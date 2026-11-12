@@ -4,6 +4,9 @@
 //! usage readings.
 //! Re-exports only.
 
+#[cfg(test)]
+pub(in crate::commands::profile) use super::mv::test_exchange;
+
 pub use super::candidate::adjusted;
 pub use super::capacity::{Rotated, refresh_from_rotation as capacity_from_rotation};
 pub use super::config::{Source, effective};

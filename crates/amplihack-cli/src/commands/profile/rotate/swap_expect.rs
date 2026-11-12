@@ -52,6 +52,7 @@ pub(super) enum Pending {
 
 /// Whether `e` is the refusal [`guard`] returns: the cycle writes its ALERT
 /// once per profile, keyed `account_mismatch:<from>`.
+#[cfg(test)]
 pub fn is_account_mismatch(e: &ProfileError) -> bool {
     matches!(e, ProfileError::RotateRefused(m) if m.starts_with(ACCOUNT_MISMATCH))
 }
@@ -154,5 +155,31 @@ pub(super) fn settle(store: &ProfileStore, from: &ProfileName, pending: Pending)
         Pending::Adopted(a) => expected::save(store.root(), from, &a, false),
         Pending::AdoptedUnrecorded => expected::forget(store.root(), from),
         Pending::Backfill(a) => expected::save(store.root(), from, &a, true),
+    }
+}
+
+/// Rotation retains its journal until expected ownership is durable.
+pub(super) fn settle_durable(
+    store: &ProfileStore,
+    from: &ProfileName,
+    pending: Pending,
+) -> Result<(), ProfileError> {
+    match pending {
+        Pending::Nothing | Pending::Relabel(_) => Ok(()),
+        Pending::Adopted(a) => expected::record(
+            &super::super::auto_switch::kit::State::new(store.root())?,
+            from,
+            &a,
+        ),
+        Pending::Backfill(a) => {
+            super::swap_authorize::check_record(store, from, Some(&a))?;
+            expected::record(
+                &super::super::auto_switch::kit::State::new(store.root())?,
+                from,
+                &a,
+            )
+        }
+        Pending::AdoptedUnrecorded => super::super::auto_switch::kit::State::new(store.root())?
+            .remove_sub_json("expected", from.as_str()),
     }
 }

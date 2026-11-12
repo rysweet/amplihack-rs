@@ -44,12 +44,6 @@ pub(super) fn no_oauth(to: &ProfileName) -> ProfileError {
     refused(format!("{to} {NO_OAUTH}"))
 }
 
-/// Whether `e` is that refusal: the cycle writes its ALERT once per
-/// profile, keyed `no_oauth:<to>`.
-pub fn is_no_oauth(e: &ProfileError) -> bool {
-    matches!(e, ProfileError::RotateRefused(m) if m.ends_with(NO_OAUTH))
-}
-
 /// Whether the login at `t` may make `to` live in `~/.claude`: an OAuth
 /// login, or any login of an API-key profile.
 pub(super) fn may_go_live(t: &Path, platform: bool) -> bool {

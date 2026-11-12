@@ -316,6 +316,15 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
         return refusal_result(&refused);
     }
     let home = home_dir();
+    #[cfg(unix)]
+    {
+        if let Some(home) = &home
+            && let Err(e) = super::rotate::login_state::assess_usage(store, home)
+        {
+            eprintln!("{e}");
+        }
+        eprintln!("{}", super::rotate::login_state::line(store.root()));
+    }
     let live = detect_live(store, home.as_deref(), &profiles);
     // Issue #2218: when `~/.claude` holds an excluded profile's login, by
     // the rotator's local proof, no other profile is read against it.
@@ -1141,6 +1150,19 @@ impl RowReader {
     pub(super) fn profile(&self, name: &ProfileName, live: bool) -> Probe {
         if self.is_excluded(name) {
             return Probe::excluded();
+        }
+        #[cfg(unix)]
+        {
+            let dir = if live {
+                self.home.as_ref().map(|h| h.join(".claude"))
+            } else {
+                Some(self.store.root().join(name.as_str()))
+            };
+            if dir.as_ref().is_some_and(|d| {
+                super::rotate::login_state::suppressed(self.store.root(), name, d).unwrap_or(true)
+            }) {
+                return Probe::direct_error("needs-login");
+            }
         }
         let claude = |m: ProbeMode| {
             usage_source::fallback_with(&self.binary, |bin| {

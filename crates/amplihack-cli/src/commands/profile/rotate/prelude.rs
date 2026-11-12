@@ -83,7 +83,13 @@ pub fn locked_prelude(
     // folders, and `~/.claude` when it holds an excluded login, are
     // identified from local files only, so no request carries their token.
     ctx.set_excluded_dirs(local_only_dirs(&ctx.store, &ctx.rs, &ctx.home)?);
-    match super::recover::recover_with(&ctx.store, &ctx.rs, &ctx.home, ctx.identity_reader()) {
+    match super::recover::recover_at(
+        &ctx.store,
+        &ctx.rs,
+        &ctx.home,
+        ctx.identity_reader(),
+        ctx.now,
+    ) {
         Ok(RecoverOutcome::None) => {}
         Ok(RecoverOutcome::RolledBack { from, to }) => {
             out.emit(now(), &msg::recovered(false, &from, &to));
@@ -99,7 +105,22 @@ pub fn locked_prelude(
     }
     // Issue #1753 (R1): after swap recovery, so no journal is pending, and
     // before anything reads the live login's identity, which never refreshes.
-    live_refresh::refresh_expired_live(ctx, &mut out);
+    live_refresh::refresh_expired_live(ctx, &mut out)?;
+    ctx.identity_budget
+        .set_suppressed(super::login_state::suppressed_dirs(
+            ctx.store.root(),
+            &ctx.home,
+        )?);
+    if ctx.identity_budget.suppressed(&ctx.home.join(".claude")) {
+        return Ok((
+            out,
+            Prelude::LiveUnusable {
+                kind: "needs-login",
+                live: None,
+                line: super::login_state::line(ctx.store.root()),
+            },
+        ));
+    }
     // Issue #1962: only after the refresh, so the stop names a fresh reading.
     if let Err(e) = ctx.rs.load_ledger() {
         let line = ledger_stop(ctx, &e);

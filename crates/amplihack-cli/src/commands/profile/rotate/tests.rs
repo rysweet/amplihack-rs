@@ -32,6 +32,8 @@ mod tests_issue_2136;
 mod tests_issue_2211;
 #[path = "tests_issue_2211_cycle.rs"]
 mod tests_issue_2211_cycle;
+#[path = "tests_issue_2242.rs"]
+mod tests_issue_2242;
 #[path = "tests_ledger.rs"]
 mod tests_ledger;
 #[path = "tests_live_readers.rs"]

@@ -52,4 +52,57 @@ pub struct RotateJournal {
     /// Full identities accepted before exchange; absent in legacy journals.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<super::super::login_identity::SwapIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_lock_ino: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parking: Option<super::super::duplicate::Parking>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion: Option<super::super::swap_record::Completion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outgoing: Option<super::super::custody::Custody>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outgoing_lock_ino: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_directory: Option<(u64, u64)>,
+}
+
+impl RotateJournal {
+    pub(super) fn valid_extended(&self) -> bool {
+        !self.from.eq_ignore_ascii_case(&self.to)
+            && self.live_ino != self.target_ino
+            && (self.outgoing_lock_ino.is_none() || self.outgoing.is_some())
+            && (self.from_lock_ino.is_none() || self.from_directory.is_some())
+            && (self.version != 2 || self.phase == Phase::Checking || self.from_directory.is_some())
+            && ((self.parking.is_none() && self.outgoing.is_none())
+                || self.from_directory.is_some())
+            && self.identity.as_ref().is_none_or(|i| {
+                i.outgoing
+                    .as_ref()
+                    .is_none_or(super::super::login_identity::Identity::valid)
+                    && i.incoming
+                        .as_ref()
+                        .is_none_or(super::super::login_identity::Identity::valid)
+            })
+            && self.outgoing.as_ref().is_none_or(|c| {
+                c.valid()
+                    && c.origin == self.from
+                    && c.destination != self.to
+                    && self.parking.is_none()
+                    && !self.adopt
+            })
+            && !self
+                .parking
+                .as_ref()
+                .is_some_and(|p| !p.valid() || p.origin != self.from)
+            && (!(self.outgoing.is_some()
+                || self.parking.is_some()
+                || self.completion.is_some()
+                || self.from_lock_ino.is_some()
+                || self.from_directory.is_some())
+                || self.version == 2)
+            && self
+                .completion
+                .as_ref()
+                .is_none_or(|c| c.valid(&self.from, &self.to))
+    }
 }

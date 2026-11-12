@@ -520,9 +520,23 @@ pub fn swap_check(
     // directory, no running process may be using the directory. An API-key
     // profile is never swapped into a running session: its `.credentials.json`
     // is no login on its own, so the session would be logged out (#1804).
+    let candidate_store = crate::commands::profile::ProfileStore::new(state.root.clone());
     let eligible = |c: &ProfileName| {
         let n = c.as_str();
-        !overflow.not_plan.contains(c)
+        // This lease path has no credential-bound server proof. Recovery
+        // profiles remain available to the verified rotator and switching.
+        let origin_allowed = matches!(
+            crate::commands::profile::rotate::custody::origin(&candidate_store, c),
+            Ok(None)
+        );
+        origin_allowed
+            && !crate::commands::profile::rotate::login_state::suppressed(
+                &state.root,
+                c,
+                &state.root.join(n),
+            )
+            .unwrap_or(true)
+            && !overflow.not_plan.contains(c)
             && ledger.leased_to(n).is_none()
             && fsx::movable_login(&slot(state, &ledger, owner.as_str(), n))
             && (ledger.hosts.contains_key(n) || n == owner.as_str() || !live.is_live(c))

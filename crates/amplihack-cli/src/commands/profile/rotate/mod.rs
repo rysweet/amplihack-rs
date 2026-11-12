@@ -21,7 +21,11 @@ mod control;
 #[cfg(unix)]
 pub(super) mod cred_identity;
 #[cfg(unix)]
+pub(super) mod custody;
+#[cfg(unix)]
 mod cycle;
+#[cfg(unix)]
+mod cycle_attempts;
 #[cfg(unix)]
 pub(super) mod daemon;
 #[cfg(unix)]
@@ -30,6 +34,8 @@ mod damp;
 pub(super) mod decide;
 #[cfg(unix)]
 mod dry_run;
+#[cfg(unix)]
+mod duplicate;
 #[cfg(unix)]
 mod exhausted;
 #[cfg(unix)]
@@ -68,6 +74,8 @@ pub(super) mod ledger;
 mod log;
 #[cfg(unix)]
 mod login_identity;
+#[cfg(unix)]
+pub(super) mod login_state;
 #[cfg(unix)]
 mod lost;
 #[cfg(unix)]
@@ -200,7 +208,6 @@ mod tests_switch_hold;
 mod tests_switch_race;
 use super::{name::ProfileName, root_config::RootSource, store::ProfileStore};
 
-// Issue #1797: `Probes` is what the usage history records from a cycle.
 #[cfg(unix)]
 pub(super) use self::{autostart::autostart_line, identify::excluded_offline::*};
 #[cfg(unix)]
@@ -215,15 +222,12 @@ pub(super) use gate_record::effective_at as overflow_gate_at;
 #[cfg(unix)]
 pub(super) use gate_record::{GateSource, effective as overflow_gate, line as overflow_gate_line};
 
-/// The tail of the warning after `profile switch NAME` (#1691) while a rotator
-/// of another amplihack binary, which ignores the switch hold, runs.
+/// Warn when another binary's rotator ignores the switch hold (#1691).
 #[cfg(unix)]
 const FOREIGN_IGNORES_HOLD: &str = "runs another amplihack binary and ignores the switch \
     hold; restart it: amplihack profile rotate stop && amplihack profile rotate start";
 
-/// The switch-hold warning for the rotator of `rs`, judged against
-/// `proc_root` and this process's executable `exe`; `None` when no rotator
-/// runs or it runs this binary.
+/// Switch-hold warning, comparing the running rotator with this executable.
 #[cfg(unix)]
 fn foreign_note_for(
     rs: &ledger::RotateState,
@@ -235,9 +239,7 @@ fn foreign_note_for(
     })
 }
 
-/// After a successful `profile switch NAME`: one line on stderr when the
-/// running rotator would ignore the hold. The switch itself succeeded, so
-/// this never changes the exit code.
+/// Warn after a successful switch when the running rotator ignores the hold.
 #[cfg(unix)]
 fn warn_switch_hold(root: &std::path::Path) {
     let exe = std::env::current_exe().ok();
@@ -377,9 +379,7 @@ pub struct Released {
     pub default: bool,
 }
 
-/// `profile switch --none`: removes the rotation pin and the default
-/// pointer as one operation under the rotate lock; what was there. Off Unix
-/// there is no rotator and so no pin, and only the pointer is removed.
+/// Removes the rotation pin and default pointer under the rotate lock.
 pub(in crate::commands::profile) fn release(
     store: &ProfileStore,
 ) -> Result<Released, super::ProfileError> {

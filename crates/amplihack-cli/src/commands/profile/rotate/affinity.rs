@@ -54,6 +54,7 @@ pub(in super::super) fn decide(
     measured: &[Measured],
     eligible: &[bool],
     need: Need,
+    attempted: &[ProfileName],
 ) -> Verdict {
     let overflow = input.overflow;
     let is_overflow = |n: &ProfileName| overflow.iter().any(|e| &e.name == n);
@@ -88,7 +89,11 @@ pub(in super::super) fn decide(
         .collect();
     let pools = pools(snap.source_org(), need, &candidates);
     let names = |indices: &[usize]| -> Vec<ProfileName> {
-        indices.iter().map(|&i| measured[i].name.clone()).collect()
+        indices
+            .iter()
+            .map(|&i| measured[i].name.clone())
+            .filter(|n| !attempted.contains(n))
+            .collect()
     };
     let (allowed, plan_room) = (names(&pools.allowed), names(&pools.plan_room));
     let mut verdict = decide_restricted(input, Some((&allowed, &plan_room)));
@@ -124,6 +129,7 @@ pub(in super::super) fn with_outlook(
     measured: &[Measured],
     eligible: &[bool],
     need: Need,
+    attempted: &[ProfileName],
 ) -> Verdict {
     let (s, real) = (input.settings, &input.live.reading);
     let on_outlook = if *real == Reading::Failed {
@@ -137,7 +143,7 @@ pub(in super::super) fn with_outlook(
             live: &figures,
             ..*input
         };
-        outlook(snap, &input, measured, eligible, need)
+        outlook(snap, &input, measured, eligible, need, attempted)
     };
     live::with_outlook(verdict, on_outlook, o.basis, s, real)
 }
@@ -169,6 +175,7 @@ fn outlook(
     measured: &[Measured],
     eligible: &[bool],
     need: Need,
+    attempted: &[ProfileName],
 ) -> Decision {
     let threshold = |d: &Decision| {
         matches!(
@@ -179,7 +186,7 @@ fn outlook(
             }
         )
     };
-    let d = decide(snap, input, measured, eligible, need).decision;
+    let d = decide(snap, input, measured, eligible, need, attempted).decision;
     if threshold(&d) {
         d
     } else if threshold(&decide_restricted(input, None).decision) {

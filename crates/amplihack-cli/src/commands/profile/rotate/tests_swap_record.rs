@@ -13,7 +13,8 @@
 //!   (`swap record seq restarts at 1: …`) on `out`.
 //! - `run_cycle` calls it only in the `Swapped` arm, after the ledger is
 //!   saved and before the lock is dropped. A failure is one log line
-//!   (`swap record not written: …`) and never changes the cycle outcome.
+//!   (`swap event publication pending: …`), returns an error and retains
+//!   the completion journal so publication can recover without another swap.
 //! - No record on a stay, an ALERT, a refused swap, a failed cycle or a
 //!   manual `profile switch`.
 //!
@@ -415,18 +416,17 @@ fn each_swap_writes_the_next_seq() {
 }
 
 #[test]
-fn a_corrupt_previous_record_restarts_seq_with_one_log_line() {
+fn a_corrupt_previous_record_preserves_completion_and_the_unreadable_evidence() {
     let e = env();
     e.rs.ensure().unwrap();
     e.rs.write("swap.json", b"not json").unwrap();
-    assert_eq!(run(&e, measure_swap).unwrap(), CycleOutcome::Swapped);
-    assert_eq!(on_disk(&e.rs).seq, 1);
-    let log = log_of(&e);
-    let lines: Vec<_> = log
-        .lines()
-        .filter(|l| l.contains("swap record seq restarts at 1: previous unparsable"))
-        .collect();
-    assert_eq!(lines.len(), 1, "{log}");
+    assert!(run(&e, measure_swap).is_err());
+    assert_eq!(fs::read(swap_file(&e.rs)).unwrap(), b"not json");
+    assert!(
+        e.rs.journal.exists(),
+        "retain automatic completion for recovery"
+    );
+    assert_eq!(ino_at(&e.live()), Some(e.t));
 }
 
 #[test]
@@ -509,13 +509,14 @@ fn a_failed_record_write_is_logged_and_the_swap_stands() {
     e.rs.ensure().unwrap();
     // A directory where the record goes: the atomic write is refused.
     fs::create_dir(swap_file(&e.rs)).unwrap();
-    let got = run(&e, measure_swap).unwrap();
-    assert_eq!(got, CycleOutcome::Swapped, "the outcome is unchanged");
+    let got = run(&e, measure_swap);
+    assert!(got.is_err(), "publication failure is recoverable");
+    assert!(e.rs.journal.exists(), "retain completion intent");
     assert_eq!(ino_at(&e.live()), Some(e.t), "spare's login is live");
     let log = log_of(&e);
     assert_eq!(
         log.lines()
-            .filter(|l| l.contains("swap record not written"))
+            .filter(|l| l.contains("swap event publication pending"))
             .count(),
         1,
         "{log}"

@@ -11,11 +11,17 @@ use std::path::Path;
 
 pub const REFRESH_LOCK: &str = ".oauth_refresh.lock";
 
+#[cfg(test)]
+#[path = "tests_exchange_boundary.rs"]
+pub(in crate::commands::profile) mod test_exchange;
+
 #[cfg(debug_assertions)]
 const TEST_ABORT_ENV: &str = "AMPLIHACK_AUTO_SWITCH_TEST_ABORT_AFTER";
 
 /// Debug builds only: stop the process at a named step, as a crash would.
 pub fn abort_point(step: &str) {
+    #[cfg(test)]
+    test_exchange::interrupt(step);
     #[cfg(debug_assertions)]
     if std::env::var_os(TEST_ABORT_ENV).is_some_and(|v| v == step) {
         std::process::exit(86);
@@ -78,7 +84,15 @@ pub fn exchange_logins(a: &Path, b: &Path) -> Result<(), MoveError> {
             "a login file is not a private regular file with one link".into(),
         ));
     }
-    exchange(a, b).map_err(|e| {
+    #[cfg(test)]
+    let result = if test_exchange::active() {
+        test_exchange::exchange(a, b)
+    } else {
+        exchange(a, b)
+    };
+    #[cfg(not(test))]
+    let result = exchange(a, b);
+    result.map_err(|e| {
         if unsupported(&e) {
             MoveError::Unsupported
         } else {

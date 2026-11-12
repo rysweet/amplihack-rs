@@ -10,6 +10,9 @@ use std::io::{self, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
+#[path = "log_alert.rs"]
+mod alert_delivery;
+
 pub const MAX_LOG: u64 = 1024 * 1024;
 
 /// UTC time in the log's format.

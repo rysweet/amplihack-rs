@@ -379,10 +379,10 @@ fn a_hand_changed_login_is_refused_without_an_alert() {
 }
 
 #[test]
-fn no_login_in_home_is_refused() {
+fn a_missing_live_login_is_refused_with_needs_login_guidance() {
     let e = env();
     fs::remove_file(e.live()).unwrap();
-    assert_refused(&e, "spare", "no login in ~/.claude");
+    assert_refused(&e, "spare", "needs-login: work");
 }
 
 #[test]

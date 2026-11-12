@@ -71,10 +71,27 @@ pub(super) fn recover_with(
     home: &Path,
     reader: Reader<'_>,
 ) -> Result<RecoverOutcome, ProfileError> {
+    recover_at(
+        store,
+        rs,
+        home,
+        reader,
+        crate::commands::profile::auto_switch::kit::now,
+    )
+}
+
+pub(super) fn recover_at(
+    store: &ProfileStore,
+    rs: &RotateState,
+    home: &Path,
+    reader: Reader<'_>,
+    clock: fn() -> i64,
+) -> Result<RecoverOutcome, ProfileError> {
+    rs.ensure()?;
     let Some(mut j) = rs.load_journal()? else {
         return Ok(RecoverOutcome::None);
     };
-    if j.phase == Phase::Inconsistent {
+    if j.phase == Phase::Inconsistent && j.version == 1 {
         return Ok(RecoverOutcome::Inconsistent(
             "an earlier swap stopped half way".into(),
         ));
@@ -88,7 +105,58 @@ pub(super) fn recover_with(
     }
     // Names were checked when the journal was loaded.
     let (from, to) = (ProfileName::parse(&j.from)?, ProfileName::parse(&j.to)?);
-    if j.phase == Phase::Checking {
+    super::swap::check_home(home)?;
+    let pre_exchange = ino_at(&home.join(".claude").join(CREDS)) == Some(j.live_ino)
+        && store
+            .verify_profile_dir(&to)
+            .ok()
+            .and_then(|dir| ino_at(&dir.join(CREDS)))
+            == Some(j.target_ino);
+    if !super::swap::source_current(store, &j) {
+        return Ok(RecoverOutcome::Inconsistent(
+            "outgoing profile directory changed; journal retained".into(),
+        ));
+    }
+    if j.parking.is_some() && j.phase == Phase::Checking {
+        super::swap::check_home(home)?;
+        // Parking is movement even though exchange has not started. Reacquire
+        // missing operation locks; never break a different writer's lock.
+        for (dir, which) in [
+            (home.join(".claude"), 0),
+            (store.verify_profile_dir(&to)?, 1),
+            (store.verify_profile_dir(&from)?, 2),
+        ] {
+            let held = match which {
+                0 => j.home_lock_ino,
+                1 => j.to_lock_ino,
+                _ => j.from_lock_ino,
+            };
+            match (
+                held,
+                ino_at(&dir.join(crate::commands::profile::auto_switch::kit::REFRESH_LOCK)),
+            ) {
+                (Some(a), Some(b)) if a == b => {}
+                (_, None) => {
+                    let ino = super::swap::take_lock(&dir)?;
+                    match which {
+                        0 => j.home_lock_ino = Some(ino),
+                        1 => j.to_lock_ino = Some(ino),
+                        _ => j.from_lock_ino = Some(ino),
+                    }
+                    rs.save_journal(&j)?;
+                }
+                _ => {
+                    return Ok(RecoverOutcome::Inconsistent(
+                        "duplicate parking refresh lock changed".into(),
+                    ));
+                }
+            }
+        }
+    }
+    if let Some(p) = &j.parking {
+        p.recover(rs, store, home, pre_exchange, reader)?;
+    }
+    if j.phase == Phase::Checking && (pre_exchange || j.version == 1) {
         // Preflight never authorizes login movement or creates adoption profiles.
         if super::swap::check_home(home).is_err() || store.verify_profile_dir(&to).is_err() {
             return Ok(RecoverOutcome::Inconsistent(
@@ -96,11 +164,14 @@ pub(super) fn recover_with(
             ));
         }
         drop_locks(store, rs, home, &mut j)?;
+        if let Some(c) = &j.outgoing {
+            c.rollback(store)?;
+        }
         rs.delete_journal()?;
         return Ok(RecoverOutcome::RolledBack { from, to });
     }
     let (Ok(from_dir), Ok(to_dir)) = (
-        store.verify_profile_dir(&from),
+        super::custody::destination(store, &j),
         store.verify_profile_dir(&to),
     ) else {
         return freeze(
@@ -117,8 +188,11 @@ pub(super) fn recover_with(
     }
     let (t, s) = (to_dir.join(CREDS), from_dir.join(CREDS));
     let (at_t, at_s) = (ino_at(&t), ino_at(&s));
-    if at_t == Some(j.target_ino) && at_s.is_none() {
+    if at_t == Some(j.target_ino) && at_s.is_none() && ino_at(&l) == Some(j.live_ino) {
         drop_locks(store, rs, home, &mut j)?;
+        if let Some(c) = &j.outgoing {
+            c.rollback(store)?;
+        }
         rs.delete_journal()?;
         remove_unused_adoption(store, &j);
         return Ok(RecoverOutcome::RolledBack { from, to });
@@ -153,6 +227,29 @@ pub(super) fn recover_with(
                 _ => return Err(super::swap_authorize::refused(UNAVAILABLE)),
             }
         }
+        if j.outgoing.is_some() {
+            let dir = store.verify_profile_dir(&from)?;
+            match (
+                j.from_lock_ino,
+                ino_at(&dir.join(crate::commands::profile::auto_switch::kit::REFRESH_LOCK)),
+            ) {
+                (Some(a), Some(b)) if a == b => {}
+                (_, None) => {
+                    j.from_lock_ino = Some(super::swap::take_lock(&dir)?);
+                }
+                _ => return Err(super::swap_authorize::refused(UNAVAILABLE)),
+            }
+            match (
+                j.outgoing_lock_ino,
+                ino_at(&from_dir.join(crate::commands::profile::auto_switch::kit::REFRESH_LOCK)),
+            ) {
+                (Some(a), Some(b)) if a == b => {}
+                (_, None) => {
+                    j.outgoing_lock_ino = Some(super::swap::take_lock(&from_dir)?);
+                }
+                _ => return Err(super::swap_authorize::refused(UNAVAILABLE)),
+            }
+        }
         rs.save_journal(&j)
     })();
     if let Err(e) = locked {
@@ -172,6 +269,30 @@ pub(super) fn recover_with(
         login_kind(&l) == LoginKind::NoOAuth && kind::kind_of(store, &to, home) == Kind::Platform;
     let platform_out = login_kind(&outgoing.join(CREDS)) == LoginKind::NoOAuth
         && kind::kind_of(store, &from, home) == Kind::Platform;
+    if let Some(c) = &j.outgoing {
+        let fresh = reader
+            .server_bound(outgoing)
+            .map_err(super::swap_authorize::refused)?;
+        if !c.permits(store, &fresh) {
+            return Err(super::swap_authorize::refused(UNAVAILABLE));
+        }
+    }
+    let conflict = if j.outgoing.is_some() {
+        let origin = store.verify_profile_dir(&from)?;
+        match fs::symlink_metadata(origin.join(CREDS)) {
+            Ok(_) => Some(super::duplicate::recovery_conflict(
+                store, &from, outgoing, reader,
+            )?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e.into()),
+        }
+    } else {
+        None
+    };
+    let proof = conflict.as_ref().map_or(
+        super::swap_authorize::Proof::Recovery(j.identity.as_ref()),
+        super::swap_authorize::Proof::Conflict,
+    );
     let auth = match authorize(
         store,
         rs,
@@ -182,7 +303,7 @@ pub(super) fn recover_with(
         platform_in,
         platform_out,
         reader,
-        super::swap_authorize::Proof::Recovery(j.identity.as_ref()),
+        proof,
     ) {
         Ok(auth) if auth.current(store) => auth,
         result => {
@@ -195,6 +316,15 @@ pub(super) fn recover_with(
             return Ok(RecoverOutcome::Inconsistent(why));
         }
     };
+    if j.identity
+        .as_ref()
+        .is_some_and(|prior| !prior.names(auth.outgoing.account(), auth.incoming.account()))
+        || j.outgoing
+            .as_ref()
+            .is_some_and(|c| !c.permits(store, &auth.outgoing))
+    {
+        return Err(super::swap_authorize::refused(UNAVAILABLE));
+    }
     if outgoing == &to_dir
         && let Err(e) = move_login(&t, &s, &show)
     {
@@ -204,10 +334,30 @@ pub(super) fn recover_with(
         );
         return freeze(store, rs, home, j, &why);
     }
+    if let Some(c) = &j.outgoing {
+        c.commit(store, rs)?;
+        c.record_account(
+            store,
+            auth.outgoing
+                .account()
+                .ok_or_else(|| super::swap_authorize::refused(UNAVAILABLE))?,
+        )?;
+    }
     // Moving the outgoing login does not change the incoming binding.
-    finish(rs, home, &j, &auth.incoming)?;
+    finish(rs, home, &mut j, &auth.incoming)?;
+    // Original ownership metadata must be durable before publishing success.
+    if j.outgoing.is_none() {
+        if j.completion.is_some() {
+            super::swap_expect::settle_durable(store, &from, auth.pending)?;
+        } else {
+            super::swap_expect::settle(store, &from, auth.pending);
+        }
+    }
     drop_locks(store, rs, home, &mut j)?;
-    rs.delete_journal()?;
-    super::swap_expect::settle(store, &from, auth.pending);
+    if j.completion.is_some() {
+        super::swap_record::complete(rs, &mut j, clock())?;
+    } else {
+        rs.delete_journal()?;
+    }
     Ok(RecoverOutcome::RolledForward { from, to })
 }

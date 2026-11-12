@@ -2,14 +2,13 @@
 //! (unlocked), decide, revalidate under the lock and swap, record. See
 //! "Rotate cycle" in docs/reference/profile-command.md.
 
-use super::alert::{alert, alert_key, alert_once, refusal_kind};
+use super::alert::{alert, alert_key, alert_once};
 use super::capacity::{self, Room};
 use super::decide::Decision;
 use super::dry_run::dry_run;
 use super::fresh::{self, Reread};
 use super::held::held_cycle;
 use super::history;
-use super::identify::LiveId;
 use super::identify::excluded_offline::{exclude_paused, unproven_live};
 use super::ledger::{RotateLedger, newer_than};
 use super::log::{msg, shown, shown_of};
@@ -17,14 +16,14 @@ use super::observe::{Measurement, Snap, live_name, measure_and_decide, platform_
 use super::overflow::Tag;
 use super::overflow_record::{
     self, alert_line, block_spend_limited, note_home_key, note_live, note_move, note_per_token,
-    refresh_capacity, refuse_key, stay_note, target_check,
+    refresh_capacity, stay_note, target_check,
 };
 use super::pin::{self, Gate as PinGate}; // the switch-hold gate
 use super::plan_room::no_room;
 pub use super::prelude::prototype_guard;
 use super::prelude::{Prelude, locked_prelude};
 use super::revalidate::{self, Verdict};
-use super::swap::{self, Source};
+
 use super::swap_back;
 use super::swap_record;
 use crate::commands::profile::ProfileError;
@@ -88,6 +87,10 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             };
         }
         Prelude::LiveUnusable { kind, live, line } => {
+            if kind == "needs-login" {
+                out.emit((ctx.now)(), &line);
+                return Ok(CycleOutcome::Alerted);
+            }
             alert(ctx, &mut out, kind, live.as_ref(), &line)?;
             if kind == "account_mismatch" && mode != Mode::Watch {
                 let reason = line.strip_prefix("ALERT: swap refused: ").unwrap_or(&line);
@@ -200,6 +203,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         }
     };
     let (live_shown, others_shown) = shown(&m, first.live_excluded);
+    let attempts_measurement = m.clone();
     let Measurement {
         live,
         others,
@@ -223,6 +227,8 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         ctx.rs.save_ledger(&l)?;
     }
     let mut swapped = None;
+    let mut refusal = None;
+    let mut uncertain = None;
     // Issue #2085: the swap record's time is when the swap finished, not the
     // cycle's `t`, which is taken before revalidation and the swap. A session
     // that stops on the outgoing login in between must read as stopped
@@ -232,60 +238,40 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     // may be stale is neither moved into that folder nor recorded live.
     let unproven = unproven_live(ctx, &first);
     let outcome = match decision {
-        Decision::Swap { to, reason } => 'swap: {
-            // Issue #1804: a refusal moves nothing and writes no journal.
-            let check = match target_check(ctx, &first, &to) {
-                Ok(check) => check,
-                Err(why) => {
-                    refuse_key(&mut out, &mut l, &to, &why, t);
-                    note_live(&mut l, &first, t);
-                    tag = None;
-                    break 'swap CycleOutcome::Alerted;
-                }
-            };
-            // Issue #2218 (S4): an excluded login moves into its folder only
-            // on proof that it is that profile's; otherwise nothing moves.
+        Decision::Swap { .. } => 'swap: {
+            // An excluded live login may move only on established ownership.
             if let Some(n) = unproven {
                 let key = alert_key("excluded_unproven", Some(n));
                 alert_once(&mut out, &mut l, &key, t, &msg::alert_excluded_unproven(n));
                 tag = None;
                 break 'swap CycleOutcome::Alerted;
             }
-            let source = match &first.live {
-                LiveId::Known(n) => Source::Profile(n.clone()),
-                _ => Source::Adopt,
-            };
-            let from = match swap::swap_with(
-                &ctx.store,
-                &ctx.rs,
-                &ctx.home,
-                source,
-                &to,
-                t,
-                ctx.identity_reader(),
-                Some(&first),
+            let success = match super::cycle_attempts::run(
+                ctx,
+                &state,
+                &first,
+                &attempts_measurement,
+                &mut out,
+                failed_before,
             ) {
-                Ok(from) => from,
-                // A refusal repeats each cycle: one ALERT per reason.
-                Err(e @ ProfileError::RotateRefused(_)) => {
-                    // Issue #1700: a login without OAuth is refused once per
-                    // profile, keyed by the profile it would have made live.
-                    let (kind, live) = if swap::is_no_oauth(&e) {
-                        ("no_oauth".to_string(), Some(&to))
-                    } else if swap::is_account_mismatch(&e) {
-                        // Keep the outgoing profile's label on repeated refusals.
-                        ("account_mismatch".to_string(), live_name(&first.live))
-                    } else {
-                        (refusal_kind(&e), live_name(&first.live))
-                    };
-                    alert(ctx, &mut out, &kind, live, &format!("ALERT: {e}"))?;
-                    return match mode {
-                        Mode::Watch => Ok(CycleOutcome::Alerted),
-                        _ => Err(e),
-                    };
+                Ok(super::cycle_attempts::Attempts::Swapped(success)) => success,
+                Err(error) => {
+                    out.emit((ctx.now)(), &format!("swap recovery required: {error}"));
+                    uncertain = Some(error);
+                    l = ctx.rs.load_ledger()?.unwrap_or_default();
+                    tag = None;
+                    break 'swap CycleOutcome::Alerted;
                 }
-                Err(e) => return Err(e),
+                Ok(super::cycle_attempts::Attempts::Refused(error)) => {
+                    refusal = Some(error);
+                    l = ctx.rs.load_ledger()?.unwrap_or_default();
+                    note_live(&mut l, &first, t);
+                    tag = None;
+                    break 'swap CycleOutcome::Alerted;
+                }
             };
+            let (from, to, reason) = (success.from, success.to, success.reason);
+            let check = target_check(ctx, &first, &to).map_err(ProfileError::RotateRefused)?;
             swapped_at = (ctx.now)();
             swapped = Some([to.clone(), from.clone()]);
             let target = shown_of(&others_shown, &to);
@@ -370,17 +356,16 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     let at = capacity::recorded_at(outcome, probed.as_ref(), measured_at);
     save(ctx, &mut l, outcome, now(), Some(at), tag)?;
     // Issue #2085: the record the limit-resume hook waits for, under the lock.
-    if let Some([to, from]) = &swapped {
-        swap_record::after_swap(
-            &ctx.rs,
-            &mut out,
-            from,
-            to,
-            &others,
-            measured_at,
-            swapped_at,
-            (first.source_org(), first.org_of(to)),
-        );
+    if swapped.is_some()
+        && let Some(mut j) = ctx.rs.load_journal()?
+    {
+        if let Err(error) = swap_record::complete(&ctx.rs, &mut j, swapped_at) {
+            out.emit(
+                (ctx.now)(),
+                &format!("swap event publication pending: {error}"),
+            );
+            return Err(error);
+        }
     }
     // Issue #1634: link the session dirs of both profiles swapped, after the
     // lock is released so a long merge never stalls a launch waiting on it.
@@ -391,6 +376,14 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     }
     for p in swapped.iter().flatten() {
         shared_dirs::ensure_for(&ctx.store, p);
+    }
+    if mode != Mode::Watch
+        && let Some(error) = refusal
+    {
+        return Err(error);
+    }
+    if let Some(error) = uncertain {
+        return Err(error);
     }
     Ok(outcome)
 }

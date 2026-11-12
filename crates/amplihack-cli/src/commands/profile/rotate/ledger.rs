@@ -40,13 +40,10 @@ pub const SWITCHED: &str = "switched";
 pub struct LastCycle {
     /// When the cycle was recorded, at its end.
     pub at: i64,
-    /// When the usage the cycle relied on was read (issue #1659): a waiting
-    /// limit-resume hook trusts only a measurement taken after its limit.
-    /// A `stayed` cycle records when the live reading was taken: a passive
-    /// reading's `observed_at`, but never later than when the cycle started
-    /// measuring (see `capacity::recorded_at`). Every other rotate outcome
-    /// records when the cycle started measuring. [`SWITCHED`] records the
-    /// time of the switch. Absent for a cycle that measured nothing.
+    /// Usage time trusted by the limit-resume hook (#1659). A stayed cycle
+    /// uses the live observation, capped at measurement start (see
+    /// `capacity::recorded_at`); other outcomes use measurement start.
+    /// [`SWITCHED`] uses switch time. Absent when nothing was measured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub measured_at: Option<i64>,
     pub outcome: String,
@@ -68,9 +65,7 @@ pub const OVERFLOW_TAGS: [&str; 3] = ["in", "out", "on"];
 pub const SPEND_LIMIT: &str = "spend_limit";
 /// The most overflow blocks a ledger may hold.
 pub const MAX_BLOCKS: usize = 256;
-/// The longest a loaded block may last. The writer uses the next spend
-/// reset, at most 31 days away; the slack lets a later change take the
-/// reset from Claude's message without invalidating older ledgers.
+/// Maximum loaded block age; allows reset-message slack beyond 31 days.
 pub const MAX_BLOCK_SECS: i64 = 62 * 86_400;
 
 /// An overflow profile that reported the organisation's spend limit: not
@@ -198,7 +193,6 @@ impl Default for RotateLedger {
 mod journal;
 pub use journal::{Phase, RotateJournal};
 
-/// Paths of the rotate state.
 #[derive(Debug, Clone)]
 pub struct RotateState {
     pub root: PathBuf,
@@ -211,7 +205,7 @@ pub struct RotateState {
     pub pid: PathBuf,
     pub log: PathBuf,
     pub log1: PathBuf,
-    /// The background process's own stdout and stderr.
+    /// Background process stdout and stderr.
     pub err: PathBuf,
 }
 
@@ -369,13 +363,24 @@ impl RotateState {
         let Some(raw) = self.read(&self.journal, WHAT)? else {
             return Ok(None);
         };
+        let header: serde_json::Value = serde_json::from_slice(&raw)
+            .map_err(|e| inconsistent(format!("{WHAT}: {}", position(&e))))?;
+        if !matches!(
+            header.get("version").and_then(serde_json::Value::as_u64),
+            Some(1 | 2)
+        ) {
+            return Err(inconsistent(format!("{WHAT}: unknown version")));
+        }
         let j: RotateJournal = serde_json::from_slice(&raw)
             .map_err(|e| inconsistent(format!("{WHAT}: {}", position(&e))))?;
-        if j.version != VERSION {
+        if !matches!(j.version, 1 | 2) {
             return Err(inconsistent(format!("{WHAT}: unknown version")));
         }
         if ProfileName::parse(&j.from).is_err() || ProfileName::parse(&j.to).is_err() {
             return Err(inconsistent(format!("{WHAT}: invalid profile name")));
+        }
+        if !j.valid_extended() {
+            return Err(inconsistent("rotate journal: invalid extended custody"));
         }
         Ok(Some(j))
     }

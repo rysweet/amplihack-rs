@@ -269,6 +269,10 @@ pub(super) fn not_a_candidate(
         }
         Skip::NoLogin => LOGIN_NOT_MOVABLE.to_string(),
         Skip::NotOAuth => "its login file holds no subscription login".to_string(),
+        Skip::NeedsLogin => {
+            format!("authentication needs repair; run `amplihack profile login {name}` first")
+        }
+        Skip::CustodyUnknown => "its recovery receipt or origin provenance is missing or inconsistent; retain the recovery profile and repair its recorded custody with the current binary".to_string(),
         Skip::SessionRunning if !snap.sees_sessions => {
             "running sessions cannot be seen here, so its login may be in use".to_string()
         }

@@ -200,6 +200,12 @@ impl Env {
             to_lock_ino: None,
             started_at: NOW,
             pid: std::process::id(),
+            from_lock_ino: None,
+            parking: None,
+            completion: None,
+            outgoing: None,
+            outgoing_lock_ino: None,
+            from_directory: None,
             identity: Some(super::login_identity::SwapIdentity::new(
                 Some(
                     &super::identify::Account::from_block(&acct("u-work", "work@example.com"))

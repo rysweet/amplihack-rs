@@ -303,6 +303,12 @@ fn status(store: &ProfileStore) -> Result<String> {
     let root = store.root();
     let eff = config::effective(root);
     let mut out = String::new();
+    #[cfg(unix)]
+    writeln!(
+        out,
+        "{}",
+        crate::commands::profile::rotate::login_state::line(root)
+    )?;
     writeln!(out, "root: {}", root.display())?;
     writeln!(
         out,

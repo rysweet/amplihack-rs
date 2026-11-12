@@ -236,6 +236,12 @@ fn journal_appears(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> 
             started_at: at,
             pid: std::process::id(),
             identity: None,
+            from_lock_ino: None,
+            parking: None,
+            completion: None,
+            outgoing: None,
+            outgoing_lock_ino: None,
+            from_directory: None,
         })
         .unwrap();
     decide_measured(ctx, snap, spent(), probes, at)

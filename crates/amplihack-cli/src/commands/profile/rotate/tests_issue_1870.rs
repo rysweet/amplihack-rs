@@ -778,33 +778,20 @@ fn spare_full_quiet(_: &Ctx, _: &ProfileName, _: Duration) -> Probed {
     exh(43.0, 100.0)
 }
 
-/// The gate passes a measurement with no probes unchanged; only test stubs
-/// build one. Outside tests the one `Measurement` literal is in
-/// `decide_measured`, and it keeps the probes.
+/// Freshness and candidate fallback must reuse the original observations,
+/// including their timestamps and window evidence.
 #[test]
 fn every_production_measurement_keeps_its_probes() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/profile/rotate");
-    let mut built = Vec::new();
-    for entry in fs::read_dir(&dir).unwrap() {
-        let path = entry.unwrap().path();
-        let file = path.file_name().unwrap().to_string_lossy().into_owned();
-        if file.starts_with("tests") || path.extension().is_none_or(|x| x != "rs") {
-            continue;
-        }
-        let text = fs::read_to_string(&path).unwrap();
-        for (i, l) in text.lines().enumerate() {
-            let code = l.split("//").next().unwrap_or_default();
-            // A destructuring `let Measurement {` and the definition build nothing.
-            if code.contains("Measurement {")
-                && !code.contains("let Measurement {")
-                && !code.contains("struct Measurement")
-            {
-                let rest: String = text.lines().skip(i).take(4).collect();
-                built.push((file.clone(), rest));
-            }
-        }
-    }
-    assert_eq!(built.len(), 1, "one production literal: {built:?}");
-    assert_eq!(built[0].0, "observe.rs");
-    assert!(built[0].1.contains("probed: Some("), "{built:?}");
+    let e = env();
+    let c = gate_ctx(&e, None);
+    let s = snap(&c);
+    let at = now();
+    let live = rd(92.0, 25.0, Some(at - 10));
+    let probes = vec![(n("spare"), rd(11.0, 20.0, Some(at - 60)))];
+    let m = decide_measured(&c, &s, live.clone(), probes.clone(), at).unwrap();
+    assert_eq!(m.probed, Some((live.clone(), probes.clone())));
+    assert_eq!(m.measured_at, at);
+    assert_eq!(m.live, live.reading);
+    assert_eq!(m.others, vec![(n("spare"), probes[0].1.reading)]);
+    assert!(matches!(m.decision, Decision::Swap { to, .. } if to == n("spare")));
 }

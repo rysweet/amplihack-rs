@@ -812,6 +812,12 @@ fn a_pending_journal_means_no_read_and_no_move() {
         started_at: T - 60,
         pid: 1,
         identity: None,
+        from_lock_ino: None,
+        parking: None,
+        completion: None,
+        outgoing: None,
+        outgoing_lock_ino: None,
+        from_directory: None,
     })
     .unwrap();
     assert_eq!(f.step(&seam(), T), Step::Clear);

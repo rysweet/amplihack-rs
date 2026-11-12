@@ -112,6 +112,69 @@ read.
 | `--raw` | Also print what `claude` wrote to stdout and stderr, for each profile, from the [attempt](#probe-method) that gave the row. Without it, that output is dropped once parsed. Rows read without `claude` print a fixed line instead. Also prints the `note:` lines for rows that fell back or whose account has [usage credits on](#usage-credits-on). It can include account details; see [Raw output](#raw-output). With `--raw` there is no summary and nothing is added to the [usage history](#usage-history). |
 | `<name>...` | Probe only these profiles, in the [usual order](#ordering). |
 
+#### Needs-login profiles
+
+`needs-login` is a persistent, per-profile authentication episode. It is
+entered when a subscription login has no OAuth token, or an expired token
+has no refresh available or a refresh is definitively rejected. Assessment
+uses the login's effective custody location: live, loaned or parked
+credentials are not missing merely because the profile's own folder is
+empty. Explicit [API-key classification](#api-key-profiles) retains its
+separate rules.
+
+Transport errors, service failures, lock contention and uncertainty about
+saving refreshed credentials do not establish `needs-login`. Identity
+verification failure alone is not definitive authentication rejection.
+
+Each episode records the first-observed timestamp, the credential-file
+change evidence used for its assessment, and whether its entry alert has
+been delivered. The state is saved in `login-state.json` under the rotate
+state directory and shared state lock. It survives process restarts.
+
+An unchanged affected profile is excluded before identity requests, usage
+probes, child-process fallbacks and ownership-claim scans would authenticate
+it. Suppression supplies no ownership proof and cannot authorise movement.
+A required ownership check that cannot be completed still refuses safely.
+Unchanged credentials are neither repeatedly refreshed nor repeatedly
+alerted.
+
+Creation, replacement, modification or removal of a credential file allows
+reassessment on an existing cycle, using the established metadata-based
+change detection. Changed credentials remain pending until conclusively
+assessed; a temporary reassessment failure is retried on a later existing
+cycle, retaining its original first-seen time and exclusion during
+uncertainty. Successful authentication and trusted server-identity
+verification clear the episode. A token's presence, local expiry data or
+an unsuccessful verification cannot clear it. Every unsuccessful repair,
+including changed credentials that are definitively unusable, retains the
+same episode, original first-seen timestamp, exclusion and alert suppression.
+All ordinary eligibility checks still apply after recovery. Only after a
+successful repair can a later transition into `needs-login` start a new
+episode with its own entry alert.
+
+Text `profile usage` output marks affected rows `needs-login`. It and
+`profile auto-switch status` use the same sorted, consolidated line listing
+every affected profile and its first-seen time, for example:
+
+```text
+needs-login: personal (first seen 2026-11-10T03:00:00Z), spare (first seen 2026-11-10T03:01:00Z); stored login: amplihack profile login <name>; live login: claude /login
+```
+
+First-seen times are UTC. The login actions appear on the same summary
+line. With no affected profiles the line is `needs-login: none`. These commands
+read persisted episode evidence without authenticating unchanged affected
+credentials. Auto-switch status does not repair or clear episodes. An
+unreadable, unsafe, oversized or unsupported login-state file is preserved
+and reported as `needs-login: unknown`, with the reason; it is never silently
+replaced with an empty list.
+
+Entry-alert delivery is keyed and durable: persist the transition, deliver
+the keyed alert, then acknowledge delivery. Recovery recognises an already
+delivered key so interruption does not duplicate the alert or lose it.
+Different-account destination conflicts have independent persistent
+suppression, described under [Verified duplicate parking](#verified-duplicate-parking).
+For repair commands, see [Repair profiles marked needs-login](../howto/claude-profile-rotation.md#repair-profiles-marked-needs-login).
+
 #### How a profile is probed
 
 Each OAuth profile is read in this order, and the first step that gives a
@@ -135,6 +198,7 @@ Every row records which step gave it as its [source](#reading-source):
 |---------|-------|
 | In the auto-switch `exclude` list | None. It is not probed, read or refreshed. See [Excluded profiles](#excluded-profiles). This wins over every row below. |
 | [API-key profile](#api-key-usage) | None. It is not probed, as before. |
+| Persisted [needs-login episode](#needs-login-profiles), credential evidence unchanged | None. The row is `needs-login`; no authentication, refresh, usage request or child probe is attempted. Changed credentials permit reassessment without resetting the episode. |
 | Marked as [overflow](#rotate-overflow) | Fallback only, as `/usage` text. The spend limit is visible only in `/usage`, so the [spend-limit block](#overflow-spend-limit-block) keeps working. Source `fallback`. Under `AMPLIHACK_PROFILE_USAGE_PROBE=direct` the row is not probed and reads `error`; see [Probe method](#probe-method). |
 | A direct answer shows usage credits turned on (`extra_usage` is not absent, `null` or `{"is_enabled": false}`) | The windows and state come from the direct answer. Source `direct`. Spend `not_probed`, unless `--spend` asks for one `/usage` text probe, under the normal per-probe timeout (`--timeout-secs`, 120 s by default), that reads only the spend status; see [Usage credits on](#usage-credits-on). If neither window in the answer is usable, the direct read fails with `usage credits on` and the profile goes to the fallback. |
 | Any profile, with `AMPLIHACK_PROFILE_USAGE_PROBE` set to `auto` or `text` | Fallback only, with the method named. See [Probe method](#probe-method). |
@@ -4425,6 +4489,10 @@ Both `install` and `repair` are idempotent: a second run leaves every
 
 #### Status notes
 
+`auto-switch status` also prints the consolidated
+[`needs-login:` line](#needs-login-profiles) from persisted state. It makes
+no authentication request to render that line.
+
 `status` prints these notes after the invariant line, each as
 `note: <text>` on its own line, only when they apply:
 
@@ -5637,6 +5705,13 @@ The auto-switch `exclude` list applies to rotation, and so does the
 `overflow` list in the same file; see [Rotate overflow](#rotate-overflow).
 `--overflow-wait` has no effect while no profile is marked as overflow.
 
+Duplicate recovery, safe candidate fallback and needs-login persistence
+need no additional settings. Predictive rotation uses the existing
+`--interval`, thresholds and margins; it does not change their defaults.
+It takes observations only from existing cycles, without adding scheduled
+retries or probes. A one-shot process without comparable history reports
+projection unavailable and applies the ordinary threshold rules.
+
 ### Rotate cycle
 
 Every non-dry-run cycle runs these steps in order:
@@ -5659,9 +5734,12 @@ Every non-dry-run cycle runs these steps in order:
    [hand-change recovery](#rotate-hand-change-recovery), then
    [identify](#rotate-live-profile) the live profile, [seed](#seeding-a-record)
    its record if one is missing and allowed, and find the
-   [candidates](#rotate-candidates). Hand-change recovery makes its
-   identity reads here, under the lock, unless the last swap is under
-   `SWAP_GRACE` old. Identification and swap authorization have their own
+   [candidates](#rotate-candidates). The persistent
+   [login-health gate](#needs-login-profiles) runs before authentication of
+   unchanged affected credentials, including during claim scans. Changed
+   credentials permit reassessment within this cycle. Hand-change recovery
+   makes its identity reads here, under the lock, unless the last swap is
+   under `SWAP_GRACE` old. Identification and swap authorisation have their own
    required trusted readings, including during that recovery grace. If
    recovery refused or holds an open suspicion, it writes its note or guidance and the cycle ends as `alerted`; if it moved a login, or
    found nothing, the cycle carries on from the resulting state. An ALERT about the live login
@@ -5705,8 +5783,11 @@ Every non-dry-run cycle runs these steps in order:
    than this cycle's measurement. A record written while the cycle
    measured, such as the `switched` record of a
    [`profile switch`](#rotate-switch), is newer and stays. A `switched`
-   record always stays. Otherwise run the [swap](#rotate-swap), still under
-   the same lock. After a swap that ran, check the
+   record always stays. Otherwise attempt the [swap](#rotate-swap), still under
+   the same lock. A safe refusal or failure before credential movement
+   permits [bounded candidate fallback](#rotate-candidate-fallback). Recover
+   a pending journal before attempting another candidate; unresolved
+   custody ends attempts. After a swap that ran, check the
    [shared session links](#shared-session-directories) of `to` and `from`.
 7. **Record.** Write the log lines and the ledger's `last_cycle`, with
    `overflow` set when the cycle moved onto, off or stayed on an
@@ -5719,7 +5800,11 @@ Every non-dry-run cycle runs these steps in order:
    also record it as `live`, with its `account`. Update the ledger's
    [`swapped_away`](#rotate-reading-freshness-and-swap-back-damping) entries:
    lift those that a later reading shows to have room, add the login just
-   left when the swap moved off a full one, and prune old entries.
+   left when the swap moved off a full one, and prune old entries. Safe
+   refusal paths also record the cycle outcome and observations. Reload
+   ledger updates made during attempts before recording; preserve newer
+   manual-switch records. A completed automatic swap then durably publishes
+   its [swap record](#swap-record), clearing completion evidence last.
 
 The overflow list is read in step 3 with the exclusion list. A change to it
 between steps 3 and 6 counts as a state change, so the cycle ends with
@@ -5739,6 +5824,43 @@ also skipped when the [effective setting](#toggle-and-precedence) is off,
 which includes having no setting at all, even though rotation still runs
 then. A swap made after a [reconsideration](#rotate-revalidation) updates
 the file in the same way as any other swap.
+
+#### Rotate candidate fallback
+
+A cycle retains one set of measurements and a separate set of attempted
+profiles. After a safe refusal it considers remaining eligible candidates
+through the existing decision pipeline. Marking a profile as attempted
+does not remove its evidence from organisation-affinity or overflow
+decisions. A refusal must not manufacture permission to cross organisations
+or spend credits.
+
+Each candidate is attempted at most once. Each attempt revalidates usage
+freshness, identity, eligibility and custody. Fallback adds no probes,
+history samples, failed-live increments or retry loops; it reuses the
+measurements already obtained by the cycle, including existing freshness
+checks. A retained reading that has become stale cannot authorise movement.
+Manual holds, exclusions, leases and busy profiles retain their force.
+
+Attempt outcomes distinguish a completed swap, a safe refusal with
+established placement, and a recovery-required result. An I/O error alone
+does not prove that nothing moved: a rename may have succeeded before a
+directory sync failed. Recover a pending journal before any further attempt.
+If custody remains uncertain, stop attempts and report it. One completed
+swap ends traversal, including a swap completed by recovery.
+
+Every selected candidate and refusal or failure is explained in the cycle
+log. If no eligible replacement remains, the cycle records that explicitly,
+including the selection or policy reason. Exhaustion records the cycle
+outcome and observations without disabling
+rotation. The next explicitly invoked cycle reassesses eligibility while
+rotation is still needed; a refusal never permanently suppresses rotation.
+
+A verified different-account conflict refuses the first attempt without
+moving either credential. For a later eligible candidate, the rotator can
+reserve [outgoing recovery custody](#outgoing-recovery-custody), separate
+from the occupied slot. This makes fallback capable of completing while
+preserving the conflicting credential and its expected-account record.
+Changing the candidate alone never authorises replacement of that slot.
 
 #### Rotate revalidation
 
@@ -6434,9 +6556,12 @@ it holds no lock.
 
 ##### Live reading series
 
-`rotate watch` keeps, in memory, a short series of the live login's
-readings: up to 4 points, each a reading time, a session figure and the
-session window's reset time (none when the reading gave no reset time). A
+`rotate watch` keeps, in memory, bounded series of the live login's
+readings for supported exhaustion windows, including session and weekly
+limits: up to 4 points per window, each with a reading time, percentage and
+reset evidence. The session-window rules below retain their existing
+tolerance; weekly observations must likewise describe the same weekly
+window. Each series is bound to the same verified live account. A
 point is added only when its reading time is later than the last point's
 and not later than now. Accepted evidence is kept separately from the
 measured cache figures used to count frozen cycles:
@@ -6466,7 +6591,7 @@ hours, so its reset is hours later.
 | More than one hour earlier (an ended window) | Stale: not added | Stale: not added |
 | Unknown on either side | A cached figure is [read again](#stale-live-reading) first; a direct read clears the series, then is added | Added |
 
-The series is cleared when:
+The session series is cleared when:
 
 - an accepted reading is from a later session window by its reset time, or,
   with no reset time to compare, a direct read gives a lower session figure
@@ -6475,8 +6600,10 @@ The series is cleared when:
 - a different login becomes live, or a swap completes;
 - the live login cannot be identified.
 
-The series is not read from or written to disk. Restarting the rotator
-starts it empty.
+Weekly history is reset independently on a weekly-window change; a session
+reset does not discard comparable weekly observations. All window histories
+are cleared on a live account change or completed swap. The series are not
+read from or written to disk. Restarting the rotator starts them empty.
 
 ##### Stale live reading
 
@@ -6608,35 +6735,61 @@ writes one `stale live reading; re-read` line, three in all.
 
 ##### Projected swap
 
-When the first and last points of the series are at least one
-`--interval` apart, the rotator works out the live login's session rate, in
-points per second, from those two points:
+For each supported exhaustion window, projection needs at least two finite,
+comparable observations with increasing timestamps and a span of at least
+one `--interval`. The latest accepted observation must be fresh at decision
+time. It uses only observations collected by existing cycles. A missing or
+unsupported window supplies no rate. A changed account,
+reset, stale or future observation, or insufficient span cannot provide a
+consumption rate for that window.
 
+For a valid series, percentages are percentage points and times are seconds:
+
+```text
+rate       = (last percentage - first percentage) / (last time - first time)
+horizon    = next scheduled cycle time - last observation time
+projected  = last percentage + rate * horizon
+exhaust_at = last observation time + (100 - last percentage) / rate
 ```
-rate      = (last session - first session) / (last time - first time)
-projected = session + rate * interval
-```
 
-Two points closer together give no rate. A direct read and a status line
-written a few seconds after it say little about the rate: one point over
-five seconds would project 24 points over a 120-second interval. Over at
-least one interval, `rate * interval` is never more than the rise the series
-has seen, so the projection adds no more than that.
+The horizon includes the observation's age and the existing scheduler's
+interval after the current cycle. It is not simply one interval from a
+possibly old observation. A non-positive rate produces no early-exhaustion
+decision. A threshold or exhaustion prediction is invalid if its window
+resets at or before the predicted crossing. Rates are never carried across
+reset windows.
 
-`interval` is `--interval`. The projection is limited to the range `0` to
-`100`. When `projected >= --session-at` and the live reading itself is below
-`--session-at`, the decision runs again on the projected session figure and
-the live week figure, under [organisation affinity](#outlook-and-organisation-affinity),
-and a threshold swap it gives is logged with `reason=projected`. It uses the
+When projected session or weekly use reaches its corresponding threshold,
+the rotator can request a threshold swap before the next cycle. In
+particular, projected use reaching or exceeding 100% by that cycle requests
+a swap now. The decision runs under
+[organisation affinity](#outlook-and-organisation-affinity), and a threshold
+swap it gives is logged with `reason=projected`. It uses the
 same `--margin` as a threshold swap, passes the same freshness gate and
 [revalidation](#rotate-revalidation), and is not stopped by `--hold`. When
 that decision finds nowhere to go, the cycle writes the `no-capacity` ALERT,
 so an ALERT can follow a live reading still below `--session-at`.
 
-A projection below `--session-at`, a rate of `0` or less, fewer than two
-points, or points less than one interval apart leaves the decision as it
-would be without this step. Only session use is projected; week use is
-decided on the reading as before.
+Insufficient valid history leaves ordinary threshold behaviour available,
+without fabricating a rate. Each window is assessed independently: missing
+weekly history does not invalidate usable session history, or vice versa.
+Each cycle explains unavailable projection evidence for each assessed
+window: missing history or reset evidence, insufficient samples or cadence
+span, stale or future observations, changed account or window, or a
+non-positive rate. A reset before the predicted crossing is also reported.
+Ordinary threshold decisions remain independent of these outcomes.
+Observations are held in memory; a new process builds its own history.
+Projection adds no timer, interval probe, polling mechanism or timed retry.
+It reduces foreseeable exhaustion but cannot predict an unobserved sudden
+increase in consumption.
+
+For example, with `--interval 300`, weekly observations of 78% and 88%,
+300 seconds apart in the same window, give a rate of `10 / 300` points per
+second. If the latest observation is 90 seconds old and the next scheduled
+cycle is 300 seconds away, the horizon is 390 seconds and projected weekly
+use is 101%. With `--week-at 95`, this requests a swap before the measured threshold. If the
+weekly reset precedes predicted exhaustion, this exhaustion prediction is
+discarded. The target must still satisfy every usual selection check.
 
 The projected figure can add only a threshold swap onto a login with
 capacity, or the ALERT. The [plan-room swap](#rotate-plan-room-swap) and the
@@ -7796,16 +7949,28 @@ set of skipped profiles changes, and by the one-shot command on every run.
 | `leased` | Its login is on loan to another profile's session in the auto-switch ledger. |
 | `hosting` | Its directory hosts another account's login in the auto-switch ledger. |
 | `parked` | `<root>/.auto-switch.d/parked/<name>` exists. |
+| `needs-login` | Persisted authentication evidence marks a continuous [needs-login episode](#needs-login-profiles). Unchanged credentials are skipped before authentication; changed credentials permit reassessment on an existing cycle. |
+| `recovery provenance unavailable` | A recovery profile has a missing, inconsistent or unsafe receipt or origin record. Keep its credential and recovery evidence for repair; discovery alone cannot authorise selection. |
 | `no account` | Its login has no usable trusted account evidence for the required ownership check. Session display data cannot supply it. The cycle also writes `ALERT: trusted login identity unavailable for profile <name>: <cause>`, with the [cause](#identity-read-causes). |
+
+The login-health gate precedes authentication even when an earlier custody
+check supplies the displayed skip reason. Missing OAuth or definitively
+unrefreshable expired credentials establish a needs-login episode instead
+of generating a trusted-identity alert on every cycle.
 
 ### Rotate swap
 
-`L` is `~/.claude/.credentials.json`, `T` is `<root>/<to>/.credentials.json`
-and `S` is `<root>/<from>/.credentials.json`, where `<from>` is the live
-profile (or the adopted one).
+`L` is `~/.claude/.credentials.json` and `T` is
+`<root>/<to>/.credentials.json`. `<from>` is the original live profile (or
+the adopted one). `S` is the outgoing custody destination: normally
+`<root>/<from>/.credentials.json`, or a separately reserved private
+[recovery profile](#outgoing-recovery-custody). The logical source and its
+actual storage destination remain distinct throughout recovery and event
+publication.
 
-Before anything is written, every check below must pass; otherwise the swap
-fails with `RotateRefused` and nothing changes:
+Before credential movement, every applicable check below must pass. A
+pre-movement refusal preserves credential placement; once journalled
+parking or exchange begins, errors require placement-aware recovery:
 
 - the profile root is private (as for auto-switch state writes); `$HOME` is
   absolute, a directory rather than a symlink, and owned by you; `~/.claude` is owned by you and
@@ -7815,7 +7980,10 @@ fails with `RotateRefused` and nothing changes:
 - `L` and `T` are regular files owned by you, with no group or other mode
   bits and exactly one link (metadata checked with `lstat`; trusted
   identity is read separately by the bounded reader);
-- `S` does not exist;
+- `S` does not exist. A matching verified duplicate in the normal outgoing
+  slot can be [parked safely](#verified-duplicate-parking) first; a verified
+  different-account conflict requires a distinct reserved recovery
+  destination on a later candidate attempt;
 - trusted outgoing and incoming identities are bound to the logins being
   exchanged; their full accounts satisfy applicable expected records,
   duplicate claims and placement checks;
@@ -7836,40 +8004,158 @@ fails with `RotateRefused` and nothing changes:
   other than Linux, macOS included if a credentials file is there, is refused
   with `atomic exchange is not supported here`.
 
-Then the steps run in order. The step names are the `phase` values in the
-journal.
+Then the steps run in order. Version 2 journals retain the logical source,
+actual outgoing destination, bound identities, owned locks, parking or
+reservation intent and automatic-publication context. `j0` and `s1` to `s4`
+are journal phase values; placement determines recovery.
 
 | Step | Action |
 |------|--------|
-| `j0` | Write `journal.json` with `from`, `to`, `adopt`, the inode numbers of `L` (`live_ino`) and `T` (`target_ino`), and `$HOME`. Then take Claude's refresh locks (`.oauth_refresh.lock`, directories made with `mkdir`, as auto-switch does) in `~/.claude` and `<root>/<to>`, recording each acquired inode (`home_lock_ino`, `to_lock_ino`). A lock held by someone else is never broken. Before `s1`, validate fresh bound identities and material ownership dependencies under these locks; uncertainty prevents the exchange. |
+| `j0` | Durably record the participants, actual custody destination, `$HOME`, file and directory bindings and any reservation intent before movement. Take the required refresh locks (`.oauth_refresh.lock` directories) in a consistent order and record ownership of each. A lock held by someone else is never broken. Revalidate fresh bound identities and material ownership dependencies under these locks before movement. |
+| Before `s1`, if the normal outgoing slot is occupied | Recheck trusted identity bindings. For a matching duplicate, durably record parking intent, rename without replacement and retain its receipt, then revalidate swap authority. Differing identities safely refuse the first attempt; a later candidate can reserve distinct recovery custody. Unverified identities authorise neither action. |
 | `s1` | Atomically exchange `T` and `L`. `~/.claude` now holds the incoming login; `<root>/<to>` holds the outgoing one. |
-| `s2` | Rename the outgoing login from `<root>/<to>` to `S`, refusing to replace an existing file. Release the refresh locks: each is removed with `rmdir` only if its inode is the one recorded. |
+| `s2` | Rename the outgoing login from `<root>/<to>` to `S`, refusing to replace an existing file. Retain the owned refresh locks while ownership is committed. |
 | `s3` | Replace the `oauthAccount` display block in `$HOME/.claude.json` from the validated incoming identity, keeping every other key and the file's mode. |
 | `s4` | Write the ledger: `live=<to>`, `previous=<from>`, `account` from the validated incoming account key, `since` and `swapped_at`. Clear any ALERT key. |
-| | Delete `journal.json`. |
-| | Write the [recorded account](#recorded-account), if one is due: for an adopted login, the outgoing account for the new `default-original[-N]` profile, only when no other profile holds that account and organization or has it recorded (otherwise a record left under that name is deleted); for `<from>` with no record, the trusted outgoing account, only when the existing ledger/provenance and compatibility checks establish ownership and a complete trusted scan finds no other claim. Session JSON cannot supply missing ownership proof. For `<from>`, the record is read again first, and a usable one is never overwritten. Nothing is recorded for `<to>`. A failure prints `warning: the recorded account for profile '<name>' was not saved: <reason>` and the swap still succeeds. |
+| | Write the [recorded account](#recorded-account), if one is due: for an adopted login, the outgoing account for the new `default-original[-N]` profile, only when no other profile holds that account and organisation or has it recorded (otherwise a record left under that name is deleted); for `<from>` with no record, the trusted outgoing account, only when existing provenance and a complete trusted scan establish ownership. A separate recovery profile receives its own verified ownership record. Session JSON supplies no ownership proof. For `<from>`, a usable record is never overwritten. An automatic rotation retains its journal on failure and publishes no success until ownership is durable. Manual switches retain their warning behaviour. Release only operation-owned refresh locks after these writes. |
+| | For an automatic swap, retain completion evidence until cycle state and the durable [swap record](#swap-record) are committed. Clear the journal last. Manual calls retain their existing event behaviour. |
 
-A swap that [recovery](#rotate-recovery) finishes writes no record.
+A swap that [recovery](#rotate-recovery) finishes retains the original
+automatic-publication context. Automatic recovery publishes the same swap
+event once; a recovered manual call does not become an automatic event.
 
 The identity reader uses the logins for bounded identity requests; movement
 uses only the exchange and rename, never copy-and-delete. Each parent
 directory is synced after each rename. At every point each
 login is in exactly one place, and `~/.claude` always has a login.
 
-If the exchange fails with `EXDEV`, `EINVAL` or `ENOSYS`, the swap fails with
-`RotateRefused` (`atomic exchange is not supported here`), the refresh locks
-are released and the journal is removed; nothing was moved. Any other error
-from the exchange also fails with `RotateRefused`, after the same clean-up.
-The exchange never produces `RotateUnsupported`. There is no copy-and-delete
-fallback.
+If the exchange fails with `EXDEV`, `EINVAL` or `ENOSYS`, the refusal is
+`RotateRefused` (`atomic exchange is not supported here`). When placement
+proves nothing moved and no parking intent remains, release the recorded
+refresh locks and remove the journal. If duplicate parking has begun,
+reconcile its evidence before clearing anything. Other errors likewise
+require placement-aware classification. A successful rename followed by a
+directory-sync failure retains recovery evidence; an I/O error alone is
+not a safe refusal. The exchange never produces `RotateUnsupported` and
+has no copy-and-delete fallback.
+
+#### Verified duplicate parking
+
+An occupied outgoing destination is represented explicitly; it is not a
+general permission to replace a file. Both the live credential and the
+profile-side credential must have fresh server-backed identity evidence
+from the trusted mechanism used by `profile verify`. Matching means the
+existing stable account-and-organisation comparison, never matching labels,
+filenames or cached session display data.
+
+Verification binds both identities to credential metadata and validated
+directories. Expected-account records, accepted snapshots, ownership claims
+and the shared identity budget remain mandatory. Immediately before
+movement, the rotator rechecks credential and directory bindings under the
+refresh locks. Substitution or unavailable evidence refuses recovery.
+
+For matching identities, the rotator creates an exclusive private parking
+location beneath the rotate state directory, on the same filesystem. Its
+identifier does not depend on elapsed time. Before moving the profile-side
+credential it durably records parking intent. Parking uses the existing
+no-replacement rename primitive: it never reads, copies, overwrites or
+deletes the credential. Trusted verification may read it beforehand.
+
+A durable, versioned receipt identifies the original profile destination,
+the parked location and verified ownership. Receipts contain no tokens,
+credential contents, authentication headers or raw server responses. The
+credential remains intact and private. Receipts and parked credentials are
+retained, including after the normal swap completes in the same cycle.
+
+Recovery validates containment, ownership, modes, links, directory bindings
+and filesystem compatibility independently. It inspects parking intent and
+actual placement before treating a pre-exchange phase as untouched. A crash
+before or after the rename must leave explained custody; metadata is
+rebound to its renamed location rather than mistaken for substitution.
+Uncertain placement preserves the evidence and stops further movement.
+
+Account identifiers, profile names and refusal reasons are sanitised before
+terminal or log output. Credential-bearing verification requests retain the
+trusted endpoint and redirect restrictions used by `profile verify`.
+
+Different verified identities preserve both credentials on the refused
+attempt and emit one useful alert naming both accounts and the affected
+profile. Suppression is persistent and keyed by destination, verified
+account pair and credential evidence, independently of needs-login alerts.
+An unchanged conflict is not alerted again after restart; a materially
+changed conflict can alert again. Every attempt still logs its outcome.
+A failed verification preserves both files and reports its refusal.
+
+Safe refusal permits the [next candidate](#rotate-candidate-fallback).
+That candidate uses distinct outgoing recovery custody when authorised;
+it cannot overwrite the conflicting slot.
+
+#### Outgoing recovery custody
+
+For fallback after a verified different-account refusal, the rotator
+reserves an exclusive private `recovered-<uuid>` profile in the profile
+root. Its durable receipt stays beneath the rotate state directory, with
+matching provenance in the recovery profile. It generates the identifier
+internally and resolves it through `ProfileStore`; an arbitrary path or profile label cannot select
+a custody destination. A collision never replaces an existing directory
+or credential.
+
+The version 2 journal records reservation intent, directory bindings,
+the original logical profile and the verified outgoing account before any
+credential movement. The reserved destination is distinct from the
+conflicting slot. Under the ordered locks, fresh bound identity evidence
+must still authorise moving the live credential into that destination.
+Evidence for different accounts permits custody of the verified live
+credential only; it grants no authority over the conflicting credential
+or its expected-account record.
+
+After exchange, the outgoing credential is renamed without replacement
+into the reserved profile. A durable receipt and origin record associate
+it with its verified account, original profile and actual location.
+Directories are `0700`, receipts and state files are `0600`, and credential
+permissions are preserved. Movement uses renames, never copying, reading
+or deleting credential contents; trusted identity verification remains
+separate. Affected directories are synchronised before custody is
+committed. Reservation, receipt or synchronisation failure requires
+placement-aware recovery before fallback can continue.
+
+Recovery profiles are discoverable through `ProfileStore` for recovery
+and future use. Automatic selection requires fresh trusted verification,
+valid origin provenance and all ordinary policy checks. The origin's
+exclusions, leases, active-session protections, organisation affinity,
+spending limits and freshness requirements remain effective. Missing or
+inconsistent provenance prevents selection. Discovery grants no eligibility.
+There is no new public API or configuration flag for reserving custody.
+
+A recovery name does not grant new credit-spending consent. The rotator
+requires an explicit matching overflow tier before selecting a recovery
+profile whose origin is marked for credits, and retains the origin's spend
+blocks. Recovery profiles are available to the verified rotator and
+explicit profile switching. Automatic in-session borrowing leaves them
+alone because its lease transaction does not carry credential-bound server
+authority for recovery custody.
+
+For example, a cycle with live profile `work` and eligible targets
+`personal` then `spare` can refuse `personal` because `work`'s stored slot
+holds a different verified account. It can then make `spare` live while
+leaving the stored `work` credential and its expected-account record
+unchanged. The original live credential reaches the reserved recovery
+profile. The event records `from_login=work` and `live_login=spare` using
+the retained measured usage for `spare`.
 
 ### Rotate recovery
 
 Recovery runs under the lock at the start of every non-dry-run `rotate`,
 `start` and cycle, before anything else is decided. `--dry-run` never runs
-it. Recovery keeps the existing journal schema and inode-placement rules,
-and reconstructs fresh login-bound identity and applicable expected-record
-evidence before any further movement or ledger settlement. It never
+it. Recovery dispatches on the journal version before interpreting its
+transaction fields. Version 1 retains its original interpretation; new
+transactions use version 2 for actual custody, parking, reservations and
+durable publication. Unsupported versions are rejected before any
+credential movement. Recovery reconstructs
+fresh login-bound identity and applicable expected-record
+evidence before any further movement or ledger settlement. Serialised
+account or binding data records intent; deserialisation never recreates
+movement authority. It never
 deletes or overwrites a login.
 
 Recovery selects the transaction action by where the recorded inodes are,
@@ -7878,7 +8164,13 @@ identity also requires fresh trusted authorization. The journal's `phase`
 is a hint for the log and for `status`; it never decides.
 This matters most for the commonest crash point, just after the exchange and
 before the journal is rewritten as `s1`, where the journal still says `j0`
-but the logins have already moved.
+but the logins have already moved. Likewise, parking intent is inspected
+before a `checking` or `j0` transaction can be rolled back. The placement
+table below applies after parking and reservation evidence has been
+reconciled, with `S` resolved from the validated outgoing destination. A
+completed automatic placement retains its journal through cycle-state
+commit and event publication, rather than deleting completion evidence
+at the placement-only steps in the table.
 
 `L` and `T` are not tested in `~/.claude`. Claude may refresh the token in
 `~/.claude` at any time, which replaces the file there with a new inode, so
@@ -7890,25 +8182,31 @@ the account currently there, including after a token refresh.
 |----------------------------------|--------|----------|
 | No journal | Nothing. | |
 | `target_ino` is at `<root>/<to>/.credentials.json`, `S` does not exist, and `~/.claude/.credentials.json` is a regular file | The exchange did not happen. Roll back: release the recorded refresh locks, then delete the journal. | `recovery: rolled back an interrupted swap work->spare` |
-| `live_ino` is at `<root>/<to>/.credentials.json`, `S` does not exist, and `~/.claude/.credentials.json` is a regular file | The exchange happened; `s2` did not. Roll forward: run `s2`, `s3` and `s4`, then delete the journal. | `recovery: finished an interrupted swap work->spare` |
-| `live_ino` is at `S`, nothing is at `<root>/<to>/.credentials.json`, and `~/.claude/.credentials.json` is a regular file | `s2` happened. Roll forward: release the recorded refresh locks, run `s3` and `s4`, then delete the journal. `s3` and `s4` are safe to repeat. | `recovery: finished an interrupted swap work->spare` |
+| `live_ino` is at `<root>/<to>/.credentials.json`, `S` does not exist, and `~/.claude/.credentials.json` is a regular file | The exchange happened; `s2` did not. Roll forward: run `s2`, `s3` and `s4`. Complete automatic cycle-state commit and publication, if due, before clearing the journal. | `recovery: finished an interrupted swap work->spare` |
+| `live_ino` is at `S`, nothing is at `<root>/<to>/.credentials.json`, and `~/.claude/.credentials.json` is a regular file | `s2` happened. Roll forward: release the recorded refresh locks, run `s3` and `s4`, then complete automatic cycle-state commit and publication, if due, before clearing the journal. `s3` and `s4` are safe to repeat. | `recovery: finished an interrupted swap work->spare` |
 | Required trusted evidence is unavailable, insufficient, changed or conflicting | Retain the unresolved journal, leave login placement and ledger identity unchanged, and safely release operation-owned refresh locks. Retry requires fresh evidence; report the identity refusal on each affected attempt. | Actionable identity ALERT; no swap. |
 | Inconsistent login placement or a failed directory check, with a valid journal for the current `$HOME` | Safely release the recorded operation-owned refresh locks, then mark the journal `inconsistent`. | `ALERT: rotate recovery is inconsistent: <reason>; no swap until it is resolved` |
 | A `home` that differs from `$HOME` | Leave the journal, logins and refresh locks untouched for a run with the correct `$HOME`. | `ALERT: rotate recovery is inconsistent: <reason>; no swap until it is resolved` |
 | An unreadable or invalid journal, including an invalid name or unknown version | Refuse recovery without acting on the untrusted journal; leave it and the refresh locks for resolution. | Journal error; no swap. |
 
 Releasing a refresh lock means removing `<dir>/.oauth_refresh.lock` with
-`rmdir` only when its inode equals the recorded `home_lock_ino` or
-`to_lock_ino`. A lock with another inode belongs to Claude and is left alone.
+`rmdir` only when its identity matches an operation-owned lock in the
+journal. Version 1 uses `home_lock_ino` and `to_lock_ino`; version 2 also
+records locks required for custody and parking. Other locks are left alone.
+Cleanup removes a reserved directory only if it is empty and its identity
+still matches this operation's reservation. Credentials and retained
+receipts are never removed as cleanup.
 If the process stopped after making a lock but before recording its inode,
 that lock is not released; see
 [Recovery](../howto/claude-profile-rotation.md#recovery) for the manual step.
 
-`inconsistent` is sticky. While the journal says so, no swap happens, the
-one-shot command exits with `RotateInconsistent`, and `watch` writes the ALERT
-(once) and keeps running. A person resolves it as described in
-[Recovery](../howto/claude-profile-rotation.md#recovery) and deletes the
-journal.
+For version 2 transactions, every explicit cycle re-examines placement and
+fresh authority, including after an `inconsistent` outcome. A repaired
+obstruction can therefore be recovered without clearing the journal or
+adding a retry schedule. Unresolved custody continues to stop the cycle.
+Legacy version 1 `inconsistent` journals retain their sticky interpretation;
+follow the version 1 procedure in
+[Recovery](../howto/claude-profile-rotation.md#recovery).
 
 If auto-switch recovery reports an inconsistent state, the cycle writes
 `ALERT: auto-switch recovery is inconsistent; no swap` and does not swap.
@@ -9024,25 +9322,39 @@ not count as capacity.
 
 Everything is under `<root>/.auto-switch.d/rotate/` (directory `0700`, files
 `0600`). Ledger and journal are written atomically, never through a symlink,
-and are capped at 64 KiB. Both have `"version": 1`, reject unknown fields, and
-omit optional fields that are unset. Every profile name read from them is
+and are capped at 64 KiB. The ledger and legacy journals have `"version": 1`.
+New transactions use `"version": 2` journals. Version dispatch precedes
+transaction interpretation; unknown versions are rejected before movement,
+as described under [Rotate recovery](#rotate-recovery). Each supported
+format validates its fields and omits optional fields that are unset.
+Every profile name read from them is
 checked with the [name rules](#name-rules) before it is used. A file that
 fails to parse is left unchanged and reported as `RotateInconsistent`.
 
 | Path | Contents |
 |------|----------|
 | `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the de-duplication key, `<kind>:<live profile or ->`, of a hard ALERT), `advisory_alert` (the same key for an [advisory ALERT](#rotate-advisory-alert); never set together with `alert`), `last_cycle` (`at`, when the cycle was recorded; `measured_at`, when the usage it relied on was read, which for `stayed` is when the live reading was taken (see [Stays and capacity](#rotate-stays-and-capacity)) and for every other rotate outcome is when the cycle started measuring, absent for a cycle that measured nothing; `outcome`; and, for an [overflow](#rotate-overflow) cycle, `overflow`), and `overflow_blocked` (the [spend blocks](#overflow-spend-limit-block)). `account` is the validated incoming account key after a swap. It is display only for recovery: no recovery decision treats that key alone as identity proof, and a hand-change recovery records its independently verified account. Optionally `hand_suspect`, an open [hand-change suspicion](#two-readings): `profile` (a valid profile name) and `first_seen` (epoch seconds, greater than 0). It holds no account data, is omitted when there is none, and a ledger without it loads as before; one that breaks these rules is `RotateInconsistent`. Optionally `guidance`, the current [hand-change](#rotate-hand-change-recovery) note, or ALERT and `fix` lines (at most 16, each at most 1024 bytes, with no control or bidirectional-override characters), and `lost_login`, the profiles that lost their login to a manual `/login` (at most 64 distinct valid names). Both are omitted when empty, and a ledger that breaks these limits is `RotateInconsistent`. Optionally the legacy `home_unreadable_since` timestamp; retained for format compatibility, never as ownership evidence (see [Stuck `~/.claude.json`](#stuck-claudejson)). Optionally `swapped_away`, the logins the rotator left while they were full, each mapped to the epoch seconds of that swap; see [Swap-back damping](#swap-back-damping). While a rotator from an older amplihack binary runs, `measured_at`, `overflow`, `overflow_blocked`, `guidance`, `lost_login`, `home_unreadable_since`, `hand_suspect`, `swapped_away` and `advisory_alert` are left out so that rotator can read the file. A ledger whose `alert` or `advisory_alert` is not a valid key, or that sets both, is `RotateInconsistent`. |
-| `journal.json` | The swap in progress: `from`, `to`, `adopt`, `phase` (`checking`, `j0`, `s1`, `s2`, `s3`, `s4` or `inconsistent`), `home`, `live_ino`, `target_ino`, `home_lock_ino` and `to_lock_ino` (each present once that refresh lock is taken), `started_at`, `pid`, and optional `identity` containing sanitized full incoming/outgoing accounts authorized before exchange. |
+| `journal.json` | Versioned transaction evidence. Version 1 retains `from`, `to`, `adopt`, `phase`, `home`, recorded file and refresh-lock inodes, diagnostic times and sanitised account evidence. Version 2 separates the original logical source from actual outgoing custody and records validated participants, file and directory bindings, operation-owned locks, parking or reservation intent, origin provenance and durable automatic-publication context. Persisted identity data cannot authorise movement. |
 | `rotate.pid` | The background process's pid, as ASCII decimal. |
+| `login-state.json` | Bounded, private, versioned [login-health state](#needs-login-profiles): per-profile episode timestamps, assessed credential-change evidence and alert delivery state; independent destination/account-pair conflict suppression. Unsafe, malformed, oversized or unsupported state is preserved and reported, never replaced or pruned to discard active evidence. |
+| Private duplicate-parking locations and receipts | Retained credentials and versioned origin, location and verified-ownership receipts, protected by durable journal intent. See [Verified duplicate parking](#verified-duplicate-parking). These are separate from auto-switch's `parked/` custody. |
+| Private outgoing recovery profiles and origin records | Exclusive custody for a verified outgoing login when its original slot holds a different account. Receipts retain the verified account, original profile and actual destination. Profile discovery preserves origin policy restrictions. See [Outgoing recovery custody](#outgoing-recovery-custody). |
 | `gate.json` | Written by `rotate watch` when it starts: `version`, `pid`, and the [overflow](#rotate-overflow) gate it resolved from its flags (`overflow_wait`, `overflow_unknown_reset`, `session_at`, `week_at`). [Auto-switch](#auto-switch-and-overflow-profiles) uses it only while the rotator with that pid runs. If it cannot be written, the log says `overflow: gate not recorded, auto-switch will not use overflow (<error>)` and auto-switch uses no overflow profile. |
 | `rotate.log` | The log. |
 | `rotate.log.1` | The previous log, after rotation. |
 | `rotate.err` | The background process's own stdout and stderr, and one line from each launch that [started](#rotate-autostart) a rotator or failed to. Not rotated. |
 | `autostart` | The [autostart](#rotate-autostart) setting: `on` or `off` and a newline. Missing means on. |
-| `swap.json` | The [swap record](#swap-record): `seq`, `live_login`, `from_login`, `swapped_at` and `reading` (`session`, `week`, `measured_at`). Written atomically, mode `0600`, under the rotate lock, only after a successful swap in a rotate cycle. Read by the [limit-resume hook](#rotate-session-resume). Not part of the ledger; deleting it is safe, and the next swap writes `seq` 1. |
+| `swap.json` | The [swap record](#swap-record): `seq`, `live_login`, `from_login`, `swapped_at` and `reading` (`session`, `week`, `measured_at`). Written atomically, mode `0600`, under the rotate lock, only after a successful automatic swap, including recovery. Read by the [limit-resume hook](#rotate-session-resume). Retain it while completion is pending. Outside pending completion, deleting it causes the next swap to write `seq` 1. |
 | `pin` | The [rotation pin](#rotate-pin): one profile name and a newline. Written by `profile switch <name>`, removed by `profile switch --none`. Not part of the ledger. |
 | `sessions-archive.last` | When the [daily session archive](#rotate-daily-session-archive) last started: epoch seconds and a newline. Written atomically before each run; removed when a run stops early after archiving something, so the next pass carries on. |
 | `owner` | The [owner marker](#rotate-owner): `unit=`, `pid=` and `since=` lines. Written by a supervised `rotate watch`, removed only by `rotate owner clear`. Not part of the ledger. |
+
+An active journal also retains any duplicate-parking or reservation intent and automatic
+completion context: original measured values and observation times,
+completed-placement time, and event identity needed for idempotent
+publication. These records contain no credential contents. Ownership and
+cycle state are committed before event publication; completion evidence is
+cleared last.
 
 The auto-switch `ledger.json` and `journal.json` one level up are separate
 files and are not changed by rotation.
@@ -9130,7 +9442,7 @@ run and prints their `reread:` lines; see
 | Message | Meaning |
 |---------|---------|
 | `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down and come from the windows read. An exhausted profile (`session_exhausted` or `weekly_exhausted`) shows the figures read, with the window that ran out never below `100%`, for example `team:s=100%,w=55%` or `team:s=30%,w=100%`; see [Exhausted figures](#rotate-exhausted-figures). `w=?` means no weekly window was read. A profile whose probe timed out or could not run shows `<name>:failed`, never a percentage: its usage is unknown, and it is probed again on the next cycle. A profile whose read had not finished when the cycle stopped waiting shows `<name>:unknown, still running`; its result is used by the next cycle. `spend_limit`, `not_logged_in` and `unparsed` also show `<name>:failed`. A profile with [no session limit](#no-session-limit) shows `s=0%`. A skipped profile is not listed. A live profile in the auto-switch `exclude` list shows `<name>:excluded (not probed)`; see [Rotate excluded live profile](#rotate-excluded-live-profile). A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
-| `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|projected\|upgrade\|failed-probe\|plan-room\|overflow-in\|overflow-out` | A completed swap. The readings are formatted as in the `cycle` line, with a space in place of the comma, so an exhausted target can show `target s=100% w=55%`. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`, one still running shows `live unknown, still running`, and an excluded live profile shows `live excluded (not probed)`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `reason=projected` is a swap made because the live login's [projected session use](#projected-swap) reached `--session-at`, or because its last known reading was near `--session-at` when the live read failed or was stale and the stale reading would not itself have needed a swap (see [Failed or stale reading near the threshold](#failed-or-stale-reading-near-the-threshold)); the `live` figures are those measured. `reason=plan-room` is a [plan-room swap](#rotate-plan-room-swap). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
+| `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|projected\|upgrade\|failed-probe\|plan-room\|overflow-in\|overflow-out` | A completed swap. The readings are formatted as in the `cycle` line, with a space in place of the comma, so an exhausted target can show `target s=100% w=55%`. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`, one still running shows `live unknown, still running`, and an excluded live profile shows `live excluded (not probed)`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `reason=projected` is a swap made because the live login's [projected session or weekly use](#projected-swap) reached `--session-at` or `--weekly-at`, respectively, or because its last known reading was near `--session-at` when the live read failed or was stale and the stale reading would not itself have needed a swap (see [Failed or stale reading near the threshold](#failed-or-stale-reading-near-the-threshold)); the `live` figures are those measured. `reason=plan-room` is a [plan-room swap](#rotate-plan-room-swap). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
 | `per-token <name>: no measured plan login below 100%, 0 not measured; <gate>; marked overflow tier <N>; <check>` | Written before the `swap` line of every move onto a per-token profile, credit or API key, by the rotator or by auto-switch. Auto-switch writes it before it swaps a session's login or starts a launch or a rerun on the profile, also prints it on stderr, and ends the line with `; auto-switch from <profile>`; the rotate log is created if no rotator has run. `<gate>` is `earliest reset <time> beyond overflow_wait`, with `--overflow-unknown-reset 1` `reset unknown`, or `leaving the API key, credits cost less` for a move off the API key, which passes no gate. `<N>` is the profile's [tier](#overflow-tiers), `10` for an API-key profile. `<check>` is `login check passed (<detail>)` for an API-key profile, with `<detail>` from [API-key login check](#api-key-login-check), or `probe ok, no spend limit` for a credit profile the rotator probed. Auto-switch runs no probe, so for a credit profile `<check>` is `no spend block`. The line never holds a key value. |
 | `key_check_refused <name>: <reason>` | The [API-key login check](#api-key-login-check) failed for the target `<name>`; no swap was made. |
 | `ALERT: home_key (<detail>): <effect>` | A key is in `~/.claude.json` or `~/.claude/settings.json` while a plan login is live, so sessions bill per token. Written once, and again if the setting changes; see [API-key login check](#api-key-login-check). The cycle carries on. |
@@ -9168,13 +9480,13 @@ run and prints their `reread:` lines; see
 | `ALERT: profile <L> has no login anywhere, and the list of such profiles is full, so this is not repeated. Run: amplihack profile login <L>` | `L` lost its login under an earlier release but `lost_login` already held 64 profiles. Written once. |
 | `ALERT: more than one profile matches the account in ~/.claude; no swap` | Trusted ownership evidence cannot select a unique login-less profile. |
 | `ALERT: trusted login identity unavailable: <cause>` | The live login has no usable identity reading, and the [cause](#identity-read-causes) says why. Nothing moves. |
-| `ALERT: trusted login identity unavailable for profile <name>: <cause>` | A candidate is skipped as `no account`, for that [cause](#identity-read-causes). Written on every cycle it applies to. |
+| `ALERT: trusted login identity unavailable for profile <name>: <cause>` | A candidate is skipped as `no account`, for that [cause](#identity-read-causes). Uncertain identity remains visible on each affected cycle. A definitive missing-token or unrefreshable-expiry result instead enters persistent [needs-login](#needs-login-profiles), alerts once and excludes unchanged credentials from authentication. |
 | `ALERT: rotate ledger unreadable[ (<field>)]; live identity: <readable\|cause>; nothing moved, no record written` | Written on every cycle it applies to. See [Unreadable-ledger stop](#unreadable-ledger-stop). |
 | `ALERT: cannot tell profiles <L>, <M> apart: both claim the account in ~/.claude; no record written, nothing moved` | Written on every cycle it applies to. See [Seeding a record](#seeding-a-record). |
 | `seeded: recorded account for live profile <L>` | A cycle [seeded](#seeding-a-record) the live profile's record. |
 | `note: no record for live profile <L>: <reason>; nothing moved; run: amplihack profile seed-record <L>` | A cycle could not seed. Written once per process. |
 | `seed-record: recorded account for profile <name>` | [`profile seed-record --write`](#profile-seed-record) wrote a record. |
-| `ALERT: swap refused: <reason>` | A [pre-swap check](#rotate-swap) failed. Missing, uncertain or conflicting required trusted identity produces an ALERT on every affected cycle; other refusals are written once per reason. The one-shot command also prints it and exits with `RotateRefused`. |
+| `ALERT: swap refused: <reason>` | A [pre-swap check](#rotate-swap) refused an attempt. Missing, uncertain or conflicting required trusted identity produces an ALERT on every affected cycle, except that an unchanged [occupied-destination/account-pair conflict](#verified-duplicate-parking) alerts once across cycles and restarts; every refused attempt is still recorded. Other refusals are written once per reason. A safe refusal permits [candidate fallback](#rotate-candidate-fallback) in the same cycle. One-shot `rotate` reports the attempt, but exits with `RotateRefused` only if fallback ends in a final refusal; a later successful swap is a successful command. |
 | `ALERT: swap refused: the login in ~/.claude is not the account recorded for profile <from>` | The trusted live login conflicts with `<from>`'s recorded account. Nothing moves or relabels. Reported on every affected cycle and manual attempt until resolved. The persisted alert key is `account_mismatch:<from>`. Session JSON cannot cause or clear this refusal. See [Recorded account](#recorded-account) and [Rotation login identity](#rotation-login-identity). |
 | `ALERT: rotate recovery is inconsistent: <reason>; no swap until it is resolved` | See [Rotate recovery](#rotate-recovery). |
 | `ALERT: auto-switch recovery is inconsistent; no swap` | Auto-switch state needs `auto-switch repair`. |
@@ -9202,16 +9514,26 @@ run and prints their `reread:` lines; see
 | `skip: <name> is already the live login; nothing moved` | `profile switch` found `<name>` already live. |
 | `would refresh: expired login in ~/.claude` / `would seed: record for live profile <L> from a fresh reading` / `would note: no record for live profile <L>: <reason>; nothing moved; run: amplihack profile seed-record <L>` / `would swap ...` / `would block <name> (spend limit) until <time>` / `would adopt ~/.claude as <name>` / `would stay` / `would stay (live probe failed (1/3))` / `would stay (held by switch to <name>)` / `would stay (pin unreadable)` / `would alert: ...` / `would recover an interrupted swap (phase <phase>)` / `would alert: rotate recovery is inconsistent` / `would alert: the rotate journal is damaged` / `would recover: <recovered line>` / `would_refuse <name>: <reason>` | `--dry-run` only. `would_refuse` is printed in place of `would swap` when the target is an API-key profile that fails its [login check](#api-key-login-check). |
 
-Identity refusals write an ALERT on every affected rotation cycle;
-manual switches report the refusal on every attempt. Other ALERTs are
+Identity refusals write an ALERT on every affected rotation cycle, except
+that an unchanged [occupied-destination/account-pair conflict](#verified-duplicate-parking)
+or [needs-login episode](#needs-login-profiles) alerts once across cycles
+and restarts. Conflict suppression is independent of
+the ordinary ALERT key below; a stay, successful swap or restart does not
+clear it. Materially changed conflict evidence permits another alert,
+and every refused attempt is still recorded. Manual switches report the
+refusal on every attempt. Other ALERTs are
 written only when their key (`no-capacity`, `no-login`,
 `hand-change`, `home-unreadable`, `ambiguous`, `inconsistent`, `auto-switch` or `refused <reason>`
 for a swap refused under [Swap](#rotate-swap), plus the live
 profile) differs from the key
 stored in the ledger. The key is cleared when a cycle stays without alerting
 or a swap succeeds, so the same ALERT can be written again later. The
-one-shot `rotate` still prints a repeated ALERT to stdout on every run; only
-the unrelated log line is written once. Hand-change notes have no key
+one-shot `rotate` still prints repeated ordinary ALERTs and reports refused
+attempts on stdout on every run; the log follows the suppression rules
+above. A refused attempt does not
+determine the command's exit status: [candidate fallback](#rotate-candidate-fallback)
+can still succeed. `RotateRefused` is the final one-shot failure only when
+fallback ends in refusal. Hand-change notes have no key
 either; each is written once
 until its text changes. The hand-change guidance and lost-login ALERTs
 have no key: they are written on every cycle while their condition holds,
@@ -10282,12 +10604,29 @@ and the room check still apply.
 
 #### Swap record
 
-The rotator writes `<root>/.auto-switch.d/rotate/swap.json` in the
-`swapped` branch of the [rotate cycle](#rotate-cycle), after the ledger is
-saved and reads back with `live` equal to the new login, and before it
-releases the rotate lock. It is written through the same atomic writer as
+The rotator writes `<root>/.auto-switch.d/rotate/swap.json` after every
+successful automatic swap with valid measured target usage, including
+duplicate recovery and candidate fallback. Under the rotate lock it first
+settles credential placement, commits ownership and cycle state, and checks
+that the ledger reads back with `live` equal to the new login. It then
+durably publishes the event and clears completion evidence last. It is
+written through the same atomic writer as
 the ledger: a temporary file in the same directory, mode `0600`, then a
 rename, so a reader never sees a partial file.
+
+Interruption recovery retains the original automatic context and measured
+values, observation time and completed-placement time. It recognises an
+already published event and does not increment `seq` twice. Publication
+failure retains pending completion evidence for recovery and stops further
+swaps until resolved. A rollback or uncertain custody publishes no success
+event. Manual switching retains its existing behaviour.
+
+This preserves the existing reader contract introduced by
+[the merged session-resumption change (#2141)](https://github.com/rysweet/amplihack-rs/pull/2141).
+Duplicate recovery and candidate fallback use the same event format and
+publication path. The complete event identity, including its sequence, is
+persisted before publication and reused after interruption. Recovery does
+not publish a second event for the same swap.
 
 ```json
 {
@@ -10301,9 +10640,9 @@ rename, so a reader never sees a partial file.
 
 | Field | Meaning |
 |-------|---------|
-| `seq` | The previous record's `seq` plus 1, or 1 when there is no previous record or it cannot be read. |
-| `live_login` | The profile now live in `~/.claude`. |
-| `from_login` | The profile swapped out. |
+| `seq` | The previous record's `seq` plus 1, or 1 when there is no previous record. Interrupted publication reuses its journalled sequence. |
+| `live_login` | The candidate that actually became live in `~/.claude`, including after fallback. |
+| `from_login` | The original logical profile swapped out; a reserved recovery-storage name does not replace it. |
 | `swapped_at` | Epoch seconds when the swap finished, taken after the login was moved, not when the cycle started. |
 | `reading.session`, `reading.week` | The new login's session and weekly use from this cycle's measured reading, rounded up to a whole percent and clamped to 0–255. |
 | `reading.measured_at` | Epoch seconds when that reading was taken. |
@@ -10313,15 +10652,11 @@ an account, a token or a path. Nothing is written for a stay, an ALERT, a
 refused or failed swap, a [`profile switch`](#rotate-switch) or an
 [in-session swap](#in-session-swap). A swap whose target reading is not a
 measured reading, or whose session or weekly figure is not a finite number,
-writes nothing, so a missing figure is never recorded as 0%. When the record
-is not written the rotator logs one line,
-`swap record not written: <reason>`, and the swap and the cycle's outcome
-stand.
-When a previous record exists but cannot be read or parsed, the new record
-is written with `seq` 1 and the rotator logs one line,
-`swap record seq restarts at 1: previous unreadable (<reason>)` or
-`swap record seq restarts at 1: previous unparsable`. The first record
-logs nothing.
+writes nothing, so a missing figure is never recorded as 0%. A publication
+failure logs `swap event publication pending: <reason>` and retains the
+completion journal for the next explicit recovery. Committed custody stays
+in place. An unreadable previous record is preserved with the journal;
+recovery does not invent a replacement sequence or overwrite that evidence.
 
 The hook reads the record loosely but safely: at most 4096 bytes, with
 no-follow, from a regular file owned by you and not writable by group or
@@ -10472,14 +10807,20 @@ failed cycle every interval without rotating again. Nothing else reports it:
 a limit-resume hook still finds a running rotator and waits its full 7 days
 for a swap record that never comes.
 Before the older binary runs, including a launch that would
-[start the rotator automatically](#rotate-autostart), stop the rotator with
-this version (`amplihack profile rotate stop`), then delete
+[start the rotator automatically](#rotate-autostart), first finish
+[recovery](#rotate-recovery) with the current binary for every version 2
+custody journal, including duplicate parking, outgoing recovery custody,
+reservations and pending automatic swap publication. Keep the journal,
+receipts, parked credentials and recovery profiles together; do not delete
+them to bypass an older reader's refusal. Only after recovery completes,
+stop the rotator with this version (`amplihack profile rotate stop`), then delete
 `<root>/.auto-switch.d/rotate/ledger.json`, then start the older rotator.
 The ledger holds only bookkeeping; the next cycle works out the live profile
 again from the accounts. Deleting it also clears the swap hold and the alert
 de-duplication key, so the first cycle may swap or alert once more. If an
-older rotator is already running and logging failures, the same three steps,
-with `rotate stop` run by either binary, recover it.
+older rotator is already running and logging failures, first finish pending
+recovery with the current binary, then follow the same stop, delete and
+start steps.
 
 A cycle that moved onto an [overflow](#rotate-overflow) profile records
 `swapped`, and one that stayed on an overflow profile whose probe read the
@@ -11188,7 +11529,7 @@ failures use this format.
 | `AutoSwitchInstall`: a profile's `settings.json` is a symlink, owned by someone else, not a JSON object, or cannot be written | `` fix or remove the reported file, then run `amplihack profile auto-switch repair` `` |
 | `RotateConfig`: a rotate flag or `AMPLIHACK_ROTATE_*` value is not a whole number in range | `` run `amplihack profile rotate --help` for the accepted values `` |
 | `RotatePrototypeRunning`: the external rotator holds `<root>/.rotator/lock` | `stop the external rotator (tmux session claude-rotator) first` |
-| `RotateRefused`: a check before the swap failed, or the atomic exchange failed; nothing was moved. Also every [`profile switch`](#rotate-switch) refusal (no stored login, lock busy, recovery inconsistent, live login unusable) and a `switch --none` that found the lock busy | `nothing was moved; see "Swap refused" in docs/howto/claude-profile-rotation.md` |
+| `RotateRefused`: a check before the swap failed, or the atomic exchange failed. A refused rotation attempt permits safe fallback; one-shot `rotate` fails with this error only when fallback ends in refusal. Also every [`profile switch`](#rotate-switch) refusal (no stored login, lock busy, recovery inconsistent, live login unusable) and a `switch --none` that found the lock busy | `nothing was moved; see "Swap refused" in docs/howto/claude-profile-rotation.md` only when unchanged credential placement is proven and no parking intent remains. Once parking or exchange begins, errors require [placement-aware recovery](#rotate-recovery); retain the journal, parking intent and receipts, and follow the reported recovery guidance. An I/O error alone does not prove that nothing moved. |
 | `profile switch` moved the live login, then could not write the pin or the default pointer. Not a `RotateRefused`: the login did move | The message itself says to run `amplihack profile switch <name>` again; see [Rotate switch](#rotate-switch) |
 | `RotateInconsistent`: the rotate ledger or journal is damaged, or recovery cannot tell which way is safe | `see the Recovery section of docs/howto/claude-profile-rotation.md` |
 | `RotateUnsupported`: `profile rotate` on a platform without Unix file semantics | `rotate needs Linux or another Unix` |

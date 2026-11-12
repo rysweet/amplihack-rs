@@ -92,21 +92,6 @@ pub(super) fn alert(
     save(ctx, &mut l, CycleOutcome::Alerted, t, None, None)
 }
 
-/// The ALERT key kind for a refused swap: its reason, without control
-/// characters and short enough that the key passes the ledger's 320-byte
-/// check with any profile name.
-pub fn refusal_kind(e: &ProfileError) -> String {
-    let reason: String = e.to_string().chars().filter(|c| !c.is_control()).collect();
-    let mut kind = String::from("refused ");
-    for c in reason.chars() {
-        if kind.len() + c.len_utf8() > 200 {
-            break;
-        }
-        kind.push(c);
-    }
-    kind
-}
-
 #[cfg(test)]
 #[path = "tests_identity_after_advisory.rs"]
 mod tests_identity_after_advisory;
