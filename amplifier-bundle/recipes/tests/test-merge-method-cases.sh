@@ -1,4 +1,6 @@
-# #1888 merge-method cases. Sourced by test-auto-drive-to-merge.sh after
+# shellcheck shell=bash
+# #1888 merge-method cases. Sourced by test-auto-drive-to-merge.sh, which
+# requires MM_CASES_DONE=1 (this file's last line) afterwards. Sourced after
 # gate_run, the fixture repository FX and REC/QA for GATE_HEAD exist; no
 # standalone harness, so every case keeps the real head, QA, review,
 # private-state and guard checks of the trusted gate.
@@ -188,8 +190,30 @@ mm_permissions true true true
 # Two pages: a reader that stops at the first would allow merge.
 mm_rules "$(mm_pr_rule merge rebase)$(mm_pr_rule rebase)"
 mm_merged ruleset-second-page rebase default "$FX_M1"
-mm_rules '[{"type":"required_linear_history"},{"type":"pull_request","parameters":{"required_approving_review_count":1}}]'
+# mm_rationale <label> <text>: the last run's bundle records <text> in its rationale.
+mm_rationale() {
+  if grep -E '^  - merge_method_rationale=' "$(mm_bundle)" 2>/dev/null | grep -qF -- "$2"; then
+    pass "1888-$1" "the rationale says: $2"
+  else
+    fail "1888-$1" "want '$2' in: $(grep -E '^  - merge_method_rationale=' "$(mm_bundle)" 2>/dev/null)"
+  fi
+}
+# Rules that say nothing about the method do not limit it.
+mm_rules '[{"type":"deletion"},{"type":"required_signatures"},{"type":"pull_request","parameters":{"required_approving_review_count":1}}]'
 mm_merged ruleset-no-method-limit squash default "$FX_M1"
+mm_rationale ruleset-no-method-limit-rationale "no ruleset on branch main limits the merge method"
+# A required_linear_history rule: GitHub takes only squash or rebase, so the
+# gate never runs --merge. Settings allow merge and rebase, not squash: the
+# default is rebase, and the rationale names the rule.
+MM_LINEAR='[{"type":"required_linear_history","ruleset_source_type":"Repository","ruleset_source":"owner-a/repo-a","ruleset_id":7}]'
+mm_permissions true false true
+mm_rules "$MM_LINEAR"
+mm_merged ruleset-linear-history rebase default "$FX_M1"
+mm_rationale ruleset-linear-history-rationale "a required_linear_history rule on branch main forbids merge"
+mm_permissions true true true
+mm_refused ruleset-linear-history-explicit-merge \
+  "selected merge method merge is disallowed by the rulesets on branch main (a required_linear_history rule forbids merge); no other method is tried" \
+  --merge-method merge
 # The values are literal JSON for the gh stub to print, not shell words.
 # shellcheck disable=SC2089,SC2090
 for GH_RULES_JSON in '{}' 'null' 'bad-json' '[{"type":"pull_request"}]' \
@@ -297,3 +321,7 @@ GATE_SCRIPT="$MM_NOFN/autodrive_merge_gate.sh" mm_refused file-missing \
   "autodrive_merge_method.sh is missing beside the merge gate"
 GATE_SCRIPT="$MM_NOFN/autodrive_merge_gate.sh" mm_refused file-missing-flag \
   "no merge method was chosen (selector exit 1)"
+
+# Last line: test-auto-drive-to-merge.sh fails 1888-cases-loaded without it.
+# shellcheck disable=SC2034 # read by test-auto-drive-to-merge.sh
+MM_CASES_DONE=1

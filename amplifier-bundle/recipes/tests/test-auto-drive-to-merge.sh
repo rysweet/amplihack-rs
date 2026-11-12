@@ -153,7 +153,8 @@ for cand in "${REPO_ROOT}/target/release/amplihack" "${REPO_ROOT}/target/debug/a
   if supports_helper "${cand}"; then REAL_AMPLIHACK="${cand}"; break; fi
 done
 [[ -n "${REAL_AMPLIHACK}" ]] || {
-  echo "HARNESS-ERROR: no 'amplihack' providing 'orch helper extract-json --require-field'." >&2
+  echo "HARNESS-ERROR: no 'amplihack' providing all of 'orch helper select-merge-method --base-ref'," >&2
+  echo "  'orch helper extract-field --field --default' and 'orch helper extract-json --require-field'." >&2
   echo "  Build it with: cargo build -p amplihack --bin amplihack" >&2; exit 2; }
 export REAL_AMPLIHACK
 echo "amplihack binary: ${REAL_AMPLIHACK}"
@@ -1953,8 +1954,17 @@ else
 fi
 
 # #1888: the merge method, run through the real gate with the fixtures above.
+# The cases file sets MM_CASES_DONE=1 as its last line. The suite runs without
+# `set -e`, so a missing, renamed or truncated file would otherwise drop every
+# case with nothing failing.
+MM_CASES_DONE=0
+MM_CASES="${REPO_ROOT}/amplifier-bundle/recipes/tests/test-merge-method-cases.sh"
 # shellcheck source=test-merge-method-cases.sh
-source "${REPO_ROOT}/amplifier-bundle/recipes/tests/test-merge-method-cases.sh"
+if source "${MM_CASES}" && [ "${MM_CASES_DONE}" = 1 ]; then
+  pass "1888-cases-loaded" "every merge-method case in ${MM_CASES##*/} ran to the end of the file"
+else
+  fail "1888-cases-loaded" "${MM_CASES} is missing or stopped before its last line (MM_CASES_DONE=${MM_CASES_DONE})"
+fi
 
 # 5i. When `gh pr merge` fails, the gate reports the REAL exit code. `$?` read
 # inside the `then` of an `if ! gh ...` is the negation's status — always 0 —

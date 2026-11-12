@@ -3343,11 +3343,11 @@ the merge; the gate never falls back to another method. The gate maps the
 method to exactly one flag, and the merge argv is otherwise the fixed list it
 always was:
 
-| Method | Repository setting | Ruleset `allowed_merge_methods` value | Flag |
-| --- | --- | --- | --- |
-| `merge` | `allow_merge_commit` | `merge` | `--merge` |
-| `squash` | `allow_squash_merge` | `squash` | `--squash` |
-| `rebase` | `allow_rebase_merge` | `rebase` | `--rebase` |
+| Method | Repository setting | Ruleset `allowed_merge_methods` value | Under a `required_linear_history` rule | Flag |
+| --- | --- | --- | --- | --- |
+| `merge` | `allow_merge_commit` | `merge` | Not allowed | `--merge` |
+| `squash` | `allow_squash_merge` | `squash` | Allowed | `--squash` |
+| `rebase` | `allow_rebase_merge` | `rebase` | Allowed | `--rebase` |
 
 `auto-drive-to-merge`, [`auto-drive-light`](auto-drive-light.md) and
 `autodrive-merge-loop` each declare `merge_method: ""` and pass it unchanged
@@ -3378,7 +3378,13 @@ merge_method = "merge"
   never brought up to date. A base that does not require up-to-date branches
   never reports `BEHIND`, so nothing else would bring such a pull request up to
   date. The base tip is recorded as `config_commit`. A pull request cannot
-  write that commit, so it cannot choose the method it is merged with. An
+  write that commit, so it cannot choose the method it is merged with. This
+  holds when the checkout's `origin` is the pull request's target repository:
+  the base tip is fetched from `origin`, while the settings and rulesets come
+  from the repository in the pull request URL. In a fork checkout these
+  differ; section 6d makes the same assumption, and binding every read to the
+  pull request's repository is
+  [#2440](https://github.com/rysweet/amplihack-rs/issues/2440). An
   untracked, modified or ignored copy in the working tree is never read, so
   the launch checkout's branch, age and local edits do not change the method.
   If the base moves between the gate's fetch and the merge, the policy read is
@@ -3434,13 +3440,21 @@ A method is allowed when both of these allow it:
 
 1. **The repository settings.** The three `allow_*` fields of
    `gh api --hostname HOST repos/OWNER/REPO`.
-2. **The rulesets on the base branch.** Every `pull_request` rule in
-   `gh api --hostname HOST --paginate repos/OWNER/REPO/rules/branches/<base>`
-   whose `parameters` list `allowed_merge_methods`. A method must be in every
-   such list. Since December 2024 a ruleset can limit the merge methods this
-   way without changing the `allow_*` fields
-   ([changelog](https://github.blog/changelog/2024-12-04-pull-request-merge-method-rule-public-preview),
-   [available rules](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)).
+2. **The rulesets on the base branch.** The active rules in
+   `gh api --hostname HOST --paginate repos/OWNER/REPO/rules/branches/<base>`.
+   Two rule types limit the method:
+   - **`pull_request` with `allowed_merge_methods`.** A method must be in
+     every such list. Since December 2024 a ruleset can limit the merge
+     methods this way without changing the `allow_*` fields
+     ([changelog](https://github.blog/changelog/2024-12-04-pull-request-merge-method-rule-public-preview)).
+   - **`required_linear_history`.** "Any pull requests merged into the branch
+     or tag must use a squash merge or a rebase merge"
+     ([Require linear history](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets#require-linear-history)),
+     so `merge` is not allowed. The rationale and any refusal name the rule:
+     `a required_linear_history rule on branch <base> forbids merge`.
+
+   No other rule type limits the method
+   ([available rules](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)).
    The endpoint returns only active rules, at the repository, organization and
    enterprise level, and not rules in `evaluate` or `disabled` rulesets. Every
    page is read, so a rule on the second page counts. `<base>` is the pull
@@ -3449,9 +3463,10 @@ A method is allowed when both of these allow it:
 
 The rules are read for every source, the explicit one included, because
 GitHub rejects a disallowed method whoever chose it. The default is the first
-of squash, merge and rebase that both allow. An explicit or repository method
-that a ruleset does not list is refused with that reason; the gate does not
-pick another.
+of squash, merge and rebase that both allow, so on a linear-history branch
+whose settings allow merge and rebase but not squash it is `rebase`. An
+explicit or repository method that a ruleset does not allow is refused with
+the rule as the reason; the gate does not pick another.
 
 The response is read strictly. Each page must be a JSON array of objects with
 a string `type`, and a `pull_request` rule must have a `parameters` object.
@@ -3488,7 +3503,15 @@ need only read access. Any of these blocks the merge: a `gh api` failure from
 either read, malformed JSON, a missing or non-boolean `allow_*` field, a
 malformed rule, or no allowed method. On GitHub Enterprise Server without the
 rulesets endpoint, the rules read fails and the merge blocks; there is no
-fallback to the settings alone. Exit 79 from either `gh api` read is a
+fallback to the settings alone. Classic branch protection is not read: its
+"Require linear history" setting (`required_linear_history` in
+`branches/<base>/protection`) is returned only to a token with admin rights on
+the repository, which the gate does not require. On a base branch with classic
+linear-history protection, an explicit or repository `merge`, or a default of
+`merge` when squash is not allowed, passes the selection, GitHub refuses
+`gh pr merge --merge`, and the gate reports that refusal without trying
+another method. A ruleset `required_linear_history` rule is read and has no
+such gap. Exit 79 from either `gh api` read is a
 terminal policy refusal: the gate writes its evidence and exits 79.
 
 | Inputs | Result |
@@ -3498,6 +3521,9 @@ terminal policy refusal: the gate writes its evidence and exits 79.
 | No file; only merge allowed | `merge`, source `default` |
 | No file; every setting allowed; a ruleset allows only merge | `merge`, source `default` |
 | No file; settings allow only squash; a ruleset allows only merge | Blocked: no merge method is allowed by both |
+| No file; settings allow merge and rebase; a `required_linear_history` ruleset rule | `rebase`, source `default` |
+| No file; settings allow only merge; a `required_linear_history` ruleset rule | Blocked: no merge method is allowed by both |
+| Explicit `merge`, or file says `merge`; a `required_linear_history` ruleset rule | Blocked; no merge command runs |
 | File says `merge`; merge allowed | `merge`, source `repository` |
 | File says `merge` at the base tip, committed after the pull request branched | `merge`, source `repository` |
 | File says `merge`; only squash allowed | Blocked; no merge command runs |
@@ -5954,8 +5980,8 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | [Minor findings end the crusty loop](#minor-findings-end-the-crusty-loop-1979) (#1979): `classify` on all-minor, mixed, unknown-severity, missing-severity, empty and non-array input; security keywords in an id or summary kept as `CONCERNS`; severity history (a minor finding recurring as minor still `MINOR_ONLY`, a major one downgraded to minor kept as `CONCERNS`, unknown history read as major, no `.severity` file for unreadable input); crusty-loop step-03 refusing to file without `AMPLIHACK_HOME` even when `REPO_PATH` holds the tool; minor-only objective completion without evaluator dispatch; one `gh issue create` per finding naming the task id and finding id, with N rows in `followups.tsv`; a rerun making no call; `gh` exiting `1` (error recorded, gate prints `ERROR: followups-unfiled`, no merge) and `79` (passed through after one call); an unresolved task id; the task id taken from `Closes #N` in the PR body; two JSON arrays on stdin, or a `concerns` string holding a minor and a blocking array, kept as `CONCERNS`; a `jq` parse failure logged with its exit code; mentions, `#N` and `GH-N` references neutralised in the body and the title; a title with shell metacharacters reaching `gh` as one argument, with `&`, `|` and backticks kept as plain characters rather than HTML entities; an unparseable PR URL; a `CLEAN` drive filing nothing and passing the check; dry runs leaving the phase incomplete when required follow-ups are unrecorded; `gate` naming each filed issue in its evidence line and printing the error and blocker on a miss; `collect` reading only the terminal round; `check` refusing a symlinked or group-writable `followups.tsv`, a malformed row and `MINOR_ONLY` with no set; `autodrive_crusty_final` accepting `MINOR_ONLY`; and static checks that both `SKILL.md` copies match, the old loop-end wording is gone from the recipes, skill and reference, the 400-line budgets hold with no per-file exception, and `autodrive_followups.sh` sources the shared rules file while no light round tool exists. Stub `gh` on `PATH`, scratch under `$TMPDIR`, no network | `crates/amplihack-cli/tests/issue_1979_crusty_minor_followups.rs`, with `mod issue_1979_crusty_minor_followups;` in `crates/amplihack-cli/tests/main.rs` |
 | A minor-only round ending the loop, and a `[minor, major]` round continuing it, through the `run_loop` stub | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
-| [Choosing the merge method](#choosing-the-merge-method-1888) (#1888), helper: every permission combination with no file, `config_commit` the base tip; the file at the base tip as `repository`; a file the base gains, changes or drops after the branch point deciding for a pull request that was never brought up to date, and an invalid one blocking it; an untracked copy and an uncommitted edit ignored; an explicit method winning without the file being read, even when it is invalid or the base is unfetched; a pull request that adds, edits or deletes the file refused with `changed-in-pr` before `gh` runs, while rewriting the same bytes, editing `.amplihack/qa.toml` or merging in a base that gained the file is not a change; an empty diff refused with `paths-empty`; one case per refusal token, none echoing file content; symlinks at both levels; an empty, non-SHA or absent base; disallowed methods never falling back; exact explicit values; `gh api` exit 79, other failures and every schema error for the settings read; ruleset `allowed_merge_methods` limiting the default, an explicit and a repository method, a settings/ruleset mismatch with nothing in common, a rule on the second page, rules that do not limit the method, the base branch named in the rules path, and exit 79, other failures and malformed answers for the rules read; an invalid base branch name never reaching `gh`; malformed pull request URLs never reaching `gh`; `GH_REPO` and `GIT_DIR` set and ignored; the three recipes forwarding `merge_method` with no `repository` context. [Reader parity](#how-the-two-repository-files-relate): the shell `autodrive_qa_config` and the Rust reader over one fixture set (grammar, size, tree entries, `changed-in-pr`, `paths-empty`), the same token from each. Unit tests: the default over every settings and rules combination, the rules parser (pages, intersection, `null`, unknown values, malformed shapes), base branch names, the grammar and the URL. Real git history, a fake `gh` | `crates/amplihack-cli/tests/issue_1888_merge_method_selection.rs`, and the unit tests in `crates/amplihack-cli/src/commands/merge_method/` |
-| The same through the real gate, run as `/bin/bash -p`, with the contract suite's fixture repository: one literal flag per method in the merge argv, the five evidence lines, the refusal reason as the blocker line, exit 79, the base fetched over a stale local ref, a pull request that branched before the base gained the file merging with the base's method, a base that dropped the file again giving the default, a ruleset that allows only merge, a ruleset that refuses an explicit method, a settings/ruleset mismatch, a ruleset rule on the second page, unreadable and malformed rules and exit 79 from the rules read, a malformed or missing helper refused, a selector file that defines no function (exit 127) or is missing blocked by the gate's own merge-flag check, every case checking that the fake `gh` served it the settings and rules it set up (not the #2186 CI route's answer for the same endpoint), and both reads naming the pull request URL's repository and base branch with `GH_REPO` set elsewhere | `amplifier-bundle/recipes/tests/test-merge-method-cases.sh`, sourced by `test-auto-drive-to-merge.sh` |
+| [Choosing the merge method](#choosing-the-merge-method-1888) (#1888), helper: every permission combination with no file, `config_commit` the base tip; the file at the base tip as `repository`; a file the base gains, changes or drops after the branch point deciding for a pull request that was never brought up to date, and an invalid one blocking it; an untracked copy and an uncommitted edit ignored; an explicit method winning without the file being read, even when it is invalid or the base is unfetched; a pull request that adds, edits or deletes the file refused with `changed-in-pr` before `gh` runs, while rewriting the same bytes, editing `.amplihack/qa.toml` or merging in a base that gained the file is not a change; an empty diff refused with `paths-empty`; one case per refusal token, none echoing file content; symlinks at both levels; an empty, non-SHA or absent base; disallowed methods never falling back; exact explicit values; `gh api` exit 79, other failures and every schema error for the settings read; ruleset `allowed_merge_methods` limiting the default, an explicit and a repository method, a settings/ruleset mismatch with nothing in common, a rule on the second page, rules that do not limit the method; a `required_linear_history` rule turning a merge default into rebase, refusing an explicit and a repository merge with the rule named, allowing an explicit rebase, leaving nothing when only merge is allowed, and counting on a later page beside a `pull_request` rule, with the rationale naming the rule; the base branch named in the rules path, and exit 79, other failures and malformed answers for the rules read; an invalid base branch name never reaching `gh`; malformed pull request URLs never reaching `gh`; `GH_REPO` and `GIT_DIR` set and ignored; the three recipes forwarding `merge_method` with no `repository` context. [Reader parity](#how-the-two-repository-files-relate): the shell `autodrive_qa_config` and the Rust reader over one fixture set (grammar, size, tree entries, `changed-in-pr`, `paths-empty`), the same token from each. Unit tests: the default over every settings and rules combination with and without linear history, the rules parser (pages, intersection, linear history, `null`, unknown values, malformed shapes) and the phrases naming each limit, base branch names, the grammar and the URL. Real git history, a fake `gh` | `crates/amplihack-cli/tests/issue_1888_merge_method_selection.rs`, and the unit tests in `crates/amplihack-cli/src/commands/merge_method/` |
+| The same through the real gate, run as `/bin/bash -p`, with the contract suite's fixture repository: one literal flag per method in the merge argv, the five evidence lines, the refusal reason as the blocker line, exit 79, the base fetched over a stale local ref, a pull request that branched before the base gained the file merging with the base's method, a base that dropped the file again giving the default, a ruleset that allows only merge, a ruleset that refuses an explicit method, a settings/ruleset mismatch, a ruleset rule on the second page, rules that do not limit the method recorded as such in the rationale, a `required_linear_history` rule turning a merge default into `--rebase` with the rule named in the rationale and refusing an explicit `--merge`, unreadable and malformed rules and exit 79 from the rules read, a malformed or missing helper refused, a selector file that defines no function (exit 127) or is missing blocked by the gate's own merge-flag check, every case checking that the fake `gh` served it the settings and rules it set up (not the #2186 CI route's answer for the same endpoint), and both reads naming the pull request URL's repository and base branch with `GH_REPO` set elsewhere. The file's last line sets `MM_CASES_DONE=1`; the suite fails `1888-cases-loaded` without it, and the Rust wrapper requires `PASS[1888-merge-only]` and `PASS[1888-cases-loaded]`, so a missing, renamed or truncated file fails instead of dropping its cases | `amplifier-bundle/recipes/tests/test-merge-method-cases.sh`, sourced by `test-auto-drive-to-merge.sh` |
 | [Criterion 6 without a required review](#criterion-6-reviews-and-approvals) (#2219): a fake `gh` returning each endpoint's post-`--jq` answer per scenario; a required count of `0` with no review rule, and an unprotected branch, still `MET` through `required-count`, including under `BLOCKED`, so a readable count decides before the merge state is consulted; a classic `0` beside a *failed* rulesets read staying `UNREADABLE`, so `REQ` is not widened; `BLOCKED` beside a code-owner, last-push or required-reviewer rule as `NOT_MET` with `review-rule`; `BLOCKED` with no rule named, and a `DRAFT` merge state, as `UNREADABLE` with `unreadable`; a failed `gh pr view`, a `reviewDecision` the tool does not know (even beside a readable count of 2), and an `UNKNOWN` merge state with the count unreadable, as `UNREADABLE` with `facts-unreadable`; an `UNKNOWN` merge state beside a *readable* count still decided by that count; `CLEAN`, `HAS_HOOKS` and `UNSTABLE`, and every agent-clearable blocker, winning over a named review rule; no reclassified case reaching `MET`; and `approval_blocker` carrying the id for each source, empty only on `MET`. No `jq`, no timers | `amplifier-bundle/recipes/tests/test-issue-2219-approval-no-review-required.sh` |
 | [Documentation-only pull requests](#documentation-only-pull-requests) (#2219): `autodrive_qa_docs_only` and `autodrive_gadugi_required` over synthetic git repositories, both sides of the predicate and both of the function that reads it: prose-only changes `true`, and `.markdown`, `.rst`, a `docs/` `.txt` and root `LICENSE`, `NOTICE`, `COPYING` with them; a `.txt` outside `docs/` and outside the root documentation names `false` (`tests/fixtures/expected.txt`, `src/templates/welcome.txt`, `fuzz/corpus/seed.txt`, `testdata/golden.txt`, `scripts/deploy.txt`), and the near-miss pin spellings `requirements-dev.txt`, `dev-requirements.txt`, `constraints-dev.txt`, `Makefile.txt` and `requirements/base.txt` `false` with them, while `README.txt`, `CHANGELOG.txt` and `CONTRIBUTING.txt` stay `true`, a `docs/` component qualifies a `.txt` at any depth and `notdocs/notes.txt` does not; a `.js`, `.json`, `.sh`, `.github/`, `.amplihack/`, `.claude/`, `.cursor/`, `AGENTS.md`, `CLAUDE.md`, `amplifier-bundle/` or `SKILL.md` path `false`; `requirements.txt`, `docs/requirements.txt`, `constraints.txt` and `CMakeLists.txt` `false`, the pin spellings under `docs/` (`docs/requirements-dev.txt`, `docs/dev-requirements.txt`, `docs/requirements/base.txt`, `docs/constraints-dev.txt`) `false` while ordinary prose under `docs/` stays `true`, with every `.txt` entry of `AUTODRIVE_ROOT_PROJECT_FILES` pinned against the predicate so the two lists cannot drift; `docs/.hidden.md` `true`, since a dot-file is not a dot-directory; `docs/conf.py` and `docs/release.js` `false`, so the `docs/` directory qualifies no extension; `README.MD` and `docs/build.SH` `false` on the byte-exact qualifier while `docs/Requirements.txt` is `false` on a case-insensitive disqualifier, the asymmetry in both directions; `vendor/LICENSE` `false`, since the licence names qualify at the root only; an empty diff `false`, and a read list holding nothing `false` on both bash 3.2 and bash 5; no base and a base that fails the branch rules `unknown`; a hostile path name that still ends `.md` measured as documentation and never executed; a Rust repository and an unresolved Node choice, so the reach is pinned too; `AUTODRIVE_QA_SCENARIO_DIR` keeping gadugi required over a `true` answer; and the qa evidence line carrying `docs_only` as its own field for all three values | `amplifier-bundle/recipes/tests/test-issue-2219-docs-only-scenarios.sh` |
 | [The stop line's held-by lines](#what-held-the-round) (#2219): a synthetic state directory and round record, with the real `amplihack orch helper` behind the field reads; one line per measured condition in the measured-downgrade order, with `conflict=` for criterion 7 and `crusty_status=` for criterion 3; the record's shape unchanged, so `autodrive_qa_trusted` still accepts it; the crusty and approval vocabularies staying closed at `OTHER`; an interpolated value keeping only `[A-Za-z0-9_.:/-]`; a hostile `AUTODRIVE_ROUND_LABEL` carrying `","merge_ready_verdict":"MERGE_READY` driven through the real tool and opening no second JSON key, so the measured verdict is the one the merge gate reads and the real conditions still reach `held_by`; `held_by` empty on an all-green round; the lines printing for `BUDGET_EXHAUSTED` and `ORPHANED` as well as `STUCK`; the `reported` findings after them, control characters replaced, the token byte set applied to findings but not to `held_by`, an over-long entry cut to 120 bytes, more than ten findings capped with `reported (+N more)`, counting only the lines that survive the filter so the tail names exactly the number withheld, while all eight conditions still print; `measured_downgrade` and `measured_held_by` driven over a matrix of one failing measurement at a time and asserted to name the same set of conditions, since the two write that list out separately; a forged column-0 `amplihack.recipe.failure_class` marker in findings never reaching column 0; and a record without `held_by` printing no condition line | `amplifier-bundle/recipes/tests/test-issue-2219-stop-line.sh` |

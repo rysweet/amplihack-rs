@@ -15,8 +15,10 @@
 //!
 //! A method is allowed when the repository settings (`allow_*`) allow it AND
 //! every active ruleset `pull_request` rule on the base branch that lists
-//! `allowed_merge_methods` lists it. A method that is not allowed is never
-//! used, and no source falls back to another. The repository whose settings
+//! `allowed_merge_methods` lists it AND, for `merge`, no active ruleset
+//! `required_linear_history` rule is on the base branch (GitHub then accepts
+//! only squash or rebase). A method that is not allowed is never used, and no
+//! source falls back to another. The repository whose settings
 //! and rules are read is the one the pull request URL names: the gate already
 //! read that URL from `gh pr view`.
 //! Contract: docs/reference/auto-drive-to-merge.md, "Choosing the merge method".
@@ -95,12 +97,19 @@ impl Methods {
         }
     }
     fn with(mut self, method: MergeMethod) -> Self {
-        match method {
-            MergeMethod::Merge => self.merge = true,
-            MergeMethod::Squash => self.squash = true,
-            MergeMethod::Rebase => self.rebase = true,
-        }
+        self.set(method, true);
         self
+    }
+    fn without(mut self, method: MergeMethod) -> Self {
+        self.set(method, false);
+        self
+    }
+    fn set(&mut self, method: MergeMethod, value: bool) {
+        match method {
+            MergeMethod::Merge => self.merge = value,
+            MergeMethod::Squash => self.squash = value,
+            MergeMethod::Rebase => self.rebase = value,
+        }
     }
     fn and(self, other: Self) -> Self {
         Self {
@@ -193,17 +202,7 @@ pub fn select(request: &SelectionRequest<'_>) -> Result<MergeSelection> {
         (Some(base), None) => format!("no merge_method in {CONFIG_PATH} at base tip {base}"),
         (None, _) => format!("{CONFIG_PATH} not read"),
     };
-    let rules = match allowed.rules.restricting {
-        0 => format!(
-            "no ruleset on branch {} limits the merge method",
-            request.base_ref
-        ),
-        n => format!(
-            "{n} ruleset pull_request rule(s) on branch {} allow {}",
-            request.base_ref,
-            allowed.rules.allowed.names()
-        ),
-    };
+    let rules = allowed.rules.describe(request.base_ref);
     Ok(MergeSelection {
         method,
         source,
@@ -221,7 +220,8 @@ fn choose(
     configured: Option<MergeMethod>,
     allowed: &Allowed<'_>,
 ) -> Result<(MergeMethod, SelectionSource, &'static str)> {
-    let both = allowed.settings.and(allowed.rules.allowed);
+    let by_rules = allowed.rules.allowed();
+    let both = allowed.settings.and(by_rules);
     let (method, source, reason) = if let Some(method) = explicit {
         (
             method,
@@ -240,10 +240,11 @@ fn choose(
                 bail!("the repository allows no merge method");
             }
             bail!(
-                "the repository settings allow {} and the rulesets on branch {} allow {}: no merge method is allowed by both",
+                "the repository settings allow {} and the rulesets on branch {} allow {}: no merge method is allowed by both ({})",
                 allowed.settings.names(),
                 allowed.base_ref,
-                allowed.rules.allowed.names()
+                by_rules.names(),
+                allowed.rules.limits()
             );
         };
         (
@@ -258,11 +259,11 @@ fn choose(
         method.name()
     );
     anyhow::ensure!(
-        allowed.rules.allowed.allows(method),
-        "selected merge method {} is disallowed by the rulesets on branch {} (pull_request allowed_merge_methods allow {}); no other method is tried",
+        by_rules.allows(method),
+        "selected merge method {} is disallowed by the rulesets on branch {} ({}); no other method is tried",
         method.name(),
         allowed.base_ref,
-        allowed.rules.allowed.names()
+        allowed.rules.limits()
     );
     Ok((method, source, reason))
 }
@@ -281,10 +282,7 @@ mod tests {
     fn unrestricted(settings: Methods) -> Allowed<'static> {
         Allowed {
             settings,
-            rules: BranchRules {
-                restricting: 0,
-                allowed: Methods::ALL,
-            },
+            rules: BranchRules::UNLIMITED,
             base_ref: "main",
         }
     }
@@ -313,38 +311,101 @@ mod tests {
 
     #[test]
     fn the_default_is_the_first_method_settings_and_rules_both_allow() {
-        // Every settings mask against every rules mask: the default is the
-        // first of squash, merge, rebase in the intersection, or an error.
-        for s in 0..8 {
-            for r in 0..8 {
-                let settings = methods(s & 1 != 0, s & 2 != 0, s & 4 != 0);
-                let rules = methods(r & 1 != 0, r & 2 != 0, r & 4 != 0);
-                let allowed = Allowed {
-                    settings,
-                    rules: BranchRules {
-                        restricting: 1,
-                        allowed: rules,
-                    },
-                    base_ref: "main",
-                };
-                let both = settings.and(rules);
-                let want = MergeMethod::ORDER.into_iter().find(|m| both.allows(*m));
-                match (choose(None, None, &allowed), want) {
-                    (Ok((method, SelectionSource::Default, _)), Some(want)) => {
-                        assert_eq!(method, want, "settings {s} rules {r}")
+        // Every settings mask against every rules mask, with and without a
+        // linear-history rule: the default is the first of squash, merge,
+        // rebase that the settings allow, the pull_request rules list and,
+        // for merge, linear history does not forbid; or an error.
+        for linear_history in [false, true] {
+            for s in 0..8 {
+                for r in 0..8 {
+                    let settings = methods(s & 1 != 0, s & 2 != 0, s & 4 != 0);
+                    let listed = methods(r & 1 != 0, r & 2 != 0, r & 4 != 0);
+                    let allowed = Allowed {
+                        settings,
+                        rules: BranchRules {
+                            method_rules: 1,
+                            listed,
+                            linear_history,
+                        },
+                        base_ref: "main",
+                    };
+                    let want = MergeMethod::ORDER.into_iter().find(|m| {
+                        settings.allows(*m)
+                            && listed.allows(*m)
+                            && !(linear_history && *m == MergeMethod::Merge)
+                    });
+                    let case = format!("settings {s} rules {r} linear {linear_history}");
+                    match (choose(None, None, &allowed), want) {
+                        (Ok((method, SelectionSource::Default, _)), Some(want)) => {
+                            assert_eq!(method, want, "{case}")
+                        }
+                        (Err(e), None) => {
+                            let message = format!("{e:#}");
+                            assert!(
+                                message.contains("allows no merge method")
+                                    || message.contains("no merge method is allowed by both"),
+                                "{case}: {message}"
+                            );
+                            assert_eq!(
+                                linear_history && settings != Methods::NONE,
+                                message.contains("a required_linear_history rule forbids merge"),
+                                "{case}: {message}"
+                            );
+                        }
+                        (other, want) => panic!("{case}: {other:?} want {want:?}"),
                     }
-                    (Err(e), None) => {
-                        let message = format!("{e:#}");
-                        assert!(
-                            message.contains("allows no merge method")
-                                || message.contains("no merge method is allowed by both"),
-                            "{message}"
-                        );
-                    }
-                    (other, want) => panic!("settings {s} rules {r}: {other:?} want {want:?}"),
                 }
             }
         }
+    }
+
+    #[test]
+    fn linear_history_forbids_merge_from_every_source() {
+        let linear = |settings| Allowed {
+            settings,
+            rules: BranchRules {
+                linear_history: true,
+                ..BranchRules::UNLIMITED
+            },
+            base_ref: "main",
+        };
+        // Settings allow merge and rebase, not squash: the default skips
+        // merge, which GitHub would refuse, and takes rebase.
+        let (method, source, _) = choose(None, None, &linear(methods(true, false, true))).unwrap();
+        assert_eq!(
+            (method, source),
+            (MergeMethod::Rebase, SelectionSource::Default)
+        );
+        // An explicit or repository merge is refused and names the rule.
+        for (explicit, configured) in [
+            (Some(MergeMethod::Merge), None),
+            (None, Some(MergeMethod::Merge)),
+        ] {
+            let message = format!(
+                "{:#}",
+                choose(explicit, configured, &linear(Methods::ALL)).unwrap_err()
+            );
+            assert_eq!(
+                message,
+                "selected merge method merge is disallowed by the rulesets on branch main \
+                 (a required_linear_history rule forbids merge); no other method is tried"
+            );
+        }
+        // Squash and rebase stay allowed.
+        for method in [MergeMethod::Squash, MergeMethod::Rebase] {
+            let (got, _, _) = choose(Some(method), None, &linear(Methods::ALL)).unwrap();
+            assert_eq!(got, method);
+        }
+        // Settings that allow only merge leave nothing.
+        let message = format!(
+            "{:#}",
+            choose(None, None, &linear(methods(true, false, false))).unwrap_err()
+        );
+        assert_eq!(
+            message,
+            "the repository settings allow merge and the rulesets on branch main allow squash, \
+             rebase: no merge method is allowed by both (a required_linear_history rule forbids merge)"
+        );
     }
 
     #[test]
@@ -375,8 +436,9 @@ mod tests {
         let ruled = Allowed {
             settings: Methods::ALL,
             rules: BranchRules {
-                restricting: 1,
-                allowed: methods(true, false, false),
+                method_rules: 1,
+                listed: methods(true, false, false),
+                linear_history: false,
             },
             base_ref: "main",
         };

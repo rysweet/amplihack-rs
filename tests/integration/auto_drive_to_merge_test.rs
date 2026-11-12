@@ -5144,6 +5144,16 @@ fn run_auto_drive_contract_shell_test(inherited: Inherited) {
         "MERGEREADY-no-round-tool did not pass (inherited={inherited:?}); a round with no \
          round tool must not find one through an inherited AUTODRIVE_TOOLS_DIR (#1607)\n{stdout}"
     );
+    // The #1888 merge-method cases live in a sourced file. Its first case and
+    // the suite's end-of-file check must both pass, so deleting the `source`
+    // line, or the file, cannot drop the cases while the suite stays green.
+    for case in ["1888-merge-only", "1888-cases-loaded"] {
+        assert!(
+            stdout.contains(&format!("PASS[{case}]")),
+            "{case} did not pass (inherited={inherited:?}); the merge-method cases in \
+             test-merge-method-cases.sh did not all run (#1888)\n{stdout}"
+        );
+    }
     if inherited == Inherited::Conflicting {
         assert!(
             !stdout.contains(DECOY_1561_SENTINEL) && !stderr.contains(DECOY_1561_SENTINEL),

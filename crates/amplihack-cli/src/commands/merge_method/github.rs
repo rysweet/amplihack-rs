@@ -26,13 +26,77 @@ impl From<Settings> for Methods {
     }
 }
 
-/// What the active rulesets on the base branch allow: the intersection of
-/// the `allowed_merge_methods` of every `pull_request` rule that lists them.
+/// The two kinds of active ruleset rule on the base branch that limit the
+/// merge method. Every other rule type leaves the method alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct BranchRules {
     /// How many `pull_request` rules list `allowed_merge_methods`.
-    pub(super) restricting: usize,
-    pub(super) allowed: Methods,
+    pub(super) method_rules: usize,
+    /// The intersection of those lists; every method when there are none.
+    pub(super) listed: Methods,
+    /// A `required_linear_history` rule is active. GitHub then accepts a pull
+    /// request only by squash or rebase, so it refuses `merge`.
+    pub(super) linear_history: bool,
+}
+
+/// The phrase that names a `required_linear_history` rule, in the rationale
+/// and in refusals.
+const LINEAR_HISTORY: &str = "a required_linear_history rule forbids merge";
+
+impl BranchRules {
+    /// No rule limits the method.
+    pub(super) const UNLIMITED: Self = Self {
+        method_rules: 0,
+        listed: Methods::ALL,
+        linear_history: false,
+    };
+
+    /// What these rules allow: the listed methods, less `merge` under a
+    /// linear-history rule.
+    pub(super) fn allowed(self) -> Methods {
+        if self.linear_history {
+            self.listed.without(MergeMethod::Merge)
+        } else {
+            self.listed
+        }
+    }
+
+    /// Each active limit, `; `-separated, for a refusal; empty when none is.
+    pub(super) fn limits(self) -> String {
+        let mut parts = Vec::new();
+        if self.method_rules > 0 {
+            parts.push(format!(
+                "pull_request allowed_merge_methods allow {}",
+                self.listed.names()
+            ));
+        }
+        if self.linear_history {
+            parts.push(LINEAR_HISTORY.to_string());
+        }
+        parts.join("; ")
+    }
+
+    /// The rationale's account of the rules on `base_ref`.
+    pub(super) fn describe(self, base_ref: &str) -> String {
+        let mut parts = Vec::new();
+        if self.method_rules > 0 {
+            parts.push(format!(
+                "{} ruleset pull_request rule(s) on branch {base_ref} allow {}",
+                self.method_rules,
+                self.listed.names()
+            ));
+        }
+        if self.linear_history {
+            parts.push(format!(
+                "a required_linear_history rule on branch {base_ref} forbids merge"
+            ));
+        }
+        if parts.is_empty() {
+            format!("no ruleset on branch {base_ref} limits the merge method")
+        } else {
+            parts.join("; ")
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -155,19 +219,22 @@ pub(super) fn branch_rules(repository: &Repository, base_ref: &str) -> Result<Br
 
 /// The answer to `gh api --paginate rules/branches/<branch>`: one JSON array
 /// per page, written one after another, or one array. Each element is a rule
-/// object with a string `type`. A `pull_request` rule has a `parameters`
-/// object; its `allowed_merge_methods`, when present and not null, is an
-/// array of strings. Absent or null, the rule does not limit the method,
-/// as for a ruleset created before GitHub added the parameter. A string other
-/// than merge, squash or rebase is ignored: it can only name a method this
-/// gate never uses, so ignoring it never allows a method the rule does not
-/// list. Errors are fixed phrases, so no response text reaches the evidence.
+/// object with a string `type`. Two types limit the merge method:
+///
+/// - `required_linear_history`: GitHub accepts a pull request into the
+///   branch only by squash or rebase, so `merge` is not allowed. The rule
+///   has no parameters to read.
+/// - `pull_request`: it has a `parameters` object; its
+///   `allowed_merge_methods`, when present and not null, is an array of
+///   strings. Absent or null, the rule does not limit the method, as for a
+///   ruleset created before GitHub added the parameter. A string other than
+///   merge, squash or rebase is ignored: it can only name a method this gate
+///   never uses, so ignoring it never allows a method the rule does not list.
+///
+/// Errors are fixed phrases, so no response text reaches the evidence.
 fn parse_branch_rules(body: &[u8]) -> std::result::Result<BranchRules, &'static str> {
     let mut pages = 0usize;
-    let mut rules = BranchRules {
-        restricting: 0,
-        allowed: Methods::ALL,
-    };
+    let mut rules = BranchRules::UNLIMITED;
     for page in serde_json::Deserializer::from_slice(body).into_iter::<Value>() {
         let page = page.map_err(|_| "not JSON")?;
         let items = page.as_array().ok_or("a page is not a JSON array")?;
@@ -178,8 +245,13 @@ fn parse_branch_rules(body: &[u8]) -> std::result::Result<BranchRules, &'static 
                 .get("type")
                 .and_then(Value::as_str)
                 .ok_or("a rule has no string type")?;
-            if kind != "pull_request" {
-                continue;
+            match kind {
+                "required_linear_history" => {
+                    rules.linear_history = true;
+                    continue;
+                }
+                "pull_request" => {}
+                _ => continue,
             }
             let parameters = rule
                 .get("parameters")
@@ -199,8 +271,8 @@ fn parse_branch_rules(body: &[u8]) -> std::result::Result<BranchRules, &'static 
                     allowed = allowed.with(method);
                 }
             }
-            rules.restricting += 1;
-            rules.allowed = rules.allowed.and(allowed);
+            rules.method_rules += 1;
+            rules.listed = rules.listed.and(allowed);
         }
     }
     if pages == 0 {
@@ -226,16 +298,29 @@ mod tests {
         let rule = |m: &str| {
             format!(r#"{{"type":"pull_request","parameters":{{"allowed_merge_methods":{m}}}}}"#)
         };
-        let other = r#"{"type":"required_linear_history"}"#;
+        // Rule types that say nothing about the merge method.
+        let other = r#"{"type":"deletion"},{"type":"required_signatures"},{"type":"required_status_checks","parameters":{}}"#;
+        let linear = r#"{"type":"required_linear_history","ruleset_id":7}"#;
         let plain = r#"{"type":"pull_request","parameters":{"required_approving_review_count":1}}"#;
         let null = r#"{"type":"pull_request","parameters":{"allowed_merge_methods":null}}"#;
-        for (body, restricting, want) in [
-            ("[]".to_string(), 0, Methods::ALL),
-            ("[]\n[]".to_string(), 0, Methods::ALL),
-            (format!("[{other},{plain},{null}]"), 0, Methods::ALL),
+        let squash_rebase = methods(false, true, true);
+        // (body, pull_request rules listing methods, their intersection,
+        // linear history, what the rules allow)
+        for (body, method_rules, listed, linear_history, allowed) in [
+            ("[]".to_string(), 0, Methods::ALL, false, Methods::ALL),
+            ("[]\n[]".to_string(), 0, Methods::ALL, false, Methods::ALL),
+            (
+                format!("[{other},{plain},{null}]"),
+                0,
+                Methods::ALL,
+                false,
+                Methods::ALL,
+            ),
             (
                 format!(r#"[{}]"#, rule(r#"["merge"]"#)),
                 1,
+                methods(true, false, false),
+                false,
                 methods(true, false, false),
             ),
             (
@@ -246,23 +331,61 @@ mod tests {
                 ),
                 2,
                 methods(false, false, true),
+                false,
+                methods(false, false, true),
             ),
-            (format!("[{}]", rule("[]")), 1, Methods::NONE),
+            (
+                format!("[{}]", rule("[]")),
+                1,
+                Methods::NONE,
+                false,
+                Methods::NONE,
+            ),
             (
                 format!(r#"[{}]"#, rule(r#"["merge","fast-forward","MERGE"]"#)),
                 1,
                 methods(true, false, false),
+                false,
+                methods(true, false, false),
+            ),
+            // A linear-history rule forbids merge, alone or with others, on
+            // any page.
+            (format!("[{linear}]"), 0, Methods::ALL, true, squash_rebase),
+            (
+                format!("[{other},{plain}]\n[{linear}]"),
+                0,
+                Methods::ALL,
+                true,
+                squash_rebase,
+            ),
+            (
+                format!(r#"[{linear},{}]"#, rule(r#"["merge","rebase"]"#)),
+                1,
+                methods(true, false, true),
+                true,
+                methods(false, false, true),
+            ),
+            // A pull_request rule that lists only merge, with linear history:
+            // nothing is allowed.
+            (
+                format!(r#"[{}][{linear}]"#, rule(r#"["merge"]"#)),
+                1,
+                methods(true, false, false),
+                true,
+                Methods::NONE,
             ),
         ] {
             let got = parse_branch_rules(body.as_bytes()).unwrap();
             assert_eq!(
                 got,
                 BranchRules {
-                    restricting,
-                    allowed: want
+                    method_rules,
+                    listed,
+                    linear_history,
                 },
                 "{body}"
             );
+            assert_eq!(got.allowed(), allowed, "{body}");
         }
         for bad in [
             "",
@@ -278,6 +401,7 @@ mod tests {
             r#"[{"type":"pull_request","parameters":[]}]"#,
             r#"[{"type":"pull_request","parameters":{"allowed_merge_methods":"merge"}}]"#,
             r#"[{"type":"pull_request","parameters":{"allowed_merge_methods":[1]}}]"#,
+            r#"[{"type":"required_linear_history"},{"type":null}]"#,
             "[] garbage",
             "[]{}",
         ] {
@@ -285,6 +409,50 @@ mod tests {
                 parse_branch_rules(bad.as_bytes()).is_err(),
                 "accepted {bad:?}"
             );
+        }
+    }
+
+    #[test]
+    fn the_rules_name_every_limit_they_apply() {
+        let linear = BranchRules {
+            linear_history: true,
+            ..BranchRules::UNLIMITED
+        };
+        let listed = BranchRules {
+            method_rules: 2,
+            listed: methods(true, false, true),
+            ..BranchRules::UNLIMITED
+        };
+        let both = BranchRules {
+            linear_history: true,
+            ..listed
+        };
+        for (rules, describe, limits) in [
+            (
+                BranchRules::UNLIMITED,
+                "no ruleset on branch main limits the merge method",
+                "",
+            ),
+            (
+                linear,
+                "a required_linear_history rule on branch main forbids merge",
+                "a required_linear_history rule forbids merge",
+            ),
+            (
+                listed,
+                "2 ruleset pull_request rule(s) on branch main allow merge, rebase",
+                "pull_request allowed_merge_methods allow merge, rebase",
+            ),
+            (
+                both,
+                "2 ruleset pull_request rule(s) on branch main allow merge, rebase; \
+                 a required_linear_history rule on branch main forbids merge",
+                "pull_request allowed_merge_methods allow merge, rebase; \
+                 a required_linear_history rule forbids merge",
+            ),
+        ] {
+            assert_eq!(rules.describe("main"), describe);
+            assert_eq!(rules.limits(), limits);
         }
     }
 

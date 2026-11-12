@@ -686,10 +686,11 @@ fn ruleset_merge_method_rules_limit_every_source() {
         "rebase",
         "default",
     );
-    // Other rules, and a pull_request rule that lists no methods, do not limit.
+    // Rules that say nothing about the method, and a pull_request rule that
+    // lists no methods, do not limit.
     let value = success(
         f.run(Call {
-            rules: r#"[{"type":"required_linear_history"},{"type":"pull_request","parameters":{"required_approving_review_count":1}}]"#.to_string(),
+            rules: r#"[{"type":"deletion"},{"type":"required_signatures"},{"type":"pull_request","parameters":{"required_approving_review_count":1}}]"#.to_string(),
             ..call()
         }),
         "squash",
@@ -714,6 +715,97 @@ fn ruleset_merge_method_rules_limit_every_source() {
         ),
         "{}",
         f.calls()
+    );
+}
+
+/// A `required_linear_history` rule: GitHub accepts a pull request into the
+/// branch only by squash or rebase, so `--merge` would be refused. The
+/// selector treats it as forbidding merge, from every source.
+#[test]
+fn a_linear_history_ruleset_forbids_merge_from_every_source() {
+    const LINEAR: &str = r#"[{"type":"required_linear_history","ruleset_source_type":"Repository","ruleset_source":"owner/project","ruleset_id":7}]"#;
+    const NAMED: &str = "a required_linear_history rule on branch main forbids merge";
+    let f = Fixture::plain();
+    // Settings allow merge and rebase, not squash. Without the rule the
+    // default is merge; with it, merge would be refused, so it is rebase.
+    success(f.select(None, [true, false, true]), "merge", "default");
+    let value = success(
+        f.run(Call {
+            settings: permissions([true, false, true]),
+            rules: LINEAR.to_string(),
+            ..call()
+        }),
+        "rebase",
+        "default",
+    );
+    let rationale = value["rationale"].as_str().unwrap();
+    assert!(rationale.contains(NAMED), "{rationale}");
+    assert!(!rationale.contains("no ruleset"), "{rationale}");
+    // Every method allowed: still squash, and the evidence names the rule.
+    let value = success(
+        f.run(Call {
+            rules: LINEAR.to_string(),
+            ..call()
+        }),
+        "squash",
+        "default",
+    );
+    assert!(value["rationale"].as_str().unwrap().contains(NAMED));
+    // An explicit merge is refused with the rule as the reason, not passed
+    // on for GitHub to refuse.
+    let why = "selected merge method merge is disallowed by the rulesets on branch main (a required_linear_history rule forbids merge); no other method is tried";
+    rejected(
+        f.run(Call {
+            explicit: Some("merge"),
+            rules: LINEAR.to_string(),
+            ..call()
+        }),
+        why,
+    );
+    // So is the repository file's.
+    let file = Fixture::with(&[(CONFIG, Some("merge_method = \"merge\"\n"))], &[], &[]);
+    rejected(
+        file.run(Call {
+            rules: LINEAR.to_string(),
+            ..call()
+        }),
+        why,
+    );
+    // An explicit rebase is allowed.
+    success(
+        f.run(Call {
+            explicit: Some("rebase"),
+            rules: LINEAR.to_string(),
+            ..call()
+        }),
+        "rebase",
+        "explicit",
+    );
+    // Settings that allow only merge leave nothing to choose.
+    rejected(
+        f.run(Call {
+            settings: permissions([true, false, false]),
+            rules: LINEAR.to_string(),
+            ..call()
+        }),
+        "the repository settings allow merge and the rulesets on branch main allow squash, rebase: no merge method is allowed by both (a required_linear_history rule forbids merge)",
+    );
+    // The rule counts on any page, beside a pull_request rule that lists
+    // merge and rebase: only rebase is left, and both limits are named.
+    let value = success(
+        f.run(Call {
+            rules: format!("{}\n{LINEAR}", pr_rule(&["merge", "rebase"])),
+            ..call()
+        }),
+        "rebase",
+        "default",
+    );
+    let rationale = value["rationale"].as_str().unwrap();
+    assert!(
+        rationale.contains(&format!(
+            "1 ruleset pull_request rule(s) on branch main allow merge, rebase; {NAMED}"
+        )),
+        "{rationale}"
     );
 }
 
@@ -804,8 +896,8 @@ fn the_repository_is_the_one_the_pull_request_url_names() {
     );
 }
 
-/// Concern 3 of crusty round 5: the merge-method file and `.amplihack/qa.toml`
-/// are read by two readers in two languages. This runs both, the Rust one
+/// The merge-method file and `.amplihack/qa.toml` are read by two readers in
+/// two languages until #2455 folds them into one. This runs both, the Rust one
 /// through the CLI and `autodrive_qa_config` from `autodrive_qa_sources.sh`,
 /// over one fixture set, and requires the same token from each for every rule
 /// they share: tree entries, size, grammar, `changed-in-pr` and
@@ -1040,7 +1132,8 @@ fn recipes_declare_empty_context_and_forward_it_at_nested_boundaries() {
             Some(""),
             "{name}: no implicit squash preference"
         );
-        // #1888 adds no mandatory repository context (crusty round 4).
+        // #1888 adds no mandatory repository context; binding steps to the
+        // pull request's repository is #2440.
         assert!(recipe["context"].get("repository").is_none(), "{name}");
         assert!(!text.contains("autodrive_bind_repository"), "{name}");
         for step in recipe["steps"].as_sequence().unwrap() {
