@@ -21,6 +21,9 @@ pub(in crate::commands::profile) mod expected;
 pub(crate) mod governor_view;
 #[cfg(unix)]
 mod kind;
+mod launch_target;
+pub(crate) use launch_target::LaunchTarget;
+use launch_target::{JoinPolicy, SelectionOrigin};
 #[cfg(unix)]
 mod limit_wait;
 #[cfg(unix)]
@@ -228,6 +231,15 @@ pub enum ProfileError {
         "profile {profile:?}: its directory holds the login of profile {live:?} for a running session"
     )]
     HostsForeignAccount { profile: String, live: String },
+    #[error("default profile {profile:?}: its directory holds the login of profile {live:?} for a running session; no usable fallback{}", source.as_ref().map(|e| format!(": {e}")).unwrap_or_default())]
+    DefaultConflict {
+        profile: String,
+        live: String,
+        #[source]
+        source: Option<Box<ProfileError>>,
+    },
+    #[error("launch destination: {0}")]
+    LaunchDestination(String),
     #[error("auto-switch settings: {0}")]
     AutoSwitchConfig(String),
     /// Issue #2218: a corrupt `.auto-switch` refused where removing it, the
@@ -322,6 +334,12 @@ impl ProfileError {
             Self::Io(_) => "check permissions on the profile root",
             Self::Leased { .. } | Self::HostsForeignAccount { .. } => {
                 "wait for that session to end, or run `amplihack profile auto-switch status`"
+            }
+            Self::DefaultConflict { .. } => {
+                "run `amplihack profile run <other>` with a usable profile, or `amplihack profile switch --none`; clearing the default still requires a usable ambient login (normally ~/.claude). Inspect the lease with `amplihack profile auto-switch status`"
+            }
+            Self::LaunchDestination(_) => {
+                "the destination changed or cannot be protected; check `amplihack profile auto-switch status` and launch again"
             }
             // Issue #2218: never "remove the file". Every case that reaches
             // it (a busy lock, a change over 4096 bytes, an unsafe root, a
@@ -876,41 +894,6 @@ fn reject_docker_mode(active: bool) -> Result<()> {
     }
 }
 
-/// Re-validates a profile directory immediately before the child is spawned.
-/// This narrows, but does not close, the window before `exec`.
-///
-/// Holds the auto-switch lock until the returned value is dropped, which the
-/// caller does right after the spawn returns.
-pub(crate) fn verify_launch_profile_dir(dir: &std::path::Path) -> Result<auto_switch::LaunchHold> {
-    let name = dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| ProfileError::SymlinkRefused(dir.display().to_string()))
-        .and_then(ProfileName::parse)
-        .map_err(with_hint)?;
-    let store = ProfileStore::from_env().map_err(with_hint)?;
-    let verified = store.verify_profile_dir(&name).map_err(with_hint)?;
-    if verified != dir {
-        return Err(with_hint(ProfileError::SymlinkRefused(
-            dir.display().to_string(),
-        )));
-    }
-    // Issue #1700: checked again right before the spawn.
-    #[cfg(unix)]
-    kind_guard(&store, &name, usage_cmd::home_dir().as_deref(), false).map_err(with_hint)?;
-    let join = LAUNCH_MAY_JOIN.load(std::sync::atomic::Ordering::Relaxed)
-        && auto_switch::inside_session(dir);
-    let hold = auto_switch::guard_launch(&store, &name, join).map_err(with_hint)?;
-    // Issue #1634: the shared session links, under the hold. Never fails.
-    shared_dirs::ensure_for(&store, &name);
-    Ok(hold)
-}
-
-/// Set when this process's launch profile was inherited (tier 2), the only
-/// case in which a launch may join a session whose directory hosts another
-/// account. Read again by the pre-spawn check.
-static LAUNCH_MAY_JOIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 /// Returns logins borrowed by the session that just ended in `dir`.
 pub(crate) fn return_after_session(dir: &std::path::Path) {
     auto_switch::return_after_session(dir);
@@ -954,9 +937,24 @@ pub(crate) fn resume_profile_dir(
 /// none. Docker and auto launches refuse a non-empty inherited value and skip
 /// the pointer.
 pub fn launch_profile_dir(flag: Option<&str>, docker: bool, auto: bool) -> Result<Option<PathBuf>> {
+    Ok(launch_target(flag, docker, auto)?
+        .dir()
+        .map(std::path::Path::to_path_buf))
+}
+
+/// Shared, typed resolution for both Claude launch entry points.
+pub(crate) fn launch_target(flag: Option<&str>, docker: bool, auto: bool) -> Result<LaunchTarget> {
     let docker_env = !docker && docker_env_active();
     let inherited = std::env::var_os(PROFILE_ENV);
-    launch_profile_dir_with(
+    validate_launch_flags(flag, docker, docker_env, auto).map_err(with_hint)?;
+    #[cfg(unix)]
+    if flag.is_none()
+        && unsupported_mode(docker, docker_env, auto).is_none()
+        && let Some(target) = LaunchTarget::from_context().map_err(with_hint)?
+    {
+        return Ok(target);
+    }
+    launch_target_with(
         flag,
         inherited.as_deref(),
         docker,
@@ -971,6 +969,7 @@ pub fn launch_profile_dir(flag: Option<&str>, docker: bool, auto: bool) -> Resul
 /// `launch_profile_dir` with the environment passed in, so tests do not depend
 /// on the caller's environment. `open_store` is only called when a profile may
 /// be applied. `home` is `$HOME`, for finding the rotator's live profile.
+#[cfg(test)]
 fn launch_profile_dir_with(
     flag: Option<&str>,
     inherited: Option<&OsStr>,
@@ -980,6 +979,22 @@ fn launch_profile_dir_with(
     home: Option<&std::path::Path>,
     open_store: impl FnOnce() -> Result<ProfileStore, ProfileError>,
 ) -> Result<Option<PathBuf>, ProfileError> {
+    Ok(
+        launch_target_with(flag, inherited, docker, docker_env, auto, home, open_store)?
+            .dir()
+            .map(std::path::Path::to_path_buf),
+    )
+}
+
+fn launch_target_with(
+    flag: Option<&str>,
+    inherited: Option<&OsStr>,
+    docker: bool,
+    docker_env: bool,
+    auto: bool,
+    home: Option<&std::path::Path>,
+    open_store: impl FnOnce() -> Result<ProfileStore, ProfileError>,
+) -> Result<LaunchTarget, ProfileError> {
     validate_launch_flags(flag, docker, docker_env, auto)?;
     // An explicit flag never reads the inherited value.
     let inherited = inherited.filter(|v| flag.is_none() && !v.is_empty());
@@ -992,7 +1007,7 @@ fn launch_profile_dir_with(
         return Err(inherited_error(&raw.to_string_lossy(), mode));
     }
     if docker || auto {
-        return Ok(None);
+        return Ok(LaunchTarget::Ambient);
     }
     let inherited = inherited
         .map(|v| {
@@ -1006,10 +1021,10 @@ fn launch_profile_dir_with(
     let resolved = resolve_launch_profile(&store, flag, inherited)?;
     if docker_env && let Some((name, _)) = &resolved {
         eprintln!("warning: default profile '{name}' is not applied in Docker (env-activated)");
-        return Ok(None);
+        return Ok(LaunchTarget::Ambient);
     }
     let Some((name, dir)) = resolved else {
-        return Ok(None);
+        return Ok(LaunchTarget::Ambient);
     };
     // The rotator's live profile has its login in `~/.claude`, not in its
     // directory: launch with no profile, as Claude then uses `~/.claude`.
@@ -1023,23 +1038,54 @@ fn launch_profile_dir_with(
         }
         if live.is_some_and(|l| l.name == name) {
             eprintln!("{}", live_launch_note(name.as_str()));
-            return Ok(None);
+            return Ok(LaunchTarget::Ambient);
         }
     }
-    // Auto-switch (#1569): only an inherited profile is ever redirected or
-    // allowed to join a hosted session; a flag or the pointer never is.
-    let is_inherited = flag.is_none() && inherited.is_some();
+    // Inherited capacity substitution and default lease fallback are distinct.
+    // Only an inherited session may join a hosted directory.
+    let origin = if flag.is_some() {
+        SelectionOrigin::Explicit
+    } else if inherited.is_some() {
+        SelectionOrigin::Inherited
+    } else {
+        SelectionOrigin::Default
+    };
+    let is_inherited = origin == SelectionOrigin::Inherited;
     if is_inherited && let Some(c) = auto_switch::substitute_nested(&store, &name) {
-        let dir = store.resolve(&c)?;
+        store.resolve(&c)?;
         auto_switch::guard(&store, &c, auto_switch::Action::Launch { join: false })?;
-        return Ok(Some(dir));
+        return LaunchTarget::named(&store, &c, JoinPolicy::Never, origin);
     }
-    // Issue #1700: a subscription profile with no login of its own would
-    // run on the Claude Platform API key.
+    let may_join = is_inherited
+        && std::env::var_os(launch_target::JOIN_ENV).as_deref() != Some(OsStr::new("never"));
+    let join = may_join && auto_switch::inside_session(&dir);
+    match auto_switch::guard(&store, &name, auto_switch::Action::Launch { join }) {
+        Ok(()) => {}
+        #[cfg(unix)]
+        Err(ProfileError::HostsForeignAccount { profile, live })
+            if origin == SelectionOrigin::Default =>
+        {
+            return match auto_switch::launch_fallback::select(&store, &name, &live) {
+                Ok(Some(target)) => Ok(target),
+                result => Err(ProfileError::DefaultConflict {
+                    profile,
+                    live,
+                    source: result.err().map(Box::new),
+                }),
+            };
+        }
+        Err(error) => return Err(error),
+    }
     #[cfg(unix)]
     kind_guard(&store, &name, home, false)?;
-    let join = is_inherited && auto_switch::inside_session(&dir);
-    LAUNCH_MAY_JOIN.store(is_inherited, std::sync::atomic::Ordering::Relaxed);
-    auto_switch::guard(&store, &name, auto_switch::Action::Launch { join })?;
-    Ok(Some(dir))
+    LaunchTarget::named(
+        &store,
+        &name,
+        if may_join {
+            JoinPolicy::ExistingSession
+        } else {
+            JoinPolicy::Never
+        },
+        origin,
+    )
 }

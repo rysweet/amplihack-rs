@@ -323,7 +323,7 @@ pub(crate) fn not_supervised(settings: Option<WaitSettings>) {
 pub(crate) fn supervise_unprofiled(
     settings: WaitSettings,
     store: Option<&ProfileStore>,
-    default: Option<&super::name::ProfileName>,
+    target: super::LaunchTarget,
     prompt_in_args: bool,
 ) -> Result<Option<i32>> {
     let path = |name: &str| {
@@ -332,13 +332,22 @@ pub(crate) fn supervise_unprofiled(
             .map(PathBuf::from)
     };
     let (home, config_dir) = (path("HOME"), path("CLAUDE_CONFIG_DIR"));
-    let watch = Watch::new(store, default, config_dir.as_deref(), home.as_deref());
+    let name = target.name();
+    let watch = Watch::new(
+        store,
+        name.as_ref(),
+        target.dir().or(config_dir.as_deref()),
+        home.as_deref(),
+    );
     // Only `$HOME/.claude` can get another login: an explicit directory or a
     // `.default` profile is the login the launch chose (#1801).
     let home_takeover =
         super::auto_switch::takeover::home_check(store.filter(|_| watch.is_home()).cloned());
-    super::auto_switch::rerun::run(
-        None,
-        Waiter::new(Some(settings), watch, prompt_in_args, home_takeover),
-    )
+    let waiter = Waiter::new(Some(settings), watch, prompt_in_args, home_takeover);
+    if target.is_fallback()
+        && let Some(store) = store
+    {
+        return super::auto_switch::rerun::supervise_target(store, target, waiter);
+    }
+    super::auto_switch::rerun::run_with_target(None, waiter, Some(target))
 }

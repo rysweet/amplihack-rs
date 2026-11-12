@@ -216,6 +216,47 @@ pub fn run_launch_profiled(
     proxy_target: Option<amplihack_utils::litellm_proxy::CliTarget>,
     claude_config_dir: Option<PathBuf>,
 ) -> Result<()> {
+    let target = claude_config_dir
+        .map(crate::commands::profile::LaunchTarget::profile)
+        .transpose()
+        .map_err(crate::commands::profile::with_hint)?
+        .unwrap_or(crate::commands::profile::LaunchTarget::Ambient);
+    run_launch_target(
+        tool,
+        launcher_command,
+        docker,
+        resume,
+        continue_session,
+        skip_permissions,
+        skip_update_check,
+        no_reflection,
+        subprocess_safe,
+        checkout_repo,
+        extra_args,
+        override_origin,
+        proxy_target,
+        target,
+    )
+}
+
+/// Both Claude entry points carry the same destination through the spawn.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_launch_target(
+    tool: &str,
+    launcher_command: &str,
+    docker: bool,
+    resume: bool,
+    continue_session: bool,
+    skip_permissions: bool,
+    skip_update_check: bool,
+    no_reflection: bool,
+    subprocess_safe: bool,
+    checkout_repo: Option<String>,
+    extra_args: Vec<String>,
+    override_origin: OverrideOrigin,
+    proxy_target: Option<amplihack_utils::litellm_proxy::CliTarget>,
+    target: crate::commands::profile::LaunchTarget,
+) -> Result<()> {
     run_launch_core(
         tool,
         launcher_command,
@@ -230,7 +271,7 @@ pub fn run_launch_profiled(
         extra_args,
         override_origin,
         proxy_target,
-        claude_config_dir,
+        target,
         amplihack_utils::root_sandbox::detect,
     )
 }
@@ -269,7 +310,7 @@ pub(crate) fn run_launch_with(
         extra_args,
         override_origin,
         proxy_target,
-        None,
+        crate::commands::profile::LaunchTarget::Ambient,
         root_sandbox_decision,
     )
 }
@@ -289,7 +330,7 @@ fn run_launch_core(
     extra_args: Vec<String>,
     override_origin: OverrideOrigin,
     proxy_target: Option<amplihack_utils::litellm_proxy::CliTarget>,
-    claude_config_dir: Option<PathBuf>,
+    target: crate::commands::profile::LaunchTarget,
     root_sandbox_decision: fn() -> amplihack_utils::root_sandbox::SkipPermissionsEnv,
 ) -> Result<()> {
     validate_launch_prompt_delivery(tool)?;
@@ -587,7 +628,7 @@ fn run_launch_core(
             &extra_args,
             Some(&execution_dir),
             subprocess_safe,
-            claude_config_dir.as_deref(),
+            target.dir(),
             contract_file.as_deref(),
             hook_settings.as_deref(),
         )?;
@@ -622,10 +663,13 @@ fn run_launch_core(
         // and why each candidate was rejected — say that instead.
         // Issue #1569: the hold keeps auto-switch swaps out of the profile
         // until the child exists and liveness scans can see it.
-        let launch_hold = claude_config_dir
-            .as_deref()
-            .map(crate::commands::profile::verify_launch_profile_dir)
-            .transpose()?;
+        let launch_hold = target
+            .prepare_launch()
+            .map_err(crate::commands::profile::with_hint)?;
+        let launch_context = target.child_context()?;
+        target.apply(&mut cmd);
+        launch_context.apply(&mut cmd);
+        target.report();
         let spawned = ManagedChild::spawn(cmd);
         drop(launch_hold);
         let mut child = match spawned {
@@ -681,7 +725,7 @@ fn run_launch_core(
         }
         // Issue #1569: hand back logins the session borrowed, on success and
         // on error, before this process exits.
-        if let Some(dir) = claude_config_dir.as_deref() {
+        if let Some(dir) = target.dir() {
             crate::commands::profile::return_after_session(dir);
         }
         let exit_code = exit_code?;

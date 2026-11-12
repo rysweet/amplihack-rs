@@ -1,3 +1,10 @@
+---
+title: How to Manage Multiple Claude Code Logins with Profiles
+description: Choose Claude logins, share sessions, and recover from profile lease conflicts.
+doc_type: howto
+review_schedule: as-needed
+---
+
 # How to Manage Multiple Claude Code Logins with Profiles
 
 A *Claude login profile* is a named Claude Code configuration directory. For
@@ -34,6 +41,8 @@ For what a recipe step does when every account is out of quota, see
 [Waiting for a usage-limit reset](#waiting-for-a-usage-limit-reset).
 For a profile that uses a Claude Platform API key, billed per token, see
 [API-key profiles and usage limits](#api-key-profiles-and-usage-limits).
+If a running session is using your default profile's directory, see
+[Launch while the default directory is leased](#launch-while-the-default-directory-is-leased).
 
 ## What a new profile inherits
 
@@ -450,6 +459,77 @@ behavior (including an ambient `CLAUDE_CONFIG_DIR` you exported yourself) is
 unchanged. When a profile is selected, it overrides the ambient value for the
 child process only.
 
+### Launch while the default directory is leased
+
+From a shell without `--profile` or an inherited `AMPLIHACK_CLAUDE_PROFILE`,
+resume as usual:
+
+```bash
+amplihack claude --resume
+```
+
+If the saved default's directory holds another profile's login under an
+active auto-switch lease, amplihack chooses another eligible named profile
+for this launch. It reports the conflicting default, the hosted login and
+the selected profile after checking the destination, before Claude starts.
+Your requested arguments, including `--resume`, are preserved. The same
+handling applies to `amplihack launch` in modes that support Claude profiles.
+
+The alternative must hold its own usable login. Existing checks for capacity,
+exclusions, organisation affinity, login kind, billing and overflow
+still apply; a credentials file alone is insufficient. Parked logins and
+`~/.claude` are not destinations for this fallback. No new setting is needed,
+and an active lease is still protected after auto-switch is turned off.
+See the [fallback reference](../reference/profile-command.md#default-profile-lease-fallback)
+for eligibility details.
+
+Claude and nested launches receive the selected profile, directory and root.
+An exported `CLAUDE_CONFIG_DIR` cannot override the selection. Supervised
+attempts use the validated destination; this fallback does not itself enable
+quota-based reruns. The saved default stays unchanged, no credentials are
+moved, and the existing session keeps its lease and borrowed login.
+
+If no alternative is usable, Claude does not start. The error names both the
+default profile and the login hosted there, and gives immediate recovery
+options:
+
+1. Inspect available profiles and leases:
+
+   ```bash
+   amplihack profile list
+   amplihack profile auto-switch status
+   ```
+
+   Use the names and lease state to choose an available profile.
+2. Run `amplihack profile run <other>` with a profile that holds a usable
+   login. For example, if `personal` is available:
+
+   ```bash
+   amplihack profile run personal -- --resume
+   ```
+
+   This resumes under `personal` without changing the default.
+3. Alternatively, if the ambient login is usable, clear the default and retry:
+
+   ```bash
+   amplihack profile switch --none
+   amplihack claude --resume
+   ```
+
+   Clearing the default moves no login and supplies neither credentials nor
+   capacity. With no inherited profile, Claude uses the ambient
+   `CLAUDE_CONFIG_DIR`, or `~/.claude` if it is unset. That login must be usable.
+
+If the error names corrupt state or a destination that changed before
+spawn, address that cause before launching again. Do not move credentials
+out of the running session by hand.
+
+This fallback applies only to the saved default hosting another login.
+Explicit `--profile` and `profile run` selections keep their lease refusals;
+inherited selections keep their existing session-joining and capacity rules.
+An exhausted default without this hosting conflict is not redirected.
+Docker and `--auto` keep their existing profile restrictions.
+
 ### Nested sessions keep the parent's profile
 
 Once a launch picks a profile, every amplihack launch started from it uses
@@ -457,9 +537,10 @@ the same profile: recipe agent steps, `multitask` workstreams, and any
 `amplihack claude` you run inside the session. This holds for sessions
 started with `amplihack claude`, `amplihack launch`, `amplihack profile run`
 and `amplihack profile login`. The launch passes the name to
-its children in `AMPLIHACK_CLAUDE_PROFILE` (and the root in
-`AMPLIHACK_CLAUDE_PROFILE_ROOT`, if you set one), and nested launches use it
-ahead of the pointer.
+its children in `AMPLIHACK_CLAUDE_PROFILE`, and nested launches use it ahead
+of the pointer. Named `claude`, `launch` and `profile run` destinations also
+pass their resolved root in `AMPLIHACK_CLAUDE_PROFILE_ROOT`, so descendants
+keep that destination even if the saved root changes.
 
 ```bash
 amplihack profile switch personal
@@ -1571,8 +1652,9 @@ hint: wait for that session to end, or run `amplihack profile auto-switch status
 ```
 
 While a profile's directory is hosting another account's login, that
-profile cannot be launched directly either. From a second terminal,
-`amplihack claude --profile work` is refused until the session in `work`
+profile cannot be launched explicitly either. A saved default can use the
+[lease fallback](#launch-while-the-default-directory-is-leased). From a second
+terminal, `amplihack claude --profile work` is refused until the session in `work`
 ends:
 
 ```
@@ -1608,8 +1690,10 @@ amplihack: profile "work" is at 93% of its five-hour limit; auto-switch is using
 ```
 
 The candidate must hold its own login and must not be hosting another
-account. Nested launches never move logins. An explicit `--profile` and the
-default pointer are never redirected; only an inherited profile is.
+account. Nested launches never move logins. This capacity-based substitution
+applies only to inherited profiles; explicit selections and exhausted defaults
+are unchanged. A default directory hosting another login has separate
+[lease-conflict handling](#launch-while-the-default-directory-is-leased).
 `multitask` workstreams make the same choice when their `run.sh` is
 written, and again when each nested launch starts.
 

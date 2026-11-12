@@ -24,6 +24,10 @@ use crate::commands::profile::limit_wait::scratch::{self, RerunStdin};
 use crate::commands::profile::limit_wait::{AfterLimit, Waiter};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
+use crate::commands::profile::{
+    LaunchTarget,
+    launch_target::{JoinPolicy, SelectionOrigin},
+};
 use crate::commands::recipe::run::limit_patterns::Harness;
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
@@ -80,28 +84,8 @@ pub fn nested_candidate(
             && ledger.leased_to(n).is_none()
             && login_ready(state, &overflow, c)
     };
-    let on_overflow = overflow.order.iter().any(|p| p.as_str() == current);
-    let need = amplihack_utils::organisation_affinity::Need::of(
-        on_overflow,
-        !on_overflow && candidate::is_exhausted(readings.get(current), cfg.threshold, now),
-    );
-    let restriction = super::affinity::restrict(
-        state,
-        ledger,
-        &pool,
-        &overflow,
-        source_host,
-        current,
-        need,
-        eligible,
-    );
-    let picked = candidate::select_restricted(
-        &pool,
-        &overflow.pool(),
-        current,
-        |p| eligible(p) && restriction.allowed.contains(p),
-        |p| restriction.plan_room.contains(p),
-    );
+    let picked = select_ready(state, ledger, &pool, &overflow, source_host, eligible);
+
     if picked.is_none_or(|p| overflow.platform.as_ref() != Some(p)) {
         let held = per_token::key_held(&pool, &overflow, current, eligible);
         per_token::record_key_held(state, &held);
@@ -112,6 +96,45 @@ pub fn nested_candidate(
     let check = overflow.check_note(&state.root, &profile)?;
     let per_token = per_token::reason(&pool, &overflow, cfg, current, &profile, check);
     Some(Pick { profile, per_token })
+}
+
+/// The shared ordering, affinity and billing policy for named destinations.
+/// Callers supply readiness only; the source host is retained so affinity
+/// follows the login in the ledger rather than the directory's owner.
+pub(super) fn select_ready<'a>(
+    state: &State,
+    ledger: &Ledger,
+    pool: &Pool<'a>,
+    overflow: &OverflowInputs,
+    source_host: &str,
+    eligible: impl Fn(&ProfileName) -> bool,
+) -> Option<&'a ProfileName> {
+    let current = ledger.account_in(source_host);
+    let on_overflow = overflow.order.iter().any(|p| p.as_str() == current);
+    let need = amplihack_utils::organisation_affinity::Need::of(
+        on_overflow,
+        !on_overflow
+            && candidate::is_exhausted(pool.readings.get(current), pool.threshold, pool.now),
+    );
+    let restriction = super::affinity::restrict(
+        state,
+        ledger,
+        pool,
+        overflow,
+        source_host,
+        current,
+        need,
+        &eligible,
+    );
+    // The selector returns an element of pool.profiles, not OverflowInputs.
+    let picked = candidate::select_restricted(
+        pool,
+        &overflow.pool(),
+        current,
+        |p| eligible(p) && restriction.allowed.contains(p),
+        |p| restriction.plan_room.contains(p),
+    )?;
+    pool.profiles.iter().find(|p| *p == picked)
 }
 
 /// The login checks a move onto `c` must pass, apart from the readings and
@@ -282,12 +305,39 @@ pub(crate) struct Switch<'a> {
 }
 
 /// Runs a launch that inherited a profile under supervision. `None` when
-/// neither auto-switch nor the wait applies; otherwise as [`run`].
+/// neither auto-switch nor the wait applies; otherwise as [`run_with_target`].
 pub fn supervise(
     store: &ProfileStore,
     inherited: ProfileName,
     waiter: Waiter,
 ) -> Result<Option<i32>> {
+    let dir = store.resolve(&inherited)?;
+    let join = super::inside_session(&dir)
+        && std::env::var_os(crate::commands::profile::launch_target::JOIN_ENV).as_deref()
+            != Some(std::ffi::OsStr::new("never"));
+    let target = LaunchTarget::named(
+        store,
+        &inherited,
+        if join {
+            JoinPolicy::ExistingSession
+        } else {
+            JoinPolicy::Never
+        },
+        SelectionOrigin::Inherited,
+    )?;
+    supervise_target(store, target, waiter)
+}
+
+/// A default fallback has already been selected before the watch is built.
+/// It retains its own join policy and evidence through every attempt.
+pub(in crate::commands::profile) fn supervise_target(
+    store: &ProfileStore,
+    target: LaunchTarget,
+    waiter: Waiter,
+) -> Result<Option<i32>> {
+    let inherited = target
+        .name()
+        .context("supervised destination has no profile")?;
     let eff = config::effective(store.root());
     if !eff.on && !waiter.enabled() {
         return Ok(None);
@@ -302,7 +352,7 @@ pub fn supervise(
     } else {
         None
     };
-    run(switch, waiter)
+    run_with_target(switch, waiter, Some(target))
 }
 
 /// Runs the launch under supervision and returns its final exit code. With
@@ -312,7 +362,11 @@ pub fn supervise(
 /// could not start, so the caller launches unsupervised; once an attempt
 /// has run, errors are returned instead, so a step is never run twice by
 /// accident.
-pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Option<i32>> {
+pub(crate) fn run_with_target(
+    switch: Option<Switch<'_>>,
+    mut waiter: Waiter,
+    initial: Option<LaunchTarget>,
+) -> Result<Option<i32>> {
     let on = switch.is_some();
     let setup = scratch_dir(switch.as_ref().map(|s| &s.state)).and_then(|dir| {
         Ok((
@@ -342,6 +396,7 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
     // The profile this attempt runs under; `None` keeps the inherited
     // environment.
     let mut profile: Option<ProfileName> = None;
+    let mut billing: Option<String> = None;
     // The inherited profile's own limit. The retry after a wait always runs
     // under that profile, so only its reset times the wait; the limits of
     // the profiles auto-switch tried matter only to its choice of candidate,
@@ -373,7 +428,7 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                 "{}",
                 substitution_note(&sw.inherited, &sub.reason, &sub.profile)
             );
-            per_token::record(&sw.state.root, sub.per_token.as_deref());
+            billing = sub.per_token;
             // The inherited account never runs before the retry, so its
             // reset comes from the readings, moved onto the wait's clock.
             // Without one (no window at 100%) no wait is built at all: see
@@ -402,17 +457,21 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         {
             recovery = Some(client.renew()?);
         }
-        let switch_dir = switch
+        let chosen = switch
             .as_ref()
             .zip(profile.as_ref())
-            .map(|(sw, p)| (p, sw.state.profile_dir(p.as_str())));
-        let env = switch_dir.as_ref().map(|(p, d)| (*p, d.as_path()));
+            .map(|(sw, p)| {
+                LaunchTarget::pinned(sw.store, p, sw.inherited.as_str(), billing.clone())
+            })
+            .transpose()
+            .map_err(crate::commands::profile::with_hint)?;
+        let target = chosen.as_ref().or(initial.as_ref());
         let input = stdin.for_attempt(n);
         let attempt = match run_attempt_with_recovery(
             &exe,
             &args,
             &rerun_dir,
-            env,
+            target,
             input,
             n,
             &signals,
@@ -477,7 +536,7 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                         current.as_str(),
                         next.profile.as_str()
                     );
-                    per_token::record(&sw.state.root, next.per_token.as_deref());
+                    billing = next.per_token;
                     attempt.discard();
                     profile = Some(next.profile).filter(|p| *p != sw.inherited);
                     continue;
@@ -529,7 +588,9 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             AfterLimit::Finish(code) => return attempt.finish(code),
             AfterLimit::Retry => {
                 attempt.discard();
-                profile = retry_profile(switch.as_ref(), &waiter);
+                let retry = retry_profile(switch.as_ref(), &waiter);
+                billing = retry.as_ref().and_then(|p| p.per_token.clone());
+                profile = retry.map(|p| p.profile);
             }
         }
     }
@@ -540,7 +601,7 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
 /// never the exhausted inherited one; after a reset wait, always `None`. The
 /// candidate is chosen again here and may now be `None`: the one retry then
 /// runs on the inherited profile, at a cost of one more attempt.
-fn retry_profile(switch: Option<&Switch<'_>>, waiter: &Waiter) -> Option<ProfileName> {
+fn retry_profile(switch: Option<&Switch<'_>>, waiter: &Waiter) -> Option<Pick> {
     let sw = switch?;
     let start = waiter.capacity_start()?;
     let pick = capacity_candidate(sw.store, &sw.state, &sw.inherited, start, waiter.now())?;
@@ -552,8 +613,7 @@ fn retry_profile(switch: Option<&Switch<'_>>, waiter: &Waiter) -> Option<Profile
     );
     // A move onto a per-token profile gives its reason line, as any rerun
     // onto one does (#1804).
-    per_token::record(&sw.state.root, pick.per_token.as_deref());
-    Some(pick.profile)
+    Some(pick)
 }
 
 /// `<root>/.auto-switch.d/rerun` with auto-switch on, else

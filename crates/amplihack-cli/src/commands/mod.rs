@@ -153,7 +153,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
             if run_supervised(profile.as_deref(), docker, auto, &claude_args)? {
                 return Ok(());
             }
-            let claude_config_dir = profile::launch_profile_dir(profile.as_deref(), docker, auto)?;
+            let claude_config_dir = profile::launch_target(profile.as_deref(), docker, auto)?;
             profile::autostart_on_launch(docker);
             profile::capacity_launch_warning(&claude_args);
             // Issue #1811: after supervision, whose rerun child is the process
@@ -173,7 +173,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     None,
                 );
             }
-            launch::run_launch_profiled(
+            launch::run_launch_target(
                 "claude",
                 "launch",
                 docker,
@@ -220,8 +220,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 if run_supervised(profile.as_deref(), docker, auto, &claude_args)? {
                     return Ok(());
                 }
-                let claude_config_dir =
-                    profile::launch_profile_dir(profile.as_deref(), docker, auto)?;
+                let claude_config_dir = profile::launch_target(profile.as_deref(), docker, auto)?;
                 profile::autostart_on_launch(docker);
                 profile::capacity_launch_warning(&claude_args);
                 // Issue #1811: after supervision, whose rerun child is the
@@ -242,7 +241,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     );
                 }
                 // Always inject --dangerously-skip-permissions to match Python launcher parity.
-                launch::run_launch_profiled(
+                launch::run_launch_target(
                     "claude",
                     "claude",
                     docker,

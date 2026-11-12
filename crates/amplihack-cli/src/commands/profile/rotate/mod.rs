@@ -67,7 +67,7 @@ pub(super) mod ledger;
 #[cfg(unix)]
 mod log;
 #[cfg(unix)]
-mod login_identity;
+pub(super) mod login_identity;
 #[cfg(unix)]
 mod lost;
 #[cfg(unix)]

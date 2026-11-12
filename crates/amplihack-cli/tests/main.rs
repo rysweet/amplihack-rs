@@ -26,6 +26,16 @@
 mod isolated_amplihack;
 mod support;
 
+#[cfg(unix)]
+#[path = "issue_1696_fixture.rs"]
+mod issue_1696_fixture;
+#[cfg(unix)]
+#[path = "issue_1696_launch_fallback.rs"]
+mod issue_1696_launch_fallback;
+#[cfg(target_os = "linux")]
+#[path = "issue_1696_launch_fallback_linux.rs"]
+mod issue_1696_launch_fallback_linux;
+
 #[path = "issue_1753_expired_live.rs"]
 mod issue_1753_expired_live;
 #[path = "issue_1753_login_identity.rs"]

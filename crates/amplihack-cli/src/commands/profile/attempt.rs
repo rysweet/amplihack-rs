@@ -6,11 +6,11 @@
 //! streams its stderr while keeping the last 64 KiB, and buffers its stdout
 //! in a private file that is printed only for the final attempt.
 
-use super::PROFILE_ENV;
 use super::auto_switch::SUPERVISED_ENV;
 use super::fsx;
 use super::limit_wait::plan::{self, WaitFor};
 use super::name::ProfileName;
+use super::{LaunchTarget, PROFILE_ENV};
 use crate::commands::recipe::run::limit_patterns::{self, Harness};
 use crate::commands::recipe::run::{FailureClass, classify_failure_text};
 use anyhow::{Context, Result};
@@ -134,12 +134,18 @@ pub(crate) fn run_attempt_with_recovery(
     exe: &Path,
     args: &[std::ffi::OsString],
     rerun_dir: &Path,
-    env: Option<(&ProfileName, &Path)>,
+    target: Option<&LaunchTarget>,
     stdin: std::io::Result<Stdio>,
     n: u32,
     signals: &Signals,
     recovery: Option<&recipe_runner_rs::recovery::ipc::Client>,
 ) -> Result<Attempt> {
+    let context_path = target
+        .map(|t| t.write_context(rerun_dir, n))
+        .transpose()?
+        .flatten();
+    let context = super::launch_target::LaunchContext::new(context_path);
+    let mut forwarding = signal_hook::iterator::Signals::new([libc::SIGTERM, libc::SIGHUP])?;
     let stdout_path = rerun_dir.join(format!("{}-{n}.out", std::process::id()));
     let mut opts = fs::OpenOptions::new();
     opts.read(true)
@@ -161,10 +167,11 @@ pub(crate) fn run_attempt_with_recovery(
             .stdin(input)
             .stdout(stdout.try_clone()?)
             .stderr(Stdio::piped());
-        if let Some((profile, dir)) = env {
-            cmd.env(PROFILE_ENV, profile.as_str())
-                .env("CLAUDE_CONFIG_DIR", dir);
+        cmd.env_remove(super::launch_target::CONTEXT_ENV);
+        if let Some(target) = target {
+            target.apply(&mut cmd);
         }
+        context.apply(&mut cmd);
         cmd.spawn()
     });
     let mut child = match spawned {
@@ -198,13 +205,24 @@ pub(crate) fn run_attempt_with_recovery(
         tail
     });
 
-    let status = loop {
-        signals.forward(child.id() as libc::pid_t);
-        if let Some(s) = child.try_wait()? {
-            break s;
+    // Blocking child completion and a signal pipe replace interval probes.
+    let handle = forwarding.handle();
+    let pid = child.id() as libc::pid_t;
+    let forwarder = std::thread::spawn(move || {
+        for signal in forwarding.forever() {
+            // SAFETY: this is our supervised child's pid.
+            unsafe {
+                libc::kill(pid, signal);
+            }
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    };
+    });
+    signals.forward(pid);
+    let status = child.wait();
+    handle.close();
+    forwarder
+        .join()
+        .map_err(|_| anyhow::anyhow!("supervised signal forwarding thread panicked"))?;
+    let status = status?;
     let stderr_tail = reader.join().unwrap_or_else(|_| {
         eprintln!("amplihack: this step's stderr reader thread panicked");
         Vec::new()

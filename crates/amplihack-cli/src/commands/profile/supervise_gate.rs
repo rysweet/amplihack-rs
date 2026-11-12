@@ -30,7 +30,7 @@ mod unix {
     use super::super::name::ProfileName;
     use super::super::store::ProfileStore;
     use super::super::{PROFILE_ENV, docker_env_active, unsupported_mode};
-    use super::default_profile;
+
     use anyhow::Result;
     use std::ffi::OsStr;
     use std::path::Path;
@@ -77,14 +77,11 @@ mod unix {
             let store = ProfileStore::from_env()
                 .map_err(|_| eprintln!("amplihack: usage-limit wait: profile store unavailable"))
                 .ok();
-            let home = std::env::var_os("HOME").filter(|h| !h.is_empty());
-            let default = store
-                .as_ref()
-                .and_then(|s| default_profile(s, home.as_deref().map(Path::new)));
+            let target = super::super::launch_target(None, docker, auto)?;
             return limit_wait::supervise_unprofiled(
                 settings,
                 store.as_ref(),
-                default.as_ref(),
+                target,
                 parsed.prompt,
             );
         };
@@ -110,33 +107,23 @@ mod unix {
         let Ok(name) = ProfileName::parse(&inherited) else {
             return Ok(None); // the normal launch reports the bad value
         };
+        let pinned = super::super::LaunchTarget::from_context().map_err(super::super::with_hint)?;
+        let effective_name = pinned
+            .as_ref()
+            .and_then(|t| t.name())
+            .unwrap_or(name.clone());
         let home = std::env::var_os("HOME").filter(|h| !h.is_empty());
         let watch = Watch::new(
             Some(&store),
-            Some(&name),
-            None,
+            Some(&effective_name),
+            pinned.as_ref().and_then(|t| t.dir()),
             home.as_deref().map(Path::new),
         );
         // A profile step's takeover check needs auto-switch: `rerun::run`.
         let waiter = Waiter::new(wait, watch, parsed.prompt, Box::new(|| false));
-        auto_switch::rerun::supervise(&store, name, waiter)
+        match pinned {
+            Some(target) => auto_switch::rerun::supervise_target(&store, target, waiter),
+            None => auto_switch::rerun::supervise(&store, name, waiter),
+        }
     }
-}
-
-/// The profile a launch with no `--profile` and no inherited profile applies
-/// from the `.default` pointer, resolved as `launch_profile_dir` does it:
-/// `None` when there is no pointer, it cannot be resolved, or its profile is
-/// the rotator's live one (the launch then uses `~/.claude`). Prints
-/// nothing; the launch itself reports any problem.
-#[cfg(unix)]
-fn default_profile(
-    store: &super::store::ProfileStore,
-    home: Option<&std::path::Path>,
-) -> Option<super::name::ProfileName> {
-    let (name, _) = super::resolve_launch_profile(store, None, None).ok()??;
-    let live = super::default_live::could_be_live(store, &name)
-        && super::default_live::detect(store, home)
-            .0
-            .is_some_and(|l| l.name == name);
-    (!live).then_some(name)
 }

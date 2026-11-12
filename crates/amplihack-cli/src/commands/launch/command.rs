@@ -277,7 +277,7 @@ pub(super) fn build_command_for_dir(
 /// `CLAUDE_CONFIG_DIR`.
 ///
 /// `dir` is always `store.resolve(name)`, i.e. `<root>/<name>` (the same
-/// assumption `verify_launch_profile_dir` makes), so its file name is the
+/// assumption the named launch destination verifies), so its file name is the
 /// profile name and its parent is the root. The root is passed on only when
 /// the parent itself was given a non-empty one; otherwise the child resolves
 /// the saved or default root just as the parent did (issue #1592).

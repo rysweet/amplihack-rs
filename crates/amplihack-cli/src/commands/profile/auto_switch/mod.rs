@@ -28,6 +28,8 @@ mod home_line;
 #[cfg(unix)]
 pub(super) mod kit;
 #[cfg(unix)]
+pub(super) mod launch_fallback;
+#[cfg(unix)]
 mod liveness;
 #[cfg(unix)]
 mod mv;
@@ -63,6 +65,8 @@ mod tests_contract;
 mod tests_exhausted_reset;
 #[cfg(all(test, unix))]
 mod tests_home_line;
+#[cfg(all(test, unix))]
+mod tests_issue_1696;
 #[cfg(all(test, unix))]
 mod tests_issue_1804;
 #[cfg(all(test, unix))]
@@ -237,7 +241,45 @@ pub fn login_held_elsewhere(store: &ProfileStore, name: &ProfileName) -> bool {
 #[must_use = "dropping the hold re-opens the window before the spawn"]
 pub struct LaunchHold {
     #[cfg(unix)]
+    _refresh: Option<RefreshHold>,
+    #[cfg(unix)]
     _lock: Option<state::Lock>,
+}
+
+#[cfg(unix)]
+struct RefreshHold {
+    directory: std::path::PathBuf,
+    inode: u64,
+}
+
+#[cfg(unix)]
+impl Drop for RefreshHold {
+    fn drop(&mut self) {
+        mv::release_refresh_lock_at(&self.directory, self.inode);
+    }
+}
+
+#[cfg(unix)]
+impl LaunchHold {
+    /// State lock first, then Claude's non-blocking refresh lock, as swaps do.
+    pub(super) fn protect_refresh(&mut self, directory: &Path) -> Result<(), ProfileError> {
+        if self._lock.is_none() {
+            return Err(ProfileError::LaunchDestination(
+                "destination state protection disappeared".into(),
+            ));
+        }
+        let inode = mv::take_refresh_lock_at(directory).map_err(|e| {
+            ProfileError::LaunchDestination(format!(
+                "destination refresh protection unavailable: {}",
+                e.kind()
+            ))
+        })?;
+        self._refresh = Some(RefreshHold {
+            directory: directory.to_path_buf(),
+            inode,
+        });
+        Ok(())
+    }
 }
 
 /// [`guard`] for a launch, keeping the state lock held until the returned
@@ -250,11 +292,17 @@ pub fn guard_launch(
     #[cfg(unix)]
     {
         if !store.root().join(".auto-switch.d").exists() {
-            return Ok(LaunchHold { _lock: None });
+            return Ok(LaunchHold {
+                _lock: None,
+                _refresh: None,
+            });
         }
         let state = state::State::new(store.root())?;
         let lock = swap::guard_held(&state, name, Action::Launch { join })?;
-        Ok(LaunchHold { _lock: lock })
+        Ok(LaunchHold {
+            _lock: lock,
+            _refresh: None,
+        })
     }
     #[cfg(not(unix))]
     {

@@ -395,7 +395,7 @@ fn cleanup_rerun(state: &State) {
     sweep_rerun(&state.dir.join("rerun"));
 }
 
-/// Removes regular `<pid>-<n>.out` files in `dir` (no recursion) whose
+/// Removes regular `<pid>-<n>.out` buffers and `.launch.json` contexts whose
 /// supervisor is gone or that are over 24 h old. Other names are left.
 pub(crate) fn sweep_rerun(dir: &Path) {
     let Ok(entries) = fs::read_dir(dir) else {
@@ -412,15 +412,23 @@ pub(crate) fn sweep_rerun(dir: &Path) {
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.elapsed().ok())
             .is_some_and(|age| age.as_secs() > RERUN_MAX_AGE_SECS);
-        if old || !pid_running(pid) {
+        // A live session may keep its pinned context for longer than a day.
+        let context = e
+            .file_name()
+            .to_str()
+            .is_some_and(|n| n.ends_with(".launch.json"));
+        if (old && !context) || !pid_running(pid) {
             let _ = fs::remove_file(e.path());
         }
     }
 }
 
-/// The supervisor pid in a rerun buffer name `<pid>-<n>.out`.
+/// The supervisor pid in a rerun buffer or private launch-context name.
 pub fn rerun_owner(name: &std::ffi::OsStr) -> Option<u32> {
-    let name = name.to_str()?.strip_suffix(".out")?;
+    let raw = name.to_str()?;
+    let name = raw
+        .strip_suffix(".out")
+        .or_else(|| raw.strip_suffix(".launch.json"))?;
     let (pid, n) = name.split_once('-')?;
     n.parse::<u32>().ok()?;
     pid.parse().ok().filter(|&p| p > 0)

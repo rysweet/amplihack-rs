@@ -4130,6 +4130,10 @@ profile in this order:
 3. `<root>/.default`
 4. none — `CLAUDE_CONFIG_DIR` is left exactly as inherited.
 
+Only a tier-3 selection whose directory hosts another login under an active
+lease can use the [default-profile lease fallback](#default-profile-lease-fallback).
+Explicit and inherited selections retain their existing behaviour.
+
 When a profile resolves, three variables are set on the child `Command` only
 (never `set_var`), and only for Claude-compatible binaries. This applies to
 every command that starts Claude with a profile: `amplihack claude`,
@@ -4139,12 +4143,20 @@ every command that starts Claude with a profile: `amplihack claude`,
 |----------|-------|
 | `CLAUDE_CONFIG_DIR` | `<root>/<name>`, overriding any ambient value |
 | `AMPLIHACK_CLAUDE_PROFILE` | `<name>` |
-| `AMPLIHACK_CLAUDE_PROFILE_ROOT` | `<root>`, only when `AMPLIHACK_CLAUDE_PROFILE_ROOT` was set and non-empty in the launching process (that is, when the root's source is `env`); otherwise the child's environment is left as inherited, so the child reads the same saved root or uses the same default. An inherited empty value passes through unchanged and still counts as unset. |
+| `AMPLIHACK_CLAUDE_PROFILE_ROOT` | The resolved `<root>` for a named `claude`, `launch` or `profile run` destination. Descendants keep this root even if the saved root changes. A launch with no named destination keeps the inherited environment. |
+
+For a [default-profile lease fallback](#default-profile-lease-fallback), the
+child receives the selected profile's name, directory and root, including an
+explicit root when it came from the saved file or default location. This pins
+the fallback's root for descendants and supervised attempts. These values are
+applied after other environment builders, so an ambient `CLAUDE_CONFIG_DIR`
+cannot replace the selected destination.
 
 Copilot and Codex children get none of these, but variables already in the
 environment pass through them unchanged.
 
-A root that came from the saved file or the default is not exported, so a nested launch reads
+Outside the lease fallback, a root that came from the saved file or the default
+is not exported, so a nested launch reads
 `~/.amplihack/profile-root` again, and fails with `InvalidSavedRoot` if the
 file has since been damaged. If you change the saved root while a
 session runs, launches nested in that session use the new root. Set
@@ -4954,7 +4966,7 @@ says `X` is live in `Y`. These are refused before `claude` is spawned:
 | Action | Refused when | Error |
 |--------|--------------|-------|
 | Launch, `run` or `login` of profile `X` | `X` is leased elsewhere | `Leased` |
-| Launch or `run` of profile `X` | directory `X` is hosting another account, unless the launch [joins](#joining-a-hosted-session) the session using it | `HostsForeignAccount` |
+| Launch or `run` of profile `X` | directory `X` is hosting another account, unless the launch [joins](#joining-a-hosted-session) the session using it; a saved default first tries the [lease fallback](#default-profile-lease-fallback) | `HostsForeignAccount`, or default-conflict failure if no fallback is usable |
 | `login X` | directory `X` is hosting another account (no exception) | `HostsForeignAccount` |
 | `remove X` | `X` is in the ledger, has a parked login, or hosts another account | `Leased` or `HostsForeignAccount` |
 
@@ -4978,6 +4990,84 @@ the global lock and again just before spawn.
 
 Leases are interlocks against accidents. They are not a security boundary
 against other processes running as you.
+
+#### Default-profile lease fallback
+
+After [lease recovery](#session-end-and-recovery), `amplihack claude` and
+`amplihack launch` choose an alternative when all of these hold:
+
+- Selection came from `<root>/.default`, without an explicit or inherited
+  profile.
+- The selected directory hosts another profile's login under an active lease
+  (`HostsForeignAccount`).
+- The mode supports Claude profiles; Docker and `--auto` are unchanged.
+
+Lease protection remains active when auto-switch is off. This fallback does
+not handle a default's login being leased elsewhere (`Leased`), ordinary
+quota exhaustion, a corrupt pointer or unrelated validation errors. Explicit
+`--profile` and `profile run` retain their existing refusals. Inherited
+selection retains [session joining](#joining-a-hosted-session) and
+[capacity substitution](#nested-launches-and-auto-switch).
+
+**Eligible destinations.** Only named profiles under the selected root that
+hold their own usable login qualify. The conflicting directory, the login it
+hosts, logins lent elsewhere, directories hosting another account and parked
+credentials are excluded. The rotator's `~/.claude` login is not a destination
+for this fallback; ordinary [live-profile routing](#live-profile-launch)
+remains separate.
+
+Selection reuses [candidate ordering](#candidate-selection), exclusions,
+capacity checks, [organisation affinity](profile-organisation-affinity.md),
+login-kind checks, [overflow gates](#auto-switch-and-overflow-profiles) and
+billing safeguards. Affinity uses the original host and the ledger-resolved
+hosted login, rather than assuming the default's name identifies the active
+account. Exclusions apply before credential requests or refreshes. A
+credential file's presence alone does not establish identity or usability.
+Missing usage readings keep their existing treatment. Unavailable plan
+logins still count towards overflow gates where existing policy requires
+it; a lease does not authorise paid overflow on its own. There is no new
+preference or configuration setting.
+
+**Launch and supervision.** Claude receives the selected profile's name,
+directory and root through the [launch environment](#resolution-and-environment),
+with the requested arguments preserved. Descendants inherit that destination
+and run the usual authoritative checks. Supervision watches the selected
+login from its first attempt and carries a validated destination context
+through re-entry. Further policy-approved attempts validate their own
+destinations. Resolving a fallback does not enable reruns that the original
+request would not permit, or grant permission to join a hosted session.
+
+**Final validation.** Selection is provisional. Immediately before the actual
+Claude spawn, amplihack rechecks the root, directory, credentials, identity,
+login kind, lease state and applicable eligibility and billing policy. State
+and required refresh protection remain held through validation, environment
+application, reporting and child creation. The fallback never joins another
+session's hosted directory. Changed or invalid evidence, malformed or stale
+supervisor context, or unavailable refresh protection stops the launch before
+Claude starts. Final validation neither silently reselects nor starts a child
+with stale evidence. Evidence and context contain no credential values.
+
+A success notice names the conflicting default, its hosted login and the
+selected profile only after validation succeeds. Fallback does not rewrite
+`.default`, move active or parked credentials, acquire a new session lease or
+change the existing lease. The running session and its valid nested launches
+retain access to the borrowed login.
+
+**Failure and recovery.** If no destination qualifies, launch exits with
+status 1 before Claude starts. The diagnostic identifies the default and
+hosted login and includes all of these:
+
+- `amplihack profile run <other>` to select an available profile with a usable
+  login explicitly;
+- `amplihack profile switch --none` to clear the default, with an explanation
+  that the next launch still requires a usable ambient login;
+- `amplihack profile auto-switch status` to inspect leases.
+
+Clearing the default supplies neither credentials nor capacity. Without an
+inherited profile, the next launch keeps an ambient `CLAUDE_CONFIG_DIR`, or
+uses `~/.claude` if it is unset. Corrupt settings or state, or failed
+validation, retain their underlying cause instead of appearing as an empty
+candidate pool. See the [recovery examples](../howto/claude-profiles.md#launch-while-the-default-directory-is-leased).
 
 ### Session end and recovery
 
@@ -5010,8 +5100,9 @@ repair it by hand.
 ### Nested launches and auto-switch
 
 Applies only when the switch is on and the profile was inherited
-(tier 2 of [resolution](#resolution-and-environment)). An explicit
-`--profile` and the default pointer are never redirected.
+(tier 2 of [resolution](#resolution-and-environment)). Explicit selections
+and exhausted defaults are not redirected by this capacity rule. Defaults
+have separate [lease-conflict handling](#default-profile-lease-fallback).
 
 If the account live in the inherited directory is exhausted, the launch uses
 the first eligible candidate that holds its own login at home and is not
@@ -7186,10 +7277,14 @@ cycle writes `ALERT: no profile has capacity` and leaves the login in
 `~/.claude`, where Claude keeps billing work to the credits. See
 [Stopping credit use](#stopping-credit-use).
 
-The [default pointer](#clearing-the-default) is outside this policy. A
-launch that resolves to a profile through `.default` uses that profile
-directly, whether it is a plan profile or an overflow profile, so leave the
-pointer unset (`amplihack profile switch --none`) when using overflow.
+The [default pointer](#clearing-the-default) normally selects its profile
+directly, outside the rotator's overflow policy, whether it is a plan profile
+or an overflow profile. If the default directory hosts another login under
+an active lease, the [lease fallback](#default-profile-lease-fallback) can
+select an eligible alternative. That fallback retains the existing overflow
+gates and billing safeguards; a lease conflict alone does not authorise paid
+overflow. Leave the pointer unset (`amplihack profile switch --none`) when
+using overflow to avoid selecting a credit-spending default directly.
 
 #### Pin and overflow
 
@@ -11180,7 +11275,8 @@ failures use this format.
 | `InvalidRoot`: a non-empty `AMPLIHACK_CLAUDE_PROFILE_ROOT`, or the `profile root` argument, is empty, relative, not UTF-8, holds control characters or has a `..` component; or `HOME` is unset | `use an absolute path: set AMPLIHACK_CLAUDE_PROFILE_ROOT to one, or run: amplihack profile root <absolute dir>` |
 | `InvalidSavedRoot`: `~/.amplihack/profile-root` is invalid (the message names the file and the [reason](#saved-root-file-format)), or `profile root <dir>` cannot write it safely | `fix or remove ~/.amplihack/profile-root, or run: amplihack profile root <absolute dir>` |
 | `Leased`: the profile's login is live in another profile's session | `` wait for that session to end, or run `amplihack profile auto-switch status` `` |
-| `HostsForeignAccount`: the profile's directory holds another account's login | `` wait for that session to end, or run `amplihack profile auto-switch status` `` |
+| `HostsForeignAccount`: the profile's directory holds another account's login during `profile login`, `profile remove`, an explicit launch or `profile run`, or a non-joining inherited launch | `` wait for that session to end, or run `amplihack profile auto-switch status` `` |
+| Default directory hosts another login and no fallback is usable, or fallback validation fails | `amplihack profile run <other>`, or `amplihack profile switch --none` with a usable ambient login; inspect `amplihack profile auto-switch status` and address any underlying cause. See [Default-profile lease fallback](#default-profile-lease-fallback). |
 | `AutoSwitchConfig`: `.auto-switch` cannot be written, the change would exceed 4096 bytes, or the [settings lock](#settings-file) stayed busy for 10 seconds (the message ends in `retry`; run the command again) | `` fix what the message names and retry; do not remove <root>/.auto-switch, which holds the exclude list (see "Settings file" in docs/reference/profile-command.md) `` |
 | `AutoSwitchExcludeAtRisk`: `.auto-switch` is a symlink, not a regular file, or owned by another user (no command replaces it; the message says to fix the owner with `chown` or replace the symlink with a regular file holding the same `exclude=` line), or it is a corrupt regular file of yours; in each case removing it would drop its exclude list. Either `on` or `off` is run without `--exclude` while it does not parse or others can write it (its exclude list is unknown), or `threshold`, `exclude`, `overflow add` or `overflow remove` needs to keep its other keys. The message names the recovery: `on --exclude NAME,...` or `off --exclude NAME,...` when the list is unknown, `on` or `off` when it is a private file of yours that parses. See [Unreadable exclude list](#unreadable-exclude-list) | `` do not remove <root>/.auto-switch: that drops its exclude list, and the rotator would probe and refresh the logins it excluded; see "Unreadable exclude list" in docs/reference/profile-command.md `` |
 | `AutoSwitchUnsupported`: an `auto-switch` command on a platform without Unix file semantics | `auto-switch needs Linux or another Unix; leave it off` |
