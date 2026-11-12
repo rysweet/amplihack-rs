@@ -752,10 +752,21 @@ fn corrupt_settings_file_means_off_and_is_replaced_by_on() {
             .contains("switch: off (corrupt)")
     );
 
-    // `threshold` refuses a corrupt file; `on` replaces it.
+    // `threshold` refuses a corrupt file. So does a bare `on` while the file
+    // does not parse, since its exclude list is unknown (issue #2218);
+    // `on --exclude ''` names the list and replaces the file.
     let out = f.run_args(&["profile", "auto-switch", "threshold", "50"]);
     assert!(!out.status.success());
-    f.switch_on();
+    let out = f.run_args(&["profile", "auto-switch", "on"]);
+    assert!(!out.status.success());
+    assert!(
+        text(&out.stderr).contains("exclude list is unknown"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert_eq!(fs::read_to_string(&file).unwrap(), "x".repeat(5000));
+    let out = f.run_args(&["profile", "auto-switch", "on", "--exclude", ""]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
     assert_eq!(
         fs::read_to_string(&file).unwrap(),
         "enabled=on\nthreshold=90\nexclude=\n"
@@ -770,7 +781,20 @@ fn symlinked_settings_file_is_never_written_through() {
     std::os::unix::fs::symlink(&target, f.root.join(".auto-switch")).unwrap();
     let out = f.run_args(&["profile", "auto-switch", "on"]);
     assert!(!out.status.success());
-    assert!(text(&out.stderr).contains("hint:"), "{}", text(&out.stderr));
+    let stderr = text(&out.stderr);
+    // Issue #2218: while the symlink is there every profile counts as
+    // excluded, so the advice is to make it a regular file, never to
+    // remove it (that would leave no exclusions).
+    assert!(stderr.contains("is a symlink"), "{stderr}");
+    assert!(stderr.contains("Do not delete it"), "{stderr}");
+    assert!(
+        stderr.contains("hint: do not remove <root>/.auto-switch"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("remove <root>/.auto-switch and run"),
+        "{stderr}"
+    );
     assert_eq!(fs::read_to_string(&target).unwrap(), "enabled=off\n");
     assert!(
         f.stdout(&["profile", "auto-switch", "status"])
@@ -1108,10 +1132,27 @@ mod swap {
         f.switch_on();
     }
 
+    /// Expected records naming one organisation for X and Y, so a swap
+    /// between them is within one organisation (#2136) and writes no
+    /// affinity warning. Without records the swap is `unresolved`, and the
+    /// warning is printed and recorded on purpose.
+    fn same_organisation(f: &Fixture) {
+        let dir = f.state().join("expected");
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        for p in ["X", "Y"] {
+            let path = dir.join(format!("{p}.json"));
+            let body = serde_json::json!({"account": format!("uuid-{p}"), "org": "org-team"});
+            fs::write(&path, body.to_string()).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+
     #[test]
     fn exhausted_session_swaps_by_move_not_copy() {
         let f = Fixture::new();
         prime(&f);
+        same_organisation(&f);
         let y_inode = Fixture::inode(&f.dir("Y").join(".credentials.json"));
         let x_inode = Fixture::inode(&f.dir("X").join(".credentials.json"));
         let _session = f.hold("X");
@@ -1146,6 +1187,10 @@ mod swap {
         assert!(mtime >= now() - 30, "moved-in login must get a fresh mtime");
         assert_eq!(f.hosts(), BTreeMap::from([("X".into(), "Y".into())]));
         assert!(!f.state().join("journal.json").exists());
+        assert!(
+            !f.state().join("affinity/last-crossing.json").exists(),
+            "a swap within one organisation records no crossing"
+        );
         f.assert_one_place_each();
         f.assert_no_leak();
     }

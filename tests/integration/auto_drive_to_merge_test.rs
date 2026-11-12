@@ -48,7 +48,7 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 26] = [
+const AUTODRIVE_TOOLS: [&str; 31] = [
     "autodrive_budget.sh",
     "autodrive_crusty_rereview.sh",
     "autodrive_done_override.sh",
@@ -58,7 +58,12 @@ const AUTODRIVE_TOOLS: [&str; 26] = [
     "autodrive_followups_check.sh",
     "autodrive_last_round.sh",
     "autodrive_loop.sh",
+    "autodrive_loop_record.sh",
+    "autodrive_crusty_record.sh",
+    "autodrive_crusty_finalize.sh",
+    "autodrive_completion_context.sh",
     "autodrive_merge_gate.sh",
+    "autodrive_merge_message.sh",
     "autodrive_merge_ready_files.sh",
     "autodrive_platform_facts.sh",
     "autodrive_pr_head.sh",
@@ -225,7 +230,7 @@ fn composer_delegates_to_the_three_phases_in_order() {
 // ── The loop terminator ──────────────────────────────────────────────────────
 
 #[test]
-fn both_loops_terminate_on_the_loop_health_evaluator_contract() {
+fn unresolved_loops_use_the_shared_loop_health_evaluator_contract() {
     let driver = read(&tool_path("autodrive_loop.sh"));
     // Resolved to an absolute path in the launch-side bundle (by
     // autodrive_worktree_guard.sh loop-preflight), never by name under
@@ -524,7 +529,10 @@ fn verdict_gates_use_the_canonical_orch_helper_pipeline() {
 
 #[test]
 fn advancing_a_phase_requires_both_the_round_verdict_and_the_loop_verdict() {
-    let driver = read(&tool_path("autodrive_loop.sh"));
+    let driver = read(&tool_path("autodrive_loop.sh")).replace(
+        ". \"${LOOP_HOME}/autodrive_loop_record.sh\" || exit 1",
+        &read(&tool_path("autodrive_loop_record.sh")),
+    );
     assert!(
         driver.contains("ROUND_CLEAN=\"true\""),
         "the driver must track whether the round's own verdict was the clean token"
@@ -717,17 +725,408 @@ fn forbidden_flags_never_appear_in_an_executable_position() {
             }
         }
     }
-    // The prohibition is structural at the merge, not merely advisory.
-    let gate = read(&tool_path("autodrive_merge_gate.sh"));
+    // The prohibition is structural at the merge, not merely advisory. Read
+    // from the gate's code: a comment quoting the argv is not the argv.
+    let gate = shell_code(&read(&tool_path("autodrive_merge_gate.sh")));
     assert!(
         gate.contains(
-            r#"MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA")"#
+            r#"MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA" --subject "$MERGE_SUBJECT" --body-file -)"#
         ),
         "the merge argv must be a fixed literal list that takes no caller flags"
     );
+    // Issue #2056: once one element carries the squash subject, the old
+    // comparison of two IFS-joined arrays cannot tell one element holding
+    // spaces from several, and a twin-array comparison is a tautology however
+    // it is spelled. What still rules out an injected flag is the element
+    // count plus the pinned literal positions.
     assert!(
-        gate.contains(r#"if [ "${MERGE_ARGV[*]}" != "${EXPECTED_ARGV[*]}" ]"#),
-        "the merge argv must be asserted unchanged immediately before execution"
+        !gate.contains(r#"if [ "${MERGE_ARGV[*]}" != "${EXPECTED_ARGV[*]}" ]"#),
+        "the IFS-joined argv self-check cannot survive a subject containing spaces"
+    );
+    for pin in [
+        r#""${#MERGE_ARGV[@]}" -ne 11"#,
+        r#""${MERGE_ARGV[0]}" != "pr""#,
+        r#""${MERGE_ARGV[1]}" != "merge""#,
+        r#""${MERGE_ARGV[3]}" != "--squash""#,
+        r#""${MERGE_ARGV[4]}" != "--delete-branch""#,
+        r#""${MERGE_ARGV[5]}" != "--match-head-commit""#,
+        r#""${MERGE_ARGV[7]}" != "--subject""#,
+        r#""${MERGE_ARGV[9]}" != "--body-file""#,
+        r#""${MERGE_ARGV[10]}" != "-""#,
+    ] {
+        assert!(
+            gate.contains(pin),
+            "the merge argv must be pinned positionally before execution; missing `{pin}`"
+        );
+    }
+}
+
+/// Shell source with its full-line comments removed. A structural assertion
+/// that searches the whole file is satisfied by a comment describing the code
+/// it means to pin: in crusty's round 4 on PR #2262, `umask 077; set -C;`
+/// deleted from the message helper's code and `jq -j` changed to `jq -r` left
+/// every such check passing on the helper's own comment block.
+fn shell_code(text: &str) -> String {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// What `autodrive_merge_message.sh` must keep in its CODE, and why.
+const HELPER_CODE_NEEDLES: [(&str, &str); 6] = [
+    (
+        "jq -j",
+        "the body is extracted with `jq -j`; `jq -r` appends a newline the body does not contain",
+    ),
+    (
+        "&& printf x)",
+        "the capture appends `x` only when jq succeeded, so `$(...)` keeps a trailing newline \
+         and a failed jq is never mistaken for a short body",
+    ),
+    (
+        "set -o pipefail",
+        "jq's exit status, not tr's, decides whether the body was read",
+    ),
+    (
+        "umask 077",
+        "the record is 0600 whatever the caller's umask",
+    ),
+    (
+        "set -C",
+        "the record is created O_EXCL, refusing anything that appeared at the path",
+    ),
+    (
+        r#"rm -f -- "$path""#,
+        "a symlink or stale record at the deterministic name is removed, never followed or reused",
+    ),
+];
+
+/// The needles of HELPER_CODE_NEEDLES that `helper`'s code, comments
+/// excluded, does not contain.
+fn helper_code_gaps(helper: &str) -> Vec<&'static str> {
+    let code = shell_code(helper);
+    HELPER_CODE_NEEDLES
+        .iter()
+        .filter(|(needle, _)| !code.contains(needle))
+        .map(|(needle, _)| *needle)
+        .collect()
+}
+
+/// Issue #2056: the squash commit message is READ IN THIS RUN and handed to
+/// `gh`, instead of being left for GitHub to compose from the branch's
+/// commits. Composing from commits puts whatever those commits carry into
+/// main's history: a wrong `Co-Authored-By` trailer, a `Fixes #N` belonging
+/// to a branch this one is stacked on, a recipe's `Task:` line.
+///
+/// Everything asserted here is structural, and every positive assertion reads
+/// code lines only. The shell contract test exercises the behaviour,
+/// including the race these checks cannot see. The two are the same contract
+/// read from opposite ends, and both must move together.
+#[test]
+fn the_merge_gate_composes_the_squash_message_from_the_pull_request() {
+    let gate_text = read(&tool_path("autodrive_merge_gate.sh"));
+    let gate = shell_code(&gate_text);
+
+    // One pre-merge read, carrying the message alongside every other
+    // criterion, so the message binds to the same head SHA as the rest. The
+    // gate's other `gh pr view` is section 10's post-merge confirmation, so an
+    // occurrence COUNT would be wrong; what is pinned is the read that
+    // carries headRefOid.
+    let pre_merge: Vec<&str> = gate
+        .lines()
+        .filter(|l| l.contains(r#"gh pr view "$PR" --json"#) && l.contains("headRefOid"))
+        .collect();
+    assert_eq!(
+        pre_merge.len(),
+        1,
+        "exactly one pre-merge `gh pr view` may carry headRefOid; found {pre_merge:?}"
+    );
+    for field in ["title", "body"] {
+        assert!(
+            pre_merge[0].contains(field),
+            "the pre-merge read must fetch `{field}` so the squash message binds to the \
+             verified head SHA: {}",
+            pre_merge[0]
+        );
+    }
+
+    // The message is read with jq, never through field(). field() resolves to
+    // `extract-json --require-field`, whose LAST-object-wins selector (#1337,
+    // PR #1347) a pull request's own body can influence once free text enters
+    // STATE_JSON. Choosing jq here is a security control, not a style.
+    for forbidden in [
+        r#"field "$STATE_JSON" title"#,
+        r#"field "$STATE_JSON" body"#,
+    ] {
+        assert!(
+            !gate_text.contains(forbidden),
+            "the squash message must not be read with the last-object-wins helper: {forbidden}"
+        );
+    }
+
+    // Composing the message is the helper's contract, and what it must keep
+    // is checked in its code, not in the comments that describe that code
+    // (see the_helper_checks_fail_when_only_the_comments_keep_the_contract).
+    let helper_text = read(&tool_path("autodrive_merge_message.sh"));
+    let helper = shell_code(&helper_text);
+    let gaps = helper_code_gaps(&helper_text);
+    assert!(
+        gaps.is_empty(),
+        "autodrive_merge_message.sh's code is missing {gaps:?}; each is needed because: {:?}",
+        HELPER_CODE_NEEDLES
+            .iter()
+            .filter(|(n, _)| gaps.contains(n))
+            .map(|(_, why)| *why)
+            .collect::<Vec<_>>()
+    );
+    for function in [
+        "autodrive_merge_subject()",
+        "autodrive_merge_body()",
+        "autodrive_merge_record()",
+    ] {
+        assert!(
+            helper.contains(function),
+            "the message helper must define `{function}`"
+        );
+    }
+    for call in [
+        r#"autodrive_merge_subject "$STATE_JSON" "$PR""#,
+        r#"autodrive_merge_body "$STATE_JSON""#,
+        r#"autodrive_merge_record "$MERGE_BODY" "$MERGE_RECORD""#,
+    ] {
+        assert!(gate.contains(call), "the gate must call `{call}`");
+    }
+    assert!(
+        !gate.contains("jq -j"),
+        "the gate must not extract the body itself; that is the helper's contract"
+    );
+    // The two failure classes stay apart: an unreadable body (a platform read
+    // that came back malformed, or a jq that failed) and a record that was
+    // not written (the filesystem under the state dir).
+    assert!(
+        gate.contains("the body of pull request #${PR} is unreadable")
+            && gate.contains("could not be written under ${STATE_DIR}"),
+        "an unreadable body and an unwritten record must be reported separately"
+    );
+
+    // The body goes to gh on stdin, from the gate's own variable, and never
+    // as a path (crusty round 4 on PR #2262, CWE-367). A file in the state
+    // dir can be rewritten by this same user between any check the gate makes
+    // on it and gh opening it; a byte in the gate's memory cannot. gh's own
+    // status is the one captured: under pipefail, `$?` could be printf's.
+    assert!(
+        gate.contains(r#"printf '%s' "$MERGE_BODY" | gh "${MERGE_ARGV[@]}""#),
+        "the gate must pipe MERGE_BODY into gh's stdin"
+    );
+    assert!(
+        gate.contains(r#"MERGE_RC="${PIPESTATUS[1]}""#),
+        "the merge status must be gh's, PIPESTATUS[1], not the pipeline's"
+    );
+    assert!(
+        !gate.contains(r#"--body-file "$"#),
+        "no path may be handed to gh as --body-file"
+    );
+    assert!(
+        !gate_text.contains(r#"--body ""#),
+        "the body must never be passed inline, where it would reach argv and `ps`"
+    );
+    // With no path handed to gh there is nothing left to guard, so the
+    // digest re-check and its sha256sum/shasum dependency are gone rather than
+    // kept beside the pipe, where they would claim a binding they never gave.
+    for gone in [
+        "autodrive_merge_body_intact",
+        "autodrive_merge_digest",
+        "MERGE_BODY_DIGEST",
+        "MERGE_BODY_FILE",
+        "sha256sum",
+        "shasum",
+    ] {
+        assert!(
+            !gate.contains(gone) && !helper.contains(gone),
+            "`{gone}` belonged to guarding a message file that gh no longer reads"
+        );
+    }
+
+    // The record is deterministic, under the private state dir, and bound to
+    // the head SHA, so a record left by an earlier round is never mistaken
+    // for this one's.
+    assert!(
+        gate.contains(r#"MERGE_RECORD="${STATE_DIR}/merge-message-${PR}-${SHA12}.txt""#),
+        "the record must live in the private state dir, named for the PR and head SHA"
+    );
+
+    // Still no bypass, and the merge is still gated on the head not moving.
+    for forbidden in ["--admin", "--auto", "--no-verify"] {
+        for line in gate.lines() {
+            assert!(
+                !line.contains(forbidden),
+                "the gate must not use `{forbidden}` in an executable position: {line}"
+            );
+        }
+    }
+}
+
+/// The structural checks above read the helper's CODE. This replays crusty's
+/// round-4 mutation on PR #2262 — `umask 077; ` and `set -C; ` deleted from
+/// the code and `jq -j` changed to `jq -r`, the comments left alone — and
+/// requires the checks to notice. Without it, an edit that put the
+/// comment-matching back would fail nothing.
+#[test]
+fn the_helper_checks_fail_when_only_the_comments_keep_the_contract() {
+    let helper = read(&tool_path("autodrive_merge_message.sh"));
+    let original = helper.lines().collect::<Vec<_>>().join("\n");
+    let mutated = helper
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with('#') {
+                line.to_string()
+            } else {
+                line.replace("umask 077; ", "")
+                    .replace("set -C; ", "")
+                    .replace("jq -j", "jq -r")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_ne!(
+        mutated, original,
+        "the mutation must change the helper's code, or this test proves nothing"
+    );
+    for needle in ["umask 077", "set -C", "jq -j"] {
+        assert!(
+            mutated.contains(needle),
+            "the mutated helper's comments must still name `{needle}`, as they did when \
+             the old whole-file checks passed on them"
+        );
+    }
+    let gaps = helper_code_gaps(&mutated);
+    for needle in ["umask 077", "set -C", "jq -j"] {
+        assert!(
+            gaps.contains(&needle),
+            "a helper whose code lost `{needle}` must fail the structural check; gaps were {gaps:?}"
+        );
+    }
+}
+
+/// Issue #2056: the gate is at its 400-line brick budget, so the message
+/// derivation is a helper beside it. A helper the gate SOURCES runs inside the
+/// process the #1551 shim trusts to merge, so it must ship and be sourced from
+/// GATE_HOME — never from a path a pull request could populate.
+#[test]
+fn the_squash_message_helper_ships_beside_the_gate() {
+    let helper = tool_path("autodrive_merge_message.sh");
+    assert!(
+        helper.is_file(),
+        "autodrive_merge_message.sh must ship in amplifier-bundle/tools"
+    );
+    let gate = shell_code(&read(&tool_path("autodrive_merge_gate.sh")));
+    assert!(
+        gate.contains(r#". "${GATE_HOME}/autodrive_merge_message.sh""#),
+        "the gate must source the message helper from GATE_HOME, not from the working directory"
+    );
+    let guard =
+        read(&workspace_root().join("crates/amplihack-cli/src/commands/recipe/run/merge_guard.rs"));
+    assert!(
+        guard.contains(r#""autodrive_merge_message.sh""#),
+        "a helper the gate sources must be a GATE_FILES entry, or it escapes the #1551 mode check"
+    );
+    // ...and it joins the tool list, so the brick budget, the forbidden-flag
+    // scan and every other control-path check cover it from then on. This
+    // assertion is what makes extending AUTODRIVE_TOOLS part of the work
+    // rather than an optional tidy-up.
+    assert!(
+        AUTODRIVE_TOOLS.contains(&"autodrive_merge_message.sh"),
+        "the message helper is on the control path and must be listed in AUTODRIVE_TOOLS \
+         so the brick budget and the forbidden-flag scan cover it"
+    );
+}
+
+/// Issue #2056: both copies of the skill describe the argv as implemented.
+/// They are byte-identical and that parity is asserted elsewhere; this pins
+/// the content so a reader is not told the gate does something it does not.
+#[test]
+fn the_skill_documents_the_squash_message_flags() {
+    for rel in [
+        "amplifier-bundle/skills/auto-drive-to-merge/SKILL.md",
+        "docs/claude/skills/auto-drive-to-merge/SKILL.md",
+    ] {
+        let text = read(&workspace_root().join(rel));
+        for needle in ["--subject", "--body-file"] {
+            assert!(
+                text.contains(needle),
+                "{rel} must state the merge argv as implemented, including `{needle}`"
+            );
+        }
+    }
+}
+
+/// Crusty round 8 on PR #2262: under auto-drive the pull request body is also
+/// merge-ready's pre-merge report ("Final platform state: open", a verdict),
+/// and nothing refreshes it after the last round, so the helper cuts the
+/// squash body where that report starts. Where it starts is a convention
+/// between two files, the merge-ready template that writes the report and the
+/// helper that cuts it. This pins both ends: the template's marker line and
+/// heading are the two boundaries the helper's CODE matches, the marker sits
+/// directly above the heading, and the skill tells the agent to keep it.
+#[test]
+fn the_merge_ready_template_marks_where_the_squash_body_ends() {
+    let template = read(
+        &workspace_root().join("amplifier-bundle/skills/merge-ready/pr-description-template.md"),
+    );
+    let skill = read(&workspace_root().join("amplifier-bundle/skills/merge-ready/SKILL.md"));
+    let helper = shell_code(&read(&tool_path("autodrive_merge_message.sh")));
+
+    // The helper compares lowercased lines, so its needles are lowercase.
+    for needle in [
+        "startswith(\"<!-- merge-ready-report\")",
+        "startswith(\"## merge readiness\")",
+        "ascii_downcase",
+    ] {
+        assert!(
+            helper.contains(needle),
+            "autodrive_merge_message.sh's code must cut the body with `{needle}`, the \
+             boundary the merge-ready template writes"
+        );
+    }
+
+    let lines: Vec<&str> = template.lines().collect();
+    let markers: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.starts_with("<!-- merge-ready-report"))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        markers.len(),
+        1,
+        "the merge-ready template must carry exactly one line starting \
+         `<!-- merge-ready-report`, the line the merge gate cuts the squash body at"
+    );
+    let marker = markers[0];
+    assert!(
+        lines[marker].ends_with("-->"),
+        "the marker must be a complete HTML comment on one line, so it does not render: {}",
+        lines[marker]
+    );
+    assert_eq!(
+        lines.get(marker + 1).copied(),
+        Some("## Merge readiness"),
+        "the marker must sit directly above the template's `## Merge readiness` heading, so \
+         the whole report is below it"
+    );
+    // No line above the marker may start like a boundary either, or the cut
+    // would come early in every description written from the template.
+    for l in &lines[..marker] {
+        assert!(
+            !l.to_ascii_lowercase().starts_with("## merge readiness"),
+            "a `## Merge readiness` line above the marker would cut the body there: {l}"
+        );
+    }
+    assert!(
+        skill.contains("<!-- merge-ready-report"),
+        "merge-ready's SKILL.md must tell the agent to keep the marker line, since the \
+         merge gate cuts the squash body at it"
     );
 }
 
@@ -742,7 +1141,10 @@ fn merge_gate_verifies_every_criterion_and_binds_them_to_one_head_sha() {
         "mergeStateStatus",
         "reviewDecision",
         "reviewThreads",
-        "gh pr checks",
+        // #2186: CI is read at the head SHA by the expected-checks reader,
+        // which replaced the `gh pr checks` rollup.
+        "autodrive_expected_checks.sh",
+        "ci_status",
         "qa_status",
         "merge_ready_verdict",
     ] {
@@ -763,7 +1165,7 @@ fn merge_gate_verifies_every_criterion_and_binds_them_to_one_head_sha() {
     // Unreadable is a failure, never a pass.
     for unreadable in [
         "metadata is unreadable",
-        "CI status for #${PR} is unreadable",
+        "expected checks unreadable",
         "review-thread state is unreadable",
     ] {
         assert!(
@@ -771,8 +1173,15 @@ fn merge_gate_verifies_every_criterion_and_binds_them_to_one_head_sha() {
             "the merge gate must treat `{unreadable}` as a blocker"
         );
     }
+    // #2186: CI is read by the expected-checks reader, which blocks on an
+    // unreadable endpoint and on zero checks at the head.
+    let reader = read(&tool_path("autodrive_expected_checks.sh"));
     assert!(
-        gate.contains("zero checks is not a green build"),
+        reader.contains(r#"t: ("expected checks unreadable: " + cl)"#),
+        "an unreadable CI endpoint must be a blocker"
+    );
+    assert!(
+        reader.contains(r#"t: ("no checks" + at)"#),
         "a PR reporting no checks at all must not be treated as green"
     );
     // The evidence bundle is written BEFORE anything is merged.
@@ -1071,8 +1480,10 @@ fn the_forbidden_flag_scanner_catches_every_spelling() {
         r#"git commit -m "clear merge-ready blockers: <what changed>""#,
         "git add -A",
         "git push",
-        r#"MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA")"#,
-        "gh pr view \"$PR\" --json state,mergedAt",
+        r#"MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA" --subject "$MERGE_SUBJECT" --body-file -)"#,
+        r#"gh pr merge "$PR" --squash --subject "$MERGE_SUBJECT""#,
+        r#"printf '%s' "$MERGE_BODY" | gh pr merge "$PR" --squash --body-file -"#,
+        "gh pr view \"$PR\" --json state,mergedAt,title,body",
         "amplihack hygiene artifact-guard --repo . --mode pre-commit",
     ] {
         assert!(
@@ -1746,10 +2157,11 @@ const STATE_DIR_SENTENCE: &str = "Do not create, edit, move, rename, delete or a
 /// Words the state directory must never be named by in an agent prompt.
 const STATE_DIR_LEAKS: [&str; 3] = ["STATE_DIR", "autodrive_state_dir", "AUTODRIVE_STATE_DIR"];
 
-/// The five agent steps of the auto-drive workflow, by recipe.
-const AUTODRIVE_AGENT_STEPS: [(&str, &str); 5] = [
+/// The six agent steps of the auto-drive workflow, by recipe.
+const AUTODRIVE_AGENT_STEPS: [(&str, &str); 6] = [
     ("autodrive-crusty-round", "step-02-crusty-review"),
     ("autodrive-crusty-round", "step-04-address-concerns"),
+    ("autodrive-crusty-round", "step-07-select-next-action"),
     ("autodrive-merge-round", "step-02-merge-ready-assessment"),
     ("autodrive-merge-round", "step-04-address-blockers"),
     ("loop-health-evaluator", "step-02-evaluate-loop-health"),
@@ -2309,7 +2721,11 @@ fn crusty_round_records_the_reviewed_head_sha_every_round() {
         ctx.contains("git rev-parse HEAD"),
         "step-01 must read the reviewed head with git, in bash"
     );
-    let cmd = field(step(&recipe, "step-06-write-round-record"), "command");
+    assert!(
+        field(step(&recipe, "step-06-write-round-record"), "command")
+            .contains("autodrive_crusty_record.sh")
+    );
+    let cmd = read(&tool_path("autodrive_crusty_record.sh"));
     // #1561: step outputs are read only as RECIPE_VAR_<key>.
     for needle in [
         "RECIPE_VAR_crusty_round_context",
@@ -2332,7 +2748,10 @@ fn crusty_round_records_the_reviewed_head_sha_every_round() {
 #[test]
 fn crusty_records_are_trusted_only_through_the_loop_manifest() {
     // Point 4 of #1517: the assessment trusts only records the loop wrote.
-    let driver = read(&tool_path("autodrive_loop.sh"));
+    let driver = read(&tool_path("autodrive_loop.sh")).replace(
+        ". \"${LOOP_HOME}/autodrive_loop_record.sh\" || exit 1",
+        &read(&tool_path("autodrive_loop_record.sh")),
+    );
     for needle in [
         "-records.tsv",
         "hash-object --no-filters --stdin",
@@ -2612,11 +3031,11 @@ fn merge_gate_keeps_every_existing_block() {
         r#"block "a review requests changes""#,
         r#"block "review-thread state is unreadable; an unreadable criterion is a failure, not a pass""#,
         r#"block "${THREADS} unresolved review thread(s)""#,
-        r#"block "jq is unavailable, so the CI rollup cannot be read; a criterion we cannot read is a failure""#,
-        r#"block "CI status for #${PR} is unreadable; an unreadable CI status is a failure, not a pass""#,
-        r#"block "no CI checks reported for #${PR}; zero checks is not a green build""#,
-        r#"block "${PENDING:-unreadable} CI check(s) still pending""#,
-        r#"block "${FAILING:-unreadable} CI check(s) failing or cancelled""#,
+        // #2186 replaced the `gh pr checks` rollup refusals (jq missing,
+        // unreadable, zero, pending, failing) with the expected-checks
+        // reader: its blocker lines become blocks, and anything short of a
+        // GREEN verdict with exit 0 and no blocker line is refused here.
+        r#"block "expected checks unreadable: the reader gave no verdict or no blocker""#,
         r#"block "no qa-team scenario evidence file was produced in this run""#,
         r#"block "qa-team scenarios did not pass in this run (qa_status=${QA_STATUS})""#,
         r#"block "the qa-team evidence records no head_sha; evidence that is not bound to a SHA never merges""#,
@@ -2913,9 +3332,14 @@ fn every_criterion_is_read_completely_and_bound_to_the_merged_sha() {
         "the merge status must be captured from `gh` itself, not from inside \
          the `then` of an `if !`, where `$?` is always 0"
     );
+    // Since #2056 the body is piped into `gh`, so the status must also be
+    // `gh`'s own element of the pipeline: under pipefail, `$?` after a pipe is
+    // the rightmost non-zero status, which could be printf's.
     assert!(
-        gate.contains("gh \"${MERGE_ARGV[@]}\"\nMERGE_RC=$?"),
-        "`gh` must run on its own line with `MERGE_RC=$?` immediately after"
+        gate.contains(
+            "printf '%s' \"$MERGE_BODY\" | gh \"${MERGE_ARGV[@]}\"\nMERGE_RC=\"${PIPESTATUS[1]}\""
+        ),
+        "`gh` must run on its own line with `MERGE_RC=\"${{PIPESTATUS[1]}}\"` immediately after"
     );
 }
 
@@ -3337,7 +3761,7 @@ fn crusty_rereview_runs_between_merge_rounds_at_the_loop_depth() {
         // Its judging agents start in the checked review dir, not the PR worktree (#1528).
         "--review-dir \"$REVIEW_DIR\"",
         "--state-dir \"$DIR\"",
-        "autodrive_record_crusty_loop_done \"$DIR\"",
+        "bash \"$HERE/autodrive_crusty_finalize.sh\"",
         "crusty-rereview-not-needed",
         "crusty-rereview-done",
         "crusty-rereview-not-done",
@@ -3356,7 +3780,7 @@ fn crusty_rereview_runs_between_merge_rounds_at_the_loop_depth() {
     let crusty_loop = recipe_yaml("autodrive-crusty-loop");
     assert!(
         step_command(&crusty_loop, "step-03-record-crusty-phase")
-            .contains("autodrive_record_crusty_loop_done \"$DIR\""),
+            .contains("bash \"$H/autodrive_crusty_finalize.sh\""),
         "phase 2 and the re-review must record a DONE crusty loop through one function"
     );
     assert!(
@@ -4086,6 +4510,9 @@ fn the_reference_documents_the_range_rule_and_the_qa_chain() {
         "autodrive_base_sha",
         "same user",
         "--match-head-commit",
+        "--subject",
+        "--body-file",
+        "merge-message-",
     ]
     .iter()
     .chain(RANGE_TOKENS.iter())
@@ -5077,6 +5504,35 @@ fn run_auto_drive_contract_shell_test(inherited: Inherited) {
         stdout.contains("PASS[MERGEREADY-no-round-tool]"),
         "MERGEREADY-no-round-tool did not pass (inherited={inherited:?}); a round with no \
          round tool must not find one through an inherited AUTODRIVE_TOOLS_DIR (#1607)\n{stdout}"
+    );
+    // An argv and stdin case (#2056): a head commit authored by
+    // `Fixture <fixture.invalid>` gets the same composed message as one authored
+    // by `t`, with no Co-authored-by line in it. The stub `gh` composes nothing,
+    // so this cannot show whether GitHub adds such a line to a supplied body.
+    // That premise has not been probed; #2263 checks it on the landed commit.
+    // Required by name, so the case cannot disappear from the suite unnoticed.
+    assert!(
+        stdout.contains("PASS[MSG-fixture-author-no-coauthor]"),
+        "MSG-fixture-author-no-coauthor did not pass (inherited={inherited:?}); the composed \
+         message for a head commit authored by Fixture <fixture.invalid> must equal the one \
+         for the usual author and carry no Co-authored-by line (#2056)\n{stdout}"
+    );
+    // Crusty round 8 on PR #2262: the merge-ready report is cut off the
+    // squash body, at the template's marker and, for a report written without
+    // it, at its heading. Required by name for the reason the case above is.
+    for case in ["MSG-report-cut-at-marker", "MSG-report-cut-at-heading"] {
+        assert!(
+            stdout.contains(&format!("PASS[{case}]")),
+            "{case} did not pass (inherited={inherited:?}); the bytes gh receives on stdin must \
+             stop where the merge-ready report starts\n{stdout}"
+        );
+    }
+    // Section 5 lost its own `command -v jq` in #2186, so section 5b names a
+    // missing jq itself instead of calling the pull request title unreadable.
+    assert!(
+        stdout.contains("PASS[MSG-no-jq-names-jq]"),
+        "MSG-no-jq-names-jq did not pass (inherited={inherited:?}); a gate without jq must \
+         say so in section 5b, not blame the pull request title (#2056)\n{stdout}"
     );
     if inherited == Inherited::Conflicting {
         assert!(

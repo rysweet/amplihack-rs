@@ -1740,6 +1740,32 @@ mod request {
 
     const ANSWER: &str = "cat > \"$d/stdin\"; cat \"$d/answer\"";
 
+    /// Issue #1974: both probe argument sets end with this flag, so
+    /// `claude` writes no session log for the probe.
+    const NO_PERSIST: &str = "--no-session-persistence";
+
+    /// The recorded `$*` of the usage request.
+    fn req() -> String {
+        format!("{} {NO_PERSIST}", ARGS.join(" "))
+    }
+
+    /// The recorded `$*` of the `/usage` text attempt.
+    const TEXT: &str = "-p /usage --no-session-persistence";
+
+    #[test]
+    fn both_argument_sets_end_with_no_session_persistence() {
+        let f = Fake::new(ANSWER, USAGE).answer(&error_answer());
+        f.probe(ProbeMode::Auto, 20, false);
+        f.probe(ProbeMode::Text, 20, false);
+        let starts = f.starts();
+        assert_eq!(starts.len(), 3, "{starts:?}");
+        for s in &starts {
+            assert!(s.ends_with(NO_PERSIST), "{s:?} must end with {NO_PERSIST}");
+            assert_eq!(s.matches(NO_PERSIST).count(), 1, "{s:?} has the flag once");
+        }
+        assert_eq!(starts, [req(), TEXT.to_string(), TEXT.to_string()]);
+    }
+
     #[test]
     fn an_accepted_answer_is_used_with_one_start() {
         let f = Fake::new(ANSWER, USAGE).answer(&accepted());
@@ -1751,7 +1777,7 @@ mod request {
         assert_eq!(session(&p), 20.0);
         assert_eq!(p.error, None);
         assert_eq!(p.raw, None);
-        assert_eq!(f.starts(), [ARGS.join(" ")]);
+        assert_eq!(f.starts(), [req()]);
         assert_eq!(f.read("stdin"), Some(format!("{REQUEST_LINE}\n")));
     }
 
@@ -1795,7 +1821,7 @@ mod request {
         let f = Fake::new(ANSWER, COST_TEXT).answer(&answer);
         let p = f.probe(ProbeMode::Auto, 20, false);
         assert_eq!(reading(&p), Reading::Failed);
-        assert_eq!(f.starts(), [ARGS.join(" "), "-p /usage".to_string()]);
+        assert_eq!(f.starts(), [req(), TEXT.to_string()]);
     }
 
     /// `primaryApiKey` answers like a plain plan login, so figures in that
@@ -1806,7 +1832,7 @@ mod request {
         let f = Fake::new(ANSWER, COST_TEXT).answer(&answer);
         let p = f.probe(ProbeMode::Auto, 20, false);
         assert!(matches!(reading(&p), Reading::Measured { .. }));
-        assert_eq!(f.starts(), [ARGS.join(" ")]);
+        assert_eq!(f.starts(), [req()]);
     }
 
     /// With no figures, as when the usage read failed, `primaryApiKey` ends
@@ -1817,7 +1843,7 @@ mod request {
         let f = Fake::new(ANSWER, COST_TEXT).answer(&answer);
         let p = f.probe(ProbeMode::Auto, 20, false);
         assert_eq!(reading(&p), Reading::Failed);
-        assert_eq!(f.starts(), [ARGS.join(" "), "-p /usage".to_string()]);
+        assert_eq!(f.starts(), [req(), TEXT.to_string()]);
     }
 
     #[test]
@@ -1826,7 +1852,7 @@ mod request {
         let p = f.probe(ProbeMode::Auto, 20, true);
         assert_eq!(p.report.state, UsageState::Ok);
         assert_eq!(session(&p), 37.0);
-        assert_eq!(f.starts(), [ARGS.join(" "), "-p /usage".to_string()]);
+        assert_eq!(f.starts(), [req(), TEXT.to_string()]);
         // `--raw` shows the attempt that gave the row.
         let raw = p.raw.unwrap();
         assert!(raw.stdout.contains("Current session"), "{raw:?}");
@@ -1855,7 +1881,7 @@ mod request {
         assert_eq!(p.report.state, UsageState::Timeout);
         assert_eq!(p.error, None);
         assert!(p.report.session.is_none() && p.report.week_all.is_none());
-        assert_eq!(f.starts(), [ARGS.join(" ")]);
+        assert_eq!(f.starts(), [req()]);
         assert!(p.raw.is_some(), "the request attempt's output");
     }
 
@@ -1878,7 +1904,7 @@ mod request {
         let p = f.probe(ProbeMode::Text, 20, false);
         assert_eq!(p.report.state, UsageState::Ok);
         assert_eq!(session(&p), 37.0);
-        assert_eq!(f.starts(), ["-p /usage"]);
+        assert_eq!(f.starts(), [TEXT]);
         assert_eq!(f.read("stdin"), None);
         assert_eq!(f.read("stdin-usage").as_deref(), Some(""));
     }
@@ -1921,7 +1947,7 @@ mod request {
         let r = probe_with(build, ProbeMode::Auto, Duration::from_secs(20), NOW, false);
         assert!(r.is_err());
         assert_eq!(calls.get(), 2);
-        assert_eq!(f.starts(), [ARGS.join(" ")]);
+        assert_eq!(f.starts(), [req()]);
     }
 
     #[test]
@@ -1953,7 +1979,7 @@ mod request {
         );
         assert_eq!(session(&probes[0]), 37.0, "cred read with /usage");
         assert_eq!(session(&probes[1]), 20.0, "plan read with the request");
-        assert_eq!(f.starts(), ["-p /usage".to_string(), ARGS.join(" ")]);
+        assert_eq!(f.starts(), [TEXT.to_string(), req()]);
     }
 
     // -----------------------------------------------------------------------
@@ -1978,7 +2004,7 @@ mod request {
     fn an_accepted_get_usage_answer_has_no_spend_to_read() {
         let f = Fake::new(ANSWER, USAGE).answer(&accepted());
         let p = f.probe(ProbeMode::Auto, 20, false);
-        assert_eq!(f.starts(), [ARGS.join(" ")]);
+        assert_eq!(f.starts(), [req()]);
         assert_eq!(p.spend, Spend::NotApplicable);
         assert_eq!(p.extra_shape, None);
     }
@@ -2000,7 +2026,7 @@ mod request {
     fn the_auto_fallback_to_usage_text_reads_the_spend() {
         let f = Fake::new(ANSWER, SPEND_TEXT).answer(&error_answer());
         let p = f.probe(ProbeMode::Auto, 20, false);
-        assert_eq!(f.starts(), [ARGS.join(" "), "-p /usage".to_string()]);
+        assert_eq!(f.starts(), [req(), TEXT.to_string()]);
         assert_eq!(p.spend, Spend::LimitReached);
     }
 

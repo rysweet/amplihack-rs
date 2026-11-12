@@ -55,6 +55,11 @@ write_body_file() (
   # and terminate/reap blocked input or formatter children before unlinking.
   set -m
   (
+    # The group receives cancellation together. Keep its leader alive to reap
+    # the input/formatter child before the outer owner removes scratch files.
+    trap 'wait; exit 143' TERM
+    trap 'wait; exit 130' INT
+    trap 'wait; exit 129' HUP
     cat > "$raw" || {
       printf '%s\n' "write_body_file: failed to read stdin" >&2
       exit 1

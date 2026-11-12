@@ -177,6 +177,7 @@ dependencies = [
  "serde_yaml",
  "sha2",
  "signal-hook",
+ "syn",
  "tar",
  "tempfile",
  "thiserror 2.0.18",
@@ -301,6 +302,7 @@ dependencies = [
 name = "amplihack-hooks-bin"
 version = "1.2.0"
 dependencies = [
+ "amplihack-git",
  "amplihack-hooks",
  "amplihack-state",
  "amplihack-types",
