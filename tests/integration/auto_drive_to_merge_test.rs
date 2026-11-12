@@ -48,7 +48,7 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 31] = [
+const AUTODRIVE_TOOLS: [&str; 32] = [
     "autodrive_budget.sh",
     "autodrive_crusty_rereview.sh",
     "autodrive_done_override.sh",
@@ -70,6 +70,7 @@ const AUTODRIVE_TOOLS: [&str; 31] = [
     "autodrive_progress.sh",
     "autodrive_qa_docs.sh",
     "autodrive_qa_evidence.sh",
+    "autodrive_qa_execute.sh",
     "autodrive_qa_scope.sh",
     "autodrive_qa_sources.sh",
     "autodrive_round_evidence.sh",
@@ -2584,7 +2585,9 @@ fn qa_evidence_step_runs_the_qa_evidence_tool() {
 #[test]
 fn qa_evidence_runs_one_gadugi_process_per_scenario() {
     let tool = read(&tool_path("autodrive_qa_evidence.sh"));
-    let cmd = tool.as_str();
+    let execution = read(&tool_path("autodrive_qa_execute.sh"));
+    let combined = format!("{tool}\n{execution}");
+    let cmd = combined.as_str();
     for needle in [
         "gadugi-test validate -d \"$",
         "--scenario \"$",

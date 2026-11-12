@@ -36,6 +36,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 TOOLS="${REPO_ROOT}/amplifier-bundle/tools"
 TOOL="${TOOLS}/autodrive_qa_evidence.sh"
+EXECUTE="${TOOLS}/autodrive_qa_execute.sh"
 QA_BINARY="${AMPLIHACK_BIN:-${CARGO_TARGET_DIR:-$REPO_ROOT/target}/debug/amplihack}"
 TRUST="${TOOLS}/autodrive_trust.sh"
 SCOPE="${TOOLS}/autodrive_qa_scope.sh"
@@ -790,7 +791,7 @@ expect pick-config-invalid "gadugi required, broken qa.toml, no scenarios" qa_st
 echo "== #1763 fallback: a missing or symlinked scope file blocks =="
 for mode in missing symlink; do
     T="$WORK/tools-$mode"; mkdir -p "$T"
-    for t in autodrive_qa_evidence.sh autodrive_state.sh autodrive_trust.sh autodrive_unmerged.sh git-repo-env.sh; do
+    for t in autodrive_qa_evidence.sh autodrive_qa_execute.sh autodrive_state.sh autodrive_trust.sh autodrive_unmerged.sh git-repo-env.sh; do
         [ -f "$TOOLS/$t" ] && cp "$TOOLS/$t" "$T/"
     done
     [ "$mode" = symlink ] && [ -f "$SCOPE" ] && ln -s "$SCOPE" "$T/autodrive_qa_scope.sh"
@@ -807,7 +808,7 @@ done
 # The scope file is there but the sources file is not: detection works, yet
 # qa.toml cannot be read, so the evidence blocks rather than ignore it.
 T="$WORK/tools-nosources"; mkdir -p "$T"
-for t in autodrive_qa_evidence.sh autodrive_state.sh autodrive_trust.sh autodrive_unmerged.sh autodrive_qa_scope.sh git-repo-env.sh; do
+for t in autodrive_qa_evidence.sh autodrive_qa_execute.sh autodrive_state.sh autodrive_trust.sh autodrive_unmerged.sh autodrive_qa_scope.sh git-repo-env.sh; do
     cp "$TOOLS/$t" "$T/"
 done
 repo Cargo.toml src/lib.rs; base; change src/lib.rs
@@ -910,8 +911,8 @@ grep -q 'declare -F' "$TOOL" && pass tool-declare "the evidence tool checks the 
 for k in qa_command_source qa_command_paths qa_candidates qa-unresolved qa-config-invalid QA_UNRESOLVED; do
     grep -q "$k" "$TOOL" && pass "tool-has:$k" "the evidence tool knows $k" || fail "tool-has:$k" "the evidence tool lacks $k"
 done
-if [ "$(code "$TOOL" | grep -c 'bash -c')" -le 1 ]; then pass tool-bash-c "bash -c only for AUTODRIVE_QA_COMMANDS entries"
-else fail tool-bash-c "bash -c appears more than once in autodrive_qa_evidence.sh"; fi
+if [ "$({ code "$TOOL"; code "$EXECUTE"; } | grep -c 'bash -c')" -le 1 ]; then pass tool-bash-c "bash -c only for AUTODRIVE_QA_COMMANDS entries"
+else fail tool-bash-c "bash -c appears more than once in the evidence adapter and executor"; fi
 if code "$TOOL" | grep -E 'Cargo\.toml|package\.json|pyproject\.toml' >/dev/null; then
     fail tool-markers "autodrive_qa_evidence.sh names a manifest outside comments"
 else pass tool-markers "manifest names stay in the scope helper"; fi

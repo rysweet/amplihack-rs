@@ -20,7 +20,40 @@ fn main() {
     let mut record = fields.join("\0");
     record.push('\0');
     let dir = std::env::var_os("QA_RECORD_DIR").expect("isolated record directory");
-    std::fs::write(std::path::Path::new(&dir).join(tag), record).unwrap();
+    let dir = std::path::Path::new(&dir);
+    if let Some(root) = std::env::var_os("QA_COMPLETION_ROOT") {
+        use std::os::unix::fs::PermissionsExt;
+        let directories: Vec<_> = std::fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("autodrive-qa-result.")
+            })
+            .collect();
+        assert_eq!(
+            directories.len(),
+            1,
+            "one private directory for this invocation"
+        );
+        let private = &directories[0];
+        assert_eq!(
+            std::fs::symlink_metadata(private)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o700
+        );
+        std::fs::write(
+            dir.join(format!("{tag}.completion")),
+            private.as_os_str().as_encoded_bytes(),
+        )
+        .unwrap();
+    }
+    std::fs::write(dir.join(tag), record).unwrap();
     println!("QA-RECORDER-STDOUT");
     eprintln!("QA-RECORDER-STDERR");
 }

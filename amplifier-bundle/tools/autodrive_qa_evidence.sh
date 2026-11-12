@@ -169,85 +169,13 @@ else
     fi
   fi
 fi
-LOG="$(mktemp -t autodrive-qa-XXXXXX)" || { echo "ERROR: cannot create a temporary log" >&2; exit 1; }
-HELPER_RESULT=""
-trap 'rm -f -- "$LOG"; [ -z "$HELPER_RESULT" ] || rm -f -- "$HELPER_RESULT"' EXIT
-CMDTEXT=""; RAN=0; FIRST_NZ=""; S_FAILED="false"; S_MISSING="false"; S_NOTINST="false"
-if [ "${#TEXTS[@]}" -eq 0 ] && [ -z "${QUNRES}${CFGBAD}" ]; then
-  S_MISSING="true"; [ -n "$NOSCOPE" ] || cause "no repository test command for repository type ${TYPE}"
+# Execution is kept beside the adapter to preserve the 400-line brick budget.
+# shellcheck source=autodrive_qa_execute.sh
+if [ ! -f "$H/autodrive_qa_execute.sh" ] || [ -L "$H/autodrive_qa_execute.sh" ] \
+   || ! . "$H/autodrive_qa_execute.sh"; then
+  echo "ERROR: autodrive QA execution module unavailable" >&2
+  exit 1
 fi
-i=0
-while [ "$i" -lt "${#TEXTS[@]}" ]; do
-  kind="${KINDS[$i]}"; text="${TEXTS[$i]}"; i=$((i + 1))
-  CMDTEXT="${CMDTEXT}${CMDTEXT:+; }${text}"
-  if [ "$kind" = "entry" ]; then
-    # Its own process from the repository root: a `cd` in one entry
-    # never reaches the next, and entries are never joined or sourced.
-    ( cd -- "$ROOT" && bash -c "$text" ) >>"$LOG" 2>&1 </dev/null
-    rc=$?
-  elif [ "$kind" = "singular" ]; then
-    dir="$QA_DIR"
-    if [ ! -d "$dir" ]; then
-      S_MISSING="true"; cause "AUTODRIVE_QA_DIR $(printf '%s' "$dir" | san | ascii | cut -c1-120) not found"
-      continue
-    fi
-    if [ -z "$QA_HELPER" ]; then
-      echo "ERROR: amplihack QA command helper not found" >&2
-      exit 1
-    fi
-    # A literal '-' is a directory, never $OLDPWD. The directory is a separate
-    # argument; the helper reads the unchanged shell source from the environment.
-    case "$dir" in /*) ;; *) dir="./$dir" ;; esac
-    HELPER_RESULT="$(mktemp -t autodrive-qa-result-XXXXXX)" || { echo "ERROR: cannot create a QA completion file" >&2; exit 1; }
-    # Only completed Bash execution is measured. Helper startup/compatibility
-    # failures cannot be distinguished from QA statuses using exit codes alone.
-    if ! "$QA_HELPER" orch helper autodrive-qa-command --dir="$dir" --result-file="$HELPER_RESULT" >>"$LOG" 2>&1 </dev/null; then
-      tail -n 60 "$LOG" >&2
-      echo "ERROR: QA command helper failed; no measured QA evidence" >&2
-      exit 1
-    fi
-    # The protocol is exactly one decimal status and a newline. Checking the
-    # byte count also rejects extra lines and bytes Bash cannot store (NUL).
-    if ! IFS= read -r rc < "$HELPER_RESULT" || ! [[ "$rc" =~ ^(0|[1-9][0-9]{0,2})$ ]] \
-       || [ "$rc" -gt 255 ] || ! [ "$(wc -c < "$HELPER_RESULT")" -eq "$((${#rc} + 1))" ]; then
-      echo "ERROR: missing or invalid QA command helper completion result" >&2
-      exit 1
-    fi
-    rm -f -- "$HELPER_RESULT"; HELPER_RESULT=""
-  else
-    dir="$QA_DIR"
-    first="$(set -f; set -- $text; printf '%s' "${1:-}")"
-    # A missing AUTODRIVE_QA_DIR is named, never "<cmd> not installed" (#1516).
-    if [ "$kind" = "word" ] && [ ! -d "$dir" ]; then
-      S_MISSING="true"; cause "AUTODRIVE_QA_DIR $(printf '%s' "$dir" | san | ascii | cut -c1-120) not found"
-      continue
-    fi
-    # One run path for every word and detected command. Installed means
-    # `command -v` finds it on PATH from qa_dir (a word may also be
-    # ./<first> there). Where it resolves is not checked, and this is not a
-    # sandbox: `npm test` runs scripts.test, pytest imports conftest.py and
-    # cargo runs build.rs, so a suite always runs branch code; a project
-    # `.venv/bin/pytest` on PATH is used as it is. `./` keeps a relative `-`
-    # from meaning $OLDPWD. No timeout: a suite is never cut off mid-run.
-    case "$dir" in /*) ;; *) dir="./$dir" ;; esac
-    if ! ( cd -- "$dir" 2>/dev/null && { command -v -- "$first" >/dev/null 2>&1 \
-           || { [ "$kind" = "word" ] && [ -x "./${first}" ]; }; } ); then
-      S_NOTINST="true"; cause "$(printf '%s' "$first" | san | cut -c1-80) not installed"
-      continue
-    fi
-    # shellcheck disable=SC2086
-    ( set -f; cd -- "$dir" && $text ) >>"$LOG" 2>&1 </dev/null
-    rc=$?
-  fi
-  RAN=$((RAN + 1))
-  echo "INFO: qa-team (${TYPE}) suite command exited ${rc}: $(printf '%s' "$text" | san | cut -c1-200)" >&2
-  if [ "$rc" -ne 0 ]; then S_FAILED="true"; [ -n "$FIRST_NZ" ] || FIRST_NZ="$rc"; fi
-done
-[ "$S_FAILED" = "true" ] && cause "repository test failure"
-RC=""; [ "$RAN" -gt 0 ] && RC="${FIRST_NZ:-0}"
-TAIL="$(tail -n 5 "$LOG" | san | ascii | cut -c1-300)"
-tail -n 60 "$LOG" >&2 || true
-rm -f "$LOG"
 # --- the scenario directory ------------------------------------------
 # Searched only where gadugi is required. AUTODRIVE_QA_SCENARIO_DIR comes
 # from the environment only. Without it the directory is the first of
@@ -432,8 +360,25 @@ OUT="$(printf "$F" \
   "$VALIDATED" "$RUNS" "$PASSED" "$FAILED" \
   "$(printf '%s' "${UNNAMED} ${STAGEFAIL} ${RUNFAIL} ${SYMFAIL}" | san | tr -s ' ' | sed 's/^ //; s/ $//')" \
   "$(printf '%s' "$RESULTS" | san)" "$(printf '%s' "$GCLR" | san | ascii)" "$(printf '%s' "$RCLR" | san | ascii)")"
-# Private to this user (#1517 D5), and never written through a planted symlink.
-if [ -n "$EVIDENCE" ] && ! ( umask 077; rm -f -- "$EVIDENCE" && printf '%s' "$OUT" > "$EVIDENCE" ); then
+# Persist a complete private sibling, then atomically replace the destination.
+# The trusted-parent check also prevents replacement of the sibling by another
+# user between mktemp, writing and rename. Never unlink the old evidence first.
+if [ -n "$EVIDENCE" ] && ! (
+  umask 077
+  # Parameter expansion preserves directory names ending in a newline.
+  case "$EVIDENCE" in
+    */*) EVIDENCE_PARENT="${EVIDENCE%/*}"; [ -n "$EVIDENCE_PARENT" ] || EVIDENCE_PARENT=/ ;;
+    *) EVIDENCE_PARENT=. ;;
+  esac
+  qa_trusted_temp_root "$EVIDENCE_PARENT" && [ ! -d "$EVIDENCE" ] || exit 1
+  # mv treats a directory destination specially. Its immediate parent must
+  # prevent another user from inserting one between the check and the rename.
+  read -r _owner parent_mode _extra <<< "$(qa_path_metadata "$QA_TEMP_ROOT")"
+  (( (8#$parent_mode & 0022) == 0 )) || exit 1
+  EVIDENCE_TMP="$(mktemp "${QA_TEMP_ROOT}/.autodrive-qa-evidence.XXXXXX")" || exit 1
+  trap 'rm -f -- "$EVIDENCE_TMP"' EXIT
+  printf '%s' "$OUT" > "$EVIDENCE_TMP" && mv -f -- "$EVIDENCE_TMP" "$EVIDENCE"
+); then
   echo "ERROR: cannot persist requested QA evidence" >&2
   exit 1
 fi

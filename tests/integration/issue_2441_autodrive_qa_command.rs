@@ -828,6 +828,137 @@ fn missing_empty_and_malformed_completion_results_fail_evidence_generation() {
 }
 
 #[test]
+fn completion_directories_are_private_unique_and_removed_after_measured_results() {
+    let f = Fixture::new(None);
+    let mut paths = Vec::new();
+    for (tag, suffix, status, reason, code) in [
+        ("private-pass", "", "PASS", "", "0"),
+        (
+            "private-fail",
+            "; exit 23",
+            "FAIL",
+            "qa-command-failed",
+            "23",
+        ),
+    ] {
+        let command = format!("qa-arg-recorder {tag}{suffix}");
+        let (e, _) = f.evidence(&[
+            ("AUTODRIVE_QA_COMMAND", &command),
+            ("QA_COMPLETION_ROOT", f.root.to_str().unwrap()),
+        ]);
+        outcome(&e, status, reason, code, "1");
+        let path =
+            PathBuf::from(fs::read_to_string(f.records.join(format!("{tag}.completion"))).unwrap());
+        assert_eq!(path.parent(), Some(f.root.as_path()));
+        assert!(!path.exists(), "completion directory must be removed");
+        paths.push(path);
+    }
+    assert_ne!(
+        paths[0], paths[1],
+        "each invocation gets fresh private state"
+    );
+}
+
+#[test]
+fn shared_temporary_roots_require_sticky_protection_including_ancestors() {
+    for mode in [0o777, 0o770, 0o1777] {
+        let f = Fixture::new(None);
+        let shared = f.root.join("shared");
+        fs::create_dir(&shared).unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(mode)).unwrap();
+        for nested in [false, true] {
+            let root = if nested {
+                shared.join("private")
+            } else {
+                shared.clone()
+            };
+            if nested {
+                fs::create_dir(&root).unwrap();
+                fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+            }
+            let out = f
+                .evidence_child()
+                .env("TMPDIR", &root)
+                .env("AUTODRIVE_QA_COMMAND", "qa-arg-recorder temporary-root")
+                .output()
+                .unwrap();
+            if mode == 0o1777 {
+                assert!(out.status.success(), "sticky root: {out:?}");
+                let e: Value = serde_json::from_slice(&out.stdout).unwrap();
+                outcome(&e, "PASS", "", "0", "1");
+                f.record("temporary-root", &f.repo, &[]);
+            } else {
+                f.failed_evidence(&out);
+                assert!(
+                    String::from_utf8_lossy(&out.stderr)
+                        .contains("untrusted QA completion temporary root"),
+                    "{out:?}"
+                );
+                f.no_records();
+            }
+            assert!(fs::read_dir(&root).unwrap().all(|entry| {
+                !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("autodrive-qa-")
+            }));
+        }
+    }
+}
+
+#[test]
+fn private_completion_creation_failure_is_not_qa_evidence() {
+    let f = Fixture::new(None);
+    let mktemp = f.bin.join("mktemp");
+    fs::write(
+        &mktemp,
+        "#!/bin/bash\nif [ \"$1\" = -d ]; then exit 1; fi\nexec /usr/bin/mktemp \"$@\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(mktemp, fs::Permissions::from_mode(0o700)).unwrap();
+    let out = f
+        .evidence_child()
+        .env("AUTODRIVE_QA_COMMAND", "qa-arg-recorder forbidden")
+        .output()
+        .unwrap();
+    f.failed_evidence(&out);
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("cannot create a private QA completion directory"),
+        "{out:?}"
+    );
+    f.no_records();
+}
+
+#[test]
+fn symlinked_completion_and_non_private_directory_are_refused_and_cleaned() {
+    for action in [
+        "ln -s \"$QA_COMPLETION_VICTIM\" \"$result\"",
+        "printf '0\\n' > \"$result\"; chmod 755 \"${result%/*}\"",
+        "mkdir \"$result\"",
+    ] {
+        let f = Fixture::new(None);
+        let victim = f.root.join("victim");
+        fs::write(&victim, "0\n").unwrap();
+        f.replace_helper(&format!("for arg in \"$@\"; do case \"$arg\" in --result-file=*) result=\"${{arg#--result-file=}}\" ;; esac; done\n{action}\nexit 0"));
+        let out = f
+            .evidence_child()
+            .env("AUTODRIVE_QA_COMMAND", "qa-arg-recorder forbidden")
+            .env("QA_COMPLETION_VICTIM", &victim)
+            .output()
+            .unwrap();
+        f.failed_evidence(&out);
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("missing or invalid"),
+            "{out:?}"
+        );
+        assert_eq!(fs::read_to_string(victim).unwrap(), "0\n");
+        f.no_records();
+    }
+}
+
+#[test]
 fn helper_result_write_failure_is_an_infrastructure_error_after_qa_completion() {
     let f = Fixture::new(None);
     let out = f
@@ -890,4 +1021,138 @@ fn unset_and_empty_evidence_destinations_allow_stdout_only_results() {
         f.record("stdout-only", &f.repo, &[]);
         f.no_helper_temporaries();
     }
+}
+
+fn no_evidence_siblings(f: &Fixture) {
+    assert!(
+        fs::read_dir(&f.root).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".autodrive-qa-evidence.")
+        }),
+        "temporary evidence sibling must be cleaned"
+    );
+}
+
+#[test]
+fn evidence_atomically_replaces_a_destination_symlink_without_touching_its_target() {
+    let f = Fixture::new(None);
+    let target = f.root.join("keep.json");
+    fs::write(&target, "previous evidence target").unwrap();
+    let destination = f.root.join("evidence.json");
+    symlink(&target, &destination).unwrap();
+    let (e, _) = f.evidence(&[("AUTODRIVE_QA_COMMAND", "true")]);
+    outcome(&e, "PASS", "", "0", "1");
+    assert_eq!(
+        fs::read_to_string(target).unwrap(),
+        "previous evidence target"
+    );
+    let metadata = fs::symlink_metadata(destination).unwrap();
+    assert!(metadata.is_file());
+    assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+    no_evidence_siblings(&f);
+}
+
+#[test]
+fn failed_evidence_write_or_rename_preserves_the_destination_and_removes_the_sibling() {
+    for failure in ["write", "rename"] {
+        let f = Fixture::new(None);
+        let destination = f.root.join("evidence.json");
+        fs::write(&destination, "previous evidence").unwrap();
+        let mut child = f.evidence_child();
+        if failure == "write" {
+            // Fail only the final evidence write after writing partial data.
+            // BASH_ENV is private to this fixture; no filesystem capacity or
+            // permission assumption is needed, even when tests run as root.
+            let env = f.root.join("fail-write.sh");
+            fs::write(
+                &env,
+                r#"printf() {
+  if [ "${1:-}" = '%s' ] && [[ "${2:-}" = '{"qa_status":'* ]]; then
+    builtin printf partial
+    return 1
+  fi
+  builtin printf "$@"
+}
+"#,
+            )
+            .unwrap();
+            child.env("BASH_ENV", env);
+        } else {
+            let mv = f.bin.join("mv");
+            fs::write(&mv, "#!/bin/bash\nexit 1\n").unwrap();
+            fs::set_permissions(mv, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let out = child
+            .env("AUTODRIVE_QA_COMMAND", "qa-arg-recorder completed")
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{failure}: {out:?}");
+        assert!(out.stdout.is_empty(), "{failure}: {out:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("cannot persist requested QA evidence"),
+            "{failure}: {out:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(destination).unwrap(),
+            "previous evidence"
+        );
+        f.record("completed", &f.repo, &[]);
+        f.no_helper_temporaries();
+        no_evidence_siblings(&f);
+    }
+}
+
+#[test]
+fn evidence_refuses_a_directory_symlink_or_unsafe_parent_without_changing_the_destination() {
+    for parent_mode in [None, Some(0o777), Some(0o1777)] {
+        let f = Fixture::new(None);
+        let parent = f.root.join("output");
+        fs::create_dir(&parent).unwrap();
+        let destination = parent.join("evidence.json");
+        if let Some(mode) = parent_mode {
+            fs::set_permissions(&parent, fs::Permissions::from_mode(mode)).unwrap();
+            fs::write(&destination, "previous evidence").unwrap();
+        } else {
+            symlink(&f.records, &destination).unwrap();
+        }
+        let out = f
+            .evidence_child()
+            .env("AUTODRIVE_QA_EVIDENCE", &destination)
+            .env("AUTODRIVE_QA_COMMAND", "true")
+            .output()
+            .unwrap();
+        f.failed_evidence(&out);
+        if parent_mode.is_some() {
+            assert_eq!(
+                fs::read_to_string(destination).unwrap(),
+                "previous evidence"
+            );
+        } else {
+            assert!(fs::symlink_metadata(destination).unwrap().is_symlink());
+            f.no_records();
+        }
+        assert_eq!(fs::read_dir(parent).unwrap().count(), 1);
+    }
+}
+
+#[test]
+fn evidence_parent_trust_checks_preserve_trailing_newlines_in_directory_names() {
+    let f = Fixture::new(None);
+    let safe = f.root.join("output");
+    let unsafe_parent = f.root.join("output\n");
+    fs::create_dir(&safe).unwrap();
+    fs::create_dir(&unsafe_parent).unwrap();
+    fs::set_permissions(&unsafe_parent, fs::Permissions::from_mode(0o1777)).unwrap();
+    let out = f
+        .evidence_child()
+        .env("AUTODRIVE_QA_EVIDENCE", unsafe_parent.join("evidence.json"))
+        .env("AUTODRIVE_QA_COMMAND", "true")
+        .output()
+        .unwrap();
+    f.failed_evidence(&out);
+    assert_eq!(fs::read_dir(safe).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(unsafe_parent).unwrap().count(), 0);
 }

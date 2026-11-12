@@ -2288,20 +2288,41 @@ zero exit means execution and status recording completed, including when QA
 exits non-zero. It does not select command sources or produce evidence JSON.
 
 The evidence tool resolves `${AMPLIHACK_BIN:-amplihack}` before changing
-directory, preserving relative helper paths. It creates a fresh private
-completion file for each invocation and requires helper success plus exactly
-one decimal status from `0` to `255` followed by one newline. Missing, empty,
-malformed or extra completion content is refused. An incompatible or unusable
-helper, failure to start Bash, or a completion failure makes evidence
-generation fail. Temporary suite logs and completion files are removed on
-normal success and failure.
+directory, preserving relative helper paths. Suite execution and completion
+handling live in the adjacent `autodrive_qa_execute.sh` module, keeping both
+shell modules within the 400-line budget without shortening their comments.
+Each invocation creates a fresh mode-`0700` directory under `${TMPDIR:-/tmp}`
+and puts its completion file inside. The resolved temporary root and every
+ancestor must belong to the current user or root; group- or world-writable
+directories must have sticky-bit protection. An unsafe parent cannot be made
+safe merely by creating a private child. Unavailable or untrusted temporary
+state fails evidence generation before the QA command runs.
+
+The tool requires helper success, a regular completion file without a symlink,
+an unchanged private directory mode and exactly one decimal status from `0`
+to `255` followed by one newline. Missing, empty, malformed or extra completion
+content is refused. An incompatible or unusable helper, failure to start Bash,
+or a completion failure makes evidence generation fail. Temporary suite logs
+and completion directories are removed on success, helper failure and malformed
+completion. The operator and suite run as the same user; these permissions
+isolate state from other users, not from deliberate same-user interference.
 
 Successful evidence generation also requires successful requested persistence:
 when `AUTODRIVE_QA_EVIDENCE` contains a non-empty path, the tool writes that
-file before printing the final JSON response. When the variable is unset or
-empty, no file is written and evidence generation may succeed. A failed
-requested write returns non-zero and produces no successful final stdout
-response.
+file before printing the final JSON response. As a separate persistence
+hardening change, the complete record is written to a securely created sibling
+with mode `0600` and atomically renamed over the destination, replacing an
+existing file symlink without writing through it. The destination's parent
+and ancestors meet the same ownership rules as the completion root. Its
+immediate parent must additionally forbid group and world writes, so another
+user cannot insert a directory destination before the rename; sticky-bit
+protection is sufficient for higher ancestors. The old destination is never
+unlinked first. Failed writes or renames
+remove the sibling and preserve the previous destination. A directory
+destination, including a symlink to a directory, is refused.
+When the variable is unset or empty, no file is written and evidence generation
+may succeed. A failed requested write returns non-zero and produces no
+successful final stdout response.
 
 **This is not a sandbox, and the installed check is not a security control.**
 The suite runs code from the branch whichever binary starts it: `npm test`
