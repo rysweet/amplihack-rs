@@ -22,7 +22,13 @@
 //! - the check's own output reaches the private `log_file`; a bounded tail
 //!   also reaches stderr, which the runner discards when the step succeeds;
 //! - the step itself exits 0, and the routing conditions send failures to
-//!   the fix / diagnose agents.
+//!   the fix / diagnose agents;
+//! - `step7-run-tests` runs its checks in `worktree_setup.worktree_path`, the
+//!   tree the agents change, and never in the directory it was started in.
+//!   Every step 7 test here starts the shell in `launch/` and puts the
+//!   fixture in `work/`, a separate git worktree root, so a step that tested
+//!   its launch directory would fail them. An unset or unusable worktree path
+//!   fails closed and runs no check.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -106,6 +112,10 @@ struct Sandbox {
     bin: PathBuf,
     sys: PathBuf,
     work: PathBuf,
+    /// The directory the runner is started in (`-C`). For step 7 it is never
+    /// the worktree, as in `consensus-workflow`, where the worktree is a
+    /// separate checkout under `<main>/worktrees/`.
+    launch: PathBuf,
     private_tmp: PathBuf,
     calls: PathBuf,
 }
@@ -116,9 +126,10 @@ impl Sandbox {
         let bin = tmp.path().join("bin");
         let sys = tmp.path().join("sys");
         let work = tmp.path().join("work");
+        let launch = tmp.path().join("launch");
         let private_tmp = tmp.path().join("tmp");
         let calls = tmp.path().join("calls");
-        for d in [&bin, &sys, &work, &private_tmp, &calls] {
+        for d in [&bin, &sys, &work, &launch, &private_tmp, &calls] {
             std::fs::create_dir_all(d).unwrap();
         }
         for tool in SYSTEM_TOOLS {
@@ -134,6 +145,7 @@ impl Sandbox {
             bin,
             sys,
             work,
+            launch,
             private_tmp,
             calls,
         }
@@ -173,8 +185,20 @@ impl Sandbox {
     }
 
     fn run(&self, recipe_name: &str, step_id: &str) -> Output {
-        Command::new(self.sys.join("bash"))
-            .arg("-c")
+        self.run_in(recipe_name, step_id, &self.work, &[])
+    }
+
+    /// Run a step's command in `bash` started in `cwd`, with `extra_env`
+    /// added to the cleared environment.
+    fn run_in(
+        &self,
+        recipe_name: &str,
+        step_id: &str,
+        cwd: &Path,
+        extra_env: &[(&str, String)],
+    ) -> Output {
+        let mut cmd = Command::new(self.sys.join("bash"));
+        cmd.arg("-c")
             .arg(step_command(recipe_name, step_id))
             .env_clear()
             .env("PATH", self.path_var())
@@ -185,11 +209,45 @@ impl Sandbox {
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_PAGER", "cat")
             .env("PAGER", "cat")
-            .env("LC_ALL", "C")
-            .stdin(std::process::Stdio::null())
-            .current_dir(&self.work)
+            .env("LC_ALL", "C");
+        for (k, v) in extra_env {
+            cmd.env(k, v);
+        }
+        cmd.stdin(std::process::Stdio::null())
+            .current_dir(cwd)
             .output()
             .expect("spawn bash")
+    }
+
+    /// `work/` as `worktree_setup_path.sh` accepts it: resolved, and the top
+    /// level of a git repository.
+    fn worktree(&self) -> PathBuf {
+        if !self.work.join(".git").exists() {
+            self.git(&["init", "-q"]);
+        }
+        std::fs::canonicalize(&self.work).unwrap()
+    }
+
+    /// The `worktree_setup` value `consensus-issue-worktree` hands on.
+    fn worktree_setup(&self) -> String {
+        serde_json::json!({ "worktree_path": self.worktree() }).to_string()
+    }
+
+    /// Run `step7-run-tests` as `consensus-workflow` does: the shell starts
+    /// in `launch/`, `RECIPE_VAR_worktree_setup` names `work/`, and
+    /// `AMPLIHACK_HOME` is this repository, so the step finds
+    /// `worktree_setup_path.sh`.
+    fn run_step7(&self) -> Output {
+        let setup = self.worktree_setup();
+        self.run_step7_with(&[("RECIPE_VAR_worktree_setup", setup)])
+    }
+
+    /// `step7-run-tests` started in `launch/` with `AMPLIHACK_HOME` set and
+    /// `extra_env` added.
+    fn run_step7_with(&self, extra_env: &[(&str, String)]) -> Output {
+        let mut env = vec![("AMPLIHACK_HOME", repo_root().display().to_string())];
+        env.extend(extra_env.iter().cloned());
+        self.run_in(TEST_FIX, "step7-run-tests", &self.launch, &env)
     }
 
     fn git(&self, args: &[&str]) {
@@ -319,7 +377,7 @@ fn cargo_project(cargo_rc: i32, precommit_rc: i32) -> Sandbox {
 #[test]
 fn a_failing_cargo_test_makes_the_step_report_not_passing() {
     let sb = cargo_project(1, 0);
-    let out = sb.run(TEST_FIX, "step7-run-tests");
+    let out = sb.run_step7();
     assert_step_exit_zero(&out);
     let obj = json_object(&out);
     assert_test_fix_schema(&obj);
@@ -348,7 +406,7 @@ fn a_failing_cargo_test_makes_the_step_report_not_passing() {
 #[test]
 fn cargo_exit_101_is_reported_verbatim() {
     let sb = cargo_project(101, 0);
-    let out = sb.run(TEST_FIX, "step7-run-tests");
+    let out = sb.run_step7();
     assert_step_exit_zero(&out);
     let obj = json_object(&out);
     assert_eq!(field(&obj, "test_exit_code"), "101");
@@ -358,7 +416,7 @@ fn cargo_exit_101_is_reported_verbatim() {
 #[test]
 fn every_check_passing_reports_all_passing_true() {
     let sb = cargo_project(0, 0);
-    let out = sb.run(TEST_FIX, "step7-run-tests");
+    let out = sb.run_step7();
     assert_step_exit_zero(&out);
     let obj = json_object(&out);
     assert_test_fix_schema(&obj);
@@ -371,7 +429,7 @@ fn every_check_passing_reports_all_passing_true() {
 #[test]
 fn a_failing_pre_commit_makes_the_step_report_not_passing() {
     let sb = cargo_project(0, 1);
-    let out = sb.run(TEST_FIX, "step7-run-tests");
+    let out = sb.run_step7();
     assert_step_exit_zero(&out);
     let obj = json_object(&out);
     assert_eq!(field(&obj, "test_exit_code"), "0");
@@ -387,7 +445,7 @@ fn a_failing_pre_commit_makes_the_step_report_not_passing() {
 #[test]
 fn pre_commit_runs_with_all_files() {
     let sb = cargo_project(0, 0);
-    let _ = sb.run(TEST_FIX, "step7-run-tests");
+    let _ = sb.run_step7();
     let argv = std::fs::read_to_string(sb.calls.join("pre-commit")).unwrap_or_default();
     assert!(
         argv.contains("run") && argv.contains("--all-files"),
@@ -410,7 +468,7 @@ fn configured_pre_commit_missing_from_path_reports_127() {
         !sb.bin.join("pre-commit").exists() && !sb.sys.join("pre-commit").exists(),
         "fixture must have no pre-commit on PATH"
     );
-    let out = sb.run(TEST_FIX, "step7-run-tests");
+    let out = sb.run_step7();
     assert_step_exit_zero(&out);
     let obj = json_object(&out);
     assert_eq!(field(&obj, "precommit_exit_code"), "127");
@@ -428,7 +486,7 @@ fn no_pre_commit_config_is_skipped_not_failed() {
     );
     sb.stub("cargo", 0, "ok", "ok");
     sb.stub("pre-commit", 1, "SHOULD_NOT_RUN", "SHOULD_NOT_RUN");
-    let out = sb.run(TEST_FIX, "step7-run-tests");
+    let out = sb.run_step7();
     assert_step_exit_zero(&out);
     let obj = json_object(&out);
     assert_eq!(field(&obj, "precommit_command"), "none");
@@ -454,7 +512,7 @@ fn cargo_project_without_cargo_reports_127() {
         "Cargo.toml",
         "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\n",
     );
-    let out = sb.run(TEST_FIX, "step7-run-tests");
+    let out = sb.run_step7();
     assert_step_exit_zero(&out);
     let obj = json_object(&out);
     assert_eq!(field(&obj, "test_exit_code"), "127");
@@ -466,7 +524,7 @@ fn a_failing_npm_test_makes_the_step_report_not_passing() {
     let sb = Sandbox::new();
     sb.write("package.json", "{\"name\":\"fixture\"}\n");
     sb.stub("npm", 1, "STUB_NPM_STDOUT", "STUB_NPM_FAIL");
-    let out = sb.run(TEST_FIX, "step7-run-tests");
+    let out = sb.run_step7();
     assert_step_exit_zero(&out);
     let obj = json_object(&out);
     assert!(
@@ -485,7 +543,7 @@ fn nothing_detected_reports_none_and_passing() {
     let sb = Sandbox::new();
     sb.stub("cargo", 1, "SHOULD_NOT_RUN", "SHOULD_NOT_RUN");
     sb.stub("npm", 1, "SHOULD_NOT_RUN", "SHOULD_NOT_RUN");
-    let out = sb.run(TEST_FIX, "step7-run-tests");
+    let out = sb.run_step7();
     assert_step_exit_zero(&out);
     let obj = json_object(&out);
     assert_test_fix_schema(&obj);
@@ -515,7 +573,7 @@ fn large_test_output_still_leaves_one_json_object_on_stdout() {
          exit 1",
     );
     sb.stub("pre-commit", 0, "ok", "ok");
-    let out = sb.run(TEST_FIX, "step7-run-tests");
+    let out = sb.run_step7();
     assert_step_exit_zero(&out);
     let obj = json_object(&out);
     assert_eq!(field(&obj, "test_exit_code"), "1");
@@ -529,7 +587,7 @@ fn large_test_output_still_leaves_one_json_object_on_stdout() {
 #[test]
 fn log_file_holds_the_full_output_and_is_private() {
     let sb = cargo_project(1, 0);
-    let out = sb.run(TEST_FIX, "step7-run-tests");
+    let out = sb.run_step7();
     let obj = json_object(&out);
     let log = PathBuf::from(field(&obj, "log_file"));
     assert!(
@@ -573,7 +631,7 @@ fn test_fix_rejects_log_paths_that_cannot_be_safely_serialized() {
     ] {
         let sb = cargo_project(0, 0);
         sb.stub("mktemp", 0, path, "");
-        let out = sb.run(TEST_FIX, "step7-run-tests");
+        let out = sb.run_step7();
         assert_step_exit_zero(&out);
         let obj = json_object(&out);
         assert_test_fix_schema(&obj);
@@ -589,11 +647,186 @@ fn test_fix_rejects_log_paths_that_cannot_be_safely_serialized() {
 #[test]
 fn stderr_carries_a_result_summary() {
     let sb = cargo_project(1, 0);
-    let out = sb.run(TEST_FIX, "step7-run-tests");
+    let out = sb.run_step7();
     assert!(
         stderr(&out).contains("[result]"),
         "the step must print a one-line [result] summary to stderr; stderr:\n{}",
         stderr(&out)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// consensus-test-fix.yaml: step7-run-tests runs in the worktree
+// ---------------------------------------------------------------------------
+
+const MINIMAL_CARGO_TOML: &str = "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\n";
+
+/// A launch directory that is a Cargo project with a pre-commit config, as
+/// the main checkout of this repository is.
+fn green_launch_checkout(sb: &Sandbox) {
+    std::fs::write(sb.launch.join("Cargo.toml"), MINIMAL_CARGO_TOML).unwrap();
+    std::fs::write(sb.launch.join(".pre-commit-config.yaml"), "repos: []\n").unwrap();
+}
+
+#[test]
+fn step7_tests_the_worktree_not_the_launch_directory() {
+    // The launch directory is a Cargo project; the worktree has no project.
+    // The step must look only at the worktree, so nothing runs.
+    let sb = Sandbox::new();
+    green_launch_checkout(&sb);
+    sb.stub("cargo", 0, "SHOULD_NOT_RUN", "SHOULD_NOT_RUN");
+    sb.stub("pre-commit", 0, "SHOULD_NOT_RUN", "SHOULD_NOT_RUN");
+    let out = sb.run_step7();
+    assert_step_exit_zero(&out);
+    let obj = json_object(&out);
+    assert_eq!(field(&obj, "test_command"), "none");
+    assert_eq!(field(&obj, "precommit_command"), "none");
+    assert!(
+        !sb.called("cargo") && !sb.called("pre-commit"),
+        "the launch directory's project must not be tested"
+    );
+    let wanted = format!(
+        "[dir] checks run in the worktree {}",
+        sb.worktree().display()
+    );
+    assert!(
+        stderr(&out).contains(&wanted),
+        "stderr must name the worktree the checks ran in ({wanted:?}); stderr:\n{}",
+        stderr(&out)
+    );
+}
+
+/// The step reported no check run, nothing passing, and no log, and ran
+/// neither cargo nor pre-commit.
+fn assert_failed_closed_without_checks(sb: &Sandbox, out: &Output, case: &str, reason: &str) {
+    assert_step_exit_zero(out);
+    let obj = json_object(out);
+    assert_test_fix_schema(&obj);
+    for (key, want) in [
+        ("tests_run", "false"),
+        ("test_command", "none"),
+        ("test_exit_code", ""),
+        ("all_passing", "false"),
+        ("log_file", ""),
+    ] {
+        assert_eq!(field(&obj, key), want, "case {case}: {key} in {obj:?}");
+    }
+    assert!(
+        !sb.called("cargo") && !sb.called("pre-commit"),
+        "case {case}: no check may run without a usable worktree"
+    );
+    assert!(
+        stderr(out).contains(reason),
+        "case {case}: stderr must say why ({reason:?}); stderr:\n{}",
+        stderr(out)
+    );
+}
+
+#[test]
+fn unset_worktree_setup_fails_closed_instead_of_testing_the_launch_directory() {
+    // A standalone run with no worktree_setup: a green launch checkout must
+    // not be reported as the change passing.
+    for setup in [None, Some(String::new()), Some("{}".to_string())] {
+        let sb = cargo_project(0, 0);
+        green_launch_checkout(&sb);
+        let env: Vec<(&str, String)> = setup
+            .clone()
+            .map(|v| vec![("RECIPE_VAR_worktree_setup", v)])
+            .unwrap_or_default();
+        let out = sb.run_step7_with(&env);
+        let case = format!("worktree_setup {setup:?}");
+        assert_failed_closed_without_checks(&sb, &out, &case, "worktree-setup-unset");
+    }
+}
+
+/// `(case name, builds the worktree_setup value, expected stderr reason)`.
+type UnusableWorktreeCase = (&'static str, fn(&Sandbox) -> String, &'static str);
+
+#[test]
+fn an_unusable_worktree_path_fails_closed() {
+    // worktree_setup_path.sh rejects each of these; the step must not fall
+    // back to the directory it started in.
+    let cases: &[UnusableWorktreeCase] = &[
+        (
+            "relative path",
+            |_| serde_json::json!({ "worktree_path": "work" }).to_string(),
+            "is not absolute",
+        ),
+        (
+            "not a git repository",
+            |sb| {
+                let dir = std::fs::canonicalize(&sb.work).unwrap();
+                serde_json::json!({ "worktree_path": dir }).to_string()
+            },
+            "is not a worktree top level",
+        ),
+        (
+            "a directory below the worktree root",
+            |sb| {
+                let root = sb.worktree();
+                let sub = root.join("sub");
+                std::fs::create_dir_all(&sub).unwrap();
+                serde_json::json!({ "worktree_path": sub }).to_string()
+            },
+            "is not a worktree top level",
+        ),
+        (
+            "missing directory",
+            |sb| {
+                let gone = std::fs::canonicalize(sb.tmp.path()).unwrap().join("gone");
+                serde_json::json!({ "worktree_path": gone }).to_string()
+            },
+            "is not a directory",
+        ),
+        (
+            "not JSON",
+            |_| "not json".to_string(),
+            "worktree-setup-not-json",
+        ),
+    ];
+    for (name, setup, reason) in cases {
+        let sb = cargo_project(0, 0);
+        green_launch_checkout(&sb);
+        let value = setup(&sb);
+        let out = sb.run_step7_with(&[("RECIPE_VAR_worktree_setup", value)]);
+        assert_failed_closed_without_checks(&sb, &out, name, reason);
+    }
+}
+
+#[test]
+fn a_missing_worktree_helper_fails_closed() {
+    // No AMPLIHACK_HOME and no bundle under HOME or the launch directory:
+    // the step cannot check the worktree path, so it runs nothing.
+    let sb = cargo_project(0, 0);
+    green_launch_checkout(&sb);
+    let out = sb.run_in(
+        TEST_FIX,
+        "step7-run-tests",
+        &sb.launch,
+        &[("RECIPE_VAR_worktree_setup", sb.worktree_setup())],
+    );
+    assert_failed_closed_without_checks(&sb, &out, "no helper", "worktree_setup_path.sh not found");
+}
+
+#[test]
+fn test_fix_declares_worktree_setup_for_step7() {
+    // step7-run-tests reads RECIPE_VAR_worktree_setup through
+    // worktree_setup_path.sh; the key must be declared so the runner replaces
+    // a parent run's inherited value (#1561).
+    assert_eq!(
+        recipe(TEST_FIX)["context"]["worktree_setup"].as_str(),
+        Some(""),
+        "consensus-test-fix must declare worktree_setup with a \"\" default"
+    );
+    let cmd = step_command(TEST_FIX, "step7-run-tests");
+    assert!(
+        cmd.contains("worktree_setup_path.sh") && cmd.contains("cd \"$CHECK_DIR\""),
+        "step7-run-tests must enter the checked worktree path"
+    );
+    assert!(
+        step(TEST_FIX, "step7-run-tests")["working_dir"].is_null(),
+        "an empty working_dir would fall back to the runner's process directory; \
+         step7 enters the worktree itself and fails closed without one"
     );
 }
 
@@ -672,6 +905,189 @@ fn local_testing_prompt_cannot_declare_ready_while_checks_fail() {
         !prompt.contains(r#"all_passing is "false""#),
         "step8 rule must not key on the literal \"false\""
     );
+}
+
+// ---------------------------------------------------------------------------
+// consensus-test-fix.yaml through the real runner, launch dir != worktree
+// ---------------------------------------------------------------------------
+
+/// Run `step7-run-tests`, `step7-fix-issues` and `step8-local-testing`
+/// through the pinned runner with `-C launch/`, as `consensus-workflow` runs
+/// them from the main checkout. With `with_worktree_setup`, the context names
+/// `work/` as `worktree_setup.worktree_path`. The runner process itself starts
+/// in a third directory, so neither directory is the default by accident.
+/// The agent launcher records each prompt and the directory it ran in.
+fn run_test_fix_handoff(sb: &Sandbox, with_worktree_setup: bool) -> Output {
+    let runner = pinned_runner();
+    let mut phase = recipe(TEST_FIX);
+    let steps = phase["steps"].as_sequence_mut().unwrap();
+    steps.truncate(3);
+    let ids: Vec<&str> = steps.iter().filter_map(|s| s["id"].as_str()).collect();
+    assert_eq!(
+        ids,
+        ["step7-run-tests", "step7-fix-issues", "step8-local-testing"],
+        "the handoff runs steps 7 and 8 exactly as the recipe orders them"
+    );
+    let recipe_path = sb.tmp.path().join("test-fix-handoff.yaml");
+    std::fs::write(&recipe_path, serde_yaml::to_string(&phase).unwrap()).unwrap();
+    let launcher = sb.bin.join("agent-launcher");
+    executable(
+        &launcher,
+        r#"#!/usr/bin/env bash
+set -eu
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-p" ]; then
+    prompt=$2
+    case "$prompt" in
+      *"Diagnose and fix any test or pre-commit failures:"*)
+        printf '%s' "$prompt" > "$STUB_CALLS/fix.prompt"
+        pwd -P > "$STUB_CALLS/fix.cwd"
+        printf '{"issues_found":[],"fixes_applied":[],"all_passing":false}\n'
+        exit 0 ;;
+      *"Perform mandatory local testing:"*)
+        printf '%s' "$prompt" > "$STUB_CALLS/local.prompt"
+        pwd -P > "$STUB_CALLS/local.cwd"
+        printf '{"test_scenarios":[],"all_scenarios_passed":false,"regressions_found":[],"ready_to_commit":false}\n'
+        exit 0 ;;
+      *) echo "unexpected agent prompt" >&2; exit 1 ;;
+    esac
+  fi
+  shift
+done
+exit 1
+"#,
+    );
+    let mut cmd = Command::new(runner);
+    cmd.arg(&recipe_path)
+        .args([
+            "--no-auto-stage",
+            "--agent-binary",
+            "claude",
+            "--output-format",
+            "json",
+        ])
+        .arg("--audit-dir")
+        .arg(sb.tmp.path().join("audit"))
+        .arg("-C")
+        .arg(&sb.launch);
+    if with_worktree_setup {
+        cmd.arg("-c")
+            .arg(format!("worktree_setup={}", sb.worktree_setup()));
+    }
+    cmd.env_clear()
+        .env("PATH", sb.path_var())
+        .env("HOME", sb.tmp.path())
+        .env("TMPDIR", &sb.private_tmp)
+        .env("STUB_CALLS", &sb.calls)
+        .env("AMPLIHACK_HOME", repo_root())
+        .env("AMPLIHACK_LAUNCHER_BINARY", launcher)
+        .env("RECIPE_RUNNER_NO_UPDATE_CHECK", "1")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
+        .stdin(std::process::Stdio::null())
+        .current_dir(sb.tmp.path())
+        .output()
+        .expect("run real recipe-runner-rs")
+}
+
+/// The `**Test Results:**` JSON an agent prompt received.
+fn prompt_test_results(prompt: &str) -> serde_json::Value {
+    let evidence = prompt
+        .lines()
+        .find_map(|line| line.strip_prefix("**Test Results:** "))
+        .unwrap_or_else(|| panic!("agent must receive test results; prompt:\n{prompt}"));
+    serde_json::from_str(evidence).expect("test results must be the recorded JSON object")
+}
+
+/// A cargo stub that records the directory it ran in and exits 101 only in
+/// a directory holding `cargo-fails-here`.
+fn cargo_failing_where_marked(sb: &Sandbox) {
+    sb.stub_body(
+        "cargo",
+        "pwd -P >> \"$STUB_CALLS/cargo.cwd\"\n\
+         if [ -f cargo-fails-here ]; then echo STUB_CARGO_FAIL >&2; exit 101; fi\n\
+         echo STUB_CARGO_OK >&2\n\
+         exit 0",
+    );
+}
+
+fn read_call(sb: &Sandbox, name: &str) -> String {
+    let path = sb.calls.join(name);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+#[test]
+fn a_failing_worktree_reaches_the_fix_agent_when_the_launch_checkout_is_green() {
+    // crusty round 10: with no working_dir the step tested the launch
+    // checkout, reported all_passing "true" and skipped the fix agent.
+    let sb = Sandbox::new();
+    std::fs::write(sb.launch.join("Cargo.toml"), MINIMAL_CARGO_TOML).unwrap();
+    sb.write("Cargo.toml", MINIMAL_CARGO_TOML);
+    sb.write("cargo-fails-here", "");
+    cargo_failing_where_marked(&sb);
+    let worktree = sb.worktree();
+    let out = run_test_fix_handoff(&sb, true);
+    assert_step_exit_zero(&out);
+    assert_eq!(
+        read_call(&sb, "cargo.cwd").trim(),
+        worktree.display().to_string(),
+        "cargo must run once, in the worktree"
+    );
+    let fix = read_call(&sb, "fix.prompt");
+    let results = prompt_test_results(&fix);
+    assert_eq!(results["tests_run"], "true", "{results}");
+    assert_eq!(results["test_exit_code"], "101", "{results}");
+    assert_eq!(results["all_passing"], "false", "{results}");
+    assert_eq!(
+        read_call(&sb, "fix.cwd").trim(),
+        worktree.display().to_string(),
+        "the fix agent works in the tree the check tested"
+    );
+    let local = read_call(&sb, "local.prompt");
+    assert_eq!(prompt_test_results(&local)["all_passing"], "false");
+}
+
+#[test]
+fn a_passing_worktree_skips_the_fix_agent_when_the_launch_checkout_fails() {
+    let sb = Sandbox::new();
+    std::fs::write(sb.launch.join("Cargo.toml"), MINIMAL_CARGO_TOML).unwrap();
+    std::fs::write(sb.launch.join("cargo-fails-here"), "").unwrap();
+    sb.write("Cargo.toml", MINIMAL_CARGO_TOML);
+    cargo_failing_where_marked(&sb);
+    let worktree = sb.worktree();
+    let out = run_test_fix_handoff(&sb, true);
+    assert_step_exit_zero(&out);
+    assert_eq!(
+        read_call(&sb, "cargo.cwd").trim(),
+        worktree.display().to_string(),
+        "cargo must run once, in the worktree"
+    );
+    assert!(
+        !sb.calls.join("fix.prompt").exists(),
+        "the runner must skip the fix agent when the worktree's checks pass"
+    );
+    let local = read_call(&sb, "local.prompt");
+    let results = prompt_test_results(&local);
+    assert_eq!(results["test_exit_code"], "0", "{results}");
+    assert_eq!(results["all_passing"], "true", "{results}");
+}
+
+#[test]
+fn without_worktree_setup_the_runner_routes_to_the_fix_agent_without_testing() {
+    // A standalone run of consensus-test-fix: the step must not test the -C
+    // directory (or the runner's own directory) in place of the change.
+    let sb = Sandbox::new();
+    std::fs::write(sb.launch.join("Cargo.toml"), MINIMAL_CARGO_TOML).unwrap();
+    std::fs::write(sb.tmp.path().join("Cargo.toml"), MINIMAL_CARGO_TOML).unwrap();
+    cargo_failing_where_marked(&sb);
+    let out = run_test_fix_handoff(&sb, false);
+    assert_step_exit_zero(&out);
+    assert!(!sb.called("cargo"), "no check may run without a worktree");
+    let results = prompt_test_results(&read_call(&sb, "fix.prompt"));
+    assert_eq!(results["tests_run"], "false", "{results}");
+    assert_eq!(results["all_passing"], "false", "{results}");
+    assert_eq!(results["log_file"], "", "{results}");
 }
 
 // ---------------------------------------------------------------------------
@@ -774,7 +1190,7 @@ fn diagnose_step_runs_only_for_checked_and_not_passing_ci() {
 
 // Use the real runner for condition evaluation, JSON context storage and agent
 // prompt rendering. Only the external tools and agent launcher are stubs.
-fn run_ci_handoff(sb: &Sandbox) -> Output {
+fn pinned_runner() -> PathBuf {
     let runner = std::env::var_os("RECIPE_RUNNER_RS_PATH")
         .or_else(|| std::env::var_os("RECIPE_RUNNER_QA_BINARY"))
         .map(PathBuf::from)
@@ -788,6 +1204,11 @@ fn run_ci_handoff(sb: &Sandbox) -> Output {
              scripts/install-pinned-recipe-runner.sh"
         );
     };
+    runner
+}
+
+fn run_ci_handoff(sb: &Sandbox) -> Output {
+    let runner = pinned_runner();
     let mut phase = recipe(MERGE_FINALIZE);
     phase["steps"].as_sequence_mut().unwrap().truncate(3);
     let recipe_path = sb.tmp.path().join("ci-handoff.yaml");

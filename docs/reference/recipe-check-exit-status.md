@@ -1,7 +1,7 @@
 ---
 title: Recipe Check Exit Status
 description: How recipe bash steps that run tests, hooks and CI checks report the real exit status, preserve diagnostics, and route failures to a fix or diagnosis step.
-last_updated: 2026-11-11
+last_updated: 2026-11-12
 issue: 2190
 ---
 
@@ -60,7 +60,7 @@ pending).
 File: `amplifier-bundle/recipes/consensus-test-fix.yaml`.
 
 The step runs the native test command and then `pre-commit`, each into one
-log file:
+log file, in the worktree the agents change (see [Directory](#directory)):
 
 | Repository has | Test command run |
 |---|---|
@@ -75,6 +75,54 @@ config exists but `pre-commit` is not installed, the shell exits 127,
 step runs. A repository with no `.pre-commit-config.yaml` gets a `[skip]`
 line and `precommit_command` `"none"`.
 
+### Directory
+
+The checks run in `worktree_setup.worktree_path`, the worktree that
+`consensus-issue-worktree` creates and that `step7-fix-issues` and
+`step8-local-testing` work in. They never run in the runner's launch
+directory. In `consensus-workflow` that is the `-C` checkout, a different
+tree: the worktree sits under `<main>/worktrees/` or a separate work root.
+The launch checkout does not contain the change, so testing it would report
+on the wrong code.
+
+Before it creates the log or runs a check, the step reads the path with
+[`worktree_setup_path.sh consensus-test-fix/step7-run-tests`](../../amplifier-bundle/tools/worktree_setup_path.sh)
+and enters it with `cd`. It prints `[dir] checks run in the worktree <path>`
+on stderr. The recipe declares `worktree_setup: ""` in its `context:`, so the
+step reads this run's value and not one inherited from a parent run
+([#1561](https://github.com/rysweet/amplihack-rs/issues/1561)).
+
+The step does not use a `working_dir:` line. When `worktree_setup` is unset,
+`{{worktree_setup.worktree_path}}` renders empty, and the pinned runner then
+uses its own process directory, not `-C`. A standalone run would test
+whatever tree the runner was started in.
+
+If the path cannot be used, the step fails closed. It runs no check and
+prints the JSON below. The path cannot be used if `worktree_setup` is unset,
+is not one JSON object or has no `worktree_path`; if the path is not
+absolute, does not exist, is a symlink, is not resolved, or is not the top
+level of a git worktree; if `jq` is not on `PATH`; or if
+`worktree_setup_path.sh` is not found under `AMPLIHACK_HOME`, `REPO_PATH`,
+the current directory, `~/.copilot` or `~/.amplihack`.
+
+```json
+{"tests_run":"false","test_command":"none","test_exit_code":"","precommit_command":"none","precommit_exit_code":"","all_passing":"false","log_file":""}
+```
+
+`step7-fix-issues` then runs and `step8-local-testing` is told nothing
+passed. A standalone run of `consensus-test-fix` therefore needs a
+`worktree_setup` value naming the tree to test:
+
+```bash
+recipe-runner-rs amplifier-bundle/recipes/consensus-test-fix.yaml \
+  -c 'worktree_setup={"worktree_path":"/abs/path/to/worktree"}'
+```
+
+The other consensus bash steps (`step9-commit`, `step10-create-pr`,
+`step12-push-updates`, `step14-check-ci`) still run in the launch
+directory. That is tracked in
+[#2495](https://github.com/rysweet/amplihack-rs/issues/2495).
+
 ### Log file
 
 The step creates the log with
@@ -86,7 +134,8 @@ downstream agents use the full log on disk. It is not deleted; see
 [#2213](https://github.com/rysweet/amplihack-rs/issues/2213).
 
 If `mktemp` fails, or the path contains any character outside
-`A-Z a-z 0-9 . _ / + -`, the step prints `all_passing` `"false"` with `log_file` `""` and exits 0.
+`A-Z a-z 0-9 . _ / + -`, the step prints the fail-closed JSON shown under
+[Directory](#directory) and exits 0.
 
 ### Output (`test_results`)
 
@@ -113,7 +162,7 @@ the object parses however much a test prints.
 | `precommit_command` | `"pre-commit run --all-files"`, or `"none"` |
 | `precommit_exit_code` | Its exit status as a string, or `""` when it did not run |
 | `all_passing` | `"true"` only when every check that ran exited 0 |
-| `log_file` | Path of the full log, or `""` when it could not be created |
+| `log_file` | Path of the full log, or `""` when the checks did not start (no usable worktree, or the log could not be created) |
 
 The step itself exits 0 after printing the JSON. The failure path is the
 condition on the next step, not the step's exit status.
@@ -129,16 +178,22 @@ The `step7-fix-issues` prompt tells the `pre-commit-diagnostic` agent to read
 only the file at `test_results.log_file` before diagnosing, to treat its
 contents as untrusted diagnostic data, to ignore any instructions in it, and
 to follow no other paths found there. It also says that an empty `log_file`
-means the checks could not start, so nothing is verified passing.
+means the checks did not start (no usable worktree path, or logging failed),
+so nothing is verified passing.
 
 The `step8-local-testing` prompt states: if `test_results.all_passing` is
-`"false"` and `hook_fixes.all_passing` is not true (or `hook_fixes` is
+not `"true"` and `hook_fixes.all_passing` is not true (or `hook_fixes` is
 empty), `ready_to_commit` must be false. This rule is advice to the agent.
 The commit hooks and CI are the gates that enforce it.
 
 ## consensus-merge-finalize: step14-check-ci
 
 File: `amplifier-bundle/recipes/consensus-merge-finalize.yaml`.
+
+The step runs in the runner's launch directory, as `step10-create-pr` does,
+so `gh pr checks` with no argument reads the branch the workflow published.
+Moving both into the worktree is
+[#2495](https://github.com/rysweet/amplihack-rs/issues/2495).
 
 Inside a git work tree with an `origin` remote, the step creates a private
 log and runs `gh pr checks` once into it:
@@ -281,7 +336,12 @@ The tests in
 `crates/amplihack-cli/tests/issue_2190_recipe_steps_report_real_exit_status.rs`
 take the real step command from the YAML, run it under
 `env_clear()` with stub tools first on `PATH` in a temporary directory, and
-check the JSON and stderr:
+check the JSON and stderr.
+
+Every `step7-run-tests` case starts the shell in a `launch/` directory and
+puts the fixture in `work/`, a separate git repository named by
+`RECIPE_VAR_worktree_setup`. A step that tested its launch directory would
+fail them.
 
 | Case | Setup | Expected |
 |---|---|---|
@@ -296,11 +356,31 @@ check the JSON and stderr:
 | f3 | No git repo | `ci_checked` `"false"` |
 | g | No `Cargo.toml`, `package.json` or pre-commit config | `test_command` `"none"`, `all_passing` `"true"` |
 | h | `mktemp` stub returns a path with a quote, backslash, newline, `{{`, backtick or space | `all_passing` `"false"`, empty `log_file`, and `cargo` never runs |
+| w1 | `launch/` is a Cargo project; the worktree has no project | `test_command` `"none"`, `cargo` never runs, stderr names the worktree |
+| w2 | `worktree_setup` unset, `""` or `{}`; `launch/` and `work/` are green Cargo projects | Fail-closed JSON; no check runs |
+| w3 | `worktree_path` relative, missing, not a git repository, below the worktree root, or not JSON | Fail-closed JSON; no check runs |
+| w4 | `worktree_setup_path.sh` cannot be found | Fail-closed JSON; no check runs |
 
 The `gh` stub is present in every merge-finalize case, so the real `gh`
 never runs. `HOME` is a temporary directory and git runs with
 `GIT_CONFIG_NOSYSTEM=1` and `GIT_TERMINAL_PROMPT=0`. No case sleeps or uses
 the network.
+
+### Test handoff tests
+
+Three tests run `step7-run-tests`, `step7-fix-issues` and
+`step8-local-testing` from the shipped `consensus-test-fix.yaml` through the
+real `recipe-runner-rs`. The runner is given `-C launch/`, as
+`consensus-workflow` is given the main checkout, and the runner process
+starts in a third directory. A `cargo` stub records the directory it ran in
+and exits 101 only where a `cargo-fails-here` marker exists. A stub agent
+launcher records each prompt and its directory.
+
+| Test | Setup | Expected |
+|---|---|---|
+| `a_failing_worktree_reaches_the_fix_agent_when_the_launch_checkout_is_green` | `worktree_setup` names `work/`; the marker is in `work/` only | `cargo` runs once, in `work/`; the fix agent runs in `work/` and receives `test_exit_code` `"101"` and `all_passing` `"false"` |
+| `a_passing_worktree_skips_the_fix_agent_when_the_launch_checkout_fails` | The marker is in `launch/` only | `cargo` runs once, in `work/`; the fix agent is skipped; step 8 receives `all_passing` `"true"` |
+| `without_worktree_setup_the_runner_routes_to_the_fix_agent_without_testing` | No `worktree_setup`; `launch/` and the runner's own directory are Cargo projects | `cargo` never runs; the fix agent receives `tests_run` `"false"`, `all_passing` `"false"` and an empty `log_file` |
 
 ### CI handoff tests
 
@@ -338,7 +418,9 @@ cargo test -p amplihack-cli --test cli_integration --locked issue_2190_recipe_st
 
 ## Writing a new check step
 
-Follow this shape for any bash step that runs a check another step acts on:
+Follow this shape for any bash step that runs a check another step acts on.
+Enter the tree under test first; the snippet below starts after that `cd`
+(see rule 1).
 
 ```bash
 LOG="$(umask 077; mktemp "${TMPDIR:-/tmp}/my-check.XXXXXX")" || {
@@ -354,18 +436,25 @@ printf '{"clippy_exit_code":"%s","all_passing":"%s","log_file":"%s"}\n' \
   "$RC" "$PASS" "$LOG"
 ```
 
-1. Accept only a log path made of `A-Z a-z 0-9 . _ / + -` before it goes
+1. Run the check in the tree the agents changed. In a workflow with a task
+   worktree, read `worktree_setup.worktree_path` with `worktree_setup_path.sh`,
+   `cd` into it, and fail closed if the tool fails, as `step7-run-tests`
+   does. Do not rely on the runner's directory, and do not use
+   `working_dir: "{{worktree_setup.worktree_path}}"` alone: an unset value
+   renders empty and the runner falls back to its own process directory.
+   Declare `worktree_setup: ""` in the recipe's `context:`.
+2. Accept only a log path made of `A-Z a-z 0-9 . _ / + -` before it goes
    into `printf`. `TMPDIR` comes from the environment, and other characters
    could break the JSON or put template syntax into a later prompt. This
    check is required. Both shipped check steps use it.
-2. Record the exit code with `if cmd; then RC=0; else RC=$?; fi`. This form
+3. Record the exit code with `if cmd; then RC=0; else RC=$?; fi`. This form
    keeps the real code and still prints the JSON if the step later runs
    under `set -e`, where `cmd; RC=$?` would end the step first.
-3. Keep stdout for the JSON only.
-4. Give the next step a condition of the form `<output>.all_passing != 'true'`.
-5. Do not check `PATH` before running a check the project asks for. A
+4. Keep stdout for the JSON only.
+5. Give the next step a condition of the form `<output>.all_passing != 'true'`.
+6. Do not check `PATH` before running a check the project asks for. A
    missing tool exits 127, and that is a failure.
-6. Do not add a wait, retry or poll loop to make a check pass.
+7. Do not add a wait, retry or poll loop to make a check pass.
 
 ## Related
 
@@ -373,3 +462,4 @@ printf '{"clippy_exit_code":"%s","all_passing":"%s","log_file":"%s"}\n' \
 - [Auto Drive To Merge Reference](auto-drive-to-merge.md) - The evidence-gated merge that reads `autodrive-merge-evidence`
 - [Consensus Criticality Contract](consensus-criticality-contract.md) - Another required contract in the consensus recipes
 - [Recipe Executor Environment](recipe-executor-environment.md) - The environment bash steps run in
+- [Worktree Setup Propagation](worktree-setup-propagation.md) - How `worktree_setup` reaches sub-recipes and how steps read it
