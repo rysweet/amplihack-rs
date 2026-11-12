@@ -83,8 +83,8 @@ steps:
       10. Implement the narrowest fix and add regression coverage or equivalent
          static validation for the proven failure mode.
       11. Closure must include `pre-commit run --all-files`, targeted tests,
-         `gh pr create`, `gh pr checks --watch`, and evidence that the PR is
-         merge-ready.
+         `gh pr create` and concrete merge-readiness evidence; pending or
+         unavailable CI stays unresolved for the next round, without watching CI.
 
       Output a comprehensive design specification.
     output: "architecture_design"
