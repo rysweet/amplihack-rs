@@ -1048,11 +1048,11 @@ fn a_json_recipe_with_a_surrogate_pair_runs_and_its_context_is_inherited() {
 }
 
 /// S6 through the command, for a YAML and a JSON recipe: an `AMPLIHACK_*`
-/// key in the `context:` of the recipe the run starts is refused before the
-/// runner starts, on a dry run too. The stub runner launches its steps even
-/// on a dry run, so a step record would show the check was missed.
+/// key in the `context:` of the recipe the run starts is refused before any
+/// step starts, on a dry run too. The stub runner launches its steps even on
+/// a dry run, so a step record would show the check was missed.
 #[test]
-fn a_reserved_key_in_the_recipe_context_is_refused_before_the_runner_starts() {
+fn a_reserved_key_in_the_recipe_context_is_refused_before_any_step_starts() {
     let f = Fixture::new(&[]);
     for key in [
         "amplihack_parent_effort",

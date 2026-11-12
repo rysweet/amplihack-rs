@@ -457,9 +457,10 @@ Two things that someone named explicitly can still stop one:
   surrogate-pair escapes; see
   [Recipe text encoding](./recipe-cli-reference.md#recipe-text-encoding)),
   merges its `context:` with `-c` and the context file, and checks that one
-  map. Before #1883 the same keys were refused when the map was handed to the
-  runner, so on a real run only; the check now runs before any work, so a
-  `--dry-run` refuses them too. It does not reach sub-recipes.
+  map before any work: before the runner is looked up or started. When the
+  map is handed to the runner it is checked again, as before #1883, on every
+  run; a `--dry-run` also starts the runner, so it was refused before #1883
+  too, only later. It does not reach sub-recipes.
   The runner loads those itself, in the same process, and exports their
   `context:` keys, and a `type: recipe` step's own `context:`, in the same
   way. With recipe-runner 0.6.0, a sub-recipe holding

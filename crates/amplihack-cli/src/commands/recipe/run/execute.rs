@@ -550,6 +550,41 @@ pub(super) fn context_env_pairs(
     pairs
 }
 
+/// #2329: the private auto-drive state directory for one invocation.
+///
+/// Resolution order: the operator's explicit `autodrive_state_dir` (already
+/// validated by `InvocationAuthorization::capture`), then `autodrive-state`
+/// in this run's durable folder, then `autodrive-state` in the dry run's
+/// private launch copy. The directory is created 0700, or an existing one is
+/// checked for a non-symlink leaf, ownership and private modes; it is never
+/// chmodded to pass. The returned path is the absolute path before
+/// canonicalisation: the runner binds it, passes the same string to the child
+/// and the report compares against it lexically.
+fn assign_autodrive_state_dir(
+    explicit_inputs: &BTreeMap<String, String>,
+    workspace: &crate::commands::cleanup::run_dir::RunWorkspace,
+    launch_home: &Path,
+) -> Result<PathBuf> {
+    let directory = match explicit_inputs.get("autodrive_state_dir") {
+        Some(value) => PathBuf::from(value),
+        None => match workspace.durable_run_dir()? {
+            Some(run_dir) => run_dir.join("autodrive-state"),
+            None => launch_home.join("autodrive-state"),
+        },
+    };
+    anyhow::ensure!(
+        directory.is_absolute(),
+        "autodrive_state_dir must be an absolute path"
+    );
+    anyhow::ensure!(
+        directory.to_str().is_some(),
+        "auto-drive state directory {directory:?} is not valid UTF-8"
+    );
+    crate::commands::orch::autodrive::state::EvidenceStore::create(&directory)
+        .with_context(|| format!("cannot prepare auto-drive state directory {directory:?}"))?;
+    Ok(directory)
+}
+
 // The resolved agent binary is an extra argument on purpose: the caller
 // decided it once, for the pre-flight and the steps alike (issue #1481).
 #[allow(clippy::too_many_arguments)]
@@ -557,24 +592,24 @@ pub(super) fn context_env_pairs(
 pub(super) fn execute_recipe_via_rust(
     recipe_path: &Path,
     context: &BTreeMap<String, String>,
+    explicit_inputs: &BTreeMap<String, String>,
     dry_run: bool,
-    _verbose: bool,
+    verbose: bool,
     working_dir: &Path,
     search_dirs: &[PathBuf],
     step_timeout: Option<u64>,
     agent_binary: amplihack_utils::agent_binary::Resolution,
-    merge_guard: bool,
 ) -> Result<RecipeRunResult> {
     execute_recipe_via_rust_fresh(
         recipe_path,
         context,
+        explicit_inputs,
         dry_run,
-        _verbose,
+        verbose,
         working_dir,
         search_dirs,
         step_timeout,
         agent_binary,
-        merge_guard,
         false,
     )
 }
@@ -583,34 +618,90 @@ pub(super) fn execute_recipe_via_rust(
 pub(super) fn execute_recipe_via_rust_fresh(
     recipe_path: &Path,
     context: &BTreeMap<String, String>,
+    explicit_inputs: &BTreeMap<String, String>,
     dry_run: bool,
-    _verbose: bool,
+    verbose: bool,
     working_dir: &Path,
     search_dirs: &[PathBuf],
     step_timeout: Option<u64>,
     agent_binary: amplihack_utils::agent_binary::Resolution,
-    merge_guard: bool,
     fresh: bool,
 ) -> Result<RecipeRunResult> {
-    // Refuse an `AMPLIHACK_*` context key before any work, a dry run
-    // included. `pass_context` refuses the same keys on a real run; this
-    // earlier check adds only the dry run. `run_recipe_with_options`, the one
-    // production caller, has already merged the top-level recipe's own
-    // `context:` into `context` (`infer_missing_context`), and it read the
-    // recipe with `parse_recipe_from_path`, the parser that also takes JSON
-    // with surrogate-pair escapes (#1964). So this one check covers `-c`, a
-    // context file and the top-level recipe's `context:`, and the file is not
-    // parsed a second time here. Sub-recipe `context:` is the runner's, which
-    // exports it to bash steps under upper-case names until it refuses the
-    // namespace (rysweet/amplihack-recipe-runner#146).
+    use crate::commands::orch::autodrive::{authorization::InvocationAuthorization, trusted};
+    // Refuse an `AMPLIHACK_*` context key before any work: before the
+    // recursion guard, the trusted bundle, the runner lookup and its
+    // capability probe. `pass_context` refuses the same keys when it hands the
+    // context to the runner, on every run (a dry run too, which still starts
+    // the runner with `--dry-run`), as it did before #1883; this only refuses
+    // them sooner. `run_recipe_with_options`, the one production caller, has
+    // already merged the top-level recipe's own `context:` into `context`
+    // (`infer_missing_context`), after reading the recipe with
+    // `parse_recipe_from_path`, the parser that also takes JSON with
+    // surrogate-pair escapes (#1964). So the file is not parsed a second time
+    // here. A trusted auto-drive run (#2340) passes only the operator's
+    // inputs; its defaults come from the pinned recipe below, into
+    // `invocation_context`, which `pass_context` checks. Sub-recipe
+    // `context:` is the runner's, which exports it to bash steps under
+    // upper-case names until it refuses the namespace
+    // (rysweet/amplihack-recipe-runner#146).
     reject_reserved_context_keys(context.keys().map(String::as_str))?;
-
+    let invocation_name = recipe_name_for_correlation(recipe_path);
+    // #2329: authority is captured once, from the raw operator inputs of this
+    // invocation, before defaults, recovery normalisation or admission. A
+    // --fresh launch or a recovery resume captures new authority (and a new
+    // run_id) like any other invocation; stored context never grants it.
+    let mut authorization = trusted::applies(&invocation_name)
+        .then(|| InvocationAuthorization::capture(&invocation_name, explicit_inputs))
+        .transpose()?;
+    if dry_run && let Some(auth) = &mut authorization {
+        auth.restrict_dry_run();
+    }
     // Issue #964: fail-closed recursion-depth guard. Refuse to spawn a nested
     // recipe-runner once the session has reached the configured maximum depth,
     // so a failing / misbehaving orchestration can never recursively re-enter
-    // the orchestrator and fork-bomb the host. Runs before binary lookup,
-    // temp dirs and spawn, so no descendant is ever created past the limit.
+    // the orchestrator and fork-bomb the host. Runs BEFORE any work (binary
+    // lookup, temp dirs, bundle copies, spawn) so no descendant is ever
+    // created past the limit.
     let guard = enforce_recursion_depth_guard(working_dir)?;
+    let launch = if let Some(auth) = &mut authorization {
+        let env = EnvBuilder::new().with_amplihack_home_from(working_dir);
+        let home = env
+            .var("AMPLIHACK_HOME")
+            .context("trusted AMPLIHACK_HOME missing for auto-drive")?;
+        Some(trusted::LaunchBundle::prepare(Path::new(home), auth)?)
+    } else {
+        None
+    };
+    let pinned_recipe = launch.as_ref().map(|l| {
+        l.home
+            .join("amplifier-bundle/recipes")
+            .join(format!("{invocation_name}.yaml"))
+    });
+    let recipe_path = pinned_recipe.as_deref().unwrap_or(recipe_path);
+    let pinned_search = launch
+        .as_ref()
+        .map(|l| vec![l.home.join("amplifier-bundle/recipes")]);
+    let search_dirs = pinned_search.as_deref().unwrap_or(search_dirs);
+    // Expand auto-drive defaults only after trusted entrypoint selection.
+    // Neither requested recipe defaults nor inferred values grant authority.
+    let (mut invocation_context, inferred) = if launch.is_some() {
+        let recipe = super::parse_recipe_from_path(recipe_path)?;
+        let (mut expanded, inferred) =
+            super::infer_missing_context(&recipe.context, explicit_inputs);
+        // Recovery identity is normalised on this derived copy only, never on
+        // `explicit_inputs`, which stays the raw source of authority.
+        super::recovery::normalize(&mut expanded, working_dir);
+        (expanded, inferred)
+    } else {
+        (context.clone(), Vec::new())
+    };
+    if verbose && !inferred.is_empty() {
+        eprintln!(
+            "[context] Inferred {} variable(s): {}",
+            inferred.len(),
+            inferred.join(", ")
+        );
+    }
     // Issue #1606: from here on a SIGHUP/SIGINT/SIGTERM stops the run, at any
     // point: setup, a running attempt, or retry backoff.
     super::stop_signal::arm();
@@ -653,9 +744,11 @@ pub(super) fn execute_recipe_via_rust_fresh(
     // Issue #1883: the effort and model every step inherits, worked out once
     // for the run, with its log lines printed once here and never by a step.
     // A recovered run (#2334) passes through here too, so its remaining steps
-    // inherit what this launch resolved.
+    // inherit what this launch resolved. It reads the context the runner is
+    // given: for a trusted auto-drive run (#2340) that is the pinned recipe's
+    // defaults and the operator's inputs, not the requested file's defaults.
     let (inherited, inherit_lines) =
-        super::inherit_inputs::inherit_for_run(context, agent_binary.binary.as_str());
+        super::inherit_inputs::inherit_for_run(&invocation_context, agent_binary.binary.as_str());
     for line in &inherit_lines {
         eprintln!("{line}");
     }
@@ -681,10 +774,14 @@ pub(super) fn execute_recipe_via_rust_fresh(
     });
     let delegated = recipe_runner_rs::recovery::ipc::Client::from_environment()?;
     let admission = if !dry_run && delegated.is_none() {
+        // #2329: whether auto-drive authority applies is part of the resume
+        // settings, so a resume cannot switch it. No per-run value (run_id,
+        // state directory) enters the fingerprint. This protects resume
+        // consistency only; it is not an authority check.
         let settings = recipe_runner_rs::recovery::model::fingerprint(&(
             &agent_binary.binary,
             step_timeout,
-            merge_guard,
+            authorization.is_some(),
             env!("CARGO_PKG_VERSION"),
         ))?;
         Some(super::recovery::admit(
@@ -692,13 +789,45 @@ pub(super) fn execute_recipe_via_rust_fresh(
             recipe_path,
             &recipe_name,
             working_dir,
-            context,
+            &invocation_context,
             fresh,
             settings,
         )?)
     } else {
         None
     };
+    // #2329 (S2): the runner writes its own keys last, after admission and
+    // immediately before launch, so no stored, recovered or operator-supplied
+    // value for them reaches the child. The private state directory is
+    // assigned and bound here too: the report opens evidence only from it.
+    if let Some(auth) = &mut authorization {
+        let launch = launch
+            .as_ref()
+            .context("trusted launch bundle missing for auto-drive")?;
+        let state_dir =
+            assign_autodrive_state_dir(explicit_inputs, &workspace.borrow(), &launch.home)?;
+        auth.bind_state_dir(state_dir.clone());
+        invocation_context.insert("no_merge".into(), auth.no_merge().to_string());
+        invocation_context.insert("autodrive_dry_run".into(), auth.dry_run().to_string());
+        invocation_context.insert(
+            "autodrive_authorization".into(),
+            serde_json::to_string(auth)?,
+        );
+        invocation_context.insert(
+            "autodrive_invocation_file".into(),
+            launch
+                .home
+                .join("invocation.json")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        invocation_context.insert(
+            "autodrive_state_dir".into(),
+            state_dir.to_string_lossy().into_owned(),
+        );
+    }
+    let authorization = authorization;
+    let context = &invocation_context;
 
     // Issue #964: snapshot the caller checkout's git state BEFORE spawning so a
     // runner that corrupts it (e.g. flips `core.bare=true`, which breaks
@@ -803,36 +932,21 @@ pub(super) fn execute_recipe_via_rust_fresh(
             .set("AMPLIHACK_NONINTERACTIVE", "1")
             .with_project_graph_db(working_dir)?;
 
-        // Issue #1551: put the `gh` merge guard from this run's own bundle
-        // first on PATH, and its BASH_ENV file to put it back there after a
-        // login shell's profile, so a merge outside autodrive_merge_gate.sh
-        // is refused in every step. Fails closed, before the runner starts, when
-        // the shim is missing.
-        //
-        // Issue #1954 D5: the guard comes from the bundle pinned once here, at
-        // run start. A link into a release is resolved now and never again, so
-        // an install that switches the link mid-run cannot make the guard's
-        // PATH entry, BASH_ENV and their de-duplication straddle two releases.
-        let env_builder = if merge_guard {
-            let guard_dir =
-                super::merge_guard::guard_dir_for_home(env_builder.var("AMPLIHACK_HOME"))?;
-            let pinned_bundle = guard_dir
-                .parent()
-                .and_then(Path::parent)
-                .map(Path::to_path_buf);
-            let env_builder =
-                super::merge_guard::apply_guard(env_builder.prepend_path(&guard_dir), &guard_dir);
-            match pinned_bundle {
-                Some(bundle) => env_builder.set(
-                    super::merge_guard::BUNDLE_DIR_ENV,
-                    bundle.to_string_lossy().into_owned(),
-                ),
-                None => env_builder,
+        let env_builder = match &launch {
+            Some(launch) => {
+                let executable = std::env::current_exe()
+                    .context("resolve current auto-drive helper executable")?;
+                env_builder
+                    .prepend_path(
+                        executable
+                            .parent()
+                            .context("auto-drive helper executable has no parent")?,
+                    )
+                    .set("AMPLIHACK_BIN", executable.to_string_lossy().into_owned())
+                    .set("AMPLIHACK_HOME", launch.home.to_string_lossy().into_owned())
             }
-        } else {
-            env_builder
+            None => env_builder,
         };
-
         // Issue #439: propagate --step-timeout as AMPLIHACK_STEP_TIMEOUT env var.
         // When Some(n), the child process sees AMPLIHACK_STEP_TIMEOUT=n (0 = disable).
         // When None, the env var is not injected (parent-inherited values flow through).
@@ -842,6 +956,7 @@ pub(super) fn execute_recipe_via_rust_fresh(
         };
 
         env_builder.apply_to_command(&mut command);
+        crate::commands::orch::autodrive::trusted::clean_retired_environment(&mut command)?;
         // Issue #1883 (C3): the runner passes these to every step. Removed
         // first, so a stale value from this process never reaches a step, and
         // set only with the run's checked value.
@@ -948,10 +1063,13 @@ pub(super) fn execute_recipe_via_rust_fresh(
                 Err(error) => return AttemptOutcome::Final(Err(error)),
             };
             let mut stderr_tail = String::new();
+            // Cloned so no RefCell borrow is held across the attempt.
+            let run_dir = workspace.borrow().run_dir().map(Path::to_path_buf);
             let attempt_result = spawn_with_streaming_stderr(
                 command,
                 correlation,
                 recipe_path,
+                run_dir.as_deref(),
                 timeout,
                 &guard.tree_id,
                 &mut stderr_tail,
@@ -1038,6 +1156,34 @@ pub(super) fn execute_recipe_via_rust_fresh(
     // reads it as DATA (issue #1337's evaluator) instead of scraping prose.
     let final_result = match result {
         Ok(mut run_result) => {
+            if let Some(auth) = &authorization {
+                let outcome = crate::commands::orch::autodrive::report::report(
+                    auth,
+                    &run_result.context,
+                    context.get("pr_number").map(String::as_str),
+                    working_dir,
+                );
+                run_result
+                    .extra
+                    .insert("autodrive_outcome".into(), outcome.clone());
+                run_result
+                    .context
+                    .insert("autodrive_summary".into(), outcome);
+                let value = serde_json::to_value(auth)?;
+                run_result
+                    .extra
+                    .insert("autodrive_authorization".into(), value.clone());
+                run_result
+                    .context
+                    .insert("autodrive_authorization".into(), value);
+                run_result
+                    .context
+                    .insert("no_merge".into(), auth.no_merge().to_string().into());
+                run_result.context.insert(
+                    "autodrive_dry_run".into(),
+                    auth.dry_run().to_string().into(),
+                );
+            }
             if !run_result.success
                 && let Some(verdict) = last_verdict.borrow().as_ref()
             {
@@ -1136,6 +1282,7 @@ fn spawn_with_streaming_stderr(
     mut command: Command,
     correlation: RecipeRunCorrelation,
     recipe_path: &Path,
+    run_dir: Option<&Path>,
     timeout: Duration,
     tree_id: &str,
     stderr_sink: &mut String,
@@ -1173,10 +1320,10 @@ fn spawn_with_streaming_stderr(
             });
         }
     }
-    correlation.emit_early();
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
+            correlation.emit_early();
             return Err(fail_with_final_record(
                 &correlation,
                 RecipeRunFinalStatus::SpawnFailure,
@@ -1187,6 +1334,27 @@ fn spawn_with_streaming_stderr(
         }
     };
     let child_pid = Some(child.id());
+    // Issue #2175: the record `recipe stop <run_id>` finds this attempt's
+    // processes by, written before `early` so a run id seen there always has
+    // one. Held for this attempt only: dropping the guard on any return
+    // removes it. A dry run has no run folder and writes none.
+    #[cfg(target_os = "linux")]
+    let _run_record = run_dir.and_then(|dir| {
+        match super::super::run_record::write(dir, correlation.run_id(), child.id()) {
+            Ok(guard) => Some(guard),
+            Err(error) => {
+                eprintln!(
+                    "amplihack: warning: recipe run {:?} wrote no process record, so \
+                     `amplihack recipe stop` cannot stop it by run id: {error:#}",
+                    correlation.run_id()
+                );
+                None
+            }
+        }
+    });
+    #[cfg(not(target_os = "linux"))]
+    let _ = run_dir;
+    correlation.emit_early();
 
     let captured_stderr: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
     let dropped_stderr_lines: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));

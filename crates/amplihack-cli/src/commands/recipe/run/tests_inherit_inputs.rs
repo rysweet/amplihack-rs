@@ -603,7 +603,8 @@ fn same_binary_parent_models_are_preserved_by_recipe_resolution() {
 }
 
 /// A reserved key in the context map is refused before any work, a dry run
-/// included (on a real run `pass_context` refuses it as well). The map is the
+/// included, so before the runner is looked up (`pass_context` refuses it
+/// again, later, when it hands the map to the runner). The map is the
 /// one `amplihack recipe run` builds: `-c`, the context file and the
 /// top-level recipe's own `context:`, merged by `run_recipe_with_options`.
 /// The file itself is not read again here; `issue_1883_step_effort_model.rs`

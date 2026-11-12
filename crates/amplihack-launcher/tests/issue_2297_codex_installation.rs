@@ -36,6 +36,7 @@ fn scenario(name: &str) {
     let output = child
         .args(["--exact", "child_contract", "--nocapture"])
         .env("HOME", root)
+        .env("TMPDIR", root)
         .env("CODEX_HOME", root.join(".codex"))
         .env("PATH", &bin)
         .env("CASE", name)
