@@ -15,8 +15,11 @@
 //! its fake tree, so a trace that saw nothing cannot pass.
 //!
 //! This catches a host read wherever it is written, including in a file no
-//! source guard lists. `recipe stop` is not traced: it reads the host table
-//! on purpose, and #2175 tracks removing that scan.
+//! source guard lists.
+//!
+//! `recipe stop <run_id>` (issue #2175) is traced too. It finds the run
+//! through the record `recipe run` wrote, so besides the traced tree it may
+//! name only the pids of the run it stops, and never `/proc` itself.
 //!
 //! Without `strace` the tests print a skip line and pass, unless
 //! `AMPLIHACK_TEST_REQUIRE_STRACE` is non-empty. CI installs `strace` and
@@ -77,9 +80,11 @@ fn traced(strace: &Path, cmd: &Command, log: &Path) -> Command {
     c
 }
 
-/// The traced lines that read the host process table. `trace` is
-/// `strace -f -o` output: each line starts with the pid that made the call.
-fn host_proc_reads(trace: &str) -> Vec<String> {
+/// The traced lines that read the host process table: `/proc` itself, or
+/// `/proc/<pid>/...` for a pid that is neither in the traced tree nor in
+/// `allowed`. `trace` is `strace -f -o` output: each line starts with the pid
+/// that made the call.
+fn host_proc_reads(trace: &str, allowed: &BTreeSet<u32>) -> Vec<String> {
     let pid_of = |line: &str| -> Option<u32> { line.split_whitespace().next()?.parse().ok() };
     let traced: BTreeSet<u32> = trace.lines().filter_map(pid_of).collect();
     let mut bad = Vec::new();
@@ -94,7 +99,9 @@ fn host_proc_reads(trace: &str) -> Vec<String> {
             let first = rest.split('/').next().unwrap_or("");
             !first.is_empty()
                 && first.bytes().all(|b| b.is_ascii_digit())
-                && first.parse::<u32>().is_ok_and(|pid| !traced.contains(&pid))
+                && first
+                    .parse::<u32>()
+                    .is_ok_and(|pid| !traced.contains(&pid) && !allowed.contains(&pid))
         } else {
             false
         };
@@ -122,7 +129,7 @@ fn check(name: &str, cmd: &Command, fake: &Path) -> Option<Output> {
         !stderr.contains("AMPLIHACK_TEST_PROC_ROOT ignored"),
         "{name}: the child refused its fake tree: {stderr}"
     );
-    let bad = host_proc_reads(&trace);
+    let bad = host_proc_reads(&trace, &BTreeSet::new());
     assert!(
         bad.is_empty(),
         "{name} read the host process table (see \
@@ -154,12 +161,19 @@ fn the_trace_parser_flags_host_reads_and_nothing_else() {
 101 readlink(\"/proc/4243/cwd\", \"/\", 4096) = 1
 100 openat(AT_FDCWD, \"/proc/sys/kernel/pid_max\", O_RDONLY) = 3
 ";
-    let bad = host_proc_reads(trace);
+    let bad = host_proc_reads(trace, &BTreeSet::new());
     assert_eq!(bad.len(), 4, "{bad:#?}");
     assert!(bad[0].contains("\"/proc\","));
     assert!(bad[1].contains("\"/proc/\","));
     assert!(bad[2].contains("/proc/4242/cmdline"));
     assert!(bad[3].contains("/proc/4243/cwd"));
+
+    // Allowed pids may be named; `/proc` itself never may.
+    let bad = host_proc_reads(trace, &BTreeSet::from([4242]));
+    assert_eq!(bad.len(), 3, "{bad:#?}");
+    assert!(bad[0].contains("\"/proc\","));
+    assert!(bad[1].contains("\"/proc/\","));
+    assert!(bad[2].contains("/proc/4243/cwd"));
 }
 
 // --- the commands -------------------------------------------------------------
@@ -242,4 +256,50 @@ fn cleanup_never_reads_the_host_process_table() {
     assert_eq!(busy_action, "skipped", "{report}");
     assert_eq!(busy_reason, "in use by a running process", "{report}");
     assert_ne!(action("replay-idle").0, "skipped", "{report}");
+}
+
+// --- recipe stop <run_id> (issue #2175) ---------------------------------------
+
+/// `recipe stop <run_id>` finds the run through its record and reads `/proc`
+/// only for that run's own pids: no table scan, no other process's
+/// `environ`. The run starts outside strace; only the stop is traced.
+#[test]
+fn recipe_stop_by_run_id_reads_no_host_process_table() {
+    use crate::issue_1606_detach::{Fx, assert_gone, text, wait_bounded};
+    let Some(strace) = strace() else {
+        return;
+    };
+    let fx = Fx::new();
+    let (mut amp, run_id) = fx.spawn_foreground_run();
+    let runner = fx.pid("runner.pid");
+    let child = fx.pid("child.pid");
+
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("trace");
+    let stop = fx.cmd(&["recipe", "stop", &run_id], &[]);
+    let out = traced(&strace, &stop, &log).output().expect("run strace");
+    let trace = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        trace.lines().count() > 0,
+        "strace logged nothing (ptrace refused?): {}",
+        text(&out.stderr)
+    );
+    assert!(out.status.success(), "{}", text(&out.stderr));
+
+    let allowed: BTreeSet<u32> = [amp.id(), runner as u32, child as u32].into();
+    let bad = host_proc_reads(&trace, &allowed);
+    assert!(
+        bad.is_empty(),
+        "recipe stop <run_id> read the host process table (issue #2175):\n{}",
+        bad.join("\n")
+    );
+    let record = format!("procs/{run_id}.json");
+    assert!(
+        trace.contains(&record),
+        "recipe stop never opened {record}, so the trace proves nothing"
+    );
+
+    assert_gone(&[runner, child]);
+    let status = wait_bounded(&mut amp);
+    assert!(!status.success(), "a stopped run must not report success");
 }

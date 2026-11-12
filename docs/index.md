@@ -313,7 +313,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Recovery after a Recipe Usage Limit](concepts/recipe-usage-limit-recovery.md) - **Planned:** latest-attempt eligibility, nested replay, and compatibility
 - [Recipe Recovery Reference](reference/recipe-recovery.md) - **Planned:** persistence policies, resources, durable storage, and runner contracts
 - [Recipe Runner Architecture](concepts/recipe-runner-architecture.md) - Execution and recovery ownership across the CLI and runner
-- [Recipe Command Reference](reference/recipe-command.md) - Launch flags, detached execution, and recovery decisions
+- [Recipe Command Reference](reference/recipe-command.md) - Launch flags, detached execution, recovery decisions, and stopping a run by session or run id
 
 - [Recipe Runner Overview](recipes/README.md) - Architecture, YAML format, and creating custom recipes
 - [UltraThink Recipe Runner Integration](recipes/RECIPE_RUNNER_ULTRATHINK_INTEGRATION.md) - How ultrathink uses Recipe Runner for code-enforced workflow execution

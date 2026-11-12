@@ -261,10 +261,20 @@ pub(crate) fn format_owned_line(item: &OwnedPath) -> Vec<u8> {
 
 /// Reads a file of at most `max` bytes without following a symlink.
 pub(crate) fn read_capped_nofollow(path: &Path, max: u64) -> std::io::Result<Vec<u8>> {
+    read_capped_nofollow_with_metadata(path, max).map(|(bytes, _)| bytes)
+}
+
+/// [`read_capped_nofollow`], also returning the metadata of the handle that
+/// was read, so owner and mode describe that file and not a later one.
+pub(crate) fn read_capped_nofollow_with_metadata(
+    path: &Path,
+    max: u64,
+) -> std::io::Result<(Vec<u8>, fs::Metadata)> {
     let file = fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)?;
+    let metadata = file.metadata()?;
     let mut buf = Vec::new();
     file.take(max + 1).read_to_end(&mut buf)?;
     if buf.len() as u64 > max {
@@ -273,7 +283,7 @@ pub(crate) fn read_capped_nofollow(path: &Path, max: u64) -> std::io::Result<Vec
             format!("{} is larger than {max} bytes", path.display()),
         ));
     }
-    Ok(buf)
+    Ok((buf, metadata))
 }
 
 /// The `owned-paths` entries of a run folder (empty when the file is missing).
@@ -520,6 +530,15 @@ impl RunWorkspace {
         match self {
             Self::Scoped { guard, .. } => guard.path(),
             Self::Legacy { dir } => dir.path(),
+        }
+    }
+
+    /// The run folder `<work root>/runs/<id>/`; `None` for a dry run, which
+    /// has none (issue #2175: so it writes no process record either).
+    pub(crate) fn run_dir(&self) -> Option<&Path> {
+        match self {
+            Self::Scoped { scope, .. } => Some(&scope.run_dir),
+            Self::Legacy { .. } => None,
         }
     }
 

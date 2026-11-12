@@ -6,8 +6,9 @@
 //!
 //! Always the real `/proc`, never `procfs::proc_root()` (issue #2042):
 //! every pid found here may be signalled, so a fake tree must not choose it.
-//! The cost is that tests of `recipe stop` read the `environ` of this user's
-//! processes on the host; issue #2175 tracks removing that scan.
+//! Only `stat` files are read: `recipe stop <run_id>` finds its root through
+//! the run's record (issue #2175), never through another process's
+//! `environ`.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -107,19 +108,6 @@ pub(super) fn group_tree(procs: &[Proc], pgid: i32) -> BTreeSet<i32> {
         return members;
     }
     tree(procs, &members)
-}
-
-/// The processes whose initial environment holds `name=value`.
-pub(super) fn with_env(procs: &[Proc], name: &str, value: &str) -> BTreeSet<i32> {
-    let wanted = format!("{name}={value}").into_bytes();
-    procs
-        .iter()
-        .filter(|p| {
-            fs::read(format!("/proc/{}/environ", p.pid))
-                .is_ok_and(|env| env.split(|b| *b == 0).any(|entry| entry == wanted))
-        })
-        .map(|p| p.pid)
-        .collect()
 }
 
 /// This process and its ancestors, which must never be signalled.

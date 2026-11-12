@@ -21,6 +21,7 @@ inspects, validates, and runs YAML recipe files.
   - [Usage-limit relaunch recovery](#usage-limit-relaunch-recovery)
   - [Detached runs](#detached-runs)
   - [recipe stop](#recipe-stop)
+  - [Run records](#run-records)
 - [Output formats](#output-formats)
 - [Progress and stream contract](#progress-and-stream-contract)
 - [Recipe file format](#recipe-file-format)
@@ -323,7 +324,11 @@ runner is started in its own session, so before this the signal ended only
 
 SIGKILL cannot be caught. If `recipe run` is killed that way, on Linux the
 kernel sends the runner SIGTERM (`PR_SET_PDEATHSIG`); agents the runner started
-can outlive it. Use `amplihack recipe stop <run_id>` to end them.
+can outlive it. `amplihack recipe stop <run_id>` ends the runner's process
+group only while the runner is still alive, because it finds the run through
+the [run record](#run-records), and a record whose processes have exited
+matches nothing. Agents that outlived the runner are then left running. Stop
+them through their tmux session, or by pid.
 
 ### Usage-limit relaunch recovery
 
@@ -404,7 +409,8 @@ log: /home/alice/.amplihack/recipe-logs/amp-smart-orchestrator-myapp-20261020-10
   `amplihack: detached run started (pid N)` to the log. If the pane cannot
   start the run, it writes the reason there instead, and the launch prints it
   and fails.
-- **Stopping** — `amplihack recipe stop <session>`, or `tmux kill-session`.
+- **Stopping** — `amplihack recipe stop <session>`, `amplihack recipe stop <run_id>`
+  with the run id from the `early` line in the log, or `tmux kill-session`.
 
 Needs `tmux` on `PATH`.
 
@@ -427,14 +433,183 @@ and every agent and command it started.
   down. Anything of its tree still running after 15 s gets SIGKILL. Then the
   session is killed, which closes any other pane in it (a `tail -f` you split
   off) without a signal from `recipe stop`.
-- **A run id**, the `run_id` of a run's `amplihack.recipe.log_pointer` line:
-  every process started with that `AMPLIHACK_RECIPE_RUN_ID`, its descendants
-  and their process groups get SIGTERM, then SIGKILL after 15 s. Linux only.
+- **A run id**, the `run_id` of a run's `amplihack.recipe.log_pointer` line
+  (the attempt id, `AMPLIHACK_RECIPE_RUN_ID`): the processes are taken from
+  the attempt's [run record](#run-records). `recipe run` and the runner's
+  process group get SIGTERM, then SIGKILL after 15 s. `recipe run` tears its
+  runner down, prints its `final` line and exits non-zero. Linux only.
 
-The tree is found before anything is signalled, and each process is
-signalled only while its start time still matches, so a reused pid is never
-hit. `recipe stop` never signals itself or its own ancestors. It prints
-`stopped <what> (<n> processes)` and exits 0, or exits 1 when nothing matches.
+An empty target, or one that starts with `-`, is refused. Otherwise tmux is
+asked first: if it has a session with that name, the session is stopped and
+the run-id path is not used.
+
+Each process is signalled only while its start time still matches the one
+recorded, so a reused pid is never hit. `recipe stop` never signals itself or
+its parent. It prints `stopped <what> (<n> processes)` and exits 0, or exits 1
+when nothing matches.
+
+### Run records
+
+Run records exist on Linux only. On other platforms no record is written and
+`recipe stop <run_id>` finds no run by its id.
+
+Every `recipe run` attempt that starts a runner writes a record of its own
+processes into its run directory:
+
+```text
+<work root>/runs/<run dir id>/procs/<run_id>.json    procs/ 0700, file 0600
+```
+
+- `<work root>` is `AMPLIHACK_WORK_ROOT` when set, and
+  `$HOME/.amplihack/work` otherwise; see
+  [Settings](../howto/clean-up-after-recipe-runs.md#settings).
+- `<run dir id>` is the run directory's name (`AMPLIHACK_RUN_ID`). It is not
+  the `run_id` that `recipe stop` takes.
+- `<run_id>` is the attempt id from the log pointer lines. A run that retries
+  writes one record per attempt in the same `procs/` directory.
+
+The record is removed with its run directory by
+[`amplihack cleanup`](../howto/clean-up-after-recipe-runs.md); cleanup does not
+treat it specially.
+
+An example record:
+
+```json
+{"version":1,"run_id":"5b60657b-76ef-4f49-8a22-8b89ed75f43e","recipe_run":{"pid":41810,"start_ticks":918201},"runner":{"pid":41822,"pgid":41822,"start_ticks":918273}}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `version` | Always `1` |
+| `run_id` | The attempt's run id, the same as in its log pointer lines |
+| `recipe_run.pid` | The pid of the `recipe run` process that owns the attempt |
+| `recipe_run.start_ticks` | Its start time in clock ticks, field 22 of `/proc/<pid>/stat` |
+| `runner.pid` | The runner's pid, the `child_pid` of the `final` line |
+| `runner.pgid` | The runner's process group. The runner starts its own session, so this equals `runner.pid` |
+| `runner.start_ticks` | The runner's start time in clock ticks |
+
+The record holds nothing else: no environment, arguments, paths or context.
+
+#### When the record exists
+
+`recipe run` writes the record straight after the runner starts and before it
+prints the `early` log pointer line. A script that has read the `early` line
+can therefore run `recipe stop <run_id>` at once, with no wait or retry. This
+includes the `recipe run` that a detached session starts in its pane, so a
+detached run can be stopped by its run id as well as by its session.
+
+`recipe run` removes the record when the attempt ends, whether the runner
+succeeds, fails or is stopped, and before any retry backoff. During backoff
+the run has no record, so stop it through its tmux session or by signalling
+`recipe run`.
+
+No record is written when:
+
+- the run is a `--dry-run`, which has no run directory;
+- the runner cannot be started, or the runner probe fails first;
+- an orphan stop arrives before the attempt starts its runner.
+
+If `recipe run` is killed with SIGKILL, its record stays on disk until cleanup
+removes the run directory. Its start times no longer match, so it never causes
+a signal.
+
+If the record cannot be written, `recipe run` prints a warning on stderr and
+the run continues as normal. Only stopping it by run id is lost.
+
+#### How `recipe stop <run_id>` uses the record
+
+1. **Check the id.** It must be 1 to 128 bytes of ASCII letters, digits, `.`,
+   `_` and `-`, and must not start with `.`. A UUID passes; `../x`, `a/b`,
+   `.hidden` and an id with a space do not. No file is read for a refused id.
+2. **Refuse to stop its own run.** If `recipe stop`'s own
+   `AMPLIHACK_RECIPE_RUN_ID` equals the id, it refuses. Every process a run
+   starts inherits that variable.
+3. **Find the record.** `recipe stop` resolves the work root as `recipe run`
+   does, lists `<work root>/runs/` and opens `<entry>/procs/<run_id>.json` in
+   each entry. Entries and `procs/` directories that are symlinks are skipped,
+   the record itself is opened without following a symlink, and a file over
+   4 KiB is not read. A record is used only if:
+   - it belongs to the user running `recipe stop`, and is not writable by
+     group or others;
+   - it parses with exactly the fields above, and `version` is `1`;
+   - `run_id` equals the requested id;
+   - both pids are above 1 and `runner.pgid` equals `runner.pid`.
+4. **Check the processes are the recorded ones.** Each pid is kept only if
+   the start time in `/proc/<pid>/stat` equals the recorded one. A pid equal
+   to `recipe stop`'s own pid or its parent's is never kept. If no pid is
+   left, the record is stale.
+5. **Refuse to stop its own group.** If `recipe stop`'s session or process
+   group equals `runner.pgid`, it refuses.
+6. **Signal.** SIGTERM goes to `recipe run`, and to the runner's process
+   group if the runner still matches. After up to 15 s, SIGKILL goes to any
+   recorded process that still matches, and to the group if the runner still
+   matches. The start time is checked again before every signal.
+7. **Report** `stopped run <run_id> (<n> processes)` and exit 0.
+
+`recipe stop` never writes, renames or removes a record.
+
+`recipe stop <run_id>` does not list `/proc` and reads no process's `environ`.
+The only `/proc` files it reads are `/proc/<pid>/stat` for the pids in the
+record. The strace check in
+[Keep Tests off the Host Process Table](../howto/keep-tests-off-the-host-process-table.md#recipe-stop-run_id-reads-only-its-own-runs-pids)
+enforces this.
+
+#### Errors
+
+Each error exits 1 and signals nothing. The three Linux messages quote the id
+as a string literal, so control characters in it are printed escaped.
+
+| Case | Message |
+|------|---------|
+| The id fails step 1 | `recipe stop: invalid run id "<run_id>"` |
+| The id is `recipe stop`'s own run (steps 2 and 5) | `recipe stop: refusing to stop run "<run_id>" from inside it` |
+| No usable record, or a stale one (steps 3 and 4) | `recipe stop: no tmux session or running recipe run named "<run_id>"` |
+| Any run id on a platform other than Linux (unchanged) | `recipe stop: no tmux session named <run_id>; stopping by run id needs /proc and is supported on Linux only` |
+
+#### Examples
+
+Stop a foreground run from another terminal, using the run id from its
+`early` line:
+
+```bash
+amplihack recipe stop 5b60657b-76ef-4f49-8a22-8b89ed75f43e
+# stopped run 5b60657b-76ef-4f49-8a22-8b89ed75f43e (2 processes)
+```
+
+An id containing a path is refused before any file is read:
+
+```bash
+amplihack recipe stop ../x
+# recipe stop: invalid run id "../x"
+echo $?
+# 1
+```
+
+#### Runs that `recipe stop <run_id>` does not find
+
+Besides runs that have no record (see
+[When the record exists](#when-the-record-exists)) and runs on platforms
+other than Linux, `recipe stop <run_id>` does not find:
+
+- runs started by an amplihack built before run records existed;
+- runs whose `recipe stop` sees a different work root, through
+  `AMPLIHACK_WORK_ROOT` or `HOME`, which is not worked around.
+
+Stop these through their tmux session, or by signalling `recipe run`.
+
+#### Accepted limits
+
+- A process can exit, and its pid be reused, between the start-time check
+  and the signal. The window is a few microseconds; only pidfds would close
+  it.
+- A process inside the target run that has both cleared
+  `AMPLIHACK_RECIPE_RUN_ID` and started a new session is not recognised as
+  part of the run, so steps 2 and 5 do not stop it from stopping its own run.
+  Detecting it would mean reading its ancestors' `/proc` entries.
+- The record is trusted because the file must belong to you and not be
+  writable by others. Start times are public, so the start-time match alone
+  does not authenticate a record. The kernel's own permission check on
+  `kill(2)` still applies.
 
 ---
 

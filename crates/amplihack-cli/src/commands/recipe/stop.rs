@@ -8,16 +8,45 @@
 //!   Whatever is left of that tree after the grace period gets SIGKILL, then
 //!   the session is killed, which closes any other pane (a `tail -f` you
 //!   split off) the way tmux always does, without a signal from here.
-//! - A run id (the `run_id` of an `amplihack.recipe.log_pointer` line): every
-//!   process started with `AMPLIHACK_RECIPE_RUN_ID=<run_id>` is found in
-//!   `/proc`, and the same SIGTERM, grace, SIGKILL is applied to them, their
-//!   descendants and their process groups. Linux only.
+//! - A run id (the `run_id` of an `amplihack.recipe.log_pointer` line,
+//!   issue #2175): each attempt of `recipe run` writes
+//!   `<work root>/runs/<run folder>/procs/<run_id>.json`, naming itself and
+//!   its runner with their start times, before it prints that line, and
+//!   removes it when the attempt ends (see `run_record.rs`). The id is
+//!   checked first (1 to 128 ASCII letters, digits, `.`, `_` or `-`, not
+//!   starting with `.`), then `stop` lists the run folders of the work root
+//!   it resolves, which must be the run's (`AMPLIHACK_WORK_ROOT`), and reads
+//!   the first record of that id that this user owns and nobody else can
+//!   write. `recipe run` and the runner get SIGTERM, and so does the runner's
+//!   process group while its leader is still the recorded runner; after the
+//!   grace period, whatever is still the recorded process gets SIGKILL, and
+//!   the group too if its leader still matches. `recipe run`'s own teardown
+//!   ends the rest of the runner's tree. Every signal re-checks the start
+//!   time, so a stale record (a SIGKILLed `recipe run`) or a reused pid is
+//!   never hit. A missing, foreign or stale record is "not found" and nothing
+//!   is signalled. A dry run has no run folder and no record. Linux only.
 //!
-//! The tree is found once, before any signal: by parent links and process
-//! groups, so a descendant that started its own session is still in it. Each
-//! process is recorded with its start time and is signalled only while that
-//! still matches, so a pid the kernel has reused is never hit. This process
-//! and its ancestors are never signalled.
+//!   This path never opens `/proc` as a folder and never reads another
+//!   process's `environ`: only `/proc/<pid>/stat` of the two recorded pids.
+//!   So it cannot walk its own parent chain either. Instead it refuses to act
+//!   when its own `AMPLIHACK_RECIPE_RUN_ID` is the target, or when its
+//!   session or process group is the runner's group, and never signals its
+//!   own pid or its parent's. Every process a run starts inherits both the
+//!   variable and the session; a descendant that clears its environment and
+//!   starts a new session is not detected, which is an accepted gap.
+//!
+//!   Accepted risks: the microseconds between the start-time check and
+//!   kill(2), which only pidfds would close; runs that are not found
+//!   (started by an older binary, under another work root, a dry run, or
+//!   whose record could not be written); and agents that started their own
+//!   session and outlived their runner (stop them through their tmux
+//!   session or by pid).
+//!
+//! For a session, the tree is found once, before any signal: by parent
+//! links and process groups, so a descendant that started its own session is
+//! still in it. Each process is recorded with its start time and is signalled
+//! only while that still matches, so a pid the kernel has reused is never
+//! hit. This process and its ancestors are never signalled.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::{Command, Stdio};
@@ -104,17 +133,74 @@ fn stop_session(session: &str) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn stop_run_id(run_id: &str) -> Result<()> {
-    use super::process_tree::{snapshot, with_env};
-    let procs = snapshot();
-    let roots = with_env(&procs, "AMPLIHACK_RECIPE_RUN_ID", run_id);
-    let tree = snapshot_tree(&roots);
+    use super::run_record::{find, validate_run_id};
+    use crate::commands::cleanup::work_root::resolve_from_env;
+    let not_found =
+        || anyhow::anyhow!("recipe stop: no tmux session or running recipe run named {run_id:?}");
+    let inside = || anyhow::anyhow!("recipe stop: refusing to stop run {run_id:?} from inside it");
+    if !validate_run_id(run_id) {
+        bail!("recipe stop: invalid run id {run_id:?}");
+    }
+    if std::env::var("AMPLIHACK_RECIPE_RUN_ID").is_ok_and(|own| own == run_id) {
+        return Err(inside());
+    }
+    // A work root that cannot be resolved holds no record: "not found",
+    // with the reason underneath.
+    let work_root = resolve_from_env().map_err(|error| {
+        error
+            .context("cannot resolve the work root")
+            .context(not_found().to_string())
+    })?;
+    let record = find(&work_root.path, run_id).ok_or_else(not_found)?;
+    let tree = live_targets(&record);
     if tree.is_empty() {
-        bail!("recipe stop: no tmux session or running recipe run named {run_id}");
+        return Err(not_found());
+    }
+    let group = (record.runner.pgid, record.runner.start_ticks);
+    if inside_group(group.0) {
+        return Err(inside());
     }
     terminate(&tree);
+    signal_group_if_leader(group, libc::SIGTERM);
     let killed = sweep(&tree, STOP_GRACE);
+    signal_group_if_leader(group, libc::SIGKILL);
     report(&format!("run {run_id}"), tree.len(), killed);
     Ok(())
+}
+
+/// The processes `record` names whose start time still matches (issue
+/// #2175): never this process or its parent. Reads only those pids' `stat`.
+#[cfg(target_os = "linux")]
+pub(super) fn live_targets(record: &super::run_record::Record) -> Tree {
+    // SAFETY: getpid and getppid have no preconditions and cannot fail.
+    let protected = unsafe { [libc::getpid(), libc::getppid()] };
+    [
+        (record.recipe_run.pid, record.recipe_run.start_ticks),
+        (record.runner.pid, record.runner.start_ticks),
+    ]
+    .into_iter()
+    .filter(|(pid, start)| !protected.contains(pid) && same_process(*pid, *start))
+    .collect()
+}
+
+/// This process's session or process group is `pgid`: it was started from
+/// inside that run, so stopping the group would stop it too.
+#[cfg(target_os = "linux")]
+fn inside_group(pgid: i32) -> bool {
+    // SAFETY: getsid(0) and getpgid(0) only query this process.
+    let (sid, pg) = unsafe { (libc::getsid(0), libc::getpgid(0)) };
+    sid == pgid || pg == pgid
+}
+
+/// Signals the process group `group.0` only while its leader is still the
+/// process recorded with start time `group.1`, so a reused group id is
+/// never hit.
+#[cfg(target_os = "linux")]
+fn signal_group_if_leader(group: (i32, u64), signal: libc::c_int) {
+    let (pgid, start) = group;
+    if same_process(pgid, start) {
+        signal_group(pgid, signal);
+    }
 }
 
 #[cfg(not(target_os = "linux"))]

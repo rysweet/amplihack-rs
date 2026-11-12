@@ -1,8 +1,8 @@
 ---
 title: Keep Tests off the Host Process Table
 type: howto
-updated: 2026-11-08
-related: issue #2042, issue #2040, issue #1760, issue #1690
+updated: 2026-11-11
+related: issue #2042, issue #2040, issue #1760, issue #1690, issue #2175
 ---
 
 # Keep Tests off the Host Process Table
@@ -384,7 +384,7 @@ The guard above reads source text, so it misses a path built some other way.
 `crates/amplihack-cli/tests/issue_2042_host_proc_strace.rs` checks what the
 kernel sees instead. It runs real fixture commands (`profile auto-switch
 status`, `profile rotate status`, `profile switch`, `profile rotate
---dry-run`, `sessions archive` and `cleanup`) under `strace -f -e
+--dry-run`, `sessions archive`, `cleanup` and `recipe stop <run_id>`) under `strace -f -e
 trace=%file`, and fails when any traced process opens `/proc` itself or names
 `/proc/<pid>/...` for a pid outside the traced tree. Each test also checks
 that the command read its fake tree, so an empty trace cannot pass.
@@ -399,6 +399,39 @@ AMPLIHACK_TEST_REQUIRE_STRACE=1 cargo test -p amplihack-cli --test cli_integrati
 
 When you route a new command through `proc_root()`, add it to this file.
 
+### `recipe stop <run_id>`: reads only its own run's pids
+
+`recipe stop` signals real processes, so it cannot read a fake tree (see
+[What still reads the real `/proc`](#what-still-reads-the-real-proc)). By run
+id it takes its pids from the attempt's
+[run record](../reference/recipe-command.md#run-records), not from a scan of
+`/proc`. Its strace case, `recipe_stop_by_run_id_reads_no_host_process_table`,
+passes the run's own pids to `host_proc_reads` as an allowed set, because
+`recipe stop` must read their `stat` to check their start times.
+
+The test starts a foreground `recipe run` with the stub runner fixture from
+`issue_1606_detach`, under a temporary `HOME` and work root, outside strace.
+It reads the run id from the `early` pointer line and waits for the runner's
+and child's pid files. The record already exists at that point, because
+`recipe run` writes it before printing `early`. Only `recipe stop <run_id>`
+runs under `strace -f`, with the fixture's environment.
+
+The test fails if any traced process:
+
+- opens `/proc` or `/proc/` as a directory;
+- opens `/proc/<pid>/environ` for a pid outside the traced tree;
+- opens any `/proc/<pid>/...` path for a pid outside the traced tree, the
+  `recipe run` process, the runner and the stub's child. `/proc/self` and
+  `/proc/thread-self` count as the traced tree.
+
+It also fails unless the trace shows an open of `procs/<run_id>.json`, so an
+empty trace cannot pass. Afterwards it checks that the stopped `recipe run`
+exited non-zero and that the runner and its child are gone, by waiting on the
+child's exit status. No step waits on a timer.
+
+The same test fails on a build without run records, where `recipe stop`
+lists `/proc`.
+
 ## What still reads the real `/proc`
 
 | Reader | Why it stays |
@@ -408,7 +441,7 @@ When you route a new command through `proc_root()`, add it to this file.
 | `proc_children` and `proc_stat_ppid` in `crates/amplihack-cli/src/util.rs` | They find the binary's own descendants to send `SIGTERM` and `SIGKILL` after a timeout. With a fake root, real descendants would be left running and fake pids would be signalled on the host. |
 | `amplihack-utils::rotator_down` | Outside the CLI crate; unchanged. |
 | `amplihack-utils::running_on_host`, called by `rotate stop` just before it signals | The pid it confirms is signalled, so a fake tree must not choose it. Discovery and `rotate status` still read the fake tree. |
-| `recipe/process_tree.rs`, used by `recipe stop` and `recipe run`'s teardown | Every pid it finds may be signalled, so a fake tree must not choose one. Tests of `recipe stop` (`issue_1606_detach`) therefore still read the `environ` of this user's processes on the host. #2175 tracks finding a run's processes without that scan. |
+| `recipe/process_tree.rs`, used by `recipe stop <session>` and `recipe run`'s teardown | Every pid it finds may be signalled, so a fake tree must not choose one. It lists `/proc` and reads `/proc/<pid>/stat` to build a tree from its roots, and reads no `environ`. `recipe stop <run_id>` does not use it: it reads only the `stat` of the pids in the run's record (`recipe/run_record.rs`). |
 | A recorded run's `/proc/<pid>/stat` in `cleanup/run_dir.rs` and `eligibility.rs` | One named pid's start time, not a scan and not its `cmdline` or `environ`. |
 | Governor and launch scans | Not reached by these tests. If one is, that call site alone moves to `proc_root()`. |
 
