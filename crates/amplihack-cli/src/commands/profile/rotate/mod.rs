@@ -268,8 +268,7 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
                 if mode == cycle::Mode::OneShot {
                     warn_foreign_rotator(Some(store.root()));
                 }
-                let mut ctx = cycle::Ctx::new(store.clone(), home?, s);
-                ctx.reread = Some(fresh::reread_as_configured);
+                let mut ctx = cycle::Ctx::new(store.clone(), home?, s).with_rereads();
                 hook_heal::after_cycle(cycle::run_cycle(&mut ctx, mode)?, &ctx);
             }
             Some(RotateAction::Start(w)) => {

@@ -260,6 +260,11 @@ settings source:
 claude --settings /home/you/.amplihack/runtime/launch-hooks-settings.json <your arguments>
 ```
 
+The runtime home is `$AMPLIHACK_HOME` when it is set and non-empty and does
+not name a Git checkout. Otherwise it is `$HOME/.amplihack`. The resolved
+path must be absolute. This keeps the launch hooks file out of the checkout
+when a recipe sets `AMPLIHACK_HOME` to its bundle source (#2361).
+
 `--settings` is placed before the arguments you pass. The path is passed, never
 inline JSON, so no settings text appears in the process command line (#2030).
 
@@ -302,11 +307,11 @@ Checked in this order. In each case the launch continues without
 | You passed `--settings <x>` or `--settings=<x>` before any literal `--`      | One notice line; the home-file repair still runs |
 | The running binary is older than the install stamp                           | Nothing written                                  |
 | No `amplihack-hooks` binary is found, or its path contains unsafe characters | Nothing written                                  |
-| `$AMPLIHACK_HOME` is not owned by you, or is writable by group or others     | Nothing written                                  |
+| The resolved runtime home is not owned by you, or is writable by group or others     | Nothing written                                  |
 | `runtime/` is a symlink, is not owned by you, or cannot be made `0700`       | Nothing written                                  |
 | Writing the file fails                                                       | One warning line                                 |
 
-When the skip is because `$AMPLIHACK_HOME` or `runtime/` is not private, the
+When the skip is because the resolved runtime home or `runtime/` is not private, the
 launch prints one warning that names the directory and says it must not be
 group- or other-writable. The other skips are logged at debug level only.
 
@@ -419,7 +424,7 @@ wins. There is no lock or retry.
 | Variable                        | Effect                                                                                                                                                |
 | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `CLAUDE_CONFIG_DIR`             | Launch repair targets `$CLAUDE_CONFIG_DIR/settings.json`. Used only when set, non-empty and absolute. Install, the rotator cycle and doctor ignore it |
-| `AMPLIHACK_HOME`                | Location of `runtime/launch-hooks-settings.json`. Used only when set, non-empty and absolute                                                          |
+| `AMPLIHACK_HOME`                | Runtime home for `runtime/launch-hooks-settings.json` when set, non-empty and not a Git checkout; otherwise `$HOME/.amplihack`. The resolved path must be absolute                                                          |
 | `AMPLIHACK_SKIP_AUTO_INSTALL`   | Suppresses the launch repair                                                                                                                          |
 | `AMPLIHACK_CLAUDE_PROFILE_ROOT` | Profile root for refresh, seeding, the rotator heal and doctor                                                                                        |
 

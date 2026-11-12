@@ -1,7 +1,8 @@
 //! Step 6 of a rotate cycle (issue #1721): under the lock, compare a fresh
 //! snapshot with the one the cycle measured from, on only what the decision
 //! depends on. Read the state once more when `~/.claude.json` held no
-//! account, and reconsider a swap once when only its target changed. See
+//! account, and reconsider a swap once when its target changed or its
+//! usage evidence became stale. See
 //! "Rotate revalidation" in docs/reference/profile-command.md.
 //!
 //! Nothing here writes: no file, ledger or log line. The cycle acts on the
@@ -42,6 +43,7 @@ pub enum Changed {
     /// A swap's target is still a candidate, but its trusted account
     /// is not the one it had when it was measured.
     TargetIdentity,
+    Affinity,
 }
 
 impl Changed {
@@ -54,10 +56,13 @@ impl Changed {
             Self::Overflow => "overflow".into(),
             Self::Target(why) => format!("target eligibility: {}", target_reason(*why)),
             Self::TargetIdentity => "target identity".into(),
+            Self::Affinity => "organisation affinity".into(),
         }
     }
 
     /// The reason in the [`reconsidered`] line, for a target change only.
+    /// The unchanged-snapshot path does not use this; it passes the fixed
+    /// reason `stale reading`.
     fn retry_reason(&self) -> Option<&'static str> {
         match self {
             Self::Target(why) => Some(target_reason(*why)),
@@ -109,7 +114,7 @@ fn still_eligible(first: &Snap, fresh: &Snap, name: &ProfileName) -> bool {
         found.and_then(|(_, a)| a.clone())
     };
     let same = match (of(first), of(fresh)) {
-        (Some(a), Some(b)) => a.same(&b),
+        (Some(a), Some(b)) => a.same(&b) && a.org() == b.org(),
         (None, None) => true,
         _ => false,
     };
@@ -118,7 +123,7 @@ fn still_eligible(first: &Snap, fresh: &Snap, name: &ProfileName) -> bool {
 
 fn same_account(a: Option<&Account>, b: Option<&Account>) -> bool {
     match (a, b) {
-        (Some(a), Some(b)) => a.same(b),
+        (Some(a), Some(b)) => a.same(b) && a.org() == b.org(),
         (None, None) => true,
         _ => false,
     }
@@ -238,8 +243,9 @@ fn home_blinked(first: &Snap, fresh: &Snap, why: &[Changed]) -> bool {
 /// so a re-decision does not count the live probe twice. Probes nothing.
 /// Each retry is made at most once, in line, with no loop: the state is
 /// read again after [`REREAD_PAUSE`] when `~/.claude.json` held no account,
-/// and a swap is reconsidered on the probes already taken, limited to fresh
-/// candidates with unchanged accounts, when only its target changed.
+/// and usage-based swaps pass the freshness gate on the probes already
+/// taken, limited to fresh candidates with unchanged accounts. A target-only
+/// change also permits reconsideration on those probes.
 pub fn check(
     ctx: &mut Ctx,
     state: &State,
@@ -253,12 +259,31 @@ pub fn check(
         (ctx.pause)(ctx);
         (fresh, why) = compare(ctx, state, first, &m.decision)?;
     }
+    // Re-evaluate the permitted pool under the execution lock. A newly
+    // available same-organisation alternative can invalidate a crossing;
+    // existing measurements are reused, without probing under the lock.
+    if why.is_empty()
+        && matches!(m.decision, Decision::Swap { .. })
+        && let Some((probe, probes)) = &m.probed
+    {
+        let probes = probes
+            .iter()
+            .filter(|(n, _)| fresh.candidates.contains(n))
+            .cloned()
+            .collect();
+        let counted = std::mem::replace(&mut ctx.failed_live, failed_before);
+        let refreshed = decide_measured(ctx, &fresh, probe.clone(), probes, m.measured_at);
+        ctx.failed_live = counted;
+        if refreshed?.decision != m.decision {
+            why.push(Changed::Affinity);
+        }
+    }
     let verdict = reconsider(ctx, first, fresh, why, m, failed_before)?;
     Ok(Checked { reread, verdict })
 }
 
 /// The verdict on `fresh`: proceed, skip, or one re-decision of a swap
-/// whose target is the only change.
+/// with an unchanged snapshot or a target-only change.
 fn reconsider(
     ctx: &mut Ctx,
     first: &Snap,
@@ -267,7 +292,11 @@ fn reconsider(
     m: &Measurement,
     failed_before: u32,
 ) -> Result<Verdict, ProfileError> {
+    let unchanged = why.is_empty();
     let (old, reason) = match (&m.decision, why.as_slice()) {
+        (Decision::Swap { to, .. }, []) if fresh::gated_target(&m.decision).is_some() => {
+            (to.clone(), "stale reading")
+        }
         (_, []) => return Ok(Verdict::Proceed),
         (Decision::Swap { to, .. }, [only]) => match only.retry_reason() {
             Some(reason) => (to.clone(), reason),
@@ -277,15 +306,20 @@ fn reconsider(
     };
     // A stub that built the measurement by hand kept no probes: no retry.
     let Some((probe, probes)) = &m.probed else {
-        return Ok(Verdict::Skip(why));
+        return Ok(if unchanged {
+            Verdict::Proceed
+        } else {
+            Verdict::Skip(why)
+        });
     };
     let probes = probes
         .iter()
         .filter(|(n, _)| still_eligible(first, &fresh, n))
         .cloned()
         .collect();
-    // Only the target changed, so the retry's `failed` equals the count
-    // already stored; `cycle.rs` relies on this (see the `Reconsidered` arm).
+    // The retry uses the stored probes and restores the count, so its
+    // `failed` equals the count already stored; `cycle.rs` relies on this
+    // (see the `Reconsidered` arm).
     let counted = std::mem::replace(&mut ctx.failed_live, failed_before);
     let retry = decide_measured(ctx, &fresh, probe.clone(), probes, m.measured_at);
     // Issue #1870: no read under the lock; a stale retry target is unknown.
@@ -294,9 +328,10 @@ fn reconsider(
     let retry = retry?;
     debug_assert_eq!(
         retry.failed, m.failed,
-        "a target-only retry must count failed live probes as the first decision did"
+        "a revalidation retry must count failed live probes as the first decision did"
     );
     match &retry.decision {
+        Decision::Swap { .. } if unchanged && retry.decision == m.decision => Ok(Verdict::Proceed),
         Decision::Swap { to, .. } if still_eligible(first, &fresh, to) => {
             Ok(Verdict::Reconsidered {
                 m: Box::new(retry),
@@ -319,8 +354,10 @@ pub fn changed_line(why: &[Changed]) -> String {
     format!("{text} ({})", labels.join(", "))
 }
 
-/// A swap's target changed and the re-decision chose another. `reason` is
-/// a bare [`Skip::as_str`], `gone`, or `account changed`.
+/// A swap's target changed, or went stale under the lock, and the
+/// re-decision chose another. `reason` is a bare [`Skip::as_str`], `gone`,
+/// or `account changed`; or `stale reading` when the snapshot is unchanged
+/// and the target's reading went stale under the lock.
 pub fn reconsidered(old: &ProfileName, reason: &str) -> String {
     format!("revalidate: target {old} no longer eligible ({reason}); reconsidered")
 }

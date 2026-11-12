@@ -369,9 +369,15 @@ jobs:
       - name: Recipes — auto-drive QA evidence record is valid JSON (issue #1531)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1531-qa-evidence-json.sh
+      - name: Recipes — auto-drive QA clears inherited GIT_* and run identity (issue #2033)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-2033-qa-git-env.sh
       - name: Recipes — #1551 no merge outside gate
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh
+      - name: Recipes — #2186 every expected check exists and passed at the head
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-2186-expected-checks.sh
       - name: Recipes — auto-drive QA command selection, nested Cargo and mixed roots (issue #1516)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh
@@ -584,7 +590,8 @@ jobs:
       - name: Install strace (issue #2042)
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends strace
       # nextest: better parallelism and lower peak disk than `cargo test`.
-      - run: cargo nextest run --workspace --locked
+      # Report every failing target; an early failure must not hide other contracts.
+      - run: cargo nextest run --workspace --locked --no-fail-fast
         env:
           AMPLIHACK_TEST_REQUIRE_STRACE: "1"
       # Issue #1278: CI is the only place this suite runs WITHOUT git's hook
@@ -767,9 +774,10 @@ jobs:
             cross: false
             gnu_cross_toolchain: false
           - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-latest
+            # Build on ARM directly; no apt mirror or GNU cross-toolchain install.
+            runner: ubuntu-24.04-arm
             cross: false
-            gnu_cross_toolchain: true
+            gnu_cross_toolchain: false
           - target: x86_64-apple-darwin
             runner: macos-latest
             cross: false

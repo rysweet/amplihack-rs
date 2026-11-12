@@ -39,6 +39,8 @@ mod tests_issue_2030_contract;
 #[cfg(all(test, unix))]
 mod tests_issue_2279_launch_settings;
 #[cfg(test)]
+mod tests_issue_2361;
+#[cfg(test)]
 mod tests_launch;
 #[cfg(test)]
 mod tests_model;

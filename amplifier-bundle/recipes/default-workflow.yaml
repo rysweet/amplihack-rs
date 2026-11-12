@@ -50,6 +50,23 @@ context:
   # Path to the repository
   repo_path: "."
 
+  # Delivery inputs. Reference: docs/reference/workflow-delivery-inputs.md.
+  # base_branch: the branch a new branch starts from and the pull request
+  # targets. Empty => discover the remote default branch, as before.
+  base_branch: ""
+  # forbidden_base_branches: globs base_branch must not match, one per word or line.
+  forbidden_base_branches: ""
+  # strict_delivery: "true" when the caller has already assigned the issue
+  # (issue_number in `repository`, on github.com) and the branch
+  # (existing_branch). The run then fails rather than create, substitute or
+  # retarget anything; pr_repository and closing_reference are checked at
+  # step-03 and step-16. Step-03 fails on any other value, and on repository,
+  # pr_repository or closing_reference set without strict_delivery: "true".
+  strict_delivery: "false"
+  repository: ""
+  pr_repository: ""
+  closing_reference: ""
+
   # Branch name prefix (default: feat)
   branch_prefix: "feat"
 
@@ -133,6 +150,12 @@ context:
   implementation_terminal_evidence: ""
   verification_terminal_evidence: ""
 
+recovery:
+  version: 1
+  persist:
+    context: ["base_branch", "closing_reference", "forbidden_base_branches", "pr_repository", "repository", "strict_delivery", "adaptive_recipe", "allow_no_op", "api_design", "architecture_design", "auto_init_repo", "blocking_issues_addressed", "branch_name", "branch_prefix", "ci_status", "clarified_requirements", "cleanup_status", "codebase_analysis", "create_issue", "database_design", "decomposition_json", "design_spec", "doc_review_checkpoint", "doc_review_feedback", "documentation", "existing_branch", "final_cleanup", "final_documentation", "final_requirements", "finalization_handoff", "force_single_workstream", "goal_already_met", "identity_preflight", "implementation", "implementation_terminal_evidence", "infra_error_details", "issue_claim_check", "issue_creation", "issue_number", "issue_url", "no_merge", "ops_modified_files", "philosophy_check", "pr_feedback_changes", "pr_number", "pr_philosophy_review", "pr_review", "pr_security_review", "pr_url", "pre_commit_review", "preflight_status", "publish_status", "quality_audit_results", "quick_change_verdict", "recursion_guard", "refactored_code", "reflection_1", "reflection_2", "reflection_final", "remote_host_type", "repo_path", "requirements", "resume_checkpoint", "review_feedback", "round_1_result", "round_2_result", "round_3_result", "security_requirements", "selected_workflow", "session_complete_status", "session_id", "session_info", "should_finalize", "should_merge", "should_run_ci_wait", "skip_pre_agent_validation", "summary", "task_description", "task_type", "terminal_reason", "terminal_state", "terminal_success", "test_spec", "tree_id", "verification_terminal_evidence", "workflow", "workflow_init", "workspace_status", "workstream", "workstream_count", "workstreams_file", "worktree_path", "worktree_setup"]
+    outputs: ["workflow-prep", "workflow-worktree", "workflow-design", "workflow-tdd", "workflow-refactor-review", "workflow-precommit-test", "workflow-publish", "workflow-pr-review", "workflow-finalize"]
+
 steps:
   # Git precondition handling lives in workflow-prep/step-01: default-workflow
   # requires a git repo at <cwd>. When <cwd> is not a git work tree it
@@ -140,37 +163,46 @@ steps:
   # set auto_init_repo="false" for a fail-closed opt-out that restores the
   # historical hard-fail (`git init` or rerun from a checkout).
   - id: "workflow-prep"
+    recovery: {"replay": "never"}
     type: "recipe"
     recipe: "workflow-prep"
 
   - id: "workflow-worktree"
+    recovery: {"replay": "never"}
     type: "recipe"
     recipe: "workflow-worktree"
 
   - id: "workflow-design"
+    recovery: {"replay": "never"}
     type: "recipe"
     recipe: "workflow-design"
 
   - id: "workflow-tdd"
+    recovery: {"replay": "never"}
     type: "recipe"
     recipe: "workflow-tdd"
 
   - id: "workflow-refactor-review"
+    recovery: {"replay": "never"}
     type: "recipe"
     recipe: "workflow-refactor-review"
 
   - id: "workflow-precommit-test"
+    recovery: {"replay": "never"}
     type: "recipe"
     recipe: "workflow-precommit-test"
 
   - id: "workflow-publish"
+    recovery: {"replay": "never"}
     type: "recipe"
     recipe: "workflow-publish"
 
   - id: "workflow-pr-review"
+    recovery: {"replay": "never"}
     type: "recipe"
     recipe: "workflow-pr-review"
 
   - id: "workflow-finalize"
+    recovery: {"replay": "never"}
     type: "recipe"
     recipe: "workflow-finalize"

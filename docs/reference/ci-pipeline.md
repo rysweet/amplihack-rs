@@ -81,6 +81,11 @@ cross build **must** equal the `rust-toolchain.toml` channel. Prefer keeping
 _all_ build-job refs pinned to the file's channel so target `rust-std` always
 lands in the resolved toolchain.
 
+CI's `aarch64-unknown-linux-gnu` check runs natively on `ubuntu-24.04-arm`.
+It uses the runner's C/C++ toolchain, avoiding the GNU cross-toolchain package
+installation that failed when Ubuntu's package mirrors could not be resolved.
+The target and required check name remain `aarch64-unknown-linux-gnu`.
+
 ### Auto Release cross-build legs (`release.yml`)
 
 The **Auto Release** workflow (`.github/workflows/release.yml`) builds a
