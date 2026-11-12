@@ -87,21 +87,11 @@ fn a_changed_directory_group_invalidates_the_reading() {
     let mut groups = [0 as libc::gid_t; 64];
     let count = unsafe { libc::getgroups(64, groups.as_mut_ptr()) };
     let own = std::os::unix::fs::MetadataExt::gid(&fs::metadata(&dir).unwrap());
-    let changed = groups[..count.max(0) as usize]
-        .iter()
-        .filter(|g| **g != own)
-        .any(
-            |other| match std::os::unix::fs::chown(&dir, None, Some(*other)) {
-                Ok(()) => true,
-                // A user namespace reports unmapped supplementary groups with
-                // its overflow gid. Those gids cannot own a fixture directory.
-                Err(e) if e.raw_os_error() == Some(libc::EINVAL) => false,
-                Err(e) => panic!("cannot change the fixture directory's group: {e}"),
-            },
-        );
-    if !changed {
-        eprintln!("SKIP: this user has no other mapped supplementary group");
+    let other = groups[..count.max(0) as usize].iter().find(|g| **g != own);
+    let Some(other) = other else {
+        eprintln!("SKIP: this user is in only one group");
         return;
-    }
+    };
+    std::os::unix::fs::chown(&dir, None, Some(*other)).unwrap();
     assert!(!bound.current(), "a new group is a new set of writers");
 }
