@@ -364,6 +364,74 @@ fn a_second_source_in_another_process_shares_the_snapshot() {
     assert_eq!(f.scans(), 1);
 }
 
+/// A reader that already missed the cache must reuse a refresh published
+/// before it acquires the lock. Forced reads still scan in that interleaving.
+#[test]
+fn a_refresh_between_cache_read_and_lock_is_reused_only_for_cached_reads() {
+    for (fresh, stale) in [
+        (Fresh::Cached, false),
+        (Fresh::Cached, true),
+        (Fresh::Forced, true),
+    ] {
+        let f = fx();
+        if stale {
+            f.plant_valid(T0 - FRESH_SECS, serde_json::json!([]));
+        }
+        let paused = f.deps(READER, vec![live(&["Y"])]);
+        let refresher = f.source(7777, vec![live(&["X"])]);
+        let (missed_tx, missed_rx) = std::sync::mpsc::sync_channel(0);
+        let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(0);
+        std::thread::scope(|scope| {
+            let root = &f.root;
+            let reader = scope.spawn(move || {
+                super::read_with_before_lock(&paused, root, fresh, || {
+                    missed_tx.send(()).unwrap();
+                    resume_rx.recv().unwrap();
+                })
+            });
+            missed_rx.recv().unwrap();
+            assert_eq!(refresher.liveness(root, Fresh::Cached), known(&["X"]));
+            assert_eq!(f.scans(), 1);
+            assert!(f.lock_is_free(), "the refresher has released its lock");
+            resume_tx.send(()).unwrap();
+            let expected = if fresh == Fresh::Cached { "X" } else { "Y" };
+            assert_eq!(reader.join().unwrap(), known(&[expected]));
+        });
+        assert_eq!(f.scans(), if fresh == Fresh::Cached { 1 } else { 2 });
+    }
+}
+
+/// The recheck under the lock applies the same checks as the first read: a
+/// snapshot written in between that is stale, from the future, for another
+/// uid or for another root is not reused, and the reader replaces it.
+#[test]
+fn a_snapshot_written_before_the_lock_that_fails_a_check_is_not_reused() {
+    let procs = || serde_json::json!([proc_json(OTHER, Some("X"))]);
+    type Plant = fn(&Fx, serde_json::Value);
+    let cases: [(&str, Plant); 4] = [
+        ("stale", |f, p| f.plant_valid(T0 - FRESH_SECS, p)),
+        ("future", |f, p| f.plant_valid(T0 + 1, p)),
+        ("other uid", |f, p| {
+            f.plant(snap_json(euid().wrapping_add(1), &f.key(), T0, p).as_bytes())
+        }),
+        ("other root", |f, p| {
+            f.plant(snap_json(euid(), "0000000000000000", T0, p).as_bytes())
+        }),
+    ];
+    for (case, plant) in cases {
+        let f = fx();
+        let d = f.deps(READER, vec![live(&["Y"])]);
+        let got = super::read_with_before_lock(&d, &f.root, Fresh::Cached, || plant(&f, procs()));
+        assert_eq!(got, known(&["Y"]), "{case}: the reader uses its own scan");
+        assert_eq!(f.scans(), 1, "{case}");
+        let v = f.snapshot_json();
+        assert_eq!(v["root_hash"], f.key(), "{case}: the reader replaced it");
+        assert_eq!(v["uid"], euid(), "{case}");
+        assert_eq!(v["taken_at"], T0, "{case}");
+        assert_eq!(v["writer_pid"], READER, "{case}");
+    }
+}
+
 // --- AC2: a busy lock never makes a caller wait or scan ---------------------
 
 #[test]

@@ -5,7 +5,8 @@
 //!
 //! - [`Fresh::Cached`] serves a fresh snapshot without scanning. A stale or
 //!   missing one is refreshed by whoever takes the snapshot lock with one
-//!   non-blocking attempt; when another process holds the lock, the stale
+//!   non-blocking attempt, after rechecking freshness under the lock;
+//!   when another process holds the lock, the stale
 //!   snapshot is served whatever its age, or `Everything` when there is no
 //!   valid one.
 //! - [`Fresh::Forced`] never reads the snapshot file. It takes the lock with
@@ -195,6 +196,17 @@ fn system_deps() -> Option<SourceDeps> {
 }
 
 fn read(d: &SourceDeps, root: &Path, fresh: Fresh) -> Liveness {
+    read_with_before_lock(d, root, fresh, || {})
+}
+
+/// The callback lets tests pause a reader after its cache miss and before
+/// lock acquisition, without changing the store or lock behavior.
+fn read_with_before_lock(
+    d: &SourceDeps,
+    root: &Path,
+    fresh: Fresh,
+    before_lock: impl FnOnce(),
+) -> Liveness {
     // An unusable root is never cached: it says nothing about processes.
     let Ok(root) = root.canonicalize() else {
         return Liveness::Unsupported;
@@ -208,8 +220,16 @@ fn read(d: &SourceDeps, root: &Path, fresh: Fresh) -> Liveness {
     {
         return derive(d, snap);
     }
+    before_lock();
     match store.try_lock() {
         Ok(Lock::Held(_lock)) => {
+            // A different reader may have refreshed after our initial miss
+            // and released the lock before we acquired it.
+            if fresh == Fresh::Cached
+                && let Found::Fresh(snap) = store.read(d.uid, (d.clock)())
+            {
+                return derive(d, snap);
+            }
             let taken_at = (d.clock)();
             let collected = scan();
             let snap = Snapshot::from_collected(&collected, d.uid, store.key(), taken_at, d.pid);
