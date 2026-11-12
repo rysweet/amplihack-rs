@@ -640,7 +640,6 @@ pub(super) fn account(
 /// a pending swap journal, a directory others can write, or less than the
 /// refresh budget left. No usage or identity request is made here; the
 /// caller reads the refreshed login's identity afresh.
-#[cfg(test)]
 pub(super) fn refresh_expired(ep: &Endpoints, req: &Request<'_>) -> Result<bool, &'static str> {
     let deadline = Deadline::after(req.timeout);
     let creds = load(req.creds_dir)?;
