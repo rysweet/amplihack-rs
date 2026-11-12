@@ -4,7 +4,8 @@
 //! touches a credential.
 //!
 //! Once per cycle, after the measurement and before the target gate,
-//! [`step`]:
+//! [`step`] (never for a live login in the auto-switch `exclude` list,
+//! issue #2218, nor for the platform tier):
 //!
 //! - reads the live login again when its cached (passive) reading is frozen
 //!   (the same session and week figures on [`FROZEN_CYCLES`] cycles after
@@ -52,7 +53,6 @@
 use super::super::cycle::Ctx;
 use super::super::decide::{Probed, Reading};
 use super::super::fresh_msg;
-use super::super::identify::LiveId;
 use super::super::measure;
 use super::super::observe::{Measurement, Snap, decide_measured};
 use super::read_at;
@@ -90,8 +90,12 @@ pub(in crate::commands::profile::rotate) fn step(
     mut m: Measurement,
 ) -> Result<Measurement, ProfileError> {
     ctx.live_outlook = None;
-    let name = match &snap.live {
-        LiveId::Known(n) if !snap.platform_live() => n.clone(),
+    // Issue #2218: an excluded live login is never read again, whatever its
+    // probe reads (`Snap::measured_live`, the `config::excluded_from` rule
+    // the snapshot applied). This does not rely on `Probed::excluded()`
+    // being `Exhausted`.
+    let name = match snap.measured_live() {
+        Some(n) if !snap.platform_live() => n.clone(),
         _ => {
             ctx.live_series.clear();
             return Ok(m);
