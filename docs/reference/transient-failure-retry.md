@@ -267,6 +267,23 @@ being retried when the guard's line is in the failed step's evidence. The
 runner reporting each step's exit code as a number would close the miss
 (issue #2490).
 
+#### When the runner pin moves
+
+The decoder matches text the runner writes, so a new runner revision can
+change that text and make every refusal decode to no status. To catch this,
+`tests_termination_contract.rs` takes the text from the pinned
+`recipe_runner_rs` crate itself rather than from a copy:
+
+- the `Step '<id>' failed: ` envelope from `models::StepExecutionError`'s
+  own `Display`, with an id that needs escaping (`a'b`);
+- the `Command failed (exit N): <stderr>` text from
+  `CLISubprocessAdapter::execute_bash_step`, running a real `exit 79`.
+
+If a pin bump changes either, those tests fail. Two pieces are still copied
+because the runner builds them in private code: the `bash step failed: `
+prefix and the sub-recipe header above. Issue #2490 removes the need for the
+decoder and for both copies.
+
 #### Quoted guard text vetoes a retry
 
 Text never sets `structural_refusal`. It can stop a retry. When any failed
@@ -366,5 +383,6 @@ undifferentiated `exit 1` is the point of this change.
 - `crates/amplihack-cli/src/commands/recipe/run/tests_failure_class.rs`
 - `crates/amplihack-cli/src/commands/recipe/run/tests_failure_class_1437.rs`
 - `crates/amplihack-cli/src/commands/recipe/run/tests_termination.rs`
+- `crates/amplihack-cli/src/commands/recipe/run/tests_termination_contract.rs`
 - `crates/amplihack-cli/tests/issue_1437_final_marker.rs`
 - `crates/amplihack-utils/src/backoff.rs`

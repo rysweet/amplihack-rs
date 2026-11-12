@@ -12,6 +12,8 @@
 //! strings (`runner/mod.rs`: the `StepType::Recipe` diagnostic,
 //! `execute_sub_recipe`, `describe_sub_recipe_failure`; `models.rs`:
 //! `StepExecutionError`). One test also holds the text as a literal.
+//! `tests_termination_contract.rs` checks the decoder against the pinned
+//! crate's own text, so a pin bump that changes it fails a test.
 
 use super::super::{RecipeRunResult, RecipeRunStepResult};
 use super::failure_class::{FailureClass, classify_run_failure};
@@ -33,7 +35,12 @@ fn bash(id: &str, code: i32, stderr: &str) -> String {
 }
 
 /// A failed `type: recipe` step's error, as the runner composes it.
-fn sub_recipe(id: &str, recipe: &str, failed: &[(&str, String)], completed: &[&str]) -> String {
+pub(super) fn sub_recipe(
+    id: &str,
+    recipe: &str,
+    failed: &[(&str, String)],
+    completed: &[&str],
+) -> String {
     let entries: Vec<String> = failed
         .iter()
         .map(|(step, error)| format!("- {} [error]: {}", escaped(step), error.trim()))

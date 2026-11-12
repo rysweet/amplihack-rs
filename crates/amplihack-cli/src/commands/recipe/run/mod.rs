@@ -507,3 +507,5 @@ mod tests_teardown;
 mod tests_terminal_record;
 #[cfg(test)]
 mod tests_termination;
+#[cfg(test)]
+mod tests_termination_contract;
