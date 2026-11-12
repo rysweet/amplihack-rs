@@ -60,6 +60,7 @@ steps:
           TOOLS_D="{{autodrive_tools_dir}}"
           [ -n "$TOOLS_D" ] || TOOLS_D="{{autodrive_launch_tools}}"
           [ ! -L "$TOOLS_D/git-repo-env.sh" ] && . "$TOOLS_D/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env
+          export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
 
       If that line fails (git-repo-env.sh is missing, or is a symlink), make
       no git write of any kind: no merge, commit, rebase or push. Return at
@@ -172,6 +173,7 @@ steps:
     parse_json: true
     command: |
       set -uo pipefail
+      export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
       # #2033: inherited GIT_* (a hook's GIT_DIR, GIT_WORK_TREE, ...) and the outer
       # run's AMPLIHACK_* identity are cleared before any git command, so the
       # repository's own hooks and tests act on this checkout. The helper comes from

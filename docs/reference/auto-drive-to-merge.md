@@ -1588,9 +1588,11 @@ TOOLS_D="{{autodrive_tools_dir}}"
 [ -n "$TOOLS_D" ] || TOOLS_D="{{autodrive_launch_tools}}"
 [ ! -L "$TOOLS_D/git-repo-env.sh" ] && . "$TOOLS_D/git-repo-env.sh" \
   && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env
+export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
 ```
 
-The helper comes from `autodrive_tools_dir`, which
+The last line keeps `git` and `gh` from opening a pager and waiting on a
+terminal; step-02 sets the same variables. The helper comes from `autodrive_tools_dir`, which
 `autodrive-merge-round.yaml` passes on together with `autodrive_launch_tools`.
 When `autodrive_tools_dir` is empty, the agent uses the copy in
 `autodrive_launch_tools`; step-02's prelude falls back to

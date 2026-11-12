@@ -127,7 +127,7 @@ mod tests {
     use super::validate;
     use serde_json::{Value, json};
 
-    const HEAD: &str = "219fee3daf8960880adf143c504c453f309f91a4";
+    const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
 
     fn green() -> Value {
         json!({"ci_status":"GREEN","ci_total":"3","ci_pending":"0","ci_failing":"0","head_sha":HEAD})
