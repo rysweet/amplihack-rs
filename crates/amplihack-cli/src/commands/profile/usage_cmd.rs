@@ -477,35 +477,42 @@ pub(super) fn read_exclude(
     warn: impl FnOnce(&str),
 ) -> Option<Vec<ProfileName>> {
     use super::auto_switch::config::{ExcludeFile, read_exclude};
-    match read_exclude(root) {
-        ExcludeFile::Read { names, trusted } => {
-            if !trusted {
-                warn(EXCLUDE_UNTRUSTED);
-            }
-            Some(names)
-        }
-        ExcludeFile::Unreadable => {
-            warn(EXCLUDE_UNREADABLE);
-            None
-        }
+    match warned(read_exclude(root), warn) {
+        ExcludeFile::Read { names, .. } => Some(names),
+        ExcludeFile::Unreadable => None,
     }
+}
+
+/// Passes `file` through after giving `warn` the line it calls for, if any.
+#[cfg(unix)]
+fn warned(
+    file: super::auto_switch::config::ExcludeFile,
+    warn: impl FnOnce(&str),
+) -> super::auto_switch::config::ExcludeFile {
+    use super::auto_switch::config::ExcludeFile;
+    match &file {
+        ExcludeFile::Read { trusted: false, .. } => warn(EXCLUDE_UNTRUSTED),
+        ExcludeFile::Unreadable => warn(EXCLUDE_UNREADABLE),
+        ExcludeFile::Read { .. } => {}
+    }
+    file
 }
 
 /// Issue #2218: the profiles to treat as excluded under `root`, read once
 /// per command or rotate cycle: the `exclude` list, or every profile in
 /// the store when the file cannot be read (fails closed: a refresh of an
 /// excluded login signs out the other hosts that share it). The rule is
-/// `config::excluded_profiles`, which `config::effective` follows too; a
-/// store that cannot be listed is an error, never an empty list.
+/// `config::excluded_from`, the body of `config::excluded_profiles`, which
+/// `config::effective` follows too; this only adds the warning. A store
+/// that cannot be listed is an error, never an empty list.
 #[cfg(unix)]
 pub(super) fn exclude_list(
     root: &std::path::Path,
     warn: impl FnOnce(&str),
 ) -> Result<Vec<ProfileName>, ProfileError> {
-    match read_exclude(root, warn) {
-        Some(names) => Ok(names),
-        None => super::auto_switch::config::every_profile(root),
-    }
+    use super::auto_switch::config::{excluded_from, read_exclude};
+    // One read: warn about it, then apply the shared rule to it.
+    excluded_from(warned(read_exclude(root), warn), root)
 }
 
 /// Auto-switch has no config on this platform, so nothing is excluded.

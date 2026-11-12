@@ -9003,6 +9003,11 @@ or `journal: inconsistent`, and one that cannot be read `journal: damaged`. A
 ledger that cannot be read shows `live: - (ledger unreadable)`, or
 `live: - (ledger unreadable: <field>)` when a field was refused, with the
 same fixed text as the [unreadable-ledger stop](#unreadable-ledger-stop).
+When the ledger names no live profile and the excluded profiles cannot be
+worked out (the auto-switch config is unreadable, so every profile counts as
+excluded, and the profile store cannot be listed), `status` shows
+`live: unknown (excluded profiles unreadable: <cause>)` rather than `live: -`,
+which would say that nothing is live.
 
 Under a systemd unit that owns rotation, `status` shows the owner and the
 deferral:

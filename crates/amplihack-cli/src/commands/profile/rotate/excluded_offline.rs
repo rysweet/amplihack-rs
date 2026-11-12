@@ -118,20 +118,26 @@ fn find_live(
 
 /// The `live:` value of `rotate status`: the ledger's `live`, else (issue
 /// #2218) the excluded profile a local rule names, with no request, else `-`.
+/// When that rule cannot be applied (the exclude list falls back to every
+/// profile and the store cannot be listed) the value says so rather than
+/// `-`, which would read as "nothing is live".
 pub fn status_live(
     store: &ProfileStore,
     rs: &RotateState,
     home: Option<&Path>,
     ledger_live: Option<String>,
 ) -> String {
-    ledger_live
-        .or_else(|| {
-            live_excluded_offline(store, rs, home?)
-                .ok()
-                .flatten()
-                .map(|(n, _)| n.as_str().to_string())
-        })
-        .unwrap_or_else(|| "-".into())
+    if let Some(live) = ledger_live {
+        return live;
+    }
+    let Some(home) = home else { return "-".into() };
+    match live_excluded_offline(store, rs, home) {
+        Ok(Some((n, _))) => n.as_str().to_string(),
+        Ok(None) => "-".into(),
+        Err(e) => crate::commands::profile::rotate::handfix_msg::status_live_exclude_unknown(
+            &e.to_string(),
+        ),
+    }
 }
 
 /// Whether moving the excluded live login `name` out may write it into

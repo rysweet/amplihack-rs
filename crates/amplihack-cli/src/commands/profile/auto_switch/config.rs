@@ -305,7 +305,14 @@ pub fn read_exclude(root: &Path) -> ExcludeFile {
 /// store that cannot be listed is an error, never an empty list, so the
 /// fallback cannot fail open.
 pub fn excluded_profiles(root: &Path) -> Result<Vec<ProfileName>, ProfileError> {
-    match read_exclude(root) {
+    excluded_from(read_exclude(root), root)
+}
+
+/// [`excluded_profiles`] for a file already read with [`read_exclude`], so
+/// a caller that warns about the file applies this same rule to the same
+/// read instead of repeating it.
+pub fn excluded_from(file: ExcludeFile, root: &Path) -> Result<Vec<ProfileName>, ProfileError> {
+    match file {
         ExcludeFile::Read { names, .. } => Ok(names),
         ExcludeFile::Unreadable => every_profile(root),
     }

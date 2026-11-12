@@ -614,6 +614,33 @@ mod local_proof {
         );
     }
 
+    #[test]
+    fn status_live_says_unknown_when_the_excluded_profiles_cannot_be_listed() {
+        use crate::commands::profile::ProfileStore;
+        use crate::commands::profile::rotate::ledger::RotateState;
+        use crate::commands::profile::rotate::status_live;
+        let (e, _) = fx();
+        fs::write(e.root.join(config::FILE), b"enabled=maybe\n").unwrap();
+        // The store refuses a symlinked root, so the fail-closed fallback
+        // (every profile) cannot be listed.
+        let link = e.home.join("store-link");
+        std::os::unix::fs::symlink(&e.root, &link).unwrap();
+        let store = ProfileStore::new(link.clone());
+        let rs = RotateState::new(&link);
+        assert!(live_excluded_offline(&store, &rs, &e.home).is_err());
+        let live = status_live(&store, &rs, Some(&e.home), None);
+        assert!(
+            live.starts_with("unknown (excluded profiles unreadable: "),
+            "an error is not `-` (nothing live): {live}"
+        );
+        // The ledger's answer still comes first; no home is still `-`.
+        assert_eq!(
+            status_live(&store, &rs, Some(&e.home), Some("work".into())),
+            "work"
+        );
+        assert_eq!(status_live(&store, &rs, None, None), "-");
+    }
+
     // --- the local-only set behind Reader::bound ---------------------------
 
     thread_local! {
