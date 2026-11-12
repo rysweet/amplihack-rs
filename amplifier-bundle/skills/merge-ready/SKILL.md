@@ -199,6 +199,8 @@ Use [pr-description-template.md](pr-description-template.md) and replace every p
 
 If the description already has useful sections, merge the evidence into the existing structure instead of duplicating headings.
 
+Keep the change's description and the readiness report apart. The report goes **below** the description, starting with the template's marker line (`<!-- merge-ready-report: … -->`), which stays exactly as written; replace an earlier report below the marker rather than adding a second one above it. Auto-drive's merge gate cuts the squash commit body at the first line that starts with `<!-- merge-ready-report` or `## Merge readiness`, so the text above becomes the commit message on the base branch and the report never does (#2056). Nothing refreshes the report after the last merge-ready round, so readiness state written above the marker would land as history: a head SHA, a verdict, `open` as the platform state, or a round-by-round log. Keep it below.
+
 #### GitHub path
 
 ```bash

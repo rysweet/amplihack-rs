@@ -111,6 +111,7 @@ The runner creates one folder per run:
 │       ├── owned-paths           # worktrees and targets this run created
 │       ├── cleanup-record.json   # written only when cleanup removed something
 │       ├── recovery/             # private completions and required artifact copies
+│       ├── procs/                # one record per running attempt, for recipe stop (Linux)
 │       └── runtime/              # removed when the run ends
 │           ├── tmp/              # TMPDIR, TMP and TEMP for every step
 │           └── artifacts/        # AMPLIHACK_WORKFLOW_ARTIFACT_DIR
