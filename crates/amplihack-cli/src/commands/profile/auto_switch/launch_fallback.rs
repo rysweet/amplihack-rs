@@ -27,6 +27,8 @@ struct Stamp {
     file: Option<(u64, i64, i64, i64, i64)>,
 }
 
+type StampedPool = Vec<(ProfileName, Vec<Option<Stamp>>)>;
+
 impl Stamp {
     fn read(path: &Path) -> Result<Option<Self>, ProfileError> {
         let m = match fs::symlink_metadata(path) {
@@ -65,7 +67,7 @@ struct PolicyEvidence {
     source_host: String,
     source_login: String,
     stamps: Vec<Option<Stamp>>,
-    pool: Vec<(ProfileName, Vec<Option<Stamp>>)>,
+    pool: StampedPool,
     approved: Vec<ProfileName>,
 }
 
@@ -74,6 +76,8 @@ pub(in crate::commands::profile) struct Evidence {
     policy: PolicyEvidence,
     credential: rotate::login_identity::LaunchBound,
 }
+
+type VerifiedPool = (Vec<(ProfileName, Evidence)>, Option<ProfileError>);
 impl std::fmt::Debug for Evidence {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Evidence(<redacted>)")
@@ -121,10 +125,7 @@ fn stamps(
 
 // Retain every profile's local policy inputs, including unselected peers.
 // Usage is deliberately re-read: new peer capacity must narrow permission.
-fn pool_stamps(
-    store: &ProfileStore,
-    source: &str,
-) -> Result<Vec<(ProfileName, Vec<Option<Stamp>>)>, ProfileError> {
+fn pool_stamps(store: &ProfileStore, source: &str) -> Result<StampedPool, ProfileError> {
     let cfg = config::read_editable(store.root())?;
     config::every_profile(store.root())?
         .into_iter()
@@ -230,10 +231,7 @@ fn authenticate(
 
 /// Authenticate the eligible pool before taking launch locks. Refused peers
 /// remain visible to policy, but are never offered as launch destinations.
-fn verified_pool(
-    store: &ProfileStore,
-    source: &str,
-) -> Result<(Vec<(ProfileName, Evidence)>, Option<ProfileError>), ProfileError> {
+fn verified_pool(store: &ProfileStore, source: &str) -> Result<VerifiedPool, ProfileError> {
     let state = State::new(store.root())?;
     let cfg = config::read_editable(store.root())?;
     let ledger = state.load_ledger()?;
