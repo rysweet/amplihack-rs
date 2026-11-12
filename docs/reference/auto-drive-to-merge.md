@@ -3377,7 +3377,7 @@ the state every other criterion was verified against.
 
 | Part | Source | Rule |
 | --- | --- | --- |
-| Subject | `.title` | `<title> (#N)`. This is GitHub's own convention, and on this repository it is literally what the platform would have produced: `squash_merge_commit_title` is `COMMIT_OR_PR_TITLE`. A title that already ends with exactly ` (#N)` for this pull request is used unchanged, so the suffix is never doubled. Control characters (`\000`-`\037` and `\177`) are stripped first: the subject cannot become multi-line, cannot forge a line in the evidence bundle, and cannot deliver an escape sequence to the terminal that reads the gate's output. |
+| Subject | `.title` | `<title> (#N)`. This is GitHub's own convention, and on this repository it is literally what the platform would have produced: `squash_merge_commit_title` is `COMMIT_OR_PR_TITLE`. A title that already ends with exactly ` (#N)` for this pull request is used unchanged, so the suffix is never doubled. Control characters are stripped first, by code point in the `jq` read: C0 (`U+0000`-`U+001F`), DEL (`U+007F`) and C1 (`U+0080`-`U+009F`). The subject cannot become multi-line, cannot forge a line in the evidence bundle, and cannot deliver ESC or a C1 introducer such as CSI (`U+009B`) to a terminal that reads the gate's output as UTF-8. A byte-level `tr -d '\000-\037\177'` would keep CSI, which UTF-8 encodes as `c2 9b`. |
 | Body | `.body` | Read with `jq -j` into the gate's variable `MERGE_BODY` and piped to `gh` on standard input, which `--body-file -` reads. `-j` is the point: `jq -r` appends a newline of its own, so a body already ending in one would gain a second and a body ending without one would gain a first. With `-j`, no trailing newline is added and none is removed; the capture appends an `x` inside `$(...)` and strips it afterwards, so command substitution does not remove one either. A NUL is stripped, since neither git nor a bash variable can carry one. |
 
 Both are read with `jq`, not with the gate's `field()` helper. `field()`
@@ -3497,7 +3497,7 @@ anything is written, so a write failure is never reported as a read failure.
 | `jq` fails on the pull request metadata | blocker |
 | `.title` absent, or JSON `null` | blocker |
 | `.title` empty or whitespace-only | blocker: every pull request has a title, so an empty one means the read is wrong |
-| `.title` longer than 1024 characters, as `${#title}` counts them | blocker: a sanity bound, well above GitHub's own 256-character title limit |
+| `.title` longer than 1024 characters once control characters are stripped, as `${#subject}` counts them | blocker: a sanity bound, well above GitHub's own 256-character title limit |
 | `.body` key absent from the object | blocker: a malformed read, not an empty body |
 | `.body` present but neither a string nor `null` | blocker |
 | `.body` longer than 65,536 bytes | blocker: GitHub's own limit on a pull request body, the same kind of sanity bound as the 1024 characters on the title |
@@ -3613,7 +3613,7 @@ merged with GitHub's default squash message, and one of its branch commits
 was authored by `Fixture <fixture.invalid>`, a test fixture's identity. No
 commit message carried a trailer for it; GitHub wrote the author into the
 default message, so `main` gained `Co-authored-by: Fixture <fixture.invalid>`.
-This repository's `main` shows the same: `489576dd` (#2241) and `29511814`
+This repository's `main` shows the same: `489576dd6b32` (#2241) and `2951181459e2`
 (#2288) both end with `Co-authored-by: qa <qa@example.invalid>`. In #2288
 that author's only commit is a merge of `main` into the branch. GitHub leaves
 merge commits out of the concatenated message but still credits their
@@ -3643,7 +3643,7 @@ What GitHub's documentation says, read on 2026-11-12:
 
 What landed commits on `main` show. This was read from `git log` and the
 pull requests' commit lists on 2026-11-12, without merging anything. Of the
-913 first-parent commits up to `489576dd`, 39 are squash commits from
+913 first-parent commits up to `489576dd6b32`, 39 are squash commits from
 branches with two or more non-merge commits whose body is not GitHub's
 `* `-prefixed concatenation. In 22 of them, a commit author other than the
 squash commit's own author appears nowhere in the message. Four were checked by hand.
@@ -3652,14 +3652,14 @@ description, so it was supplied at merge:
 
 | Squash commit | Merged | Branch commits authored by | `Co-authored-by` for them |
 | --- | --- | --- | --- |
-| `cb915faf` (#1003) | 2026-07-25 | `amplihack-agent <agent@amplihack.local>`, all nine | none |
-| `034e92b9` (#1053) | 2026-07-26 | `Ubuntu <azureuser@deva….internal.cloudapp.net>`, both | none |
-| `ff3441a9` (#1100) | 2026-07-28 | `Ryan Sweet <ryan@simard.dev>`, all three non-merge commits | none |
-| `e080a9d8` (#650) | 2026-05-19 | `Copilot <223556219+Copilot@users.noreply.github.com>`, both | none |
+| `cb915faf8553` (#1003) | 2026-07-25 | `amplihack-agent <agent@amplihack.local>`, all nine | none |
+| `034e92b9ad9c` (#1053) | 2026-07-26 | `Ubuntu <azureuser@deva….internal.cloudapp.net>`, both | none |
+| `ff3441a99d07` (#1100) | 2026-07-28 | `Ryan Sweet <ryan@simard.dev>`, all three non-merge commits | none |
+| `e080a9d80c79` (#650) | 2026-05-19 | `Copilot <223556219+Copilot@users.noreply.github.com>`, both | none |
 
 #1003 and #1053 are the merge owner's case in everything but name: identities
 that belong to no GitHub account authored every commit on the branch, and
-neither reached `main`. The control is `851b1056` (#1117). It was merged
+neither reached `main`. The control is `851b10566189` (#1117). It was merged
 with GitHub's default message on the same day as #1100, by the same account,
 from commits by the same `Ryan Sweet <ryan@simard.dev>`, and it ends
 `Co-authored-by: Ryan Sweet <ryan@simard.dev>`. So in July 2026 GitHub

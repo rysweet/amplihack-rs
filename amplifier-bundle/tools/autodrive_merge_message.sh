@@ -66,15 +66,19 @@ autodrive_merge_sha12() {
 # object `gh` returned and nothing quoted inside it. Choosing jq here is a
 # security control, not a style.
 #
-# The 1024-character bound, as `${#title}` counts them, is a sanity bound well
-# above GitHub's own 256-character title limit: anything past it is a read
-# gone wrong, not a subject.
+# The 1024-character bound, as `${#subject}` counts them, is a sanity bound
+# well above GitHub's own 256-character title limit: anything past it is a
+# read gone wrong, not a subject.
 #
-# Control characters (\000-\037 and \177) are removed rather than only CR and
-# LF. The subject reaches an operator's terminal through the gate's own
-# messages and is written into the evidence bundle, so ESC is an escape
-# sequence delivered to a terminal and NUL silently truncates a bash array
+# Control characters are removed rather than only CR and LF: C0 (U+0000-001F),
+# DEL (U+007F) and C1 (U+0080-009F). The subject reaches an operator's
+# terminal through the gate's own messages and is written into the evidence
+# bundle, so ESC, or the one-character C1 introducer CSI (U+009B), is an escape
+# sequence delivered to a terminal, and NUL silently truncates a bash array
 # element. Removing them is what stops a title forging a line of that bundle.
+# They are removed by code point, in jq, not by byte with `tr`: as bytes, CSI
+# is C2 9B, which `tr -d '\000-\037\177'` keeps, and deleting bytes 80-9F
+# instead would cut characters such as U+039B (CE 9B) in half (crusty round 7).
 #
 # The ` (#N)` suffix is GitHub's own convention, and on this repository it is
 # literally what the platform would have produced (`squash_merge_commit_title`
@@ -82,12 +86,13 @@ autodrive_merge_sha12() {
 # request's suffix keeps it, so the suffix is never doubled; a title ending
 # with ANOTHER pull request's number still gets its own.
 autodrive_merge_subject() {
-  local json="${1:-}" pr="${2:-}" title subject
-  title="$(printf '%s' "$json" \
-    | jq -r 'if (has("title") and (.title | type == "string")) then .title else error end' 2>/dev/null)" \
+  local json="${1:-}" pr="${2:-}" subject
+  subject="$(printf '%s' "$json" | jq -r '
+    if (has("title") and (.title | type == "string"))
+    then [.title | explode[] | select(. > 31 and (. < 127 or . > 159))] | implode
+    else error end' 2>/dev/null)" \
     || return 1
-  [ "${#title}" -le 1024 ] || return 1
-  subject="$(printf '%s' "$title" | tr -d '\000-\037\177')"
+  [ "${#subject}" -le 1024 ] || return 1
   case "$subject" in
     *[![:space:]]*) ;;
     *) return 1 ;;

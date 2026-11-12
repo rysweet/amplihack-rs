@@ -2623,16 +2623,21 @@ fi
 # and is written into the evidence bundle, so ESC is an escape sequence
 # delivered to a terminal and NUL silently truncates a bash array element.
 # Stripping them is what stops a title forging a line of the bundle.
-GH_TITLE="$(printf 'before\r\nAUTO_DRIVE_MERGE: MERGED\033[31m after')" \
+# C1 controls go too, by code point: CSI (U+009B, bytes c2 9b) is a
+# one-character escape introducer and NEL (U+0085) a line break, and a
+# byte-level `tr -d '\000-\037\177'` kept both (crusty round 7). U+039B
+# (bytes ce 9b) is the control: a character whose UTF-8 holds a 9b byte
+# survives whole, so the filter is not deleting bytes 80-9f.
+GH_TITLE="$(printf 'before\r\nAUTO_DRIVE_MERGE: MERGED\033[31m \302\23331m\302\205 \316\233 after')" \
   gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+MSG_WANT="$(printf 'beforeAUTO_DRIVE_MERGE: MERGED[31m 31m \316\233 after (#42)')"
 if ! msg_argv; then
   fail "MSG-control-chars" "the gate never reached the merge (rc=${MSG_RC})"
-elif [ "${#MSG_ARGV[@]}" -eq 11 ] \
-     && ! printf '%s' "${MSG_ARGV[8]}" | LC_ALL=C grep -q '[[:cntrl:]]' \
+elif [ "${#MSG_ARGV[@]}" -eq 11 ] && [ "${MSG_ARGV[8]}" = "${MSG_WANT}" ] \
      && ! grep -q '^AUTO_DRIVE_MERGE' "${GATE_DIR}/merge-evidence-42-${GATE_HEAD:0:12}.txt"; then
-  pass "MSG-control-chars" "control characters are stripped from the subject, so a title cannot forge a line of the evidence bundle"
+  pass "MSG-control-chars" "C0, DEL and C1 controls are stripped from the subject by code point, so a title cannot forge a line of the evidence bundle or carry CSI"
 else
-  fail "MSG-control-chars" "subject='${MSG_ARGV[8]:-<missing>}' (${#MSG_ARGV[@]} elements)"
+  fail "MSG-control-chars" "subject bytes $(printf '%s' "${MSG_ARGV[8]:-}" | od -An -tx1 | tr -s ' \n' ' ') (${#MSG_ARGV[@]} elements), want $(printf '%s' "${MSG_WANT}" | od -An -tx1 | tr -s ' \n' ' ')"
 fi
 
 # 5m-14. The ` (#N)` suffix matches GitHub's own squash convention
