@@ -13,8 +13,10 @@
 //!   the work root it resolves, and signals only the two processes it names
 //!   and the runner's group, re-checking each start time before every
 //!   signal. It never opens `/proc` as a folder or reads another process's
-//!   `environ`, refuses to stop the run it runs inside, and never signals
-//!   its own pid or its parent's. A missing, untrusted or stale record is
+//!   `environ`, refuses to stop a run it descends from (its own, or an
+//!   outer run when it runs under a nested `recipe run`: it walks its own
+//!   parent chain, see `inside_run`), and never signals its own pid or its
+//!   parent's. A missing, untrusted or stale record is
 //!   "not found" and nothing is signalled; a lookup that fails to read gives
 //!   the reason under that message. Signal order and accepted limits are in
 //!   `docs/reference/recipe-command.md`. Linux only.
@@ -138,13 +140,17 @@ fn stop_run_id(run_id: &str) -> Result<()> {
         return Err(not_found());
     }
     let group = (record.runner.pgid, record.runner.start_ticks);
-    if inside_group(group.0) {
+    if inside_group(group.0) || inside_run(&record) {
         return Err(inside());
     }
     terminate(&tree);
     signal_group_if_leader(group, libc::SIGTERM);
     // The group gets SIGKILL before its leader, while the leader can still
-    // match its recorded start time.
+    // match its recorded start time. Only the two recorded pids are waited
+    // on: once the runner has exited, the group gets no SIGKILL from here,
+    // and members that ignored SIGTERM are left to `recipe run`'s own
+    // teardown (`snapshot_group` in `run/execute.rs`), which got SIGTERM
+    // above.
     let survivors = wait_for_exit(&tree, STOP_GRACE);
     signal_group_if_leader(group, libc::SIGKILL);
     kill_survivors(&tree, &survivors);
@@ -175,6 +181,24 @@ fn inside_group(pgid: i32) -> bool {
     // SAFETY: getsid(0) and getpgid(0) only query this process.
     let (sid, pg) = unsafe { (libc::getsid(0), libc::getpgid(0)) };
     sid == pgid || pg == pgid
+}
+
+/// This process descends from the run `record` names: one of its ancestors
+/// (or itself) is the recorded `recipe run` or runner with the recorded start
+/// time, or is in the runner's process group. This is what catches a step of
+/// a nested `recipe run` asked to stop an outer run: the nested run has its
+/// own `AMPLIHACK_RECIPE_RUN_ID` and its runner its own session, but the
+/// outer runner is still on its parent chain. Reads only this process's own
+/// ancestry (see `process_tree::own_ancestry`).
+#[cfg(target_os = "linux")]
+pub(super) fn inside_run(record: &super::run_record::Record) -> bool {
+    let recorded = [
+        (record.recipe_run.pid, record.recipe_run.start_ticks),
+        (record.runner.pid, record.runner.start_ticks),
+    ];
+    super::process_tree::own_ancestry()
+        .iter()
+        .any(|p| recorded.contains(&(p.pid, p.start)) || p.pgid == record.runner.pgid)
 }
 
 /// Signals the process group `group.0` only while its leader is still the

@@ -724,8 +724,11 @@ The test fails if any traced process:
 - opens `/proc` or `/proc/` as a directory;
 - opens any `environ` at all, even of the run's own pids;
 - opens any `/proc/<pid>/...` path for a pid outside the traced tree, the
-  `recipe run` process, the runner and the stub's child. `/proc/self` and
-  `/proc/thread-self` count as the traced tree.
+  `recipe run` process, the runner, the stub's child and the traced command's
+  ancestors (strace, the test process and its parents). `/proc/self` and
+  `/proc/thread-self` count as the traced tree;
+- opens anything but `stat` of one of those ancestors. `recipe stop` reads
+  its own parent chain to refuse a run it descends from.
 
 It also fails unless the trace shows an open of `procs/<run_id>.json`, so an
 empty trace cannot pass. Afterwards it checks that the stopped `recipe run`

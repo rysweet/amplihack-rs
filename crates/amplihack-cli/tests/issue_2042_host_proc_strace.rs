@@ -277,7 +277,18 @@ fn recipe_stop_by_run_id_reads_no_host_process_table() {
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("trace");
     let stop = fx.cmd(&["recipe", "stop", &run_id], &[]);
-    let out = traced(&strace, &stop, &log).output().expect("run strace");
+    let tracer = traced(&strace, &stop, &log)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run strace");
+    // `recipe stop` walks its own parent chain (strace, this test, ...) to
+    // refuse an outer run it descends from; those `stat` reads are its own
+    // ancestry, not the process table.
+    let ancestry: BTreeSet<u32> = std::iter::once(tracer.id())
+        .chain(test_ancestry())
+        .collect();
+    let out = tracer.wait_with_output().expect("wait for strace");
     let trace = std::fs::read_to_string(&log).unwrap_or_default();
     assert!(
         trace.lines().count() > 0,
@@ -286,7 +297,24 @@ fn recipe_stop_by_run_id_reads_no_host_process_table() {
     );
     assert!(out.status.success(), "{}", text(&out.stderr));
 
-    let allowed: BTreeSet<u32> = [amp.id(), runner as u32, child as u32].into();
+    let ancestor_reads: Vec<_> = trace
+        .lines()
+        .filter(|line| {
+            let path = line.split('"').nth(1).unwrap_or("");
+            ancestry.iter().any(|pid| {
+                path.strip_prefix(&format!("/proc/{pid}/"))
+                    .is_some_and(|rest| rest != "stat")
+            })
+        })
+        .collect();
+    assert!(
+        ancestor_reads.is_empty(),
+        "recipe stop may read only `stat` of its ancestors: {ancestor_reads:#?}"
+    );
+    let allowed: BTreeSet<u32> = [amp.id(), runner as u32, child as u32]
+        .into_iter()
+        .chain(ancestry.iter().copied())
+        .collect();
     let bad = host_proc_reads(&trace, &allowed);
     assert!(
         bad.is_empty(),
@@ -307,4 +335,25 @@ fn recipe_stop_by_run_id_reads_no_host_process_table() {
     assert_gone(&[runner, child]);
     let status = wait_bounded(&mut amp);
     assert!(!status.success(), "a stopped run must not report success");
+}
+
+/// This test process and its ancestors, by `/proc/<pid>/stat` field 4.
+fn test_ancestry() -> Vec<u32> {
+    let mut chain = Vec::new();
+    let mut pid = std::process::id();
+    while pid > 1 && !chain.contains(&pid) {
+        chain.push(pid);
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            break;
+        };
+        let Some(ppid) = stat
+            .rfind(')')
+            .and_then(|end| stat[end + 1..].split_whitespace().nth(1))
+            .and_then(|ppid| ppid.parse().ok())
+        else {
+            break;
+        };
+        pid = ppid;
+    }
+    chain
 }

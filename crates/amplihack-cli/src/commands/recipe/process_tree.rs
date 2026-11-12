@@ -68,6 +68,20 @@ pub(super) fn start_time(pid: i32) -> Option<u64> {
     read_stat(pid).map(|p| p.start)
 }
 
+/// This process and its ancestors, read one `/proc/<pid>/stat` at a time up
+/// the parent chain: this process's own ancestry, never the process table.
+/// Stops at pid 1, at a process that is gone, or at a loop.
+pub(super) fn own_ancestry() -> Vec<Proc> {
+    let mut chain: Vec<Proc> = Vec::new();
+    let mut pid = std::process::id() as i32;
+    while pid > 1 && !chain.iter().any(|p| p.pid == pid) {
+        let Some(p) = read_stat(pid) else { break };
+        pid = p.ppid;
+        chain.push(p);
+    }
+    chain
+}
+
 /// `roots`, every process descended from one of them, and every member of
 /// those processes' groups. A root's own pid counts as a group too: a runner
 /// is its group's leader, and its group outlives it once it has exited.

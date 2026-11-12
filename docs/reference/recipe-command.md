@@ -445,7 +445,7 @@ the run-id path is not used.
 
 Each process is signalled only while its start time still matches the one
 recorded, so a reused pid is never hit. `recipe stop` never signals itself or
-its parent. It prints `stopped <what> (<n> processes)` and exits 0, or exits 1
+its parent, and by run id refuses a run it descends from. It prints `stopped <what> (<n> processes)` and exits 0, or exits 1
 when nothing matches.
 
 ### Run records
@@ -503,12 +503,24 @@ longer match, so it never causes a signal.
 - **A pid is kept** only while the start time in `/proc/<pid>/stat` matches
   the record, and never if it is `recipe stop`'s own pid or its parent's.
   `recipe stop` refuses when its own `AMPLIHACK_RECIPE_RUN_ID`, session or
-  process group is the run's.
+  process group is the run's, and when it descends from the run: it walks its
+  own parent chain (`/proc/self/stat`, then each parent's `stat`) and refuses
+  if any ancestor is the recorded `recipe run` or runner with the recorded
+  start time, or is in the runner's process group. This covers a step of a
+  nested `recipe run` asked to stop an outer run: the nested run has its own
+  `AMPLIHACK_RECIPE_RUN_ID` and its runner its own session, but the outer
+  runner is still its ancestor.
 - **Signals:** SIGTERM to the kept pids and to the runner's group; after up to
   15 s, SIGKILL to the group and then to any kept pid still running. The start
-  time is checked again before every signal.
-- **No other `/proc` access:** it does not list `/proc`, reads no `environ`,
-  and never writes or removes a record. The strace check in
+  time is checked again before every signal. `recipe stop` waits only on the
+  two recorded pids, and signals the group only while its leader, the runner,
+  still matches its start time. If the runner exits within the 15 s, the group
+  gets no SIGKILL from `recipe stop`: members that ignored SIGTERM are left to
+  `recipe run`'s own teardown, which got SIGTERM in the same pass and SIGKILLs
+  the runner's remaining group members (`snapshot_group` in `run/execute.rs`).
+- **No other `/proc` access:** besides the two recorded pids' `stat` it reads
+  only the `stat` of itself and its ancestors; it does not list `/proc`, reads
+  no `environ`, and never writes or removes a record. The strace check in
   [Keep Tests off the Host Process Table](../howto/keep-tests-off-the-host-process-table.md#recipe-stop-run_id-reads-only-its-own-runs-pids)
   enforces this.
 
@@ -535,9 +547,10 @@ different work root (through `AMPLIHACK_WORK_ROOT` or `HOME`). Stop these
 through their tmux session, or by signalling `recipe run`.
 
 Accepted risks: a pid reused in the microseconds between the start-time check
-and `kill(2)`, which only pidfds would close; a descendant of the run that
-cleared its environment and started a new session, which the "from inside it"
-check does not detect; and agents that started their own session and outlived
+and `kill(2)`, which only pidfds would close; a descendant of the run whose
+link to it was broken (an intermediate process exited, so it was reparented to
+init or a subreaper) and that cleared its environment and started a new
+session, which the "from inside it" check does not detect; and agents that started their own session and outlived
 their runner, which are not in the runner's group. Stop those through their
 tmux session or by pid.
 

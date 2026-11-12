@@ -22,12 +22,15 @@
 //!   is `Ok(None)`; a folder or record it cannot read is `Err` naming it.
 //! - `stop::live_targets(&Record) -> Tree`: the recorded pids whose start
 //!   time still matches, never this process or its parent.
+//! - `stop::inside_run(&Record) -> bool`: this process or an ancestor is a
+//!   recorded pid with its recorded start time, or is in the runner's group,
+//!   so a step under a nested `recipe run` cannot stop the outer run.
 //!
 //! Temp directories only; nothing here signals a process.
 
 use super::*;
 use crate::commands::cleanup::run_dir::pid_start_ticks;
-use crate::commands::recipe::stop::live_targets;
+use crate::commands::recipe::stop::{inside_run, live_targets};
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
@@ -554,6 +557,58 @@ fn this_process_and_its_parent_are_never_targets() {
     let parent_start = pid_start_ticks(parent as u32).expect("parent start time");
     let r = record((me, my_start()), (parent, parent_start));
     assert!(live_targets(&r).is_empty());
+}
+
+/// `/proc/<pid>/stat`: (ppid, pgrp).
+fn parent_and_group(pid: i32) -> (i32, i32) {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let rest = &stat[stat.rfind(')').unwrap() + 1..];
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    (fields[1].parse().unwrap(), fields[2].parse().unwrap())
+}
+
+/// The nested-run case: `recipe stop <outer run_id>` from a step under a
+/// nested `recipe run` has a different `AMPLIHACK_RECIPE_RUN_ID`, session and
+/// group, and the outer pids are neither its own nor its parent's; they are
+/// further up its parent chain. Here that is `getppid()`'s parent.
+#[test]
+fn a_record_naming_a_grandparent_is_a_run_this_process_is_inside() {
+    // SAFETY: getppid has no preconditions.
+    let parent = unsafe { libc::getppid() };
+    let (grandparent, _) = parent_and_group(parent);
+    if grandparent <= 1 {
+        eprintln!("skip: this test's parent is a child of init");
+        return;
+    }
+    let start = pid_start_ticks(grandparent as u32).expect("grandparent start time");
+    let other = Sleeper::start();
+    let other_start = other.start_ticks();
+    let other_group = |pid: i32| {
+        let mut r = record((other.pid(), other_start), (pid, start));
+        r.runner.pgid = other.pid();
+        r
+    };
+
+    // As the outer `recipe run`, and as the outer runner.
+    let as_recipe_run = record((grandparent, start), (other.pid(), other_start));
+    assert!(inside_run(&as_recipe_run));
+    assert!(inside_run(&other_group(grandparent)));
+    // The same pid with another start time is a different process.
+    let reused = record((grandparent, start + 1), (other.pid(), other_start));
+    assert!(!inside_run(&reused));
+}
+
+#[test]
+fn a_record_whose_group_holds_an_ancestor_is_a_run_this_process_is_inside() {
+    // SAFETY: getppid has no preconditions.
+    let parent = unsafe { libc::getppid() };
+    let (_, parent_group) = parent_and_group(parent);
+    let a = Sleeper::start();
+    let b = Sleeper::start();
+    let mut r = record((a.pid(), a.start_ticks()), (b.pid(), b.start_ticks()));
+    assert!(!inside_run(&r), "unrelated processes are not this run");
+    r.runner.pgid = parent_group;
+    assert!(inside_run(&r));
 }
 
 #[test]
