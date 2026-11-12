@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # autodrive_loop.sh — the agentic loop driver for auto-drive-to-merge.
 #
-# Runs one round recipe over and over until an AGENTIC evaluator says to stop.
+# Runs rounds until objective completion or an AGENTIC convergence stop.
 # There is no iteration cap in this file — not a `max_rounds`, not a backstop
 # integer. `ROUND` below is a LABEL for reports and file names; it is never
 # compared against a limit. It starts after this loop's earlier rounds in the
@@ -12,7 +12,8 @@
 # a cost ceiling and never the convergence terminator; budget keys arrive as
 # --context autodrive_budget_*=N and never reach a round recipe.
 #
-# The terminator is `loop-health-evaluator` (issue #1337): after every round it
+# Crusty recognizes objective completion first (#2336); unresolved rounds
+# use `loop-health-evaluator` (issue #1337). After those rounds it
 # looks at measured evidence — what the round actually produced, whether the
 # same findings keep recurring, whether test/CI signals moved — and answers
 # CONTINUE / DONE / STUCK. Absence of progress stops the loop; number of
@@ -30,8 +31,10 @@
 #             DONE, a repeated DONE over an unchanged non-clean round (#1597),
 #             a child that failed on a usage limit (USAGE_LIMIT, #1801), or a
 #             stop decided in code (STUCK, BUDGET_EXHAUSTED; #1743).
-#   Exit 79 — a child returned the terminal policy refusal. Surfaced, final,
-#             and NEVER retried into.
+#   Exit 79 — a child exited 79, or the runner's last failure_class marker said
+#             structural_refusal (#1437; autodrive_refusal.sh). Final; NEVER
+#             retried into. Any other child failure is named and left to the
+#             evaluator.
 #
 # --before-round <script> (optional) runs `bash <script> --repo <repo> --review-dir
 # <dir> --state-dir <dir>` plus the round's -c context and the budget keys
@@ -39,10 +42,10 @@
 # loop it starts runs at THIS loop's depth. The merge-ready loop uses it for
 # autodrive_crusty_rereview.sh: a crusty loop started inside a merge round is
 # one runner deeper, where the recursion guard refuses it (PR #1520 review).
-# Exit 0 runs the round; exit 79, or the guard's refusal line in its stderr,
-# is the terminal refusal; any other exit stops the loop with loop_result
-# BEFORE_ROUND_FAILED. The script's stdout may carry `before_round_result`,
-# which joins the round's line in the history the evaluator reads.
+# Exit 0 runs the round; a terminal refusal (autodrive_refusal.sh) exits 79;
+# any other exit stops the loop with loop_result BEFORE_ROUND_FAILED. The
+# script's stdout may carry `before_round_result`, which joins the round's line
+# in the history the evaluator reads.
 #
 # Policy: this workflow NEVER passes a hook-skipping commit flag or any branch-
 # protection bypass. See docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
@@ -66,7 +69,7 @@ while [ $# -gt 0 ]; do
     --review-dir)    REVIEW_DIR="${2:-}"; shift 2 ;;
     --state-dir)     STATE_DIR="${2:-}"; shift 2 ;;
     --task-file)     TASK_FILE_IN="${2:-}"; shift 2 ;;
-    --context)       case "${2:-}" in review_dir=*|autodrive_launch_tools=*) CTX_REFUSED="${2%%=*}" ;; pr_number=*) AD_PR="${2#*=}" ;; esac
+    --context)       case "${2:-}" in review_dir=*|autodrive_launch_tools=*|autodrive_completion_state=*) CTX_REFUSED="${2%%=*}" ;; pr_number=*) AD_PR="${2#*=}" ;; esac
                      case "${2:-}" in autodrive_budget_*) BUDGET_CTX+=("${2:-}"); BEFORE_CTX+=("-c" "${2:-}") ;; *) ROUND_CTX+=("-c" "${2:-}") ;; esac; shift 2 ;;
     --before-round)  BEFORE_ROUND="${2:-}"; shift 2 ;;
     *) echo "ERROR: autodrive_loop.sh: unknown argument '$1'" >&2; exit 2 ;;
@@ -91,6 +94,8 @@ LOOP_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
   || { echo "ERROR: autodrive_loop.sh: autodrive_state.sh is missing beside it (${LOOP_HOME:-<unknown>}); the state dir cannot be made private" >&2; exit 2; }
 # shellcheck source=autodrive_escalate.sh # escalate, usage_limit_stop (#1801)
 . "${LOOP_HOME}/autodrive_escalate.sh" 2>/dev/null || { echo "ERROR: autodrive_loop.sh: autodrive_escalate.sh is missing beside it (${LOOP_HOME:-<unknown>}); the loop cannot report how it stopped" >&2; exit 2; }
+# shellcheck source=autodrive_refusal.sh # terminal_refusal, child_failure_summary (#1437)
+. "${LOOP_HOME}/autodrive_refusal.sh" 2>/dev/null || { echo "ERROR: autodrive_loop.sh: autodrive_refusal.sh is missing beside it (${LOOP_HOME:-<unknown>}); a refusal could not be told from a failure" >&2; exit 2; }
 stops_preflight && autodrive_private_dir "$STATE_DIR" || exit 2 # #1743: usage and progress files first
 CALLER_UMASK="$(umask)"
 umask 077
@@ -134,16 +139,12 @@ copy_private() {
   { rm -f -- "$2" && cp -- "$1" "$2"; } || echo "WARNING: could not copy $1 to $2." >&2
 }
 
-# terminal_refusal <exit_code> <log_file>: exit 79, or the guard's full marker
-# outside input echoes: run summary, agent and log_pointer lines (#1510). Same
-# awk+ERE as loop-evidence-collector.yaml; docs/reference/loop-health-evaluator.md.
-terminal_refusal() {
-  [ "${1:-0}" = "$AUTODRIVE_EXIT_POLICY_REFUSAL" ] && return 0
-  [ -f "${2:-}" ] && awk 'NR > 1 { if (prev ~ /^Recipe: / && $0 ~ /^(Run ID|Status): /) { cut = 1; exit } print prev } { prev = $0 } END { if (NR > 0 && !cut) print prev }' "$2" 2>/dev/null \
-    | grep -vE '^[[:space:]]*(\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] \[amplihack:|amplihack\.recipe\.log_pointer \{)' \
-    | grep -qF 'BLOCKED_TERMINAL orchestration_unavailable' && return 0
-  return 1
-}
+# terminal_refusal <rc> <log> comes from autodrive_refusal.sh (#1437): exit 79,
+# or structural_refusal true on the runner's LAST failure_class marker. It
+# replaces the transcript pass #1510 filtered (awk over the run summary, agent
+# and log_pointer lines, then a grep for the guard's phrase): any text a round
+# read or quoted could still land outside those filters. log_body in
+# autodrive_escalate.sh keeps that filter for the usage-limit check only.
 
 # #1528: the review dir (the main checkout) is stamped before each round and
 # compared after it and after the evaluator. Any change stops the loop: the
@@ -171,11 +172,17 @@ PRE="$(bash "${LOOP_HOME}/autodrive_worktree_guard.sh" loop-preflight \
 # --- preflight: the terminator must resolve BEFORE round 1 (why: see the ERROR)
 if [ -z "$HEALTH_RECIPE_PATH" ] || ! "$AMPLIHACK_BIN" recipe show "$HEALTH_RECIPE_PATH" >/dev/null 2>&1; then
   echo "ERROR: loop '${LOOP_NAME}' cannot start: the required recipe 'loop-health-evaluator' does not resolve in ${LOOP_HOME%/tools}/recipes." >&2
-  echo "  It is this loop's ONLY terminator (issue #1337). Without it a full round runs first — a review, a fix pass, commits pushed — and the loop then stops on an unreadable verdict that blames the loop rather than the missing dependency." >&2
+  echo "  It is required for unresolved work (issue #1337). Without it a full round runs first — a review, a fix pass, commits pushed — and the loop then stops on an unreadable verdict that blames the loop rather than the missing dependency." >&2
   echo "  Install or update the amplifier bundle beside this script (${LOOP_HOME%/tools}/recipes, never the tree under review) so it resolves there, then re-run. Check with: ${AMPLIHACK_BIN} recipe show ${LOOP_HOME%/tools}/recipes/loop-health-evaluator.yaml" >&2
   printf '{"loop":"%s","loop_result":"MISSING_DEPENDENCY","round_label":"preflight","reason":"the required recipe loop-health-evaluator does not resolve"}\n' \
     "$LOOP_NAME"
   exit 1
+fi
+
+# Discover incompatible installations before spending a Crusty review.
+if [ "$LOOP_NAME" = crusty ]; then
+  "$AMPLIHACK_BIN" orch helper autodrive-completion-prepare --help >/dev/null \
+    || { echo "ERROR: completion helper unavailable; update amplihack before reviewing" >&2; exit 2; }
 fi
 
 # Round labels continue after this loop's earlier rounds (autodrive_last_round.sh).
@@ -217,16 +224,22 @@ while :; do
     BEFORE_RESULT="$(field "$(cat -- "${BEFORE_LOG}.out" 2>/dev/null)" before_round_result "" | LC_ALL=C tr -cd 'A-Za-z0-9_.:-')"
     assert_ceiling_untouched
     if terminal_refusal "$BEFORE_RC" "$BEFORE_LOG"; then
-      echo "ERROR: exit ${AUTODRIVE_EXIT_POLICY_REFUSAL} terminal policy refusal from the before-round step (#1327/#1332). Final: the guard is never retried into." >&2
-      escalate "TERMINAL_POLICY_REFUSAL" "the before-round step returned the exit-${AUTODRIVE_EXIT_POLICY_REFUSAL} policy refusal"
+      echo "ERROR: terminal policy refusal from the before-round step (${TERMINAL_WHY}) (#1327/#1332). Final: the guard is never retried into." >&2
+      escalate "TERMINAL_POLICY_REFUSAL" "the before-round step returned a policy refusal (${TERMINAL_WHY})"
       exit "$AUTODRIVE_EXIT_POLICY_REFUSAL"
     fi
     usage_limit_stop "$BEFORE_RC" "$BEFORE_LOG" "the before-round step failed on a Claude usage limit that no login lifted"
     if [ "$BEFORE_RC" -ne 0 ]; then # a nested BUDGET_EXHAUSTED, or a limit reached, is reported as such
       [ "$BEFORE_RESULT" = "crusty-rereview-budget-exhausted" ] && budget_stop before --force; budget_stop before
-      escalate "BEFORE_ROUND_FAILED" "the before-round step ${BEFORE_ROUND##*/} exited ${BEFORE_RC} (${BEFORE_RESULT:-no before_round_result}); ${ROUND_LABEL} did not run"
+      escalate "BEFORE_ROUND_FAILED" "the before-round step ${BEFORE_ROUND##*/} exited ${BEFORE_RC} (${BEFORE_RESULT:-no before_round_result}; $(child_failure_summary "$BEFORE_RC" "$BEFORE_LOG")); ${ROUND_LABEL} did not run"
       exit 1
     fi
+  fi
+
+  COMPLETION_CTX=()
+  unset AUTODRIVE_COMPLETION_STATE
+  if [ "$LOOP_NAME" = crusty ]; then
+    . "${LOOP_HOME}/autodrive_completion_context.sh" || exit 2
   fi
 
   echo "=== auto-drive loop '${LOOP_NAME}': ${ROUND_LABEL} ===" >&2
@@ -236,65 +249,25 @@ while :; do
       -c "autodrive_round_record=${RECORD}" \
       -c "autodrive_round_label=${ROUND_LABEL}" \
       -c "autodrive_resolved_concerns_file=${STATE_DIR}/resolved-concerns.txt" \
-      "${ROUND_CTX[@]}" -c "review_dir=${REVIEW_REAL}" -c "autodrive_launch_tools=${LOOP_HOME}" ) >"$LOG" 2>&1
+      ${COMPLETION_CTX[@]+"${COMPLETION_CTX[@]}"} "${ROUND_CTX[@]}" -c "review_dir=${REVIEW_REAL}" -c "autodrive_launch_tools=${LOOP_HOME}" ) >"$LOG" 2>&1
   ROUND_RC=$?; usage_add round "$T0"
   tail -n 200 "$LOG" >&2 || true; orphan_stop "$ROUND_RC" "round ${ROUND_LABEL}" # exit 75 (#1976)
 
   if terminal_refusal "$ROUND_RC" "$LOG"; then
-    echo "ERROR: exit ${AUTODRIVE_EXIT_POLICY_REFUSAL} terminal policy refusal from '${ROUND_RECIPE}' (#1327/#1332). Final: the guard is never retried into." >&2
-    escalate "TERMINAL_POLICY_REFUSAL" "child returned the exit-${AUTODRIVE_EXIT_POLICY_REFUSAL} policy refusal"
+    echo "ERROR: terminal policy refusal from ${ROUND_LABEL} (${TERMINAL_WHY}) (#1327/#1332). Final: the guard is never retried into." >&2
+    escalate "TERMINAL_POLICY_REFUSAL" "${ROUND_LABEL} of ${ROUND_RECIPE##*/} returned a policy refusal (${TERMINAL_WHY})"
     exit "$AUTODRIVE_EXIT_POLICY_REFUSAL"
   fi
   usage_limit_stop "$ROUND_RC" "$LOG" "round ${ROUND_LABEL} failed on a Claude usage limit that no login lifted; it is not passed to the evaluator"
+  ROUND_CHILD="" # #1437: an ordinary failure is named and left to the evaluator.
+  if [ "$ROUND_RC" -ne 0 ]; then
+    ROUND_CHILD="$(child_failure_summary "$ROUND_RC" "$LOG")"
+    echo "INFO: ${ROUND_LABEL} child failed: ${ROUND_CHILD}; not a policy refusal, continuing" >&2
+  fi
   check_review_dir "${ROUND_LABEL}${BEFORE_ROUND:+ or its before-round step}"
 
-  # --- read the round's STRUCTURED record -----------------------------------
-  # A missing or unparseable record is never clean; it is evidence of a round that produced nothing.
-  RAW=""
-  [ -f "$RECORD" ] && RAW="$(cat "$RECORD")"
-  ROUND_VERDICT="$(field "$RAW" "$VERDICT_FIELD" "MISSING")"
-  case "$ROUND_VERDICT" in
-    "$CLEAN_TOKEN"|"${ALSO_CLEAN:-$CLEAN_TOKEN}") ROUND_CLEAN="true" ;;
-    MISSING) ROUND_CLEAN="false"
-      echo "WARNING: ${ROUND_LABEL} produced no parseable '${VERDICT_FIELD}'; treated as NOT clean." >&2 ;;
-    *) ROUND_CLEAN="false" ;;
-  esac
-  # Only A-Za-z0-9_ of the verdict reaches the evaluator, history and #1597 messages; a non-clean one that sanitises to the token ('CLEAN!') is tagged _NONCANONICAL so none of them reads it as clean.
-  VERDICT_SAFE="$(printf '%s' "$ROUND_VERDICT" | LC_ALL=C tr -cd 'A-Za-z0-9_')"; [ "$ROUND_CLEAN" = "true" ] || [ "$VERDICT_SAFE" != "$TOKEN_SAFE" ] || VERDICT_SAFE="${VERDICT_SAFE}_NONCANONICAL"
-  # #1979: MINOR_ONLY stays MINOR_ONLY in the history and messages. Only the
-  # evaluator's loop_round_verdict, which its DONE rule compares with the clean token, reads it as clean.
-  EVAL_VERDICT="$VERDICT_SAFE"; [ "$ROUND_CLEAN" != "true" ] || EVAL_VERDICT="$TOKEN_SAFE"
-  FINDINGS=""
-  [ -f "${RECORD}.findings" ] && FINDINGS="$(cat "${RECORD}.findings")"
-  # Stable path to the latest round record, so a later gate binds evidence to the round that made it.
-  copy_private "$RECORD" "${STATE_DIR}/${LOOP_NAME}-latest.json"
-  copy_private "${RECORD}.findings" "${STATE_DIR}/${LOOP_NAME}-latest.json.findings"
-  # #1517: <loop>-records.tsv gets one row per round THIS loop wrote (label, record, git blob hash)
-  # before any later agent runs. autodrive_crusty_final and autodrive_qa_trusted trust a record only
-  # when the last row names it and the hash matches (git from the state dir, GIT_DIR/GIT_WORK_TREE
-  # unset, as autodrive_blob_hash). A failed check: WARNING, no row.
-  if [ -f "$RECORD" ]; then
-    MANIFEST_FILE="${RECORD##*/}"; MANIFEST_HASH=""
-    case "$MANIFEST_FILE" in
-      .*|*[!A-Za-z0-9._-]*|'')
-        echo "WARNING: round record name '${MANIFEST_FILE}' is not a plain file name; no manifest row for ${ROUND_LABEL}." >&2 ;;
-      *)
-        if ! cmp -s "$RECORD" "${STATE_DIR}/${LOOP_NAME}-latest.json"; then
-          echo "WARNING: ${RECORD} and its ${LOOP_NAME}-latest.json copy differ; no manifest row for ${ROUND_LABEL}." >&2
-        else
-          MANIFEST_HASH="$( (cd -- "$STATE_DIR" && env -u GIT_DIR -u GIT_WORK_TREE git hash-object --no-filters --stdin) < "$RECORD" 2>/dev/null)"
-          case "$MANIFEST_HASH" in *[!0-9a-f]*) MANIFEST_HASH="" ;; esac
-          case "${#MANIFEST_HASH}" in 40|64) ;; *) MANIFEST_HASH="" ;; esac
-          [ -n "$MANIFEST_HASH" ] || echo "WARNING: git could not hash ${RECORD}; no manifest row for ${ROUND_LABEL}, so this round cannot count as loop-written evidence." >&2
-        fi ;;
-    esac
-    if [ -n "$MANIFEST_HASH" ]; then
-      ( umask 077
-        printf '%s\t%s\t%s\n' "$(printf '%s' "$ROUND_LABEL" | tr -c 'A-Za-z0-9._-' '_')" "$MANIFEST_FILE" "$MANIFEST_HASH" \
-          >> "${STATE_DIR}/${LOOP_NAME}-records.tsv" ) \
-        || echo "WARNING: could not append the manifest row for ${ROUND_LABEL} to ${LOOP_NAME}-records.tsv." >&2
-    fi
-  fi
+  # Preserve the round and its manifest before accepting any next action.
+  . "${LOOP_HOME}/autodrive_loop_record.sh" || exit 1
   # #1743, decided in code before the evaluator: no progress, then the budget. RF: 1 clean, 2 failed (rc!=0 or no verdict; the evaluator judges faults), 0 otherwise.
   HEAD_NOW="$(git -C "$REPO" rev-parse HEAD || printf '')"; CI_SIGNAL="$(field "$RAW" ci_signal "")"
   RF=0; [ "$ROUND_CLEAN" = "true" ] && RF=1 || { [ "$ROUND_RC" -eq 0 ] && [ "$ROUND_VERDICT" != "MISSING" ]; } || RF=2
@@ -303,11 +276,31 @@ while :; do
   [ "$ROUND_CLEAN" = "true" ] || budget_stop post
   TEST_SIGNAL="$(field "$RAW" test_signal "")"
   HISTORY="${HISTORY}
-${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(printf '%s' "$FINDINGS" | grep -c . || true)${BEFORE_RESULT:+ before=${BEFORE_RESULT}}"
+${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(printf '%s' "$FINDINGS" | grep -c . || true)${BEFORE_RESULT:+ before=${BEFORE_RESULT}}${ROUND_CHILD:+ child=${ROUND_CHILD}}"
 
   # --- the agentic terminator ----------------------------------------------
   assert_ceiling_untouched
   HEALTH_LOG="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}-health.log"; T0=$SECONDS
+  if [ "$LOOP_NAME" = crusty ]; then
+    DISPATCH="$(AMPLIHACK_USAGE_WAIT_LEDGER="$(wait_ledger evaluator)" \
+      "$AMPLIHACK_BIN" orch helper autodrive-completion-dispatch \
+      --private-state "$AUTODRIVE_COMPLETION_STATE" --child-exit-code "$ROUND_RC")"
+    HEALTH_RC=$?
+    INVOKED="$(field "$DISPATCH" evaluator_invoked '')"
+    if [ "$INVOKED" = false ] && [ "$HEALTH_RC" -eq 0 ]; then
+      check_review_dir objective-completion
+      record_result "$DISPATCH"
+      exit 0
+    fi
+    if [ "$INVOKED" != true ]; then
+      # A dispatch error after launching still spent evaluator usage.
+      if [ -f "$HEALTH_LOG" ]; then usage_add evaluator "$T0"; check_review_dir loop-health-evaluator; fi
+      echo "ERROR: completion dispatch rejected the next action; no evaluator fallback" >&2
+      escalate INVALID_DECISION "completion decision or evidence was invalid"
+      case "$HEALTH_RC" in 79|75) exit "$HEALTH_RC" ;; *) exit 1 ;; esac
+    fi
+    usage_add evaluator "$T0"
+  else
   ( umask "$CALLER_UMASK" && AMPLIHACK_USAGE_WAIT_LEDGER="$(wait_ledger evaluator)" exec "$AMPLIHACK_BIN" recipe run "$HEALTH_RECIPE_PATH" \
       --working-dir "$REVIEW_REAL" \
       -c "loop_name=auto-drive:${LOOP_NAME}" \
@@ -326,14 +319,16 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(print
       -c "loop_clean_token=${TOKEN_SAFE}" -c "loop_round_verdict=${EVAL_VERDICT}" ) \
       >"$HEALTH_LOG" 2>&1
   HEALTH_RC=$?; usage_add evaluator "$T0"
+  fi
   tail -n 120 "$HEALTH_LOG" >&2 || true; orphan_stop "$HEALTH_RC" "the loop-health evaluator for ${ROUND_LABEL}"
 
   if terminal_refusal "$HEALTH_RC" "$HEALTH_LOG"; then
-    echo "ERROR: exit ${AUTODRIVE_EXIT_POLICY_REFUSAL} terminal policy refusal from loop-health-evaluator. Final; not retried." >&2
-    escalate "TERMINAL_POLICY_REFUSAL" "loop-health-evaluator returned the policy refusal"
+    echo "ERROR: terminal policy refusal from loop-health-evaluator (${TERMINAL_WHY}) (#1327/#1332). Final; not retried." >&2
+    escalate "TERMINAL_POLICY_REFUSAL" "loop-health-evaluator returned a policy refusal (${TERMINAL_WHY})"
     exit "$AUTODRIVE_EXIT_POLICY_REFUSAL"
   fi
   usage_limit_stop "$HEALTH_RC" "$HEALTH_LOG" "the loop-health evaluator failed on a Claude usage limit that no login lifted"
+  [ "$HEALTH_RC" = 0 ] || echo "INFO: loop-health-evaluator child failed: $(child_failure_summary "$HEALTH_RC" "$HEALTH_LOG"); not a policy refusal, reading its verdict" >&2
   check_review_dir loop-health-evaluator
 
   # The evaluator's last step prints one LOOP_HEALTH: marker, exiting non-zero on STUCK. The runner

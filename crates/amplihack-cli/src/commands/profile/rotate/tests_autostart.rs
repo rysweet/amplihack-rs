@@ -35,6 +35,7 @@ use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::euid;
 use crate::commands::profile::root_config::{ROTATE_ROOT_FILE, config_dir};
 use crate::commands::profile::store::{ProfileStore, ROOT_ENV};
+use crate::test_support::proc::FakeProc;
 use crate::test_support::{EnvGuard, env_lock};
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -48,6 +49,8 @@ use std::time::Duration;
 const EXE: &str = "amplihack-autostart-test";
 /// Above `PID_MAX_LIMIT`: never a real process.
 const FAKE_PID: u32 = 4_200_000;
+/// A rotator already running: a fake pid too, so no host process is named.
+const LIVE_PID: u32 = 4_199_000;
 const STARTED: &str = "amplihack: started Claude login rotator (pid 4200000); 'amplihack profile rotate autostart off' to disable\n";
 
 fn mode(path: &Path, m: u32) {
@@ -60,37 +63,21 @@ fn private_file(path: &Path, body: &[u8]) {
     mode(path, 0o600);
 }
 
-fn argv(parts: &[&str]) -> Vec<u8> {
-    let mut v = Vec::new();
-    for p in parts {
-        v.extend_from_slice(p.as_bytes());
-        v.push(0);
-    }
-    v
-}
-
 /// A fake rotator process: what `state_at` checks under `/proc`.
-fn fake_process(proc_root: &Path, pid: u32) {
-    let d = proc_root.join(pid.to_string());
-    fs::create_dir_all(&d).unwrap();
-    fs::write(
-        d.join("cmdline"),
-        argv(&[
-            &format!("/usr/bin/{EXE}"),
-            "profile",
-            "rotate",
-            "watch",
-            "--spawned",
-        ]),
-    )
-    .unwrap();
+fn fake_process(proc: &FakeProc, pid: u32) {
+    let exe = format!("/usr/bin/{EXE}");
+    proc.process(pid)
+        .cmdline(&[&exe, "profile", "rotate", "watch", "--spawned"]);
 }
 
 struct Fx {
     tmp: tempfile::TempDir,
+    /// The fake process table, built by the one `FakeProc` builder
+    /// (issue #2196). Declared after `tmp`, so it drops after it. Shared
+    /// with the fake spawner, which `Deps` requires to be `'static`.
+    proc: Arc<FakeProc>,
     root: PathBuf,
     home: PathBuf,
-    proc_root: PathBuf,
     rs: RotateState,
     spawns: Arc<AtomicU32>,
     seen: Arc<Mutex<Vec<(Settings, PathBuf)>>>,
@@ -127,8 +114,7 @@ fn fx() -> Fx {
     mode(tmp.path(), 0o700);
     let root = tmp.path().join("root");
     let home = tmp.path().join("home");
-    let proc_root = tmp.path().join("proc");
-    for d in [&root, &home, &proc_root] {
+    for d in [&root, &home] {
         fs::create_dir(d).unwrap();
         mode(d, 0o700);
     }
@@ -137,9 +123,9 @@ fn fx() -> Fx {
     Fx {
         rs: RotateState::new(&root),
         tmp,
+        proc: Arc::new(FakeProc::new()),
         root,
         home,
-        proc_root,
         spawns: Arc::new(AtomicU32::new(0)),
         seen: Arc::new(Mutex::new(Vec::new())),
     }
@@ -155,7 +141,7 @@ impl Fx {
     fn running(&self, pid: u32) {
         self.rs.ensure().unwrap();
         private_file(&self.rs.pid, format!("{pid}\n").as_bytes());
-        fake_process(&self.proc_root, pid);
+        fake_process(&self.proc, pid);
     }
 
     fn spawned(&self) -> u32 {
@@ -178,12 +164,12 @@ impl Fx {
         let proc_root = o
             .proc_root
             .clone()
-            .unwrap_or_else(|| self.proc_root.clone());
+            .unwrap_or_else(|| self.proc.path().to_path_buf());
         run_at(
             &self.root,
             &self.home,
             &proc_root,
-            &self.proc_root,
+            &self.proc,
             self.spawns.clone(),
             self.seen.clone(),
             o,
@@ -197,7 +183,7 @@ fn run_at(
     root: &Path,
     home: &Path,
     proc_root: &Path,
-    fake_proc: &Path,
+    fake_proc: &Arc<FakeProc>,
     spawns: Arc<AtomicU32>,
     seen: Arc<Mutex<Vec<(Settings, PathBuf)>>>,
     o: Opts,
@@ -217,7 +203,7 @@ fn run_at(
     let docker = o.docker_env;
     let docker_env = move || docker;
     let spawn_err = o.spawn_err;
-    let fake_proc = fake_proc.to_path_buf();
+    let spawner_proc = Arc::clone(fake_proc);
     let spawn = move |_rs: &RotateState, s: &Settings, r: &Path| -> Result<u32, ProfileError> {
         let n = spawns.fetch_add(1, Ordering::SeqCst);
         seen.lock().unwrap().push((*s, r.to_path_buf()));
@@ -225,10 +211,14 @@ fn run_at(
             return Err(ProfileError::RotateDaemon(e.into()));
         }
         let pid = FAKE_PID + n;
-        fake_process(&fake_proc, pid);
+        fake_process(&spawner_proc, pid);
         Ok(pid)
     };
     let mut err: Vec<u8> = Vec::new();
+    // `run` reads `proc_root` from `Deps`, but the change log it writes reads
+    // `procfs::proc_root()`; point that at the fixture's tree on this thread
+    // (issue #2196), so no part of the run reads the host table.
+    let _scope = crate::test_support::proc::proc_scope_at(fake_proc);
     let outcome = autostart::run(
         root,
         o.docker_flag,
@@ -303,7 +293,7 @@ fn a_second_launch_finds_the_rotator_running_and_says_nothing() {
 #[test]
 fn a_live_verified_rotator_is_left_alone() {
     let f = fx();
-    f.running(48213);
+    f.running(LIVE_PID);
     let before = fs::read(&f.rs.pid).unwrap();
     let (o, err) = f.run();
     assert_eq!(o, Outcome::Running);
@@ -404,8 +394,8 @@ fn a_missing_root_is_skipped() {
     let (o, err) = run_at(
         &gone,
         &f.home,
-        &f.proc_root,
-        &f.proc_root,
+        f.proc.path(),
+        &f.proc,
         f.spawns.clone(),
         f.seen.clone(),
         Opts {
@@ -426,8 +416,8 @@ fn a_symlinked_root_is_skipped() {
     let (o, _) = run_at(
         &link,
         &f.home,
-        &f.proc_root,
-        &f.proc_root,
+        f.proc.path(),
+        &f.proc,
         f.spawns.clone(),
         f.seen.clone(),
         Opts::default(),
@@ -538,7 +528,7 @@ fn docker_skips_autostart() {
 #[test]
 fn docker_is_checked_before_the_daemon_state() {
     let f = fx();
-    f.running(48213);
+    f.running(LIVE_PID);
     let (o, _) = f.run_with(Opts {
         docker_flag: true,
         ..Opts::default()
@@ -550,7 +540,7 @@ fn docker_is_checked_before_the_daemon_state() {
 fn an_unverifiable_rotator_is_skipped() {
     let f = fx();
     f.rs.ensure().unwrap();
-    private_file(&f.rs.pid, b"48213\n");
+    private_file(&f.rs.pid, format!("{LIVE_PID}\n").as_bytes());
     let (o, err) = f.run_with(Opts {
         proc_root: Some(f.tmp.path().join("no-proc")),
         ..Opts::default()
@@ -816,6 +806,7 @@ fn a_setting_owned_by_another_user_is_corrupt() {
 
 #[test]
 fn set_writes_a_private_file_and_round_trips() {
+    let _proc = crate::test_support::proc::fake_proc_scope();
     let f = fx();
     let store = ProfileStore::new(f.root.clone());
     set(&store, false).unwrap();
@@ -843,6 +834,7 @@ fn set_refuses_a_root_writable_by_others() {
 
 #[test]
 fn cli_without_a_value_changes_nothing() {
+    let _proc = crate::test_support::proc::fake_proc_scope();
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let _env = EnvGuard::unset([ENV]);
     let f = fx();

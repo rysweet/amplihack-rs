@@ -539,6 +539,7 @@ pub(super) fn context_env_pairs(
 // The resolved agent binary is an extra argument on purpose: the caller
 // decided it once, for the pre-flight and the steps alike (issue #1481).
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(super) fn execute_recipe_via_rust(
     recipe_path: &Path,
     context: &BTreeMap<String, String>,
@@ -549,6 +550,33 @@ pub(super) fn execute_recipe_via_rust(
     step_timeout: Option<u64>,
     agent_binary: amplihack_utils::agent_binary::Resolution,
     merge_guard: bool,
+) -> Result<RecipeRunResult> {
+    execute_recipe_via_rust_fresh(
+        recipe_path,
+        context,
+        dry_run,
+        _verbose,
+        working_dir,
+        search_dirs,
+        step_timeout,
+        agent_binary,
+        merge_guard,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_recipe_via_rust_fresh(
+    recipe_path: &Path,
+    context: &BTreeMap<String, String>,
+    dry_run: bool,
+    _verbose: bool,
+    working_dir: &Path,
+    search_dirs: &[PathBuf],
+    step_timeout: Option<u64>,
+    agent_binary: amplihack_utils::agent_binary::Resolution,
+    merge_guard: bool,
+    fresh: bool,
 ) -> Result<RecipeRunResult> {
     // Issue #964: fail-closed recursion-depth guard. Refuse to spawn a nested
     // recipe-runner once the session has reached the configured maximum depth,
@@ -565,6 +593,23 @@ pub(super) fn execute_recipe_via_rust(
 
     let binary = super::binary::find_recipe_runner_binary()?;
     let recipe_name = recipe_name_for_correlation(recipe_path);
+    if let Err(error) = crate::runner_validation::probe(&binary, &agent_binary.binary) {
+        let correlation = RecipeRunCorrelation::new(
+            recipe_name.clone(),
+            working_dir,
+            &BTreeMap::new(),
+            binary.as_path(),
+        );
+        correlation.emit_early();
+        eprintln!("amplihack: runner capability check failed: {error}");
+        return Err(fail_with_final_record(
+            &correlation,
+            RecipeRunFinalStatus::SpawnFailure,
+            None,
+            None,
+            error,
+        ));
+    }
 
     // Issue #1481: the caller resolved the agent binary once, from
     // `working_dir`, while this process could still see the session markers of
@@ -592,10 +637,31 @@ pub(super) fn execute_recipe_via_rust(
     // Issue #1808: the run's folder under the work root holds run.json and
     // owned-paths; its runtime/ (TMPDIR, TMP, TEMP and artifacts) is removed
     // when the run ends, on every exit path including a panic.
-    let workspace = RefCell::new(crate::commands::cleanup::run_dir::RunWorkspace::begin(
-        &recipe_name,
-        working_dir,
-    )?);
+    let workspace = RefCell::new(if dry_run {
+        crate::commands::cleanup::run_dir::RunWorkspace::dry_runtime()?
+    } else {
+        crate::commands::cleanup::run_dir::RunWorkspace::begin_durable(&recipe_name, working_dir)?
+    });
+    let delegated = recipe_runner_rs::recovery::ipc::Client::from_environment()?;
+    let admission = if !dry_run && delegated.is_none() {
+        let settings = recipe_runner_rs::recovery::model::fingerprint(&(
+            &agent_binary.binary,
+            step_timeout,
+            merge_guard,
+            env!("CARGO_PKG_VERSION"),
+        ))?;
+        Some(super::recovery::admit(
+            &workspace.borrow(),
+            recipe_path,
+            &recipe_name,
+            working_dir,
+            context,
+            fresh,
+            settings,
+        )?)
+    } else {
+        None
+    };
 
     // Issue #964: snapshot the caller checkout's git state BEFORE spawning so a
     // runner that corrupts it (e.g. flips `core.bare=true`, which breaks
@@ -629,6 +695,14 @@ pub(super) fn execute_recipe_via_rust(
             .arg("-C")
             .arg(working_dir);
 
+        if fresh {
+            command.arg("--fresh");
+        }
+        if let Some(admission) = &admission {
+            command
+                .arg("--recovery-descriptor")
+                .arg(admission.descriptor_path());
+        }
         // Issue #494: forward sub-recipe search dirs as -R flags so
         // recipe-runner-rs can resolve sub-recipes the same way amplihack
         // resolves top-level recipes. One -R per non-empty entry, in order.
@@ -747,6 +821,9 @@ pub(super) fn execute_recipe_via_rust(
         command.env(MAX_DEPTH_ENV, guard.max_depth.to_string());
         command.env("AMPLIHACK_RECIPE_RUN_ID", run_id);
         command.envs(workspace.borrow().env());
+        if dry_run {
+            command.env("AMPLIHACK_RUN_ID", run_id);
+        }
         // Issue #1976: name this `recipe run` as the parent of any nested run
         // a step starts, on the child only (never set_var). Without a start
         // time the pair is omitted: a pid alone could be reused.
@@ -826,10 +903,13 @@ pub(super) fn execute_recipe_via_rust(
                 Err(error) => return AttemptOutcome::Final(Err(error)),
             };
             let mut stderr_tail = String::new();
+            // Cloned so no RefCell borrow is held across the attempt.
+            let run_dir = workspace.borrow().run_dir().map(Path::to_path_buf);
             let attempt_result = spawn_with_streaming_stderr(
                 command,
                 correlation,
                 recipe_path,
+                run_dir.as_deref(),
                 timeout,
                 &guard.tree_id,
                 &mut stderr_tail,
@@ -928,6 +1008,31 @@ pub(super) fn execute_recipe_via_rust(
         }
         Err(error) => Err(error),
     };
+    if let Some(admission) = &admission {
+        use recipe_runner_rs::recovery::model::Outcome;
+        let outcome = match &final_result {
+            Ok(result) if result.success => Some(Outcome::Success),
+            Ok(_)
+                if last_verdict
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|v| v.class == super::FailureClass::UsageLimit) =>
+            {
+                Some(Outcome::UsageLimit)
+            }
+            Err(error)
+                if error
+                    .downcast_ref::<super::stop_signal::StoppedBySignal>()
+                    .is_some() =>
+            {
+                None
+            }
+            _ => Some(Outcome::Failure),
+        };
+        if let Some(outcome) = outcome {
+            admission.finish(outcome)?;
+        }
+    }
     finish_workspace(workspace.into_inner(), &final_result, dry_run);
     final_result
 }
@@ -989,6 +1094,7 @@ fn spawn_with_streaming_stderr(
     mut command: Command,
     correlation: RecipeRunCorrelation,
     recipe_path: &Path,
+    run_dir: Option<&Path>,
     timeout: Duration,
     tree_id: &str,
     stderr_sink: &mut String,
@@ -1026,10 +1132,10 @@ fn spawn_with_streaming_stderr(
             });
         }
     }
-    correlation.emit_early();
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
+            correlation.emit_early();
             return Err(fail_with_final_record(
                 &correlation,
                 RecipeRunFinalStatus::SpawnFailure,
@@ -1040,6 +1146,27 @@ fn spawn_with_streaming_stderr(
         }
     };
     let child_pid = Some(child.id());
+    // Issue #2175: the record `recipe stop <run_id>` finds this attempt's
+    // processes by, written before `early` so a run id seen there always has
+    // one. Held for this attempt only: dropping the guard on any return
+    // removes it. A dry run has no run folder and writes none.
+    #[cfg(target_os = "linux")]
+    let _run_record = run_dir.and_then(|dir| {
+        match super::super::run_record::write(dir, correlation.run_id(), child.id()) {
+            Ok(guard) => Some(guard),
+            Err(error) => {
+                eprintln!(
+                    "amplihack: warning: recipe run {:?} wrote no process record, so \
+                     `amplihack recipe stop` cannot stop it by run id: {error:#}",
+                    correlation.run_id()
+                );
+                None
+            }
+        }
+    });
+    #[cfg(not(target_os = "linux"))]
+    let _ = run_dir;
+    correlation.emit_early();
 
     let captured_stderr: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
     let dropped_stderr_lines: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));

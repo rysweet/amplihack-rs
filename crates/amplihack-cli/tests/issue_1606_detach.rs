@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 
 /// Records its pid, its environment and its child's pid, then waits.
 const STUB_RUNNER: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 env > "$RECORD_DIR/env.tmp" && mv "$RECORD_DIR/env.tmp" "$RECORD_DIR/env.txt"
 echo $$ > "$RECORD_DIR/runner.tmp" && mv "$RECORD_DIR/runner.tmp" "$RECORD_DIR/runner.pid"
 sleep 300 &
@@ -39,11 +40,11 @@ steps:
     command: "true"
 "#;
 
-struct Fx {
+pub(crate) struct Fx {
     _tmp: tempfile::TempDir,
     /// Set only when the socket directory had to leave `TMPDIR`.
     _tmux_tmp: Option<tempfile::TempDir>,
-    home: PathBuf,
+    pub(crate) home: PathBuf,
     project: PathBuf,
     tools: PathBuf,
     records: PathBuf,
@@ -52,7 +53,7 @@ struct Fx {
 }
 
 impl Fx {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::with_runner(STUB_RUNNER)
     }
 
@@ -88,7 +89,7 @@ impl Fx {
         fx
     }
 
-    fn cmd(&self, args: &[&str], env: &[(&str, &str)]) -> Command {
+    pub(crate) fn cmd(&self, args: &[&str], env: &[(&str, &str)]) -> Command {
         let mut c = crate::isolated_amplihack::isolated(amplihack_bin());
         c.args(args)
             .current_dir(&self.project)
@@ -120,11 +121,11 @@ impl Fx {
         c
     }
 
-    fn run(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
+    pub(crate) fn run(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
         output_within("amplihack to exit", &mut self.cmd(args, env))
     }
 
-    fn recipe_run_args(&self) -> Vec<String> {
+    pub(crate) fn recipe_run_args(&self) -> Vec<String> {
         vec![
             "recipe".into(),
             "run".into(),
@@ -163,7 +164,7 @@ impl Fx {
             .unwrap()
     }
 
-    fn pid(&self, name: &str) -> i32 {
+    pub(crate) fn pid(&self, name: &str) -> i32 {
         let path = self.records.join(name);
         wait_for(|| path.is_file(), name);
         fs::read_to_string(path).unwrap().trim().parse().unwrap()
@@ -247,7 +248,7 @@ fn wait_for(done: impl FnMut() -> bool, what: &str) {
 }
 
 /// Waits for amplihack to exit under the shared ceiling (issue #1973).
-fn wait_bounded(child: &mut Child) -> std::process::ExitStatus {
+pub(crate) fn wait_bounded(child: &mut Child) -> std::process::ExitStatus {
     wait_child("amplihack to exit", child)
 }
 
@@ -282,7 +283,7 @@ fn retry_delay(line: &str) -> Duration {
 }
 
 /// Alive and not a zombie.
-fn alive(pid: i32) -> bool {
+pub(crate) fn alive(pid: i32) -> bool {
     fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
         stat.rsplit_once(')')
             .and_then(|(_, rest)| rest.split_whitespace().next())
@@ -290,14 +291,14 @@ fn alive(pid: i32) -> bool {
     })
 }
 
-fn assert_gone(pids: &[i32]) {
+pub(crate) fn assert_gone(pids: &[i32]) {
     wait_for(
         || pids.iter().all(|pid| !alive(*pid)),
         &format!("processes {pids:?} to exit"),
     );
 }
 
-fn text(bytes: &[u8]) -> String {
+pub(crate) fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
@@ -475,6 +476,7 @@ fn stop_of_an_unknown_target_fails() {
 
 /// Fails every attempt with a transient (retryable) transport error.
 const TRANSIENT_RUNNER: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 echo $$ > "$RECORD_DIR/runner.tmp" && mv "$RECORD_DIR/runner.tmp" "$RECORD_DIR/runner.pid"
 echo attempt >> "$RECORD_DIR/attempts"
 echo "API Error: 529 overloaded_error" >&2
@@ -590,6 +592,7 @@ fn detach_without_tmux_fails_and_leaves_nothing_behind() {
 
 /// A tmux that accepts `new-session` but never starts the pane.
 const SILENT_TMUX: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 case "$1" in
   -V) echo "tmux 3.4" ;;
   new-session|kill-session) exit 0 ;;
@@ -675,6 +678,7 @@ fn a_sigkilled_recipe_run_takes_its_runner_with_it() {
 
 /// Starts a child that leaves the runner's process group and session.
 const SETSID_RUNNER: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 echo $$ > "$RECORD_DIR/runner.tmp" && mv "$RECORD_DIR/runner.tmp" "$RECORD_DIR/runner.pid"
 setsid sleep 300 &
 echo $! > "$RECORD_DIR/escaped.tmp" && mv "$RECORD_DIR/escaped.tmp" "$RECORD_DIR/escaped.pid"
@@ -714,6 +718,7 @@ fn a_stop_also_ends_a_descendant_that_left_the_group() {
 /// Reports success, then signals its parent (`recipe run`) and exits at once:
 /// the signal and the exit race.
 const SIGNAL_AT_EXIT_RUNNER: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 printf '%s\n' '{"recipe_name":"issue-1606-detach","success":true,"step_results":[],"context":{}}'
 kill -TERM $PPID
 exit 0
@@ -760,7 +765,7 @@ fn a_pane_start_up_error_is_reported_by_the_launch() {
     crate::support::exec_stub::write_executable(
         &fx.tools.join("tmux"),
         format!(
-            "#!/bin/sh\nif [ \"$1\" = new-session ]; then mv \"$CALLER_DIR\" \"$CALLER_DIR.moved\"; fi\nexec {real_tmux} \"$@\"\n"
+            "#!/bin/sh\ncase \"$*\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nif [ \"$1\" = new-session ]; then mv \"$CALLER_DIR\" \"$CALLER_DIR.moved\"; fi\nexec {real_tmux} \"$@\"\n"
         ),
         0o755,
     );
@@ -780,4 +785,427 @@ fn a_pane_start_up_error_is_reported_by_the_launch() {
     assert!(err.contains("failed to start recipe run in"), "{err}");
     assert!(fx.leftovers(".spec.json").is_empty());
     assert!(fx.leftovers(".context.json").is_empty());
+}
+
+// --- issue #2175: stopping a run by its run id through its record ---------------
+
+/// The `run_id` of the first `early` log pointer in `line`, if it has one.
+fn early_run_id(line: &str) -> Option<String> {
+    let json = line.split_once("amplihack.recipe.log_pointer ")?.1;
+    let event: serde_json::Value = serde_json::from_str(json.trim()).ok()?;
+    (event["event"] == "early").then(|| event["run_id"].as_str().map(str::to_string))?
+}
+
+impl Fx {
+    /// Starts `recipe run` in the foreground and returns it with the run id
+    /// of its `early` log pointer line, read from its stderr.
+    pub(crate) fn spawn_foreground_run(&self) -> (Child, String) {
+        let args = self.recipe_run_args();
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let mut amp = self
+            .cmd(&args, &[])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stderr = amp.stderr.take().unwrap();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut sent = false;
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                if !sent && let Some(id) = early_run_id(&line) {
+                    let _ = tx.send(id);
+                    sent = true;
+                }
+            }
+        });
+        let run_id = rx.recv_timeout(CEILING).expect("early pointer");
+        (amp, run_id)
+    }
+
+    /// `<work root>/runs` of this fixture: `HOME/.amplihack/work/runs`.
+    pub(crate) fn runs_dir(&self) -> PathBuf {
+        self.home.join(".amplihack").join("work").join("runs")
+    }
+
+    /// Every `runs/*/procs/<run_id>.json` under the fixture's work root.
+    fn records_of(&self, run_id: &str) -> Vec<PathBuf> {
+        fs::read_dir(self.runs_dir())
+            .map(|dir| {
+                dir.filter_map(Result::ok)
+                    .map(|e| e.path().join("procs").join(format!("{run_id}.json")))
+                    .filter(|p| p.is_file())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Writes a record by hand, as `recipe run` would, in a run directory of
+    /// its own. Returns the record's path.
+    fn plant_record(&self, run_id: &str, body: &str) -> PathBuf {
+        let procs = self.runs_dir().join("planted-run-dir").join("procs");
+        fs::create_dir_all(&procs).unwrap();
+        for dir in [
+            self.runs_dir(),
+            self.runs_dir().join("planted-run-dir"),
+            procs.clone(),
+        ] {
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let path = procs.join(format!("{run_id}.json"));
+        fs::write(&path, body).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        path
+    }
+}
+
+/// Field 22 of `/proc/<pid>/stat`: the start time in clock ticks.
+fn start_ticks(pid: u32) -> u64 {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let rest = stat.rsplit_once(')').unwrap().1;
+    rest.split_whitespace().nth(19).unwrap().parse().unwrap()
+}
+
+/// A `sleep` this test owns; killed and reaped when dropped.
+struct Sleeper(Child);
+
+impl Sleeper {
+    /// `own_group`: the sleep leads its own process group, like the runner.
+    fn start(own_group: bool) -> Self {
+        use std::os::unix::process::CommandExt;
+        let mut c = Command::new("sleep");
+        c.arg("300").stdin(Stdio::null());
+        if own_group {
+            c.process_group(0);
+        }
+        Self(c.spawn().unwrap())
+    }
+
+    fn pid(&self) -> u32 {
+        self.0.id()
+    }
+
+    /// Still running: not exited and not yet reaped.
+    fn running(&mut self) -> bool {
+        self.0.try_wait().unwrap().is_none()
+    }
+}
+
+impl Drop for Sleeper {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn record_body(run_id: &str, recipe_run: (u32, u64), runner: (u32, u64)) -> String {
+    serde_json::json!({
+        "version": 1,
+        "run_id": run_id,
+        "recipe_run": {"pid": recipe_run.0, "start_ticks": recipe_run.1},
+        "runner": {"pid": runner.0, "pgid": runner.0, "start_ticks": runner.1},
+    })
+    .to_string()
+}
+
+/// The record exists as soon as the `early` line is printed, is private, names
+/// exactly this run's processes, and is removed when the attempt ends.
+#[test]
+fn a_running_run_has_a_private_record_that_names_its_processes() {
+    let fx = Fx::new();
+    let (mut amp, run_id) = fx.spawn_foreground_run();
+    // No wait: the record is written before the early line.
+    let records = fx.records_of(&run_id);
+    assert_eq!(
+        records.len(),
+        1,
+        "one record for run {run_id} under {}",
+        fx.runs_dir().display()
+    );
+    let record = &records[0];
+    let procs = record.parent().unwrap();
+    assert_eq!(
+        fs::symlink_metadata(procs).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert_eq!(
+        fs::symlink_metadata(record).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let runner = fx.pid("runner.pid");
+    let child = fx.pid("child.pid");
+    let value: serde_json::Value = serde_json::from_slice(&fs::read(record).unwrap()).unwrap();
+    let mut keys: Vec<&str> = value
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        ["recipe_run", "run_id", "runner", "version"],
+        "{value}"
+    );
+    assert_eq!(value["version"], 1, "{value}");
+    assert_eq!(value["run_id"], run_id.as_str(), "{value}");
+    assert_eq!(value["recipe_run"]["pid"], amp.id(), "{value}");
+    assert_eq!(
+        value["recipe_run"]["start_ticks"],
+        start_ticks(amp.id()),
+        "{value}"
+    );
+    assert_eq!(value["runner"]["pid"], runner, "{value}");
+    assert_eq!(value["runner"]["pgid"], runner, "{value}");
+    assert_eq!(
+        value["runner"]["start_ticks"],
+        start_ticks(runner as u32),
+        "{value}"
+    );
+
+    let stop = fx.run(&["recipe", "stop", &run_id], &[]);
+    assert!(stop.status.success(), "{}", text(&stop.stderr));
+    assert!(
+        text(&stop.stdout).contains(&format!("stopped run {run_id}")),
+        "{}",
+        text(&stop.stdout)
+    );
+    assert_gone(&[runner, child]);
+    let status = wait_bounded(&mut amp);
+    assert!(!status.success(), "a stopped run must not report success");
+    assert!(
+        fx.records_of(&run_id).is_empty(),
+        "the attempt's record must be removed when it ends"
+    );
+}
+
+/// A detached run is stopped by its run id as well as by its session.
+#[test]
+fn stop_by_run_id_ends_a_detached_run() {
+    if !tmux_available() {
+        return;
+    }
+    let fx = Fx::new();
+    if !fx.tmux_socket_usable() {
+        return;
+    }
+    let mut args = fx.recipe_run_args();
+    args.push("--detach".into());
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = fx.run(&args, &[]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let stdout = text(&out.stdout);
+    let log = PathBuf::from(
+        stdout
+            .lines()
+            .find_map(|l| l.strip_prefix("log: "))
+            .unwrap_or_else(|| panic!("no log line: {stdout}")),
+    );
+    let mut run_id = None;
+    wait_for(
+        || {
+            run_id = fs::read_to_string(&log)
+                .ok()
+                .and_then(|body| body.lines().find_map(early_run_id));
+            run_id.is_some()
+        },
+        "the detached run's early pointer",
+    );
+    let run_id = run_id.unwrap();
+    let runner = fx.pid("runner.pid");
+    let child = fx.pid("child.pid");
+
+    let stop = fx.run(&["recipe", "stop", &run_id], &[]);
+    assert!(stop.status.success(), "{}", text(&stop.stderr));
+    assert!(
+        text(&stop.stdout).contains(&format!("stopped run {run_id}")),
+        "{}",
+        text(&stop.stdout)
+    );
+    assert_gone(&[runner, child]);
+}
+
+#[test]
+fn stop_of_an_unknown_run_quotes_its_id() {
+    let fx = Fx::new();
+    let out = fx.run(&["recipe", "stop", "no-such-run"], &[]);
+    assert!(!out.status.success());
+    assert!(
+        text(&out.stderr)
+            .contains(r#"recipe stop: no tmux session or running recipe run named "no-such-run""#),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+/// A `runs/` folder `stop` cannot read is "not found" with the reason
+/// underneath, and nothing is signalled. Root reads any folder, so there is
+/// nothing to check as root.
+#[test]
+fn stop_reports_why_it_could_not_read_the_runs_folder() {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let fx = Fx::new();
+    let id = "unreadable-run";
+    fx.plant_record(id, "{}");
+    let runs = fx.runs_dir();
+    fs::set_permissions(&runs, fs::Permissions::from_mode(0o300)).unwrap();
+    let out = fx.run(&["recipe", "stop", id], &[]);
+    fs::set_permissions(&runs, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(!out.status.success(), "{}", text(&out.stdout));
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains(
+            r#"recipe stop: no tmux session or running recipe run named "unreadable-run""#
+        ),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("cannot list {}", runs.display()))
+            && stderr.contains("ermission denied"),
+        "the reason must be shown: {stderr}"
+    );
+}
+
+/// An id that could name another path is refused before any record is read.
+#[test]
+fn stop_refuses_an_id_that_could_name_a_path() {
+    let fx = Fx::new();
+    for id in ["../x", "a/b", ".hidden", "a b", "a\u{1b}[31m"] {
+        let out = fx.run(&["recipe", "stop", id], &[]);
+        assert!(!out.status.success(), "{id:?} must be refused");
+        let expected = format!("recipe stop: invalid run id {id:?}");
+        assert!(
+            text(&out.stderr).contains(&expected),
+            "{id:?}: expected {expected:?} in {}",
+            text(&out.stderr)
+        );
+        assert!(
+            !text(&out.stderr).contains('\u{1b}'),
+            "control characters must be printed escaped"
+        );
+    }
+}
+
+/// A process inside a run (it inherits `AMPLIHACK_RECIPE_RUN_ID`) cannot stop
+/// that run by its id, and the run keeps going.
+#[test]
+fn stop_refuses_to_stop_the_run_it_runs_inside() {
+    let fx = Fx::new();
+    let (mut amp, run_id) = fx.spawn_foreground_run();
+    let runner = fx.pid("runner.pid");
+    let child = fx.pid("child.pid");
+
+    let out = fx.run(
+        &["recipe", "stop", &run_id],
+        &[("AMPLIHACK_RECIPE_RUN_ID", run_id.as_str())],
+    );
+    assert!(!out.status.success(), "{}", text(&out.stdout));
+    let expected = format!("recipe stop: refusing to stop run {run_id:?} from inside it");
+    assert!(
+        text(&out.stderr).contains(&expected),
+        "expected {expected:?} in {}",
+        text(&out.stderr)
+    );
+    assert!(alive(runner) && alive(child), "nothing may be signalled");
+    assert!(
+        amp.try_wait().unwrap().is_none(),
+        "recipe run must keep running"
+    );
+
+    let stop = fx.run(&["recipe", "stop", &run_id], &[]);
+    assert!(stop.status.success(), "{}", text(&stop.stderr));
+    assert_gone(&[runner, child]);
+    wait_bounded(&mut amp);
+}
+
+/// A record found by its run id is acted on through its pids and the
+/// runner's process group, with no other lookup.
+#[test]
+fn stop_signals_the_processes_a_record_names() {
+    let fx = Fx::new();
+    let mut recipe_run = Sleeper::start(false);
+    let mut runner = Sleeper::start(true);
+    let id = "planted-run";
+    fx.plant_record(
+        id,
+        &record_body(
+            id,
+            (recipe_run.pid(), start_ticks(recipe_run.pid())),
+            (runner.pid(), start_ticks(runner.pid())),
+        ),
+    );
+    let out = fx.run(&["recipe", "stop", id], &[]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stdout).contains(&format!("stopped run {id}")),
+        "{}",
+        text(&out.stdout)
+    );
+    let a = wait_child("the recorded recipe run to exit", &mut recipe_run.0);
+    let b = wait_child("the recorded runner to exit", &mut runner.0);
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(a.signal(), Some(libc::SIGTERM), "{a:?}");
+    assert_eq!(b.signal(), Some(libc::SIGTERM), "{b:?}");
+}
+
+/// A record whose start times no longer match (a reused pid, or a record left
+/// by a SIGKILLed run) is not acted on.
+#[test]
+fn stop_leaves_alone_processes_whose_start_time_differs() {
+    let fx = Fx::new();
+    let mut recipe_run = Sleeper::start(false);
+    let mut runner = Sleeper::start(true);
+    let id = "stale-run";
+    fx.plant_record(
+        id,
+        &record_body(
+            id,
+            (recipe_run.pid(), start_ticks(recipe_run.pid()) + 1),
+            (runner.pid(), start_ticks(runner.pid()) + 1),
+        ),
+    );
+    let out = fx.run(&["recipe", "stop", id], &[]);
+    assert!(!out.status.success(), "{}", text(&out.stdout));
+    assert!(
+        text(&out.stderr)
+            .contains(r#"recipe stop: no tmux session or running recipe run named "stale-run""#),
+        "{}",
+        text(&out.stderr)
+    );
+    assert!(
+        recipe_run.running() && runner.running(),
+        "nothing may be signalled"
+    );
+}
+
+/// A record others could have written is not trusted.
+#[test]
+fn stop_ignores_a_record_writable_by_others() {
+    let fx = Fx::new();
+    let mut recipe_run = Sleeper::start(false);
+    let mut runner = Sleeper::start(true);
+    let id = "open-record";
+    let path = fx.plant_record(
+        id,
+        &record_body(
+            id,
+            (recipe_run.pid(), start_ticks(recipe_run.pid())),
+            (runner.pid(), start_ticks(runner.pid())),
+        ),
+    );
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
+    let out = fx.run(&["recipe", "stop", id], &[]);
+    assert!(!out.status.success(), "{}", text(&out.stdout));
+    assert!(
+        text(&out.stderr).contains(&format!("{id:?}")),
+        "{}",
+        text(&out.stderr)
+    );
+    assert!(
+        recipe_run.running() && runner.running(),
+        "nothing may be signalled"
+    );
 }

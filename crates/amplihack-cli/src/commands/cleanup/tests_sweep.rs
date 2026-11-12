@@ -605,7 +605,7 @@ fn new_format_target_with_held_cargo_lock_is_in_use() {
     assert_eq!(e.action, Action::Skipped, "{e:?}");
     assert_eq!(e.reason, "in use: .cargo-lock is held");
     assert!(t.join("debug/keep-me").exists());
-    drop(lock);
+    crate::test_support::release_flock(lock, &t.join("debug/.cargo-lock"));
     let entries = run_sweep(&far_keep(&fx), true).unwrap();
     assert_eq!(entry(&entries, &t).action, Action::Removed);
 }

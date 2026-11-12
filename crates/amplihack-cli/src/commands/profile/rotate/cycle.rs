@@ -2,7 +2,7 @@
 //! (unlocked), decide, revalidate under the lock and swap, record. See
 //! "Rotate cycle" in docs/reference/profile-command.md.
 
-use super::alert::{alert, alert_key, refusal_kind};
+use super::alert::{alert, alert_key, alert_once, refusal_kind};
 use super::capacity::{self, Room};
 use super::decide::Decision;
 use super::dry_run::dry_run;
@@ -10,6 +10,7 @@ use super::fresh::{self, Reread};
 use super::held::held_cycle;
 use super::history;
 use super::identify::LiveId;
+use super::identify::excluded_offline::{exclude_paused, unproven_live};
 use super::ledger::{RotateLedger, newer_than};
 use super::log::{msg, shown, shown_of};
 use super::observe::{Measurement, Snap, live_name, measure_and_decide, platform_block_reason};
@@ -129,20 +130,27 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         return Ok(CycleOutcome::Held);
     }
     drop(lock);
+    // Issue #2218: an unreadable exclude list pauses rotation.
+    if let Some(alert) = exclude_paused(&ctx.store, |w| out.emit(now(), w)) {
+        out.emit(now(), &format!("ALERT: {alert}"));
+        return Ok(CycleOutcome::Alerted);
+    }
     // Steps 4 and 5: measure without the lock, then decide. `claude` is
     // looked for only when a read falls back to it (issue #1844).
     let measuring = std::time::Instant::now();
+    ctx.live_outlook = None;
     let m = match ctx.measure {
         Some(stub) => stub(ctx, &first)?,
         None => measure_and_decide(ctx, &first)?,
     };
-    let (live_shown, others_shown) = shown(&m);
+    let (live_shown, others_shown) = shown(&m, first.live_excluded);
     let (name, platform) = (live_name(&first.live), first.shown_platform());
     out.emit(
         now(),
         &msg::cycle(name, &live_shown, &others_shown, platform),
     );
-    // Issue #1870: before `failed_live` moves on, so it is counted once.
+    // Issues #2211, #1870: before `failed_live` moves on, so it is counted once.
+    let m = fresh::live::step(ctx, &first, m)?;
     let m = fresh::gate(ctx, &first, m, Reread::Allowed)?;
     ctx.identity_budget.exclude_measurement(measuring.elapsed());
     m.fresh_lines.iter().for_each(|line| out.emit(now(), line));
@@ -191,7 +199,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             return Ok(CycleOutcome::Skipped);
         }
     };
-    let (live_shown, others_shown) = shown(&m);
+    let (live_shown, others_shown) = shown(&m, first.live_excluded);
     let Measurement {
         live,
         others,
@@ -220,6 +228,9 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     // that stops on the outgoing login in between must read as stopped
     // before the swap, or the limit-resume hook judges the record stale.
     let mut swapped_at = t;
+    // Issue #2218 (S4): an excluded live login named only by evidence that
+    // may be stale is neither moved into that folder nor recorded live.
+    let unproven = unproven_live(ctx, &first);
     let outcome = match decision {
         Decision::Swap { to, reason } => 'swap: {
             // Issue #1804: a refusal moves nothing and writes no journal.
@@ -232,6 +243,14 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                     break 'swap CycleOutcome::Alerted;
                 }
             };
+            // Issue #2218 (S4): an excluded login moves into its folder only
+            // on proof that it is that profile's; otherwise nothing moves.
+            if let Some(n) = unproven {
+                let key = alert_key("excluded_unproven", Some(n));
+                alert_once(&mut out, &mut l, &key, t, &msg::alert_excluded_unproven(n));
+                tag = None;
+                break 'swap CycleOutcome::Alerted;
+            }
             let source = match &first.live {
                 LiveId::Known(n) => Source::Profile(n.clone()),
                 _ => Source::Adopt,
@@ -267,12 +286,23 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                 }
                 Err(e) => return Err(e),
             };
-            swapped_at = now();
+            swapped_at = (ctx.now)();
             swapped = Some([to.clone(), from.clone()]);
             let target = shown_of(&others_shown, &to);
+            if first.live_excluded {
+                out.emit(now(), &msg::excluded_moving_off(&from));
+            }
             let seen = (next_plan_reset, unknown_plan.len());
             note_per_token(&mut out, &first, tag, &to, seen, check);
             out.emit(now(), &msg::swap(&from, &to, &live_shown, &target, reason));
+            if let Some(line) = amplihack_utils::organisation_affinity::Affinity::between(
+                first.source_org(),
+                first.org_of(&to),
+            )
+            .log_line(from.as_str(), to.as_str())
+            {
+                out.emit(now(), &line);
+            }
             let (off_key, onto_key) = (first.platform_live(), first.platform() == Some(&to));
             note_move(
                 &mut out,
@@ -284,6 +314,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                 onto_key,
             );
             ctx.failed_live = 0;
+            ctx.live_series.clear();
             l = ctx.rs.load_ledger()?.unwrap_or_default();
             CycleOutcome::Swapped
         }
@@ -299,16 +330,21 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             room.stay(&mut l)
         }
         Decision::Alert => {
-            note_live(&mut l, &first, t);
+            if unproven.is_none() {
+                note_live(&mut l, &first, t);
+            }
             let reason = || platform_block_reason(ctx);
             let (kind, line) = alert_line(&first, tag, &live, &others, &key_held, reason);
             let key = alert_key(kind, live_name(&first.live));
             room.alert(&mut out, &mut l, kind, &key, t, &line)
         }
     };
+    // Issue #2218: nothing measured is recorded under an excluded live
+    // login's name; it was never probed.
+    let recorded_live = live_name(&first.live).filter(|_| !first.live_excluded);
     refresh_capacity(
         ctx,
-        live_name(&first.live),
+        recorded_live,
         &live,
         &others,
         t,
@@ -323,8 +359,11 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         probed.as_ref(),
         measured_at,
     );
-    let left = swapped.as_ref().map(|[_, from]| (from, &live));
-    let (s, live_n) = (&ctx.settings, live_name(&first.live));
+    let left = swapped
+        .as_ref()
+        .filter(|_| !first.live_excluded)
+        .map(|[_, from]| (from, &live));
+    let (s, live_n) = (&ctx.settings, recorded_live);
     for line in swap_back::update(&mut l, s, live_n, probed.as_ref(), left, measured_at, t) {
         out.emit(now(), &line);
     }
@@ -340,6 +379,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             &others,
             measured_at,
             swapped_at,
+            (first.source_org(), first.org_of(to)),
         );
     }
     // Issue #1634: link the session dirs of both profiles swapped, after the

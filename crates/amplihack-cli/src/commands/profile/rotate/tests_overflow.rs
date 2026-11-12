@@ -688,6 +688,54 @@ fn a_lasting_plan_failure_does_not_block_overflow() {
     }
 }
 
+/// Issue #2271: a plan profile with no login is read without starting
+/// `claude`. It is a known `not_logged_in`, as the `claude` fallback read
+/// it before, so it does not hold the move onto credits; a timed-out plan
+/// probe still does.
+#[test]
+fn a_not_signed_in_plan_profile_does_not_hold_overflow() {
+    use crate::commands::profile::usage_direct::reason;
+    let case = |spare: Probed| {
+        Case::new("work", exhausted(FAR, FAR))
+            .cand("spare", spare)
+            .cand("extra", exhausted(FAR, FAR))
+            .cand("cred", exhausted(None, None))
+            .overflow(&["cred"])
+            .run()
+    };
+    for why in [reason::NO_TOKEN, reason::NO_REFRESH_TOKEN, reason::NO_FILE] {
+        let spare = reading("spare", &Probe::not_signed_in(why));
+        assert!(!spare.unknown, "{why}");
+        let v = case(spare);
+        assert_eq!(v.decision, swap("cred", Reason::OverflowIn), "{why}");
+        assert_eq!(v.tag, Some(Tag::In), "{why}");
+    }
+    let v = case(timed_out());
+    assert_eq!(v.decision, Decision::Alert, "a timed-out probe still holds");
+    assert_eq!(v.tag, None);
+}
+
+/// A plan profile whose credentials file could not be read (not JSON, a
+/// format change, a rejected token) is not "not signed in": under the
+/// `direct` probe it is a failed probe, so it is unknown and holds the move
+/// onto credits. Its `rotate.err` warning is checked in
+/// `measure::tests_issue_2271_measure`. In the default order it falls back
+/// to `claude`, which reads it as before #2271.
+#[test]
+fn an_unreadable_credentials_file_holds_overflow() {
+    use crate::commands::profile::usage_direct::reason;
+    let spare = reading("spare", &Probe::direct_error(reason::UNREADABLE_CREDS));
+    assert!(spare.unknown);
+    let v = Case::new("work", exhausted(FAR, FAR))
+        .cand("spare", spare)
+        .cand("cred", exhausted(None, None))
+        .overflow(&["cred"])
+        .run();
+    assert_eq!(v.decision, Decision::Alert);
+    assert_eq!(v.tag, None);
+    assert!(v.new_blocks.is_empty());
+}
+
 #[test]
 fn a_refused_plan_profile_directory_blocks_overflow() {
     // A directory refused just before the spawn reads `error`; that login
@@ -1211,3 +1259,41 @@ fn moving_back_off_overflow_ignores_a_recent_swap() {
 // policy, so a unit case cannot set it. The cycle-level test that writes
 // `.default` and compares verdicts with and without it is
 // `tests/profile_overflow.rs::the_default_pointer_does_not_change_the_rotators_verdict`.
+
+/// The overflow exit's room fallback ranks only the plan-room pool it is
+/// given. Which logins that pool holds (a crossing is in it when leaving
+/// overflow and no same-organisation plan login has room) is decided by
+/// `organisation_affinity::pools`; see its tests.
+#[test]
+fn issue_2136_blocked_overflow_room_fallback_ranks_only_its_pool() {
+    for same_org in [false, true] {
+        let case = Case::new("credits", spend_limited())
+            .overflow(&["credits"])
+            .cand("plan", measured(95.0, 95.0, FAR, FAR));
+        let live = n("credits");
+        let overflow = vec![OverflowEntry::new(live.clone(), 1)];
+        let allowed = vec![n("plan")];
+        let same = if same_org { allowed.clone() } else { vec![] };
+        let result = super::overflow::decide_restricted(
+            &OverflowInput {
+                settings: &case.s,
+                live_name: Some(&live),
+                live: &case.live,
+                candidates: &case.candidates,
+                refused: &[],
+                overflow: &overflow,
+                blocks: &case.blocks,
+                platform_block: None,
+                unmeasured_plan: &[],
+                swapped_at: None,
+                now: NOW,
+            },
+            Some((&allowed, &same)),
+        );
+        if same_org {
+            assert_eq!(result.decision, swap("plan", Reason::OverflowOut));
+        } else {
+            assert!(!matches!(result.decision, Decision::Swap { .. }));
+        }
+    }
+}
