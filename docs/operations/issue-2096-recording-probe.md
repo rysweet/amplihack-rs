@@ -11,8 +11,8 @@ This document preserves an earlier diagnostic and its limitations. Its
 implementation-status statements and host-specific results below describe
 that experiment, not the execution contract. For the feature contract, see
 [checkout isolation](../reference/recipe-checkout-isolation.md#required-recording).
-For current requirement dispositions, see the
-[requirement/review ledger](../reference/recipe-checkout-isolation.md#requirement-and-review-disposition-ledger).
+For the limits of the delivered recorder, see
+[isolation limits](../reference/recipe-checkout-isolation.md#limits).
 Statements below that production integration was unchanged refer to the
 diagnostic revision; later linked-worktree/Trace2 code does not satisfy the
 stronger target contract.

@@ -3,11 +3,10 @@
 //! overflow list` and `clear` (issue #1606).
 
 use super::daemon::{DaemonState, current_state, daemon_err, exe_name, proc_root, running_on_host};
-use super::exhausted;
-use super::history;
 use super::identify::{self, LiveId};
 use super::ledger::{LastCycle, Phase, RotateLedger, RotateState, active_blocks};
 use super::log::{msg, timestamp};
+use super::{exhausted, history, hook_heal};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{State, now};
 use crate::commands::profile::name::ProfileName;
@@ -102,9 +101,9 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     };
     let auto = super::autostart_line(store.root());
     // Issue #1803: read only under a private root; never echoes the marker.
-    let exe = exe_name();
-    let owner = super::owner::describe(store.root(), &proc_root(), exe.as_deref());
+    let owner = super::owner::describe(store.root(), &proc_root(), exe_name().as_deref());
     println!("rotate: {word}\n{auto}\n{owner}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
+    super::observe::affinity::print_status(store.root());
     // Issue #1797: from the usage history only; no probe and no `claude`.
     let (capacity, warnings) = history::capacity(store.root(), now());
     for w in warnings {
@@ -149,7 +148,8 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
         Ok(None) => {}
         Err(_) => println!("journal: damaged"),
     }
-    println!("log: {}", rs.log.display());
+    let hooks = hook_heal::status_line(&rs, now());
+    println!("{hooks}\nlog: {}", rs.log.display());
 }
 
 /// The ledger's hand-change guidance as `note:` or `alert:` lines, then a

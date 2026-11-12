@@ -1,21 +1,16 @@
 ---
 title: Recipe Runner Logging Reference
-description: Progress output, correlation, current cooperative Trace2 recording, and planned mandatory recording.
+description: Progress output, correlation, and the required Git command record.
 doc_type: reference
-last_updated: 2026-11-10
+last_updated: 2026-11-12
 ---
 
 # Recipe Runner Logging Reference
 
-**[CANDIDATE - acceptance pending]** Progress and result formats below remain
-operational. The working-tree implementation requires Linux descendant
-observation and durable per-attempt evidence; collector and publication errors
-fail the run. Trace2 is retained for diagnostics only. Current native coverage
-is successful execution of named Git executables in the runner's descendant
-tree. Preparation, release, arbitrary non-Git writes and unrelated host activity
-are outside that demonstrated coverage. The [target recording contract](recipe-checkout-isolation.md#required-recording)
-and [review ledger](recipe-checkout-isolation.md#requirement-and-review-disposition-ledger)
-identify the outstanding requirements.
+Every real run records the Git commands its runner, steps, agents and hooks
+launch, using a Linux observer. A run whose recording fails does not succeed.
+Trace2 output is kept for diagnostics only. See
+[required recording](recipe-checkout-isolation.md#required-recording).
 
 Reference for live recipe progress, heartbeat events, bounded subprocess output
 snippets, run correlation pointers, and additive JSON fields emitted by
@@ -312,12 +307,12 @@ Output snippet event:
 
 ## Git command record
 
-The candidate production path requires Linux native observation. Each attempt
+A real run requires the Linux observer. Each attempt
 writes a private journal under `git-trace2/` (the directory retains its legacy
 name). Successful executable stops provide executable identity, cwd, launch
 routing, run and attempt identity, and UTC time. Repository/index attribution
 uses the observed Git options and routing. Cleared-environment absolute Git
-and Rust hook descendants are covered by production-boundary tests. Independent
+and Rust hook descendants are covered. Independent
 nested runs receive separate journals and an acknowledgement after their
 observed scope has ended and evidence is synchronized.
 
@@ -335,12 +330,12 @@ fails. A successful empty journal requires a completed observer receipt.
 The mechanism does not establish observation of preparation/release processes,
 arbitrary non-Git index writes, renamed Git executables, unrelated processes,
 or tamper resistance against the same user. See the
-[acceptance ledger](recipe-checkout-isolation.md#requirement-and-review-disposition-ledger).
+[isolation limits](recipe-checkout-isolation.md#limits).
 
 ### Diagnostic Trace2 compatibility
 
 The following retained description concerns the cooperative diagnostic API and
-older installs. It does **not** describe the candidate production coverage or
+older installs. It does **not** describe the production coverage or
 failure policy. The historical probe remains useful evidence of why Trace2
 cannot implement required recording.
 
@@ -484,24 +479,6 @@ jq -c --arg co "$co" \
   'select(.cwd != null and (.cwd | startswith($co) | not)) | {argv, cwd}' \
   "$run/git-commands.jsonl"
 ```
-
-### Planned mandatory recording
-
-**[PLANNED - Implementation Pending]** A supported Linux observer must
-establish descendant coverage before provisioning and runner launch, remain
-active through teardown and release, and attribute executable, argv, launch
-cwd, repository, effective index, run and attempt identity. Initialization,
-live collection, bounds, attribution, persistence, synchronization and final
-publication failures must prevent complete success and retain available
-evidence. Unsupported capability must stop launch. Trace2 can supplement
-that observer; it cannot replace it.
-
-The current six-field Trace2 summary is not the proposed versioned provenance
-schema. An empty journal is acceptable under the target only with established
-coverage and no relevant activity. Current empty journals make no such claim.
-See the [required recording specification](recipe-checkout-isolation.md#required-recording),
-[production acceptance requirements](recipe-checkout-isolation.md#validation-contract),
-and [historical Trace2 evidence](../operations/issue-2096-recording-probe.md).
 
 ## Configuration
 

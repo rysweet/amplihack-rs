@@ -1,7 +1,7 @@
 ---
 title: "Agent Prompt Channels Reference"
 description: "How every amplihack launch path hands prompt, brief and contract text to an agent CLI without putting it in the child's argv: the contract file, the version gate, the passthrough rewrite, per-path channels, errors and tests."
-last_updated: 2026-11-08
+last_updated: 2026-11-11
 review_schedule: quarterly
 owner: rysweet
 doc_type: reference
@@ -110,7 +110,7 @@ claude --model opus[1m] --append-system-prompt-file /home/alice/.amplihack/priva
 | Property | Value |
 | --- | --- |
 | Path | `<amplihack home>/private/system-prompt-append.md` |
-| Amplihack home | `AMPLIHACK_HOME` if set, otherwise `~/.amplihack` |
+| Amplihack home | `AMPLIHACK_HOME` if set, non-empty and not a Git checkout (no `.git` directory, file or symlink at its root, #2361); otherwise `~/.amplihack` |
 | Directory mode | `private/` is 0700, owned by the current user |
 | File mode | 0600, regular file, owned by the current user |
 | Written by | `ensure_contract_file(home)`, at launch, never at install |
@@ -351,8 +351,8 @@ rather than pass the arguments through, because passing them through would
 put the prompt on Codex's argv: an option a later Codex added, followed by a
 word, and a plain-`exec` `--image` that took more than one value with no
 prompt left. Each error says how to write the command so it is unambiguous. The flags added for recipe agent steps
-(#1985) go directly after `exec`, so `exec <text>` reaches Codex as
-`exec --sandbox workspace-write ... --dangerously-bypass-hook-trust -`.
+(#1985, #2317) go directly after `exec`, so `exec <text>` reaches Codex as
+`exec --sandbox danger-full-access --dangerously-bypass-hook-trust -`.
 
 Interactive Codex is not rewritten. The first positional of a bare `codex` is
 either a prompt or a Codex subcommand, and the subcommand list changes
@@ -612,7 +612,7 @@ text, already in the `amplihack` process's own argv; see
 | --- | --- |
 | `AMPLIHACK_NO_SYSTEM_PROMPT_APPEND=1` | No contract, no contract file, no version gate for the contract. Any other value, or unset, injects |
 | `AMPLIHACK_PROMPT_DELIVERY` | `auto` (default), `stdin` or `tempfile`. Any other value, including `argv`, logs a warning and is treated as `auto` |
-| `AMPLIHACK_HOME` | Home that holds `private/system-prompt-append.md` |
+| `AMPLIHACK_HOME` | Home that holds `private/system-prompt-append.md`, unless it is a Git checkout; then `~/.amplihack` holds it |
 
 ## Errors
 
@@ -622,6 +622,8 @@ text, already in the `amplihack` process's own argv; see
 | `... could not read a Claude Code version from '<resolved binary> --version'` | Probe printed no version, failed or timed out | Check that the named binary's `--version` runs; then as above |
 | `<home>/private is not a directory owned by you` | `private/` is a symlink, a file or owned by another user | Remove it and launch again |
 | `the amplihack home path contains a newline or NUL` | `AMPLIHACK_HOME` or `HOME` is malformed | Fix the variable |
+| `cannot locate the amplihack home: neither AMPLIHACK_HOME nor HOME is set` | Both variables are unset or empty | Set `HOME` |
+| `cannot locate the amplihack home: AMPLIHACK_HOME is a Git checkout, which never holds runtime state (#2361), and HOME is not set` | `AMPLIHACK_HOME` is a checkout, so the launch falls back to `HOME`, which is unset or empty | Set `HOME` |
 | `CONTRACT_PATH_MISSING: ...` | Internal: the contract applies but no file path reached the command builder | Report a bug; this is never retried with text |
 | `no channel keeps this prompt out of the command line: ...` | The binary has no stdin, file or pointer channel | Use an agent CLI that reads stdin or a file |
 | `the prompt was given twice (-p/--print); pass it once` | Two `-p <text>` in passthrough | Pass one |

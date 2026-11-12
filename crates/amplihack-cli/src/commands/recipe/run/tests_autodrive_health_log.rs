@@ -50,10 +50,16 @@ fn read_verdict(log: &str) -> String {
         .output()
         .expect("awk must be on PATH: autodrive_loop.sh depends on it");
     assert!(out.status.success(), "awk failed: {out:?}");
-    String::from_utf8(out.stdout)
+    let shell = String::from_utf8(out.stdout)
         .expect("utf8")
         .trim()
-        .to_string()
+        .to_string();
+    assert_eq!(
+        shell,
+        crate::commands::orch::autodrive_health_verdict(log),
+        "Crusty Rust dispatch and merge-ready shell parsing must agree"
+    );
+    shell
 }
 
 fn step(id: &str, status: &str, output: &str) -> RecipeRunStepResult {

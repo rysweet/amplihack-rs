@@ -269,3 +269,21 @@ fn five_field_lines_count_toward_the_10000_line_cap() {
     assert_eq!(parsed.len(), 10_000);
     assert!(parsed.iter().all(|o| o.target.is_some()));
 }
+
+/// Issue #2096: a dry run's workspace keeps no record. Recording an attempt
+/// is a no-op that succeeds, it has no run folder, and finishing removes
+/// its temporary folder.
+#[test]
+fn a_dry_runtime_records_attempts_as_a_no_op_and_removes_its_folder() {
+    let mut workspace = RunWorkspace::dry_runtime().expect("dry runtime");
+    let runtime = workspace.runtime_dir().to_path_buf();
+    assert!(runtime.is_dir());
+    assert!(workspace.run_dir().is_none(), "a dry run has no run folder");
+    workspace
+        .record_attempt_checked("dry-attempt")
+        .expect("a dry run records nothing and must not fail");
+    workspace
+        .finish_checked(Outcome::Success, Vec::new(), None, false)
+        .expect("finish dry runtime");
+    assert!(!runtime.exists(), "{} was left behind", runtime.display());
+}

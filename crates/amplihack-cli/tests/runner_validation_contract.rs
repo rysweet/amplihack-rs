@@ -19,7 +19,7 @@ fn cli_binary() -> std::path::PathBuf {
 
 const REPO: &str = "https://github.com/rysweet/amplihack-recipe-runner";
 const REV: &str = "1111111111111111111111111111111111111111";
-const REPORT: &str = r#"{"capabilities":["future","codex_exec"],"version":"custom-99","schema_version":1,"extra":true}"#;
+const REPORT: &str = r#"{"capabilities":["future","codex_exec","durable_recovery_v1"],"version":"custom-99","schema_version":1,"extra":true}"#;
 
 struct Fixture {
     root: tempfile::TempDir,
@@ -112,10 +112,10 @@ fn reordered_additive_report_works_without_python_or_node() {
     f.success(f.run("codex", false, &f.binary()), "codex", "explicit");
 }
 #[test]
-fn empty_capabilities_are_legacy_provider_compatible_only() {
+fn recovery_only_capability_supports_legacy_providers_but_codex_still_requires_codex_exec() {
     for provider in ["claude", "copilot", "codex"] {
         let f = Fixture::new(
-            r#"{"capabilities":[],"schema_version":1,"version":"custom-99"}"#,
+            r#"{"capabilities":["durable_recovery_v1"],"schema_version":1,"version":"custom-99"}"#,
             0,
         );
         let o = f.run(provider, false, &f.binary());
@@ -130,8 +130,8 @@ fn empty_capabilities_are_legacy_provider_compatible_only() {
 fn ambiguous_malformed_and_wrong_typed_reports_fail() {
     for report in [
         r#"{"schema_version":1,"schema_version":1,"version":"v","capabilities":["codex_exec"]}"#,
-        r#"{"schema_version":true,"version":"v","capabilities":[]}"#,
-        r#"{"schema_version":1,"version":" ","capabilities":[]}"#,
+        r#"{"schema_version":true,"version":"v","capabilities":["durable_recovery_v1"]}"#,
+        r#"{"schema_version":1,"version":" ","capabilities":["durable_recovery_v1"]}"#,
         r#"{"schema_version":1,"version":"v","capabilities":[1]}"#,
         &format!("{REPORT} {{}}"),
         "not json",

@@ -465,7 +465,20 @@ pub(crate) fn classify_run_failure(result: &RecipeRunResult, stderr_tail: &str) 
     }
 
     let evidence = truncate_evidence(evidence_parts.join("\n"));
-    let (class, signal) = classify_failure_text(&evidence);
+    let (mut class, mut signal) = classify_failure_text(&evidence);
+    // The runner's scoped supervisor evidence survives nested error summaries.
+    // Work and environmental failures keep their established higher priority.
+    if matches!(
+        class,
+        FailureClass::Indeterminate | FailureClass::TransientTransport
+    ) && result
+        .extra
+        .get("failure_cause")
+        .is_some_and(|cause| cause["class"] == "usage_limit" && cause["origin"].is_object())
+    {
+        class = FailureClass::UsageLimit;
+        signal = Some("durable scoped usage-limit evidence");
+    }
     FailureVerdict {
         class,
         signal,

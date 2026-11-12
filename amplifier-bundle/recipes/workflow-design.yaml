@@ -16,10 +16,17 @@ recursion:
   max_depth: 6
   max_total_steps: 80
 
-context: {}
+context: { strict_delivery: "false", repository: "" }  # step-06d: docs/reference/workflow-delivery-inputs.md
+
+recovery:
+  version: 1
+  persist:
+    context: ["repository", "strict_delivery", "adaptive_recipe", "allow_no_op", "api_design", "architecture_design", "auto_init_repo", "blocking_issues_addressed", "branch_name", "branch_prefix", "ci_status", "clarified_requirements", "cleanup_status", "codebase_analysis", "create_issue", "database_design", "decomposition_json", "design_spec", "doc_review_checkpoint", "doc_review_feedback", "documentation", "existing_branch", "final_cleanup", "final_documentation", "final_requirements", "finalization_handoff", "force_single_workstream", "goal_already_met", "identity_preflight", "implementation", "implementation_terminal_evidence", "infra_error_details", "issue_claim_check", "issue_creation", "issue_number", "issue_url", "no_merge", "ops_modified_files", "philosophy_check", "pr_feedback_changes", "pr_number", "pr_philosophy_review", "pr_review", "pr_security_review", "pr_url", "pre_commit_review", "preflight_status", "publish_status", "quality_audit_results", "quick_change_verdict", "recursion_guard", "refactored_code", "reflection_1", "reflection_2", "reflection_final", "remote_host_type", "repo_path", "requirements", "resume_checkpoint", "review_feedback", "round_1_result", "round_2_result", "round_3_result", "security_requirements", "selected_workflow", "session_complete_status", "session_id", "session_info", "should_finalize", "should_merge", "should_run_ci_wait", "skip_pre_agent_validation", "summary", "task_description", "task_type", "terminal_reason", "terminal_state", "terminal_success", "test_spec", "tree_id", "verification_terminal_evidence", "workflow", "workflow_init", "workspace_status", "workstream", "workstream_count", "workstreams_file", "worktree_path", "worktree_setup"]
+    outputs: ["step-05-architecture", "step-05b-api-design", "step-05c-database-design", "step-05d-security-review", "step-05e-design-consolidation", "step-06-documentation", "step-06b-documentation-review", "step-06c-documentation-refinement", "step-06b-checkpoint-doc-review", "step-06d-goal-already-met-probe"]
 
 steps:
   - id: "step-05-architecture"
+    recovery: {"replay": "reuse", "resources": [{"kind": "repository", "path": "{{worktree_setup.worktree_path}}"}]}
     agent: "amplihack:architect"
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
@@ -83,6 +90,7 @@ steps:
     output: "architecture_design"
 
   - id: "step-05b-api-design"
+    recovery: {"replay": "reuse", "resources": [{"kind": "repository", "path": "{{worktree_setup.worktree_path}}"}]}
     condition: "clarified_requirements.requires_api_design != 'false'"
     agent: "amplihack:api-designer"
     working_dir: "{{worktree_setup.worktree_path}}"
@@ -101,6 +109,7 @@ steps:
     output: "api_design"
 
   - id: "step-05c-database-design"
+    recovery: {"replay": "reuse", "resources": [{"kind": "repository", "path": "{{worktree_setup.worktree_path}}"}]}
     condition: "clarified_requirements.requires_database_design != 'false'"
     agent: "amplihack:database"
     working_dir: "{{worktree_setup.worktree_path}}"
@@ -119,6 +128,7 @@ steps:
     output: "database_design"
 
   - id: "step-05d-security-review"
+    recovery: {"replay": "reuse", "resources": [{"kind": "repository", "path": "{{worktree_setup.worktree_path}}"}]}
     agent: "amplihack:security"
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
@@ -139,6 +149,7 @@ steps:
     output: "security_requirements"
 
   - id: "step-05e-design-consolidation"
+    recovery: {"replay": "reuse", "resources": [{"kind": "repository", "path": "{{worktree_setup.worktree_path}}"}]}
     agent: "amplihack:architect"
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
@@ -169,6 +180,7 @@ steps:
   # STEP 6: RETCON DOCUMENTATION WRITING
   # ==========================================================================
   - id: "step-06-documentation"
+    recovery: {"replay": "reuse", "resources": [{"kind": "repository", "path": "{{worktree_setup.worktree_path}}"}]}
     agent: "amplihack:documentation-writer"
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
@@ -191,6 +203,7 @@ steps:
     output: "documentation"
 
   - id: "step-06b-documentation-review"
+    recovery: {"replay": "reuse", "resources": [{"kind": "repository", "path": "{{worktree_setup.worktree_path}}"}]}
     agent: "amplihack:architect"
     working_dir: "{{worktree_setup.worktree_path}}"
     # Documentation review is a QUALITY SIGNAL, not a gate (#834): non-fatal so a
@@ -228,6 +241,7 @@ steps:
     output: "doc_review_feedback"
 
   - id: "step-06c-documentation-refinement"
+    recovery: {"replay": "reuse", "resources": [{"kind": "repository", "path": "{{worktree_setup.worktree_path}}"}]}
     agent: "amplihack:documentation-writer"
     working_dir: "{{worktree_setup.worktree_path}}"
     continue_on_error: true
@@ -260,6 +274,7 @@ steps:
   # indirect expansion, no env/secret dumps. `set -uo pipefail` without `-e`;
   # structurally exits 0.
   - id: "step-06b-checkpoint-doc-review"
+    recovery: {"replay": "reuse"}
     type: "bash"
     command: |
       set -uo pipefail
@@ -301,12 +316,17 @@ steps:
   # round (typical case: a previous orchestrator round shipped the fix and
   # this round was queued as a duplicate).
   #
+  # strict_delivery: issue_number belongs to `repository`, which may not be this
+  # checkout's, so the issue is read there (`--repo`). A bare number would read
+  # an unrelated local issue and could skip implementation because of it.
+  #
   # Defensive: if `gh` is missing, ISSUE_NUMBER is unset, or any probe call
   # fails, we set goal_already_met="false" and let the workflow proceed
   # normally — never short-circuit on uncertainty. Even when true, this legacy
   # signal is only supporting evidence; workflow-terminal-state remains the
   # authoritative fail-closed arbiter for dirty worktrees, PR state, diffs, and CI.
   - id: "step-06d-goal-already-met-probe"
+    recovery: {"replay": "reuse"}
     type: "bash"
     condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     command: |
@@ -316,7 +336,9 @@ steps:
         echo "false"
         exit 0
       fi
-      ISSUE_STATE=$(gh issue view "$ISSUE_NUM" --json state --jq '.state' 2>/dev/null || true)
+      ISSUE_REPO=()
+      [ "${RECIPE_VAR_strict_delivery:-false}" != true ] || ISSUE_REPO=(--repo "github.com/${RECIPE_VAR_repository:-}")
+      ISSUE_STATE=$(gh issue view "$ISSUE_NUM" ${ISSUE_REPO[@]+"${ISSUE_REPO[@]}"} --json state --jq '.state' 2>/dev/null || true)
       if [ "$ISSUE_STATE" != "CLOSED" ]; then
         echo "false"
         exit 0
@@ -326,7 +348,7 @@ steps:
       # pairs so cross-repo closing PRs are looked up in the correct repo
       # rather than silently misresolved against the current repo (COE
       # cohort review #2, REAL_BUG #2).
-      CLOSING_PR_REFS=$(gh issue view "$ISSUE_NUM" \
+      CLOSING_PR_REFS=$(gh issue view "$ISSUE_NUM" ${ISSUE_REPO[@]+"${ISSUE_REPO[@]}"} \
         --json closedByPullRequestsReferences \
         --jq '[.closedByPullRequestsReferences[]? | "\(.number) \(.repository.owner.login)/\(.repository.name)"] | join("\n")' \
         2>/dev/null || true)
@@ -352,7 +374,7 @@ steps:
           PR_MERGED=$(timeout 30 gh pr view "$PR_NUM" --json mergedAt --jq '.mergedAt' 2>/dev/null || true)
         fi
         if [ -n "$PR_MERGED" ] && [ "$PR_MERGED" != "null" ]; then
-          echo "INFO: issue #${ISSUE_NUM} is already CLOSED by merged PR ${PR_REPO}#${PR_NUM}." >&2
+          echo "INFO: issue ${ISSUE_REPO[1]:+${ISSUE_REPO[1]} }#${ISSUE_NUM} is already CLOSED by merged PR ${PR_REPO}#${PR_NUM}." >&2
           echo "  Short-circuiting steps 07/08/08c/08b/09-16b — goal already met (#368)." >&2
           echo "true"
           exit 0

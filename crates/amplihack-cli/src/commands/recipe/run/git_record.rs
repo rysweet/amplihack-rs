@@ -123,6 +123,21 @@ impl GitRecord {
         Ok(record)
     }
 
+    /// The record of a dry run: no runner step executes, so nothing is
+    /// observed or written. `apply_to` still removes the caller's trace
+    /// targets, and `finish` writes nothing. Only the dry-run path of
+    /// `execute_recipe_via_rust_fresh` uses this; real runs use `begin`, which
+    /// fails closed.
+    pub(crate) fn dry_run() -> Self {
+        Self::disabled()
+    }
+
+    /// Whether this record must observe the runner (every real run).
+    #[cfg(target_os = "linux")]
+    pub(crate) fn is_required(&self) -> bool {
+        self.required
+    }
+
     #[cfg(target_os = "linux")]
     pub(crate) fn spawn(
         &self,

@@ -32,6 +32,8 @@ context:
   pr_number: ""
   autodrive_qa_evidence: ""
   autodrive_round_label: "round"
+  # The round's step-00-tools-dir result; empty when this recipe runs alone.
+  autodrive_tools_dir: ""
 
 steps:
   - id: "step-01-sync-with-base"
@@ -39,6 +41,16 @@ steps:
     parse_json: true
     command: |
       set -uo pipefail
+      # #2033: inherited GIT_* (a hook's GIT_DIR, GIT_WORK_TREE, ...) and the outer
+      # run's AMPLIHACK_* identity are cleared before any git command, so the
+      # repository's own hooks and tests act on this checkout. The helper comes from
+      # the tools directory autodrive-merge-round's step-00-tools-dir found once
+      # (it requires git-repo-env.sh there); run alone, from AMPLIHACK_HOME. Never
+      # through git, which those variables could redirect. Same line as merge-round step-04.
+      TOOLS_D="${RECIPE_VAR_autodrive_tools_dir:-}"
+      [ -n "$TOOLS_D" ] || TOOLS_D="${AMPLIHACK_HOME:-}/amplifier-bundle/tools"
+      [ ! -L "$TOOLS_D/git-repo-env.sh" ] && . "$TOOLS_D/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env || { echo "STOP: cannot load git-repo-env.sh from the tools directory (#2033)" >&2; exit 1; }
+      echo "INFO: cleared git env: ${AMPLIHACK_GIT_ENV_CLEARED}; run env: ${AMPLIHACK_RUN_ENV_CLEARED} (#2033)" >&2
       cd "${REPO_PATH:-.}" 2>/dev/null || true
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
       # `main` requires branches to be up to date before merge (the strict
@@ -85,14 +97,24 @@ steps:
     parse_json: true
     command: |
       set -uo pipefail
+      # #2033: inherited GIT_* (a hook's GIT_DIR, GIT_WORK_TREE, ...) and the outer
+      # run's AMPLIHACK_* identity are cleared before any git command, so the
+      # repository's own hooks and tests act on this checkout. The helper comes from
+      # the tools directory autodrive-merge-round's step-00-tools-dir found once
+      # (it requires git-repo-env.sh there); run alone, from AMPLIHACK_HOME. Never
+      # through git, which those variables could redirect. Same line as merge-round step-04.
+      TOOLS_D="${RECIPE_VAR_autodrive_tools_dir:-}"
+      [ -n "$TOOLS_D" ] || TOOLS_D="${AMPLIHACK_HOME:-}/amplifier-bundle/tools"
+      [ ! -L "$TOOLS_D/git-repo-env.sh" ] && . "$TOOLS_D/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env || { echo "STOP: cannot load git-repo-env.sh from the tools directory (#2033)" >&2; exit 1; }
+      echo "INFO: cleared git env: ${AMPLIHACK_GIT_ENV_CLEARED}; run env: ${AMPLIHACK_RUN_ENV_CLEARED} (#2033)" >&2
       cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
-      TOP=""; T=""; SEARCHED=""
-      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        TOP="$(git rev-parse --show-toplevel 2>/dev/null)"
-      else
-        echo "[skip] not a git repo; the git toplevel is not searched for autodrive_qa_evidence.sh" >&2
+      T=""; SEARCHED=""
+      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "[skip] not a git repo once GIT_* is cleared (REPO_PATH); head_sha and the changed paths will be empty" >&2
       fi
-      for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$TOP" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
+      # The QA tool is found by the same path search, never through the git
+      # toplevel: an inherited GIT_WORK_TREE could plant one there (#2033).
+      for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
         [ -n "$c" ] || continue
         SEARCHED="${SEARCHED}${SEARCHED:+, }${c}/amplifier-bundle/tools"
         [ -f "$c/amplifier-bundle/tools/autodrive_qa_evidence.sh" ] && { T="$c/amplifier-bundle/tools/autodrive_qa_evidence.sh"; break; }
@@ -154,9 +176,32 @@ steps:
       else
         STATUS="RED"
       fi
-      echo "INFO: CI for #${PR}: ${STATUS} (total=${TOTAL:-?} failing=${FAILING:-?})" >&2
-      printf '{"ci_status":"%s","ci_total":"%s","ci_pending":"%s","ci_failing":"%s","ci_signal":"%s:%s/%s"}\n' \
-        "$STATUS" "${TOTAL:-0}" "$PENDING" "${FAILING:-}" "$STATUS" "${FAILING:-?}" "${TOTAL:-?}"
+      SIG="${STATUS}:${FAILING:-?}/${TOTAL:-?}"
+      # #2186: a green rollup only lists the checks that exist. Every expected
+      # check must exist at the head and pass, so GREEN is lowered to the
+      # verdict of autodrive_expected_checks.sh, run read-only and only from
+      # AMPLIHACK_HOME (never from a path the PR fills). No new wait.
+      if [ "$STATUS" = "GREEN" ]; then
+        HB="$(gh pr view "$PR" --json headRefOid,baseRefName --jq '.headRefOid + " " + .baseRefName' 2>/dev/null)" || HB=""
+        H="${HB%% *}"; B="${HB#* }"; ECS=""; EC_RC=1
+        if [ -n "${AMPLIHACK_HOME:-}" ] && [ -f "${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_expected_checks.sh" ] \
+           && [ -n "$H" ] && [ -n "$B" ] && [ "$H" != "$HB" ]; then
+          EC_OUT="$(/bin/bash -p "${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_expected_checks.sh" "$H" "$B" 2>/dev/null)"; EC_RC=$?
+          EC_LAST="$(printf '%s\n' "$EC_OUT" | tail -n1)"
+          ECS="$(printf '%s' "$EC_LAST" | jq -r '.ci_status // empty' 2>/dev/null)"
+        fi
+        case "${ECS}:${EC_RC}" in
+          GREEN:0) ;;
+          RED:*|PENDING:*|MISSING:*)
+            STATUS="$ECS"
+            M="$(printf '%s' "$EC_LAST" | jq -r '.missing | join(",")' 2>/dev/null | tr -cd 'A-Za-z0-9 ._/()&:,+-')"
+            SIG="$(printf '%s' "${STATUS}:missing=${M}" | cut -c1-300)" ;;
+          *) STATUS="UNREADABLE"; SIG="expected-checks-unreadable" ;;
+        esac
+      fi
+      echo "INFO: CI for #${PR}: ${STATUS} (total=${TOTAL:-?} failing=${FAILING:-?} signal=${SIG})" >&2
+      printf '{"ci_status":"%s","ci_total":"%s","ci_pending":"%s","ci_failing":"%s","ci_signal":"%s"}\n' \
+        "$STATUS" "${TOTAL:-0}" "$PENDING" "${FAILING:-}" "$SIG"
     output: "ci_evidence"
 
 output:

@@ -11,11 +11,11 @@ description: |
 
   There is NO iteration cap here. Not a max-rounds integer, not a backstop.
   The operator's usage budget (#1743) is a resumable cost ceiling, not the
-  convergence terminator. The terminator is `loop-health-evaluator` (issue #1337):
-  after each round it reads measured evidence — what the round actually
-  produced, which concerns are new / recurring / resolved, whether signals
-  moved — and answers CONTINUE / DONE / STUCK. Absence of progress stops the
-  loop; number of attempts does not.
+  convergence terminator. An agent assesses objective completion first.
+  Evidence-valid CLEAN or MINOR_ONLY completes iteration without an evaluator.
+  For unresolved reviews, `loop-health-evaluator` (issue #1337) reads measured
+  evidence — recurring concerns and changed signals — and answers CONTINUE /
+  DONE / STUCK. Absence of progress stops the loop; number of attempts does not.
 
   Host safety is enforced structurally one layer down by #1327 (sealed
   recursion ceiling) and #1332 (width cap + free-memory floor), which refuse
@@ -112,7 +112,7 @@ steps:
       STATE="$(autodrive_pr_state "$PR")"
       if [ "$STATE" = "MERGED" ]; then
         RUN="false"; WHY="PR #${PR} is already merged; nothing to review"
-      elif autodrive_phase_done "$DIR" "crusty-loop"; then
+      elif autodrive_crusty_final "$DIR" >/dev/null; then
         RUN="false"; WHY="the crusty loop already completed for this PR in an earlier run"
       fi
       # #1543: whenever this loop was handed a PR number (the operator's, or
@@ -267,7 +267,7 @@ steps:
       [ -f "$STATE_HELPER" ] || STATE_HELPER="$(pwd)/amplifier-bundle/tools/autodrive_state.sh"
       [ -f "$STATE_HELPER" ] || STATE_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_state.sh"
       [ -f "$STATE_HELPER" ] || STATE_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_state.sh"
-      [ -f "$STATE_HELPER" ] || { echo "WARNING: autodrive state helper not found; this run stays correct but a resumed run will redo the crusty loop." >&2; exit 0; }
+      [ -f "$STATE_HELPER" ] || { echo "ERROR: autodrive state helper missing; phase remains incomplete." >&2; exit 1; }
       . "$STATE_HELPER"
       DIR="$(printf '%s' "${RECIPE_VAR_crusty_loop_preflight:-}" \
         | amplihack orch helper extract-json --require-field state_dir \
@@ -286,41 +286,14 @@ steps:
         echo "INFO: crusty loop result is '${RESULT:-unknown}', not DONE; the phase is NOT recorded complete." >&2
         exit 0
       fi
-      # Issue #1979: a loop that ended on MINOR_ONLY files one follow-up issue
-      # per minor finding of that last round before anything is recorded. If
-      # collecting or filing fails, no marker is written: the merge gate then
-      # refuses criterion 3 and the drive is not READY. The tool writes to
-      # GitHub, so, as in merge-loop step-02b, it runs only from AMPLIHACK_HOME,
-      # never from the STATE_HELPER fallbacks (REPO_PATH or the cwd can be a PR
-      # checkout). Without AMPLIHACK_HOME a MINOR_ONLY loop is refused.
-      H=""; [ -z "${AMPLIHACK_HOME:-}" ] || H="${AMPLIHACK_HOME}/amplifier-bundle/tools"; FU="$H/autodrive_followups.sh"
-      LAST="$(sed -n 's/^{"crusty_verdict":"\([A-Z_]*\)",.*/\1/p' "$DIR/crusty-latest.json" 2>/dev/null | head -n 1)"
-      if [ -n "$H" ] && [ -f "$FU" ] && { [ -n "$PR" ] || [ "$LAST" = "MINOR_ONLY" ]; }; then
-        bash "$FU" collect --state-dir "$DIR" \
-          || { echo "ERROR: followups-unfiled: the minor findings could not be collected; the crusty loop is NOT recorded complete." >&2; exit 1; }
-        if [ "${AUTODRIVE_DRY_RUN:-false}" = "true" ]; then
-          echo "INFO: dry run: no follow-up issue is filed; the merge gate reports each minor finding as followup-missing." >&2
-        else
-          FT="$(umask 077; mktemp -d "${TMPDIR:-/tmp}/autodrive-followup-task.XXXXXX")" || exit 1
-          trap 'rm -rf -- "$FT"' EXIT
-          printf '%s' "${RECIPE_VAR_task_description:-}" > "$FT/task.txt"
-          . "$H/recipe_context_value.sh" 2>/dev/null && { write_context_value task_description "$FT/task.txt" 2>/dev/null || : > "$FT/task.txt"; }
-          bash "$FU" file --state-dir "$DIR" --pr "$PR" --task-id "${RECIPE_VAR_plan_task_id:-}" --task-text-file "$FT/task.txt"
-          RC=$?
-          [ "$RC" -ne 79 ] || { echo "ERROR: exit 79 terminal policy refusal while filing follow-up issues; final, never retried." >&2; exit 79; }
-          [ "$RC" -eq 0 ] || { echo "ERROR: followups-unfiled: the follow-up issues could not all be filed; the crusty loop is NOT recorded complete and the drive is not READY." >&2; exit 1; }
-        fi
-      elif [ "$LAST" = "MINOR_ONLY" ]; then
-        echo "ERROR: followups-unfiled: AMPLIHACK_HOME is unset or has no autodrive_followups.sh; the minor findings cannot be filed, so the crusty loop is NOT recorded complete." >&2
-        exit 1
-      fi
-      # Every concern crusty raised during this loop is now settled or filed:
-      # the loop only reports DONE on a round whose own verdict was CLEAN or
-      # MINOR_ONLY (whose .findings is empty). Record the ids so a resumed run
-      # does not reopen them, then the marker. The re-review between merge
-      # rounds records its loop the same way.
-      autodrive_record_crusty_loop_done "$DIR"
-      echo "INFO: crusty loop recorded complete for PR #${PR:-<none>}." >&2
+      H="${AMPLIHACK_HOME:-}/amplifier-bundle/tools"
+      [ -n "${AMPLIHACK_HOME:-}" ] && [ -f "$H/autodrive_crusty_finalize.sh" ] \
+        || { echo "ERROR: followups-unfiled: launch-side finalizer missing; phase remains incomplete" >&2; exit 1; }
+      FT="$(umask 077; mktemp -d "${TMPDIR:-/tmp}/autodrive-followup-task.XXXXXX")" || exit 1
+      trap 'rm -rf -- "$FT"' EXIT
+      . "$H/recipe_context_value.sh" || exit 1
+      write_context_value task_description "$FT/task.txt" || exit 1
+      bash "$H/autodrive_crusty_finalize.sh" "$DIR" "$PR" "${RECIPE_VAR_plan_task_id:-}" "$FT/task.txt" || exit $?
     output: "crusty_phase_record"
 
 output:

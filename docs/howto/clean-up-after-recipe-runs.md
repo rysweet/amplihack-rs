@@ -1,19 +1,17 @@
 ---
-title: Clean Up After Recipe Runs
-description: Inspect managed storage and safely release owned run resources.
+title: Clean up after recipe runs
+description: Locate, retain, remove, or archive run-owned files and recovery state.
 doc_type: howto
-last_updated: 2026-11-10
+last_updated: 2026-11-12
 ---
 
 # Clean Up After Recipe Runs
 
-**[CANDIDATE - lifecycle acceptance pending]** `RunCheckout` validates its
-private manifest and filesystem identities before explicit release. Release
-and required recording failures fail execution. Private repository metadata
-is retained when durable child worktrees depend on it; automated metadata
-reclamation and descriptor-relative recovery remain
-[planned requirements](../reference/recipe-checkout-isolation.md#ownership-and-lifecycle);
-see the [review ledger](../reference/recipe-checkout-isolation.md#requirement-and-review-disposition-ledger).
+Each real run removes its own execution checkout when it ends, after checking
+the ownership manifest and the device and inode of every owned path. A path
+that changed is kept and the run fails. Private repository metadata stays when
+a durable worktree depends on it. See
+[ownership and release](../reference/recipe-checkout-isolation.md#ownership-and-release).
 
 Use this guide to find what a recipe run leaves on disk, to choose where it
 goes, and to remove or archive it with `amplihack cleanup`.
@@ -29,6 +27,7 @@ logs and removes temporary folders left by killed runs.
 - [Quick start](#quick-start)
 - [Settings](#settings)
 - [Where a run writes](#where-a-run-writes)
+- [Preserve or retire recovery state](#preserve-or-retire-recovery-state)
 - [What happens when a run ends](#what-happens-when-a-run-ends)
 - [When a run is eligible for cleanup](#when-a-run-is-eligible-for-cleanup)
 - [When a target is removed](#when-a-target-is-removed)
@@ -66,8 +65,9 @@ amplihack cleanup --apply --only run-tmp --only tmp-leftover
 
 No configuration is needed for the end-of-run cleanup. It runs after every
 `amplihack recipe run` unless `AMPLIHACK_CLEANUP_ON_EXIT=0` is set. A
-`recipe run --dry-run` still removes its own `runtime/` folder but never runs
-the sweep.
+`recipe run --dry-run` still removes its temporary `amplihack-dry-*` folder
+(`RunWorkspace::dry_runtime`) but never runs the sweep. A dry run creates no
+`runs/` folder, so there is nothing else to remove.
 
 ## Settings
 
@@ -119,6 +119,7 @@ The runner creates one folder per run:
 │       ├── cleanup-record.json   # written only when cleanup removed something
 │       ├── git-commands.jsonl    # index-writing git commands the run made (kept)
 │       ├── git-trace2/           # raw git events; deleted once summarised
+│       ├── recovery/             # private completions and required artifact copies
 │       └── runtime/              # removed when the run ends
 │           ├── checkout/         # the run's detached worktree (git runs only)
 │           ├── tmp/              # TMPDIR, TMP and TEMP for every step
@@ -154,6 +155,11 @@ Every step of the run sees these variables:
 
 A sub-recipe started by a step gets its own run folder, its own run id and its
 own temporary folder.
+
+Trusted delegated executions also attach to the enclosing
+recovery tree.
+Their completion records are published through the root runner's writer;
+their own temporary folders are not recovery authority.
 
 If `<run dir>/runtime/tmp` would be longer than 80 bytes, which can happen
 with a long home path, the runtime folder is placed at
@@ -206,10 +212,11 @@ grep -l "\"$ATTEMPT_ID\"" "$WORK_ROOT"/runs/*/run.json | xargs -r dirname
 # /home/ryan/.amplihack/work/runs/3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3
 ```
 
-Run folders themselves are never removed. After cleanup a folder holds only
+Run folders themselves are never removed. After cleanup a folder retains
 `run.json`, `cleanup-record.json` and, while some recorded path remains,
-`owned-paths`. Together they take a few kilobytes. Pruning old run folders is
-not part of this feature.
+`owned-paths`. These summary files take a few kilobytes. The recovery
+feature will retain additional `recovery/` contents, which can be much larger.
+Pruning old run folders is not part of this feature.
 
 ### Recording owned paths
 
@@ -317,31 +324,99 @@ The default work root (`$HOME/.amplihack/work`) applies to run folders,
 targets, clones and the archive whether or not the variable is set. Only
 worktrees need the variable set explicitly.
 
+## Preserve or retire recovery state
+
+Durable recovery storage and `--fresh` are supported. Recovery retirement
+remains a separate operation; existing cleanup categories do not retire recovery
+history or its latest-attempt markers.
+
+Keep `<run dir>/recovery/` when you need a future launch to recover after
+a usage limit. The identity index under the work root selects only the
+latest attempt. Keep that metadata as well; moving a run directory alone
+does not establish a matching recovery identity.
+
+The `run-tmp` category and normal end-of-run runtime removal exclude durable
+recovery state. Required temporary artifacts are copied into private
+recovery storage before completion is published, so runtime cleanup does
+not erase replayable outputs. An output that refers to an unavailable,
+uncopied artifact is invalidated on relaunch.
+
+Use `--fresh` on the next `recipe run` to bypass history without deleting
+it. Do not delete a latest marker to reach an older usage-limit run.
+Retention must preserve a latest-attempt tombstone when detailed history is
+retired, so a later failure or success continues to exclude older history.
+Deleting the latest attempt's detail means future recovery falls back
+fresh if that detail is needed.
+
+**Retirement tooling is unresolved.** Existing `amplihack cleanup`
+categories cover runtime files, worktrees, targets, and logs; they do not
+provide a coordinated recovery-retirement operation. No supported command
+or manual deletion procedure is specified for retiring sensitive recovery
+records. Deleting directories or markers manually cannot meet the
+concurrency contract. The planned `--fresh` flag only bypasses replay; it
+does not remove records.
+
+A supported retirement interface must coordinate with admission and
+imports, exclude active owners and in-progress imports, and durably preserve
+the latest-attempt sequence/tombstone before deleting detailed records.
+Interrupted retirement must not expose older history as eligible. Its
+selection/reporting contract must account for sensitive inherited copies
+in later attempts: retiring an ancestor does not erase those copies.
+Recovery records never authorize deleting external dependencies or
+worktrees. The command, locking protocol, and handling of interrupted
+retirement must be specified and implemented before publishing operational
+retirement instructions.
+
+Recovery copies can retain allowed prompts, typed context, outputs, and
+artifact contents after their runtime originals disappear. They are
+private sensitive data: directories are `0700`, regular files `0600`.
+They are not included in a summary-only `run.json`, and log archiving does
+not retire them. Retention policy must cover these durable copies as well
+as logs, but enforcing that policy requires the unresolved retirement
+interface. Private permissions do not provide encryption.
+
+For launch behavior, see
+[Resume a recipe after a usage limit](resume-recipe-after-usage-limit.md).
+For publication and retention invariants, see
+[private recovery storage](../reference/recipe-recovery.md#private-storage-and-publication).
+
 ## What happens when a run ends
 
 When `amplihack recipe run` finishes, whether the run succeeded, failed or
-panicked, the runner:
+panicked, the runner does these steps in order. Each step runs even when an
+earlier one failed, and the final error names every failure.
 
-1. Validates and removes the run's checkout from its private repository.
-   It does not alter the caller's worktree registry. Substituted resources
-   are retained and release fails. Metadata with durable worktree dependencies
-   is retained outside disposable runtime storage.
-2. Publishes `git-commands.jsonl` from completed native observer journals and
-   removes `git-trace2/` only after successful publication;
-   see [Git command record](../reference/recipe-runner-logging.md#git-command-record).
-   `runs/<id>/git-commands.jsonl` stays in the run folder; the run's
-   execution checkout has its own owned storage. See
-   [Recipe run and auto-drive checkout isolation](../reference/recipe-checkout-isolation.md).
-3. Removes `<run dir>/runtime/`, including everything steps wrote to
-   `TMPDIR` and `artifacts/`.
-4. Finalises `run.json` with the end time, outcome and step summary.
-5. Unless `AMPLIHACK_CLEANUP_ON_EXIT=0` is set, sweeps the whole work root for
-   run-owned items that are now eligible (the categories `run-tmp`,
-   `run-worktree` and `run-target`), and removes them. This includes items
-   from earlier runs, and from the current run if it is already eligible.
-   When the sweep removes a worktree, that worktree's target goes with it in
-   the same sweep, whether the run recorded it as `created` or `reused`; see
-   [When a target is removed](#when-a-target-is-removed).
+1. Removes the execution checkout (`checkout.remove()`). It deletes only paths
+   its `owner.json` proves the run owns and never follows symlinks. It does
+   not change the caller's worktree list. A substituted path is kept and the
+   run fails. When a durable worktree depends on the private repository, the
+   repository stays and is listed in `durable-dependencies`.
+2. Publishes the Git command record (`git_record.finish()`):
+   `git-commands.jsonl`, `diagnostics/git/commands.jsonl` and
+   `git-recording.json`, then removes `git-trace2/`. See
+   [Git command record](../reference/recipe-runner-logging.md#git-command-record).
+   A publication failure makes the run fail.
+3. Finishes the recovery admission with an outcome judged from the run and
+   the first two steps.
+4. Finishes the workspace (`finish_workspace`):
+   1. Removes `<run dir>/runtime/`, including everything steps wrote to
+      `TMPDIR` and `artifacts/`. Durable `recovery/` state and copied
+      artifacts remain outside that disposable folder.
+   2. Finalises `run.json` with the end time, outcome and step summary.
+   3. Unless `AMPLIHACK_CLEANUP_ON_EXIT=0` is set, sweeps the whole work root
+      for run-owned items that are now eligible (the categories `run-tmp`,
+      `run-worktree` and `run-target`), and removes them. This includes items
+      from earlier runs, and from the current run if it is already eligible.
+      When the sweep removes a worktree, that worktree's target goes with it in
+      the same sweep, whether the run recorded it as `created` or `reused`; see
+      [When a target is removed](#when-a-target-is-removed).
+
+`AMPLIHACK_CLEANUP_ON_EXIT=0` skips only the sweep in step 4. Steps 1 to 3
+always run.
+
+A run that fails before its first step, for example on an unborn `HEAD`,
+still finishes its recovery admission as `Failure`, so the next launch does
+not try to resume it.
 
 The sweep is best effort. If another cleanup holds the lock, the sweep is
 skipped. It stops after 120 seconds. Any problem is printed as a warning and
@@ -378,10 +453,16 @@ When the sweep removes something from a run, it adds an entry to that run's
 
 If nothing was removed, no record is written.
 
-If the work root cannot be used, for example because it is group-writable,
-the runner prints a warning and falls back to a private temporary folder for
-`runtime/`, as earlier releases did. No run folder or cleanup happens for that
-run.
+A real run starts its workspace with `RunWorkspace::begin_durable`. If the
+work root cannot be used, for example because it is group-writable, the run
+fails before any step starts, with an error that names the work root. Fix
+its permissions (`chmod g-w,o-w`) or point `AMPLIHACK_WORK_ROOT` at a private
+absolute directory. A real run never falls back to a temporary folder. A `--dry-run` uses
+`RunWorkspace::dry_runtime`: a temporary `amplihack-dry-*` folder that is
+removed on exit, with no run folder, checkout or recording.
+
+Unverifiable historical records instead cause a logged fresh execution
+after secure admission of the new attempt.
 
 ## When a run is eligible for cleanup
 
@@ -976,10 +1057,11 @@ expects:
 - the `tmp-leftover` folders described above;
 - log originals, after their archive is verified.
 
-The current `owned-paths` checks below are not the planned versioned ownership
-lease. They do not establish generation or filesystem-identity ownership for
-private execution/review resources. That stronger validation and dependency
-retention must be implemented before adopting the target lifecycle.
+The `owned-paths` rules below apply to this cleanup command only. They are
+separate from the release a recipe run does at its end: that release deletes
+only paths its `owner.json` manifest proves the run created, with matching
+identities. See
+[ownership and release](../reference/recipe-checkout-isolation.md#ownership-and-release).
 
 An entry in `owned-paths` is a request, not a permission. A recorded path
 outside these folders is reported as skipped.

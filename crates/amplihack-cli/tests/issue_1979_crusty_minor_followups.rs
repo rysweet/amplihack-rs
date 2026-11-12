@@ -1618,9 +1618,16 @@ fn crusty_final(d: &Drive) -> Output {
 
 #[test]
 fn crusty_final_accepts_a_minor_only_terminal_record() {
+    if skip() {
+        return;
+    }
     let d = Drive::new();
-    private_file(&d.p("phases.tsv"), "crusty-loop\t2026-11-05T00:00:00Z\n");
     d.loop_writes_round(1, "MINOR_ONLY", 2);
+    d.minor(1, &three()[..2]);
+    // Completion authority comes from actual successful finalization, never
+    // a hand-written marker with missing follow-up obligations (#2336).
+    let recorded = loop_step03(&d, "1979", &[]);
+    assert_eq!(recorded.status.code(), Some(0), "{}", show(&recorded));
     let o = crusty_final(&d);
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     assert_eq!(stdout(&o).trim(), "a".repeat(40));
@@ -1823,6 +1830,7 @@ fn round_step06_records_minor_only() {
     let script = step_command(ROUND, "step-06-write-round-record");
     let rec = d.record(1);
     let ctx = json!({"pr": "7", "head_sha": "a".repeat(40)}).to_string();
+    let tools = tools_dir();
     let env: Vec<(&str, &OsStr)> = vec![
         (
             "RECIPE_VAR_crusty_verdict",
@@ -1833,6 +1841,7 @@ fn round_step06_records_minor_only() {
         ("RECIPE_VAR_crusty_round_context", OsStr::new(&ctx)),
         ("AUTODRIVE_ROUND_RECORD", rec.as_os_str()),
         ("AUTODRIVE_ROUND_LABEL", OsStr::new("round-1")),
+        ("AUTODRIVE_LAUNCH_TOOLS", tools.as_os_str()),
     ];
     let o = d.bash(Some(&script), &[], &env, "");
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
@@ -1928,24 +1937,25 @@ fn crusty_loop_step03_writes_no_marker_without_a_task_id() {
 }
 
 #[test]
-fn crusty_loop_step03_dry_run_collects_but_files_nothing() {
+fn crusty_loop_step03_dry_run_keeps_unfiled_phase_incomplete() {
     if skip() {
         return;
     }
     // A dry run writes nothing to GitHub. The set is still collected, so the
-    // gate reports the unfiled finding and the rehearsal ends NOT_MERGED.
+    // gate reports the unfiled finding. Under #2336 no phase-completion
+    // marker may claim these required follow-ups have been recorded.
     let d = Drive::new();
     d.loop_writes_round(1, "MINOR_ONLY", 1);
     d.minor(1, &three()[..1]);
     let o = loop_step03(&d, "1979", &[("AUTODRIVE_DRY_RUN", "true")]);
-    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
     assert!(d.creates().is_empty(), "no issue is filed\n{}", show(&o));
     assert!(
         d.read("followups.jsonl").contains("naming-1"),
         "{}",
         show(&o)
     );
-    assert!(marker_written(&d), "{}", show(&o));
+    assert!(!marker_written(&d), "{}", show(&o));
     let g = d.check_as("gate");
     assert_eq!(g.status.code(), Some(1), "{}", show(&g));
     assert!(
@@ -2144,9 +2154,15 @@ fn every_touched_recipe_and_tool_stays_within_400_lines() {
         "amplifier-bundle/tools/autodrive_followups.sh",
         "amplifier-bundle/tools/autodrive_finding_rules.sh",
         "amplifier-bundle/tools/autodrive_loop.sh",
+        "amplifier-bundle/tools/autodrive_loop_record.sh",
+        "amplifier-bundle/tools/autodrive_crusty_record.sh",
+        "amplifier-bundle/tools/autodrive_crusty_finalize.sh",
+        "amplifier-bundle/tools/autodrive_completion_context.sh",
         "amplifier-bundle/tools/autodrive_crusty_rereview.sh",
         "amplifier-bundle/tools/autodrive_state.sh",
         "amplifier-bundle/tools/autodrive_merge_gate.sh",
+        // #2186: the expected-checks reader the gate runs for its CI section.
+        "amplifier-bundle/tools/autodrive_expected_checks.sh",
         "amplifier-bundle/tools/autodrive_round_evidence.sh",
         "amplifier-bundle/recipes/autodrive-crusty-round.yaml",
         "amplifier-bundle/recipes/autodrive-crusty-loop.yaml",
@@ -2206,7 +2222,10 @@ fn zero_concerns_wording_is_gone() {
 
 #[test]
 fn verdict_allow_lists_admit_minor_only() {
-    let s06 = step_command(ROUND, "step-06-write-round-record");
+    let s06 = read("amplifier-bundle/tools/autodrive_crusty_record.sh");
+    assert!(
+        step_command(ROUND, "step-06-write-round-record").contains("autodrive_crusty_record.sh")
+    );
     assert!(
         s06.contains("CLEAN|MINOR_ONLY|CONCERNS"),
         "step-06 allow-list"
@@ -2299,14 +2318,15 @@ fn only_the_crusty_loops_pass_the_second_clean_token() {
         !ml.contains("--also-clean-token"),
         "the merge-ready loop passes no second token"
     );
-    let rr_collect = rr.find(" collect").expect("re-review runs collect");
-    let rr_done = rr
+    assert!(rr.contains("bash \"$HERE/autodrive_crusty_finalize.sh\""));
+    let finalizer = read("amplifier-bundle/tools/autodrive_crusty_finalize.sh");
+    let collect = finalizer.find(" collect").unwrap();
+    let file = finalizer.find(" file").unwrap();
+    let check = finalizer.find(" check").unwrap();
+    let done = finalizer
         .rfind("autodrive_record_crusty_loop_done")
-        .expect("records done");
-    assert!(
-        rr_collect < rr_done,
-        "collect runs before the loop is recorded done"
-    );
+        .unwrap();
+    assert!(collect < file && file < check && check < done);
 }
 
 #[test]

@@ -1,7 +1,7 @@
 ---
 title: Auto-Drive-Light Recipe
 description: The smaller drive-to-merge recipe for small pull requests, its eligibility rules, escalation to auto-drive-to-merge, the task id its follow-up issues name, and how it shares auto-drive-to-merge's per-finding follow-up model.
-last_updated: 2026-11-10
+last_updated: 2026-11-12
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -9,22 +9,15 @@ doc_type: reference
 
 # Auto-Drive-Light Recipe
 
-**[PLANNED - Implementation Pending: SHA-bound review isolation]** The
-current shell helpers create detached linked review worktrees at the main
-checkout's `HEAD`, with shared common metadata. They do not implement
-Rust-owned exact-PR-head generations or enforce trusted instruction discovery
-through the agent adapter. Recipe execution still copies committed content
-only and may reuse ancestor checkouts; Git recording remains cooperative
-Trace2 with warning-only failures. The
-[planned review contract](recipe-checkout-isolation.md#private-review-generations)
-and [requirement/review ledger](recipe-checkout-isolation.md#requirement-and-review-disposition-ledger)
-remain requirements to build and validate, not delivered guarantees.
+Judging agents review the PR in a private checkout at the recorded PR-head
+SHA and start in a separate trusted launch directory, as in
+[`auto-drive-to-merge`](auto-drive-to-merge.md#review-generations).
 
 > [Home](../index.md) > Reference > Auto-Drive-Light
 
 `auto-drive-light` builds a small change in one agent session, opens a pull request, and drives that PR to merge through the same crusty loop, merge loop and evidence gate as [`auto-drive-to-merge`](auto-drive-to-merge.md). It has no workflow-design, consensus-design or architect steps and never calls `default-workflow`.
 
-A bash step measures the PR after it is opened. If the change exceeds any eligibility rule, the run hands the same PR to `auto-drive-to-merge`. Minor review findings are handled exactly as in `auto-drive-to-merge`: a crusty round whose findings are all minor ends the crusty loop, and each finding is filed as its own follow-up issue, linked to the task, before the PR can merge.
+A bash step measures the PR after it is opened. If the change exceeds any eligibility rule, the run hands the same PR to `auto-drive-to-merge`. Minor review findings follow the [Crusty completion contract](autodrive-crusty-completion.md): an evidence-valid `CLEAN` or `MINOR_ONLY` completes iteration without a loop-health evaluator call. Both primary reviews and rereviews file or verify each required follow-up, linked to the task, before recording phase completion and advancing. A filing failure or dry run with unrecorded required follow-ups leaves the phase incomplete.
 
 The recipe is `amplifier-bundle/recipes/auto-drive-light.yaml`. It was added for issue #1802. Issue #1982 moved its minor findings to the follow-up model of #1979.
 
@@ -153,7 +146,7 @@ The recipe also fills these values as it runs: `light_base`, `light_task_id`, `b
 
 **Prerequisites (steps 1 to 3).** `light-prereqs` checks that every tool the run loads exists under `$AMPLIHACK_HOME/amplifier-bundle/tools`. The list includes `autodrive_light_eligibility.sh`, `autodrive_finding_rules.sh`, and the follow-up tools `autodrive_followups.sh`, `autodrive_followups_check.sh` and `workflow_issue_tracking.sh`, which the loops load from the same root. `light-task-id` checks `plan_task_id` and works out the effective task id, before any work starts; see [The task id](#the-task-id).
 
-**Build (steps 4 to 10).** The worktree and branch come from `workflow-worktree` and `quick_change_common.sh`, so the branch is named `quick/<issue-or-slug>`. `light-base-pin` records the base commit before the agent runs; that commit is `light_base`. `light-implement` is a single agent session whose prompt carries the quick-change leaf-step constraints and the line `[amplihack:no-merge]`. It never tells the agent to start an orchestrator. `light-qa` runs `qa_command` or `quick_change_checks.sh`; `light-precommit` runs the repository's pre-commit hooks. A failing check stops the run before anything is pushed.
+**Build (steps 4 to 10).** The worktree and branch come from `workflow-worktree` and `quick_change_common.sh`, so the branch is named `quick/<issue-or-slug>`. `light-worktree` passes `base_branch` and `forbidden_base_branches` as empty, so the branch starts from `origin/HEAD`, the branch `light-open-pr` targets; an inherited `strict_delivery` of `"true"` makes step 04 refuse to create it (see [Where the inputs apply](workflow-delivery-inputs.md#where-the-inputs-apply)). `light-base-pin` records the base commit before the agent runs; that commit is `light_base`. `light-implement` is a single agent session whose prompt carries the quick-change leaf-step constraints and the line `[amplihack:no-merge]`. It never tells the agent to start an orchestrator. `light-qa` runs `qa_command` or `quick_change_checks.sh`; `light-precommit` runs the repository's pre-commit hooks. A failing check stops the run before anything is pushed.
 
 **PR resolution (step 11).** `light-resolve-pr` writes `build_result` in the same shape as `autodrive-build`, with `pr`, `branch`, `head_sha`, `base_sha` and `state_dir`. For an existing PR it reads `gh pr view` and refuses a PR whose `isCrossRepository` is true (`light-cross-repo`). For an existing PR, `light_base` is the merge base of the PR head and `origin/<baseRefName>`. PR code fetched as `refs/pull/<N>/head` is not checked out, sourced or run before review.
 
@@ -358,7 +351,7 @@ The recipe header sets `recursion.max_depth: 6` and `recursion.max_total_steps: 
 - `plan_task_id` is validated by `light-task-id` through `autodrive_followups.sh resolve-task`, and `file` applies the same function to the forwarded value. Its character set contains no quote, brace, newline or `$`, so it cannot inject template or YAML text into the context of the three child recipes.
 - The light steps make no GitHub call of their own beyond `light-open-pr` and `light-resolve-pr`; the eligibility tool is offline. `autodrive_followups.sh file` is the only code that writes follow-up issues and parent comments.
 - Agent text reaches `gh` only through files (`--body-file`), after `cell()`; see [Cell sanitising](auto-drive-to-merge.md#cell-sanitising).
-- Judging agents run from the review directory: a detached worktree made for the drive at the `HEAD` of the main checkout, never at the PR head, so the PR under review cannot supply the `AGENTS.md`, `CLAUDE.md` or `.claude/` files its judges load (issue #2096; see [Recipe run and auto-drive checkout isolation](recipe-checkout-isolation.md#private-review-generations)). The build itself runs in the recipe run's own checkout, and the PR's commits are made in its PR worktree, passed as `repo_path`. Round and loop recipes are loaded from the tool root. `auto-drive-light.yaml` loads every tool, including `quick_change_common.sh`, only from `$AMPLIHACK_HOME/amplifier-bundle/tools`; `light-prereqs` checks that each one exists there, and a missing file stops the step rather than falling back to the worktree or another install.
+- Judging agents start in the drive's review generation launch directory and read a private checkout detached at the recorded PR-head SHA. The PR's `AGENTS.md`, `CLAUDE.md` and `.claude/` files are review data there, never instructions (issue #2096; see [Recipe run and auto-drive checkout isolation](recipe-checkout-isolation.md#private-review-generations)). The build itself runs in the recipe run's own checkout, and the PR's commits are made in its PR worktree, passed as `repo_path`. Round and loop recipes are loaded from the tool root. `auto-drive-light.yaml` loads every tool, including `quick_change_common.sh`, only from `$AMPLIHACK_HOME/amplifier-bundle/tools`; `light-prereqs` checks that each one exists there, and a missing file stops the step rather than falling back to the worktree or another install.
 - Exit code 79 is final at every level and is never retried.
 - `light-implement` and the crusty loop agents carry `[amplihack:no-merge]` in their prompts.
 
@@ -366,7 +359,7 @@ The recipe header sets `recursion.max_depth: 6` and `recursion.max_total_steps: 
 
 - **Measured once, before the loops.** Eligibility is measured when the PR is resolved (and again on a resumed run whose PR head has moved). A head that grows past the limits during the crusty loop stays on the light path. It still gets the review and merge criteria of `auto-drive-to-merge`, because the light path runs the same loops and gate; see [Nothing is measured inside the loops](#nothing-is-measured-inside-the-loops). The `path` in the report is the decision made before the loops, not the size of the merged change.
 - **Follow-ups come from the last round only.** As in `auto-drive-to-merge`, `collect` reads only the round that ended the loop. Minor findings raised in any earlier round are filed only when the final record is `MINOR_ONLY` and still lists them.
-- **Filing happens only after DONE.** Follow-up issues are filed when the crusty loop ends DONE, and again by merge-loop step-02b. A run that stops earlier, for example `STUCK` or `BUDGET_EXHAUSTED`, files none, and a dry run files none.
+- **Review completion precedes filing.** Both primary Crusty reviews and rereviews file or verify required follow-ups after objective `DONE`, before phase completion. Merge-loop step-02b repeats filing idempotently. Failed recording or a dry run with unrecorded required follow-ups prevents advancement. A run that stops before review completion files no new follow-ups.
 - **A task id is needed for minor findings.** A drive that ends `MINOR_ONLY` with no `plan_task_id`, no `issue_number` and no `Closes`, `Fixes` or `Resolves #N` in the PR body or `task_description` stops with `followup-task-unresolved` and does not merge.
 - **The parent comment says the PR closes the issue.** The comment that `file` posts on the task issue says "Merging that PR closes this issue". A light PR's body says `Refs #N`, so merging it does not close the issue; the comment is inaccurate for light runs. The comment format is shared with `auto-drive-to-merge` and is not changed for light mode.
 - **Escalation is permanent.** Once `escalation.json` exists, the state directory never returns to light mode. A new `autodrive_state_dir`, or deleting the file by hand, is needed.

@@ -7,12 +7,6 @@ last_updated: 2026-11-10
 
 # Run a Recipe End-to-End
 
-**[CANDIDATE - acceptance pending]** The working-tree implementation preserves
-staged and working contents in private repository-backed checkouts. Independent
-launches get fresh ownership. Required Linux recording and finalization errors
-fail execution. Broader input compatibility and acceptance remain pending. See
-[current limitations and requirement dispositions](../reference/recipe-checkout-isolation.md#requirement-and-review-disposition-ledger).
-
 How to use `amplihack recipe run` to execute a YAML recipe through the Rust CLI
 — from finding the right recipe to inspecting results.
 
@@ -151,32 +145,26 @@ amplihack.recipe.log_pointer {"schema_version":1,"event":"final","run_id":"5b606
 
 ## Know where the run works
 
-The candidate `RunCheckout` gives each Git-based invocation a detached
-checkout backed by private Git metadata and object storage. Staged blobs,
-working contents, and ordinary untracked inputs are preserved independently.
-An explicitly selected ignored recipe is included. Unsupported index states
-and escaping symlinks reject execution. Independently launched nested runs
-receive fresh resources, regardless of inherited checkout markers.
+A recipe run never runs steps in your checkout. Before the first step,
+`amplihack recipe run` copies your committed, staged, unstaged and untracked
+changes into a private repository and a detached checkout under the run
+folder. Steps, agents and hooks run there, and the checkout is removed when
+the run ends. Your index, `HEAD`, branches and Git configuration do not
+change, even when a step runs `git add` or `git commit`.
 
-`-w` selects the source and matching relative execution directory. Exact
-caller-local absolute context paths are mapped into execution. Embedded
-caller paths in opaque prose are rejected. External recipe dependencies,
-other required ignored inputs, and broader typed path semantics still need
-acceptance; do not assume automatic discovery of arbitrary path dependencies.
+- `-w` picks the source checkout and the subdirectory steps start in.
+- A context value that is exactly a path in your checkout, such as
+  `-c repo_path=$PWD`, is mapped to the same path in the run's checkout.
+  A path buried inside longer text is refused; pass it as its own value.
+- Ignored files are not copied, except the recipe file itself.
+- `--dry-run` prepares no checkout, records nothing and writes no run folder.
+- A resumed run gets a fresh checkout.
+- Real runs need Linux, because Git recording uses a Linux observer.
 
-A dry run creates no execution checkout. A confirmed nonrepository directory
-is used as requested; corrupt metadata and unavailable Git reject execution.
-Required recording currently needs Linux. Recording and explicit release
-failures prevent success, and incomplete evidence is retained.
-
-**[PLANNED - schema not implemented]** Broader recipes need declarations for
-required ignored files and path-bearing context according
-to the [proposed input-selection contract](../reference/recipe-checkout-isolation.md#required-local-input-declarations).
-That schema is not supported yet. Do not rely on it for current runs.
-
-See the [target isolation reference](../reference/recipe-checkout-isolation.md),
-[current recording behavior](../reference/recipe-runner-logging.md#git-command-record),
-and [future acceptance exercise](../tutorials/recipe-checkout-isolation.md).
+Commits you want to keep belong in a durable task or PR worktree. Try it in
+[Inspect a local-input snapshot](../tutorials/recipe-checkout-isolation.md);
+the full rules are in the
+[checkout isolation reference](../reference/recipe-checkout-isolation.md).
 
 ---
 

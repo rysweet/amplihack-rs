@@ -492,9 +492,13 @@ pub(crate) enum RunWorkspace {
 }
 
 impl RunWorkspace {
+    /// Appends one attempt to `run.json` and rewrites it, propagating any
+    /// write error. A dry-run workspace (`dry_runtime`) has no run folder and
+    /// records nothing, so this is `Ok(())` for it. Real runs are always
+    /// `Scoped`: `begin_durable` never falls back to a temporary folder.
     pub(crate) fn record_attempt_checked(&mut self, correlation_id: &str) -> Result<()> {
         let Self::Scoped { scope, .. } = self else {
-            bail!("required attempt recording has no durable run folder");
+            return Ok(());
         };
         scope.report.attempts.push(Attempt {
             correlation_id: correlation_id.to_string(),
@@ -546,31 +550,25 @@ impl RunWorkspace {
             Self::Legacy { dir } => dir.close().context("release legacy recipe runtime"),
         }
     }
-    /// Creates the run folder, or falls back to a temp folder with a warning.
-    pub(crate) fn begin(recipe: &str, cwd: &Path) -> Result<Self> {
-        let scoped = super::work_root::resolve_from_env()
-            .and_then(|root| RunScope::begin(root, recipe, cwd));
-        match scoped {
-            Ok((scope, guard)) => Ok(Self::Scoped {
-                scope: Box::new(scope),
-                guard,
-            }),
-            Err(error) => {
-                eprintln!(
-                    "amplihack: warning: cannot use the work root ({error:#}); this run uses a \
-                     private temporary folder and no run folder or cleanup"
-                );
-                let dir = tempfile::Builder::new()
-                    .prefix("amplihack-workflow-")
-                    .tempdir()
-                    .context("failed to create isolated workflow runtime directory")?;
-                create_private_dir_all(&dir.path().join("tmp"))?;
-                create_private_dir_all(&dir.path().join("artifacts"))?;
-                Ok(Self::Legacy { dir })
-            }
-        }
+    /// Recovery never silently executes without durable admission.
+    pub(crate) fn begin_durable(recipe: &str, cwd: &Path) -> Result<Self> {
+        let root = super::work_root::resolve_from_env()?;
+        recipe_runner_rs::recovery::private_fs::Directory::open(&root.path, true)?;
+        let (scope, guard) = RunScope::begin(root, recipe, cwd)?;
+        Ok(Self::Scoped {
+            scope: Box::new(scope),
+            guard,
+        })
     }
-
+    /// A dry run owns only temporary scratch space and never a run scope.
+    pub(crate) fn dry_runtime() -> Result<Self> {
+        let dir = tempfile::Builder::new()
+            .prefix("amplihack-dry-")
+            .tempdir()?;
+        create_private_dir_all(&dir.path().join("tmp"))?;
+        create_private_dir_all(&dir.path().join("artifacts"))?;
+        Ok(Self::Legacy { dir })
+    }
     pub(crate) fn runtime_dir(&self) -> &Path {
         match self {
             Self::Scoped { guard, .. } => guard.path(),

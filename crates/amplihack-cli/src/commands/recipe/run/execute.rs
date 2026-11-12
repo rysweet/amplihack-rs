@@ -15,7 +15,6 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write as IoWrite};
-#[cfg(not(target_os = "linux"))]
 use std::process::Child;
 use std::process::{ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
@@ -544,6 +543,7 @@ pub(super) fn context_env_pairs(
 // The resolved agent binary is an extra argument on purpose: the caller
 // decided it once, for the pre-flight and the steps alike (issue #1481).
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(super) fn execute_recipe_via_rust(
     recipe_path: &Path,
     context: &BTreeMap<String, String>,
@@ -554,6 +554,33 @@ pub(super) fn execute_recipe_via_rust(
     step_timeout: Option<u64>,
     agent_binary: amplihack_utils::agent_binary::Resolution,
     merge_guard: bool,
+) -> Result<RecipeRunResult> {
+    execute_recipe_via_rust_fresh(
+        recipe_path,
+        context,
+        dry_run,
+        _verbose,
+        working_dir,
+        search_dirs,
+        step_timeout,
+        agent_binary,
+        merge_guard,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_recipe_via_rust_fresh(
+    recipe_path: &Path,
+    context: &BTreeMap<String, String>,
+    dry_run: bool,
+    _verbose: bool,
+    working_dir: &Path,
+    search_dirs: &[PathBuf],
+    step_timeout: Option<u64>,
+    agent_binary: amplihack_utils::agent_binary::Resolution,
+    merge_guard: bool,
+    fresh: bool,
 ) -> Result<RecipeRunResult> {
     // Issue #964: fail-closed recursion-depth guard. Refuse to spawn a nested
     // recipe-runner once the session has reached the configured maximum depth,
@@ -572,6 +599,23 @@ pub(super) fn execute_recipe_via_rust(
         .canonicalize()
         .context("resolve recipe runner before changing its launch directory")?;
     let recipe_name = recipe_name_for_correlation(recipe_path);
+    if let Err(error) = crate::runner_validation::probe(&binary, &agent_binary.binary) {
+        let correlation = RecipeRunCorrelation::new(
+            recipe_name.clone(),
+            working_dir,
+            &BTreeMap::new(),
+            binary.as_path(),
+        );
+        correlation.emit_early();
+        eprintln!("amplihack: runner capability check failed: {error}");
+        return Err(fail_with_final_record(
+            &correlation,
+            RecipeRunFinalStatus::SpawnFailure,
+            None,
+            None,
+            error,
+        ));
+    }
 
     // Issue #1481: the caller resolved the agent binary once, from
     // `working_dir`, while this process could still see the session markers of
@@ -599,10 +643,31 @@ pub(super) fn execute_recipe_via_rust(
     // Issue #1808: the run's folder under the work root holds run.json and
     // owned-paths; its runtime/ (TMPDIR, TMP, TEMP and artifacts) is removed
     // when the run ends, on every exit path including a panic.
-    let workspace = RefCell::new(crate::commands::cleanup::run_dir::RunWorkspace::begin(
-        &recipe_name,
-        working_dir,
-    )?);
+    let workspace = RefCell::new(if dry_run {
+        crate::commands::cleanup::run_dir::RunWorkspace::dry_runtime()?
+    } else {
+        crate::commands::cleanup::run_dir::RunWorkspace::begin_durable(&recipe_name, working_dir)?
+    });
+    let delegated = recipe_runner_rs::recovery::ipc::Client::from_environment()?;
+    let admission = if !dry_run && delegated.is_none() {
+        let settings = recipe_runner_rs::recovery::model::fingerprint(&(
+            &agent_binary.binary,
+            step_timeout,
+            merge_guard,
+            env!("CARGO_PKG_VERSION"),
+        ))?;
+        Some(super::recovery::admit(
+            &workspace.borrow(),
+            recipe_path,
+            &recipe_name,
+            working_dir,
+            context,
+            fresh,
+            settings,
+        )?)
+    } else {
+        None
+    };
 
     // Prepare private Git metadata outside disposable runtime/ before any
     // executable step. An unborn or unsupported caller state rejects launch.
@@ -610,10 +675,22 @@ pub(super) fn execute_recipe_via_rust(
     // Required recording storage is established before preparation. Native
     // runner supervision starts at spawn; its evidence is finalized after
     // the observed runner tree has ended and the checkout has been released.
-    let recording = super::git_record::GitRecord::begin(workspace.borrow().run_dir());
+    // A dry run has no run folder and runs no step, so it records nothing.
+    let recording = if dry_run {
+        Ok(super::git_record::GitRecord::dry_run())
+    } else {
+        super::git_record::GitRecord::begin(workspace.borrow().run_dir())
+    };
     let git_record = match recording {
         Ok(record) => record,
-        Err(error) => return fail_before_execution(workspace.into_inner(), error, dry_run),
+        Err(error) => {
+            return fail_before_execution(
+                workspace.into_inner(),
+                admission.as_ref(),
+                error,
+                dry_run,
+            );
+        }
     };
     let mut checkout = match super::run_checkout::RunCheckout::prepare_with_inputs(
         working_dir,
@@ -624,14 +701,48 @@ pub(super) fn execute_recipe_via_rust(
         Ok(checkout) => checkout,
         Err(error) => {
             git_record.discard();
-            return fail_before_execution(workspace.into_inner(), error, dry_run);
+            return fail_before_execution(
+                workspace.into_inner(),
+                admission.as_ref(),
+                error,
+                dry_run,
+            );
         }
     };
     let exec_dir = checkout.exec_dir().to_path_buf();
-    let mapped = checkout.map_path(recipe_path).and_then(|recipe| {
-        checkout
-            .map_context(context)
-            .map(|context| (recipe, context))
+    // The recovery descriptor lives in the run folder; one inside the private
+    // checkout would be state a step could rewrite (S-AZ4).
+    let descriptor_outside_checkout = || -> Result<()> {
+        if let Some(admission) = &admission
+            && !dry_run
+        {
+            let descriptor = admission.descriptor_path();
+            let parent = descriptor
+                .parent()
+                .context("recovery descriptor path has no parent folder")?;
+            let resolved = parent
+                .canonicalize()
+                .with_context(|| format!("cannot resolve {}", parent.display()))?;
+            let checkout_root = exec_dir
+                .canonicalize()
+                .with_context(|| format!("cannot resolve {}", exec_dir.display()))?;
+            if resolved.starts_with(&checkout_root) {
+                anyhow::bail!(
+                    "recovery descriptor {} resolves inside the run's private checkout {}; \
+                     refusing to launch",
+                    descriptor.display(),
+                    exec_dir.display()
+                );
+            }
+        }
+        Ok(())
+    };
+    let mapped = descriptor_outside_checkout().and_then(|()| {
+        checkout.map_path(recipe_path).and_then(|recipe| {
+            checkout
+                .map_context(context)
+                .map(|context| (recipe, context))
+        })
     });
     let (mapped_recipe, mapped_context) = match mapped {
         Ok(mapped) => mapped,
@@ -640,7 +751,12 @@ pub(super) fn execute_recipe_via_rust(
                 error = error.context(format!("execution release also failed: {release:#}"));
             }
             git_record.discard();
-            return fail_before_execution(workspace.into_inner(), error, dry_run);
+            return fail_before_execution(
+                workspace.into_inner(),
+                admission.as_ref(),
+                error,
+                dry_run,
+            );
         }
     };
     let context = &mapped_context;
@@ -676,6 +792,14 @@ pub(super) fn execute_recipe_via_rust(
         checkout.apply_to(&mut command);
         git_record.apply_to(&mut command)?;
 
+        if fresh {
+            command.arg("--fresh");
+        }
+        if let Some(admission) = &admission {
+            command
+                .arg("--recovery-descriptor")
+                .arg(admission.descriptor_path());
+        }
         // Issue #494: forward sub-recipe search dirs as -R flags so
         // recipe-runner-rs can resolve sub-recipes the same way amplihack
         // resolves top-level recipes. One -R per non-empty entry, in order.
@@ -794,6 +918,9 @@ pub(super) fn execute_recipe_via_rust(
         command.env(MAX_DEPTH_ENV, guard.max_depth.to_string());
         command.env("AMPLIHACK_RECIPE_RUN_ID", run_id);
         command.envs(workspace.borrow().env());
+        if dry_run {
+            command.env("AMPLIHACK_RUN_ID", run_id);
+        }
         // Issue #1976: name this `recipe run` as the parent of any nested run
         // a step starts, on the child only (never set_var). Without a start
         // time the pair is omitted: a pid alone could be reused.
@@ -976,6 +1103,10 @@ pub(super) fn execute_recipe_via_rust(
         }
         Err(error) => Err(error),
     };
+    // Release order: the private checkout, then the Git record, then the
+    // recovery admission (judged from the result after the first two), then
+    // the run folder. Every step runs; each error is kept as context on the
+    // one before it, so no release failure hides another.
     if let Err(release_error) = checkout.remove() {
         final_result = Err(match final_result {
             Err(error) => {
@@ -990,6 +1121,17 @@ pub(super) fn execute_recipe_via_rust(
             Ok(_) => record_error,
         });
     }
+    if let Some(admission) = &admission
+        && let Some(outcome) = admission_outcome(&final_result, last_verdict.borrow().as_ref())
+        && let Err(admission_error) = admission.finish(outcome)
+    {
+        final_result = Err(match final_result {
+            Err(error) => error.context(format!(
+                "recovery admission finish also failed: {admission_error:#}"
+            )),
+            Ok(_) => admission_error.context("cannot finish recovery admission"),
+        });
+    }
     if let Err(finalization) = finish_workspace(workspace.into_inner(), &final_result, dry_run) {
         final_result = Err(match final_result {
             Err(error) => error.context(format!("run report also failed: {finalization:#}")),
@@ -999,12 +1141,50 @@ pub(super) fn execute_recipe_via_rust(
     final_result
 }
 
-/// Preserve preparation errors while publishing a terminal run report.
+/// The recovery outcome for a finished run (#2334): `None` for a run stopped
+/// by a signal, which stays resumable.
+fn admission_outcome(
+    final_result: &Result<RecipeRunResult>,
+    last_verdict: Option<&FailureVerdict>,
+) -> Option<recipe_runner_rs::recovery::model::Outcome> {
+    use recipe_runner_rs::recovery::model::Outcome;
+    match final_result {
+        Ok(result) if result.success => Some(Outcome::Success),
+        Ok(_) if last_verdict.is_some_and(|v| v.class == super::FailureClass::UsageLimit) => {
+            Some(Outcome::UsageLimit)
+        }
+        Err(error)
+            if error
+                .downcast_ref::<super::stop_signal::StoppedBySignal>()
+                .is_some() =>
+        {
+            None
+        }
+        _ => Some(Outcome::Failure),
+    }
+}
+
+/// Preserve preparation errors while finishing the recovery admission (as
+/// `Failure`, unless a stop signal ended the run) and publishing a terminal
+/// run report.
 fn fail_before_execution(
     workspace: crate::commands::cleanup::run_dir::RunWorkspace,
+    admission: Option<&recipe_runner_rs::recovery::admission::Admission>,
     error: anyhow::Error,
     dry_run: bool,
 ) -> Result<RecipeRunResult> {
+    let mut error = error;
+    if let Some(admission) = admission
+        && error
+            .downcast_ref::<super::stop_signal::StoppedBySignal>()
+            .is_none()
+        && let Err(admission_error) =
+            admission.finish(recipe_runner_rs::recovery::model::Outcome::Failure)
+    {
+        error = error.context(format!(
+            "recovery admission finish also failed: {admission_error:#}"
+        ));
+    }
     let failure = Err(error);
     if let Err(finalization) = finish_workspace(workspace, &failure, dry_run) {
         return failure
@@ -1109,32 +1289,29 @@ fn spawn_with_streaming_stderr(
         }
     }
     correlation.emit_early();
+    // A required record (every real run) is spawned under the native
+    // observer. Only a dry run's record is not required, and it never
+    // reaches `GitRecord::spawn`: it spawns the runner plainly.
     #[cfg(target_os = "linux")]
-    let (mut child, mut observer) =
-        git_record
-            .spawn(command, correlation.run_id())
-            .map_err(|error| {
-                fail_with_final_record(
-                    &correlation,
-                    RecipeRunFinalStatus::SpawnFailure,
-                    None,
-                    None,
-                    error,
-                )
-            })?;
-    #[cfg(not(target_os = "linux"))]
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            return Err(fail_with_final_record(
-                &correlation,
-                RecipeRunFinalStatus::SpawnFailure,
-                None,
-                None,
-                anyhow::Error::new(error).context("failed to spawn recipe-runner-rs"),
-            ));
+    let (spawned, mut observer) = if git_record.is_required() {
+        match git_record.spawn(command, correlation.run_id()) {
+            Ok((child, observer)) => (Ok(child), Some(observer)),
+            Err(error) => (Err(error), None),
         }
+    } else {
+        (spawn_unobserved(command), None)
     };
+    #[cfg(not(target_os = "linux"))]
+    let spawned = spawn_unobserved(command);
+    let mut child = spawned.map_err(|error| {
+        fail_with_final_record(
+            &correlation,
+            RecipeRunFinalStatus::SpawnFailure,
+            None,
+            None,
+            error,
+        )
+    })?;
     let child_pid = Some(child.id());
 
     let captured_stderr: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
@@ -1181,7 +1358,10 @@ fn spawn_with_streaming_stderr(
     });
 
     #[cfg(target_os = "linux")]
-    let waited = wait_for_observed_runner(&observer, timeout);
+    let waited = match &observer {
+        Some(observer) => wait_for_observed_runner(observer, timeout),
+        None => wait_for_recipe_runner(&mut child, timeout),
+    };
     #[cfg(not(target_os = "linux"))]
     let waited = wait_for_recipe_runner(&mut child, timeout);
     let status = match waited
@@ -1252,10 +1432,13 @@ fn spawn_with_streaming_stderr(
             // The sweep runs whatever the group teardown reports: a runner
             // that could not be reaped must not leave its descendants behind.
             #[cfg(target_os = "linux")]
-            let teardown = {
-                crate::commands::recipe::stop::terminate(&tree);
-                crate::commands::recipe::stop::sweep(&tree, recipe_runner_teardown_grace());
-                observer.terminate()
+            let teardown = match observer.as_mut() {
+                Some(observer) => {
+                    crate::commands::recipe::stop::terminate(&tree);
+                    crate::commands::recipe::stop::sweep(&tree, recipe_runner_teardown_grace());
+                    observer.terminate()
+                }
+                None => terminate_recipe_runner(&mut child),
             };
             #[cfg(not(target_os = "linux"))]
             let teardown = terminate_recipe_runner(&mut child);
@@ -1285,13 +1468,16 @@ fn spawn_with_streaming_stderr(
             let detail = super::format::format_log_pointer_summary(&summary);
             let run_id = summary.run_id.clone();
             #[cfg(target_os = "linux")]
-            let teardown = {
-                let tree = crate::commands::recipe::stop::snapshot_tree(
-                    &std::collections::BTreeSet::from([child.id() as i32]),
-                );
-                crate::commands::recipe::stop::terminate(&tree);
-                crate::commands::recipe::stop::sweep(&tree, recipe_runner_teardown_grace());
-                observer.terminate()
+            let teardown = match observer.as_mut() {
+                Some(observer) => {
+                    let tree = crate::commands::recipe::stop::snapshot_tree(
+                        &std::collections::BTreeSet::from([child.id() as i32]),
+                    );
+                    crate::commands::recipe::stop::terminate(&tree);
+                    crate::commands::recipe::stop::sweep(&tree, recipe_runner_teardown_grace());
+                    observer.terminate()
+                }
+                None => terminate_recipe_runner(&mut child),
             };
             #[cfg(not(target_os = "linux"))]
             let teardown = terminate_recipe_runner(&mut child);
@@ -1399,6 +1585,12 @@ fn spawn_with_streaming_stderr(
             })
         }
     }
+}
+
+/// Spawns the runner without the native observer: a dry run on Linux, and
+/// every launch elsewhere (real runs are refused there before this point).
+fn spawn_unobserved(mut command: Command) -> Result<Child> {
+    command.spawn().context("failed to spawn recipe-runner-rs")
 }
 
 #[cfg(target_os = "linux")]
@@ -1707,7 +1899,6 @@ enum RunnerWait {
     Stopped(i32),
 }
 
-#[cfg(not(target_os = "linux"))]
 fn wait_for_recipe_runner(child: &mut Child, timeout: Duration) -> std::io::Result<RunnerWait> {
     let started = Instant::now();
     loop {
@@ -1728,7 +1919,6 @@ fn wait_for_recipe_runner(child: &mut Child, timeout: Duration) -> std::io::Resu
     }
 }
 
-#[cfg(not(target_os = "linux"))]
 fn terminate_recipe_runner(child: &mut Child) -> Result<()> {
     let pid = child.id();
     #[cfg(unix)]

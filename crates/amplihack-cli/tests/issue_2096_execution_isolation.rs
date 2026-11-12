@@ -35,7 +35,8 @@ mod review_isolation;
 
 /// The stub runner. It enters the runner's `-C`, records what it finds and,
 /// with `ISSUE_2096_STAGE` set, stages and commits a file there. With
-/// `ISSUE_2096_FAIL` set it then exits non-zero.
+/// `ISSUE_2096_FAIL` set it then exits non-zero. It writes the
+/// `--recovery-descriptor` argument, when given, to `descriptor`.
 const STUB_RUNNER: &str = r#"#!/bin/sh
 set -eu
 out="$ISSUE_2096_OBSERVATIONS"
@@ -45,6 +46,7 @@ dir=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -C) dir="$2"; shift 2 ;;
+    --recovery-descriptor) printf "%s" "$2" > "$out/descriptor"; shift 2 ;;
     *) shift ;;
   esac
 done
@@ -526,4 +528,225 @@ fn a_dry_run_uses_the_callers_directory_and_makes_no_checkout() {
         "1"
     );
     assert_eq!(f.worktrees(), before);
+    assert!(
+        f.run_folders().is_empty(),
+        "a dry run made run folders: {:?}",
+        f.run_folders()
+    );
+    let mut recordings = Vec::new();
+    find_named(&f.root.join("work"), "git-recording.json", &mut recordings);
+    assert!(
+        recordings.is_empty(),
+        "a dry run wrote a git recording: {recordings:?}"
+    );
+}
+
+impl Fixture {
+    /// `<work root>/runs/*`, sorted. A missing `runs/` is empty; any other
+    /// read error fails the test, so an isolation check never passes on a
+    /// folder it could not read.
+    fn run_folders(&self) -> Vec<PathBuf> {
+        let runs = self.root.join("work/runs");
+        let entries = match fs::read_dir(&runs) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+            Err(e) => panic!("read {}: {e}", runs.display()),
+        };
+        let mut dirs: Vec<PathBuf> = entries
+            .map(|e| e.unwrap_or_else(|e| panic!("read {}: {e}", runs.display())))
+            .map(|e| e.path())
+            .collect();
+        dirs.sort();
+        dirs
+    }
+
+    /// The single run folder made since `before`.
+    fn new_run_folder(&self, before: &[PathBuf]) -> PathBuf {
+        let new: Vec<PathBuf> = self
+            .run_folders()
+            .into_iter()
+            .filter(|d| !before.contains(d))
+            .collect();
+        assert_eq!(new.len(), 1, "expected one new run folder: {new:?}");
+        new.into_iter().next().unwrap()
+    }
+}
+
+/// Every file called `name` under `dir`, following no symlink. A missing
+/// `dir` adds nothing; any other I/O error fails the test.
+fn find_named(dir: &Path, name: &str, found: &mut Vec<PathBuf>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) => panic!("read {}: {e}", dir.display()),
+    };
+    for entry in entries {
+        let entry = entry.unwrap_or_else(|e| panic!("read {}: {e}", dir.display()));
+        let kind = entry
+            .file_type()
+            .unwrap_or_else(|e| panic!("stat {}: {e}", entry.path().display()));
+        if kind.is_dir() {
+            find_named(&entry.path(), name, found);
+        } else if entry.file_name() == name {
+            found.push(entry.path());
+        }
+    }
+}
+
+fn json_file(path: &Path) -> serde_json::Value {
+    let bytes = fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    serde_json::from_slice(&bytes).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
+}
+
+/// The recovery outcome the run's admission finished with, from
+/// `<run folder>/recovery/tree.json`.
+fn recovery_outcome(run: &Path) -> String {
+    let tree = json_file(&run.join("recovery/tree.json"));
+    tree["outcome"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no outcome in {tree:#}"))
+        .to_ascii_lowercase()
+}
+
+/// A prepare failure (unborn HEAD) happens after admission, so the
+/// admission must be finished as a failure, not left running for the next
+/// launch to resume.
+#[test]
+fn an_unborn_head_finishes_the_recovery_admission_as_failure() {
+    let f = Fixture::new();
+    f.git(&["checkout", "-q", "--orphan", "unborn"]);
+    let before = f.run_folders();
+    let out = f
+        .command("unborn-admission")
+        .args(["-c", "issue_number=2096"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "an unborn HEAD must stop the run");
+    assert!(
+        !f.root.join("unborn-admission/cwd").exists(),
+        "the runner started"
+    );
+    let run = f.new_run_folder(&before);
+    assert_eq!(recovery_outcome(&run), "failure");
+    let report = json_file(&run.join("run.json"));
+    assert_eq!(report["outcome"], "failure", "{report:#}");
+    assert!(report["ended_at"].is_string(), "{report:#}");
+}
+
+/// A failed run releases in order: checkout, recording, admission,
+/// workspace. Each one must have happened.
+#[test]
+fn a_failed_run_finishes_checkout_recording_admission_and_workspace() {
+    let f = Fixture::new();
+    let before = f.run_folders();
+    let out = f
+        .command("released")
+        .args(["-c", "issue_number=2096"])
+        .env("ISSUE_2096_FAIL", "1")
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "the stub runner was told to fail");
+    let cwd = String::from_utf8(f.observed("released", "cwd")).unwrap();
+    assert!(!Path::new(&cwd).exists(), "{cwd} was left behind");
+    let run = f.new_run_folder(&before);
+    assert_eq!(recovery_outcome(&run), "failure");
+    let report = json_file(&run.join("run.json"));
+    assert_eq!(report["outcome"], "failure", "{report:#}");
+    assert!(report["ended_at"].is_string(), "{report:#}");
+    assert!(
+        run.join("git-recording.json").is_file(),
+        "the git recording was not finished before the workspace"
+    );
+}
+
+/// A relaunch with the same identity after a failure gets a new private
+/// checkout; the first one is gone and is never reused. The recovery
+/// descriptor lives in the run folder, never inside the checkout, and the
+/// caller's checkout is unchanged by either launch.
+#[test]
+fn a_relaunch_after_a_failure_gets_a_fresh_checkout_and_leaves_the_caller_unchanged() {
+    let f = Fixture::new();
+    let caller = f.snapshot();
+    let worktrees = f.worktrees();
+
+    let before = f.run_folders();
+    let first = f
+        .command("first")
+        .args(["-c", "issue_number=2096"])
+        .env("ISSUE_2096_STAGE", "1")
+        .env("ISSUE_2096_FAIL", "1")
+        .output()
+        .unwrap();
+    assert!(!first.status.success(), "the stub runner was told to fail");
+    let first_run = f.new_run_folder(&before);
+    let first_cwd = PathBuf::from(String::from_utf8(f.observed("first", "cwd")).unwrap());
+    assert!(
+        !first_cwd.exists(),
+        "{} was left behind",
+        first_cwd.display()
+    );
+
+    let before = f.run_folders();
+    succeeds(
+        &f.command("second")
+            .args(["-c", "issue_number=2096"])
+            .output()
+            .unwrap(),
+    );
+    let second_run = f.new_run_folder(&before);
+    let second_cwd = PathBuf::from(String::from_utf8(f.observed("second", "cwd")).unwrap());
+
+    assert_ne!(
+        first_cwd, second_cwd,
+        "the relaunch reused the first checkout"
+    );
+    assert_ne!(
+        second_cwd, f.repo,
+        "the relaunch ran in the caller's checkout"
+    );
+    assert!(
+        !second_cwd.exists(),
+        "{} was left behind",
+        second_cwd.display()
+    );
+    assert_eq!(
+        f.observed("second", "head"),
+        f.git(&["rev-parse", "HEAD"]),
+        "the relaunch did not start at the caller's HEAD"
+    );
+
+    let first_id = json_file(&first_run.join("recovery/descriptor.json"))["identity"].clone();
+    let second_id = json_file(&second_run.join("recovery/descriptor.json"))["identity"].clone();
+    assert!(
+        first_id.as_str().is_some_and(|s| !s.is_empty()),
+        "the launch had no recovery identity: {first_id}"
+    );
+    assert_eq!(first_id, second_id, "both launches must share one identity");
+    assert_eq!(recovery_outcome(&first_run), "failure");
+    assert_eq!(recovery_outcome(&second_run), "success");
+
+    for (label, run, cwd) in [
+        ("first", &first_run, &first_cwd),
+        ("second", &second_run, &second_cwd),
+    ] {
+        let descriptor = PathBuf::from(String::from_utf8(f.observed(label, "descriptor")).unwrap());
+        assert!(
+            descriptor.starts_with(run),
+            "{label}: descriptor {} is not in the run folder {}",
+            descriptor.display(),
+            run.display()
+        );
+        assert!(
+            !descriptor.starts_with(cwd),
+            "{label}: descriptor {} is inside the checkout",
+            descriptor.display()
+        );
+    }
+
+    assert_eq!(
+        f.snapshot(),
+        caller,
+        "a launch changed the caller's checkout"
+    );
+    assert_eq!(f.worktrees(), worktrees, "a launch left a worktree record");
 }

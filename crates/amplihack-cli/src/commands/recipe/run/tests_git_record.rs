@@ -736,3 +736,38 @@ fn issue_2096_alias_resolved_to_add_is_not_silently_omitted() {
         "retain original invocation while classifying resolved behavior"
     );
 }
+
+/// A dry run records nothing and does not fail on the missing run folder:
+/// `GitRecord::dry_run()` is the disabled, not-required record. Only a dry
+/// run may reach it; real runs go through `begin`, which fails closed.
+#[test]
+fn a_dry_run_record_is_disabled_strips_trace_targets_and_finishes_without_writing() {
+    let record = GitRecord::dry_run();
+    let mut command = Command::new("true");
+    command
+        .env("GIT_TRACE2_EVENT", "/caller/chosen/target")
+        .env("GIT_TRACE2_ENV_VARS", "HOME");
+    record
+        .apply_to(&mut command)
+        .expect("a dry-run record must not refuse to apply");
+    let envs: Vec<(OsString, Option<OsString>)> = command
+        .get_envs()
+        .map(|(k, v)| (k.to_os_string(), v.map(OsStr::to_os_string)))
+        .collect();
+    for var in ["GIT_TRACE2_EVENT", "GIT_TRACE2_ENV_VARS"] {
+        assert!(
+            envs.iter().any(|(k, v)| k == var && v.is_none()),
+            "{var} must be removed, not passed through: {envs:?}"
+        );
+    }
+    record
+        .finish()
+        .expect("finishing a dry-run record writes nothing and succeeds");
+}
+
+/// `begin(None)` stays fail-closed: the dry-run record is a separate
+/// constructor, not a relaxed `begin`.
+#[test]
+fn begin_without_a_run_folder_still_refuses() {
+    assert!(GitRecord::begin(None).is_err());
+}

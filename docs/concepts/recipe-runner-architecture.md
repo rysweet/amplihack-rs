@@ -1,18 +1,11 @@
 ---
-title: Recipe Runner Architecture
-description: External runner responsibilities and the CLI's isolation and supervision boundary.
+title: Recipe runner architecture
+description: Execution, supervision, and durable recovery ownership across Amplihack and the Rust runner.
 doc_type: explanation
-last_updated: 2026-11-10
+last_updated: 2026-11-12
 ---
 
 # Recipe Runner Architecture
-
-**[CANDIDATE - acceptance pending]** The working-tree implementation adds
-private repository-backed checkouts, separate index/working input layers,
-independent ownership, required Linux descendant observation, and SHA-bound
-review generations. It has not completed the full
-[target contract](../reference/recipe-checkout-isolation.md); see the
-[requirement/review ledger](../reference/recipe-checkout-isolation.md#requirement-and-review-disposition-ledger).
 
 Why the recipe runner is an external binary, how amplihack locates and invokes
 it, and how recipe execution stays predictable.
@@ -25,6 +18,7 @@ it, and how recipe execution stays predictable.
 - [The run's own checkout](#the-runs-own-checkout)
 - [Data flow](#data-flow)
 - [Logging responsibility split](#logging-responsibility-split)
+- [Durable recovery ownership](#durable-recovery-ownership)
 - [What amplihack does NOT do](#what-amplihack-does-not-do)
 - [Operational contract](#operational-contract)
 
@@ -45,24 +39,16 @@ exists because:
 
 ## Binary resolution
 
-amplihack resolves the runner binary at launch time using `freshness.rs`:
+Amplihack resolves the selected runner through the
+[shared binary lookup](../reference/recipe-command.md#recipe-runner-binary).
+Managed installation and freshness use the immutable upstream revision in
+`claude-plugin/recipe-runner.rev`, with the existing ancestry/downgrade
+guard. They do not select the remote `main` tip at launch.
 
-```
-$PATH lookup for `recipe-runner-rs`
-       │
-       ├── found → check freshness against GitHub HEAD
-       │              │
-       │              ├── up-to-date → use it
-       │              └── stale → `cargo install --git` to upgrade
-       │
-       └── not found → `cargo install --git` to install
-```
-
-The freshness check compares the locally installed commit SHA against the
-remote `main` branch HEAD, throttled by a cooldown file at
-`~/.amplihack/state/recipe_runner.json`.
-
-Source: `crates/amplihack-cli/src/freshness.rs`, lines 108–176.
+Capability validation is separate from managed source provenance. An
+explicit compatible custom runner need not match the managed SHA, but it
+must satisfy the required provider capabilities. Every provider must also advertise `durable_recovery_v1`. See
+[runner validation](../reference/recipe-runner-validation.md).
 
 ## Invocation contract
 
@@ -84,27 +70,37 @@ The runner:
 
 ## The run's own checkout
 
-For a Git working directory, Rust prepares a detached execution checkout
-backed by private repository metadata before starting the external runner.
-Staged objects and working contents are transferred separately. Independent
-invocations, including nested CLI launches, receive fresh leases and indexes.
-Neither preparation nor release registers a worktree in the caller repository.
-Metadata lives outside disposable runtime storage so durable child worktrees
-can survive execution release.
+A recipe step is often a full-tool agent. If it ran in your checkout, one
+`git add -A` or a pre-commit hook could change your index while you work.
+So the CLI, not the runner, owns where steps run.
 
-The external runner retains ordering and context evaluation. The CLI maps
-supported caller-local invocation paths, rejects unsupported input states,
-and combines execution, explicit release, recording and report publication
-failures. Required Linux descendant observation follows successful executable
-launches independently of the runner's environment filtering. Per-attempt
-journals and nested-scope acknowledgements precede final publication.
+For a Git working directory, Rust copies `HEAD`, the index and the working
+tree separately into a private repository and a detached checkout before the
+runner starts. The runner gets `-C <exec dir>`. Every independent launch,
+including one nested inside another run, gets its own checkout and index.
+Nothing registers a worktree in your repository, and no step writes to your
+work tree, index, `HEAD`, refs or configuration. That is why the old
+`CallerGitState` repair of `core.bare` (#964) is gone: there is nothing in
+the caller's checkout to repair.
 
-The candidate does not yet establish the entire target contract: broad local
-input declarations, observation of preparation/release Git, durable metadata
-reclamation, and actual reviewer instruction discovery remain acceptance work.
-Private Git state is not an OS sandbox. See
-[isolation evidence and limitations](../reference/recipe-checkout-isolation.md#requirement-and-review-disposition-ledger)
-and the [command record](../reference/recipe-runner-logging.md#git-command-record).
+Identity and execution are kept apart. Recovery admission keys on your
+`--working-dir`, because that is the run you asked for. The `exec dir` belongs
+to one attempt: a resumed run prepares a fresh one.
+
+The runner still owns step order and context evaluation. The CLI owns what
+surrounds it, in this order: prepare the checkout, start the Linux observer,
+launch the runner, then remove the checkout, publish the Git record, finish
+the recovery admission and finish the workspace. Each step's error is kept and
+joined to the others, so a failed release cannot hide a failed publication.
+
+A dry run plans only. It uses the caller's directory, prepares no checkout,
+records nothing and writes no run folder.
+
+Private Git state is not an OS sandbox. See the
+[checkout isolation reference](../reference/recipe-checkout-isolation.md)
+and the [Git command record](../reference/recipe-runner-logging.md#git-command-record).
+
+---
 
 ## Data flow
 
@@ -142,6 +138,44 @@ state. It forwards the runner's stderr progress, captures stdout for the final
 the runner emits additive diagnostic fields, the CLI must not drop them while
 formatting JSON or YAML output.
 
+## Durable recovery ownership
+
+Durable relaunch recording and replay live in the external Rust runner; the
+CLI integrates its upstream library contracts and supported executable pin.
+See the [recovery reference](../reference/recipe-recovery.md).
+
+Durable recovery uses the same external Rust executor. Amplihack supplies
+the canonical repository/work identity, durable run storage, effective
+launch settings, and recognized failure causes. Under an identity lock it
+selects the latest predecessor, registers the new attempt, and publishes
+the latest marker before execution. Only the executing process admits an
+attempt; detached launchers do not. Dry runs do not change recovery state.
+
+The runner owns versioned completion records, typed context deltas,
+compatibility checks, resource validation, and replay. Its single durable
+writer preserves completed children beneath incomplete parents. Trusted
+delegated runners attach through inherited private local IPC scoped to
+their attempt, invocation subtree, operations, and generation. The CLI
+does not reconstruct or reorder steps.
+
+Recognized usage-limit blockage is published before waiting or unwinding.
+Synchronized status revisions and generations prevent stale child reports
+from overriding a newer enclosing outcome. Current session ownership,
+governor admission, recursion accounting, and authorization are established
+before dependent replay. Existing same-process wait/retry remains intact.
+
+The selected runner must advertise `durable_recovery_v1`, even for
+`--fresh`. Support is delivered upstream before Amplihack's supported
+runner pin advances; existing ancestry validation remains required. A
+second execution engine or vendored runner copy is not part of recovery.
+
+Private state and required artifact copies live under the run's
+`recovery/` directory, outside `runtime/`. Latest-attempt markers survive
+retirement of detailed history. Each recovering attempt imports its own
+inherited state, allowing repeated recovery without retaining every
+ancestor. See [recovery behavior](recipe-usage-limit-recovery.md) and the
+[versioned recovery contract](../reference/recipe-recovery.md).
+
 ## What amplihack does NOT do
 
 - **Does not parse recipes** — YAML parsing is the runner's responsibility.
@@ -152,8 +186,11 @@ formatting JSON or YAML output.
 - **Does not embed the runner** — There is no compiled-in recipe execution
   engine.
 
-amplihack is responsible for: binary resolution, freshness checks, argument
-forwarding, and exit code propagation.
+amplihack is responsible for binary resolution, freshness and capability
+checks, argument forwarding, and exit code propagation. The recovery
+feature adds admission/storage and launch/failure integration to those
+responsibilities. General recipe recording and replay will remain runner
+responsibilities.
 
 ## Operational contract
 

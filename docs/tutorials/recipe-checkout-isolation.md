@@ -1,40 +1,25 @@
 ---
-title: Future Acceptance Exercise for a Local-Input Snapshot
-description: Planned acceptance exercise for preserving local input layers and the caller's index.
+title: Inspect a Local-Input Snapshot
+description: Run a recipe against staged, unstaged and untracked changes and confirm the caller's checkout is untouched.
 doc_type: tutorial
-last_updated: 2026-11-10
+last_updated: 2026-11-12
 ---
 
-# Future acceptance exercise: inspect a local-input snapshot
+# Inspect a local-input snapshot
 
-**[PLANNED - Implementation Pending]** This is a future acceptance exercise,
-not a working tutorial for the current implementation. `RunCheckout` currently
-copies only committed `HEAD` into a linked worktree, shares repository
-metadata, and may reuse an ancestor checkout. `GitRecord` is cooperative
-Trace2 and recording failures only warn. The expected output below is not a
-runtime validation receipt.
+In this tutorial you make a repository with a staged version and a different
+working version of one file, plus an untracked file. You run a recipe that
+reads all three and stages a file. Then you check that the recipe saw each
+version and that your own index and `HEAD` did not change.
 
-Use this exercise only after the [input declaration proposal](../reference/recipe-checkout-isolation.md#required-local-input-declarations)
-has an implemented schema and production-boundary validation demonstrates the
-[required guarantees](../reference/recipe-checkout-isolation.md#requirement-and-review-disposition-ledger).
-The YAML includes that proposed field and is not accepted as a supported
-interface today. Shell syntax, disposable fixture setup, and YAML parsing do
-not demonstrate snapshot preservation, observation, or failure supervision.
-
-The future exercise creates a disposable repository with different staged
-and working versions of one file. A shell-only recipe reads both versions,
-reads a declared untracked input, and stages it in the execution checkout.
-The assertions specify the intended caller-index and `HEAD` preservation.
-
-Its prerequisites will be Linux with validated descendant observation, Git,
-`jq`, the updated `amplihack`, and the supported pinned `recipe-runner-rs`.
-No agent login or network service is needed. Under the target contract,
-unsupported observation must stop execution before the runner starts.
+It takes about five minutes. You need Linux, Git, `jq`, `amplihack` and
+`recipe-runner-rs`. No agent login or network is used. The rules behind each
+result are in [checkout isolation](../reference/recipe-checkout-isolation.md).
 
 ## Start an isolated shell
 
-Resolve the installed binaries before changing home directories, then enter
-a shell with disposable homes and profile roots:
+Find the binaries first, then start a shell whose home, profile and work
+directories are all temporary:
 
 ```bash
 demo=$(mktemp -d)
@@ -55,8 +40,8 @@ env -i PATH="$PATH" HOME="$demo/home" DEMO="$demo" \
   bash --noprofile --norc
 ```
 
-Run the remaining commands inside this shell. Its profile and framework
-paths point into the temporary directory, not your normal configuration.
+Run everything below inside this shell. Nothing touches your real
+`~/.claude`, `~/.amplihack` or profiles.
 
 ## Create two local versions
 
@@ -76,38 +61,29 @@ printf 'local recipe input\n' > local-notes.txt
 git status --short
 ```
 
-Expected status:
+Output:
 
 ```text
 MM notes.txt
 ?? local-notes.txt
 ```
 
-Record the caller's index digest and commit before the run:
+Save the index digest and commit so you can compare them later:
 
 ```bash
 before_index=$(git hash-object .git/index)
 before_head=$(git rev-parse HEAD)
 ```
 
-## Create and validate the recipe
+## Write the recipe
 
-Keep the recipe outside the caller repository. Under the target contract its
-explicit invocation path must remain usable after moving execution. Declare
-`local-notes.txt` as a required input; reading it from a command literal alone
-does not select an untracked file. The proposed declaration is not implemented.
+Put the recipe outside the repository. `local-notes.txt` is an ordinary
+untracked file, so the run copies it without any declaration.
 
 ```bash
 cat > "$DEMO/inspect-inputs.yaml" <<'YAML'
 name: inspect-local-inputs
-# [PLANNED] Requires the proposed CLI/runner input schema.
-execution_inputs:
-  version: 1
-  required:
-    - local-notes.txt
-  context_paths: {}
-  opaque_path_fields: []
-description: Read separate local input layers and stage in the execution checkout.
+description: Read the staged, working and untracked inputs, then stage one file.
 steps:
   - id: inspect-inputs
     type: bash
@@ -121,12 +97,18 @@ YAML
 "$AMPLIHACK_BIN" recipe validate "$DEMO/inspect-inputs.yaml"
 ```
 
-After schema implementation, validation must accept `inspect-local-inputs`
-and reject unsupported input declarations. Current recipe validation is not
-evidence that the proposed schema is honored. Neither YAML parsing nor recipe
-validation establishes observer capability or runs the step.
+## Try a dry run
 
-## Run and inspect the result
+```bash
+"$AMPLIHACK_BIN" recipe run "$DEMO/inspect-inputs.yaml" \
+  -w "$DEMO/caller" --dry-run
+ls "$DEMO/work/runs" 2>/dev/null | wc -l
+```
+
+The last line prints `0`. A dry run prepares no checkout, records nothing and
+creates no run folder.
+
+## Run it
 
 ```bash
 "$AMPLIHACK_BIN" recipe run "$DEMO/inspect-inputs.yaml" \
@@ -134,57 +116,57 @@ validation establishes observer capability or runs the step.
 jq -r '.success, .step_results[].output' "$DEMO/result.json"
 ```
 
-**Planned acceptance output:** values must include `true` and this step output:
+Output:
 
 ```text
+true
 staged version
 working version
 local recipe input
 ```
 
-A production run producing these values must still be checked against the
-caller assertions below. Distinct first and second lines are required for
-independent index/working-tree preservation; the third requires the declared
-untracked input. These values have not been established by syntax checks.
-Live progress belongs on stderr.
+The first two lines differ: the step read the staged version from the index
+and the working version from the file. The third line shows the untracked
+file was copied. Progress messages go to stderr.
 
-Check the caller:
+## Check your checkout
 
 ```bash
-test "$before_index" = "$(git hash-object .git/index)"
-test "$before_head" = "$(git rev-parse HEAD)"
+test "$before_index" = "$(git hash-object .git/index)" && echo index unchanged
+test "$before_head" = "$(git rev-parse HEAD)" && echo HEAD unchanged
 git status --short
 ```
 
-For acceptance, both checks must exit zero and status must still show
-`MM notes.txt` and
-`?? local-notes.txt`: the recipe staged the untracked file only in its own
-checkout. Useful commits from real workflows belong in durable task or PR
-worktrees, not the disposable execution checkout.
+Output:
 
-## Inspect the retained journal
+```text
+index unchanged
+HEAD unchanged
+MM notes.txt
+?? local-notes.txt
+```
 
-The disposable work root contains only this exercise's run folders. Read
-their command journals:
+The step's `git add` changed only the execution checkout's index. In real
+workflows, commits you want to keep go to a durable task or PR worktree.
+
+## Read the Git command record
 
 ```bash
 find "$DEMO/work/runs" -name git-commands.jsonl -type f \
-  -exec jq -c '{time, argv, cwd, git_dir, index_file}' {} +
+  -exec jq -c '{argv, cwd, index_file}' {} +
 ```
 
-For acceptance, the journal must include the step's `git add -- local-notes.txt`,
-attributed to the private execution checkout and effective index. Provisioning
-and release may add other records. Check the implemented recording schema and
-coverage/finalization outcome as well as these projected fields. Command
-presence alone does not prove an index mutation; a passing caller digest
-comparison supplies evidence for this exercise only. An empty journal here is
-not expected because the step ran `git add`.
+One line shows `["git","add","--","local-notes.txt"]` with a `cwd` under
+`$DEMO/work/runs/<id>/execution-<id>/checkout`, never `$DEMO/caller`. The
+execution checkout itself is gone; only the record stays:
 
-Under the target failure contract, if recording or finalization fails, retain
-`result.json`, the failure report, and partial evidence. A step's successful
-output does not override that failure.
+```bash
+find "$DEMO/work/runs" -maxdepth 2 -name 'execution-*' | wc -l
+```
 
-## Leave the exercise
+prints `0`.
+
+## Clean up
 
 ```bash
 cd "$DEMO"
@@ -192,13 +174,12 @@ cd "$DEMO"
 exit
 ```
 
-Cleanup previews eligible resources. Keep the temporary directory until you
-have inspected any failures; exiting returns to your original shell.
+`exit` returns you to your normal shell. Delete `$demo` when you are done.
 
-Passing this exercise alone will not validate concurrency, independent nested
-runs, trusted review launch, real-project hooks, or injected recorder failures.
-Those require the separate production tests in the
-[validation contract](../reference/recipe-checkout-isolation.md#validation-contract).
+## Next steps
 
-See [checkout isolation](../reference/recipe-checkout-isolation.md) for required
-ignored inputs, nested-run ownership, review generations, and security limits.
+- What is copied and what is refused:
+  [checkout isolation reference](../reference/recipe-checkout-isolation.md#what-the-run-copies)
+- Record fields: [Git command record](../reference/recipe-runner-logging.md#git-command-record)
+- How auto-drive reviews in its own checkout:
+  [private review generations](../reference/recipe-checkout-isolation.md#private-review-generations)

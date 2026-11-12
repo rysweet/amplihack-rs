@@ -54,3 +54,28 @@ Overall code, security and philosophy disposition remains **changes required**.
 PR #2290 must remain unmerged and issue #2096 open. The PR's `Closes #2096` and
 "implemented behavior" claims remain inaccurate; this follow-up does not claim
 delivery of the production feature or successful full reviews.
+
+## Addendum, 12 Nov 2026
+
+The text above records the review of head `a2f92b8` and is left as written.
+The run on 12 Nov 2026 built on head `60ecbe573` and addressed the five
+blocking findings as follows. Test results for this run are in the PR #2290
+description and CI; whether issue #2096 closes is decided at the merge gate.
+
+1. Preparation, input copying, path mapping and owned release: the batch
+   staged-blob query takes object IDs only and rejects unexpected output;
+   release deletes only manifest-owned paths.
+2. Review generations at the recorded PR head: the guard script comments now
+   name the three checks Rust makes (ownership manifest, identities, detached
+   `HEAD` at the recorded PR-source commit).
+3. Recording: dry runs use `GitRecord::dry_run()` and never start the
+   observer; real runs fail closed. The observer is Linux-only.
+4. Caller `HEAD` and index: `CallerGitState` and its #964 `core.bare` repair
+   are removed, because no step runs in the caller's checkout.
+5. Lifecycle: early failures finish the recovery admission as `Failure`;
+   release runs in the order checkout, recording, admission, workspace, with
+   every error kept; resumed runs prepare a fresh execution checkout. Test
+   helpers fail on I/O errors and non-zero exits.
+
+The current contract is in
+[recipe checkout isolation](../../reference/recipe-checkout-isolation.md).
