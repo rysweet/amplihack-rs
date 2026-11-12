@@ -431,9 +431,10 @@ are gated with `#[cfg(target_os = "linux")]` and are omitted on macOS:
 - `toggle_file_turns_it_on_too`
 
 The [CI Test job](../../.github/workflows/ci.yml) runs the workspace tests on
-`ubuntu-latest`, where these cases are included. Corresponding Linux CI
-validation remains pending; no passing run is available for this branch.
-These limit-resume cases do not validate Stop counter locking.
+`ubuntu-latest`, where these cases are included. Record the corresponding
+passing Linux run and results for the reviewed revision in the pull request
+before claiming merge readiness. These limit-resume cases do not validate
+Stop counter locking.
 
 The state crate's contention test holds the real companion lock in a child
 process. Private unit-test instrumentation first attempts acquisition on the
