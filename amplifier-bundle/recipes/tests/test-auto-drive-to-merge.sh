@@ -138,8 +138,9 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t
 # PR #1347). A binary without that flag would silently exercise a different,
 # fail-open pipeline, so it is part of what "supports the helper" means.
 supports_helper() {
-  # #1888: the selector with its current arguments, so a stale build is skipped.
-  "$1" orch helper select-merge-method --help 2>/dev/null | grep -q -- '--pr-url' && \
+  # #1888: the selector with its current arguments (--base-ref reads the
+  # branch rulesets), so a build without them is skipped.
+  "$1" orch helper select-merge-method --help 2>/dev/null | grep -q -- '--base-ref' && \
   printf '{"a":"b"}' | "$1" orch helper extract-field --field a --default X >/dev/null 2>&1 \
     && printf '{"a":"b"}' | "$1" orch helper extract-json --require-field a >/dev/null 2>&1
 }
@@ -1285,6 +1286,12 @@ if [ "$*" = "api --hostname github.com repos/owner-a/repo-a" ]; then
     printf '%s\n' '{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":true}'
   fi
   exit "${GH_METHODS_RC:-0}"
+fi
+# #1888: the active rules on the base branch, every page. GH_RULES_JSON and
+# GH_RULES_RC change the answer; by default no rule applies.
+if [ "$*" = "api --hostname github.com --paginate repos/owner-a/repo-a/rules/branches/${GH_BASE-main}" ]; then
+  printf '%s\n' "${GH_RULES_JSON-[]}"
+  exit "${GH_RULES_RC:-0}"
 fi
 case "${GH_MODE:-}" in
   merged)

@@ -94,7 +94,7 @@ AUTODRIVE_LIGHT_ELIGIBILITY=light reason=within-limits
 | --- | --- | --- |
 | `task_description` | `""` | The change to make. Required unless `pr_number` or `existing_branch` is set. |
 | `repo_path` | `"."` | Repository to work in. |
-| `merge_method` | `""` | Optional. Exactly `merge`, `squash` or `rebase`. Empty: the repository's `.amplihack/auto-drive.toml` at the merge base, else the first method the repository allows, in squash, merge, rebase order. Passed unchanged to `autodrive-merge-loop` and through escalation. See [Choosing the merge method](auto-drive-to-merge.md#choosing-the-merge-method-1888). |
+| `merge_method` | `""` | Optional. Exactly `merge`, `squash` or `rebase`. Empty: the repository's `.amplihack/auto-drive.toml` at the base branch tip, else the first method that the repository settings and the base branch's rulesets both allow, in squash, merge, rebase order. Passed unchanged to `autodrive-merge-loop` and through escalation. See [Choosing the merge method](auto-drive-to-merge.md#choosing-the-merge-method-1888). |
 | `issue_number` | `""` | Optional. 1 to 10 digits. The PR body gets `Refs #N` and the branch name uses it. When `plan_task_id` is empty, `#N` is the task id for follow-up issues. See [The task id](#the-task-id). |
 | `plan_task_id` | `""` | Optional. The plan task that follow-up issues name: `N`, `#N`, or 1 to 64 characters from `A-Za-z0-9._:/-`. Checked by `light-task-id`, which exits 2 on any other value. |
 | `existing_branch` | `""` | A branch whose PR already exists. Validated with `git check-ref-format` and refused if it begins with `-`. A branch without an open PR is refused with `light-existing-branch-no-pr`. |

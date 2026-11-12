@@ -5130,7 +5130,7 @@ fn run_auto_drive_contract_shell_test(inherited: Inherited) {
 
 /// Writes a fake `amplihack` for the shell test's probe, which needs
 /// `orch helper extract-field`, `orch helper extract-json --require-field`
-/// and `orch helper select-merge-method --pr-url` (#1888).
+/// and `orch helper select-merge-method --pr-url --base-ref` (#1888).
 /// A fake without `--require-field` stands in for a build from before #1347.
 #[cfg(unix)]
 fn write_fake_amplihack(path: &Path, has_require_field: bool) {
@@ -5142,7 +5142,7 @@ fn write_fake_amplihack(path: &Path, has_require_field: bool) {
         format!(
             "#!/usr/bin/env bash\n\
              [ \"${{1:-}} ${{2:-}}\" = \"orch helper\" ] || exit 1\n\
-             case \"${{3:-}}\" in extract-json|extract-field) cat >/dev/null ;; select-merge-method) echo --pr-url ;; esac\n\
+             case \"${{3:-}}\" in extract-json|extract-field) cat >/dev/null ;; select-merge-method) echo --pr-url --base-ref ;; esac\n\
              case \" $* \" in *\" --require-field \"*) exit {require_field_rc} ;; esac\n\
              exit 0\n"
         ),

@@ -15,27 +15,31 @@
 # empty. Returns 0, 1, or 79 for a policy refusal from `gh api`.
 #
 # The choice itself is `amplihack orch helper select-merge-method` (Rust,
-# crates/amplihack-cli/src/commands/merge_method.rs): the explicit context;
-# else .amplihack/auto-drive.toml at the merge base of HEAD_SHA and the base
-# branch fetched now, never the working tree, refusing a pull request that
-# changes it; else the first of squash, merge and rebase the repository allows.
-# The repository is the one the pull request URL names. A disallowed method is
-# never used and nothing falls back.
+# crates/amplihack-cli/src/commands/merge_method/): the explicit context;
+# else .amplihack/auto-drive.toml at the base branch tip fetched now (the
+# base's policy at merge time), never the working tree, refusing a pull
+# request whose own changes touch it; else the first of squash, merge and
+# rebase that is allowed. Allowed means the repository settings allow it AND
+# every ruleset pull_request rule on the base branch (baseRefName) that lists
+# allowed_merge_methods lists it. The repository is the one the pull request
+# URL names. A disallowed method is never used and nothing falls back.
 # Contract: docs/reference/auto-drive-to-merge.md, "Choosing the merge method".
 
 # shellcheck disable=SC2034 # MERGE_FLAG belongs to the gate, which reads it after this returns
 autodrive_merge_method() {
-  local explicit="${1:-}" base="" out="" rc=0 reason=""
+  local explicit="${1:-}" base_ref="" base="" out="" rc=0 reason=""
   MERGE_FLAG=""
-  # The file is read only without an explicit method, and needs the base SHA.
+  # The rulesets are read on the base branch whatever the source.
+  base_ref="$(field "$STATE_JSON" baseRefName "")"
+  # The file is read only without an explicit method, at the fetched base tip.
   if [ -z "$explicit" ]; then
     base="${BASE_SHA:-}"
     if [ -z "$base" ] && declare -F autodrive_base_sha >/dev/null; then
-      base="$(autodrive_base_sha "$PWD" "$(field "$STATE_JSON" baseRefName "")")" || base=""
+      base="$(autodrive_base_sha "$PWD" "$base_ref")" || base=""
     fi
   fi
   out="$("$AMPLIHACK_BIN" orch helper select-merge-method --pr-url "$(field "$STATE_JSON" url "")" \
-    --repo-root "$PWD" --base "$base" --head "${HEAD_SHA:-}" --merge-method "$explicit")"
+    --repo-root "$PWD" --base-ref "$base_ref" --base "$base" --head "${HEAD_SHA:-}" --merge-method "$explicit")"
   rc=$?
   if [ "$rc" -ne 0 ]; then
     # The selector prints {"error": reason}: kept to one printable line.

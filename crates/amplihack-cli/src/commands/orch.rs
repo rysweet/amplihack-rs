@@ -58,7 +58,13 @@ pub enum OrchHelperCommands {
         /// The checkout whose object store holds the base and the head.
         #[arg(long)]
         repo_root: PathBuf,
-        /// The fetched base branch tip.
+        /// The pull request's base branch name (`baseRefName`); the rulesets
+        /// on it are read whatever the method's source. A `-`-led value is
+        /// taken too, so that it is refused with a reason.
+        #[arg(long, default_value = "", allow_hyphen_values = true)]
+        base_ref: String,
+        /// The fetched base branch tip, where `.amplihack/auto-drive.toml`
+        /// is read.
         #[arg(long, default_value = "")]
         base: String,
         /// The pull request head commit.
@@ -531,6 +537,7 @@ pub fn run(command: OrchHelperCommands) -> Result<()> {
         OrchHelperCommands::SelectMergeMethod {
             pr_url,
             repo_root,
+            base_ref,
             base,
             head,
             merge_method,
@@ -538,6 +545,7 @@ pub fn run(command: OrchHelperCommands) -> Result<()> {
             let request = super::merge_method::SelectionRequest {
                 pr_url: &pr_url,
                 repo_root: &repo_root,
+                base_ref: &base_ref,
                 base: &base,
                 head: &head,
                 explicit: &merge_method,

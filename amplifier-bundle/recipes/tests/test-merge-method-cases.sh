@@ -3,11 +3,17 @@
 # standalone harness, so every case keeps the real head, QA, review,
 # private-state and guard checks of the trusted gate.
 #
-# History used here, on top of the main fixture (merge base FX_M0 for main):
+# The file is read at the base branch tip the gate fetches, so a policy the
+# base gains after a pull request branched applies to that pull request too.
+# History used here, on top of the main fixture (main is FX_M1; the merge
+# base of GATE_HEAD=CR_SHA2 and main is FX_M0):
 #
 #   FX_M1 (main) --- MM_BASE (base adds .amplihack/auto-drive.toml) ----- refs/heads/mm-main
-#                       \
-#   CR_SHA2 ------------ MM_HEAD (a clean merge of mm-main: the file is at the merge base)
+#                       \        \
+#                        \        MM_DROP (base deletes the file again) -- refs/heads/mm-drop
+#                         \
+#   CR_SHA2 -------------- MM_HEAD (a clean merge of mm-main)
+#   CR_SHA2 (not updated: its merge base with mm-main is still FX_M0)
 #   CR_SHA2 --- MM_ADD (the pull request adds the file itself)
 #   FX_M1 --- MM_BAD (base adds an invalid file) ---- refs/heads/mm-bad; MM_BAD_HEAD merges it
 
@@ -15,6 +21,11 @@ mm_permissions() { # mm_permissions <merge> <squash> <rebase>: what gh api repor
   GH_METHODS_JSON="$(jq -cn --argjson m "$1" --argjson s "$2" --argjson r "$3" \
     '{allow_merge_commit:$m,allow_squash_merge:$s,allow_rebase_merge:$r}')"
   export GH_METHODS_JSON
+}
+# mm_rules <json>: the active rules gh api reports on the base branch.
+mm_rules() { GH_RULES_JSON="$1"; export GH_RULES_JSON; }
+mm_pr_rule() { # mm_pr_rule <method>...: one pull_request rule listing them
+  jq -cn '[{type:"pull_request",parameters:{required_approving_review_count:0,allowed_merge_methods:$ARGS.positional}}]' --args "$@"
 }
 mm_bundle() { printf '%s' "$GATE_OUT" | jq -r '.evidence_bundle // empty' 2>/dev/null; }
 # mm_files <head>: a MERGE_READY record and PASS qa evidence bound to <head>,
@@ -64,19 +75,19 @@ mm_refused() {
 }
 
 # --- the default order, from what the repository allows -------------------
-# FX has no .amplihack, so the file is looked for at the merge base FX_M0.
-mm_permissions true false false; mm_merged merge-only merge default "$FX_M0"
-mm_permissions false true false; mm_merged squash-only squash default "$FX_M0"
-mm_permissions false false true; mm_merged rebase-only rebase default "$FX_M0"
-mm_permissions true true true;   mm_merged default-order squash default "$FX_M0"
-mm_permissions true false true;  mm_merged fallback-order merge default "$FX_M0"
+# FX has no .amplihack, so the file is looked for at the base tip FX_M1.
+mm_permissions true false false; mm_merged merge-only merge default "$FX_M1"
+mm_permissions false true false; mm_merged squash-only squash default "$FX_M1"
+mm_permissions false false true; mm_merged rebase-only rebase default "$FX_M1"
+mm_permissions true true true;   mm_merged default-order squash default "$FX_M1"
+mm_permissions true false true;  mm_merged fallback-order merge default "$FX_M1"
 mm_permissions false false false
 mm_refused none-allowed "merge-method selection failed (exit 1): the repository allows no merge method"
 
 # --- the explicit context ---------------------------------------------------
 mm_permissions true true true
 mm_merged explicit rebase explicit not-read --merge-method rebase
-mm_merged empty-context squash default "$FX_M0" --merge-method ''
+mm_merged empty-context squash default "$FX_M1" --merge-method ''
 mm_permissions false true false
 mm_merged allowed-override squash explicit not-read --merge-method squash
 mm_refused disallowed-explicit "selected merge method rebase is disallowed by repository permissions" --merge-method rebase
@@ -86,16 +97,23 @@ mm_refused invalid-context "merge_method context must be exactly merge, squash o
 # --- the working tree is never read -----------------------------------------
 mkdir -p "${FX}/.amplihack"
 printf 'merge_method = "rebase"\n' > "${FX}/.amplihack/auto-drive.toml"
-mm_merged working-tree-ignored squash default "$FX_M0"
+mm_merged working-tree-ignored squash default "$FX_M1"
 rm -rf "${FX:?}/.amplihack"
 
-# --- the file at the merge base -------------------------------------------
+# --- the file at the base branch tip ----------------------------------------
 MM_BASE="$(fx_change "$FX_M1" "base sets the merge method" '.amplihack/auto-drive.toml=merge_method = "merge"')"
 MM_HEAD="$(fx_merge "$CR_SHA2" "$MM_BASE")"
+MM_DROP="$(fx_change "$MM_BASE" "base drops the merge method" '.amplihack/auto-drive.toml=@delete')"
 MM_BAD="$(fx_change "$FX_M1" "base sets an invalid merge method" '.amplihack/auto-drive.toml=merge_method = merge')"
 MM_BAD_HEAD="$(fx_merge "$CR_SHA2" "$MM_BAD")"
 MM_ADD="$(fx_change "$CR_SHA2" "pull request sets its own merge method" '.amplihack/auto-drive.toml=merge_method = "rebase"')"
-if git -C "$FX" push -q origin "${MM_BASE}:refs/heads/mm-main" "${MM_BAD}:refs/heads/mm-bad" >/dev/null 2>&1; then
+if git -C "$FX" push -q origin "${MM_BASE}:refs/heads/mm-main" "${MM_DROP}:refs/heads/mm-drop" \
+     "${MM_BAD}:refs/heads/mm-bad" >/dev/null 2>&1; then
+  # The in-flight pull request: GATE_HEAD branched at FX_M0, before the base
+  # gained the file, and was never brought up to date (an unprotected base
+  # never reports BEHIND). The base's policy still decides its merge.
+  MM_REC=""; MM_QA=""
+  GH_BASE=mm-main mm_merged base-tip-in-flight merge repository "$MM_BASE"
   mm_files "$MM_HEAD"
   GH_BASE=mm-main GH_HEAD="$MM_HEAD" mm_merged repository merge repository "$MM_BASE"
   # A local origin/mm-main that is stale is overwritten by the gate's fetch.
@@ -106,10 +124,13 @@ if git -C "$FX" push -q origin "${MM_BASE}:refs/heads/mm-main" "${MM_BAD}:refs/h
   GH_BASE=mm-main GH_HEAD="$MM_HEAD" mm_refused disallowed-repository \
     "selected merge method merge is disallowed by repository permissions; no other method is tried"
   mm_permissions true true true
+  # The base dropped the file after this head merged it in: the base tip has
+  # no file, so the default applies, whatever the merge base held.
+  GH_BASE=mm-drop GH_HEAD="$MM_HEAD" mm_merged base-tip-dropped squash default "$MM_DROP"
 
   mm_files "$MM_BAD_HEAD"
   GH_BASE=mm-bad GH_HEAD="$MM_BAD_HEAD" mm_refused invalid-file \
-    ".amplihack/auto-drive.toml at merge base ${MM_BAD}: syntax"
+    ".amplihack/auto-drive.toml at base tip ${MM_BAD}: syntax"
   # An explicit method means the file is not read, so it cannot block.
   GH_BASE=mm-bad GH_HEAD="$MM_BAD_HEAD" mm_merged invalid-file-explicit squash explicit not-read --merge-method squash
 
@@ -131,9 +152,46 @@ mm_refused base-unfetched "merge-method selection failed (exit 1): the base bran
 mm_merged base-unfetched-explicit merge explicit not-read --merge-method merge
 git -C "$FX" remote set-url origin "${FX_ORIGIN}"
 
+# --- the rulesets on the base branch -----------------------------------------
+# GitHub's pull_request rule can limit the merge methods without touching the
+# repository's allow_* fields; the allowed set is the intersection of both.
+mm_permissions true true true
+mm_rules "$(mm_pr_rule merge)"
+mm_merged ruleset-only-merge merge default "$FX_M1"
+mm_refused ruleset-explicit-disallowed \
+  "selected merge method squash is disallowed by the rulesets on branch main (pull_request allowed_merge_methods allow merge); no other method is tried" \
+  --merge-method squash
+mm_permissions false true false
+mm_refused ruleset-settings-mismatch \
+  "the repository settings allow squash and the rulesets on branch main allow merge: no merge method is allowed by both"
+mm_permissions true true true
+# Two pages: a reader that stops at the first would allow merge.
+mm_rules "$(mm_pr_rule merge rebase)$(mm_pr_rule rebase)"
+mm_merged ruleset-second-page rebase default "$FX_M1"
+mm_rules '[{"type":"required_linear_history"},{"type":"pull_request","parameters":{"required_approving_review_count":1}}]'
+mm_merged ruleset-no-method-limit squash default "$FX_M1"
+# The values are literal JSON for the gh stub to print, not shell words.
+# shellcheck disable=SC2089,SC2090
+for GH_RULES_JSON in '{}' 'null' 'bad-json' '[{"type":"pull_request"}]' \
+  '[{"type":"pull_request","parameters":{"allowed_merge_methods":"merge"}}]'; do
+  export GH_RULES_JSON
+  mm_refused ruleset-schema "invalid answer for the rulesets on branch main"
+done
+unset GH_RULES_JSON
+GH_RULES_RC=3; export GH_RULES_RC
+mm_refused ruleset-unreadable "gh api could not read the rulesets on branch main"
+GH_RULES_RC=79
+mm_refused ruleset-policy-refusal "gh api refused to read the rulesets on branch main (terminal policy exit 79)"
+if [ "$MM_RC" -eq 79 ]; then
+  pass "1888-ruleset-policy-refusal-exit" "a policy refusal reading the rulesets is surfaced as exit 79"
+else
+  fail "1888-ruleset-policy-refusal-exit" "exit ${MM_RC}, want 79"
+fi
+unset GH_RULES_RC
+
 # --- the permission read ----------------------------------------------------
 GH_METHODS_RC=79; export GH_METHODS_RC
-mm_refused api-policy-refusal "gh api refused repository merge permissions (terminal policy exit 79)"
+mm_refused api-policy-refusal "gh api refused to read repository merge permissions (terminal policy exit 79)"
 if [ "$MM_RC" -eq 79 ]; then
   pass "1888-api-policy-refusal-exit" "a policy refusal from gh api is surfaced as exit 79"
 else
@@ -196,9 +254,10 @@ chmod 0755 "$MM_HELPER_DIR/missing"
 GATE_HELPER="$MM_HELPER_DIR/missing" mm_refused missing-helper "merge-method selection failed (exit 2): the helper gave no reason"
 
 # The repository comes from the pull request URL, never from GH_REPO.
-GATE_EXTRA_ENV=GH_REPO=owner-b/repo-b mm_merged gh-repo-ignored squash default "$FX_M0"
-if grep -qxF 'api --hostname github.com repos/owner-a/repo-a' "${GATE_DIR}/gh-calls"; then
-  pass "1888-permissions-from-pr-url" "the permission read names the repository in the pull request URL"
+GATE_EXTRA_ENV=GH_REPO=owner-b/repo-b mm_merged gh-repo-ignored squash default "$FX_M1"
+if grep -qxF 'api --hostname github.com repos/owner-a/repo-a' "${GATE_DIR}/gh-calls" \
+   && grep -qxF 'api --hostname github.com --paginate repos/owner-a/repo-a/rules/branches/main' "${GATE_DIR}/gh-calls"; then
+  pass "1888-permissions-from-pr-url" "the settings and ruleset reads name the repository in the pull request URL and its base branch"
 else
   fail "1888-permissions-from-pr-url" "$(grep '^api' "${GATE_DIR}/gh-calls" | tr '\n' '|')"
 fi
