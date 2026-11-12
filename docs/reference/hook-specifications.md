@@ -1196,7 +1196,7 @@ check never makes a hook fail.
 
 Fresh installs register hooks through the native `amplihack-hooks` binary deployed at `~/.local/bin/amplihack-hooks`. The installer writes command strings such as `amplihack-hooks session-start` and `amplihack-hooks user-prompt-submit` into `~/.claude/settings.json`.
 
-The hooks keep their state under `${AMPLIHACK_HOME:-~/.amplihack}/runtime/`. The [Hook State Root Reference](./hook-state-root.md) lists every file, how the root is resolved and what happens when it cannot be.
+The hooks keep their state under `runtime/` in the hook state root. The state root is `$AMPLIHACK_HOME` when that is an absolute path with no `..` component and not a Git checkout, and `$HOME/.amplihack` otherwise. When `recipe run -w <checkout>` sets `AMPLIHACK_HOME` to the checkout, the hooks therefore write to `$HOME/.amplihack/runtime/`, not to `<checkout>/runtime/`. The [Hook State Root Reference](./hook-state-root.md) lists every file, how the root is resolved and what happens when it cannot be.
 
 ## Generated script line endings
 
