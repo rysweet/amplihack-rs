@@ -97,6 +97,8 @@ impl Fx {
             "grouproot" => "g",
             "stickyroot" => "s",
             "elsewhere" => "e",
+            "parent" => "p",
+            "parent2" => "p2",
             other => other,
         };
         let p = self.base.join(name);

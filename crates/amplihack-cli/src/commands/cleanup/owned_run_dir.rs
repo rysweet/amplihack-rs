@@ -627,7 +627,7 @@ fn read_record(dir: &File, name: &str) -> Result<Record> {
     let mut bytes = Vec::new();
     file.take(LIMIT + 1).read_to_end(&mut bytes)?;
     ensure!(bytes.len() as u64 <= LIMIT, "ownership record too large");
-    Ok(serde_json::from_slice(&bytes).context("invalid ownership record")?)
+    serde_json::from_slice(&bytes).context("invalid ownership record")
 }
 #[cfg(target_os = "linux")]
 struct Lock(File);

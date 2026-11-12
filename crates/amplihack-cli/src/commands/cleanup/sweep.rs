@@ -116,7 +116,7 @@ enum Op {
     Fail,
     RemoveRunTmp {
         run_dir: PathBuf,
-        owned: super::owned_run_dir::OwnedRunDir,
+        owned: Box<super::owned_run_dir::OwnedRunDir>,
     },
     RemoveWorktree {
         main: PathBuf,
@@ -983,7 +983,7 @@ impl Collector<'_> {
                             run_id: Some(id.to_string()),
                             op: Op::RemoveRunTmp {
                                 run_dir: run.dir.clone(),
-                                owned,
+                                owned: Box::new(owned),
                             },
                         });
                     }

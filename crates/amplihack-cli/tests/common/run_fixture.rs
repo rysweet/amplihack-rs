@@ -42,7 +42,7 @@ impl RunFixture {
             external: base.join("r"),
             home: base.join("p/t/h"),
             evidence: base.join("e"),
-            proc_root: base.join("proc"),
+            proc_root: base.join("p/t/proc"),
             base,
             _owner: owner,
         };
@@ -71,6 +71,10 @@ impl RunFixture {
             ),
             ("AMPLIHACK_WORK_ROOT", self.work.clone().into_os_string()),
             ("HOME", self.home.clone().into_os_string()),
+            (
+                "AMPLIHACK_TEST_HOME_GUARD",
+                self.home.clone().into_os_string(),
+            ),
             ("XDG_CACHE_HOME", self.home.join(".cache").into_os_string()),
             ("CODEX_HOME", self.home.join(".codex").into_os_string()),
             (

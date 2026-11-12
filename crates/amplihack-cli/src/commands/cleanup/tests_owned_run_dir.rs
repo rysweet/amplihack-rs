@@ -249,7 +249,7 @@ fn missing_invalid_or_unsafe_marker_preserves_owned_directory() {
                 }
                 "hardlink" => fs::hard_link(&record, fx.evidence.join("marker-hardlink")).unwrap(),
                 "unreadable" => {
-                    fs::set_permissions(&record, fs::Permissions::from_mode(0)).unwrap()
+                    fs::set_permissions(&record, fs::Permissions::from_mode(0o0)).unwrap()
                 }
                 _ => unreachable!(),
             }

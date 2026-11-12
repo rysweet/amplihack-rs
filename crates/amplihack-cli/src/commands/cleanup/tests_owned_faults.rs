@@ -251,7 +251,7 @@ fn invalid_external_evidence_is_never_reconstructed_from_internal_marker() {
                     fs::hard_link(&record, fx.evidence.join("external-hardlink")).unwrap()
                 }
                 "unreadable" => {
-                    fs::set_permissions(&record, fs::Permissions::from_mode(0)).unwrap()
+                    fs::set_permissions(&record, fs::Permissions::from_mode(0o0)).unwrap()
                 }
                 _ => unreachable!(),
             }

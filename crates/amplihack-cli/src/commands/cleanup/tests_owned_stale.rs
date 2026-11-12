@@ -138,7 +138,11 @@ fn stale_apply_rechecks_a_new_protected_temp_root() {
                 .any(|item| item.path == runtime && matches!(item.op, Op::RemoveRunTmp { .. }))
         );
         // SAFETY: isolated() retains the crate-wide lock and restores TMPDIR.
-        unsafe { std::env::set_var("TMPDIR", &runtime) };
+        fs::create_dir(runtime.join("proc")).unwrap();
+        unsafe {
+            std::env::set_var("TMPDIR", &runtime);
+            std::env::set_var("AMPLIHACK_TEST_PROC_ROOT", runtime.join("proc"));
+        };
         let entries = apply_items(items, &settings, true);
         let entry = entries
             .iter()

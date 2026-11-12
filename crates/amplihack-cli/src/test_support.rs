@@ -213,12 +213,15 @@ impl IsolatedWorkRoot {
         let dir = tempfile::tempdir_in(parent).expect("create isolated recipe test fixture");
         let runtime = dir.path().join("runtime");
         let tmp = runtime.join("tmp");
-        std::fs::create_dir_all(&tmp).expect("create private recipe test runtime and TMPDIR");
+        std::fs::create_dir_all(tmp.join("proc"))
+            .expect("create private recipe test runtime, TMPDIR and process table");
         let env = EnvGuard::capture(&[
             "AMPLIHACK_WORK_ROOT",
             "AMPLIHACK_WORK_ROOT_EXPLICIT",
             "AMPLIHACK_CLEANUP_ON_EXIT",
             "AMPLIHACK_RUN_TMP_ROOT",
+            "AMPLIHACK_TEST_PROC_ROOT",
+            "AMPLIHACK_TEST_HOME_GUARD",
             "AMPLIHACK_WORKFLOW_RUNTIME_DIR",
             "TMPDIR",
             "TMP",
@@ -230,6 +233,8 @@ impl IsolatedWorkRoot {
             std::env::set_var("AMPLIHACK_CLEANUP_ON_EXIT", "0");
             std::env::set_var("AMPLIHACK_RUN_TMP_ROOT", "");
             std::env::set_var("AMPLIHACK_WORKFLOW_RUNTIME_DIR", &runtime);
+            std::env::set_var("AMPLIHACK_TEST_PROC_ROOT", tmp.join("proc"));
+            std::env::set_var("AMPLIHACK_TEST_HOME_GUARD", "1");
             for key in ["TMPDIR", "TMP", "TEMP"] {
                 std::env::set_var(key, &tmp);
             }
