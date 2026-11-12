@@ -4717,6 +4717,15 @@ account is exhausted. The target must be eligible and, in addition, its login
 must be in its home slot, and if that home slot is its own profile directory,
 no running process may be using that directory.
 
+The target is picked twice. The first pick uses a cached
+[process-table reading](#cached-and-fresh-reads). When that pick finds a
+target, a forced reading follows and the target is picked again from it,
+with every eligibility check and the organisation restriction worked out
+from the forced reading alone. The swap uses only the second pick: its
+target, and the organisation restriction that came with it. Nothing from
+the first pick is reused. If the second pick finds no target, there is no
+swap.
+
 The *home slot* of account `X` is `<root>/X/.credentials.json` when directory
 `X` holds `X`'s own login, and `<root>/.auto-switch.d/parked/X/.credentials.json`
 when directory `X` is hosting another account. At any moment each account's
@@ -4882,8 +4891,13 @@ When no snapshot can be kept at all (no usable runtime directory, or the
 the snapshot cannot be written),
 amplihack logs one warning per process, naming the directory:
 `proc snapshot cache unusable at <dir>: <why>; every read scans /proc`. The
-answers are still correct. A snapshot file that is damaged, too old or fails
-a check is logged only at debug level.
+answers are still correct. A snapshot file that cannot be read or parsed, or
+that fails a safety check, is logged at debug level; the log line gives its
+path and the reason, never its contents. A snapshot whose version, user id or
+profile-root hash does not match, that names an invalid profile, or whose
+`taken_at` is in the future, is treated as missing and is not logged. A stale
+snapshot is not logged either; it is kept for the cases described in
+[Cached and fresh reads](#cached-and-fresh-reads).
 
 There is one pair of files for each profile root:
 
@@ -4968,9 +4982,13 @@ The reader turns the snapshot into the same answer the scan gave before:
 3. Otherwise the live profiles are the `profile` values of the records that
    are not zombies and are not the reader's own pid.
 
-A process never counts itself. A writer that has since exited stays in the
-snapshot until the next refresh; that can only make a profile look live
-when it is not, which is the safe direction.
+A process never counts itself. Before step 2 and step 3 are applied, each
+record that could change the answer (one with a `profile`, or one with both
+`claude_like` and `environ_unreadable`) is checked against
+`/proc/<pid>/status` and dropped when the process has gone, is a zombie or
+now belongs to another user. Records that cannot change the answer, such as
+a writer with no profile, are not checked and stay in the snapshot until the
+next refresh.
 
 #### Cached and fresh reads
 
@@ -4979,7 +4997,7 @@ sleeps or retries.
 
 | Read | Steps |
 |------|-------|
-| Cached | A fresh snapshot is used as it is. Otherwise the reader tries the lock file once. If it gets the lock, it scans `/proc`, writes the snapshot and uses the result. If the lock is held, someone else is refreshing: it uses the stale snapshot whatever its age, or, when there is no valid snapshot, counts every hosted directory as live. |
+| Cached | A fresh snapshot is used as it is. Otherwise the reader tries the lock file once. If it gets the lock, it reads the snapshot again and uses it if another reader wrote a fresh one in the meantime; otherwise it scans `/proc`, writes the snapshot and uses the result. If the lock is held, someone else is refreshing: it uses the stale snapshot whatever its age, or, when there is no valid snapshot, counts every hosted directory as live. |
 | Forced | The snapshot file is not read at all. The reader tries the lock file once. If it gets the lock, it scans `/proc`, writes the snapshot and uses the result. If the lock is held, it counts every hosted directory as live, so the command does not act. |
 | Confirmed | A cached read. If its answer would let the command act, a forced read follows and the command decides on that answer instead. |
 
@@ -4987,8 +5005,9 @@ A forced read writes its result, so the next cached reader does not scan
 again. When the snapshot cannot be written, for example because the
 directory is read-only, the reader still uses its scan, and the next reader
 scans again. A problem with the snapshot, its directory or its lock is never
-reported as an error, never written to a log or the status line, and never
-makes a command fail; at worst a command scans `/proc` as it did before.
+reported as an error, never shown on the status line, and never makes a
+command fail; at worst a command scans `/proc` as it did before. What is
+logged is set out in [Where the snapshot is kept](#where-the-snapshot-is-kept).
 
 `Unsupported` from a scan is written to the snapshot like any other result,
 so on a host where `/proc` cannot be used, shared-directory migration stays

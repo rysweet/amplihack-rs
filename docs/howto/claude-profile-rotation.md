@@ -1044,11 +1044,19 @@ ls -l "${XDG_RUNTIME_DIR:-$HOME/.amplihack/runtime}/amplihack/"
 -rw------- 1 ryan ryan    0 Nov  8 10:14 proc-snapshot-3f9a6c0e1b2d4a57.lock
 ```
 
-The file holds pids, parent pids and profile names only; it
-holds no paths, command lines or environment contents. You never need to
-edit or remove it. A damaged, foreign or unsafe file is ignored and
-replaced, and if the directory cannot be used, every check reads `/proc`
-itself, as it did before.
+Each process record holds its pid, optional profile name, and flags for
+whether it is a zombie, looks like Claude or amplihack, or has an unreadable
+environment. The file also holds a format version, user id, profile-root
+hash, scan time, writer pid and scan outcome; it holds no paths, command
+lines or environment contents.
+
+A damaged snapshot in a regular file you own is ignored and replaced on
+the next refresh, provided the directory and lock can be used and the
+write succeeds. Symlinks, nonregular entries and files owned by another
+user are ignored but never replaced: you must correct or remove those
+entries yourself. These entries cause repeated `/proc` scans and failed
+snapshot writes until corrected. If the directory cannot be used, every
+check reads `/proc` itself, as it did before.
 
 A snapshot only ever answers questions that lead to no action, such as what
 `auto-switch status` shows or which profiles the rotator measures. Before
