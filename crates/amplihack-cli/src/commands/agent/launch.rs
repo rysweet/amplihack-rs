@@ -31,7 +31,8 @@ const LAUNCHER_NAMES: &[&str] = &[
 /// (`inherit::ENV_INPUTS`), first occurrence kept.
 ///
 /// Issue #1883: every `amplihack <cli>` launch exports
-/// `AMPLIHACK_PARENT_EFFORT`, `_MODEL` and `_MODEL_BINARY`, and sets
+/// `AMPLIHACK_PARENT_EFFORT`, `_EFFORT_BINARY`, `_MODEL` and `_MODEL_BINARY`,
+/// and sets
 /// `CLAUDE_CODE_EFFORT_LEVEL` and `ANTHROPIC_MODEL` for its agent when it
 /// passes an inherited value, so a tmux server started inside an amplihack
 /// session holds them and hands them to this pane. The resumed agent gets its

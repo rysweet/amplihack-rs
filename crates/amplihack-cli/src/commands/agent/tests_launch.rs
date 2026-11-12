@@ -70,6 +70,7 @@ fn pane_unset_is_the_markers_then_the_launcher_names() {
         // Issue #1883: the effort and model variables a tmux server keeps
         // from the amplihack session that started it.
         "AMPLIHACK_PARENT_EFFORT",
+        "AMPLIHACK_PARENT_EFFORT_BINARY",
         "AMPLIHACK_PARENT_MODEL",
         "AMPLIHACK_PARENT_MODEL_BINARY",
         "CLAUDE_CODE_EFFORT_LEVEL",

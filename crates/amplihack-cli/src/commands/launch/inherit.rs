@@ -2,12 +2,14 @@
 //!
 //! `amplihack recipe run` works out the run's values once
 //! ([`resolve_parent`], then [`vet_for_binary`]) and puts them in the runner's
-//! environment as [`PARENT_EFFORT_ENV`] and [`PARENT_MODEL_ENV`]. Each step's
-//! `amplihack <binary>` launch reads only those two variables
-//! ([`inherited_from_env`]) and its own arguments, adds what [`effort_args`]
-//! and `command::model_args` return, and exports the two variables again for
-//! the agent it starts ([`export_to_child`]), so a nested run inherits from
-//! the step that started it.
+//! environment as [`PARENT_EFFORT_ENV`] and [`PARENT_MODEL_ENV`], each with
+//! the binary it was chosen for ([`PARENT_EFFORT_BINARY_ENV`],
+//! [`PARENT_MODEL_BINARY_ENV`]). Each step's `amplihack <binary>` launch
+//! reads only those variables ([`inherited_from_env`] and the provenance
+//! readers) and its own arguments, adds what [`effort_args`] and
+//! `command::model_args` return, and exports the variables again for the
+//! agent it starts ([`export_to_child`]), so a nested run inherits from the
+//! step that started it.
 //!
 //! Everything here is pure apart from [`inherited_from_env`],
 //! [`in_recipe_run`], [`print_once`] and [`export_to_child`]. Nothing in this
@@ -28,26 +30,35 @@ pub(crate) const PARENT_EFFORT_ENV: &str = "AMPLIHACK_PARENT_EFFORT";
 pub(crate) const PARENT_MODEL_ENV: &str = "AMPLIHACK_PARENT_MODEL";
 /// The binary for which the parent model was selected. Model ids are not portable.
 pub(crate) const PARENT_MODEL_BINARY_ENV: &str = "AMPLIHACK_PARENT_MODEL_BINARY";
+/// The binary for which the parent effort was chosen. Copilot takes an
+/// inherited effort only when this names copilot ([`effort_chosen_for`]).
+pub(crate) const PARENT_EFFORT_BINARY_ENV: &str = "AMPLIHACK_PARENT_EFFORT_BINARY";
 /// Every variable a launch exports for its children (C1). [`set_parent_env`]
-/// removes all three before it sets any, and a test that asserts an exact
-/// argv clears all three: every launch inside an amplihack session exports
+/// removes all four before it sets any, and a test that asserts an exact
+/// argv clears all four: every launch inside an amplihack session exports
 /// them, so `cargo test` run there inherits them.
-pub(crate) const PARENT_ENV_VARS: [&str; 3] =
-    [PARENT_EFFORT_ENV, PARENT_MODEL_ENV, PARENT_MODEL_BINARY_ENV];
+pub(crate) const PARENT_ENV_VARS: [&str; 4] = [
+    PARENT_EFFORT_ENV,
+    PARENT_EFFORT_BINARY_ENV,
+    PARENT_MODEL_ENV,
+    PARENT_MODEL_BINARY_ENV,
+];
 
 /// The effort fallback (D3, last tier), and what `claude` reads its effort from.
 pub(crate) const EFFORT_LEVEL_ENV: &str = "CLAUDE_CODE_EFFORT_LEVEL";
 /// The model fallback (D3, last tier), and what `claude` reads its model from.
 pub(crate) const MODEL_ENV: &str = "ANTHROPIC_MODEL";
 /// Every variable `recipe run` reads the run's effort and model from (D3):
-/// the three a launch exports for its children, then the two fallbacks, which
+/// the four a launch exports for its children, then the two fallbacks, which
 /// a launch also sets for its agent when it passes an inherited value. A tmux
 /// server keeps whichever of them the process that started it held, and gives
-/// them to every later session, so the tmux hand-offs remove all five
+/// them to every later session, so the tmux hand-offs remove all six
 /// (`amplihack agent-binary --shell`, `amplihack agent`'s resumed pane) and
-/// `recipe run --detach` does not start a server holding them.
-pub(crate) const ENV_INPUTS: [&str; 5] = [
+/// `recipe run --detach` does not start a server holding them. A provenance
+/// variable comes after the value it describes.
+pub(crate) const ENV_INPUTS: [&str; 6] = [
     PARENT_EFFORT_ENV,
+    PARENT_EFFORT_BINARY_ENV,
     PARENT_MODEL_ENV,
     PARENT_MODEL_BINARY_ENV,
     EFFORT_LEVEL_ENV,
@@ -191,12 +202,15 @@ pub(crate) fn resolve_parent(inputs: &ParentInputs<'_>) -> Resolved {
 /// What `binary` may receive of `resolved` (D6), and one "cannot be passed"
 /// line per dropped setting, effort first. Models from the recipe context
 /// apply to the run's binary; parent-launch models require compatible binary
-/// provenance. `through_gateway` is whether a LiteLLM gateway variable is set.
+/// provenance. Efforts are checked for copilot the same way
+/// ([`effort_chosen_for`]). `through_gateway` is whether a LiteLLM gateway
+/// variable is set.
 pub(crate) fn vet_for_binary(
     binary: &str,
     resolved: &Resolved,
     through_gateway: bool,
     parent_model_binary: Option<&str>,
+    parent_effort_binary: Option<&str>,
 ) -> (Inherited, Vec<String>) {
     let mut lines = Vec::new();
     if is_claude_compatible(binary) {
@@ -220,8 +234,9 @@ pub(crate) fn vet_for_binary(
         }
         return (passed, lines);
     }
+    let origin = effort_origin(resolved.effort_source, binary, parent_effort_binary);
     let effort = resolved.inherited.effort.as_deref().and_then(|e| {
-        if takes_effort(binary, e) {
+        if takes_effort(binary, e) && effort_chosen_for(binary, origin) {
             Some(e.to_string())
         } else {
             lines.push(cannot_pass_line("effort", e, binary));
@@ -245,13 +260,54 @@ pub(crate) fn vet_for_binary(
     (Inherited { effort, model }, lines)
 }
 
+/// The binary an effort from `source` was chosen for: the run's own binary
+/// for the recipe context (`-c effort=` is given to this run), the binary the
+/// parent launch recorded ([`PARENT_EFFORT_BINARY_ENV`]), and `claude` for
+/// the `claude` ancestor process and `CLAUDE_CODE_EFFORT_LEVEL`, which are
+/// Claude Code's own settings.
+fn effort_origin<'a>(
+    source: Option<InheritSource>,
+    run_binary: &'a str,
+    parent_effort_binary: Option<&'a str>,
+) -> Option<&'a str> {
+    match source? {
+        InheritSource::RecipeContext => Some(run_binary),
+        InheritSource::ParentLaunch => parent_effort_binary,
+        InheritSource::ParentClaude | InheritSource::EffortEnv => Some("claude"),
+        InheritSource::ModelEnv => None,
+    }
+}
+
+/// Whether `binary` may take an inherited effort chosen for `origin` (D6).
+///
+/// Copilot refuses to start, with exit status 1, a level its model does not
+/// support, and which levels those are depends on the model (`copilot --help`:
+/// "supported levels depend on the model"). A Claude session's `max` says
+/// nothing about the model copilot runs. So copilot takes an inherited effort
+/// only when it was chosen for copilot: in a copilot run's recipe context, or
+/// by a copilot launch (its own `--reasoning-effort`, or one it passed on).
+/// This is the rule models follow (`model_matches_binary`), and a refused
+/// effort gets the same "cannot be passed" line, so nothing amplihack infers
+/// can stop a copilot launch (crusty review of #1892, round 7). Missing
+/// provenance counts as another binary.
+///
+/// `claude` and `codex` take an effort whatever its origin, through their own
+/// checks: `claude` lists every level amplihack accepts, and `codex` receives
+/// only `low`, `medium` or `high` ([`codex_effort`]).
+pub(crate) fn effort_chosen_for(binary: &str, origin: Option<&str>) -> bool {
+    binary != "copilot" || origin == Some("copilot")
+}
+
 /// What a launch of `binary` with the step's `extra_args` adds for the
 /// inherited effort. Nothing at all when no effort is inherited (C4); the
 /// step's own effort wins and is what the child's variable holds (D5).
+/// `origin` is the binary the inherited effort was chosen for
+/// ([`parent_effort_binary`]); see [`effort_chosen_for`].
 pub(crate) fn effort_args(
     binary: &str,
     extra_args: &[String],
     inherited: &Inherited,
+    origin: Option<&str>,
 ) -> EffortArgs {
     let mut out = EffortArgs::default();
     let own = if is_claude_compatible(binary) {
@@ -292,7 +348,7 @@ pub(crate) fn effort_args(
         }
     } else if binary == "copilot" {
         if own.is_none() {
-            match copilot_effort(level) {
+            match copilot_effort(level).filter(|_| effort_chosen_for(binary, origin)) {
                 Some(literal) => {
                     out.argv = vec![COPILOT_EFFORT_FLAG.to_string(), literal.to_string()];
                     out.exported = Some(level.to_string());
@@ -335,6 +391,8 @@ fn takes_effort(binary: &str, level: &str) -> bool {
 /// refuses `none` and `minimal` for that model (`Reasoning effort "none"
 /// is not supported for model "claude-sonnet-5.5"`), so those two are
 /// dropped with a "cannot be passed" line (crusty review of #1892, round 6).
+/// This is the second check: an inherited effort reaches it only when it was
+/// chosen for copilot at all ([`effort_chosen_for`]).
 pub(crate) fn copilot_effort(level: &str) -> Option<&'static str> {
     Some(match level {
         "low" => "low",
@@ -521,6 +579,16 @@ pub(crate) fn in_recipe_run() -> bool {
     std::env::var_os(RECIPE_RUN_ID_ENV).is_some_and(|v| !v.is_empty())
 }
 
+/// The binary the inherited effort was chosen for, as the parent launch or
+/// `recipe run` recorded it. `recipe run` and every launch set it whenever
+/// they set [`PARENT_EFFORT_ENV`] ([`set_parent_env`]), so there is no
+/// fallback: an effort without it was not chosen for any known binary.
+pub(crate) fn parent_effort_binary() -> Option<String> {
+    std::env::var(PARENT_EFFORT_BINARY_ENV)
+        .ok()
+        .filter(|v| !v.is_empty())
+}
+
 /// Whether the inherited model was selected for this binary or a compatible
 /// Claude binary. Explicit provenance also works outside recipe runs.
 pub(crate) fn model_checked_for(binary: &str) -> bool {
@@ -646,14 +714,16 @@ pub(crate) fn export_to_child(cmd: &mut Command, applied: &Inherited, binary: &s
     );
 }
 
-/// Replace parent values and model provenance together, removing stale values
-/// first and setting provenance only when a model is present.
+/// Replace parent values and their provenance together, removing stale
+/// values first and setting each provenance variable only with the value it
+/// describes.
 pub(crate) fn set_parent_env(cmd: &mut Command, values: &Inherited, binary: &str) {
     for var in PARENT_ENV_VARS {
         cmd.env_remove(var);
     }
     if let Some(effort) = &values.effort {
         cmd.env(PARENT_EFFORT_ENV, effort);
+        cmd.env(PARENT_EFFORT_BINARY_ENV, binary);
     }
     if let Some(model) = &values.model {
         cmd.env(PARENT_MODEL_ENV, model);

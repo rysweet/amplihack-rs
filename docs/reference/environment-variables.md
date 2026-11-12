@@ -112,9 +112,9 @@ every session marker and sets both variables (#1525). It also removes
 `AMPLIHACK_AUTODRIVE_STATE_DIR` (#1976): a tmux server first started from a
 recipe step keeps the step's values, and a run in a later session would watch
 a parent that has gone and stop at once with exit `75`. It removes
-`AMPLIHACK_PARENT_EFFORT`, `AMPLIHACK_PARENT_MODEL`,
-`AMPLIHACK_PARENT_MODEL_BINARY`, `CLAUDE_CODE_EFFORT_LEVEL` and
-`ANTHROPIC_MODEL` too, then sets the caller's own value of each (#1883), so a
+`AMPLIHACK_PARENT_EFFORT`, `AMPLIHACK_PARENT_EFFORT_BINARY`,
+`AMPLIHACK_PARENT_MODEL`, `AMPLIHACK_PARENT_MODEL_BINARY`,
+`CLAUDE_CODE_EFFORT_LEVEL` and `ANTHROPIC_MODEL` too, then sets the caller's own value of each (#1883), so a
 run there inherits the caller's effort and model, not the server starter's. It belongs inside the
 double-quoted tmux command; in single quotes it expands in the new session and
 reads the server's markers. An answer read from a marker the tmux server holds
@@ -1290,7 +1290,7 @@ resolution order, the support for each binary and the log lines are in
 
 A tmux server started inside an amplihack session keeps these variables, with
 `CLAUDE_CODE_EFFORT_LEVEL` and `ANTHROPIC_MODEL`, and gives them to every later
-`tmux new-session`. `$(amplihack agent-binary --shell)` removes all five and
+`tmux new-session`. `$(amplihack agent-binary --shell)` removes all six and
 sets the caller's own values instead; see
 [Limitations](./effort-and-model-inheritance.md#limitations).
 
@@ -1298,6 +1298,14 @@ sets the caller's own values instead; see
 binary that selected it. Codex and Copilot inherit models from a parent launch
 of the same binary, including through nested recipe runs. This marker is
 removed whenever no model is exported, and its context alias is also reserved.
+
+`AMPLIHACK_PARENT_EFFORT_BINARY` does the same for the effort: it accompanies
+an exported effort, records the binary that runs with it (for
+`amplihack recipe run`, the run's agent binary), and is removed whenever no
+effort is exported. Copilot takes an inherited effort only when this names
+`copilot`, because which `--reasoning-effort` levels copilot accepts depends
+on its model and copilot refuses to start on one it does not support.
+`claude` and `codex` ignore it.
 
 ```sh
 amplihack claude -- --effort high

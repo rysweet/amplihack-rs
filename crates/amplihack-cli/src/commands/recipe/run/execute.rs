@@ -293,8 +293,9 @@ pub(super) fn is_reserved_context_key(key: &str) -> bool {
     key.to_ascii_uppercase().starts_with("AMPLIHACK_")
 }
 
-/// Refuse reserved keys in a context map before it reaches the runner: the
-/// caller's `-c`/context-file map, and the top-level recipe's `context:`.
+/// Refuse reserved keys in a context map before it reaches the runner. For
+/// `amplihack recipe run` the map is `-c`, the context file and the top-level
+/// recipe's own `context:`, merged.
 fn reject_reserved_context_keys<'a>(mut keys: impl Iterator<Item = &'a str>) -> Result<()> {
     if let Some(key) = keys.find(|key| is_reserved_context_key(key)) {
         anyhow::bail!(
@@ -591,21 +592,17 @@ pub(super) fn execute_recipe_via_rust_fresh(
     merge_guard: bool,
     fresh: bool,
 ) -> Result<RecipeRunResult> {
-    // Refuse an `AMPLIHACK_*` key in the top-level recipe's own `context:`,
-    // independently of the caller's context map: the public command merges
-    // those defaults, but internal callers pass their own map, and the runner
-    // exports every top-level key to bash steps under its upper-case name.
-    // This covers the top-level file only. The runner reads sub-recipes
-    // itself, in the same process, and exports their `context:` keys and a
-    // `type: recipe` step's `context:` the same way, so a sub-recipe can still
-    // set `AMPLIHACK_PARENT_*` for its own bash steps until the runner refuses
-    // the namespace (rysweet/amplihack-recipe-runner#146). Each launch still
-    // checks such a value (D9), and a recipe can already put `--model` or
-    // `--effort` on its own steps. This sits in `execute_recipe_via_rust_fresh`,
-    // the one path every run takes (the `#[cfg(test)]` wrapper, a fresh run and
-    // a recovered run, #2334).
-    let recipe: RecipeDoc = serde_yaml::from_str(&std::fs::read_to_string(recipe_path)?)?;
-    reject_reserved_context_keys(recipe.context.keys().map(String::as_str))?;
+    // Refuse an `AMPLIHACK_*` context key before any work, a dry run
+    // included. `pass_context` refuses the same keys on a real run; this
+    // earlier check adds only the dry run. `run_recipe_with_options`, the one
+    // production caller, has already merged the top-level recipe's own
+    // `context:` into `context` (`infer_missing_context`), and it read the
+    // recipe with `parse_recipe_from_path`, the parser that also takes JSON
+    // with surrogate-pair escapes (#1964). So this one check covers `-c`, a
+    // context file and the top-level recipe's `context:`, and the file is not
+    // parsed a second time here. Sub-recipe `context:` is the runner's, which
+    // exports it to bash steps under upper-case names until it refuses the
+    // namespace (rysweet/amplihack-recipe-runner#146).
     reject_reserved_context_keys(context.keys().map(String::as_str))?;
 
     // Issue #964: fail-closed recursion-depth guard. Refuse to spawn a nested
@@ -721,9 +718,9 @@ pub(super) fn execute_recipe_via_rust_fresh(
         // keeps AMPLIHACK_* variables, which is why only the profile name (not
         // CLAUDE_CONFIG_DIR) needs to survive: each step's nested
         // `amplihack claude` rebuilds the dir from it. `pass_context` refuses
-        // `AMPLIHACK_*` keys from `-c`, and the check at the top of this
-        // function refuses them in the top-level recipe's `context:`. The
-        // runner still exports a sub-recipe's `context:`, a `type: recipe`
+        // `AMPLIHACK_*` keys in the context map, which holds `-c`, the context
+        // file and the top-level recipe's own `context:` (merged by
+        // `run_recipe_with_options`), as it did before #1883. The runner still exports a sub-recipe's `context:`, a `type: recipe`
         // step's `context:` and step `output:` names under their upper-case
         // names, so those can still override the pinned value until the runner
         // refuses that namespace too (rysweet/amplihack-recipe-runner#146).

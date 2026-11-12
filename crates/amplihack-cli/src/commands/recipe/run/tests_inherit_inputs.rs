@@ -70,8 +70,9 @@ fn fake_proc(ancestor: &[&str]) -> FakeProc {
     FakeProc { _tmp: tmp, root }
 }
 
-const READ_VARS: [&str; 8] = [
+const READ_VARS: [&str; 9] = [
     "AMPLIHACK_PARENT_EFFORT",
+    "AMPLIHACK_PARENT_EFFORT_BINARY",
     "AMPLIHACK_PARENT_MODEL",
     "AMPLIHACK_PARENT_MODEL_BINARY",
     "AMPLIHACK_AGENT_BINARY",
@@ -336,18 +337,85 @@ fn codex_drops_effort_with_one_line_after_the_warnings() {
     );
 }
 
-/// Copilot steps receive the run's effort (as `--reasoning-effort`), and the
-/// summary names it (crusty review of #1892, round 2).
+/// Copilot steps receive an effort chosen for copilot (as
+/// `--reasoning-effort`), and the summary names it (crusty review of #1892,
+/// round 2): one a copilot launch exported, or the run's own context.
 #[test]
 fn copilot_steps_inherit_the_effort() {
     let p = fake_proc(&[]);
-    let (got, lines) = run(&p, &[], &[("AMPLIHACK_PARENT_EFFORT", "high")], "copilot");
+    let (got, lines) = run(
+        &p,
+        &[],
+        &[
+            ("AMPLIHACK_PARENT_EFFORT", "high"),
+            ("AMPLIHACK_PARENT_EFFORT_BINARY", "copilot"),
+        ],
+        "copilot",
+    );
     assert_eq!(got, inherited(Some("high"), None));
     assert_eq!(
         lines,
         vec![
             "amplihack: steps inherit effort=high model=unset (from the parent amplihack launch)"
                 .to_string()
+        ]
+    );
+    let (got, lines) = run(&p, &[("effort", "medium")], &[], "copilot");
+    assert_eq!(got, inherited(Some("medium"), None));
+    assert_eq!(
+        lines,
+        vec![
+            "amplihack: steps inherit effort=medium model=unset (from the recipe context)"
+                .to_string()
+        ]
+    );
+}
+
+/// Crusty review of #1892, round 7: a copilot run started from a Claude
+/// session does not pass that session's effort to copilot, from whichever
+/// source it is found, with or without `-c model=<gpt id>`. Copilot refuses to
+/// start on a level its model does not support, so the run drops the effort
+/// with one line rather than risk every step.
+#[test]
+fn a_copilot_run_drops_an_effort_chosen_for_claude() {
+    let line = "amplihack: effort 'max' cannot be passed to copilot; steps use copilot's default";
+    let claude = fake_proc(&["claude", "--effort", "max"]);
+    let plain = fake_proc(&[]);
+    // (the synthetic `/proc`, the recipe context, the environment)
+    type Case<'a> = (
+        &'a FakeProc,
+        &'a [(&'a str, &'a str)],
+        &'a [(&'a str, &'a str)],
+    );
+    let cases: [Case; 5] = [
+        (&plain, &[], &[("AMPLIHACK_PARENT_EFFORT", "max")]),
+        (
+            &plain,
+            &[],
+            &[
+                ("AMPLIHACK_PARENT_EFFORT", "max"),
+                ("AMPLIHACK_PARENT_EFFORT_BINARY", "claude"),
+            ],
+        ),
+        (&claude, &[], &[]),
+        (&claude, &[("model", "gpt-5.1")], &[]),
+        (&plain, &[], &[("CLAUDE_CODE_EFFORT_LEVEL", "max")]),
+    ];
+    for (proc, context, env) in cases {
+        let (got, lines) = run(proc, context, env, "copilot");
+        assert_eq!(got.effort, None, "{context:?} {env:?}");
+        assert_eq!(lines.first().map(String::as_str), Some(line), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.contains("effort=max")), "{lines:?}");
+    }
+    // The model from the context still reaches the steps on its own.
+    let (got, lines) = run(&claude, &[("model", "gpt-5.1")], &[], "copilot");
+    assert_eq!(got, inherited(None, Some("gpt-5.1")));
+    assert_eq!(
+        lines,
+        vec![
+            line.to_string(),
+            "amplihack: steps inherit effort=unset model=gpt-5.1 (from the recipe context)"
+                .to_string(),
         ]
     );
 }
@@ -482,6 +550,7 @@ fn parent_variables_are_reserved_context_keys_in_any_case() {
         "AMPLIHACK_PARENT_EFFORT",
         "AMPLIHACK_PARENT_MODEL",
         "AMPLIHACK_PARENT_MODEL_BINARY",
+        "AMPLIHACK_PARENT_EFFORT_BINARY",
         "amplihack_parent_model",
         "Amplihack_Parent_Effort",
     ] {
@@ -533,40 +602,49 @@ fn same_binary_parent_models_are_preserved_by_recipe_resolution() {
     }
 }
 
-/// Internal callers may supply an empty context map rather than merging YAML
-/// defaults. The boundary still refuses reserved YAML before any runner spawn.
+/// A reserved key in the context map is refused before any work, a dry run
+/// included (on a real run `pass_context` refuses it as well). The map is the
+/// one `amplihack recipe run` builds: `-c`, the context file and the
+/// top-level recipe's own `context:`, merged by `run_recipe_with_options`.
+/// The file itself is not read again here; `issue_1883_step_effort_model.rs`
+/// covers a reserved key written in a YAML and in a JSON recipe through the
+/// command.
 #[test]
-fn runner_boundary_checks_yaml_independently_of_the_supplied_context_map() {
+fn reserved_context_keys_are_refused_before_any_work_even_on_a_dry_run() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let temp = tempfile::tempdir().unwrap();
-    let recipe = temp.path().join("reserved.yaml");
+    let recipe = temp.path().join("plain.yaml");
+    fs::write(
+        &recipe,
+        "name: plain\nsteps:\n  - id: s\n    type: bash\n    command: \"true\"\n",
+    )
+    .unwrap();
     for key in [
         "amplihack_parent_effort",
         "AMPLIHACK_PARENT_MODEL",
         "Amplihack_Parent_Model_Binary",
+        "AMPLIHACK_PARENT_EFFORT_BINARY",
     ] {
-        fs::write(
-            &recipe,
-            format!("name: reserved\ncontext: {{{key}: low}}\nsteps: []\n"),
-        )
-        .unwrap();
-        let error = super::execute_recipe_via_rust_for_test(
-            &recipe,
-            &BTreeMap::new(),
-            false,
-            false,
-            temp.path(),
-            &[],
-            None,
-        )
-        .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("namespace cannot be set from recipe context"),
-            "{error:#}"
-        );
+        let context = BTreeMap::from([(key.to_string(), "low".to_string())]);
+        for dry_run in [true, false] {
+            let error = super::execute_recipe_via_rust_for_test(
+                &recipe,
+                &context,
+                dry_run,
+                false,
+                temp.path(),
+                &[],
+                None,
+            )
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("namespace cannot be set from recipe context"),
+                "{key}, dry run {dry_run}: {error:#}"
+            );
+        }
     }
 }

@@ -24,15 +24,18 @@
 //!   `ANTHROPIC_MODEL=Y`.
 //! - (c) nothing inherited: no `--effort`, no added variables, the default
 //!   model argv and the #1421 notice unchanged.
-//! - (d) copilot: every step receives the inherited effort as
-//!   `--reasoning-effort`; an effort copilot does not list gives the
-//!   "cannot be passed" line exactly once across the run and two steps.
+//! - (d) copilot: every step receives an effort chosen for copilot (a copilot
+//!   launch's, or the run's `-c effort=`) as `--reasoning-effort`; an effort
+//!   chosen for claude, from a parent launch, the `claude` ancestor or
+//!   `CLAUDE_CODE_EFFORT_LEVEL`, is not passed, and neither is an effort
+//!   copilot does not list; each gives the "cannot be passed" line exactly
+//!   once across the run and two steps.
 //! - (e) children have no `AMPLIHACK_CLAUDE_PROFILE_ROOT` and HOME lies under
 //!   the temp root.
 //! - (f) Linux: a plain `claude` ancestor's argv is read through `/proc`; under
 //!   an older amplihack session its model is not trusted (C2).
-//! - (g) a Claude run with an inherited model whose second step starts
-//!   `amplihack copilot`: that step receives the effort but no `--model`.
+//! - (g) a Claude run with an inherited effort and model whose second step
+//!   starts `amplihack copilot`: that step receives neither, and says so.
 //! - (h) a Claude run with effort `max` whose second step starts
 //!   `amplihack codex`: codex cannot take `max`, so that step prints the
 //!   "cannot be passed" line for effort and for the model, once each.
@@ -87,6 +90,7 @@ step="${STEP:-0}"
   printf 'CLAUDE_CODE_EFFORT_LEVEL=%s\n' "${CLAUDE_CODE_EFFORT_LEVEL-<unset>}"
   printf 'ANTHROPIC_MODEL=%s\n' "${ANTHROPIC_MODEL-<unset>}"
   printf 'AMPLIHACK_PARENT_EFFORT=%s\n' "${AMPLIHACK_PARENT_EFFORT-<unset>}"
+  printf 'AMPLIHACK_PARENT_EFFORT_BINARY=%s\n' "${AMPLIHACK_PARENT_EFFORT_BINARY-<unset>}"
   printf 'AMPLIHACK_PARENT_MODEL=%s\n' "${AMPLIHACK_PARENT_MODEL-<unset>}"
   printf 'AMPLIHACK_PARENT_MODEL_BINARY=%s\n' "${AMPLIHACK_PARENT_MODEL_BINARY-<unset>}"
   printf 'HOME=%s\n' "$HOME"
@@ -455,36 +459,123 @@ fn c_nothing_inherited_changes_nothing() {
     );
 }
 
-/// (d) Copilot takes the inherited effort as `--reasoning-effort L` on every
-/// step, with no Claude variables, and no "cannot be passed" line.
+/// (d) Copilot takes an effort chosen for copilot as `--reasoning-effort L`
+/// on every step, with no Claude variables, and no "cannot be passed" line:
+/// one a copilot launch exported, or the run's own `-c effort=`.
 #[test]
 fn d_copilot_steps_receive_reasoning_effort() {
-    let f = Fixture::new(&[]);
-    let out = f.run("copilot", &[("AMPLIHACK_PARENT_EFFORT", "high")]);
-    assert!(out.status.success(), "{}", describe(&out));
-    let all = format!(
-        "{}\n{}\n{}",
-        text(&out.stderr),
-        f.step_stderr(1),
-        f.step_stderr(2)
+    let from_copilot_launch: (&[&str], &[(&str, &str)]) = (
+        &[],
+        &[
+            ("AMPLIHACK_PARENT_EFFORT", "high"),
+            ("AMPLIHACK_PARENT_EFFORT_BINARY", "copilot"),
+        ],
     );
-    assert!(!all.contains("cannot be passed"), "{all}");
-    for step in [1, 2] {
-        let call = f.call(step);
-        let args = argv(&call);
+    // The run's context outranks a Claude session's effort, and is given to
+    // this copilot run.
+    let from_context: (&[&str], &[(&str, &str)]) = (
+        &["-c", "effort=high"],
+        &[
+            ("AMPLIHACK_PARENT_EFFORT", "max"),
+            ("AMPLIHACK_PARENT_EFFORT_BINARY", "claude"),
+        ],
+    );
+    for (extra, env) in [from_copilot_launch, from_context] {
+        let f = Fixture::new(&[]);
+        let out = f.run_with("copilot", extra, env);
+        assert!(out.status.success(), "{}", describe(&out));
+        let all = format!(
+            "{}\n{}\n{}",
+            text(&out.stderr),
+            f.step_stderr(1),
+            f.step_stderr(2)
+        );
+        assert!(!all.contains("cannot be passed"), "{all}");
+        for step in [1, 2] {
+            let call = f.call(step);
+            let args = argv(&call);
+            assert_eq!(
+                count(&args, "--reasoning-effort"),
+                1,
+                "step {step}: {args:?}"
+            );
+            assert_eq!(
+                flag(&args, "--reasoning-effort").as_deref(),
+                Some("high"),
+                "step {step}: {args:?}"
+            );
+            assert_eq!(count(&args, "--effort"), 0, "step {step}: {args:?}");
+            assert_eq!(call["CLAUDE_CODE_EFFORT_LEVEL"], "<unset>", "step {step}");
+            assert_eq!(call["AMPLIHACK_PARENT_EFFORT"], "high", "step {step}");
+            assert_eq!(
+                call["AMPLIHACK_PARENT_EFFORT_BINARY"], "copilot",
+                "step {step}"
+            );
+        }
+    }
+}
+
+/// (d) Crusty review of #1892, round 7: which levels copilot accepts depends
+/// on its model, and copilot exits 1 at startup on a level it refuses. An
+/// effort chosen for claude says nothing about copilot's model, so a copilot
+/// run does not pass it: not from a Claude launch (`AMPLIHACK_PARENT_EFFORT`
+/// with claude or no provenance), not from the `claude` ancestor process, and
+/// not from `CLAUDE_CODE_EFFORT_LEVEL`, with or without `-c model=<gpt id>`.
+/// The run says so once and every step starts without `--reasoning-effort`.
+#[test]
+fn d_copilot_run_does_not_pass_an_effort_chosen_for_claude() {
+    let ancestor = ["claude", "--effort", "max"];
+    // (ancestor argv, environment, extra `recipe run` arguments)
+    type Case<'a> = (&'a [&'a str], &'a [(&'a str, &'a str)], &'a [&'a str]);
+    let cases: [Case; 5] = [
+        (&[], &[("AMPLIHACK_PARENT_EFFORT", "max")], &[]),
+        (
+            &[],
+            &[
+                ("AMPLIHACK_PARENT_EFFORT", "max"),
+                ("AMPLIHACK_PARENT_EFFORT_BINARY", "claude"),
+            ],
+            &[],
+        ),
+        (&ancestor, &[], &[]),
+        (&ancestor, &[], &["-c", "model=gpt-5.1"]),
+        (&[], &[("CLAUDE_CODE_EFFORT_LEVEL", "max")], &[]),
+    ];
+    let line = "amplihack: effort 'max' cannot be passed to copilot; steps use copilot's default";
+    for (ancestor, env, extra) in cases {
+        let f = Fixture::new(ancestor);
+        let out = f.run_with("copilot", extra, env);
+        assert!(out.status.success(), "{}", describe(&out));
+        let all = format!(
+            "{}\n{}\n{}",
+            text(&out.stderr),
+            f.step_stderr(1),
+            f.step_stderr(2)
+        );
         assert_eq!(
-            count(&args, "--reasoning-effort"),
+            all.lines().filter(|l| *l == line).count(),
             1,
-            "step {step}: {args:?}"
+            "{ancestor:?} {env:?} {extra:?}: {all}"
         );
-        assert_eq!(
-            flag(&args, "--reasoning-effort").as_deref(),
-            Some("high"),
-            "step {step}: {args:?}"
+        assert!(
+            !text(&out.stderr).contains("steps inherit effort=max"),
+            "{}",
+            describe(&out)
         );
-        assert_eq!(count(&args, "--effort"), 0, "step {step}: {args:?}");
-        assert_eq!(call["CLAUDE_CODE_EFFORT_LEVEL"], "<unset>", "step {step}");
-        assert_eq!(call["AMPLIHACK_PARENT_EFFORT"], "high", "step {step}");
+        for step in [1, 2] {
+            let call = f.call(step);
+            let args = argv(&call);
+            assert_eq!(
+                count(&args, "--reasoning-effort"),
+                0,
+                "{ancestor:?} {env:?} {extra:?} step {step}: {args:?}"
+            );
+            assert_eq!(call["AMPLIHACK_PARENT_EFFORT"], "<unset>", "step {step}");
+            assert_eq!(
+                call["AMPLIHACK_PARENT_EFFORT_BINARY"], "<unset>",
+                "step {step}"
+            );
+        }
     }
 }
 
@@ -493,7 +584,13 @@ fn d_copilot_steps_receive_reasoning_effort() {
 #[test]
 fn d_copilot_unlisted_effort_line_appears_exactly_once() {
     let f = Fixture::new(&[]);
-    let out = f.run("copilot", &[("AMPLIHACK_PARENT_EFFORT", "ultra")]);
+    let out = f.run(
+        "copilot",
+        &[
+            ("AMPLIHACK_PARENT_EFFORT", "ultra"),
+            ("AMPLIHACK_PARENT_EFFORT_BINARY", "copilot"),
+        ],
+    );
     assert!(out.status.success(), "{}", describe(&out));
     let line = "amplihack: effort 'ultra' cannot be passed to copilot; steps use copilot's default";
     let all = format!(
@@ -645,8 +742,10 @@ fn f_an_ancestor_model_is_not_trusted_inside_an_older_session() {
 /// (g) Crusty review of #1892, round 2: a Claude run passes its model to the
 /// runner, which every process under the run sees. A step that starts
 /// `amplihack copilot` (quality-loop.yaml) must not receive that Claude
-/// model id, because the run checked it for claude only. It still receives
-/// the effort, which copilot lists.
+/// model id, because the run checked it for claude only. Round 7: nor the
+/// effort, which the run chose for claude (`AMPLIHACK_PARENT_EFFORT_BINARY`
+/// is `claude`); a Claude `max` could make copilot exit 1 on its own model.
+/// The copilot launch says so, once for each.
 #[test]
 fn g_claude_run_model_does_not_reach_an_amplihack_copilot_step() {
     let f = Fixture::new(&[]);
@@ -661,24 +760,32 @@ fn g_claude_run_model_does_not_reach_an_amplihack_copilot_step() {
     assert!(out.status.success(), "{}", describe(&out));
     let claude = argv(&f.call(1));
     assert_eq!(flag(&claude, "--model").as_deref(), Some(X), "{claude:?}");
+    assert_eq!(f.call(1)["AMPLIHACK_PARENT_EFFORT_BINARY"], "claude");
     let call = f.call(2);
     let copilot = argv(&call);
     assert_eq!(count(&copilot, "--model"), 0, "{copilot:?}");
     assert!(!copilot.iter().any(|a| a.contains(X)), "{copilot:?}");
-    assert_eq!(
-        flag(&copilot, "--reasoning-effort").as_deref(),
-        Some("high"),
-        "{copilot:?}"
-    );
+    assert_eq!(count(&copilot, "--reasoning-effort"), 0, "{copilot:?}");
     assert_eq!(call["ANTHROPIC_MODEL"], "<unset>");
     assert_eq!(call["AMPLIHACK_PARENT_MODEL"], "<unset>");
-    let line =
-        format!("amplihack: model '{X}' cannot be passed to copilot; steps use copilot's default");
-    assert_eq!(
-        f.step_stderr(2).lines().filter(|l| *l == line).count(),
-        1,
+    assert_eq!(call["AMPLIHACK_PARENT_EFFORT"], "<unset>");
+    for line in [
+        "amplihack: effort 'high' cannot be passed to copilot; steps use copilot's default"
+            .to_string(),
+        format!("amplihack: model '{X}' cannot be passed to copilot; steps use copilot's default"),
+    ] {
+        assert_eq!(
+            f.step_stderr(2).lines().filter(|l| *l == line).count(),
+            1,
+            "{line}\n---\n{}",
+            f.step_stderr(2)
+        );
+    }
+    // The run's own lines are about claude, which takes both values.
+    assert!(
+        !text(&out.stderr).contains("cannot be passed"),
         "{}",
-        f.step_stderr(2)
+        describe(&out)
     );
 }
 
@@ -864,11 +971,21 @@ fn codex_quoted_toml_effort_survives_a_nested_recipe() {
     }
 }
 
-/// Exercise the public command with the real runner, including a successful
-/// bash launch control. A stub cannot detect the runner's YAML alias exports.
-#[test]
-fn real_runner_yaml_cannot_override_checked_parent_inheritance() {
-    let runner = std::env::var_os("RECIPE_RUNNER_RS_PATH")
+/// A multi-line JSON recipe whose bash step holds a UTF-16 surrogate-pair
+/// escape (`\uD83D\uDE00`, U+1F600) on a later line. YAML refuses that
+/// escape, so only the JSON fallback of `parse_recipe_text` reads it (#1964,
+/// docs/reference/recipe-cli-reference.md, "Recipe text encoding"). The step
+/// starts the fake agent as step 1. `{CONTEXT}` is replaced with the
+/// recipe's `context` object.
+const JSON_RECIPE: &str = r#"{"name": "inherit-1883-json", "version": "1.0.0",
+ "context": {CONTEXT},
+ "steps": [{"id": "nested-launch", "type": "bash",
+   "command": "echo \uD83D\uDE00 >/dev/null && STEP=1 \"$AMPLIHACK_UNDER_TEST\" claude --subprocess-safe -- -p control"}]}
+"#;
+
+/// The recipe runner the CI installs from claude-plugin/recipe-runner.rev.
+fn real_runner() -> PathBuf {
+    std::env::var_os("RECIPE_RUNNER_RS_PATH")
         .map(PathBuf::from)
         .or_else(|| {
             std::env::var_os("PATH").and_then(|paths| {
@@ -877,7 +994,133 @@ fn real_runner_yaml_cannot_override_checked_parent_inheritance() {
                     .find(|p| p.is_file())
             })
         })
-        .expect("install the runner pinned in claude-plugin/recipe-runner.rev");
+        .expect("install the runner pinned in claude-plugin/recipe-runner.rev")
+}
+
+/// Crusty review of #1892, round 7: `recipe run` once re-read the recipe
+/// file with a YAML-only parser to look for reserved context keys, and so
+/// refused a JSON recipe with a surrogate pair that `recipe validate` and the
+/// runner accept (`found invalid Unicode character escape code`). The file is
+/// read once, by `parse_recipe_text`; its `context:` reaches the run through
+/// the merged context map. With the stub runner: `recipe validate` and
+/// `recipe run` both accept the recipe, and its `effort` reaches every step.
+#[test]
+fn a_json_recipe_with_a_surrogate_pair_runs_and_its_context_is_inherited() {
+    let f = Fixture::new(&[]);
+    let path = f.root.join("inherit-1883.json");
+    fs::write(
+        &path,
+        JSON_RECIPE.replace("{CONTEXT}", r#"{"effort": "low"}"#),
+    )
+    .unwrap();
+    let validate = f
+        .command("claude", &[])
+        .args(["recipe", "validate"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(validate.status.success(), "{}", describe(&validate));
+    let out = f
+        .command("claude", &[])
+        .args(["recipe", "run"])
+        .arg(&path)
+        .arg("-w")
+        .arg(&f.work)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", describe(&out));
+    assert!(!text(&out.stderr).contains("Unicode"), "{}", describe(&out));
+    assert!(
+        text(&out.stderr)
+            .contains("amplihack: steps inherit effort=low model=unset (from the recipe context)"),
+        "{}",
+        describe(&out)
+    );
+    for step in [1, 2] {
+        let call = f.call(step);
+        assert_eq!(
+            flag(&argv(&call), "--effort").as_deref(),
+            Some("low"),
+            "step {step}"
+        );
+        assert_eq!(call["AMPLIHACK_PARENT_EFFORT"], "low", "step {step}");
+    }
+}
+
+/// S6 through the command, for a YAML and a JSON recipe: an `AMPLIHACK_*`
+/// key in the `context:` of the recipe the run starts is refused before the
+/// runner starts, on a dry run too. The stub runner launches its steps even
+/// on a dry run, so a step record would show the check was missed.
+#[test]
+fn a_reserved_key_in_the_recipe_context_is_refused_before_the_runner_starts() {
+    let f = Fixture::new(&[]);
+    for key in [
+        "amplihack_parent_effort",
+        "AMPLIHACK_PARENT_MODEL",
+        "Amplihack_Parent_Model_Binary",
+        "AMPLIHACK_PARENT_EFFORT_BINARY",
+    ] {
+        let yaml = RECIPE.replace("context: {}", &format!("context: {{{key}: low}}"));
+        let json = JSON_RECIPE.replace("{CONTEXT}", &format!(r#"{{"{key}": "low"}}"#));
+        for (file, body) in [("reserved.yaml", yaml), ("reserved.json", json)] {
+            let path = f.root.join(file);
+            fs::write(&path, body).unwrap();
+            for dry_run in [false, true] {
+                let mut c = f.command("claude", &[]);
+                c.args(["recipe", "run"]).arg(&path).arg("-w").arg(&f.work);
+                if dry_run {
+                    c.arg("--dry-run");
+                }
+                let out = c.output().unwrap();
+                let what = format!("{key} in {file}, dry run {dry_run}");
+                assert!(!out.status.success(), "{what}: {}", describe(&out));
+                assert!(
+                    text(&out.stderr).contains("namespace cannot be set from recipe context"),
+                    "{what}: {}",
+                    describe(&out)
+                );
+                assert!(
+                    !f.records.join("call.1").exists(),
+                    "{what}: a reserved key reached a step"
+                );
+            }
+        }
+    }
+}
+
+/// Crusty's reproduction with the real runner: a multi-line JSON recipe with
+/// a surrogate pair runs, and its bash step's launch inherits the recipe
+/// context's effort.
+#[test]
+fn real_runner_runs_a_multi_line_json_recipe_with_a_surrogate_pair() {
+    let runner = real_runner();
+    let f = Fixture::new(&[]);
+    let path = f.root.join("inherit-1883.json");
+    fs::write(
+        &path,
+        JSON_RECIPE.replace("{CONTEXT}", r#"{"effort": "low"}"#),
+    )
+    .unwrap();
+    let out = f
+        .command("claude", &[])
+        .env("RECIPE_RUNNER_RS_PATH", &runner)
+        .args(["recipe", "run"])
+        .arg(&path)
+        .arg("-w")
+        .arg(&f.work)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", describe(&out));
+    let call = f.call(1);
+    assert_eq!(flag(&argv(&call), "--effort").as_deref(), Some("low"));
+    assert_eq!(call["AMPLIHACK_PARENT_EFFORT"], "low");
+}
+
+/// Exercise the public command with the real runner, including a successful
+/// bash launch control. A stub cannot detect the runner's YAML alias exports.
+#[test]
+fn real_runner_yaml_cannot_override_checked_parent_inheritance() {
+    let runner = real_runner();
     let f = Fixture::new(&[]);
     let recipe = r#"name: inherit-1883
 version: 1.0.0

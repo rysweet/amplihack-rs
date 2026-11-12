@@ -1351,6 +1351,7 @@ fn model_args_inherited(
             "CLAUDE_CODE_EFFORT_LEVEL",
             "AMPLIHACK_RECIPE_RUN_ID",
             "AMPLIHACK_PARENT_EFFORT",
+            "AMPLIHACK_PARENT_EFFORT_BINARY",
             "AMPLIHACK_PARENT_MODEL",
             "AMPLIHACK_PARENT_MODEL_BINARY",
             "AMPLIHACK_AGENT_BINARY",

@@ -36,8 +36,8 @@
 //! would otherwise watch a parent that has gone and stop at once with exit 75.
 //!
 //! It removes the effort and model variables too (`inherit::ENV_INPUTS`, issue
-//! #1883): `AMPLIHACK_PARENT_EFFORT`, `_MODEL` and `_MODEL_BINARY`, which every
-//! `amplihack <cli>` launch exports, and `CLAUDE_CODE_EFFORT_LEVEL` and
+//! #1883): `AMPLIHACK_PARENT_EFFORT`, `_EFFORT_BINARY`, `_MODEL` and
+//! `_MODEL_BINARY`, which every `amplihack <cli>` launch exports, and `CLAUDE_CODE_EFFORT_LEVEL` and
 //! `ANTHROPIC_MODEL`, which a launch sets for its agent when it passes an
 //! inherited value. A server first started inside an amplihack session holds
 //! that session's values, and a `recipe run` in a later session would rank
@@ -51,7 +51,8 @@
 //! leaves alone in both places the line is read (see [`shell_inert`]); a model
 //! such as `opus[1m]` does not, so it is removed and not set, and the caller's
 //! terminal gets one line naming the variable and how to pass it instead.
-//! `AMPLIHACK_PARENT_MODEL_BINARY` crosses only with the model it describes.
+//! `AMPLIHACK_PARENT_EFFORT_BINARY` and `AMPLIHACK_PARENT_MODEL_BINARY` each
+//! cross only with the effort or model they describe.
 //!
 //! The assignments that follow set the caller's answer. GNU, BSD (macOS) and
 //! BusyBox `env` all take `-u`, and further `NAME=value` words after the
@@ -112,7 +113,8 @@ use amplihack_utils::agent_binary::{
 use anyhow::{Context, Result};
 
 use crate::commands::launch::inherit::{
-    ENV_INPUTS, PARENT_MODEL_BINARY_ENV, PARENT_MODEL_ENV, checked,
+    ENV_INPUTS, PARENT_EFFORT_BINARY_ENV, PARENT_EFFORT_ENV, PARENT_MODEL_BINARY_ENV,
+    PARENT_MODEL_ENV, checked,
 };
 use crate::commands::recipe::run::parent_watch::PARENT_WATCH_ENV;
 
@@ -193,14 +195,15 @@ fn shell_inert(c: char) -> bool {
 /// simply removed on the far side.
 pub(crate) fn inherit_handoff(read: impl Fn(&str) -> Option<String>) -> InheritHandoff {
     let mut out = InheritHandoff::default();
-    let mut model_crossed = false;
     for name in ENV_INPUTS {
         let Some(value) = read(name).filter(|v| !v.is_empty()) else {
             continue;
         };
-        if name == PARENT_MODEL_BINARY_ENV {
-            // Provenance travels only with the model it describes.
-            if model_crossed && value.chars().all(shell_inert) {
+        if let Some(described) = provenance_of(name) {
+            // Provenance travels only with the value it describes, which
+            // `ENV_INPUTS` lists first.
+            let value_crossed = out.set.iter().any(|(set, _)| *set == described);
+            if value_crossed && value.chars().all(shell_inert) {
                 out.set.push((name, value));
             }
             continue;
@@ -208,13 +211,21 @@ pub(crate) fn inherit_handoff(read: impl Fn(&str) -> Option<String>) -> InheritH
         let crosses =
             checked(&value).as_deref() == Some(value.as_str()) && value.chars().all(shell_inert);
         if crosses {
-            model_crossed |= name == PARENT_MODEL_ENV;
             out.set.push((name, value));
         } else {
             out.not_handed_on.push(name);
         }
     }
     out
+}
+
+/// The value a provenance variable describes, or `None` for a value variable.
+fn provenance_of(name: &str) -> Option<&'static str> {
+    match name {
+        PARENT_EFFORT_BINARY_ENV => Some(PARENT_EFFORT_ENV),
+        PARENT_MODEL_BINARY_ENV => Some(PARENT_MODEL_ENV),
+        _ => None,
+    }
 }
 
 /// The line `amplihack agent-binary` prints.
@@ -388,13 +399,14 @@ mod tests {
 
     /// Crusty review of #1892, round 6: a tmux server first started inside an
     /// amplihack session holds that session's effort and model variables
-    /// globally. The hand-off removes all five, then sets the caller's, before
+    /// globally. The hand-off removes all six, then sets the caller's, before
     /// the agent-binary assignments, so a run in a later session inherits the
     /// caller's values and not the server starter's.
     #[test]
     fn the_hand_off_replaces_the_effort_and_model_variables() {
         let caller = handoff(&[
             ("AMPLIHACK_PARENT_EFFORT", "xhigh"),
+            ("AMPLIHACK_PARENT_EFFORT_BINARY", "claude"),
             ("AMPLIHACK_PARENT_MODEL", "claude-opus-5-5"),
             ("AMPLIHACK_PARENT_MODEL_BINARY", "claude"),
             ("CLAUDE_CODE_EFFORT_LEVEL", "xhigh"),
@@ -411,7 +423,8 @@ mod tests {
         assert_eq!(
             line,
             format!(
-                "{} AMPLIHACK_PARENT_EFFORT=xhigh AMPLIHACK_PARENT_MODEL=claude-opus-5-5 \
+                "{} AMPLIHACK_PARENT_EFFORT=xhigh AMPLIHACK_PARENT_EFFORT_BINARY=claude \
+                 AMPLIHACK_PARENT_MODEL=claude-opus-5-5 \
                  AMPLIHACK_PARENT_MODEL_BINARY=claude CLAUDE_CODE_EFFORT_LEVEL=xhigh \
                  ANTHROPIC_MODEL=claude-opus-5-5 AMPLIHACK_AGENT_BINARY=claude \
                  AMPLIHACK_AGENT_BINARY_SOURCE=",
@@ -421,6 +434,7 @@ mod tests {
         let words: Vec<&str> = line.split(' ').collect();
         for variable in [
             "AMPLIHACK_PARENT_EFFORT",
+            "AMPLIHACK_PARENT_EFFORT_BINARY",
             "AMPLIHACK_PARENT_MODEL",
             "AMPLIHACK_PARENT_MODEL_BINARY",
             "CLAUDE_CODE_EFFORT_LEVEL",
@@ -468,6 +482,7 @@ mod tests {
     fn a_value_a_shell_would_change_is_removed_and_named() {
         let caller = handoff(&[
             ("AMPLIHACK_PARENT_EFFORT", "high"),
+            ("AMPLIHACK_PARENT_EFFORT_BINARY", "claude"),
             ("AMPLIHACK_PARENT_MODEL", "claude-opus-5[1m]"),
             ("AMPLIHACK_PARENT_MODEL_BINARY", "claude"),
             ("CLAUDE_CODE_EFFORT_LEVEL", "high"),
@@ -477,6 +492,7 @@ mod tests {
             caller.set,
             vec![
                 ("AMPLIHACK_PARENT_EFFORT", "high".to_string()),
+                ("AMPLIHACK_PARENT_EFFORT_BINARY", "claude".to_string()),
                 ("CLAUDE_CODE_EFFORT_LEVEL", "high".to_string()),
             ]
         );
@@ -525,6 +541,32 @@ mod tests {
                 "{value}"
             );
         }
+    }
+
+    /// `AMPLIHACK_PARENT_EFFORT_BINARY` describes the effort; without an
+    /// effort that crosses, a stale provenance is not handed on, so a far-side
+    /// copilot cannot take a server starter's effort as its own.
+    #[test]
+    fn effort_provenance_crosses_only_with_its_effort() {
+        let caller = handoff(&[("AMPLIHACK_PARENT_EFFORT_BINARY", "copilot")]);
+        assert_eq!(caller, InheritHandoff::default());
+        let caller = handoff(&[
+            ("AMPLIHACK_PARENT_EFFORT", " high"),
+            ("AMPLIHACK_PARENT_EFFORT_BINARY", "copilot"),
+        ]);
+        assert_eq!(caller.set, Vec::new());
+        assert_eq!(caller.not_handed_on, vec!["AMPLIHACK_PARENT_EFFORT"]);
+        let caller = handoff(&[
+            ("AMPLIHACK_PARENT_EFFORT", "high"),
+            ("AMPLIHACK_PARENT_EFFORT_BINARY", "copilot"),
+        ]);
+        assert_eq!(
+            caller.set,
+            vec![
+                ("AMPLIHACK_PARENT_EFFORT", "high".to_string()),
+                ("AMPLIHACK_PARENT_EFFORT_BINARY", "copilot".to_string()),
+            ]
+        );
     }
 
     /// `AMPLIHACK_PARENT_MODEL_BINARY` describes the model; without a model

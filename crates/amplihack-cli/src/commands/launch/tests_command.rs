@@ -17,7 +17,8 @@ fn make_binary(path: &str) -> BinaryInfo {
 /// Issue #1883 (C1): every launch inside an amplihack session exports
 /// `AMPLIHACK_PARENT_*`, so a `cargo test` started there inherits them and an
 /// exact-argv test would see the session's `--model` and `--effort`. Removes
-/// all three until the guard drops; the caller holds `home_env_lock()`.
+/// every `PARENT_ENV_VARS` name until the guard drops; the caller holds
+/// `home_env_lock()`.
 pub(super) fn clear_parent_env() -> EnvGuard {
     EnvGuard::unset(super::inherit::PARENT_ENV_VARS)
 }
@@ -1141,8 +1142,9 @@ fn codex_resume_uses_subcommand_and_continue_selects_last_without_model_pin() {
 
 /// Every variable the inheritance path reads or writes, plus the ones the
 /// argv assertions below depend on.
-const INHERIT_TEST_VARS: [&str; 15] = [
+const INHERIT_TEST_VARS: [&str; 16] = [
     "AMPLIHACK_PARENT_EFFORT",
+    "AMPLIHACK_PARENT_EFFORT_BINARY",
     "AMPLIHACK_AGENT_BINARY",
     "AMPLIHACK_PARENT_MODEL",
     "AMPLIHACK_PARENT_MODEL_BINARY",
@@ -1377,7 +1379,8 @@ fn test_1883_codex_effort_goes_before_resume() {
     assert_eq!(env_val(&b, "ANTHROPIC_MODEL"), None);
 }
 
-/// Copilot takes the inherited effort as `--reasoning-effort L` and no
+/// Copilot takes an inherited effort chosen for copilot
+/// (`AMPLIHACK_PARENT_EFFORT_BINARY=copilot`) as `--reasoning-effort L` and no
 /// Claude variables (crusty review of #1892, round 2).
 #[test]
 fn test_1883_copilot_gets_reasoning_effort() {
@@ -1386,6 +1389,7 @@ fn test_1883_copilot_gets_reasoning_effort() {
         false,
         &[
             ("AMPLIHACK_PARENT_EFFORT", "xhigh"),
+            ("AMPLIHACK_PARENT_EFFORT_BINARY", "copilot"),
             ("AMPLIHACK_RECIPE_RUN_ID", "run-1883"),
         ],
         &["-p", "do it"],
@@ -1396,6 +1400,30 @@ fn test_1883_copilot_gets_reasoning_effort() {
     assert!(!b.args.iter().any(|a| a == "--effort"), "{:?}", b.args);
     assert_eq!(env_val(&b, "CLAUDE_CODE_EFFORT_LEVEL"), None);
     assert_eq!(b.applied.effort.as_deref(), Some("xhigh"));
+}
+
+/// Crusty review of #1892, round 7: a copilot launch does not take an
+/// effort chosen for claude, or one with no recorded binary. Copilot exits 1
+/// at startup on a level its model refuses, so the launch starts copilot
+/// without `--reasoning-effort` and passes no effort on.
+#[test]
+fn test_1883_copilot_does_not_get_an_effort_chosen_for_claude() {
+    for provenance in [None, Some("claude")] {
+        let mut env = vec![
+            ("AMPLIHACK_PARENT_EFFORT", "max"),
+            ("AMPLIHACK_RECIPE_RUN_ID", "run-1883"),
+            ("AMPLIHACK_AGENT_BINARY", "claude"),
+        ];
+        env.extend(provenance.map(|p| ("AMPLIHACK_PARENT_EFFORT_BINARY", p)));
+        let b = build_inherit("copilot", false, &env, &["-p", "do it"]);
+        assert!(
+            !b.args.iter().any(|a| a.contains("reasoning-effort")),
+            "{provenance:?}: {:?}",
+            b.args
+        );
+        assert_eq!(b.applied.effort, None, "{provenance:?}");
+        assert_eq!(env_val(&b, "CLAUDE_CODE_EFFORT_LEVEL"), None);
+    }
 }
 
 /// A copilot step's own `--reasoning-effort` wins, and is what its children

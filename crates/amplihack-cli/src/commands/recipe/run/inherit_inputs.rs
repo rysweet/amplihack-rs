@@ -6,7 +6,8 @@
 
 use crate::commands::launch::inherit::{
     EFFORT_LEVEL_ENV, Inherited, MODEL_ENV, PARENT_EFFORT_ENV, PARENT_MODEL_ENV, ParentInputs,
-    Resolved, checked, inherit_summary_line, parent_model_binary, resolve_parent, vet_for_binary,
+    Resolved, checked, inherit_summary_line, parent_effort_binary, parent_model_binary,
+    resolve_parent, vet_for_binary,
 };
 use std::collections::BTreeMap;
 
@@ -60,6 +61,7 @@ pub(crate) fn inherit_for_run(
         &resolved,
         through_gateway,
         parent_model_binary().as_deref(),
+        parent_effort_binary().as_deref(),
     );
     let mut lines = resolved.warnings.clone();
     lines.extend(notices);

@@ -188,7 +188,12 @@ pub(super) fn build_launch_command(
     }
     cmd.args(&model.argv);
     cmd.envs(model.env.iter().map(|(k, v)| (*k, v)));
-    let effort = inherit::effort_args(&binary.name, extra_args, &inherited);
+    let effort = inherit::effort_args(
+        &binary.name,
+        extra_args,
+        &inherited,
+        inherit::parent_effort_binary().as_deref(),
+    );
     cmd.args(&effort.argv);
     cmd.envs(effort.env.iter().map(|(k, v)| (*k, v)));
     // Inside a recipe run for this same binary, `recipe run` has already
