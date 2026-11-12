@@ -501,9 +501,10 @@ fn a_lock_released_at_4_9_virtual_seconds_is_still_taken() {
     assert!(g.seen(&ev(1)).unwrap(), "the commit wrote its marker");
 }
 
-/// The same holder letting go only at 5 s is too late: the wait has given up.
+/// A holder scheduled to release at 65 virtual seconds outlasts the default
+/// five-second wait: the commit gives up while the lock is still held.
 #[test]
-fn a_lock_released_only_at_5_virtual_seconds_is_given_up_on() {
+fn a_lock_held_beyond_the_default_timeout_is_given_up_on() {
     let r = root();
     let held = held_lock(r.path());
     let (clock, released) = releasing_clock(held, LOCK_TIMEOUT + Duration::from_secs(60));

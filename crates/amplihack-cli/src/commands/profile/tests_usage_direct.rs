@@ -70,7 +70,7 @@ use super::usage_direct::{
     API_BASE_ENV, BETA, CLIENT_ID, Creds, DEFAULT_API_BASE, DEFAULT_TOKEN_URL, Endpoints, MAX_BODY,
     MAX_EXPIRES_IN, MAX_STEP, MAX_TOKEN, MIN_STEP, REFRESH_BUDGET, REFRESH_MARGIN_SECS, Request,
     TOKEN_URL_ENV, Token, USAGE_PATH, USER_AGENT, base_ok, bounded_lookup, expires_in, map_err,
-    post_failure, read, reason, refresh_status, refreshes_in_progress,
+    post_failure, read, reason, refresh_counter, refresh_status, refreshes_in_progress,
 };
 use super::usage_direct::{Ctx, get_step, post_step, read_with, refresh_expired_with};
 use super::usage_parse::UsageState;
@@ -1692,9 +1692,10 @@ fn the_refresh_counter_covers_a_refresh_in_progress() {
     assert!(!l.lock().exists());
 }
 
-/// SR-9: `read` counts its refresh on the process-wide counter that
-/// `refreshes_in_progress` and `wait_for_refreshes` read, so the rotator's
-/// wait still covers it. The shared lock excludes other process-wide refreshes.
+/// SR-9: the read counts its refresh on the process-wide counter that
+/// `Ctx::system`, `refreshes_in_progress` and `wait_for_refreshes` use, so the
+/// rotator's wait still covers it. Only the clock and transport guard differ
+/// from production. The shared lock excludes other process-wide refreshes.
 #[test]
 fn read_uses_the_process_wide_counter() {
     let _serial = crate::test_support::refresh_count_lock();
@@ -1707,6 +1708,7 @@ fn read_uses_the_process_wide_counter() {
     let root = l.root.clone();
     let ep = endpoints(&fake);
     let reader = std::thread::spawn(move || {
+        let clock = VirtualClock::new();
         let journals = vec![root.join(".auto-switch.d/journal.json")];
         let req = Request {
             creds_dir: &dir,
@@ -1716,17 +1718,16 @@ fn read_uses_the_process_wide_counter() {
             timeout: HANG_GUARD,
             now_ms: now_ms(),
         };
-        read(&ep, &req).is_ok()
+        read_with(&ep, &req, &Ctx::new(&clock, refresh_counter(), HANG_GUARD)).is_ok()
     });
     posted
         .recv_timeout(HANG_GUARD)
         .expect("the refresh POST reached the token server");
-    assert!(
-        refreshes_in_progress() >= 1,
-        "read() counts on the process-wide counter"
-    );
+    assert_eq!(refreshes_in_progress(), 1, "the held refresh is counted");
+    assert!(l.lock().is_dir(), "the refresh holds Claude's lock");
     gate.release();
     assert!(reader.join().unwrap());
+    assert_eq!(refreshes_in_progress(), 0, "released with the lock");
     assert!(!l.lock().exists());
 }
 

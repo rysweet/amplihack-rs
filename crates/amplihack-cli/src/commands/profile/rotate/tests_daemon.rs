@@ -334,10 +334,11 @@ fn the_leak_scan_matches_the_argv_spawn_builds() {
 mod issue_1844 {
     use super::super::inflight::{finish_refreshes, refresh_grace};
     use crate::commands::profile::tests_fake_http::{FakeHttp, Reply};
-    use crate::commands::profile::usage_direct::{Endpoints, Request, read};
+    use crate::commands::profile::usage_direct::{Ctx, Endpoints, Request, read_with};
     use crate::commands::profile::usage_direct::{refresh_counter, wait_for_refreshes_on};
+    use crate::test_support::virtual_clock::FrozenClock;
     use crate::test_support::wait::CEILING;
-    use amplihack_utils::clock::{Clock, SystemClock};
+    use amplihack_utils::clock::Clock;
     use serde_json::json;
     use std::ffi::OsStr;
     use std::fs;
@@ -367,29 +368,30 @@ mod issue_1844 {
         assert!(finish_refreshes(Duration::ZERO));
     }
 
-    /// `SystemClock` that reports, once, the first time the waiter sleeps.
+    /// Frozen clock that reports, once, the first time the waiter sleeps.
     /// `wait_for_refreshes_on` sleeps only while the count is above zero, so
     /// the report means the stop has seen the held refresh and is waiting.
     struct ReportsFirstWait {
+        clock: std::sync::Arc<FrozenClock>,
         waiting: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>,
     }
 
     impl Clock for ReportsFirstWait {
         fn now(&self) -> std::time::Instant {
-            SystemClock.now()
+            self.clock.now()
         }
         fn sleep(&self, d: Duration) {
             if let Some(tx) = self.waiting.lock().unwrap().take() {
                 let _ = tx.send(());
             }
-            SystemClock.sleep(d);
+            self.clock.sleep(d);
         }
     }
 
     /// The stop must wait for a refresh it finds in progress. The stopper
     /// runs what `finish_refreshes` runs (`wait_for_refreshes_on` on the
-    /// process-wide count with the real clock and the stop's grace), on a
-    /// clock that reports its first wait. Only after that report, with the
+    /// process-wide count and the stop's grace), on a frozen clock that
+    /// reports its first wait. Only after that report, with the
     /// stopper still running, is the refresh let finish; so the test proves
     /// the order, not just the outcome.
     #[test]
@@ -446,6 +448,7 @@ mod issue_1844 {
         let (base, token) = (fake.base(), fake.token_url());
         let reader_dir = dir.clone();
         let reader = std::thread::spawn(move || {
+            let clock = FrozenClock::shared();
             let (ep, _) = Endpoints::resolve(Some(OsStr::new(&base)), Some(OsStr::new(&token)));
             let journals = Vec::new();
             let req = Request {
@@ -453,24 +456,28 @@ mod issue_1844 {
                 journals: &journals,
                 allow_refresh: true,
                 cancel: &NO_CANCEL,
-                // The hang guard only; the gate decides when the refresh ends.
                 timeout: CEILING,
                 now_ms: chrono::Utc::now().timestamp_millis(),
             };
-            read(&ep, &req).is_ok()
+            // Freeze the logical budget and override the production socket
+            // steps: only the gate (or the independent hang guard) ends I/O.
+            read_with(&ep, &req, &Ctx::new(&*clock, refresh_counter(), CEILING)).is_ok()
         });
         gate.wait_arrived("the refresh POST");
         let held = dir.join(".oauth_refresh.lock").is_dir();
         // The daemon stops now, with the refresh still held at the gate.
         let (tx, waiting) = std::sync::mpsc::channel();
+        let (done, stopped) = std::sync::mpsc::channel();
         let stopper = std::thread::spawn(move || {
             let clock = ReportsFirstWait {
+                clock: FrozenClock::shared(),
                 waiting: std::sync::Mutex::new(Some(tx)),
             };
-            wait_for_refreshes_on(refresh_counter(), refresh_grace(CEILING), &clock)
+            let finished = wait_for_refreshes_on(refresh_counter(), refresh_grace(CEILING), &clock);
+            let _ = done.send(finished);
         });
         waiting
-            .recv()
+            .recv_timeout(CEILING)
             .expect("the stop returned without waiting for the held refresh");
         assert!(
             !stopper.is_finished(),
@@ -478,7 +485,13 @@ mod issue_1844 {
         );
         gate.open();
         assert!(held, "the refresh did not hold Claude's lock");
-        assert!(stopper.join().unwrap(), "the stop gave up on the refresh");
+        assert!(
+            stopped
+                .recv_timeout(CEILING)
+                .expect("hung: the stop never completed"),
+            "the stop gave up on the refresh"
+        );
+        stopper.join().unwrap();
         assert!(!dir.join(".oauth_refresh.lock").exists());
         assert_eq!(fake.count("POST", "/v1/oauth/token"), 1);
         assert!(reader.join().unwrap());

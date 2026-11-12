@@ -1159,4 +1159,9 @@ mod transport_deadline_tests {
         clock.advance(Duration::from_secs(4));
         assert_eq!(deadline.transport_timeout(), Ok(Duration::from_secs(1)));
     }
+
+    #[test]
+    fn system_context_uses_the_process_wide_refresh_counter() {
+        assert!(std::ptr::eq(Ctx::system().refreshing, refresh_counter()));
+    }
 }
