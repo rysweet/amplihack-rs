@@ -286,8 +286,10 @@ the same helper from `$AMPLIHACK_HOME` and lowers `ci_status` to `MISSING`,
 `types:` filter can skip a head, or whose branch pattern jq cannot compile, is
 expected only if it ran; matrix legs are not counted, so one leg satisfies the
 job; jobs match by literal name or prefix; required checks match by name, not
-app id; the workflow list is read at the head only (details: "Limits of the
-expected set" in the full reference below).
+app id; workflows are read at the head while `pull_request` runs build the
+merge commit, so a job the base branch renamed or removed reads as missing
+until the base is merged in (details: "Limits of the expected set" in the full
+reference below).
 
 **An unreadable criterion is a failure, never a pass.** Unreadable CI, a
 missing expected check, zero reported checks, unreadable review threads, missing `qa-team` evidence, an

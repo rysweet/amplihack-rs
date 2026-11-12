@@ -14,12 +14,14 @@
 #      no sleep/wait loop, read-only).
 #   2. Arguments (exit 2, no gh call before validation).
 #   3. AC1/AC7: the default green set.
-#   4. AC2-AC5: missing jobs, required checks, workflow runs, other SHA.
+#   4. AC2-AC5: missing jobs, required checks, workflow runs, other SHA;
+#      D6 run choice with concurrency-cancelled runs (tokio loom.yml).
 #   5. AC6: unreadable inputs, and the empty answers that are NOT unreadable.
 #   6. Conclusions: failure, pending, neutral, skipped required, other checks,
 #      zero checks, status order.
 #   7. Workflow selection: on: forms, branch filters, disabled, paths.
-#   8. Job matching rules 1-4 and the empty prefix.
+#   8. Job matching rules 1-4, the best match, expression-only names;
+#      8b. block-scalar and multi-line job names (real cpython/tokio shapes).
 #   9. Security: S1 spoof, S2 paths and run ids, name injection, jq version.
 #  10. Callers: gate section 5 (static), merge-evidence step-03 (run), light
 #      drive, platform facts comment, docs.
@@ -141,6 +143,11 @@ check "EC-budget" "the helper is at most 400 lines" \
   test "$(wc -l < "${HELPER}" 2>/dev/null || echo 9999)" -le 400
 check "EC-gate-budget" "the gate stays at most 400 lines" \
   test "$(wc -l < "${GATE}")" -le 400
+# Every recipe this change grows keeps the shared brick budget (crusty round 5,
+# item 1: autodrive-merge-round.yaml reached 403 lines and turned CI red).
+for y in autodrive-merge-round autodrive-merge-evidence; do
+  check "EC-budget-${y}" "${y}.yaml stays at most 400 lines" test "$(wc -l < "${RECIPES}/${y}.yaml")" -le 400
+done
 check "EC-bash-n" "the helper parses (bash -n)" bash -n "${HELPER}"
 if command -v shellcheck >/dev/null 2>&1; then
   check "EC-shellcheck" "the helper is shellcheck clean" shellcheck -x "${HELPER}"
@@ -355,7 +362,9 @@ expect "EC-D8-job-absent-queued" "a job without if: absent from a queued run is 
   "blocker: expected check 'build' is not created yet; run 1003 is queued at ${HEAD}" \
   "evidence: workflow .github/workflows/docs.yml: run 1003 is queued/none"
 # #2186's own failure mode: the only job carries a job-level if:, and the run
-# completed without creating it. No run conclusion excuses the missing job.
+# completed without creating it. No run conclusion excuses the missing job. A
+# run cancelled with no jobs and no other run of its path gets one blocker that
+# names the run and says to re-run it (crusty round 4, item 3).
 E2E_YML='name: E2E
 on:
   pull_request:
@@ -373,9 +382,12 @@ for c in startup_failure failure cancelled success; do
   ec_jq "$FX/runs.json" '(.workflow_runs[] | select(.id == 1008)).conclusion = $c' --arg c "$c"
   echo '{"total_count":0,"jobs":[]}' > "$FX/jobs-1008.json"
   run_helper "$FX"
+  want="blocker: expected check 'E2E' was never created at ${HEAD}"
+  [ "$c" = cancelled ] && want="blocker: expected workflow '.github/workflows/e2e.yml' run 1008 was cancelled before it created any job at ${HEAD}; re-run it"
   expect "EC-D8-no-jobs-${c}" "an if: job absent from a run that concluded ${c} with no jobs is MISSING" MISSING 1 \
-    "evidence: workflow .github/workflows/e2e.yml: run 1008 is completed/${c}" \
-    "blocker: expected check 'E2E' was never created at ${HEAD}"
+    "evidence: workflow .github/workflows/e2e.yml: run 1008 is completed/${c}" "$want"
+  [ "$c" != cancelled ] || check "EC-D8-cancelled-missing-path" "the cancelled run's workflow is what missing names" \
+    test "$MISSING" = '[".github/workflows/e2e.yml"]'
 done
 
 # AC5: the check exists only on another SHA (an earlier push).
@@ -390,6 +402,8 @@ printf '{"state":"success","sha":"%s","total_count":1,"statuses":[{"context":"Ex
 run_helper "$FX"
 expect "EC-AC5-other-sha-required" "a required check green only on another SHA does not satisfy the head" MISSING 1 \
   "blocker: expected check 'External Scan' was never created at ${HEAD}"
+ran_check "EC-AC5-required-no-merge-hint" "a required check (read from the base) gets no merge-commit hint" \
+  bash -c '! grep -qF "merge commit" "$1"' _ "${WORK}/out"
 
 # D6: the latest run per path decides (an older run at the head lacking a job).
 FX="$(new_fx)"; ec_run "$FX" 900 .github/workflows/ci.yml __HEAD__
@@ -397,6 +411,64 @@ echo '{"total_count":1,"jobs":[{"id":90000,"run_id":900,"name":"Lint & Format","
 run_helper "$FX"
 expect "EC-D6-latest-run" "the latest run (highest id) for a workflow is the one whose jobs count" GREEN 0
 check "EC-D6-latest-jobs-read" "the latest run's jobs are read" grep -qF 'actions/runs/1001/jobs' "${CALLS}"
+
+# D6 and concurrency (crusty round 4, item 3): run ids do not follow the order
+# a concurrency group handles runs in. tokio PR #8771's loom.yml has four runs
+# made at 12:38:07-09Z; the highest id was cancelled before it created a job.
+# A run cancelled with zero jobs holds no evidence: the next run decides.
+FX="$(new_fx)"; ec_tokio_loom "$FX"
+run_helper "$FX" "$HEAD" master
+expect "EC-D6-tokio-cancelled-dup" "tokio's loom.yml run shape is GREEN, not six jobs 'never created'" GREEN 0 \
+  "evidence: workflow .github/workflows/loom.yml: run 42618656717 was cancelled before it created any job; run 42618656471 decides" \
+  "evidence: workflow .github/workflows/loom.yml: run 42618656471 is completed/skipped" \
+  "evidence: expected 'loom tokio::sync': skipped"
+ran_check "EC-D6-tokio-no-never-created" "no loom job is called never created" \
+  bash -c '! grep -qF "was never created" "$1"' _ "${WORK}/out"
+check "EC-D6-tokio-reads" "it reads the cancelled run's jobs, then the next run's, and no further" \
+  bash -c 'grep -qF actions/runs/42618656717/jobs "$1" && grep -qF actions/runs/42618656471/jobs "$1" && ! grep -qF actions/runs/42618656066/jobs "$1"' _ "${CALLS}"
+# The run that decides is checked like any other: a failing job in it blocks.
+ec_set_job "$FX" 42618656471 "loom tokio::sync" completed failure
+run_helper "$FX" "$HEAD" master
+expect "EC-D6-tokio-next-run-counts" "a failing job in the run that decides blocks" RED 1 \
+  "blocker: expected check 'loom tokio::sync' is completed/failure at ${HEAD}"
+# Every run cancelled with zero jobs: the latest decides, and the blocker names it.
+FX="$(new_fx)"; ec_tokio_loom "$FX"
+for r in 42615877258 42618653969 42618656066 42618656471; do
+  ec_jq "$FX/runs.json" '(.workflow_runs[] | select(.id == ($r | tonumber))).conclusion = "cancelled"' --arg r "$r"
+  echo '{"total_count":0,"jobs":[]}' > "$FX/jobs-${r}.json"
+  ec_jq "$FX/check-runs.json" '.check_runs |= map(select(.check_suite.id != (($r | tonumber) + 5000)))' --arg r "$r"
+done
+run_helper "$FX" "$HEAD" master
+expect "EC-D6-all-cancelled" "when every run was cancelled before it created a job, the latest is named with 're-run it'" MISSING 1 \
+  "blocker: expected workflow '.github/workflows/loom.yml' run 42618656717 was cancelled before it created any job at ${HEAD}; re-run it"
+ran_check "EC-D6-all-cancelled-no-skip-note" "no run is said to decide in its place" \
+  bash -c '! grep -qF " decides" "$1"' _ "${WORK}/out"
+ran_check "EC-D6-all-cancelled-no-merge-hint" "a run cancelled before any job is not blamed on a stale branch" \
+  bash -c '! grep -qF "merge commit" "$1"' _ "${WORK}/out"
+# A cancelled latest run that created jobs is evidence, not skipped: it blocks.
+FX="$(new_fx)"; ec_run "$FX" 1013 .github/workflows/recipe-runner-pin.yml __HEAD__
+ec_jq "$FX/runs.json" '(.workflow_runs[] | select(.id == 1013)).conclusion = "cancelled"'
+ec_job "$FX" 1013 "Recipe runner pin ancestry" completed cancelled
+run_helper "$FX"
+expect "EC-D6-cancelled-with-jobs" "a cancelled latest run that created jobs still decides and blocks" RED 1 \
+  "blocker: expected check 'Recipe runner pin ancestry' is completed/cancelled at ${HEAD}"
+# A cancelled zero-job latest run above a run still going: the running one decides.
+FX="$(new_fx)"; ec_run "$FX" 1013 .github/workflows/recipe-runner-pin.yml __HEAD__
+ec_jq "$FX/runs.json" '(.workflow_runs[] | select(.id == 1013)).conclusion = "cancelled"'
+echo '{"total_count":0,"jobs":[]}' > "$FX/jobs-1013.json"
+ec_jq "$FX/runs.json" '(.workflow_runs[] | select(.id == 1002)) |= (.status = "in_progress" | .conclusion = null)'
+ec_set_job "$FX" 1002 "Recipe runner pin ancestry" in_progress null
+run_helper "$FX"
+expect "EC-D6-cancelled-over-running" "a zero-job cancelled run above a running one gives PENDING from the running one" PENDING 1 \
+  "evidence: workflow .github/workflows/recipe-runner-pin.yml: run 1013 was cancelled before it created any job; run 1002 decides"
+# S3 follows D6's choice: the suites of the path's other runs are dropped and
+# the chosen run's suite is kept, so a required job of the chosen run is found
+# (dropping every suite but the highest id's would call it never created).
+FX="$(new_fx)"; ec_tokio_loom "$FX"; ec_required "$FX" "loom tokio::sync"
+ec_jq "$FX/check-runs.json" '(.check_runs[] | select(.check_suite.id == 42618658969 and .name == "loom tokio::sync")) |= (.conclusion = "failure")'
+run_helper "$FX" "$HEAD" master
+expect "EC-D6-S3-follows-choice" "a required job of the chosen run passes, and an older run's failing check-run is superseded" GREEN 0 \
+  "evidence: expected 'loom tokio::sync' (required): skipped"
 
 # ---------------------------------------------------------------------------
 # 5. AC6: unreadable means blocked; the empty answers that are not unreadable.
@@ -487,7 +559,10 @@ run_helper "$FX"
 expect "EC-S3-superseded-cancelled" "a cancelled earlier ci.yml run at the head, superseded by a green one, gives GREEN" GREEN 0
 FX="$(new_fx)"; add_cancelled_ci_run "$FX" 1003
 run_helper "$FX"
-expect "EC-S3-latest-cancelled" "when the latest ci.yml run at the head is the cancelled one, it blocks" RED 1 \
+# Run 1003 has the highest id and was cancelled AFTER it created its jobs, so
+# it holds evidence and decides (only a cancelled run with zero jobs is passed
+# over, EC-D6-tokio-cancelled-dup): its cancelled jobs block as RED.
+expect "EC-S3-latest-cancelled" "a cancelled highest-id ci.yml run that created jobs decides, and its cancelled jobs block" RED 1 \
   "blocker: expected check 'Test' is completed/cancelled at ${HEAD}"
 FX="$(new_fx)"; add_cancelled_ci_run "$FX" 999; ec_set_job "$FX" 1001 Test completed failure
 ec_jq "$FX/check-runs.json" '(.check_runs[] | select(.check_suite.id == 5999 and .name == "Test")) |= (.conclusion = "cancelled")'
@@ -840,12 +915,28 @@ match_case no-prefix-overmatch "a plain name does not match another job that onl
     steps:
       - run: echo
 ' "Testing other" MISSING "blocker: expected check 'Test' was never created at ${HEAD}"
-match_case empty-prefix "a job named only by an expression counts as missing" '  e:
+# A job named only by an expression (crusty round 4, item 5) is met by the jobs
+# of its run that no other defined job matches; here it is the run's only job.
+match_case expression-only "a job named only by an expression is met by a job no other defined job matches" '  e:
     name: ${{ matrix.label }}
     runs-on: ubuntu-latest
     steps:
       - run: echo
-' "anything" MISSING "blocker: expected check '<matrix.label>' was never created at ${HEAD}"
+' "anything" GREEN
+# Rule 2 keeps the space before the first ${{ (crusty round 4, item 4), and a
+# leg whose expression is empty is matched by the prefix GitHub trims.
+match_case rule2-trailing-space "rule 2 keeps the space before \${{, so 'Testing' does not match" '  t:
+    name: Test ${{ matrix.os }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo
+' "Testing" MISSING "blocker: expected check 'Test <matrix.os>' was never created at ${HEAD}"
+match_case rule2-trimmed-equal "rule 2 matches the trimmed prefix (an empty expression)" '  f:
+    name: features exclude ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo
+' "features exclude" GREEN
 match_case quoted-name "a quoted name: value" '  q:
     name: "Quoted Job"
     runs-on: ubuntu-latest
@@ -909,6 +1000,209 @@ ec_run "$FX" 1007 .github/workflows/t.yml __HEAD__; ec_job "$FX" 1007 Other comp
 run_helper "$FX"
 expect "EC-S-tab-in-name" "a tab in a job name does not shift the scanner's fields" MISSING 1 \
   "blocker: expected check 'x 1' was never created at ${HEAD}"
+
+# A reported job meets only the defined jobs that match it best (crusty round
+# 4, item 4): rule 1 beats rules 3-4, which beat rule 2, and a longer prefix
+# beats a shorter one. `two_jobs` defines `$1` and `$2` in m.yml.
+two_jobs() { # two_jobs <name a> <name b>: prints a fixture dir with m.yml and run 1005
+  local fx; fx="$(new_fx)"
+  ec_wf "$fx" m.yml "name: M
+on: pull_request
+jobs:
+  a:
+    name: $1
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo
+  b:
+    name: $2
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo
+"
+  ec_run "$fx" 1005 .github/workflows/m.yml __HEAD__; printf '%s' "$fx"
+}
+FX="$(two_jobs 'Test ${{ matrix.os }}' 'Test docs')"; ec_job "$FX" 1005 "Test docs" completed success
+run_helper "$FX"
+expect "EC-match-best-rule1" "a job another defined job names exactly does not meet a prefix" MISSING 1 \
+  "blocker: expected check 'Test <matrix.os>' was never created at ${HEAD}"
+ec_job "$FX" 1005 "Test ubuntu-latest" completed success
+run_helper "$FX"
+expect "EC-match-best-own-leg" "with a leg of its own, the prefix job passes" GREEN 0
+FX="$(two_jobs 'Build ${{ matrix.t }}' 'Build docs ${{ matrix.f }}')"; ec_job "$FX" 1005 "Build docs html" completed success
+run_helper "$FX"
+expect "EC-match-best-longer-prefix" "a longer matching prefix wins the reported job" MISSING 1 \
+  "blocker: expected check 'Build <matrix.t>' was never created at ${HEAD}"
+FX="$(two_jobs '${{ matrix.a }}' '${{ matrix.b }}')"; ec_job "$FX" 1005 "x1" completed success
+run_helper "$FX"
+expect "EC-match-two-expression-only" "two expression-only jobs in one workflow are UNREADABLE, by name" UNREADABLE 1 \
+  "blocker: expected checks unreadable: job '<matrix.a>' of .github/workflows/m.yml cannot be matched: 2 of its jobs are named only by an expression; give them literal names"
+ran_check "EC-match-two-expression-only-not-missing" "neither is called never created" \
+  bash -c '! grep -qF "was never created" "$1"' _ "${WORK}/out"
+# Each reported job goes to at most one defined job (crusty round 5, item 4).
+# Two defined jobs with the same literal prefix match a leg equally: it belongs
+# to neither, so both are UNREADABLE by name instead of both being met by one
+# leg while the other job's legs were never created.
+FX="$(two_jobs 'Test ${{ matrix.os }}' 'Test ${{ matrix.py }}')"; ec_job "$FX" 1005 "Test ubuntu-latest" completed success
+run_helper "$FX"
+expect "EC-match-tie-unreadable" "a leg two defined jobs match equally meets neither: both UNREADABLE, by name" UNREADABLE 1 \
+  "blocker: expected checks unreadable: job 'Test <matrix.os>' of .github/workflows/m.yml cannot be matched: another of its jobs matches 'Test ubuntu-latest' as well; give them distinct literal names" \
+  "blocker: expected checks unreadable: job 'Test <matrix.py>' of .github/workflows/m.yml cannot be matched: another of its jobs matches 'Test ubuntu-latest' as well; give them distinct literal names"
+ran_check "EC-match-tie-not-passed" "the tied leg is not evidence for either job" \
+  bash -c '! grep -qF "evidence: expected '"'"'Test ubuntu-latest'"'"'" "$1"' _ "${WORK}/out"
+# Two jobs with the same exact name tie too: one reported job cannot stand for both.
+FX="$(two_jobs 'Lint' 'Lint')"; ec_job "$FX" 1005 "Lint" completed success
+run_helper "$FX"
+expect "EC-match-tie-same-name" "two defined jobs with one name and one reported job are UNREADABLE" UNREADABLE 1 \
+  "blocker: expected checks unreadable: job 'Lint' of .github/workflows/m.yml cannot be matched: another of its jobs matches 'Lint' as well; give them distinct literal names"
+# No reported job at all: nothing is tied, so both are simply never created.
+FX="$(two_jobs 'Test ${{ matrix.os }}' 'Test ${{ matrix.py }}')"; ec_job "$FX" 1005 "Other" completed success
+run_helper "$FX"
+expect "EC-match-tie-none-created" "with no leg of either, both same-prefix jobs are MISSING" MISSING 1 \
+  "blocker: expected check 'Test <matrix.os>' was never created at ${HEAD}" \
+  "blocker: expected check 'Test <matrix.py>' was never created at ${HEAD}"
+
+# tokio's ci.yml at PR #8771 (crusty round 4, item 5): `wasm32-wasip1` is named
+# only by `${{ matrix.target }}`, and its legs are the run's jobs that no other
+# defined job matches. Before, it was "never created" though both legs ran.
+FX="$(new_fx)"; ec_tokio_ci "$FX"
+run_helper "$FX" "$HEAD" master
+expect "EC-match-tokio-ci" "tokio's ci.yml (an expression-only job, a trimmed leg) is GREEN" GREEN 0 \
+  "evidence: expected 'wasm32-wasip1': success" "evidence: expected 'wasm32-wasip1-threads': success" \
+  "evidence: expected 'features exclude': success"
+ec_drop_job "$FX" 1011 wasm32-wasip1; ec_drop_job "$FX" 1011 wasm32-wasip1-threads
+run_helper "$FX" "$HEAD" master
+# The blocker names the job by its key and says why (crusty round 5, item 5):
+# no agent can look for a check called '<matrix.target>'.
+expect "EC-match-tokio-expression-gone" "with its legs gone, the expression-only job is MISSING, named by key with the reason" MISSING 1 \
+  "blocker: expected job 'wasm32-wasip1' of .github/workflows/tokio-ci.yml was never created at ${HEAD}: its name '<matrix.target>' is only an expression and every job of run 1011 matches another job; if it ran, give it a literal name"
+check "EC-match-tokio-expression-gone-key" "missing names the job key, not the expression" \
+  test "$MISSING" = '["wasm32-wasip1"]'
+# Jobs are read at the head, but pull_request runs build the merge commit
+# (crusty round 5, item 6): a job-level MISSING says how a stale branch shows.
+expect "EC-merge-commit-hint" "a job never created carries the merge-commit hint, naming the base" MISSING 1 \
+  "evidence: jobs are read from the workflow files at the head, but pull_request runs build the merge commit with master: if master changed a missing job or workflow since this branch forked, merge master in"
+
+# ---------------------------------------------------------------------------
+# 8b. Block-scalar and multi-line job names (crusty round 4, item 2).
+# ---------------------------------------------------------------------------
+# cpython's build.yml at PR #161842 names three jobs with `name: >-`. Before,
+# each read as the literal '>-' and was "never created" for ever.
+FX="$(new_fx)"; ec_cpython "$FX"
+run_helper "$FX"
+expect "EC-bs-cpython" "cpython's build.yml (three name: >- jobs) is GREEN" GREEN 0 \
+  "evidence: expected 'Windows / Build and test (x64, tail-call)': success" \
+  "evidence: expected 'macOS (free-threading) / build and test (macos-26)': success" \
+  "evidence: expected 'Ubuntu  (bolt) / build and test (ubuntu-26.04)': success" \
+  "evidence: expected 'Windows MSI<>': skipped"
+ran_check "EC-bs-cpython-no-indicator" "no check is named by the block indicator" \
+  bash -c '! grep -qF "'"'"'>-'"'"'" "$1"' _ "${WORK}/out"
+# Every Windows leg gone: `Windows MSI${{ '' }}` shares the `Windows ` prefix
+# but matches its own job better, so it does not stand in for them.
+ec_jq "$FX/jobs-1010.json" '.jobs |= map(select(.name | test("^Windows (\\(free-threading\\) )?/") | not)) | .total_count = (.jobs|length)'
+ec_jq "$FX/check-runs.json" '.check_runs |= map(select(.name | test("^Windows (\\(free-threading\\) )?/") | not)) | .total_count = (.check_runs|length)'
+run_helper "$FX"
+expect "EC-bs-cpython-windows-gone" "with every Windows leg gone, the folded Windows job is MISSING" MISSING 1 \
+  "blocker: expected check 'Windows <fromJSON(matrix.free-threading) && (free-threading) || >' was never created at ${HEAD}"
+
+# name_case <id> <description> <name: lines> <reported name> <status> [line]
+name_case() {
+  local fx; fx="$(new_fx)"
+  ec_wf "$fx" n.yml "name: N
+on: pull_request
+jobs:
+  n:
+$3
+    runs-on: ubuntu-latest
+    steps:
+      - name: not the job name
+        run: |
+          echo one
+          echo two
+"
+  ec_run "$fx" 1012 .github/workflows/n.yml __HEAD__; ec_job "$fx" 1012 "$4" completed success
+  run_helper "$fx"
+  if [ -n "${6:-}" ]; then expect "EC-name-$1" "$2" "$5" 1 "$6"; else expect "EC-name-$1" "$2" "$5" 0; fi
+}
+BREAK="blocker: expected checks unreadable: .github/workflows/n.yml could not be scanned (job n: name: keeps a line break)"
+name_case folded "a folded name (>-) is joined with spaces" '    name: >-
+      Build
+      all' "Build all" GREEN
+name_case folded-comment "a folded name with a comment after its indicator" '    name: > # shown name
+      Build all' "Build all" GREEN
+name_case literal-one "a literal name (|) of one line" '    name: |
+      Build all' "Build all" GREEN
+name_case literal-trailing-blank "a blank line after a one-line literal name is not a line break" '    name: |
+      Build all
+' "Build all" GREEN
+name_case indicator "an indentation indicator (>2-) sets the content indent" '    name: >2-
+      Build
+      all' "Build all" GREEN
+name_case hash-content "a line starting with # inside a block scalar is content" '    name: >-
+      Build
+      #1' "Build #1" GREEN
+name_case plain-multiline "a plain name continued on the next line" '    name: Build
+      all' "Build all" GREEN
+name_case quoted-multiline "a double-quoted name continued on the next line" '    name: "Build
+      all"' "Build all" GREEN
+name_case quoted-indicator "a quoted \">-\" is a literal name, not a block scalar" '    name: ">-"' ">-" GREEN
+name_case literal-two "a literal name (|) over two lines keeps a line break: refused by name" '    name: |
+      Build
+      all' "Build" UNREADABLE "$BREAK"
+name_case folded-blank "a blank line inside a folded name keeps a line break: refused by name" '    name: >-
+      Build
+
+      all' "Build all" UNREADABLE "$BREAK"
+name_case folded-deeper "a more-indented line inside a folded name keeps its line break: refused by name" '    name: >-
+      Build
+        all' "Build all" UNREADABLE "$BREAK"
+name_case plain-blank "a blank line before a plain name's continuation is a line break: refused by name" '    name: Build
+
+      all' "Build" UNREADABLE "$BREAK"
+name_case empty-block "an empty block-scalar name is refused by name" '    name: >-' "n" UNREADABLE \
+  "blocker: expected checks unreadable: .github/workflows/n.yml could not be scanned (job n: name: is an empty block scalar)"
+# Only the text before the first ${{ is matched, so a line break after it
+# changes nothing and is not refused. cpython's reusable-san.yml splits its
+# expression over lines inside a folded name: `${{ inputs.sanitizer }}${{`,
+# then deeper lines, then `}}`.
+name_case after-expression "a line break after the first \${{ is not refused" '    name: >-
+      San ${{
+        matrix.s
+      }}' "San tsan" GREEN
+name_case literal-after-expression "a literal (|) name breaking after its first \${{ is matched by its prefix" '    name: |
+      Build ${{ matrix.t }}
+      ${{ matrix.u }}' "Build x86_64" GREEN
+name_case break-before-expression "a line break before the first \${{ is still refused" '    name: >-
+      Build
+        ${{ matrix.t }}' "Build x86_64" UNREADABLE "$BREAK"
+
+# A malformed jobs: section matters only in a workflow that is expected: a
+# workflow_call-only workflow (cpython's reusable-san.yml before the rule
+# above) runs no job here, so it does not make the verdict UNREADABLE. An
+# unreadable on: still blocks, because then nobody knows if it is expected.
+reusable_case() { # reusable_case <id> <description> <on: line> <status> [line]
+  local fx; fx="$(new_fx)"
+  ec_wf "$fx" r.yml "name: R
+$3
+jobs:
+  r:
+    name: |
+      Build
+      all
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo
+"
+  run_helper "$fx"
+  if [ -n "${5:-}" ]; then expect "EC-reusable-$1" "$2" "$4" 1 "$5"; else expect "EC-reusable-$1" "$2" "$4" 0; fi
+}
+reusable_case not-expected "a workflow_call-only workflow with a refused job name stays GREEN" 'on: workflow_call' GREEN
+ran_check "EC-reusable-not-expected-no-scan-error" "and no scan error is printed for it" \
+  bash -c '! grep -qF "r.yml could not be scanned" "$1"' _ "${WORK}/out"
+reusable_case expected "the same job name in a pull_request workflow is refused by name" 'on: [pull_request, workflow_call]' UNREADABLE \
+  "blocker: expected checks unreadable: .github/workflows/r.yml could not be scanned (job r: name: keeps a line break)"
+reusable_case on-unreadable "an unreadable on: blocks even when the job section is the only other fault" 'on: {workflow_call: {}}' UNREADABLE \
+  "blocker: expected checks unreadable: .github/workflows/r.yml could not be scanned (flow mapping under on:)"
 
 # ---------------------------------------------------------------------------
 # 9. Security.

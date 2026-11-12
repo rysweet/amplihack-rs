@@ -3423,32 +3423,154 @@ so it was removed. The evidence line for each run gives its status and
 conclusion (`run 1008 is completed/startup_failure`), so the reason for a
 missing job is in the evidence bundle.
 
-The run used for a workflow is the latest one (highest `id`) whose `path`
-matches, from `actions/runs?head_sha=<HEAD_SHA>&event=pull_request`. Its jobs
-come from `actions/runs/<id>/jobs`, latest attempt. Run ids must be all digits.
+The run that decides for a workflow is chosen from its runs at the head, the
+ones from `actions/runs?head_sha=<HEAD_SHA>&event=pull_request` whose `path`
+matches: it is the run with the highest `id` **that holds evidence**. A run
+that concluded `cancelled` with zero jobs holds none and is passed over (see
+below). Its jobs come from `actions/runs/<id>/jobs`, latest attempt. Run ids
+must be all digits.
 
-An earlier run of the same workflow at the same head is superseded. `ci.yml`
+The highest `id` is only the order in which GitHub created the runs. It is not
+the order in which a concurrency group admitted, ran or cancelled them, so
+"highest id" alone does not mean "the run that counts".
+
+**A run cancelled before it created a job does not decide.** Run ids do not
+follow the order in which a concurrency group handles runs. On tokio-rs/tokio
+pull request #8771, `loom.yml` (`types: [labeled, opened, synchronize,
+reopened]`, `cancel-in-progress: true`) has four runs created between
+12:38:07Z and 12:38:09Z. Runs 42618653969, 42618656066 and 42618656471
+completed as `skipped` with six jobs each. Run 42618656717 has the highest id,
+and the concurrency group cancelled it before it created any job. A run that
+concluded `cancelled` with zero jobs holds no evidence, so the helper reads
+the next run down instead, and records it:
+
+```text
+evidence: workflow .github/workflows/loom.yml: run 42618656717 was cancelled before it created any job; run 42618656471 decides
+```
+
+The helper skips only a run with **both** conclusion `cancelled` **and** zero
+jobs. A cancelled run that created jobs still decides, so its cancelled jobs
+block as `RED`. A `startup_failure` run with zero jobs still decides, so its
+jobs block as `MISSING`: that is #2186's own failure mode. The next run down
+decides even when it is still going, so the result is then `PENDING`. If
+every run of the workflow at the head was cancelled before it created a job,
+the latest one decides, and the helper prints one blocker for it instead of a
+"never created" line for each job:
+
+```text
+blocker: expected workflow '.github/workflows/loom.yml' run 42618656717 was cancelled before it created any job at <sha>; re-run it
+```
+
+`missing` then names the workflow path.
+
+The other runs of the same workflow at the same head are superseded. `ci.yml`
 cancels a running build when a new one starts for the same ref, so closing and
 reopening a pull request, or pushing the same SHA again, leaves a cancelled
-earlier run at the head. The check-runs in the check suite of every superseded
-run (`check_suite_id` from `actions/runs`) are dropped before the required
-checks and the other checks at the head are evaluated. The latest run's own
-check-runs always count, so a cancelled or failing latest run still blocks.
+earlier run at the head. The check-runs in the check suite of every run other
+than the one that decides (`check_suite_id` from `actions/runs`) are dropped
+before the required checks and the other checks at the head are evaluated.
+The deciding run's own check-runs always count, so if that run is cancelled or
+failing, it still blocks.
 
 ### Matching a defined job to a reported job
 
-The expected display name is the job's literal `name:`, or its key when it has
-no `name:`. A reported job matches when its name:
+The expected display name is the job's `name:`, or its key when it has no
+`name:`. The scanner reads a `name:` written in any of these forms:
+
+| Form | Example | Read as |
+| --- | --- | --- |
+| Plain or quoted, one line | `name: Test`, `name: 'Ubuntu (installed)'` | the value |
+| Plain or quoted, continued on deeper lines | `name: Build` then `  all` on the next line | the lines joined by one space: `Build all` |
+| Folded block scalar (`>`, `>-`, `>+`, `>2-`) | cpython's `name: >-` then `Windows` and `${{ … }}` on two lines | the lines joined by one space |
+| Literal block scalar (`\|`) of one line | `name: \|` then `Build all` | that line |
+
+A comment after the indicator (`name: >- # note`) is not part of the value,
+and a line starting with `#` inside a block scalar is. A `name:` value that
+keeps a line break **before its first `${{`** cannot be matched to a reported
+name. These values are refused by name, so the workflow is `UNREADABLE` and
+the blocker says why (`job <key>: name: keeps a line break`):
+
+- a blank line inside the value;
+- a line indented deeper than the first content line of a block scalar;
+- a literal (`|`) block scalar of two or more lines.
+
+A line break **after** the first `${{` is not refused. Matching uses only the
+literal text before the first `${{` (rule 2 below), so nothing after it is
+compared. The lines are joined with one space. cpython's `reusable-san.yml`
+splits its name this way:
+
+```yaml
+    name: >-
+      ${{ inputs.sanitizer }}${{
+        inputs.free-threading
+        && ' (free-threading)'
+        || ''
+      }}
+```
+
+An empty block scalar (`name: >-` with nothing under it) is refused as
+`job <key>: name: is an empty block scalar`.
+
+**A fault under `jobs:` blocks only an expected workflow.** A refused job
+name, an unreadable job key, bad indentation under `jobs:` or no jobs at all
+makes the workflow `UNREADABLE` only if it is expected (`pull_request` in
+`on:` and the base admitted). A workflow that is not expected, such as a
+`workflow_call`-only reusable workflow, runs no job of its own for the pull
+request, so its job names are never compared. A fault in `on:` always blocks,
+because then the helper cannot tell whether the workflow is expected.
+
+A reported job matches a defined job when its name:
 
 1. equals the expected name; or
-2. starts with the literal text before the first `${{` (trimmed), so
-   `Build ${{ matrix.target }}` matches `Build x86_64-unknown-linux-gnu`; or
+2. starts with the literal text before the first `${{`, keeping a trailing
+   space, or equals that text with the trailing space removed. So
+   `Build ${{ matrix.target }}` matches `Build x86_64-unknown-linux-gnu` but
+   not `Builds`. On tokio's `ci.yml`, `features exclude ${{ matrix.name }}`
+   matches the leg GitHub reports as `features exclude`: the expression was
+   empty, and GitHub trims the trailing space; or
 3. starts with `<key> (` or `<name> (`, for a matrix job: GitHub adds the
    matrix values in brackets when `name:` does not use them; or
 4. starts with `<name> / `, for a reusable workflow.
 
-A job whose name is only an expression has an empty literal prefix and counts
-as missing. Give it a literal name.
+**A reported job satisfies only the defined jobs that match it best.** Rule 1
+beats rules 3 and 4, which beat rule 2. Between two rule-2 matches, the longer
+prefix wins. So if every leg of `Test ${{ matrix.os }}` is never created, a
+sibling job named `Test docs` does not stand in for them. On cpython's
+`build.yml`, `Windows MSI${{ '' }}` belongs to its own job (prefix
+`Windows MSI`), not to the folded `Windows ${{ … }}` job (prefix `Windows `).
+
+**A reported job belongs to at most one defined job.** If two defined jobs
+match it equally well, for example `Test ${{ matrix.os }}` and
+`Test ${{ matrix.py }}` (both prefix `Test `) or two jobs both named `Lint`,
+the helper cannot tell whose leg it is. It does not let one leg satisfy both,
+because the other job might never have been created. Each of them blocks as
+`UNREADABLE` and names the leg:
+
+```text
+blocker: expected checks unreadable: job 'Test <matrix.os>' of .github/workflows/m.yml cannot be matched: another of its jobs matches 'Test ubuntu-latest' as well; give them distinct literal names
+```
+
+If neither job reported a leg, nothing is tied, and both are `MISSING`.
+
+**A job whose name is only an expression** (`name: ${{ matrix.target }}`) has
+no literal text to match. It is satisfied by the jobs of its run that no other
+defined job matches. On tokio's `ci.yml`, those are `wasm32-wasip1` and
+`wasm32-wasip1-threads`. While the run is going and no such job exists, it is
+`PENDING`. When the run has completed and no such job exists, it is `MISSING`.
+No check called `<matrix.target>` can exist, so the blocker names the job by
+its key and gives the reason and the fix, and `missing` holds the key:
+
+```text
+blocker: expected job 'wasm32-wasip1' of .github/workflows/ci.yml was never created at <sha>: its name '<matrix.target>' is only an expression and every job of run 1011 matches another job; if it ran, give it a literal name
+```
+
+If one workflow has two or more jobs named only by an expression, the helper
+cannot tell their jobs apart. Each of them then blocks as `UNREADABLE`, with a
+reason that names it:
+
+```text
+blocker: expected checks unreadable: job '<matrix.a>' of .github/workflows/m.yml cannot be matched: 2 of its jobs are named only by an expression; give them literal names
+```
 
 ### Which conclusions pass
 
@@ -3488,13 +3610,20 @@ Any of these makes `ci_status` `UNREADABLE`:
   endpoints;
 - a response is not valid JSON, or a page of a paginated read fails;
 - `jq` is missing or older than 1.6 (no `@base64d`);
-- a workflow file has no top-level `on:` or `jobs:` the scanner can find;
+- a workflow file has a top-level `on:` the scanner cannot read, or none;
+- an expected workflow has a `jobs:` section the scanner cannot read (see
+  [Matching a defined job](#matching-a-defined-job-to-a-reported-job));
 - a workflow path or run id breaks the rules above;
 - a run has no `path` field (some GitHub Enterprise Server versions).
 
 The one 404 read as empty is `contents/.github/workflows?ref=<HEAD_SHA>`: a
 repository with no workflows directory has no defined jobs. Its required
 checks still apply.
+
+The YAML scanner is an `awk` program that reads a stated subset of YAML: the
+top-level `on:` with `pull_request`'s child keys, and each job's key and
+`name:`. A form outside that subset is refused with a reason that names it,
+so the verdict is `UNREADABLE`. The scanner never guesses a value.
 
 ### Output
 
@@ -3646,7 +3775,11 @@ the base branch, which the helper always enforces.
   required leg that was never created blocks as `MISSING`.
 - **Name matching.** Defined jobs are matched by literal name or literal
   prefix (see [Matching a defined job](#matching-a-defined-job-to-a-reported-job)).
-  A job named only by an expression counts as missing. Rules 3 (`<key> (` or
+  A job named only by an expression is met by the jobs of its run that no
+  other defined job matches, so a leg whose computed name happens to start
+  with another job's literal prefix is counted for that other job. Two jobs
+  named only by an expression in one workflow, or two defined jobs that match
+  one reported job equally, are `UNREADABLE` by name. Rules 3 (`<key> (` or
   `<name> (` for a matrix job) and 4 (`<name> / ` for a reusable workflow) are added
   on top of the literal-prefix rule. They can match a job that a plain prefix
   would not, so each has its own test.
@@ -3656,6 +3789,27 @@ the base branch, which the helper always enforces.
 - **Workflow list read at the head only.** A pull request that deletes or
   renames a workflow removes it from the defined jobs. Required checks from
   the base branch still apply, and crusty reviews workflow changes.
+- **Workflows read at the head, but `pull_request` runs use the merge
+  commit.** The helper reads each workflow file at `<HEAD_SHA>`. GitHub runs a
+  `pull_request` workflow from `refs/pull/<N>/merge`, the test merge of the
+  head into the base, so `GITHUB_SHA` is that merge commit (and no such run
+  starts while the pull request has merge conflicts). If the base branch
+  renames or removes a job after the branch point, the run creates the base's
+  jobs while the helper still expects the head's: the old name is reported as
+  `was never created`, and the verdict stays `MISSING` until the base is
+  merged into the branch. A job added on the base is not expected, but its
+  check still has to pass, as every check at the head does. The helper does
+  not read the merge commit, because `pulls/<N>.merge_commit_sha` changes
+  every time the base moves. Instead, whenever a job or workflow from the
+  head's files is missing, it adds one `evidence:` line that says so:
+
+  ```text
+  evidence: jobs are read from the workflow files at the head, but pull_request runs build the merge commit with main: if main changed a missing job or workflow since this branch forked, merge main in
+  ```
+
+  The merge-round prompt gives the agent the same rule for `MISSING`. A
+  required check that was never created gets no such line: required checks
+  are read from the base branch, not from the head.
 - **Only active workflows are expected.** A workflow that `actions/workflows`
   does not list as `active` is not expected. A workflow that the pull request
   adds, and that has never run, is therefore not required. As with deleted
