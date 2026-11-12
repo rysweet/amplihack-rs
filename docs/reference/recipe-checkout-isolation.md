@@ -124,14 +124,32 @@ in a private `exec dir` that belongs to one attempt:
 - The recovery descriptor is written in the run folder. A descriptor path that
   resolves inside the `exec dir` is refused.
 - A run with a recovery identity prepares each attempt's checkout at
-  `<work root>/exec/<identity>/`, so every attempt presents the same
-  repository path and replay can reuse steps that depend on the checkout
-  ([#2493](https://github.com/rysweet/amplihack-rs/issues/2493)). The path is
-  created new by each attempt and removed at release. If an earlier attempt
-  still holds it (a killed attempt, or durable worktrees in its private
-  repository), the new attempt says so and uses a fresh random path; replay
-  then re-runs the checkout-dependent steps. A run without an identity always
-  uses a random path.
+  `<work root>/exec/<identity>/`, so that a relaunch presents the same
+  repository path. The path is reused when the earlier attempt has finished
+  and no durable worktrees from it remain. Then replay can reuse steps that
+  depend on the checkout (part of
+  [#2493](https://github.com/rysweet/amplihack-rs/issues/2493), which stays
+  open: a replay while durable worktrees from the earlier attempt are still
+  in use needs those worktrees moved over or reattached). A run without an
+  identity always uses a random path.
+- Each attempt creates the path new (mode `0700`) and writes `claim.json`
+  there, naming its run folder. Release removes the path. When an earlier
+  attempt left it behind (it was killed, or preparation failed after the
+  claim), the next attempt reclaims it once, under a lock on `exec/`, only
+  when all of these hold:
+  - the path is a real directory, never a symlink, and still the same
+    directory (device and inode) when it is moved aside to be removed;
+  - the run named in `claim.json` has ended (its `run.json` says so, or names
+    a process that is gone, or the run folder is gone). A directory with no
+    claim is reclaimed only when it is empty;
+  - no worktree registered in its `repository.git` lies outside it and still
+    exists. In default-workflow, step 04 creates such worktrees.
+
+  Otherwise the new attempt prints why the path is still held (the owner is
+  still running, a durable worktree still uses it, or it is not a real
+  directory) and uses a fresh random path; replay then re-runs the
+  checkout-dependent steps. `amplihack cleanup` applies the same rules to
+  every path under `exec/` (category `run-exec`).
 
 Each attempt keeps its own recording. A later successful attempt does not
 remove an earlier attempt's evidence.
@@ -219,12 +237,20 @@ and checks out that SHA detached. A second drive on the same PR gets its own
 generation. When the PR advances, `review-next` makes a new generation; an old
 verdict never covers the new head.
 
-The guard accepts a review dir only when all three checks pass:
+The guard accepts a review dir only when all four checks pass:
 
 1. The generation has an ownership manifest that this run wrote.
 2. The identities recorded in it (repository, generation, owner, device and
    inode of each path) match what is on disk.
 3. `HEAD` is detached at the recorded PR-source commit.
+4. The working tree and index hold exactly that commit's files:
+   `git status --porcelain=v1 -z --untracked-files=all` prints nothing.
+   Ignored files, such as build output, are allowed.
+
+`index-check`, which the rounds run after the judging step, applies check 4
+again through `amplihack internal review-clean`, so an edit that is never
+staged still stops the drive. `review-bind-record` runs all four before it
+binds a verdict to the recorded commit.
 
 Any other directory gives `REVIEW_DIR_CHANGED` or `REVIEW_DIR_UNSTAMPED`,
 never a pass. Being outside the PR worktree, or being detached, grants
@@ -270,7 +296,8 @@ These are internal modules, not a public API.
 | `commands/recipe/run/run_checkout.rs` | Finds the repository (fails closed), provisions the private checkout, maps paths, releases owned paths. |
 | `commands/recipe/run/git_record.rs` | `GitRecord::begin` starts the Linux observer; `GitRecord::dry_run()` is the disabled state for dry runs; `finish` publishes. |
 | `run_isolation/observer/linux.rs` | ptrace observer, built only with `cfg(target_os = "linux")`. |
-| `run_isolation/review_generation.rs` | Review generations: provision, three-part validation, release. |
+| `run_isolation/review_generation.rs` | Review generations: provision, four-part validation (including a clean working tree), release. |
+| `run_isolation/exec_storage.rs` | Claims `<work root>/exec/<identity>/` and decides when it may be reclaimed; used by preparation and by `amplihack cleanup`. |
 | `commands/cleanup/run_dir.rs` | `RunWorkspace::begin_durable` for real runs, `RunWorkspace::dry_runtime` for dry runs; `record_attempt_checked` and `finish_checked` return errors. |
 | `commands/recipe/run/execute.rs` | Order of preparation, launch and release; joins errors. |
 
@@ -287,6 +314,9 @@ workspace code. None of them is discarded with `.ok()`, `let _ =` or
 | Observer lost, storage or attribution error | Controlled teardown, partial evidence kept, run fails. |
 | Checkout identity changed at release | Resources kept, run fails. |
 | Review dir fails a check | `REVIEW_DIR_CHANGED` or `REVIEW_DIR_UNSTAMPED`; no judging. |
+| Review checkout has edited or untracked files | `review-validate` and `index-check` refuse it, naming the first changed path. |
+| Stable execution path still held | The attempt prints the reason and uses a fresh random path. |
+| Git recording trace folder cannot be removed | The error is returned: the folder may contain command lines. |
 | Every step passed but release or publication failed | The run fails. |
 
 Output formats keep their existing fields. A runner exit code of zero is not

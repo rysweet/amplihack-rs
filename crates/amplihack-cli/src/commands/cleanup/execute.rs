@@ -43,6 +43,7 @@ fn is_managed(item: &Item, roots: &ManagedRoots) -> bool {
         // planned shape; this is the containment half of that check.
         Op::RemoveTarget { .. } => target_remove::location(&item.path)
             .is_ok_and(|at| is_contained(OwnedKind::Target, &at, roots, None)),
+        Op::ReclaimExec { .. } => c.parent() == Some(roots.exec.as_path()),
     }
 }
 
@@ -127,6 +128,19 @@ pub(super) fn execute(
     let target = item.canonical.as_path();
     match &item.op {
         Op::Skip | Op::Fail | Op::Archive { .. } | Op::RemoveTarget { .. } => Ok(()),
+        Op::ReclaimExec { tombstone } => {
+            if procs.in_use(target) {
+                refuse!("in use by a running process");
+            }
+            if *tombstone {
+                return exec_storage::remove_tombstone(target, None);
+            }
+            match exec_storage::reclaim(target, run_has_ended)? {
+                exec_storage::Verdict::Reclaimable(_) => Ok(()),
+                exec_storage::Verdict::Absent => refuse!("{} is already gone", target.display()),
+                exec_storage::Verdict::Kept(reason) => refuse!("{reason}"),
+            }
+        }
         Op::RemoveRunTmp { run_dir } => {
             run_still_inactive(run_dir)?;
             // A child of a killed runner (an agent, cargo) may outlive it and

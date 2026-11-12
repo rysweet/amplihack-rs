@@ -9,7 +9,7 @@ use super::Category;
 use super::archive::archive_file;
 use super::eligibility::{
     PrInfo, Verdict, is_valid_branch, is_valid_id, lookup_pr, no_pr_verdict, pr_verdict,
-    run_is_active,
+    run_has_ended, run_is_active,
 };
 use super::run_dir::{
     CLEANUP_RECORD, OWNED_PATHS, OwnedKind, OwnedPath, RUN_JSON, RUN_SCHEMA_VERSION, RunReport,
@@ -21,6 +21,7 @@ use super::work_root::WorkRoot;
 use crate::commands::hygiene::cleanup::{
     git_has_dirty_state, hardened_git, has_live_pid_marker, sanitized_stderr_short,
 };
+use crate::commands::recipe::run::run_checkout::exec_storage;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -141,6 +142,12 @@ enum Op {
     },
     Archive {
         relative: PathBuf,
+    },
+    /// Stable execution storage directly under `<work root>/exec/`, removed
+    /// only through `exec_storage`, which checks its rules again (#2096). A
+    /// tombstone is a folder an interrupted reclaim already moved aside.
+    ReclaimExec {
+        tombstone: bool,
     },
 }
 
@@ -528,6 +535,7 @@ struct ManagedRoots {
     targets: PathBuf,
     runs: PathBuf,
     short_runtime: PathBuf,
+    exec: PathBuf,
     hook_base: Option<PathBuf>,
     tmp: PathBuf,
 }
@@ -540,6 +548,7 @@ impl ManagedRoots {
             targets: canonical_or_self(&root.targets_dir()),
             runs: canonical_or_self(&root.runs_dir()),
             short_runtime: canonical_or_self(&root.short_runtime_dir()),
+            exec: canonical_or_self(&root.exec_dir()),
             hook_base: s.hook_cache_base.as_deref().map(canonical_or_self),
             tmp: canonical_or_self(&std::env::temp_dir()),
         }
@@ -1169,6 +1178,78 @@ impl Collector<'_> {
         }
     }
 
+    /// `run-exec`: each folder directly under `<work root>/exec/`, judged by
+    /// the same rules a relaunch applies before it reuses the path
+    /// (`exec_storage`): the owner run has ended and no durable worktree uses
+    /// its repository. The keep period does not apply.
+    fn collect_exec_storage(&mut self) {
+        if !self.wants(Category::RunExec) {
+            return;
+        }
+        let dir = self.s.work_root.exec_dir();
+        let listing = match fs::symlink_metadata(&dir) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
+                self.items.push(Item::skip(
+                    Category::RunExec,
+                    &dir,
+                    "not a real folder, so it is left untouched",
+                    None,
+                ));
+                return;
+            }
+            _ => fs::read_dir(&dir),
+        };
+        let mut paths: Vec<PathBuf> = match listing {
+            Ok(entries) => entries.flatten().map(|e| e.path()).collect(),
+            Err(error) => {
+                self.items.push(Item::fail(
+                    Category::RunExec,
+                    &dir,
+                    format!("cannot list: {error}"),
+                ));
+                return;
+            }
+        };
+        paths.sort();
+        for path in paths {
+            let tombstone = path.file_name().is_some_and(exec_storage::is_tombstone);
+            let verdict = if tombstone {
+                Ok(if is_real_dir(&path) {
+                    exec_storage::Verdict::Reclaimable(
+                        "moved aside by a reclaim that did not finish".to_string(),
+                    )
+                } else {
+                    exec_storage::Verdict::Kept(
+                        "it is not a real directory, so it is left untouched".to_string(),
+                    )
+                })
+            } else {
+                exec_storage::inspect(&path, run_has_ended)
+            };
+            match verdict {
+                Ok(exec_storage::Verdict::Absent) => {}
+                Ok(exec_storage::Verdict::Kept(reason)) => {
+                    self.items
+                        .push(Item::skip(Category::RunExec, &path, reason, None));
+                }
+                Ok(exec_storage::Verdict::Reclaimable(reason)) => self.items.push(Item {
+                    category: Category::RunExec,
+                    canonical: canonical_or_self(&path),
+                    size_bytes: tree_size(&path),
+                    reason,
+                    path,
+                    run_id: None,
+                    op: Op::ReclaimExec { tombstone },
+                }),
+                Err(error) => {
+                    self.items
+                        .push(Item::fail(Category::RunExec, &path, format!("{error:#}")));
+                }
+            }
+        }
+    }
+
     fn collect_tmp_leftovers(&mut self) {
         if !self.wants(Category::TmpLeftover) || euid() == 0 {
             return;
@@ -1427,6 +1508,7 @@ fn collect(settings: &Settings) -> Result<Vec<Item>> {
     c.collect_runs(&runs);
     c.collect_unrecorded_worktrees(&runs);
     c.collect_untagged_targets(&runs);
+    c.collect_exec_storage();
     c.collect_tmp_leftovers();
     c.collect_logs();
     Ok(c.items)

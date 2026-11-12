@@ -542,3 +542,96 @@ fn loop_preflight_refuses_a_branch_worktree_as_review_dir() {
     );
     assert!(pr.exists());
 }
+
+/// `amplihack internal review-validate <pr> <review>`.
+fn review_validate(f: &Fixture, pr: &Path, review: &Path) -> Output {
+    let mut command =
+        crate::isolated_amplihack::isolated(crate::support::amplihack_bin::amplihack_bin());
+    f.environment(&mut command);
+    command
+        .args(["internal", "review-validate"])
+        .arg(pr)
+        .arg(review)
+        .output()
+        .unwrap()
+}
+
+/// Security finding 1 (S-AZ2): a verdict names the recorded commit, so the
+/// review checkout must still hold that commit's files. An unstaged edit to
+/// a tracked file and a new untracked file are each refused; a clean
+/// checkout passes, and so does one with only ignored files (build output).
+#[test]
+fn review_validate_refuses_a_checkout_whose_files_differ_from_its_commit() {
+    let f = Fixture::new();
+    let pr = pr_worktree(&f);
+    let review = private_review(&f, &pr);
+    succeeds(&review_validate(&f, &pr, &review));
+
+    let exclude = f.git_in(
+        &review,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "info/exclude",
+        ],
+    );
+    let exclude = PathBuf::from(String::from_utf8(exclude).unwrap().trim());
+    fs::create_dir_all(exclude.parent().unwrap()).unwrap();
+    fs::write(&exclude, "build-output/\n").unwrap();
+    fs::create_dir(review.join("build-output")).unwrap();
+    fs::write(review.join("build-output/artifact"), "ignored").unwrap();
+    succeeds(&review_validate(&f, &pr, &review));
+
+    fs::write(review.join("tracked"), "edited after the commit\n").unwrap();
+    let edited = review_validate(&f, &pr, &review);
+    assert!(!edited.status.success(), "an unstaged edit must be refused");
+    assert!(
+        text(&edited).contains("changes that are not in its recorded commit"),
+        "{}",
+        text(&edited)
+    );
+    f.git_in(&review, &["checkout", "--", "tracked"]);
+    succeeds(&review_validate(&f, &pr, &review));
+
+    fs::write(review.join("new-file"), "untracked\n").unwrap();
+    let untracked = review_validate(&f, &pr, &review);
+    assert!(
+        !untracked.status.success(),
+        "an untracked file must be refused"
+    );
+    assert!(
+        text(&untracked).contains("new-file"),
+        "{}",
+        text(&untracked)
+    );
+}
+
+/// `index-check` applies the same refusal after a judging step: an edit that
+/// is never staged leaves the stamp unchanged, and is still caught.
+#[test]
+fn index_check_refuses_an_unstaged_edit_in_the_review_checkout() {
+    let f = Fixture::new();
+    let pr = pr_worktree(&f);
+    let review = private_review(&f, &pr);
+    let review_arg = review.to_str().unwrap();
+    let stamped = guard(&f, &["index-stamp", review_arg]);
+    succeeds(&stamped);
+    let stamp = String::from_utf8(stamped.stdout).unwrap();
+    succeeds(&guard(
+        &f,
+        &["index-check", review_arg, stamp.trim(), "judging"],
+    ));
+
+    fs::write(review.join("tracked"), "edited by the judge\n").unwrap();
+    let edited = guard(&f, &["index-check", review_arg, stamp.trim(), "judging"]);
+    assert!(
+        !edited.status.success(),
+        "an unstaged edit must stop the drive"
+    );
+    assert!(
+        text(&edited).contains("left changes in the working tree"),
+        "{}",
+        text(&edited)
+    );
+}

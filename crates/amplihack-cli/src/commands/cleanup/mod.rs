@@ -34,6 +34,7 @@ pub enum Category {
     RunTmp,
     RunWorktree,
     RunTarget,
+    RunExec,
     UntaggedTarget,
     TmpLeftover,
     RecipeLog,
@@ -41,10 +42,11 @@ pub enum Category {
 }
 
 impl Category {
-    pub(crate) const ALL: [Category; 7] = [
+    pub(crate) const ALL: [Category; 8] = [
         Self::RunTmp,
         Self::RunWorktree,
         Self::RunTarget,
+        Self::RunExec,
         Self::UntaggedTarget,
         Self::TmpLeftover,
         Self::RecipeLog,
@@ -56,6 +58,7 @@ impl Category {
             Self::RunTmp => "run-tmp",
             Self::RunWorktree => "run-worktree",
             Self::RunTarget => "run-target",
+            Self::RunExec => "run-exec",
             Self::UntaggedTarget => "untagged-target",
             Self::TmpLeftover => "tmp-leftover",
             Self::RecipeLog => "recipe-log",

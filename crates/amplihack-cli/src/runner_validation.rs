@@ -186,6 +186,10 @@ pub enum InternalCommands {
     ReviewRelease {
         checkout: std::path::PathBuf,
     },
+    /// Refuses an owned review checkout whose files differ from its commit.
+    ReviewClean {
+        checkout: std::path::PathBuf,
+    },
     ReviewLaunch {
         checkout: std::path::PathBuf,
     },
@@ -260,6 +264,9 @@ pub(crate) fn run(command: InternalCommands) -> Result<()> {
         } => return review_generation::validate(&repository, &checkout),
         InternalCommands::ReviewRelease { checkout } => {
             return review_generation::release(&checkout);
+        }
+        InternalCommands::ReviewClean { checkout } => {
+            return review_generation::clean(&checkout);
         }
         InternalCommands::ReviewLaunch { checkout } => {
             println!("{}", review_generation::launch(&checkout)?.display());

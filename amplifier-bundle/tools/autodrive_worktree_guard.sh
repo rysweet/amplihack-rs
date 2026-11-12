@@ -82,7 +82,9 @@
 #       (`git ls-files --stage`). It reads; it writes no object.
 #   autodrive_worktree_guard.sh index-check <dir> <stamp> <step>
 #       After an agent step: exit 1 with a STOP line naming <step> unless
-#       index-stamp <dir> still prints <stamp>. The rounds run it after the
+#       index-stamp <dir> still prints <stamp> and, for an owned review
+#       generation, `amplihack internal review-clean` finds its working tree
+#       still holds the recorded commit's files. The rounds run it after the
 #       judging step (step-02b). The loop stamps the review dir before each
 #       round and runs it after the whole round, whatever the round's exit
 #       status (so step-04, the agent that stages and commits, is covered even
@@ -302,6 +304,11 @@ cmd_index_check() {
   [ -n "$want" ] || stop "${step}: no index stamp of the review dir was taken before it ran; nothing shows its index is unchanged"
   now="$(cmd_index_stamp "$dir")" || { echo "STOP: ${step}: the review dir ${dir} could not be stamped again, so its index was not compared and no change is claimed; fix the git error above and run the round again (#1528)" >&2; exit 3; }
   [ "$now" = "$want" ] || stop "${step} changed the index or HEAD of the review dir ${dir} (git -C '${dir}' status; git -C '${dir}' reflog -n 5). Auto-drive agents never stage or commit there; undo the change there before another round. If a person committed there meanwhile, run the round again"
+  # An owned generation must also still hold its commit's files (#2096).
+  local rdir; rdir="$(real "$dir")" || rdir=""
+  if [ -n "$rdir" ] && [ -f "${rdir}.review-owner.json" ]; then
+    amplihack internal review-clean "$rdir" >/dev/null || stop "${step} left changes in the working tree of the review dir ${dir} (git -C '${dir}' status); a verdict must name the files it reviewed. Release this review dir and run the round again"
+  fi
 }
 
 cmd_commit_dir() {

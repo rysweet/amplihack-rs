@@ -264,6 +264,36 @@ pub(crate) fn validate(source: &Path, checkout: &Path) -> Result<()> {
     if branch.status.code() != Some(1) {
         bail!("owned review checkout must remain detached");
     }
+    refuse_dirty(checkout)
+}
+/// The owned review checkout at `checkout` still holds exactly its recorded
+/// commit's files: [`refuse_dirty`] after the ownership checks of [`read`].
+pub(crate) fn clean(checkout: &Path) -> Result<()> {
+    read(checkout)?;
+    refuse_dirty(checkout)
+}
+/// Refuses a review checkout whose working tree or index differs from HEAD,
+/// or that holds untracked files: a verdict names the recorded commit, so
+/// the files reviewed must be that commit's. Ignored files (build output)
+/// are allowed; `git status` leaves them out.
+fn refuse_dirty(checkout: &Path) -> Result<()> {
+    let output = command(checkout)
+        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+        .output()?;
+    if !output.status.success() {
+        bail!(
+            "review Git inspection failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    if let Some(first) = output.stdout.split(|b| *b == 0).find(|e| !e.is_empty()) {
+        bail!(
+            "review checkout {} has changes that are not in its recorded commit (first: {}); \
+             refusing to review it",
+            checkout.display(),
+            String::from_utf8_lossy(first)
+        );
+    }
     Ok(())
 }
 pub(crate) fn launch(checkout: &Path) -> Result<PathBuf> {

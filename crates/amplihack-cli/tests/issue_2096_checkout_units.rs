@@ -213,3 +213,27 @@ fn release_revalidates_directory_identity_before_removing_contents() {
         },
     );
 }
+
+/// S-IV4: `map_path` refuses `..` inside the caller's checkout as
+/// `map_context` does. Joined onto the private root, `<caller>/x/../../y`
+/// would resolve outside the checkout, beside `repository.git`.
+#[test]
+fn map_path_refuses_a_caller_path_that_climbs_out_with_parent_dirs() {
+    isolated_body(
+        "map_path_refuses_a_caller_path_that_climbs_out_with_parent_dirs",
+        |f| {
+            let scratch = f.root.join("scratch");
+            fs::create_dir(&scratch).unwrap();
+            let checkout = implementation::RunCheckout::prepare(&f.repo, &scratch, false).unwrap();
+            let error = checkout
+                .map_path(&f.repo.join("x/../../y"))
+                .expect_err("a path that climbs out of the checkout must be refused");
+            assert!(format!("{error:#}").contains("contains '..'"), "{error:#}");
+            assert_eq!(
+                checkout.map_path(&f.repo.join("tracked")).unwrap(),
+                checkout.exec_dir().join("tracked"),
+                "a canonical path inside the checkout still maps"
+            );
+        },
+    );
+}

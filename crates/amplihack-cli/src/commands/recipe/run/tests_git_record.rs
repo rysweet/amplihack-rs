@@ -555,7 +555,7 @@ fn enabled_record_points_git_at_its_folder_and_removes_the_callers_trace_targets
         "exactly these variables, never the caller's list"
     );
     assert_caller_trace_removed(&command);
-    record.discard();
+    record.discard().unwrap();
 }
 
 #[test]
@@ -664,8 +664,28 @@ fn discard_removes_the_empty_folder_and_writes_no_summary() {
     let run = tempfile::tempdir().unwrap();
     let record = GitRecord::prepare(Some(run.path()));
     assert!(run.path().join(TRACE_DIR).is_dir());
-    record.discard();
+    record.discard().unwrap();
     assert!(!run.path().join(TRACE_DIR).exists());
+    assert!(!run.path().join(SUMMARY).exists());
+}
+
+/// A trace folder that cannot be removed (here it is no longer empty) is an
+/// error the caller receives, not a warning: the folder is left in place and
+/// its path is named.
+#[test]
+fn discard_returns_the_error_when_the_folder_cannot_be_removed() {
+    let run = tempfile::tempdir().unwrap();
+    let record = GitRecord::prepare(Some(run.path()));
+    let trace = run.path().join(TRACE_DIR);
+    fs::write(trace.join("left-behind"), b"x").unwrap();
+    let error = record
+        .discard()
+        .expect_err("a folder that cannot be removed must fail the discard");
+    assert!(
+        format!("{error:#}").contains(&trace.display().to_string()),
+        "{error:#}"
+    );
+    assert!(trace.join("left-behind").is_file());
     assert!(!run.path().join(SUMMARY).exists());
 }
 

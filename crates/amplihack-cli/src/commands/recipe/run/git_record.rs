@@ -398,39 +398,37 @@ impl GitRecord {
             )?;
             fs::remove_dir_all(&trace_dir).context("cannot release finalized observer storage")?;
         } else {
-            remove_trace_dir(&trace_dir);
+            remove_trace_dir(&trace_dir).context(
+                "cannot remove the Git recording trace folder; it may contain command lines",
+            )?;
         }
         Ok(())
     }
 
     /// Removes the still-empty folder without writing a summary, for a run
-    /// that stopped before its runner started.
-    pub(crate) fn discard(self) {
+    /// that stopped before its runner started. A folder already gone is
+    /// fine; any other failure is returned for the caller to attach to the
+    /// error it already holds.
+    pub(crate) fn discard(self) -> Result<()> {
         let State::Enabled { trace_dir, .. } = self.state else {
-            return;
+            return Ok(());
         };
         match fs::remove_dir(&trace_dir) {
-            Ok(()) => {}
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Err(error) => eprintln!(
-                "amplihack: warning: cannot remove {} ({:?})",
-                trace_dir.display(),
-                error.kind()
-            ),
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+            Err(error) => {
+                Err(error).with_context(|| format!("cannot remove {}", trace_dir.display()))
+            }
         }
     }
 }
 
 /// `remove_dir_all` removes a symlink itself rather than following it.
-fn remove_trace_dir(trace_dir: &Path) {
+fn remove_trace_dir(trace_dir: &Path) -> Result<()> {
     match fs::remove_dir_all(trace_dir) {
-        Ok(()) => {}
-        Err(error) if error.kind() == ErrorKind::NotFound => {}
-        Err(error) => eprintln!(
-            "amplihack: warning: cannot remove {} ({:?}); it may contain command lines",
-            trace_dir.display(),
-            error.kind()
-        ),
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("cannot remove {}", trace_dir.display())),
     }
 }
 

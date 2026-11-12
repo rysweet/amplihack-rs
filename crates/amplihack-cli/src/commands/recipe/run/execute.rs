@@ -697,11 +697,24 @@ pub(super) fn execute_recipe_via_rust_fresh(
     // at a path derived from that identity, so a relaunch presents the same
     // repository path and replay can reuse checkout-dependent steps (#2493).
     let recovering = admission.is_some() || delegated.is_some();
-    let stable_storage = match (recovering, workspace.borrow().work_root_path()) {
+    let stable_path = match (recovering, workspace.borrow().work_root_path()) {
         (true, Some(root)) => {
-            super::recovery::identity(recipe_path, &recipe_name, working_dir, context)
-                .map(|identity| root.join("exec").join(&identity[..identity.len().min(32)]))
+            super::recovery::identity(recipe_path, &recipe_name, working_dir, context).map(
+                |identity| {
+                    root.join(crate::commands::cleanup::work_root::EXEC_DIR)
+                        .join(&identity[..identity.len().min(32)])
+                },
+            )
         }
+        _ => None,
+    };
+    let owner_run_dir = workspace.borrow().run_dir().map(Path::to_path_buf);
+    let stable_storage = match (&stable_path, &owner_run_dir) {
+        (Some(path), Some(owner_run_dir)) => Some(super::run_checkout::StableStorage {
+            path,
+            owner_run_dir,
+            owner_ended: crate::commands::cleanup::eligibility::run_has_ended,
+        }),
         _ => None,
     };
     let mut checkout = match super::run_checkout::RunCheckout::prepare_with_inputs(
@@ -709,11 +722,13 @@ pub(super) fn execute_recipe_via_rust_fresh(
         &scratch,
         dry_run,
         &[recipe_path.to_path_buf()],
-        stable_storage.as_deref(),
+        stable_storage,
     ) {
         Ok(checkout) => checkout,
-        Err(error) => {
-            git_record.discard();
+        Err(mut error) => {
+            if let Err(discard) = git_record.discard() {
+                error = error.context(format!("Git recording release also failed: {discard:#}"));
+            }
             return fail_before_execution(
                 workspace.into_inner(),
                 admission.as_ref(),
@@ -731,24 +746,7 @@ pub(super) fn execute_recipe_via_rust_fresh(
         if let Some(admission) = &admission
             && matches!(checkout, super::run_checkout::RunCheckout::Private { .. })
         {
-            let descriptor = admission.descriptor_path();
-            let parent = descriptor
-                .parent()
-                .context("recovery descriptor path has no parent folder")?;
-            let resolved = parent
-                .canonicalize()
-                .with_context(|| format!("cannot resolve {}", parent.display()))?;
-            let checkout_root = exec_dir
-                .canonicalize()
-                .with_context(|| format!("cannot resolve {}", exec_dir.display()))?;
-            if resolved.starts_with(&checkout_root) {
-                anyhow::bail!(
-                    "recovery descriptor {} resolves inside the run's private checkout {}; \
-                     refusing to launch",
-                    descriptor.display(),
-                    exec_dir.display()
-                );
-            }
+            refuse_descriptor_inside(&admission.descriptor_path(), &exec_dir)?;
         }
         Ok(())
     };
@@ -765,7 +763,9 @@ pub(super) fn execute_recipe_via_rust_fresh(
             if let Err(release) = checkout.remove() {
                 error = error.context(format!("execution release also failed: {release:#}"));
             }
-            git_record.discard();
+            if let Err(discard) = git_record.discard() {
+                error = error.context(format!("Git recording release also failed: {discard:#}"));
+            }
             return fail_before_execution(
                 workspace.into_inner(),
                 admission.as_ref(),
@@ -1107,7 +1107,7 @@ pub(super) fn execute_recipe_via_rust_fresh(
 
     // Attach the classification to the structured result so the agentic layer
     // reads it as DATA (issue #1337's evaluator) instead of scraping prose.
-    let mut final_result = match result {
+    let final_result = match result {
         Ok(mut run_result) => {
             if !run_result.success
                 && let Some(verdict) = last_verdict.borrow().as_ref()
@@ -1123,40 +1123,81 @@ pub(super) fn execute_recipe_via_rust_fresh(
     };
     // Release order: the private checkout, then the Git record, then the
     // recovery admission (judged from the result after the first two), then
-    // the run folder. Every step runs; each error is kept as context on the
-    // one before it, so no release failure hides another.
-    if let Err(release_error) = checkout.remove() {
-        final_result = Err(match final_result {
-            Err(error) => {
-                error.context(format!("execution release also failed: {release_error:#}"))
-            }
-            Ok(_) => release_error,
-        });
+    // the run folder.
+    release_in_order(
+        final_result,
+        vec![
+            ("execution release", Box::new(|_| checkout.remove())),
+            ("Git recording", Box::new(|_| git_record.finish())),
+            (
+                "recovery admission finish",
+                Box::new(|result| {
+                    match (
+                        &admission,
+                        admission_outcome(result, last_verdict.borrow().as_ref()),
+                    ) {
+                        (Some(admission), Some(outcome)) => admission
+                            .finish(outcome)
+                            .context("cannot finish recovery admission"),
+                        _ => Ok(()),
+                    }
+                }),
+            ),
+            (
+                "run report",
+                Box::new(|result| finish_workspace(workspace.into_inner(), result, dry_run)),
+            ),
+        ],
+    )
+}
+
+/// One release step: its name in the error chain, and the step, which sees
+/// the result so far.
+pub(super) type ReleaseStep<'a> = (
+    &'static str,
+    Box<dyn FnOnce(&Result<RecipeRunResult>) -> Result<()> + 'a>,
+);
+
+/// Runs every release step, in order, whatever happened before it. A step's
+/// error becomes the result of a run that had succeeded; otherwise it is kept
+/// as context ("<name> also failed: ...") on the error before it, so no
+/// release failure hides another.
+pub(super) fn release_in_order(
+    mut result: Result<RecipeRunResult>,
+    steps: Vec<ReleaseStep<'_>>,
+) -> Result<RecipeRunResult> {
+    for (name, step) in steps {
+        if let Err(step_error) = step(&result) {
+            result = Err(match result {
+                Err(error) => error.context(format!("{name} also failed: {step_error:#}")),
+                Ok(_) => step_error,
+            });
+        }
     }
-    if let Err(record_error) = git_record.finish() {
-        final_result = Err(match final_result {
-            Err(error) => error.context(format!("Git recording also failed: {record_error:#}")),
-            Ok(_) => record_error,
-        });
+    result
+}
+
+/// The recovery descriptor lives in the run folder; one whose folder resolves
+/// inside the private checkout would be state a step could rewrite (S-AZ4).
+pub(super) fn refuse_descriptor_inside(descriptor: &Path, exec_dir: &Path) -> Result<()> {
+    let parent = descriptor
+        .parent()
+        .context("recovery descriptor path has no parent folder")?;
+    let resolved = parent
+        .canonicalize()
+        .with_context(|| format!("cannot resolve {}", parent.display()))?;
+    let checkout_root = exec_dir
+        .canonicalize()
+        .with_context(|| format!("cannot resolve {}", exec_dir.display()))?;
+    if resolved.starts_with(&checkout_root) {
+        anyhow::bail!(
+            "recovery descriptor {} resolves inside the run's private checkout {}; \
+             refusing to launch",
+            descriptor.display(),
+            exec_dir.display()
+        );
     }
-    if let Some(admission) = &admission
-        && let Some(outcome) = admission_outcome(&final_result, last_verdict.borrow().as_ref())
-        && let Err(admission_error) = admission.finish(outcome)
-    {
-        final_result = Err(match final_result {
-            Err(error) => error.context(format!(
-                "recovery admission finish also failed: {admission_error:#}"
-            )),
-            Ok(_) => admission_error.context("cannot finish recovery admission"),
-        });
-    }
-    if let Err(finalization) = finish_workspace(workspace.into_inner(), &final_result, dry_run) {
-        final_result = Err(match final_result {
-            Err(error) => error.context(format!("run report also failed: {finalization:#}")),
-            Ok(_) => finalization,
-        });
-    }
-    final_result
+    Ok(())
 }
 
 /// The recovery outcome for a finished run (#2334): `None` for a run stopped

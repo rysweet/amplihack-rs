@@ -12,8 +12,19 @@ use std::process::Command;
 #[path = "../../../run_isolation/input_snapshot.rs"]
 mod input_snapshot;
 use input_snapshot::{InputSnapshot, trim_lf};
+#[path = "../../../run_isolation/exec_storage.rs"]
+pub(crate) mod exec_storage;
 
 pub(crate) const RUN_CHECKOUT_ENV: &str = "AMPLIHACK_RUN_CHECKOUT";
+
+/// The stable path an attempt with a recovery identity prepares at, the run
+/// folder that claims it, and how to tell whether an earlier owner has ended.
+#[derive(Clone, Copy)]
+pub(crate) struct StableStorage<'a> {
+    pub(crate) path: &'a Path,
+    pub(crate) owner_run_dir: &'a Path,
+    pub(crate) owner_ended: exec_storage::OwnerEnded,
+}
 
 /// A non-cloneable lease. Repository metadata lives outside disposable runtime/.
 #[derive(Debug)]
@@ -44,15 +55,17 @@ impl RunCheckout {
     /// `stable_storage`, when given, is where this attempt's private
     /// repository and checkout are created: a path derived from the run's
     /// recovery identity, so a relaunch prepares its fresh checkout at the same
-    /// path and replay can match checkout-dependent steps. It must not exist;
-    /// when an earlier attempt still holds it (durable dependencies, or an
-    /// attempt that was killed), this attempt uses a fresh random path instead.
+    /// path and replay can match checkout-dependent steps. The attempt claims
+    /// it through [`exec_storage::claim`], which reclaims a path an earlier
+    /// attempt left once that attempt's run has ended and no durable worktree
+    /// uses it. When the path is still held, this attempt says why and uses a
+    /// fresh random path instead.
     pub(crate) fn prepare_with_inputs(
         working_dir: &Path,
         scratch: &Path,
         dry_run: bool,
         inputs: &[PathBuf],
-        stable_storage: Option<&Path>,
+        stable_storage: Option<StableStorage<'_>>,
     ) -> Result<Self> {
         if dry_run {
             return Ok(Self::Caller(
@@ -114,7 +127,20 @@ impl RunCheckout {
             .parent()
             .context("runtime directory has no parent")?;
         let storage = match stable_storage {
-            Some(stable) => claim_stable_storage(stable)?,
+            Some(stable) => {
+                match exec_storage::claim(stable.path, stable.owner_run_dir, stable.owner_ended)? {
+                    exec_storage::Claim::Claimed(path) => Some(path),
+                    exec_storage::Claim::Held(reason) => {
+                        eprintln!(
+                            "amplihack: {} is still held by an earlier attempt ({reason}); this \
+                             attempt uses a fresh execution path, so recovery replay re-runs \
+                             steps that depend on the checkout",
+                            stable.path.display()
+                        );
+                        None
+                    }
+                }
+            }
             None => None,
         };
         let storage = match storage {
@@ -261,12 +287,7 @@ impl RunCheckout {
                 _ => Path::new(value),
             };
             let replacement = if path.is_absolute() && path.starts_with(caller_top) {
-                if path
-                    .components()
-                    .any(|c| matches!(c, std::path::Component::ParentDir))
-                {
-                    bail!("context path {key} contains '..'; use a canonical repository path");
-                }
+                refuse_parent_dir(path, &format!("context path {key}"))?;
                 root.join(path.strip_prefix(caller_top)?)
                     .into_os_string()
                     .into_string()
@@ -301,6 +322,7 @@ impl RunCheckout {
             std::env::current_dir()?.join(path)
         };
         if let Ok(relative) = absolute.strip_prefix(caller_top) {
+            refuse_parent_dir(&absolute, &format!("path {}", absolute.display()))?;
             Ok(root.join(relative))
         } else {
             Ok(absolute)
@@ -442,39 +464,16 @@ fn git(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
     }
     Ok(output.stdout)
 }
-/// Creates `stable` (mode 0700, exclusively) and its private parents.
-/// `Ok(None)` when it already exists: an earlier attempt still holds it.
-fn claim_stable_storage(stable: &Path) -> Result<Option<PathBuf>> {
-    use std::os::unix::fs::DirBuilderExt;
-    let parent = stable
-        .parent()
-        .context("stable execution path has no parent")?;
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(parent)
-        .with_context(|| format!("cannot create {}", parent.display()))?;
-    let metadata = fs::symlink_metadata(parent)
-        .with_context(|| format!("cannot inspect {}", parent.display()))?;
-    if !metadata.is_dir() || metadata.mode() & 0o077 != 0 {
-        bail!(
-            "execution storage parent {} must be a private directory (mode 0700)",
-            parent.display()
-        );
+/// A caller path inside the checkout must not climb out of it with `..`:
+/// joined onto the private root, it would resolve outside the checkout.
+fn refuse_parent_dir(path: &Path, what: &str) -> Result<()> {
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        bail!("{what} contains '..'; use a canonical repository path");
     }
-    match fs::DirBuilder::new().mode(0o700).create(stable) {
-        Ok(()) => Ok(Some(stable.to_path_buf())),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            eprintln!(
-                "amplihack: {} is still held by an earlier attempt; this attempt uses a fresh \
-                 execution path, so recovery replay re-runs steps that depend on the checkout",
-                stable.display()
-            );
-            Ok(None)
-        }
-        Err(error) => Err(error)
-            .with_context(|| format!("cannot create execution storage {}", stable.display())),
-    }
+    Ok(())
 }
 /// Whether `text` contains `root` as a whole path: followed by `/` or by the
 /// end of a path (end of text, whitespace, a quote or another delimiter), not

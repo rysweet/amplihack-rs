@@ -18,6 +18,8 @@ use std::{
 mod checkout_units;
 #[path = "issue_2096_contract_support.rs"]
 mod contract_support;
+#[path = "issue_2096_exec_reclaim.rs"]
+mod exec_reclaim;
 #[path = "issue_2096_input_preservation.rs"]
 mod input_preservation;
 #[path = "issue_2096_ownership_lifecycle.rs"]
