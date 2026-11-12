@@ -27,6 +27,8 @@
 #
 # Run: bash tests/issue_1676_build_resolves_agent_pr.sh
 set -uo pipefail
+# Issue #1764: no git this script runs may wait on a credential prompt.
+export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true
 exec </dev/null
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$REPO_ROOT/amplifier-bundle/recipes/autodrive-build.yaml"
