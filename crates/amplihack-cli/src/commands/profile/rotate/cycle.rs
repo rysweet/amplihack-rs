@@ -22,12 +22,11 @@ use super::overflow_record::{
 use super::pin::{self, Gate as PinGate}; // the switch-hold gate
 use super::plan_room::no_room;
 pub use super::prelude::prototype_guard;
-use super::prelude::{Prelude, locked_prelude, log_sink};
+use super::prelude::{Prelude, locked_prelude};
 use super::revalidate::{self, Verdict};
-use super::run_lock::{self, Taken};
+use super::run_lock;
 use super::swap::{self, Source};
-use super::swap_back;
-use super::swap_record;
+use super::{swap_back, swap_record};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::now;
 use crate::commands::profile::shared_dirs;
@@ -57,25 +56,9 @@ pub(super) fn save(
 }
 
 pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError> {
-    // Issue #2040 (D10): one rotate run at a time, real or dry, held until
-    // this function returns. Taken before anything is read.
-    let _run_lock = match run_lock::take(&ctx.rs) {
-        Ok(Taken::Held(lock)) => lock,
-        Ok(Taken::Busy(pid)) => {
-            if mode == Mode::Watch {
-                log_sink(ctx, false).emit(now(), msg::RUN_BUSY);
-                return Ok(CycleOutcome::Skipped);
-            }
-            return Err(ProfileError::RotateRunning(pid));
-        }
-        // A run lock file that fails a check: the daemon keeps running and
-        // says so each cycle until the file is fixed.
-        Ok(Taken::Refused(reason)) if mode == Mode::Watch => {
-            log_sink(ctx, false).emit(now(), &format!("skip: rotate run lock {reason}"));
-            return Ok(CycleOutcome::Skipped);
-        }
-        Ok(Taken::Refused(reason)) => return Err(run_lock::refusal(reason)),
-        Err(e) => return Err(e),
+    // Issue #2040 (D10): one run at a time, held until this returns.
+    let Some(_run_lock) = run_lock::for_cycle(ctx, mode)? else {
+        return Ok(CycleOutcome::Skipped);
     };
     // Issue #1962: set for each run, so a real cycle never inherits it.
     ctx.read_only = mode == Mode::DryRun;

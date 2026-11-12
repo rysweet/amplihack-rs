@@ -6,8 +6,12 @@
 //! The holder writes its pid into the file. That pid is for display only:
 //! it is never signalled, and its raw bytes never reach a message.
 
+use super::cycle::{Ctx, Mode};
 use super::ledger::RotateState;
+use super::log::msg;
+use super::prelude::log_sink;
 use crate::commands::profile::ProfileError;
+use crate::commands::profile::auto_switch::kit::now;
 use fs2::FileExt;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -73,6 +77,26 @@ pub fn take(rs: &RotateState) -> Result<Taken, ProfileError> {
             Ok(Taken::Busy(read_pid(&mut file)))
         }
         Err(e) => Err(ProfileError::Io(e)),
+    }
+}
+
+/// The run lock for one cycle in `mode`, taken before anything is read.
+/// `None` when a `watch` cycle must skip: another run holds the lock, or
+/// the lock file fails a check. The reason is logged and the daemon carries
+/// on. A one-shot or dry run fails instead.
+pub fn for_cycle(ctx: &Ctx, mode: Mode) -> Result<Option<RunLock>, ProfileError> {
+    let skip = |line: &str| {
+        log_sink(ctx, false).emit(now(), line);
+        Ok(None)
+    };
+    match take(&ctx.rs)? {
+        Taken::Held(lock) => Ok(Some(lock)),
+        Taken::Busy(_) if mode == Mode::Watch => skip(msg::RUN_BUSY),
+        Taken::Busy(pid) => Err(ProfileError::RotateRunning(pid)),
+        Taken::Refused(reason) if mode == Mode::Watch => {
+            skip(&format!("skip: rotate run lock {reason}"))
+        }
+        Taken::Refused(reason) => Err(refusal(reason)),
     }
 }
 
