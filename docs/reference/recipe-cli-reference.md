@@ -1,3 +1,10 @@
+---
+title: Recipe CLI Reference
+description: Recipe commands, text encoding and validation rules.
+type: reference
+updated: 2026-11-05
+---
+
 # Recipe CLI Reference
 
 Command-line reference for `amplihack recipe`.
@@ -10,6 +17,7 @@ Command-line reference for `amplihack recipe`.
 - [Removed context keys](#removed-context-keys)
 - [Nested runs and orphan stops](#nested-runs-and-orphan-stops)
 - [amplihack recipe validate](#amplihack-recipe-validate)
+- [Recipe text encoding](#recipe-text-encoding)
 - [amplihack recipe show](#amplihack-recipe-show)
 - [Environment variables](#environment-variables)
 - [Exit codes](#exit-codes)
@@ -226,7 +234,7 @@ the pane environment, so a detached run outlives the session that launched it.
 
 ## amplihack recipe validate
 
-Validate a recipe YAML file without executing it.
+Validate a recipe file containing YAML or JSON without executing it.
 
 ```bash
 amplihack recipe validate <FILE> [OPTIONS]
@@ -234,7 +242,7 @@ amplihack recipe validate <FILE> [OPTIONS]
 
 | Option | Description | Default |
 | --- | --- | --- |
-| `<FILE>` | Recipe YAML file to validate | required |
+| `<FILE>` | Recipe file containing YAML or JSON to validate | required |
 | `--verbose`, `-v` | Include validation details | `false` |
 | `--format <format>`, `-f <format>` | Output format: `table`, `json`, or `yaml` | `table` |
 
@@ -242,6 +250,57 @@ amplihack recipe validate <FILE> [OPTIONS]
 amplihack recipe validate ~/.amplihack/.claude/recipes/default-workflow.yaml \
   --verbose
 ```
+
+## Recipe text encoding
+
+The CLI recipe parser accepts UTF-8 YAML and JSON. JSON strings may contain
+supplementary Unicode characters directly or encode them as valid UTF-16
+surrogate pairs. Both forms produce identical decoded recipe text. No flag,
+environment variable or configuration change is required.
+
+These complete recipes decode to the same prompt:
+
+```json
+{"name":"unicode-review","steps":[{"id":"review","type":"agent","prompt":"Review: \uD83D\uDE80, \uD834\uDD1E.\nKeep punctuation!"}]}
+```
+
+```json
+{"name":"unicode-review","steps":[{"id":"review","type":"agent","prompt":"Review: 🚀, 𝄞.\nKeep punctuation!"}]}
+```
+
+The decoded prompt contains exactly these two lines:
+
+```text
+Review: 🚀, 𝄞.
+Keep punctuation!
+```
+
+JSON escaping still applies. The JSON string `"\\uD83D\\uDE80"` decodes to
+the literal text `\uD83D\uDE80`. The parser preserves those backslashes and
+does not interpret the decoded text again. Actual lone, reversed, interrupted
+or malformed surrogate escapes are rejected, including `"\uD83D"`,
+`"\uDE80"`, `"\uDE80\uD83D"`, `"\uD83Dx\uDE80"` and `"\uD83G"`.
+
+The parser tries YAML decoding first. If decoding fails, it tries JSON decoding
+on the original input, requiring a complete JSON document without trailing
+content. If both decoders fail, it returns the original YAML error. A schema
+error after successful YAML decoding does not trigger a JSON retry. Existing
+YAML syntax and scalar behaviour remain unchanged.
+
+Both decoding paths apply the same recipe validation. The original file and
+input limits remain 1,000,000 bytes, measured before escape decoding. Recipes
+require a top-level mapping, a string `name`, non-empty `steps` and non-blank,
+unique step identifiers. Field types and the supported explicit step types
+(`bash`, `agent` and `recipe`) remain unchanged, as does step-type inference.
+Duplicate mapping keys are rejected at every depth, including context and
+additional fields. Keys that become equal after escape decoding also count
+as duplicates. Additional fields remain available in the parsed recipe;
+unknown-field and retired-field warning behaviour remains unchanged.
+
+This encoding contract applies to CLI recipe parsing and pre-validation.
+Recipe execution passes the original file to `recipe-runner-rs`, whose parsing
+support is independent. Successful CLI validation does not establish runner
+compatibility or change formatter behaviour.
 
 ## amplihack recipe show
 

@@ -4,6 +4,9 @@
 //! and runs each through the corresponding hook's `process()` method, comparing
 //! the output semantically against the expected JSON.
 
+#[path = "../support/isolated_hook.rs"]
+mod isolated_hook;
+
 use amplihack_hooks::{
     Hook, PostToolUseHook, PreCompactHook, PreToolUseHook, SessionStartHook, SessionStopHook,
     StopHook, UserPromptSubmitHook,
@@ -15,30 +18,62 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-struct EnvVarGuard {
-    key: &'static str,
-    previous: Option<OsString>,
+/// The process environment while hooks run in-process under the golden lock.
+///
+/// [`GoldenEnv::enter`] saves the whole environment, removes every variable a
+/// spawned hook child would not keep (`isolated_hook::is_kept`, #2361), sets
+/// `isolated_hook::NO_GIT_PROMPT_ENV`, points `HOME`,
+/// `AMPLIHACK_CLAUDE_PROFILE_ROOT` and `CLAUDE_PROJECT_DIR` into `root`, and
+/// then sets `extra`. The hooks therefore see the same environment as a
+/// `HookSandbox` child, with no `AMPLIHACK_HOME` (so their state goes under
+/// `<root>/home/.amplihack`), no `AMPLIHACK_SESSION_DEPTH` and no `XPIA_*`:
+/// the expected outputs assume the XPIA defaults, under which XPIA is off
+/// (#1734). Drop puts the saved environment back exactly.
+///
+/// Hold `golden_env_lock()` while the value lives.
+struct GoldenEnv {
+    saved: Vec<(OsString, OsString)>,
 }
 
-impl EnvVarGuard {
-    fn unset(key: &'static str) -> Self {
-        let previous = std::env::var_os(key);
-        unsafe { std::env::remove_var(key) };
-        Self { key, previous }
-    }
-
-    fn set(key: &'static str, value: &str) -> Self {
-        let previous = std::env::var_os(key);
-        unsafe { std::env::set_var(key, value) };
-        Self { key, previous }
+impl GoldenEnv {
+    fn enter(root: &Path, extra: &[(&str, &str)]) -> Self {
+        let home = root.join("home");
+        let profiles = root.join("profiles");
+        fs::create_dir_all(&home).expect("golden temp home");
+        fs::create_dir_all(&profiles).expect("golden temp profile root");
+        let saved: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+        // SAFETY: every test in this binary that reads or writes the
+        // environment holds `golden_env_lock()`.
+        unsafe {
+            for (key, _) in &saved {
+                if !key.to_str().is_some_and(isolated_hook::is_kept) {
+                    std::env::remove_var(key);
+                }
+            }
+            for (key, value) in isolated_hook::NO_GIT_PROMPT_ENV {
+                std::env::set_var(key, value);
+            }
+            std::env::set_var("HOME", &home);
+            std::env::set_var("AMPLIHACK_CLAUDE_PROFILE_ROOT", &profiles);
+            std::env::set_var("CLAUDE_PROJECT_DIR", root);
+            for (key, value) in extra {
+                std::env::set_var(key, value);
+            }
+        }
+        Self { saved }
     }
 }
 
-impl Drop for EnvVarGuard {
+impl Drop for GoldenEnv {
     fn drop(&mut self) {
-        match &self.previous {
-            Some(value) => unsafe { std::env::set_var(self.key, value) },
-            None => unsafe { std::env::remove_var(self.key) },
+        // SAFETY: as in `enter`.
+        unsafe {
+            for (key, _) in std::env::vars_os() {
+                std::env::remove_var(key);
+            }
+            for (key, value) in &self.saved {
+                std::env::set_var(key, value);
+            }
         }
     }
 }
@@ -71,26 +106,6 @@ impl Drop for TempCwd {
         let _ = fs::remove_dir_all(&self.path);
     }
 }
-
-/// Every variable `XpiaConfig::from_env` reads.
-const XPIA_ENV_KEYS: &[&str] = &[
-    "XPIA_ENABLED",
-    "XPIA_SECURITY_LEVEL",
-    "XPIA_VERBOSE_FEEDBACK",
-    "XPIA_BLOCK_HIGH_RISK",
-    "XPIA_BLOCK_CRITICAL",
-    "XPIA_VALIDATE_WEBFETCH",
-    "XPIA_VALIDATE_BASH",
-    "XPIA_VALIDATE_AGENTS",
-    "XPIA_LOG_EVENTS",
-    "XPIA_LOG_FILE",
-    "XPIA_MAX_PROMPT_LENGTH",
-    "XPIA_MAX_URL_LENGTH",
-    "XPIA_WHITELIST_DOMAINS",
-    "XPIA_WHITELIST_FILE",
-    "XPIA_BLACKLIST_DOMAINS",
-    "XPIA_BLACKLIST_FILE",
-];
 
 fn golden_env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -232,26 +247,12 @@ fn run_golden_tests_for_hook(hook_type: &str) {
     let _guard = golden_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
-    // The expected outputs assume the XPIA defaults, under which XPIA is off
-    // (#1734) and the non-XPIA guards answer dangerous commands. A session
-    // that exports, for example, XPIA_ENABLED=true would otherwise change
-    // which guard answers.
-    let _xpia: Vec<EnvVarGuard> = XPIA_ENV_KEYS
-        .iter()
-        .map(|key| EnvVarGuard::unset(key))
-        .collect();
     let cwd = TempCwd::new(hook_type);
     // Since #1963 the hooks write their state under `$AMPLIHACK_HOME`, else
-    // `$HOME/.amplihack`, rather than the cwd. Point both at the temp tree so
-    // golden runs never write into the real `~/.amplihack`.
-    let golden_home = cwd.path.join("home");
-    fs::create_dir_all(&golden_home).expect("golden temp home");
-    let _home = EnvVarGuard::set(
-        "HOME",
-        golden_home.to_str().expect("golden temp home is UTF-8"),
-    );
-    let _amplihack_home = EnvVarGuard::unset("AMPLIHACK_HOME");
+    // `$HOME/.amplihack`, rather than the cwd. `GoldenEnv` removes the first
+    // and points the second into the temp tree, so golden runs never write
+    // into the real `~/.amplihack` or a checkout (#2361).
+    let _env = GoldenEnv::enter(&cwd.path, &[]);
 
     let golden_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -383,13 +384,8 @@ fn pre_tool_use_xpia_opt_in() {
     let _guard = golden_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
-    let _xpia: Vec<EnvVarGuard> = XPIA_ENV_KEYS
-        .iter()
-        .map(|key| EnvVarGuard::unset(key))
-        .collect();
-    let _enabled = EnvVarGuard::set("XPIA_ENABLED", "true");
-    let _cwd = TempCwd::new("xpia-opt-in");
+    let cwd = TempCwd::new("xpia-opt-in");
+    let _env = GoldenEnv::enter(&cwd.path, &[("XPIA_ENABLED", "true")]);
 
     let input_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/golden/hooks/pre_tool_use/100_or_rm_rf_dot.input.json");
