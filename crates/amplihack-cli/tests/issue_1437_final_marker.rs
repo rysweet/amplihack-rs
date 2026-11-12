@@ -15,7 +15,7 @@
 
 use crate::support::amplihack_bin::amplihack_bin;
 use std::fs;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 const PREFIX: &str = "amplihack.recipe.failure_class ";
 
@@ -62,13 +62,14 @@ fn run_fixture(stub: &str) -> (i32, String) {
     let log_path = root.join("round.log");
     let log = fs::File::create(&log_path).unwrap();
 
-    let status = Command::new(amplihack_bin())
+    // `isolated` clears the environment and keeps only the test harness's own
+    // variables (#1606); the fixture then sets everything the run reads.
+    let status = crate::isolated_amplihack::isolated(amplihack_bin())
         .args(["recipe", "run"])
         .arg(&recipe)
         .arg("-w")
         .arg(root)
         .current_dir(root)
-        .env_clear()
         .env(
             "PATH",
             format!("{}:/usr/local/bin:/usr/bin:/bin", tools.display()),
