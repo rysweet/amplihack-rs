@@ -1557,11 +1557,13 @@ S1B_HEAD="$(new_repo "${S1B_REPO}")" || { echo "HARNESS-ERROR: could not create 
 AH="${WORK}/amplihack-home"; mkdir -p "${AH}/amplifier-bundle"
 ln -s "${TOOLS}" "${AH}/amplifier-bundle/tools"
 run_s3() { # run_s3 <fixture> [extra env...] — sets S3_OUT (last line), S3_STATUS, S3_SIGNAL
-  local fx="$1"; shift
+  # S3_BASE (default main) is the base in merge_sync, as step-01 reports it.
+  local fx="$1" ms; shift
+  ms="$(jq -cn --arg b "${S3_BASE-main}" '{base:$b}')"
   (cd "${WORK}" && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE GH_CI_FIX="$fx" GH_CI_ROUTE="${ROUTE}" \
     GH_HEAD="${S1B_HEAD}" GH_BASE=main GH_CALLS="${WORK}/s3-calls" PR_NUMBER=42 REPO_PATH="${S1B_REPO}" \
-    AMPLIHACK_HOME="${AH}" RECIPE_VAR_autodrive_tools_dir="${TOOLS}" PATH="${STUB_BIN}:${PATH}" env "$@" \
-    bash -c 'export RECIPE_VAR_merge_sync; RECIPE_VAR_merge_sync="$(jq -cn --arg b "${GH_BASE-main}" "{base:\$b}")"; bash -c "$1"' _ "$S3" \
+    AMPLIHACK_HOME="${AH}" RECIPE_VAR_autodrive_tools_dir="${TOOLS}" RECIPE_VAR_merge_sync="$ms" \
+    PATH="${STUB_BIN}:${PATH}" env "$@" bash -c "$S3" \
     >"${WORK}/s3-out" 2>"${WORK}/s3-err" </dev/null)
   S3_OUT="$(tail -n1 "${WORK}/s3-out")"
   S3_STATUS="$(printf '%s' "$S3_OUT" | jq -r .ci_status 2>/dev/null)"
@@ -1604,10 +1606,10 @@ FX="$(new_fx)"; ec_drop_job "$FX" 1001 "Install Smoke Test"
 run_s3 "$FX" REPO_PATH="${PLANT}" GH_HEAD="${PLANT_HEAD}" AMPLIHACK_HOME="${WORK}/no-such-home"
 check "EC-AC8b-no-planted" "a helper planted under REPO_PATH is never run" test "$S3_STATUS" = UNREADABLE
 FX="$(new_fx)"
-run_s3 "$FX" GH_BASE=""
+S3_BASE="" run_s3 "$FX"
 check "EC-AC8b-no-base" "step-01b with no base in merge_sync gives UNREADABLE" test "$S3_STATUS" = UNREADABLE
 FX="$(new_fx)"
-run_s3 "$FX" GH_BASE='$(touch '"${WORK}"'/pwned3)'
+S3_BASE='$(touch '"${WORK}"'/pwned3)' run_s3 "$FX"
 check "EC-AC8b-bad-base" "a hostile base value is not executed and does not pass" \
   bash -c '[ ! -e "$1" ] && [ "$2" != GREEN ]' _ "${WORK}/pwned3" "$S3_STATUS"
 FX="$(new_fx)"
