@@ -44,9 +44,20 @@ impl Fx {
         }
         fx.stub("tmux", "exit 1");
         fx.stub("gh", "exit 1");
+        // Every start, `--version` included, appends its arguments to
+        // `claude-ran`. `--version` answers at once: `profile add` runs it to
+        // choose the hooks block it writes into the new profile (issue
+        // #2279), once an `amplihack-hooks` binary exists, and a stub that
+        // hung there would hold every `add_profile` for the version
+        // check's whole budget. Anything else stalls.
         fx.stub(
             "claude",
-            &format!("touch '{}/claude-ran'\nexec sleep 30", fx.marks.display()),
+            &format!(
+                "echo \"$*\" >> '{}'\n\
+                 case \"$1\" in\n --version) echo '2.1.301 (Claude Code)'; exit 0 ;;\nesac\n\
+                 exec sleep 30",
+                fx.marks.join("claude-ran").display()
+            ),
         );
         fx
     }
@@ -179,11 +190,20 @@ fn status_without_logins_renders_plain_text_and_exits_zero() {
 fn no_logins_never_starts_a_usage_probe() {
     let fx = Fx::new();
     fx.add_profile("spare");
+    // Setup's own `claude --version` (see `Fx::new`) is not the command
+    // under test: only what `workstreams status` starts counts.
+    let ran = fx.marks.join("claude-ran");
+    match fs::remove_file(&ran) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => panic!("remove {}: {e}", ran.display()),
+    }
     let (out, _) = fx.run(&["workstreams", "status", "--no-logins", "--all"], &[]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(
-        !exists(&fx.marks.join("claude-ran")),
-        "--no-logins must not run claude"
+        !exists(&ran),
+        "--no-logins must not run claude, not even --version; it ran with: {}",
+        fs::read_to_string(&ran).unwrap_or_default()
     );
 }
 
