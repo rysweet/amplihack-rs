@@ -262,7 +262,29 @@ steps:
       [ "$FAILING" = "0" ] || finish RED "RED:${FAILING}/${TOTAL}"
       [ "$UNREAD" = "0" ] || finish UNREADABLE unreadable
       [ "$TOTAL" != "0" ] || finish PENDING no-run-for-head
-      finish GREEN "GREEN:0/${TOTAL}"
+      # #2186: the runs at the head only show the checks that exist. Every
+      # expected check must exist at this head and pass, so GREEN is lowered
+      # to the verdict of autodrive_expected_checks.sh for the same SHA. It is
+      # run read-only and only from AMPLIHACK_HOME (never from a path the PR
+      # fills); the base comes from step-01's merge_sync, so no extra gh call.
+      # No new wait: the tool reads once. A missing tool or base is UNREADABLE.
+      B="$(printf '%s' "${RECIPE_VAR_merge_sync:-}" | jq -r 'if type == "object" then (.base // "") else "" end' 2>/dev/null)" || B=""
+      [ -n "$B" ] && git check-ref-format --branch "$B" >/dev/null 2>&1 || B=""
+      EC_TOOL="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/autodrive_expected_checks.sh"
+      if [ -z "${AMPLIHACK_HOME:-}" ] || [ ! -f "$EC_TOOL" ] || [ -z "$B" ]; then
+        echo "ERROR: expected checks at ${SHA} cannot be read (tool present=$([ -f "$EC_TOOL" ] && echo yes || echo no), base='${B}'). Unreadable CI is a FAILURE, not a pass." >&2
+        finish UNREADABLE expected-checks-unreadable
+      fi
+      EC_OUT="$(/bin/bash -p "$EC_TOOL" "$SHA" "$B" 2>/dev/null </dev/null)"; EC_RC=$?
+      EC_LAST="$(printf '%s\n' "$EC_OUT" | tail -n1)"
+      ECS="$(printf '%s' "$EC_LAST" | jq -r '.ci_status // empty' 2>/dev/null)" || ECS=""
+      case "${ECS}:${EC_RC}" in
+        GREEN:0) finish GREEN "GREEN:0/${TOTAL}" ;;
+        RED:*|PENDING:*|MISSING:*)
+          M="$(printf '%s' "$EC_LAST" | jq -r '(.missing // []) | join(",")' 2>/dev/null | tr -cd 'A-Za-z0-9 ._/()&:,+-')"
+          finish "$ECS" "$(printf '%s' "${ECS}:missing=${M}" | cut -c1-300)" ;;
+        *) finish UNREADABLE expected-checks-unreadable ;;
+      esac
     output: "ci_evidence"
 
   # Criterion 1 is measured by amplifier-bundle/tools/autodrive_qa_evidence.sh:

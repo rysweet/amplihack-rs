@@ -20,6 +20,9 @@
 //!   calls (bb:0 rate-limit incident, 11 Nov).
 //! - The setting reaches step-01b from a whole-drive `-c` through the merge
 //!   loop and the round.
+//! - A GREEN verdict is lowered to that of `autodrive_expected_checks.sh`
+//!   (#2186) for the same head and the base from `merge_sync`; a missing
+//!   helper or base is UNREADABLE, and a failed run is never re-read.
 //! - Step-01 merges and pushes only when GitHub's `mergeStateStatus` requires
 //!   it (`BEHIND`, or `DIRTY` with a clean local merge).
 //!
@@ -188,6 +191,20 @@ printf '{"qa_status":"PASS","gadugi_status":"NOT_REQUIRED"}\n'
 /// back to an empty base when it fails.
 const STUB_AMPLIHACK: &str = "#!/usr/bin/env bash\nexit 1\n";
 
+/// Expected-checks stub (#2186) found by step-01b under
+/// `$AMPLIHACK_HOME/amplifier-bundle/tools`. It logs `ec:<head> <base>` in the
+/// same log as the gh calls, prints `expected_checks` from the state
+/// directory (default GREEN) as its last line, and exits 0 only for GREEN, as
+/// the real helper does.
+const STUB_EXPECTED_CHECKS: &str = r#"#!/usr/bin/env bash
+state="${STUB_GH_STATE:?}"
+printf 'ec:%s %s\n' "${1:-}" "${2:-}" >> "$state/calls.log"
+verdict='{"ci_status":"GREEN","missing":[],"blockers":0}'
+[ -f "$state/expected_checks" ] && verdict="$(cat "$state/expected_checks")"
+printf 'evidence: stub\n%s\n' "$verdict"
+[ "$(printf '%s' "$verdict" | jq -r '.ci_status')" = GREEN ]
+"#;
+
 fn write_exec(path: &Path, content: &str) {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).unwrap_or_else(|e| panic!("mkdir {}: {e}", parent.display()));
@@ -253,6 +270,10 @@ impl Sandbox {
         write_exec(
             &root.join("amp-home/amplifier-bundle/tools/autodrive_qa_evidence.sh"),
             STUB_QA,
+        );
+        write_exec(
+            &root.join("amp-home/amplifier-bundle/tools/autodrive_expected_checks.sh"),
+            STUB_EXPECTED_CHECKS,
         );
         // #2033: steps that run git source the repository-env helper from
         // `$AMPLIHACK_HOME/amplifier-bundle/tools`. The sandbox gets this
@@ -347,6 +368,7 @@ impl Sandbox {
             .env_remove("SSH_AUTH_SOCK")
             .env_remove("REPO_PATH")
             .env_remove("PR_NUMBER")
+            .env_remove("RECIPE_VAR_merge_sync")
     }
 
     fn git_output(&self, dir: &Path, args: &[&str]) -> Output {
@@ -467,6 +489,11 @@ impl Sandbox {
     /// environment (a caller setting, as the runner exports it).
     fn driver_env(&self, ids: &[&str], done_fifo: Option<&Path>, env: &[(&str, &str)]) -> Command {
         let mut script = String::from("#!/usr/bin/env bash\nset -u\n");
+        // step-01 exports merge_sync; a run without it gets the base `main`,
+        // as step-01 would report it, so step-01b can read expected checks.
+        script.push_str(
+            "d='{\"base\":\"main\"}'; export RECIPE_VAR_merge_sync=\"${RECIPE_VAR_merge_sync-$d}\"\n",
+        );
         for (n, (id, output, body)) in select_steps(ids).iter().enumerate() {
             let file = self.root.join("steps").join(format!("{n:02}-{id}.sh"));
             fs::write(&file, body).unwrap();
@@ -692,10 +719,12 @@ fn qa_runs_only_after_head_ci_run_completes() {
         &|c| c.starts_with("run view") && c.contains("101"),
         "run view 101",
     );
+    let expected = format!("ec:{head} main");
+    let ec = pos(&|c| *c == expected, "expected checks at the head");
     let qa = pos(&|c| c.starts_with("qa:"), "qa");
     assert!(
-        list < watch && watch < view && view < qa,
-        "order must be run list, run watch, run view, qa: {calls:#?}"
+        list < watch && watch < view && view < ec && ec < qa,
+        "order must be run list, run watch, run view, expected checks, qa: {calls:#?}"
     );
     assert_eq!(
         watch_intervals(&calls),
@@ -898,6 +927,125 @@ fn the_watch_exit_code_is_not_the_conclusion() {
     sb.runs(&head, &[("502", &head, "failure", &head)]);
     let evidence = wait_ci(&sb);
     assert_eq!(field(&evidence, "ci_status"), "RED", "{evidence}");
+}
+
+// ---------------------------------------------------------------------------
+// #2186: green runs at the head are not enough; every expected check must
+// exist at the head and pass
+// ---------------------------------------------------------------------------
+
+fn ec_calls(sb: &Sandbox) -> Vec<String> {
+    sb.calls()
+        .into_iter()
+        .filter(|c| c.starts_with("ec:"))
+        .collect()
+}
+
+#[test]
+fn expected_checks_lower_green_at_the_head() {
+    // The helper gets this head and the base from merge_sync, and its GREEN
+    // keeps GREEN.
+    let sb = Sandbox::new();
+    sb.active_workflow();
+    let head = sb.head();
+    sb.runs(&head, &[("601", &head, "success", &head)]);
+    let evidence = wait_ci(&sb);
+    assert_eq!(field(&evidence, "ci_status"), "GREEN", "{evidence}");
+    assert_eq!(ec_calls(&sb), [format!("ec:{head} main")]);
+
+    // A missing expected check lowers GREEN to MISSING and is named.
+    for (verdict, status) in [
+        (
+            r#"{"ci_status":"MISSING","missing":["Install Smoke Test"],"blockers":1}"#,
+            "MISSING",
+        ),
+        (
+            r#"{"ci_status":"PENDING","missing":[],"blockers":1}"#,
+            "PENDING",
+        ),
+        (r#"{"ci_status":"RED","missing":[],"blockers":1}"#, "RED"),
+        ("not json", "UNREADABLE"),
+        (
+            r#"{"ci_status":"GREEN","missing":[],"blockers":0,"x":"#,
+            "UNREADABLE",
+        ),
+    ] {
+        let sb = Sandbox::new();
+        sb.active_workflow();
+        let head = sb.head();
+        sb.runs(&head, &[("602", &head, "success", &head)]);
+        sb.set("expected_checks", verdict);
+        let evidence = wait_ci(&sb);
+        assert_eq!(
+            field(&evidence, "ci_status"),
+            status,
+            "{verdict}: {evidence}"
+        );
+        assert_eq!(field(&evidence, "head_sha"), head, "{verdict}: {evidence}");
+        if status == "MISSING" {
+            assert_eq!(
+                field(&evidence, "ci_signal"),
+                "MISSING:missing=Install Smoke Test",
+                "{evidence}"
+            );
+        }
+    }
+
+    // A failed run stays RED; the helper only lowers GREEN, so it is not run.
+    let sb = Sandbox::new();
+    sb.active_workflow();
+    let head = sb.head();
+    sb.runs(&head, &[("603", &head, "failure", &head)]);
+    let evidence = wait_ci(&sb);
+    assert_eq!(field(&evidence, "ci_status"), "RED", "{evidence}");
+    assert!(ec_calls(&sb).is_empty(), "{:#?}", sb.calls());
+}
+
+#[test]
+fn expected_checks_that_cannot_be_read_are_never_green() {
+    let green_runs = |sb: &Sandbox| {
+        sb.active_workflow();
+        let head = sb.head();
+        sb.runs(&head, &[("701", &head, "success", &head)]);
+    };
+    // No helper under AMPLIHACK_HOME.
+    let sb = Sandbox::new();
+    green_runs(&sb);
+    fs::remove_file(
+        sb.root
+            .join("amp-home/amplifier-bundle/tools/autodrive_expected_checks.sh"),
+    )
+    .unwrap();
+    let evidence = wait_ci(&sb);
+    assert_eq!(field(&evidence, "ci_status"), "UNREADABLE", "{evidence}");
+    assert_eq!(
+        field(&evidence, "ci_signal"),
+        "expected-checks-unreadable",
+        "{evidence}"
+    );
+
+    // merge_sync has no base, or a base that is not a branch name: the helper
+    // is not run, and a hostile value is never executed.
+    let pwned = TempDir::new().unwrap();
+    let marker = pwned.path().join("pwned");
+    for merge_sync in [
+        r#"{"base":""}"#.to_string(),
+        "not json".to_string(),
+        format!(r#"{{"base":"$(touch {})"}}"#, marker.display()),
+    ] {
+        let sb = Sandbox::new();
+        green_runs(&sb);
+        let evidence = sb
+            .step_json_env(WAIT_STEP, &[("RECIPE_VAR_merge_sync", merge_sync.as_str())])
+            .0;
+        assert_eq!(
+            field(&evidence, "ci_status"),
+            "UNREADABLE",
+            "{merge_sync}: {evidence}"
+        );
+        assert!(ec_calls(&sb).is_empty(), "{merge_sync}: {:#?}", sb.calls());
+    }
+    assert!(!marker.exists(), "a hostile base must never run");
 }
 
 // ---------------------------------------------------------------------------
@@ -1708,7 +1856,10 @@ fn one_round_makes_the_minimum_gh_calls() {
     sb.run_env(&id_refs, &interval_env("60"));
 
     let calls = sb.calls();
-    let gh: Vec<&String> = calls.iter().filter(|c| !c.starts_with("qa:")).collect();
+    let gh: Vec<&String> = calls
+        .iter()
+        .filter(|c| !c.starts_with("qa:") && !c.starts_with("ec:"))
+        .collect();
     let count = |prefix: &str| gh.iter().filter(|c| c.starts_with(prefix)).count();
     assert_eq!(
         count("run list"),
