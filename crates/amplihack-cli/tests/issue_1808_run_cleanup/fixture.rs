@@ -161,10 +161,11 @@ impl Fx {
     pub fn new_short() -> Self {
         let short =
             |t: &tempfile::TempDir| t.path().canonicalize().unwrap().as_os_str().len() <= 30;
-        let mut tmp = tempfile::tempdir().unwrap();
-        if !short(&tmp) {
-            tmp = tempfile::tempdir_in("/tmp").unwrap();
-        }
+        let tmp = tempfile::Builder::new()
+            .prefix("f")
+            .rand_bytes(3)
+            .tempdir()
+            .unwrap();
         assert!(
             short(&tmp),
             "no temp folder short enough: {}",
@@ -176,6 +177,7 @@ impl Fx {
     fn in_tempdir(tmp: tempfile::TempDir) -> Self {
         let root = tmp.path().canonicalize().unwrap();
         mkdir_0700(&root.join("tmp"));
+        mkdir_0700(&root.join("parent-runtime"));
         let proc = FakeProc::new_in(root.join("tmp"));
         let fx = Self {
             // Inside TMPDIR: the test home guard only accepts a HOME under
@@ -294,7 +296,10 @@ impl Fx {
             .env_remove("CARGO_TARGET_DIR")
             // Issue #2291: a test that wants a temp root sets it itself.
             .env_remove("AMPLIHACK_RUN_TMP_ROOT")
-            .env_remove("AMPLIHACK_WORKFLOW_RUNTIME_DIR")
+            .env(
+                "AMPLIHACK_WORKFLOW_RUNTIME_DIR",
+                self.root.join("parent-runtime"),
+            )
             .env_remove("TMUX")
             .stdin(Stdio::null());
         c

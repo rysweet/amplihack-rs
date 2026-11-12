@@ -61,7 +61,7 @@ fn me() -> u32 {
 /// for roots. Its path is kept short so the 80-byte rule does not fire by
 /// accident; tests that need an exact length build it themselves.
 struct Fx {
-    _tmp: tempfile::TempDir,
+    _environment: super::super::tests_owned_run_dir::UnitEnvironment,
     base: PathBuf,
     work: PathBuf,
     home: PathBuf,
@@ -69,8 +69,8 @@ struct Fx {
 
 impl Fx {
     fn new() -> Self {
-        let tmp = short_tempdir();
-        let base = fs::canonicalize(tmp.path()).unwrap();
+        let environment = super::super::tests_owned_run_dir::UnitEnvironment::new();
+        let base = environment.fixture.base.clone();
         let work = base.join("work");
         let home = base.join("home");
         for d in [&work, &home] {
@@ -78,7 +78,7 @@ impl Fx {
             fs::set_permissions(d, fs::Permissions::from_mode(0o700)).unwrap();
         }
         Self {
-            _tmp: tmp,
+            _environment: environment,
             base,
             work,
             home,
@@ -121,20 +121,6 @@ impl Fx {
     fn default_dir(&self) -> PathBuf {
         runtime_dir_for(&self.work, ID)
     }
-}
-
-/// A temp folder whose canonical path leaves room for a 56-byte root.
-fn short_tempdir() -> tempfile::TempDir {
-    let t = tempfile::tempdir().unwrap();
-    if fs::canonicalize(t.path()).unwrap().as_os_str().len() <= 30 {
-        return t;
-    }
-    let t = tempfile::tempdir_in("/tmp").unwrap();
-    assert!(
-        fs::canonicalize(t.path()).unwrap().as_os_str().len() <= 30,
-        "no temp folder short enough for the length tests"
-    );
-    t
 }
 
 fn external(chosen: &Chosen) -> (&Path, &Path) {

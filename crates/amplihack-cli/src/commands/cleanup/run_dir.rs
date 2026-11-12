@@ -4,6 +4,7 @@
 //! append to, `cleanup-record.json` after a sweep removed something, and the
 //! ephemeral `runtime/` folder that [`RuntimeGuard`] removes when the run ends.
 
+use super::owned_run_dir::{CleanupOutcome, OwnedRunDir};
 use super::run_tmp_root::{
     DRY_DIR_PREFIX, DRY_RAND_LEN, RUN_TMP_ROOT_ENV, RuntimeChoice, TmpRootInputs,
     choose_runtime_dir, usable_explicit_root,
@@ -65,36 +66,40 @@ pub(crate) fn short_id(run_id: &str) -> String {
 /// Removes a runtime folder when dropped, including during unwinding.
 #[derive(Debug)]
 pub(crate) struct RuntimeGuard {
-    path: Option<PathBuf>,
+    path: PathBuf,
+    owned: Option<OwnedRunDir>,
 }
 
 impl RuntimeGuard {
+    #[cfg(test)]
     pub(crate) fn new(path: PathBuf) -> Self {
-        Self { path: Some(path) }
+        Self { path, owned: None }
+    }
+
+    fn owned(owned: OwnedRunDir) -> Self {
+        Self {
+            path: owned.path().to_owned(),
+            owned: Some(owned),
+        }
     }
 
     pub(crate) fn path(&self) -> &Path {
-        self.path.as_deref().unwrap_or(Path::new(""))
+        &self.path
     }
 
-    /// Removes the folder now and reports a failure as a warning.
     pub(crate) fn remove(mut self) {
         self.remove_inner();
     }
 
     fn remove_inner(&mut self) {
-        let Some(path) = self.path.take() else {
+        let Some(owned) = self.owned.take() else {
             return;
         };
-        match fs::remove_dir_all(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Err(error) => {
-                tracing::warn!(path = %path.display(), %error, "could not remove the run's runtime folder");
-                eprintln!(
-                    "amplihack: warning: could not remove the run's runtime folder {}: {error}",
-                    path.display()
-                );
+        match owned.remove() {
+            CleanupOutcome::Removed => {}
+            CleanupOutcome::Preserved(reason) | CleanupOutcome::Failed(reason) => {
+                tracing::warn!(path = ?self.path, %reason, "run runtime preserved");
+                eprintln!("amplihack: runtime {:?} preserved: {reason}", self.path);
             }
         }
     }
@@ -373,6 +378,9 @@ pub(crate) struct RunReport {
     /// Absent for the default layout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_dir: Option<String>,
+    /// Selected independently at creation; old reports never grant authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_root: Option<PathBuf>,
 }
 
 impl RunReport {
@@ -458,7 +466,27 @@ impl RunScope {
         };
         // Created before the first write, so a failed write still removes an
         // external folder the chooser has just made.
-        let guard = RuntimeGuard::new(runtime_dir.clone());
+        let owned = match chosen.owned {
+            Some(owned) => owned,
+            None => {
+                let root = if runtime_dir == run_dir.join("runtime") {
+                    run_dir.clone()
+                } else {
+                    let root = work_root.short_runtime_dir();
+                    create_private_dir_all(&root)?;
+                    root
+                };
+                OwnedRunDir::create(
+                    &root,
+                    runtime_dir
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .context("invalid runtime leaf")?,
+                    &run_id,
+                )?
+            }
+        };
+        let guard = RuntimeGuard::owned(owned);
         let pid = std::process::id();
         let report = RunReport {
             schema_version: RUN_SCHEMA_VERSION,
@@ -473,6 +501,7 @@ impl RunScope {
             attempts: Vec::new(),
             steps: Vec::new(),
             log_path: None,
+            runtime_root: runtime_root.clone(),
             runtime_dir: runtime_root
                 .as_ref()
                 .map(|_| runtime_dir.display().to_string()),
@@ -533,7 +562,7 @@ pub(crate) enum RunWorkspace {
         guard: RuntimeGuard,
     },
     Legacy {
-        dir: tempfile::TempDir,
+        guard: RuntimeGuard,
         /// The resolved `AMPLIHACK_RUN_TMP_ROOT` the folder was made in,
         /// when rule 1 accepted it (issue #2291, D12).
         explicit_root: Option<PathBuf>,
@@ -567,20 +596,22 @@ impl RunWorkspace {
                 None
             }
         };
-        let mut builder = tempfile::Builder::new();
-        builder.prefix(DRY_DIR_PREFIX).rand_bytes(DRY_RAND_LEN);
-        let dir = match &explicit_root {
-            Some(root) => builder.tempdir_in(root),
-            None => builder.tempdir(),
-        }?;
-        create_private_dir_all(&dir.path().join("tmp"))?;
-        create_private_dir_all(&dir.path().join("artifacts"))?;
-        Ok(Self::Legacy { dir, explicit_root })
+        let root = explicit_root.clone().unwrap_or_else(std::env::temp_dir);
+        let run_id = new_run_id();
+        let leaf = super::run_tmp_root::external_dir_name(&run_id).context("invalid dry run id")?;
+        let guard = RuntimeGuard::owned(OwnedRunDir::create(&root, &leaf, &run_id)?);
+        create_private_dir_all(&guard.path().join("tmp"))?;
+        create_private_dir_all(&guard.path().join("artifacts"))?;
+        Ok(Self::Legacy {
+            guard,
+            explicit_root,
+        })
     }
+
     pub(crate) fn runtime_dir(&self) -> &Path {
         match self {
             Self::Scoped { guard, .. } => guard.path(),
-            Self::Legacy { dir, .. } => dir.path(),
+            Self::Legacy { guard, .. } => guard.path(),
         }
     }
 
@@ -657,11 +688,7 @@ impl RunWorkspace {
                     super::sweep::end_of_run(&scope.work_root);
                 }
             }
-            Self::Legacy { dir, .. } => {
-                if let Err(error) = dir.close() {
-                    eprintln!("amplihack: warning: could not remove the runtime folder: {error}");
-                }
-            }
+            Self::Legacy { guard, .. } => guard.remove(),
         }
     }
 }

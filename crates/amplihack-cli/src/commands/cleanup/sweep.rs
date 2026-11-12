@@ -116,6 +116,7 @@ enum Op {
     Fail,
     RemoveRunTmp {
         run_dir: PathBuf,
+        owned: super::owned_run_dir::OwnedRunDir,
     },
     RemoveWorktree {
         main: PathBuf,
@@ -913,6 +914,37 @@ impl Collector<'_> {
                         } else {
                             "run is no longer active (interrupted)"
                         };
+                        let expected_root = if *dir == run.dir.join("runtime") {
+                            run.dir.clone()
+                        } else if *dir == root.short_runtime_dir().join(short_id(id)) {
+                            root.short_runtime_dir()
+                        } else if let Some(root) = &report.runtime_root {
+                            root.clone()
+                        } else {
+                            self.items.push(Item::skip(
+                                Category::RunTmp,
+                                dir,
+                                "no independent runtime root recorded",
+                                Some(id),
+                            ));
+                            continue;
+                        };
+                        let owned = match super::owned_run_dir::OwnedRunDir::load(
+                            &expected_root,
+                            dir,
+                            id,
+                        ) {
+                            Ok(owned) => owned,
+                            Err(error) => {
+                                self.items.push(Item::skip(
+                                    Category::RunTmp,
+                                    dir,
+                                    format!("ownership refused: {error:#}"),
+                                    Some(id),
+                                ));
+                                continue;
+                            }
+                        };
                         self.items.push(Item {
                             category: Category::RunTmp,
                             path: dir.clone(),
@@ -922,6 +954,7 @@ impl Collector<'_> {
                             run_id: Some(id.to_string()),
                             op: Op::RemoveRunTmp {
                                 run_dir: run.dir.clone(),
+                                owned,
                             },
                         });
                     }
@@ -1907,3 +1940,7 @@ fn end_of_run_inner(work_root: &WorkRoot) -> Result<()> {
 #[cfg(test)]
 #[path = "tests_sweep.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests_owned_stale.rs"]
+mod tests_owned_stale;

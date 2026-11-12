@@ -64,20 +64,24 @@ fn runtime_dir_boundary_is_80_bytes_of_runtime_tmp() {
 
 #[test]
 fn runtime_guard_removes_folder_on_drop_and_on_panic() {
-    let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path().join("runtime");
-    std::fs::create_dir_all(dir.join("tmp/nested")).unwrap();
-    drop(RuntimeGuard::new(dir.clone()));
-    assert!(!dir.exists());
-
-    std::fs::create_dir_all(dir.join("tmp")).unwrap();
-    let d = dir.clone();
-    let result = std::panic::catch_unwind(move || {
-        let _guard = RuntimeGuard::new(d);
-        panic!("step blew up");
+    super::super::tests_owned_run_dir::isolated(|fx| {
+        let make = || {
+            let owned = OwnedRunDir::create(&fx.external, "runtime", "unit-run").unwrap();
+            let dir = owned.path().to_owned();
+            std::fs::create_dir_all(dir.join("tmp/nested")).unwrap();
+            (RuntimeGuard::owned(owned), dir)
+        };
+        let (guard, dir) = make();
+        drop(guard);
+        assert!(!dir.exists());
+        let (guard, dir) = make();
+        let result = std::panic::catch_unwind(move || {
+            let _guard = guard;
+            panic!("step blew up");
+        });
+        assert!(result.is_err());
+        assert!(!dir.exists(), "removed during unwinding");
     });
-    assert!(result.is_err());
-    assert!(!dir.exists(), "removed during unwinding");
 }
 
 #[test]
@@ -318,35 +322,36 @@ fn runtime_tmp_limit_is_shared_and_80_bytes() {
 /// guard drops.
 #[test]
 fn begin_with_explicit_root_records_and_removes_the_external_folder() {
-    let tmp = tempfile::tempdir_in("/tmp").unwrap();
-    let base = fs::canonicalize(tmp.path()).unwrap();
-    let ext = base.join("ext");
-    let work = WorkRoot {
-        path: base.join("work"),
-        explicit: false,
-    };
-    let inputs = TmpRootInputs {
-        run_tmp_root: Some(ext.clone().into_os_string()),
-        // SAFETY: geteuid has no preconditions and cannot fail.
-        euid: unsafe { libc::geteuid() },
-        ..TmpRootInputs::default()
-    };
+    super::super::tests_owned_run_dir::isolated(|fx| {
+        let base = fx.base.clone();
+        let ext = base.join("ext");
+        let work = WorkRoot {
+            path: base.join("work"),
+            explicit: false,
+        };
+        let inputs = TmpRootInputs {
+            run_tmp_root: Some(ext.clone().into_os_string()),
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            euid: unsafe { libc::geteuid() },
+            ..TmpRootInputs::default()
+        };
 
-    let (scope, guard) = RunScope::begin_with(work, "test", &base, &inputs).unwrap();
+        let (scope, guard) = RunScope::begin_with(work, "test", &base, &inputs).unwrap();
 
-    assert_eq!(scope.runtime_root.as_deref(), Some(ext.as_path()));
-    let runtime = guard.path().to_path_buf();
-    assert_eq!(runtime.parent(), Some(ext.as_path()));
-    assert!(runtime.join("tmp").is_dir());
-    let report = RunReport::read(&scope.run_dir).unwrap();
-    assert_eq!(
-        report.runtime_dir.as_deref(),
-        Some(runtime.to_str().unwrap())
-    );
+        assert_eq!(scope.runtime_root.as_deref(), Some(ext.as_path()));
+        let runtime = guard.path().to_path_buf();
+        assert_eq!(runtime.parent(), Some(ext.as_path()));
+        assert!(runtime.join("tmp").is_dir());
+        let report = RunReport::read(&scope.run_dir).unwrap();
+        assert_eq!(
+            report.runtime_dir.as_deref(),
+            Some(runtime.to_str().unwrap())
+        );
 
-    drop(guard);
-    assert!(!runtime.exists(), "the guard removes the external folder");
-    assert!(ext.is_dir(), "the root itself is kept");
+        drop(guard);
+        assert!(!runtime.exists(), "the guard removes the external folder");
+        assert!(ext.is_dir(), "the root itself is kept");
+    });
 }
 
 /// Issue #2291: a dry run under an explicit root at the 59-byte budget still
@@ -354,7 +359,7 @@ fn begin_with_explicit_root_records_and_removes_the_external_folder() {
 /// `ahr-<12 hex>`. The folder is removed when the workspace drops.
 #[test]
 fn dry_run_under_a_root_at_the_budget_stays_within_80_bytes() {
-    let tmp = tempfile::tempdir_in("/tmp").unwrap();
+    let tmp = tempfile::tempdir().unwrap();
     let base = fs::canonicalize(tmp.path()).unwrap();
     let pad = 59 - base.as_os_str().len() - 1;
     let root = base.join("r".repeat(pad));

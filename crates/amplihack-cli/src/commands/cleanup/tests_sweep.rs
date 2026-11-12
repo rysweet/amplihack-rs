@@ -6,7 +6,7 @@ use super::*;
 use std::os::unix::fs::{PermissionsExt, symlink};
 
 struct Fx {
-    _tmp: tempfile::TempDir,
+    _environment: super::super::tests_owned_run_dir::UnitEnvironment,
     root: PathBuf,
     work: WorkRoot,
     hook_base: PathBuf,
@@ -14,8 +14,8 @@ struct Fx {
 
 impl Fx {
     fn new() -> Self {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = fs::canonicalize(tmp.path()).unwrap();
+        let environment = super::super::tests_owned_run_dir::UnitEnvironment::new();
+        let root = environment.fixture.base.clone();
         let work = WorkRoot {
             path: root.join("work"),
             explicit: false,
@@ -25,7 +25,7 @@ impl Fx {
             fs::create_dir_all(&dir).unwrap();
         }
         Self {
-            _tmp: tmp,
+            _environment: environment,
             root,
             work,
             hook_base,
@@ -69,6 +69,7 @@ impl Fx {
             attempts: Vec::new(),
             steps: Vec::new(),
             log_path: None,
+            runtime_root: None,
             runtime_dir: None,
         };
         fs::write(dir.join(RUN_JSON), serde_json::to_vec(&report).unwrap()).unwrap();
@@ -376,6 +377,7 @@ fn seed(fx: &Fx, id: &str, active: bool, owned: &[u8]) -> PathBuf {
         attempts: Vec::new(),
         steps: Vec::new(),
         log_path: None,
+        runtime_root: None,
         runtime_dir: None,
     };
     fs::write(dir.join(RUN_JSON), serde_json::to_vec(&report).unwrap()).unwrap();
@@ -761,6 +763,7 @@ fn seed_ext(fx: &Fx, active: bool, runtime_dir: Option<&Path>) -> PathBuf {
         attempts: Vec::new(),
         steps: Vec::new(),
         log_path: None,
+        runtime_root: None,
         runtime_dir: runtime_dir.map(|p| p.display().to_string()),
     };
     fs::write(dir.join(RUN_JSON), serde_json::to_vec(&report).unwrap()).unwrap();

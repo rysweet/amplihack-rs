@@ -31,7 +31,7 @@ fn is_managed(item: &Item, roots: &ManagedRoots) -> bool {
     let c = item.canonical.as_path();
     match &item.op {
         Op::Skip | Op::Fail | Op::Archive { .. } => true,
-        Op::RemoveRunTmp { run_dir } => item.run_id.as_deref().is_some_and(|id| {
+        Op::RemoveRunTmp { run_dir, .. } => item.run_id.as_deref().is_some_and(|id| {
             c == roots.runs.join(id).join("runtime")
                 || c == roots.short_runtime.join(short_id(id))
                 || recorded_external_matches(run_dir, id, c, roots)
@@ -143,14 +143,20 @@ pub(super) fn execute(
     let target = item.canonical.as_path();
     match &item.op {
         Op::Skip | Op::Fail | Op::Archive { .. } | Op::RemoveTarget { .. } => Ok(()),
-        Op::RemoveRunTmp { run_dir } => {
+        Op::RemoveRunTmp { run_dir, owned } => {
             run_still_inactive(run_dir)?;
             // A child of a killed runner (an agent, cargo) may outlive it and
             // still use its TMPDIR.
             if procs.in_use(target) {
                 refuse!("in use by a running process");
             }
-            remove_real_dir(target)
+            match owned.remove() {
+                super::super::owned_run_dir::CleanupOutcome::Removed => Ok(()),
+                super::super::owned_run_dir::CleanupOutcome::Preserved(reason) => {
+                    refuse!("{reason}");
+                }
+                super::super::owned_run_dir::CleanupOutcome::Failed(reason) => bail!("{reason}"),
+            }
         }
         Op::RemoveDir {
             run_dir,

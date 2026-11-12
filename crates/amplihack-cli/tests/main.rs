@@ -26,6 +26,9 @@
 mod isolated_amplihack;
 mod support;
 
+#[path = "owned_run_dir_cleanup.rs"]
+mod owned_run_dir_cleanup;
+
 #[path = "issue_1753_expired_live.rs"]
 mod issue_1753_expired_live;
 #[path = "issue_1753_login_identity.rs"]

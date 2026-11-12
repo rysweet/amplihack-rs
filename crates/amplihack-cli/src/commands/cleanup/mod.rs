@@ -4,6 +4,7 @@
 
 pub(crate) mod archive;
 pub(crate) mod eligibility;
+pub(crate) mod owned_run_dir;
 pub(crate) mod run_dir;
 pub(crate) mod run_tmp_root;
 pub(crate) mod sweep;
@@ -448,3 +449,7 @@ pub(crate) fn cleanup_on_exit_enabled() -> bool {
 #[cfg(test)]
 #[path = "tests_cli.rs"]
 mod tests_cli;
+
+#[cfg(test)]
+#[path = "tests_owned_run_dir.rs"]
+mod tests_owned_run_dir;

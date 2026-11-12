@@ -18,8 +18,7 @@ use super::run_dir::{MAX_RUNTIME_TMP_BYTES, runtime_dir_for, short_id};
 use super::work_root::create_private_dir_all;
 use std::ffi::OsString;
 use std::fs;
-use std::io::ErrorKind;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 pub(crate) const RUN_TMP_ROOT_ENV: &str = "AMPLIHACK_RUN_TMP_ROOT";
@@ -101,6 +100,7 @@ pub(crate) enum RuntimeChoice {
 pub(crate) struct Chosen {
     pub choice: RuntimeChoice,
     pub warning: Option<String>,
+    pub owned: Option<super::owned_run_dir::OwnedRunDir>,
 }
 
 /// Which rule a root came from; names the variable in warnings.
@@ -156,15 +156,24 @@ pub(crate) fn choose_runtime_dir(work_root: &Path, run_id: &str, inputs: &TmpRoo
     if let (Some(name), Some((rule, value))) = (external_dir_name(run_id), candidate) {
         let value = Path::new(value);
         let attempt = usable_root(work_root, rule, value, inputs).and_then(|root| {
-            create_run_dir(&root, &name, inputs.euid)
-                .map(|dir| RuntimeChoice::External { dir, root })
-                .map_err(Refused::Warn)
+            super::owned_run_dir::OwnedRunDir::create(&root, &name, run_id)
+                .map(|owned| {
+                    (
+                        RuntimeChoice::External {
+                            dir: owned.path().to_owned(),
+                            root,
+                        },
+                        owned,
+                    )
+                })
+                .map_err(|e| Refused::Warn(format!("{e:#}")))
         });
         match attempt {
-            Ok(choice) => {
+            Ok((choice, owned)) => {
                 return Chosen {
                     choice,
                     warning: None,
+                    owned: Some(owned),
                 };
             }
             Err(Refused::Warn(reason)) => {
@@ -177,6 +186,7 @@ pub(crate) fn choose_runtime_dir(work_root: &Path, run_id: &str, inputs: &TmpRoo
     Chosen {
         choice: RuntimeChoice::Default(runtime_dir_for(work_root, run_id)),
         warning,
+        owned: None,
     }
 }
 
@@ -354,29 +364,6 @@ fn os_user_tmpdir() -> Option<PathBuf> {
 #[cfg(not(target_os = "macos"))]
 fn os_user_tmpdir() -> Option<PathBuf> {
     None
-}
-
-/// Creates `<root>/<name>` with one non-recursive `mkdir` at mode 0700 and
-/// checks the result is a private folder owned by `euid`. An existing entry
-/// of that name is never reused.
-fn create_run_dir(root: &Path, name: &str, euid: u32) -> Result<PathBuf, String> {
-    let dir = root.join(name);
-    if let Err(error) = fs::DirBuilder::new().mode(0o700).create(&dir) {
-        return Err(if error.kind() == ErrorKind::AlreadyExists {
-            format!("per-run folder {dir:?} already exists")
-        } else {
-            format!("per-run folder {dir:?} could not be created: {error}")
-        });
-    }
-    let private = fs::symlink_metadata(&dir)
-        .is_ok_and(|m| m.file_type().is_dir() && m.uid() == euid && m.mode() & 0o077 == 0);
-    if !private {
-        if let Err(error) = fs::remove_dir(&dir) {
-            tracing::warn!(path = ?dir, %error, "could not remove a per-run folder that is not private");
-        }
-        return Err(format!("per-run folder {dir:?} is not private"));
-    }
-    Ok(dir)
 }
 
 #[cfg(test)]

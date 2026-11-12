@@ -2,17 +2,27 @@
 title: Clean up after recipe runs
 description: Locate, retain, remove, or archive run-owned files and recovery state.
 doc_type: howto
-last_updated: 2026-11-11
+last_updated: 2026-11-12
 ---
 
 # Clean Up After Recipe Runs
 
+**[PLANNED - Implementation Pending]** The ownership-based cleanup contract,
+`ahr-` and `ahd-` prefixes, revised path limits, and examples using them
+describe intended behavior. Publish these changes as finished behavior only
+after the shared authority and every runtime removal entry point satisfy
+the [regression contract](../reference/owned-run-directory-cleanup.md#regression-contract).
+The short-name examples below are planned usage, not verified commands for
+an unguarded checkout.
+
 Use this guide to find what a recipe run leaves on disk, to choose where it
 goes, and to remove or archive it with `amplihack cleanup`.
 
-Every `amplihack recipe run` now writes into one work root. At the end of each
-run the runner removes the run's temporary folder and clears out earlier runs
-whose pull request was merged or closed more than a day ago. The
+Every `amplihack recipe run` writes into one work root. At the end of each
+run the runner removes its temporary folder only when creation ownership,
+parent, protected-root, and directory identity checks pass. It also clears
+eligible items from earlier runs whose pull request was merged or closed
+more than a day ago. The
 `amplihack cleanup` command does the same on demand, and also archives old
 logs and removes temporary folders left by killed runs.
 
@@ -60,8 +70,8 @@ amplihack cleanup --apply --only run-tmp --only tmp-leftover
 
 No configuration is needed for the end-of-run cleanup. It runs after every
 `amplihack recipe run` unless `AMPLIHACK_CLEANUP_ON_EXIT=0` is set. A
-`recipe run --dry-run` still removes its own `runtime/` folder but never runs
-the sweep.
+`recipe run --dry-run` still requests guarded cleanup of its own private
+temporary folder but never runs the sweep. A refusal preserves the folder.
 
 ## Settings
 
@@ -77,7 +87,7 @@ for these settings.
 | `AMPLIHACK_CLEANUP_KEEP_HOURS` | `--keep-hours N` | `24` | How long run-owned worktrees and targets are kept after a run's PR closes or the run ends, and how old untagged targets and system temporary leftovers must be. Does not apply to `run-tmp`. Maximum `87600`. |
 | `AMPLIHACK_LOG_ARCHIVE_DAYS` | `--log-days N` | `30` | Recipe logs and session logs whose modification time is older than this are archived. Maximum `36500`. |
 | `AMPLIHACK_LOG_ARCHIVE_DIR` | none | `<work root>/archive` | Where log archives and `MANIFEST.jsonl` are written. |
-| `AMPLIHACK_CLEANUP_ON_EXIT` | none | `1` | Set to `0` to skip the end-of-run sweep. The run's temporary folder is still removed. |
+| `AMPLIHACK_CLEANUP_ON_EXIT` | none | `1` | Set to `0` to skip the end-of-run sweep. The run still requests guarded removal of its temporary folder. |
 | `AMPLIHACK_TARGET_LINK_ROOTS` | none | unset | Extra colon-separated absolute folders where linked targets may point. Not needed for links made by the host cargo wrapper. See [Linked targets](#linked-targets). |
 
 Recipe logs stay in `recipe.log_dir` (default `~/.amplihack/recipe-logs`).
@@ -113,7 +123,7 @@ The runner creates one folder per run:
 │       ├── owned-paths           # worktrees and targets this run created
 │       ├── cleanup-record.json   # written only when cleanup removed something
 │       ├── recovery/             # private completions and required artifact copies
-│       └── runtime/              # removed when the run ends
+│       └── runtime/              # guarded removal requested when the run ends
 │           ├── tmp/              # TMPDIR, TMP and TEMP for every step
 │           └── artifacts/        # AMPLIHACK_WORKFLOW_ARTIFACT_DIR
 ├── targets/                      # one cargo target per checkout, from git-hook-cargo.sh
@@ -402,7 +412,7 @@ are skipped without a warning; see
 [When the runner falls back](#when-the-runner-falls-back).
 
 The resolved path of `<root>/ahr-<12 hex>/tmp` must be at most 80 bytes, the
-same limit as the default layout; [Socket paths](#socket-paths) explains the
+threshold for shortening the default layout; [Socket paths](#socket-paths) explains the
 figure. The part after the root, `/ahr-<12 hex>/tmp`, takes 21 bytes, so a
 resolved root of up to 59 bytes fits; a root of 60 bytes is refused with a
 warning, whichever variable named it.
@@ -441,8 +451,10 @@ the size of `sun_path`, including the terminating NUL: 108 bytes on Linux
 ([unix(7)](https://man7.org/linux/man-pages/man7/unix.7.html)) and 104 on
 macOS (XNU
 [`bsd/sys/un.h`](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/un.h)).
-There is no single limit. A step's `TMPDIR` of 80 bytes, the most the runner
-gives, leaves 27 bytes below it on Linux and 23 on macOS. Some common tools
+There is no single limit. A step's `TMPDIR` of 80 bytes leaves 27 bytes below
+it on Linux and 23 on macOS. The 80-byte rule caps external paths and
+triggers shortening of default paths; it does not cap the shortened path
+when the work root itself is long. Some common tools
 need more:
 
 | Tool | Socket path below `TMPDIR` | Longest `TMPDIR` that works |
@@ -463,8 +475,8 @@ What a step gets:
 | Default, long work root | `<work root>/r/<12 hex>/tmp` | work root + 19 bytes |
 | External root | `<root>/ahr-<12 hex>/tmp` | root + 21 bytes, at most 80 |
 
-So a work root of 22 to 26 bytes, such as `/home/<4 characters>/.amplihack/work`
-on Linux, gives steps a `TMPDIR` of 76 to 80 bytes, which is past the limit
+So a work root of 22 to 26 bytes on Linux gives steps a `TMPDIR` of 76 to
+80 bytes, which is past the limit
 for Python multiprocessing. Whether to lower the 80-byte limit is tracked in
 [#2412](https://github.com/rysweet/amplihack-rs/issues/2412).
 
@@ -480,9 +492,16 @@ above. If `/tmp` is a tmpfs, see [tmpfs roots](#tmpfs-roots).
 mode `0700`. If a file, folder or symbolic link of that name already exists,
 the run does not use it: it prints a warning and falls back to the default
 layout. After creating it, the runner checks that it is a real folder, owned
-by you, with no group or other permissions; if not, it removes it and falls
-back. Two runs never share a folder, because each run id gives a different
-name.
+by you, with no group or other permissions. It writes matching internal and
+external ownership records bound to the run, the selected parent, and the
+new directory's identity before arming cleanup. Failed or incomplete
+ownership initialization leaves the directory preserved and reports the
+problem. Existing directories never receive ownership records through reuse.
+Default and shortened runtime folders follow the same creation contract.
+
+Do not edit, copy, or add ownership markers. A marker-shaped file, a run id,
+or a path in `run.json` does not authorize deletion. See the
+[ownership reference](../reference/owned-run-directory-cleanup.md#ownership-established-at-creation).
 
 ### When the runner falls back
 
@@ -555,9 +574,17 @@ the sub-recipe uses the default layout.
 
 ### Removal and cleanup
 
-The run removes its per-run folder when it ends, whether it succeeded, failed
-or panicked, exactly as it removes `<run dir>/runtime`. The root is never
-removed, even if the runner created it.
+The run attempts guarded removal of its per-run folder when it ends, whether
+it succeeded, failed, or unwound after a panic. Explicit cleanup and `Drop`
+use the same authority as stale cleanup. The selected parent is never
+removed, even if the runner created it. An unmarked, changed, or unverifiable
+directory survives with a diagnostic.
+
+Cleanup refuses `TMPDIR`, `std::env::temp_dir()`, literal `/tmp`, and `$HOME`,
+including equivalent paths and filesystem aliases. The candidate must be a
+direct child of the independently retained configured parent. A temporary
+root can contain an eligible child; that does not make the root eligible.
+See [deletion authorization](../reference/owned-run-directory-cleanup.md#deletion-authorization).
 
 While the run is going, `run.json` records the folder, so a run killed with
 `SIGKILL` can still be cleaned up. An excerpt of `run.json`, with the other
@@ -573,11 +600,14 @@ fields left out:
 
 `runtime_dir` appears only for a folder under an external root. Runs on the
 default layout leave it out, and reports written by earlier releases read as
-if it were absent.
+if it were absent. Read this field when inspecting an external runtime path;
+do not assume runtime storage is below the run folder. A recorded path may
+already be gone or may remain after a cleanup refusal.
 
 `amplihack cleanup` and the end-of-run sweep treat a recorded folder as a
-`run-tmp` item. It is removed when the run is no longer active and no running
-process uses it, as for `<run dir>/runtime`. Before that, cleanup checks the
+`run-tmp` item. Removal requires the run to be inactive, no running process
+to use the folder, and valid creation ownership and root checks, as for
+`<run dir>/runtime`. Before that, cleanup checks the
 recorded path, and reports it as `skipped` with
 `recorded temp folder refused: <reason>` if any check fails:
 
@@ -597,23 +627,37 @@ removes an `ahr-*` folder that no `run.json` records; the prefix is
 not one of the `tmp-leftover` patterns.
 
 Just before removing a recorded folder, `amplihack cleanup --apply` reads
-`run.json` again. The folder is removed only if the report still records the
-same resolved path, with the right name and owner. A path changed between
-the dry run and the apply is refused with
-`no longer inside the folders cleanup manages`. Links inside the folder are
-removed, never followed.
+`run.json` again. The report must still record the same resolved path, with
+the right name and owner. These checks establish eligibility; the shared
+ownership authority then validates creation evidence, protected roots,
+direct parent, and directory identity through claiming and removal.
+Legacy unmarked directories remain even when their reports are valid.
+Links inside an authorized directory are unlinked, never followed, and
+traversal does not cross mount boundaries. Missing filesystem guarantees
+preserve the directory rather than trigger an unrestricted deletion fallback.
 
 ### Dry runs and the explicit root
 
-A dry run (`amplihack recipe run --dry-run`) has no run folder. It uses a
-private temporary folder instead. If `AMPLIHACK_RUN_TMP_ROOT` is usable under
+A dry run (`amplihack recipe run --dry-run`) has no durable run folder or
+`run.json`. It uses an exclusively created private temporary folder instead.
+If `AMPLIHACK_RUN_TMP_ROOT` is usable under
 the rules above, that folder is `<root>/ahd-<6 random characters>`, and the
 run exports the root to its steps. Otherwise it is `ahd-<6 random characters>`
 in the system temporary folder, which already follows `TMPDIR`. The name is no
 longer than `ahr-<12 hex>`, so a root that fits a run's folder also fits a dry
-run's. The folder is removed when the run ends, but nothing records it, so one
-left by a killed dry run under an explicit root is not swept; remove it by
-hand.
+run's. Dry-run creation must establish the same internal and external
+ownership evidence as a durable run. Explicit disposal, `Drop`, and panic
+unwinding must use the shared authority; neither a temporary-directory
+destructor nor a direct pathname deletion may bypass a refusal. Failed
+ownership initialization or removal checks preserve the folder and report
+why.
+
+Ownership evidence is distinct from a durable run report. A killed dry run
+can leave valid evidence but no `run.json`, so stale `run-tmp` discovery does
+not collect it, under either an explicit or a system temporary root. `ahd-*`
+is not a `tmp-leftover` pattern. Inspect such remnants and confirm that no
+process uses them before considering manual removal. Never fabricate
+ownership records to force cleanup.
 
 ### Build targets stay out of the run folder
 
@@ -697,9 +741,11 @@ For publication and retention invariants, see
 When `amplihack recipe run` finishes, whether the run succeeded, failed or
 panicked, the runner:
 
-1. Removes the run's temporary folder, `<run dir>/runtime/` or
-   `<root>/ahr-<short id>/`, including everything steps wrote to
-   `TMPDIR` and `artifacts/`. Durable `recovery/` state and copied artifacts
+1. Requests guarded removal of the run's temporary folder,
+   `<run dir>/runtime/`, `<work root>/r/<short id>`, or
+   `<root>/ahr-<short id>/`. Successful removal includes files steps
+   wrote to `TMPDIR` and `artifacts/`. A failed safety check preserves the
+   candidate and reports why. Durable `recovery/` state and copied artifacts
    remain outside that disposable folder.
 2. Finalises `run.json` with the end time, outcome and step summary.
 3. Unless `AMPLIHACK_CLEANUP_ON_EXIT=0` is set, sweeps the whole work root for
@@ -1127,7 +1173,7 @@ amplihack cleanup --apply --skip-logs
 
 | Category | What it collects | Action |
 | --- | --- | --- |
-| `run-tmp` | `<work root>/runs/<id>/runtime` (or `<work root>/r/<short id>`), or the external folder recorded as `runtime_dir` in `run.json`, left by a run that is no longer active, such as one that was killed. The keep period does not apply: the folder is removed as soon as the run is inactive and no running process (such as a child the killed run left behind) uses it. | remove |
+| `run-tmp` | `<work root>/runs/<id>/runtime` (or `<work root>/r/<short id>`), or the external folder recorded as `runtime_dir` in `run.json`, left by an inactive run. Removal also requires no process using it, creation ownership, an approved direct parent, matching identities, and protected-root checks. Legacy unmarked directories survive. The keep period does not apply. | guarded remove |
 | `run-worktree` | Worktrees recorded in a run's `owned-paths`, under `<work root>/worktrees/` or `<main checkout>/worktrees/`, once the run is eligible. | `git worktree remove`; the branch is kept |
 | `run-target` | Targets recorded in a run's `owned-paths`: on the events in [When a target is removed](#when-a-target-is-removed), or for legacy lines once the run is eligible. Also the target removed by `--worktree-target`. A linked target loses both its destination and the link. | remove |
 | `untagged-target` | Folders directly under `<work root>/targets/`, and `amplihack-precommit-target-*` folders in the hook cache base, that no run recorded and that have not been modified within the keep period. | remove |
@@ -1352,6 +1398,13 @@ expects:
 An entry in `owned-paths` is a request, not a permission. A recorded path
 outside these folders is reported as skipped.
 
+Runtime directories additionally require creation-bound internal and external
+ownership evidence. Explicit completion, `Drop`, unwinding, and stale cleanup
+all enforce the [same removal contract](../reference/owned-run-directory-cleanup.md).
+They reject protected roots and aliases, wrong parents, symlink candidates,
+and replaced directories. Checks remain in force through descriptor-relative
+removal. Refusal never falls through to another deletion method.
+
 A worktree is removed only if all of these hold:
 
 - it is a linked worktree, never the main checkout;
@@ -1545,11 +1598,15 @@ under `/var/folders` is ignored on purpose; see
 **An `ahr-*` folder is left after a run was killed.** Run
 `amplihack cleanup`. If the item is listed as `skipped` with
 `recorded temp folder refused`, the folder or its record was changed; check
-the reason, and remove the folder by hand if it is yours. A folder that no
-`run.json` records is never removed by cleanup.
+the reason. Missing or invalid creation evidence, changed identities,
+protected roots, and unavailable filesystem guarantees also preserve it.
+A folder that no `run.json` records is never removed by cleanup. Inspect a
+retained folder and confirm no process uses it before considering manual
+removal; do not create a marker to force automatic deletion.
 
 ## Related documentation
 
+- [Owned Run Directory Cleanup](../reference/owned-run-directory-cleanup.md) - Creation evidence, protected roots, removal authority, and regression contract
 - [Hygiene Cleanup](../operations/hygiene-cleanup.md) - Opt-in cleanup of stale worktrees, detached Cargo targets and session artifacts outside recipe runs
 - [Configure Workflow Runtime Isolation](configure-workflow-runtime-isolation.md) - Where workflow runtime output is written
 - [Correlate Recipe Runs with Logs](correlate-recipe-runs.md) - Match a run id to its logs and processes
