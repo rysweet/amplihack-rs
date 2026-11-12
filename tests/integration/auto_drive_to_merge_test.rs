@@ -5426,6 +5426,16 @@ fn run_auto_drive_contract_shell_test(inherited: Inherited) {
         "MERGEREADY-no-round-tool did not pass (inherited={inherited:?}); a round with no \
          round tool must not find one through an inherited AUTODRIVE_TOOLS_DIR (#1607)\n{stdout}"
     );
+    // The merge owner's requirement of 12 Nov 2026 on PR #2262: a branch commit
+    // authored by `Fixture <fixture.invalid>` must merge with a composed message
+    // carrying no Co-authored-by line for it (software-factory #321). Required by
+    // name, so the case cannot disappear from the suite unnoticed.
+    assert!(
+        stdout.contains("PASS[MSG-fixture-author-no-coauthor]"),
+        "MSG-fixture-author-no-coauthor did not pass (inherited={inherited:?}); a commit \
+         authored by Fixture <fixture.invalid> must not become a Co-authored-by line in the \
+         squash message (#2056)\n{stdout}"
+    );
     if inherited == Inherited::Conflicting {
         assert!(
             !stdout.contains(DECOY_1561_SENTINEL) && !stderr.contains(DECOY_1561_SENTINEL),

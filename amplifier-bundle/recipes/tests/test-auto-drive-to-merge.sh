@@ -2600,6 +2600,52 @@ else
   fail "MSG-no-commit-trailers" "gh received commit text: $(head -c 200 "${MSG_SENT}")"
 fi
 
+# 5m-16b. THE MERGE OWNER'S CASE (rysweet, 12 Nov 2026, on PR #2262).
+# software-factory #321 merged at 09:23Z with GitHub's default squash message.
+# One of its branch commits was AUTHORED by `Fixture <fixture.invalid>`, a test
+# fixture's identity, and GitHub writes every commit author on the branch into
+# the default message as a `Co-authored-by:` line, so main gained
+# `Co-authored-by: Fixture <fixture.invalid>`. No commit message carried that
+# line; it came from the author field. MSG-no-commit-trailers does not cover
+# this: its trailer is text inside a message, and its author is `t`. Here the
+# head commit is authored by Fixture and its message has no trailer at all.
+# The composed message, the subject in argv and the body gh reads, must
+# contain no Co-authored-by line and must not name the Fixture identity.
+# The precondition is checked first: if the fixture commit were not authored
+# by Fixture, or its message carried the line itself, the case would prove
+# nothing. No `grep -q` right of that pipe, for the reason msg_code_has gives.
+MSG_FIXTURE_ID='Fixture <fixture.invalid>'
+FX_FIXTURE="$(GIT_AUTHOR_NAME=Fixture GIT_AUTHOR_EMAIL=fixture.invalid \
+  fx_change "$CR_SHA2" "docs: refresh the description" PR_DESCRIPTION.md=fixture)"
+MSG_FIXTURE_REC="${WORK}/mr-fixture.json"; mr_rec MERGE_READY "${FX_FIXTURE}" > "${MSG_FIXTURE_REC}"
+MSG_FIXTURE_QA="${WORK}/qa-fixture.json"; qa_fixture "${FX_FIXTURE}" PASS 3 > "${MSG_FIXTURE_QA}"
+MSG_FIXTURE_BODY="$(printf 'Refresh the description.\n\nCloses #2056.')"
+GH_HEAD="${FX_FIXTURE}" GH_BODY="${MSG_FIXTURE_BODY}" \
+  gate_run merges --round-record "${MSG_FIXTURE_REC}" --qa-evidence "${MSG_FIXTURE_QA}"; MSG_RC=$?
+MSG_SENT="$(msg_sent)"
+MSG_LANDED="${GATE_DIR}/landed-message.txt"
+if [ "$(git -C "$FX" log -1 --format='%an <%ae>' "${FX_FIXTURE}" 2>/dev/null)" != "${MSG_FIXTURE_ID}" ] \
+   || git -C "$FX" log -1 --format='%B' "${FX_FIXTURE}" | grep -i 'co-authored-by' >/dev/null; then
+  fail "MSG-fixture-author-no-coauthor" "the fixture commit is not authored by ${MSG_FIXTURE_ID} with a trailer-free message, so this case proves nothing"
+elif ! msg_merged; then
+  fail "MSG-fixture-author-no-coauthor" "the gate did not merge (rc=${MSG_RC}): $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+elif ! msg_argv || [ "${MSG_ARGV[7]:-}" != "--subject" ] || [ "${MSG_ARGV[9]:-}" != "--body-file" ] \
+     || [ "${MSG_ARGV[10]:-}" != "-" ] || [ ! -f "${MSG_SENT}" ]; then
+  fail "MSG-fixture-author-no-coauthor" "gh was not given a subject and a body on stdin, so GitHub would compose the message and add Co-authored-by: ${MSG_FIXTURE_ID}"
+else
+  # The message GitHub commits: the subject, a blank line, the body.
+  { printf '%s\n\n' "${MSG_ARGV[8]:-}"; cat "${MSG_SENT}"; } > "${MSG_LANDED}"
+  if [ "${MSG_ARGV[8]:-}" = "${MSG_TITLE} (#42)" ] \
+     && [ "$(cat "${MSG_SENT}")" = "${MSG_FIXTURE_BODY}" ] \
+     && ! grep -qi 'co-authored-by' "${MSG_LANDED}" \
+     && ! grep -qiF 'fixture.invalid' "${MSG_LANDED}" \
+     && ! grep -qiF 'fixture.invalid' "${GATE_DIR}/gh-calls.merge-argv"; then
+    pass "MSG-fixture-author-no-coauthor" "a branch commit authored by ${MSG_FIXTURE_ID} merges with a composed message that has no Co-authored-by line for it"
+  else
+    fail "MSG-fixture-author-no-coauthor" "the composed message names the commit author: $(head -c 200 "${MSG_LANDED}" | tr '\n' ' ')"
+  fi
+fi
+
 # 5m-17. The record is never written without an explicitly given, private
 # --state-dir. The message is derived long before the privacy gate of section
 # 6b blocks, so without this the gate would drop the pull request's body into
