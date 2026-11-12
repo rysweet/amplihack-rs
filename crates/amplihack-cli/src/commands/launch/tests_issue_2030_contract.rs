@@ -489,13 +489,16 @@ mod contract_home_choice {
         );
     }
 
+    // The exact message is listed in the "Errors" table of
+    // docs/reference/agent-prompt-channels.md; change both together.
     #[test]
     fn checkout_amplihack_home_without_home_is_an_error() {
         let err = contract_home_from(os("/srv/checkout"), None, true)
             .expect_err("a checkout is never the contract home");
-        assert!(
-            format!("{err:#}").contains("cannot locate the amplihack home"),
-            "{err:#}"
+        assert_eq!(
+            format!("{err:#}"),
+            "cannot locate the amplihack home: AMPLIHACK_HOME is a Git checkout, which never \
+             holds runtime state (#2361), and HOME is not set"
         );
         assert!(contract_home_from(os("/srv/checkout"), os(""), true).is_err());
     }
@@ -510,9 +513,14 @@ mod contract_home_choice {
         }
     }
 
+    // Listed in the same "Errors" table.
     #[test]
     fn neither_value_is_an_error() {
-        assert!(contract_home_from(None, None, false).is_err());
+        let err = contract_home_from(None, None, false).expect_err("no home to choose");
+        assert_eq!(
+            format!("{err:#}"),
+            "cannot locate the amplihack home: neither AMPLIHACK_HOME nor HOME is set"
+        );
     }
 
     #[test]
