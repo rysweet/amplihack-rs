@@ -166,6 +166,10 @@ pub struct RotateLedger {
     /// Logins left while full, by name, at the swap's epoch seconds (#1870).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub swapped_away: BTreeMap<String, i64>,
+    /// Issue #2013: the hourly alert limit's state by key; bad entries are dropped on load.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(deserialize_with = "super::alert_limit::serde_raw::deserialize")]
+    pub alert_log: BTreeMap<String, super::alert_limit::AlertSeen>,
 }
 
 impl Default for RotateLedger {
@@ -190,6 +194,7 @@ impl Default for RotateLedger {
             platform_block: None,
             no_room: None,
             swapped_away: BTreeMap::new(),
+            alert_log: BTreeMap::new(),
         }
     }
 }

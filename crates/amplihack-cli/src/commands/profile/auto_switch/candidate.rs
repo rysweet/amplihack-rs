@@ -10,7 +10,6 @@
 use super::usage::{Reading, Window};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::Gate;
-use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 pub struct Pool<'a> {
@@ -33,14 +32,23 @@ fn worst(r: &Reading, now: i64) -> f64 {
     adjusted(r.five_hour.as_ref(), now).max(adjusted(r.seven_day.as_ref(), now))
 }
 
+/// The rank key of a reading (issue #2013, D3): adjusted week use, then
+/// adjusted session use, so the most weekly room comes first.
+fn rank_key(r: &Reading, now: i64) -> (f64, f64) {
+    (
+        adjusted(r.seven_day.as_ref(), now),
+        adjusted(r.five_hour.as_ref(), now),
+    )
+}
+
 /// Either adjusted window at or above the threshold. No reading: not exhausted.
 pub fn is_exhausted(r: Option<&Reading>, threshold: u8, now: i64) -> bool {
     r.is_some_and(|r| worst(r, now) >= f64::from(threshold))
 }
 
-/// The eligible profile with the most quota left: known readings by their
-/// worse window (lowest first), then profiles without a reading; ties by
-/// name. `eligible` is asked only about profiles that pass every other rule.
+/// The eligible profile with the most quota left: known readings by week
+/// use, then session use (lowest first, issue #2013), then profiles without
+/// a reading; ties by name. `eligible` is asked only about profiles that pass every other rule.
 pub fn select<'a>(
     pool: &Pool<'a>,
     current: &str,
@@ -62,7 +70,9 @@ fn select_by<'a>(
     usable: impl Fn(Option<&Reading>) -> bool,
     eligible: impl Fn(&ProfileName) -> bool,
 ) -> Option<&'a ProfileName> {
-    let mut known: Vec<(f64, &'a ProfileName)> = Vec::new();
+    // Issue #2013 (D3): the rotator's rank order, week use first, then
+    // session use, then name, on the adjusted windows.
+    let mut known: Vec<((f64, f64), &'a ProfileName)> = Vec::new();
     let mut unknown: Vec<&'a ProfileName> = Vec::new();
     for p in pool.profiles {
         if p.as_str() == current || pool.exclude.contains(p) {
@@ -73,13 +83,14 @@ fn select_by<'a>(
             continue;
         }
         match reading {
-            Some(r) => known.push((worst(r, pool.now), p)),
+            Some(r) => known.push((rank_key(r, pool.now), p)),
             None => unknown.push(p),
         }
     }
     known.sort_by(|a, b| {
-        a.0.partial_cmp(&b.0)
-            .unwrap_or(Ordering::Equal)
+        a.0.0
+            .total_cmp(&b.0.0)
+            .then_with(|| a.0.1.total_cmp(&b.0.1))
             .then_with(|| a.1.as_str().cmp(b.1.as_str()))
     });
     unknown.sort_by(|a, b| a.as_str().cmp(b.as_str()));

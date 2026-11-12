@@ -244,6 +244,16 @@ where
         got
     }
 
+    /// Issue #2013 (D7): how long the read of `k` has been working at `now`,
+    /// when it is running; `None` when it is queued, waiting for a slot or
+    /// not in flight. Display only.
+    pub fn running_for(&self, k: &K, now: Instant) -> Option<Duration> {
+        match job_clock::read(&self.running.get(k)?.0) {
+            Phase::Running(at) => Some(now.saturating_duration_since(at)),
+            Phase::Queued | Phase::Waiting => None,
+        }
+    }
+
     /// Drops the keys whose read has been working longer than `max_age` at
     /// `now`, and returns them. A queued read, or one waiting for a `claude`
     /// slot, is never dropped. A late result for a dropped key is ignored.

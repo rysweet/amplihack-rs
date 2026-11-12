@@ -8,7 +8,7 @@
 use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
 use super::decide::{Decision, Measured, Reading, decide};
 use super::identify::{LiveId, live};
-use super::log::msg;
+
 use super::observe::{Measurement, Snap};
 use super::pin::{self, PinState};
 use super::settings;
@@ -172,7 +172,12 @@ fn an_unreadable_home_account_retries_and_the_next_cycle_recovers() {
         // cycle also notes why it cannot seed. That line is not a fix line.
         .filter(|l| !l.starts_with("skip: ") && !l.starts_with("note: no record for live"))
         .collect();
-    assert_eq!(alerts, vec![msg::home_unreadable(&n(L))], "no fix lines");
+    // Issue #2013 (D10): the refusal line, with its fix; never `/login`.
+    assert_eq!(alerts.len(), 1, "no fix lines: {alerts:?}");
+    let head = format!("ALERT: swap refused (home-unreadable, profile {L}): ");
+    assert!(alerts[0].starts_with(&head), "{alerts:?}");
+    assert!(alerts[0].contains(".claude.json=unreadable"), "{alerts:?}");
+    assert!(!alerts[0].contains("/login"), "{alerts:?}");
 
     private(
         &f.home.join(".claude.json"),

@@ -7,13 +7,16 @@
 //! refuses, so it refuses a hand-changed login as `LiveUnusable` and leaves
 //! recovery to the next cycle, which runs it before reading the ledger.
 
+use super::alert::limited;
 use super::cycle::{Ctx, LOCK_WAIT};
 use super::handfix;
 use super::handfix_msg::ledger_unreadable;
+use super::home_repair;
 use super::identify::Skip;
 use super::log::{Sink, msg, open_or_warn};
 use super::observe::{Snap, live_alert, live_name, snapshot};
 use super::overflow_record::log_ignored;
+use super::refusal::Cause;
 use super::seed;
 use super::swap::RecoverOutcome;
 use crate::commands::profile::ProfileError;
@@ -37,10 +40,14 @@ pub enum Prelude {
     AutoSwitchInconsistent,
     Inconsistent(String),
     /// `~/.claude` holds no login, someone else's, or an ambiguous one.
+    /// Issue #2013: `limit` is the alert-limit key of a refusal, and
+    /// `reason` its reason, for the one-shot command's error.
     LiveUnusable {
         kind: &'static str,
         live: Option<ProfileName>,
         line: String,
+        limit: Option<String>,
+        reason: Option<String>,
     },
     /// Issue #1962: the rotate ledger cannot be read. The live login was
     /// refreshed and read; `line` is the stop, without `ALERT: `. Nothing may
@@ -63,6 +70,9 @@ pub fn locked_prelude(
     hand_change: bool,
 ) -> Result<(Sink, Prelude), ProfileError> {
     ctx.identity_budget.reset();
+    // Issue #2013 (D11): alert-limit keys not seen from here on are cleared
+    // when the cycle is saved.
+    ctx.cycle_started_at = ctx.now();
     prototype_guard(ctx.store.root())?;
     ctx.rs.ensure()?;
     let log = open_or_warn(&ctx.rs.log, &ctx.rs.log1);
@@ -81,10 +91,10 @@ pub fn locked_prelude(
     match super::recover::recover_with(&ctx.store, &ctx.rs, &ctx.home, ctx.identity_reader()) {
         Ok(RecoverOutcome::None) => {}
         Ok(RecoverOutcome::RolledBack { from, to }) => {
-            out.emit(now(), &msg::recovered(false, &from, &to));
+            out.emit(ctx.now(), &msg::recovered(false, &from, &to));
         }
         Ok(RecoverOutcome::RolledForward { from, to }) => {
-            out.emit(now(), &msg::recovered(true, &from, &to));
+            out.emit(ctx.now(), &msg::recovered(true, &from, &to));
         }
         Ok(RecoverOutcome::Inconsistent(reason))
         | Err(ProfileError::RotateInconsistent(reason)) => {
@@ -108,20 +118,48 @@ pub fn locked_prelude(
     let first = snapshot(ctx, &state)?;
     log_skips(ctx, &mut out, &first);
     for (name, cause) in &first.candidate_refusals {
-        out.emit(
-            now(),
-            &format!("ALERT: trusted login identity unavailable for profile {name}: {cause}"),
-        );
+        let line = format!("ALERT: trusted login identity unavailable for profile {name}: {cause}");
+        // Issue #2013 (D11): limited in a rotate cycle; `profile switch`
+        // changes nothing but `.default` when it refuses, so it writes it.
+        match hand_change {
+            true => limited(
+                ctx,
+                &mut out,
+                &format!("identity-unavailable:{name}"),
+                &line,
+            )?,
+            false => out.emit(ctx.now(), &line),
+        }
+    }
+    // Issue #2013 (D8, D9): every rotate cycle, before seeding and the live
+    // ALERTs, so a block a session wrote back never stops a swap.
+    if hand_change {
+        home_repair::step(ctx, &state, &first, &mut out)?;
     }
     // Issue #1962: a rotate cycle only; `profile switch` never seeds.
     if hand_change && let Some(line) = seed::in_cycle(ctx, &state, &first, &mut out) {
         let live = live_name(&first.live).cloned();
         let kind = seed::SAME_ACCOUNT;
-        return Ok((out, Prelude::LiveUnusable { kind, live, line }));
+        let limit = Some(Cause::SameAccount.key(live.as_ref()));
+        let unusable = Prelude::LiveUnusable {
+            kind,
+            live,
+            line,
+            limit,
+            reason: None,
+        };
+        return Ok((out, unusable));
     }
-    if let Some((kind, line)) = live_alert(&first) {
+    if let Some(a) = live_alert(&first) {
         let live = live_name(&first.live).cloned();
-        return Ok((out, Prelude::LiveUnusable { kind, live, line }));
+        let unusable = Prelude::LiveUnusable {
+            kind: a.kind,
+            live,
+            line: a.line,
+            limit: a.limit,
+            reason: a.reason,
+        };
+        return Ok((out, unusable));
     }
     let first = Box::new(first);
     Ok((out, Prelude::Ready { lock, state, first }))
@@ -146,7 +184,7 @@ const LIVE_READABLE: &str = "readable";
 /// differ from what this process last logged, and each API-key profile
 /// ignored in `overflow=` once per process.
 fn log_skips(ctx: &mut Ctx, out: &mut Sink, snap: &Snap) {
-    let t = now();
+    let t = ctx.now();
     log_ignored(out, snap, t);
     if snap.proto != ctx.last_proto {
         if let Some(reason) = snap.proto {

@@ -1,6 +1,7 @@
 //! The decision rule (D1-D5): a pure function of the settings, the live
 //! reading, the candidates' readings, the last swap time and the clock.
 
+use super::rank;
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::usage_parse::{UsageReport, UsageState, UsageWindow};
@@ -142,6 +143,13 @@ pub struct Probed {
     /// source in [`Probed::from_report`]; `observed_at` cannot stand in for
     /// it, because a #1870 re-read is a direct read that also carries one.
     pub passive: bool,
+    /// Issue #2013 (D7): why the probe failed, as an error kind and status
+    /// only (`timeout`, `http 429`), never a body, header, URL or token.
+    /// Display only; `None` for a probe that did not fail.
+    pub failure: Option<String>,
+    /// Issue #2013 (D7): when a read that was still running, or whose
+    /// result was carried from an earlier cycle, started. Display only.
+    pub started_at: Option<i64>,
 }
 
 impl Probed {
@@ -158,6 +166,17 @@ impl Probed {
             carried: false,
             // `UsageReport::observed_at` is set only by the passive reader.
             passive: r.observed_at.is_some(),
+            failure: Self::failure_of(r),
+            started_at: None,
+        }
+    }
+
+    /// Issue #2013: the failure shown for a report that did not read usage:
+    /// its state's name only, never the report's message.
+    fn failure_of(r: &UsageReport) -> Option<String> {
+        match Reading::from_report(r) {
+            Reading::Failed => Some(r.state.as_str().replace('_', " ")),
+            _ => None,
         }
     }
 
@@ -178,6 +197,8 @@ impl Probed {
             observed_at: None,
             carried: false,
             passive: false,
+            failure: None,
+            started_at: None,
         }
     }
 
@@ -192,6 +213,8 @@ impl Probed {
             observed_at: None,
             carried: false,
             passive: false,
+            failure: None,
+            started_at: None,
         }
     }
 }
@@ -268,16 +291,26 @@ pub(super) fn needs_swap(s: &Settings, live: &Reading) -> bool {
     }
 }
 
-/// The candidate with the most headroom; ties go to the first name. Failed
-/// and exhausted candidates are never chosen.
-pub(super) fn best(candidates: &[Measured]) -> Option<(&ProfileName, u8)> {
-    candidates
-        .iter()
-        .filter(|c| !matches!(c.reading, Reading::Exhausted { .. }))
-        .filter_map(|c| c.reading.headroom().map(|h| (&c.name, h)))
-        .min_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.as_str().cmp(b.0.as_str())))
-}
-
+/// The decision rule (issue #2013, D3, D4, D17).
+///
+/// At a threshold, a live login that is itself [eligible](rank::eligible)
+/// has crossed `--session-at` only. When an eligible candidate exists, it
+/// moves to the first in rank order only if that candidate ranks ahead of
+/// it ([`rank::ranks_ahead`]: less week use, or the same week and less
+/// session use); otherwise it stays. Session use is a tie-break, so the
+/// rotator never trades weekly room for session room (7 November
+/// addendum to #2013), and two logins past `--session-at` never swap back
+/// and forth.
+///
+/// Otherwise, at a threshold: the first eligible candidate in rank order
+/// (no margin needed), else the first candidate with room whose weekly
+/// headroom beats the live login's by `--margin`, else an ALERT. A live
+/// login that is eligible has more weekly room than any candidate that is
+/// not, so for it this is the ALERT when no other login is eligible.
+///
+/// Below the thresholds, and not held: the first eligible candidate in
+/// rank order with at least the live login's weekly room whose overall
+/// headroom beats the live login's by `--upgrade-margin`.
 pub fn decide(
     s: &Settings,
     live: &Reading,
@@ -285,27 +318,38 @@ pub fn decide(
     swapped_at: Option<i64>,
     now: i64,
 ) -> Decision {
-    let live_h = i32::from(live.headroom().unwrap_or(0));
-    let best = best(candidates);
-    let gain = best.map(|(_, h)| i32::from(h) - live_h);
+    let swap = |to: &Measured, reason| Decision::Swap {
+        to: to.name.clone(),
+        reason,
+    };
     if needs_swap(s, live) {
-        return match (best, gain) {
-            (Some((to, _)), Some(g)) if g >= i32::from(s.margin) => Decision::Swap {
-                to: to.clone(),
-                reason: Reason::Threshold,
-            },
-            _ => Decision::Alert,
+        // A live login past `--session-at` only stays while it ranks first:
+        // moving would trade weekly room for session room.
+        if rank::eligible(s, live)
+            && rank::best_eligible(s, candidates)
+                .is_some_and(|to| !rank::ranks_ahead(&to.reading, live))
+        {
+            return Decision::Stay;
+        }
+        return match rank::best_eligible(s, candidates)
+            .or_else(|| rank::best_with_margin(s, live, candidates))
+        {
+            Some(to) => swap(to, Reason::Threshold),
+            None => Decision::Alert,
         };
     }
-    let held = held(s.hold, swapped_at, now);
-    match (best, gain) {
-        (Some((to, _)), Some(g)) if !held && g > 0 && g >= i32::from(s.upgrade_margin) => {
-            Decision::Swap {
-                to: to.clone(),
-                reason: Reason::Upgrade,
-            }
-        }
-        _ => Decision::Stay,
+    if held(s.hold, swapped_at, now) {
+        return Decision::Stay;
+    }
+    let live_h = i32::from(live.headroom().unwrap_or(0));
+    let live_room = rank::weekly_headroom(live);
+    let gains = |c: &&Measured| {
+        let g = i32::from(c.reading.headroom().unwrap_or(0)) - live_h;
+        g > 0 && g >= i32::from(s.upgrade_margin) && rank::weekly_headroom(&c.reading) >= live_room
+    };
+    match rank::ranked_eligible(s, candidates).into_iter().find(gains) {
+        Some(to) => swap(to, Reason::Upgrade),
+        None => Decision::Stay,
     }
 }
 

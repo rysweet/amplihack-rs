@@ -11,7 +11,7 @@ use super::guide::home_stuck_head;
 use super::hand_fields::HOME_UNREADABLE_GRACE;
 use super::handfix::Step;
 use super::identify::{LiveId, home_problem, live};
-use super::log::{msg, sh_quote};
+use super::log::sh_quote;
 use super::tests_handfix::{C, Fx, L, T, acct, fx, fx_no_l, seam};
 use super::tests_handfix_cycle::{ctx, m_spent, never};
 use super::tests_swap::{ino_at, n, private};
@@ -20,19 +20,34 @@ use std::path::Path;
 
 const G: i64 = HOME_UNREADABLE_GRACE;
 
-/// Each way `~/.claude.json` can hold no account, and what the ALERT says.
-/// `None`: the file is removed.
+/// Each way `~/.claude.json` can be unusable, and what the ALERT says.
+/// Issue #2013 (D8): a missing file, a missing block and a block with no
+/// usable account are no longer unreadable: the cycle writes the block from
+/// the verified identity (`tests_issue_2013_repair`). Only a file that does
+/// not parse as a JSON object stays unreadable.
 const CASES: &[(Option<&str>, &str)] = &[
-    (None, "it does not exist"),
     (Some("{"), "it is not valid JSON (empty or cut short)"),
     (Some(""), "it is not valid JSON (empty or cut short)"),
     (Some("[]"), "it is not a JSON object"),
-    (Some(r#"{"projects":{}}"#), "it has no oauthAccount block"),
-    (
-        Some(r#"{"oauthAccount":{"accountUuid":""}}"#),
-        "its oauthAccount block has no usable accountUuid or emailAddress",
-    ),
 ];
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_missing_file_or_block_is_not_unreadable() {
+    for body in [
+        None,
+        Some(r#"{"projects":{}}"#),
+        Some(r#"{"oauthAccount":{"accountUuid":""}}"#),
+    ] {
+        let f = fx(true, false);
+        spoil(&f, body);
+        assert_eq!(
+            live(&f.store, &f.rs, &f.home).unwrap().0,
+            LiveId::Known(n(L)),
+            "{body:?}"
+        );
+    }
+}
 
 fn spoil(f: &Fx, body: Option<&str>) {
     let p = f.home.join(".claude.json");
@@ -155,7 +170,7 @@ fn a_readable_account_in_between_starts_the_spell_again() {
 fn escalated_guidance_clears_once_the_file_is_readable() {
     let f = fx(false, false);
     let good = fs::read_to_string(f.home.join(".claude.json")).unwrap();
-    spoil(&f, Some(r#"{"projects":{}}"#));
+    spoil(&f, Some("{"));
     f.step(&seam(), T);
     assert_eq!(f.step(&seam(), T + G), Step::Guided);
     private(&f.home.join(".claude.json"), &good);
@@ -171,12 +186,12 @@ fn escalated_guidance_clears_once_the_file_is_readable() {
 #[test]
 fn dry_run_previews_the_escalated_guidance() {
     let f = fx(true, false);
-    spoil(&f, None);
+    spoil(&f, Some("{"));
     f.step(&seam(), T);
     let before = fs::read(&f.rs.ledger).unwrap();
     assert!(f.preview_with(seam, T + G - 1).is_empty());
     let got = f.preview_with(seam, T + G);
-    let want = stuck_lines(&f, "it does not exist");
+    let want = stuck_lines(&f, "it is not valid JSON (empty or cut short)");
     let head = want[0].strip_prefix("ALERT: ").unwrap();
     assert_eq!(got[0], format!("would alert: {head}"));
     assert_eq!(got[1..], want[1..]);
@@ -221,7 +236,7 @@ fn fix_two_gives_l_its_login_back_and_never_replaces_one() {
 fn run_cycle_escalates_a_home_account_that_stays_unreadable() {
     let f = fx(true, true);
     let good = fs::read_to_string(f.home.join(".claude.json")).unwrap();
-    spoil(&f, Some(r#"{"projects":{}}"#));
+    spoil(&f, Some("{"));
     let mut c = ctx(&f, never);
     assert_eq!(
         run_cycle(&mut c, Mode::Watch).unwrap(),
@@ -229,7 +244,13 @@ fn run_cycle_escalates_a_home_account_that_stays_unreadable() {
     );
     assert_eq!(f.ledger().guidance, None);
     let since = f.ledger().home_unreadable_since.expect("spell recorded");
-    assert!(f.logged().contains(&msg::home_unreadable(&n(L))));
+    // Issue #2013 (D10): the refusal line, written once an hour at most.
+    let head = format!("ALERT: swap refused (home-unreadable, profile {L}): ");
+    assert!(
+        f.logged().iter().any(|l| l.starts_with(&head)),
+        "{:?}",
+        f.logged()
+    );
 
     // The second cycle, a grace later: the start is moved back instead of
     // sleeping.
@@ -240,7 +261,7 @@ fn run_cycle_escalates_a_home_account_that_stays_unreadable() {
         run_cycle(&mut c, Mode::Watch).unwrap(),
         CycleOutcome::Alerted
     );
-    let want = stuck_lines(&f, "it has no oauthAccount block");
+    let want = stuck_lines(&f, "it is not valid JSON (empty or cut short)");
     assert_eq!(f.ledger().guidance.as_ref(), Some(&want));
     let log = f.logged();
     assert!(log.ends_with(&want), "{log:?}");

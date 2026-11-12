@@ -638,17 +638,46 @@ pub fn assert_no_secrets(out: &Output) {
 }
 
 pub fn assert_text_has_no_secrets(s: &str) {
-    for secret in [
-        "SENTINEL",
-        "SECRET-KEY",
-        "uuid-",
-        "@example.com",
-        "fake-rotation1753-",
-        "fake-default1753-",
-        "fake-task1753-",
-    ] {
-        assert!(!s.contains(secret), "secret {secret:?} printed: {s}");
+    for line in s.lines() {
+        for secret in [
+            "SENTINEL",
+            "SECRET-KEY",
+            "uuid-",
+            "@example.com",
+            "fake-rotation1753-",
+            "fake-default1753-",
+            "fake-task1753-",
+        ] {
+            // Issue #2013 (D8, D10): refusal evidence and repair lines name
+            // accounts by e-mail address, and only those lines.
+            if secret == "@example.com" && names_accounts(line) {
+                continue;
+            }
+            assert!(!line.contains(secret), "secret {secret:?} printed: {line}");
+        }
     }
+}
+
+/// A refusal or repair line, which may name accounts by e-mail address.
+fn names_accounts(line: &str) -> bool {
+    let msg = line.split_once("Z ").map_or(line, |(_, m)| m);
+    [
+        "ALERT: swap refused (",
+        "repair: ",
+        "would repair: ",
+        "would alert: swap refused (",
+    ]
+    .iter()
+    .any(|p| msg.starts_with(p))
+}
+
+/// `s` without the reading ages (issue #2013, D7), for tests that pin the
+/// percentages only.
+pub fn no_ages(s: &str) -> String {
+    regex::Regex::new(r",?\s?age=\d+s")
+        .unwrap()
+        .replace_all(s, "")
+        .into_owned()
 }
 
 /// The documented log grammar: one-shot and `watch` lines start with a UTC
@@ -666,7 +695,7 @@ pub fn assert_log_grammar(line: &str, timed: bool) {
         line.to_string()
     };
     let kinds = regex::Regex::new(
-        r"^(cycle live=\S+( \S+:(s=\d+%,w=(\d+%|\?)|failed|per-token|unknown, still running))*|swap \S+->\S+ live (s=\d+% w=(\d+%|\?)|failed|unknown, still running) target s=\d+% w=(\d+%|\?) reason=(threshold|upgrade)|switch \S+->\S+|ALERT: .+|recovery: (rolled back|finished) an interrupted swap \S+->\S+|skip: .+|change: \S+ \S+ -> \S+ by pid=\d+ ppid=\d+ parent=\x22[^\x22]*\x22( recipe_run=\S+)?( invocation=\S+)?|stop: signal received; cycle abandoned|idle: auto-switch is off|sessions archive: .+|reread: \S+ (reading stale .+; fresh .+|(failed|limit reached|time limit reached); treated as unknown)|would .+)$",
+        r"^(cycle live=\S+( \S+:(s=\d+%,w=(\d+%|\?)(,age=\d+s)?|failed|stale|running|per-token))*|swap \S+->\S+ live (s=\d+% w=(\d+%|\?)( age=\d+s)?|probe failed: .+|probe running since (\d+|\?)s \(not used\)) target s=\d+% w=(\d+%|\?)( age=\d+s)? reason=(threshold|upgrade)|reading: \S+ .+|stay: .+|repair: .+|switch \S+->\S+|ALERT: .+|recovery: (rolled back|finished) an interrupted swap \S+->\S+|skip: .+|change: \S+ \S+ -> \S+ by pid=\d+ ppid=\d+ parent=\x22[^\x22]*\x22( recipe_run=\S+)?( invocation=\S+)?|stop: signal received; cycle abandoned|idle: auto-switch is off|sessions archive: .+|reread: \S+ (reading stale .+; fresh .+|(failed|limit reached|time limit reached); treated as unknown)|would .+)$",
     )
     .unwrap();
     assert!(kinds.is_match(&msg), "line outside the grammar: {line:?}");

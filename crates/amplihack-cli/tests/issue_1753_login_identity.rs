@@ -528,12 +528,16 @@ fn identity_refusal_is_logged_on_each_affected_rotate_cycle() {
     fake_login(&f.home_login(), "unknown");
     let before = f.logins();
     for cycle in 0..3 {
-        let alerts = f.log().matches("ALERT:").count();
-        let _out = run(&f, &ep, &["profile", "rotate"]);
+        let out = run(&f, &ep, &["profile", "rotate"]);
+        // Issue #2013 (D11): the one-shot command prints the refusal on
+        // every cycle and the ledger records it; the log has it once an hour.
         assert!(
-            f.log().matches("ALERT:").count() > alerts,
-            "persistent identity refusal disappeared on cycle {cycle}"
+            text(&out.stdout).contains("ALERT: swap refused ("),
+            "persistent identity refusal disappeared on cycle {cycle}: {}",
+            text(&out.stdout)
         );
+        assert!(f.ledger().unwrap()["alert"].is_string(), "cycle {cycle}");
+        assert_eq!(f.log().matches("ALERT: swap refused (").count(), 1);
         assert_eq!(f.logins(), before);
         let ledger = f.ledger().unwrap();
         assert_eq!(ledger["live"], "work");

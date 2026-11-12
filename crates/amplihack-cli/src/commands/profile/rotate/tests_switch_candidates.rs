@@ -233,6 +233,7 @@ fn snap_with(skip: Skip, sees_sessions: bool) -> Snap {
         unmarked: Vec::new(),
         detected_mark: None,
         home_no_oauth: false,
+        evidence: Default::default(),
         candidate_accounts: Vec::new(),
     }
 }

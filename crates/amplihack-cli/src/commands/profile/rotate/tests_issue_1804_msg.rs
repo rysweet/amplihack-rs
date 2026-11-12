@@ -223,6 +223,7 @@ fn snap_on_unmarked_key() -> Snap {
         unmarked: vec![n("api-key")],
         detected_mark: None,
         home_no_oauth: true,
+        evidence: Default::default(),
         candidate_accounts: Vec::new(),
     }
 }
@@ -280,6 +281,8 @@ fn measured(session: f64, week: f64) -> Probed {
         observed_at: None,
         carried: false,
         passive: false,
+        failure: None,
+        started_at: None,
     }
 }
 
@@ -303,6 +306,8 @@ fn exhausted() -> Probed {
         observed_at: None,
         carried: false,
         passive: false,
+        failure: None,
+        started_at: None,
     }
 }
 

@@ -23,6 +23,8 @@ mod control;
 pub(super) mod cred_identity;
 #[cfg(unix)]
 mod cycle;
+#[cfg(unix)] // Issue #2013; declared in `cycle.rs` to keep this file in budget.
+use cycle::{alert_limit, home_repair, rank, refusal};
 #[cfg(unix)]
 pub(super) mod daemon;
 #[cfg(unix)]
@@ -235,9 +237,8 @@ fn foreign_note_for(
     })
 }
 
-/// After a successful `profile switch NAME`: one line on stderr when the
-/// running rotator would ignore the hold. The switch itself succeeded, so
-/// this never changes the exit code.
+/// After a successful `profile switch NAME`: one line on stderr when the running
+/// rotator would ignore the hold. The switch succeeded; the exit code is unchanged.
 #[cfg(unix)]
 fn warn_switch_hold(root: &std::path::Path) {
     let exe = std::env::current_exe().ok();
@@ -378,9 +379,8 @@ pub struct Released {
     pub default: bool,
 }
 
-/// `profile switch --none`: removes the rotation pin and the default
-/// pointer as one operation under the rotate lock; what was there. Off Unix
-/// there is no rotator and so no pin, and only the pointer is removed.
+/// `profile switch --none`: removes the rotation pin and the default pointer as one
+/// operation under the rotate lock; what was there. Off Unix only the pointer goes.
 pub(in crate::commands::profile) fn release(
     store: &ProfileStore,
 ) -> Result<Released, super::ProfileError> {

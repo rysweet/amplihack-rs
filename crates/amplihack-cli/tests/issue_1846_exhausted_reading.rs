@@ -23,7 +23,8 @@ fn a_session_exhausted_live_login_logs_its_weekly_figure() {
     let ls = lines(&out);
     assert!(
         ls.iter()
-            .any(|l| l.contains("swap work->spare live s=100% w=62% target s=10% w=20%")),
+            // Issue #2013 (D7): each reading carries its age.
+            .any(|l| no_ages(l).contains("swap work->spare live s=100% w=62% target s=10% w=20%")),
         "{ls:?}"
     );
     assert!(

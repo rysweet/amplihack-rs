@@ -1113,17 +1113,32 @@ threads, and the cycle waits only until `--interval` minus 2 seconds after
 the cycle started, and at least 1 second. Then:
 
 - A login whose read has not finished reads as unknown. The
-  [cycle line](#rotate-log) shows it as `<name>:unknown, still running`. For
+  [cycle line](#rotate-log) shows it as `<name>:running`, followed by
+  `reading: <name> probe running since <n>s (not used)`. For
   the decision it counts as a failed probe: it is never a target, it blocks
   a move onto [overflow](#overflow-decision) as `timeout` does, and for the
   live login it counts towards [failed live probes](#rotate-failed-live-probes).
-- The read keeps running. The next cycle collects its result and uses it,
+- The read keeps running. The next cycle collects its result and shows it,
   and starts no second read for that login while one is outstanding. Only
   logins with no result and no read in flight get a new read. A result
   collected this way has no
-  [reading time](#rotate-reading-freshness-and-swap-back-damping), so if
-  the decision chooses that login as a swap target it is read again
-  directly before the swap.
+  [reading time](#rotate-reading-freshness-and-swap-back-damping), so it is
+  [stale](#reading-age-limit): the cycle line shows `<name>:stale`, the
+  `reading:` line gives its figures with its age counted from when the read
+  started, and the decision never uses it. The cycle after that reads the
+  login as usual.
+
+A login whose read always takes longer than the cycle waits therefore
+alternates between `<name>:running` and `<name>:stale` and is never an
+[eligible](#rotate-eligible-logins-and-ranking) target. This is
+deliberate: a result that arrives after its cycle has decided is never
+trusted. While such a login is live, no cycle records `stayed`. A
+`running` cycle counts as a [failed live probe](#rotate-failed-live-probes),
+so the failed-probe rules can move work off it; a `stale` cycle stays with
+`stay: live reading stale` and records `stayed-unread` (see
+[Stale live reading](#stale-live-reading)). The `reading:` lines in
+[`rotate.log`](#rotate-log) show the pattern; a longer `--interval` gives
+each read more time.
 - A read that has been working for `2 × deadline + 5` seconds (245
   seconds by default) is dropped, and the next cycle starts a new one. Its
   thread ends on its own HTTP or `claude` timeout. A read is working from
@@ -1365,10 +1380,10 @@ result is a reading: the account answered, and a window is at 100% or more.
 
 | Result | `profile usage` table | `--json` | Rotator cycle line | Rotator decision | Next probe |
 |--------|-----------------------|----------|--------------------|------------------|------------|
-| `timeout` | state `timeout`, `-` in every percentage and reset | `"state": "timeout"`, `session`, `week_all` and `error` `null`, `week_models` empty | `<name>:failed` | Unknown: never a target, never counted as exhausted; a plan candidate in this state blocks a move onto [overflow](#overflow-decision) | Next run or cycle; no failed result is kept |
-| `error` | state `error`, `-` in every percentage and reset; reason on stderr | `"state": "error"`, `session` and `week_all` `null`, `week_models` empty, reason in `error` | `<name>:failed` | As for `timeout`, `profile directory refused` included (see [Overflow decision](#overflow-decision)) | As for `timeout` |
-| `session_exhausted`, `weekly_exhausted` | the percentages read | the windows read | `<name>:s=<n>%,w=<n>%`, the windows read; see [Exhausted figures](#rotate-exhausted-figures) | Headroom `0`: never a target | Next run or cycle |
-| Still running (rotator only) | - | - | `<name>:unknown, still running` | As for `timeout` | Its result is used by the next cycle; see [Reads that outlast a cycle](#reads-that-outlast-a-cycle) |
+| `timeout` | state `timeout`, `-` in every percentage and reset | `"state": "timeout"`, `session`, `week_all` and `error` `null`, `week_models` empty | `<name>:failed`, then `reading: <name> probe failed: timeout` | Unknown: never a target, never counted as exhausted; a plan candidate in this state blocks a move onto [overflow](#overflow-decision) | Next run or cycle; no failed result is kept |
+| `error` | state `error`, `-` in every percentage and reset; reason on stderr | `"state": "error"`, `session` and `week_all` `null`, `week_models` empty, reason in `error` | `<name>:failed`, then `reading: <name> probe failed: <reason>` | As for `timeout`, `profile directory refused` included (see [Overflow decision](#overflow-decision)) | As for `timeout` |
+| `session_exhausted`, `weekly_exhausted` | the percentages read | the windows read | `<name>:s=<n>%,w=<n>%,age=<n>s`, the windows read; see [Exhausted figures](#rotate-exhausted-figures) | Headroom `0`: never a target | Next run or cycle |
+| Still running (rotator only) | - | - | `<name>:running`, then `reading: <name> probe running since <n>s (not used)` | As for `timeout` | No new read while it runs. The next cycle collects its result, shows it as `<name>:stale` and never uses it; the cycle after that reads the login again. See [Reads that outlast a cycle](#reads-that-outlast-a-cycle) |
 
 `spend_limit`, `not_logged_in` and `unparsed` are also shown as
 `<name>:failed` in the cycle line and are never a target; see
@@ -4474,8 +4489,9 @@ spend-blocked instead), plus the extra conditions for an
 
 Eligible accounts are ordered:
 
-1. accounts with a reading, by the higher of their two adjusted windows,
-   lowest first, then by name;
+1. accounts with a reading, by their adjusted week use, lowest first, then
+   by their adjusted session use, then by name (the rotator's
+   [rank order](#rotate-eligible-logins-and-ranking));
 2. accounts with no reading, by name.
 
 The first one is chosen. A known reading below the threshold always beats
@@ -5477,6 +5493,12 @@ have no flags and come from the `AMPLIHACK_PROFILE_USAGE_*` variables in the
 rotator's environment. See
 [Probe settings in the rotator](#probe-settings-in-the-rotator).
 
+`--session-at` and `--week-at` decide both when the live login is due to
+move and which candidates are [eligible](#rotate-eligible-logins-and-ranking)
+to take over. `--margin` is the weekly headroom a candidate that is not
+eligible must gain over the live login. `--interval` also sets the
+[reading age limit](#reading-age-limit), `min(300, --interval)` seconds.
+
 The thresholds and margins are independent of the auto-switch `threshold`.
 The auto-switch `exclude` list applies to rotation, and so does the
 `overflow` list in the same file; see [Rotate overflow](#rotate-overflow).
@@ -5500,8 +5522,11 @@ Every non-dry-run cycle runs these steps in order:
    [expired live login](#an-expired-live-login), then the
    [unreadable-ledger stop](#unreadable-ledger-stop), then
    [hand-change recovery](#rotate-hand-change-recovery), then
-   [identify](#rotate-live-profile) the live profile, [seed](#seeding-a-record)
-   its record if one is missing and allowed, and find the
+   [identify](#rotate-live-profile) the live profile,
+   [repair the home account block](#rotate-home-account-repair) when the
+   verified identity, the ledger and the record agree,
+   [seed](#seeding-a-record) its record if one is missing and allowed, and
+   find the
    [candidates](#rotate-candidates). Hand-change recovery makes its
    identity reads here, under the lock, unless the last swap is under
    `SWAP_GRACE` old. Identification and swap authorization have their own
@@ -5532,7 +5557,8 @@ Every non-dry-run cycle runs these steps in order:
    [`profile usage`](#probe-method) does. Claude's output is parsed and dropped;
    only percentages, reset times and states are kept, and `--raw` output is
    never collected. No lock is held.
-5. **Decide.** See [Decision rule](#rotate-decision-rule). A swap target
+5. **Decide.** See [Decision rule](#rotate-decision-rule). Only
+   [fresh readings](#reading-age-limit) are used. A swap target
    chosen by its reading then passes the
    [freshness gate](#rotate-reading-freshness-and-swap-back-damping), which
    may read it again and decide again. No lock is held.
@@ -5678,7 +5704,7 @@ There is at most one reconsideration per cycle. The [swap](#rotate-swap)
 still makes its own checks on the target's login and on `~/.claude` before it
 moves anything, so a login that disappears after step 6 still causes a
 refusal: the `revalidate:` line is then followed by
-`ALERT: swap refused: <reason>` rather than a `swap` line.
+an `ALERT: swap refused (...)` line, in the [refusal format](#rotate-refusal-alerts), rather than a `swap` line.
 
 For example, live login `work` is exhausted, `spare` and `third` are spare
 logins at 0% session use, and `third` is parked while the cycle measures.
@@ -5686,17 +5712,17 @@ The decision is a swap to `spare`, `third` is not part of it, and the cycle
 logs:
 
 ```
-2026-10-29T20:16:25Z cycle live=work work:s=100%,w=72% spare:s=0%,w=43% third:s=0%,w=50%
-2026-10-29T20:16:31Z swap work->spare live s=100% w=72% target s=0% w=43% reason=threshold
+2026-10-29T20:16:25Z cycle live=work work:s=100%,w=72%,age=2s spare:s=0%,w=43%,age=2s third:s=0%,w=50%,age=2s
+2026-10-29T20:16:31Z swap work->spare live s=100% w=72% age=2s target s=0% w=43% age=2s reason=threshold
 ```
 
 If instead `spare` starts a session while the cycle measures, the cycle
 reconsiders and takes `third`:
 
 ```
-2026-10-29T20:16:25Z cycle live=work work:s=100%,w=72% spare:s=0%,w=43% third:s=0%,w=50%
+2026-10-29T20:16:25Z cycle live=work work:s=100%,w=72%,age=2s spare:s=0%,w=43%,age=2s third:s=0%,w=50%,age=2s
 2026-10-29T20:16:31Z revalidate: target spare no longer eligible (session running); reconsidered
-2026-10-29T20:16:31Z swap work->third live s=100% w=72% target s=0% w=50% reason=threshold
+2026-10-29T20:16:31Z swap work->third live s=100% w=72% age=2s target s=0% w=50% age=2s reason=threshold
 ```
 
 With `spare` the only candidate, the same change ends the cycle:
@@ -5762,33 +5788,136 @@ refused`), is *unknown*, not exhausted: it is not counted or recorded as
 exhausted, does not [have capacity](#plan-pool), blocks a move onto
 [overflow](#overflow-decision), and is probed again on the next cycle. See
 [Failed and exhausted results](#failed-and-exhausted-results).
-The *best* candidate has the
-highest headroom; ties go to the name that sorts first by byte value.
+A candidate whose reading is not [fresh](#reading-age-limit) is never
+chosen either, whatever figures it shows.
 Failed probes on some candidates do not stop a swap to another candidate
 whose probe succeeded: with live `work` exhausted, `a` and `b` failed and
 `c` at `s=0%,w=43%`, the cycle swaps to `c`, in `watch` and in the one-shot
 `rotate` alike. The no-capacity ALERT means that no candidate measured with
-enough headroom; its [suffix](#rotate-log) counts the candidates whose probe
+enough room; its [suffix](#rotate-log) counts the candidates whose probe
 failed or that were exhausted.
+
+#### Rotate eligible logins and ranking
+
+Every swap path uses one rule to decide which logins can be chosen and in
+what order: the threshold and upgrade swaps below, the
+[plan-room swap](#rotate-plan-room-swap), the move back off an
+[overflow](#rotate-overflow) profile, and auto-switch, which chooses through
+the plan-room rule.
+
+A candidate is *eligible* when all of these hold:
+
+- its reading is [fresh](#reading-age-limit);
+- its probe succeeded with measured figures (not failed, not exhausted, not
+  `probe running`, not collected from a read started in an earlier cycle);
+- its session use is below 100% (it has session room);
+- its week use is below `--week-at`.
+
+`--session-at` is not part of eligibility. It decides when the live login
+looks for a move, and session use breaks ties on week use, but it never
+drops a login with weekly room. A login with less weekly room is never
+chosen over another only because its session use is below `--session-at`
+(issue #2013, 7 November addendum). On 7 November, with `--session-at 70`,
+every login with weekly room sat just above 70% session, so the old rule
+dropped them all and the rotator swapped six times in seven minutes among
+logins at 97-99% weekly.
+
+Eligible candidates are ranked by these keys, in order:
+
+1. the most weekly headroom (`100 - week_used`), that is, the lowest week
+   use;
+2. the most session headroom, that is, the lowest session use;
+3. the profile name, ascending by byte value.
+
+The candidates are plan logins only. [Overflow](#overflow-tiers) and
+[API-key](#moving-onto-the-api-key) profiles are never ranked this way:
+they are tried by tier, and only after no plan login is chosen; see
+[Rotate decision order](#rotate-decision-order).
+
+Weekly use is ranked first because a weekly limit lasts for days and a
+session limit for hours. The thresholds come only from `--session-at` and
+`--week-at` (and their variables); there is no separate weekly floor.
+
+A candidate *has room* when its reading is fresh and measured and both its
+session and week use are below 100%. A candidate that has room but is not
+eligible is chosen only when no candidate is eligible, and only when its
+weekly headroom is at least `--margin` points more than the live login's.
+Candidates with room are ranked by the same keys. This stops the rotator
+from moving between logins that are all near their weekly limit.
+
+For example, with the defaults (`--session-at 85`, `--week-at 90`,
+`--margin 5`), live `nnorth` at `s=10%,w=98%` and three candidates at
+`s=10%`:
+
+```
+2026-11-05T14:02:11Z cycle live=nnorth nnorth:s=10%,w=98%,age=12s ffarmer:s=10%,w=97%,age=12s eelsworth:s=10%,w=11%,age=12s iivanovich:s=10%,w=52%,age=12s
+2026-11-05T14:02:12Z swap nnorth->eelsworth live s=10% w=98% age=13s target s=10% w=11% age=13s reason=threshold
+```
+
+`ffarmer` is not eligible, because its week (97%) is at `--week-at`.
+`eelsworth` and `iivanovich` are, and `eelsworth` ranks first on weekly
+use. It still ranks first with `--session-at 5`, or with its session at
+88%: session use past `--session-at` drops no candidate. With
+`--week-at 10` no candidate is eligible; `eelsworth` then still has room
+and its weekly headroom (89) beats the live login's (2) by more than 5, so
+the cycle swaps to it on the margin rule. If every candidate were at
+`w=97%` or above, none would beat the live login's headroom by 5 points,
+and the cycle would stay with `stay: no login with room` (see
+[Rotate log](#rotate-log)).
+
+#### Rotate threshold and upgrade swaps
+
+*Live headroom* below is the live login's headroom as defined above. A
+live reading that is not fresh is never used: the cycle stays with
+`stay: live reading stale age=<n>s (not used)`; see
+[Stale live reading](#stale-live-reading).
 
 | Condition (all comparisons inclusive) | Outcome |
 |---------------------------------------|---------|
-| Live probe failed, or `session_used >= session-at`, or `week_used >= week-at`; and `best - live >= margin` | Swap to best, `reason=threshold`. A failed live probe counts as headroom `0`, and the swap is then subject to [failed-probe damping](#rotate-failed-live-probes). |
-| As above, but no candidate meets the margin, or there are no candidates | ALERT `no-capacity`. No swap. |
-| No threshold reached, `now - swapped_at >= hold` (or no earlier swap), and `best - live >= upgrade-margin` and `best - live > 0` | Swap to best, `reason=upgrade`. |
+| Live `session_used >= session-at` only: the live login is itself eligible (session below 100%, week below `week-at`) | Swap to the first eligible candidate only if it ranks ahead of the live login: lower week use, or the same week use and lower session use, `reason=threshold`. Otherwise stay. The rotator never trades weekly room for session room. |
+| Live probe failed, or `week_used >= week-at`, or the live login has no room; and a candidate is eligible | Swap to the first eligible candidate, `reason=threshold`. No margin is needed. A failed live probe makes the swap subject to [failed-probe damping](#rotate-failed-live-probes). |
+| As above, no candidate is eligible, and a candidate with room has at least `margin` more weekly headroom than the live login (a failed live probe counts as weekly headroom `0`) | Swap to the first such candidate, `reason=threshold`. |
+| As above, but no candidate meets either rule, or there are no candidates | ALERT `no-capacity`, then the [decision order](#rotate-decision-order) goes on to the plan-room step. |
+| No threshold reached, `now - swapped_at >= hold` (or no earlier swap), and an eligible candidate has at least the live login's weekly headroom and its headroom minus the live headroom is at least `upgrade-margin` and above `0` | Swap to the first such candidate in rank order, `reason=upgrade`. |
 | Otherwise | Stay. |
+
+Because a threshold swap needs only one eligible candidate, rotation
+happens before the live login is exhausted: live `work` at `s=86%,w=40%`
+with `--session-at 85` and an eligible candidate at `w=30%` swaps in that
+cycle, whatever the candidate's session use. With the only candidate at
+`w=82%`, `work` stays: it has more weekly room, and it moves when its
+session reaches 100% or a candidate ranks ahead of it.
+
+For example, the logins of 7 November with `--session-at 70`: live `kkane`
+at `w=99%`, `ffarmer`, `oole` and `nnorth` at 97-98%, `eelsworth` at
+`s=71%,w=21%`, `iivanovich` at `s=75%,w=62%`, `llarame` at `s=73%,w=62%`
+and `ryanc2-mistt-org` at `s=71%,w=82%`. The cycle swaps `kkane` to
+`eelsworth`. On `eelsworth` it then stays: no other login ranks ahead of
+it on week use.
+
+The upgrade test uses headroom, `100 - max(session_used, week_used)`, not
+weekly headroom alone, because an upgrade is optional: it should move work
+only to a login that is better on both windows. It walks the eligible
+candidates in rank order and takes the first that passes, so a candidate
+ranked first on week use but close to its session limit does not hide one
+further down that passes. For example, with the defaults
+(`--upgrade-margin 30`), live `work` at `s=50%,w=50%` (headroom 50),
+`aanderson` at `s=80%,w=10%` (headroom 20) and `bbuck` at `s=0%,w=15%`
+(headroom 85): `aanderson` ranks first but gains nothing, and `bbuck`
+gains 35 points, so the cycle swaps to `bbuck` with `reason=upgrade`.
 
 `swapped_at` and `previous` (the profile swapped out) come from the
 [ledger](#rotate-state-directory). During the hold no upgrade happens at
 all, so `previous` cannot come straight back by upgrade. Threshold swaps on
 a measured reading are never held.
 
-The table ranks every candidate on the reading it has, which may be minutes
-old. Before a swap stands, its target passes the
+The table ranks only candidates whose readings are within the
+[age limit](#reading-age-limit). Before a swap stands, its target passes the
 [freshness gate](#rotate-reading-freshness-and-swap-back-damping): a target
-read more than 300 seconds ago, earlier than the live login, or not since the
-rotator last swapped away from it while it was full, is read again (by the
-[probe method](#probe-method), passive readings off) and the decision is made again on the new figures.
+read longer ago than the age limit, earlier than the live login, or not
+since the rotator last swapped away from it while it was full, is read
+again (by the [probe method](#probe-method), passive readings off) and the
+decision is made again on the new figures.
 
 #### Rotate failed live probes
 
@@ -5801,7 +5930,7 @@ consecutive cycles, including this one, whose live probe failed.
 | `k < 3` | Stay. | `stay: live probe failed (<k>/3)` |
 | `k >= 3` and `now - swapped_at < hold` | Stay. | `stay: live probe failed; held after last swap (<N>s left)`, where `N = hold - (now - swapped_at)`, or `hold` if `swapped_at` is in the future |
 | The [API-key login check](#api-key-login-check) passes on the `$HOME` files and the API key is not live | Stay. | `stay: live probe failed; home key (<detail>) applies to every login once live, a swap changes nothing`; see [API-key login check](#api-key-login-check) |
-| Otherwise | Swap to best. | `swap <from>-><to> live failed target s=<n>% w=<n>% reason=failed-probe` |
+| Otherwise | Swap to the first [eligible](#rotate-eligible-logins-and-ranking) candidate, or else the first that meets the margin rule. | `swap <from>-><to> live probe failed: <reason> target s=<n>% w=<n>% age=<n>s reason=failed-probe` |
 
 `k` is kept in memory by `watch`. It is reset to `0` by a cycle whose live
 probe does not fail, by a completed swap, and by restarting the rotator. The
@@ -5831,7 +5960,7 @@ depends only on the reading of the live login taken in this cycle.
 The live reading *qualifies* when all of these hold:
 
 - the probe succeeded in this cycle with measured figures: it is not failed,
-  not `unknown, still running`, not a result
+  not `probe running`, not a result
   [collected from a read started in an earlier cycle](#reads-that-outlast-a-cycle),
   and not unknown;
 - it is not a [spend limit](#spend-status), and the live login has no
@@ -5842,9 +5971,12 @@ The live reading *qualifies* when all of these hold:
   qualify).
 
 The [reading freshness](#rotate-reading-freshness-and-swap-back-damping)
-gate does not apply here, as it does not apply to any stay or ALERT. A
-passive reading of the live login that is measured and below `100` on both
-windows qualifies, but its age still matters. A `stayed` cycle records, as
+gate, which re-reads a swap target, does not apply here. The
+[age limit](#reading-age-limit) does: a live reading older than the limit
+does not qualify, and the stay records `stayed-unread` (see
+[Stale live reading](#stale-live-reading)). A passive reading of the live
+login that is within the limit, measured and below `100` on both windows
+qualifies, but its age still matters. A `stayed` cycle records, as
 `last_cycle.measured_at`, the time the live reading was taken: its
 `observed_at` for a passive reading, otherwise the time the cycle started
 measuring, whichever is earlier. The usage-limit wait counts only a
@@ -5876,7 +6008,7 @@ profile, or a stay on one with an active
 | Qualifies | `stayed` | yes | `alert` and `advisory_alert` cleared |
 | Read in this cycle on an overflow profile (`overflow=on`) with no active spend block, at any figures | `stayed` | yes | `alert` and `advisory_alert` cleared |
 | Qualifies, but a passive reading taken before the limit hit | `stayed`, recorded at the reading's time | not for that limit | `alert` and `advisory_alert` cleared |
-| Failed, carried, unknown, still running, spend-limited, or at 100% on either window (and not a read overflow stay) | `stayed-unread` | no | unchanged |
+| Failed, carried, unknown, still running, older than the [age limit](#reading-age-limit), spend-limited, or at 100% on either window (and not a read overflow stay) | `stayed-unread` | no | unchanged |
 | Live login with an active spend block, at any figures | `stayed-unread` | no | unchanged |
 
 Every stay that does not read the live login records `stayed-unread`: a
@@ -5972,27 +6104,109 @@ a stay or an ALERT. It checks only the target the decision chose, after
 | A direct or `claude` read started and finished in this cycle | When this cycle started measuring (`last_cycle.measured_at`). |
 | A re-read by the gate | When the re-read finished. |
 | A result collected from a read started in an earlier cycle | None. |
-| `unknown, still running` or failed | None. |
+| `probe running` or failed | None. |
 
-A target's reading is *fresh* when all of these hold:
+##### Reading age limit
 
-- it has a reading time;
-- the reading time is no more than 300 seconds before now;
+The *age* of a reading is `now - reading time`, in whole seconds. `now`
+comes from the rotator's one clock, read when the cycle starts and when
+each check runs; nothing else supplies the time. The *age limit* is:
+
+| `--interval` | Age limit |
+|--------------|-----------|
+| above `0` | `min(300, --interval)` seconds |
+| `0` or not set | 300 seconds |
+
+The one-shot `rotate` uses its resolved `--interval` (600 by default), so
+its limit is 300 seconds. Under `--interval 120` the limit is 120 seconds,
+so a [passive reading](#passive-readings) between 121 and 300 seconds old,
+which the status line still accepts, is stale for the rotator: a target
+chosen on one is read again, within the existing limits on
+[re-reads](#re-reads), and a swap can wait one more cycle. The 300-second
+cap is fixed; there is no flag or environment variable that raises it.
+
+A reading within the age limit is *fresh*; any other reading is *stale*.
+A reading with no reading time (a failed probe, `probe running`, or a
+result collected from a read started in an earlier cycle) is stale. A
+reading time later than `now` is stale too, so a clock step backwards
+never makes an old reading look new.
+
+Only fresh readings are used for a decision, for the live login and for
+every candidate. A stale reading is shown in the log with its age and the
+words `(not used)`; see [Reading display](#reading-display).
+
+##### Stale live reading
+
+When the live login's reading is stale or failed, the cycle makes no
+threshold, upgrade or plan-room decision from it. A stale reading writes:
+
+```
+2026-11-06T22:49:05Z stay: live reading stale age=7320s (not used)
+```
+
+and the cycle records `stayed-unread`. It is not a failed live probe and
+does not count towards the [failed-probe](#rotate-failed-live-probes)
+count `k`. A failed live probe follows the failed-probe rules as before.
+The steps that do not depend on the live login's usage still run in that
+cycle: the [LiveUnusable](#rotate-live-profile) check, the refresh of an
+[expired live login](#an-expired-live-login), the identity checks and the
+[home account repair](#rotate-home-account-repair). The next cycle's
+ordinary measurement reads the live login again; no extra probe is made.
+
+##### Target freshness
+
+A swap target's reading is *fresh for the gate* when all of these hold:
+
+- it is within the [age limit](#reading-age-limit);
 - the reading time is not earlier than the live login's reading time. Equal
   times count as fresh. When the live probe failed, the live login has no
   reading time and only the age test applies;
 - when the target has a [`swapped_away`](#swap-back-damping) entry, the
   reading time is strictly later than that entry.
 
-Otherwise the reading is *stale*.
+Otherwise the gate reads the target again. Raising
+[`AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS`](#passive-readings) above
+the age limit lets the status line keep older passive readings, but the
+rotator never ranks a candidate on one.
 
-The 300-second limit is fixed; there is no flag or environment variable for
-it. It equals the default of
-[`AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS`](#passive-readings) and half
-the default `--interval` of 600 seconds, so a passive reading accepted under
-the default setting is never too old on age alone. Raising the passive
-setting above 300 lets older passive readings rank candidates, but a target
-chosen on one is still read again.
+##### Reading display
+
+Every reading the rotator writes carries its age, so a value is never shown
+without the time it was read:
+
+| Reading | In `swap`, `stay` and `reading:` lines | In the `cycle` line |
+|---------|------------------------------------------|---------------------|
+| Fresh | `s=41% w=97% age=35s` | `<name>:s=41%,w=97%,age=35s` |
+| Stale | `s=41% w=97% stale age=7320s (not used)` | `<name>:stale`, followed by a `reading:` line |
+| Failed probe | `probe failed: <reason>`, with no percentages | `<name>:failed`, followed by a `reading:` line |
+| Still running from an earlier cycle | `probe running since <n>s (not used)` | `<name>:running`, followed by a `reading:` line |
+
+A failed probe never shows the figures of an earlier reading. `<reason>`
+names the kind of failure and, for an HTTP error, its status: the direct
+read's reason when it failed (such as `http 429`, `timeout` or
+`transport`), else the probe's state (`timeout`, `not logged in`,
+`spend limit`, `unparsed` or `error`). A probe that recorded no reason, such
+as a target the freshness gate could not read again, shows
+`probe failed: no reading`. It never holds a response body, a header, a URL
+or token material; control characters are removed and it is cut to 128
+characters.
+
+The age of a result collected from a read started in an earlier cycle is
+counted from when that read started, since it has no reading time; such a
+result is always stale. When the start of a read still running is not
+known (it is queued for a `claude` slot), the line shows
+`probe running since ?s (not used)`.
+
+For each profile that the `cycle` line shows as `stale`, `failed` or
+`running`, the cycle writes one `reading:` line straight after it:
+
+```
+2026-11-06T22:49:05Z cycle live=nnorth nnorth:stale eelsworth:s=88%,w=11%,age=40s iivanovich:s=20%,w=52%,age=40s ffarmer:failed oole:running
+2026-11-06T22:49:05Z reading: nnorth s=17% w=98% stale age=7320s (not used)
+2026-11-06T22:49:05Z reading: ffarmer probe failed: http 429
+2026-11-06T22:49:05Z reading: oole probe running since 130s (not used)
+2026-11-06T22:49:05Z stay: live reading stale age=7320s (not used)
+```
 
 When this cycle read the live login directly and a candidate passively, the
 candidate's reading is older than the live one, so it is read again if it is
@@ -6087,7 +6301,8 @@ is past `--week-at`, and `ggrant` has a stored reading from before it was
 last live:
 
 ```
-2026-11-02T13:09:09Z cycle live=ryan-ryansweet ryan-ryansweet:s=0%,w=97% ggrant:s=11%,w=95% hharkness:unknown, still running
+2026-11-02T13:09:09Z cycle live=ryan-ryansweet ryan-ryansweet:s=0%,w=97%,age=3s ggrant:s=11%,w=95%,age=240s hharkness:running
+2026-11-02T13:09:09Z reading: hharkness probe running since 125s (not used)
 2026-11-02T13:09:10Z reread: ggrant reading stale s=11% w=95%; fresh s=43% w=100%
 2026-11-02T13:09:10Z ALERT: no profile has capacity live=ryan-ryansweet s=0% w=97% (candidates: 1 failed, 1 exhausted)
 ```
@@ -6127,17 +6342,20 @@ started while `ggrant` was live keep using its login, so its use goes on
 rising:
 
 ```
-2026-11-02T15:40:10Z swap ggrant->hharkness live s=86% w=70% target s=70% w=62% reason=threshold
+2026-11-02T15:40:10Z swap ggrant->hharkness live s=86% w=40% age=1s target s=70% w=62% age=1s reason=threshold
 ```
 
-On the next cycle, `ggrant`'s stored reading is the one taken at 15:40:09,
-before the swap, and on those figures it beats `hharkness` by `--margin`.
-That reading is not later than the `swapped_away` entry, so it is read
-again:
+On the next cycle, `ggrant`'s stored reading is a passive one taken at
+15:40:09, before the swap, which is within the age limit. `hharkness` has
+passed `--session-at` and no candidate is
+[eligible](#rotate-eligible-logins-and-ranking), but on the stored figures
+`ggrant` has room and 60 points of weekly headroom against `hharkness`'s
+37, so the margin rule chooses it. That reading is not later than the
+`swapped_away` entry, so it is read again:
 
 ```
-2026-11-02T15:42:21Z cycle live=hharkness hharkness:s=92%,w=63% ggrant:s=86%,w=70%
-2026-11-02T15:42:22Z reread: ggrant reading stale s=86% w=70%; fresh s=93% w=71%
+2026-11-02T15:42:21Z cycle live=hharkness hharkness:s=92%,w=63%,age=2s ggrant:s=86%,w=40%,age=132s
+2026-11-02T15:42:22Z reread: ggrant reading stale s=86% w=40%; fresh s=100% w=41%
 2026-11-02T15:42:22Z damp: ggrant swapped away exhausted; no later reading shows room
 2026-11-02T15:42:22Z ALERT: no profile has capacity live=hharkness s=92% w=63%
 ```
@@ -6160,48 +6378,66 @@ reported as `RotateInconsistent` so that it cannot stop rotation.
 
 #### Rotate plan-room swap
 
-The table above swaps on a threshold only when a candidate beats the live
-login by `--margin`. When every plan login is near its limits, none may, and
-the cycle would end in `ALERT no-capacity` although some plan logins still
-have room below 100%. The plan-room swap moves `~/.claude` to the plan login
-with the most room, because a plan login costs nothing while it has room.
+The plan-room swap moves `~/.claude` to a plan login with room when the
+[threshold rule](#rotate-threshold-and-upgrade-swaps) gives
+`ALERT no-capacity`, because a plan login costs nothing while it has room.
+It uses the same [eligibility and ranking](#rotate-eligible-logins-and-ranking)
+as every other swap, so the threshold rule and the plan-room swap never
+disagree about which login is best.
 
-A plan login *has room* when its probe this cycle gave `ok` and both its
-session and week use are below 100%. A failed probe, a login that was not
-measured, an `exhausted` reading and every API-key profile have no room.
+A plan login *has room* when its reading is
+[fresh](#reading-age-limit), its probe this cycle gave `ok` and both its
+session and week use are below 100%. A failed probe, a stale reading, a
+login that was not measured, an `exhausted` reading and every API-key
+profile have no room.
 
 While the live login is a plan profile, the rotator considers a plan-room
 swap only when both hold:
 
-- the live login has reached `--session-at` or `--week-at` on a measured
-  reading (a failed live probe is left to the
-  [failed-probe rules](#rotate-failed-live-probes));
-- the table above gives `ALERT no-capacity`.
+- the live login has reached `--session-at` or `--week-at` on a fresh,
+  measured reading (a failed live probe is left to the
+  [failed-probe rules](#rotate-failed-live-probes), and a stale one to
+  [Stale live reading](#stale-live-reading));
+- the threshold rule gives `ALERT no-capacity`.
 
 It never fires while the live login is below both thresholds, so it adds no
-upgrade swaps. `--margin`, `--hold` and `--upgrade-margin` do not apply.
-While the live login is an [overflow profile](#overflow-decision), the same
-ranking chooses the plan login to move back to.
+upgrade swaps. `--upgrade-margin` does not apply. `--hold` applies only to a
+move between logins that are all at or above `--week-at` (pass 2): at most
+one such move happens per `--hold` window, and while the hold lasts a live
+login with room stays. A live login with no room (100% in a window) moves
+whatever the hold. Such moves gain little weekly room and were the churn of
+7 November 2026, when the rotator swapped six times in seven minutes among
+logins at 97-99% weekly. While the live
+login is an [overflow profile](#overflow-decision), the same rule chooses
+the plan login to move back to.
 
-Plan logins with room are ranked by these keys, in order:
+The choice runs in two passes:
 
-1. a login whose session use is below `--session-at` comes before one whose
-   session use is not;
-2. the most weekly room: the lowest week use;
-3. the most session room: the lowest session use;
-4. the profile name, ascending by byte value.
+1. **Eligible logins.** Plan logins that are
+   [eligible](#rotate-eligible-logins-and-ranking), with session use below
+   100% and week use below `--week-at`, are ranked by weekly use, then
+   session use, then name. The first one is chosen. `--session-at` drops
+   none of them.
+2. **Logins with room.** Only when pass 1 finds none: plan logins with room
+   are ranked by the same keys, with the live login among them. The first
+   one is chosen only when it is not the live login and its weekly headroom
+   is at least `--margin` points more than the live login's. Otherwise the
+   cycle stays.
 
-The first key keeps a login whose session window is nearly spent from
-winning on weekly room alone. Ranking by week next keeps the login with the
-most weekly room, which lasts longest.
+A live login that is exhausted, or whose probe failed, has weekly headroom
+`0` in pass 2. When the cycle stays, it writes
 
-The live login is ranked by the same keys. A live login that is exhausted,
-or whose probe failed, ranks last. The rotator swaps only when the best
-candidate ranks strictly ahead of the live login; otherwise the cycle ends in
-`ALERT no-capacity` as before, and the ALERT is written once, not every
-cycle. This stops two logins from swapping back and forth: live `ddrumpf` at
-`s=0%,w=92%` stays put rather than moving to `ccapstone` at `s=11%,w=92%`,
-and `ccapstone` would not move back either.
+```
+stay: no login with room; live <name> <reading>; <name> <reading>; ...
+```
+
+with every candidate's [reading](#reading-display), stale and failed ones
+included, and the `ALERT no-capacity` line once per key as before. The
+`stay:` line is limited to once an hour by the
+[alert limit](#rotate-alert-limit). The margin stops two logins near their
+weekly limit from swapping back and forth: live `ddrumpf` at `s=0%,w=92%`
+stays put rather than moving to `ccapstone` at `s=11%,w=92%`, and
+`ccapstone` would not move back either.
 
 The swap is logged with `reason=plan-room`.
 
@@ -6218,42 +6454,54 @@ reading of `s=74%` reads it again before the swap:
 
 `hharkness` is then session-exhausted and is not chosen.
 
-**Example.** With the default `--session-at 85`, this cycle has a live
-login past its session threshold and no candidate that beats it by
-`--margin 5` (the best headroom is 8 against the live login's 13):
+**Example: logins near their weekly limit.** With the defaults
+(`--session-at 85`, `--week-at 90`, `--margin 5`), live `nnorth` has passed
+`--week-at`, three logins are close to their weekly limit, and three have
+weekly room:
 
 ```
-2026-10-30T19:42:56Z cycle live=iivanovich iivanovich:s=87%,w=61% aanderson:s=25%,w=95% bbuck:s=50%,w=97% ccapstone:s=11%,w=92% ddrumpf:s=0%,w=92% eelsworth:s=98%,w=17% ggrant:s=100%,w=100% ryan-mistt-personal:s=0%,w=96%
-2026-10-30T19:42:56Z swap iivanovich->ddrumpf live s=87% w=61% target s=0% w=92% reason=plan-room
+2026-11-05T16:47:39Z cycle live=nnorth nnorth:s=17%,w=98%,age=4s ffarmer:s=10%,w=97%,age=4s oole:s=41%,w=97%,age=4s eelsworth:s=88%,w=11%,age=4s iivanovich:s=20%,w=52%,age=4s llarame:s=30%,w=52%,age=4s
+2026-11-05T16:47:40Z swap nnorth->eelsworth live s=17% w=98% age=5s target s=88% w=11% age=5s reason=threshold
 ```
 
-`aanderson`, `bbuck`, `ccapstone`, `ddrumpf` and `ryan-mistt-personal` have
-session use below 85%, so they rank first. `eelsworth` has the lowest week
-use but ranks after them because its session (98%) is at `--session-at`;
-the live `iivanovich` (87%) ranks after them for the same reason; `ggrant`
-has no room. `ccapstone` and `ddrumpf` tie on week at 92%, and `ddrumpf`
-wins on session. A marked credit or API-key profile is never chosen here,
-and is not used while any of these logins has room.
+`ffarmer` and `oole` are at `--week-at`, so they are not eligible.
+`eelsworth`, `iivanovich` and `llarame` are: `eelsworth` is past
+`--session-at`, but that drops no login with weekly room, and it ranks
+first on week. The swap comes from the threshold rule, so the plan-room
+step is not reached. A login at `w=97%` is never chosen while an eligible
+login exists. With `eelsworth` at `s=100%` it has no room and is not
+eligible; `iivanovich` and `llarame` then tie on week at 52%, and
+`iivanovich` wins on session.
 
 **Unmeasured plan logins.** A plan login skipped as `session running`,
 `leased`, `hosting`, `parked`, `no account` or `directory refused`, or whose
-probe failed, has no reading, so it cannot be chosen for room. It is unknown
-rather than empty.
+probe failed or is still running, or whose reading is stale, has no usable
+reading, so it cannot be chosen for room. It is unknown rather than empty.
 The per-token rules below name what each does with such a login. Excluded,
 login-less and `not oauth` profiles do not count, nor do overflow or API-key
 profiles.
 
-**Example with no session room.** With every plan login at or above
-`--session-at`, the first key ties and weekly room decides. Live `aanderson`
-at `s=90%,w=80%` and `bbuck` at `s=95%,w=60%`:
+**Example with no eligible login.** With every plan login at or above
+`--week-at`, pass 1 finds none and pass 2 ranks by weekly use. Live
+`aanderson` at `s=40%,w=99%` and `bbuck` at `s=10%,w=93%`: `bbuck` has 7
+points of weekly headroom against `aanderson`'s 1, which is at least the
+margin, so the threshold rule's margin step swaps to it:
 
 ```
-2026-10-31T08:10:05Z swap aanderson->bbuck live s=90% w=80% target s=95% w=60% reason=plan-room
+2026-10-31T08:10:05Z swap aanderson->bbuck live s=40% w=99% age=3s target s=10% w=93% age=3s reason=threshold
 ```
 
-On the next cycle, with the same readings, `bbuck` is live and ranks ahead
-of `aanderson`, so there is no swap back; the cycle writes
-`ALERT no-capacity` once.
+On the next cycle, with the same readings, `bbuck` is live and `aanderson`
+has less weekly headroom than `bbuck`, so there is no swap back; the cycle
+writes `stay: no login with room` and `ALERT no-capacity` once. A further
+move to another login at or above `--week-at` waits for `--hold` while
+`bbuck` has room.
+
+Logins past `--session-at` but below `--week-at` are eligible, so they are
+ranked in pass 1. Live `aanderson` at `s=90%,w=80%` and `bbuck` at
+`s=95%,w=60%`: `bbuck` ranks ahead on week, so the threshold rule swaps to
+it. On the next cycle `bbuck` is live and past `--session-at`, but
+`aanderson` does not rank ahead of it, so the cycle stays.
 
 #### Rotate decision order
 
@@ -6286,7 +6534,9 @@ first step that gives a swap ends the decision:
 While the live login is a per-token profile (credit or API key), the order
 is:
 
-1. a plan login with [capacity](#plan-pool), `reason=overflow-out`;
+1. an [eligible](#rotate-eligible-logins-and-ranking) plan login (session
+   below 100%, week below `--week-at`), the first in rank order,
+   `reason=overflow-out`;
 2. a plan login with room, chosen by the plan-room ranking,
    `reason=overflow-out`;
 3. a usable marked per-token profile in tier order, under the same gate,
@@ -6479,7 +6729,7 @@ While the live login is an overflow profile, these rules apply in order:
 
 | Condition | Outcome |
 |-----------|---------|
-| A plan candidate has capacity | Swap to the plan candidate that has capacity with the most headroom, `reason=overflow-out`. `--margin`, `--hold` and `--upgrade-margin` do not apply. |
+| A plan candidate is [eligible](#rotate-eligible-logins-and-ranking) | Swap to the first eligible plan candidate in rank order, `reason=overflow-out`. `--margin`, `--hold` and `--upgrade-margin` do not apply. |
 | A plan candidate has room | Swap to the plan login the [plan-room ranking](#rotate-plan-room-swap) puts first, `reason=overflow-out`. |
 | The live reading is `spend_limit` | [Block](#overflow-spend-limit-block) the live profile, then swap to the next eligible overflow candidate if the wait rule above still holds, else to the plan candidate with the most headroom that is not exhausted and whose probe did not fail, else ALERT `no-capacity`. |
 | Live probe failed | [Failed-probe rules](#rotate-failed-live-probes), with plan candidates as the only targets; otherwise stay on credits. |
@@ -6631,7 +6881,7 @@ revalidation, swap completion and interrupted-swap recovery.
 | Positively identified platform login | Uses the existing API-key rules; an unreadable OAuth login does not become a platform login. |
 | Expected-account record | States which account a profile is meant to own. See [Recorded account](#recorded-account). |
 | Rotate ledger and swap journal | Track placement and transaction state, with sanitized full-account provenance from authorized trusted readings. A legacy account key or an inode alone cannot prove ownership. |
-| `.claude.json` and its `oauthAccount` | Display state. Cannot establish ownership, authorize movement, backfill a record or choose the ledger account. |
+| `.claude.json` and its `oauthAccount` | Display state. Cannot establish ownership, authorize or refuse movement, backfill a record or choose the ledger account. Shown as evidence in [refusal alerts](#rotate-refusal-alerts), and rewritten from the verified identity by the [home account repair](#rotate-home-account-repair). |
 
 Trusted readings are bound to validated non-secret metadata for the login
 file and its directory. The reader rejects symlinks and unsafe files,
@@ -6772,6 +7022,103 @@ The acceptance dry run on candide (#1962 item 5) is tracked in issue #1988.
 Candide stays on 1.2.97 until that run names the live login with no identity
 alert.
 
+#### Rotate home account repair
+
+Claude Code shows the account named by the `oauthAccount` block in
+`~/.claude.json`. The block can name another account than the login in
+`~/.claude`: a running Claude Code session writes the whole file back from
+memory, including the block it read when it started. The rotator therefore
+checks the block on every cycle and rewrites it from the verified identity
+when the evidence agrees.
+
+The repair runs in step 3 of the [cycle](#rotate-cycle), under the lock,
+after the refresh of an [expired live login](#an-expired-live-login) and
+the identification of the live profile, and before seeding and the live
+ALERTs. It runs in the one-shot `rotate` and in `rotate watch`. It never
+runs in recovery, `rotate status`, `profile verify` or `profile switch`,
+and it makes no identity request of its own: it uses the reading the cycle
+already made.
+
+The block is rewritten only when all of these hold:
+
+- the ledger names a live profile `<p>`, and the cycle has no identity
+  refusal;
+- the verified identity of the login in `~/.claude` is available;
+- that identity is the account the ledger records for `<p>`, and the
+  account recorded for `<p>` in `<root>/.auto-switch.d/expected/<p>.json`;
+- `~/.claude.json` does not exist, or parses as a JSON object;
+- the block is missing, or names another account.
+
+Then the rotator:
+
+1. writes the `oauthAccount` block built from the verified account,
+   leaving every other key in the file as it was;
+2. writes `repair: home account metadata named <old>, verified identity is <new>; rewritten`,
+   where `<old>` is the e-mail address the block named, or `none`, and
+   `<new>` is the verified one;
+3. goes on with the cycle, so a swap that is due is made in the same cycle.
+
+The write is atomic: a temporary file in the same directory, then a rename.
+It keeps the file's mode, and a new file is created with mode `0600`. A
+symlink, a file that is not a regular file and a file owned by another user
+are never written. A file that does not parse is never rewritten, because
+it holds other Claude settings; the cycle refuses swaps with
+`home-unreadable` (see [Rotate refusal alerts](#rotate-refusal-alerts))
+until it is repaired by hand.
+
+When the verified identity disagrees with the ledger or the record, or
+cannot be read, nothing is rewritten and a swap is refused with the
+evidence. A block that names the target account never authorizes a swap.
+
+`--dry-run` writes nothing and prints
+`would repair: home account metadata named <old>, verified identity is <new>`.
+The `repair:` line is limited by the [alert limit](#rotate-alert-limit)
+under the key `repair:<p>`, so a session that keeps writing the old block
+back is repaired on every cycle but logged once an hour.
+
+When the write itself is refused or fails, nothing is written, the cycle
+goes on with its swap checks, and the rotator writes
+`repair refused: ~/.claude.json was not rewritten: <error>`. That line is
+limited under its own key, `repair-refused:<p>`, so a lasting cause is
+logged once an hour rather than on every cycle.
+
+A swap writes the block too, in its `s3` step, from the verified incoming
+identity. The login file and `~/.claude.json` are separate files, so the
+two writes cannot be one; each is atomic. If a swap stops after `s1` and
+before `s3`, [recovery](#rotate-recovery) finishes it, `s3` included. If a
+session then writes the old block back, the next cycle repairs it.
+
+#### Cause on candide (issue #2013)
+
+On 6 November, from 20:32:54Z, every cycle on candide (1.2.97) refused to
+swap because the `oauthAccount` block in `~/.claude.json` named `ffarmer`
+while the verified live login and the ledger named `nnorth`. Two causes are
+consistent with the code; the evidence files from that host were not read,
+so neither is proven:
+
+- In 1.2.97, step `s3` copied the block from the target profile's own
+  `.claude.json`. If `<root>/nnorth/.claude.json` still named `ffarmer`,
+  the `ffarmer->nnorth` swap at 20:30:27Z copied `ffarmer` into the home
+  file. `s3` now writes the block from the verified identity, so this
+  cannot recur.
+- A Claude Code session that was running under `ffarmer` rewrote
+  `~/.claude.json` from memory after the swap. This can still happen; the
+  per-cycle repair above now corrects it.
+
+The same day's plan-room swaps between logins at 97% to 100% weekly use,
+while `eelsworth` showed `w=11%`, have a likely cause in the earlier
+ranking, again drawn from the code rather than from the host. The
+threshold rule and plan-room's first pass used different keys, and the
+first pass did not filter on `--week-at`. `eelsworth`'s session was at or
+above `--session-at`, or exhausted, so the threshold rule's choice of it
+could not stand and plan-room's first pass dropped it on session; plan-room
+then chose among logins at `w=97%`. Both paths now use one
+[ranking](#rotate-eligible-logins-and-ranking), which leaves out logins at
+`--week-at` and needs `--margin` of weekly headroom for any other move. A
+failed, running or stale reading of `eelsworth` would also have kept it
+out; such readings are now shown as such in the log (see
+[Reading display](#reading-display)).
+
 ### Rotate live profile
 
 The live profile is the one whose login is in `~/.claude`. The ledger may
@@ -6861,7 +7208,7 @@ journal.
 | `j0` | Write `journal.json` with `from`, `to`, `adopt`, the inode numbers of `L` (`live_ino`) and `T` (`target_ino`), and `$HOME`. Then take Claude's refresh locks (`.oauth_refresh.lock`, directories made with `mkdir`, as auto-switch does) in `~/.claude` and `<root>/<to>`, recording each acquired inode (`home_lock_ino`, `to_lock_ino`). A lock held by someone else is never broken. Before `s1`, validate fresh bound identities and material ownership dependencies under these locks; uncertainty prevents the exchange. |
 | `s1` | Atomically exchange `T` and `L`. `~/.claude` now holds the incoming login; `<root>/<to>` holds the outgoing one. |
 | `s2` | Rename the outgoing login from `<root>/<to>` to `S`, refusing to replace an existing file. Release the refresh locks: each is removed with `rmdir` only if its inode is the one recorded. |
-| `s3` | Replace the `oauthAccount` display block in `$HOME/.claude.json` from the validated incoming identity, keeping every other key and the file's mode. |
+| `s3` | Replace the `oauthAccount` display block in `$HOME/.claude.json` from the verified incoming identity, never from the target profile's own `.claude.json`, keeping every other key and the file's mode. The write is atomic. If the block is later written back by a running session, the [home account repair](#rotate-home-account-repair) corrects it on the next cycle. |
 | `s4` | Write the ledger: `live=<to>`, `previous=<from>`, `account` from the validated incoming account key, `since` and `swapped_at`. Clear any ALERT key. |
 | | Delete `journal.json`. |
 | | Write the [recorded account](#recorded-account), if one is due: for an adopted login, the outgoing account for the new `default-original[-N]` profile, only when no other profile holds that account and organization or has it recorded (otherwise a record left under that name is deleted); for `<from>` with no record, the trusted outgoing account, only when the existing ledger/provenance and compatibility checks establish ownership and a complete trusted scan finds no other claim. Session JSON cannot supply missing ownership proof. For `<from>`, the record is read again first, and a usable one is never overwritten. Nothing is recorded for `<to>`. A failure prints `warning: the recorded account for profile '<name>' was not saved: <reason>` and the swap still succeeds. |
@@ -7011,7 +7358,9 @@ raw response is stored. Swap completion
 uses the validated incoming account for the existing ledger key and
 sanitized display fields; authorized adoption/backfill uses the trusted
 outgoing identity for the outgoing profile's ownership record. Routine
-logs print no account identifiers or e-mails. Only
+logs print no account identifiers. They print no e-mail address either,
+except in the evidence of a swap refusal and in a `repair:` line in
+[`rotate.log`](#rotate-log). Otherwise only
 [`profile verify`](#profile-verify) prints an e-mail, on request. The token
 goes only in the request's `Authorization` header.
 
@@ -7042,15 +7391,18 @@ ALERT: trusted login identity unavailable: <cause>
 ```
 
 This ALERT is written on every cycle it applies to, with the cause that cycle
-found, whether or not the cause changed. So is the candidate form,
-`ALERT: trusted login identity unavailable for profile <name>: <cause>`, the
+found, whether or not the cause changed. So are the
 [unreadable-ledger ALERT](#unreadable-ledger-stop) and the
-[same-account ALERT](#seeding-a-record).
+[same-account ALERT](#seeding-a-record). The candidate form,
+`ALERT: trusted login identity unavailable for profile <name>: <cause>`, is
+limited to once an hour per candidate by the
+[alert limit](#rotate-alert-limit).
 
 `profile switch` refuses with the same text when the read of the login in
-`~/.claude` fails. Swap authorization does too, in `profile switch` and after
-`ALERT: swap refused: ` in a cycle, when a read of either login or a read in its
-scan of other profiles fails. Other identity refusals have no cause and keep their
+`~/.claude` fails. Swap authorization does too, in `profile switch` and as the `<cause>` of
+`ALERT: swap refused (identity-unavailable, profile <p>): ` in a cycle (see
+[Rotate refusal alerts](#rotate-refusal-alerts)), when a read of either login
+or a read in its scan of other profiles fails. Other identity refusals have no cause and keep their
 fixed text. These are a profile root that cannot be listed, a login or record that
 changed before the exchange, and a refresh lock that recovery does not recognize:
 
@@ -7381,10 +7733,10 @@ It prints one line for `~/.claude`, then one for each profile in name
 order:
 
 ```
-~/.claude (live ffarmer) -> ffarmer@mistt.com: ok
+~/.claude (live ffarmer) -> ffarmer@example.com: ok
 ffarmer -> no login
 mmorrison -> no login
-nnorth -> mmorrison@mistt.com: MISMATCH, recorded for mmorrison
+nnorth -> mmorrison@example.com: MISMATCH, recorded for mmorrison
 ```
 
 The account is the e-mail the server reports, or its uuid when it reports
@@ -7514,7 +7866,7 @@ own refusal text.
 
 **When a cycle cannot seed.** It logs this line once per process, and a real
 cycle goes on to measure. A swap away from the profile is then refused with
-`ALERT: swap refused: trusted login identity: outgoing ownership is not established; run: amplihack profile seed-record <L>`.
+`ALERT: swap refused (no-record, profile <L>): trusted login identity: outgoing ownership is not established. Evidence: ... Fix: run: amplihack profile seed-record <L>`.
 The note says why the seed stopped:
 
 ```
@@ -7648,9 +8000,12 @@ a path are cut to 1024 bytes.
 #### Stuck `~/.claude.json`
 
 `oauthAccount` is display state. A missing, incomplete or stale account
-block does not authorize movement, invalidate trusted identity or start
-hand-change recovery. The swap builds display details from trusted
-identity and preserves unrelated JSON fields and file modes.
+block does not authorize or refuse movement, invalidate trusted identity
+or start hand-change recovery. The swap builds display details from trusted
+identity and preserves unrelated JSON fields and file modes. A missing or
+stale block is rewritten on the next cycle by the
+[home account repair](#rotate-home-account-repair) when the verified
+identity, the ledger and the record agree; nothing needs doing by hand.
 
 Safe file handling still applies. A symlink, unsafe permissions,
 unreadable or malformed JSON, or a non-object can prevent a safe display
@@ -8022,7 +8377,7 @@ fails to parse is left unchanged and reported as `RotateInconsistent`.
 
 | Path | Contents |
 |------|----------|
-| `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the de-duplication key, `<kind>:<live profile or ->`, of a hard ALERT), `advisory_alert` (the same key for an [advisory ALERT](#rotate-advisory-alert); never set together with `alert`), `last_cycle` (`at`, when the cycle was recorded; `measured_at`, when the usage it relied on was read, which for `stayed` is when the live reading was taken (see [Stays and capacity](#rotate-stays-and-capacity)) and for every other rotate outcome is when the cycle started measuring, absent for a cycle that measured nothing; `outcome`; and, for an [overflow](#rotate-overflow) cycle, `overflow`), and `overflow_blocked` (the [spend blocks](#overflow-spend-limit-block)). `account` is the validated incoming account key after a swap. It is display only for recovery: no recovery decision treats that key alone as identity proof, and a hand-change recovery records its independently verified account. Optionally `hand_suspect`, an open [hand-change suspicion](#two-readings): `profile` (a valid profile name) and `first_seen` (epoch seconds, greater than 0). It holds no account data, is omitted when there is none, and a ledger without it loads as before; one that breaks these rules is `RotateInconsistent`. Optionally `guidance`, the current [hand-change](#rotate-hand-change-recovery) note, or ALERT and `fix` lines (at most 16, each at most 1024 bytes, with no control or bidirectional-override characters), and `lost_login`, the profiles that lost their login to a manual `/login` (at most 64 distinct valid names). Both are omitted when empty, and a ledger that breaks these limits is `RotateInconsistent`. Optionally the legacy `home_unreadable_since` timestamp; retained for format compatibility, never as ownership evidence (see [Stuck `~/.claude.json`](#stuck-claudejson)). Optionally `swapped_away`, the logins the rotator left while they were full, each mapped to the epoch seconds of that swap; see [Swap-back damping](#swap-back-damping). While a rotator from an older amplihack binary runs, `measured_at`, `overflow`, `overflow_blocked`, `guidance`, `lost_login`, `home_unreadable_since`, `hand_suspect`, `swapped_away` and `advisory_alert` are left out so that rotator can read the file. A ledger whose `alert` or `advisory_alert` is not a valid key, or that sets both, is `RotateInconsistent`. |
+| `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the key, `<kind>:<live profile or ->`, of the current hard ALERT; for a swap refusal it keeps the key older binaries write, such as `account_mismatch:<from>`, and records state only; see [Rotate alert limit](#rotate-alert-limit)), `advisory_alert` (the same key for an [advisory ALERT](#rotate-advisory-alert); never set together with `alert`), `last_cycle` (`at`, when the cycle was recorded; `measured_at`, when the usage it relied on was read, which for `stayed` is when the live reading was taken (see [Stays and capacity](#rotate-stays-and-capacity)) and for every other rotate outcome is when the cycle started measuring, absent for a cycle that measured nothing; `outcome`; and, for an [overflow](#rotate-overflow) cycle, `overflow`), and `overflow_blocked` (the [spend blocks](#overflow-spend-limit-block)). `account` is the validated incoming account key after a swap. It is display only for recovery: no recovery decision treats that key alone as identity proof, and a hand-change recovery records its independently verified account. Optionally `hand_suspect`, an open [hand-change suspicion](#two-readings): `profile` (a valid profile name) and `first_seen` (epoch seconds, greater than 0). It holds no account data, is omitted when there is none, and a ledger without it loads as before; one that breaks these rules is `RotateInconsistent`. Optionally `guidance`, the current [hand-change](#rotate-hand-change-recovery) note, or ALERT and `fix` lines (at most 16, each at most 1024 bytes, with no control or bidirectional-override characters), and `lost_login`, the profiles that lost their login to a manual `/login` (at most 64 distinct valid names). Both are omitted when empty, and a ledger that breaks these limits is `RotateInconsistent`. Optionally the legacy `home_unreadable_since` timestamp; retained for format compatibility, never as ownership evidence (see [Stuck `~/.claude.json`](#stuck-claudejson)). Optionally `swapped_away`, the logins the rotator left while they were full, each mapped to the epoch seconds of that swap; see [Swap-back damping](#swap-back-damping). Optionally `alert_log`, the state of the [alert limit](#rotate-alert-limit): an object keyed by alert key (such as `account-mismatch:nnorth` or `repair:nnorth`), each value holding `last_logged_at` and `seen_at` (epoch seconds) and `suppressed` (the count of repeats not written since `last_logged_at`). It holds profile names and fixed text only, never an e-mail address. It is omitted when empty, and a ledger without it loads with an empty map. At most 64 entries are kept; the one with the oldest `seen_at` is dropped first. `alert_log` never makes the ledger `RotateInconsistent`: an entry with a key longer than 320 bytes or holding control characters, a negative time, or a value of the wrong shape is dropped when the ledger loads (loading reads no clock: a time later than now is kept, and the next occurrence is written at once), and when more than 64 entries load, only the 64 with the newest `seen_at` are kept. A dropped entry only means its next line is written at once. While a rotator from an older amplihack binary runs, `measured_at`, `overflow`, `overflow_blocked`, `guidance`, `lost_login`, `home_unreadable_since`, `hand_suspect`, `swapped_away`, `alert_log` and `advisory_alert` are left out so that rotator can read the file. A ledger whose `alert` or `advisory_alert` is not a valid key, or that sets both, is `RotateInconsistent`. |
 | `journal.json` | The swap in progress: `from`, `to`, `adopt`, `phase` (`checking`, `j0`, `s1`, `s2`, `s3`, `s4` or `inconsistent`), `home`, `live_ino`, `target_ino`, `home_lock_ino` and `to_lock_ino` (each present once that refresh lock is taken), `started_at`, `pid`, and optional `identity` containing sanitized full incoming/outgoing accounts authorized before exchange. |
 | `rotate.pid` | The background process's pid, as ASCII decimal. |
 | `gate.json` | Written by `rotate watch` when it starts: `version`, `pid`, and the [overflow](#rotate-overflow) gate it resolved from its flags (`overflow_wait`, `overflow_unknown_reset`, `session_at`, `week_at`). [Auto-switch](#auto-switch-and-overflow-profiles) uses it only while the rotator with that pid runs. If it cannot be written, the log says `overflow: gate not recorded, auto-switch will not use overflow (<error>)` and auto-switch uses no overflow profile. |
@@ -8120,8 +8475,13 @@ run and prints their `reread:` lines; see
 
 | Message | Meaning |
 |---------|---------|
-| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down and come from the windows read. An exhausted profile (`session_exhausted` or `weekly_exhausted`) shows the figures read, with the window that ran out never below `100%`, for example `team:s=100%,w=55%` or `team:s=30%,w=100%`; see [Exhausted figures](#rotate-exhausted-figures). `w=?` means no weekly window was read. A profile whose probe timed out or could not run shows `<name>:failed`, never a percentage: its usage is unknown, and it is probed again on the next cycle. A profile whose read had not finished when the cycle stopped waiting shows `<name>:unknown, still running`; its result is used by the next cycle. `spend_limit`, `not_logged_in` and `unparsed` also show `<name>:failed`. A profile with [no session limit](#no-session-limit) shows `s=0%`. A skipped profile is not listed. A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
-| `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|upgrade\|failed-probe\|plan-room\|overflow-in\|overflow-out` | A completed swap. The readings are formatted as in the `cycle` line, with a space in place of the comma, so an exhausted target can show `target s=100% w=55%`. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`, and one still running shows `live unknown, still running`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `reason=plan-room` is a [plan-room swap](#rotate-plan-room-swap). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
+| `cycle live=<name\|-> <name>:s=<n>%,w=<n>%,age=<n>s ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down and come from the windows read. `age=` is the age of the reading in seconds; see [Reading display](#reading-display). A reading older than the [age limit](#reading-age-limit) shows `<name>:stale`, never a percentage, and is followed by a `reading:` line. An exhausted profile (`session_exhausted` or `weekly_exhausted`) shows the figures read, with the window that ran out never below `100%`, for example `team:s=100%,w=55%` or `team:s=30%,w=100%`; see [Exhausted figures](#rotate-exhausted-figures). `w=?` means no weekly window was read. A profile whose probe timed out or could not run shows `<name>:failed`, never a percentage: its usage is unknown, and it is probed again on the next cycle. A profile whose read had not finished when the cycle stopped waiting shows `<name>:running`; the next cycle collects its result and shows it as `<name>:stale`, and no decision uses it. Each `failed`, `stale` or `running` profile is followed by a `reading:` line. `spend_limit`, `not_logged_in` and `unparsed` also show `<name>:failed`. A profile with [no session limit](#no-session-limit) shows `s=0%`. A skipped profile is not listed. A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
+| `swap <from>-><to> live s=<n>% w=<n>% age=<n>s target s=<n>% w=<n>% age=<n>s reason=threshold\|upgrade\|failed-probe\|plan-room\|overflow-in\|overflow-out` | A completed swap. Both readings are in the [reading display](#reading-display) format, so an exhausted target can show `target s=100% w=55% age=4s`. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live probe failed: <reason>`, and one still running shows `live probe running since <n>s (not used)`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `reason=plan-room` is a [plan-room swap](#rotate-plan-room-swap). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
+| `reading: <name> s=<n>% w=<n>% stale age=<n>s (not used)` / `reading: <name> probe failed: <reason>` / `reading: <name> probe running since <n>s (not used)` | Written after the `cycle` line for each profile it shows as `stale`, `failed` or `running`. The values are never used for a decision. See [Reading display](#reading-display). |
+| `stay: live reading stale age=<n>s (not used)` | The live login's reading is older than the [age limit](#reading-age-limit). No decision is made from it; the cycle records `stayed-unread`. See [Stale live reading](#stale-live-reading). |
+| `stay: no login with room; live <name> <reading>; <name> <reading>; ...` | The live login has reached a threshold and no candidate is [eligible](#rotate-eligible-logins-and-ranking) or beats the live login's weekly headroom by `--margin`. Every candidate is listed with its [reading](#reading-display). Limited by the [alert limit](#rotate-alert-limit) under the key `no-room:<live>`. |
+| `repair: home account metadata named <old>, verified identity is <new>; rewritten` | The cycle rewrote the `oauthAccount` block in `~/.claude.json` from the verified identity. See [Home account repair](#rotate-home-account-repair). Limited by the alert limit under the key `repair:<live>`. |
+| `repair refused: ~/.claude.json was not rewritten: <error>` | The evidence agreed and the block needed rewriting, but the write was refused or failed (for example, `$HOME` cannot be written to). Nothing was written, and the swap checks still apply in that cycle. See [Home account repair](#rotate-home-account-repair). Limited by the alert limit under the key `repair-refused:<live>`. |
 | `per-token <name>: no measured plan login below 100%, 0 not measured; <gate>; marked overflow tier <N>; <check>` | Written before the `swap` line of every move onto a per-token profile, credit or API key, by the rotator or by auto-switch. Auto-switch writes it before it swaps a session's login or starts a launch or a rerun on the profile, also prints it on stderr, and ends the line with `; auto-switch from <profile>`; the rotate log is created if no rotator has run. `<gate>` is `earliest reset <time> beyond overflow_wait`, with `--overflow-unknown-reset 1` `reset unknown`, or `leaving the API key, credits cost less` for a move off the API key, which passes no gate. `<N>` is the profile's [tier](#overflow-tiers), `10` for an API-key profile. `<check>` is `login check passed (<detail>)` for an API-key profile, with `<detail>` from [API-key login check](#api-key-login-check), or `probe ok, no spend limit` for a credit profile the rotator probed. Auto-switch runs no probe, so for a credit profile `<check>` is `no spend block`. The line never holds a key value. |
 | `key_check_refused <name>: <reason>` | The [API-key login check](#api-key-login-check) failed for the target `<name>`; no swap was made. |
 | `ALERT: home_key (<detail>): <effect>` | A key is in `~/.claude.json` or `~/.claude/settings.json` while a plan login is live, so sessions bill per token. Written once, and again if the setting changes; see [API-key login check](#api-key-login-check). The cycle carries on. |
@@ -8151,20 +8511,20 @@ run and prints their `reread:` lines; see
 | `ALERT: profile <L> has no login anywhere, and the list of such profiles is full, so this is not repeated. Run: amplihack profile login <L>` | `L` lost its login under an earlier release but `lost_login` already held 64 profiles. Written once. |
 | `ALERT: more than one profile matches the account in ~/.claude; no swap` | Trusted ownership evidence cannot select a unique login-less profile. |
 | `ALERT: trusted login identity unavailable: <cause>` | The live login has no usable identity reading, and the [cause](#identity-read-causes) says why. Nothing moves. |
-| `ALERT: trusted login identity unavailable for profile <name>: <cause>` | A candidate is skipped as `no account`, for that [cause](#identity-read-causes). Written on every cycle it applies to. |
+| `ALERT: trusted login identity unavailable for profile <name>: <cause>` | A candidate is skipped as `no account`, for that [cause](#identity-read-causes). Limited by the [alert limit](#rotate-alert-limit) under the key `identity-unavailable:<name>`. |
 | `ALERT: rotate ledger unreadable[ (<field>)]; live identity: <readable\|cause>; nothing moved, no record written` | Written on every cycle it applies to. See [Unreadable-ledger stop](#unreadable-ledger-stop). |
 | `ALERT: cannot tell profiles <L>, <M> apart: both claim the account in ~/.claude; no record written, nothing moved` | Written on every cycle it applies to. See [Seeding a record](#seeding-a-record). |
 | `seeded: recorded account for live profile <L>` | A cycle [seeded](#seeding-a-record) the live profile's record. |
 | `note: no record for live profile <L>: <reason>; nothing moved; run: amplihack profile seed-record <L>` | A cycle could not seed. Written once per process. |
 | `seed-record: recorded account for profile <name>` | [`profile seed-record --write`](#profile-seed-record) wrote a record. |
-| `ALERT: swap refused: <reason>` | A [pre-swap check](#rotate-swap) failed. Missing, uncertain or conflicting required trusted identity produces an ALERT on every affected cycle; other refusals are written once per reason. The one-shot command also prints it and exits with `RotateRefused`. |
-| `ALERT: swap refused: the login in ~/.claude is not the account recorded for profile <from>` | The trusted live login conflicts with `<from>`'s recorded account. Nothing moves or relabels. Reported on every affected cycle and manual attempt until resolved. The persisted alert key is `account_mismatch:<from>`. Session JSON cannot cause or clear this refusal. See [Recorded account](#recorded-account) and [Rotation login identity](#rotation-login-identity). |
+| `ALERT: swap refused (<kind>, profile <p\|->): <cause>. Evidence: credentials/verified=<a>, ledger=<b>, record=<c>, .claude.json=<d>. Fix: <action>` | A [pre-swap check](#rotate-swap) failed. `<kind>` and its fixed `<action>` are listed under [Rotate refusal alerts](#rotate-refusal-alerts). Limited by the [alert limit](#rotate-alert-limit) under the key `<kind>:<p>`. The one-shot command prints it on every run and exits with `RotateRefused`. |
+| `ALERT: swap refused (account-mismatch, profile <from>): the login in ~/.claude is not the account recorded for profile <from>. Evidence: ...` | The verified live login conflicts with `<from>`'s recorded account. Nothing moves or relabels. The ledger's `alert` field holds `account_mismatch:<from>`; the [alert limit](#rotate-alert-limit) key is `account-mismatch:<from>`. The two differ on purpose; see [Ledger alert and limit keys](#ledger-alert-and-limit-keys). Session JSON cannot cause or clear this refusal; it appears only as the `.claude.json=` evidence. See [Recorded account](#recorded-account) and [Rotation login identity](#rotation-login-identity). |
 | `ALERT: rotate recovery is inconsistent: <reason>; no swap until it is resolved` | See [Rotate recovery](#rotate-recovery). |
 | `ALERT: auto-switch recovery is inconsistent; no swap` | Auto-switch state needs `auto-switch repair`. |
 | `recovery: rolled back an interrupted swap <from>-><to>` / `recovery: finished an interrupted swap <from>-><to>` | Recovery acted. |
 | `skip: state lock busy` / `skip: <name> (<reason>)` / `skip: cannot see running sessions; no candidates` | The cycle or a candidate was skipped. |
 | `skip: state changed during measurement (<labels>)` | Step 6 found a change that affects the decision; see [Rotate revalidation](#rotate-revalidation). `<labels>` lists one or more of `journal`, `live`, `pin`, `overflow`, `target eligibility: <reason>` and `target identity`, separated by `, `. The labels are fixed text and [skip reasons](#rotate-candidates) only. Older readers that match the prefix `skip: state changed during measurement` still match. |
-| `revalidate: target <name> no longer eligible (<reason>); reconsidered` | The swap target became ineligible, or its account changed, while the cycle measured, and the cycle decided again under the lock. `<reason>` is the target's bare [skip reason](#rotate-candidates), such as `session running`, `gone`, or `account changed`; it never begins with `target eligibility: `. The next line is the new `swap` line, or `ALERT: swap refused: <reason>` when a [pre-swap check](#rotate-swap) refuses the new target. |
+| `revalidate: target <name> no longer eligible (<reason>); reconsidered` | The swap target became ineligible, or its account changed, while the cycle measured, and the cycle decided again under the lock. `<reason>` is the target's bare [skip reason](#rotate-candidates), such as `session running`, `gone`, or `account changed`; it never begins with `target eligibility: `. The next line is the new `swap` line, or an `ALERT: swap refused (...)` line when a [pre-swap check](#rotate-swap) refuses the new target. |
 | `revalidate: ~/.claude.json held no account; read again` | Retained diagnostic wording for the bounded retry of trusted credential identity. Session JSON supplies no identity evidence. |
 | `skip: the external rotator is running` / `skip: <error>` | `watch` only: the cycle failed with that error and the rotator carries on. |
 | `skip: prototype ledger ignored (<reason>)` | See [Rotate live profile](#rotate-live-profile). Written only when the reason changes. |
@@ -8185,11 +8545,13 @@ run and prints their `reread:` lines; see
 | `skip: <name> is already the live login; nothing moved` | `profile switch` found `<name>` already live. |
 | `would refresh: expired login in ~/.claude` / `would seed: record for live profile <L> from a fresh reading` / `would note: no record for live profile <L>: <reason>; nothing moved; run: amplihack profile seed-record <L>` / `would swap ...` / `would block <name> (spend limit) until <time>` / `would adopt ~/.claude as <name>` / `would stay` / `would stay (live probe failed (1/3))` / `would stay (held by switch to <name>)` / `would stay (pin unreadable)` / `would alert: ...` / `would recover an interrupted swap (phase <phase>)` / `would alert: rotate recovery is inconsistent` / `would alert: the rotate journal is damaged` / `would recover: <recovered line>` / `would_refuse <name>: <reason>` | `--dry-run` only. `would_refuse` is printed in place of `would swap` when the target is an API-key profile that fails its [login check](#api-key-login-check). |
 
-Identity refusals write an ALERT on every affected rotation cycle;
-manual switches report the refusal on every attempt. Other ALERTs are
+Swap refusals, `home-unreadable` included, repairs and
+`stay: no login with room` lines are limited to one an hour per key by the
+[alert limit](#rotate-alert-limit) and by nothing else; manual switches
+report a refusal on every attempt. Other ALERTs are
 written only when their key (`no-capacity`, `no-login`,
-`hand-change`, `home-unreadable`, `ambiguous`, `inconsistent`, `auto-switch` or `refused <reason>`
-for a swap refused under [Swap](#rotate-swap), plus the live
+`hand-change`, `ambiguous`, `inconsistent` or `auto-switch`,
+plus the live
 profile) differs from the key
 stored in the ledger. The key is cleared when a cycle stays without alerting
 or a swap succeeds, so the same ALERT can be written again later. The
@@ -8207,11 +8569,159 @@ readable or writable by group or others is not written to; a warning goes to
 stderr and its mode is not changed.
 
 Log lines and stdout contain only profile names (with control characters
-removed), percentages, times, phases, paths under `HOME` and the root, and
-fixed text. They never contain
-account IDs, e-mail addresses, tokens, environment values or Claude's output.
-The one exception is the redacted parent command line and the run ids in a
-[`change:` line](#rotate-change-log).
+removed), percentages, ages, times, phases, paths under `HOME` and the
+root, and fixed text. They never contain
+account IDs, organization IDs, tokens, environment values or Claude's
+output. There are two exceptions: the redacted parent command line and the
+run ids in a [`change:` line](#rotate-change-log), and the account e-mail
+addresses in the evidence of an `ALERT: swap refused (...)` line and in a
+`repair:` line, which name the account each source reports so that the
+disagreement can be seen. An address longer than 320 bytes or holding
+control characters is shown as `unreadable`.
+
+This reverses the earlier rule that `rotate.log` never holds an e-mail
+address. A `rotate.log` written by this release can name the accounts on
+the host, so check it before you share it. Lines written by earlier
+releases hold no address.
+
+#### Rotate refusal alerts
+
+A refused swap writes one line that names the cause, what each source said
+and what fixes it:
+
+```
+ALERT: swap refused (<kind>, profile <p>): <cause>. Evidence: credentials/verified=<a>, ledger=<b>, record=<c>, .claude.json=<d>. Fix: <action>
+```
+
+`<p>` is the profile the refusal is about, or `-` when there is none.
+`<cause>` is the refusal reason, as listed under "Swap refused" in the
+[rotation guide](../howto/claude-profile-rotation.md#swap-refused). The
+evidence gives one value per source:
+
+| Field | Source |
+|-------|--------|
+| `credentials/verified` | The account the OAuth profile endpoint reported for the login in `~/.claude`, read with that login's own token. This is the only source that decides. |
+| `ledger` | The account the ledger records for its `live` profile. |
+| `record` | The account recorded for `<p>` in `<root>/.auto-switch.d/expected/<p>.json`. |
+| `.claude.json` | The account named by the `oauthAccount` block in `~/.claude.json`. Shown as evidence only; it never authorizes or refuses a swap. |
+
+Each value is the account's e-mail address. A source with no value shows
+`none`; one that could not be read, or whose value is longer than 320
+bytes or holds control characters, shows `unreadable`. A record stores an
+account UUID, not an e-mail address, so `record=` shows the e-mail address
+of the first other source whose account it names, in the order
+`credentials/verified`, `ledger`, `.claude.json`, or `another account` when
+it names none of them. An account with no e-mail address shows
+`an account without an e-mail address`. The line holds no account UUID,
+organization ID, token or billing detail.
+
+Each `<kind>` has one fixed action:
+
+| `<kind>` | Raised when | `Fix:` text |
+|----------|-------------|-------------|
+| `identity-unavailable` | The verified identity of a login in the swap could not be read: the request failed, timed out or lacked the fields the check needs. | `none needed; the next cycle reads the identity again; if this repeats, run: amplihack profile verify` |
+| `account-mismatch` | The verified identity of the login in `~/.claude` is not the account recorded for `<p>`. | `run plain claude, /login to the account recorded for <p>, then wait for the next cycle` |
+| `ledger-mismatch` | The verified identity of the login in `~/.claude` is not the account the ledger records for its live profile. | `none needed; the next cycle checks for a manual /login in ~/.claude; if this repeats, run: amplihack profile verify` |
+| `no-record` | Ownership of the outgoing login is not established: `<p>` has no usable record. | `run: amplihack profile seed-record <p>, check the account it shows, then run it again with --write` |
+| `same-account` | The target holds the same account as the login in `~/.claude`. | `run: amplihack profile verify, then log <p> in to its own account with: amplihack profile login <p>` |
+| `home-unreadable` | `~/.claude.json` is not valid JSON, is not a JSON object, or is a symlink, not a regular file, or owned by another user. | `repair ~/.claude.json so it is a regular file you own holding a JSON object; it is never rewritten while it cannot be parsed` |
+| `target-no-login` | The target has no stored login. | `run: amplihack profile login <p>` |
+| `has-login` | The profile the live login returns to already has a login. | `decide which login <p> keeps, then run: amplihack profile login <p>` |
+| `file-unsafe` | A login file, `~/.claude`, `$HOME` or the profile root fails the owner, mode or link checks. | `fix the owner and mode of the path named before 'Evidence:' (chmod 600 for a login file, chmod 700 for the profile root)` |
+| `refresh-lock` | Claude holds its `.oauth_refresh.lock`. | `none needed; the next cycle tries again` |
+| `unsupported` | `~/.claude` and the profile root are on different devices, or the system has no atomic exchange. | `move the profile root onto the same Linux filesystem as your home directory` |
+| `api-key` | An API-key target fails its [login check](#api-key-login-check), or a target has no OAuth login and is not an API-key profile. | `see "Use an API key as the last resort" in docs/howto/claude-profile-rotation.md` |
+| `other` | Any other pre-swap check. | `see "Swap refused" in docs/howto/claude-profile-rotation.md` |
+
+Every command a `Fix:` text names is a subcommand listed by
+`amplihack profile --help`: `login <name>`, `verify` and
+`seed-record <name> [--write]`.
+
+The refusal kind is `target-no-login`, not `no-login`, so that it cannot be
+read as the `no-login` ALERT for a missing `~/.claude` login.
+
+When more than one row applies, the first in the table names the kind. In
+particular, when the verified identity differs from both the record for
+`<p>` and the ledger, the kind is `account-mismatch`: the record is the
+ownership evidence a swap needs, and the evidence fields show the ledger's
+value as well. Any refusal reason that maps to no row is `other`, and its
+`<cause>` is the reason's fixed text.
+
+The ledger's `alert` field is set on every refused cycle. The rotator has
+no separate retry: each normal cycle decides again, and once the cause has
+gone the swap goes ahead in that cycle.
+
+For example, in a hypothetical case where a manual `/login` has put
+`ffarmer`'s account into `~/.claude` while the ledger and the record for
+`nnorth` both name `nnorth`:
+
+```
+2026-11-07T09:14:05Z ALERT: swap refused (account-mismatch, profile nnorth): the login in ~/.claude is not the account recorded for profile nnorth. Evidence: credentials/verified=ffarmer@example.com, ledger=nnorth@example.com, record=nnorth@example.com, .claude.json=ffarmer@example.com. Fix: run plain claude, /login to the account recorded for nnorth, then wait for the next cycle
+```
+
+This is not the candide case of 6 November (see
+[Cause on candide](#cause-on-candide-issue-2013)): there the verified
+login, the ledger and the record agreed and only `.claude.json` differed.
+When only `.claude.json=` differs from the other three, there is no
+refusal: the cycle [repairs the block](#rotate-home-account-repair) and goes
+on.
+
+#### Rotate alert limit
+
+Swap refusals, `repair:` lines, `stay: no login with room` lines and the
+`trusted login identity unavailable` lines for candidates are limited so
+that the same line is written at most once an hour. Each line has a key:
+
+| Line | Key |
+|------|-----|
+| `ALERT: swap refused (<kind>, profile <p>)` | `<kind>:<p>` |
+| `repair: ...` | `repair:<live profile>` |
+| `stay: no login with room; ...` | `no-room:<live profile>` |
+| A candidate's `trusted login identity unavailable` line | `identity-unavailable:<candidate>` |
+
+For each key, with `t` the time of the cycle:
+
+1. The first time the key occurs, its line is written.
+2. While less than 3600 seconds have passed since the line was last
+   written, a repeat is not written; the rotator counts it.
+3. The first repeat 3600 seconds or more after the line was last written is
+   written with ` (repeated <n> times since <last>)` added, where `<n>` is
+   the number of repeats not written and `<last>` is when the line was last
+   written, in UTC (`YYYY-MM-DDTHH:MM:SSZ`). So `<n>` and `<last>` always
+   describe the same period. The count then starts again at 0, and `<last>`
+   becomes the time of this line.
+4. A cycle in which the key does not occur clears it, so the next
+   occurrence is written at once.
+
+A stored time later than `t` counts as an hour ago, so the line is written.
+The ledger's `alert` field still shows the current state on every cycle,
+the one-shot `rotate` prints the refusal on every run, and `profile switch`
+reports it on every attempt; only the `rotate.log` line is limited.
+
+For example, a refusal that occurs on every cycle of a rotator running with
+`--interval 120` from 09:14:05:
+
+```
+2026-11-07T09:14:05Z ALERT: swap refused (account-mismatch, profile nnorth): ...
+2026-11-07T10:14:05Z ALERT: swap refused (account-mismatch, profile nnorth): ... (repeated 29 times since 2026-11-07T09:14:05Z)
+2026-11-07T11:14:05Z ALERT: swap refused (account-mismatch, profile nnorth): ... (repeated 29 times since 2026-11-07T10:14:05Z)
+```
+
+The state is kept in the ledger's `alert_log`; see
+[Rotate state directory](#rotate-state-directory).
+
+<a id="ledger-alert-and-limit-keys"></a>
+
+##### Ledger alert and limit keys
+
+The ledger's `alert` field and the `alert_log` keys are separate on
+purpose. `alert` records which hard ALERT is current, in the form older
+amplihack binaries write and read, so a refusal of the live login's account
+stays `account_mismatch:<from>` there. It does not decide whether a refusal
+line is written. The `alert_log` keys use the refusal `<kind>` as printed
+in the line, such as `account-mismatch:<from>`, and only they decide
+whether a refusal, `repair:`, `stay: no login with room` or candidate
+identity line is written. No key is limited by both.
 
 ### Rotate change log
 
@@ -11369,7 +11879,7 @@ Before the journal is written, the swap is refused when it would leave
 as `api-key`. A refusal leaves no journal, renames nothing and logs:
 
 ```
-ALERT: swap refused: ryan-ryansweet has no oauth login and is not an API-key profile
+ALERT: swap refused (api-key, profile ryan-ryansweet): ryan-ryansweet has no oauth login and is not an API-key profile. Evidence: credentials/verified=ryan@example.com, ledger=ryan@example.com, record=ryan@example.com, .claude.json=ryan@example.com. Fix: see "Use an API key as the last resort" in docs/howto/claude-profile-rotation.md
 ```
 
 #### Log lines for a move onto the API key
@@ -11381,7 +11891,7 @@ line follow it:
 
 ```
 per-token api-key: no measured plan login below 100%, 0 not measured; earliest reset 2026-11-01T02:14:00Z beyond overflow_wait; marked overflow tier 10; login check passed (primaryApiKey set)
-swap iivanovich->api-key live s=100% w=61% target s=0% w=0% reason=overflow-in
+swap iivanovich->api-key live s=100% w=61% age=2s target s=0% w=0% age=2s reason=overflow-in
 moved ~/.claude onto API key profile api-key (billed per token)
 ```
 
@@ -11524,7 +12034,7 @@ API-key tier. Each ALERT is written once per change of state.
 | `ALERT: the API key is blocked (<reason>) until <time>; API-key profiles are not used` | A new [API-key block](#api-key-block). |
 | `ALERT: the API key is blocked (<reason>) and no plan or credit profile can be used; staying on <name>` | The live API-key profile is blocked and there is nowhere to go. |
 | `ALERT: more than one API-key profile could be live in ~/.claude; no swap` | The live API-key profile is [ambiguous](#several-api-key-profiles). |
-| `ALERT: swap refused: <name> has no oauth login and is not an API-key profile` | The swap check refused a target. |
+| `ALERT: swap refused (api-key, profile <name>): <name> has no oauth login and is not an API-key profile. Evidence: ... Fix: ...` | The swap check refused a target. |
 | `skip: API-key profile <name> is not marked; it is never used. To allow per-token billing, run: amplihack profile overflow add <name>` | An API-key profile exists and is not named in `overflow=`; once per rotator process. |
 | `skip: API-key profile <name> is marked but not used; another comes first by name` | More than one API-key profile is marked; written for each one after the first by name, once per rotator process. |
 | `key_check_refused <name>: <reason>` | The [login check](#api-key-login-check) failed; no swap. |

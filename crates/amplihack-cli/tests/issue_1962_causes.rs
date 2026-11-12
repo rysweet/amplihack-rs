@@ -15,6 +15,9 @@ const VAGUE: &[&str] = &[
 ];
 
 fn assert_not_vague(what: &str, text: &str) {
+    // Issue #2013 (D10): a refusal's evidence names each source, the
+    // `.claude.json=` field included; that field never blames the file.
+    let text = &text.replace(".claude.json=", "home-block=");
     for vague in VAGUE {
         assert!(!text.contains(vague), "{what} says {vague:?}: {text}");
     }
@@ -36,14 +39,19 @@ fn live_read_fails_with(answer: Answer, cause: &str) {
 
     let _ = w.cycle();
     let log = w.f.log();
-    let alert = format!("ALERT: trusted login identity unavailable: {cause}");
+    // Issue #2013 (D10): the refusal line, with its kind and evidence.
+    let alert = format!(
+        "ALERT: swap refused (identity-unavailable, profile work): trusted login identity unavailable: {cause}. Evidence:"
+    );
     assert!(log.contains(&alert), "{log}");
     let note = format!("~/.claude identity read failed: {cause}");
     assert!(log.contains(&note), "{log}");
     assert_not_vague("log", &log);
 
     let stdout = text(&w.dry().stdout);
-    let would = format!("would alert: trusted login identity unavailable: {cause}");
+    let would = format!(
+        "would alert: swap refused (identity-unavailable, profile work): trusted login identity unavailable: {cause}. Evidence:"
+    );
     assert!(stdout.contains(&would), "{stdout}");
     assert!(stdout.contains(&note), "{stdout}");
     assert_not_vague("dry run", &stdout);
@@ -93,7 +101,9 @@ fn alert_tracks_the_cause_on_every_cycle() {
     w.fake.answer("work", Answer::Status(401));
     let _ = w.cycle();
     let log = w.f.log();
-    assert_eq!(log.matches("unavailable: http 429").count(), 2, "{log}");
+    // Issue #2013 (D11): the same cause within the hour is counted, not
+    // written; a new cause is written at once.
+    assert_eq!(log.matches("unavailable: http 429").count(), 1, "{log}");
     assert_eq!(log.matches("unavailable: http 401").count(), 1, "{log}");
 }
 

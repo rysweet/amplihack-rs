@@ -25,7 +25,9 @@ use super::ledger::{RotateLedger, RotateState};
 ///   `platform_block` and `live_kind`, nothing is gained by keeping it for a
 ///   rotator that would refuse the whole ledger;
 /// - `advisory_alert` (issue #1907). Without it an older rotator logs the
-///   advisory ALERT once more; `alert` stays empty, so no hook is blocked.
+///   advisory ALERT once more; `alert` stays empty, so no hook is blocked;
+/// - `alert_log` (issue #2013), the hourly alert limit's state. Without it
+///   this binary writes each limited line once more when it next runs.
 pub fn for_older_readers(l: &RotateLedger, older: bool) -> RotateLedger {
     let mut out = l.clone();
     if older {
@@ -43,6 +45,8 @@ pub fn for_older_readers(l: &RotateLedger, older: bool) -> RotateLedger {
         // Issue #1870: only this binary's freshness gate reads it.
         out.swapped_away.clear();
         out.advisory_alert = None;
+        // Issue #2013: only this binary's alert limit reads it.
+        out.alert_log.clear();
     }
     out
 }

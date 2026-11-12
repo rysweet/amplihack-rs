@@ -102,6 +102,8 @@ fn measured(session: f64, week: f64, s_reset: Option<i64>, w_reset: Option<i64>)
         observed_at: None,
         carried: false,
         passive: false,
+        failure: None,
+        started_at: None,
     }
 }
 
@@ -120,6 +122,8 @@ fn exhausted(s_reset: Option<i64>, w_reset: Option<i64>) -> Probed {
         observed_at: None,
         carried: false,
         passive: false,
+        failure: None,
+        started_at: None,
     }
 }
 
@@ -135,6 +139,8 @@ fn failed() -> Probed {
         observed_at: None,
         carried: false,
         passive: false,
+        failure: None,
+        started_at: None,
     }
 }
 
@@ -153,6 +159,8 @@ fn spend_limited() -> Probed {
         observed_at: None,
         carried: false,
         passive: false,
+        failure: None,
+        started_at: None,
     }
 }
 
@@ -461,17 +469,18 @@ fn never_upgrades_onto_overflow_below_the_thresholds() {
 }
 
 #[test]
-fn a_plan_login_below_the_thresholds_but_short_of_the_margin_gets_plan_room_not_overflow() {
+fn a_plan_login_below_the_thresholds_but_short_of_the_margin_gets_a_threshold_swap_not_overflow() {
     // work at the session threshold (headroom 15); spare below both
-    // thresholds (headroom 16) but only 1 point better: no threshold swap,
-    // so plan room takes it (issue #1804). No credits are spent.
+    // thresholds (headroom 16) but only 1 point better. Issue #2013 (D3,
+    // D17): spare is eligible, so the threshold swap needs no margin. No
+    // credits are spent.
     let far = Some(NOW + 5 * HOUR);
     let v = Case::new("work", measured(85.0, 0.0, far, far))
         .cand("spare", measured(84.0, 0.0, far, far))
         .cand("cred", exhausted(far, far))
         .overflow(&["cred"])
         .run();
-    assert_eq!(v.decision, swap("spare", Reason::PlanRoom));
+    assert_eq!(v.decision, swap("spare", Reason::Threshold));
     assert_eq!(v.tag, None);
 }
 
@@ -884,10 +893,18 @@ fn moving_off_overflow_picks_the_best_plan_login_with_capacity() {
     let v = Case::new("cred", exhausted(None, None))
         .cand("spare", measured(60.0, 10.0, None, None))
         .cand("extra", measured(10.0, 10.0, None, None))
-        .cand("over", measured(86.0, 0.0, None, None))
+        .cand("over", measured(86.0, 20.0, None, None))
         .overflow(&["cred"])
         .run();
     assert_eq!(v.decision, swap("extra", Reason::OverflowOut));
+    // Issue #2013 (7 November addendum): past --session-at drops no plan
+    // login, so the one with the most weekly room wins.
+    let v = Case::new("cred", exhausted(None, None))
+        .cand("extra", measured(10.0, 10.0, None, None))
+        .cand("over", measured(86.0, 0.0, None, None))
+        .overflow(&["cred"])
+        .run();
+    assert_eq!(v.decision, swap("over", Reason::OverflowOut));
 }
 
 #[test]

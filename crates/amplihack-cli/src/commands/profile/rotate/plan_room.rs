@@ -13,14 +13,15 @@
 //! auto-switch both use [`room`].
 
 use super::decide::{Measured, Reading};
+use super::overflow::OverflowInput;
 
 /// The rotator's record of the logins it measured with no room, kept in its
 /// ledger for auto-switch (issue #1804).
 #[path = "no_room.rs"]
 pub mod no_room;
+use super::rank;
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
-use std::cmp::Ordering;
 
 /// Whether a plan login using `session`% and `week`% has room: both below
 /// 100. An unreadable value (NaN) is no room.
@@ -36,45 +37,55 @@ pub fn has_room(r: &Reading) -> bool {
     }
 }
 
-/// The plan login to move to for room, if any. Pass 1 takes the logins with
-/// session below `--session-at` and week below 100; pass 2, only when pass
-/// 1 is empty (the live login included), takes those with room. Each pass
-/// ranks by week, then session, then name. `None` when nothing qualifies
-/// or when the live login ranks first, so the rotator does not swap back
-/// and forth between two logins with the same week.
+/// The plan login to move to for room, if any (issue #2013, D3, D4).
+///
+/// Pass 1 takes the [eligible](rank::eligible) logins, the live login
+/// included. Pass 2, only when pass 1 is empty, takes the logins with room.
+/// Each pass ranks with [`rank::order`]. `None` when nothing qualifies or
+/// when the live login ranks first, so the rotator does not swap back and
+/// forth between two logins with the same week. In pass 2 the winner must
+/// also beat the live login's weekly headroom by `--margin`, so the rotator
+/// does not move between logins that are all near their weekly limit. With
+/// no live login (off overflow) there is nothing to beat.
 ///
 /// `plan` must hold plan logins only: the caller leaves every overflow
 /// profile out, so an API-key profile is never chosen.
 pub fn choose(s: &Settings, live: Option<&Measured>, plan: &[Measured]) -> Option<ProfileName> {
-    let session_at = f64::from(s.session_at);
-    let pool: Vec<(&ProfileName, f64, f64)> = live
+    let pool: Vec<&Measured> = live
         .into_iter()
         .chain(plan)
-        .filter_map(|m| match m.reading {
-            Reading::Measured { session, week } if room(session, week) => {
-                Some((&m.name, session, week))
-            }
-            _ => None,
-        })
+        .filter(|m| has_room(&m.reading))
         .collect();
-    let first_pass: Vec<_> = pool
+    let first_pass: Vec<&Measured> = pool
         .iter()
         .copied()
-        .filter(|(_, session, _)| *session < session_at)
+        .filter(|m| rank::eligible(s, &m.reading))
         .collect();
-    let pass = if first_pass.is_empty() {
-        pool
-    } else {
-        first_pass
-    };
-    let rank = |a: &(&ProfileName, f64, f64), b: &(&ProfileName, f64, f64)| -> Ordering {
-        a.2.total_cmp(&b.2)
-            .then_with(|| a.1.total_cmp(&b.1))
-            .then_with(|| a.0.as_str().cmp(b.0.as_str()))
-    };
-    let (winner, _, _) = pass.into_iter().min_by(rank)?;
-    if live.is_some_and(|l| &l.name == winner) {
+    let second = first_pass.is_empty();
+    let pass = if second { pool } else { first_pass };
+    let winner = pass.into_iter().min_by(|a, b| rank::order(a, b))?;
+    if live.is_some_and(|l| l.name == winner.name) {
         return None;
     }
-    Some(winner.clone())
+    if second && live.is_some_and(|l| !rank::beats_by_margin(s, &l.reading, &winner.reading)) {
+        return None;
+    }
+    Some(winner.name.clone())
+}
+
+/// Whether the plan-room move to `choice` waits for `--hold` (issue #2013,
+/// 7 November addendum): the target is not [eligible](rank::eligible), so
+/// every login involved is at or above `--week-at` (or has no session
+/// room), the live login still has room, and the last swap was less than
+/// `--hold` ago. Such a move gains little weekly room; on 7 November six of
+/// them in seven minutes were the churn. So at most one happens per
+/// `--hold` window, and a live login with no room always moves.
+pub fn held(i: &OverflowInput<'_>, plan: &[Measured], choice: Option<&ProfileName>) -> bool {
+    let s = i.settings;
+    let among_full = choice.is_some_and(|to| {
+        !plan
+            .iter()
+            .any(|c| &c.name == to && rank::eligible(s, &c.reading))
+    });
+    among_full && has_room(&i.live.reading) && super::decide::held(s.hold, i.swapped_at, i.now)
 }

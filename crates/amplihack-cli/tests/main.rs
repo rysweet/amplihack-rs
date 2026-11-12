@@ -60,6 +60,8 @@ mod issue_1976_orphaned_nested_run;
 mod issue_1976_real_runner_nested_run;
 #[path = "issue_1976_removed_should_publish.rs"]
 mod issue_1976_removed_should_publish;
+#[path = "issue_2013_rotate_outside_in.rs"]
+mod issue_2013_rotate_outside_in;
 #[path = "issue_2030_guards.rs"]
 mod issue_2030_guards;
 #[path = "issue_2030_no_prompt_in_argv.rs"]

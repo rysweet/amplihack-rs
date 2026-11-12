@@ -44,6 +44,7 @@ fn base() -> Snap {
         unmarked: Vec::new(),
         detected_mark: None,
         home_no_oauth: false,
+        evidence: Default::default(),
         candidate_accounts: ["spare", "spare2", "third"]
             .iter()
             .map(|c| (n(c), acct(&format!("u-{c}"), &format!("{c}@example.com"))))

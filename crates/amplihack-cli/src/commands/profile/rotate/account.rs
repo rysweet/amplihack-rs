@@ -6,7 +6,7 @@
 //! Standalone login and display callers retain their existing semantics.
 
 use super::ledger::safe_account;
-use crate::commands::profile::auto_switch::kit::read_claude_json;
+use crate::commands::profile::auto_switch::kit::{CLAUDE_JSON, exists, read_claude_json};
 use std::path::Path;
 
 /// An `oauthAccount`: its user (`accountUuid`), its organization
@@ -123,6 +123,14 @@ impl Account {
         self.email.as_deref()
     }
 
+    /// The account as a refusal or `repair:` line shows it (issue #2013):
+    /// its e-mail address only, never a UUID.
+    pub fn email_or_placeholder(&self) -> String {
+        self.email()
+            .unwrap_or("an account without an e-mail address")
+            .to_string()
+    }
+
     /// The account in `dir/.claude.json`.
     pub fn of_dir(dir: &Path) -> Option<Self> {
         Self::from_value(&read_claude_json(dir)?.0)
@@ -195,11 +203,14 @@ impl Account {
     }
 }
 
-/// Whether `<home>/.claude.json` holds an account that can be read. It only
-/// stops a swap while Claude rewrites the file (#1702); it never says whose
-/// login is in `~/.claude` (#1886).
+/// Whether `<home>/.claude.json` can be used: it does not exist, or it parses
+/// as a JSON object (read without following a symlink). It only stops a swap
+/// while the file is damaged (#1702); it never says whose login is in
+/// `~/.claude` (#1886). Issue #2013 (D8): a missing block, or one naming
+/// another account, is repaired from the verified identity, never a reason
+/// to stop.
 pub fn home_readable(home: &Path) -> bool {
-    Account::of_dir(home).is_some()
+    !exists(&home.join(CLAUDE_JSON)) || read_claude_json(home).is_some()
 }
 
 /// Issue #1947: the one e-mail rule, applied by [`Account::from_block`],

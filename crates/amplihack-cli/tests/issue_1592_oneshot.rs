@@ -68,14 +68,14 @@ fn a_threshold_swap_moves_both_logins_and_only_the_account() {
         assert_log_grammar(l, true);
     }
     assert!(
-        ls.iter().any(|l| l
+        // Issue #2013 (D7): each reading carries its age.
+        ls.iter().any(|l| no_ages(l)
             .ends_with("swap work->spare live s=90% w=40% target s=10% w=20% reason=threshold")),
         "{ls:?}"
     );
     assert!(
-        ls.iter()
-            .any(|l| l
-                .contains("cycle live=work work:s=90%,w=40% extra:s=50%,w=50% spare:s=10%,w=20%")),
+        ls.iter().any(|l| no_ages(l)
+            .contains("cycle live=work work:s=90%,w=40% extra:s=50%,w=50% spare:s=10%,w=20%")),
         "{ls:?}"
     );
 
@@ -146,7 +146,7 @@ fn an_upgrade_swap_needs_thirty_points() {
     f.usage("spare", 20, 0);
     let out = f.ok(&["profile", "rotate"]);
     assert!(
-        text(&out.stdout)
+        no_ages(&text(&out.stdout))
             .contains("swap work->spare live s=50% w=0% target s=20% w=0% reason=upgrade"),
         "{}",
         text(&out.stdout)

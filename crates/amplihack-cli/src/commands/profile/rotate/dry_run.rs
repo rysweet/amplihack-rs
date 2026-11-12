@@ -84,7 +84,12 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
     if seed::preview(ctx, &state, &snap, &mut out) {
         return Ok(CycleOutcome::Alerted);
     }
-    if let Some((_, line)) = live_alert(&snap) {
+    // Issue #2013 (D8): what the repair would rewrite; nothing is written.
+    if let Ok(Some(Some((old, new)))) = super::home_repair::plan(ctx, &state, &snap) {
+        out.emit(0, &super::home_repair::would(&old, &new));
+    }
+    if let Some(alert) = live_alert(&snap) {
+        let line = alert.line;
         let text = line.strip_prefix("ALERT: ").unwrap_or(&line);
         out.emit(0, &format!("would alert: {text}"));
         return Ok(CycleOutcome::Alerted);
@@ -106,7 +111,8 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         Some(stub) => stub(ctx, &snap)?,
         None => measure_and_decide(ctx, &snap)?,
     };
-    let (live_shown, others_shown) = super::log::shown(&m);
+    let (live_shown, others_shown) =
+        super::log::shown(&m, ctx.now(), fresh::max_age(&ctx.settings));
     let name = live_name(&snap.live);
     out.emit(
         0,
@@ -117,7 +123,8 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
     for line in &m.fresh_lines {
         out.emit(0, line);
     }
-    let (live_shown, others_shown) = super::log::shown(&m);
+    let (live_shown, others_shown) =
+        super::log::shown(&m, ctx.now(), fresh::max_age(&ctx.settings));
     let Measurement {
         live,
         others,

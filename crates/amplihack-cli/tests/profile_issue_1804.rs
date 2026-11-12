@@ -96,9 +96,10 @@ fn all_plan_logins_out_direct(f: &Fixture) {
 }
 
 /// The issue's cycle in miniature: live past `--session-at`, spare with
-/// session room and the most weekly room among those, extra with the lowest
-/// week but its session nearly spent. No candidate beats the live login by
-/// `--margin`.
+/// session room but its week past `--week-at`, extra with the lowest week but
+/// its session nearly spent. Issue #2013 (D3, D4): no candidate is eligible,
+/// and extra's weekly headroom (83) beats the live login's (39) by
+/// `--margin`, so the rotator moves to extra with `reason=threshold`.
 fn near_limits(f: &Fixture) {
     f.usage_resetting("work", 87, 61, 3);
     f.usage_resetting("spare", 0, 91, 3);
@@ -132,14 +133,14 @@ fn t1_near_the_limits_with_no_mark_the_rotator_swaps_to_the_plan_login_with_room
     near_limits(&f);
     let out = f.ok(&["profile", "rotate"]);
     let log = f.log();
-    assert_eq!(ino(&f.home_login()), Some(f.spare_ino), "{log}");
+    assert_eq!(ino(&f.home_login()), Some(f.extra_ino), "{log}");
     assert!(
         log.lines()
-            .any(|l| l.contains("swap work->spare") && l.ends_with("reason=plan-room")),
+            .any(|l| l.contains("swap work->extra") && l.ends_with("reason=threshold")),
         "{log}"
     );
     assert!(
-        stdout(&out).contains("reason=plan-room"),
+        stdout(&out).contains("reason=threshold"),
         "{}",
         stdout(&out)
     );
@@ -209,9 +210,12 @@ fn t2_near_the_limits_with_the_api_key_marked_the_rotator_still_picks_the_plan_l
     near_limits(&f);
     f.ok(&["profile", "rotate"]);
     let log = f.log();
-    assert_eq!(ino(&f.home_login()), Some(f.spare_ino), "{log}");
+    assert_eq!(ino(&f.home_login()), Some(f.extra_ino), "{log}");
     assert_eq!(ino(&f.root.join("console").join(CREDS)), Some(console));
-    assert!(log.contains("reason=plan-room"), "{log}");
+    assert!(
+        log.contains("swap work->extra") && log.contains("reason=threshold"),
+        "{log}"
+    );
     assert!(!log.contains("SENTINEL-1804-KEY"));
 }
 
@@ -220,18 +224,12 @@ fn the_plan_room_swap_does_not_flap_back_on_the_next_cycle() {
     let f = Fixture::new();
     near_limits(&f);
     f.ok(&["profile", "rotate"]);
-    assert_eq!(ino(&f.home_login()), Some(f.spare_ino), "{}", f.log());
-    // spare is now live at 0/91 (week past --week-at), short of work's
-    // headroom by less than --margin. spare wins pass 1 itself (work at 87%
-    // is past --session-at), so it stays.
+    assert_eq!(ino(&f.home_login()), Some(f.extra_ino), "{}", f.log());
+    // extra is now live at 98/17: no candidate is eligible and none beats
+    // its weekly headroom (83) by --margin, so it stays.
     f.ok(&["profile", "rotate"]);
-    assert_eq!(ino(&f.home_login()), Some(f.spare_ino), "{}", f.log());
-    assert_eq!(
-        f.log().matches("reason=plan-room").count(),
-        1,
-        "{}",
-        f.log()
-    );
+    assert_eq!(ino(&f.home_login()), Some(f.extra_ino), "{}", f.log());
+    assert_eq!(f.log().matches(" swap ").count(), 1, "{}", f.log());
 }
 
 #[test]

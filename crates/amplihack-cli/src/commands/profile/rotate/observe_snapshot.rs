@@ -5,13 +5,17 @@ use crate::commands::profile::auto_switch::kit::{CREDS, Liveness, State, effecti
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{PLATFORM_TIER, tiers_detail};
 
+#[path = "observe_evidence.rs"]
+mod evidence;
+
 pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
     let root = ctx.store.root();
     let live_read = ctx.identity_reader().oauth(&ctx.home.join(".claude"));
     let identity_cause = live_read.as_ref().err().copied();
     let trusted_live = live_read.ok();
     let mut identity_refusal = None;
-    if let Some(l) = ctx.rs.load_ledger()?
+    let ledger = ctx.rs.load_ledger()?;
+    if let Some(l) = &ledger
         && let Some(raw) = l.live.as_deref()
     {
         let n = ProfileName::parse(raw)?;
@@ -79,7 +83,15 @@ pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
         readable
     });
     candidate_refusals.retain(|(n, _)| !candidates.contains(n));
+    let evidence = evidence::of(
+        ctx,
+        state,
+        ledger.as_ref(),
+        trusted_live.as_ref(),
+        live_name.as_ref(),
+    );
     Ok(Snap {
+        evidence,
         account: trusted_live.as_ref().map(|a| a.key().to_string()),
         trusted_live,
         identity_refusal,

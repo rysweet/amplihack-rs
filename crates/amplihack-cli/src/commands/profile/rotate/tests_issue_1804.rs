@@ -79,6 +79,8 @@ fn measured(session: f64, week: f64, reset: Option<i64>) -> Probed {
         observed_at: None,
         carried: false,
         passive: false,
+        failure: None,
+        started_at: None,
     }
 }
 
@@ -102,6 +104,8 @@ fn exhausted(reset: Option<i64>) -> Probed {
         observed_at: None,
         carried: false,
         passive: false,
+        failure: None,
+        started_at: None,
     }
 }
 
@@ -254,21 +258,28 @@ fn plan_of(c: &Case) -> Vec<Measured> {
 }
 
 #[test]
-fn choose_in_the_replay_picks_ddrumpf_over_eelsworth_and_ccapstone() {
+fn choose_in_the_replay_picks_eelsworth_on_weekly_headroom() {
+    // Issue #2013 (D3, D15): ranked by weekly use, eelsworth (w=17%) wins on
+    // the margin rule; ddrumpf and ccapstone are at --week-at.
     let c = replay();
     let live = m("iivanovich", &c.live);
     assert_eq!(
         choose(&c.s, Some(&live), &plan_of(&c)),
-        Some(n("ddrumpf")),
-        "eelsworth (98%) is past --session-at; ddrumpf ties ccapstone on week and wins on session"
+        Some(n("eelsworth")),
+        "no login is eligible; eelsworth has the lowest week and beats the live login by --margin"
     );
 }
 
 #[test]
-fn choose_in_the_replay_at_session_at_70_still_picks_ddrumpf() {
+fn choose_in_the_replay_at_session_at_70_still_picks_eelsworth() {
+    // Issue #2013 (D3, D15): ranked by weekly use, eelsworth (w=17%) wins on
+    // the margin rule; ddrumpf and ccapstone are at --week-at.
     let c = replay().at(70);
     let live = m("iivanovich", &c.live);
-    assert_eq!(choose(&c.s, Some(&live), &plan_of(&c)), Some(n("ddrumpf")));
+    assert_eq!(
+        choose(&c.s, Some(&live), &plan_of(&c)),
+        Some(n("eelsworth"))
+    );
 }
 
 #[test]
@@ -317,33 +328,45 @@ fn choose_returns_none_when_the_live_login_ranks_first() {
 
 #[test]
 fn choose_counts_the_live_login_in_pass_1_so_pass_2_is_not_used() {
+    // Issue #2013 (D3): pass 1 filters on --week-at too, so the live login
+    // is below it here.
     let s = settings(85);
     // The live login qualifies for pass 1 and wins it; spare, with a lower
-    // week but past --session-at, is only a pass-2 login.
-    let live = m("work", &measured(10.0, 95.0, FAR));
-    let plan = vec![m("spare", &measured(92.0, 20.0, FAR))];
+    // week but at --week-at, is only a pass-2 login.
+    let live = m("work", &measured(10.0, 85.0, FAR));
+    let plan = vec![m("spare", &measured(10.0, 90.0, FAR))];
     assert_eq!(choose(&s, Some(&live), &plan), None);
+    // Issue #2013 (7 November addendum): past --session-at is no reason to
+    // leave a login out of pass 1, so spare's lower week wins.
+    let plan = vec![m("spare", &measured(92.0, 20.0, FAR))];
+    assert_eq!(choose(&s, Some(&live), &plan), Some(n("spare")));
 }
 
 // --- decide_overflow: T1 and T2 ------------------------------------------------------
 
 #[test]
-fn t1_the_replay_with_no_mark_swaps_to_ddrumpf_for_plan_room() {
+fn t1_the_replay_with_no_mark_swaps_to_eelsworth() {
+    // Issue #2013 (D3, D15): ranked by weekly use, eelsworth (w=17%) wins on
+    // the margin rule; ddrumpf and ccapstone are at --week-at.
     let v = replay().run();
-    assert_eq!(v.decision, swap("ddrumpf", Reason::PlanRoom), "{v:?}");
+    assert_eq!(v.decision, swap("eelsworth", Reason::Threshold), "{v:?}");
     assert_eq!(v.tag, None, "not an overflow move");
 }
 
 #[test]
-fn t1_at_session_at_70_swaps_to_ddrumpf_too() {
+fn t1_at_session_at_70_swaps_to_eelsworth_too() {
+    // Issue #2013 (D3, D15): ranked by weekly use, eelsworth (w=17%) wins on
+    // the margin rule; ddrumpf and ccapstone are at --week-at.
     let v = replay().at(70).run();
-    assert_eq!(v.decision, swap("ddrumpf", Reason::PlanRoom), "{v:?}");
+    assert_eq!(v.decision, swap("eelsworth", Reason::Threshold), "{v:?}");
 }
 
 #[test]
-fn t2_the_replay_with_the_api_key_marked_and_the_gate_open_still_swaps_to_ddrumpf() {
+fn t2_the_replay_with_the_api_key_marked_and_the_gate_open_still_swaps_to_eelsworth() {
+    // Issue #2013 (D3, D15): ranked by weekly use, eelsworth (w=17%) wins on
+    // the margin rule; ddrumpf and ccapstone are at --week-at.
     let v = replay().marked_key().run();
-    assert_eq!(v.decision, swap("ddrumpf", Reason::PlanRoom), "{v:?}");
+    assert_eq!(v.decision, swap("eelsworth", Reason::Threshold), "{v:?}");
     assert_eq!(
         v.tag, None,
         "the API key is never chosen while a plan login has room"
@@ -361,61 +384,87 @@ fn the_flapping_guard_keeps_ddrumpf_live() {
 }
 
 #[test]
-fn the_flapping_guard_still_lets_ccapstone_move_to_ddrumpf_once() {
+fn the_flapping_guard_keeps_ccapstone_live_too() {
+    // Issue #2013 (D4): ddrumpf ties ccapstone on week, so it does not beat
+    // ccapstone's weekly headroom by --margin, and ccapstone stays too.
     let v = Case::new("ccapstone", measured(11.0, 92.0, FAR))
         .cand("ddrumpf", measured(0.0, 92.0, FAR))
         .run();
-    assert_eq!(v.decision, swap("ddrumpf", Reason::PlanRoom), "{v:?}");
+    assert_eq!(v.decision, Decision::Alert, "{v:?}");
 }
 
 #[test]
 fn pass_2_picks_the_lowest_week_when_every_login_is_past_session_at() {
+    // Issue #2013 (D3, D4): no login is eligible, so the threshold rule's
+    // margin swap moves, on weekly headroom, with reason=threshold; plan-room
+    // ranks alike and agrees.
     let v = Case::new("work", measured(90.0, 50.0, FAR))
         .cand("spare", measured(95.0, 40.0, FAR))
         .cand("extra", measured(88.0, 60.0, FAR))
         .run();
-    assert_eq!(v.decision, swap("spare", Reason::PlanRoom), "{v:?}");
+    assert_eq!(v.decision, swap("spare", Reason::Threshold), "{v:?}");
 }
 
 #[test]
 fn d5_pass_2_swaps_once_and_the_next_cycle_makes_no_further_swap() {
+    // Issue #2013 (D3, D4): no login is eligible, so the threshold rule's
+    // margin swap moves, on weekly headroom, with reason=threshold; plan-room
+    // ranks alike and agrees.
     // No login has session room (--session-at 85), so pass 2 ranks by week.
     let first = Case::new("work", measured(90.0, 80.0, FAR))
         .cand("spare", measured(95.0, 60.0, FAR))
         .run();
-    assert_eq!(first.decision, swap("spare", Reason::PlanRoom), "{first:?}");
+    assert_eq!(
+        first.decision,
+        swap("spare", Reason::Threshold),
+        "{first:?}"
+    );
     // The next cycle, over the same readings, from the new live login.
+    // Issue #2013 (7 November addendum): both are eligible, and work does
+    // not rank ahead of spare, so spare stays.
     let second = Case::new("spare", measured(95.0, 60.0, FAR))
         .cand("work", measured(90.0, 80.0, FAR))
         .run();
-    assert_eq!(second.decision, Decision::Alert, "no flap back: {second:?}");
+    assert_eq!(second.decision, Decision::Stay, "no flap back: {second:?}");
     assert_eq!(second.tag, None);
 }
 
 #[test]
 fn d5_an_exhausted_live_login_ranks_last_in_pass_2() {
+    // Issue #2013 (D3, D4): no login is eligible, so the threshold rule's
+    // margin swap moves, on weekly headroom, with reason=threshold; plan-room
+    // ranks alike and agrees.
     let v = Case::new("work", exhausted(FAR))
         .cand("spare", measured(99.0, 99.0, FAR))
         .run();
-    assert_eq!(v.decision, swap("spare", Reason::PlanRoom), "{v:?}");
+    assert_eq!(v.decision, swap("spare", Reason::Threshold), "{v:?}");
 }
 
 #[test]
-fn d5_margin_plays_no_part_in_plan_room() {
+fn d4_the_margin_applies_in_plan_room_pass_2() {
+    // Issue #2013 (D4): the margin now applies in pass 2, so one point of
+    // week is not enough to move.
     // spare beats the live login by one point of week only: far short of
     // --margin 5, but strictly better on the ranking.
-    let v = Case::new("work", measured(90.0, 61.0, FAR))
-        .cand("spare", measured(95.0, 60.0, FAR))
+    // Both at or above --week-at, so neither is eligible.
+    let v = Case::new("work", measured(10.0, 95.0, FAR))
+        .cand("spare", measured(10.0, 94.0, FAR))
         .run();
-    assert_eq!(v.decision, swap("spare", Reason::PlanRoom), "{v:?}");
+    assert_eq!(v.decision, Decision::Alert, "{v:?}");
 }
 
 #[test]
 fn pass_2_keeps_a_live_login_that_has_the_lowest_week() {
+    let v = Case::new("work", measured(10.0, 93.0, FAR))
+        .cand("spare", measured(10.0, 95.0, FAR))
+        .run();
+    assert_eq!(v.decision, Decision::Alert, "{v:?}");
+    // Below --week-at both are eligible; past --session-at only, the live
+    // login keeps its lower week and stays.
     let v = Case::new("work", measured(90.0, 30.0, FAR))
         .cand("spare", measured(95.0, 40.0, FAR))
         .run();
-    assert_eq!(v.decision, Decision::Alert, "{v:?}");
+    assert_eq!(v.decision, Decision::Stay, "{v:?}");
 }
 
 #[test]
@@ -431,12 +480,14 @@ fn a_threshold_swap_that_meets_the_margin_is_not_replaced() {
 /// a tie that the name would give to ccapstone; the plan-room rank is not.
 #[test]
 fn a_threshold_swap_without_capacity_follows_the_plan_room_rank() {
+    // Issue #2013 (D3, D15): ranked by weekly use, eelsworth (w=17%) wins on
+    // the margin rule; ddrumpf and ccapstone are at --week-at.
     let v = Case::new("iivanovich", measured(98.0, 61.0, FAR))
         .cand("ccapstone", measured(11.0, 92.0, FAR))
         .cand("ddrumpf", measured(0.0, 92.0, FAR))
         .cand("eelsworth", measured(98.0, 17.0, FAR))
         .run();
-    assert_eq!(v.decision, swap("ddrumpf", Reason::PlanRoom), "{v:?}");
+    assert_eq!(v.decision, swap("eelsworth", Reason::Threshold), "{v:?}");
 }
 
 #[test]
@@ -451,18 +502,24 @@ fn plan_room_never_fires_below_both_thresholds() {
 
 #[test]
 fn plan_room_fires_for_an_exhausted_live_login() {
+    // Issue #2013 (D3, D4): no login is eligible, so the threshold rule's
+    // margin swap moves, on weekly headroom, with reason=threshold; plan-room
+    // ranks alike and agrees.
     let v = Case::new("work", exhausted(FAR))
         .cand("spare", measured(97.0, 10.0, FAR))
         .run();
-    assert_eq!(v.decision, swap("spare", Reason::PlanRoom), "{v:?}");
+    assert_eq!(v.decision, swap("spare", Reason::Threshold), "{v:?}");
 }
 
 #[test]
 fn plan_room_is_skipped_when_the_live_probe_failed() {
+    // Issue #2013 (D4): a failed live probe has weekly headroom 0, so the
+    // threshold rule's margin swap takes spare (w=10%); plan-room is still
+    // skipped, and failed-probe damping applies in the cycle.
     let v = Case::new("work", Probed::failed())
         .cand("spare", measured(97.0, 10.0, FAR))
         .run();
-    assert_eq!(v.decision, Decision::Alert, "{v:?}");
+    assert_eq!(v.decision, swap("spare", Reason::Threshold), "{v:?}");
 }
 
 #[test]
@@ -477,27 +534,34 @@ fn a_failed_live_probe_never_moves_onto_the_api_key() {
 
 #[test]
 fn plan_room_comes_before_a_usable_credit_profile() {
+    // Issue #2013 (D3, D4): no login is eligible, so the threshold rule's
+    // margin swap moves, on weekly headroom, with reason=threshold; plan-room
+    // ranks alike and agrees.
     // D1: credit profiles are billed per token too, so a plan login with
     // room wins over them.
     let v = Case::new("work", measured(100.0, 40.0, FAR))
         .cand("spare", measured(99.0, 50.0, FAR))
         .credits(measured(10.0, 10.0, FAR))
         .run();
-    assert_eq!(v.decision, swap("spare", Reason::PlanRoom), "{v:?}");
+    assert_eq!(v.decision, swap("spare", Reason::Threshold), "{v:?}");
     assert_eq!(v.tag, None, "not an overflow move");
 }
 
 #[test]
-fn d1_the_replay_with_a_tier_1_credit_profile_still_swaps_to_ddrumpf() {
+fn d1_the_replay_with_a_tier_1_credit_profile_still_swaps_to_eelsworth() {
+    // Issue #2013 (D3, D15): ranked by weekly use, eelsworth (w=17%) wins on
+    // the margin rule; ddrumpf and ccapstone are at --week-at.
     let v = replay().credits(measured(5.0, 5.0, FAR)).run();
-    assert_eq!(v.decision, swap("ddrumpf", Reason::PlanRoom), "{v:?}");
+    assert_eq!(v.decision, swap("eelsworth", Reason::Threshold), "{v:?}");
     assert_eq!(v.tag, None, "no credit spend while a plan login has room");
 }
 
 #[test]
-fn d1_the_replay_with_credits_and_the_api_key_marked_still_swaps_to_ddrumpf() {
+fn d1_the_replay_with_credits_and_the_api_key_marked_still_swaps_to_eelsworth() {
+    // Issue #2013 (D3, D15): ranked by weekly use, eelsworth (w=17%) wins on
+    // the margin rule; ddrumpf and ccapstone are at --week-at.
     let v = replay().credits(measured(5.0, 5.0, FAR)).marked_key().run();
-    assert_eq!(v.decision, swap("ddrumpf", Reason::PlanRoom), "{v:?}");
+    assert_eq!(v.decision, swap("eelsworth", Reason::Threshold), "{v:?}");
     assert_eq!(v.tag, None);
 }
 
@@ -558,11 +622,14 @@ fn credit_tiers_are_tried_in_tier_order_before_the_api_key() {
 
 #[test]
 fn plan_room_comes_before_the_api_key() {
+    // Issue #2013 (D3, D4): no login is eligible, so the threshold rule's
+    // margin swap moves, on weekly headroom, with reason=threshold; plan-room
+    // ranks alike and agrees.
     let v = Case::new("work", measured(100.0, 40.0, FAR))
         .cand("spare", measured(99.0, 50.0, FAR))
         .marked_key()
         .run();
-    assert_eq!(v.decision, swap("spare", Reason::PlanRoom), "{v:?}");
+    assert_eq!(v.decision, swap("spare", Reason::Threshold), "{v:?}");
     assert_eq!(v.tag, None);
 }
 
@@ -861,12 +928,15 @@ fn a_refused_overflow_profile_holds_nothing() {
 
 #[test]
 fn neither_hold_stops_the_plan_room_swap_which_costs_nothing() {
+    // Issue #2013 (D3, D4): no login is eligible, so the threshold rule's
+    // margin swap moves, on weekly headroom, with reason=threshold; plan-room
+    // ranks alike and agrees.
     for c in [
         Case::new("work", exhausted(FAR)).cand("timedout", Probed::failed()),
         Case::new("work", exhausted(FAR)).refused("locked"),
     ] {
         let v = c.cand("spare", measured(50.0, 97.0, FAR)).run();
-        assert_eq!(v.decision, swap("spare", Reason::PlanRoom), "{v:?}");
+        assert_eq!(v.decision, swap("spare", Reason::Threshold), "{v:?}");
     }
 }
 

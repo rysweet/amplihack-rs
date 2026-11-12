@@ -60,6 +60,8 @@ fn probed(s: f64, w: f64) -> Probed {
         observed_at: None,
         carried: false,
         passive: false,
+        failure: None,
+        started_at: None,
     }
 }
 

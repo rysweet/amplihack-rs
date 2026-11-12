@@ -48,6 +48,8 @@ fn roomy() -> Probed {
         observed_at: None,
         carried: false,
         passive: false,
+        failure: None,
+        started_at: None,
     }
 }
 
@@ -65,6 +67,8 @@ fn plan_ok() -> Probed {
         observed_at: None,
         carried: false,
         passive: false,
+        failure: None,
+        started_at: None,
     }
 }
 
