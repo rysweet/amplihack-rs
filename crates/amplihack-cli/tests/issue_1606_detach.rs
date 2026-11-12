@@ -1038,6 +1038,37 @@ fn stop_of_an_unknown_run_quotes_its_id() {
     );
 }
 
+/// A `runs/` folder `stop` cannot read is "not found" with the reason
+/// underneath, and nothing is signalled. Root reads any folder, so there is
+/// nothing to check as root.
+#[test]
+fn stop_reports_why_it_could_not_read_the_runs_folder() {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let fx = Fx::new();
+    let id = "unreadable-run";
+    fx.plant_record(id, "{}");
+    let runs = fx.runs_dir();
+    fs::set_permissions(&runs, fs::Permissions::from_mode(0o300)).unwrap();
+    let out = fx.run(&["recipe", "stop", id], &[]);
+    fs::set_permissions(&runs, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(!out.status.success(), "{}", text(&out.stdout));
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains(
+            r#"recipe stop: no tmux session or running recipe run named "unreadable-run""#
+        ),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("cannot list {}", runs.display()))
+            && stderr.contains("ermission denied"),
+        "the reason must be shown: {stderr}"
+    );
+}
+
 /// An id that could name another path is refused before any record is read.
 #[test]
 fn stop_refuses_an_id_that_could_name_a_path() {

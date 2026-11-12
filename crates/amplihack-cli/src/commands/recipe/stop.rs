@@ -9,38 +9,15 @@
 //!   the session is killed, which closes any other pane (a `tail -f` you
 //!   split off) the way tmux always does, without a signal from here.
 //! - A run id (the `run_id` of an `amplihack.recipe.log_pointer` line,
-//!   issue #2175): each attempt of `recipe run` writes
-//!   `<work root>/runs/<run folder>/procs/<run_id>.json`, naming itself and
-//!   its runner with their start times, before it prints that line, and
-//!   removes it when the attempt ends (see `run_record.rs`). The id is
-//!   checked first (1 to 128 ASCII letters, digits, `.`, `_` or `-`, not
-//!   starting with `.`), then `stop` lists the run folders of the work root
-//!   it resolves, which must be the run's (`AMPLIHACK_WORK_ROOT`), and reads
-//!   the first record of that id that this user owns and nobody else can
-//!   write. `recipe run` and the runner get SIGTERM, and so does the runner's
-//!   process group while its leader is still the recorded runner; after the
-//!   grace period the group gets SIGKILL if its leader still matches, then
-//!   whatever is still the recorded process does. `recipe run`'s own teardown
-//!   ends the rest of the runner's tree. Every signal re-checks the start
-//!   time, so a stale record (a SIGKILLed `recipe run`) or a reused pid is
-//!   never hit. A missing, foreign or stale record is "not found" and nothing
-//!   is signalled. A dry run has no run folder and no record. Linux only.
-//!
-//!   This path never opens `/proc` as a folder and never reads another
-//!   process's `environ`: only `/proc/<pid>/stat` of the two recorded pids.
-//!   So it cannot walk its own parent chain either. Instead it refuses to act
-//!   when its own `AMPLIHACK_RECIPE_RUN_ID` is the target, or when its
-//!   session or process group is the runner's group, and never signals its
-//!   own pid or its parent's. Every process a run starts inherits both the
-//!   variable and the session; a descendant that clears its environment and
-//!   starts a new session is not detected, which is an accepted gap.
-//!
-//!   Accepted risks: the microseconds between the start-time check and
-//!   kill(2), which only pidfds would close; runs that are not found
-//!   (started by an older binary, under another work root, a dry run, or
-//!   whose record could not be written); and agents that started their own
-//!   session and outlived their runner (stop them through their tmux
-//!   session or by pid).
+//!   issue #2175): `stop` reads the run's record (see `run_record.rs`) under
+//!   the work root it resolves, and signals only the two processes it names
+//!   and the runner's group, re-checking each start time before every
+//!   signal. It never opens `/proc` as a folder or reads another process's
+//!   `environ`, refuses to stop the run it runs inside, and never signals
+//!   its own pid or its parent's. A missing, untrusted or stale record is
+//!   "not found" and nothing is signalled; a lookup that fails to read gives
+//!   the reason under that message. Signal order and accepted limits are in
+//!   `docs/reference/recipe-command.md`. Linux only.
 //!
 //! For a session, the tree is found once, before any signal: by parent
 //! links and process groups, so a descendant that started its own session is
@@ -151,7 +128,11 @@ fn stop_run_id(run_id: &str) -> Result<()> {
             .context("cannot resolve the work root")
             .context(not_found().to_string())
     })?;
-    let record = find(&work_root.path, run_id).ok_or_else(not_found)?;
+    // A lookup that could not read the work root also refuses: "not found",
+    // with the reason underneath.
+    let record = find(&work_root.path, run_id)
+        .map_err(|error| error.context(not_found().to_string()))?
+        .ok_or_else(not_found)?;
     let tree = live_targets(&record);
     if tree.is_empty() {
         return Err(not_found());

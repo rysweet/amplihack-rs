@@ -522,6 +522,7 @@ string literal, so control characters in it are printed escaped.
 | The id is invalid | `recipe stop: invalid run id "<run_id>"` |
 | The id is `recipe stop`'s own run | `recipe stop: refusing to stop run "<run_id>" from inside it` |
 | No usable record, or a stale one | `recipe stop: no tmux session or running recipe run named "<run_id>"` |
+| The work root, `runs/`, a run folder or a record cannot be read (for example, permission denied), and no usable record was found | The same "not found" message, followed by the reason, such as `cannot list <work root>/runs: Permission denied` |
 | Any run id on a platform other than Linux | `recipe stop: no tmux session named <run_id>; stopping by run id needs /proc and is supported on Linux only` |
 
 #### Runs that `recipe stop <run_id>` does not find
@@ -533,9 +534,12 @@ amplihack built before run records existed, or runs whose `recipe stop` sees a
 different work root (through `AMPLIHACK_WORK_ROOT` or `HOME`). Stop these
 through their tmux session, or by signalling `recipe run`.
 
-The remaining accepted risks (pid reuse in the microseconds before `kill(2)`,
-and a descendant that cleared its environment and started a new session) are
-listed in the module doc of `crates/amplihack-cli/src/commands/recipe/stop.rs`.
+Accepted risks: a pid reused in the microseconds between the start-time check
+and `kill(2)`, which only pidfds would close; a descendant of the run that
+cleared its environment and started a new session, which the "from inside it"
+check does not detect; and agents that started their own session and outlived
+their runner, which are not in the runner's group. Stop those through their
+tmux session or by pid.
 
 ---
 

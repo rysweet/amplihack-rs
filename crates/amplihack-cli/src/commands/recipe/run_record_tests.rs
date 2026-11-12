@@ -14,11 +14,12 @@
 //!   "runner":{"pid","pgid","start_ticks"}}`, with `recipe_run` this process,
 //!   `pgid == runner pid`, start times read from `/proc`. A `procs` symlink
 //!   is refused. Dropping the `Guard` removes the file.
-//! - `find(work_root, run_id) -> Option<Record>` opens
+//! - `find(work_root, run_id) -> Result<Option<Record>>` opens
 //!   `<work_root>/runs/<entry>/procs/<run_id>.json` for each real directory
 //!   entry, never through a symlink, at most 4096 bytes, owned by this user
 //!   with no group or other write bit, no unknown fields, version 1, the same
-//!   run id, both pids > 1 and `runner.pgid == runner.pid`.
+//!   run id, both pids > 1 and `runner.pgid == runner.pid`. Every refusal
+//!   is `Ok(None)`; a folder or record it cannot read is `Err` naming it.
 //! - `stop::live_targets(&Record) -> Tree`: the recorded pids whose start
 //!   time still matches, never this process or its parent.
 //!
@@ -68,8 +69,9 @@ impl Root {
         path
     }
 
+    /// `find`, which must not fail: every refusal is `Ok(None)`.
     fn find(&self, run_id: &str) -> Option<Record> {
-        find(&self.work, run_id)
+        find(&self.work, run_id).expect("find must refuse, not fail")
     }
 }
 
@@ -310,7 +312,28 @@ fn find_looks_in_every_run_directory() {
 #[test]
 fn find_with_no_runs_directory_is_none() {
     let tmp = tempfile::tempdir().unwrap();
-    assert!(find(tmp.path(), ID).is_none());
+    assert!(find(tmp.path(), ID).unwrap().is_none());
+}
+
+/// A `runs/` folder that cannot be listed is an error naming it, not "no
+/// record". Root reads any folder, so there is nothing to check as root.
+#[test]
+fn find_reports_a_runs_folder_it_cannot_list() {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let root = Root::new();
+    let runs = root.work.join("runs");
+    fs::set_permissions(&runs, fs::Permissions::from_mode(0o300)).unwrap();
+    let result = find(&root.work, ID);
+    fs::set_permissions(&runs, fs::Permissions::from_mode(0o700)).unwrap();
+    let error = result.expect_err("an unreadable runs folder must be an error");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains(&runs.display().to_string()) && message.contains("ermission denied"),
+        "{message}"
+    );
 }
 
 #[test]

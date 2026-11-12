@@ -108,11 +108,6 @@ fn file_name(run_id: &str) -> String {
     format!("{run_id}.json")
 }
 
-/// A real folder, not a symlink to one.
-fn is_real_dir(path: &Path) -> bool {
-    fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_dir())
-}
-
 /// Writes the record of attempt `run_id` in `run_dir`: this process and the
 /// runner `runner_pid`, which leads its own group. Start times are read from
 /// `/proc` here, never supplied by the caller. Dropping the returned guard
@@ -159,45 +154,100 @@ pub(crate) fn write(run_dir: &Path, run_id: &str, runner_pid: u32) -> Result<Gua
     Ok(Guard { path })
 }
 
-/// The record of `run_id` under `work_root`, or `None` when there is none
-/// that can be trusted: an invalid id, no `runs/` folder, no file, a run
-/// folder, `procs` folder or record that is a symlink, a file over
-/// [`MAX_RECORD`] bytes, owned by another user or writable by group or
-/// others, a body that does not parse, another version or run id, a pid
-/// `<= 1` or a runner group that is not its pid. The first acceptable record
-/// wins. Changes nothing on disk and reads nothing under `/proc`.
-pub(crate) fn find(work_root: &Path, run_id: &str) -> Option<Record> {
+/// The record of `run_id` under `work_root`.
+///
+/// `Ok(None)` when there is none that can be trusted: an invalid id, no
+/// `runs/` folder, no file, a run folder, `procs` folder or record that is a
+/// symlink or not a regular file, a file over [`MAX_RECORD`] bytes, owned by
+/// another user or writable by group or others, a body that does not parse,
+/// another version or run id, a pid `<= 1` or a runner group that is not its
+/// pid. The first acceptable record wins.
+///
+/// `Err` when no acceptable record was found and something could not be read
+/// (a permission or I/O error on `runs/`, a run folder or a record): the
+/// lookup could not finish, and the error says why. Changes nothing on disk
+/// and reads nothing under `/proc`.
+pub(crate) fn find(work_root: &Path, run_id: &str) -> Result<Option<Record>> {
     if !validate_run_id(run_id) {
-        return None;
+        return Ok(None);
     }
     let runs = work_root.join("runs");
-    if !is_real_dir(&runs) {
-        return None;
+    match fs::symlink_metadata(&runs) {
+        Ok(meta) if meta.file_type().is_dir() => {}
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot check {}", runs.display()));
+        }
     }
+    let entries = fs::read_dir(&runs).with_context(|| format!("cannot list {}", runs.display()))?;
     let name = file_name(run_id);
     // SAFETY: geteuid has no preconditions and cannot fail.
     let euid = unsafe { libc::geteuid() };
-    fs::read_dir(&runs)
-        .ok()?
-        .flatten()
-        .filter(|entry| entry.file_type().is_ok_and(|t| t.is_dir()))
-        .map(|entry| entry.path().join(PROCS))
-        .filter(|procs| is_real_dir(procs))
-        .find_map(|procs| read_record(&procs.join(&name), run_id, euid))
+    let mut first_error: Option<anyhow::Error> = None;
+    for entry in entries {
+        let found = entry
+            .with_context(|| format!("cannot list {}", runs.display()))
+            .and_then(|entry| record_in(&entry, &name, run_id, euid));
+        match found {
+            Ok(Some(record)) => return Ok(Some(record)),
+            Ok(None) => {}
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    first_error.map_or(Ok(None), Err)
 }
 
-fn read_record(path: &Path, run_id: &str, euid: u32) -> Option<Record> {
-    let (bytes, meta) = read_capped_nofollow_with_metadata(path, MAX_RECORD).ok()?;
-    if !meta.file_type().is_file() || meta.uid() != euid || meta.mode() & 0o022 != 0 {
-        return None;
+/// The acceptable record `name` in the `procs` folder of run folder `entry`.
+fn record_in(entry: &fs::DirEntry, name: &str, run_id: &str, euid: u32) -> Result<Option<Record>> {
+    let run_dir = entry.path();
+    let file_type = entry
+        .file_type()
+        .with_context(|| format!("cannot check {}", run_dir.display()))?;
+    if !file_type.is_dir() {
+        return Ok(None);
     }
-    let record: Record = serde_json::from_slice(&bytes).ok()?;
+    let procs = run_dir.join(PROCS);
+    match fs::symlink_metadata(&procs) {
+        Ok(meta) if meta.file_type().is_dir() => {}
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot check {}", procs.display()));
+        }
+    }
+    read_record(&procs.join(name), run_id, euid)
+}
+
+fn read_record(path: &Path, run_id: &str, euid: u32) -> Result<Option<Record>> {
+    let (bytes, meta) = match read_capped_nofollow_with_metadata(path, MAX_RECORD) {
+        Ok(read) => read,
+        // Absent, a symlink (O_NOFOLLOW gives ELOOP), not a regular file or
+        // too large: no trusted record here, not a read failure.
+        Err(error)
+            if matches!(
+                error.kind(),
+                ErrorKind::NotFound | ErrorKind::InvalidInput | ErrorKind::InvalidData
+            ) || error.raw_os_error() == Some(libc::ELOOP) =>
+        {
+            return Ok(None);
+        }
+        Err(error) => return Err(error).with_context(|| format!("cannot read {}", path.display())),
+    };
+    if !meta.file_type().is_file() || meta.uid() != euid || meta.mode() & 0o022 != 0 {
+        return Ok(None);
+    }
+    let Ok(record) = serde_json::from_slice::<Record>(&bytes) else {
+        return Ok(None);
+    };
     let usable = record.version == VERSION
         && record.run_id == run_id
         && record.recipe_run.pid > 1
         && record.runner.pid > 1
         && record.runner.pgid == record.runner.pid;
-    usable.then_some(record)
+    Ok(usable.then_some(record))
 }
 
 #[cfg(test)]
