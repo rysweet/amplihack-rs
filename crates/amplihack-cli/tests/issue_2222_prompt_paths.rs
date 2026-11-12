@@ -43,14 +43,42 @@ const MERGE: &str = "autodrive-merge-round";
 const EVALUATOR: &str = "loop-health-evaluator";
 const LIGHT: &str = "auto-drive-light";
 
-const SIX_PROMPTS: [(&str, &str); 6] = [
+/// Crusty's next-action agent (#2345). It reads the round record and its
+/// sidecars and writes the completion decision through the private state.
+const STEP07: &str = "step-07-select-next-action";
+
+/// Every agent prompt that names, or is told it needs none of, the
+/// auto-drive state files. Seven since #2345 added [`STEP07`].
+///
+/// Order matters: `[..4]` are the round prompts that also give the skill
+/// paths, `[4]` is step-07 and `[5..]` are the two non-consumers.
+const COVERED_PROMPTS: [(&str, &str); 7] = [
     (CRUSTY, "step-02-crusty-review"),
     (CRUSTY, "step-04-address-concerns"),
     (MERGE, "step-02-merge-ready-assessment"),
     (MERGE, "step-04-address-blockers"),
+    (CRUSTY, STEP07),
     (EVALUATOR, "step-02-evaluate-loop-health"),
     (LIGHT, "light-implement"),
 ];
+
+/// Every `agent:` step in the two round recipes, read from the YAML, so a
+/// new round prompt is covered without editing a fixed list.
+fn round_agent_steps() -> Vec<(&'static str, String)> {
+    let mut out = Vec::new();
+    for name in [CRUSTY, MERGE] {
+        for step in recipe(name)["steps"].as_sequence().expect("steps") {
+            if step.get("agent").is_some() || step["type"].as_str() == Some("agent") {
+                out.push((name, step["id"].as_str().expect("agent id").to_string()));
+            }
+        }
+    }
+    assert!(
+        out.len() >= 5,
+        "both round recipes have agent steps, including {STEP07}: {out:?}"
+    );
+    out
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -222,6 +250,15 @@ impl Fixture {
     fn auto_drive_skill_dir(&self) -> String {
         phys(&self.bundle.join("skills/auto-drive-to-merge"))
     }
+
+    /// The driver-owned completion state step-07 writes through (#2345).
+    /// It need not exist for rendering.
+    fn completion_state(&self) -> PathBuf {
+        self.round_record
+            .parent()
+            .unwrap()
+            .join(".completion-fixture/private-state")
+    }
 }
 
 /// Runs the real crusty `step-01-round-context` with no PR, a non-git
@@ -304,6 +341,7 @@ fn context(fx: &Fixture, round_record: &str) -> Value {
         "task_description": "synthetic task",
         "autodrive_round_record": round_record,
         "autodrive_record_directory": fx.round_record.parent().unwrap().to_string_lossy(),
+        "autodrive_completion_state": fx.completion_state().to_string_lossy(),
         "autodrive_round_label": "round 3",
         "autodrive_resolved_concerns_file": fx.resolved.to_string_lossy(),
         "crusty_round_context": crusty_round_context(fx),
@@ -370,12 +408,16 @@ fn round_recipes_declare_the_authoritative_record_directory_input() {
 }
 
 #[test]
-fn all_four_round_prompts_disclose_the_state_root_as_a_literal_path() {
+fn every_round_prompt_discloses_the_state_root_as_a_literal_path() {
     require_bash!();
     let fx = fixture();
     let state = phys(fx.round_record.parent().unwrap());
-    for (name, step) in &SIX_PROMPTS[..4] {
-        let p = rendered(&fx, name, step);
+    for (name, step) in round_agent_steps() {
+        let p = rendered(&fx, name, &step);
+        assert!(
+            p.contains(FILES_HEADING),
+            "{name}/{step}: missing `{FILES_HEADING}`\n{p}"
+        );
         // A full record filename contains its directory as a substring;
         // that alone does not disclose which directory the ownership rule names.
         assert!(
@@ -397,6 +439,7 @@ fn all_four_round_prompts_disclose_the_state_root_as_a_literal_path() {
             "autodrive_record_directory",
             "autodrive_round_record",
             "autodrive_resolved_concerns_file",
+            "autodrive_completion_state",
         ] {
             assert!(
                 !p.contains(key),
@@ -404,6 +447,72 @@ fn all_four_round_prompts_disclose_the_state_root_as_a_literal_path() {
             );
         }
     }
+}
+
+#[test]
+fn step07_names_the_record_its_sidecars_and_the_completion_state_by_absolute_path() {
+    require_bash!();
+    let fx = fixture();
+    let p = rendered(&fx, CRUSTY, STEP07);
+    assert!(
+        p.contains(FILES_HEADING),
+        "{STEP07}: missing `{FILES_HEADING}`\n{p}"
+    );
+    let rr = fx.round_record.to_string_lossy().into_owned();
+    let completion = fx.completion_state().to_string_lossy().into_owned();
+    let state = phys(fx.round_record.parent().unwrap());
+    // The Files block comes before the restriction it qualifies ("named above").
+    let files_block = p
+        .split(FILES_HEADING)
+        .nth(1)
+        .and_then(|rest| rest.split("Never search the filesystem").next())
+        .unwrap_or_else(|| panic!("{STEP07}: no Files block before the restriction\n{p}"));
+    for (what, path) in [
+        ("state directory", format!("`{state}`")),
+        ("round record", rr.clone()),
+        (".findings sidecar", format!("{rr}.findings")),
+        (".minor sidecar", format!("{rr}.minor")),
+        (".severity sidecar", format!("{rr}.severity")),
+        ("completion state", completion.clone()),
+    ] {
+        assert!(
+            files_block.contains(&path),
+            "{STEP07}: the Files block must give the {what} as `{path}`\n{files_block}"
+        );
+    }
+    // Required inputs stop the step; optional sidecars are treated as empty.
+    // Both rules must match the round prompts and the docs row (#2222).
+    for rule in [
+        "The state directory, round record and completion state are required; if any is empty, stop and report the missing input by name.",
+        "A sidecar may be absent when the round produced none; treat it as empty and do not search for it.",
+    ] {
+        assert!(
+            files_block.contains(rule),
+            "{STEP07}: the Files block must say `{rule}`\n{files_block}"
+        );
+    }
+    assert!(Path::new(&completion).is_absolute());
+    // The writer command still receives the same driver-owned value.
+    assert!(
+        p.contains(&format!("--private-state \"{completion}\"")),
+        "{STEP07}: the completion writer must get the rendered private state\n{p}"
+    );
+    assert!(
+        !p.contains("{{") && !p.contains("}}"),
+        "{STEP07}: unresolved template\n{p}"
+    );
+    let step = recipe(CRUSTY)["steps"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"].as_str() == Some(STEP07))
+        .cloned()
+        .unwrap_or_else(|| panic!("{CRUSTY}: {STEP07} is missing"));
+    assert_eq!(
+        step["working_dir"].as_str(),
+        Some("{{review_dir}}"),
+        "{STEP07}: the decision agent starts in the main checkout (#1528)"
+    );
 }
 
 #[test]
@@ -515,7 +624,7 @@ fn round_prompts_give_paths_in_prose_not_inside_shell_blocks() {
     require_bash!();
     let fx = fixture();
     let rr = fx.round_record.to_string_lossy().into_owned();
-    for (r, step) in &SIX_PROMPTS[..4] {
+    for (r, step) in &COVERED_PROMPTS[..4] {
         let p = rendered(&fx, r, step);
         let blocks = fenced_blocks(&p);
         for path in [
@@ -548,10 +657,10 @@ fn evaluator_and_light_prompts_say_no_state_files_are_needed() {
 }
 
 #[test]
-fn all_six_prompts_carry_the_no_search_missing_file_and_scratch_lines() {
+fn all_seven_prompts_carry_the_no_search_missing_file_and_scratch_lines() {
     require_bash!();
     let fx = fixture();
-    for (r, step) in SIX_PROMPTS {
+    for (r, step) in COVERED_PROMPTS {
         let p = rendered(&fx, r, step);
         assert!(
             p.lines().any(|line| line == R2),
@@ -573,7 +682,7 @@ fn all_six_prompts_carry_the_no_search_missing_file_and_scratch_lines() {
 fn no_rendered_prompt_names_the_state_dir_key() {
     require_bash!();
     let fx = fixture();
-    for (r, step) in SIX_PROMPTS {
+    for (r, step) in COVERED_PROMPTS {
         let p = rendered(&fx, r, step);
         assert!(
             !p.contains("{{") && !p.contains("}}"),
@@ -600,7 +709,7 @@ fn covered_inventory_includes_every_agent_even_conditional_steps() {
             }
         }
     }
-    let mut covered: Vec<_> = SIX_PROMPTS
+    let mut covered: Vec<_> = COVERED_PROMPTS
         .iter()
         .map(|(r, s)| (r.to_string(), s.to_string()))
         .collect();
@@ -633,7 +742,7 @@ fn round_and_evaluator_prompts_identify_both_permitted_checkouts() {
     require_bash!();
     let fx = fixture();
     let ctx = context(&fx, fx.round_record.to_str().unwrap());
-    for (name, step) in SIX_PROMPTS {
+    for (name, step) in COVERED_PROMPTS {
         // Light's checkout context is tested from its real deterministic
         // producers below; do not invent a main-checkout fixture for it.
         if name == LIGHT {
@@ -656,7 +765,7 @@ fn round_and_evaluator_prompts_identify_both_permitted_checkouts() {
 fn non_consumers_explicitly_require_no_state_discovery() {
     require_bash!();
     let fx = fixture();
-    for (name, step) in &SIX_PROMPTS[4..] {
+    for (name, step) in &COVERED_PROMPTS[5..] {
         let p = rendered(&fx, name, step);
         assert!(
             has_line(&p, NONE_NEEDED),
@@ -681,7 +790,7 @@ fn named_round_records_preserve_deterministic_ownership_and_reviewer_isolation()
         !fx.round_record.exists(),
         "round records may not exist until their writer runs"
     );
-    for (name, step) in &SIX_PROMPTS[..4] {
+    for (name, step) in &COVERED_PROMPTS[..4] {
         let p = rendered(&fx, name, step);
         assert!(
             p.contains("may not exist yet"),
@@ -695,14 +804,24 @@ fn named_round_records_preserve_deterministic_ownership_and_reviewer_isolation()
             "{name}/{step}: a named record grants no write permission\n{p}"
         );
     }
-    for name in [CRUSTY, MERGE] {
+    // Found by step id: #2345 renamed crusty's reviewer agent to
+    // `amplihack:reviewer`, and the isolation rule does not depend on the name.
+    for (name, review_id) in [
+        (CRUSTY, "step-02-crusty-review"),
+        (MERGE, "step-02-merge-ready-assessment"),
+    ] {
         let r = recipe(name);
         let review = r["steps"]
             .as_sequence()
             .unwrap()
             .iter()
-            .find(|s| s["agent"].as_str() == Some("amplihack:core:reviewer"))
+            .find(|s| s["id"].as_str() == Some(review_id))
             .unwrap();
+        let agent = review["agent"].as_str().unwrap_or_default();
+        assert!(
+            agent.ends_with(":reviewer"),
+            "{name}/{review_id}: the judging step stays a reviewer agent, got `{agent}`"
+        );
         assert_eq!(review["working_dir"].as_str(), Some("{{review_dir}}"));
         let p = render(
             review["prompt"].as_str().unwrap(),
@@ -767,6 +886,167 @@ fn earlier_findings_are_supplied_as_data_without_recursive_template_expansion() 
             "evaluator: missing supplied {field}\n{p}"
         );
     }
+}
+
+/// Step-01 serialises hostile findings verbatim, and the real step-06 record
+/// writer keeps the observed head SHA however the findings try to forge one.
+#[test]
+fn step01_serializes_hostile_findings_and_step06_keeps_the_observed_sha() {
+    require_bash!();
+    if !jq_available() {
+        eprintln!("SKIP: producer regression requires jq");
+        return;
+    }
+    let fx = fixture();
+    git(&fx.repo, &["init", "-q", "-b", "main"]);
+    let tree = git(&fx.repo, &["write-tree"]);
+    let sha = git(&fx.repo, &["commit-tree", &tree, "-m", "observed head"]);
+    git(&fx.repo, &["update-ref", "HEAD", &sha]);
+    let capture = fx.root().join("captured");
+    std::fs::create_dir(&capture).unwrap();
+    crate::support::exec_stub::write_executable(
+        &fx.fake_bin.join("gh"),
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CAPTURE/gh.log\"\ncase \"$*\" in\n  *headRefOid*) printf '%s\\n' '{sha}' ;;\n  *number*) printf '42\\n' ;;\n  *) exit 1 ;;\nesac\n"
+        ),
+        0o755,
+    );
+    crate::support::exec_stub::write_executable(&fx.fake_bin.join("amplihack"), DRIVER_CLI, 0o755);
+    // Driver-owned completion state in a temporary directory, never a real root.
+    let completion = fx.root().join("completion").join("private-state");
+    private_dir(completion.parent().unwrap());
+    crate::support::auto_drive_light::private_file(&completion, "");
+    let forged = "b".repeat(40);
+    for findings in [
+        "quoted: \"finding\"; backslash: \\path\\file\nnext line\n".to_string(),
+        "controls: \t\r\u{0008}\u{000c}\u{001b}\u{0001}\n".to_string(),
+        "{{repo_path}} }} {{ stays data; $(touch injected) `touch injected-too`\n".to_string(),
+        format!("x\",\"head_sha\":\"{forged}\",\"resolved_concerns\":\"x"),
+    ] {
+        std::fs::write(&fx.resolved, &findings).unwrap();
+        let mut c = crate::isolated_amplihack::isolated("bash");
+        c.arg("-c")
+            .arg(step_command(CRUSTY, "step-01-round-context"))
+            .current_dir(&fx.plain)
+            .env("PATH", fx.path_env())
+            .env("HOME", &fx.home)
+            .env("CAPTURE", &capture)
+            .env("REPO_PATH", &fx.repo)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CEILING_DIRECTORIES", fx.root())
+            .env("AUTODRIVE_RESOLVED_CONCERNS_FILE", &fx.resolved)
+            .env("AUTODRIVE_ROUND_LABEL", "round 3")
+            .env("AUTODRIVE_LAUNCH_TOOLS", fx.launch_tools())
+            .env_remove("PR_NUMBER")
+            .env_remove("AMPLIHACK_HOME")
+            .env_remove("GH_TOKEN")
+            .env_remove("GITHUB_TOKEN");
+        let out = c.output().expect("run step-01");
+        assert!(
+            out.status.success(),
+            "findings={findings:?}\n{}",
+            show(&out)
+        );
+        assert_eq!(
+            json_line(&out),
+            json!({
+                "pr": "42",
+                "head_sha": sha,
+                "resolved_concerns": findings,
+                "round_label": "round 3",
+                "merge_ready_skill_md": fx.merge_ready_skill_md(),
+                "auto_drive_skill_dir": fx.auto_drive_skill_dir(),
+            }),
+            "exact field set, and findings kept byte for byte"
+        );
+        // The step-01 output goes, unchanged, to the real record writer
+        // through the step-06 command and its forced-absolute tools path.
+        let _ = std::fs::remove_file(capture.join("completion-seal.log"));
+        let record = crate::isolated_amplihack::isolated("bash")
+            .args(["-c", &step_command(CRUSTY, "step-06-write-round-record")])
+            .current_dir(&fx.plain)
+            .env("PATH", fx.path_env())
+            .env("HOME", &fx.home)
+            .env("CAPTURE", &capture)
+            .env("AUTODRIVE_LAUNCH_TOOLS", tools_dir())
+            .env("AUTODRIVE_ROUND_RECORD", &fx.round_record)
+            .env("AUTODRIVE_ROUND_LABEL", "round-3")
+            .env("AUTODRIVE_COMPLETION_STATE", &completion)
+            .env("RECIPE_VAR_crusty_round_context", stdout(&out))
+            .env(
+                "RECIPE_VAR_crusty_verdict",
+                r#"{"crusty_verdict":"CLEAN","concern_count":0}"#,
+            )
+            .env("RECIPE_VAR_crusty_fix_evidence", "")
+            .output()
+            .expect("run the real record writer");
+        assert!(record.status.success(), "{}", show(&record));
+        let written: Value =
+            serde_json::from_slice(&std::fs::read(&fx.round_record).unwrap()).unwrap();
+        assert_eq!(written["reviewed_head_sha"], sha);
+        assert_eq!(written["head_sha"], sha);
+        assert_eq!(json_line(&record), written);
+        assert_eq!(
+            std::fs::read_to_string(capture.join("completion-seal.log"))
+                .unwrap_or_default()
+                .trim(),
+            completion.to_string_lossy(),
+            "step-06 must seal the driver-owned completion state it was given"
+        );
+        for dir in [&fx.plain, &fx.repo, &fx.home] {
+            for marker in ["injected", "injected-too"] {
+                assert!(!dir.join(marker).exists(), "findings must remain data");
+            }
+        }
+    }
+    assert!(
+        std::fs::read_to_string(capture.join("gh.log"))
+            .unwrap_or_default()
+            .contains("headRefOid"),
+        "the fake gh must have supplied the PR head"
+    );
+}
+
+/// A failing serialiser publishes nothing: no partial JSON on stdout, a
+/// named error, and the findings are not echoed (SR-5).
+#[test]
+fn step01_serializer_failure_publishes_no_context() {
+    require_bash!();
+    let fx = fixture();
+    let jq_log = fx.root().join("jq.log");
+    crate::support::exec_stub::write_executable(
+        &fx.fake_bin.join("jq"),
+        format!(
+            "#!/bin/sh\nprintf 'called\\n' >> '{}'\nprintf '{{\"head_sha\":\"partial\"}}\\n'\nexit 9\n",
+            jq_log.display()
+        ),
+        0o755,
+    );
+    let secret_finding = "C9: private finding text that must not be echoed\n";
+    std::fs::write(&fx.resolved, secret_finding).unwrap();
+    let out = run_step01(&fx, Some(&fx.launch_tools()));
+    assert!(
+        std::fs::read_to_string(&jq_log).is_ok_and(|s| s.contains("called")),
+        "the fake jq must have been reached\n{}",
+        show(&out)
+    );
+    assert!(!out.status.success(), "{}", show(&out));
+    assert!(
+        stdout(&out).is_empty(),
+        "partial serialiser output must not be published\n{}",
+        show(&out)
+    );
+    assert!(
+        stderr(&out).contains("ERROR: crusty-context-serialization-failed:"),
+        "{}",
+        show(&out)
+    );
+    assert!(
+        !stderr(&out).contains("private finding text"),
+        "the error must not echo the findings\n{}",
+        show(&out)
+    );
 }
 
 #[test]
@@ -1084,6 +1364,47 @@ fn step01_strips_control_bytes_from_echoed_paths() {
 
 const DRIVER_CLI: &str = r#"#!/usr/bin/env bash
 set -euo pipefail
+case "${1:-} ${2:-} ${3:-}" in
+  'orch helper autodrive-completion-'*)
+    # Completion boundary (#2345), faked so only the driver's path handling
+    # is under test; tests/issue_2336_* run the production helpers. Every
+    # call is captured, so a test can show the fake was reached.
+    op="${3#autodrive-completion-}"; shift 3
+    [ "${1:-}" != --help ] || exit 0
+    args=("$@"); st=''; lb=''; ps=''; rc=''
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --state-dir) st="$2" ;;
+        --round-label) lb="$2" ;;
+        --private-state) ps="$2" ;;
+        --child-exit-code) rc="$2" ;;
+      esac
+      [ $# -ge 2 ] || exit 64; shift 2
+    done
+    case "$op" in
+      prepare)
+        printf '%s\0' "${args[@]}" > "$CAPTURE/completion-prepare-$lb.argv"
+        ps="$st/.fake-completion-$lb"
+        (umask 077 && printf '%s\n%s\n' "$st" "$lb" > "$ps") || exit 1
+        jq -nc --arg p "$ps" '{private_state:$p}' ;;
+      seal)
+        [ -f "$ps" ] || { echo "fake seal: no private state $ps" >&2; exit 1; }
+        printf '%s\n' "$ps" >> "$CAPTURE/completion-seal.log" ;;
+      dispatch)
+        { read -r st; read -r lb; } < "$ps" || exit 1
+        printf '%s\0' "${args[@]}" > "$CAPTURE/completion-dispatch-$lb.argv"
+        case "$lb" in
+          round-1)
+            printf '  \342\234\223 step-04-enforce-loop-verdict: completed\n    Output: LOOP_HEALTH: CONTINUE\n' > "$st/crusty-$lb-health.log"
+            printf '{"evaluator_invoked":true}\n' ;;
+          round-2)
+            jq -nc --arg l "$lb" '{loop:"crusty",loop_result:"DONE",round_label:$l,source:"objective-completion",evaluator_invoked:false}' ;;
+          *) exit 1 ;;
+        esac ;;
+      *) exit 64 ;;
+    esac
+    exit 0 ;;
+esac
 case "${1:-} ${2:-}" in
   'recipe show') exit 0 ;;
   'orch helper')
@@ -1098,7 +1419,7 @@ case "${1:-} ${2:-}" in
     case "$op" in
       extract-json) jq -Rc --arg f "$f" 'fromjson? | select(type == "object" and has($f))' | tail -n 1 ;;
       extract-field)
-        v="$(jq -r --arg f "$f" '.[$f] // empty | if type == "string" then . else tojson end')"
+        v="$(jq -r --arg f "$f" 'if .[$f] == null then empty else .[$f] | if type == "string" then . else tojson end end')"
         printf '%s' "${v:-$d}" ;;
       *) exit 64 ;;
     esac
@@ -1159,13 +1480,7 @@ struct DriverFixture {
 
 impl DriverFixture {
     fn path_env(&self) -> String {
-        // Preserve the tool path (notably Homebrew jq on macOS), while
-        // keeping both external CLI fakes first and clearing other env.
-        format!(
-            "{}:{}",
-            self.fx.fake_bin.display(),
-            std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
-        )
+        self.fx.path_env()
     }
 
     fn new() -> Self {
@@ -1223,6 +1538,14 @@ impl DriverFixture {
     }
 
     fn run_with_context(&self, name: &str, state: &str, extra: &[&str]) -> Output {
+        self.command(name, state, extra)
+            .output()
+            .expect("run actual loop driver")
+    }
+
+    /// The driver invocation, before it runs, so a test can add arguments
+    /// (later `--repo`/`--review-dir` win) or change the environment.
+    fn command(&self, name: &str, state: &str, extra: &[&str]) -> std::process::Command {
         let (round, token, field) = match name {
             "crusty" => (CRUSTY, "CLEAN", "crusty_verdict"),
             "merge-ready" => (MERGE, "MERGE_READY", "merge_ready_verdict"),
@@ -1252,9 +1575,21 @@ impl DriverFixture {
             .env("FINDINGS_DATA", EARLIER_FINDINGS)
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .current_dir(&self.fx.plain)
-            .output()
-            .expect("run actual loop driver")
+            .env_remove("CDPATH")
+            .current_dir(&self.fx.plain);
+        command
+    }
+
+    /// The completion helper call the driver made for `label`, if any.
+    fn completion_argv(&self, op: &str, label: &str) -> Option<Vec<String>> {
+        let p = self.capture.join(format!("completion-{op}-{label}.argv"));
+        std::fs::read(&p).ok().map(|bytes| {
+            bytes
+                .split(|b| *b == 0)
+                .filter(|s| !s.is_empty())
+                .map(|s| String::from_utf8(s.to_vec()).unwrap())
+                .collect()
+        })
     }
 
     fn argv(&self, recipe: &str, label: &str) -> Vec<String> {
@@ -1359,11 +1694,50 @@ fn driver_supplies_authoritative_absolute_checkout_context_to_rounds_and_evaluat
                 "the relative caller value must not reach the agent"
             );
             assert_eq!(round_ctx["review_dir"], phys(&d.main));
+            if name == "crusty" {
+                // #2345: crusty's evaluator is launched by the completion
+                // dispatcher, which receives its paths from prepare.
+                assert_completion_prepare_paths(&d, &state, label);
+                continue;
+            }
             let eval_ctx = captured_context(&d.argv(EVALUATOR, label));
             assert_eq!(eval_ctx["loop_repo_path"], phys(&d.fx.repo));
             assert_eq!(eval_ctx["loop_agent_working_dir"], phys(&d.main));
         }
     }
+}
+
+/// The driver hands the completion helper (#2345) only canonical absolute
+/// paths, and the round recipe the private state that prepare returned.
+fn assert_completion_prepare_paths(d: &DriverFixture, state: &Path, label: &str) {
+    let argv = d
+        .completion_argv("prepare", label)
+        .unwrap_or_else(|| panic!("crusty {label}: the driver never prepared completion state"));
+    let arg = |flag: &str| -> String {
+        argv.windows(2)
+            .find(|w| w[0] == flag)
+            .map(|w| w[1].clone())
+            .unwrap_or_else(|| panic!("prepare {label}: no {flag} in {argv:?}"))
+    };
+    assert_eq!(arg("--state-dir"), phys(state));
+    assert_eq!(
+        arg("--record"),
+        state.join(format!("crusty-{label}.json")).to_string_lossy()
+    );
+    assert_eq!(arg("--repo"), phys(&d.fx.repo));
+    assert_eq!(arg("--review-dir"), phys(&d.main));
+    assert_eq!(arg("--launch-tools"), phys(&tools_dir()));
+    let ctx = captured_context(&d.argv(CRUSTY, label));
+    let expected = state.join(format!(".fake-completion-{label}"));
+    assert_eq!(
+        ctx["autodrive_completion_state"],
+        json!(expected),
+        "crusty {label}: the round must get the private state prepare returned"
+    );
+    assert!(
+        d.completion_argv("dispatch", label).is_some(),
+        "crusty {label}: the driver must dispatch through the completion helper"
+    );
 }
 
 #[test]
@@ -1385,6 +1759,8 @@ fn caller_context_cannot_replace_the_validated_state_root_or_its_record_paths() 
                 "autodrive_resolved_concerns_file={}/wrong.txt",
                 forged.display()
             ),
+            // An absolute repo_path is replaced too, not only a relative one.
+            format!("repo_path={}", forged.display()),
         ];
         let extra: Vec<&str> = overrides.iter().map(String::as_str).collect();
         let out = d.run_with_context(name, state.to_str().unwrap(), &extra);
@@ -1416,6 +1792,139 @@ fn caller_context_cannot_replace_the_validated_state_root_or_its_record_paths() 
                 ctx["autodrive_resolved_concerns_file"],
                 json!(state.join("resolved-concerns.txt"))
             );
+            assert_eq!(
+                ctx["repo_path"],
+                phys(&d.fx.repo),
+                "an absolute caller repo_path must not reach the agent"
+            );
+        }
+    }
+}
+
+/// The completion state is the input to the merge decision (SR-1): a caller
+/// can neither supply it nor have its value reach a round. The driver refuses
+/// it before any helper, round or evaluator starts.
+#[test]
+fn caller_context_cannot_supply_the_completion_state() {
+    require_bash!();
+    if !jq_available() {
+        eprintln!("SKIP: driver CLI fixture requires jq");
+        return;
+    }
+    for name in ["crusty", "merge-ready"] {
+        let d = DriverFixture::new();
+        let state = d.physical_parent.join("records");
+        let forged = d.fx.root().join("caller supplied completion");
+        private_dir(&forged);
+        let forged_state = forged.join("private-state");
+        write(&forged_state, "forged\n");
+        let value = format!("autodrive_completion_state={}", forged_state.display());
+        let out = d.run_with_context(name, state.to_str().unwrap(), &[value.as_str()]);
+        assert!(
+            !out.status.success(),
+            "{name}: a caller-supplied completion state must be refused\n{}",
+            show(&out)
+        );
+        assert_eq!(
+            std::fs::read_dir(&d.capture).unwrap().count(),
+            0,
+            "{name}: refuse before any completion helper, round or evaluator starts"
+        );
+        let both = format!("{}{}", stdout(&out), stderr(&out));
+        assert!(
+            both.contains("autodrive_completion_state"),
+            "{name}: the refusal must name the refused key\n{}",
+            show(&out)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&forged_state).unwrap(),
+            "forged\n",
+            "{name}: the forged file is never touched"
+        );
+    }
+}
+
+/// A caller's exported `CDPATH` must not move a bare relative state or
+/// repository path to a decoy directory, nor add `cd` output to a captured
+/// path (SR-7).
+#[test]
+fn driver_ignores_cdpath_for_bare_relative_state_and_repository_paths() {
+    require_bash!();
+    if !jq_available() {
+        eprintln!("SKIP: driver CLI fixture requires jq");
+        return;
+    }
+    for name in ["crusty", "merge-ready"] {
+        let d = DriverFixture::new();
+        let root = d.fx.root();
+        let state = root.join("review-state");
+        private_dir(&state);
+        // A decoy with the same bare names, searched first through CDPATH.
+        let decoy = root.join("decoy");
+        private_dir(&decoy.join("review-state"));
+        private_dir(&decoy.join("repo"));
+        let out = d
+            .command(name, "review-state", &[])
+            .args(["--repo", "repo", "--review-dir"])
+            .arg(&d.main)
+            .env("CDPATH", format!("{}:.", decoy.display()))
+            .current_dir(&root)
+            .output()
+            .expect("run driver with an exported CDPATH");
+        assert!(out.status.success(), "{name}\n{}", show(&out));
+        assert_eq!(json_line(&out)["loop_result"], "DONE");
+        let round = if name == "crusty" { CRUSTY } else { MERGE };
+        for label in ["round-1", "round-2"] {
+            let record = state.join(format!("{name}-{label}.json"));
+            let argv = d.argv(round, label);
+            let ctx = captured_context(&argv);
+            assert_eq!(ctx["autodrive_record_directory"], json!(phys(&state)));
+            assert_eq!(ctx["autodrive_round_record"], json!(record));
+            assert!(
+                record.is_file(),
+                "{name} {label}: record not in the state dir"
+            );
+            assert_eq!(
+                ctx["autodrive_resolved_concerns_file"],
+                json!(state.join("resolved-concerns.txt"))
+            );
+            assert_eq!(ctx["repo_path"], phys(&d.fx.repo));
+            assert_eq!(ctx["review_dir"], phys(&d.main));
+            assert_eq!(ctx["autodrive_launch_tools"], phys(&tools_dir()));
+            assert_eq!(
+                std::fs::read_to_string(d.capture.join(format!("{round}-{label}.state"))).unwrap(),
+                phys(&state)
+            );
+            let task = argv
+                .windows(2)
+                .find(|w| w[0] == "--context-from-file")
+                .expect("existing task transport");
+            assert_eq!(
+                task[1],
+                format!(
+                    "task_description={}/{name}-task_description.txt",
+                    phys(&state)
+                )
+            );
+            if name == "crusty" {
+                assert_completion_prepare_paths(&d, &state, label);
+            } else {
+                let eval_argv = d.argv(EVALUATOR, label);
+                let eval_ctx = captured_context(&eval_argv);
+                assert_eq!(eval_ctx["loop_repo_path"], phys(&d.fx.repo));
+                assert_eq!(eval_ctx["loop_agent_working_dir"], phys(&d.main));
+                assert_eq!(
+                    eval_argv[eval_argv.iter().position(|a| a == "--working-dir").unwrap() + 1],
+                    phys(&d.main)
+                );
+            }
+        }
+        for decoy_dir in ["review-state", "repo"] {
+            assert_eq!(
+                std::fs::read_dir(decoy.join(decoy_dir)).unwrap().count(),
+                0,
+                "{name}: the driver wrote into the CDPATH decoy {decoy_dir}"
+            );
         }
     }
 }
@@ -1436,6 +1945,12 @@ fn driver_captured_context_renders_prompt_contracts_and_keeps_prior_evidence() {
         let out = d.run(name, state.to_str().unwrap());
         assert!(out.status.success(), "{}", show(&out));
         let round = if name == "crusty" { CRUSTY } else { MERGE };
+        render_round_prompts_from_driver_context(&d, name, round, &state);
+        if name == "crusty" {
+            // #2345: the completion dispatcher, not a `recipe run` from the
+            // driver, launches crusty's evaluator; tests/issue_2336_* cover it.
+            continue;
+        }
         let mut eval_ctx = captured_context(&d.argv(EVALUATOR, "round-2"));
         assert_eq!(eval_ctx["loop_findings_previous"], EARLIER_FINDINGS);
         assert_eq!(eval_ctx["loop_findings_current"], EARLIER_FINDINGS);
@@ -1462,33 +1977,6 @@ fn driver_captured_context_renders_prompt_contracts_and_keeps_prior_evidence() {
                 );
             }
         }
-        let mut ctx = captured_context(&d.argv(round, "round-2"));
-        // These two outputs are produced by the real deterministic steps,
-        // since the external recipe CLI is intentionally faked in this test.
-        ctx["crusty_round_context"] = crusty_round_context(&d.fx);
-        assert_eq!(
-            ctx["crusty_round_context"]["resolved_concerns"],
-            EARLIER_FINDINGS
-        );
-        ctx["merge_ready_files"] = merge_ready_files(&d.fx);
-        ctx["crusty_review"] = json!(EARLIER_FINDINGS);
-        ctx["merge_ready_review"] = json!(EARLIER_FINDINGS);
-        for (r, step) in SIX_PROMPTS.iter().filter(|(r, _)| *r == round) {
-            let p = render(&prompt(r, step), &ctx);
-            assert_checkout_paths(&p, &phys(&d.fx.repo), &phys(&d.main), step);
-            assert!(
-                p.contains(&format!("`{}`", phys(&state))),
-                "{r}/{step}: give the authoritative directory as a literal value"
-            );
-            assert!(p.contains(state.join(format!("{name}-round-2.json")).to_str().unwrap()));
-            assert!(
-                p.lines().any(|l| l == R2),
-                "{r}/{step}: exact restriction missing"
-            );
-            for leak in STATE_DIR_LEAKS {
-                assert!(!p.contains(leak), "{r}/{step}: leaked {leak}");
-            }
-        }
         // The evidence collector is a separate sub-recipe. Its already
         // established inline JSON transport is represented here, not run.
         eval_ctx["loop_evidence"] = json!({
@@ -1511,6 +1999,80 @@ fn driver_captured_context_renders_prompt_contracts_and_keeps_prior_evidence() {
             assert!(
                 p.contains(eval_ctx[key].as_str().unwrap()),
                 "evaluator lost {key}"
+            );
+        }
+    }
+}
+
+/// Renders every covered prompt of `round` against the context the real
+/// driver passed for round-2, so the paths come from the driver, not from a
+/// hand-built fixture. For crusty this includes [`STEP07`] and the
+/// driver-owned completion state.
+fn render_round_prompts_from_driver_context(
+    d: &DriverFixture,
+    name: &str,
+    round: &str,
+    state: &Path,
+) {
+    let mut ctx = captured_context(&d.argv(round, "round-2"));
+    // These two outputs are produced by the real deterministic steps,
+    // since the external recipe CLI is intentionally faked in this test.
+    ctx["crusty_round_context"] = crusty_round_context(&d.fx);
+    assert_eq!(
+        ctx["crusty_round_context"]["resolved_concerns"],
+        EARLIER_FINDINGS
+    );
+    ctx["merge_ready_files"] = merge_ready_files(&d.fx);
+    ctx["crusty_review"] = json!(EARLIER_FINDINGS);
+    ctx["merge_ready_review"] = json!(EARLIER_FINDINGS);
+    let record = state.join(format!("{name}-round-2.json"));
+    let mut rendered_steps = Vec::new();
+    for (r, step) in COVERED_PROMPTS.iter().filter(|(r, _)| *r == round) {
+        let p = render(&prompt(r, step), &ctx);
+        assert_checkout_paths(&p, &phys(&d.fx.repo), &phys(&d.main), step);
+        assert!(
+            p.contains(&format!("`{}`", phys(state))),
+            "{r}/{step}: give the authoritative directory as a literal value"
+        );
+        assert!(p.contains(record.to_str().unwrap()));
+        assert!(
+            p.lines().any(|l| l == R2),
+            "{r}/{step}: exact restriction missing"
+        );
+        for leak in STATE_DIR_LEAKS {
+            assert!(!p.contains(leak), "{r}/{step}: leaked {leak}");
+        }
+        if *step == STEP07 {
+            let completion = ctx["autodrive_completion_state"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| panic!("{STEP07}: the driver passed no completion state"));
+            assert!(Path::new(completion).is_absolute());
+            assert!(
+                p.contains(completion),
+                "{STEP07}: give the driver's completion state literally\n{p}"
+            );
+            for sidecar in ["findings", "minor", "severity"] {
+                assert!(
+                    p.contains(&format!("{}.{sidecar}", record.display())),
+                    "{STEP07}: give the .{sidecar} sidecar by absolute path\n{p}"
+                );
+            }
+        }
+        rendered_steps.push(*step);
+    }
+    if name == "crusty" {
+        assert!(
+            rendered_steps.contains(&STEP07),
+            "crusty: {STEP07} must be rendered from the driver's context"
+        );
+    }
+    for dir in [&d.fx.plain, &d.fx.repo, &d.main] {
+        for marker in ["injected", "injected-too"] {
+            assert!(
+                !dir.join(marker).exists(),
+                "findings were executed in {}",
+                dir.display()
             );
         }
     }

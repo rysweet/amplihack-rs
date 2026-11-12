@@ -403,7 +403,7 @@ steps:
           EMPTY) : ;;
           UNPARSEABLE)
             unparseable_count=$((unparseable_count + 1))
-            _cv_dir="${OUTPUT_DIR:-/tmp}/cycle_${CYCLE:-0}"
+            _cv_dir="${OUTPUT_DIR:-${TMPDIR:-/tmp}}/cycle_${CYCLE:-0}"
             if ! mkdir -p "$_cv_dir" 2>/dev/null; then _cv_dir=$(dirname "$_cv_raw"); fi
             chmod 700 "$_cv_dir" 2>/dev/null || true
             _cv_art="$_cv_dir/validator_${_cv_label}_raw.txt"

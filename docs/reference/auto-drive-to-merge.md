@@ -2656,21 +2656,37 @@ decision output. It cannot edit evidence or phase state.
 
 ### Paths the agent prompts give
 
-All six agent steps in these four recipes name the PR worktree and main
+All seven agent steps in these four recipes name the PR worktree and main
 checkout by absolute path, including conditional steps and steps that need no
-state files (#2222). The round prompts put these locations and resources under
+state files (#2222). The count was six until #2345 added
+`step-07-select-next-action` to the crusty round; that step is covered on the
+same terms as the others. The round prompts put these locations and resources under
 “Files you need (#2222)”.
 
 | Recipe | Agent steps | Required state files and resources |
 | --- | --- | --- |
-| `autodrive-crusty-round.yaml` | `step-02-crusty-review`, `step-04-address-concerns` | `{{autodrive_record_directory}}`, `{{autodrive_round_record}}`, `{{autodrive_resolved_concerns_file}}`, `{{crusty_round_context.merge_ready_skill_md}}`, `{{crusty_round_context.auto_drive_skill_dir}}` |
+| `autodrive-crusty-round.yaml` | `step-02-crusty-review`, `step-04-address-concerns` | `{{autodrive_record_directory}}`, `{{autodrive_round_record}}`, `{{autodrive_resolved_concerns_file}}` (the path must be set; the file may be absent and is not searched for), `{{crusty_round_context.merge_ready_skill_md}}`, `{{crusty_round_context.auto_drive_skill_dir}}` |
+| `autodrive-crusty-round.yaml` | `step-07-select-next-action` | `{{autodrive_record_directory}}`, `{{autodrive_round_record}}` and its `.findings`, `.minor` and `.severity` sidecars, `{{autodrive_completion_state}}` |
 | `autodrive-merge-round.yaml` | `step-02-merge-ready-assessment`, `step-04-address-blockers` | `{{autodrive_record_directory}}`, `{{autodrive_round_record}}`, `{{merge_ready_files.skill_md}}`, `{{merge_ready_files.auto_drive_skill_dir}}`; the assessment also receives `{{merge_ready_files.template}}` |
 | `loop-health-evaluator.yaml` | `step-02-evaluate-loop-health` | No state files needed and no discovery required; evidence, history and recent round output arrive in context |
 | `auto-drive-light.yaml` | `light-implement` | No state files needed and no discovery required; task and checkout locations arrive in the prompt |
 
-The driver supplies authoritative absolute `repo_path` and `review_dir` to
-rounds, overriding a caller's relative `repo_path` context. The auto-drive
-evaluator receives that same pair through `loop_repo_path` and
+The driver supplies absolute `repo_path` and `review_dir` values to rounds.
+Four keys are replaced: `repo_path`, `autodrive_record_directory`,
+`autodrive_round_record` and `autodrive_resolved_concerns_file`. The driver
+passes its `repo_path` and derives the other three from the canonical state
+directory, and passes all four after the caller's `--context` values, so a
+caller value for any of them, relative or absolute, is replaced. The round is invoked with the
+completion context first, then the caller context, then every driver-owned
+key, so the driver's values always come last.
+
+Three keys are not replaced but refused: `review_dir`,
+`autodrive_launch_tools` and `autodrive_completion_state`. A `--context`
+naming any of them stops the drive before a round starts.
+`autodrive_completion_state` is the input to the crusty completion decision
+([completion contract](autodrive-crusty-completion.md)), so step-07 writes its
+decision only to the driver's path. The auto-drive
+evaluator receives the same `repo_path` and `review_dir` pair through `loop_repo_path` and
 `loop_agent_working_dir`. Light-build's existing `light-prereqs` bash step
 uses `autodrive_worktree_guard.sh review-dir` to resolve the main checkout,
 even when the caller's `repo_path` names a linked worktree. It returns
@@ -2709,6 +2725,16 @@ The resolved-concerns file can be absent before any earlier findings exist;
 its absolute path is still supplied, and the inline context is authoritative.
 Neither case permits a replacement search.
 
+Step-07 sorts its inputs into required and optional:
+
+| Input | Status in step-07 | When it is empty or missing |
+| --- | --- | --- |
+| `{{autodrive_record_directory}}`, `{{autodrive_round_record}}`, `{{autodrive_completion_state}}` | Required | An empty value stops the step with a report naming the input. |
+| `{{autodrive_round_record}}.findings`, `.minor`, `.severity` | Optional | A round that produced no sidecar leaves it absent; the step treats it as empty and does not search for it. |
+
+A required file that is named but missing is reported by name, and the
+step does not search for it.
+
 Crusty's resources come only from the trusted launch-side bundle.
 Merge-ready retains ordered candidates and same-installation relationships;
 checkout-sourced criteria remain advisory. See [The merge-ready files](#the-merge-ready-files)
@@ -2720,12 +2746,28 @@ An absolute path identifies a location, not authenticity.
 Crusty's resolved concern ids arrive inline through
 `crusty_round_context.resolved_concerns`; the exact absolute
 `autodrive_resolved_concerns_file` path is also supplied. The producer uses
-`jq --arg` for scalar values and `jq --rawfile` for findings to preserve
-embedded and trailing newlines. The driver preserves trailing newlines
+`jq --arg` for scalar values and `jq --rawfile` for findings, so findings are
+kept verbatim, including quotes, backslashes, `$(...)`, backticks, `{{ }}`,
+control bytes and embedded and trailing newlines. The driver preserves trailing newlines
 with a non-newline sentinel around shell file reads. Findings never enter
 executable shell source or recursive template expansion. The concern-fixing
 step receives the preceding `crusty_review`; the blocker-fixing step receives
 `merge_ready_review`. Neither needs to locate an earlier record.
+
+`step-01-round-context` captures the `jq` output, checks its exit status and
+only then prints it. When serialisation fails, `jq`'s own message goes to
+stderr, followed by
+
+```
+ERROR: crusty-context-serialization-failed: jq could not encode the round context with the resolved concerns from <resolved-concerns file>; no context is published
+```
+
+The step exits `1` and leaves stdout empty, so no partial
+`crusty_round_context` is published. The error names the resolved-concerns
+file, with control bytes removed, but never echoes its contents.
+`step-06-write-round-record` runs
+`/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_crusty_record.sh` from the launch
+tools only, and the record's `head_sha` is the SHA observed in the round.
 
 The evaluator receives measured `loop_evidence`, accumulated `loop_history`,
 current and previous findings, test and CI signals, and recent
@@ -2741,6 +2783,12 @@ physical resolution, preserving ownership, permissions and rejection of a
 state-directory symlink. Once the directory exists and validation succeeds,
 a checked `cd --` and `pwd -P` replace the internal directory value with its
 physical absolute path. Resolution failure stops with a named error.
+
+The driver runs `unset CDPATH` directly after `set -uo pipefail`, before its
+first `cd`. An inherited `CDPATH` therefore cannot send a bare relative state
+or repository path such as `--state-dir state` to a directory of the same
+name elsewhere, and cannot add the extra line that `cd` prints when it uses
+`CDPATH` to the captured path.
 
 Relative input is resolved against the original invocation directory. For
 example, `--state-dir 'review state'` selects that directory beneath the
@@ -2775,6 +2823,15 @@ prompt-location audit, not a claim that every bundled example was executed.
 | `transcript-viewer/SKILL.md`, `session-to-agent/reference.md` | Transcript lookup is rooted in explicitly named projects/session directories; unchanged. |
 | `session-replay/SKILL.md` | Trace discovery uses the supplied trace directory (default `.claude-trace`) and only its JSONL children; unchanged. |
 | `quality-loop.yaml`, `markitdown/examples.md` | Review diff path is supplied directly; document conversion uses a named input directory; unchanged. |
+| `smart-execute-routing.yaml` `cleanup-helper` | Cleaned a bare `/tmp/smart-orch-ws-*.json` glob while the writer uses `$TMPDIR`. Now runs `rm -f -- "${TMPDIR:-/tmp}"/smart-orch-ws-*.json`, so cleanup matches the writer. The glob can still remove a concurrent run's file, as before; that is left to a follow-up issue. |
+| `quality-audit-cycle.yaml` `merge-validations` | Fell back to a bare `/tmp` for raw validator output. Now uses `${OUTPUT_DIR:-${TMPDIR:-/tmp}}`; an explicit `output_dir` still wins, and `chmod 700` is kept. The predictable `cycle_N` directory name is unchanged and is left to the same follow-up issue. |
+| `workflow-worktree.yaml` runtime-root fallback | When `tools/workflow_runtime_root.sh` is missing, the step uses `${AMPLIHACK_RUNTIME_ROOT:-${XDG_RUNTIME_DIR:-/tmp}/amplihack-runtime/$BRANCH_NAME}`. This follows the runtime-directory convention rather than `TMPDIR` and is outside #2222; unchanged. |
+| Skill Markdown examples (`transcript-viewer`, `session-to-agent`, `qa-team` README, `smart-test`, `eval-recipes-runner` Dockerfile, `signal-setup`) | User documentation, not recipe steps; unchanged. |
+
+The two audited steps above no longer write to, or clean, a bare `/tmp/...`
+path; each now falls back through `${TMPDIR:-/tmp}`. This is not a rule for
+every recipe step. Skill folders are checked only for scripts that recipe
+steps run.
 
 The PPTX helper is anchored to the absolute directory containing the loaded
 `pptx/SKILL.md`, supplied by the skill loader, independently of the project.
@@ -2788,9 +2845,10 @@ by an auto-drive prompt.
 uses the production `recipe_runner_rs::context::RecipeContext::render` API
 from the Cargo.lock-pinned revision
 `90286bc50b84ded773795d2c8301b689f680db0b` and real driver/helper subprocesses.
-It enumerates every agent step in all
-four recipes and compares that inventory with the six covered prompts,
-including conditional and no-state steps. The restriction must be an exact
+It enumerates every `agent:` step in all
+four recipes, with no fixed list, so the seven covered prompts, including
+`step-07-select-next-action`, conditional steps and no-state steps, are found
+from the YAML. A new agent step that omits the restriction fails the test. The restriction must be an exact
 rendered line; other prose assertions may collapse whitespace.
 
 Coverage checks both absolute checkout locations before the restriction,
@@ -2806,7 +2864,44 @@ symlinked parent. Only external CLI boundaries are replaced. They capture
 round/evaluator context, render prompts from it, and use structured records
 to complete deterministically. Quotes, newlines and template-like findings
 exercise context transport. A state-directory symlink itself is rejected
-before a round or evaluator runs.
+before a round or evaluator runs. Caller context that names `repo_path`,
+`autodrive_record_directory`, `autodrive_round_record` or
+`autodrive_resolved_concerns_file` is replaced by the driver's values; caller
+context that names `autodrive_completion_state` is refused before any round
+runs. A decoy `CDPATH` directory does not capture a bare relative state or
+repository path.
+
+| Test | Checks |
+| --- | --- |
+| `all_seven_prompts_carry_the_no_search_missing_file_and_scratch_lines` | Each of the seven rendered prompts holds the never-search sentence as an exact line, the missing-file instruction and the `$TMPDIR` scratch instruction. |
+| `step07_names_the_record_its_sidecars_and_the_completion_state_by_absolute_path` | The rendered step-07 prompt carries the “Files you need (#2222)” block with the literal state directory, round record, `.findings`, `.minor` and `.severity` sidecars and completion state, the sentence that makes the state directory, round record and completion state required (stop if empty), and the sentence that lets an absent sidecar be treated as empty without a search. |
+| `caller_context_cannot_replace_the_validated_state_root_or_its_record_paths` | Caller values for the state root, round record and resolved-concerns file reach no round; the driver's absolute paths do. |
+| `caller_context_cannot_supply_the_completion_state` | A `--context autodrive_completion_state=...` stops the driver before any round or evaluator runs. |
+| `step01_serializes_hostile_findings_and_step06_keeps_the_observed_sha` | Findings holding quotes, backslashes, `$(...)`, backticks, newlines, `{{ }}` and a control byte come out of step-01 byte for byte; step-06, run through `autodrive_crusty_record.sh` with a temporary `AUTODRIVE_COMPLETION_STATE`, records the observed `head_sha`. |
+| `step01_serializer_failure_publishes_no_context` | A failing `jq` first on `PATH`, asserted to have run, gives a non-zero exit, `crusty-context-serialization-failed` on stderr, empty stdout and no echoed findings. |
+| `driver_ignores_cdpath_for_bare_relative_state_and_repository_paths` | The driver resolves bare relative paths against the invocation directory despite a decoy `CDPATH`. |
+
+[`issue_2222_tmp_fallbacks.rs`](../../crates/amplihack-cli/tests/issue_2222_tmp_fallbacks.rs)
+runs the two recipe steps whose `/tmp` fallback moved, with `TMPDIR` set to a
+temporary directory:
+
+| Test | Checks |
+| --- | --- |
+| `smart_execute_cleanup_removes_workstream_files_from_tmpdir` | The `smart-execute-routing.yaml` `cleanup-helper` removes `smart-orch-ws-*.json` from `$TMPDIR` and leaves other files there. |
+| `quality_audit_empty_output_dir_keeps_raw_output_under_tmpdir` | With `output_dir` set empty, `merge-validations` keeps an unparseable validator's raw output under `$TMPDIR/cycle_N`. |
+| `quality_audit_explicit_output_dir_still_wins_over_tmpdir` | With `output_dir` set, the raw output goes there and nothing is written under `$TMPDIR`. |
+
+The empty-`output_dir` test is the only one that names a path in the shared
+`/tmp`: `/tmp/cycle_2222-<unique>`, where the unique part is the name of the
+test's own temporary directory. It asserts that the path is absent before the step runs and
+still absent afterwards, which proves the fallback moved. A drop guard
+removes that literal path only if the test could have created it; the test
+writes nothing else outside its temporary directories.
+
+The fixtures put the fake commands first on `PATH`, followed by the inherited
+`PATH`. Every test uses a temporary home, work and profile root,
+`GIT_CONFIG_GLOBAL=/dev/null`, and unset `GH_TOKEN` and `GITHUB_TOKEN`; none
+reads `~/.claude`, `~/.amplihack` or a credential file.
 
 Resource subprocess tests run `step-01-round-context` and
 `autodrive_merge_ready_files.sh` against synthetic bundle fixtures, including
