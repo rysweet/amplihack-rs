@@ -5493,7 +5493,9 @@ printf 'crusty-loop\t2026-10-03T00:00:00Z\n' > "${OLD}/phases.tsv"
 ln -s "${OLD}/phases.tsv" "${OLD}/crusty-latest.json"
 pd_run "${OLD}"
 SET_ASIDE="$(find "${OLD}" -mindepth 1 -maxdepth 1 -type d -name 'untrusted-*' -print 2>/dev/null)"
-if [ "${PD_RC}" -eq 0 ] && ! writable_by_others "${OLD}" && [ "$(printf '%s\n' "${SET_ASIDE}" | grep -c .)" = "1" ] \
+if [ "${PD_RC}" -eq 0 ] && ! writable_by_others "${OLD}" \
+   && [ -n "$(find "${OLD}" -maxdepth 0 -perm 700 -print 2>/dev/null)" ] \
+   && [ "$(printf '%s\n' "${SET_ASIDE}" | grep -c .)" = "1" ] \
    && [ ! -e "${OLD}/phases.tsv" ] && [ ! -L "${OLD}/crusty-latest.json" ] \
    && [ "$(cat "${SET_ASIDE}/phases.tsv" 2>/dev/null)" = "$(printf 'crusty-loop\t2026-10-03T00:00:00Z')" ] \
    && [ -L "${SET_ASIDE}/crusty-latest.json" ] && ! writable_by_others "${SET_ASIDE}" \
