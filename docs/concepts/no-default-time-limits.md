@@ -149,6 +149,7 @@ agent step or a recipe run.
 | Version and readiness checks | `claude --version`, `copilot --version`, `node --version` | A version check that hangs means a broken install |
 | `git`, `gh`, `az` and `tmux` queries | `timeout 30`/`timeout 60` around `gh` and `az` reads in `workflow-prep`, `workflow-design`, `workflow-terminal-state` | A read query that hangs means a network or auth fault |
 | `gh` reads and writes through the retry helper | `timeout 60 gh ...` in `workflow_gh_retry.sh` and `workflow-terminal-state` | A single `gh` call that hangs means a network or auth fault |
+| Tracking-issue reads | `timeout 30 gh api` in `workflow_issue_tracking.sh`: one read per candidate issue when step-03 looks for a tracking issue, and one read of the caller's issue when `strict_delivery=true` | A single issue read that hangs means a network or auth fault. A failed candidate read skips that candidate; a failed strict-delivery read stops the run with exit 2 rather than picking another issue |
 | Identity preflight | `AMPLIHACK_IDENTITY_PREFLIGHT_TIMEOUT` (default 30 s) in `workflow_identity_preflight.sh` | Bounds each `gh` identity query before a run starts |
 | `gh pr create` in `quick-change` | `timeout 1800` | Hang guard on one GitHub write |
 | Auto-drive stop comment | `timeout 900` around one `gh pr comment` in `tools/autodrive_budget.sh` | Bounds one comment post after a loop has already stopped; it does not limit the drive |
@@ -194,6 +195,11 @@ below the registered timeout. The margin bounds no work.
 | `RECIPE_RUNNER_POLL_INTERVAL` (100 ms) | How often the runner wait checks for exit or a stop request; it never ends the wait |
 | `DEFAULT_LATEST_TAG_TTL_MS` (6 h) in `npm/lib/bootstrap.js` | How long the npm launcher caches the latest release tag |
 | `max_runtime` 7200 and 10800 in the multitask skill's `TIMEOUT_LIFECYCLE.md` | Example values for a workstream that sets its own limit; `max_runtime` is optional and has no default |
+| `LOCK_TIMEOUT` (5 s) in `limit_resume/guard.rs`, passed to `lock_exclusive_timeout` | How long one hook waits to take the resume lock; on expiry that commit fails as an I/O error. It bounds one lock call, not a session or a wait for capacity |
+| `LOCK_TIMEOUT` (1 s) in `limit_resume/log.rs` and (10 s) in `commands/agent/store.rs` | Other constants with the same name. Each bounds one `lock_exclusive_timeout` call: the log append is skipped, and a registry change fails with "try again" |
+| `STOP_SLACK_SECS` (1 s) in `rotator_status::swap_record` | A clock allowance: a login swap counts as "after the stop" if it falls no more than one second before the hook's start. It is a comparison on timestamps and ends nothing |
+| `READ_T` (60 s) in `profile/tests_usage_direct.rs` | Test-only deadline on one usage read against a fake server; it never runs outside `cargo test` |
+| `RACE_LOCK_TIMEOUT` (120 s) in `amplihack-hooks/tests/limit_resume_fs.rs` | Test-only lock wait for racing hook commits, set long enough that the race result, not the wait, decides the test |
 
 ## Rules for new code
 
