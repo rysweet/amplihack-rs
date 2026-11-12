@@ -1505,7 +1505,7 @@ without publishing twice or advancing the sequence twice. Keep a pending
 completion journal until recovery finishes. See the
 [swap-record contract](../reference/profile-command.md#swap-record).
 
-Rotation preserves the existing event contract introduced by
+Rotation preserves the existing event contract consumed by
 [the merged session-resumption change (#2141)](https://github.com/rysweet/amplihack-rs/pull/2141).
 After fallback, the record names the candidate that actually became live
 and the original outgoing profile. A recovery-storage name never replaces

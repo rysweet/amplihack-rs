@@ -8354,10 +8354,11 @@ any identity read, refreshes that login once when its token has expired, as
 the [direct read](#token-refresh) refreshes a profile's login, under
 `~/.claude/.oauth_refresh.lock`.
 
-The refresh does not depend on the rotate ledger or the lease view, so an
-unreadable ledger or a lease view that bars the live profile does not stop it.
-That exception covers `~/.claude` only: a profile folder the lease view bars is
-never refreshed. These still refuse the refresh:
+Normal assessment resolves effective custody from the rotate ledger and
+lease view, preserving exclusions and protections for loaned or hosted
+logins. If the rotate ledger is unreadable, the existing refresh exception
+covers `~/.claude` alone before the unreadable-ledger stop; profile folders
+are not assessed using unknown ownership. These still refuse the refresh:
 
 | Refusal | Reason in the log |
 |---------|-------------------|
@@ -10625,7 +10626,7 @@ failure retains pending completion evidence for recovery and stops further
 swaps until resolved. A rollback or uncertain custody publishes no success
 event. Manual switching retains its existing behaviour.
 
-This preserves the existing reader contract introduced by
+This preserves the existing reader contract used by
 [the merged session-resumption change (#2141)](https://github.com/rysweet/amplihack-rs/pull/2141).
 Duplicate recovery and candidate fallback use the same event format and
 publication path. The complete event identity, including its sequence, is
