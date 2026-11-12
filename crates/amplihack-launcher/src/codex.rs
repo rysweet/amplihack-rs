@@ -1,7 +1,7 @@
 //! OpenAI Codex launcher with auto-install and auto-update.
 //!
 //! Matches Python `amplihack/launcher/codex.py`:
-//! - Version detection via `codex --version`
+//! - Shared discovery and version-specific native/helper validation
 //! - Auto-install via npm
 //! - Auto-update to latest version
 //! - Preserving TOML configuration
@@ -10,14 +10,10 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::flag_matrix::AgentBinary;
 use crate::prompt_delivery::{DeliveredCommand, build_tool_command_from_env};
-
-/// Maximum time to wait for a version-check subprocess.
-const VERSION_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Codex binary detection result.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -29,24 +25,15 @@ pub struct CodexInfo {
 
 /// Check if Codex is installed and get version info.
 pub fn check_codex() -> CodexInfo {
-    let child = Command::new("codex")
-        .arg("--version")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn();
-    match child.and_then(|c| wait_with_timeout(c, VERSION_CHECK_TIMEOUT)) {
-        Ok(output) if output.status.success() => {
-            let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let path = which_binary("codex");
-            info!(version = %version, "Codex detected");
-            CodexInfo {
-                installed: true,
-                version: Some(version),
-                path,
-            }
-        }
-        _ => {
-            debug!("Codex not found or timed out");
+    let resolution = codex_resolution();
+    match resolution.target {
+        Some(target) => CodexInfo {
+            installed: true,
+            version: Some(target.version),
+            path: Some(target.path),
+        },
+        None => {
+            warn!("{}", resolution.rejection_report("codex", "@openai/codex"));
             CodexInfo {
                 installed: false,
                 version: None,
@@ -54,6 +41,11 @@ pub fn check_codex() -> CodexInfo {
             }
         }
     }
+}
+
+fn codex_resolution() -> amplihack_utils::launch_target::Resolution {
+    use amplihack_utils::launch_target::{OverrideOrigin, resolve_uncached};
+    resolve_uncached("codex", OverrideOrigin::User)
 }
 
 /// Install Codex via npm.
@@ -114,65 +106,45 @@ pub fn ensure_and_build(
     extra_args: &[String],
     auto_install: bool,
 ) -> Result<Command> {
-    let info = check_codex();
-    if !info.installed {
-        if auto_install {
-            install_codex()?;
-        } else {
-            anyhow::bail!("Codex is not installed. Run `npm install -g @openai/codex` to install.");
+    use amplihack_utils::launch_target::InstallDecision;
+    let mut resolution = codex_resolution();
+    if resolution.target.is_none() {
+        let original = resolution.rejection_report("codex", "@openai/codex");
+        let decision =
+            amplihack_utils::launch_target::decide_install("codex", &resolution, None, None);
+        if decision == InstallDecision::Abstain {
+            anyhow::bail!(
+                "{original}\nValidation is inconclusive; automatic repair was not attempted. Select a supported complete installation or address the reported inspection failure."
+            );
+        }
+        if !auto_install || decision == InstallDecision::BrokenOverride {
+            anyhow::bail!(
+                "{original}\nRepair the installation with npm install -g @openai/codex, or change/unset AMPLIHACK_CODEX_BINARY_PATH and CODEX_BINARY_PATH."
+            );
+        }
+        eprintln!("{original}");
+        install_codex()
+            .map_err(|error| anyhow::anyhow!("{original}\nCodex repair failed: {error:#}"))?;
+        resolution = codex_resolution();
+        if resolution.target.is_none() {
+            anyhow::bail!(
+                "{original}\nCodex remains unusable after npm repair:\n{}",
+                resolution.rejection_report("codex", "@openai/codex")
+            );
         }
     }
-    let delivered = build_codex_command_with_prompt_delivery(prompt, project_path, extra_args)?;
+    let target = resolution.target.expect("validated above");
+    let delivered = crate::prompt_delivery::build_codex_command_at(
+        &target.path,
+        project_path,
+        extra_args,
+        prompt,
+    )?;
     anyhow::ensure!(
         delivered.stdin_payload.is_none(),
         "Codex exec requires build_codex_command_with_prompt_delivery and explicit stdin ownership"
     );
     Ok(delivered.command)
-}
-
-fn which_binary(name: &str) -> Option<PathBuf> {
-    Command::new("which")
-        .arg(name)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()))
-}
-
-/// Wait for a child process with a timeout, killing it if it exceeds the limit.
-fn wait_with_timeout(
-    mut child: std::process::Child,
-    timeout: Duration,
-) -> std::io::Result<std::process::Output> {
-    use std::io;
-    let start = std::time::Instant::now();
-    loop {
-        match child.try_wait()? {
-            Some(status) => {
-                let stdout = child.stdout.map_or_else(Vec::new, |mut s| {
-                    let mut buf = Vec::new();
-                    let _ = io::Read::read_to_end(&mut s, &mut buf);
-                    buf
-                });
-                let stderr = child.stderr.map_or_else(Vec::new, |mut s| {
-                    let mut buf = Vec::new();
-                    let _ = io::Read::read_to_end(&mut s, &mut buf);
-                    buf
-                });
-                return Ok(std::process::Output {
-                    status,
-                    stdout,
-                    stderr,
-                });
-            }
-            None if start.elapsed() >= timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(io::Error::new(io::ErrorKind::TimedOut, "process timed out"));
-            }
-            None => std::thread::sleep(Duration::from_millis(50)),
-        }
-    }
 }
 
 #[cfg(test)]

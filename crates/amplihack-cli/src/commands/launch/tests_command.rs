@@ -1179,9 +1179,12 @@ fn build_inherit(name: &str, resume: bool, env: &[(&str, &str)], extra: &[&str])
         version: Some("1.0.0".to_string()),
     };
     let extra: Vec<String> = extra.iter().map(|a| a.to_string()).collect();
+    // The system-prompt append is suppressed above, so no contract path is
+    // needed (issue #2030), and no hooks settings file is passed (#2279).
     let (cmd, applied) = super::command::build_launch_command(
-        &binary, resume, false, false, &extra, None, false, None,
-    );
+        &binary, resume, false, false, &extra, None, false, None, None, None,
+    )
+    .expect("the append is suppressed, so no contract path is required");
     Built {
         applied,
         args: cmd
@@ -1480,4 +1483,200 @@ fn test_1883_gateway_model_wins_over_the_inherited_model() {
         b.args
     );
     assert_ne!(env_val(&b, "ANTHROPIC_MODEL"), Some("claude-opus-5-5"));
+}
+
+/// A codex agent step inside a codex run gets the inherited `--model` and
+/// `-c model_reasoning_effort=L` before `exec`, and the #1985/#2317 sandbox
+/// and hook-trust flags (from `codex_agent_step_args`) right after `exec`,
+/// with the step's own arguments last. codex 0.166 applies a root-level
+/// `--model` and `-c` to `exec`, so this is the argv codex accepts.
+#[test]
+fn test_1883_codex_agent_step_keeps_inherited_flags_before_exec_and_step_flags_after() {
+    let b = build_inherit(
+        "codex",
+        false,
+        &[
+            ("AMPLIHACK_PARENT_EFFORT", "high"),
+            ("AMPLIHACK_PARENT_MODEL", "gpt-5.5"),
+            ("AMPLIHACK_RECIPE_RUN_ID", "run-1883"),
+            ("AMPLIHACK_AGENT_BINARY", "codex"),
+        ],
+        &["exec", "--output-last-message", "/run/final-message", "-"],
+    );
+    let model = pos(&b.args, "--model");
+    assert_eq!(b.args[model + 1], "gpt-5.5");
+    let effort = pos(&b.args, "model_reasoning_effort=high");
+    assert_eq!(b.args[effort - 1], "-c");
+    let exec = pos(&b.args, "exec");
+    assert!(model < exec && effort < exec, "{:?}", b.args);
+    let step = vec!["exec", "--output-last-message", "/run/final-message", "-"]
+        .into_iter()
+        .map(String::from)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        b.args[exec..],
+        super::codex_agent_step::codex_agent_step_args(&step)[..],
+        "{:?}",
+        b.args
+    );
+}
+
+// ---- Issue #1985: Codex agent-step flags through build_command ----
+
+fn codex_binary() -> BinaryInfo {
+    BinaryInfo {
+        name: "codex".into(),
+        path: PathBuf::from("/usr/bin/codex"),
+        version: None,
+    }
+}
+
+fn argv_of(command: Command) -> Vec<String> {
+    command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect()
+}
+
+fn strings(items: &[&str]) -> Vec<String> {
+    items.iter().map(|s| (*s).to_string()).collect()
+}
+
+/// #2317: a Codex agent step gets the same trust as a Claude step.
+#[test]
+fn codex_agent_step_args_carry_no_workspace_write() {
+    let extra = strings(&["exec", "--output-last-message", "/run/final-message", "-"]);
+    let args = with_uvx_detection_disabled(|| {
+        argv_of(build_command(&codex_binary(), false, false, false, &extra))
+    });
+    assert!(
+        !args
+            .iter()
+            .any(|a| a.contains("workspace-write") || a.contains("sandbox_workspace_write")),
+        "{args:?}"
+    );
+}
+
+#[test]
+fn codex_agent_step_gets_full_access_and_hook_trust_after_exec() {
+    let extra = strings(&["exec", "--output-last-message", "/run/final-message", "-"]);
+    let args = with_uvx_detection_disabled(|| {
+        argv_of(build_command(&codex_binary(), false, false, false, &extra))
+    });
+    assert_eq!(
+        args,
+        strings(&[
+            "exec",
+            "--sandbox",
+            "danger-full-access",
+            "--dangerously-bypass-hook-trust",
+            "--output-last-message",
+            "/run/final-message",
+            "-",
+        ])
+    );
+}
+
+#[test]
+fn codex_agent_step_respects_caller_sandbox_in_build_command() {
+    let extra = strings(&["exec", "--sandbox", "read-only", "-"]);
+    let args = with_uvx_detection_disabled(|| {
+        argv_of(build_command(&codex_binary(), false, false, false, &extra))
+    });
+    assert_eq!(
+        args,
+        strings(&[
+            "exec",
+            "--dangerously-bypass-hook-trust",
+            "--sandbox",
+            "read-only",
+            "-"
+        ])
+    );
+}
+
+#[test]
+fn codex_agent_step_never_gets_approvals_bypass_from_build_command() {
+    // skip_permissions=true must not turn into Codex's approvals bypass either.
+    let extra = strings(&["exec", "-"]);
+    let args = with_uvx_detection_disabled(|| {
+        argv_of(build_command(&codex_binary(), false, false, true, &extra))
+    });
+    for forbidden in [
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--yolo",
+        "workspace-write",
+        "sandbox_workspace_write.network_access=true",
+    ] {
+        assert!(
+            !args.iter().any(|a| a == forbidden),
+            "{forbidden}: {args:?}"
+        );
+    }
+    assert!(
+        args.iter().any(|a| a == "--dangerously-bypass-hook-trust"),
+        "{args:?}"
+    );
+}
+
+#[test]
+fn codex_interactive_launches_are_unchanged_by_build_command() {
+    let (bare, prompt, resumed, continued) = with_uvx_detection_disabled(|| {
+        let b = codex_binary();
+        (
+            argv_of(build_command(&b, false, false, false, &[])),
+            argv_of(build_command(
+                &b,
+                false,
+                false,
+                false,
+                &strings(&["fix the bug"]),
+            )),
+            argv_of(build_command(&b, true, false, false, &[])),
+            argv_of(build_command(
+                &b,
+                false,
+                false,
+                false,
+                &strings(&["resume", "--last"]),
+            )),
+        )
+    });
+    assert!(bare.is_empty(), "{bare:?}");
+    assert_eq!(prompt, strings(&["fix the bug"]));
+    assert_eq!(resumed, strings(&["resume"]));
+    assert_eq!(continued, strings(&["resume", "--last"]));
+}
+
+#[test]
+fn non_codex_tools_get_no_codex_agent_step_flags() {
+    let extra = strings(&["exec", "-"]);
+    let (claude, copilot) = with_uvx_detection_disabled(|| {
+        let copilot = BinaryInfo {
+            name: "copilot".into(),
+            path: PathBuf::from("/usr/bin/copilot"),
+            version: None,
+        };
+        (
+            argv_of(build_command(
+                &make_binary("/usr/bin/claude"),
+                false,
+                false,
+                false,
+                &extra,
+            )),
+            argv_of(build_command(&copilot, false, false, false, &extra)),
+        )
+    });
+    for args in [&claude, &copilot] {
+        for flag in [
+            "--sandbox",
+            "danger-full-access",
+            "workspace-write",
+            "sandbox_workspace_write.network_access=true",
+            "--dangerously-bypass-hook-trust",
+        ] {
+            assert!(!args.iter().any(|a| a == flag), "{flag}: {args:?}");
+        }
+    }
 }

@@ -52,7 +52,7 @@ The version string comes from the `__version__` attribute in `amplihack/__init__
 | Subcommand   | Description                                                                                 |
 | ------------ | ------------------------------------------------------------------------------------------- |
 | `version`    | Show amplihack version.                                                                     |
-| `agent-binary` | Print the agent CLI that agent steps would run under, and why. `--shell` prints `env -u <each session marker> AMPLIHACK_AGENT_BINARY=<cli> AMPLIHACK_AGENT_BINARY_SOURCE=<tag>`, a prefix for a command started with `tmux new-session`, which gets the tmux server's environment rather than the caller's. The `env -u` part removes the markers the server holds from whatever started it, so use the line inline, inside the double-quoted tmux command, rather than rebuilding it with `tmux new-session -e`, which cannot unset a variable; see [Active Agent Binary](./active-agent-binary.md#handing-the-binary-to-a-detached-launch). |
+| `agent-binary` | Print the agent CLI that agent steps would run under, and why. `--shell` prints `env -u <each session marker> AMPLIHACK_AGENT_BINARY=<cli> AMPLIHACK_AGENT_BINARY_SOURCE=<tag>`, a prefix for a command started with `tmux new-session`, which gets the tmux server's environment rather than the caller's. The `env -u` part removes the markers the server holds from whatever started it, and the parent-watch variables `AMPLIHACK_PARENT_RECIPE_PID`, `AMPLIHACK_PARENT_RECIPE_STARTTIME` and `AMPLIHACK_AUTODRIVE_STATE_DIR` (#1976), so use the line inline, inside the double-quoted tmux command, rather than rebuilding it with `tmux new-session -e`, which cannot unset a variable; see [Active Agent Binary](./active-agent-binary.md#handing-the-binary-to-a-detached-launch). |
 | `wait`       | Sleep for `--seconds N` (0 to 86400) inside the amplihack process, then exit 0. Starts no child process and prints nothing. Use it instead of `tail -f /dev/null` or `timeout N tail -f /dev/null`, which the `pre-tool-use` hook denies; to wait for a command, run it in the background and use `wait $pid`. See [Wait Without Leaving Orphan Processes](../howto/wait-without-orphan-processes.md). |
 | `install`    | Install amplihack agents and tools to `~/.claude`.                                          |
 | `uninstall`  | Remove amplihack agents and tools from `~/.claude`.                                         |
@@ -105,17 +105,19 @@ amplihack update [--skip-install | --no-install]
    message.
 2. Download the platform-specific archive and verify its SHA-256, then
    atomically replace the running binary.
-3. **Unless `--skip-install` was passed**, invoke the same code path as
-   `amplihack install` (in-process — no subprocess) to re-stage framework
-   assets to `~/.amplihack/.claude`. This is non-interactive. Unlike a
-   standalone `amplihack install`, the post-update install **forces a fresh
-   bundle download** from the upstream archive (`REPO_ARCHIVE_URL`) rather
-   than reusing the local `~/.amplihack/amplifier-bundle/` directory. This
-   ensures the new binary always gets matching framework assets (issue #675).
+3. **Unless `--skip-install` was passed**, run the new binary's
+   `amplihack install --force-refresh` as a subprocess to re-stage framework
+   assets. This is non-interactive. Unlike a standalone `amplihack install`, it
+   doesn't reuse `~/.amplihack/amplifier-bundle/` or consult the current
+   directory. It stages from `AMPLIHACK_HOME` when that tree has the new
+   binary's version, and otherwise **fetches the release tag**
+   `v<version>`. This ensures the new binary always gets the bundle belonging
+   to its release. See
+   [Framework source selection](framework-source-selection.md).
 
 If step 2 fails, the install step does **not** run and the original binary
-remains in place. If step 3 fails, the new binary is already installed; you
-can re-run `amplihack install` manually to retry the asset refresh.
+remains in place. If step 3 fails, `amplihack update` exits non-zero and the
+new binary is already installed; you can re-run `amplihack install` manually to retry the asset refresh.
 
 **Examples**
 
@@ -144,9 +146,9 @@ a successful update keeps the binary and the staged framework consistent.
 Prior to issue #675, the post-update install could re-stage the **old** bundle
 from `~/.amplihack/amplifier-bundle/` instead of downloading the new one,
 because `find_bundled_framework_root()` found the stale local copy before
-falling through to the network download. The fix ensures that post-update
-install always downloads a fresh bundle, so new binary + fresh recipes = no
-more "orch_helper.py not found" errors.
+falling through to the network download. The post-update install no longer uses
+that copy. It stages from a same-version `AMPLIHACK_HOME` or fetches the release
+tag, so the recipes always match the new binary.
 
 **Startup-prompt updates**
 

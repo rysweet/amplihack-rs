@@ -123,8 +123,9 @@ fn wrapper_target_dir(entry: &str) -> Result<String, String> {
         .current_dir(workspace_root())
         // The caller's own cache must not stand in for the default under test.
         .env_remove("CARGO_TARGET_DIR")
+        // Nor may a recipe run's work root (issue #1808), which moves the
+        // cache to `<work root>/targets` whenever the caller runs inside one.
         .env_remove("AMPLIHACK_WORK_ROOT")
-        .env_remove("AMPLIHACK_WORK_ROOT_EXPLICIT")
         .env("HOME", &home)
         .env("XDG_CACHE_HOME", home.join(".cache"))
         .env("AMPLIHACK_PRECOMMIT_CACHE_TTL_DAYS", "0")
@@ -518,8 +519,12 @@ fn pre_commit_build_hooks_use_isolated_target_dir() {
         // Either the entry sets it inline, or it runs through the wrapper --
         // and the wrapper is checked for the export, not merely named.
         let inline = entry.contains("CARGO_TARGET_DIR") && entry.contains("/tmp");
+        // Outside the checkout, not "contains /tmp": in an amplihack session
+        // the wrapper puts the cache under AMPLIHACK_WORK_ROOT (issue #1440).
         let via_wrapper = entry.starts_with(HOOK_WRAPPER)
-            && wrapper_target_dir(entry).is_ok_and(|dir| dir.contains("/tmp"));
+            && wrapper_target_dir(entry)
+                .and_then(|dir| assert_isolated_target_dir(&dir, entry))
+                .is_ok();
         assert!(
             inline || via_wrapper,
             "{id} must isolate Cargo build output outside the parent worktree; entry was `{entry}`"

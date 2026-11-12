@@ -263,6 +263,9 @@ fn rotate_log_grammar_is_documented() {
         "damp: <name> later reading shows room; swap-back allowed",
         "#### Rotate reading freshness and swap-back damping",
         "\"swapped_away\": { \"ggrant\": 1793634010 }",
+        // Issue #2211: live reading freshness and the projected swap.
+        "reason=projected",
+        "stale live reading; re-read",
     ] {
         assert!(REFERENCE.contains(line), "reference is missing `{line}`");
     }
@@ -663,14 +666,9 @@ fn docs_describe_hand_change_recovery() {
             "{name} is missing the /login sentence"
         );
         for stem in [
-            "recovered: ~/.claude holds",
             "recovered: ~/.claude and",
             "has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login",
             "ALERT: the account in ~/.claude is not the one the ledger names (live=",
-            "fix 1: amplihack profile login",
-            "no profile has that account; no swap",
-            "the next cycle then recovers",
-            "none needed; the next cycle reads ~/.claude.json again",
             "~/.claude.json has had no account that can be read for 5 minutes or more (live=",
             "no swap until it is fixed; do not /login in ~/.claude before the login there is set aside, it would replace",
             "fix 1: run claude with no CLAUDE_CONFIG_DIR and without /login, then quit it; if",
@@ -705,10 +703,6 @@ fn docs_describe_hand_change_recovery() {
         "alert: <line>",
         "warning: <line>",
         "lost_login",
-        "it matches more than one profile (<M1>, <M2>);",
-        "the account of profile <P1>, <P2> cannot be read, so the match is uncertain;",
-        "the account in ~/.claude.json cannot be read;",
-        "~/.claude has no login;",
         "recovery refused: <reason>;",
         "home_unreadable_since",
         "it does not exist",
@@ -772,6 +766,227 @@ fn docs_describe_the_usage_bar_view() {
         assert!(
             !doc.contains("most capacity first"),
             "{name} doc still describes the old order"
+        );
+    }
+}
+
+// --- Issue #1886: hand-change recovery by credential identity ---------------
+//
+// `rotate/tests_issue_1886.rs` asserts that `SWAP_GRACE` is 600 and that the
+// code's note and ALERT texts are exactly the ones quoted here, so a change on
+// either side fails one of the two tests.
+
+/// The issue #1886 lines, as the reference quotes them.
+const ISSUE_1886_LINES: &[&str] = &[
+    "note: ~/.claude holds the same account as profile <M> (ledger names <L>); nothing moved, the next cycle reads again",
+    "note: cannot tell whose login is in ~/.claude (live=<L>): <why>; nothing moved",
+    "ALERT: ~/.claude holds the same account as profile <M> on two readings (ledger names <L>), but <L> has no login of its own, so recording <M> would leave <L> with no login anywhere; nothing moved, no swap",
+    "recovered: ~/.claude and <M> held the same account; kept ~/.claude, moved <M>'s copy to <backup>/.credentials.json; recorded <M> as live",
+];
+
+/// The `<why>` texts of the cannot-tell note.
+const ISSUE_1886_WHY: &[&str] = &[
+    "~/.claude identity read failed: <cause>",
+    "it holds the same account as more than one profile (<M1>, <M2>)",
+    "profile <P1> not read (<cause>), <P2> not read (<cause>)",
+    "the reads ran out of time",
+    "the last swap time is later than now",
+    "it holds the same account as profile <M>, which is not the account recorded for <M>; run amplihack profile verify",
+    "it holds an account other than the one recorded for <L>; run amplihack profile verify",
+];
+
+/// The owner decision of 3 November (#1886): identity is the OAuth profile
+/// endpoint's account, never reset times, and `profile verify` exists.
+#[test]
+fn docs_describe_server_identity_and_profile_verify() {
+    for want in [
+        "`GET /api/oauth/profile`",
+        "#### profile verify",
+        "amplihack profile verify [--fix]",
+        "| `verify [--fix]` |",
+        "usage reset times",
+    ] {
+        assert!(REFERENCE.contains(want), "reference is missing `{want}`");
+    }
+    for gone in [
+        "~/.claude answers as profile",
+        "fewer than two reset times",
+        "report different windows",
+        "This set of reset times is the login's *fingerprint*",
+        "two accounts reset at the same times, and the alert clears",
+    ] {
+        assert!(!REFERENCE.contains(gone), "reference still says `{gone}`");
+        assert!(
+            !ROTATE_HOWTO.contains(gone),
+            "rotate how-to still says `{gone}`"
+        );
+    }
+    assert!(ROTATE_HOWTO.contains("#### Check which account each folder holds"));
+}
+
+#[test]
+fn docs_quote_swap_grace_and_its_value() {
+    assert!(
+        REFERENCE.contains("`SWAP_GRACE` (600 seconds)"),
+        "reference must quote SWAP_GRACE with its value"
+    );
+    assert!(
+        ROTATE_HOWTO.contains("`SWAP_GRACE`, 600 seconds"),
+        "rotate how-to must quote SWAP_GRACE with its value"
+    );
+}
+
+#[test]
+fn reference_quotes_the_issue_1886_lines() {
+    for line in ISSUE_1886_LINES {
+        assert!(REFERENCE.contains(line), "reference is missing `{line}`");
+    }
+    for why in ISSUE_1886_WHY {
+        assert!(
+            REFERENCE.contains(&format!("`{why}`")),
+            "reference why table is missing `{why}`"
+        );
+    }
+    assert!(
+        REFERENCE.contains("would note: <note>"),
+        "the dry-run row names the `would note:` prefix"
+    );
+}
+
+#[test]
+fn docs_describe_credential_identity_and_display_only_claude_json() {
+    for heading in [
+        "#### Two readings",
+        "#### Only-login rule",
+        "#### Hand-change notes",
+        "#### Only-login ALERT",
+    ] {
+        assert!(
+            REFERENCE.contains(heading),
+            "reference is missing {heading}"
+        );
+    }
+    assert!(REFERENCE.contains("`~/.claude.json` is not compared with the ledger"));
+    assert!(ROTATE_HOWTO.contains("### Hand-change notes and alerts"));
+    assert!(ROTATE_HOWTO.contains("#### No profile answers the same"));
+    assert!(ROTATE_HOWTO.contains("```bash\namplihack profile rotate\n```"));
+}
+
+// ---------------------------------------------------------------------------
+// Issue #2001: the Codex block of `profile usage`
+// ---------------------------------------------------------------------------
+
+const ENV_VARS: &str = include_str!("../../../../../docs/reference/amplihack-env-vars.md");
+
+#[test]
+fn every_codex_json_key_is_in_the_reference_key_table() {
+    use super::usage_codex::{json_rows, view};
+    use amplihack_utils::codex_capacity::{AccountResult, Outcome, Reading, Window, WindowName};
+    let mut r = Reading::default();
+    r.windows = vec![Window {
+        name: WindowName::Primary,
+        used_percent: Some(1.0),
+        window_minutes: Some(300),
+        resets_at: Some(1_794_001_200),
+    }];
+    let v = view(
+        std::path::PathBuf::from("/r"),
+        vec![AccountResult::new(
+            "a",
+            std::path::PathBuf::from("/r/a"),
+            Outcome::Ok(r),
+            1_793_992_140,
+        )],
+        20,
+    );
+    let row = serde_json::to_value(json_rows(&v)).unwrap()[0].clone();
+    let mut keys: Vec<String> = row.as_object().unwrap().keys().cloned().collect();
+    keys.extend(
+        row["windows"][0]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| format!("windows[].{k}")),
+    );
+    for k in keys {
+        assert!(
+            REFERENCE.contains(&format!("| `{k}` |")),
+            "reference has no key-table row for Codex `{k}`"
+        );
+    }
+}
+
+#[test]
+fn the_codex_settings_are_documented_in_both_references() {
+    use amplihack_utils::codex_capacity::{BIN_ENV, ROOT_ENV, TIMEOUT_ENV};
+    for var in [ROOT_ENV, BIN_ENV, TIMEOUT_ENV] {
+        assert!(REFERENCE.contains(&format!("`{var}`")), "reference: {var}");
+        assert!(ENV_VARS.contains(&format!("`{var}`")), "env-vars: {var}");
+    }
+}
+
+/// Crusty round 3 on #2001: `--json` stays the bare array, because host
+/// scripts read it with `.[]` and `.[0]` and drop stderr. Every `--json | jq`
+/// example reads the array, and every Codex example reads `--summary-json`.
+#[test]
+fn the_docs_read_json_as_an_array_and_codex_from_summary_json() {
+    for (name, doc) in [("reference", REFERENCE), ("howto", HOWTO)] {
+        for l in doc.lines() {
+            if l.contains("profile usage --json | jq") {
+                assert!(
+                    !l.contains(".claude[]") && !l.contains(".codex"),
+                    "{name}: a jq example reads `--json` as an object: {l}"
+                );
+            }
+            if l.contains(".codex[]") {
+                assert!(
+                    l.contains("profile usage --summary-json | jq"),
+                    "{name}: a Codex example does not read `--summary-json`: {l}"
+                );
+            }
+        }
+        assert!(!doc.contains(".claude[]"), "{name}");
+        assert!(!doc.contains("one break in that promise"), "{name}");
+    }
+}
+
+/// Crusty rounds 1 and 3 on #2001: the reference says `--json` has no Codex
+/// rows and why, the how-to's saved-file cron example says the file is the
+/// Claude array, and neither doc claims the `<- next` marker is
+/// `codex-pick`'s own choice (it reads session files; this view reads live).
+#[test]
+fn the_docs_keep_json_an_array_and_name_the_live_next_rule() {
+    let flat = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let (reference, howto) = (flat(REFERENCE), flat(HOWTO));
+    assert!(reference.contains("`--json` prints one JSON array of Claude profile rows"));
+    assert!(reference.contains("`--json` has no Codex rows, and does not read Codex at all."));
+    assert!(reference.contains("Keys are only ever added, never renamed or removed"));
+    let cron = howto
+        .find("profile usage --json > /tmp/claude-usage.json")
+        .expect("howto cron example");
+    assert!(howto[cron..].contains("The saved file is the array of Claude rows"));
+    for (name, doc) in [("reference", &reference), ("howto", &howto)] {
+        assert!(!doc.contains("`codex-pick` would choose"), "{name}");
+    }
+    assert!(reference.contains("refreshing the account's login"));
+}
+
+#[test]
+fn the_reference_quotes_the_codex_texts_the_code_prints() {
+    for text in [
+        "Codex accounts under ",
+        "Codex: no accounts under ",
+        "codex binary not found: ",
+        "unexpected response from codex app-server",
+        "codex usage read is supported only on Unix",
+        "codex account authentication required to read rate limits",
+        "<- next",
+        "no windows reported",
+        "warning: AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS=\"0\" is not a whole number from 1 to 300; using 20",
+    ] {
+        assert!(
+            REFERENCE.contains(text),
+            "reference does not quote {text:?}"
         );
     }
 }

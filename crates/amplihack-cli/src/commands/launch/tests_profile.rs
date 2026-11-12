@@ -18,7 +18,19 @@ fn cfg_env(cmd: &std::process::Command) -> Option<Option<std::ffi::OsString>> {
 }
 
 fn build(name: &str, dir: Option<&Path>) -> std::process::Command {
-    build_command_for_dir(&bin(name), false, false, false, &[], None, false, dir)
+    build_command_for_dir(
+        &bin(name),
+        false,
+        false,
+        false,
+        &[],
+        None,
+        false,
+        dir,
+        Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+        None,
+    )
+    .unwrap()
 }
 
 #[test]

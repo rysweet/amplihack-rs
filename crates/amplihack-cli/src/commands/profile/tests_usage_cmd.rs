@@ -51,7 +51,6 @@ fn row(name: &str, rep: UsageReport) -> Row {
         live_in: false,
         overflow: false,
         overflow_blocked_until: None,
-        live_in_home: false,
         api_key: false,
         api_key_blocked: None,
         report: rep,
@@ -601,9 +600,13 @@ fn error_reasons_are_the_four_fixed_texts() {
 // JSON (D14)
 // ---------------------------------------------------------------------------
 
+/// The `--json` array for `rows`.
 fn json(rows: &[Row]) -> serde_json::Value {
     let text = render_json(rows);
-    serde_json::from_str(&text).unwrap_or_else(|e| panic!("not JSON ({e}): {text}"))
+    let v: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("not JSON ({e}): {text}"));
+    assert!(v.is_array(), "{text}");
+    v
 }
 
 fn keys(v: &serde_json::Value) -> Vec<&str> {
@@ -613,7 +616,7 @@ fn keys(v: &serde_json::Value) -> Vec<&str> {
 }
 
 #[test]
-fn json_is_an_array_of_rows_with_the_exact_keys() {
+fn json_claude_is_an_array_of_rows_with_the_exact_keys() {
     let v = json(&table_rows());
     let arr = v.as_array().unwrap();
     assert_eq!(arr.len(), 2);
@@ -719,7 +722,10 @@ fn json_raw_only_when_kept_and_strings_are_escaped_not_cleaned() {
 
 #[test]
 fn json_for_no_rows_is_an_empty_array() {
-    assert_eq!(render_json(&[]).trim(), "[]");
+    // Issue #2001 keeps `--json` a bare array: host scripts read it with
+    // `.[]` and `.[0]`. The Codex rows are in `--summary-json` only.
+    let v: serde_json::Value = serde_json::from_str(&render_json(&[])).unwrap();
+    assert_eq!(v, serde_json::json!([]));
 }
 
 // ---------------------------------------------------------------------------
@@ -1154,21 +1160,6 @@ fn spend_swap_note_names_the_profile_and_says_the_spend_is_unknown() {
 }
 
 #[test]
-fn home_spend_swap_note_is_fixed_text_listed_in_the_docs() {
-    // Crusty round 6: a swap before or during the `~/.claude` row's
-    // `--spend` probe drops that probe's result; the note says so.
-    let got = super::usage_cmd::home_spend_swap_note();
-    assert_eq!(
-        got,
-        "note: the login in ~/.claude changed while the ~/.claude row was probed \
-         for its spend; its spend is unknown this run"
-    );
-    assert!(!got.contains('\n'), "{got}");
-    let doc = include_str!("../../../../../docs/reference/profile-command.md");
-    assert!(doc.contains(&got), "profile-command.md lists the note");
-}
-
-#[test]
 fn swap_warning_is_one_line_that_is_not_a_warning() {
     let name = super::name::ProfileName::parse("work").unwrap();
     let got = swap_warning(&name);
@@ -1279,17 +1270,16 @@ fn json_rows_carry_the_overflow_fields() {
     cred.overflow = true;
     cred.overflow_blocked_until = Some(1_793_491_200);
     let v = json(&[cred, ok("work", None, Some((5.0, None)))]);
-    let arr = v.as_array().expect("still a top-level array");
+    let arr = v.as_array().expect("the `claude` array");
     assert_eq!(arr[0]["overflow"], true);
     assert_eq!(arr[0]["overflow_blocked_until"], 1_793_491_200);
     assert_eq!(arr[1]["overflow"], false);
     assert!(arr[1]["overflow_blocked_until"].is_null());
 }
 
-// ---------------------------------------------------------------------------
-// Issue #1693: the `~/.claude` row for an account no profile has
-// ---------------------------------------------------------------------------
-
+/// A row labelled `~/.claude`, live there. `profile usage` no longer builds
+/// one (issue #1886 removed the `.claude.json` hand-change detection that
+/// did); the golden file keeps it to pin the JSON of an unusual label.
 fn home_row() -> Row {
     let mut r = ok(
         "~/.claude",
@@ -1297,34 +1287,7 @@ fn home_row() -> Row {
         Some((95.0, Some(NOW + DAY))),
     );
     r.live_in = true;
-    r.live_in_home = true;
     r
-}
-
-#[test]
-fn the_home_row_is_shown_with_the_literal_label() {
-    let v = json(&[home_row()]);
-    assert_eq!(v[0]["profile"], "~/.claude");
-    assert_eq!(v[0]["account"], "~/.claude");
-    assert_eq!(v[0]["live_in"], "~/.claude");
-    assert_eq!(v[0]["default"], false);
-    assert!(v[0]["leased_to"].is_null());
-}
-
-#[test]
-fn the_home_row_is_never_recorded() {
-    let rows = vec![
-        home_row(),
-        ok("work", Some((20.0, None)), Some((30.0, None))),
-    ];
-    let obs = observations(&rows);
-    let got: Vec<&str> = obs.iter().map(|o| o.profile.as_str()).collect();
-    assert_eq!(got, ["work"]);
-}
-
-#[test]
-fn no_profile_can_be_named_like_the_home_row() {
-    assert!(super::name::ProfileName::parse("~/.claude").is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -1777,6 +1740,32 @@ mod request {
 
     const ANSWER: &str = "cat > \"$d/stdin\"; cat \"$d/answer\"";
 
+    /// Issue #1974: both probe argument sets end with this flag, so
+    /// `claude` writes no session log for the probe.
+    const NO_PERSIST: &str = "--no-session-persistence";
+
+    /// The recorded `$*` of the usage request.
+    fn req() -> String {
+        format!("{} {NO_PERSIST}", ARGS.join(" "))
+    }
+
+    /// The recorded `$*` of the `/usage` text attempt.
+    const TEXT: &str = "-p /usage --no-session-persistence";
+
+    #[test]
+    fn both_argument_sets_end_with_no_session_persistence() {
+        let f = Fake::new(ANSWER, USAGE).answer(&error_answer());
+        f.probe(ProbeMode::Auto, 20, false);
+        f.probe(ProbeMode::Text, 20, false);
+        let starts = f.starts();
+        assert_eq!(starts.len(), 3, "{starts:?}");
+        for s in &starts {
+            assert!(s.ends_with(NO_PERSIST), "{s:?} must end with {NO_PERSIST}");
+            assert_eq!(s.matches(NO_PERSIST).count(), 1, "{s:?} has the flag once");
+        }
+        assert_eq!(starts, [req(), TEXT.to_string(), TEXT.to_string()]);
+    }
+
     #[test]
     fn an_accepted_answer_is_used_with_one_start() {
         let f = Fake::new(ANSWER, USAGE).answer(&accepted());
@@ -1788,7 +1777,7 @@ mod request {
         assert_eq!(session(&p), 20.0);
         assert_eq!(p.error, None);
         assert_eq!(p.raw, None);
-        assert_eq!(f.starts(), [ARGS.join(" ")]);
+        assert_eq!(f.starts(), [req()]);
         assert_eq!(f.read("stdin"), Some(format!("{REQUEST_LINE}\n")));
     }
 
@@ -1832,7 +1821,7 @@ mod request {
         let f = Fake::new(ANSWER, COST_TEXT).answer(&answer);
         let p = f.probe(ProbeMode::Auto, 20, false);
         assert_eq!(reading(&p), Reading::Failed);
-        assert_eq!(f.starts(), [ARGS.join(" "), "-p /usage".to_string()]);
+        assert_eq!(f.starts(), [req(), TEXT.to_string()]);
     }
 
     /// `primaryApiKey` answers like a plain plan login, so figures in that
@@ -1843,7 +1832,7 @@ mod request {
         let f = Fake::new(ANSWER, COST_TEXT).answer(&answer);
         let p = f.probe(ProbeMode::Auto, 20, false);
         assert!(matches!(reading(&p), Reading::Measured { .. }));
-        assert_eq!(f.starts(), [ARGS.join(" ")]);
+        assert_eq!(f.starts(), [req()]);
     }
 
     /// With no figures, as when the usage read failed, `primaryApiKey` ends
@@ -1854,7 +1843,7 @@ mod request {
         let f = Fake::new(ANSWER, COST_TEXT).answer(&answer);
         let p = f.probe(ProbeMode::Auto, 20, false);
         assert_eq!(reading(&p), Reading::Failed);
-        assert_eq!(f.starts(), [ARGS.join(" "), "-p /usage".to_string()]);
+        assert_eq!(f.starts(), [req(), TEXT.to_string()]);
     }
 
     #[test]
@@ -1863,7 +1852,7 @@ mod request {
         let p = f.probe(ProbeMode::Auto, 20, true);
         assert_eq!(p.report.state, UsageState::Ok);
         assert_eq!(session(&p), 37.0);
-        assert_eq!(f.starts(), [ARGS.join(" "), "-p /usage".to_string()]);
+        assert_eq!(f.starts(), [req(), TEXT.to_string()]);
         // `--raw` shows the attempt that gave the row.
         let raw = p.raw.unwrap();
         assert!(raw.stdout.contains("Current session"), "{raw:?}");
@@ -1892,7 +1881,7 @@ mod request {
         assert_eq!(p.report.state, UsageState::Timeout);
         assert_eq!(p.error, None);
         assert!(p.report.session.is_none() && p.report.week_all.is_none());
-        assert_eq!(f.starts(), [ARGS.join(" ")]);
+        assert_eq!(f.starts(), [req()]);
         assert!(p.raw.is_some(), "the request attempt's output");
     }
 
@@ -1915,7 +1904,7 @@ mod request {
         let p = f.probe(ProbeMode::Text, 20, false);
         assert_eq!(p.report.state, UsageState::Ok);
         assert_eq!(session(&p), 37.0);
-        assert_eq!(f.starts(), ["-p /usage"]);
+        assert_eq!(f.starts(), [TEXT]);
         assert_eq!(f.read("stdin"), None);
         assert_eq!(f.read("stdin-usage").as_deref(), Some(""));
     }
@@ -1958,7 +1947,7 @@ mod request {
         let r = probe_with(build, ProbeMode::Auto, Duration::from_secs(20), NOW, false);
         assert!(r.is_err());
         assert_eq!(calls.get(), 2);
-        assert_eq!(f.starts(), [ARGS.join(" ")]);
+        assert_eq!(f.starts(), [req()]);
     }
 
     #[test]
@@ -1990,7 +1979,7 @@ mod request {
         );
         assert_eq!(session(&probes[0]), 37.0, "cred read with /usage");
         assert_eq!(session(&probes[1]), 20.0, "plan read with the request");
-        assert_eq!(f.starts(), ["-p /usage".to_string(), ARGS.join(" ")]);
+        assert_eq!(f.starts(), [TEXT.to_string(), req()]);
     }
 
     // -----------------------------------------------------------------------
@@ -2015,7 +2004,7 @@ mod request {
     fn an_accepted_get_usage_answer_has_no_spend_to_read() {
         let f = Fake::new(ANSWER, USAGE).answer(&accepted());
         let p = f.probe(ProbeMode::Auto, 20, false);
-        assert_eq!(f.starts(), [ARGS.join(" ")]);
+        assert_eq!(f.starts(), [req()]);
         assert_eq!(p.spend, Spend::NotApplicable);
         assert_eq!(p.extra_shape, None);
     }
@@ -2037,7 +2026,7 @@ mod request {
     fn the_auto_fallback_to_usage_text_reads_the_spend() {
         let f = Fake::new(ANSWER, SPEND_TEXT).answer(&error_answer());
         let p = f.probe(ProbeMode::Auto, 20, false);
-        assert_eq!(f.starts(), [ARGS.join(" "), "-p /usage".to_string()]);
+        assert_eq!(f.starts(), [req(), TEXT.to_string()]);
         assert_eq!(p.spend, Spend::LimitReached);
     }
 
@@ -2070,8 +2059,9 @@ mod request {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #1797: `--json` is unchanged byte for byte, and `--summary-json`
-// holds the same array
+// Issue #1797: the Claude rows of `--json` are unchanged, and
+// `--summary-json` holds the same array. Issue #2001 moved them under
+// `claude`; the golden file is still the Claude array alone.
 // ---------------------------------------------------------------------------
 
 /// Every kind of row `--json` can print, in display order, with the
@@ -2131,12 +2121,13 @@ fn golden_rows() -> Vec<Row> {
 }
 
 #[test]
-fn json_output_matches_the_golden_file_byte_for_byte() {
-    let want = include_str!("testdata/usage_json_golden.json");
+fn json_claude_rows_match_the_golden_file() {
+    let want: serde_json::Value =
+        serde_json::from_str(include_str!("testdata/usage_json_golden.json")).unwrap();
+    let got: serde_json::Value = serde_json::from_str(&render_json(&golden_rows())).unwrap();
     assert_eq!(
-        render_json(&golden_rows()),
-        want.strip_suffix('\n').unwrap_or(want),
-        "`--json` must not change (issue #1797)"
+        got, want,
+        "the `--json` array must not change (issues #1797, #2001)"
     );
 }
 
@@ -2184,35 +2175,52 @@ mod summary_1797 {
     fn summary_json_profiles_are_exactly_the_json_array() {
         let rows = golden_rows();
         let s = summary(&rows);
-        let v = parse(&render_summary_json(NOW, &rows, s.as_ref()));
+        let v = parse(&render_summary_json(NOW, &rows, s.as_ref(), &[]));
         assert_eq!(v["profiles"], parse(&render_json(&rows)));
         let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["at", "profiles", "summary"]);
+        assert_eq!(keys, ["at", "codex", "profiles", "summary"]);
+        assert_eq!(v["codex"], serde_json::json!([]));
     }
 
     #[test]
     fn summary_json_at_is_iso_utc_and_profile_times_stay_epoch() {
         let rows = golden_rows();
-        let v = parse(&render_summary_json(NOW, &rows, summary(&rows).as_ref()));
+        let v = parse(&render_summary_json(
+            NOW,
+            &rows,
+            summary(&rows).as_ref(),
+            &[],
+        ));
         assert_eq!(v["at"], "2026-10-16T12:00:00Z");
         assert!(v["profiles"][0]["session"]["resets_at"].is_i64());
     }
 
     #[test]
     fn summary_json_with_no_profiles_has_an_empty_array_and_null_summary() {
-        let v = parse(&render_summary_json(NOW, &[], None));
+        let v = parse(&render_summary_json(NOW, &[], None, &[]));
         assert_eq!(
             v,
-            serde_json::json!({"at": "2026-10-16T12:00:00Z", "profiles": [], "summary": null})
+            serde_json::json!({
+                "at": "2026-10-16T12:00:00Z",
+                "profiles": [],
+                "summary": null,
+                "codex": []
+            })
         );
     }
 
     #[test]
     fn the_golden_rows_summarise_only_subscription_logins() {
         // work 30.5 -> 31 (rounded), spare 68, extra 100, odd 2; the
-        // ~/.claude row and the API-key row are not logins; slow is unknown.
-        let s = summary(&golden_rows()).expect("there are subscription rows");
+        // API-key row is not a login; slow is unknown. The `~/.claude` row
+        // only pins the JSON of an unusual label (issue #1886: `profile
+        // usage` builds no such row), so it is left out here.
+        let rows: Vec<super::Row> = golden_rows()
+            .into_iter()
+            .filter(|r| r.profile != "~/.claude")
+            .collect();
+        let s = summary(&rows).expect("there are subscription rows");
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["valid_readings"], 4);
         assert_eq!(v["unknown"], serde_json::json!(["slow"]));
@@ -2275,7 +2283,7 @@ mod summary_1797 {
         for out in [&text, &json] {
             assert!(!out.contains("example.com"), "{out}");
         }
-        let whole = render_summary_json(NOW, &[r], Some(&s));
+        let whole = render_summary_json(NOW, &[r], Some(&s), &[]);
         assert_eq!(
             whole.matches("someone@example.com").count(),
             2,

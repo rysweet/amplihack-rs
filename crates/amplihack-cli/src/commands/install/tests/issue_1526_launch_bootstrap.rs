@@ -190,7 +190,6 @@ fn bootstrap_leaves_unparseable_settings_untouched() {
     let fixture = tempfile::tempdir().unwrap();
     let hooks_stub = create_exe_stub(&fixture.path().join("stub_bin"), "amplihack-hooks");
     let mut env = IsolatedHome::new(home);
-    env.set("AMPLIHACK_AGENT_BINARY", "claude");
     env.set("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
     env.set("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", "1");
 
@@ -203,8 +202,12 @@ fn bootstrap_leaves_unparseable_settings_untouched() {
     version_stamp::write_installed_version(crate::VERSION).unwrap();
 
     assert_home_is(home);
-    ensure_framework_installed_with(&mut Vec::new())
-        .expect("an unparseable settings.json warns; it does not fail the launch");
+    // Exercise Claude settings repair without inheriting the suite's provider.
+    crate::freshness::with_provider(
+        "claude",
+        || ensure_framework_installed_with(&mut Vec::new()),
+    )
+    .expect("an unparseable settings.json warns; it does not fail the launch");
 
     assert_eq!(
         fs::read(&settings).unwrap(),

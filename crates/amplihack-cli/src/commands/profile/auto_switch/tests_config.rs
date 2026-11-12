@@ -482,6 +482,7 @@ fn update_applies_the_change_and_returns_the_result() {
 
 #[test]
 fn update_of_a_missing_file_starts_from_the_defaults() {
+    let _proc = crate::test_support::proc::fake_proc_scope();
     for mode in [ReadMode::Editable, ReadMode::DefaultOnInvalid] {
         let tmp = private_root();
         let root = tmp.path();
@@ -516,6 +517,7 @@ fn editable_update_refuses_a_corrupt_file_and_leaves_it() {
 
 #[test]
 fn default_on_invalid_update_replaces_a_corrupt_file() {
+    let _proc = crate::test_support::proc::fake_proc_scope();
     let tmp = private_root();
     let root = tmp.path();
     write_file(root, "enabled=maybe\n");

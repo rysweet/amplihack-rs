@@ -20,6 +20,7 @@ use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Lock, State};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
+use crate::test_support::proc::{FakeProcScope, fake_proc_scope};
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -53,12 +54,13 @@ pub(super) fn private(path: &Path, body: &str) {
 }
 
 pub(super) fn login(path: &Path) -> u64 {
+    let body = super::tests::tests_fixture_identity::body(path);
     if path.exists() {
         fs::remove_file(path).unwrap();
     }
     // Issue #1700: an OAuth login (its top-level keys are read for the
     // kind); the value is a sentinel that must never be printed.
-    private(path, r#"{"claudeAiOauth":{"accessToken":"SENTINEL"}}"#);
+    private(path, &body);
     ino(path)
 }
 
@@ -83,6 +85,10 @@ fn acct(uuid: &str, email: &str) -> serde_json::Value {
 }
 
 /// `~/.claude` holds `work`'s login (`l`); `spare` has its own (`t`).
+///
+/// `proc` is this test's synthetic process table (issue #2196), installed for
+/// the thread that called [`env`]; it holds no processes until a test seeds
+/// one. A thread the test spawns installs it again with `proc_scope_at`.
 pub(super) struct Env {
     pub(super) _tmp: tempfile::TempDir,
     pub(super) home: PathBuf,
@@ -91,9 +97,11 @@ pub(super) struct Env {
     pub(super) rs: RotateState,
     pub(super) l: u64,
     pub(super) t: u64,
+    pub(super) proc: FakeProcScope,
 }
 
 pub(super) fn env() -> Env {
+    let proc = fake_proc_scope();
     let tmp = tempfile::tempdir().unwrap();
     fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let home = tmp.path().join("home");
@@ -133,6 +141,15 @@ pub(super) fn env() -> Env {
     let t = login(&root.join("spare").join(CREDS));
     let rs = RotateState::new(&root);
     rs.ensure().unwrap();
+    rs.save_ledger(&super::ledger::RotateLedger {
+        live: Some("work".into()),
+        account: Some("u-work".into()),
+        login_identity: Some(super::login_identity::Identity::new(
+            &(super::cred_identity::DEFAULT_READ)(&home.join(".claude")).unwrap(),
+        )),
+        ..Default::default()
+    })
+    .unwrap();
     Env {
         _tmp: tmp,
         home,
@@ -141,6 +158,7 @@ pub(super) fn env() -> Env {
         rs,
         l,
         t,
+        proc,
     }
 }
 
@@ -182,6 +200,16 @@ impl Env {
             to_lock_ino: None,
             started_at: NOW,
             pid: std::process::id(),
+            identity: Some(super::login_identity::SwapIdentity::new(
+                Some(
+                    &super::identify::Account::from_block(&acct("u-work", "work@example.com"))
+                        .unwrap(),
+                ),
+                Some(
+                    &super::identify::Account::from_block(&acct("u-spare", "spare@example.com"))
+                        .unwrap(),
+                ),
+            )),
         }
     }
 

@@ -1,3 +1,10 @@
+---
+title: Recipe CLI Reference
+description: Recipe commands, text encoding and validation rules.
+type: reference
+updated: 2026-11-05
+---
+
 # Recipe CLI Reference
 
 Command-line reference for `amplihack recipe`.
@@ -7,7 +14,10 @@ Command-line reference for `amplihack recipe`.
 - [Subcommands](#subcommands)
 - [amplihack recipe list](#amplihack-recipe-list)
 - [amplihack recipe run](#amplihack-recipe-run)
+- [Removed context keys](#removed-context-keys)
+- [Nested runs and orphan stops](#nested-runs-and-orphan-stops)
 - [amplihack recipe validate](#amplihack-recipe-validate)
+- [Recipe text encoding](#recipe-text-encoding)
 - [amplihack recipe show](#amplihack-recipe-show)
 - [Environment variables](#environment-variables)
 - [Exit codes](#exit-codes)
@@ -113,9 +123,118 @@ default and that `--verbose` only increases diagnostic detail.
 `amplihack recipe run` does not support `--adapter`, `--resume-from`,
 `--stop-at`, `--output`, `--interactive`, or `--quiet`.
 
+## Removed context keys
+
+Some context keys have been removed from every bundled recipe. Passing one is
+an error, not a silent no-op. `amplihack recipe run` checks the merged context
+from `-c`, `--context-file` and `--context-from-file` and exits `1` before it
+creates a worktree, a state directory or a tmux pane, and before any step,
+`git` or `gh` command runs.
+
+| Key | Removed by | Why |
+| --- | --- | --- |
+| `should_publish` | #1976 (decision 17.113) | No step ever read it. A run passed `should_publish=false` still pushed, opened a PR and posted comments. |
+
+Every value is refused, including `true`, an empty value and `True`. The match
+is on the key only: the text before the first `=`, with surrounding spaces
+trimmed, compared exactly. `should_publish_extra` and `Should_Publish` are
+ordinary keys and are not refused.
+
+```console
+$ amplihack recipe run default-workflow \
+    -c task_description="Fix flaky retry tests" \
+    -c should_publish=false
+Error: context key 'should_publish' was removed by #1976 (decision 17.113). It never stopped a run from publishing; do not rely on it. Remove '-c should_publish=…' from the command.
+$ echo $?
+1
+```
+
+The same error appears for a `--context-file` JSON object that has a
+`should_publish` key, and for `--detach` runs, which are refused before the
+pane opens. The message names the key once, however many times it was passed,
+and never repeats the value.
+
+The check runs again at the start of the runner wrapper, so the pane child of
+a `--detach` run and callers inside the crate are covered by the same table.
+It does not inspect a `RECIPE_VAR_should_publish` that is already in the
+environment; nothing reads that variable.
+
+The removed caller key is unrelated to `terminal_state.should_publish`. That
+is an internal output of `workflow-terminal-state`, still emitted and still
+used to gate every publish step in `workflow-publish`. See
+[Workflow Terminal-State Provider Safety](./workflow-terminal-state-provider-safety.md).
+
+There is no caller switch that stops a recipe run from publishing. Do not rely
+on task text either: a run told not to push can still push. To keep work local,
+run a recipe that has no publish phase.
+
+## Nested runs and orphan stops
+
+A recipe step can start another `amplihack recipe run`, for example the rounds
+that `autodrive_loop.sh` launches. Each `amplihack recipe run` exports two
+variables to its runner child and nowhere else:
+
+| Variable | Value |
+| --- | --- |
+| `AMPLIHACK_PARENT_RECIPE_PID` | Process ID of this `amplihack recipe run`. |
+| `AMPLIHACK_PARENT_RECIPE_STARTTIME` | Its start time: field 22 of `/proc/<pid>/stat`, in clock ticks since boot. |
+
+A run that inherits both values is a nested run. It watches its parent run and
+stops itself when the parent exits, so a fixer whose driver was killed does not
+keep pushing on its own.
+
+- **Linux only.** The watch uses `pidfd_open` and blocks in `poll()` with no
+  timeout. It wakes on the parent's exit, not on an interval. On other
+  platforms, and on kernels older than 5.3, nothing is watched and the run
+  behaves as it did before.
+- **Parent gone at start.** If the parent PID no longer exists, or its start
+  time no longer matches (the PID was reused), the run is orphaned at once
+  and no runner child is spawned.
+- **Parent exits mid-run.** The run prints one line to stderr, writes the
+  orphan record, and tears down the runner's process group with `SIGTERM`
+  then `SIGKILL`, the same teardown used for a signal. The watch wakes at
+  once, but the wrapper acts on it at the next check of its existing wait
+  loop, which checks every 100 ms. The stop can therefore start up to 100 ms
+  after the parent exits. This is the loop's check interval, not a timeout.
+- **Exit code.** An orphan stop exits `75`. A signal received before the
+  orphan stop keeps its own `128+n` exit code.
+- **Bad values.** If only one variable is set, or either does not parse, or
+  the PID is `1` or lower, the run prints a warning and is treated as a
+  top-level run. A broken watch never stops a healthy run.
+
+```console
+orphaned: parent recipe run 412337 exited; stopping
+```
+
+The final correlation record has `status: "orphaned"`; see
+[Recipe Run Correlation Reference](./recipe-run-correlation.md#final-statuses).
+When `AMPLIHACK_AUTODRIVE_STATE_DIR` is set, the run also writes
+`orphaned.json` there; see
+[Orphaned rounds](./auto-drive-to-merge.md#orphaned-rounds). `recipe run`
+removes `AMPLIHACK_AUTODRIVE_STATE_DIR` from its runner's environment, so runs
+nested below that level never write the file.
+
+A run started outside the tree does not inherit the parent variables.
+`--detach` removes them from the pane's environment, and
+`$(amplihack agent-binary --shell)` removes them from the command it
+prefixes. The prefix matters for a raw `tmux new-session` started from a
+step: if that command starts the tmux server, the server copies the step's
+environment, parent variables included, into its global environment and gives
+them to every later session (tmux(1), "GLOBAL AND SESSION ENVIRONMENT"). A
+`recipe run` in such a session, started without the prefix, would watch a
+parent that has exited and stop at once with exit `75`. Start it as
+`tmux new-session -d "$(amplihack agent-binary --shell) amplihack recipe run ..."`,
+or remove the variables with `env -u`.
+
+The parent is always another `amplihack recipe run`, never the human's shell
+or Claude session. A top-level run, including the pane root of a `--detach`
+run, watches nothing: `--detach` removes `AMPLIHACK_PARENT_RECIPE_PID`,
+`AMPLIHACK_PARENT_RECIPE_STARTTIME` and `AMPLIHACK_AUTODRIVE_STATE_DIR` from
+the pane environment, so a detached run outlives the session that launched it.
+
 ## amplihack recipe validate
 
-Validate a recipe YAML file without executing it.
+Validate a recipe file containing YAML or JSON without executing it.
 
 ```bash
 amplihack recipe validate <FILE> [OPTIONS]
@@ -123,7 +242,7 @@ amplihack recipe validate <FILE> [OPTIONS]
 
 | Option | Description | Default |
 | --- | --- | --- |
-| `<FILE>` | Recipe YAML file to validate | required |
+| `<FILE>` | Recipe file containing YAML or JSON to validate | required |
 | `--verbose`, `-v` | Include validation details | `false` |
 | `--format <format>`, `-f <format>` | Output format: `table`, `json`, or `yaml` | `table` |
 
@@ -131,6 +250,57 @@ amplihack recipe validate <FILE> [OPTIONS]
 amplihack recipe validate ~/.amplihack/.claude/recipes/default-workflow.yaml \
   --verbose
 ```
+
+## Recipe text encoding
+
+The CLI recipe parser accepts UTF-8 YAML and JSON. JSON strings may contain
+supplementary Unicode characters directly or encode them as valid UTF-16
+surrogate pairs. Both forms produce identical decoded recipe text. No flag,
+environment variable or configuration change is required.
+
+These complete recipes decode to the same prompt:
+
+```json
+{"name":"unicode-review","steps":[{"id":"review","type":"agent","prompt":"Review: \uD83D\uDE80, \uD834\uDD1E.\nKeep punctuation!"}]}
+```
+
+```json
+{"name":"unicode-review","steps":[{"id":"review","type":"agent","prompt":"Review: 🚀, 𝄞.\nKeep punctuation!"}]}
+```
+
+The decoded prompt contains exactly these two lines:
+
+```text
+Review: 🚀, 𝄞.
+Keep punctuation!
+```
+
+JSON escaping still applies. The JSON string `"\\uD83D\\uDE80"` decodes to
+the literal text `\uD83D\uDE80`. The parser preserves those backslashes and
+does not interpret the decoded text again. Actual lone, reversed, interrupted
+or malformed surrogate escapes are rejected, including `"\uD83D"`,
+`"\uDE80"`, `"\uDE80\uD83D"`, `"\uD83Dx\uDE80"` and `"\uD83G"`.
+
+The parser tries YAML decoding first. If decoding fails, it tries JSON decoding
+on the original input, requiring a complete JSON document without trailing
+content. If both decoders fail, it returns the original YAML error. A schema
+error after successful YAML decoding does not trigger a JSON retry. Existing
+YAML syntax and scalar behaviour remain unchanged.
+
+Both decoding paths apply the same recipe validation. The original file and
+input limits remain 1,000,000 bytes, measured before escape decoding. Recipes
+require a top-level mapping, a string `name`, non-empty `steps` and non-blank,
+unique step identifiers. Field types and the supported explicit step types
+(`bash`, `agent` and `recipe`) remain unchanged, as does step-type inference.
+Duplicate mapping keys are rejected at every depth, including context and
+additional fields. Keys that become equal after escape decoding also count
+as duplicates. Additional fields remain available in the parsed recipe;
+unknown-field and retired-field warning behaviour remains unchanged.
+
+This encoding contract applies to CLI recipe parsing and pre-validation.
+Recipe execution passes the original file to `recipe-runner-rs`, whose parsing
+support is independent. Successful CLI validation does not establish runner
+compatibility or change formatter behaviour.
 
 ## amplihack recipe show
 
@@ -161,6 +331,9 @@ amplihack recipe show default-workflow --format yaml
 | `AMPLIHACK_RECIPE_HEARTBEAT_INTERVAL_SECONDS` | runner | Heartbeat interval in seconds. `0` disables heartbeat lines. |
 | `AMPLIHACK_RECIPE_SNIPPET_LINES` | runner | Maximum recent output lines retained per child source and stream. |
 | `AMPLIHACK_RECIPE_SNIPPET_BYTES` | runner | Maximum recent output bytes retained per child source and stream. |
+| `AMPLIHACK_PARENT_RECIPE_PID` | nested `recipe run` | Set by `amplihack recipe run` on its runner child. A nested run that inherits it watches that parent. See [Nested runs and orphan stops](#nested-runs-and-orphan-stops). Treat as read-only. |
+| `AMPLIHACK_PARENT_RECIPE_STARTTIME` | nested `recipe run` | Start time of the parent run, from field 22 of `/proc/<pid>/stat`. Guards against a reused PID. Treat as read-only. |
+| `AMPLIHACK_AUTODRIVE_STATE_DIR` | nested `recipe run` | Set by `autodrive_loop.sh` on each round. An orphaned run writes `orphaned.json` here. `recipe run` removes it from its runner's environment, so only the round's own run writes the file. |
 | `AMPLIHACK_RECIPE_LOG_JSONL` | runner | Optional path for structured JSONL lifecycle, heartbeat, output snippet, and failure events. |
 
 See [Environment Variables](./environment-variables.md) for full details.
@@ -170,7 +343,9 @@ See [Environment Variables](./environment-variables.md) for full details.
 | Code | Meaning |
 | --- | --- |
 | `0` | Command succeeded |
-| `1` | Command failed, validation failed, recipe execution failed, runner missing, or arguments were malformed |
+| `1` | Command failed, validation failed, recipe execution failed, runner missing, arguments were malformed, or a [removed context key](#removed-context-keys) was passed |
+| `75` | Nested run stopped because its parent `amplihack recipe run` exited. See [Nested runs and orphan stops](#nested-runs-and-orphan-stops). |
+| `128+n` | Run stopped by signal `n`, for example `130` for `SIGINT` and `143` for `SIGTERM` |
 
 For development workflows, exit `0` also requires terminal-state evidence. A
 code-change task that stops after planning, analysis, design, or worktree setup

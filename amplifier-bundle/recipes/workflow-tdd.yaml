@@ -122,13 +122,16 @@ steps:
       ## Inputs
       **Original task (authoritative — judge intent against this):**
       {{task_description}}
-      **Linked issue:** #{{issue_number}}
+      **Linked issue:** #{{issue_number}}, as step-03 recorded it: {{issue_creation}}
       **Implement-step output (look for `Files modified:`, `Diff summary:`,
       `No-op justification:`, and the orchestration sentinel
       `No files modified — orchestration task`):**
       {{implementation}}
       **`allow_no_op` opt-out (orchestration / docs-only / audit / meta):**
       {{allow_no_op}}
+      **Base, `<base>` below:** `{{worktree_setup.base_ref}}`, the base step-04
+      recorded (`origin/<base_branch>` when the caller set one). When that is
+      empty, use `origin/HEAD`.
 
       ## Investigation (use shell tools; ALL evidence must be real)
       Be LIBERAL about WHERE work landed; STRICT about WHETHER it landed.
@@ -139,20 +142,22 @@ steps:
       done. Prioritize git log and PR evidence over working tree state.
 
       1. **Local commits since branch point (PRIMARY)** —
-         `git log --oneline origin/main..HEAD` (fall back to `origin/HEAD`).
+         `git log --oneline <base>..HEAD`.
          Empty commits and no-op edits do NOT count.
       2. **Already-merged-during-implement** — the agent may have committed,
-         pushed, opened a scoped PR, and auto-merged into `origin/main` all
-         within step-08; in that case `git merge-base HEAD origin/main` equals
-         HEAD. Detect with `git fetch --quiet origin main || true`,
-         `git log --oneline --since='6 hours ago' origin/main -- .`, and only
+         pushed, opened a scoped PR, and auto-merged into <base> all
+         within step-08; in that case `git merge-base HEAD <base>` equals
+         HEAD. Detect with `git fetch --quiet origin <base without origin/> || true`,
+         `git log --oneline --since='6 hours ago' <base> -- .`, and only
          persisted PR URL/number or `workflow_pr_scope.sh` with explicit repo,
          headRefName, baseRefName, headRefOid, isCrossRepository=false,
          expected_pr_title_prefix, created_after, and issue/work-item scope.
       3. **Sibling branches / worktrees** — `git branch -a --contains HEAD` and `git worktree list`.
-      4. **Linked GitHub issue** —
-         `gh issue view {{issue_number}} --json state,closedByPullRequestsReferences`
-         (skip if `{{issue_number}}` is empty). If the issue is `CLOSED` by a
+      4. **Linked GitHub issue** — when step-03 recorded a GitHub issue URL
+         above, run `gh issue view <that URL> --json state,closedByPullRequestsReferences`.
+         The URL names the repository that owns the issue, which need not be
+         this checkout's (`strict_delivery`), so never look the number up
+         here instead. Skip this check without such a URL. If the issue is `CLOSED` by a
          merged PR whose diff matches the task, verdict = `WORK_VERIFIED`
          (this is the issue #360 case the legacy guard handled).
       5. **Scoped PR evidence** — use only a persisted PR URL/number or

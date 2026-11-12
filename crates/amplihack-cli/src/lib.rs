@@ -41,7 +41,10 @@ mod runner_ancestry;
 mod runner_probe;
 mod runner_validation;
 pub use runner_validation::InternalCommands;
+#[cfg(debug_assertions)]
+pub(crate) mod debug_knob;
 pub mod health_check;
+pub(crate) mod install_lock;
 pub mod install_output_contract;
 pub mod launcher;
 pub mod launcher_context;

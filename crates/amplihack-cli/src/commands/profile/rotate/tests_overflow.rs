@@ -101,6 +101,7 @@ fn measured(session: f64, week: f64, s_reset: Option<i64>, w_reset: Option<i64>)
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     }
 }
 
@@ -118,6 +119,7 @@ fn exhausted(s_reset: Option<i64>, w_reset: Option<i64>) -> Probed {
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     }
 }
 
@@ -132,6 +134,7 @@ fn failed() -> Probed {
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     }
 }
 
@@ -149,6 +152,7 @@ fn spend_limited() -> Probed {
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     }
 }
 
@@ -1207,3 +1211,41 @@ fn moving_back_off_overflow_ignores_a_recent_swap() {
 // policy, so a unit case cannot set it. The cycle-level test that writes
 // `.default` and compares verdicts with and without it is
 // `tests/profile_overflow.rs::the_default_pointer_does_not_change_the_rotators_verdict`.
+
+/// The overflow exit's room fallback ranks only the plan-room pool it is
+/// given. Which logins that pool holds (a crossing is in it when leaving
+/// overflow and no same-organisation plan login has room) is decided by
+/// `organisation_affinity::pools`; see its tests.
+#[test]
+fn issue_2136_blocked_overflow_room_fallback_ranks_only_its_pool() {
+    for same_org in [false, true] {
+        let case = Case::new("credits", spend_limited())
+            .overflow(&["credits"])
+            .cand("plan", measured(95.0, 95.0, FAR, FAR));
+        let live = n("credits");
+        let overflow = vec![OverflowEntry::new(live.clone(), 1)];
+        let allowed = vec![n("plan")];
+        let same = if same_org { allowed.clone() } else { vec![] };
+        let result = super::overflow::decide_restricted(
+            &OverflowInput {
+                settings: &case.s,
+                live_name: Some(&live),
+                live: &case.live,
+                candidates: &case.candidates,
+                refused: &[],
+                overflow: &overflow,
+                blocks: &case.blocks,
+                platform_block: None,
+                unmeasured_plan: &[],
+                swapped_at: None,
+                now: NOW,
+            },
+            Some((&allowed, &same)),
+        );
+        if same_org {
+            assert_eq!(result.decision, swap("plan", Reason::OverflowOut));
+        } else {
+            assert!(!matches!(result.decision, Decision::Swap { .. }));
+        }
+    }
+}

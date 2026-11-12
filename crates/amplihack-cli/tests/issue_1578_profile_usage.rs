@@ -63,7 +63,7 @@ fn reset_text(t: i64) -> String {
 /// `/usage` path appends `S <p>` and `E <p>` around a 0.5 s sleep.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.301 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 p=$(basename "${CLAUDE_CONFIG_DIR:-$HOME/.claude}")
 case " $* " in
@@ -117,7 +117,16 @@ impl Fixture {
         let canned = tmp.path().join("canned");
         let work = tmp.path().join("work");
         let tools = tmp.path().join("tools");
-        for d in [&home, &records, &canned, &work, &tools] {
+        // Issue #1974: with the shared folder present, `profile add` links
+        // each profile's `projects` to it, as on a real host, so on a host
+        // with a usable `bwrap` every probe here runs through the sandbox.
+        for d in [
+            &home.join(".claude/projects"),
+            &records,
+            &canned,
+            &work,
+            &tools,
+        ] {
             fs::create_dir_all(d).unwrap();
         }
         executable(&tools.join("claude"), FAKE_CLAUDE);
@@ -223,12 +232,24 @@ impl Fixture {
             .current_dir(&self.work)
             .env_clear()
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            .env(
+                crate::isolated_amplihack::PROC_ROOT_ENV,
+                crate::isolated_amplihack::shared_empty_proc_root(),
+            )
             .env("TMPDIR", std::env::temp_dir())
             .env(
                 "PATH",
                 format!("{}:/usr/local/bin:/usr/bin:/bin", self.tools.display()),
             )
             .env("HOME", &self.home)
+            // Issue #2001: never read a Codex account here.
+            // Outside HOME: the empty-root line names the root, and the
+            // output must not name HOME.
+            .env(
+                "CODEX_PROFILES_ROOT",
+                self.home.with_file_name("no-codex-profiles"),
+            )
+            .env("CODEX_BIN", self.home.join("no-codex"))
             .env("AMPLIHACK_CLAUDE_BINARY_PATH", self.tools.join("claude"))
             .env("RECORD_DIR", &self.records)
             .env("CANNED", &self.canned)
@@ -307,6 +328,8 @@ fn table_rows(stdout: &str) -> Vec<&str> {
     // The capacity summary (issue #1797) follows the table.
     lines
         .take_while(|l| !l.starts_with("weekly headroom "))
+        // The Codex block (issue #2001) is printed last.
+        .take_while(|l| !l.starts_with("Codex: ") && !l.starts_with("Codex accounts under "))
         .filter(|l| !l.starts_with(' ') && !l.is_empty())
         .filter(|l| !l.starts_with("times: ") && !l.starts_with("order: "))
         .collect()
@@ -332,6 +355,25 @@ fn assert_no_secrets(out: &Output) {
             assert!(!s.contains(secret), "secret {secret:?} printed: {s}");
         }
     }
+}
+
+/// The `note:` lines on stderr, less the probe-sandbox note for a host
+/// without a usable `bwrap` (issue #1974), which is printed in every output
+/// mode. The profiles here have a resolvable `projects` link, so the note
+/// for an unresolved folder is never allowed: it would mean the sandbox was
+/// skipped for a reason other than the host.
+fn notes_other_than_sandbox(stderr: &str) -> Vec<&str> {
+    const PREFIX: &str = "note: usage probes run claude with --no-session-persistence only: ";
+    stderr
+        .lines()
+        .filter(|l| l.contains("note:"))
+        .filter(|l| {
+            !matches!(
+                l.strip_prefix(PREFIX),
+                Some("bwrap not found" | "bwrap refused")
+            )
+        })
+        .collect()
 }
 
 fn warning_lines(stderr: &str) -> Vec<&str> {
@@ -382,7 +424,7 @@ fn table_orders_by_capacity_marks_default_and_leases_and_hides_raw_text() {
     for p in ["a", "b", "c", "d"] {
         let args = fs::read_to_string(f.records.join(format!("args.{p}"))).unwrap();
         assert_eq!(
-            args, "2\n-p\n/usage\n",
+            args, "3\n-p\n/usage\n--no-session-persistence\n",
             "exactly `claude -p /usage` for {p}"
         );
         let env = fs::read_to_string(f.records.join(format!("env.{p}"))).unwrap();
@@ -391,6 +433,25 @@ fn table_orders_by_capacity_marks_default_and_leases_and_hides_raw_text() {
             format!("CLAUDE_CONFIG_DIR={}\n", f.root.join(p).display())
         );
     }
+    // Issue #1974: each profile's `projects` resolves, so the only allowed
+    // fallback is a host without a usable `bwrap`; with one, the probes ran
+    // through it and nothing is noted.
+    let stderr = text(&out.stderr);
+    assert!(notes_other_than_sandbox(&stderr).is_empty(), "{stderr}");
+    if bwrap_usable() {
+        assert!(!stderr.contains("note: usage probes"), "{stderr}");
+    }
+}
+
+/// Whether `bwrap --dev-bind / / true` succeeds here, as the probe checks.
+fn bwrap_usable() -> bool {
+    Command::new("bwrap")
+        .args(["--dev-bind", "/", "/", "--", "true"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 #[test]
@@ -443,7 +504,10 @@ fn json_has_the_documented_shape_and_order() {
         assert!(r.get("raw").is_none(), "no raw key without --raw: {r}");
         assert_eq!(r["error"], serde_json::Value::Null);
     }
-    assert!(!stderr.contains("note:"), "--json prints no note: {stderr}");
+    assert!(
+        notes_other_than_sandbox(&stderr).is_empty(),
+        "--json prints no note: {stderr}"
+    );
 
     let (rows, _) = f.json(&["profile", "usage", "--json", "--raw"]);
     assert!(rows[1]["raw"]["stdout"].as_str().unwrap().contains(BANNER));
@@ -521,7 +585,7 @@ fn not_set_up_records_nothing_and_says_so_only_in_table_mode() {
     );
     assert!(!f.state().exists(), "no auto-switch state created");
     let (_, stderr) = f.json(&["profile", "usage", "--json"]);
-    assert!(!stderr.contains("note:"), "{stderr}");
+    assert!(notes_other_than_sandbox(&stderr).is_empty(), "{stderr}");
     assert!(!f.state().exists());
 }
 
@@ -763,11 +827,16 @@ fn setup_failures_exit_non_zero_before_probing() {
 fn no_profiles_prints_the_list_message_or_an_empty_array() {
     let f = Fixture::empty();
     let out = f.ok(&["profile", "usage"]);
+    let stdout = text(&out.stdout);
+    let first = stdout.lines().next().unwrap_or_default();
     assert_eq!(
-        text(&out.stdout).trim(),
-        "no profiles; create one with `amplihack profile add <name>`"
+        first, "no profiles; create one with `amplihack profile add <name>`",
+        "{stdout}"
     );
+    // Issue #2001: the Codex block follows, after one empty line.
+    assert!(stdout.contains("\n\nCodex: no accounts under "), "{stdout}");
     let out = f.ok(&["profile", "usage", "--json"]);
+    // Issue #2001 keeps `--json` the bare array, with no Codex rows.
     assert_eq!(text(&out.stdout).trim(), "[]");
 }
 
@@ -984,8 +1053,7 @@ fn malformed_ledger_warns_once_and_marks_nothing_live() {
 // ---------------------------------------------------------------------------
 
 const REQUEST_LINE: &str = r#"{"type":"control_request","request_id":"amplihack-usage","request":{"subtype":"get_usage","skip_behaviors":true}}"#;
-const REQUEST_ARGS: &str =
-    "6\n-p\n--input-format\nstream-json\n--output-format\nstream-json\n--verbose\n";
+const REQUEST_ARGS: &str = "7\n-p\n--input-format\nstream-json\n--output-format\nstream-json\n--verbose\n--no-session-persistence\n";
 const SYSTEM_MARKER: &str = "SYSTEM-LINE-MARKER-1698";
 const PROBE_ENV: &str = "AMPLIHACK_PROFILE_USAGE_PROBE";
 
@@ -1051,7 +1119,10 @@ fn an_error_answer_falls_back_to_usage() {
     let (rows, stderr) = f.json(&["profile", "usage", "--json", "a"]);
     assert_eq!(session(&rows[0]), 20.0, "read from /usage");
     assert!(f.recorded("args-request.a").is_some());
-    assert_eq!(f.recorded("args.a").as_deref(), Some("2\n-p\n/usage\n"));
+    assert_eq!(
+        f.recorded("args.a").as_deref(),
+        Some("3\n-p\n/usage\n--no-session-persistence\n")
+    );
     assert!(!stderr.contains("Unknown control request"), "{stderr}");
 }
 

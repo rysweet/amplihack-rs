@@ -95,7 +95,7 @@ pub(crate) fn validate_framework_bundle_compatibility(
     root_or_bundle: &Path,
 ) -> Result<(), BundleCompatibilityError> {
     let bundle = resolve_bundle_root(root_or_bundle)?;
-    reject_symlink(&bundle)?;
+    let bundle = accept_release_link(bundle)?;
     let recipes = bundle.join("recipes");
     reject_symlink(&recipes)?;
 
@@ -170,6 +170,25 @@ fn resolve_bundle_root(root_or_bundle: &Path) -> Result<PathBuf, BundleCompatibi
     Err(BundleCompatibilityError::MissingBundle(
         root_or_bundle.to_path_buf(),
     ))
+}
+
+/// Issue #1954: the installed `amplifier-bundle` is a symlink into
+/// `releases/<release>/amplifier-bundle`. Only that top-level link is
+/// accepted, and only when it resolves to a real directory inside a release
+/// with `.complete`, under the `releases/` beside the link. Validation then
+/// runs on the release directory. Any other symlink is rejected as before,
+/// and symlinks inside the tree are still rejected below.
+fn accept_release_link(bundle: PathBuf) -> Result<PathBuf, BundleCompatibilityError> {
+    let metadata =
+        fs::symlink_metadata(&bundle).map_err(|source| BundleCompatibilityError::ReadFile {
+            path: bundle.clone(),
+            source,
+        })?;
+    if !metadata.file_type().is_symlink() {
+        return Ok(bundle);
+    }
+    super::release_layout::resolve_bundle_link(&bundle)
+        .ok_or(BundleCompatibilityError::SymlinkedPath(bundle))
 }
 
 fn reject_symlink(path: &Path) -> Result<(), BundleCompatibilityError> {

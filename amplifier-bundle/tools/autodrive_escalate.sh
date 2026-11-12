@@ -34,12 +34,85 @@ usage_limit_failure() {
 # usage_limit_stop <rc> <log> <reason>: escalate USAGE_LIMIT and exit 1 on one.
 usage_limit_stop() { usage_limit_failure "$1" "$2" || return 0; escalate "USAGE_LIMIT" "$3" usage_limit; exit 1; }
 
-escalate() { # escalate <verdict> <why> [usage_limit|budget]
+# orphan_stop <rc> <who>: a child that exited 75 lost the recipe run above the
+# loop (#1976). Stop as ORPHANED with exit 75 before the progress row and the
+# evaluator: the evaluator would inherit the same dead parent, stop at once
+# and leave no LOOP_HEALTH line, so the loop would report a driver crash as
+# STUCK. docs/reference/auto-drive-to-merge.md#how-the-loop-treats-exit-75.
+AUTODRIVE_EXIT_ORPHANED=75 # a nested recipe run whose parent run exited (#1976)
+orphan_stop() {
+  [ "${1:-0}" = "$AUTODRIVE_EXIT_ORPHANED" ] || return 0
+  escalate "ORPHANED" "${2} exited ${AUTODRIVE_EXIT_ORPHANED}: the recipe run above this loop exited, so the nested run stopped itself; see orphaned.json in the state directory" orphaned
+  exit "$AUTODRIVE_EXIT_ORPHANED"
+}
+
+# held_by_lines: the `  held by:` lines of a stop (issue #2219). The reason is
+# the evaluator's sentence and names no measurement, so without these the
+# operator cannot see which criterion held the pull request up. Two sources:
+#
+#   the round record's held_by field  one condition line per disagreeing
+#       measurement, written by autodrive_round_evidence.sh round-record.
+#   ${RECORD}.findings                one `reported <id>` line per blocker
+#       the round reported.
+#
+# BOTH ARE FILTERED HERE, ON READ, and differently. The state directory is
+# already treated as possibly untrusted, and .findings holds unfiltered model
+# output.
+#   held_by   control characters become spaces and the entry is cut to 120
+#             bytes. NOT the token byte set: a condition line legitimately
+#             holds spaces, `=` and `:`, which that set would shred.
+#   findings  control characters become spaces, then only [A-Za-z0-9_.:/-]
+#             survives, then the entry is cut to 120 bytes. At most ten
+#             print, then `(+N more)` — the same cap as _autodrive_qa_list.
+#             The cap is a findings cap; every condition the record names is
+#             printed. The count is of lines that SURVIVE the filter, so a
+#             line that sanitises to nothing is neither printed nor counted
+#             and `(+N more)` names exactly the lines withheld. That costs
+#             the filter's two forks on a line past the cap, which is at
+#             most the tail of one small file, once per stop.
+# The two-space prefix is unconditional, so no attacker-influenced byte ever
+# begins a line at column 0 — the column usage_limit_failure greps.
+#
+# The record is read with parameter expansion and not with a helper binary:
+# the binary may itself be what failed. A record with no held_by field prints
+# no condition line, so a record written before this change still works.
+held_by_lines() {
+  local -x LC_ALL=C # so the 120-byte cuts below are bytes, not characters
+  local rec="${RECORD:-}" raw="" e="" n=0
+  [ -n "$rec" ] && [ -f "$rec" ] && [ ! -L "$rec" ] || rec=""
+  if [ -n "$rec" ]; then
+    raw="$(tr '\001-\037\177' ' ' < "$rec" 2>/dev/null)"
+    case "$raw" in
+      *'"held_by":"'*)
+        raw="${raw#*'"held_by":"'}"
+        raw="${raw%%'"'*}"
+        while [ -n "$raw" ]; do
+          e="${raw%%|*}"
+          case "$raw" in *'|'*) raw="${raw#*|}" ;; *) raw="" ;; esac
+          [ -n "$e" ] || continue
+          printf '  held by: %s\n' "${e:0:120}"
+        done ;;
+    esac
+  fi
+  [ -n "$rec" ] && [ -f "${rec}.findings" ] && [ ! -L "${rec}.findings" ] || return 0
+  while IFS= read -r e; do
+    e="$(printf '%s' "$e" | tr '\001-\037\177' ' ' | tr -cd 'A-Za-z0-9_.:/-')"
+    [ -n "$e" ] || continue
+    n=$((n + 1))
+    [ "$n" -le 10 ] || continue
+    printf '  held by: reported %s\n' "${e:0:120}"
+  done < "${rec}.findings"
+  [ "$n" -le 10 ] || printf '  held by: reported (+%s more)\n' "$((n - 10))"
+}
+
+escalate() { # escalate <verdict> <why> [usage_limit|budget|orphaned]
   echo "AUTO_DRIVE_LOOP: ${1} — loop '${LOOP_NAME}' stops at round label '${ROUND_LABEL:-?}'." >&2
   echo "  Reason: ${2}" >&2
+  held_by_lines >&2
   echo "  Round record: ${RECORD:-<none>}" >&2
   case "${3:-}" in
     usage_limit) echo "  This is a usage limit, not a judgement about progress. Run again when a login has capacity." >&2 ;;
+    orphaned) echo "  This is a lost driver, not a judgement about progress. Relaunch auto-drive to resume from the recorded round." >&2 ;;
     budget) echo "  This is a usage budget set by the operator, not a judgement about progress. Relaunch with a higher budget to resume from the recorded round." >&2 ;;
     *) echo "  This is a judgement about absence of progress, not an attempt count." >&2 ;;
   esac

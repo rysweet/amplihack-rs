@@ -637,6 +637,9 @@ root: /home/you/.claude-profiles (source: config)
 */30 * * * * amplihack profile usage --json > /tmp/claude-usage.json
 ```
 
+The saved file is the array of Claude rows, so a script reads it with
+`jq '.[]'`. It has no Codex rows; save `--summary-json` instead for those.
+
 ```bash
 tmux new-session -d -s work 'amplihack claude --profile work'
 ```
@@ -907,6 +910,41 @@ logins, how many can take work now, the next session reset and how long the
 weekly capacity lasts at the recent rate; see
 [See how much capacity is left](claude-profile-rotation.md#see-how-much-capacity-is-left).
 `--summary-json` prints the rows and that summary as one JSON object.
+
+### See your Codex accounts in the same view
+
+With no profile names, `profile usage` also asks each Codex account under
+`~/.codex-profiles` (or `CODEX_PROFILES_ROOT`) for its rate limits, live,
+and lists it after the Claude output. `~/.codex` is included when it is
+signed in. Each row shows the five-hour and weekly use with their resets,
+any credit balance, the plan and the time of the reading, and `<- next`
+marks the account `codex-pick`'s rule picks from these live readings
+(`codex-pick` itself reads session files, which can be older, so the two
+can disagree):
+
+```
+Codex accounts under /home/ryan/.codex-profiles
+ffarmer  signed in      5h █░░░░░░░░░  12% 11-06 21:40 in 2h 31m  7d ████░░░░░░  41% 11-12 08:00 in 132h 51m  plan plus  read 19:09:00
+ggrant   signed in      7d ███░░░░░░░  34% 11-10 14:30 in 91h 21m  plan pro  read 19:09:00  <- next
+jjones   not signed in  read 19:09:00
+```
+
+The accounts are read at once, each with a 20-second limit
+(`AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS`); one that does not answer shows
+`timed out`, never an older figure. amplihack does not open `auth.json`;
+Codex reads its own login. `--json` stays the array of Claude rows and does
+not read Codex; the Codex rows are under `codex` in `--summary-json`:
+
+```bash
+amplihack profile usage --summary-json | jq -r '.codex[] | select(.next_choice) | .account'
+```
+
+```
+ggrant
+```
+
+See [Codex accounts](../reference/profile-command.md#codex-accounts) for
+the states, the choice rule and every JSON key.
 
 The command exits with status 0 whenever the probes ran, whatever their
 states. Like `profile run`, it is refused under Docker.

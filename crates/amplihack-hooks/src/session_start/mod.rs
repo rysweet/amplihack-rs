@@ -26,9 +26,7 @@ use context_loaders::{
     load_user_preferences, load_workflow_context,
 };
 pub(crate) use context_loaders::{is_nested_recipe_session, is_workflow_active};
-use migration::{
-    code_graph_compatibility_notice, memory_graph_compatibility_notice, migrate_global_hooks,
-};
+use migration::{code_graph_compatibility_notice, memory_graph_compatibility_notice};
 
 pub struct SessionStartHook;
 
@@ -60,8 +58,11 @@ impl Hook for SessionStartHook {
         // the host should be aware of — e.g. code-graph setup failures.
         let mut warnings: Vec<String> = Vec::new();
 
+        // The original request is saved under the amplihack state root, never
+        // the working directory (#1963). The context is injected either way.
+        let session_dir = amplihack_types::session_state_dir(session_id.as_deref());
         if let Some(original_request_context) =
-            maybe_capture_original_request(&dirs, session_id.as_deref(), &extra)?
+            maybe_capture_original_request(session_dir.as_deref(), session_id.as_deref(), &extra)
         {
             context_parts.push(original_request_context);
         }
@@ -88,12 +89,8 @@ impl Hook for SessionStartHook {
             context_parts.push(version_notice);
         }
 
-        // Migrate global hooks if needed.
-        if !codex_protocol_selected()
-            && let Some(migration_notice) = migrate_global_hooks(&dirs)
-        {
-            context_parts.push(migration_notice);
-        }
+        // Issue #2279 (C13): amplihack's global hooks are never removed here,
+        // even when the project has its own copy.
 
         // Run blarify / code-graph indexing setup and track the lifecycle status.
         //
@@ -187,22 +184,17 @@ impl Hook for SessionStartHook {
     }
 }
 
+/// Capture the original request from the session-start prompt and return the
+/// context block to inject. A failed or skipped save is logged by
+/// `capture_original_request` and does not suppress the context.
 fn maybe_capture_original_request(
-    dirs: &ProjectDirs,
+    session_dir: Option<&std::path::Path>,
     session_id: Option<&str>,
     extra: &Value,
-) -> anyhow::Result<Option<String>> {
-    let Some(prompt) = extra.get("prompt").and_then(Value::as_str).map(str::trim) else {
-        return Ok(None);
-    };
-
-    Ok(capture_original_request(dirs, session_id, prompt)?
-        .as_ref()
-        .map(format_original_request_context))
-}
-
-pub(crate) fn codex_protocol_selected() -> bool {
-    crate::protocol::codex_hook_protocol_selected()
+) -> Option<String> {
+    let prompt = extra.get("prompt").and_then(Value::as_str).map(str::trim)?;
+    capture_original_request(session_dir, session_id, prompt)
+        .map(|captured| format_original_request_context(&captured.request))
 }
 
 fn format_code_graph_status(body: String) -> String {

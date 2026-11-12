@@ -3,13 +3,7 @@
 use amplihack_utils::rotator_status::LIMIT_RESUME_TIMEOUT_SECS;
 use serde::{Deserialize, Serialize};
 
-/// Upstream archive URL — only used as a network fallback when the
-/// bundled framework root cannot be resolved locally (issue #254).
-/// Points to amplihack-rs (current canonical repo) per #249.
-pub(super) const REPO_ARCHIVE_URL: &str =
-    "https://github.com/rysweet/amplihack-rs/archive/refs/heads/main.tar.gz";
-/// Upstream git URL — only used as a network fallback (issue #254).
-/// Points to amplihack-rs (current canonical repo) per #249.
+/// The repository a release tag is fetched from (issues #254, #249, #1955).
 pub(super) const REPO_GIT_URL: &str = "https://github.com/rysweet/amplihack-rs";
 /// Identifies which framework-asset source layout was found in the
 /// caller-supplied repository root.
@@ -91,7 +85,7 @@ pub(super) fn dir_mapping(layout: SourceLayout) -> &'static [(&'static str, &'st
 }
 
 /// Destination-relative essential dirs that the layout actually stages.
-/// Used by `missing_framework_paths` and the network-fallback hard-error
+/// Used by `missing_framework_paths` and the release-tag install's hard-error
 /// check to verify the staged tree contains every dir the install path
 /// promised to copy.
 pub(super) fn essential_destinations(layout: SourceLayout) -> &'static [&'static str] {
@@ -150,8 +144,13 @@ pub(super) fn essential_destinations(layout: SourceLayout) -> &'static [&'static
 /// The fragment is now `include_str!`d into the binary
 /// (`launch::system_prompt_append::FRAGMENT`), so the feature reaches every
 /// install with no restage at all and this list keeps its pre-existing
-/// contents. Before adding an entry here, check that the file being added is
-/// not also *read* as an instruction to the agent.
+/// contents. Since issue #2030 the launch writes those compiled-in bytes to
+/// `<amplihack home>/private/system-prompt-append.md` (0600) and passes the
+/// path with `--append-system-prompt-file`, so the text never reaches argv.
+/// That file is generated at launch from the binary, never read back as a
+/// source of content, and deliberately not listed here or in the bundle
+/// staging tree. Before adding an entry here, check that the file being added
+/// is not also *read* as an instruction to the agent.
 pub(super) fn essential_files(layout: SourceLayout) -> &'static [&'static str] {
     match layout {
         SourceLayout::Bundle => &["tools/statusline.sh"],
@@ -218,119 +217,6 @@ pub(super) struct HookSpec {
     /// background and exit code 2 wakes the session. Only `StopFailure`.
     pub async_rewake: bool,
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct CanonicalHookContractEntry {
-    pub event: &'static str,
-    /// Legacy on-disk filename of the Python shim that historically backed
-    /// this hook entry. `None` for events whose `.py` shim was deleted in
-    /// favor of a native `amplihack-hooks` subcommand (issue #522). Kept
-    /// only as descriptive metadata for drift diagnostics — the install
-    /// pipeline does not consult this field to locate or stage hook files.
-    pub hook_file: Option<&'static str>,
-    pub native_subcmd: Option<&'static str>,
-    pub timeout: Option<u64>,
-    pub matcher: Option<&'static str>,
-    pub async_rewake: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct ObservedNativeHookContractEntry {
-    pub subcmd: String,
-    pub timeout: Option<u64>,
-    pub matcher: Option<String>,
-}
-
-// Mirrors the canonical hook contract — all hooks use native Rust binary.
-// No Python shims remain. The `hook_file` field is retained for drift
-// diagnostics but is always `None` — all events use `amplihack-hooks <subcmd>`.
-// UserPromptSubmit is intentionally launcher-ordered so the lightweight
-// workflow-classification reminder runs before user-prompt-submit.
-pub(super) const CANONICAL_AMPLIHACK_HOOK_CONTRACT: &[CanonicalHookContractEntry] = &[
-    CanonicalHookContractEntry {
-        event: "SessionStart",
-        hook_file: None,
-        native_subcmd: Some("session-start"),
-        timeout: Some(10),
-        matcher: None,
-        async_rewake: false,
-    },
-    CanonicalHookContractEntry {
-        event: "Stop",
-        // `stop.py` shim deleted in issue #522 — native `amplihack-hooks stop`
-        // is the only implementation.
-        hook_file: None,
-        native_subcmd: Some("stop"),
-        timeout: Some(120),
-        matcher: None,
-        async_rewake: false,
-    },
-    CanonicalHookContractEntry {
-        event: "PreToolUse",
-        hook_file: Some("pre_tool_use.py"),
-        native_subcmd: Some("pre-tool-use"),
-        timeout: None,
-        matcher: Some("*"),
-        async_rewake: false,
-    },
-    CanonicalHookContractEntry {
-        event: "PostToolUse",
-        // `post_tool_use.py` shim deleted in issue #522.
-        hook_file: None,
-        native_subcmd: Some("post-tool-use"),
-        timeout: None,
-        matcher: Some("*"),
-        async_rewake: false,
-    },
-    CanonicalHookContractEntry {
-        event: "UserPromptSubmit",
-        hook_file: Some("workflow_classification_reminder.py"),
-        native_subcmd: Some("workflow-classification-reminder"),
-        timeout: Some(5),
-        matcher: None,
-        async_rewake: false,
-    },
-    CanonicalHookContractEntry {
-        event: "UserPromptSubmit",
-        // `user_prompt_submit.py` shim deleted in issue #522.
-        hook_file: None,
-        native_subcmd: Some("user-prompt-submit"),
-        timeout: Some(10),
-        matcher: None,
-        async_rewake: false,
-    },
-    CanonicalHookContractEntry {
-        event: "PreCompact",
-        hook_file: Some("pre_compact.py"),
-        native_subcmd: Some("pre-compact"),
-        timeout: Some(30),
-        matcher: None,
-        async_rewake: false,
-    },
-    // SessionEnd fires once when a Claude Code session genuinely terminates.
-    // It drives per-session Signal channel teardown (leave group, stop the
-    // detached subscriber). Unlike the per-turn `Stop` hook, this is the only
-    // safe place to tear the channel down without killing it mid-session.
-    CanonicalHookContractEntry {
-        event: "SessionEnd",
-        hook_file: None,
-        native_subcmd: Some("session-stop-event"),
-        timeout: Some(30),
-        matcher: None,
-        async_rewake: false,
-    },
-    // A turn ended by a usage limit (issue #1658): wait, bounded, for the
-    // login rotator to record a fresh cycle with capacity, then wake the
-    // session. Needs Claude Code 2.1.306 or later.
-    CanonicalHookContractEntry {
-        event: "StopFailure",
-        hook_file: None,
-        native_subcmd: Some("limit-resume"),
-        timeout: Some(LIMIT_RESUME_TIMEOUT_SECS),
-        matcher: Some("rate_limit"),
-        async_rewake: true,
-    },
-];
 
 /// The event of the limit-resume hook, registered only for a Claude Code
 /// that supports it (see `settings::LIMIT_RESUME_MIN_CLAUDE`).
@@ -422,36 +308,6 @@ pub(super) const AMPLIHACK_HOOK_SPECS: &[HookSpec] = &[
         timeout: Some(LIMIT_RESUME_TIMEOUT_SECS),
         matcher: Some("rate_limit"),
         async_rewake: true,
-    },
-];
-
-pub(super) const XPIA_HOOK_SPECS: &[HookSpec] = &[
-    HookSpec {
-        event: "SessionStart",
-        cmd: HookCommandKind::BinarySubcmd {
-            subcmd: "session-start",
-        },
-        timeout: Some(10),
-        matcher: None,
-        async_rewake: false,
-    },
-    HookSpec {
-        event: "PreToolUse",
-        cmd: HookCommandKind::BinarySubcmd {
-            subcmd: "pre-tool-use",
-        },
-        timeout: None,
-        matcher: Some("*"),
-        async_rewake: false,
-    },
-    HookSpec {
-        event: "PostToolUse",
-        cmd: HookCommandKind::BinarySubcmd {
-            subcmd: "post-tool-use",
-        },
-        timeout: None,
-        matcher: Some("*"),
-        async_rewake: false,
     },
 ];
 

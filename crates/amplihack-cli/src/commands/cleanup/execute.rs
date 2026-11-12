@@ -2,7 +2,8 @@
 //! resolves the recorded path again, requires it to match the canonical path
 //! seen at collection and to lie in the managed roots, repeats the liveness,
 //! Cargo-lock and cleanliness checks, then acts on the canonical path only.
-//! Moved out of `sweep.rs` unchanged.
+//! Moved out of `sweep.rs`. Run targets (issue #2039) are removed only
+//! through `target_remove`, which inspects the path again itself.
 
 use super::*;
 
@@ -38,6 +39,10 @@ fn is_managed(item: &Item, roots: &ManagedRoots) -> bool {
             c.parent() == Some(roots.tmp.as_path()) && has_prefix(c, TMP_PREFIXES)
         }
         Op::RemoveDir { .. } => is_contained(OwnedKind::Target, c, roots, None),
+        // `target_remove::remove` inspects the path again and requires the
+        // planned shape; this is the containment half of that check.
+        Op::RemoveTarget { .. } => target_remove::location(&item.path)
+            .is_ok_and(|at| is_contained(OwnedKind::Target, &at, roots, None)),
     }
 }
 
@@ -67,16 +72,37 @@ fn run_still_inactive(run_dir: &Path) -> Result<()> {
 /// Repeats the safety checks on the item immediately before acting, then
 /// acts on the canonical path recorded at collection, never on the
 /// step-supplied one.
+///
+/// After a worktree is removed, the target of that checkout is handed to the
+/// same removal routine (issue #2039, rule c); its entries go to `follow_on`.
 pub(super) fn execute(
     item: &Item,
     settings: &Settings,
     roots: &ManagedRoots,
+    links: &LinkRoots,
     procs: &ProcScan,
+    follow_on: &mut Vec<Entry>,
 ) -> Result<()> {
     match &item.op {
         Op::Skip | Op::Fail => return Ok(()),
         Op::Archive { relative } => {
             return archive_file(&item.path, &settings.archive_dir, relative).map(|_| ());
+        }
+        Op::RemoveTarget {
+            run_dir,
+            shape,
+            after_checkout_gone,
+        } => {
+            return remove_run_target(
+                item,
+                run_dir,
+                shape,
+                after_checkout_gone.as_deref(),
+                settings,
+                roots,
+                links,
+                procs,
+            );
         }
         _ => {}
     }
@@ -100,7 +126,7 @@ pub(super) fn execute(
     }
     let target = item.canonical.as_path();
     match &item.op {
-        Op::Skip | Op::Fail | Op::Archive { .. } => Ok(()),
+        Op::Skip | Op::Fail | Op::Archive { .. } | Op::RemoveTarget { .. } => Ok(()),
         Op::RemoveRunTmp { run_dir } => {
             run_still_inactive(run_dir)?;
             // A child of a killed runner (an agent, cargo) may outlive it and
@@ -118,18 +144,30 @@ pub(super) fn execute(
                 run_still_inactive(run_dir)?;
                 refuse_if_other_live_owner(item, settings)?;
             }
-            if *cargo_lock && cargo_lock_held(target) {
-                refuse!("in use: .cargo-lock is held");
-            }
             if item.category == Category::TmpLeftover && has_live_pid_marker(target) {
                 refuse!("in use: a pid marker names a running process");
             }
             if procs.in_use(target) {
                 refuse!("in use by a running process");
             }
+            // Issue #2039: a Cargo target is locked exclusively from the
+            // check through the delete, so a build cannot start in between.
+            // Dropping the handles before the delete reopens that race.
+            let _held = if *cargo_lock {
+                match target_remove::lock_cargo_tree(target) {
+                    Ok(held) => held,
+                    Err(refusal) => refuse!("{refusal}"),
+                }
+            } else {
+                Vec::new()
+            };
             remove_real_dir(target)
         }
-        Op::RemoveWorktree { main, run_dir } => {
+        Op::RemoveWorktree {
+            main,
+            run_dir,
+            rule_a_target,
+        } => {
             run_still_inactive(run_dir)?;
             refuse_if_other_live_owner(item, settings)?;
             if !is_real_dir(target) {
@@ -165,7 +203,107 @@ pub(super) fn execute(
                     sanitized_stderr_short(&output.stderr)
                 );
             }
+            if !rule_a_target {
+                follow_on.extend(follow_on_target(item, settings, roots, links));
+            }
             Ok(())
+        }
+    }
+}
+
+/// Rule (c) of issue #2039: the target of the worktree `item` removed just
+/// now. The caller skips this when the sweep planned a rule (a) removal of
+/// that target as its own item; a `created` record alone is not enough,
+/// because under `--only run-worktree`, or when the rule (a) item was refused
+/// at plan time, no such item exists.
+fn follow_on_target(
+    item: &Item,
+    settings: &Settings,
+    roots: &ManagedRoots,
+    links: &LinkRoots,
+) -> Vec<Entry> {
+    // A fresh process scan: the worktree was in use a moment ago.
+    let mut procs = None;
+    worktree_target_entries(
+        item.canonical.as_path(),
+        settings,
+        roots,
+        links,
+        &mut procs,
+        item.run_id.as_deref(),
+    )
+}
+
+/// Applies `Op::RemoveTarget`: the run is still inactive, no other live run
+/// records the target, for rule (a) the checkout is gone now, no process
+/// uses it, and then `target_remove::remove` with its own re-inspection and
+/// `.cargo-lock` locks.
+#[allow(clippy::too_many_arguments)]
+fn remove_run_target(
+    item: &Item,
+    run_dir: &Path,
+    shape: &Shape,
+    after_checkout_gone: Option<&Path>,
+    settings: &Settings,
+    roots: &ManagedRoots,
+    links: &LinkRoots,
+    procs: &ProcScan,
+) -> Result<()> {
+    if !is_managed(item, roots) {
+        refuse!(
+            "{} is no longer inside the folders cleanup manages",
+            item.path.display()
+        );
+    }
+    // A link that resolved when planned must resolve to the same place now;
+    // `remove` repeats this as part of its shape check.
+    if !matches!(shape, Shape::DanglingLink) {
+        match fs::canonicalize(&item.path) {
+            Ok(now) if now == item.canonical => {}
+            Ok(now) => refuse!(
+                "{} now resolves to {} instead of {}",
+                item.path.display(),
+                now.display(),
+                item.canonical.display()
+            ),
+            Err(_) => refuse!("{}", target_remove::Refusal::ChangedSincePlan),
+        }
+    }
+    run_still_inactive(run_dir)?;
+    refuse_if_other_live_owner(item, settings)?;
+    if let Some(checkout) = after_checkout_gone {
+        match fs::symlink_metadata(checkout) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => refuse!("worktree kept"),
+        }
+    }
+    let in_use_at = match shape {
+        Shape::DanglingLink => None,
+        _ => Some(item.canonical.as_path()),
+    };
+    if in_use_at.is_some_and(|p| procs.in_use(p)) {
+        refuse!("in use by a running process");
+    }
+    match target_remove::remove(&item.path, shape, roots, links, true) {
+        Ok(()) => {
+            // (a) the run removed this worktree; (b) the checkout was gone.
+            let event = if after_checkout_gone.is_some() {
+                "a"
+            } else {
+                "b"
+            };
+            tracing::info!(
+                path = %item.path.display(),
+                event,
+                reason = %item.reason,
+                run_id = item.run_id.as_deref().unwrap_or(""),
+                "removed pre-commit target"
+            );
+            Ok(())
+        }
+        Err(target_remove::RemoveError::Refused(refusal)) => refuse!("{refusal}"),
+        Err(target_remove::RemoveError::Io(error)) => {
+            Err(error).with_context(|| format!("cannot remove {}", item.path.display()))
         }
     }
 }
@@ -201,7 +339,9 @@ fn refuse_if_other_live_owner(item: &Item, settings: &Settings) -> Result<()> {
         Ok(runs) => runs,
         Err(error) => refuse!("cannot list runs: {error:#}"),
     };
-    if let Some(reason) = other_live_owner(&runs, &item.canonical, own) {
+    let other = other_live_owner(&runs, &item.canonical, own)
+        .or_else(|| other_live_owner(&runs, &item.path, own));
+    if let Some(reason) = other {
         refuse!("{reason}");
     }
     Ok(())

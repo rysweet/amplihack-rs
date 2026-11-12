@@ -5,6 +5,7 @@
 
 #![cfg(target_os = "linux")]
 
+use crate::support::fake_proc::{FAKE_PID_BASE, FakeProc};
 use crate::support::profile_rotate::*;
 use std::collections::BTreeMap;
 use std::fs;
@@ -206,6 +207,10 @@ fn the_hold_blocks_an_upgrade_back_and_hold_zero_allows_it() {
 #[test]
 fn a_dry_run_changes_nothing_and_prints_only_would_and_cycle_lines() {
     let f = Fixture::new();
+    // Issue #1962: a dry run reads the usage endpoint only and never starts `claude`.
+    f.usage_direct("work", 90, 20);
+    f.usage_direct("spare", 10, 20);
+    f.usage_direct("extra", 50, 60);
     let before = snapshot(&f);
     let out = f.ok(&["profile", "rotate", "--dry-run"]);
     assert_eq!(snapshot(&f), before, "dry run wrote or moved something");
@@ -220,6 +225,7 @@ fn a_dry_run_changes_nothing_and_prints_only_would_and_cycle_lines() {
         ls.iter().any(|l| l.starts_with("would swap work->spare")),
         "{ls:?}"
     );
+    assert!(f.probe_envs().is_empty(), "the dry run started claude");
 }
 
 #[test]
@@ -273,6 +279,8 @@ fn an_unknown_login_is_adopted_as_default_original() {
         "primaryApiKey": "SECRET-KEY-HOME"
     });
     private_file(&f.home.join(".claude.json"), &home_json.to_string());
+    // Issue #1753: identity comes from the login, so it names the stranger too.
+    assert_eq!(login(&f.home_login()), f.live_ino);
     f.usage("stranger", 95, 10);
     let out = f.ok(&["profile", "rotate"]);
     assert!(
@@ -337,17 +345,18 @@ fn no_login_in_home_is_an_alert_and_nothing_moves_in() {
     assert_eq!(ino(&f.slot("spare")), Some(f.spare_ino));
 }
 
-/// Issue #1693: a manual `/login` in `~/.claude` as `extra`'s account left
-/// `spare` (the ledger's live profile) with no login and two copies of
-/// `extra`'s account. One `profile rotate` moves `extra`'s own copy aside,
-/// records `extra` as live, warns that `spare` has no login, and then, in the
-/// same run, swaps to `work`, which has capacity again.
+/// Issue #1886: `~/.claude.json` naming another profile's account is no
+/// hand change. Running sessions rewrite that file from memory, so after a
+/// swap it can still name the previous account. One `profile rotate` moves
+/// no login aside, records nobody in the ledger's place and writes no
+/// recovery or lost-login line; with no usable credential reading (the test
+/// guard sends no request) it can only note that it cannot tell, and the
+/// run goes on to measure and swap as usual.
 #[test]
-fn a_hand_change_to_a_logged_in_profile_recovers_and_swaps_in_the_same_run() {
+fn claude_json_naming_another_profile_moves_nothing_aside() {
     let f = Fixture::new();
     f.ok(&["profile", "rotate"]);
     assert_eq!(f.where_is(f.spare_ino).as_deref(), Some("~/.claude"));
-    // Someone ran /login in ~/.claude as `extra`'s account.
     let home_json = serde_json::json!({"oauthAccount": account_json("extra")});
     private_file(&f.home.join(".claude.json"), &home_json.to_string());
     f.usage("extra", 95, 95);
@@ -356,40 +365,17 @@ fn a_hand_change_to_a_logged_in_profile_recovers_and_swaps_in_the_same_run() {
     before.sort();
     let out = f.ok(&["profile", "rotate"]);
     let stdout = text(&out.stdout);
-    let at = |want: &str| {
-        stdout
-            .find(want)
-            .unwrap_or_else(|| panic!("missing {want:?} in {stdout}"))
-    };
-    let recovered = at(
-        "recovered: ~/.claude and extra held the same account; kept ~/.claude, moved extra's copy to ",
+    assert!(!stdout.contains("recovered:"), "{stdout}");
+    assert!(!stdout.contains("has no login anywhere"), "{stdout}");
+    assert!(
+        !f.root.join(".rejected-logins").exists(),
+        "nothing was set aside: {stdout}"
     );
-    at(
-        "ALERT: profile spare has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login spare",
-    );
-    let swapped = at("swap extra->work ");
-    assert!(recovered < swapped, "recovery comes first: {stdout}");
-    assert!(!stdout.contains("(live=spare); no swap"), "{stdout}");
-    assert!(!stdout.contains("no-capacity"), "{stdout}");
-
-    // `work` is live; the manual login went to `extra`'s slot.
-    assert_eq!(f.where_is(f.live_ino).as_deref(), Some("~/.claude"));
-    assert_eq!(f.where_is(f.spare_ino).as_deref(), Some("extra"));
-    assert_eq!(f.home_account(), "uuid-work");
+    assert_eq!(f.where_is(f.extra_ino).as_deref(), Some("extra"));
     let ledger = f.ledger().unwrap();
-    assert_eq!(ledger["live"], "work", "{ledger}");
-    assert_eq!(ledger["last_cycle"]["outcome"], "swapped", "{ledger}");
-    // Every login still exists exactly once: in a profile, in ~/.claude or
-    // in the backup under .rejected-logins, where `extra`'s copy now is.
-    let mut backups = Vec::new();
-    for e in fs::read_dir(f.root.join(".rejected-logins")).unwrap() {
-        if let Ok(m) = fs::symlink_metadata(e.unwrap().path().join(CREDS)) {
-            backups.push(m.ino());
-        }
-    }
-    assert_eq!(backups, vec![f.extra_ino]);
+    assert_ne!(ledger["live"], "extra", "{ledger}");
+    assert!(ledger.get("hand_suspect").is_none(), "{ledger}");
     let mut after: Vec<u64> = f.logins().iter().map(|(_, i)| *i).collect();
-    after.extend(backups);
     after.sort();
     assert_eq!(after, before, "no login lost or copied");
 }
@@ -473,45 +459,24 @@ fn probes_get_no_rotate_settings_and_the_live_probe_has_no_config_dir() {
 }
 
 /// A stand-in for a rotator started from an older amplihack binary: a
-/// process whose command line names `profile rotate watch` but whose
-/// executable is not this build's. Killed on drop.
-struct OldRotator(std::process::Child);
-
-impl OldRotator {
-    fn start(f: &Fixture) -> Self {
-        // A loop keeps `sh` itself running (it never exec's into `sleep`,
-        // which would replace the command line the rotator check reads), and
-        // the short sleep means no orphan outlives the kill by more than a
-        // second. No inherited pipes, so nextest sees no leak.
-        let child = std::process::Command::new("sh")
-            .args([
-                "-c",
-                "while :; do sleep 1; done",
-                "amplihack",
-                "profile",
-                "rotate",
-                "watch",
-            ])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
-        let dir = f.rotate_dir();
-        fs::create_dir_all(&dir).unwrap();
-        for d in [dir.parent().unwrap(), dir.as_path()] {
-            fs::set_permissions(d, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
-        }
-        fs::write(dir.join("rotate.pid"), format!("{}\n", child.id())).unwrap();
-        Self(child)
+/// static entry in a fake process table (issue #2042) whose command line
+/// names `profile rotate watch` and which has no `exe` link to this build.
+/// No process is started; the pid lies above `pid_max`, so nothing can
+/// signal it. Every later fixture command reads the returned tree; keep it
+/// alive while they run.
+fn old_rotator(f: &Fixture) -> FakeProc {
+    let fake = FakeProc::new();
+    fake.process(FAKE_PID_BASE)
+        .cmdline(&["amplihack", "profile", "rotate", "watch"])
+        .status('S');
+    f.with_proc(&fake);
+    let dir = f.rotate_dir();
+    fs::create_dir_all(&dir).unwrap();
+    for d in [dir.parent().unwrap(), dir.as_path()] {
+        fs::set_permissions(d, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
     }
-}
-
-impl Drop for OldRotator {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
+    fs::write(dir.join("rotate.pid"), format!("{FAKE_PID_BASE}\n")).unwrap();
+    fake
 }
 
 /// Issue #1659: beside a rotator from another binary, a one-shot cycle says
@@ -521,7 +486,7 @@ impl Drop for OldRotator {
 fn a_one_shot_beside_an_older_rotator_keeps_the_ledger_readable_to_it() {
     let f = Fixture::new();
     f.usage("work", 20, 20);
-    let _old = OldRotator::start(&f);
+    let _old = old_rotator(&f);
     let out = f.ok(&["profile", "rotate"]);
     let stderr = text(&out.stderr);
     assert!(

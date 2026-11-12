@@ -137,6 +137,11 @@ pub struct Probed {
     /// Issue #1870: the result of a read started in an earlier cycle, so it
     /// has no reading time (`fresh::read_at`).
     pub carried: bool,
+    /// Issue #1970: the figure Claude's status line stored (a passive
+    /// reading, `usage_passive`), not one read by this cycle. Set from the
+    /// source in [`Probed::from_report`]; `observed_at` cannot stand in for
+    /// it, because a #1870 re-read is a direct read that also carries one.
+    pub passive: bool,
 }
 
 impl Probed {
@@ -151,6 +156,8 @@ impl Probed {
             still_running: false,
             observed_at: r.observed_at,
             carried: false,
+            // `UsageReport::observed_at` is set only by the passive reader.
+            passive: r.observed_at.is_some(),
         }
     }
 
@@ -170,6 +177,7 @@ impl Probed {
             still_running: false,
             observed_at: None,
             carried: false,
+            passive: false,
         }
     }
 
@@ -183,6 +191,7 @@ impl Probed {
             still_running: false,
             observed_at: None,
             carried: false,
+            passive: false,
         }
     }
 }
@@ -223,6 +232,10 @@ pub enum Reason {
     /// A move to the plan login with the most room when no threshold swap
     /// meets `--margin` (issue #1804); see `plan_room`.
     PlanRoom,
+    /// Issue #2211: a threshold swap decided on the live login's projected
+    /// session use, or on a failed or stale reading near the threshold; see
+    /// `fresh::live` (`live_fresh.rs`).
+    Projected,
 }
 
 impl Reason {
@@ -234,6 +247,7 @@ impl Reason {
             Self::OverflowIn => "overflow-in",
             Self::OverflowOut => "overflow-out",
             Self::PlanRoom => "plan-room",
+            Self::Projected => "projected",
         }
     }
 }

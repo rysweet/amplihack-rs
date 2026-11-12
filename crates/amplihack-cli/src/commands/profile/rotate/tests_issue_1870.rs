@@ -91,6 +91,7 @@ pub(super) fn rd(session: f64, week: f64, observed_at: Option<i64>) -> Probed {
         still_running: false,
         observed_at,
         carried: false,
+        passive: false,
     }
 }
 
@@ -107,6 +108,7 @@ pub(super) fn exh(session: f64, week: f64) -> Probed {
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     }
 }
 
@@ -425,23 +427,32 @@ fn only_production_call_sites_wire_the_direct_reread() {
         c.reread.is_none(),
         "SR-10: Ctx::new reads nothing, so no test reaches a live read"
     );
+    let wired = c.with_rereads();
+    assert!(
+        wired.reread.is_some() && wired.reread_live.is_some(),
+        "Ctx::with_rereads installs both re-read hooks"
+    );
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/profile/rotate");
+    let code_has = |file: &str, needle: &str| {
+        let text = fs::read_to_string(dir.join(file)).unwrap();
+        text.lines()
+            .any(|l| l.split("//").next().unwrap_or_default().contains(needle))
+    };
+    assert!(
+        code_has("cycle_ctx.rs", "fresh::reread_as_configured)"),
+        "Ctx::with_rereads no longer wires fresh::reread_as_configured"
+    );
     // One-shot and --dry-run (mod.rs) and watch (daemon.rs). A switch
     // decides nothing, so it has no re-read.
     for file in ["mod.rs", "daemon.rs"] {
-        let text = fs::read_to_string(dir.join(file)).unwrap();
-        let wired = text.lines().any(|l| {
-            let code = l.split("//").next().unwrap_or_default();
-            code.contains(".reread = Some(") && code.contains("fresh::reread_as_configured)")
-        });
         assert!(
-            wired,
-            "rotate/{file} no longer wires fresh::reread_as_configured"
+            code_has(file, ".with_rereads()"),
+            "rotate/{file} no longer wires the configured re-reads"
         );
     }
     let switch = fs::read_to_string(dir.join("switch.rs")).unwrap();
     assert!(
-        !switch.contains("reread_as_configured"),
+        !switch.contains("reread_as_configured") && !switch.contains("with_rereads"),
         "a switch makes no decision, so it wires no re-read"
     );
 }
@@ -634,7 +645,11 @@ fn gate_rereads_a_stale_target_and_decides_again_without_writing() {
         got.fresh_lines,
         ["reread: spare reading stale s=11% w=20%; fresh s=43% w=100%"]
     );
-    assert!(!e.rs.ledger.exists(), "the gate writes no ledger");
+    assert_eq!(
+        e.rs.load_ledger().unwrap().unwrap().account.as_deref(),
+        Some("u-work"),
+        "the gate preserves the ledger"
+    );
     assert!(!e.rs.log.exists(), "the gate writes no log; the cycle does");
 }
 

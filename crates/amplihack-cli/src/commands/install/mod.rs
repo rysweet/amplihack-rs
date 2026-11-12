@@ -3,6 +3,7 @@
 mod binary;
 pub(crate) mod bundle_compat;
 pub(crate) mod bundle_compat_cache;
+mod bundle_manifest;
 mod claude_commands;
 mod claude_publication;
 mod clone;
@@ -10,15 +11,21 @@ mod codex_plugin;
 mod command_staging;
 mod copilot_plugin;
 mod directories;
+mod fetch_backoff;
 pub(crate) mod filesystem;
+pub(crate) mod framework_source;
+pub(crate) mod hook_block;
 mod hooks;
 pub(crate) mod interactive;
+mod launch_repair;
 mod manifest;
 mod mermaid_cli;
 pub(crate) mod paths;
 mod recipe_runner;
+pub(crate) mod release_layout;
 mod settings;
 mod stale_wrappers;
+pub(crate) mod tag_fetch;
 mod types;
 mod uninstall;
 mod verification;
@@ -31,9 +38,9 @@ mod codex_alias_fixture;
 mod tests;
 
 pub(crate) use binary::resolve_running_binary_source;
-use binary::{deploy_binaries, find_hooks_binary, stable_hooks_binary};
+use binary::{deploy_binaries_into, find_hooks_binary, stable_hooks_binary};
 use bundle_compat::validate_framework_bundle_compatibility;
-use clone::{download_and_extract_framework_repo, find_bundled_framework_root};
+use clone::{FrameworkRootQuery, find_bundled_framework_root};
 use directories::*;
 use filesystem::{all_rel_dirs, get_all_files_and_dirs};
 use manifest::{manifest_path, write_manifest};
@@ -52,7 +59,8 @@ pub use uninstall::run_uninstall;
 /// system-prompt fragment is NOT listed — adding it there is what armed a
 /// cwd-sourced restage on every install (see `types::essential_files`), and a
 /// ratchet in the module that consumes the fragment is the one place a future
-/// edit would actually look.
+/// edit would actually look. The per-install contract file written at launch
+/// for `--append-system-prompt-file` (issue #2030) is not listed either.
 #[cfg(test)]
 pub(in crate::commands) fn essential_files_for_test(
     layout: types::SourceLayout,
@@ -130,66 +138,83 @@ fn run_install_scoped(
     reconcile_codex: bool,
     mode: InstallMode,
 ) -> Result<()> {
+    run_install_with_fetcher(
+        local,
+        interactive,
+        force_refresh,
+        reconcile_codex,
+        mode,
+        &framework_source::BinaryIdentity::current(),
+        &tag_fetch::ReleaseTagFetcher::production(),
+    )
+}
+
+/// The source is settled first (issue #1955): a refusal or a failed fetch comes
+/// before the wizard asks anything and before any binary is deployed, so it
+/// changes nothing on disk.
+fn run_install_with_fetcher(
+    local: Option<PathBuf>,
+    interactive: bool,
+    force_refresh: bool,
+    reconcile_codex: bool,
+    mode: InstallMode,
+    binary: &framework_source::BinaryIdentity,
+    fetcher: &dyn tag_fetch::TagFetcher,
+) -> Result<()> {
+    let local = local
+        .map(|local_path| -> Result<PathBuf> {
+            // Validate and canonicalize the --local path
+            let canonical = local_path.canonicalize().with_context(|| {
+                format!(
+                    "--local path does not exist or cannot be canonicalized: {}",
+                    local_path.display()
+                )
+            })?;
+            if !canonical.is_dir() {
+                bail!("--local path is not a directory: {}", canonical.display());
+            }
+            Ok(canonical)
+        })
+        .transpose()?;
+
+    let policy = framework_source::SourcePolicy {
+        local,
+        force_refresh,
+        mode,
+        fetch_backoff: version_stamp::installed_version_path()
+            .ok()
+            .and_then(|stamp| stamp.parent().map(fetch_backoff::marker_path)),
+    };
+    // Lives until the install returns, because a fetched tree is deleted with it.
+    let source = framework_source::acquire_framework_source(
+        &policy,
+        &FrameworkRootQuery::from_environment(),
+        binary,
+        fetcher,
+        &|candidate| {
+            validate_framework_bundle_compatibility(candidate).map_err(|err| format!("{err:#}"))
+        },
+    )?;
+
     // Run the interactive wizard if --interactive was passed.
     // The wizard produces an optional config; if None, we proceed with defaults.
     let wizard_config = interactive::maybe_run_wizard(interactive)?;
 
-    if let Some(local_path) = local {
-        // Validate and canonicalize the --local path
-        let canonical = local_path.canonicalize().with_context(|| {
-            format!(
-                "--local path does not exist or cannot be canonicalized: {}",
-                local_path.display()
-            )
-        })?;
-        if !canonical.is_dir() {
-            bail!("--local path is not a directory: {}", canonical.display());
-        }
-        return local_install_scoped(&canonical, wizard_config.as_ref(), reconcile_codex, mode);
+    // Issue #1275: name the source *and* the step that chose it. The resolution
+    // order is not obvious from the outside, and staging from an unexpected
+    // directory used to be silent.
+    for line in source.describe(&binary.version) {
+        println!("{line}");
+    }
+    local_install_scoped(&source.root, wizard_config.as_ref(), reconcile_codex, mode)?;
+
+    if source.origin != framework_source::SourceOrigin::ReleaseTag {
+        return Ok(());
     }
 
-    // Issue #675: when triggered by `amplihack update`, force_refresh=true
-    // skips the bundled-root check so we always download fresh assets from
-    // upstream.  This prevents stale Python-era recipes from persisting after
-    // a binary update.
-    if !force_refresh {
-        // Issue #254: prefer bundled framework assets from the amplihack-rs source
-        // tree.  Only fall back to network download when the local source tree is
-        // not reachable (e.g. binary installed via `cargo install` on a machine
-        // that doesn't have the checkout).
-        if let Some(bundled) = find_bundled_framework_root() {
-            // Issue #1275: name the source *and* the step that chose it. The
-            // resolution order is not obvious from the outside, and staging
-            // from an unexpected directory used to be silent.
-            println!(
-                "📦 Using bundled framework assets from {} ({})",
-                bundled.root.display(),
-                bundled.origin.describe()
-            );
-            return local_install_scoped(
-                &bundled.root,
-                wizard_config.as_ref(),
-                reconcile_codex,
-                mode,
-            );
-        }
-    } else {
-        println!("📦 Forcing fresh framework download from upstream...");
-    }
-
-    println!("⚠️  Bundled framework source not found, falling back to network download...");
-    let temp_dir = tempfile::tempdir().context("failed to create temp dir for install")?;
-    let extracted_root = download_and_extract_framework_repo(temp_dir.path())?;
-    local_install_scoped(
-        &extracted_root,
-        wizard_config.as_ref(),
-        reconcile_codex,
-        mode,
-    )?;
-
-    // Network-fallback hard-error: every entry in the active layout's
-    // destination set must have been staged. Read the .layout marker the
-    // install just wrote to know which layout to verify.
+    // Every entry in the active layout's destination set must have been staged.
+    // Read the .layout marker the install just wrote to know which layout to
+    // verify.
     let staging_dir = staging_claude_dir()?;
     let layout = read_layout_marker(&staging_dir)?.unwrap_or(SourceLayout::LegacyClaude);
     let mut missing_essentials = Vec::new();
@@ -200,20 +225,13 @@ fn run_install_scoped(
     }
     if !missing_essentials.is_empty() {
         bail!(
-            "network-fallback install completed but the staged tree at {} is missing \
+            "release-tag install completed but the staged tree at {} is missing \
              required essentials for layout `{}`: {:?}. \
-             Re-run `amplihack install` or check upstream archive integrity.",
+             Re-run `amplihack install` or check the tag's contents.",
             staging_dir.display(),
             layout.marker_str(),
             missing_essentials
         );
-    }
-
-    // Record the upstream SHA the staged framework now reflects, so the
-    // freshness check can compare against it on subsequent launches. This
-    // is best-effort — a failed SHA fetch doesn't roll back the install.
-    if let Some(sha) = crate::freshness::current_framework_remote_sha() {
-        crate::freshness::record_framework_installed_sha(&sha);
     }
     Ok(())
 }
@@ -300,11 +318,45 @@ pub(super) fn read_layout_marker(claude_dir: &Path) -> Result<Option<SourceLayou
 /// The gaps that are emitted must also each be closable by a restage. Issue
 /// #1266's loop came from listing an asset the restage source could not supply;
 /// the fix was to stop listing it (the system-prompt fragment is `include_str!`d
-/// into the binary now — see `launch::system_prompt_append`), not to special-
-/// case it here. Before adding an entry to `essential_files`, check that a
+/// into the binary now, and written at launch to the 0600 file passed with
+/// `--append-system-prompt-file` — see `launch::system_prompt_append`), not to
+/// special-case it here. Before adding an entry to `essential_files`, check that a
 /// restage can actually satisfy it, or this becomes a loop again.
 fn framework_restage_needed(staging_exists: bool, missing: &[String]) -> bool {
     !staging_exists || !missing.is_empty()
+}
+
+/// Issue #1954 D7: removes releases and retired trees no process uses. Each
+/// published link keeps its current release and the one it named before this
+/// switch. A failure here costs disk space, not the install, so it warns.
+fn cleanup_unused_releases(claude_dir: &Path, switched: &release_layout::SwitchReport) {
+    let Some(amplihack_dir) = claude_dir.parent() else {
+        return;
+    };
+    let mut links = vec![amplihack_dir.join("amplifier-bundle")];
+    match paths::preferred_user_bin_dir() {
+        Ok(local_bin) => {
+            for name in ["amplihack", "amplihack-hooks", "amplihack-asset-resolver"] {
+                links.push(local_bin.join(crate::path_conflicts::binary_filename(name)));
+            }
+        }
+        Err(error) => {
+            eprintln!(
+                "amplihack: warning: skipping release cleanup, the user bin directory is \
+                 unknown: {error:#}"
+            );
+            return;
+        }
+    }
+    let releases = release_layout::releases_dir(amplihack_dir);
+    let keep = release_layout::keep_set(&releases, &links, &switched.previous_targets());
+    match release_layout::cleanup_unused(amplihack_dir, &keep) {
+        Ok(report) => release_layout::report_cleanup(&report),
+        Err(error) => eprintln!(
+            "amplihack: warning: could not clean up unused releases in {}: {error:#}",
+            releases.display()
+        ),
+    }
 }
 
 /// Announce entries a publisher carried across because amplihack could not
@@ -333,6 +385,13 @@ pub(crate) fn newer_install_stamp() -> Result<Option<String>> {
             version_stamp::relation(crate::VERSION, installed)
                 == version_stamp::VersionRelation::Older
         }))
+}
+
+/// Issue #2279: whether this binary may write hooks implicitly, that is, it
+/// is not older than the install stamp. An unreadable stamp counts as newer,
+/// so the answer is `false`. Used by launch, profile seeding and the rotator.
+pub(crate) fn binary_is_current() -> bool {
+    matches!(newer_install_stamp(), Ok(None))
 }
 
 pub(crate) fn ensure_framework_installed() -> Result<()> {
@@ -395,75 +454,25 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
     // The Codex transaction is a no-op when current and preserves every byte
     // on failure; an older binary never gets here (#1526 refuses it first).
     if crate::freshness::codex_selected() {
-        let source = find_bundled_framework_root()
-            .context("bundled source required to reconcile native Codex resources")?;
-        codex_plugin::install(&source.root, &hooks_bin)
-            .context("failed native Codex reconciliation")?;
-    }
-    let settings_path = global_settings_path()?;
-    match hooks_registered_in_settings(&settings_path)? {
-        HookRegistration::Registered => {
-            // #1659: a settings.json from #1660 registers `StopFailure` for
-            // every user. A Claude Code too old for it ignores the whole
-            // file, so the entry is drift even though every hook is present.
-            // Only a Claude launch asks `claude --version`: copilot and codex
-            // never read this file, and the next Claude launch repairs it.
-            let Some(version) =
-                harmful_limit_resume_registration(&settings_path, launched_claude_too_old)
-            else {
-                return Ok(());
-            };
-            tracing::warn!(
-                "settings.json registers StopFailure, which Claude Code {version} does not know \
-                 — auto-repairing"
-            );
-            println!(
-                "⚠️  Claude Code {version} is older than {LIMIT_RESUME_MIN_CLAUDE}: removing the \
-                 usage-limit resume hook (StopFailure) from settings.json, which this Claude \
-                 Code would otherwise read as invalid and run no amplihack hook"
-            );
-        }
-        HookRegistration::Missing => {}
-        HookRegistration::Unparseable => {
-            // Issue #1526 (SR-8): never back up or rewrite a file we cannot read.
-            tracing::warn!("settings.json is not valid JSON; skipping hook auto-repair");
+        if let Some(source) = find_bundled_framework_root() {
+            codex_plugin::install(&source.root, &hooks_bin)
+                .context("failed native Codex reconciliation")?;
+        } else {
+            // Issue #1955 D1: a bundle kept after a failed fetch has no source with
+            // this binary's version until a fetch succeeds.
+            let stamp = version_stamp::read_installed_version_quiet()
+                .context("reading install version stamp")?;
+            if !framework_source::bundle_kept_without_source(stamp.as_deref(), crate::VERSION) {
+                bail!("bundled source required to reconcile native Codex resources");
+            }
             eprintln!(
-                "amplihack: warning: {} is not valid JSON; hook registrations were not \
-                 checked or repaired. Fix the file, then run `amplihack install`.",
-                paths::sanitize_path(&settings_path)
+                "amplihack: warning: skipping the Codex reconcile, because no framework source \
+                 matches v{} yet.",
+                crate::VERSION
             );
-            return Ok(());
         }
     }
-    tracing::warn!("hooks not registered in settings.json — auto-repairing");
-    let timestamp = unix_timestamp();
-    // The launch repair writes the user's own settings, so it is global.
-    let status_line =
-        status_line_command(interactive::HookScope::Global, binary::stable_self_binary);
-    let (settings_ok, _events) = ensure_settings_json(
-        &settings_path,
-        &staging_dir,
-        timestamp,
-        &hooks_bin,
-        status_line.as_deref(),
-    )?;
-    if !settings_ok {
-        bail!(
-            "failed to configure ~/.claude/settings.json for amplihack hooks.\n\
-             Run `amplihack install` to repair, or `amplihack doctor` to diagnose."
-        );
-    }
-    // Verify the repair actually worked
-    if hooks_registered_in_settings(&settings_path)? != HookRegistration::Registered
-        || harmful_limit_resume_registration(&settings_path, launched_claude_too_old).is_some()
-    {
-        bail!(
-            "hooks still not registered after auto-repair.\n\
-             Run `amplihack install` manually to fix hook wiring."
-        );
-    }
-    println!("✅ Auto-repaired missing hook registrations in settings.json");
-    Ok(())
+    launch_repair::repair_settings_hooks(notice, &staging_dir, &hooks_bin)
 }
 
 /// Issue #1526: an implicit re-stage does not write `settings_path`, so an
@@ -522,97 +531,6 @@ pub(super) fn warn_implicit_hook_drift_for<W: std::io::Write>(
     );
 }
 
-/// #1659: the version of the `claude` a launch would run, when
-/// `settings_path` holds amplihack's `StopFailure` registration and that
-/// `claude` is older than [`LIMIT_RESUME_MIN_CLAUDE`]. `old_claude` is only
-/// called when the registration is there, so a launch without it never
-/// probes. A file that is absent, unreadable or not JSON gives `None`.
-pub(super) fn harmful_limit_resume_registration(
-    settings_path: &Path,
-    old_claude: impl FnOnce() -> Option<String>,
-) -> Option<String> {
-    let raw = fs::read_to_string(settings_path).ok()?;
-    let settings = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
-    if !has_limit_resume_registration(&settings) {
-        return None;
-    }
-    old_claude()
-}
-
-/// #1659: [`claude_too_old_for_limit_resume`] for the launch bootstrap, which
-/// runs before every launch. A launch of another tool gives `None` without
-/// running `claude --version` (about 150 ms, up to the 10-second probe
-/// budget): that tool never reads `~/.claude/settings.json`, and the next
-/// Claude launch removes an entry its Claude Code cannot read.
-fn launched_claude_too_old() -> Option<String> {
-    claude_too_old_for_launch(claude_too_old_for_limit_resume)
-}
-
-/// [`launched_claude_too_old`] with the version check passed in.
-pub(super) fn claude_too_old_for_launch(
-    old_claude: impl FnOnce() -> Option<String>,
-) -> Option<String> {
-    if !crate::freshness::claude_selected() {
-        return None;
-    }
-    old_claude()
-}
-
-/// Whether `~/.claude/settings.json` holds an `amplihack-hooks` command.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum HookRegistration {
-    Registered,
-    /// The file is absent, or parses with no amplihack hook.
-    Missing,
-    Unparseable,
-}
-
-/// Classify the settings file. Absence is read off the failed read (no
-/// `exists()` probe, issue #1123); any other read error, such as EACCES, is
-/// an `Err`, because an unreadable file is not evidence that hooks are missing.
-pub(super) fn hooks_registered_in_settings(settings_path: &Path) -> Result<HookRegistration> {
-    let raw = match fs::read_to_string(settings_path) {
-        Ok(raw) => raw,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(HookRegistration::Missing);
-        }
-        Err(e) => {
-            return Err(e).with_context(|| format!("failed to read {}", settings_path.display()));
-        }
-    };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return Ok(HookRegistration::Unparseable);
-    };
-    let has_hooks = json
-        .get("hooks")
-        .and_then(|h| h.as_object())
-        .map(|hooks_map| {
-            hooks_map.values().any(|wrappers| {
-                wrappers.as_array().is_some_and(|arr| {
-                    arr.iter().any(|wrapper| {
-                        wrapper
-                            .get("hooks")
-                            .and_then(|h| h.as_array())
-                            .is_some_and(|entries| {
-                                entries.iter().any(|entry| {
-                                    entry
-                                        .get("command")
-                                        .and_then(|c| c.as_str())
-                                        .is_some_and(|cmd| cmd.contains("amplihack-hooks"))
-                                })
-                            })
-                    })
-                })
-            })
-        })
-        .unwrap_or(false);
-    Ok(if has_hooks {
-        HookRegistration::Registered
-    } else {
-        HookRegistration::Missing
-    })
-}
-
 #[cfg(test)]
 fn local_install(
     repo_root: &Path,
@@ -627,6 +545,11 @@ fn local_install_scoped(
     reconcile_codex: bool,
     mode: InstallMode,
 ) -> Result<()> {
+    // Issue #1954 D6: every install holds the install lock for its whole
+    // run, so an explicit install, the post-update install and a self-heal
+    // never stage or switch at the same time. Re-entrant on this thread, so
+    // the self-heal that calls this while holding it does not deadlock.
+    let _install_lock = crate::install_lock::acquire()?;
     let claude_dir = staging_claude_dir()?;
     let timestamp = unix_timestamp();
 
@@ -653,7 +576,18 @@ fn local_install_scoped(
             })
             .unwrap_or_default(),
     };
-    let (deployed_binaries, kept_binaries) = deploy_binaries(mode, stamp.as_deref())?;
+    // Issue #1954: this run's binaries and bundle go into one new release
+    // under ~/.amplihack/releases. Everything that can fail on the source is
+    // staged and checked inside that release first; nothing a running process
+    // reads changes until `commit_release` switches the links. The mapped
+    // `.claude` trees are not part of a release: they are exchanged after the
+    // commit, so a failure while staging the release leaves every published
+    // path on the old version. If an exchange itself fails, the binaries and
+    // bundle are already on the new release and the trees exchanged so far
+    // stay new; running `amplihack install` again completes the rest.
+    let mut release = binary::new_release_txn()?;
+    let (deployed_binaries, kept_binaries) =
+        deploy_binaries_into(&mut release, mode, stamp.as_deref())?;
     let hooks_bin = find_hooks_binary()?;
     for p in deployed_binaries
         .iter()
@@ -661,6 +595,62 @@ fn local_install_scoped(
     {
         println!("  ✅ Deployed {}", p.display());
     }
+
+    ensure_dirs(&claude_dir)?;
+    let pre_dirs = all_rel_dirs(&claude_dir)?;
+
+    let (source_root, layout) = find_source_root(repo_root)?;
+    if layout == SourceLayout::Bundle {
+        validate_framework_bundle_compatibility(&source_root).with_context(|| {
+            format!(
+                "source amplifier-bundle at {} is incompatible",
+                source_root.display()
+            )
+        })?;
+    }
+
+    println!();
+    println!("📦 Staging amplifier-bundle (recipes, modules, tools):");
+    copy_amplifier_bundle_into(repo_root, &claude_dir, &mut release)?;
+
+    println!();
+    println!("🔀 Switching to the new release:");
+    let switched = binary::commit_release(release)?;
+    for switch in &switched.switched {
+        println!(
+            "  ✅ {} -> {}",
+            switch.link.display(),
+            switch.target.display()
+        );
+    }
+    // After the commit: the analysis reads ~/.local/bin/amplihack, which
+    // names the new binary only once the links have switched.
+    binary::print_path_conflict_advisory();
+
+    println!();
+    println!("📁 Copying essential directories:");
+    println!(
+        "   Source layout: {} (from {})",
+        layout.marker_str(),
+        source_root.display()
+    );
+    let copied_dirs = copytree_manifest(&source_root, layout, &claude_dir)?;
+    if copied_dirs.is_empty() {
+        bail!(
+            "no essential directories were copied from {} (layout: {}). \
+             The source repository appears to be missing all framework assets. \
+             Verify the checkout is complete.",
+            source_root.display(),
+            layout.marker_str()
+        );
+    }
+
+    // Write the .layout marker atomically so subsequent presence checks
+    // (missing_framework_paths) know which mapping to consult.
+    write_layout_marker(&claude_dir, layout)?;
+
+    cleanup_unused_releases(&claude_dir, &switched);
+
     let preferred_amplihack =
         paths::preferred_user_bin_dir()?.join(crate::path_conflicts::binary_filename("amplihack"));
     if preferred_amplihack.is_file() {
@@ -710,44 +700,6 @@ fn local_install_scoped(
             );
         }
     }
-
-    ensure_dirs(&claude_dir)?;
-    let pre_dirs = all_rel_dirs(&claude_dir)?;
-
-    println!();
-    println!("📁 Copying essential directories:");
-    let (source_root, layout) = find_source_root(repo_root)?;
-    println!(
-        "   Source layout: {} (from {})",
-        layout.marker_str(),
-        source_root.display()
-    );
-    if layout == SourceLayout::Bundle {
-        validate_framework_bundle_compatibility(&source_root).with_context(|| {
-            format!(
-                "source amplifier-bundle at {} is incompatible",
-                source_root.display()
-            )
-        })?;
-    }
-    let copied_dirs = copytree_manifest(&source_root, layout, &claude_dir)?;
-    if copied_dirs.is_empty() {
-        bail!(
-            "no essential directories were copied from {} (layout: {}). \
-             The source repository appears to be missing all framework assets. \
-             Verify the checkout is complete.",
-            source_root.display(),
-            layout.marker_str()
-        );
-    }
-
-    // Write the .layout marker atomically so subsequent presence checks
-    // (missing_framework_paths) know which mapping to consult.
-    write_layout_marker(&claude_dir, layout)?;
-
-    println!();
-    println!("📦 Staging amplifier-bundle (recipes, modules, tools):");
-    copy_amplifier_bundle(repo_root, &claude_dir)?;
 
     println!();
     println!("📝 Initializing PROJECT.md:");

@@ -434,3 +434,230 @@ fn every_rotate_submodule_is_unix_only() {
         "found only {checked} mod lines in rotate/mod.rs"
     );
 }
+
+// --- Issue #1886: recovery identifies by the credential, never .claude.json --
+
+/// The code lines of `text`: every line that does not start with `//`
+/// (after indentation), with any trailing `//` comment removed.
+fn code_lines(text: &str) -> Vec<&str> {
+    text.lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .map(|l| l.split("//").next().unwrap_or_default())
+        .collect()
+}
+
+/// The `.claude.json` account helpers that must not drive a recovery
+/// decision. `Account::of_dir`/`from_value` read `.claude.json`; the
+/// `home_*` helpers compared it with each profile's.
+const CLAUDE_JSON_IDENTITY: &[&str] = &[
+    "Account::from_value",
+    "Account::of_dir",
+    "from_value(",
+    "of_dir(",
+    "home_key",
+    "home_still_matches",
+    "home_holders",
+];
+
+/// The one `.claude.json` read the recovery path may make, and where:
+/// `account::home_readable` is the #1702 `HomeUnreadable`/`HomeStuck` guard.
+/// It asks only whether `~/.claude.json` names an account, stops the swap
+/// or gives fix lines, and never leads to a move. It reaches `of_dir`
+/// through `account.rs`, which the scan below does not list, so this test
+/// pins where it is called.
+const HOME_READABLE_ALLOWED: &[&str] = &["handfix_plan.rs", "identify.rs"];
+
+#[test]
+fn recovery_never_identifies_by_claude_json() {
+    let profile = rotate_dir().parent().unwrap().to_path_buf();
+    let files = [
+        rotate_dir().join("handfix.rs"),
+        rotate_dir().join("handfix_plan.rs"),
+        rotate_dir().join("cred_identity.rs"),
+        rotate_dir().join("identify.rs"),
+        rotate_dir().join("recover.rs"),
+        profile.join("usage_live.rs"),
+    ];
+    for path in files {
+        let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        for (i, code) in code_lines(&text).iter().enumerate() {
+            for f in CLAUDE_JSON_IDENTITY {
+                assert!(
+                    !code.contains(f),
+                    "{}:{}: `{f}` in the recovery path: {code}",
+                    path.display(),
+                    i + 1
+                );
+            }
+            let name = path.file_name().unwrap().to_string_lossy();
+            assert!(
+                !code.contains("home_readable(") || HOME_READABLE_ALLOWED.contains(&name.as_ref()),
+                "{}:{}: `home_readable` outside the #1702 guard: {code}",
+                path.display(),
+                i + 1
+            );
+        }
+    }
+}
+
+#[test]
+fn the_claude_json_holders_module_is_gone() {
+    assert!(
+        !rotate_dir().join("holders.rs").exists(),
+        "rotate/holders.rs (home_holders, home_key, home_still_matches) must be deleted"
+    );
+    let m = fs::read_to_string(rotate_dir().join("mod.rs")).unwrap();
+    assert!(!code_lines(&m).iter().any(|l| l.contains("mod holders")));
+}
+
+#[test]
+fn rotate_has_the_issue_1886_files() {
+    for want in [
+        "cred_identity.rs",
+        "account.rs",
+        "adopt.rs",
+        "handfix_plan.rs",
+    ] {
+        assert!(rotate_dir().join(want).exists(), "missing rotate/{want}");
+    }
+}
+
+/// SEC-1, SEC-4: the identity path passes directory paths to
+/// `usage_direct` and never handles a token, nor starts a process.
+#[test]
+fn identity_and_recovery_never_touch_a_token_or_start_a_process() {
+    for name in ["cred_identity.rs", "handfix.rs", "handfix_plan.rs"] {
+        let text = source(name);
+        for (i, code) in code_lines(&text).iter().enumerate() {
+            for f in [
+                "Token",
+                "Creds",
+                "load(",
+                "header(",
+                "Command::new",
+                "accessToken",
+                "claudeAiOauth",
+            ] {
+                assert!(!code.contains(f), "rotate/{name}:{}: `{f}`: {code}", i + 1);
+            }
+        }
+    }
+}
+
+/// SEC-2 and the owner decision of 3 November: identity reads ask the
+/// OAuth profile endpoint (`usage_direct::account`, which never refreshes),
+/// never the usage read, whose reset times do not tell accounts apart.
+#[test]
+fn identity_reads_ask_the_profile_endpoint_and_never_refresh() {
+    let text = source("cred_identity.rs");
+    let code = code_lines(&text).join("\n");
+    assert!(
+        code.contains("usage_direct::account("),
+        "usage_direct::account"
+    );
+    assert!(!code.contains("allow_refresh"));
+    assert!(!code.contains("usage_direct::read") && !code.contains("direct::read("));
+    for f in [
+        "resets_at",
+        "UsageReport",
+        "usage_passive",
+        "passive",
+        "probe_one",
+        "claude -p",
+        "auth status",
+    ] {
+        assert!(!code.contains(f), "cred_identity.rs uses `{f}`");
+    }
+    let direct =
+        fs::read_to_string(rotate_dir().parent().unwrap().join("usage_direct.rs")).unwrap();
+    let account = body_of(&direct, "account");
+    assert!(
+        account.contains("profile_url()"),
+        "account reads /api/oauth/profile"
+    );
+    assert!(!account.contains("refresh("), "account never refreshes");
+}
+
+/// SEC-16: an account read for identity is never written or shown by the
+/// rotator.
+#[test]
+fn identities_are_never_serialized_or_displayed() {
+    for name in ["cred_identity.rs", "account.rs"] {
+        let code = code_lines(&source(name)).join("\n");
+        assert!(!code.contains("Serialize"), "{name}: must not serialize");
+        assert!(
+            !code.contains("impl std::fmt::Display") && !code.contains("impl Display"),
+            "{name}: no Display"
+        );
+    }
+    for name in [
+        "cred_identity.rs",
+        "handfix.rs",
+        "handfix_plan.rs",
+        "handfix_msg.rs",
+        "guide.rs",
+    ] {
+        let code = code_lines(&source(name)).join("\n");
+        assert!(!code.contains(".shown()"), "{name} prints an account");
+    }
+}
+
+/// SEC-9: the inode re-check is the last thing before the move.
+#[test]
+fn move_aside_rechecks_inodes_last() {
+    let body = body_of(&source("handfix.rs"), "move_aside");
+    assert!(!body.contains("home_still_matches"));
+    assert_before(&body, ".same(", "verify_profile_dir", "move_aside");
+    // The checks that can refuse come before the backup directory is made.
+    assert_before(&body, "verify_profile_dir", "fresh_backup", "move_aside");
+    assert_before(&body, "fresh_backup", "ino_ctime", "move_aside");
+    assert_before(&body, "verify_profile_dir", "ino", "move_aside");
+    assert_before(&body, "ino", "move_login", "move_aside");
+}
+
+/// The hand-change plan has no catch-all arm that could fall into a move.
+#[test]
+fn the_hand_change_plan_has_no_wildcard_move() {
+    let code = code_lines(&source("handfix_plan.rs")).join("\n");
+    for l in code.lines() {
+        let t = l.trim_start();
+        assert!(
+            !(t.starts_with("_ =>") && t.contains("Move")),
+            "handfix_plan.rs: wildcard arm returns a move: {l}"
+        );
+    }
+}
+
+/// The #1873 files are out of scope for #1886 and keep their roles.
+#[test]
+fn the_issue_1873_files_are_not_used_for_identity() {
+    for name in ["fresh.rs", "damp.rs", "swap_back.rs"] {
+        let code = code_lines(&source(name)).join("\n");
+        assert!(!code.contains("cred_identity"), "{name} uses cred_identity");
+        assert!(!code.contains("hand_suspect"), "{name} uses hand_suspect");
+    }
+}
+
+/// Issue #1753 (R1): the live refresh renews an expired login and nothing
+/// else. It reads no identity and no usage, so a refresh can never stand in
+/// for the fresh identity reading the snapshot takes afterwards.
+#[test]
+fn live_refresh_only_refreshes_an_expired_login() {
+    let text = source("live_refresh.rs");
+    let code = code_lines(&text).join("\n");
+    assert!(code.contains("usage_direct::refresh_expired("));
+    for f in [
+        "usage_direct::read",
+        "usage_direct::account",
+        "identity_reader",
+        "cred_identity",
+        "Account",
+    ] {
+        assert!(!code.contains(f), "live_refresh.rs uses `{f}`");
+    }
+    let direct =
+        fs::read_to_string(rotate_dir().parent().unwrap().join("usage_direct.rs")).unwrap();
+    let body = body_of(&direct, "refresh_expired");
+    assert!(body.contains("at <= req.now_ms"), "only an expired token");
+    assert!(!body.contains("get_usage") && !body.contains("profile_url"));
+}

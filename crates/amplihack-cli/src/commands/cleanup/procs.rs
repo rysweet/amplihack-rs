@@ -1,5 +1,12 @@
 //! Which folders running processes use (issue #1808): working folders, open
-//! files and TMPDIR/TMP/TEMP read from `/proc`. Split out of `sweep.rs`.
+//! files and TMPDIR/TMP/TEMP read from the process table. Split out of
+//! `sweep.rs`.
+//!
+//! The table is `procfs::proc_root()` (issue #2042), so a test that runs
+//! `amplihack cleanup` reads its own fake tree, never every process on the
+//! host. Outside tests that is `/proc`. Nothing here signals a process: a
+//! fake tree can only make a folder look free or busy, and the folders a
+//! test's cleanup can reach are that test's own temp folders.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,7 +19,7 @@ pub(super) struct ProcScan {
 
 impl ProcScan {
     pub(super) fn take() -> Self {
-        let Ok(entries) = fs::read_dir("/proc") else {
+        let Ok(entries) = fs::read_dir(crate::commands::agent::procfs::proc_root()) else {
             return Self {
                 available: false,
                 paths: Vec::new(),

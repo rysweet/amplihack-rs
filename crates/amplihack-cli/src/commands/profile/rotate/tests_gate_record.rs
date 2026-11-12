@@ -367,6 +367,7 @@ fn probed(session: f64, resets_at: i64) -> Probed {
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     }
 }
 
@@ -488,6 +489,7 @@ fn probed2(session: f64, week: f64) -> Probed {
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     }
 }
 

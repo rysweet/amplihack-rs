@@ -1,26 +1,28 @@
-//! Issue #1802: the minor-only rule of the light crusty round.
+//! Issues #1802 and #1982: a crusty round of an auto-drive-light run.
+//!
+//! Since #1982 light mode adds nothing inside the crusty and merge loops. The
+//! change is measured once, by `light-eligibility` before the loops, where the
+//! result decides what runs; a crusty round never measures it again, and has
+//! no light hook, marker or tool. Minor findings are classified by the #1979
+//! `classify` branch and filed by `autodrive_followups.sh collect` and `file`,
+//! as in auto-drive-to-merge.
 //!
 //! Three layers are tested:
 //!
-//! 1. `amplifier-bundle/tools/autodrive_light_round.sh defer`, run directly:
-//!
-//!    ```text
-//!    autodrive_light_round.sh defer --record <record> --pr <N>
-//!        --reviewed-head <sha> --repo <dir>        (concerns JSON on stdin)
-//!    ```
-//!
-//!    The state directory is `dirname <record>`. The tool always prints one
-//!    JSON line with `light_exit` (`off`, `none` or `minor-deferred`), exits
-//!    0 on any decision, exits 2 on bad arguments, and passes exit 79
-//!    through.
-//! 2. Step-03 and step-06 of `autodrive-crusty-round.yaml`, extracted from
-//!    the live YAML and run in bash with a fake `amplihack` and a fake `gh`.
-//!    Without the `light-mode` marker their output is byte-identical to the
-//!    output before #1802 (the golden tests below were captured from the
-//!    unmodified recipe).
-//! 3. Acceptance test (a): a light CLEAN record is accepted by
-//!    `autodrive_crusty_final` through the manifest, and
-//!    `autodrive_record_crusty_loop_done` does not mark deferred ids resolved.
+//! 1. Step-03 and step-06 of `autodrive-crusty-round.yaml`, extracted from
+//!    the live YAML and run in bash. Their output is byte-identical to the
+//!    output before #1802 (the golden tests were captured from the unmodified
+//!    recipe), and a light state directory, a leftover `light-mode` marker or
+//!    a planted light tool changes none of it.
+//! 2. The real tools (`autodrive_followups.sh`, `autodrive_followups_check.sh`,
+//!    `autodrive_finding_rules.sh`, `autodrive_state.sh` and
+//!    `workflow_issue_tracking.sh`) copied into one tools directory, with a
+//!    sentinel `gh` that exits 97 wherever step-03 must not call it:
+//!    classification, the record, collect, file, the gate, both recurrence
+//!    cases, the keyword predicate, a head that grew past the light limits,
+//!    and the absence of every retired light state file.
+//! 3. Acceptance: a light `MINOR_ONLY` record is accepted by
+//!    `autodrive_crusty_final` through the manifest.
 //!
 //! Every test skips, with a note, when `jq` is not installed.
 
@@ -32,14 +34,24 @@ use std::process::Output;
 use serde_json::{Value, json};
 
 use crate::support::auto_drive_light::{
-    Fakes, LightRepo, called, calls_of, fake_bin, git, jq_available, private_dir, private_file,
-    repo_root, round_tool, run_bash, show, stderr, stdout, step_command, tools_dir,
+    Fakes, LightRepo, fake_bin, git, jq_available, private_dir, private_file, read, repo_root,
+    run_bash, show, stderr, stdout, step_command, tools_dir,
 };
 
 const ROUND: &str = "autodrive-crusty-round";
 const STEP03: &str = "step-03-extract-crusty-verdict";
 const STEP06: &str = "step-06-write-round-record";
-const MARKER: &str = "<!-- auto-drive-light:pr-7 -->";
+
+/// State files of the retired single-issue model; nothing may write them.
+const RETIRED: &[&str] = &[
+    "follow-up-issue",
+    "follow-up-posted-ids",
+    "follow-up-linked",
+    "follow-up-failed",
+];
+
+/// The in-loop light tools #1982 removed.
+const RETIRED_TOOLS: &[&str] = &["autodrive_light_round.sh", "autodrive_light_steps.sh"];
 
 fn skip() -> bool {
     if !jq_available() {
@@ -81,16 +93,12 @@ impl Env {
         }
     }
 
-    /// The state the light recipe leaves after a `light` decision at `head`.
+    /// The state `light-eligibility` leaves after a `light` decision at the
+    /// head: `light-eligibility.json`, and nothing a round reads.
     fn light(&self) -> &Self {
-        self.light_at(&self.head)
-    }
-
-    fn light_at(&self, head: &str) -> &Self {
-        private_file(&self.state.join("light-mode"), &format!("{head}\n"));
         let elig = json!({
             "decision": "light", "reason": "within-limits",
-            "base": self.repo.base, "head": head,
+            "base": self.repo.base, "head": self.head,
             "lines": 2, "new_modules": 0, "public_api": 0, "schema": 0, "recipe_contract": 0,
             "limits": {"lines": 300, "new_modules": 0, "public_api": 0, "schema": 0, "recipe_contract": 0}
         });
@@ -98,6 +106,12 @@ impl Env {
             &self.state.join("light-eligibility.json"),
             &format!("{elig}\n"),
         );
+        self
+    }
+
+    /// A `light-mode` marker as an auto-drive-light run before #1982 left it.
+    fn leftover_marker(&self) -> &Self {
+        private_file(&self.state.join("light-mode"), &format!("{}\n", self.head));
         self
     }
 
@@ -113,26 +127,6 @@ impl Env {
         std::fs::read_to_string(self.p(name)).unwrap_or_default()
     }
 
-    fn defer(&self, concerns: &Value, env: &[(&str, &str)]) -> Output {
-        self.defer_raw(&concerns.to_string(), &self.head.clone(), env)
-    }
-
-    fn defer_raw(&self, stdin: &str, reviewed: &str, env: &[(&str, &str)]) -> Output {
-        let args: Vec<OsString> = vec![
-            round_tool().into(),
-            "defer".into(),
-            "--record".into(),
-            self.record.clone().into(),
-            "--pr".into(),
-            "7".into(),
-            "--reviewed-head".into(),
-            reviewed.into(),
-            "--repo".into(),
-            self.repo.wt.clone().into(),
-        ];
-        self.tool(&args, env, stdin)
-    }
-
     fn tool(&self, args: &[OsString], env: &[(&str, &str)], stdin: &str) -> Output {
         let argv: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
         let root = repo_root();
@@ -144,34 +138,6 @@ impl Env {
         e.extend(env.iter().map(|(k, v)| (*k, OsStr::new(*v))));
         run_bash(&self.repo.home, &self.fakes, None, &argv, &e, stdin)
     }
-}
-
-/// The tool's single stdout line, parsed.
-fn result(o: &Output) -> Value {
-    let out = stdout(o);
-    let lines: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
-    assert_eq!(
-        lines.len(),
-        1,
-        "exactly one JSON line on stdout: {}",
-        show(o)
-    );
-    serde_json::from_str(lines[0]).unwrap_or_else(|e| panic!("not JSON ({e}): {}", show(o)))
-}
-
-fn exit_none(o: &Output, reason: &str) -> Value {
-    assert_eq!(o.status.code(), Some(0), "{}", show(o));
-    let j = result(o);
-    assert_eq!(j["light_exit"], "none", "{}", show(o));
-    assert_eq!(j["reason"], reason, "{}", show(o));
-    j
-}
-
-fn deferred(o: &Output) -> Value {
-    assert_eq!(o.status.code(), Some(0), "{}", show(o));
-    let j = result(o);
-    assert_eq!(j["light_exit"], "minor-deferred", "{}", show(o));
-    j
 }
 
 fn minor(id: &str, summary: &str) -> Value {
@@ -189,1130 +155,66 @@ fn mode(p: &Path) -> u32 {
     std::fs::symlink_metadata(p).unwrap().permissions().mode() & 0o777
 }
 
-/// Writes the `.findings` file step-03 writes before it calls the tool.
+/// Writes the `.findings` file step-03 writes before the light hook runs.
 fn findings(e: &Env, ids: &[&str]) {
     let body: String = ids.iter().map(|i| format!("{i}\n")).collect();
     private_file(&e.rec(".findings"), &body);
 }
 
-fn no_issue_created(e: &Env) {
-    assert!(
-        !called(&e.fakes.gh_calls(), "issue", "create"),
-        "no issue may be created: {:?}",
-        e.fakes.gh_calls()
-    );
-}
-
-// ===========================================================================
-// 1. autodrive_light_round.sh defer
-// ===========================================================================
-
-#[test]
-fn minor_only_concerns_are_deferred_to_a_new_follow_up_issue() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    findings(&e, &["naming-1", "doc-2"]);
-    let j = deferred(&e.defer(&two_minor(), &[]));
-    assert_eq!(j["follow_up_issue"], "1851");
-    assert_eq!(j["deferred_ids"], json!(["naming-1", "doc-2"]));
-    assert_eq!(j["concern_count"], 2);
-
-    // Side files.
-    assert_eq!(std::fs::read(e.rec(".findings")).unwrap(), b"");
-    let tsv = std::fs::read_to_string(e.rec(".concerns.tsv")).unwrap();
-    let rows: Vec<Vec<&str>> = tsv.lines().map(|l| l.split('\t').collect()).collect();
-    assert_eq!(rows.len(), 2, "{tsv}");
-    assert_eq!(&rows[0][..2], ["naming-1", "minor"]);
-    assert_eq!(&rows[1][..2], ["doc-2", "minor"]);
-    let side: Value =
-        serde_json::from_str(&std::fs::read_to_string(e.rec(".light.json")).unwrap()).unwrap();
-    assert_eq!(
-        side,
-        json!({"follow_up_issue": "1851", "deferred_ids": ["naming-1", "doc-2"]})
-    );
-    assert_eq!(e.read("follow-up-issue").trim(), "1851");
-    assert!(e.p("follow-up-linked").is_file());
-    let posted: Vec<String> = e
-        .read("follow-up-posted-ids")
-        .lines()
-        .map(String::from)
-        .collect();
-    assert!(posted.contains(&"naming-1".into()) && posted.contains(&"doc-2".into()));
-    for f in [
-        e.rec(".concerns.tsv"),
-        e.rec(".light.json"),
-        e.p("follow-up-issue"),
-        e.p("follow-up-posted-ids"),
-    ] {
-        assert_eq!(mode(&f), 0o600, "{} must be private", f.display());
-    }
-
-    // gh: one issue created through --body-file, with the fixed title.
-    let calls = e.fakes.gh_calls();
-    let creates = calls_of(&calls, "issue", "create");
-    assert_eq!(creates.len(), 1, "{calls:?}");
-    let c = creates[0];
-    assert!(c.iter().any(|a| a == "--body-file"), "{c:?}");
-    assert!(!c.iter().any(|a| a == "--body" || a == "-b"), "{c:?}");
-    let ti = c
-        .iter()
-        .position(|a| a == "--title" || a == "-t")
-        .expect("--title");
-    assert_eq!(c[ti + 1], "Follow-up: minor review concerns from PR #7");
-    assert!(
-        !c.iter().any(|a| a == "--label" || a == "-l"),
-        "no label unless it exists"
-    );
-    let body = &e.fakes.bodies()[0];
-    assert_eq!(body.matches(MARKER).count(), 1, "{body}");
-    assert!(body.contains("naming-1") && body.contains("doc-2"));
-    assert!(
-        body.contains("| id | severity | summary | evidence |"),
-        "{body}"
-    );
-
-    // gh: the PR is linked once with the fixed text.
-    let comments = calls_of(&calls, "pr", "comment");
-    assert_eq!(comments.len(), 1, "{calls:?}");
-    let text = comments[0].join(" ") + &e.fakes.bodies().join(" ");
-    assert!(
-        text.contains("Minor review concerns deferred to #1851."),
-        "{text}"
-    );
-    assert!(comments[0].iter().any(|a| a == "7"));
-
-    // The body file is removed after a successful create.
-    assert!(!e.p("follow-up-body.md").exists());
-}
-
-#[test]
-fn the_follow_up_label_is_added_only_when_it_exists() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    deferred(&e.defer(
-        &two_minor(),
-        &[("FAKE_GH_LABELS", r#"[{"name":"bug"},{"name":"follow-up"}]"#)],
-    ));
-    let calls = e.fakes.gh_calls();
-    let c = calls_of(&calls, "issue", "create")[0];
-    let li = c
-        .iter()
-        .position(|a| a == "--label" || a == "-l")
-        .expect("--label");
-    assert_eq!(c[li + 1], "follow-up");
-}
-
-#[test]
-fn a_major_or_blocking_concern_takes_the_normal_path() {
-    if skip() {
-        return;
-    }
-    for sev in ["major", "blocking"] {
-        let e = Env::new();
-        e.light();
-        findings(&e, &["naming-1", "real-bug"]);
-        let concerns = json!([
-            minor("naming-1", "Rename"),
-            {"id": "real-bug", "severity": sev, "summary": "Wrong result", "evidence": "x"}
-        ]);
-        exit_none(&e.defer(&concerns, &[]), "not-minor-only");
-        assert_eq!(
-            e.read("crusty-round-1.json.findings"),
-            "naming-1\nreal-bug\n"
-        );
-        assert!(!e.rec(".light.json").exists());
-        no_issue_created(&e);
-    }
-}
-
-#[test]
-fn unknown_or_missing_severity_is_major() {
-    if skip() {
-        return;
-    }
-    for c in [
-        json!({"id": "a-1", "summary": "no severity"}),
-        json!({"id": "a-1", "severity": "", "summary": "empty"}),
-        json!({"id": "a-1", "severity": "Minor", "summary": "case differs"}),
-        json!({"id": "a-1", "severity": "nit", "summary": "unknown"}),
-        json!({"id": "a-1", "severity": 1, "summary": "not a string"}),
-    ] {
-        let e = Env::new();
-        e.light();
-        exit_none(
-            &e.defer(&json!([minor("naming-1", "x"), c]), &[]),
-            "not-minor-only",
-        );
-        no_issue_created(&e);
-    }
-}
-
-#[test]
-fn a_missing_or_malformed_id_is_major() {
-    if skip() {
-        return;
-    }
-    for c in [
-        json!({"severity": "minor", "summary": "no id"}),
-        json!({"id": "", "severity": "minor", "summary": "empty id"}),
-        json!({"id": "has space", "severity": "minor", "summary": "x"}),
-        json!({"id": "a;rm -rf /", "severity": "minor", "summary": "x"}),
-        json!({"id": "x".repeat(65), "severity": "minor", "summary": "too long"}),
-        json!({"id": "nl\nid", "severity": "minor", "summary": "x"}),
-    ] {
-        let e = Env::new();
-        e.light();
-        exit_none(&e.defer(&json!([c]), &[]), "not-minor-only");
-        no_issue_created(&e);
-    }
-}
-
-#[test]
-fn ids_containing_a_security_keyword_are_major() {
-    if skip() {
-        return;
-    }
-    for id in [
-        "auth-check",
-        "sec-1",
-        "section-1",
-        "permalink-2",
-        "author-name",
-        "TOKEN-leak",
-        "xss-1",
-        "csrf",
-        "cve-2026-1",
-        "Vuln.2",
-        "unsafe-block",
-        "privilege-drop",
-        "secret-in-log",
-        "credential-1",
-        "sql-inject",
-    ] {
-        let e = Env::new();
-        e.light();
-        exit_none(&e.defer(&json!([minor(id, "x")]), &[]), "not-minor-only");
-        no_issue_created(&e);
-    }
-}
-
-#[test]
-fn a_security_word_in_the_summary_or_evidence_is_major() {
-    if skip() {
-        return;
-    }
-    let cases = [
-        json!({"id": "c3", "severity": "minor", "summary": "Possible SQL injection in the query builder", "evidence": "db.rs line 4"}),
-        json!({"id": "c3", "severity": "minor", "summary": "Leaks the API Token to the log", "evidence": "log.rs"}),
-        json!({"id": "c3", "severity": "minor", "summary": "Tidy this", "evidence": "the path is not sanitised before use"}),
-        json!({"id": "c3", "severity": "minor", "summary": "Missing authorization check", "evidence": null}),
-        json!({"id": "c3", "severity": "minor", "summary": "Insecure default", "evidence": "x"}),
-    ];
-    for c in cases {
-        let e = Env::new();
-        e.light();
-        exit_none(&e.defer(&json!([c]), &[]), "not-minor-only");
-        no_issue_created(&e);
-    }
-}
-
-#[test]
-fn common_words_in_the_summary_do_not_count_as_security_words() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    let c = json!([{"id": "c3", "severity": "minor",
-        "summary": "The second author line repeats the section title",
-        "evidence": "permalink in README.md line 2"}]);
-    deferred(&e.defer(&c, &[]));
-}
-
-#[test]
-fn without_a_follow_up_label_the_issue_is_created_without_one() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    let j = deferred(&e.defer(&two_minor(), &[("FAKE_GH_LABELS", r#"[{"name":"bug"}]"#)]));
-    assert_eq!(j["light_exit"], "minor-deferred");
-    let calls = e.fakes.gh_calls();
-    let c = calls_of(&calls, "issue", "create")[0];
-    assert!(
-        !c.iter().any(|a| a == "--label" || a == "-l"),
-        "no label may be passed: {c:?}"
-    );
-    // Both ids are recorded as posted, from an empty start.
-    assert_eq!(e.read("follow-up-posted-ids"), "naming-1\ndoc-2\n");
-}
-
-#[test]
-fn a_failed_issue_list_is_logged_before_the_duplicate_check_is_skipped() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    let o = e.defer(&two_minor(), &[("FAKE_GH_FAIL", "issue list")]);
-    assert!(
-        stderr(&o).contains("WARNING: light round: issue list failed; duplicate check skipped"),
-        "{}",
-        show(&o)
-    );
-}
-
-#[test]
-fn an_empty_concerns_array_is_not_minor_only() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    exit_none(&e.defer(&json!([]), &[]), "no-concerns");
-    no_issue_created(&e);
-    assert!(e.fakes.gh_calls().is_empty());
-}
-
-#[test]
-fn a_returning_id_is_promoted_to_major() {
-    if skip() {
-        return;
-    }
-    // Recorded as resolved by an earlier DONE crusty loop.
-    let e = Env::new();
-    e.light();
-    private_file(&e.p("resolved-concerns.txt"), "naming-1\n");
-    exit_none(&e.defer(&two_minor(), &[]), "not-minor-only");
-    no_issue_created(&e);
-
-    // Raised in an earlier round whose step-04 ran (non-empty .findings).
-    let e = Env::new();
-    e.light();
-    private_file(&e.p("crusty-round-0.json"), "{}\n");
-    private_file(&e.p("crusty-round-0.json.findings"), "doc-2\n");
-    exit_none(&e.defer(&two_minor(), &[]), "not-minor-only");
-    no_issue_created(&e);
-}
-
-#[test]
-fn a_deferred_id_raised_again_stays_minor_and_is_not_posted_again() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    // An earlier light round deferred both ids: its .findings is empty.
-    private_file(&e.p("crusty-round-0.json"), "{}\n");
-    private_file(&e.p("crusty-round-0.json.findings"), "");
-    private_file(
-        &e.p("crusty-round-0.json.concerns.tsv"),
-        "naming-1\tminor\tRename\ndoc-2\tminor\tStale\n",
-    );
-    private_file(&e.p("follow-up-issue"), "1851\n");
-    private_file(&e.p("follow-up-linked"), "1851\n");
-    private_file(&e.p("follow-up-posted-ids"), "doc-2\nnaming-1\n");
-    let j = deferred(&e.defer(&two_minor(), &[]));
-    assert_eq!(j["follow_up_issue"], "1851");
-    let calls = e.fakes.gh_calls();
-    assert!(!called(&calls, "issue", "create"), "{calls:?}");
-    assert!(
-        !called(&calls, "issue", "comment"),
-        "nothing new to post: {calls:?}"
-    );
-    assert!(
-        !called(&calls, "pr", "comment"),
-        "the PR is linked once: {calls:?}"
-    );
-}
-
-#[test]
-fn a_confirming_round_posts_only_new_ids_to_the_existing_issue() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    private_file(&e.p("follow-up-issue"), "1851\n");
-    private_file(&e.p("follow-up-linked"), "1851\n");
-    private_file(&e.p("follow-up-posted-ids"), "naming-1\n");
-    let j = deferred(&e.defer(&two_minor(), &[]));
-    assert_eq!(j["follow_up_issue"], "1851");
-    let calls = e.fakes.gh_calls();
-    assert!(!called(&calls, "issue", "create"), "{calls:?}");
-    assert!(!called(&calls, "pr", "comment"), "{calls:?}");
-    let comments = calls_of(&calls, "issue", "comment");
-    assert_eq!(comments.len(), 1, "one comment for the new ids: {calls:?}");
-    assert!(comments[0].iter().any(|a| a == "1851"));
-    assert!(comments[0].iter().any(|a| a == "--body-file"));
-    let body = e.fakes.bodies().pop().unwrap();
-    assert!(body.contains("doc-2"), "{body}");
-    assert!(!body.contains("naming-1"), "already posted: {body}");
-    let posted = e.read("follow-up-posted-ids");
-    assert!(posted.lines().any(|l| l == "doc-2") && posted.lines().any(|l| l == "naming-1"));
-}
-
-#[test]
-fn a_recorded_issue_number_that_is_not_digits_is_never_used() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    private_file(&e.p("follow-up-issue"), "12; touch /tmp/x\n");
-    let j = deferred(&e.defer(&two_minor(), &[]));
-    assert_eq!(j["follow_up_issue"], "1851");
-    for c in e.fakes.gh_calls() {
-        assert!(!c.join(" ").contains("touch"), "{c:?}");
-    }
-    assert_eq!(e.read("follow-up-issue").trim(), "1851");
-}
-
-#[test]
-fn an_open_issue_found_by_search_is_reused_when_written_by_this_login() {
-    if skip() {
-        return;
-    }
-    let body = format!("{MARKER}\nMinor review concerns raised by crusty on PR #7.\n");
-    let hit_cli =
-        json!([{"number": 1900, "state": "OPEN", "author": {"login": "me"}, "body": body}]);
-    let hit_api = json!([{"number": 1900, "state": "open", "user": {"login": "me"}, "body": body}]);
-    let view = json!({"number": 1900, "state": "OPEN", "author": {"login": "me"}, "body": body});
-    let api_view = json!({"number": 1900, "state": "open", "user": {"login": "me"}, "body": body});
-    let env = |login: &str| -> Vec<(String, String)> {
-        vec![
-            (
-                "FAKE_GH_SEARCH".into(),
-                hit_cli
-                    .to_string()
-                    .replace("\"me\"", &format!("\"{login}\"")),
-            ),
-            (
-                "FAKE_GH_SEARCH_API".into(),
-                hit_api
-                    .to_string()
-                    .replace("\"me\"", &format!("\"{login}\"")),
-            ),
-            (
-                "FAKE_GH_ISSUE_VIEW".into(),
-                view.to_string().replace("\"me\"", &format!("\"{login}\"")),
-            ),
-            (
-                "FAKE_GH_ISSUE_API".into(),
-                api_view
-                    .to_string()
-                    .replace("\"me\"", &format!("\"{login}\"")),
-            ),
-        ]
-    };
-
-    let e = Env::new();
-    e.light();
-    let v = env("me");
-    let refs: Vec<(&str, &str)> = v.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
-    let j = deferred(&e.defer(&two_minor(), &refs));
-    assert_eq!(j["follow_up_issue"], "1900");
-    no_issue_created(&e);
-    assert_eq!(e.read("follow-up-issue").trim(), "1900");
-
-    // Written by someone else: not reused.
-    let e = Env::new();
-    e.light();
-    let v = env("mallory");
-    let refs: Vec<(&str, &str)> = v.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
-    let j = deferred(&e.defer(&two_minor(), &refs));
-    assert_eq!(j["follow_up_issue"], "1851");
-}
-
-#[test]
-fn issue_cells_are_sanitised_and_the_marker_appears_once() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    let nasty = format!(
-        "{MARKER} ping @someone about #12 | col `code` <b>&\u{7}{}",
-        "x".repeat(500)
-    );
-    let concerns =
-        json!([{"id": "style-1", "severity": "minor", "summary": nasty, "evidence": "@other #34"}]);
-    deferred(&e.defer(&concerns, &[]));
-    let body = e.fakes.bodies()[0].clone();
-    assert_eq!(body.matches(MARKER).count(), 1, "{body}");
-    assert!(
-        !body.contains("@someone") && !body.contains("@other"),
-        "{body}"
-    );
-    assert!(!body.contains("#12") && !body.contains("#34"), "{body}");
-    assert!(!body.contains("<b>"), "{body}");
-    assert!(!body.contains('\u{7}'), "control characters are removed");
-    assert!(
-        !body.contains(&"x".repeat(201)),
-        "cells are truncated to 200 characters"
-    );
-    let row = body.lines().find(|l| l.contains("style-1")).expect("row");
-    // id, severity, summary, evidence: the escaped `|` adds no column.
-    assert_eq!(
-        row.matches(" | ").count() - row.matches("\\|").count(),
-        3,
-        "{row}"
-    );
-}
-
-#[test]
-fn full_github_urls_in_cells_are_broken() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    let concerns = json!([{"id": "style-1", "severity": "minor",
-        "summary": "see https://github.com/o/r/issues/12",
-        "evidence": "and HTTPS://GitHub.com/o/r/pull/34"}]);
-    deferred(&e.defer(&concerns, &[]));
-    let body = e.fakes.bodies()[0].clone();
-    assert!(
-        !body.contains("github.com/o/r/issues/12"),
-        "the URL is not left whole: {body}"
-    );
-    assert!(!body.contains("GitHub.com/o/r/pull/34"), "{body}");
-    assert!(body.contains("github.com/\u{200b}o/r/issues/12"), "{body}");
-}
-
-#[test]
-fn junk_lines_in_posted_ids_do_not_stop_a_post() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    private_file(&e.p("follow-up-issue"), "1851\n");
-    private_file(&e.p("follow-up-linked"), "1851\n");
-    // A forged line that is not an id, and one that names doc-2 with junk.
-    private_file(
-        &e.p("follow-up-posted-ids"),
-        "naming-1\ndoc-2 extra\n../doc-2\n",
-    );
-    deferred(&e.defer(&two_minor(), &[]));
-    let body = e.fakes.bodies().pop().unwrap();
-    assert!(body.contains("doc-2"), "doc-2 is posted: {body}");
-    assert!(!body.contains("naming-1"), "{body}");
-    let posted = e.read("follow-up-posted-ids");
-    assert_eq!(posted, "naming-1\ndoc-2\n", "junk is not written back");
-}
-
-#[test]
-fn a_failure_to_record_follow_up_failed_is_reported() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    findings(&e, &["naming-1", "doc-2"]);
-    std::fs::create_dir(e.p("follow-up-failed")).unwrap();
-    let o = e.defer(&two_minor(), &[("FAKE_GH_FAIL", "issue create")]);
-    exit_none(&o, "follow-up-failed");
-    assert!(
-        stderr(&o).contains("ERROR: light round: follow-up-failed could not be written"),
-        "{}",
-        show(&o)
-    );
-}
-
-#[test]
-fn a_gh_failure_keeps_the_normal_path_and_truncates_nothing() {
-    if skip() {
-        return;
-    }
-    for fail in ["issue create", "pr comment", "issue list", "api user"] {
-        let e = Env::new();
-        e.light();
-        findings(&e, &["naming-1", "doc-2"]);
-        let o = e.defer(&two_minor(), &[("FAKE_GH_FAIL", fail)]);
-        if fail == "issue list" || fail == "api user" {
-            // The search fallback failing must not stop a create.
-            let j = result(&o);
-            assert!(
-                j["light_exit"] == "minor-deferred"
-                    || (j["light_exit"] == "none" && j["reason"] == "follow-up-failed"),
-                "{fail}: {}",
-                show(&o)
-            );
-            if j["light_exit"] == "minor-deferred" {
-                continue;
-            }
-        } else {
-            exit_none(&o, "follow-up-failed");
-        }
-        assert_eq!(
-            e.read("crusty-round-1.json.findings"),
-            "naming-1\ndoc-2\n",
-            "{fail}"
-        );
-        assert!(!e.rec(".light.json").exists(), "{fail}");
-        assert!(e.p("follow-up-failed").is_file(), "{fail}");
-        let f = e.read("follow-up-failed");
-        assert!(
-            !f.contains("HTTP"),
-            "follow-up-failed carries no free text: {f}"
-        );
-    }
-}
-
-#[test]
-fn an_unparseable_issue_url_is_a_follow_up_failure() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    findings(&e, &["naming-1", "doc-2"]);
-    exit_none(
-        &e.defer(&two_minor(), &[("FAKE_GH_NEW_ISSUE", "12;evil")]),
-        "follow-up-failed",
-    );
-    assert!(!e.p("follow-up-issue").exists() || !e.read("follow-up-issue").contains("evil"));
-}
-
-#[test]
-fn exit_79_from_gh_is_passed_through() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    let o = e.defer(
-        &two_minor(),
-        &[
-            ("FAKE_GH_FAIL", "issue create"),
-            ("FAKE_GH_EXIT_CODE", "79"),
-        ],
-    );
-    assert_eq!(o.status.code(), Some(79), "{}", show(&o));
-    let creates = calls_of(&e.fakes.gh_calls(), "issue", "create").len();
-    assert_eq!(creates, 1, "exit 79 is never retried");
-}
-
-#[test]
-fn no_retry_temporaries_or_body_files_are_left_behind() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    deferred(&e.defer(&two_minor(), &[]));
-    let left: Vec<_> = std::fs::read_dir(&e.tmpdir).unwrap().collect();
-    assert!(left.is_empty(), "TMPDIR must be clean: {left:?}");
-    for entry in std::fs::read_dir(&e.state).unwrap() {
-        let name = entry.unwrap().file_name().into_string().unwrap();
-        assert!(!name.starts_with('.'), "stray temporary {name}");
-        assert!(!name.ends_with(".md"), "stray body file {name}");
-    }
-}
-
-// --- marker validation -----------------------------------------------------
-
-#[test]
-fn without_a_marker_the_tool_is_off_and_touches_nothing() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    findings(&e, &["naming-1", "doc-2"]);
-    let o = e.defer(&two_minor(), &[]);
-    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
-    assert_eq!(result(&o)["light_exit"], "off");
-    assert!(e.fakes.gh_calls().is_empty());
-    let names: Vec<String> = std::fs::read_dir(&e.state)
+fn state_names(e: &Env) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(&e.state)
         .unwrap()
         .map(|d| d.unwrap().file_name().into_string().unwrap())
         .collect();
-    assert_eq!(names, ["crusty-round-1.json.findings"]);
+    v.sort();
+    v
 }
 
-#[test]
-fn an_invalid_marker_or_inconsistent_state_takes_the_normal_path() {
-    if skip() {
-        return;
-    }
-    type Spoil = fn(&Env);
-    let cases: Vec<(&str, Spoil)> = vec![
-        ("not hex", |e| private_file(&e.p("light-mode"), "light\n")),
-        ("uppercase hex", |e| {
-            private_file(&e.p("light-mode"), &format!("{}\n", e.head.to_uppercase()))
-        }),
-        ("escalation present", |e| {
-            private_file(&e.p("escalation.json"), "{\"reason\":\"lines\"}\n")
-        }),
-        ("eligibility escalate", |e| {
-            let j = json!({"decision": "escalate", "reason": "lines", "base": e.repo.base, "head": e.head});
-            private_file(&e.p("light-eligibility.json"), &format!("{j}\n"))
-        }),
-        ("eligibility other head", |e| {
-            let j = json!({"decision": "light", "reason": "within-limits", "base": e.repo.base, "head": e.repo.base});
-            private_file(&e.p("light-eligibility.json"), &format!("{j}\n"))
-        }),
-        ("eligibility missing", |e| {
-            std::fs::remove_file(e.p("light-eligibility.json")).unwrap()
-        }),
-        ("marker world-readable-writable", |e| {
-            std::fs::set_permissions(e.p("light-mode"), std::fs::Permissions::from_mode(0o666))
-                .unwrap()
-        }),
-        ("eligibility group-writable", |e| {
-            std::fs::set_permissions(
-                e.p("light-eligibility.json"),
-                std::fs::Permissions::from_mode(0o620),
-            )
-            .unwrap()
-        }),
-        ("marker is a symlink", |e| {
-            let real = e.repo.tmp.path().join("elsewhere");
-            std::fs::write(&real, format!("{}\n", e.head)).unwrap();
-            std::fs::remove_file(e.p("light-mode")).unwrap();
-            std::os::unix::fs::symlink(&real, e.p("light-mode")).unwrap();
-        }),
-    ];
-    for (name, spoil) in cases {
-        let e = Env::new();
-        e.light();
-        spoil(&e);
-        findings(&e, &["naming-1", "doc-2"]);
-        let o = e.defer(&two_minor(), &[]);
-        assert_eq!(o.status.code(), Some(0), "{name}: {}", show(&o));
-        let j = result(&o);
+/// No retired light file, side file or temporary is in the state directory.
+fn no_retired_files(e: &Env) {
+    for name in state_names(e) {
         assert!(
-            (j["light_exit"] == "none"
-                && (j["reason"] == "marker-invalid" || j["reason"] == "state-unsafe"))
-                || (name == "marker is a symlink" && j["light_exit"] == "off"),
-            "{name}: {}",
-            show(&o)
+            !RETIRED.contains(&name.as_str()),
+            "{name} is a retired light state file"
         );
-        assert_eq!(
-            e.read("crusty-round-1.json.findings"),
-            "naming-1\ndoc-2\n",
-            "{name}"
-        );
-        no_issue_created(&e);
-    }
-}
-
-#[test]
-fn a_reviewed_head_that_does_not_descend_from_the_marker_head_is_stale() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    git(&e.repo.wt, &["checkout", "-q", "-b", "side", &e.repo.base]);
-    e.repo.write("docs/other.md", "x\n");
-    let side = e.repo.commit("side");
-    findings(&e, &["naming-1", "doc-2"]);
-    exit_none(
-        &e.defer_raw(&two_minor().to_string(), &side, &[]),
-        "marker-stale",
-    );
-    assert!(e.p("light-mode").exists(), "a stale marker is not removed");
-    no_issue_created(&e);
-}
-
-// --- re-measurement inside the loop ------------------------------------------
-
-#[test]
-fn a_moved_head_within_limits_is_re_measured_and_stays_light() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    e.repo.write(
-        "docs/guide.md",
-        "# guide\n\nA small fix.\nAnd an address commit.\n",
-    );
-    let moved = e.repo.commit("address");
-    let j = deferred(&e.defer_raw(
-        &two_minor().to_string(),
-        &moved,
-        &[("FAKE_GH_HEAD", &moved)],
-    ));
-    assert_eq!(j["follow_up_issue"], "1851");
-    assert_eq!(e.read("light-mode").trim(), moved);
-    let elig: Value = serde_json::from_str(&e.read("light-eligibility.json")).unwrap();
-    assert_eq!(elig["head"], moved.as_str());
-    assert_eq!(elig["decision"], "light");
-    assert_eq!(elig["base"], e.repo.base.as_str());
-    assert_eq!(mode(&e.p("light-mode")), 0o600);
-    assert_eq!(mode(&e.p("light-eligibility.json")), 0o600);
-}
-
-#[test]
-fn a_moved_head_over_a_limit_escalates_inside_the_loop() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    e.repo.write("docs/big.md", &"line\n".repeat(400));
-    let moved = e.repo.commit("big address");
-    findings(&e, &["naming-1", "doc-2"]);
-    exit_none(
-        &e.defer_raw(
-            &two_minor().to_string(),
-            &moved,
-            &[("FAKE_GH_HEAD", &moved)],
-        ),
-        "re-measured-escalate",
-    );
-    assert!(
-        !e.p("light-mode").exists(),
-        "the marker is removed on escalation"
-    );
-    let esc: Value = serde_json::from_str(&e.read("escalation.json")).expect("escalation.json");
-    assert_eq!(esc["reason"], "in-loop-lines");
-    assert_eq!(esc["head_sha"], moved.as_str());
-    assert_eq!(esc["base_sha"], e.repo.base.as_str());
-    assert_eq!(mode(&e.p("escalation.json")), 0o600);
-    assert_eq!(e.read("crusty-round-1.json.findings"), "naming-1\ndoc-2\n");
-    no_issue_created(&e);
-
-    // Every later round finds no marker.
-    let o = e.defer_raw(
-        &two_minor().to_string(),
-        &moved,
-        &[("FAKE_GH_HEAD", &moved)],
-    );
-    assert_eq!(result(&o)["light_exit"], "off", "{}", show(&o));
-}
-
-#[test]
-fn a_re_measurement_fault_escalates_with_a_fault_reason() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    // Point the recorded base at a commit that is not an ancestor.
-    git(&e.repo.wt, &["checkout", "-q", "-b", "side", &e.repo.base]);
-    e.repo.write("docs/side.md", "x\n");
-    let side = e.repo.commit("side");
-    git(&e.repo.wt, &["checkout", "-q", "main"]);
-    let j = json!({"decision": "light", "reason": "within-limits", "base": side, "head": e.head,
-                   "limits": {"lines": 300, "new_modules": 0, "public_api": 0, "schema": 0, "recipe_contract": 0}});
-    private_file(&e.p("light-eligibility.json"), &format!("{j}\n"));
-    e.repo.write("docs/guide.md", "moved\n");
-    let moved = e.repo.commit("moved");
-    exit_none(
-        &e.defer_raw(
-            &two_minor().to_string(),
-            &moved,
-            &[("FAKE_GH_HEAD", &moved)],
-        ),
-        "re-measured-escalate",
-    );
-    let esc: Value = serde_json::from_str(&e.read("escalation.json")).unwrap();
-    assert!(
-        esc["reason"]
-            .as_str()
-            .unwrap()
-            .starts_with("in-loop-fault-"),
-        "{esc}"
-    );
-    assert!(!e.p("light-mode").exists());
-}
-
-/// Pushes a 400-line commit to `origin/main` from a second clone, so the
-/// working repository does not hold it yet, and returns its SHA.
-fn upstream_commit(e: &Env) -> String {
-    let other = e.repo.tmp.path().join("other");
-    let origin = e.repo.tmp.path().join("origin.git");
-    git(
-        e.repo.tmp.path(),
-        &[
-            "clone",
-            "-q",
-            origin.to_str().unwrap(),
-            other.to_str().unwrap(),
-        ],
-    );
-    std::fs::write(other.join("upstream.md"), "line\n".repeat(400)).unwrap();
-    git(&other, &["add", "-A"]);
-    git(&other, &["commit", "-q", "-m", "upstream"]);
-    git(&other, &["push", "-q", "origin", "HEAD:main"]);
-    git(&other, &["rev-parse", "HEAD"])
-}
-
-/// Merges `origin/main` into the PR branch and returns the merge commit.
-fn merge_upstream(e: &Env) -> String {
-    git(&e.repo.wt, &["fetch", "-q", "origin"]);
-    git(
-        &e.repo.wt,
-        &["merge", "-q", "--no-edit", "--no-ff", "origin/main"],
-    );
-    e.repo.head()
-}
-
-#[test]
-fn a_moved_head_that_merged_the_base_branch_is_measured_from_the_new_merge_base() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    let up = upstream_commit(&e);
-    let moved = merge_upstream(&e);
-    findings(&e, &["naming-1", "doc-2"]);
-    let j = deferred(&e.defer_raw(
-        &two_minor().to_string(),
-        &moved,
-        &[("FAKE_GH_HEAD", &moved), ("FAKE_GH_BASE_OID", &up)],
-    ));
-    assert_eq!(j["follow_up_issue"], "1851");
-    assert_eq!(e.read("light-mode").trim(), moved);
-    let elig: Value = serde_json::from_str(&e.read("light-eligibility.json")).unwrap();
-    assert_eq!(elig["decision"], "light");
-    assert_eq!(elig["head"], moved.as_str());
-    assert_eq!(
-        elig["base"],
-        up.as_str(),
-        "the new base is recorded, so the next round's reuse check uses it"
-    );
-    assert!(
-        called(&e.fakes.gh_calls(), "pr", "view"),
-        "{:?}",
-        e.fakes.gh_calls()
-    );
-}
-
-#[test]
-fn a_base_tip_missing_locally_is_fetched_before_the_merge_base() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    let up = upstream_commit(&e);
-    e.repo.write(
-        "docs/guide.md",
-        "# guide\n\nA small fix.\nAnd an address commit.\n",
-    );
-    let moved = e.repo.commit("address");
-    findings(&e, &["naming-1", "doc-2"]);
-    deferred(&e.defer_raw(
-        &two_minor().to_string(),
-        &moved,
-        &[("FAKE_GH_HEAD", &moved), ("FAKE_GH_BASE_OID", &up)],
-    ));
-    git(&e.repo.wt, &["cat-file", "-e", &format!("{up}^{{commit}}")]);
-    let elig: Value = serde_json::from_str(&e.read("light-eligibility.json")).unwrap();
-    // The PR did not merge the base, so the merge-base is still the pinned base.
-    assert_eq!(elig["base"], e.repo.base.as_str());
-}
-
-#[test]
-fn the_pr_s_own_change_over_a_limit_still_escalates_after_a_base_merge() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    let up = upstream_commit(&e);
-    merge_upstream(&e);
-    e.repo.write("docs/big.md", &"line\n".repeat(400));
-    let moved = e.repo.commit("big address");
-    findings(&e, &["naming-1", "doc-2"]);
-    exit_none(
-        &e.defer_raw(
-            &two_minor().to_string(),
-            &moved,
-            &[("FAKE_GH_HEAD", &moved), ("FAKE_GH_BASE_OID", &up)],
-        ),
-        "re-measured-escalate",
-    );
-    let esc: Value = serde_json::from_str(&e.read("escalation.json")).unwrap();
-    assert_eq!(esc["reason"], "in-loop-lines");
-    assert_eq!(esc["base_sha"], up.as_str());
-    assert!(!e.p("light-mode").exists());
-    no_issue_created(&e);
-}
-
-#[test]
-fn an_unreadable_or_invalid_base_falls_back_to_the_pinned_base_and_escalates() {
-    if skip() {
-        return;
-    }
-    let cases: Vec<(&str, Vec<(&str, String)>)> = vec![
-        ("gh fails", vec![("FAKE_GH_FAIL", "pr view".into())]),
-        ("no base oid", vec![]),
-        (
-            "base oid not hex",
-            vec![("FAKE_GH_BASE_OID", "not-a-sha".into())],
-        ),
-        (
-            "base oid unknown",
-            vec![("FAKE_GH_BASE_OID", "ab".repeat(20))],
-        ),
-        (
-            "base name starts with -",
-            vec![("FAKE_GH_BASE_NAME", "-main".into())],
-        ),
-    ];
-    for (name, extra) in cases {
-        let e = Env::new();
-        e.light();
-        let up = upstream_commit(&e);
-        let moved = merge_upstream(&e);
-        findings(&e, &["naming-1", "doc-2"]);
-        let mut env: Vec<(&str, &str)> = vec![("FAKE_GH_HEAD", &moved)];
-        if name == "base name starts with -" {
-            env.push(("FAKE_GH_BASE_OID", &up));
-        }
-        env.extend(extra.iter().map(|(k, v)| (*k, v.as_str())));
-        let o = e.defer_raw(&two_minor().to_string(), &moved, &env);
-        exit_none(&o, "re-measured-escalate");
         assert!(
-            stderr(&o).contains("measuring from the pinned base"),
-            "{name}: {}",
-            show(&o)
+            !name.ends_with(".concerns.tsv") && !name.ends_with(".light.json"),
+            "{name} is a retired light side file"
         );
-        let esc: Value = serde_json::from_str(&e.read("escalation.json")).unwrap();
-        assert_eq!(esc["reason"], "in-loop-lines", "{name}");
-        assert_eq!(esc["base_sha"], e.repo.base.as_str(), "{name}");
-    }
-}
-
-#[test]
-fn exit_79_while_reading_the_base_is_passed_through() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    e.repo.write("docs/guide.md", "moved\n");
-    let moved = e.repo.commit("moved");
-    let o = e.defer_raw(
-        &two_minor().to_string(),
-        &moved,
-        &[
-            ("FAKE_GH_HEAD", &moved),
-            ("FAKE_GH_FAIL", "pr view"),
-            ("FAKE_GH_EXIT_CODE", "79"),
-        ],
-    );
-    assert_eq!(o.status.code(), Some(79), "{}", show(&o));
-    assert!(e.p("light-mode").exists());
-}
-
-// --- argument checks -------------------------------------------------------
-
-#[test]
-fn bad_arguments_exit_2() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    let rec: OsString = e.record.clone().into();
-    let wt: OsString = e.repo.wt.clone().into();
-    let h: OsString = e.head.clone().into();
-    let base = |pr: &str, head: &OsString, record: &OsString| -> Vec<OsString> {
-        vec![
-            round_tool().into(),
-            "defer".into(),
-            "--record".into(),
-            record.clone(),
-            "--pr".into(),
-            pr.into(),
-            "--reviewed-head".into(),
-            head.clone(),
-            "--repo".into(),
-            wt.clone(),
-        ]
-    };
-    for args in [
-        base("7x", &h, &rec),
-        base("", &h, &rec),
-        base("12345678901", &h, &rec),
-        base("7", &"zz".into(), &rec),
-        base("7", &"-x".into(), &rec),
-        base("7", &h, &"relative/crusty-round-1.json".into()),
-        base(
-            "7",
-            &h,
-            &format!("{}/../x/crusty-round-1.json", e.state.display()).into(),
-        ),
-        vec![round_tool().into(), "nope".into()],
-        vec![round_tool().into()],
-    ] {
-        let o = e.tool(&args, &[], &two_minor().to_string());
-        assert_eq!(o.status.code(), Some(2), "{args:?}: {}", show(&o));
-    }
-    assert!(e.fakes.gh_calls().is_empty());
-}
-
-#[test]
-fn concerns_that_are_not_a_json_array_take_the_normal_path() {
-    if skip() {
-        return;
-    }
-    for input in ["", "not json", "{\"id\":\"a\"}", "[1,2]"] {
-        let e = Env::new();
-        e.light();
-        let o = e.defer_raw(input, &e.head.clone(), &[]);
-        assert_eq!(o.status.code(), Some(0), "{input:?}: {}", show(&o));
-        assert_ne!(result(&o)["light_exit"], "minor-deferred", "{input:?}");
-        no_issue_created(&e);
+        assert!(!name.starts_with('.'), "stray temporary {name}");
     }
 }
 
 // ===========================================================================
-// 2. step-03 and step-06 of autodrive-crusty-round.yaml
+// 1. Step-03 and step-06 of the shared round
 // ===========================================================================
 
-/// A tools directory holding a copy of the real `autodrive_light_steps.sh`,
-/// which the round recipe sources from `AUTODRIVE_LAUNCH_TOOLS`, and a logging
-/// stand-in for `autodrive_light_round.sh`, which prints `$FAKE_ROUND_OUT` and exits
-/// `$FAKE_ROUND_EXIT` (default 0). With `$FAKE_ROUND_TRUNCATE` set it empties
-/// the record's `.findings`, as the real tool does on `minor-deferred`.
-const FAKE_ROUND_TOOL: &str = r#"#!/usr/bin/env bash
-( IFS=$'\x1f'; printf '%s\n' "$*" ) >> "${FAKE_LOG:?}/round.log"
-cat > "$FAKE_LOG/round.stdin"
-if [ -n "${FAKE_ROUND_TRUNCATE:-}" ]; then
-  while [ $# -gt 0 ]; do [ "$1" = --record ] && : > "$2.findings"; shift; done
-fi
-printf '%s\n' "${FAKE_ROUND_OUT:-}"
-exit "${FAKE_ROUND_EXIT:-0}"
-"#;
+/// The planted light tools write this file if anything runs or sources them.
+const CANARY: &str = "light-tool-ran";
 
+/// A tools directory for the round with no `autodrive_followups.sh`, so
+/// `classify` is skipped, and a stand-in for each retired light tool that
+/// touches `$FAKE_LOG/light-tool-ran` if a round ever runs or sources it.
 fn fake_tools(e: &Env) -> PathBuf {
     let t = e.repo.tmp.path().join("fake-tools");
     std::fs::create_dir_all(&t).unwrap();
     std::fs::copy(
-        tools_dir().join("autodrive_light_steps.sh"),
-        t.join("autodrive_light_steps.sh"),
+        tools_dir().join("autodrive_crusty_record.sh"),
+        t.join("autodrive_crusty_record.sh"),
     )
     .unwrap();
-    crate::support::exec_stub::write_executable(
-        &t.join("autodrive_light_round.sh"),
-        FAKE_ROUND_TOOL,
-        0o755,
-    );
+    for f in RETIRED_TOOLS {
+        crate::support::exec_stub::write_executable(
+            &t.join(f),
+            format!("#!/usr/bin/env bash\ntouch \"${{FAKE_LOG:?}}/{CANARY}\"\n"),
+            0o755,
+        );
+    }
     t
 }
 
-fn round_log(e: &Env) -> Vec<Vec<String>> {
-    std::fs::read_to_string(e.fakes.log.join("round.log"))
-        .unwrap_or_default()
-        .lines()
-        .map(|l| l.split('\u{1f}').map(String::from).collect())
-        .collect()
+fn light_tool_ran(e: &Env) -> bool {
+    e.fakes.log.join(CANARY).exists()
 }
 
 fn crusty_review(verdict: &str, concerns: &Value) -> String {
@@ -1368,15 +270,6 @@ fn step06(e: &Env, tools: &Path, verdict: &str, fix: &str) -> Output {
     )
 }
 
-fn state_names(e: &Env) -> Vec<String> {
-    let mut v: Vec<String> = std::fs::read_dir(&e.state)
-        .unwrap()
-        .map(|d| d.unwrap().file_name().into_string().unwrap())
-        .collect();
-    v.sort();
-    v
-}
-
 // --- golden: no marker, output as before #1802 ------------------------------
 
 #[test]
@@ -1401,10 +294,7 @@ fn golden_step03_without_marker_is_unchanged_and_never_calls_the_light_tool() {
         "naming-1\nreal-bug\n"
     );
     assert_eq!(state_names(&e), ["crusty-round-1.json.findings"]);
-    assert!(
-        round_log(&e).is_empty(),
-        "the light tool must not run without a marker"
-    );
+    assert!(!light_tool_ran(&e), "no light tool runs");
     assert!(e.fakes.gh_calls().is_empty());
 
     // All-minor without a marker is still CONCERNS.
@@ -1415,7 +305,7 @@ fn golden_step03_without_marker_is_unchanged_and_never_calls_the_light_tool() {
         stdout(&o),
         "{\"crusty_verdict\":\"CONCERNS\",\"verdict_source\":\"crusty\",\"concern_count\":2}\n"
     );
-    assert!(round_log(&e).is_empty());
+    assert!(!light_tool_ran(&e));
 
     // CLEAN and missing verdicts.
     let e = Env::new();
@@ -1430,7 +320,7 @@ fn golden_step03_without_marker_is_unchanged_and_never_calls_the_light_tool() {
         stdout(&o),
         "{\"crusty_verdict\":\"CONCERNS\",\"verdict_source\":\"missing_verdict\",\"concern_count\":0}\n"
     );
-    assert!(round_log(&e).is_empty());
+    assert!(!light_tool_ran(&e));
 }
 
 #[test]
@@ -1485,197 +375,104 @@ fn golden_step06_without_light_source_writes_the_same_bytes() {
     );
 }
 
-// --- step-03 with a marker (stand-in tool) ----------------------------------
-
-const DEFERRED_OUT: &str = r#"{"light_exit":"minor-deferred","follow_up_issue":"1851","deferred_ids":["naming-1","doc-2"],"concern_count":2}"#;
+const CONCERNS_TWO: &str =
+    "{\"crusty_verdict\":\"CONCERNS\",\"verdict_source\":\"crusty\",\"concern_count\":2}\n";
 
 #[test]
-fn step03_turns_a_minor_deferred_result_into_a_light_clean_verdict() {
+fn step03_ignores_a_light_state_dir_and_a_leftover_marker() {
     if skip() {
         return;
     }
-    let e = Env::new();
-    e.light();
-    let tools = fake_tools(&e);
-    let o = step03(
-        &e,
-        &tools,
-        &crusty_review("CONCERNS", &two_minor()),
-        &[
-            ("FAKE_ROUND_OUT", DEFERRED_OUT),
-            ("FAKE_ROUND_TRUNCATE", "1"),
-        ],
-    );
-    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
-    assert_eq!(
-        stdout(&o),
-        "{\"crusty_verdict\":\"CLEAN\",\"verdict_source\":\"light-minor-rule\",\"concern_count\":2}\n"
-    );
-    let log = round_log(&e);
-    assert_eq!(log.len(), 1, "{log:?}");
-    let argv = &log[0];
-    assert_eq!(argv[0], "defer");
-    let arg = |flag: &str| {
-        let i = argv
-            .iter()
-            .position(|a| a == flag)
-            .unwrap_or_else(|| panic!("{flag} in {argv:?}"));
-        argv[i + 1].clone()
-    };
-    assert_eq!(arg("--record"), e.record.to_string_lossy());
-    assert_eq!(arg("--pr"), "7");
-    assert_eq!(arg("--reviewed-head"), e.head);
-    assert_eq!(
-        std::fs::canonicalize(arg("--repo")).unwrap(),
-        std::fs::canonicalize(&e.repo.wt).unwrap()
-    );
-    let seen: Value =
-        serde_json::from_str(&std::fs::read_to_string(e.fakes.log.join("round.stdin")).unwrap())
-            .expect("concerns reach the tool as JSON on stdin");
-    assert_eq!(seen, two_minor());
-}
-
-#[test]
-fn step03_keeps_the_crusty_verdict_when_the_rule_does_not_apply() {
-    if skip() {
-        return;
-    }
-    for out in [
-        r#"{"light_exit":"none","reason":"not-minor-only"}"#,
-        r#"{"light_exit":"none","reason":"follow-up-failed"}"#,
-        r#"{"light_exit":"off"}"#,
-        "garbage",
-        "",
+    // A light run's state directory, with or without the `light-mode` file an
+    // earlier version wrote, gives the same verdict and state as any other
+    // round: nothing is measured, no light tool runs and gh is never called.
+    let concerns = json!([
+        minor("naming-1", "Rename"),
+        {"id": "real-bug", "severity": "major", "summary": "Wrong result", "evidence": "x"}
+    ]);
+    for (verdict, list, want) in [
+        ("CONCERNS", concerns.clone(), CONCERNS_TWO),
+        ("CONCERNS", two_minor(), CONCERNS_TWO),
+        (
+            "CLEAN",
+            json!([]),
+            "{\"crusty_verdict\":\"CLEAN\",\"verdict_source\":\"crusty\",\"concern_count\":0}\n",
+        ),
     ] {
-        let e = Env::new();
-        e.light();
-        let tools = fake_tools(&e);
-        let o = step03(
-            &e,
-            &tools,
-            &crusty_review("CONCERNS", &two_minor()),
-            &[("FAKE_ROUND_OUT", out)],
+        for marker in [false, true] {
+            let e = Env::new();
+            e.light();
+            if marker {
+                e.leftover_marker();
+            }
+            let before = state_names(&e);
+            let tools = fake_tools(&e);
+            let o = step03(&e, &tools, &crusty_review(verdict, &list), &[]);
+            assert_eq!(o.status.code(), Some(0), "{verdict}/{marker}: {}", show(&o));
+            assert_eq!(stdout(&o), want, "{verdict}/{marker}: {}", show(&o));
+            assert!(
+                !light_tool_ran(&e),
+                "{verdict}/{marker}: no light tool runs"
+            );
+            assert!(e.fakes.gh_calls().is_empty(), "{verdict}/{marker}");
+            let mut after = state_names(&e);
+            after.retain(|n| n != "crusty-round-1.json.findings");
+            assert_eq!(
+                after, before,
+                "{verdict}/{marker}: only .findings is written"
+            );
+            if marker {
+                assert_eq!(
+                    e.read("light-mode").trim(),
+                    e.head,
+                    "the leftover is left alone"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_round_recipe_has_no_light_hook_and_the_in_loop_tools_are_gone() {
+    let round = read("amplifier-bundle/recipes/autodrive-crusty-round.yaml");
+    for gone in [
+        "light-mode",
+        "autodrive_light",
+        "light-minor-rule",
+        "light_exit",
+    ] {
+        assert!(
+            !round.contains(gone),
+            "autodrive-crusty-round.yaml still mentions {gone}"
         );
-        assert_eq!(o.status.code(), Some(0), "{out}: {}", show(&o));
-        assert_eq!(
-            stdout(&o),
-            "{\"crusty_verdict\":\"CONCERNS\",\"verdict_source\":\"crusty\",\"concern_count\":2}\n",
-            "{out}"
+    }
+    for f in RETIRED_TOOLS {
+        assert!(
+            !tools_dir().join(f).exists(),
+            "{f} was removed by #1982 and must not come back"
         );
-        assert_eq!(e.read("crusty-round-1.json.findings"), "naming-1\ndoc-2\n");
+    }
+    for rel in [
+        "amplifier-bundle/recipes/auto-drive-light.yaml",
+        "amplifier-bundle/recipes/autodrive-crusty-loop.yaml",
+        "amplifier-bundle/recipes/autodrive-merge-loop.yaml",
+        "amplifier-bundle/recipes/auto-drive-to-merge.yaml",
+    ] {
+        let body = read(rel);
+        for f in RETIRED_TOOLS {
+            assert!(!body.contains(f), "{rel} still names {f}");
+        }
+        assert!(
+            !body.contains("light-escalated"),
+            "{rel} still has light-escalated"
+        );
     }
 }
 
-#[test]
-fn step03_fails_safe_when_the_tool_fails() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    let tools = fake_tools(&e);
-    let o = step03(
-        &e,
-        &tools,
-        &crusty_review("CONCERNS", &two_minor()),
-        &[("FAKE_ROUND_OUT", DEFERRED_OUT), ("FAKE_ROUND_EXIT", "1")],
-    );
-    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
-    assert!(
-        stdout(&o).starts_with("{\"crusty_verdict\":\"CONCERNS\","),
-        "a failed tool never yields CLEAN: {}",
-        show(&o)
-    );
-}
+// --- step-06: no light branch -----------------------------------------------
 
-#[test]
-fn step03_passes_exit_79_through() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    let tools = fake_tools(&e);
-    let o = step03(
-        &e,
-        &tools,
-        &crusty_review("CONCERNS", &two_minor()),
-        &[("FAKE_ROUND_EXIT", "79")],
-    );
-    assert_eq!(o.status.code(), Some(79), "{}", show(&o));
-}
-
-#[test]
-fn step03_ignores_a_marker_that_is_not_a_regular_file() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    let tools = fake_tools(&e);
-    let real = e.repo.tmp.path().join("elsewhere");
-    std::fs::write(&real, format!("{}\n", e.head)).unwrap();
-    std::os::unix::fs::symlink(&real, e.p("light-mode")).unwrap();
-    let o = step03(
-        &e,
-        &tools,
-        &crusty_review("CONCERNS", &two_minor()),
-        &[("FAKE_ROUND_OUT", DEFERRED_OUT)],
-    );
-    assert!(
-        stdout(&o).starts_with("{\"crusty_verdict\":\"CONCERNS\","),
-        "{}",
-        show(&o)
-    );
-    assert!(
-        round_log(&e).is_empty(),
-        "a symlinked marker is not light mode"
-    );
-
-    let e = Env::new();
-    let tools = fake_tools(&e);
-    std::fs::create_dir(e.p("light-mode")).unwrap();
-    let o = step03(
-        &e,
-        &tools,
-        &crusty_review("CONCERNS", &two_minor()),
-        &[("FAKE_ROUND_OUT", DEFERRED_OUT)],
-    );
-    assert!(
-        stdout(&o).starts_with("{\"crusty_verdict\":\"CONCERNS\","),
-        "{}",
-        show(&o)
-    );
-    assert!(round_log(&e).is_empty());
-}
-
-#[test]
-fn step03_leaves_a_crusty_clean_verdict_alone_in_light_mode() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    let tools = fake_tools(&e);
-    let o = step03(
-        &e,
-        &tools,
-        &crusty_review("CLEAN", &json!([])),
-        &[("FAKE_ROUND_OUT", DEFERRED_OUT)],
-    );
-    assert_eq!(
-        stdout(&o),
-        "{\"crusty_verdict\":\"CLEAN\",\"verdict_source\":\"crusty\",\"concern_count\":0}\n",
-        "{}",
-        show(&o)
-    );
-}
-
-// --- step-06 with the light source ------------------------------------------
-
-const LIGHT_VERDICT: &str =
-    r#"{"crusty_verdict":"CLEAN","verdict_source":"light-minor-rule","concern_count":2}"#;
-
-fn light_side_files(e: &Env) {
+/// Side files an earlier light round left beside the record.
+fn legacy_side_files(e: &Env) {
     private_file(&e.rec(".findings"), "");
     private_file(
         &e.rec(".concerns.tsv"),
@@ -1685,195 +482,130 @@ fn light_side_files(e: &Env) {
         &e.rec(".light.json"),
         "{\"follow_up_issue\":\"1851\",\"deferred_ids\":[\"naming-1\",\"doc-2\"]}\n",
     );
+    private_file(&e.p("follow-up-issue"), "1851\n");
 }
 
-fn light_record(head: &str) -> String {
+fn plain_record(verdict: &str, count: u32, head: &str) -> String {
     format!(
-        "{{\"crusty_verdict\":\"CLEAN\",\"concern_count\":2,\"commits_this_round\":0,\"head_sha\":\"{head}\",\"reviewed_head_sha\":\"{head}\",\"round_label\":\"crusty-round-1\",\"test_signal\":\"\",\"ci_signal\":\"\",\"verdict_source\":\"light-minor-rule\",\"follow_up_issue\":\"1851\",\"deferred_ids\":[\"naming-1\",\"doc-2\"]}}\n"
+        "{{\"crusty_verdict\":\"{verdict}\",\"concern_count\":{count},\"commits_this_round\":0,\"head_sha\":\"{head}\",\"reviewed_head_sha\":\"{head}\",\"round_label\":\"crusty-round-1\",\"test_signal\":\"\",\"ci_signal\":\"\"}}\n"
     )
 }
 
 #[test]
-fn step06_writes_the_light_clean_record() {
+fn step06_has_no_light_hook() {
     if skip() {
         return;
     }
-    let e = Env::new();
-    e.light();
-    light_side_files(&e);
-    let tools = fake_tools(&e);
-    let o = step06(&e, &tools, LIGHT_VERDICT, "");
-    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
-    let rec = std::fs::read_to_string(&e.record).unwrap();
-    assert_eq!(rec, light_record(&e.head));
-    assert!(rec.starts_with("{\"crusty_verdict\":\"CLEAN\","));
-    assert_eq!(rec.matches("\"reviewed_head_sha\":").count(), 1);
-    assert_eq!(rec.lines().count(), 1);
-    assert_eq!(mode(&e.record), 0o600);
-}
-
-#[test]
-fn step06_writes_concerns_when_the_side_file_is_invalid() {
-    if skip() {
-        return;
-    }
-    type Spoil = fn(&Env);
-    let cases: Vec<(&str, Spoil)> = vec![
-        ("missing side file", |e| {
-            std::fs::remove_file(e.rec(".light.json")).unwrap()
-        }),
-        ("extra key", |e| {
-            private_file(
-                &e.rec(".light.json"),
-                "{\"follow_up_issue\":\"1851\",\"deferred_ids\":[\"naming-1\",\"doc-2\"],\"crusty_verdict\":\"CLEAN\"}\n",
-            )
-        }),
-        ("issue not digits", |e| {
-            private_file(
-                &e.rec(".light.json"),
-                "{\"follow_up_issue\":\"18\\\"51\",\"deferred_ids\":[\"naming-1\",\"doc-2\"]}\n",
-            )
-        }),
-        ("issue too long", |e| {
-            private_file(
-                &e.rec(".light.json"),
-                "{\"follow_up_issue\":\"12345678901\",\"deferred_ids\":[\"naming-1\",\"doc-2\"]}\n",
-            )
-        }),
-        ("id not in tsv", |e| {
-            private_file(
-                &e.rec(".light.json"),
-                "{\"follow_up_issue\":\"1851\",\"deferred_ids\":[\"naming-1\",\"other-9\"]}\n",
-            )
-        }),
-        ("tsv has a major row", |e| {
-            private_file(
-                &e.rec(".concerns.tsv"),
-                "naming-1\tminor\tx\ndoc-2\tminor\ty\nreal-bug\tmajor\tz\n",
-            )
-        }),
-        ("findings not empty", |e| {
-            private_file(&e.rec(".findings"), "naming-1\n")
-        }),
-        ("side file loose mode", |e| {
-            std::fs::set_permissions(e.rec(".light.json"), std::fs::Permissions::from_mode(0o666))
-                .unwrap()
-        }),
-        ("side file symlink", |e| {
-            let real = e.repo.tmp.path().join("side.json");
-            std::fs::write(
-                &real,
-                "{\"follow_up_issue\":\"1851\",\"deferred_ids\":[\"naming-1\",\"doc-2\"]}\n",
-            )
-            .unwrap();
-            std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
-            std::fs::remove_file(e.rec(".light.json")).unwrap();
-            std::os::unix::fs::symlink(&real, e.rec(".light.json")).unwrap();
-        }),
-    ];
-    for (name, spoil) in cases {
+    // A planted light-minor-rule string, legacy side files and a light
+    // verdict_source change nothing: the record has the bytes of any other
+    // record with that verdict, and the light helper is never loaded.
+    for (verdict, want) in [
+        (
+            r#"{"crusty_verdict":"CONCERNS","verdict_source":"crusty","note":"light-minor-rule","concern_count":2}"#,
+            "CONCERNS",
+        ),
+        (
+            r#"{"crusty_verdict":"CLEAN","verdict_source":"light-minor-rule","concern_count":2}"#,
+            "CLEAN",
+        ),
+        (
+            r#"{"crusty_verdict":"MINOR_ONLY","verdict_source":"crusty","concern_count":2}"#,
+            "MINOR_ONLY",
+        ),
+    ] {
         let e = Env::new();
-        e.light();
-        light_side_files(&e);
-        spoil(&e);
+        e.light().leftover_marker();
+        legacy_side_files(&e);
         let tools = fake_tools(&e);
-        let o = step06(&e, &tools, LIGHT_VERDICT, "");
-        assert_eq!(o.status.code(), Some(0), "{name}: {}", show(&o));
+        let o = step06(&e, &tools, verdict, "");
+        assert_eq!(o.status.code(), Some(0), "{verdict}: {}", show(&o));
         let rec = std::fs::read_to_string(&e.record).unwrap();
+        assert_eq!(rec, plain_record(want, 2, &e.head), "{verdict}");
+        assert_eq!(stdout(&o), rec, "{verdict}");
         assert!(
-            rec.starts_with("{\"crusty_verdict\":\"CONCERNS\","),
-            "{name}: {rec}"
-        );
-        assert!(
-            !rec.contains("verdict_source"),
-            "{name}: no light suffix: {rec}"
-        );
-        assert!(
-            stderr(&o).contains("WARNING: light-side-file-invalid"),
-            "{name}: {}",
+            !stderr(&o).contains("light-side-file-invalid"),
+            "{verdict}: {}",
             show(&o)
         );
+        assert!(!light_tool_ran(&e), "{verdict}: no light tool runs");
+        assert_eq!(mode(&e.record), 0o600);
     }
-}
-
-#[test]
-fn step03_loads_the_helper_from_the_launch_tools_only() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    let tools = fake_tools(&e);
-    std::fs::remove_file(tools.join("autodrive_light_steps.sh")).unwrap();
-    // AMPLIHACK_HOME (the repository root) still holds the helper.
-    let o = step03(
-        &e,
-        &tools,
-        &crusty_review("CONCERNS", &two_minor()),
-        &[("FAKE_ROUND_OUT", DEFERRED_OUT)],
-    );
-    assert!(
-        stdout(&o).starts_with("{\"crusty_verdict\":\"CONCERNS\","),
-        "{}",
-        show(&o)
-    );
-    assert!(
-        stderr(&o).contains("autodrive_light_steps.sh not found under AUTODRIVE_LAUNCH_TOOLS"),
-        "{}",
-        show(&o)
-    );
-    assert!(round_log(&e).is_empty(), "the round tool is not called");
-}
-
-#[test]
-fn step06_rejects_a_verdict_that_names_the_rule_but_has_another_source() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    light_side_files(&e);
-    let tools = fake_tools(&e);
-    let verdict = r#"{"crusty_verdict":"CLEAN","verdict_source":"crusty","note":"light-minor-rule","concern_count":0}"#;
-    let o = step06(&e, &tools, verdict, "");
-    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
-    let rec = std::fs::read_to_string(&e.record).unwrap();
-    assert!(
-        rec.starts_with("{\"crusty_verdict\":\"CONCERNS\","),
-        "{rec}"
-    );
-    assert!(!rec.contains("deferred_ids"), "{rec}");
-    assert!(
-        stderr(&o).contains("WARNING: light-side-file-invalid"),
-        "{}",
-        show(&o)
-    );
-
-    // The function itself: non-zero, with an empty SUFFIX.
-    let helper = tools_dir().join("autodrive_light_steps.sh");
-    let script = format!(
-        ". {:?}; VERDICT=CLEAN; RECORD={:?}; SUFFIX=x; autodrive_light_step06 \"$1\"; printf 'rc=%s suffix=[%s]' \"$?\" \"$SUFFIX\"",
-        helper.display().to_string(),
-        e.record.display().to_string()
-    );
-    let argv = [
-        OsStr::new("-c"),
-        OsStr::new(&script),
-        OsStr::new("x"),
-        OsStr::new(verdict),
-    ];
-    let o = run_bash(&e.repo.home, &e.fakes, None, &argv, &[], "");
-    assert_eq!(stdout(&o), "rc=1 suffix=[]", "{}", show(&o));
 }
 
 // ===========================================================================
-// 3. Acceptance test (a): light CLEAN record reaches the merge phase
+// 2. The real tools, end to end
 // ===========================================================================
 
-/// Writes the loop's manifest row and `crusty-latest.json` for the record,
-/// as `autodrive_loop.sh` does, then runs `autodrive_record_crusty_loop_done`
-/// (the DONE path) and `autodrive_crusty_final`.
-fn loop_done_and_final(e: &Env) -> Output {
+/// The tools a light round loads, copied from the bundle into one directory
+/// that serves as `AUTODRIVE_LAUNCH_TOOLS`.
+fn real_tools(e: &Env) -> PathBuf {
+    let t = e.repo.tmp.path().join("real-tools");
+    std::fs::create_dir_all(&t).unwrap();
+    for f in [
+        "autodrive_crusty_record.sh",
+        "autodrive_followups.sh",
+        "autodrive_followups_check.sh",
+        "autodrive_finding_rules.sh",
+        "autodrive_state.sh",
+        "autodrive_unmerged.sh",
+        "workflow_issue_tracking.sh",
+        "workflow_gh_retry.sh",
+    ] {
+        std::fs::copy(tools_dir().join(f), t.join(f))
+            .unwrap_or_else(|err| panic!("copy {f}: {err}"));
+    }
+    t
+}
+
+/// A `gh` that logs its argv and exits 97: any call is a failure.
+const SENTINEL_GH: &str = r#"#!/usr/bin/env bash
+( IFS=$'\x1f'; printf '%s\n' "$*" ) >> "${FAKE_LOG:?}/gh.log"
+echo "sentinel gh: no gh call is expected here" >&2
+exit 97
+"#;
+
+/// A `gh` for `file`: `pr view` answers PR 7 of o/r with an empty body,
+/// `issue create` prints `https://github.com/o/r/issues/<101, 102, ...>`,
+/// `issue comment` prints a comment URL. Every call is logged.
+const FILING_GH: &str = r#"#!/usr/bin/env bash
+set -u
+log="${FAKE_LOG:?}"
+( IFS=$'\x1f'; printf '%s\n' "$*" ) >> "$log/gh.log"
+args=("$@"); jqf=""
+for ((i=0; i<${#args[@]}; i++)); do
+  case "${args[$i]}" in --jq|-q) jqf="${args[$((i+1))]:-}" ;; esac
+done
+emit() { if [ -n "$jqf" ]; then printf '%s' "$1" | jq -r "$jqf"; else printf '%s\n' "$1"; fi; }
+case "${1:-} ${2:-}" in
+  "pr view") emit '{"number":7,"url":"https://github.com/o/r/pull/7","body":"Refs #1982"}' ;;
+  "issue create")
+    made=$(grep -c . "$log/created" 2>/dev/null || true); made=${made:-0}
+    echo x >> "$log/created"
+    printf 'https://github.com/o/r/issues/%s\n' "$((101 + made))" ;;
+  "issue comment") printf 'https://github.com/o/r/issues/%s#issuecomment-1\n' "${3:-0}" ;;
+esac
+exit 0
+"#;
+
+fn use_gh(e: &Env, body: &str) {
+    crate::support::exec_stub::write_executable(&e.fakes.bin.join("gh"), body, 0o755);
+}
+
+/// Runs `autodrive_followups.sh <args>` from `tools`.
+fn followups(e: &Env, tools: &Path, args: &[&str]) -> Output {
+    let tool = tools.join("autodrive_followups.sh");
+    let mut argv: Vec<OsString> = vec![tool.into()];
+    argv.extend(args.iter().map(OsString::from));
+    e.tool(&argv, &[], "")
+}
+
+fn state_arg(e: &Env) -> String {
+    e.state.to_string_lossy().into_owned()
+}
+
+/// What autodrive_loop.sh does after a round: a copy in crusty-latest.json
+/// and a manifest row with the record's blob hash.
+fn loop_writes_round(e: &Env) {
     let hash = git(
         &e.state,
         &["hash-object", "--no-filters", e.record.to_str().unwrap()],
@@ -1888,6 +620,375 @@ fn loop_done_and_final(e: &Env) -> Output {
         std::fs::Permissions::from_mode(0o600),
     )
     .unwrap();
+}
+
+const MINOR_ONLY_TWO: &str =
+    "{\"crusty_verdict\":\"MINOR_ONLY\",\"verdict_source\":\"crusty\",\"concern_count\":2}\n";
+
+/// A light round on an unchanged head whose findings are all minor, through
+/// step-03 and step-06, with the sentinel `gh`. Returns the tools directory.
+fn minor_only_light_round(e: &Env) -> PathBuf {
+    e.light();
+    let tools = real_tools(e);
+    use_gh(e, SENTINEL_GH);
+    let o = step03(e, &tools, &crusty_review("CONCERNS", &two_minor()), &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert_eq!(stdout(&o), MINOR_ONLY_TWO, "{}", show(&o));
+    let o6 = step06(e, &tools, MINOR_ONLY_TWO.trim(), "");
+    assert_eq!(o6.status.code(), Some(0), "{}", show(&o6));
+    assert!(
+        e.fakes.gh_calls().is_empty(),
+        "step-03 and step-06 make no gh call: {:?}",
+        e.fakes.gh_calls()
+    );
+    tools
+}
+
+#[test]
+fn real_tools_classify_an_all_minor_light_round_as_minor_only() {
+    if skip() {
+        return;
+    }
+    let e = Env::new();
+    e.light();
+    let tools = real_tools(&e);
+    use_gh(&e, SENTINEL_GH);
+    let o = step03(&e, &tools, &crusty_review("CONCERNS", &two_minor()), &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert_eq!(stdout(&o), MINOR_ONLY_TWO, "{}", show(&o));
+    let minor: Vec<Value> = e
+        .read("crusty-round-1.json.minor")
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let ids: Vec<&str> = minor.iter().map(|m| m["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["naming-1", "doc-2"]);
+    assert_eq!(e.read("crusty-round-1.json.findings"), "");
+    assert!(e.p("crusty-round-1.json.severity").exists());
+    assert!(e.fakes.gh_calls().is_empty(), "{:?}", e.fakes.gh_calls());
+    no_retired_files(&e);
+}
+
+#[test]
+fn real_tools_a_light_round_with_a_major_finding_stays_concerns() {
+    if skip() {
+        return;
+    }
+    let e = Env::new();
+    e.light();
+    let tools = real_tools(&e);
+    use_gh(&e, SENTINEL_GH);
+    let concerns = json!([
+        minor("naming-1", "Rename"),
+        {"id": "real-bug", "severity": "major", "summary": "Wrong result", "evidence": "x"}
+    ]);
+    let o = step03(&e, &tools, &crusty_review("CONCERNS", &concerns), &[]);
+    assert_eq!(stdout(&o), CONCERNS_TWO, "{}", show(&o));
+    assert_eq!(
+        e.read("crusty-round-1.json.findings"),
+        "naming-1\nreal-bug\n"
+    );
+    assert!(!e.rec(".minor").exists());
+    assert!(e.fakes.gh_calls().is_empty());
+    no_retired_files(&e);
+}
+
+#[test]
+fn real_tools_record_a_light_minor_only_round_with_the_plain_prefix() {
+    if skip() {
+        return;
+    }
+    let e = Env::new();
+    minor_only_light_round(&e);
+    let rec = std::fs::read_to_string(&e.record).unwrap();
+    assert!(
+        rec.starts_with("{\"crusty_verdict\":\"MINOR_ONLY\","),
+        "{rec}"
+    );
+    assert_eq!(rec, plain_record("MINOR_ONLY", 2, &e.head));
+    assert!(!rec.contains("verdict_source"), "{rec}");
+}
+
+/// Collects and files the follow-ups of a light MINOR_ONLY round for task
+/// #1982 with the filing `gh`, and returns the gh calls `file` made.
+fn collect_and_file(e: &Env, tools: &Path) -> Vec<Vec<String>> {
+    loop_writes_round(e);
+    let st = state_arg(e);
+    let o = followups(e, tools, &["collect", "--state-dir", &st]);
+    assert_eq!(o.status.code(), Some(0), "collect: {}", show(&o));
+    use_gh(e, FILING_GH);
+    let o = followups(
+        e,
+        tools,
+        &[
+            "file",
+            "--state-dir",
+            &st,
+            "--pr",
+            "7",
+            "--task-id",
+            "#1982",
+        ],
+    );
+    assert_eq!(o.status.code(), Some(0), "file: {}", show(&o));
+    assert_eq!(stdout(&o).trim(), "followups-ok 2", "{}", show(&o));
+    e.fakes.gh_calls()
+}
+
+#[test]
+fn real_tools_collect_and_file_make_one_issue_per_finding_and_one_parent_comment() {
+    if skip() {
+        return;
+    }
+    let e = Env::new();
+    let tools = minor_only_light_round(&e);
+    let calls = collect_and_file(&e, &tools);
+    let first2 = |c: &Vec<String>| (c.first().cloned(), c.get(1).cloned());
+    let creates: Vec<_> = calls
+        .iter()
+        .filter(|c| first2(c) == (Some("issue".into()), Some("create".into())))
+        .collect();
+    assert_eq!(creates.len(), 2, "{calls:?}");
+    let comments: Vec<_> = calls
+        .iter()
+        .filter(|c| first2(c) == (Some("issue".into()), Some("comment".into())))
+        .collect();
+    assert_eq!(comments.len(), 1, "one parent comment: {calls:?}");
+    assert_eq!(comments[0].get(2).map(String::as_str), Some("1982"));
+    assert!(
+        !calls
+            .iter()
+            .any(|c| first2(c) == (Some("pr".into()), Some("comment".into()))),
+        "no PR comment: {calls:?}"
+    );
+    let rows: Vec<Vec<String>> = e
+        .read("followups.tsv")
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.split('\t').map(String::from).collect())
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ["naming-1", "101", "#1982", "7"],
+            ["doc-2", "102", "#1982", "7"]
+        ]
+    );
+}
+
+#[test]
+fn real_tools_gate_blocks_a_light_minor_only_drive_until_filing() {
+    if skip() {
+        return;
+    }
+    let e = Env::new();
+    let tools = minor_only_light_round(&e);
+    loop_writes_round(&e);
+    let st = state_arg(&e);
+    let o = followups(&e, &tools, &["collect", "--state-dir", &st]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    // Before filing: no light exemption.
+    let o = followups(&e, &tools, &["gate", "--state-dir", &st, "--pr", "7"]);
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    assert!(
+        stderr(&o).contains("ERROR: followups-unfiled:"),
+        "{}",
+        show(&o)
+    );
+    let o = followups(&e, &tools, &["check", "--state-dir", &st, "--pr", "7"]);
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    assert!(e.fakes.gh_calls().is_empty(), "gate and check are offline");
+    // After filing.
+    collect_and_file(&e, &tools);
+    let o = followups(&e, &tools, &["gate", "--state-dir", &st, "--pr", "7"]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert!(stdout(&o).starts_with("followups-ok 2"), "{}", show(&o));
+    let o = followups(&e, &tools, &["check", "--state-dir", &st, "--pr", "7"]);
+    assert_eq!(stdout(&o).trim(), "followups-ok 2", "{}", show(&o));
+}
+
+/// Runs step-03 with the real tools for round `n` of the same state dir.
+fn real_round(e: &Env, tools: &Path, n: u32, concerns: &Value) -> Output {
+    let rec = e.p(&format!("crusty-round-{n}.json"));
+    let rec = rec.to_string_lossy().into_owned();
+    step03(
+        e,
+        tools,
+        &crusty_review("CONCERNS", concerns),
+        &[("AUTODRIVE_ROUND_RECORD", &rec)],
+    )
+}
+
+fn verdict_of(o: &Output) -> String {
+    let j: Value = serde_json::from_str(stdout(o).trim())
+        .unwrap_or_else(|err| panic!("one verdict line ({err}): {}", show(o)));
+    j["crusty_verdict"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn real_tools_an_id_once_major_keeps_a_later_light_round_concerns() {
+    if skip() {
+        return;
+    }
+    // Recurrence, case 1 (decision 17.104): an id another round saw as major
+    // stops a later all-minor round from being MINOR_ONLY.
+    let e = Env::new();
+    e.light();
+    let tools = real_tools(&e);
+    use_gh(&e, SENTINEL_GH);
+    let r1 = json!([
+        minor("naming-1", "Rename"),
+        {"id": "bug-2", "severity": "major", "summary": "Wrong result", "evidence": "x"}
+    ]);
+    assert_eq!(verdict_of(&real_round(&e, &tools, 1, &r1)), "CONCERNS");
+    let r2 = json!([
+        minor("bug-2", "Now only cosmetic"),
+        minor("naming-1", "Rename")
+    ]);
+    let o = real_round(&e, &tools, 2, &r2);
+    assert_eq!(verdict_of(&o), "CONCERNS", "{}", show(&o));
+    assert!(!e.p("crusty-round-2.json.minor").exists());
+    assert!(e.fakes.gh_calls().is_empty());
+}
+
+#[test]
+fn real_tools_a_minor_id_raised_again_stays_minor() {
+    if skip() {
+        return;
+    }
+    // Recurrence, case 2: an id seen only as minor before stays minor. The
+    // retired light rule promoted every returning id to major.
+    let e = Env::new();
+    e.light();
+    let tools = real_tools(&e);
+    use_gh(&e, SENTINEL_GH);
+    let r1 = json!([
+        minor("naming-1", "Rename"),
+        {"id": "bug-2", "severity": "major", "summary": "Wrong result", "evidence": "x"}
+    ]);
+    assert_eq!(verdict_of(&real_round(&e, &tools, 1, &r1)), "CONCERNS");
+    private_file(&e.p("resolved-concerns.txt"), "bug-2\n");
+    let o = real_round(&e, &tools, 2, &json!([minor("naming-1", "Rename")]));
+    assert_eq!(verdict_of(&o), "MINOR_ONLY", "{}", show(&o));
+    assert_eq!(
+        e.read("crusty-round-2.json.minor").lines().count(),
+        1,
+        "{}",
+        show(&o)
+    );
+    assert!(e.fakes.gh_calls().is_empty());
+}
+
+#[test]
+fn real_tools_use_the_one_keyword_predicate() {
+    if skip() {
+        return;
+    }
+    for (id, summary, want) in [
+        (
+            "pr-body-testing-section",
+            "Rename the heading",
+            "MINOR_ONLY",
+        ),
+        ("section-1", "Rename the heading", "MINOR_ONLY"),
+        (
+            "head-commit-wrong-author-identity",
+            "Fix the author",
+            "MINOR_ONLY",
+        ),
+        ("sec-3", "Rename the heading", "CONCERNS"),
+        ("auth-bypass", "Rename the heading", "CONCERNS"),
+        ("naming-1", "The token is printed in the log", "CONCERNS"),
+        ("naming-1", "Two tokens are cached", "CONCERNS"),
+    ] {
+        let e = Env::new();
+        e.light();
+        let tools = real_tools(&e);
+        use_gh(&e, SENTINEL_GH);
+        let o = real_round(&e, &tools, 1, &json!([minor(id, summary)]));
+        assert_eq!(verdict_of(&o), want, "{id} / {summary}: {}", show(&o));
+        assert!(e.fakes.gh_calls().is_empty());
+    }
+}
+
+#[test]
+fn real_tools_a_head_grown_past_the_light_limits_is_not_measured_in_the_loop() {
+    if skip() {
+        return;
+    }
+    // #1982: the round neither measures the moved head nor escalates; the
+    // verdict comes from classify alone, and gh is never called (a sentinel
+    // gh exits 97), so there is no base read and no fetch per round.
+    let e = Env::new();
+    e.light().leftover_marker();
+    let tools = real_tools(&e);
+    use_gh(&e, SENTINEL_GH);
+    e.repo.write("docs/big.md", &"line\n".repeat(400));
+    let moved = e.repo.commit("big address");
+    let ctx = json!({"pr": "7", "head_sha": moved, "resolved_concerns": "", "round_label": "crusty-round-1"})
+        .to_string();
+    let o = step03(
+        &e,
+        &tools,
+        &crusty_review("CONCERNS", &two_minor()),
+        &[
+            ("RECIPE_VAR_crusty_round_context", &ctx),
+            ("FAKE_GH_HEAD", &moved),
+        ],
+    );
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert_eq!(stdout(&o), MINOR_ONLY_TWO, "{}", show(&o));
+    assert!(e.fakes.gh_calls().is_empty(), "{:?}", e.fakes.gh_calls());
+    assert!(!e.p("escalation.json").exists(), "no in-loop escalation");
+    assert_eq!(
+        e.read("light-mode").trim(),
+        e.head,
+        "the leftover is not rewritten"
+    );
+    let elig: Value = serde_json::from_str(&e.read("light-eligibility.json")).unwrap();
+    assert_eq!(
+        elig["head"],
+        e.head.as_str(),
+        "light-eligibility.json is not rewritten"
+    );
+    assert!(!stderr(&o).contains("light round"), "{}", show(&o));
+    no_retired_files(&e);
+}
+
+#[test]
+fn real_tools_an_end_to_end_light_drive_leaves_no_retired_file() {
+    if skip() {
+        return;
+    }
+    let e = Env::new();
+    let tools = minor_only_light_round(&e);
+    let calls = collect_and_file(&e, &tools);
+    no_retired_files(&e);
+    for c in &calls {
+        assert!(
+            !c.iter().any(|a| a.contains("auto-drive-light:pr-")),
+            "no light marker search: {c:?}"
+        );
+        assert!(
+            !(c.first().map(String::as_str) == Some("pr")
+                && c.get(1).map(String::as_str) == Some("comment")),
+            "no PR comment: {c:?}"
+        );
+    }
+    for name in state_names(&e) {
+        assert!(!name.ends_with(".md"), "stray body file {name}");
+    }
+}
+
+// ===========================================================================
+// 3. Acceptance: a light MINOR_ONLY record reaches the merge phase
+// ===========================================================================
+
+/// Writes the loop's manifest row and `crusty-latest.json` for the record,
+/// as `autodrive_loop.sh` does, then runs `autodrive_record_crusty_loop_done`
+/// (the DONE path) and `autodrive_crusty_final`.
+fn loop_done_and_final(e: &Env) -> Output {
+    loop_writes_round(e);
     let helper = tools_dir().join("autodrive_state.sh");
     let script = ". \"$1\" || exit 98\nautodrive_record_crusty_loop_done \"$2\"\nautodrive_crusty_final \"$2\"\n";
     run_bash(
@@ -1901,29 +1002,12 @@ fn loop_done_and_final(e: &Env) -> Output {
 }
 
 #[test]
-fn acceptance_a_minor_only_round_reaches_the_merge_phase() {
+fn acceptance_a_minor_only_light_round_reaches_the_merge_phase() {
     if skip() {
         return;
     }
     let e = Env::new();
-    e.light();
-    // The real tool, loaded from the tool root.
-    let tools = tools_dir();
-    let o = step03(&e, &tools, &crusty_review("CONCERNS", &two_minor()), &[]);
-    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
-    assert_eq!(
-        stdout(&o),
-        "{\"crusty_verdict\":\"CLEAN\",\"verdict_source\":\"light-minor-rule\",\"concern_count\":2}\n"
-    );
-    let verdict = stdout(&o).trim().to_string();
-    let o6 = step06(&e, &tools, &verdict, "");
-    assert_eq!(o6.status.code(), Some(0), "{}", show(&o6));
-    assert_eq!(
-        std::fs::read_to_string(&e.record).unwrap(),
-        light_record(&e.head)
-    );
-    assert_eq!(e.read("follow-up-issue").trim(), "1851");
-
+    minor_only_light_round(&e);
     let f = loop_done_and_final(&e);
     assert_eq!(f.status.code(), Some(0), "{}", show(&f));
     assert_eq!(
@@ -1939,31 +1023,6 @@ fn acceptance_a_minor_only_round_reaches_the_merge_phase() {
     let resolved = e.read("resolved-concerns.txt");
     assert!(
         !resolved.contains("naming-1") && !resolved.contains("doc-2"),
-        "deferred ids are not recorded as resolved: {resolved}"
+        "minor ids are not recorded as resolved: {resolved}"
     );
-}
-
-#[test]
-fn acceptance_b_a_major_concern_runs_the_normal_address_path() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    e.light();
-    let concerns = json!([
-        minor("naming-1", "Rename"),
-        {"id": "real-bug", "severity": "major", "summary": "Wrong result", "evidence": "x"}
-    ]);
-    let o = step03(&e, &tools_dir(), &crusty_review("CONCERNS", &concerns), &[]);
-    assert_eq!(
-        stdout(&o),
-        "{\"crusty_verdict\":\"CONCERNS\",\"verdict_source\":\"crusty\",\"concern_count\":2}\n",
-        "{}",
-        show(&o)
-    );
-    assert_eq!(
-        e.read("crusty-round-1.json.findings"),
-        "naming-1\nreal-bug\n"
-    );
-    no_issue_created(&e);
 }

@@ -6,7 +6,9 @@
 
 use super::helpers::create_exe_stub;
 use super::*;
-use amplihack_utils::rotator_status::{LIMIT_RESUME_TIMEOUT_SECS, MAX_WAIT, SLOW_POLL_INTERVAL};
+use amplihack_utils::rotator_status::{
+    LIMIT_RESUME_TIMEOUT_MARGIN, LIMIT_RESUME_TIMEOUT_SECS, MAX_WAIT,
+};
 use serde_json::{Value, json};
 
 const PLUGIN_HOOKS: &str = include_str!("../../../../../../claude-plugin/hooks.json");
@@ -56,7 +58,7 @@ fn stop_failure_spec_runs_limit_resume_on_rate_limit_with_async_rewake() {
 
 #[test]
 fn only_the_stop_failure_spec_has_async_rewake() {
-    for spec in AMPLIHACK_HOOK_SPECS.iter().chain(XPIA_HOOK_SPECS) {
+    for spec in AMPLIHACK_HOOK_SPECS.iter() {
         assert_eq!(
             spec.async_rewake,
             spec.event == "StopFailure",
@@ -68,45 +70,14 @@ fn only_the_stop_failure_spec_has_async_rewake() {
 }
 
 #[test]
-fn canonical_contract_has_the_matching_stop_failure_entry() {
-    let entry = CANONICAL_AMPLIHACK_HOOK_CONTRACT
-        .iter()
-        .find(|e| e.event == "StopFailure")
-        .expect("canonical StopFailure entry");
-    assert_eq!(entry.native_subcmd, Some("limit-resume"));
-    assert_eq!(entry.hook_file, None);
-    assert_eq!(entry.matcher, Some("rate_limit"));
-    assert_eq!(entry.timeout, Some(LIMIT_RESUME_TIMEOUT_SECS));
-    assert!(entry.async_rewake);
-    assert!(
-        CANONICAL_AMPLIHACK_HOOK_CONTRACT
-            .iter()
-            .filter(|e| e.event != "StopFailure")
-            .all(|e| !e.async_rewake)
-    );
-}
-
-#[test]
-fn spec_list_and_contract_agree_entry_for_entry() {
+fn wait_plus_the_margin_is_shorter_than_the_registered_timeout() {
+    // Issue #2085: the hook waits on events, not a poll interval; the
+    // margin keeps its own deadline inside the timeout Claude Code enforces.
+    assert!((MAX_WAIT + LIMIT_RESUME_TIMEOUT_MARGIN).as_secs() < LIMIT_RESUME_TIMEOUT_SECS);
     assert_eq!(
-        AMPLIHACK_HOOK_SPECS.len(),
-        CANONICAL_AMPLIHACK_HOOK_CONTRACT.len()
+        LIMIT_RESUME_TIMEOUT_SECS, 608_400,
+        "the registered value stays"
     );
-    for (spec, entry) in AMPLIHACK_HOOK_SPECS
-        .iter()
-        .zip(CANONICAL_AMPLIHACK_HOOK_CONTRACT)
-    {
-        assert_eq!(spec.event, entry.event);
-        assert_eq!(Some(subcmd(spec)), entry.native_subcmd);
-        assert_eq!(spec.timeout, entry.timeout);
-        assert_eq!(spec.matcher, entry.matcher);
-        assert_eq!(spec.async_rewake, entry.async_rewake);
-    }
-}
-
-#[test]
-fn wait_plus_one_poll_is_shorter_than_the_registered_timeout() {
-    assert!((MAX_WAIT + SLOW_POLL_INTERVAL).as_secs() < LIMIT_RESUME_TIMEOUT_SECS);
 }
 
 // ── Wrapper JSON ────────────────────────────────────────────────────────────
@@ -136,7 +107,6 @@ fn every_other_wrapper_is_byte_identical_to_before() {
     let bin = create_exe_stub(temp.path(), "amplihack-hooks");
     for spec in AMPLIHACK_HOOK_SPECS
         .iter()
-        .chain(XPIA_HOOK_SPECS)
         .filter(|s| s.event != "StopFailure")
     {
         let built = hooks::build_hook_wrapper(spec, &bin);
@@ -192,7 +162,14 @@ fn wrapper_with_async_rewake_does_not_match_a_plain_spec() {
     assert!(!hooks::wrapper_matches(&w, stop, "amplihack"));
 }
 
-// ── update_hook_paths ───────────────────────────────────────────────────────
+// ── hook_block::merge ───────────────────────────────────────────────────────
+
+fn full_target(bin: &std::path::Path) -> hook_block::HookTarget {
+    hook_block::HookTarget {
+        bin: bin.to_path_buf(),
+        limit_resume: true,
+    }
+}
 
 fn amplihack_stop_failure_wrappers(settings: &Value) -> Vec<&Value> {
     settings["hooks"]["StopFailure"]
@@ -214,8 +191,8 @@ fn install_registers_stop_failure_once_and_is_idempotent() {
     let temp = tempfile::tempdir().unwrap();
     let bin = create_exe_stub(temp.path(), "amplihack-hooks");
     let mut settings = json!({});
-    hooks::update_hook_paths(&mut settings, "amplihack", AMPLIHACK_HOOK_SPECS, &bin);
-    hooks::update_hook_paths(&mut settings, "amplihack", AMPLIHACK_HOOK_SPECS, &bin);
+    hook_block::merge(&mut settings, &full_target(&bin));
+    hook_block::merge(&mut settings, &full_target(&bin));
     let found = amplihack_stop_failure_wrappers(&settings);
     assert_eq!(found.len(), 1);
     assert_eq!(found[0]["hooks"][0]["asyncRewake"], json!(true));
@@ -235,7 +212,7 @@ fn install_replaces_a_stale_stop_failure_wrapper_without_async_rewake() {
             }]
         }]}
     });
-    hooks::update_hook_paths(&mut settings, "amplihack", AMPLIHACK_HOOK_SPECS, &bin);
+    hook_block::merge(&mut settings, &full_target(&bin));
     let found = amplihack_stop_failure_wrappers(&settings);
     assert_eq!(found.len(), 1, "{settings:#}");
     assert_eq!(found[0]["hooks"][0]["asyncRewake"], json!(true));
@@ -254,19 +231,10 @@ fn install_keeps_unrelated_user_stop_failure_hooks() {
         "hooks": [{"type": "command", "command": "/usr/local/bin/notify-me"}]
     });
     let mut settings = json!({"hooks": {"StopFailure": [user.clone()]}});
-    hooks::update_hook_paths(&mut settings, "amplihack", AMPLIHACK_HOOK_SPECS, &bin);
+    hook_block::merge(&mut settings, &full_target(&bin));
     let all = settings["hooks"]["StopFailure"].as_array().unwrap();
     assert!(all.contains(&user), "user hook dropped: {settings:#}");
     assert_eq!(amplihack_stop_failure_wrappers(&settings).len(), 1);
-}
-
-#[test]
-fn xpia_install_does_not_register_stop_failure() {
-    let temp = tempfile::tempdir().unwrap();
-    let bin = create_exe_stub(temp.path(), "amplihack-hooks");
-    let mut settings = json!({});
-    hooks::update_hook_paths(&mut settings, "xpia", XPIA_HOOK_SPECS, &bin);
-    assert!(settings["hooks"].get("StopFailure").is_none());
 }
 
 // ── Claude Code version gate (#1659) ────────────────────────────────────────
@@ -294,13 +262,13 @@ fn too_old_a_claude_gets_no_stop_failure_and_loses_a_stale_one() {
         "hooks": [{"type": "command", "command": "/usr/local/bin/notify-me"}]
     });
     let mut settings = json!({});
-    settings::register_hooks(&mut settings, &bin, false, true);
+    settings::register_hooks(&mut settings, &bin, true);
     settings["hooks"]["StopFailure"]
         .as_array_mut()
         .unwrap()
         .push(user.clone());
 
-    settings::register_hooks(&mut settings, &bin, false, false);
+    settings::register_hooks(&mut settings, &bin, false);
     assert_eq!(
         settings["hooks"]["StopFailure"],
         json!([user]),
@@ -308,11 +276,11 @@ fn too_old_a_claude_gets_no_stop_failure_and_loses_a_stale_one() {
     );
     assert!(settings["hooks"].get("SessionStart").is_some());
     assert!(settings::missing_hook_registrations(&settings, false).is_empty());
-    assert!(settings::validate_amplihack_native_hook_contract(&settings, false).is_empty());
+    assert!(settings::validate_amplihack_native_hook_contract(&settings, false, &bin).is_empty());
 
     let mut only_ours = json!({});
-    settings::register_hooks(&mut only_ours, &bin, false, true);
-    settings::register_hooks(&mut only_ours, &bin, false, false);
+    settings::register_hooks(&mut only_ours, &bin, true);
+    settings::register_hooks(&mut only_ours, &bin, false);
     assert!(
         only_ours["hooks"].get("StopFailure").is_none(),
         "{only_ours:#}"
@@ -374,7 +342,7 @@ fn plugin_manifest_has_async_rewake_nowhere_else() {
 /// included, written literally rather than by this build.
 fn settings_from_1660(bin: &std::path::Path) -> Value {
     let mut settings = json!({});
-    settings::register_hooks(&mut settings, bin, false, false);
+    settings::register_hooks(&mut settings, bin, false);
     settings["hooks"]["StopFailure"] = json!([{
         "matcher": "rate_limit",
         "hooks": [{
@@ -403,7 +371,7 @@ fn a_1660_stop_failure_entry_is_a_limit_resume_registration() {
 
     // A user's own StopFailure hook is not ours.
     let mut users_only = json!({});
-    settings::register_hooks(&mut users_only, &bin, false, false);
+    settings::register_hooks(&mut users_only, &bin, false);
     users_only["hooks"]["StopFailure"] = json!([{
         "matcher": "rate_limit",
         "hooks": [{"type": "command", "command": "/usr/local/bin/notify-me"}]
@@ -411,60 +379,22 @@ fn a_1660_stop_failure_entry_is_a_limit_resume_registration() {
     assert!(!settings::has_limit_resume_registration(&users_only));
 }
 
-/// The launch bootstrap's check: a #1660 entry with an old `claude` is
-/// harmful and the version comes back; with a current `claude` it is not.
+/// Issue #2279: the launch repair sees a #1660 entry as drift for an old
+/// `claude` (`extra` StopFailure) and as current for a current one.
 #[test]
-fn the_bootstrap_flags_a_1660_entry_only_for_an_old_claude() {
+fn a_1660_entry_is_extra_drift_only_for_an_old_claude() {
     let temp = tempfile::tempdir().unwrap();
     let bin = create_exe_stub(temp.path(), "amplihack-hooks");
-    let path = write_settings(temp.path(), &settings_from_1660(&bin));
-
+    let settings = settings_from_1660(&bin);
+    let old = hook_block::HookTarget {
+        bin: bin.clone(),
+        limit_resume: false,
+    };
     assert_eq!(
-        harmful_limit_resume_registration(&path, || Some("2.1.76".to_string())),
-        Some("2.1.76".to_string())
+        hook_block::drift(&settings, &old).extra,
+        vec!["StopFailure".to_string()]
     );
-    assert_eq!(harmful_limit_resume_registration(&path, || None), None);
-    // The bootstrap still sees every hook as registered, which is why the
-    // presence check alone never repaired this file.
-    assert_eq!(
-        hooks_registered_in_settings(&path).unwrap(),
-        HookRegistration::Registered
-    );
-}
-
-/// Without the entry, the bootstrap never asks for the `claude` version.
-#[test]
-fn the_bootstrap_does_not_probe_claude_without_a_stop_failure_entry() {
-    let temp = tempfile::tempdir().unwrap();
-    let bin = create_exe_stub(temp.path(), "amplihack-hooks");
-    let mut settings = json!({});
-    settings::register_hooks(&mut settings, &bin, false, false);
-    let path = write_settings(temp.path(), &settings);
-
-    assert_eq!(
-        harmful_limit_resume_registration(&path, || panic!("probed claude")),
-        None
-    );
-}
-
-/// A copilot or codex launch never asks for the `claude` version; a Claude
-/// launch does.
-#[test]
-fn only_a_claude_launch_probes_the_claude_version() {
-    for tool in ["copilot", "codex"] {
-        assert_eq!(
-            crate::freshness::with_provider(tool, || {
-                claude_too_old_for_launch(|| panic!("{tool} launch probed claude"))
-            }),
-            None
-        );
-    }
-    assert_eq!(
-        crate::freshness::with_provider("claude", || {
-            claude_too_old_for_launch(|| Some("2.1.76".to_string()))
-        }),
-        Some("2.1.76".to_string())
-    );
+    assert!(hook_block::drift(&settings, &full_target(&bin)).is_clean());
 }
 
 /// The repair the bootstrap runs on a flagged file removes the entry.
@@ -473,7 +403,7 @@ fn the_bootstrap_repair_removes_a_1660_entry_for_an_old_claude() {
     let temp = tempfile::tempdir().unwrap();
     let bin = create_exe_stub(temp.path(), "amplihack-hooks");
     let mut settings = settings_from_1660(&bin);
-    settings::register_hooks(&mut settings, &bin, false, false);
+    settings::register_hooks(&mut settings, &bin, false);
     assert!(!settings::has_limit_resume_registration(&settings));
     assert!(
         settings["hooks"].get("StopFailure").is_none(),
@@ -511,7 +441,7 @@ fn the_implicit_restage_is_silent_for_an_old_claude_without_the_entry() {
     let temp = tempfile::tempdir().unwrap();
     let bin = create_exe_stub(temp.path(), "amplihack-hooks");
     let mut settings = json!({});
-    settings::register_hooks(&mut settings, &bin, false, false);
+    settings::register_hooks(&mut settings, &bin, false);
     let path = write_settings(temp.path(), &settings);
 
     assert_eq!(implicit_notice(&path, Some("2.1.76")), "");

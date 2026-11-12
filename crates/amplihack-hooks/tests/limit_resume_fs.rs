@@ -14,15 +14,21 @@
 
 use amplihack_hooks::limit_resume::decide::{event_key, session_key};
 use amplihack_hooks::limit_resume::guard::{
-    CommitError, FsGuard, GuardStore, PROMPTED_RETENTION_SECS,
+    CommitError, FsGuard, GuardStore, LOCK_TIMEOUT, PROMPTED_RETENTION_SECS,
 };
+use amplihack_hooks::limit_resume::keys::{Key, Pane};
 use amplihack_hooks::limit_resume::log::{LOG_MAX_BYTES, LogEntry, append, format_line, sanitize};
 use amplihack_hooks::limit_resume::{
-    Deps, MAX_RESUMES_PER_SESSION, Outcome, record_prompt_at, run_with,
+    Deps, Event, MAX_RESUMES_PER_SESSION, Outcome, check_watch_dir, record_prompt_at, run_with,
 };
 use amplihack_types::HookInput;
 use amplihack_utils::rotator_status::CycleStatus;
-use amplihack_utils::secure_files::{lock_exclusive_timeout, open_private_nofollow};
+use amplihack_utils::rotator_status::swap_record::{
+    SwapReading, SwapRecord, read_stop_time, read_swap, rotate_dir,
+};
+use amplihack_utils::secure_files::{
+    ExclusiveLock, lock_exclusive_timeout, open_private_nofollow, write_private_atomic,
+};
 use serde_json::json;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
@@ -365,23 +371,36 @@ fn malformed_event_key_is_refused() {
 
 // ── FsGuard: lock ───────────────────────────────────────────────────────────
 
-#[test]
-fn stuck_lock_times_out_as_io_error() {
-    let r = root();
-    let d = resume_dir(r.path());
+/// The resume layout under `root` with its lock held, as a hook still
+/// committing leaves it. `events/` and `sessions/` exist already, so a
+/// commit reaches the lock without creating them: creating each syncs its
+/// parent, and one sync of the test's temporary directory on a loaded disk
+/// was measured at 10 s, which counted against the lock-wait bounds.
+fn held_lock(root: &Path) -> ExclusiveLock {
+    let d = resume_dir(root);
     private_dir(&d);
-    let held = lock_exclusive_timeout(
+    private_dir(&d.join("events"));
+    private_dir(&d.join("sessions"));
+    lock_exclusive_timeout(
         open_private_nofollow(&d.join("lock")).unwrap(),
         Duration::ZERO,
     )
-    .unwrap();
+    .unwrap()
+}
+
+#[test]
+fn stuck_lock_times_out_as_io_error() {
+    let r = root();
+    let held = held_lock(r.path());
     let mut g = FsGuard::with_lock_timeout(r.path(), Duration::from_millis(200));
     let start = Instant::now();
     assert!(matches!(
         g.commit(&ev(1), &sess(), NOW, NOW),
         Err(CommitError::Io)
     ));
-    assert!(start.elapsed() < Duration::from_secs(3));
+    // Well under the default: the 200 ms wait, not `LOCK_TIMEOUT`, ended it.
+    let waited = start.elapsed();
+    assert!(waited < LOCK_TIMEOUT, "waited {waited:?}");
     drop(held);
     assert!(!g.seen(&ev(1)).unwrap(), "no marker after a failed lock");
 }
@@ -389,13 +408,7 @@ fn stuck_lock_times_out_as_io_error() {
 #[test]
 fn default_lock_timeout_is_five_seconds() {
     let r = root();
-    let d = resume_dir(r.path());
-    private_dir(&d);
-    let held = lock_exclusive_timeout(
-        open_private_nofollow(&d.join("lock")).unwrap(),
-        Duration::ZERO,
-    )
-    .unwrap();
+    let held = held_lock(r.path());
     let mut g = FsGuard::new(r.path());
     let start = Instant::now();
     assert!(g.commit(&ev(1), &sess(), NOW, NOW).is_err());
@@ -409,6 +422,13 @@ fn default_lock_timeout_is_five_seconds() {
 
 // ── FsGuard: concurrency ────────────────────────────────────────────────────
 
+/// The lock wait for racing commits. Losers wait while the winner syncs its
+/// marker, `events/` and its session file; one sync on a loaded disk was
+/// measured at 10 s, past `LOCK_TIMEOUT`, and a loser whose wait ends first
+/// reports `Io`, not `Duplicate`. These tests are about exactly-once, so the
+/// wait is long enough never to end first.
+const RACE_LOCK_TIMEOUT: Duration = Duration::from_secs(120);
+
 #[test]
 fn eight_racing_hooks_on_one_event_commit_exactly_once() {
     let r = root();
@@ -418,7 +438,7 @@ fn eight_racing_hooks_on_one_event_commit_exactly_once() {
         .map(|_| {
             let (p, b) = (path.clone(), barrier.clone());
             std::thread::spawn(move || {
-                let mut g = FsGuard::new(&p);
+                let mut g = FsGuard::with_lock_timeout(&p, RACE_LOCK_TIMEOUT);
                 b.wait();
                 g.commit(&ev(1), &sess(), NOW, NOW)
             })
@@ -446,7 +466,7 @@ fn eight_racing_waiters_for_one_session_wake_it_once() {
         .map(|i| {
             let (p, b) = (path.clone(), barrier.clone());
             std::thread::spawn(move || {
-                let mut g = FsGuard::new(&p);
+                let mut g = FsGuard::with_lock_timeout(&p, RACE_LOCK_TIMEOUT);
                 b.wait();
                 g.commit(&ev(i), &sess(), NOW, NOW + 100)
             })
@@ -544,6 +564,11 @@ fn entry(outcome: Outcome, live: Option<&str>) -> LogEntry {
         outcome,
         live: live.map(str::to_string),
         cycle: live.map(|_| "swapped".to_string()),
+        swap_seq: None,
+        swap_live: None,
+        pane: None,
+        keys_sent: None,
+        detail: None,
     }
 }
 
@@ -634,6 +659,10 @@ fn append_never_writes_through_a_symlink_and_never_panics() {
 
 // ── End to end on disk: nothing secret is stored ────────────────────────────
 
+/// The real resume state, swap record and prompt markers under a temporary
+/// root. Each `wait_event` is one scripted wake: the rotator writes a swap
+/// record 61 s into the wait (`Event::Swap`), or, with `prompt_after`, the
+/// user prompts in `s1` first (`Event::Prompted`). No tmux pane.
 struct DiskDeps {
     root: PathBuf,
     guard: FsGuard,
@@ -641,6 +670,52 @@ struct DiskDeps {
     start: i64,
     /// The user sends a prompt in `s1` this many seconds into the wait.
     prompt_after: Option<i64>,
+    armed: bool,
+    swaps: u64,
+}
+
+impl DiskDeps {
+    fn new(root: &Path, prompt_after: Option<i64>) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            guard: FsGuard::new(root),
+            clock: NOW,
+            start: NOW,
+            prompt_after,
+            armed: false,
+            swaps: 0,
+        }
+    }
+}
+
+/// What the rotator writes after a swap at `at`, through the same private
+/// atomic write it uses.
+fn write_swap(root: &Path, seq: u64, at: i64, mode: u32) {
+    let dir = rotate_dir(root);
+    if !dir.exists() {
+        private_dir(&dir);
+    }
+    let r = SwapRecord {
+        from_org: None,
+        to_org: None,
+        affinity: None,
+        seq,
+        live_login: "spare".into(),
+        from_login: "work".into(),
+        swapped_at: at,
+        reading: SwapReading {
+            session: 12,
+            week: 40,
+            measured_at: at - 30,
+        },
+    };
+    write_private_atomic(
+        &dir,
+        "swap.json",
+        serde_json::to_string(&r).unwrap().as_bytes(),
+    )
+    .unwrap();
+    fs::set_permissions(dir.join("swap.json"), fs::Permissions::from_mode(mode)).unwrap();
 }
 
 impl Deps for DiskDeps {
@@ -650,26 +725,13 @@ impl Deps for DiskDeps {
     fn now(&mut self) -> i64 {
         self.clock
     }
-    fn sleep(&mut self, d: Duration) {
-        self.clock += d.as_secs() as i64;
-        if self
-            .prompt_after
-            .is_some_and(|t| self.clock - self.start >= t)
-        {
-            record_prompt_at(&self.root, Some("s1"), self.clock);
-        }
-    }
-    fn read_cycle(&mut self, now: i64) -> Option<CycleStatus> {
-        // The rotator records its cycle 61 s into the wait.
-        if now < self.start + 61 {
-            return None;
-        }
+    fn read_cycle(&mut self, _now: i64) -> Option<CycleStatus> {
         Some(CycleStatus {
-            at: Some(self.start + 61),
-            measured_at: Some(self.start + 31),
-            outcome: Some("swapped".into()),
+            at: Some(self.start - 120),
+            measured_at: Some(self.start - 150),
+            outcome: Some("stayed".into()),
             alert: false,
-            live: Some("spare".into()),
+            live: Some("work".into()),
             overflow: None,
             platform_live: false,
         })
@@ -680,24 +742,50 @@ impl Deps for DiskDeps {
     fn log(&mut self, now: i64, entry: &LogEntry) {
         append(&resume_dir(&self.root), &format_line(now, entry));
     }
-    fn session_alive(&mut self) -> bool {
-        true
-    }
     fn rotator_down(&mut self, _now: i64) -> bool {
         false
+    }
+    fn arm(&mut self) -> std::io::Result<()> {
+        self.armed = true;
+        Ok(())
+    }
+    fn wait_event(&mut self, deadline: i64) -> Event {
+        assert!(self.armed, "wait before arm");
+        if let Some(t) = self.prompt_after.take() {
+            self.clock = self.start + t;
+            record_prompt_at(&self.root, Some("s1"), self.clock);
+            return Event::Prompted;
+        }
+        if self.swaps > 0 {
+            self.clock = deadline;
+            return Event::Deadline;
+        }
+        self.swaps += 1;
+        self.clock = self.start + 61;
+        write_swap(&self.root, self.swaps, self.clock, 0o600);
+        Event::Swap
+    }
+    fn read_swap(&mut self, now: i64) -> Option<SwapRecord> {
+        read_swap(&self.root, now)
+    }
+    fn stop_time(&mut self, _transcript: Option<&Path>, _start: i64) -> Option<i64> {
+        None
+    }
+    fn pane(&mut self) -> Option<Pane> {
+        None
+    }
+    fn send_keys(&mut self, _pane: &Pane, _key: Key) -> std::io::Result<()> {
+        panic!("no pane, so no keys")
+    }
+    fn session_alive_now(&mut self) -> bool {
+        true
     }
 }
 
 #[test]
 fn resume_state_holds_no_message_text_or_session_id() {
     let r = root();
-    let mut d = DiskDeps {
-        root: r.path().to_path_buf(),
-        guard: FsGuard::new(r.path()),
-        clock: NOW,
-        start: NOW,
-        prompt_after: None,
-    };
+    let mut d = DiskDeps::new(r.path(), None);
     let input: HookInput = serde_json::from_value(json!({
         "hook_event_name": "StopFailure",
         "session_id": "SESSION-SENTINEL-7781",
@@ -721,10 +809,8 @@ fn resume_state_holds_no_message_text_or_session_id() {
         assert!(!contains(&bytes, s), "{s} reached the resume state");
     }
     let log = fs::read_to_string(resume_dir(r.path()).join("resume.log")).unwrap();
-    assert!(
-        log.contains("outcome=resumed live=spare cycle=swapped"),
-        "{log}"
-    );
+    assert!(log.contains("outcome=resumed "), "{log}");
+    assert!(log.contains("spare"), "the swap's login is logged: {log}");
     assert!(log.contains(&format!(
         "session={}",
         &session_key("SESSION-SENTINEL-7781")[..12]
@@ -838,13 +924,7 @@ fn prompt_after_the_hook_started_ends_the_wait_on_disk() {
         if let Some(t) = prompt {
             record_prompt_at(r.path(), Some("s1"), t);
         }
-        let mut d = DiskDeps {
-            root: r.path().to_path_buf(),
-            guard: FsGuard::new(r.path()),
-            clock: NOW,
-            start: NOW,
-            prompt_after: None,
-        };
+        let mut d = DiskDeps::new(r.path(), None);
         let input: HookInput = serde_json::from_value(json!({
             "hook_event_name": "StopFailure",
             "session_id": "s1",
@@ -860,13 +940,7 @@ fn first_ever_waiter_sees_a_prompt_sent_during_the_wait() {
     // A fresh root: no resume/ until the waiter prepares it.
     let r = root();
     assert!(!resume_dir(r.path()).exists());
-    let mut d = DiskDeps {
-        root: r.path().to_path_buf(),
-        guard: FsGuard::new(r.path()),
-        clock: NOW,
-        start: NOW,
-        prompt_after: Some(30),
-    };
+    let mut d = DiskDeps::new(r.path(), Some(30));
     let input: HookInput = serde_json::from_value(json!({
         "hook_event_name": "StopFailure",
         "session_id": "s1",
@@ -925,4 +999,269 @@ fn old_prompt_markers_are_pruned_on_prepare_and_commit() {
         );
         assert!(odd.exists(), "non-hash names are left alone");
     }
+}
+
+// ── Issue #2085: swap records on disk, read as the hook reads them ──────────
+
+/// Reads the real `swap.json` under a temporary profile root through
+/// `swap_record::read_swap`; the root is passed in, so neither HOME nor
+/// `AMPLIHACK_CLAUDE_PROFILE_ROOT` is consulted. `wake` writes what the
+/// rotator writes for the first wake; later wakes are the deadline.
+struct SwapDeps {
+    root: PathBuf,
+    guard: FsGuard,
+    clock: i64,
+    wake: fn(&Path),
+    woken: bool,
+}
+
+impl Deps for SwapDeps {
+    fn auto_switch_on(&mut self) -> bool {
+        true
+    }
+    fn now(&mut self) -> i64 {
+        self.clock
+    }
+    fn read_cycle(&mut self, now: i64) -> Option<CycleStatus> {
+        amplihack_utils::rotator_status::read_cycle(&self.root, now)
+    }
+    fn guard(&mut self) -> &mut dyn GuardStore {
+        &mut self.guard
+    }
+    fn log(&mut self, now: i64, entry: &LogEntry) {
+        append(&resume_dir(&self.root), &format_line(now, entry));
+    }
+    fn rotator_down(&mut self, _now: i64) -> bool {
+        false
+    }
+    fn arm(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn wait_event(&mut self, deadline: i64) -> Event {
+        if self.woken {
+            self.clock = deadline;
+            return Event::Deadline;
+        }
+        self.woken = true;
+        self.clock = NOW + 61;
+        (self.wake)(&self.root);
+        Event::Swap
+    }
+    fn read_swap(&mut self, now: i64) -> Option<SwapRecord> {
+        read_swap(&self.root, now)
+    }
+    /// As the hook reads it: the real reader on the payload's path.
+    fn stop_time(&mut self, transcript: Option<&Path>, start: i64) -> Option<i64> {
+        transcript.and_then(|p| read_stop_time(p, start))
+    }
+    fn pane(&mut self) -> Option<Pane> {
+        None
+    }
+    fn send_keys(&mut self, _pane: &Pane, _key: Key) -> std::io::Result<()> {
+        panic!("no pane, so no keys")
+    }
+    fn session_alive_now(&mut self) -> bool {
+        true
+    }
+}
+
+fn limit_event() -> HookInput {
+    serde_json::from_value(json!({
+        "hook_event_name": "StopFailure",
+        "session_id": "s2085",
+        "error": "rate_limit",
+        "last_assistant_message": "You've hit your session limit"
+    }))
+    .unwrap()
+}
+
+fn run_on_disk(r: &tempfile::TempDir, wake: fn(&Path)) -> Outcome {
+    let mut d = SwapDeps {
+        root: r.path().to_path_buf(),
+        guard: FsGuard::new(r.path()),
+        clock: NOW,
+        wake,
+        woken: false,
+    };
+    run_with(&limit_event(), &mut d)
+}
+
+fn no_resume_marker(root: &Path) -> bool {
+    let events = resume_dir(root).join("events");
+    !events.exists() || fs::read_dir(&events).unwrap().count() == 0
+}
+
+#[test]
+fn issue_2085_a_private_swap_record_on_disk_resumes() {
+    let r = root();
+    let out = run_on_disk(&r, |root| write_swap(root, 1, NOW + 61, 0o600));
+    assert_eq!(out, Outcome::Resumed);
+    assert!(!no_resume_marker(r.path()));
+}
+
+#[test]
+fn issue_2085_a_swap_record_others_can_write_never_resumes() {
+    // S1: a record someone else could have written is not read.
+    for mode in [0o620, 0o602, 0o666] {
+        let r = root();
+        let out = match mode {
+            0o620 => run_on_disk(&r, |root| write_swap(root, 1, NOW + 61, 0o620)),
+            0o602 => run_on_disk(&r, |root| write_swap(root, 1, NOW + 61, 0o602)),
+            _ => run_on_disk(&r, |root| write_swap(root, 1, NOW + 61, 0o666)),
+        };
+        assert_eq!(out, Outcome::NoCapacityTimeout, "mode {mode:o}");
+        assert!(no_resume_marker(r.path()), "mode {mode:o}");
+    }
+}
+
+#[test]
+fn issue_2085_a_swap_record_from_before_the_stop_never_resumes() {
+    let r = root();
+    let out = run_on_disk(&r, |root| write_swap(root, 1, NOW - 30, 0o600));
+    assert_eq!(out, Outcome::NoCapacityTimeout);
+    assert!(no_resume_marker(r.path()));
+    let log = fs::read_to_string(resume_dir(r.path()).join("resume.log")).unwrap();
+    assert!(log.contains("outcome=swap-stale"), "{log}");
+}
+
+#[test]
+fn issue_2085_a_ledger_with_capacity_but_no_swap_record_never_resumes() {
+    // Before #2085 a stayed cycle measured after the stop resumed; now only
+    // a swap record does.
+    let r = root();
+    let dir = rotate_dir(r.path());
+    private_dir(&dir);
+    let p = dir.join("ledger.json");
+    fs::write(
+        &p,
+        format!(
+            r#"{{"version":1,"live":"work","last_cycle":{{"at":{a},"measured_at":{m},"outcome":"stayed"}}}}"#,
+            a = NOW + 61,
+            m = NOW + 31
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).unwrap();
+    let out = run_on_disk(&r, |_| {});
+    assert_eq!(out, Outcome::NoCapacityTimeout);
+    assert!(no_resume_marker(r.path()));
+}
+
+// ── Issue #2236: the stop time read from the transcript on disk ────────────
+
+/// A transcript under `r` whose last entry is at `stop`, with `secret` in
+/// a field the hook must never log.
+fn write_transcript(r: &Path, stop: i64, mode: u32, secret: &str) -> PathBuf {
+    let ts = |t: i64| {
+        chrono::DateTime::from_timestamp(t, 0)
+            .unwrap()
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    };
+    let p = r.join("transcript.jsonl");
+    let body = format!(
+        "{{\"type\":\"user\",\"timestamp\":\"{}\",\"message\":\"{secret}\"}}\n\
+         {{\"type\":\"assistant\",\"timestamp\":\"{}\",\"message\":\"{secret}\"}}\n",
+        ts(stop - 300),
+        ts(stop)
+    );
+    fs::write(&p, body).unwrap();
+    fs::set_permissions(&p, fs::Permissions::from_mode(mode)).unwrap();
+    p
+}
+
+/// The hook started at `NOW`, ten seconds after the stop the transcript
+/// records, and finds a swap made three seconds after that stop.
+fn run_late_start(r: &tempfile::TempDir, transcript_mode: u32) -> Outcome {
+    write_swap(r.path(), 1, NOW - 7, 0o600);
+    let transcript = write_transcript(r.path(), NOW - 10, transcript_mode, "SECRET-2236-MARKER");
+    let mut d = SwapDeps {
+        root: r.path().to_path_buf(),
+        guard: FsGuard::new(r.path()),
+        clock: NOW,
+        wake: |_| {},
+        woken: false,
+    };
+    let input: HookInput = serde_json::from_value(json!({
+        "hook_event_name": "StopFailure",
+        "session_id": "s2236",
+        "error": "rate_limit",
+        "last_assistant_message": "You've hit your session limit",
+        "transcript_path": transcript,
+    }))
+    .unwrap();
+    run_with(&input, &mut d)
+}
+
+#[test]
+fn issue_2236_a_swap_between_the_transcript_stop_and_a_late_start_resumes() {
+    let r = root();
+    assert_eq!(run_late_start(&r, 0o600), Outcome::Resumed);
+    assert!(!no_resume_marker(r.path()));
+    let log = fs::read_to_string(resume_dir(r.path()).join("resume.log")).unwrap();
+    assert!(log.contains("outcome=resumed"), "{log}");
+    assert!(!log.contains("SECRET-2236-MARKER"), "{log}");
+    assert!(!log.contains("transcript"), "{log}");
+}
+
+#[test]
+fn issue_2236_a_transcript_others_can_write_falls_back_to_the_slack_rule() {
+    // A refused transcript gives no stop time: the swap seven seconds
+    // before the start is then before the stop, as before #2236.
+    for mode in [0o620, 0o602] {
+        let r = root();
+        assert_eq!(
+            run_late_start(&r, mode),
+            Outcome::NoCapacityTimeout,
+            "mode {mode:o}"
+        );
+        assert!(no_resume_marker(r.path()), "mode {mode:o}");
+        let log = fs::read_to_string(resume_dir(r.path()).join("resume.log")).unwrap();
+        assert!(!log.contains("SECRET-2236-MARKER"), "{log}");
+    }
+}
+
+// ── Issue #2085 (S2): watched directories ───────────────────────────────────
+
+#[test]
+fn a_private_directory_can_be_watched() {
+    let r = root();
+    let dir = r.path().join(".auto-switch.d").join("w");
+    private_dir(&dir);
+    assert!(check_watch_dir(&dir).is_ok());
+}
+
+#[test]
+fn a_directory_others_can_write_is_not_watched() {
+    for m in [0o720, 0o702, 0o777, 0o1777] {
+        let r = root();
+        let dir = r.path().join(".auto-switch.d").join("w");
+        private_dir(&dir);
+        fs::set_permissions(&dir, fs::Permissions::from_mode(m)).unwrap();
+        assert!(check_watch_dir(&dir).is_err(), "mode {m:o}");
+        assert_eq!(mode(&dir), m, "never chmod-ed");
+    }
+}
+
+#[test]
+fn a_symlink_missing_path_or_file_is_not_watched() {
+    let r = root();
+    let real = r.path().join(".auto-switch.d").join("real");
+    private_dir(&real);
+    let link = r.path().join(".auto-switch.d").join("link");
+    symlink(&real, &link).unwrap();
+    assert!(check_watch_dir(&link).is_err(), "symlink");
+    assert!(
+        check_watch_dir(&r.path().join(".auto-switch.d").join("missing")).is_err(),
+        "missing"
+    );
+    let file = r.path().join(".auto-switch.d").join("file");
+    fs::write(&file, b"").unwrap();
+    assert!(check_watch_dir(&file).is_err(), "file");
+}
+
+#[test]
+fn the_prompted_dir_prepare_makes_can_be_watched() {
+    let r = root();
+    FsGuard::new(r.path()).prepare(NOW).unwrap();
+    assert!(check_watch_dir(&resume_dir(r.path()).join("prompted")).is_ok());
 }

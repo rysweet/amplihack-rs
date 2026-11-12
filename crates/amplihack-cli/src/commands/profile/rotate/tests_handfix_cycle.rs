@@ -1,6 +1,7 @@
-//! Hand-change recovery inside the real `run_cycle` (issue #1693, review of
-//! #1702), on the 27 Oct fixture from `tests_handfix.rs`. `Ctx::measure`
-//! replaces finding `claude` and probing, so nothing outside the temp dir
+//! Hand-change recovery inside the real `run_cycle` (issues #1693, #1886,
+//! review of #1702), on the 27 Oct fixture from `tests_handfix.rs`.
+//! `Ctx::measure` replaces finding `claude` and probing, and `Ctx::identity`
+//! is the fixture's fake credential reader, so nothing outside the temp dir
 //! runs; `Ctx::scan` sees no sessions. Each stub checks the snapshot it is
 //! handed, so these tests show what the cycle itself read after recovery.
 
@@ -12,7 +13,7 @@ use super::observe::{Measurement, Snap};
 use super::pin::{self, PinState};
 use super::settings;
 use super::switch::{Switched, release, switch_live};
-use super::tests_handfix::{C, CREDS, Fx, L, M, fx, lost_l, moved_line};
+use super::tests_handfix::{C, CREDS, Fx, L, M, by_path, fx, moved_line};
 use super::tests_swap::{ino_at, n, private};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Liveness, now};
@@ -23,25 +24,29 @@ pub(super) fn ctx(f: &Fx, measure: super::cycle::MeasureFn) -> Ctx {
     let mut ctx = Ctx::new(f.store.clone(), f.home.clone(), s);
     ctx.scan = |_| Liveness::Known(BTreeSet::new());
     ctx.measure = Some(measure);
+    ctx.identity = by_path;
     ctx
 }
 
-/// M is spent and every candidate has capacity; decided by the real
-/// `decide`. The snapshot must already name M, read from the ledger that
-/// recovery wrote earlier in this same cycle.
+/// M is spent, C has capacity and L (which keeps its own login) is spent
+/// too; decided by the real `decide`. The snapshot must already name M,
+/// read from the ledger that recovery wrote earlier in this same cycle.
 pub(super) fn m_spent(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     assert_eq!(snap.live, LiveId::Known(n(M)), "snapshot after recovery");
-    assert_eq!(snap.candidates, vec![n(C)], "L has no login, M is live");
-    let reading = Reading::Measured {
-        session: 12.0,
-        week: 40.0,
-    };
+    assert_eq!(snap.candidates, vec![n(C), n(L)], "M is live");
     let measured: Vec<Measured> = snap
         .candidates
         .iter()
         .map(|c| Measured {
             name: c.clone(),
-            reading,
+            reading: if *c == n(C) {
+                Reading::Measured {
+                    session: 12.0,
+                    week: 40.0,
+                }
+            } else {
+                Reading::EXHAUSTED
+            },
             windows: Default::default(),
             spend_limit: false,
             unknown: false,
@@ -110,13 +115,15 @@ fn no_recovery_or_guidance(lines: &[String]) {
     }
 }
 
-/// The #1693 reproduction through `run_cycle`: recovery moves M's duplicate
-/// aside after swap recovery, the snapshot reads the new ledger, and the same
-/// cycle swaps to C, which has capacity.
+/// The #1693 reproduction through `run_cycle`, on the second reading: the
+/// confirmed suspicion moves M's duplicate aside after swap recovery, the
+/// snapshot reads the new ledger, and the same cycle swaps to C, which has
+/// capacity.
 #[cfg(target_os = "linux")]
 #[test]
 fn one_rotate_cycle_recovers_the_hand_change_and_swaps_to_capacity() {
     let f = fx(true, true);
+    f.suspected();
     let mut c = ctx(&f, m_spent);
     assert_eq!(
         run_cycle(&mut c, Mode::OneShot).unwrap(),
@@ -126,20 +133,16 @@ fn one_rotate_cycle_recovers_the_hand_change_and_swaps_to_capacity() {
     assert_eq!(ino_at(&backup), f.m, "M's own copy, renamed aside");
     assert_eq!(ino_at(&f.live()), f.c, "C is live");
     assert_eq!(ino_at(&f.slot(M)), Some(f.h), "the manual login went to M");
-    assert_eq!(
-        ino_at(&f.slot(L)),
-        None,
-        "L had no login and still has none"
-    );
+    assert_eq!(ino_at(&f.slot(L)), f.l, "L keeps its own login");
     f.assert_each_login_once();
     let l = f.ledger();
     assert_eq!(l.live.as_deref(), Some(C));
-    assert_eq!(l.account.as_deref(), Some("u-src"));
+    assert_eq!(l.account.as_deref(), Some("u-charlie"));
     assert_eq!(l.last_cycle.unwrap().outcome, "swapped");
     assert_eq!(l.guidance, None);
+    assert!(l.lost_login.is_empty());
     let log = f.logged();
     assert_eq!(log[0], moved_line(&backup), "{log:?}");
-    assert_eq!(log[1], lost_l(), "{log:?}");
     assert!(
         log.iter().any(|x| x.starts_with(&format!("swap {M}->{C}"))),
         "{log:?}"
@@ -165,7 +168,9 @@ fn an_unreadable_home_account_retries_and_the_next_cycle_recovers() {
     let alerts: Vec<String> = f
         .logged()
         .into_iter()
-        .filter(|l| !l.starts_with("skip: "))
+        // Issue #1962: this ledger has no login identity and `L` no record, so the
+        // cycle also notes why it cannot seed. That line is not a fix line.
+        .filter(|l| !l.starts_with("skip: ") && !l.starts_with("note: no record for live"))
         .collect();
     assert_eq!(alerts, vec![msg::home_unreadable(&n(L))], "no fix lines");
 
@@ -173,6 +178,8 @@ fn an_unreadable_home_account_retries_and_the_next_cycle_recovers() {
         &f.home.join(".claude.json"),
         std::str::from_utf8(&good).unwrap(),
     );
+    // The first reading of M was taken before the file went bad.
+    f.suspected();
     c.measure = Some(m_spent);
     assert_eq!(
         run_cycle(&mut c, Mode::Watch).unwrap(),
@@ -189,11 +196,15 @@ fn an_unreadable_home_account_retries_and_the_next_cycle_recovers() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_profile_switch_is_never_taken_for_a_hand_change() {
+    let _proc = crate::test_support::proc::fake_proc_scope();
     let f = fx(false, true);
     // A correct ledger: ~/.claude holds M's login.
     let mut l = f.ledger();
     l.live = Some(M.into());
-    l.account = Some("u-mistt".into());
+    l.account = Some("u-mike".into());
+    l.login_identity = Some(super::login_identity::Identity::new(
+        &super::tests_handfix::a_m(),
+    ));
     f.rs.save_ledger(&l).unwrap();
 
     assert_eq!(
@@ -203,6 +214,8 @@ fn a_profile_switch_is_never_taken_for_a_hand_change() {
             to: n(C)
         }
     );
+    // The fake reader follows the logins: ~/.claude now answers as C.
+    f.answer("~/.claude", Ok(super::tests_handfix::a_c()));
     assert_eq!(pin::read(&f.rs), PinState::Pinned(n(C)));
     assert_eq!(
         live(&f.store, &f.rs, &f.home).unwrap().0,

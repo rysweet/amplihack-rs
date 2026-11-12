@@ -222,6 +222,9 @@ fn run_status(json: bool, home: &std::path::Path) -> anyhow::Result<()> {
 #[path = "tests_cmdline.rs"]
 mod tests_cmdline;
 #[cfg(test)]
+#[path = "tests_cmdline_issue_2030.rs"]
+mod tests_cmdline_issue_2030;
+#[cfg(test)]
 #[path = "tests_env_drift.rs"]
 mod tests_env_drift;
 #[cfg(test)]

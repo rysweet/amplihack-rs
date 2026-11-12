@@ -7,7 +7,8 @@
 # collision. This helper closes the two remaining acceptance criteria of #840:
 #
 #   sweep <repo_path>
-#       Best-effort orphan sweep. Runs `git worktree prune`, then for each
+#       Best-effort orphan sweep, run under a per-repository lock (see
+#       sweep_locked below). Runs `git worktree prune`, then for each
 #       registered worktree under <repo_path>/worktrees/ that is BOTH stale
 #       (directory mtime older than AMPLIHACK_WORKTREE_STALE_SECS) AND carries
 #       no unmerged meaningful commits (rev-list --count BASE..HEAD == 0), it
@@ -22,13 +23,26 @@
 #
 #   cleanup_on_failure <repo_path> <branch>
 #       Tear down THIS run's worktree+branch after a failed/aborted run, but
-#       only AFTER archiving any unique commits to refs/amplihack-archive/<branch>
-#       (and best-effort pushing them). Never destroys unmerged meaningful work.
+#       only AFTER archiving any unique commits to the local ref
+#       refs/amplihack-archive/<branch>. Never destroys unmerged meaningful
+#       work. Takes no sweep lock.
+#
+# The sweep never contacts a remote; archive refs are local to this clone
+# (#2061). It uses no credentials and never runs the repository's hooks for
+# remote updates, so a sweep costs only local git commands.
+#
+# Sweep lock (#2061): the `sweep` subcommand holds a non-blocking flock on
+# <common git dir>/amplihack-worktree-sweep.lock, shared by the main checkout
+# and every linked worktree. A second sweep of the same repository logs
+# `sweep skipped: lock held: <path>` and exits 0 without acting. There is no
+# wait, timeout or retry. When flock is missing or the lock cannot be used the
+# sweep warns and runs unlocked.
 #
 # This is a self-contained brick: it is safe to `source` (it only defines
 # functions until invoked — the strict-mode block below is guarded to apply
 # only on direct execution, so sourcing never leaks `set`/`IFS`) and safe to
-# run as a CLI. It depends solely on git and POSIX coreutils. A missing helper
+# run as a CLI. It depends on git and POSIX coreutils; util-linux `flock` is
+# optional (used for the sweep lock when present). A missing helper
 # is a graceful no-op at the call site, so callers guard the invocation with
 # `-f`/`|| true` (per #829 precedent).
 #
@@ -147,28 +161,46 @@ content_merged() {
         | awk -v p="$pid" '$1 == p { found = 1 } END { exit !found }'
 }
 
-# archive_branch <repo> <branch> <sha> — record <sha> under the archive
-# namespace so unique work stays reachable after a prune. Best-effort remote
-# push (relies on configured auth; never echoes tokens).
+# archive_branch <repo> <branch> <sha> — record <sha> under the local archive
+# namespace so unique work stays reachable after a prune. Local only (#2061):
+# no remote is contacted. Writes nothing when the ref already holds <sha>, so
+# the reflog does not grow on every sweep. The update is a compare-and-swap
+# against the value just read, because cleanup_on_failure runs unlocked and may
+# overlap a sweep. Returns 0 when the archive was created or is already
+# current, and 1 when <sha> is malformed, the existing archive is not an
+# ancestor of <sha>, or the local update fails; callers keep the worktree on 1.
 archive_branch() {
     local repo="$1" branch="$2" sha="$3"
-    local ref="${ARCHIVE_NS}/${branch}"
-    if git -C "$repo" update-ref "$ref" "$sha" 2>/dev/null; then
-        log_info "Archived '${branch}' (${sha}) to ${ref}."
-    else
-        log_warn "Could not archive '${branch}' to ${ref} locally."
+    local ref="${ARCHIVE_NS}/${branch}" current now err
+    if [[ ! "$sha" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
+        log_warn "Refusing to archive '${branch}': '${sha}' is not a full object name."
         return 1
     fi
-    # Update the remote branch only while the remote still has it: pushing
-    # refs/heads/<branch> after a merged PR's branch was deleted would bring it
-    # back. Otherwise push the archive ref, which no branch listing shows.
-    if git -C "$repo" ls-remote --exit-code --heads origin "refs/heads/${branch}" >/dev/null 2>&1 \
-        && git -C "$repo" push origin "${sha}:refs/heads/${branch}" >/dev/null 2>&1; then
+    current="$(git -C "$repo" rev-parse --verify --quiet "$ref" 2>/dev/null || true)"
+    if [ "$current" = "$sha" ]; then
+        log_info "archive ${ref} already current at ${sha}"
         return 0
     fi
-    git -C "$repo" push origin "${ref}:${ref}" >/dev/null 2>&1 \
-        || log_warn "Best-effort archive push for '${branch}' did not complete; local archive ref retained."
-    return 0
+    # Only move an archive forward. Moving it to a commit that does not contain
+    # the archived one (a reused or rewritten branch name) would leave the old
+    # work unreachable, and since #2061 there is no remote copy.
+    if [ -n "$current" ] && ! git -C "$repo" merge-base --is-ancestor "$current" "$sha" 2>/dev/null; then
+        log_warn "Keeping ${ref} at ${current}: '${branch}' (${sha}) does not contain it; not archived."
+        return 1
+    fi
+    if err="$(git -C "$repo" update-ref -m "amplihack worktree archive" "$ref" "$sha" "${current:-}" 2>&1)"; then
+        log_info "Archived '${branch}' (${sha}) to ${ref}."
+        return 0
+    fi
+    # Another process may have written the same value between the read and
+    # the compare-and-swap; that is success.
+    now="$(git -C "$repo" rev-parse --verify --quiet "$ref" 2>/dev/null || true)"
+    if [ "$now" = "$sha" ]; then
+        log_info "archive ${ref} already current at ${sha}"
+        return 0
+    fi
+    log_warn "Could not archive '${branch}' to ${ref} locally.${err:+ git: $(printf '%s' "$err" | tr '\n' ' ')}"
+    return 1
 }
 
 # remove_worktree_and_branch <repo> <path> <branch> — destructive teardown,
@@ -180,6 +212,9 @@ remove_worktree_and_branch() {
         git -C "$repo" worktree remove --force -- "$path" >/dev/null 2>&1 \
             || rm -rf -- "$path" 2>/dev/null \
             || log_warn "Could not fully remove worktree directory '${path}'."
+        # Issue #2039: remove the worktree's pre-commit target through the
+        # single audited entry point; best effort, never an rm here.
+        command -v amplihack >/dev/null 2>&1 && amplihack cleanup --apply --worktree-target "$path" >/dev/null || true
     fi
     git -C "$repo" worktree prune >/dev/null 2>&1 || true
     if [ -n "$branch" ] && git -C "$repo" show-ref --verify --quiet "refs/heads/${branch}"; then
@@ -279,6 +314,17 @@ has_uncommitted_work() {
     [ -n "$out" ]
 }
 
+# common_git_dir <repo> — print the absolute, symlink-resolved common git dir
+# of <repo>, so the main checkout and every linked worktree print the same
+# string. Prints nothing and returns 1 on failure.
+common_git_dir() {
+    local repo="$1" common
+    common="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || return 1
+    [ -n "$common" ] || return 1
+    case "$common" in /*) ;; *) common="${repo}/${common}" ;; esac
+    (cd -- "$common" 2>/dev/null && pwd -P) || return 1
+}
+
 # exclude_worktrees_dir <repo> — add `/worktrees/` to the repository's
 # info/exclude (shared by all its worktrees; no tracked file changes). Task
 # worktrees under <repo>/worktrees/ are kept rather than deleted (#1494, #1560),
@@ -286,8 +332,7 @@ has_uncommitted_work() {
 # and invite `git add -A` to stage them. Idempotent; best-effort.
 exclude_worktrees_dir() {
     local repo="$1" common exclude
-    common="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || return 0
-    case "$common" in /*) ;; *) common="${repo}/${common}" ;; esac
+    common="$(common_git_dir "$repo")" || return 0
     exclude="${common}/info/exclude"
     if [ -f "$exclude" ] && grep -qxF '/worktrees/' "$exclude" 2>/dev/null; then
         return 0
@@ -393,6 +438,7 @@ cleanup_on_failure() {
         log_info "cleanup_on_failure: branch '${branch}' not present; pruning any stale worktree dir."
         if [ -n "$path" ] && within_worktrees_dir "$repo" "$path" && ! has_uncommitted_work "$path"; then
             git -C "$repo" worktree remove --force -- "$path" >/dev/null 2>&1 || rm -rf -- "$path" 2>/dev/null || true
+            command -v amplihack >/dev/null 2>&1 && amplihack cleanup --apply --worktree-target "$path" >/dev/null || true
             git -C "$repo" worktree prune >/dev/null 2>&1 || true
         fi
         return 0
@@ -430,12 +476,60 @@ cleanup_on_failure() {
     return 0
 }
 
+# sweep_locked <repo_path> — run sweep under a non-blocking lock on
+# <common git dir>/amplihack-worktree-sweep.lock (#2061). When another sweep of
+# the same repository holds the lock, log the skip and return 0 before any
+# prune, exclude edit, archive or removal. When the lock cannot be used (no
+# flock, unresolvable common dir, symlinked lock path, unopenable file) warn
+# and run unlocked, as before #2061. No wait, timeout or retry. Always returns 0.
+sweep_locked() {
+    local repo="${1:-}" common lock fd reason=""
+    # Invalid input: let sweep log its own message; there is nothing to lock.
+    if [ -z "$repo" ] || [ ! -d "$repo" ] \
+        || ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        sweep "$repo"
+        return 0
+    fi
+    if ! command -v flock >/dev/null 2>&1; then
+        reason="flock not found"
+    elif ! common="$(common_git_dir "$repo")"; then
+        reason="could not resolve the common git dir of '${repo}'"
+    else
+        lock="${common}/amplihack-worktree-sweep.lock"
+        if [ -L "$lock" ]; then
+            reason="lock path ${lock} is a symlink"
+        # Append mode never truncates an existing file.
+        elif ! { exec {fd}>>"$lock"; } 2>/dev/null; then
+            reason="cannot open lock ${lock}"
+        else
+            # Exit 75 means another process holds the lock; any other failure
+            # (for example ENOLCK on a filesystem without flock support) means
+            # the lock cannot be used, which falls back to running unlocked.
+            local rc=0
+            flock -n -E 75 "$fd" 2>/dev/null || rc=$?
+            if [ "$rc" -eq 75 ]; then
+                exec {fd}>&-
+                log_info "sweep skipped: lock held: ${lock}"
+                return 0
+            elif [ "$rc" -ne 0 ]; then
+                exec {fd}>&-
+                reason="cannot lock ${lock} (flock exit ${rc})"
+            fi
+        fi
+    fi
+    [ -n "$reason" ] && log_warn "${reason}; running sweep without a lock."
+    sweep "$repo"
+    # fd is open only when no fallback applied.
+    [ -z "$reason" ] && exec {fd}>&-
+    return 0
+}
+
 main() {
     local mode="${1:-}"
     case "$mode" in
         sweep)
             shift || true
-            sweep "${1:-}"
+            sweep_locked "${1:-}"
             ;;
         cleanup_on_failure)
             shift || true
@@ -450,6 +544,10 @@ Usage:
 Env:
   AMPLIHACK_WORKTREE_STALE_SECS   staleness threshold (default 86400)
   AMPLIHACK_WORKTREE_BASE_REF     base ref for the unmerged-diff gate
+
+Archive refs (refs/amplihack-archive/<branch>) are local only; no remote is
+contacted. The sweep subcommand holds a per-repository lock on
+<common git dir>/amplihack-worktree-sweep.lock and skips when it is held.
 USAGE
             [ -n "$mode" ] && return 0 || return 2
             ;;

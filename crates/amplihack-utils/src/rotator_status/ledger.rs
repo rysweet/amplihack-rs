@@ -12,15 +12,20 @@ const VERSION: u64 = 1;
 const MAX_LEDGER_BYTES: u64 = 64 * 1024;
 /// A cycle time this far past `now` is accepted as clock skew; later ones
 /// are ignored.
-const MAX_SKEW_SECS: i64 = 300;
+pub(crate) const MAX_SKEW_SECS: i64 = 300;
 
 /// What the hook needs from the ledger.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CycleStatus {
     /// When the last cycle was recorded (at its end), epoch seconds.
     pub at: Option<i64>,
-    /// When that cycle started measuring usage, epoch seconds. Absent for
-    /// a cycle that measured nothing, and from rotators older than #1659.
+    /// When the usage that cycle relied on was read, epoch seconds. A
+    /// `stayed` cycle records when the live reading was taken: a passive
+    /// reading's `observed_at`, but never later than when the cycle started
+    /// measuring. Every other rotate outcome records when the cycle started
+    /// measuring, and `profile switch` records the time of the switch.
+    /// Absent for a cycle that measured nothing, and from rotators older
+    /// than #1659.
     pub measured_at: Option<i64>,
     /// The last cycle's outcome: `swapped`, `stayed`, `switched`, `held`,
     /// `alerted`, …
@@ -45,6 +50,13 @@ impl CycleStatus {
     /// `profile switch` to one the person chose (`switched`, issue #1691;
     /// held cycles leave that record in place). Any other outcome, known or
     /// not, `held` included, is no capacity.
+    ///
+    /// Issue #1907: the rotator writes `stayed` only after a fresh,
+    /// successful reading of the live login below 100% on both windows (or
+    /// for a live API-key profile). A stay on a failed, carried or unknown
+    /// probe is `stayed-unread`, which is not capacity here. A no-capacity
+    /// ALERT while the live login reads below 100% is stored in
+    /// `advisory_alert`, which this reader ignores, so it does not block.
     pub fn has_capacity(&self) -> bool {
         !self.alert
             && matches!(

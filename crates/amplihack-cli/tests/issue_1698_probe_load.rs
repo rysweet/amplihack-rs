@@ -98,9 +98,10 @@ fn the_live_probe_counts_against_the_bound() {
     f.add_logged_in("fourth", 60, 60);
     f.add_logged_in("fifth", 70, 70);
     fs::write(f.canned.join("marks"), "").unwrap();
+    // A real cycle: since issue #1962 a dry run never starts `claude`.
     rotate(
         &f,
-        &["profile", "rotate", "--dry-run"],
+        &["profile", "rotate"],
         &[("AMPLIHACK_PROFILE_USAGE_PARALLEL", "2")],
     );
     let marks = fs::read_to_string(f.records.join("marks")).unwrap();

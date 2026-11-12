@@ -7,10 +7,9 @@
 #![cfg(unix)]
 
 use amplihack_utils::rotator_status::{
-    CycleStatus, FRESH_MARGIN_SECS, LIMIT_RESUME_TIMEOUT_SECS, Ledger, MAX_WAIT, POLL_INTERVAL,
-    SLOW_POLL_AFTER, SLOW_POLL_INTERVAL, auto_switch_on_from, foreign_rotator, is_rotator,
-    ledger_path, parse_cycle, pid_path, read_cycle, read_ledger, resolve_root_from,
-    rotator_down_at, valid_live_name,
+    CycleStatus, FRESH_MARGIN_SECS, LIMIT_RESUME_TIMEOUT_MARGIN, LIMIT_RESUME_TIMEOUT_SECS, Ledger,
+    MAX_WAIT, auto_switch_on_from, foreign_rotator, is_rotator, ledger_path, parse_cycle, pid_path,
+    read_cycle, read_ledger, resolve_root_from, rotator_down_at, valid_live_name,
 };
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -44,17 +43,18 @@ fn private_file(p: &Path, bytes: &[u8]) {
 #[test]
 fn constants_match_the_documented_limits() {
     assert_eq!(MAX_WAIT, Duration::from_secs(7 * 24 * 60 * 60));
-    assert_eq!(POLL_INTERVAL, Duration::from_secs(15));
-    assert_eq!(SLOW_POLL_AFTER, Duration::from_secs(60 * 60));
-    assert_eq!(SLOW_POLL_INTERVAL, Duration::from_secs(5 * 60));
+    // Issue #2085: the hook waits on events, so there is no poll interval;
+    // the margin is what keeps the hook's own deadline inside the timeout.
+    assert_eq!(LIMIT_RESUME_TIMEOUT_MARGIN, Duration::from_secs(300));
+    // `fresh_capacity` (and its margin) stays for the recipe-run wait (D12).
     assert_eq!(FRESH_MARGIN_SECS, 60);
     assert_eq!(LIMIT_RESUME_TIMEOUT_SECS, 608_400);
 }
 
 #[test]
-fn wait_plus_one_poll_fits_inside_the_registered_timeout() {
+fn wait_plus_the_margin_fits_inside_the_registered_timeout() {
     assert!(
-        (MAX_WAIT + SLOW_POLL_INTERVAL).as_secs() < LIMIT_RESUME_TIMEOUT_SECS,
+        (MAX_WAIT + LIMIT_RESUME_TIMEOUT_MARGIN).as_secs() < LIMIT_RESUME_TIMEOUT_SECS,
         "the hook must decide before Claude Code kills it"
     );
 }
@@ -812,4 +812,58 @@ fn a_rotator_running_another_binary_is_foreign() {
     // No rotator running: nothing to protect.
     let none = tempfile::tempdir().unwrap();
     assert_eq!(foreign_rotator(&pid_file, none.path(), Some(&new)), None);
+}
+
+// ── Issue #1907: what counts as capacity ────────────────────────────────────
+
+/// A ledger whose last cycle ended `outcome`, measured after a limit hit at
+/// `NOW - 100`, with `extra` fields at the top level.
+fn ledger_1907(outcome: &str, extra: &str) -> Vec<u8> {
+    ledger(&format!(
+        r#"{{"version":1,"live":"work"{extra},
+            "last_cycle":{{"at":{t},"measured_at":{m},"outcome":"{outcome}"}}}}"#,
+        m = NOW - 40,
+        t = NOW - 10
+    ))
+}
+
+#[test]
+fn issue_1907_a_stayed_unread_cycle_is_not_capacity() {
+    let s = parse_cycle(&ledger_1907("stayed-unread", ""), NOW).unwrap();
+    assert_eq!(s.outcome.as_deref(), Some("stayed-unread"));
+    assert!(!s.alert);
+    assert!(!s.has_capacity());
+    assert!(!s.fresh_capacity(NOW - 100));
+}
+
+#[test]
+fn issue_1907_an_unknown_outcome_without_an_alert_is_not_capacity() {
+    for o in ["stayed-later", "stayed_unread", "Stayed", ""] {
+        let s = parse_cycle(&ledger_1907(o, r#","alert":null"#), NOW).unwrap();
+        assert!(!s.has_capacity(), "{o:?}");
+    }
+}
+
+#[test]
+fn issue_1907_a_stay_with_only_an_advisory_alert_is_capacity() {
+    let raw = ledger_1907(
+        "stayed",
+        r#","alert":null,"advisory_alert":"no-capacity:work""#,
+    );
+    let s = parse_cycle(&raw, NOW).unwrap();
+    assert!(!s.alert, "advisory_alert is not read as alert");
+    assert!(s.has_capacity());
+    assert!(s.fresh_capacity(NOW - 100));
+    // And without the null `alert` key at all.
+    let raw = ledger_1907("stayed", r#","advisory_alert":"no-capacity:work""#);
+    assert!(parse_cycle(&raw, NOW).unwrap().fresh_capacity(NOW - 100));
+}
+
+#[test]
+fn issue_1907_a_hard_alert_still_blocks_whatever_the_advisory_field_says() {
+    let raw = ledger_1907(
+        "stayed",
+        r#","alert":"no-capacity:work","advisory_alert":null"#,
+    );
+    assert!(!parse_cycle(&raw, NOW).unwrap().has_capacity());
 }

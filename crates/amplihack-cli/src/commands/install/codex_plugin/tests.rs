@@ -6,14 +6,23 @@ fn native_failure_diagnostics_do_not_expose_child_output() {
     let _env_lock = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|p| p.into_inner());
-    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let binary = dir.path().join("native");
-    fs::write(&binary, "#!/bin/sh\nprintf '\\033[31mAuthorization: Bearer secret-canary' >&2\nprintf 'prompt-canary'\nexit 7\n").unwrap();
-    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
-    let error = native(&binary, &["plugin", "list", "--json"], dir.path())
-        .unwrap_err()
-        .to_string();
+    // Issue #1973: written without this process holding a write descriptor,
+    // and given the wait ceiling: the subject is the redaction of a failure,
+    // not the time limit.
+    crate::test_support::write_executable(
+        &binary,
+        "#!/bin/sh\nprintf '\\033[31mAuthorization: Bearer secret-canary' >&2\nprintf 'prompt-canary'\nexit 7\n",
+    );
+    let error = native_with_timeout(
+        &binary,
+        &["plugin", "list", "--json"],
+        dir.path(),
+        std::time::Duration::from_secs(600),
+    )
+    .unwrap_err()
+    .to_string();
     assert!(error.contains("native plugin command failed"));
     assert!(!error.contains("canary"));
     assert!(!error.contains('\u{1b}'));

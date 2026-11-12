@@ -1,35 +1,36 @@
-//! Hand-change recovery (issue #1693). A manual `/login` in `~/.claude`
-//! replaces whatever login was there, and the rotate ledger then names a
-//! profile `L` whose account is no longer in `~/.claude.json`. When `L`'s
-//! own recorded account (#1845) is that account, `L` stays live with it.
-//! Otherwise, when exactly one profile `M` holds that account, `M` is
-//! recorded as live; if `M` also has its own login, that copy is first
-//! renamed into a fresh `<root>/.rejected-logins/rotate-<M>-<time>/`. Anything else gives exact
-//! guidance, written every cycle until resolved. A `~/.claude.json` with no
-//! readable account is not a hand change; once it has stayed so for
-//! `HOME_UNREADABLE_GRACE` it gets guidance too (#1702 review). See "Rotate
-//! hand-change recovery" in docs/reference/profile-command.md.
+//! Hand-change recovery (issues #1693 and #1886). A manual `/login` in
+//! `~/.claude` replaces whatever login was there, and the rotate ledger then
+//! names a profile `L` whose login is no longer the one in `~/.claude`.
+//! Whose login it is, is told by the account the OAuth profile endpoint
+//! reports for each credential (`cred_identity`), never by `.claude.json`:
+//! running sessions rewrite that file from memory, so for minutes after a
+//! swap it names the previous account. When `~/.claude` holds the same
+//! account as exactly one other profile `M`'s own login on two cycles at
+//! least an interval apart, and outside
+//! `SWAP_GRACE`, `M`'s copy is renamed into a fresh
+//! `<root>/.rejected-logins/rotate-<M>-<time>/` and `M` is recorded as live,
+//! unless that would leave `L` with no login anywhere. Anything else writes
+//! a note or guidance. See "Rotate hand-change recovery" in
+//! docs/reference/profile-command.md.
 //!
-//! Only `.claude.json` files, `L`'s record and metadata are read; a login
-//! is moved only by `move_login` (rename without replace) and never opened,
-//! copied or deleted.
+//! A login is moved only by `move_login` (rename without replace) and never
+//! opened, copied or deleted here; the readings are `usage_direct`'s.
 
-use super::backup::{BackupRefusal, first_free, fresh_backup, rejected_dir, stamp};
+use super::backup::{BackupRefusal, discard_empty, first_free, fresh_backup, rejected_dir};
 use super::cycle::Ctx;
-use super::guide::{self, Fix, Kind, Paths};
+use super::guide::{self, Fix, Kind};
 use super::handfix_msg as msg;
-use super::identify::{self, Holders, LiveId};
-use super::ledger::{HOME_UNREADABLE_GRACE, MAX_GUIDANCE_LINE, RotateLedger, RotateState};
+pub use super::handfix_plan::Read;
+use super::handfix_plan::{Confirmed, Input, Plan, ino_ctime, plan, unreadable_since};
+use super::ledger::{MAX_GUIDANCE_LINE, RotateLedger, RotateState};
 use super::log::{Sink, cut};
 use super::lost;
 pub use super::precheck::Env;
-use super::precheck::{move_check, record_check};
 use super::swap::{self, LOGIN_NOT_MOVABLE};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
     CREDS, MoveError, State, abort_point, movable_login, move_login,
 };
-use crate::commands::profile::expected;
 use crate::commands::profile::login_check::REJECTED_DIR;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
@@ -40,330 +41,244 @@ const CHANGED: &str = "~/.claude changed during recovery";
 /// What one cycle's hand-change step did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
-    /// No hand change (or no login in `~/.claude`): the cycle goes on.
+    /// Nothing to report: the cycle goes on.
     Clear,
-    /// The holder was recorded as live: the cycle goes on with it.
+    /// A note (a first reading, or cannot tell): the cycle goes on, and an
+    /// open suspicion then stops it as `hand-change`.
+    Noted,
+    /// The suspected profile was recorded as live: the cycle goes on with it.
     Recovered,
     /// Guidance was written: the cycle ends `alerted`.
     Guided,
 }
 
-/// The hand change: the profile the ledger names, whether it has no login
-/// file, and the paths the guidance may name.
-struct Case {
-    l: ProfileName,
-    l_lost: bool,
-    paths: Paths,
-}
-
-enum Plan<'a> {
-    /// Case A: record `m`; nothing moves. `line` is the recovery line.
-    Record {
-        case: Case,
-        m: ProfileName,
-        key: String,
-        line: String,
-    },
-    /// Case B: move `m`'s own copy aside, then record `m`.
-    Move {
-        case: Case,
-        m: ProfileName,
-        key: String,
-        env: Env<'a>,
-    },
-    /// The guidance, and L when its `fix 1` already logs it in: L then
-    /// gets no lost-login line this cycle.
-    Guide(Vec<String>, Option<ProfileName>),
-}
-
-impl Case {
-    fn skip(&self) -> Option<ProfileName> {
-        self.l_lost.then(|| self.l.clone())
-    }
-}
-
-/// The guidance for a refused recovery.
-fn refused_lines(case: &Case, m: &ProfileName, own_login: bool, why: (String, Fix)) -> Vec<String> {
-    let kind = Kind::Refused {
-        m,
-        own_login,
-        reason: &why.0,
-        fix: why.1,
-    };
-    guide::lines(&case.l, case.l_lost, &kind, &case.paths)
-}
-
-fn refused<'a>(case: &Case, m: &ProfileName, own_login: bool, why: (String, Fix)) -> Plan<'a> {
-    Plan::Guide(refused_lines(case, m, own_login, why), case.skip())
-}
-
-/// The paths the guidance may name.
-fn paths(store: &ProfileStore, rs: &RotateState, home: &Path, t: i64) -> Paths {
-    Paths {
-        home: home.to_path_buf(),
-        root: store.root().to_path_buf(),
-        ledger: rs.ledger.clone(),
-        manual: store
-            .root()
-            .join(REJECTED_DIR)
-            .join(format!("manual-{}", stamp(t))),
-    }
-}
-
-/// When `~/.claude.json` has been unreadable since, counting this cycle at
-/// `t`: the ledger's time, or `t` when it has none or it lies in the future.
-fn unreadable_since(stored: Option<i64>, t: i64) -> i64 {
-    stored.filter(|s| *s <= t).unwrap_or(t)
-}
-
-/// Decides without writing anything. The plan is `None` with neither a hand
-/// change nor a `~/.claude.json` that has stayed unreadable for
-/// [`HOME_UNREADABLE_GRACE`]; the flag says whether `~/.claude.json` had no
-/// readable account under a ledger-named live profile this cycle. `since`
-/// is the ledger's `home_unreadable_since`. Calls `env_for` only after a
-/// hand change.
-fn plan<'a>(
-    store: &ProfileStore,
-    rs: &RotateState,
-    home: &Path,
-    since: Option<i64>,
-    env_for: impl FnOnce() -> Env<'a>,
+/// What a confirmed move needs besides the plan.
+struct Mover<'r> {
+    store: &'r ProfileStore,
+    home: &'r Path,
+    read: Read<'r>,
     t: i64,
-) -> Result<(Option<Plan<'a>>, bool), ProfileError> {
-    let l = match identify::live(store, rs, home)?.0 {
-        LiveId::HandChanged(l) => l,
-        // #1702 review: one bad read is Claude rewriting the file, so the
-        // cycle only alerts; a file that stays unreadable gets fix lines.
-        // `l_lost` is false: L's login is the one in ~/.claude.
-        LiveId::HomeUnreadable(l) => {
-            if t - unreadable_since(since, t) < HOME_UNREADABLE_GRACE {
-                return Ok((None, true));
-            }
-            let kind = Kind::HomeStuck {
-                problem: identify::home_problem(home),
-            };
-            let lines = guide::lines(&l, false, &kind, &paths(store, rs, home, t));
-            return Ok((Some(Plan::Guide(lines, None)), true));
-        }
-        _ => return Ok((None, false)),
-    };
-    plan_hand_change(store, rs, home, l, env_for, t).map(|p| (Some(p), false))
 }
 
-/// [`plan`] after a hand change from `l`.
-fn plan_hand_change<'a>(
-    store: &ProfileStore,
-    rs: &RotateState,
-    home: &Path,
-    l: ProfileName,
-    env_for: impl FnOnce() -> Env<'a>,
-    t: i64,
-) -> Result<Plan<'a>, ProfileError> {
-    let env = env_for();
-    let key = identify::home_key(home);
-    let holders = identify::home_holders(store, home)?;
-    let case = Case {
-        l_lost: lost::lost(store, l.as_str()),
-        l,
-        paths: paths(store, rs, home, t),
-    };
-    let guide = |kind: Kind<'_>| {
-        let lines = guide::lines(&case.l, case.l_lost, &kind, &case.paths);
-        Ok(Plan::Guide(lines, case.skip()))
-    };
-    // #1845: L's own record names the new login, so the `/login` put back
-    // the account L is meant for. L stays live; the swap away from L then
-    // writes that account into L's `.claude.json`.
-    let has_login = !matches!(holders, Holders::HomeNoLogin | Holders::HomeUnreadable);
-    if let Some(key) = key
-        .as_deref()
-        .filter(|_| has_login && recorded_here(store, home, &case.l))
-    {
-        let l = case.l.clone();
-        if let Some(why) = record_check(store, rs, home) {
-            return Ok(refused(&case, &l, false, why));
-        }
-        let (key, line) = (key.to_string(), msg::recovered_relogin(&l));
-        return Ok(Plan::Record {
-            case,
-            m: l,
-            key,
-            line,
-        });
-    }
-    let (m, own_login, key) = match (holders, key) {
-        (Holders::One { name, own_login }, Some(key)) => (name, own_login, key),
-        (Holders::One { .. } | Holders::HomeUnreadable, _) => return guide(Kind::HomeUnreadable),
-        (Holders::HomeNoLogin, _) => return guide(Kind::HomeNoLogin),
-        (Holders::None, _) => return guide(Kind::None),
-        (Holders::Many(v), _) => return guide(Kind::Many(&v)),
-        (Holders::Unreadable(v), _) => return guide(Kind::Unreadable(&v)),
-    };
-    if let Some(why) = record_check(store, rs, home) {
-        return Ok(refused(&case, &m, own_login, why));
-    }
-    if !own_login {
-        let line = msg::recovered_record(&m, &case.l);
-        return Ok(Plan::Record { case, m, key, line });
-    }
-    if let Some(why) = move_check(store, home, &m, &env) {
-        return Ok(refused(&case, &m, own_login, why));
-    }
-    Ok(Plan::Move { case, m, key, env })
-}
-
-/// Whether `l` has a usable record that names the account in `~/.claude`.
-fn recorded_here(store: &ProfileStore, home: &Path, l: &ProfileName) -> bool {
-    let Some(live) = identify::Account::of_dir(home) else {
-        return false;
-    };
-    State::new(store.root())
-        .is_ok_and(|state| matches!(expected::lookup(&state, l), Ok(Some(rec)) if rec.names(&live)))
-}
-
-/// Case B after the checks: create the backup, check `~/.claude.json`
-/// again, move `m`'s copy. Each failure is a refusal; nothing else moved.
+/// After the checks: read both logins again and check `M`'s directory,
+/// then create the backup directory, then check that neither login file was
+/// replaced since the readings, then move `M`'s copy. Each failure is a
+/// refusal; nothing else moved. A refusal leaves no new directory: the
+/// checks that can refuse run before it is made, and the one after it
+/// removes it again (only while it is empty).
 fn move_aside(
-    store: &ProfileStore,
-    home: &Path,
-    m: &ProfileName,
-    key: &str,
-    env: &Env<'_>,
-    t: i64,
-) -> Result<PathBuf, (String, Fix)> {
-    let by_hand = |r: BackupRefusal| (r.reason(), Fix::ByHand);
-    let rejected = rejected_dir(&store.root().join(REJECTED_DIR)).map_err(by_hand)?;
-    let dir = fresh_backup(&rejected, m, t).map_err(by_hand)?;
-    abort_point("rotate-handfix-dir");
-    (env.after_create)();
-    if !identify::home_still_matches(home, key) {
-        return Err((CHANGED.into(), Fix::Retry));
+    c: &Confirmed<'_>,
+    mv: &Mover<'_>,
+) -> Result<(PathBuf, super::identify::Account), (String, Fix)> {
+    let changed = || (CHANGED.to_string(), Fix::Retry);
+    // SEC-9: each read ends within IDENTITY_READ_TIMEOUT, so the two
+    // re-reads together take at most 10 seconds; with `assess` the cycle
+    // holds its lock for at most IDENTITY_BUDGET + 3 reads, 45 seconds.
+    // That bound holds in release builds and in debug builds with the
+    // AMPLIHACK_TEST_IDENTITY_READ_TIMEOUT_SECS knob unset (issue #1973).
+    let here = (mv.read)(&mv.home.join(".claude")).map_err(|_| changed())?;
+    let there = (mv.read)(&mv.store.root().join(c.m.as_str())).map_err(|_| changed())?;
+    if !here.same(&there) {
+        return Err(changed());
     }
-    let (src, to) = (store.root().join(m.as_str()).join(CREDS), dir.join(CREDS));
+    if mv.store.verify_profile_dir(&c.m).is_err() {
+        return Err(changed());
+    }
+    let by_hand = |r: BackupRefusal| (r.reason(), Fix::ByHand);
+    let rejected = rejected_dir(&mv.store.root().join(REJECTED_DIR)).map_err(by_hand)?;
+    let dir = fresh_backup(&rejected, &c.m, mv.t).map_err(by_hand)?;
+    abort_point("rotate-handfix-dir");
+    (c.env.after_create)();
+    let src = mv.store.root().join(c.m.as_str()).join(CREDS);
+    // Last, just before the rename: neither file was replaced since the
+    // readings this cycle.
+    let now = [
+        ino_ctime(&mv.home.join(".claude").join(CREDS)),
+        ino_ctime(&src),
+    ];
+    if now != c.seen || now.iter().any(Option::is_none) {
+        discard_empty(&dir);
+        return Err(changed());
+    }
+    let to = dir.join(CREDS);
     if let Err(e) = move_login(&src, &to, &swap::show) {
         let reason = match e {
             MoveError::Other(_) if !movable_login(&src) => LOGIN_NOT_MOVABLE.to_string(),
             e => swap::describe(e),
         };
+        discard_empty(&dir);
         return Err((reason, Fix::ByHand));
     }
     abort_point("rotate-handfix-moved");
-    Ok(to)
+    Ok((to, here))
 }
 
-/// Records `m` as live in place of `case.l`; `done` is the recovery line.
-/// When `case.l` is lost but `lost_login` is full, a one-off line says so.
-fn record(
-    l: &mut RotateLedger,
-    case: &Case,
-    m: &ProfileName,
-    key: &str,
-    t: i64,
-    done: String,
-) -> (Step, Vec<String>) {
+/// Records `m` and its confirmed full identity; clears prior guidance and
+/// suspicion. The grace and independent-reading requirements are unchanged.
+fn record(l: &mut RotateLedger, m: &ProfileName, account: &super::identify::Account, t: i64) {
     l.live = Some(m.to_string());
-    l.account = Some(key.to_string());
+    l.account = Some(account.key().to_string());
+    l.login_identity = Some(super::login_identity::Identity::new(account));
     l.since = Some(t);
-    l.alert = None;
+    super::alert::clear_alert(l);
     l.guidance = None;
-    let mut lines = vec![done];
-    if case.l != *m && case.l_lost {
-        lines.extend(lost::add(l, &case.l));
-    }
-    (Step::Recovered, lines)
+    l.hand_suspect = None;
+}
+
+/// The guidance for a confirmed move that `move_aside` refused.
+fn refused_lines(c: &Confirmed<'_>, why: (String, Fix)) -> Vec<String> {
+    let kind = Kind::Refused {
+        m: &c.m,
+        reason: &why.0,
+        fix: why.1,
+    };
+    guide::lines(&c.l, &kind, &c.paths)
 }
 
 /// One cycle's hand-change step, under the cycle's lock: recovers when it
-/// safely can, else writes guidance; then writes a line for each profile in
-/// `lost_login`. The ledger is written only when it changed, and before any
-/// line is written. `env_for` is called only after a hand change.
+/// safely can, else writes a note or guidance; then a line for each profile
+/// in `lost_login`. The ledger is written only when it changed, and before
+/// any line is written. A note identical to the ledger's `guidance` is not
+/// written again (D9). `read` is the identity reader; `min_gap` the
+/// rotation interval, at least 1. `env_for` is called only for a confirmed
+/// suspicion.
+#[allow(clippy::too_many_arguments)]
 pub fn step_with<'a>(
     store: &ProfileStore,
     rs: &RotateState,
     home: &Path,
     out: &mut Sink,
     env_for: impl FnOnce() -> Env<'a>,
+    read: Read<'_>,
+    min_gap: i64,
     t: i64,
 ) -> Result<Step, ProfileError> {
     let mut ledger = rs.load_ledger()?.unwrap_or_default();
     let before = ledger.clone();
-    let (plan, unreadable) = plan(store, rs, home, ledger.home_unreadable_since, env_for, t)?;
+    let input = Input {
+        store,
+        rs,
+        home,
+        ledger: &before,
+        read,
+        min_gap,
+        t,
+    };
+    let (plan, unreadable) = plan(&input, env_for);
     ledger.home_unreadable_since =
         unreadable.then(|| unreadable_since(ledger.home_unreadable_since, t));
     lost::prune(&mut ledger, store);
-    let mut skip = None;
     let (step, lines) = match plan {
-        None => {
+        Plan::Nothing { reset } => {
             ledger.guidance = None;
+            if reset {
+                ledger.hand_suspect = None;
+            }
             (Step::Clear, Vec::new())
         }
-        Some(Plan::Guide(lines, s)) => {
-            skip = s;
+        Plan::Note { line, suspect } => {
+            ledger.hand_suspect = suspect;
+            let repeat = before.guidance.as_deref() == Some(std::slice::from_ref(&line));
+            ledger.guidance = Some(vec![line.clone()]);
+            (Step::Noted, if repeat { Vec::new() } else { vec![line] })
+        }
+        Plan::Guide { lines, suspect } => {
+            ledger.hand_suspect = suspect;
+            ledger.guidance = Some(lines.clone());
             (Step::Guided, lines)
         }
-        Some(Plan::Record { case, m, key, line }) => record(&mut ledger, &case, &m, &key, t, line),
-        Some(Plan::Move { case, m, key, env }) => {
-            match move_aside(store, home, &m, &key, &env, t) {
-                Ok(to) => {
-                    let line = msg::recovered_moved(&m, &to);
-                    record(&mut ledger, &case, &m, &key, t, line)
+        Plan::Move(c) => {
+            let mv = Mover {
+                store,
+                home,
+                read,
+                t,
+            };
+            match move_aside(&c, &mv) {
+                Ok((to, account)) => {
+                    record(&mut ledger, &c.m, &account, t);
+                    (Step::Recovered, vec![msg::recovered_moved(&c.m, &to)])
                 }
                 Err(why) => {
-                    skip = case.skip();
-                    (Step::Guided, refused_lines(&case, &m, true, why))
+                    let lines = refused_lines(&c, why);
+                    ledger.guidance = Some(lines.clone());
+                    (Step::Guided, lines)
                 }
             }
         }
     };
-    if step == Step::Guided {
-        ledger.guidance = Some(lines.clone());
-    }
     if ledger != before {
         rs.save_ledger(&ledger)?;
     }
     for line in &lines {
         out.emit(t, &cut(line, MAX_GUIDANCE_LINE));
     }
-    for line in lost::lines(&ledger, skip.as_ref()) {
+    for line in lost::lines(&ledger) {
         out.emit(t, &line);
     }
     Ok(step)
 }
 
-/// [`step_with`] on this host: `/proc` and the auto-switch ledger are read
-/// only after a hand change.
-pub fn step(ctx: &Ctx, state: &State, out: &mut Sink, t: i64) -> Result<Step, ProfileError> {
-    let env_for = || Env::system(ctx.store.root(), state, ctx.scan);
-    step_with(&ctx.store, &ctx.rs, &ctx.home, out, env_for, t)
+/// The rotation interval as the two-reading rule's gap: at least 1 second.
+pub fn min_gap(ctx: &Ctx) -> i64 {
+    i64::try_from(ctx.settings.interval)
+        .unwrap_or(i64::MAX)
+        .max(1)
 }
 
-/// The `--dry-run` lines: `would recover: ...`, or `would alert: ...` and
-/// the `fix` lines; empty without a hand change. Takes no lock and writes
-/// nothing. `env_for` is called only after a hand change.
+/// [`step_with`] on this host: `/proc` and the auto-switch ledger are read
+/// only for a confirmed suspicion; the readings are `ctx.identity`'s.
+pub fn step(ctx: &Ctx, state: &State, out: &mut Sink, t: i64) -> Result<Step, ProfileError> {
+    let env_for = || Env::system(ctx.store.root(), state, ctx.scan);
+    let read = |p: &Path| ctx.identity_reader().oauth(p);
+    let (store, rs, home) = (&ctx.store, &ctx.rs, &ctx.home);
+    step_with(store, rs, home, out, env_for, &read, min_gap(ctx), t)
+}
+
+/// Whether `--dry-run` stops after the preview's lines: everything but a
+/// cannot-tell note does, as the real cycle would.
+pub fn dry_run_stops(lines: &[String]) -> bool {
+    let unsure = format!("would note: {}", msg::UNSURE_HEAD);
+    !lines.is_empty() && !lines.iter().all(|l| l.starts_with(&unsure))
+}
+
+/// The `--dry-run` lines: `would recover: ...`, `would note: ...`, or
+/// `would alert: ...` and the `fix` lines; empty when nothing would be
+/// written. Takes no lock and writes nothing, so it never starts or
+/// confirms a suspicion: it applies the rules to the ledger as it stands.
 pub fn preview<'a>(
     store: &ProfileStore,
     rs: &RotateState,
     home: &Path,
     env_for: impl FnOnce() -> Env<'a>,
+    read: Read<'_>,
+    min_gap: i64,
     t: i64,
 ) -> Result<Vec<String>, ProfileError> {
-    let would = |line: String| {
-        let text = line.strip_prefix("recovered: ").unwrap_or(&line);
-        vec![format!("would recover: {text}")]
+    let ledger = rs.load_ledger()?.unwrap_or_default();
+    let input = Input {
+        store,
+        rs,
+        home,
+        ledger: &ledger,
+        read,
+        min_gap,
+        t,
     };
-    let since = rs.load_ledger()?.and_then(|l| l.home_unreadable_since);
-    let (Some(plan), _) = plan(store, rs, home, since, env_for, t)? else {
-        return Ok(Vec::new());
-    };
-    let lines = match plan {
-        Plan::Guide(lines, _) => lines,
-        Plan::Record { line, .. } => return Ok(would(line)),
-        Plan::Move { case, m, .. } => match first_free(&store.root().join(REJECTED_DIR), &m, t) {
-            Some(dir) => return Ok(would(msg::recovered_moved(&m, &dir.join(CREDS)))),
-            None => {
-                let why = (BackupRefusal::NoFreeName.reason(), Fix::ByHand);
-                refused_lines(&case, &m, true, why)
+    let lines = match plan(&input, env_for).0 {
+        Plan::Nothing { .. } => return Ok(Vec::new()),
+        Plan::Note { line, .. } => {
+            let text = line.strip_prefix("note: ").unwrap_or(&line);
+            return Ok(vec![format!("would note: {text}")]);
+        }
+        Plan::Guide { lines, .. } => lines,
+        Plan::Move(c) => match first_free(&store.root().join(REJECTED_DIR), &c.m, t) {
+            Some(dir) => {
+                let line = msg::recovered_moved(&c.m, &dir.join(CREDS));
+                let text = line.strip_prefix("recovered: ").unwrap_or(&line);
+                return Ok(vec![format!("would recover: {text}")]);
             }
+            None => refused_lines(&c, (BackupRefusal::NoFreeName.reason(), Fix::ByHand)),
         },
     };
     Ok(lines

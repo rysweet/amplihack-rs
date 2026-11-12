@@ -26,7 +26,18 @@ on:
   # alive and finds that kind of drift against main, where it belongs.
   schedule:
     - cron: "0 6 * * 1,4"
+  # sccache binary (issue #2105): jobs get the sccache binary from the Actions
+  # cache through .github/actions/sccache-bin, and build without RUSTC_WRAPPER
+  # when no usable binary exists. The simulate_sccache_missing input below
+  # tests that fallback:
+  #   gh workflow run ci.yml --ref <branch> -f simulate_sccache_missing=true
+  # The design is described in docs/reference/ci-pipeline.md ("sccache binary").
   workflow_dispatch:
+    inputs:
+      simulate_sccache_missing:
+        description: Skip the sccache binary cache and download, to test the build-without-sccache fallback.
+        type: boolean
+        default: false
 
 # Least-privilege default: every job gets a read-only token unless it opts up.
 permissions:
@@ -98,12 +109,31 @@ jobs:
       # fails fast). The recipe gates below build the amplihack binary; when they
       # ran before this step they had to build it with RUSTC_WRAPPER='' --
       # uncached, about 17 minutes of this job on every run.
+      # sccache binary: cache, else one download, else no wrapper (#2105; see header).
+      - name: Restore sccache binary
+        id: sccache-bin
+        uses: ./.github/actions/sccache-bin
+        with:
+          phase: restore
+          simulate-missing: ${{ inputs.simulate_sccache_missing == true }}
       - name: Setup sccache
+        if: steps.sccache-bin.outputs.hit != 'true' && inputs.simulate_sccache_missing != true
+        continue-on-error: true
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.19.0
+          disable_annotations: 'true'
+      - name: Save sccache binary or build without it
+        uses: ./.github/actions/sccache-bin
+        with:
+          phase: finish
+          hit: ${{ steps.sccache-bin.outputs.hit }}
+          simulate-missing: ${{ inputs.simulate_sccache_missing == true }}
       # sccache's disk cache travels as one Actions cache entry per job (and
       # target); see .github/actions/sccache-restore. Only main saves, so pull
       # requests start from main's entry and add none of their own.
       - name: Restore sccache disk cache
+        if: env.RUSTC_WRAPPER == 'sccache'
         uses: ./.github/actions/sccache-restore
         with:
           key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-host-
@@ -120,6 +150,13 @@ jobs:
         run: scripts/check-skills-no-missing-helpers.sh
       - name: Toolchain refs — cross-target steps pinned to channel (issue #935)
         run: scripts/check-toolchain-refs.sh
+      # Cases that need the real binary may print SKIP only when this job fell
+      # back (RUSTC_WRAPPER is empty, e.g. under simulate_sccache_missing).
+      - name: sccache binary — script behaviour (issue #2105)
+        shell: bash
+        env:
+          SCCACHE_TEST_REQUIRE_BINARY: ${{ env.RUSTC_WRAPPER == 'sccache' && '1' || '' }}
+        run: bash .github/scripts/test-sccache-bin.sh
       - name: Branch-protection guard — strict-mode script logic (issue #1095)
         shell: bash
         run: bash tests/issue_1095_branch_protection_guard_test.sh
@@ -260,9 +297,19 @@ jobs:
       - name: Recipes — PR always opens after successful push (issue #495)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-pr-always-opens.sh
+      # Holds the #1968 publish coverage (merge-base diff, derived titles,
+      # issue-reference defusal, redaction, hostile titles, mixed-title tie)
+      # and the earlier #929 cases. About 70 seconds; HOME is a fresh
+      # directory so nothing reads or writes the runner's configuration.
+      - name: Recipes — default workflow reliability contracts (issues #929, #1968)
+        shell: bash
+        run: HOME="$(mktemp -d)" bash amplifier-bundle/recipes/tests/test-default-workflow-reliability.sh
       - name: Recipes — checkpoint formatting stays within task edits
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-checkpoint-scoped-format.sh
+      - name: Recipes — fixture writers keep their repositories out of /tmp (issue #1937)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-1937-no-stray-git.sh
       - name: Recipes — existing open PR makes step-16 idempotent (issue #1060)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1060-existing-pr-is-idempotent.sh
@@ -290,6 +337,11 @@ jobs:
       - name: Recipes — cleanup never deletes other runs' or uncommitted worktrees (issues #1494, #1560)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1494-1560-worktree-safety.sh
+      - name: Recipes — worktree sweep archives locally, never pushes, locks per repository (issue #2061)
+        shell: bash
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: bash amplifier-bundle/recipes/tests/test-issue-2061-sweep-no-push.sh
       - name: Recipes — re-run never destroys an existing worktree's work (issue #1565)
         shell: bash
         env:
@@ -317,15 +369,30 @@ jobs:
       - name: Recipes — auto-drive QA evidence record is valid JSON (issue #1531)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1531-qa-evidence-json.sh
+      - name: Recipes — auto-drive QA clears inherited GIT_* and run identity (issue #2033)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-2033-qa-git-env.sh
       - name: Recipes — #1551 no merge outside gate
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh
+      - name: Recipes — #2186 every expected check exists and passed at the head
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-2186-expected-checks.sh
       - name: Recipes — auto-drive QA command selection, nested Cargo and mixed roots (issue #1516)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh
       - name: Recipes — auto-drive QA command source and path scoping (issue #1763)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1763-qa-scope.sh
+      - name: Recipes — criterion 6 when no review is required (issue #2219)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-2219-approval-no-review-required.sh
+      - name: Recipes — documentation-only pull requests need no gadugi scenario (issue #2219)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-2219-docs-only-scenarios.sh
+      - name: Recipes — the stop names what held the pull request (issue #2219)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-2219-stop-line.sh
       - name: Recipes — fatal allowlist preserved; bookkeeping gates degraded (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-fatal-allowlist-preserved.sh
@@ -352,10 +419,12 @@ jobs:
         shell: bash
         run: |
           if command -v shellcheck >/dev/null 2>&1; then
-            shellcheck -S warning amplifier-bundle/tools/workflow_worktree_sweep.sh
+            shellcheck -S warning amplifier-bundle/tools/workflow_worktree_sweep.sh \
+              amplifier-bundle/recipes/tests/test-issue-2061-sweep-no-push.sh
           else
             sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-            shellcheck -S warning amplifier-bundle/tools/workflow_worktree_sweep.sh
+            shellcheck -S warning amplifier-bundle/tools/workflow_worktree_sweep.sh \
+              amplifier-bundle/recipes/tests/test-issue-2061-sweep-no-push.sh
           fi
       - name: Recipes — shellcheck worktree deconflict helper (concurrency)
         shell: bash
@@ -416,16 +485,16 @@ jobs:
 
       - run: cargo fmt --check
       - name: Disk + sccache stats (before)
-        run: df -h / && sccache --show-stats
+        run: df -h / && if [ "${RUSTC_WRAPPER:-}" = sccache ] && command -v sccache >/dev/null; then sccache --show-stats; fi
       # --locked: fail fast on Cargo.lock drift here in the first job (rather than
       # only downstream in test/build), closing a dependency-substitution gap so
       # clippy can never silently resolve unpinned deps (#744 supply-chain).
       - run: cargo clippy --locked --all-targets -- -D warnings
       - name: Disk + sccache stats (after)
         if: always()
-        run: df -h / && sccache --show-stats
+        run: df -h / && if [ "${RUSTC_WRAPPER:-}" = sccache ] && command -v sccache >/dev/null; then sccache --show-stats; fi
       - name: Save sccache disk cache
-        if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && env.RUSTC_WRAPPER == 'sccache'
         uses: ./.github/actions/sccache-save
         with:
           key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-host-
@@ -475,12 +544,31 @@ jobs:
         uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
         with:
           tool: nextest
+      # sccache binary: cache, else one download, else no wrapper (#2105; see header).
+      - name: Restore sccache binary
+        id: sccache-bin
+        uses: ./.github/actions/sccache-bin
+        with:
+          phase: restore
+          simulate-missing: ${{ inputs.simulate_sccache_missing == true }}
       - name: Setup sccache
+        if: steps.sccache-bin.outputs.hit != 'true' && inputs.simulate_sccache_missing != true
+        continue-on-error: true
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.19.0
+          disable_annotations: 'true'
+      - name: Save sccache binary or build without it
+        uses: ./.github/actions/sccache-bin
+        with:
+          phase: finish
+          hit: ${{ steps.sccache-bin.outputs.hit }}
+          simulate-missing: ${{ inputs.simulate_sccache_missing == true }}
       # sccache's disk cache travels as one Actions cache entry per job (and
       # target); see .github/actions/sccache-restore. Only main saves, so pull
       # requests start from main's entry and add none of their own.
       - name: Restore sccache disk cache
+        if: env.RUSTC_WRAPPER == 'sccache'
         uses: ./.github/actions/sccache-restore
         with:
           key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-host-
@@ -495,9 +583,17 @@ jobs:
         shell: bash
         run: bash scripts/install-pinned-recipe-runner.sh
       - name: Disk + sccache stats (before)
-        run: df -h / && sccache --show-stats
+        run: df -h / && if [ "${RUSTC_WRAPPER:-}" = sccache ] && command -v sccache >/dev/null; then sccache --show-stats; fi
+      # Issue #2042: issue_2042_host_proc_strace traces profile, sessions and
+      # cleanup commands and fails on any read of the host process table.
+      # Without strace it skips, so CI installs it and requires it.
+      - name: Install strace (issue #2042)
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends strace
       # nextest: better parallelism and lower peak disk than `cargo test`.
-      - run: cargo nextest run --workspace --locked
+      # Report every failing target; an early failure must not hide other contracts.
+      - run: cargo nextest run --workspace --locked --no-fail-fast
+        env:
+          AMPLIHACK_TEST_REQUIRE_STRACE: "1"
       # Issue #1278: CI is the only place this suite runs WITHOUT git's hook
       # variables set, which is exactly why the unpassable pre-push gate stayed
       # invisible for so long. Re-run the crates that spawn git with GIT_DIR and
@@ -531,9 +627,9 @@ jobs:
         run: bash scripts/check-leaked-rotators.sh
       - name: Disk + sccache stats (after)
         if: always()
-        run: df -h / && sccache --show-stats
+        run: df -h / && if [ "${RUSTC_WRAPPER:-}" = sccache ] && command -v sccache >/dev/null; then sccache --show-stats; fi
       - name: Save sccache disk cache
-        if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && env.RUSTC_WRAPPER == 'sccache'
         uses: ./.github/actions/sccache-save
         with:
           key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-host-
@@ -564,12 +660,31 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
+      # sccache binary: cache, else one download, else no wrapper (#2105; see header).
+      - name: Restore sccache binary
+        id: sccache-bin
+        uses: ./.github/actions/sccache-bin
+        with:
+          phase: restore
+          simulate-missing: ${{ inputs.simulate_sccache_missing == true }}
       - name: Setup sccache
+        if: steps.sccache-bin.outputs.hit != 'true' && inputs.simulate_sccache_missing != true
+        continue-on-error: true
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.19.0
+          disable_annotations: 'true'
+      - name: Save sccache binary or build without it
+        uses: ./.github/actions/sccache-bin
+        with:
+          phase: finish
+          hit: ${{ steps.sccache-bin.outputs.hit }}
+          simulate-missing: ${{ inputs.simulate_sccache_missing == true }}
       # sccache's disk cache travels as one Actions cache entry per job (and
       # target); see .github/actions/sccache-restore. Only main saves, so pull
       # requests start from main's entry and add none of their own.
       - name: Restore sccache disk cache
+        if: env.RUSTC_WRAPPER == 'sccache'
         uses: ./.github/actions/sccache-restore
         with:
           key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-host-
@@ -587,9 +702,9 @@ jobs:
         run: cargo install --path bins/amplihack --locked
       - name: sccache stats
         if: always()
-        run: sccache --show-stats
+        run: df -h / && if [ "${RUSTC_WRAPPER:-}" = sccache ] && command -v sccache >/dev/null; then sccache --show-stats; fi
       - name: Save sccache disk cache
-        if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && env.RUSTC_WRAPPER == 'sccache'
         uses: ./.github/actions/sccache-save
         with:
           key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-host-
@@ -659,9 +774,10 @@ jobs:
             cross: false
             gnu_cross_toolchain: false
           - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-latest
+            # Build on ARM directly; no apt mirror or GNU cross-toolchain install.
+            runner: ubuntu-24.04-arm
             cross: false
-            gnu_cross_toolchain: true
+            gnu_cross_toolchain: false
           - target: x86_64-apple-darwin
             runner: macos-latest
             cross: false
@@ -675,12 +791,31 @@ jobs:
       - uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
         with:
           targets: ${{ matrix.target }}
+      # sccache binary: cache, else one download, else no wrapper (#2105; see header).
+      - name: Restore sccache binary
+        id: sccache-bin
+        uses: ./.github/actions/sccache-bin
+        with:
+          phase: restore
+          simulate-missing: ${{ inputs.simulate_sccache_missing == true }}
       - name: Setup sccache
+        if: steps.sccache-bin.outputs.hit != 'true' && inputs.simulate_sccache_missing != true
+        continue-on-error: true
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.19.0
+          disable_annotations: 'true'
+      - name: Save sccache binary or build without it
+        uses: ./.github/actions/sccache-bin
+        with:
+          phase: finish
+          hit: ${{ steps.sccache-bin.outputs.hit }}
+          simulate-missing: ${{ inputs.simulate_sccache_missing == true }}
       # sccache's disk cache travels as one Actions cache entry per job (and
       # target); see .github/actions/sccache-restore. Only main saves, so pull
       # requests start from main's entry and add none of their own.
       - name: Restore sccache disk cache
+        if: env.RUSTC_WRAPPER == 'sccache'
         uses: ./.github/actions/sccache-restore
         with:
           key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target }}-
@@ -736,9 +871,9 @@ jobs:
 
       - name: sccache stats
         if: always()
-        run: sccache --show-stats
+        run: df -h / && if [ "${RUSTC_WRAPPER:-}" = sccache ] && command -v sccache >/dev/null; then sccache --show-stats; fi
       - name: Save sccache disk cache
-        if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && env.RUSTC_WRAPPER == 'sccache'
         uses: ./.github/actions/sccache-save
         with:
           key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target }}-

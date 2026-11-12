@@ -128,6 +128,16 @@ fn install_stages_amplifier_bundle_from_local_checkout_not_stale_source() {
             fs::write(claude.join("AMPLIHACK.md"), "framework\n").unwrap();
             fs::write(claude.join("settings.json"), "{}\n").unwrap();
             fs::write(checkout.path().join("CLAUDE.md"), "root\n").unwrap();
+            // Issue #1955: only a checkout at this binary's version is staged.
+            fs::write(
+                checkout.path().join("Cargo.toml"),
+                format!(
+                    "[workspace]\nmembers = [\"crates/amplihack-cli\"]\n\n\
+                     [workspace.package]\nversion = \"{}\"\n",
+                    amplihack_cli::VERSION
+                ),
+            )
+            .unwrap();
 
             // Inject sentinel into the checkout's smart-orchestrator.yaml so we can
             // prove which source the install consumed.
@@ -154,14 +164,25 @@ fn install_stages_amplifier_bundle_from_local_checkout_not_stale_source() {
             fs::create_dir_all(&bin_dir).unwrap();
             let hooks_stub = write_stub_hooks_binary(&bin_dir);
 
+            let runner = bin_dir.join("recipe-runner-rs");
+            write_executable(
+                &runner,
+                "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}'\n",
+                0o700,
+            );
+            child_set_var("RECIPE_RUNNER_RS_PATH", &runner);
+            child_set_var("AMPLIHACK_SKIP_MMDC", "1");
+            child_set_var("PATH", format!("{}:/usr/bin:/bin", bin_dir.display()));
             child_set_var("HOME", home.path());
+            child_set_var("AMPLIHACK_AGENT_BINARY", "claude");
             child_remove_var("AMPLIHACK_HOME");
             // Issue #1699: `run_install` refreshes every profile under this
             // root; an inherited value would point at the real profiles.
             child_remove_var("AMPLIHACK_CLAUDE_PROFILE_ROOT");
-            // This fixture stages Claude assets; native Codex registration
-            // requires its own CLI stub and is covered by separate tests.
-            child_set_var("AMPLIHACK_AGENT_BINARY", "claude");
+            // This fixture tests bundle provenance, independently of the
+            // provider selected by the agent running the test suite.
+            child_set_var("AMPLIHACK_AGENT_BINARY", "copilot");
+            child_remove_var("AMPLIHACK_AGENT_BINARY_SOURCE");
             child_set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
             child_set_current_dir(checkout.path());
 

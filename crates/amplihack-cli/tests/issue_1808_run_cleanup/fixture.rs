@@ -17,9 +17,10 @@
 
 #![allow(dead_code)]
 
-use crate::isolated_amplihack::isolated;
+use crate::isolated_amplihack::{PROC_ROOT_ENV, isolated};
 use crate::support::amplihack_bin::amplihack_bin;
 use crate::support::exec_stub::write_executable;
+use crate::support::fake_proc::FakeProc;
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -109,6 +110,11 @@ pub struct Fx {
     pub records: PathBuf,
     pub recipe: PathBuf,
     children: Vec<Child>,
+    /// The process table every `amplihack` child reads (issue #2042). It
+    /// lies inside `tmp`, the children's `TMPDIR`, because the seam accepts
+    /// only a tree inside the child's temp dir. It holds only the processes
+    /// [`Fx::live_process`] starts, so `cleanup` never scans the host.
+    pub proc: FakeProc,
     /// Files whose `flock` the test holds; see [`Fx::hold_flock`].
     held_locks: Vec<fs::File>,
 }
@@ -148,6 +154,8 @@ impl Fx {
     pub fn new() -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
+        mkdir_0700(&root.join("tmp"));
+        let proc = FakeProc::new_in(root.join("tmp"));
         let fx = Self {
             // Inside TMPDIR: the test home guard only accepts a HOME under
             // the child's temp dir.
@@ -164,6 +172,7 @@ impl Fx {
             _tmp: tmp,
             children: Vec::new(),
             held_locks: Vec::new(),
+            proc,
         };
         for d in [&fx.tmp, &fx.home, &fx.work, &fx.bin, &fx.gh, &fx.records] {
             mkdir_0700(d);
@@ -236,6 +245,7 @@ impl Fx {
         c.current_dir(&self.root)
             .env("HOME", &self.home)
             .env("TMPDIR", &self.tmp)
+            .env(PROC_ROOT_ENV, self.proc.path())
             .env("PATH", &self.bin)
             .env("FAKE_GH_DIR", &self.gh)
             .env("RECORD_DIR", &self.records)
@@ -291,7 +301,9 @@ impl Fx {
     /// `amplihack recipe run` with `runner_body` as the recipe runner.
     pub fn recipe_run(&self, runner_body: &str, tweak: impl FnOnce(&mut Command)) -> Output {
         let runner = self.bin.join("recipe-runner-rs");
-        write_executable(&runner, runner_body, 0o755);
+        let capability = r#"case "$1" in --capabilities) printf '%s\n' '{"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]}'; exit 0 ;; esac"#;
+        let body = runner_body.replacen('\n', &format!("\n{capability}\n"), 1);
+        write_executable(&runner, &body, 0o755);
         let mut c = self.amplihack();
         c.arg("recipe")
             .arg("run")
@@ -456,6 +468,7 @@ impl Fx {
             .spawn()
             .unwrap();
         let pid = child.id();
+        self.proc.link_own(pid);
         self.children.push(child);
         pid
     }
@@ -525,6 +538,65 @@ impl SeedRun {
             .push(("target", path.to_path_buf(), String::new()));
         self
     }
+
+    /// Issue #2039: a 5-field line
+    /// `target<TAB><path><TAB><TAB><origin><TAB><checkout>`.
+    pub fn owns_new_target(mut self, path: &Path, origin: &str, checkout: &Path) -> Self {
+        self.owned.push((
+            "target",
+            path.to_path_buf(),
+            format!("\t{origin}\t{}", checkout.display()),
+        ));
+        self
+    }
+
+    /// A run that is still active: this test process's pid and start ticks.
+    pub fn active() -> Self {
+        let pid = std::process::id();
+        let mut run = Self::ended(0);
+        run.pid = pid;
+        run.pid_start_ticks = start_ticks(pid);
+        run.ended_hours_ago = None;
+        run
+    }
+}
+
+/// Issue #2039: the hook's target name for `checkout`, computed the way the
+/// hook does (`printf '%s' "$top" | sha256sum`, first 12 hex characters).
+pub fn hook_target_name(checkout: &Path) -> String {
+    let out = Command::new("/bin/sh")
+        .arg("-c")
+        .arg("printf '%s' \"$1\" | sha256sum | cut -c1-12")
+        .arg("sh")
+        .arg(checkout)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", describe(&out));
+    format!(
+        "amplihack-precommit-target-{}",
+        String::from_utf8_lossy(&out.stdout).trim()
+    )
+}
+
+/// Issue #2039: a cargo-shaped target folder at `path` (profile with
+/// `.fingerprint`, `.cargo-lock` files, `.rustc_info.json`, a tag, a blob).
+pub fn cargo_target_at(path: &Path) -> PathBuf {
+    fs::create_dir_all(path.join("debug/.fingerprint")).unwrap();
+    fs::write(path.join(".rustc_info.json"), "{}").unwrap();
+    fs::write(path.join(".cargo-lock"), "").unwrap();
+    fs::write(path.join("debug/.cargo-lock"), "").unwrap();
+    fs::write(
+        path.join("CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55\n",
+    )
+    .unwrap();
+    fs::write(path.join("debug/blob"), vec![7u8; 256]).unwrap();
+    path.to_path_buf()
+}
+
+/// True when something (a file, folder or link, even dangling) is at `path`.
+pub fn present(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
 }
 
 /// The pid of a process that has exited.

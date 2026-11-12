@@ -1,8 +1,10 @@
 //! Issue #1870: the freshness gate. A swap target chosen by its reading is
 //! accepted only when that reading is fresh: taken no more than
-//! [`MAX_READING_AGE_SECS`] ago, not earlier than the live login's reading,
-//! and, for a login in the ledger's `swapped_away`, strictly after the swap
-//! away from it. A stale target is read again, by the user's probe method
+//! [`MAX_READING_AGE_SECS`] ago, not earlier than the live login's reading
+//! (taken as no later than when the cycle started measuring, [`live_time`]),
+//! and, for a login in the ledger's `swapped_away` or the ledger's
+//! `previous` (the login the last swap left, issue #2211), strictly after the
+//! swap away from it. A stale target is read again, by the user's probe method
 //! (`AMPLIHACK_PROFILE_USAGE_PROBE`) with passive readings off, and the
 //! decision is made again on the new figures. See "Rotate reading freshness and
 //! swap-back damping" in docs/reference/profile-command.md.
@@ -23,6 +25,9 @@ use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::probe_limits::ProbeMode;
 use crate::commands::profile::usage_source::SourceEnv;
 use std::time::{Duration, Instant};
+
+#[path = "live_fresh.rs"]
+pub(super) mod live;
 
 /// The oldest a target's reading may be. It equals the default passive
 /// age (`DEFAULT_PASSIVE_MAX_AGE_SECS`) and the usage history's limit, so a
@@ -64,6 +69,22 @@ pub fn read_at(p: &Probed, measured_at: i64) -> Option<i64> {
     Some(p.observed_at.unwrap_or(measured_at))
 }
 
+/// The live reading time the gate compares targets with: the live probe's
+/// reading time ([`read_at`]), but never later than `measured_at`, when the
+/// cycle started measuring. `None` when the live probe has no reading time.
+///
+/// The cap is for the issue #2211 live re-read. It runs after the
+/// measurement, so it is dated after `measured_at`, while a target read
+/// directly in the same measurement is dated `measured_at`. Without the cap
+/// every such target would be "older than the live reading" whenever the
+/// measurement crossed a second boundary: one more usage read per target,
+/// and a false `no-capacity` ALERT when that read failed. A target passive
+/// reading taken before the measurement is still older than the live
+/// reading, as it is next to a direct live read.
+pub fn live_time(live: &Probed, measured_at: i64) -> Option<i64> {
+    read_at(live, measured_at).map(|at| at.min(measured_at))
+}
+
 /// Whether a reading taken at `read_at` is stale `now`: no reading time,
 /// more than [`MAX_READING_AGE_SECS`] old, strictly older than the live
 /// reading (`None` when the live probe failed), or, for a damped login, not
@@ -91,7 +112,8 @@ pub fn gated_target(d: &Decision) -> Option<&ProfileName> {
             | Reason::Upgrade
             | Reason::PlanRoom
             | Reason::FailedProbe
-            | Reason::OverflowOut => Some(to),
+            | Reason::OverflowOut
+            | Reason::Projected => Some(to),
             Reason::OverflowIn => None,
         },
         Decision::Stay | Decision::Alert => None,
@@ -154,14 +176,22 @@ pub(super) fn settle(
     let Some((live, mut probes)) = m.probed.clone() else {
         return Ok(m);
     };
-    let damped = ctx
-        .rs
-        .load_ledger()?
-        .map(|l| l.swapped_away)
-        .unwrap_or_default();
-    let live_at = read_at(&live, m.measured_at);
+    let ledger = ctx.rs.load_ledger()?;
+    // Issue #2211: the login the last swap left, and when. Its reading must
+    // be taken after it stopped being used, whether or not it was full.
+    let left = ledger
+        .as_ref()
+        .and_then(|l| Some((l.previous.clone()?, l.swapped_at?)));
+    let damped = ledger.map(|l| l.swapped_away).unwrap_or_default();
+    // Capped at `measured_at`: a live re-read made after the measurement
+    // does not make this measurement's own target readings stale.
+    let live_at = live_time(&live, m.measured_at);
     let mut lines = std::mem::take(&mut m.fresh_lines);
     let mut done: Vec<ProfileName> = Vec::new();
+    // Targets whose re-read logged new figures. If such a reading is still
+    // stale on the next pass, the target is made unknown with its own line,
+    // so the log does not read as if the re-read had been accepted.
+    let mut accepted: Vec<ProfileName> = Vec::new();
     let mut reads = 0;
     let started = Instant::now();
     // Each name is handled at most twice: read (or made unknown), then made
@@ -173,8 +203,13 @@ pub(super) fn settle(
             break;
         };
         let damped_at = damped.get(to.as_str()).copied();
-        let t = now();
-        if !stale(read_at(&probes[i].1, m.measured_at), live_at, damped_at, t) {
+        let left_at = left
+            .as_ref()
+            .filter(|(from, _)| from == to.as_str())
+            .map(|(_, at)| *at);
+        let t = (ctx.now)();
+        let after = damped_at.max(left_at);
+        if !stale(read_at(&probes[i].1, m.measured_at), live_at, after, t) {
             break;
         }
         if handled >= max_handled {
@@ -184,6 +219,9 @@ pub(super) fn settle(
         let new = if done.contains(&to) || mode == Reread::Never {
             // Under the lock, or a re-read that is still not strictly later
             // than the damping time (a clock step): unknown, with no read.
+            if accepted.contains(&to) {
+                lines.push(fresh_msg::failed(&to));
+            }
             Probed::failed()
         } else if reads >= MAX_REREADS_PER_CYCLE {
             lines.push(fresh_msg::limit(&to));
@@ -202,7 +240,11 @@ pub(super) fn settle(
             } else {
                 reads += 1;
                 let p = reread(ctx, &to, left);
-                fresh_probe(ctx, &to, &probes[i].1, p, damped_at.is_some(), &mut lines)
+                let p = fresh_probe(ctx, &to, &probes[i].1, p, damped_at.is_some(), &mut lines);
+                if p != Probed::failed() {
+                    accepted.push(to.clone());
+                }
+                p
             }
         } else {
             // No hook: nothing may be read, so the target is unknown.
@@ -233,13 +275,17 @@ fn fresh_probe(
     damped: bool,
     lines: &mut Vec<String>,
 ) -> Probed {
-    if p.reading == Reading::Failed || p.unknown || p.still_running {
+    if p.reading == Reading::Failed || p.unknown || p.still_running || p.carried {
         lines.push(fresh_msg::failed(to));
         return Probed::failed();
     }
-    // The reading time of a re-read is when it finished.
-    p.observed_at = Some(now());
+    // Preserve the evidence time. Only an undated direct result receives
+    // the completion time; the next gate pass validates dated results.
+    p.observed_at.get_or_insert_with(ctx.now);
     p.carried = false;
+    // Issue #1970: a re-read is made with passive readings off, so it is a
+    // direct reading and never checked as a stale cached one.
+    p.passive = false;
     lines.push(fresh_msg::stale(to, &Shown::of(old), &Shown::of(&p)));
     if damped && !swap_back::room(&p.reading, &ctx.settings) {
         lines.push(fresh_msg::still_damped(to));
@@ -277,4 +323,17 @@ pub fn reread_as_configured(ctx: &Ctx, name: &ProfileName, left: Duration) -> Pr
     let env = reread_env(measure::mode_quiet(), left);
     let reader = measure::reader(ctx, env, 1, now());
     measure::reading(name.as_str(), &reader.profile(name, false))
+}
+
+/// Issue #2211: the production re-read of the live login `name`. Like
+/// [`reread_as_configured`], but it reads the login in `~/.claude` (under
+/// `ctx.home`), as the cycle's measurement reads the live login, never the
+/// profile directory's copy, which is stale or missing while the login is
+/// live. A live read never refreshes the token (SR-3(d) in
+/// `usage_cmd::RowReader::plan`; only the rotate prelude does, #1753) and
+/// writes nothing.
+pub fn reread_live_as_configured(ctx: &Ctx, name: &ProfileName, left: Duration) -> Probed {
+    let env = reread_env(measure::mode_quiet(), left);
+    let reader = measure::reader(ctx, env, 1, now());
+    measure::reading(name.as_str(), &reader.profile(name, true))
 }

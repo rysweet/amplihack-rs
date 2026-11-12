@@ -1,6 +1,7 @@
 //! Delivery-aware command builders for launcher subprocesses.
 
 mod codex_args;
+pub mod codex_options;
 
 use std::ffi::OsStr;
 use std::io::{self, ErrorKind};
@@ -156,9 +157,28 @@ pub fn build_tool_command_from_env(
     build_tool_command_with_prompt_delivery(binary, project_path, extra_args, prompt, from_env())
 }
 
+/// Build with a retained validated target while preserving Codex prompt delivery.
+pub(crate) fn build_codex_command_at(
+    executable: &std::path::Path,
+    project_path: &std::path::Path,
+    args: &[String],
+    prompt: &str,
+) -> io::Result<DeliveredCommand> {
+    let requested = from_env();
+    validate_prompt_delivery_request(AgentBinary::Codex, requested)?;
+    let mut command = Command::new(executable);
+    command.current_dir(project_path);
+    describe_launched_session(&mut command, "codex");
+    finish_codex_delivery(command, args, prompt, requested)
+}
+
 /// Codex has separate interactive and unattended prompt contracts. Never pipe
 /// interactive stdin: it belongs to the terminal, including during resume.
 /// Root option values are consumed before classifying the native command.
+///
+/// Issue #2030: `exec` reads the prompt on stdin through a trailing `-`;
+/// interactive Codex gets the file-reference pointer. The prompt is never in
+/// argv: a request for `argv` is treated like `auto`.
 fn finish_codex_delivery(
     mut command: Command,
     args: &[String],
@@ -213,29 +233,16 @@ fn finish_codex_delivery(
             d
         })
     } else {
-        if prompt.len() > 96 * 1024 {
-            return Err(invalid(
-                "Codex interactive prompt exceeds safe argv size; use exec for full stdin delivery",
-            ));
-        }
-        if matches!(requested, PromptDelivery::Stdin | PromptDelivery::Tempfile) {
-            return Err(invalid(
-                "Codex interactive mode requires terminal stdin and positional prompt delivery; use exec",
-            ));
-        }
         if !mode.delimiter {
             command.arg("--");
         }
-        finish_prompt_delivery(
-            command,
-            prompt,
-            PromptDelivery::Argv,
-            DeliveryCaps::argv_only(),
-        )
-        .map(|mut d| {
-            d.requested_mode = requested;
-            d
-        })
+        // Interactive stdin belongs to the terminal, so stdin is cleared from
+        // the caps; the positional prompt is the pointer sentence.
+        let caps = DeliveryCaps {
+            supports_stdin: false,
+            ..prompt_delivery_caps_for(AgentBinary::Codex)
+        };
+        finish_prompt_delivery(command, prompt, requested, caps)
     }
 }
 
@@ -266,8 +273,8 @@ fn warnings_for(
     caps: &DeliveryCaps,
 ) -> Vec<DeliveryWarning> {
     let unsupported = match requested {
-        PromptDelivery::Auto => false,
-        PromptDelivery::Argv => !caps.supports_argv,
+        // #2030 R1.2: an `Argv` request is treated as `Auto`, not degraded.
+        PromptDelivery::Auto | PromptDelivery::Argv => false,
         PromptDelivery::Tempfile => !caps.supports_tempfile,
         PromptDelivery::Stdin => !caps.supports_stdin,
     };
@@ -368,6 +375,35 @@ mod root_sandbox_tests {
             let error = build(AgentBinary::Claude, decision).expect_err("refused up front");
             assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
             assert!(error.to_string().contains("IS_SANDBOX=1"), "{error}");
+        }
+    }
+
+    /// Issue #2030 R1.2: these builders are called with `PromptDelivery::Argv`;
+    /// the request is treated as `Auto`, so the prompt never reaches argv.
+    #[test]
+    fn argv_request_never_puts_the_prompt_in_argv() {
+        for binary in [
+            AgentBinary::Claude,
+            AgentBinary::Copilot,
+            AgentBinary::Codex,
+        ] {
+            let delivered = build_tool_command_with_root_sandbox(
+                binary,
+                Path::new("."),
+                &[],
+                "hello-sentinel-2030",
+                PromptDelivery::Argv,
+                || root_sandbox::SkipPermissionsEnv::NotRoot,
+            )
+            .unwrap();
+            assert_ne!(delivered.selected_mode, DeliveryMode::Argv, "{binary:?}");
+            assert!(
+                delivered
+                    .command
+                    .get_args()
+                    .all(|a| !a.to_string_lossy().contains("hello-sentinel-2030")),
+                "{binary:?}: prompt in argv"
+            );
         }
     }
 
