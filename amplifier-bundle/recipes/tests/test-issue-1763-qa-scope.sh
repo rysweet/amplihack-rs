@@ -851,15 +851,17 @@ expect_helper gate-head-empty autodrive_gadugi_required "true" "$B" AUTODRIVE_QA
 repo Cargo.toml web/package.json web/src/app.ts; base; change web/src/app.ts
 PRH="$(git -C "$REPO" rev-parse HEAD)"; git -C "$REPO" update-ref HEAD refs/remotes/origin/main
 expect_helper gate-head-web autodrive_gadugi_required "true" "$B" AUTODRIVE_QA_HEAD="$PRH"
-# The one statement that asks, from `GADUGI_REQ="$(` to its `|| GADUGI_REQ="true"`.
+# The one statement that asks (#2458: before section 5, with the declaration), from
+# `BASE_REF="$(field ... baseRefName` to its fail-closed `|| QA_GREQ="true"`.
 GCOUNT="$(grep -v '^[[:space:]]*#' "$GATE" | grep -c 'autodrive_gadugi_required')"
-GLINE="$(awk '/^[[:space:]]*GADUGI_REQ="\$\(/ { on = 1 } on { print } on && /GADUGI_REQ="true"/ { exit }' "$GATE")"
+GLINE="$(awk '/^BASE_REF="\$\(field/ { on = 1 } on { print } on && /QA_GREQ="true"$/ { exit }' "$GATE")"
 if [ "$GCOUNT" = 1 ] && printf '%s' "$GLINE" | grep -q 'autodrive_gadugi_required' \
-   && printf '%s' "$GLINE" | grep -qF 'AUTODRIVE_QA_BASE=' \
+   && printf '%s' "$GLINE" | grep -qF 'AUTODRIVE_QA_BASE="$BASE_REF"' \
    && printf '%s' "$GLINE" | grep -qF 'baseRefName' \
    && ! printf '%s' "$GLINE" | grep -qF 'AUTODRIVE_QA_BASE:-' \
    && printf '%s' "$GLINE" | grep -qF 'AUTODRIVE_QA_HEAD="$HEAD_SHA"' \
-   && printf '%s' "$GLINE" | grep -qF 'GADUGI_REQ="true"'; then
+   && printf '%s' "$GLINE" | grep -qF '[ "$QA_GREQ" = "false" ] || QA_GREQ="true"' \
+   && grep -qF 'GADUGI_REQ="$QA_GREQ"' "$GATE"; then
     pass gate-line "the gate sets AUTODRIVE_QA_BASE and AUTODRIVE_QA_HEAD from its own baseRefName and headRefOid, fail-closed"
 else fail gate-line "gate line is: ${GLINE:-<none>}"; fi
 
@@ -894,9 +896,9 @@ for fn in autodrive_qa_config autodrive_qa_ci autodrive_qa_report; do
     grep -q "^${fn}()" "$SOURCES" && pass "sources-fn:$fn" "defined in autodrive_qa_sources.sh" \
         || fail "sources-fn:$fn" "not defined in autodrive_qa_sources.sh"
 done
-# The merge gate needs only the scope file; the declared sources stay out of it.
-code "$TRUST" | grep -q 'autodrive_qa_sources' && fail trust-sources "autodrive_trust.sh loads the sources file" \
-    || pass trust-sources "the gate path never loads autodrive_qa_sources.sh"
+# #2458: autodrive_trust.sh loads the sources file too, so the gate reads the base qa.toml declaration.
+grep -q 'shellcheck source=autodrive_qa_sources.sh' "$TRUST" && pass trust-sources "autodrive_trust.sh loads autodrive_qa_sources.sh" \
+    || fail trust-sources "autodrive_trust.sh does not load autodrive_qa_sources.sh"
 grep -q 'shellcheck source=autodrive_qa_scope.sh' "$TRUST" && pass trust-directive "autodrive_trust.sh has the shellcheck source= directive" \
     || fail trust-directive "autodrive_trust.sh lacks '# shellcheck source=autodrive_qa_scope.sh'"
 grep -q 'BASH_SOURCE' "$TRUST" && grep -q '_AD_SCOPE_OK' "$TRUST" && pass trust-loader "the loader uses BASH_SOURCE and _AD_SCOPE_OK" \

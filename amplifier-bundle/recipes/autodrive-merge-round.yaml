@@ -77,7 +77,7 @@ steps:
       bash "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_worktree_guard.sh" round-guard || { echo "STOP: review-dir guard refused or not found under AUTODRIVE_LAUNCH_TOOLS (#1528) [autodrive-merge-round/step-00]" >&2; exit 1; }
     output: "review_index"
   # merge-ready refuses agents, so bash finds its files for step-02; a missing install fails here by name (#1517). So does gadugi-test
-  # where criterion 1 needs it: autodrive_gadugi_required (a Node repository or an operator-set AUTODRIVE_QA_SCENARIO_DIR).
+  # where criterion 1 needs it: autodrive_gadugi_required (Node, or AUTODRIVE_QA_SCENARIO_DIR; a HEAD qa.toml declaration skips only this check, #2458).
   - id: "step-00-merge-ready-files"
     type: "bash"
     parse_json: true
@@ -310,18 +310,20 @@ steps:
       - **qa-team scenarios** with `gadugi_status` `NO_SCENARIOS`,
         `VALIDATE_FAILED` or `RUN_FAILED`, or tests that miss the changed
         behaviour (`qa-team-scenarios-do-not-cover-the-change`): use
-        `Skill(skill="qa-team")` and follow its repo-type table. Where
-        `gadugi_required` is `false` (a Rust CLI or Python repository), add
-        the coverage to the suite command's tests, `cargo test` or `pytest`;
-        auto-drive runs no gadugi scenario there, so one clears nothing.
+        `Skill(skill="qa-team")` and its repo-type table. Where
+        `gadugi_required` is `false` (a Rust CLI or Python repository, or a base branch qa.toml
+        declaration: `qa_criterion1_declaration` not `none`), add coverage to the suite
+        command's tests (`cargo test`, `pytest`, the qa.toml command); a gadugi scenario clears nothing.
+        Never add `multi_area` or `scenarios_ci_job` to qa.toml: the base
+        branch owns them (a qa.toml changed here is `changed-in-pr`).
         Where `gadugi_required` is `true`, write top-level `*.yaml`
-        scenarios, each with a top-level `name:`, in `gadugi_scenario_dir`. Run
+        scenarios, each with a top-level `name:`, in `gadugi_scenario_dir`,
+        using no timer, sleep or wait and no file outside the brief. Run
         `gadugi-test validate -d <dir>`, then each scenario on its own
         (gadugi-agentic-test #207), never a whole directory:
         `gadugi-test run -d <dir> --scenario "<name>"`. Commit them. Never
         delete or weaken a failing scenario to reach a pass. If
-        `gadugi_scenario_dir` is absolute or outside this repository, write
-        nothing there; report `gadugi-scenario-dir-outside-repo`.
+        `gadugi_scenario_dir` is absolute or outside this repository, write nothing there; report `gadugi-scenario-dir-outside-repo`.
       - **`qa-unresolved`**, **`qa-config-invalid`**: operator action, not a code fix: set
         AUTODRIVE_QA_COMMAND or fix/add .amplihack/qa.toml; keep the blocker.
       - **`gadugi-test-missing`**: only a person can install `gadugi-test`. Do

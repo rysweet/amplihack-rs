@@ -2,7 +2,7 @@
 title: Auto Drive To Merge Reference
 description: Auto-drive phases, review completion, follow-up recording and merge evidence.
 doc_type: reference
-last_updated: 2026-11-11
+last_updated: 2026-11-12
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -1527,7 +1527,23 @@ a Node repository, or any repository where the operator sets
 run in seconds, and the auto-drive skill lists it under Prerequisites. In a
 Rust CLI or Python repository the step prints `{"gadugi_test":"not-required"}`
 and the run goes on without it. Step-00 checks again by the same rule, in case
-the tool goes away during the run. When it is missing, step-00 fails the round with
+the tool goes away during the run.
+
+These preflights (`autodrive-prerequisites`, the matching step of
+`auto-drive-light.yaml`, and merge-round step-00) run with
+`AUTODRIVE_QA_BASE` unset, so they have no merge base. There,
+`autodrive_qa_declaration` reads a
+[criterion-1 declaration](#declaring-how-criterion-1-is-met-2458) from
+`.amplihack/qa.toml` in the checkout's committed `HEAD`, by passing
+`decl-only` as the second argument of `autodrive_qa_config`. That mode prints
+only `decl<TAB><token>`, never the command or `dir`. Only an
+unset `AUTODRIVE_QA_BASE` selects it; set but empty, the merge base is
+unknown and the declaration is `none`. A `HEAD` declaration can only skip
+the `gadugi-test` install check. The evidence tool and the merge gate decide
+criterion 1 again from the merge base, so a declaration added by the pull
+request never meets criterion 1; at worst the round is `BLOCKED` later.
+
+When `gadugi-test` is missing, step-00 fails the round with
 `ERROR: gadugi-test-not-installed: gadugi-test is not on PATH`, which names
 the install command (`npm install -g github:rysweet/gadugi-agentic-test#6c120657798995b1b53399a5acf3693d418a2d8b`).
 Reported instead as the blocker `gadugi-test-missing`, it would repeat every
@@ -1634,7 +1650,10 @@ repository whose only crate is `ws/Cargo.toml`,
 `AUTODRIVE_QA_COMMAND=make AUTODRIVE_QA_DIR=sub` runs `make` in `sub` and
 records `qa_dir` `sub`, while `qa_scenarios` still lists
 `ws/tests/parity/scenarios/*.yaml`. When detection is `unresolved`, the
-parity directory is `.`.
+parity directory is `.`. The one exception is a
+[criterion-1 declaration](#declaring-how-criterion-1-is-met-2458) in the
+merge-base qa.toml, which can turn a detected gadugi requirement off; the
+command itself never does.
 
 ##### The operator environment
 
@@ -1692,6 +1711,18 @@ of TOML, from a copy of at most 4097 bytes taken before parsing:
   return or any other byte rejects the file.
 - `command` is required and must split into at least one word. `dir` is
   optional, and defaults to `.`.
+- `multi_area` and `scenarios_ci_job` are optional and declare how
+  criterion 1 is met; see
+  [Declaring how criterion 1 is met](#declaring-how-criterion-1-is-met-2458).
+  `multi_area` accepts the one value `command`. `scenarios_ci_job` is a
+  check-run name of 1 to 128 bytes from `A-Z a-z 0-9`, space and
+  `. _ / ( ) + : , @ % -`, checked byte by byte with `LC_ALL=C`. A file may
+  give one of the two, not both. Neither replaces `command`, which stays
+  required.
+- The checks run in this order, and the first that fails names the problem:
+  `syntax`, `unknown-key`, `duplicate-key`, `declaration-conflict`,
+  `unknown-value`, `missing-command`, `unsafe-command`, then the `dir`
+  checks.
 - The command, after the quotes are removed, uses only letters, digits,
   spaces and `. _ / - = + : , @ %`. A `$`, backtick, quote, `\`, `;`, `&`,
   `|`, `<`, `>`, `(`, `)`, `*`, `?`, `[`, `]`, `{`, `}`, `~`, `!` or `#`
@@ -1715,8 +1746,10 @@ names the problem token only; no part of the file's content is ever printed.
 | `not-regular` | In the merge-base tree, `.amplihack` is not a directory, or `qa.toml` is not a regular file; or the blob read back is not the size its entry gives. |
 | `too-large` | The file is longer than 4096 bytes. |
 | `syntax` | A line that is not blank, a comment or `key = "value"`: a table header, a single-quoted or unterminated string, a backslash, a trailing comment, or a byte outside tab and printable ASCII. |
-| `unknown-key` | A key other than `command` or `dir`. |
+| `unknown-key` | A key other than `command`, `dir`, `multi_area` or `scenarios_ci_job`. |
 | `duplicate-key` | A key given twice. |
+| `declaration-conflict` | Both `multi_area` and `scenarios_ci_job` are given. They set different criterion-1 rules, so neither is chosen silently. |
+| `unknown-value` | `multi_area` is not `command`, or `scenarios_ci_job` is empty, longer than 128 bytes, or holds a byte outside its alphabet. |
 | `missing-command` | No `command`, or one made only of spaces. |
 | `unsafe-command` | A command byte outside the command alphabet. |
 | `unsafe-dir` | A `dir` that breaks the directory rule. |
@@ -1724,6 +1757,13 @@ names the problem token only; no part of the file's content is ever printed.
 | `changed-in-pr` | The pull request changes `.amplihack/qa.toml`, or `.amplihack` itself. A workflow edit does not refuse the file. |
 | `paths-empty` | The diff from the merge base to the head is empty, so there is no pull request change to show that the file is unchanged. |
 | `paths-unknown` | The changed paths are `(unknown)`, or no base was given, so the tool cannot show that the file is unchanged. With no merge base, the file is looked up in `HEAD` only to decide whether it is present. |
+
+Only `autodrive_qa_declaration` passes `decl-only` as the second argument of
+`autodrive_qa_config`, and only when `AUTODRIVE_QA_BASE` is unset. In that
+mode the function prints one `decl<TAB><token>` line in place of `ok`, never
+the command or `dir`.
+`autodrive_qa_report` never passes it, so a report with no base still gives
+`invalid` with `paths-unknown`.
 
 These tokens are the complete set. The command runs exactly as a word
 command does:
@@ -1736,6 +1776,109 @@ It is split into words with globbing off, never passed to `bash -c` or
 `eval`, and its first word is checked with the same installed check as
 `AUTODRIVE_QA_COMMAND`. A value such as `command = "$(touch pwned)"` is
 rejected as `unsafe-command` and runs nothing.
+
+##### Declaring how criterion 1 is met (#2458)
+
+Where detection would require gadugi scenarios, a repository can say in its
+base-branch `.amplihack/qa.toml` how criterion 1 is met instead. Detection
+requires them for a `node` project, and for an `unresolved` result where any
+candidate directory has a `package.json`, which is the usual case for a pull
+request that spans several top-level folders of a repository with a root
+`package.json`. Without a declaration, such a repository needs gadugi YAML
+scenarios even when its own suite, and its own scenarios in another format,
+pass.
+
+There are two declarations. A file gives at most one.
+
+| Key | Value | `qa_criterion1_declaration` | Criterion 1 is met when |
+| --- | --- | --- | --- |
+| `multi_area` | `command` | `multi-area-command` | The qa.toml `command` exits `0`. No gadugi scenario is searched for or run. |
+| `scenarios_ci_job` | A check-run name, such as `"scenarios"` | `ci-job:<name>` | The qa.toml `command` exits `0`, **and** at the head commit the merge gate finds a check-run with exactly that name and every check-run with that name passed. |
+
+A repository whose scenarios are JSON and TypeScript files run by its own
+test command declares the first:
+
+```toml
+# .amplihack/qa.toml
+command = "npm test"
+multi_area = "command"
+```
+
+With that file at the merge base, a pull request that changes `api/`,
+`web/` and `infra/` and does not touch `.amplihack/qa.toml` records:
+
+```console
+$ jq -r '.qa_status, .gadugi_required, .gadugi_status, .qa_criterion1_declaration' "$EVIDENCE"
+PASS
+false
+NOT_REQUIRED
+multi-area-command
+```
+
+Without the `multi_area` line, the same pull request records `FAIL`,
+`no-scenarios`, `gadugi_required` `true` and declaration `none`, as before
+#2458.
+
+A repository whose scenarios run in CI names the job instead. The name is the
+check-run name GitHub shows at the head, the job's `name:` or its key, not
+the workflow's name:
+
+```toml
+# .amplihack/qa.toml
+command = "npm run lint"
+scenarios_ci_job = "scenarios"
+```
+
+The evidence then records `qa_criterion1_declaration` `ci-job:scenarios` and
+`gadugi_required` `false`, and the merge gate reads the job's result itself
+(see [The gate checks a declared CI job](#the-gate-checks-a-declared-ci-job)).
+The qa.toml command still runs and must pass; the CI job is an extra
+condition, not a replacement. A repository that wants the CI job alone
+declares a command that only exits `0`, such as `command = "true"`.
+
+**Where the declaration is read from.** Only from the merge-base tree, by the
+same `git ls-tree` and `git cat-file` reads as `command`. A pull request that
+adds, changes or removes `.amplihack/qa.toml` is refused with `changed-in-pr`
+before the file is parsed, so its declaration is `none` and the round is
+`BLOCKED` with `qa-config-invalid`. A pull request cannot set the rule it is
+judged by ([#2439](https://github.com/rysweet/amplihack-rs/issues/2439)). A
+repository's first declaration therefore takes effect from the pull request
+after the one that adds it.
+
+**When a declaration has no effect.** `autodrive_qa_declaration <dir>` prints
+one line, `none`, `multi-area-command` or `ci-job:<name>`, and always exits
+`0`. It prints `none`, and gadugi stays required wherever detection requires
+it, when:
+
+- `AUTODRIVE_QA_SCENARIO_DIR` is set: the operator asked for gadugi
+  scenarios;
+- `AUTODRIVE_QA_COMMAND` or `AUTODRIVE_QA_COMMANDS` is set, even to the empty
+  string, because then qa.toml is not read at all;
+- qa.toml is absent, or invalid for any reason, `changed-in-pr`,
+  `paths-unknown` and `paths-empty` included;
+- the merge base is unknown, or a git read fails;
+- `autodrive_qa_sources.sh` did not load beside `autodrive_trust.sh`;
+- for `scenarios_ci_job` only: the pull request changes `.github/workflows/`
+  or `.amplihack/qa.toml`. A pull request could otherwise rename or rewrite
+  the job it is judged by. `qa_summary` then names
+  `ci-job-workflow-changed`.
+
+Every failure gives `none`, so no fault can lift criterion 1. Environment
+variables can only make the rule stricter. A declaration changes nothing
+where gadugi is already not required: a Rust or Python project, or a
+[documentation-only pull request](#documentation-only-pull-requests).
+
+**Agents do not write declarations or scenarios to meet it.** Merge-round
+step-04 is told:
+
+- when the declaration is not `none`, criterion 1 is met by that declaration
+  and no gadugi scenario is written;
+- when gadugi scenarios are required, they must not use timers, sleeps or
+  waits, and no file outside the task brief is created or edited to satisfy
+  criterion 1;
+- a declaration is never added or changed by the round. The base branch's
+  maintainers own it, and a pull request change to qa.toml is refused as
+  `changed-in-pr` anyway.
 
 ##### The CI workflows
 
@@ -2125,11 +2268,19 @@ rust-cli	.
 When `autodrive_qa_scope.sh` is missing, is a symlink, or fails to load,
 `autodrive_trust.sh` defines a fallback `autodrive_qa_target` that prints
 `unknown`, `.`, and `autodrive_gadugi_required` answers `true`. The declared
-sources, `autodrive_qa_config` and `autodrive_qa_ci`, live in
-`autodrive_qa_sources.sh`, which only the evidence tool loads, from its own
-directory and only as a regular file; the merge gate never loads it. When
-either file is missing, the evidence tool writes `BLOCKED` with
-`qa-command-missing`. A broken install therefore blocks; it never passes.
+sources, `autodrive_qa_config`, `autodrive_qa_ci` and
+`autodrive_qa_declaration`, live in `autodrive_qa_sources.sh`.
+`autodrive_trust.sh` loads it after the scope file, from its own directory,
+only as a regular file and never a symlink, and only when the scope file
+loaded; it then sets `_AD_SOURCES_OK=1`. Before loading either file it runs
+`unset -f` on `autodrive_qa_config`, `autodrive_qa_declaration` and
+`autodrive_qa_report`, so a function of the same name inherited from the
+caller's shell is never used. Every caller checks both `_AD_SOURCES_OK` and
+`declare -F` before using a declaration. The evidence tool and the merge gate
+both get the file through `autodrive_trust.sh`, and the merge guard lists it
+as a gate file. When either file is missing, the evidence tool writes
+`BLOCKED` with `qa-command-missing`, and the declaration is `none`. A broken
+install therefore blocks; it never passes.
 
 **Computed once.** `_autodrive_qa_scan` runs the diff and the tree walk, and
 `_autodrive_qa_choose` makes the project choice, once per directory, base and
@@ -2138,13 +2289,25 @@ head in a shell. The evidence tool asks every question through
 `git ls-tree -r`; a regression test counts them.
 
 `autodrive_gadugi_required <dir>` returns `true` when
-`AUTODRIVE_QA_SCENARIO_DIR` is set, when the scope file did not load, or when
-the merge base is unknown; those three are decided first and nothing lifts
-them. Failing those, it returns `true` when the chosen type is `node`, or when
-the result is `unresolved` and any candidate directory has a `package.json`,
-unless `autodrive_qa_docs_only` says `true`, which exempts a
+`AUTODRIVE_QA_SCENARIO_DIR` is set or when the scope file did not load; those
+two are decided first and nothing lifts them. Next it returns `false` when
+`autodrive_qa_docs_only` says `true`, which exempts a
 [documentation-only pull request](#documentation-only-pull-requests).
-Otherwise it returns `false`.
+Detection follows: it returns `true` when the merge base is unknown, when the
+chosen type is `node`, or when the result is `unresolved` and any candidate
+directory has a `package.json`. A `true` from detection stands unless
+`autodrive_qa_declaration` prints anything other than `none`, which applies a
+[criterion-1 declaration](#declaring-how-criterion-1-is-met-2458); with an
+unknown merge base the declaration is always `none`, so nothing lifts that
+case either. Otherwise it returns `false`. The order is: scenario directory,
+scope file missing, documentation-only, detection (including the unknown
+merge base), declaration.
+
+`autodrive_qa_report` prints a `decl<TAB><token>` line after the `greq` line
+on every path, including the early return for an operator command, where the
+token is `none`. When `autodrive_qa_config` finds a declaration it adds a
+fourth tab field, `multi-area-command` or `ci-job:<name>`, to its `ok` line;
+with no declaration the line keeps its three fields.
 
 ##### The QA_UNRESOLVED result
 
@@ -2295,6 +2458,7 @@ written under `umask 077`. A failed temporary file gives
 | --- | --- |
 | `qa_status`, `qa_reason`, `gadugi_status`, `qa_summary` | As above. `gadugi_status` is `NOT_REQUIRED` where gadugi is not required. |
 | `gadugi_required` | `true` or `false`, from `autodrive_gadugi_required`. The gate decides it again from its own `baseRefName` and `headRefOid` (passed as `AUTODRIVE_QA_HEAD`, not the checkout's `HEAD`, which is normally the base branch), and does not read this field. A head commit missing from the clone makes gadugi required. |
+| `qa_criterion1_declaration` | `none`, `multi-area-command` or `ci-job:<name>`: the [criterion-1 declaration](#declaring-how-criterion-1-is-met-2458) used, from the `decl` line of `autodrive_qa_report`. The tool checks the line again against the same whitelist, and anything else is recorded as `none`. A record only: the gate computes the declaration itself and does not read this field. |
 | `docs_only` | `true`, `false` or `unknown`, from `autodrive_qa_docs_only`: whether every changed path is [documentation](#documentation-only-pull-requests). Recorded as its own measurement so that the round reads why gadugi was not required instead of inferring it. The gate decides it again and does not read this field. |
 | `qa_repo_type`, `qa_round` | `configured` for the `env`, `repo-file` and `ci` sources, else the detected `rust-cli`, `node`, `python` or `unknown`; the round label. |
 | `qa_command_source` | `env`, `repo-file`, `ci` or `detected`: the [source](#choosing-the-qa-command) that gave the command. `""` when none did. |
@@ -2314,8 +2478,13 @@ For `NO_SCENARIOS`, `VALIDATE_FAILED`, `RUN_FAILED`, or step-02's
 `qa-team-scenarios-do-not-cover-the-change`, step-04 uses `qa-team` and
 follows its repo-type table. Where gadugi is required, it writes top-level
 `*.yaml` scenarios with a `name:` in `gadugi_scenario_dir`, runs each, and
-commits. In a Rust CLI or Python repository it adds the missing coverage to
-`cargo test` or `pytest`, because auto-drive runs no gadugi scenario there. A
+commits. Those scenarios use no timers, sleeps or waits, and step-04 creates
+or edits no file outside the task brief to satisfy criterion 1. Where
+`qa_criterion1_declaration` is not `none`, criterion 1 is met by the
+base-branch declaration and step-04 writes no gadugi scenario; it never adds
+or changes a declaration itself. In a Rust CLI or Python repository it adds
+the missing coverage to `cargo test` or `pytest`, because auto-drive runs no
+gadugi scenario there. A
 failing scenario or test is fixed, never weakened or deleted. A directory
 outside the repository gives `gadugi-scenario-dir-outside-repo`.
 
@@ -2691,6 +2860,11 @@ runs the project it could read. The candidate list then names the error as
 never the working tree, and are refused when the pull request changes them
 (see
 [Declared commands come from the merge base](#declared-commands-come-from-the-merge-base)).
+The same holds for a
+[criterion-1 declaration](#declaring-how-criterion-1-is-met-2458): only the
+merge-base qa.toml can turn a detected gadugi requirement off, every fault
+leaves it on, and the merge gate computes the declaration itself rather than
+reading the evidence.
 Detected
 commands run in `qa_dir` and are found through the operator's `PATH`; where
 the program resolves, inside or outside the repository, is not checked. That
@@ -3270,7 +3444,7 @@ merges, it re-verifies and records:
 | CI | `autodrive_expected_checks.sh <HEAD_SHA> <baseRefName>`, run from the gate's own directory (see [Expected checks at the head](#expected-checks-at-the-head-2186)) | an expected check that was never created at `HEAD_SHA` (named); an expected check pending or not passed; any check at `HEAD_SHA` pending or failing; zero checks at `HEAD_SHA`; **or an expected set that cannot be read**. A missing helper, or one that blocks without printing a `blocker:` line, blocks with `expected checks unreadable`. |
 | qa-team scenarios | evidence file from this run | `qa_status` other than `PASS`, no evidence file, or evidence whose `head_sha` is missing or is not the SHA being merged |
 | qa evidence chain | `merge-ready-records.tsv`, `merge-ready-latest.json`, `qa-evidence.json` | any of them not private; `autodrive_qa_trusted` not `ok` (its token, or `qa-other`; see [The qa evidence hash chain](#the-qa-evidence-hash-chain)) |
-| gadugi scenarios | same evidence file, and `autodrive_gadugi_required .` on the checkout's own files, the same files the evidence step measured, with `AUTODRIVE_QA_BASE` set from the gate's own `baseRefName` so its changed paths match step-02's; an inherited value is replaced | Unless the gate's own `autodrive_gadugi_required` says `false` and `gadugi_status` is `NOT_REQUIRED`: `gadugi_status` other than `PASS`, or `gadugi_scenario_count` not a positive integer. An unreadable answer counts as required. |
+| gadugi scenarios | same evidence file, and `autodrive_gadugi_required .` on the checkout's own files, the same files the evidence step measured, with `AUTODRIVE_QA_BASE` set from the gate's own `baseRefName` so its changed paths match step-02's; an inherited value is replaced | Unless the gate's own `autodrive_gadugi_required` says `false` and `gadugi_status` is `NOT_REQUIRED`: `gadugi_status` other than `PASS`, or `gadugi_scenario_count` not a positive integer. An unreadable answer counts as required. With a `ci-job:<name>` declaration, also the CI row's blocker for that job (see [The gate checks a declared CI job](#the-gate-checks-a-declared-ci-job)). |
 | Crusty loop | `phases.tsv`, `crusty-latest.json`, `crusty-records.tsv` and its record, in `--state-dir` | no `--state-dir`; the directory or a file not private; no `crusty-loop` marker; `crusty_verdict` neither `CLEAN` nor `MINOR_ONLY`; `autodrive_crusty_final` failing (its token, or `crusty-other`); `HEAD_SHA` not in the clone; `autodrive_crusty_range` not `ok` (its token, or `crusty-range-other`) |
 | Follow-up issues (#1979) | `followups.jsonl`, `followups.tsv`, `followups.error`, `followups.parent` in `--state-dir`, checked by `autodrive_followups.sh gate` from the gate's own directory | `ERROR: followups-unfiled: <token>`: a finding in the set with no issue row, no recorded comment on the parent task issue, a recorded filing error, a malformed or unsafe file, or `MINOR_ONLY` with an empty set. A missing tool blocks whatever the verdict. See [The follow-up check in the merge gate](#the-follow-up-check-in-the-merge-gate). |
 | merge-ready verdict | round record from this run | not `MERGE_READY`, or captured against a different head SHA |
@@ -3796,7 +3970,7 @@ caught only when the base branch requires it (see
 ### Usage
 
 ```bash
-/bin/bash -p amplifier-bundle/tools/autodrive_expected_checks.sh <HEAD_SHA> <BASE_REF>
+/bin/bash -p amplifier-bundle/tools/autodrive_expected_checks.sh <HEAD_SHA> <BASE_REF> [JOB]
 ```
 
 Run it from inside a clone of the repository, so `gh` picks the repository
@@ -3806,8 +3980,9 @@ from the clone (or from `GH_REPO`). It is run, never sourced.
 | --- | --- |
 | `HEAD_SHA` | Exactly 40 characters of `[0-9a-f]`. |
 | `BASE_REF` | Only `A-Z a-z 0-9 . _ / -`; no leading `-` or `/`; no `..` or `//`; no trailing `/` or `.lock`. |
+| `JOB` | Optional. A [declared scenarios job](#the-gate-checks-a-declared-ci-job): 1 to 128 bytes from `A-Z a-z 0-9`, space and `. _ / ( ) + : , @ % -`, checked with `LC_ALL=C`; no leading `-`. |
 
-Both are checked before any `gh` call. A bad argument prints a usage line on
+All are checked before any `gh` call. A bad argument prints a usage line on
 stderr and exits `2`.
 
 The helper is read-only. It makes `gh api` GET requests only, writes nothing
@@ -4242,6 +4417,49 @@ unchanged. `auto-drive-light` runs the same merge loop, and so the same gate.
 
 `autodrive_platform_facts.sh` still reports a `CHECKS` fact. It is advisory
 only and does not decide whether CI is green.
+
+### The gate checks a declared CI job
+
+Before section 5, the gate runs one subshell that sources
+`autodrive_trust.sh` with `AUTODRIVE_QA_BASE` set to its own `baseRefName`
+and `AUTODRIVE_QA_HEAD` to its own `headRefOid`, and prints two lines:
+`autodrive_gadugi_required .` and `autodrive_qa_declaration .`. The second is
+asked only when `_AD_SOURCES_OK` is set and `declare -F` finds the function.
+Each line is read with `IFS= read -r`; a missing line keeps the default,
+`true` and `none`. When `baseRefName` is empty, the subshell is not run and
+both defaults stand. Any first line other than `false` is `true`, and any
+declaration other than `multi-area-command` or `ci-job:<name>` is `none`. The
+job name is checked against the whitelist by `autodrive_expected_checks.sh`,
+which exits `2` on a bad name before any `gh` call, so the gate blocks rather
+than drop the job. The gate never reads the declaration from the evidence
+file.
+
+Only for `ci-job:<name>` does section 5 pass the name as a third argument:
+
+```bash
+"${GATE_HOME}/autodrive_expected_checks.sh" "$HEAD_SHA" "$BASE_REF" "${QA_DECL#ci-job:}"
+```
+
+The helper treats the job as one more expected check, kept apart from the
+branch-protection set and judged against check-runs at `HEAD_SHA` only; a
+commit status with the same name does not count. The name is compared
+exactly, through `jq --arg`, never interpolated.
+
+| Check-runs named `<name>` at `HEAD_SHA` | Result |
+| --- | --- |
+| At least one, and every one `success` or `neutral` | Passes. |
+| None | `MISSING`, with the name in the `missing` list. A name that differs from GitHub's check-run name fails here. |
+| Any queued or in progress | `PENDING`. The gate does not wait; the next merge round reads it again. |
+| Any `failure`, `cancelled`, `skipped`, `timed_out` or other conclusion | `RED`. A skipped declared job is red, not by-design. |
+
+No `gh` call, poll or retry is added: the result comes from the check-runs
+the helper already reads. The section-6 note line records
+`qa_criterion1_declaration=<token>` as the gate computed it, and the old
+separate trust subshell in section 6 is gone.
+
+`autodrive-merge-evidence.yaml` step-03 still runs the helper with two
+arguments, so the evidence's `ci_status` can be `GREEN` while the gate blocks
+with `MISSING` for the declared job. The gate decides.
 
 ### In the merge evidence step
 
@@ -6143,10 +6361,10 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `amplifier-bundle/tools/autodrive_qa_evidence.sh` | tool | Criterion 1: the suite commands and, where `autodrive_gadugi_required` says so, the gadugi scenarios, for `autodrive-merge-evidence.yaml` step-02. |
 | `amplifier-bundle/tools/autodrive_round_evidence.sh` | tool | The merge round's deterministic step bodies, and the crusty range the re-review reads: crusty range and evidence, the qa evidence hash, the measured downgrade, the findings, and the round record with its [`held_by`](#what-held-the-round) conditions. |
 | `amplifier-bundle/tools/autodrive_state.sh` | tool | Resumable local state, `autodrive_crusty_final`, `autodrive_private`; platform truth for merged-ness. |
-| `amplifier-bundle/tools/autodrive_trust.sh` | tool | Range check and qa evidence chain; `autodrive_repo_type` and `autodrive_gadugi_required`, which reads `autodrive_qa_docs_only`. Loads `autodrive_qa_scope.sh` from its own directory, with a fail-closed fallback. |
+| `amplifier-bundle/tools/autodrive_trust.sh` | tool | Range check and qa evidence chain; `autodrive_repo_type` and `autodrive_gadugi_required`, which reads `autodrive_qa_docs_only` and `autodrive_qa_declaration`. Loads `autodrive_qa_scope.sh`, then `autodrive_qa_sources.sh`, from its own directory, with a fail-closed fallback. |
 | `amplifier-bundle/tools/autodrive_qa_scope.sh` | tool | Defines functions only: the changed paths, the candidate search and the project choice (`autodrive_qa_changed_paths`, `autodrive_qa_target`), computed once per shell, and loads `autodrive_qa_docs.sh` beside it. Runs nothing it reads. A gate file, so the install mode check covers it. |
 | `amplifier-bundle/tools/autodrive_qa_docs.sh` | tool | Defines one function: the [documentation-only](#documentation-only-pull-requests) predicate `autodrive_qa_docs_only`, over the scan `autodrive_qa_scope.sh` already made. Compares changed paths, never runs them. A gate file. |
-| `amplifier-bundle/tools/autodrive_qa_sources.sh` | tool | Defines functions only: the `.amplihack/qa.toml` parser `autodrive_qa_config`, the CI reader `autodrive_qa_ci` and `autodrive_qa_report`, which gives the evidence tool every answer from one scan. Loaded by the evidence tool only. |
+| `amplifier-bundle/tools/autodrive_qa_sources.sh` | tool | Defines functions only: the `.amplihack/qa.toml` parser `autodrive_qa_config`, the CI reader `autodrive_qa_ci`, `autodrive_qa_report`, which gives the evidence tool every answer from one scan, and `autodrive_qa_declaration` ([#2458](#declaring-how-criterion-1-is-met-2458)). Loaded by `autodrive_trust.sh`, so the evidence tool and the merge gate both have it; a gate file in the merge guard's list. |
 | `amplifier-bundle/tools/autodrive_scenario_name.sh` | tool | Prints the `name:` of one qa-team scenario file for `gadugi-test run --scenario`. Run by the evidence tool. |
 | `amplifier-bundle/tools/autodrive_pr_head.sh` | tool | Read-only PR head and worktree resolver. |
 | `amplifier-bundle/tools/workflow_finalization_handoff.sh` | tool | The [#1714 hand-off](#finalization-hand-off-from-phase-1-1714): the allow-list, the exact-match flag, `finalization_fail_or_handoff` and `finalization_fail_or_handoff_open_pr` for the validator and `autodrive_build_handoff` for step-03. No top-level side effects; safe to source twice. |
@@ -6166,6 +6384,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | PR head and worktree resolution, refusal, relative `repo_path`, run report, and two runs of the composed recipe through `recipe-runner-rs` (a fresh build whose stand-in default-workflow builds in its own worktree, as the real one does, where both loops must get that worktree and not the launch checkout; skipped build and crusty phases followed by a merge), and the `pr-worktree-stale` refusal (#1543). It needs `recipe-runner-rs` on `PATH` or in `RECIPE_RUNNER_RS_PATH`, and stops with a harness error without it | `amplifier-bundle/recipes/tests/test-issue-1543-pr-head-worktree.sh` |
 | QA command selection (#1516): `AUTODRIVE_QA_DIR` with `AUTODRIVE_QA_COMMAND`, root Cargo, nested and nested-workspace Cargo, pruned `target`/`worktrees`/`node_modules`/`.git` crates, unrelated sibling crates with no base (`QA_UNRESOLVED`) and depth-4 crates, mixed Node/Python roots, the jamestown shape (root `pytest` beside a nested crate), `package.json` beside a nested crate, a root `requirements.txt`, `go.mod` or other unhandled project file beside a nested crate (BLOCKED, never `cargo test` in the crate), the `./<word>` installed check, an `AUTODRIVE_QA_DIR` that does not exist, parity scenarios under the detected workspace directory (including `AUTODRIVE_QA_COMMAND` with `AUTODRIVE_QA_DIR=sub` in a nested-Cargo repository), the space-separated unresolved candidate list, symlinked and unsafely named directories, a `cargo` in the workspace that is off `PATH` and never runs, an in-repository `cargo` on `PATH` that runs (the check is a `PATH` lookup, not a sandbox), a `.venv/bin/pytest` on `PATH` that runs whether detected or set with `AUTODRIVE_QA_COMMAND=pytest`, and a crate in a directory named `-` or an exported `CDPATH` that never moves the suite outside the checkout. Stub `cargo`, `pytest`, `npm` and `gadugi-test` record their directory and arguments | `amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh` |
 | QA command source and path scoping (#1763): the env, `.amplihack/qa.toml`, CI and detected sources and their precedence (an empty env value still wins); malformed, oversized, symlinked and unsafe `qa.toml` files, one per problem token, with injection markers that leave no side effect; `changed-in-pr` for a `qa.toml` or workflow file changed by the pull request; a clean CI step, an ambiguous CI source, and one shaped like this repository's `ci.yml` that falls through to `cargo test` at `.`; `paths-unknown` for `(unknown)` and `(none)` paths; a present `.amplihack` symlink, a `.amplihack` file and a dangling `qa.toml` symlink, and a real `.amplihack` directory without `qa.toml` that falls through to CI; known paths inside one nested project, a move across projects, a nested-only `ws` crate with a pull request that changes only `README.md` (`rust-cli` at `ws`) and `svc/package.json` with `docs/svc.md` (`node` at `svc`), an unknown base with two projects (`QA_UNRESOLVED`), and `QA_UNRESOLVED` with a `package.json` candidate, asserting both that gadugi ran and that `qa_status` stays `QA_UNRESOLVED` when gadugi passes and when it fails, a root workspace with a change in `crates/x`, and the gate given `AUTODRIVE_QA_BASE` in a mixed fixture repository. Merge-base reads: an untracked, an ignored and a differently-cased `qa.toml` give `none`, a modified tracked one gives the merge-base command, a `qa.toml` symlink committed at the merge base gives `symlink`, an untracked workflow file is ignored, a PR-added nested or root `Cargo.toml` in a Node repository keeps gadugi required, an untracked manifest is not a candidate, an unknown or empty base keeps gadugi required, an unset base (a preflight) reads `HEAD`'s committed tree, 50 workflow files are read and 51 are not, and a broken `qa.toml` outranks `no-scenarios`. `shellcheck -x -S warning` runs on the scope file, `autodrive_trust.sh`, the evidence tool and the gate, and is skipped with a message when it is not installed. Fake `cargo`, `npm`, `pytest` and `gadugi-test` record their directory and arguments; children run under `env -i` with `HOME` in the test's own directory and no `AMPLIHACK_CLAUDE_PROFILE_ROOT` | `amplifier-bundle/recipes/tests/test-issue-1763-qa-scope.sh` (the cases above); `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` (the four direct #1763 cases and the `1763-gate-*` gate cases); `amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh` (the #1516 detection cases changed by #1763) |
+| [Criterion-1 declarations](#declaring-how-criterion-1-is-met-2458) (#2458), over temporary repositories with a root `package.json`, a `scenarios/` folder of JSON and TypeScript files, a pull request spanning three top-level folders and a qa.toml command that exits `0`: `multi_area = "command"` on the base branch giving `qa_status` `PASS`, `gadugi_required` `false` and `qa_criterion1_declaration` `multi-area-command`; no declaration giving `FAIL`, `no-scenarios`, `gadugi_required` `true` and `none`; the declaration added by the pull request giving `BLOCKED`, `qa-config-invalid` `changed-in-pr` and `none`; `unknown-value` and `declaration-conflict`; an operator variable or `AUTODRIVE_QA_SCENARIO_DIR` keeping `none`; `AUTODRIVE_QA_BASE` set but empty giving `none` while unset reads `HEAD` in `decl-only` mode; the report with no base still `paths-unknown`; a `ci-job` declaration void when the pull request changes a workflow; an inherited `autodrive_qa_declaration` function ignored; and, with a stub `gh` on `PATH` and no network, a declared job passing on `success`, blocking on failure, `skipped`, pending and missing, and a same-named commit status not counting. Each test sets `GIT_CONFIG_GLOBAL=/dev/null`, a `HOME` inside its temporary directory, and removes `AUTODRIVE_QA_*` | `tests/integration/issue_2458_qa_declaration_test.rs`; `qa_criterion1_declaration` in `EV_KEYS` of `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh`; the helper list in `crates/amplihack-cli/src/commands/recipe/run/tests_merge_guard.rs` |
 | Structural and wiring guards, brick budget, skill-invocation guard, state-directory sentence, `tests/gadugi/recipe-step-command.sh` compared with serde_yaml over every bundled recipe step, the PR-head resolver read-only guard, `autodrive_step_outputs_are_read_from_recipe_var_only` (the four [static checks](#the-static-check), with the read counts taken from this page), `autodrive_round_with_inherited_stale_tools_dir_uses_its_own` (#1607), and the contract shell suite run with inherited variables scrubbed, set to a conflicting decoy, and set to the round's own tools | `tests/integration/auto_drive_to_merge_test.rs` |
 | [The bundle guard](#the-bundle-guard) (#1561) | `crates/amplihack-cli/tests/issue_1561_step_outputs_prefer_recipe_var.rs` |
 | Where phases 2 and 3 run (issue #1528): resolver behaviour and refusals (including a local branch or worktree behind, ahead of or diverged from origin), loop `step-02` resolution and forwarding, round `step-04` commit blocks, a forced-add reproduction the guard refuses, and a commit from the pull request worktree that leaves the launch checkout's index clean | `tests/integration/autodrive_pr_worktree_tests.rs` |

@@ -4507,6 +4507,7 @@ ev_run() { # ev_run <stub-dir> [VAR=value ...] -> runs the step; EV_OUT = last s
 }
 evf() { printf '%s' "${EV_OUT}" | jq -r --arg k "$1" '.[$k] // "<absent>"' 2>/dev/null; }
 EV_KEYS="qa_status qa_reason qa_repo_type qa_dir qa_command qa_suite_commands_count qa_scenarios qa_exit_code qa_summary qa_round head_sha
+qa_criterion1_declaration
 gadugi_required gadugi_status gadugi_validate_exit_code gadugi_run_exit_code gadugi_scenario_count gadugi_scenario_dir
 gadugi_scenarios_validated gadugi_scenarios_run gadugi_scenarios_passed gadugi_scenarios_failed gadugi_failed_scenarios
 gadugi_scenario_results"

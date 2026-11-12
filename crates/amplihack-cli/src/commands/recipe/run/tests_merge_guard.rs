@@ -481,6 +481,24 @@ fn the_qa_scope_helper_is_a_gate_file() {
     );
 }
 
+/// Issue #2458: `autodrive_trust.sh` loads `autodrive_qa_sources.sh` so
+/// `autodrive_gadugi_required` can read the base qa.toml declaration. It then
+/// runs inside the gate process and needs the shim's mode check.
+#[test]
+fn the_qa_sources_helper_is_a_gate_file() {
+    assert!(
+        GATE_FILES.contains(&"autodrive_qa_sources.sh"),
+        "autodrive_qa_sources.sh is loaded by autodrive_trust.sh but missing from GATE_FILES: {GATE_FILES:?}"
+    );
+    let tools = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../amplifier-bundle/tools");
+    let trust = fs::read_to_string(tools.join("autodrive_trust.sh")).expect("autodrive_trust.sh");
+    assert!(
+        trust.contains("shellcheck source=autodrive_qa_sources.sh"),
+        "autodrive_trust.sh must name autodrive_qa_sources.sh in a shellcheck source= directive \
+         so every_helper_the_gate_sources_is_a_gate_file sees it"
+    );
+}
+
 /// Issue #1551: `amplihack claude` prepends the claude binary's directory,
 /// which may also hold the real gh. Inside a guarded run the guard must stay
 /// at PATH index 0 for the agent; outside one, PATH is left alone.

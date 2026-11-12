@@ -1,11 +1,9 @@
 #!/bin/bash -p
 # autodrive_merge_gate.sh — the final, evidence-gated merge for auto-drive-to-merge.
-#
 # NO SILENT MERGE. Every criterion is re-verified HERE, in the run that merges,
 # against ONE head SHA, and the evidence is written down before anything is
 # merged. A criterion that cannot be read is a FAILURE, never a pass: an
 # unreadable CI status means "we do not know", and that does not merge.
-#
 # The merge argv is a FIXED literal list built in this file, pinned element by
 # element before execution. It takes no flags from any caller, so there is no
 # argument through which a branch-protection bypass could be threaded. A bypass
@@ -36,14 +34,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 case "$PR" in ''|*[!0-9]*) echo "ERROR: --pr must be a positive integer (got '${PR}')" >&2; exit 2 ;; esac
-# This gate's own directory, found before the cd below because BASH_SOURCE may be
-# relative. Every helper it sources or runs comes from here, and from nowhere else.
+# This gate's own directory, found before the cd below (BASH_SOURCE may be relative): every helper comes from here.
 GATE_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
-# gh resolves {owner}/{repo} from the working directory, so every read below
-# must run inside the repository the PR belongs to.
+# gh resolves {owner}/{repo} from the working directory, so every read below runs inside the PR's repository.
 cd "$REPO" 2>/dev/null || { echo "ERROR: --repo '${REPO}' is not a directory; refusing to read PR state from an unknown working directory." >&2; exit 2; }
-# Decide whether a state dir was given BEFORE the fallback below: an empty
-# --state-dir must not turn the world-writable TMPDIR into crusty evidence.
+# Decide BEFORE the fallback below: an empty --state-dir must not turn the world-writable TMPDIR into crusty evidence.
 if [ -n "$STATE_DIR" ]; then STATE_DIR_GIVEN="true"; else STATE_DIR_GIVEN="false"; fi
 # The evidence bundle (section 8) still needs somewhere to go. The gate only creates
 # a missing directory, under umask 077; it never changes the mode of an existing one.
@@ -124,8 +119,15 @@ esac
 # head, read by autodrive_expected_checks.sh beside this gate (never from a
 # path the PR fills). Its evidence: lines become notes and its blocker: lines
 # blockers. The verdict is its LAST line only, and passes only as GREEN, exit 0.
-BASE_REF="$(field "$STATE_JSON" baseRefName "")"; CI_BLOCKED=""
-CI_OUT="$(/bin/bash -p "${GATE_HOME}/autodrive_expected_checks.sh" "$HEAD_SHA" "$BASE_REF" 2>/dev/null)"; CI_RC=$?
+# Criterion 1's gadugi need and base qa.toml declaration (#2458): from this gate's baseRefName and headRefOid,
+# never the evidence; failure or no base gives true and none. `ci-job:<name>`: that check-run must pass too.
+BASE_REF="$(field "$STATE_JSON" baseRefName "")"; CI_BLOCKED=""; QA_GREQ="true"; QA_DECL="none"; CI_JOB=()
+[ -z "$BASE_REF" ] || { IFS= read -r QA_GREQ || true; IFS= read -r QA_DECL || true; } < <(AUTODRIVE_QA_BASE="$BASE_REF"
+  AUTODRIVE_QA_HEAD="$HEAD_SHA"; export AUTODRIVE_QA_BASE AUTODRIVE_QA_HEAD; . "${GATE_HOME:-/nonexistent}/autodrive_trust.sh" 2>/dev/null \
+  && autodrive_gadugi_required . && [ -n "${_AD_SOURCES_OK:-}" ] && declare -F autodrive_qa_declaration >/dev/null && autodrive_qa_declaration .)
+[ "$QA_GREQ" = "false" ] || QA_GREQ="true"
+case "$QA_DECL" in multi-area-command) ;; ci-job:*) CI_JOB=("${QA_DECL#ci-job:}") ;; *) QA_DECL="none" ;; esac
+CI_OUT="$(/bin/bash -p "${GATE_HOME}/autodrive_expected_checks.sh" "$HEAD_SHA" "$BASE_REF" ${CI_JOB[@]+"${CI_JOB[@]}"} 2>/dev/null)"; CI_RC=$?
 while IFS= read -r L; do
   case "$L" in "evidence: "*) note "${L#evidence: }" ;; "blocker: "*) block "${L#blocker: }"; CI_BLOCKED=1 ;; esac
 done <<< "$CI_OUT"
@@ -191,13 +193,11 @@ else
   elif [ -n "$HEAD_SHA" ] && [ "$QA_SHA" != "$HEAD_SHA" ]; then
     block "the qa-team evidence was captured against ${QA_SHA} but the head is now ${HEAD_SHA}; evidence must bind to the SHA being merged"
   fi
-  # Gadugi need: from this gate's own baseRefName and headRefOid (#1763), never the evidence; failure: required.
+  # Gadugi need: computed by this gate before section 5 (#1763, #2458), never read from the evidence.
   GADUGI_STATUS="$(field "$QA_RAW" gadugi_status MISSING)"
   GADUGI_COUNT="$(field "$QA_RAW" gadugi_scenario_count "")"
-  GADUGI_REQ="$(AUTODRIVE_QA_BASE="$(field "$STATE_JSON" baseRefName "")"; AUTODRIVE_QA_HEAD="$HEAD_SHA"
-    export AUTODRIVE_QA_BASE AUTODRIVE_QA_HEAD
-    . "${GATE_HOME:-/nonexistent}/autodrive_trust.sh" 2>/dev/null && autodrive_gadugi_required .)" || GADUGI_REQ="true"
-  note "gadugi_required=${GADUGI_REQ} gadugi_status=${GADUGI_STATUS} gadugi_scenario_count=${GADUGI_COUNT:-<none>} gadugi_scenario_dir=$(field "$QA_RAW" gadugi_scenario_dir '')"
+  GADUGI_REQ="$QA_GREQ"
+  note "qa_criterion1_declaration=${QA_DECL} gadugi_required=${GADUGI_REQ} gadugi_status=${GADUGI_STATUS} gadugi_scenario_count=${GADUGI_COUNT:-<none>} gadugi_scenario_dir=$(field "$QA_RAW" gadugi_scenario_dir '')"
   if [ "${GADUGI_REQ}:${GADUGI_STATUS}" != "false:NOT_REQUIRED" ]; then
     [ "$GADUGI_STATUS" = "PASS" ] || block "gadugi-test scenarios were not validated and run to a pass in this run (gadugi_status=${GADUGI_STATUS})"
     case "$GADUGI_COUNT" in
