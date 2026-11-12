@@ -3,6 +3,12 @@
 //!
 //! Linux only. Only processes owned by the effective uid are listed, since
 //! they are the only ones that could be signalled anyway.
+//!
+//! Always the real `/proc`, never `procfs::proc_root()` (issue #2042):
+//! every pid found here may be signalled, so a fake tree must not choose it.
+//! Only `stat` files are read: `recipe stop <run_id>` finds its root through
+//! the run's record (issue #2175), never through another process's
+//! `environ`.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -62,6 +68,20 @@ pub(super) fn start_time(pid: i32) -> Option<u64> {
     read_stat(pid).map(|p| p.start)
 }
 
+/// This process and its ancestors, read one `/proc/<pid>/stat` at a time up
+/// the parent chain: this process's own ancestry, never the process table.
+/// Stops at pid 1, at a process that is gone, or at a loop.
+pub(super) fn own_ancestry() -> Vec<Proc> {
+    let mut chain: Vec<Proc> = Vec::new();
+    let mut pid = std::process::id() as i32;
+    while pid > 1 && !chain.iter().any(|p| p.pid == pid) {
+        let Some(p) = read_stat(pid) else { break };
+        pid = p.ppid;
+        chain.push(p);
+    }
+    chain
+}
+
 /// `roots`, every process descended from one of them, and every member of
 /// those processes' groups. A root's own pid counts as a group too: a runner
 /// is its group's leader, and its group outlives it once it has exited.
@@ -102,19 +122,6 @@ pub(super) fn group_tree(procs: &[Proc], pgid: i32) -> BTreeSet<i32> {
         return members;
     }
     tree(procs, &members)
-}
-
-/// The processes whose initial environment holds `name=value`.
-pub(super) fn with_env(procs: &[Proc], name: &str, value: &str) -> BTreeSet<i32> {
-    let wanted = format!("{name}={value}").into_bytes();
-    procs
-        .iter()
-        .filter(|p| {
-            fs::read(format!("/proc/{}/environ", p.pid))
-                .is_ok_and(|env| env.split(|b| *b == 0).any(|entry| entry == wanted))
-        })
-        .map(|p| p.pid)
-        .collect()
 }
 
 /// This process and its ancestors, which must never be signalled.

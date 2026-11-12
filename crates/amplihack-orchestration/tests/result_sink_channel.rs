@@ -28,19 +28,21 @@ use amplihack_orchestration::result_sink;
 use amplihack_utils::prompt_delivery::{DeliveryCaps, PromptDelivery};
 
 /// A fake agent: pours a noisy human/log firehose onto stdout, then — only if
-/// the clean channel is enabled — copies its exact answer bytes (`$1`, an
-/// answer-source file path delivered via argv) to `$AMPLIHACK_RESULT_SINK`.
+/// the clean channel is enabled — copies its exact answer bytes to
+/// `$AMPLIHACK_RESULT_SINK`. The prompt is the answer-source file path; it
+/// arrives on stdin, since #2030 never puts a prompt in argv.
 ///
 /// The stdout stream deliberately carries ANSI SGR escapes, a banner, tracing
 /// lines with real JSON braces, and a DECOY `{ "verdict": "REJECT" }` blob — so
 /// any consumer that brace-scans stdout would recover the WRONG verdict.
 const FAKE_AGENT_SCRIPT: &str = r#"
+src=$(cat)
 printf '\033[1;33m========== STARTUP BANNER ==========\033[0m\n'
 printf '\033[31m2024-07-06T00:00:00Z INFO agent booting {"phase":"init","ok":true}\033[0m\n'
 printf '\033[36mprogress: [####------] 40%%\033[0m\n'
 printf 'noise { "verdict": "REJECT" } <- decoy brace-blob on stdout\n'
 if [ -n "${AMPLIHACK_RESULT_SINK:-}" ]; then
-  cat "$1" > "$AMPLIHACK_RESULT_SINK"
+  cat "$src" > "$AMPLIHACK_RESULT_SINK"
 fi
 "#;
 
@@ -63,7 +65,7 @@ fn consume_answer_without_scraping(result: &ProcessResult) -> String {
 
 /// Drive the fake agent through the real runner path. `sink` opts the run into
 /// the clean channel; `answer_src` is the file whose exact bytes the agent
-/// copies to the sink (delivered to the child as `$1` via argv).
+/// copies to the sink (delivered to the child on stdin).
 async fn run_fake_agent(
     answer_src: &std::path::Path,
     sink: Option<std::path::PathBuf>,
@@ -78,14 +80,13 @@ async fn run_fake_agent(
         opts = opts.with_result_sink(path);
     }
 
-    // args: `-c <script> sh` — after argv prompt-delivery appends the prompt,
-    // the child sees argv = [sh, -c, <script>, sh, <answer_src>] so $1 is the
-    // answer source path.
+    // args: `-c <script> sh`. Issue #2030: the prompt (the answer source
+    // path) goes to the child's stdin, never into its argv.
     runner
         .run_with_prompt_delivery_for_test(
             opts,
-            PromptDelivery::Argv,
-            DeliveryCaps::argv_only(),
+            PromptDelivery::Auto,
+            DeliveryCaps::default().with_stdin(),
             "sh",
             ["-c", FAKE_AGENT_SCRIPT, "sh"],
         )

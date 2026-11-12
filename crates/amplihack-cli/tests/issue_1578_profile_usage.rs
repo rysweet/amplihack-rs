@@ -63,7 +63,7 @@ fn reset_text(t: i64) -> String {
 /// `/usage` path appends `S <p>` and `E <p>` around a 0.5 s sleep.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.301 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 p=$(basename "${CLAUDE_CONFIG_DIR:-$HOME/.claude}")
 case " $* " in
@@ -117,7 +117,16 @@ impl Fixture {
         let canned = tmp.path().join("canned");
         let work = tmp.path().join("work");
         let tools = tmp.path().join("tools");
-        for d in [&home, &records, &canned, &work, &tools] {
+        // Issue #1974: with the shared folder present, `profile add` links
+        // each profile's `projects` to it, as on a real host, so on a host
+        // with a usable `bwrap` every probe here runs through the sandbox.
+        for d in [
+            &home.join(".claude/projects"),
+            &records,
+            &canned,
+            &work,
+            &tools,
+        ] {
             fs::create_dir_all(d).unwrap();
         }
         executable(&tools.join("claude"), FAKE_CLAUDE);
@@ -200,6 +209,17 @@ impl Fixture {
         f
     }
 
+    /// Adds profile `p` with a login file, so its direct read fails at the
+    /// test guard and it goes to the fake `claude` like a, b, c and d.
+    /// Issue #2271: a profile with no login file starts no `claude`.
+    fn add_logged_in(&self, p: &str) {
+        self.ok(&["profile", "add", p]);
+        private_file(
+            &self.root.join(p).join(".credentials.json"),
+            &format!("{{\"claudeAiOauth\":{{\"accessToken\":\"SENTINEL-TOKEN-{p}\"}}}}"),
+        );
+    }
+
     fn canned(&self, p: &str, stdout: &str) {
         fs::write(self.canned.join(format!("{p}.out")), stdout).unwrap();
     }
@@ -223,12 +243,24 @@ impl Fixture {
             .current_dir(&self.work)
             .env_clear()
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            .env(
+                crate::isolated_amplihack::PROC_ROOT_ENV,
+                crate::isolated_amplihack::shared_empty_proc_root(),
+            )
             .env("TMPDIR", std::env::temp_dir())
             .env(
                 "PATH",
                 format!("{}:/usr/local/bin:/usr/bin:/bin", self.tools.display()),
             )
             .env("HOME", &self.home)
+            // Issue #2001: never read a Codex account here.
+            // Outside HOME: the empty-root line names the root, and the
+            // output must not name HOME.
+            .env(
+                "CODEX_PROFILES_ROOT",
+                self.home.with_file_name("no-codex-profiles"),
+            )
+            .env("CODEX_BIN", self.home.join("no-codex"))
             .env("AMPLIHACK_CLAUDE_BINARY_PATH", self.tools.join("claude"))
             .env("RECORD_DIR", &self.records)
             .env("CANNED", &self.canned)
@@ -307,6 +339,8 @@ fn table_rows(stdout: &str) -> Vec<&str> {
     // The capacity summary (issue #1797) follows the table.
     lines
         .take_while(|l| !l.starts_with("weekly headroom "))
+        // The Codex block (issue #2001) is printed last.
+        .take_while(|l| !l.starts_with("Codex: ") && !l.starts_with("Codex accounts under "))
         .filter(|l| !l.starts_with(' ') && !l.is_empty())
         .filter(|l| !l.starts_with("times: ") && !l.starts_with("order: "))
         .collect()
@@ -332,6 +366,25 @@ fn assert_no_secrets(out: &Output) {
             assert!(!s.contains(secret), "secret {secret:?} printed: {s}");
         }
     }
+}
+
+/// The `note:` lines on stderr, less the probe-sandbox note for a host
+/// without a usable `bwrap` (issue #1974), which is printed in every output
+/// mode. The profiles here have a resolvable `projects` link, so the note
+/// for an unresolved folder is never allowed: it would mean the sandbox was
+/// skipped for a reason other than the host.
+fn notes_other_than_sandbox(stderr: &str) -> Vec<&str> {
+    const PREFIX: &str = "note: usage probes run claude with --no-session-persistence only: ";
+    stderr
+        .lines()
+        .filter(|l| l.contains("note:"))
+        .filter(|l| {
+            !matches!(
+                l.strip_prefix(PREFIX),
+                Some("bwrap not found" | "bwrap refused")
+            )
+        })
+        .collect()
 }
 
 fn warning_lines(stderr: &str) -> Vec<&str> {
@@ -382,7 +435,7 @@ fn table_orders_by_capacity_marks_default_and_leases_and_hides_raw_text() {
     for p in ["a", "b", "c", "d"] {
         let args = fs::read_to_string(f.records.join(format!("args.{p}"))).unwrap();
         assert_eq!(
-            args, "2\n-p\n/usage\n",
+            args, "3\n-p\n/usage\n--no-session-persistence\n",
             "exactly `claude -p /usage` for {p}"
         );
         let env = fs::read_to_string(f.records.join(format!("env.{p}"))).unwrap();
@@ -391,6 +444,25 @@ fn table_orders_by_capacity_marks_default_and_leases_and_hides_raw_text() {
             format!("CLAUDE_CONFIG_DIR={}\n", f.root.join(p).display())
         );
     }
+    // Issue #1974: each profile's `projects` resolves, so the only allowed
+    // fallback is a host without a usable `bwrap`; with one, the probes ran
+    // through it and nothing is noted.
+    let stderr = text(&out.stderr);
+    assert!(notes_other_than_sandbox(&stderr).is_empty(), "{stderr}");
+    if bwrap_usable() {
+        assert!(!stderr.contains("note: usage probes"), "{stderr}");
+    }
+}
+
+/// Whether `bwrap --dev-bind / / true` succeeds here, as the probe checks.
+fn bwrap_usable() -> bool {
+    Command::new("bwrap")
+        .args(["--dev-bind", "/", "/", "--", "true"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 #[test]
@@ -443,7 +515,10 @@ fn json_has_the_documented_shape_and_order() {
         assert!(r.get("raw").is_none(), "no raw key without --raw: {r}");
         assert_eq!(r["error"], serde_json::Value::Null);
     }
-    assert!(!stderr.contains("note:"), "--json prints no note: {stderr}");
+    assert!(
+        notes_other_than_sandbox(&stderr).is_empty(),
+        "--json prints no note: {stderr}"
+    );
 
     let (rows, _) = f.json(&["profile", "usage", "--json", "--raw"]);
     assert!(rows[1]["raw"]["stdout"].as_str().unwrap().contains(BANNER));
@@ -521,7 +596,7 @@ fn not_set_up_records_nothing_and_says_so_only_in_table_mode() {
     );
     assert!(!f.state().exists(), "no auto-switch state created");
     let (_, stderr) = f.json(&["profile", "usage", "--json"]);
-    assert!(!stderr.contains("note:"), "{stderr}");
+    assert!(notes_other_than_sandbox(&stderr).is_empty(), "{stderr}");
     assert!(!f.state().exists());
 }
 
@@ -578,7 +653,7 @@ const ENV_KEY_VALUE: &str = "value-of-the-env-key";
 #[test]
 fn a_slow_profile_times_out_without_holding_up_the_others() {
     let f = Fixture::new(false);
-    f.ok(&["profile", "add", "e"]);
+    f.add_logged_in("e");
     fs::write(f.canned.join("e.slow"), "").unwrap();
     f.canned("e", "Current session: 1% used · resets 4pm (UTC)\n");
     let start = Instant::now();
@@ -602,7 +677,7 @@ fn a_slow_profile_times_out_without_holding_up_the_others() {
 #[test]
 fn timeout_env_is_honoured_and_a_bad_value_warns() {
     let f = Fixture::new(false);
-    f.ok(&["profile", "add", "e"]);
+    f.add_logged_in("e");
     fs::write(f.canned.join("e.slow"), "").unwrap();
     let start = Instant::now();
     let out = f
@@ -680,7 +755,7 @@ fn a_valid_or_empty_parallel_value_prints_no_warning() {
 #[test]
 fn a_timed_out_profile_is_timeout_in_the_table_never_a_percentage() {
     let f = Fixture::new(false);
-    f.ok(&["profile", "add", "e"]);
+    f.add_logged_in("e");
     fs::write(f.canned.join("e.slow"), "").unwrap();
     f.canned("e", "Current session: 100% used · resets 4pm (UTC)\n");
     let out = f
@@ -763,11 +838,16 @@ fn setup_failures_exit_non_zero_before_probing() {
 fn no_profiles_prints_the_list_message_or_an_empty_array() {
     let f = Fixture::empty();
     let out = f.ok(&["profile", "usage"]);
+    let stdout = text(&out.stdout);
+    let first = stdout.lines().next().unwrap_or_default();
     assert_eq!(
-        text(&out.stdout).trim(),
-        "no profiles; create one with `amplihack profile add <name>`"
+        first, "no profiles; create one with `amplihack profile add <name>`",
+        "{stdout}"
     );
+    // Issue #2001: the Codex block follows, after one empty line.
+    assert!(stdout.contains("\n\nCodex: no accounts under "), "{stdout}");
     let out = f.ok(&["profile", "usage", "--json"]);
+    // Issue #2001 keeps `--json` the bare array, with no Codex rows.
     assert_eq!(text(&out.stdout).trim(), "[]");
 }
 
@@ -865,11 +945,20 @@ fn no_ledger_is_quiet_and_marks_nothing_live() {
     let (rows, stderr) = f.json(&["profile", "usage", "--json"]);
     assert!(rows.iter().all(|r| r["live_in"].is_null()));
     assert!(warning_lines(&stderr).is_empty(), "{stderr}");
-    // c is probed through its own directory, not ~/.claude. The fake
-    // `claude` does not check for a login, so its canned 5% comes back.
+    // c is read through its own directory, not ~/.claude. That directory
+    // has no credentials file, so on Linux (issue #2271) it reads as not
+    // signed in without starting `claude`; elsewhere `claude` is started
+    // there, and the fake, which does not check for a login, answers 5%.
     let c = rows.iter().find(|r| r["profile"] == "c").unwrap();
-    assert_eq!(c["session"]["used_percentage"], 5.0);
-    assert!(f.records.join("env.c").exists());
+    if cfg!(target_os = "linux") {
+        assert_eq!(c["state"], "not_logged_in", "{c}");
+        assert_eq!(c["source"], "direct", "{c}");
+        assert!(c["error"].is_null(), "{c}");
+        assert!(!f.records.join("env.c").exists());
+    } else {
+        assert_eq!(c["session"]["used_percentage"], 5.0);
+        assert!(f.records.join("env.c").exists());
+    }
     assert!(!f.records.join("env..claude").exists());
 }
 
@@ -984,8 +1073,7 @@ fn malformed_ledger_warns_once_and_marks_nothing_live() {
 // ---------------------------------------------------------------------------
 
 const REQUEST_LINE: &str = r#"{"type":"control_request","request_id":"amplihack-usage","request":{"subtype":"get_usage","skip_behaviors":true}}"#;
-const REQUEST_ARGS: &str =
-    "6\n-p\n--input-format\nstream-json\n--output-format\nstream-json\n--verbose\n";
+const REQUEST_ARGS: &str = "7\n-p\n--input-format\nstream-json\n--output-format\nstream-json\n--verbose\n--no-session-persistence\n";
 const SYSTEM_MARKER: &str = "SYSTEM-LINE-MARKER-1698";
 const PROBE_ENV: &str = "AMPLIHACK_PROFILE_USAGE_PROBE";
 
@@ -1051,7 +1139,10 @@ fn an_error_answer_falls_back_to_usage() {
     let (rows, stderr) = f.json(&["profile", "usage", "--json", "a"]);
     assert_eq!(session(&rows[0]), 20.0, "read from /usage");
     assert!(f.recorded("args-request.a").is_some());
-    assert_eq!(f.recorded("args.a").as_deref(), Some("2\n-p\n/usage\n"));
+    assert_eq!(
+        f.recorded("args.a").as_deref(),
+        Some("3\n-p\n/usage\n--no-session-persistence\n")
+    );
     assert!(!stderr.contains("Unknown control request"), "{stderr}");
 }
 
@@ -1158,7 +1249,7 @@ fn a_request_past_the_deadline_is_timeout_and_usage_never_runs() {
 fn the_bound_holds_with_the_request_and_its_fallback() {
     let f = Fixture::new(false);
     for p in ["e", "g"] {
-        f.ok(&["profile", "add", p]);
+        f.add_logged_in(p);
         f.canned(
             p,
             "Current session: 1% used\nCurrent week (all models): 1% used\n",
@@ -1324,4 +1415,321 @@ fn conflicting_output_flags_exit_non_zero_before_probing() {
         );
     }
     assert!(f.probed().is_empty(), "nothing probed: {:?}", f.probed());
+}
+
+// ---------------------------------------------------------------------------
+// Issue #2271: a login with no token starts no `claude`
+//
+// `tl` has a login file with no access token, holding only a canary
+// refresh token. `xr` has an expired access token (a sentinel) and no
+// refresh token. `nf` is a real profile directory with no login file: on
+// Linux it is not signed in, elsewhere it falls back (D1). `rr` has an
+// expired token and a refresh token; it still goes to `claude` (D3), and
+// the test guard makes the endpoints unusable, which also checks that the
+// login is judged before the endpoints (D4). The fake `claude` records a
+// file for every start, so a start for any of them would be visible. No
+// stream and no record file may hold the canary, a sentinel or the path
+// of a login file.
+// ---------------------------------------------------------------------------
+
+const CANARY_2271: &str = "sk-ant-oat01-TEST-2271-CANARY";
+const ACCESS_SENTINEL_2271: &str = "sk-ant-oat01-FAKE2271SENTINEL";
+const REFRESH_SENTINEL_2271: &str = "sk-ant-ort01-FAKE2271REFRESH";
+
+fn expired_ms() -> i64 {
+    now() * 1000 - 60_000
+}
+
+/// The `Fixture::new(false)` profiles plus `tl`, `xr`, `nf` and `rr`.
+fn token_less() -> Fixture {
+    let f = Fixture::new(false);
+    for p in ["tl", "xr", "nf", "rr"] {
+        f.ok(&["profile", "add", p]);
+        // Canned text that shows up only if `claude` is started.
+        f.canned(p, "Not logged in · Please run /login\n");
+    }
+    private_file(
+        &f.root.join("tl").join(".credentials.json"),
+        &format!("{{\"claudeAiOauth\":{{\"refreshToken\":\"{CANARY_2271}\"}}}}"),
+    );
+    private_file(
+        &f.root.join("xr").join(".credentials.json"),
+        &format!(
+            "{{\"claudeAiOauth\":{{\"accessToken\":\"{ACCESS_SENTINEL_2271}\",\"expiresAt\":{}}}}}",
+            expired_ms()
+        ),
+    );
+    private_file(
+        &f.root.join("rr").join(".credentials.json"),
+        &format!(
+            "{{\"claudeAiOauth\":{{\"accessToken\":\"{ACCESS_SENTINEL_2271}\",\
+             \"refreshToken\":\"{REFRESH_SENTINEL_2271}\",\"expiresAt\":{}}}}}",
+            expired_ms()
+        ),
+    );
+    f
+}
+
+/// The profiles that are not signed in on this platform, with the reason.
+fn not_signed_in_cases() -> Vec<(&'static str, &'static str)> {
+    let mut v = vec![("tl", "no oauth token"), ("xr", "no refresh token")];
+    if cfg!(target_os = "linux") {
+        v.push(("nf", "no credentials file"));
+    }
+    v
+}
+
+/// No start of any kind was recorded for `p`: neither `/usage` nor the
+/// `get_usage` request.
+fn assert_never_started(f: &Fixture, p: &str) {
+    assert!(!f.probed().contains(p), "claude was started for {p}");
+    assert_eq!(f.recorded(&format!("args-request.{p}")), None, "{p}");
+    assert_eq!(f.recorded(&format!("env.{p}")), None, "{p}");
+}
+
+/// Neither the canary, a sentinel nor any login file's path reaches the
+/// user or the fake `claude`'s record files.
+fn assert_no_canary(f: &Fixture, out: &Output) {
+    assert_no_secrets(out);
+    let mut seen = vec![text(&out.stdout), text(&out.stderr)];
+    for e in fs::read_dir(&f.records).unwrap() {
+        seen.push(fs::read_to_string(e.unwrap().path()).unwrap_or_default());
+    }
+    for s in seen {
+        for secret in [
+            CANARY_2271,
+            "TEST-2271",
+            ACCESS_SENTINEL_2271,
+            REFRESH_SENTINEL_2271,
+            "FAKE2271",
+        ] {
+            assert!(!s.contains(secret), "{secret:?} printed: {s}");
+        }
+        assert!(!s.contains(".credentials.json"), "login path printed: {s}");
+    }
+    for s in [text(&out.stdout), text(&out.stderr)] {
+        for p in ["tl", "xr", "nf"] {
+            let dir = f.root.join(p);
+            assert!(
+                !s.contains(dir.to_str().unwrap()),
+                "profile path printed: {s}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_token_less_profile_starts_no_claude_and_reads_not_signed_in() {
+    let f = token_less();
+    let out = f.ok(&["profile", "usage", "--json"]);
+    assert_no_canary(&f, &out);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    let stderr = text(&out.stderr);
+    let row = |p: &str| {
+        rows.iter()
+            .find(|r| r["profile"] == p)
+            .unwrap_or_else(|| panic!("no row for {p}: {rows:?}"))
+            .clone()
+    };
+    for (p, why) in not_signed_in_cases() {
+        let r = row(p);
+        assert_eq!(r["state"], "not_logged_in", "{r}");
+        assert_eq!(r["source"], "direct", "{r}");
+        assert_eq!(r["spend"], "unknown", "{r}");
+        // D6: not an error row, so `error` stays `null`.
+        assert!(r["error"].is_null(), "{why}: {r}");
+        assert!(r["raw"].is_null(), "{r}");
+        assert!(r["session"].is_null() && r["week_all"].is_null(), "{r}");
+        // D7: the reason is in the row; no stderr warning repeats it.
+        assert!(
+            !stderr.contains(&format!("warning: profile \"{p}\"")),
+            "{stderr}"
+        );
+        assert_never_started(&f, p);
+    }
+    // The profiles with a token still go to `claude`, as before.
+    for p in ["a", "b", "c", "d"] {
+        assert!(f.probed().contains(p), "{p} was probed");
+    }
+    assert_eq!(row("d")["state"], "not_logged_in");
+    assert_eq!(row("d")["source"], "fallback", "d has a token");
+}
+
+/// D3: an expired token that has a refresh token still goes to `claude`.
+#[test]
+fn an_expired_login_with_a_refresh_token_still_starts_claude() {
+    let f = token_less();
+    let out = f.ok(&["profile", "usage", "--json", "rr"]);
+    assert_no_canary(&f, &out);
+    assert!(f.probed().contains("rr"), "{:?}", f.probed());
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(rows[0]["source"], "fallback", "{}", rows[0]);
+}
+
+/// D1: off Linux a missing login file may mean the login is in the
+/// Keychain, so `nf` still goes to `claude`.
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn off_linux_a_missing_login_file_still_starts_claude() {
+    let f = token_less();
+    let out = f.ok(&["profile", "usage", "--json", "nf"]);
+    assert!(f.probed().contains("nf"), "{:?}", f.probed());
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(rows[0]["source"], "fallback", "{}", rows[0]);
+}
+
+#[test]
+fn a_token_less_profile_in_the_table_and_bar_view() {
+    let f = token_less();
+    let out = f.ok(&["profile", "usage", "--table"]);
+    assert_no_canary(&f, &out);
+    let stdout = text(&out.stdout);
+    let rows = table_rows(&stdout);
+    let tl = rows
+        .iter()
+        .find(|l| first_word(l) == "tl")
+        .unwrap_or_else(|| panic!("{stdout}"));
+    assert!(tl.contains("not signed in (no oauth token)"), "{tl}");
+    assert!(tl.contains("not_logged_in"), "{tl}");
+    assert!(!tl.contains("(fallback)") && !tl.contains('%'), "{tl}");
+
+    let out = f.ok(&["profile", "usage"]);
+    assert_no_canary(&f, &out);
+    let stdout = text(&out.stdout);
+    let xr = stdout
+        .lines()
+        .find(|l| first_word(l) == "xr")
+        .unwrap_or_else(|| panic!("{stdout}"));
+    assert!(xr.contains("not signed in (no refresh token)"), "{xr}");
+    assert_eq!(xr.matches("not signed in").count(), 1, "{xr}");
+    assert!(
+        !xr.contains("no reading") && !xr.contains("fallback"),
+        "{xr}"
+    );
+    assert!(xr.contains("spend:unknown"), "{xr}");
+    for (p, _) in not_signed_in_cases() {
+        assert_never_started(&f, p);
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_missing_login_file_on_linux_shows_not_signed_in_in_the_bar_view() {
+    let f = token_less();
+    let out = f.ok(&["profile", "usage", "nf"]);
+    assert_no_canary(&f, &out);
+    let stdout = text(&out.stdout);
+    let nf = stdout
+        .lines()
+        .find(|l| first_word(l) == "nf")
+        .unwrap_or_else(|| panic!("{stdout}"));
+    assert!(nf.contains("not signed in (no credentials file)"), "{nf}");
+    assert_never_started(&f, "nf");
+}
+
+#[test]
+fn raw_adds_no_line_and_no_note_for_a_token_less_profile() {
+    let f = token_less();
+    let out = f.ok(&["profile", "usage", "--table", "--raw", "tl", "xr", "a"]);
+    assert_no_canary(&f, &out);
+    let stdout = text(&out.stdout);
+    assert!(!stdout.contains("no claude output"), "{stdout}");
+    assert!(
+        stdout.contains("  raw stdout:"),
+        "a's text is kept: {stdout}"
+    );
+    let stderr = text(&out.stderr);
+    for p in ["tl", "xr"] {
+        assert!(
+            !stderr.contains(&format!("note: profile \"{p}\"")),
+            "{stderr}"
+        );
+        assert!(
+            !stderr.contains(&format!("warning: profile \"{p}\"")),
+            "{stderr}"
+        );
+        assert_never_started(&f, p);
+    }
+}
+
+#[test]
+fn direct_mode_gives_a_token_less_profile_the_same_row() {
+    let f = token_less();
+    let names: Vec<&str> = not_signed_in_cases().iter().map(|(p, _)| *p).collect();
+    let mut args = vec!["profile", "usage", "--json"];
+    args.extend(&names);
+    let out = f
+        .cmd(&args)
+        .env("AMPLIHACK_PROFILE_USAGE_PROBE", "direct")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_no_canary(&f, &out);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(rows.len(), names.len());
+    for r in &rows {
+        let (_, why) = not_signed_in_cases()
+            .into_iter()
+            .find(|(p, _)| r["profile"] == *p)
+            .unwrap();
+        assert_eq!(r["state"], "not_logged_in", "{r}");
+        assert_eq!(r["source"], "direct", "{r}");
+        // D6: not an error row, so `error` stays `null`.
+        assert!(r["error"].is_null(), "{why}: {r}");
+    }
+    assert!(f.probed().is_empty(), "{:?}", f.probed());
+}
+
+/// `auto` does no direct read, so the token-less profile still reaches
+/// `claude` there.
+#[test]
+fn auto_mode_still_starts_claude_for_a_token_less_profile() {
+    let f = token_less();
+    let out = f
+        .cmd(&["profile", "usage", "--json", "tl"])
+        .env("AMPLIHACK_PROFILE_USAGE_PROBE", "auto")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(f.probed().contains("tl"), "{:?}", f.probed());
+}
+
+/// A token-less profile alone needs no `claude` at all, so a missing binary
+/// changes nothing.
+#[test]
+fn a_token_less_profile_needs_no_claude_binary() {
+    let f = token_less();
+    let out = f
+        .cmd(&["profile", "usage", "--json", "tl", "xr"])
+        .env(
+            "AMPLIHACK_CLAUDE_BINARY_PATH",
+            f.tools.join("no-such-claude"),
+        )
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_no_canary(&f, &out);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(rows.len(), 2);
+    for r in &rows {
+        assert_eq!(r["state"], "not_logged_in", "{r}");
+        assert!(r["error"].is_null(), "{r}");
+    }
+}
+
+/// `--summary-json` holds the same rows as `--json`.
+#[test]
+fn summary_json_gives_a_token_less_profile_the_same_row() {
+    let f = token_less();
+    let out = f.ok(&["profile", "usage", "--summary-json", "tl", "xr"]);
+    assert_no_canary(&f, &out);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    for r in v["profiles"].as_array().unwrap() {
+        assert_eq!(r["state"], "not_logged_in", "{r}");
+        assert_eq!(r["source"], "direct", "{r}");
+        assert!(r["error"].is_null(), "{r}");
+    }
+    for p in ["tl", "xr"] {
+        assert_never_started(&f, p);
+    }
 }

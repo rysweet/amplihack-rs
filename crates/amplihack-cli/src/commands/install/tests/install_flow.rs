@@ -883,92 +883,10 @@ fn copy_amplifier_bundle_replaces_existing_atomically() {
     );
 }
 
-/// Issue #1551: the `gh` merge guard is staged with the bundle and stays
-/// executable, since `amplihack recipe run` puts its directory on PATH and
-/// refuses to run auto-drive without it.
+/// Staging normalizes ordinary tool permissions without gate-specific rules.
 #[cfg(unix)]
 #[test]
-fn copy_amplifier_bundle_stages_the_merge_guard_executable() {
-    use std::os::unix::fs::PermissionsExt;
-    let temp = tempfile::tempdir().unwrap();
-    let repo_root = temp.path().join("repo");
-    let claude_dir = temp.path().join(".amplihack/.claude");
-    fs::create_dir_all(&claude_dir).unwrap();
-    issue_734_create_bundle_repo(&repo_root, issue_734_compatible_smart_orchestrator());
-    let guard = repo_root.join("amplifier-bundle/tools/gh-merge-guard");
-    fs::create_dir_all(&guard).unwrap();
-    fs::write(
-        guard.join("gh"),
-        "#!/usr/bin/env bash\n# amplihack-gh-merge-guard\n",
-    )
-    .unwrap();
-    fs::set_permissions(guard.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
-
-    directories::copy_amplifier_bundle(&repo_root, &claude_dir).unwrap();
-
-    let staged = temp
-        .path()
-        .join(".amplihack/amplifier-bundle/tools/gh-merge-guard/gh");
-    let meta = fs::metadata(&staged)
-        .unwrap_or_else(|e| panic!("{} must be staged: {e}", staged.display()));
-    assert!(meta.is_file());
-    assert!(
-        meta.permissions().mode() & 0o111 != 0,
-        "the staged merge guard must stay executable (mode {:o})",
-        meta.permissions().mode()
-    );
-}
-
-/// Issue #1551 G11: the install sets the shim to exactly 0755 rather than
-/// keeping whatever mode the checkout (and its umask) gave it, because
-/// `amplihack recipe run` refuses a guard that group or others can write.
-#[cfg(unix)]
-#[test]
-fn copy_amplifier_bundle_stages_the_merge_guard_at_exactly_0755() {
-    use std::os::unix::fs::PermissionsExt;
-    for source_mode in [0o775, 0o777, 0o700, 0o644] {
-        let temp = tempfile::tempdir().unwrap();
-        let repo_root = temp.path().join("repo");
-        let claude_dir = temp.path().join(".amplihack/.claude");
-        fs::create_dir_all(&claude_dir).unwrap();
-        issue_734_create_bundle_repo(&repo_root, issue_734_compatible_smart_orchestrator());
-        let guard = repo_root.join("amplifier-bundle/tools/gh-merge-guard");
-        fs::create_dir_all(&guard).unwrap();
-        fs::write(
-            guard.join("gh"),
-            "#!/bin/bash -p\n# amplihack-gh-merge-guard\n",
-        )
-        .unwrap();
-        fs::set_permissions(guard.join("gh"), fs::Permissions::from_mode(source_mode)).unwrap();
-
-        directories::copy_amplifier_bundle(&repo_root, &claude_dir).unwrap();
-
-        let staged_dir = temp
-            .path()
-            .join(".amplihack/amplifier-bundle/tools/gh-merge-guard");
-        let mode = fs::metadata(staged_dir.join("gh"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o7777;
-        assert_eq!(
-            mode, 0o755,
-            "a {source_mode:o} source shim must be staged as 0755, got {mode:o}"
-        );
-        let dir_mode = fs::metadata(&staged_dir).unwrap().permissions().mode();
-        assert_eq!(
-            dir_mode & 0o022,
-            0,
-            "the staged guard dir must not be group- or other-writable (mode {dir_mode:o})"
-        );
-    }
-}
-
-/// Issue #1551 G11: the guard also trusts tools/ and the gate files in it, so
-/// the install removes their group and other write bits, keeping the rest.
-#[cfg(unix)]
-#[test]
-fn copy_amplifier_bundle_removes_group_write_from_tools_and_gate_files() {
+fn copy_amplifier_bundle_removes_group_write_from_tools() {
     use std::os::unix::fs::PermissionsExt;
     let temp = tempfile::tempdir().unwrap();
     let repo_root = temp.path().join("repo");
@@ -976,17 +894,17 @@ fn copy_amplifier_bundle_removes_group_write_from_tools_and_gate_files() {
     fs::create_dir_all(&claude_dir).unwrap();
     issue_734_create_bundle_repo(&repo_root, issue_734_compatible_smart_orchestrator());
     let tools = repo_root.join("amplifier-bundle/tools");
-    let guard = tools.join("gh-merge-guard");
+    let guard = tools.join("ordinary-tool-dir");
     fs::create_dir_all(&guard).unwrap();
     fs::write(
         guard.join("gh"),
-        "#!/bin/bash -p\n# amplihack-gh-merge-guard\n",
+        "#!/bin/bash -p\n# amplihack-ordinary-tool-dir\n",
     )
     .unwrap();
     fs::set_permissions(guard.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
-    fs::write(tools.join("autodrive_merge_gate.sh"), "#!/bin/bash\n").unwrap();
+    fs::write(tools.join("ordinary-tool.sh"), "#!/bin/bash\n").unwrap();
     fs::set_permissions(
-        tools.join("autodrive_merge_gate.sh"),
+        tools.join("ordinary-tool.sh"),
         fs::Permissions::from_mode(0o777),
     )
     .unwrap();
@@ -1003,7 +921,7 @@ fn copy_amplifier_bundle_removes_group_write_from_tools_and_gate_files() {
     let staged = temp.path().join(".amplihack/amplifier-bundle/tools");
     let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o7777;
     assert_eq!(mode(&staged) & 0o022, 0, "tools/ mode {:o}", mode(&staged));
-    assert_eq!(mode(&staged.join("autodrive_merge_gate.sh")), 0o755);
+    assert_eq!(mode(&staged.join("ordinary-tool.sh")), 0o755);
     assert_eq!(mode(&staged.join("autodrive_state.sh")), 0o644);
 }
 
@@ -1781,4 +1699,103 @@ fn fixture_environment() -> crate::test_support::EnvGuard {
     // A session's own AMPLIHACK_HOME is a source install would now refuse (#1955).
     unsafe { std::env::remove_var("AMPLIHACK_HOME") };
     saved
+}
+
+/// Issue #1954 B2: the mapped `.claude` trees are exchanged only after the
+/// release commits, so a bundle that fails its staging check leaves them,
+/// and the published bundle link, exactly as the previous install left them.
+#[test]
+fn failed_bundle_staging_leaves_claude_trees_on_the_old_version() {
+    use crate::commands::install::directories::staging_hook::with_staging_hook;
+
+    fn files(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+        let mut out = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                let kind = entry.file_type().unwrap();
+                if kind.is_dir() {
+                    stack.push(path);
+                } else if kind.is_file() {
+                    out.push((
+                        path.strip_prefix(root).unwrap().to_path_buf(),
+                        fs::read(&path).unwrap(),
+                    ));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
+    let temp = tempfile::tempdir().unwrap();
+    let previous = crate::test_support::set_home(temp.path());
+
+    let bin_dir = temp.path().join("stub_bin");
+    let hooks_stub = create_exe_stub(&bin_dir, "amplihack-hooks");
+    let prev_hooks = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
+    let prev_path = std::env::var_os("PATH");
+    unsafe {
+        std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin_dir.display(),
+                prev_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            ),
+        );
+    }
+
+    create_source_repo(temp.path());
+    local_install(temp.path(), None).unwrap();
+    let claude = temp.path().join(".amplihack/.claude");
+    let link = temp.path().join(".amplihack/amplifier-bundle");
+    let before = files(&claude);
+    let link_before = fs::read_link(&link).unwrap();
+
+    // The next source ships changed agents and skills; its bundle fails the
+    // staging comparison because the staged copy gains a file.
+    for dir in ["agents", "skills"] {
+        fs::write(
+            temp.path()
+                .join("amplifier-bundle")
+                .join(dir)
+                .join("marker.txt"),
+            "changed\n",
+        )
+        .unwrap();
+    }
+    let result = with_staging_hook(
+        |staging| fs::write(staging.join("injected.txt"), "x\n").unwrap(),
+        || local_install(temp.path(), None),
+    );
+
+    let after = files(&claude);
+    let link_after = fs::read_link(&link).unwrap();
+
+    if let Some(v) = prev_hooks {
+        unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };
+    } else {
+        unsafe { std::env::remove_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH") };
+    }
+    if let Some(v) = prev_path {
+        unsafe { std::env::set_var("PATH", v) };
+    }
+    crate::test_support::restore_home(previous);
+
+    assert!(result.is_err(), "the staging check must fail the install");
+    assert_eq!(link_after, link_before, "the bundle link did not switch");
+    assert!(
+        before == after,
+        "the .claude trees changed although the release did not commit"
+    );
 }

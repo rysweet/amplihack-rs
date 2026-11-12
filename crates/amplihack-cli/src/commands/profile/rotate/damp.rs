@@ -10,7 +10,9 @@
 //! normally, since each is probed through its own directory, but the one
 //! swapped in would then fail as well. So [`keep_for_home_key`]
 //! turns that swap into a stay: it would change neither the billing nor the
-//! next live reading. The cycle gives it only a key that
+//! next live reading. That includes the failed-probe swap made sooner by the
+//! near-threshold rule (#2211, `reason=projected` on a failed live reading).
+//! The cycle gives it only a key that
 //! [`reachable`](super::key_check::reachable) accepts: a stay on a dead login
 //! costs more than a useless hourly swap, so a doubtful key does not stop one.
 
@@ -70,27 +72,38 @@ pub fn damp(
     )
 }
 
-/// True when `d` is a swap made only because the live probe kept failing;
-/// the cycle looks for a home key only then.
-pub fn is_failed_probe_swap(d: &Decision) -> bool {
-    matches!(
-        d,
+/// True when `d` is a swap made only because the live probe, which read
+/// `live`, failed; the cycle looks for a home key only then. That is the
+/// failed-probe swap, and the same swap made sooner by the near-threshold
+/// rule (#2211), which relabels it `projected` on a failed live reading so
+/// that damping does not delay it. A `projected` swap on a live reading that
+/// was measured is not one.
+pub fn is_failed_probe_swap(d: &Decision, live: &Reading) -> bool {
+    match d {
         Decision::Swap {
             reason: Reason::FailedProbe,
             ..
-        }
-    )
+        } => true,
+        Decision::Swap {
+            reason: Reason::Projected,
+            ..
+        } => *live == Reading::Failed,
+        _ => false,
+    }
 }
 
-/// `d` given the `$HOME` key `setting`, with the log note for the stay. A
-/// failed-probe swap becomes a stay; anything else passes unchanged.
+/// `d`, decided on the live reading `live`, given the `$HOME` key
+/// `setting`, with the log note for the stay. A swap made only because the
+/// live probe failed ([`is_failed_probe_swap`]) becomes a stay; anything
+/// else passes unchanged.
 pub fn keep_for_home_key(
     d: Decision,
     note: Option<String>,
     setting: Option<&str>,
+    live: &Reading,
 ) -> (Decision, Option<String>) {
     match setting {
-        Some(setting) if is_failed_probe_swap(&d) => {
+        Some(setting) if is_failed_probe_swap(&d, live) => {
             (Decision::Stay, Some(msg::stay_home_key(setting)))
         }
         _ => (d, note),

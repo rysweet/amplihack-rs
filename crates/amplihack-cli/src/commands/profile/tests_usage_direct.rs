@@ -179,13 +179,24 @@ fn endpoints(fake: &FakeHttp) -> Endpoints {
     ep
 }
 
+/// The read deadline for a test that expects its read to finish: far longer
+/// than anything its fake takes, so a stall on a loaded host only adds
+/// elapsed time. A refresh saves the login with two syncs, and one sync of
+/// the test's temporary directory on a loaded disk was measured at 10 s. At
+/// 5 s, such a stall left the retry nothing, or one of 2 s before the POST
+/// left less than `REFRESH_BUDGET`, and the read gave `timeout`
+/// (`a_401_refreshes_once_writes_back_and_reads_again` and
+/// `a_slow_refresh_within_the_deadline_still_reads` in loaded parallel runs).
+/// Tests of the deadline itself set their own.
+const READ_T: Duration = Duration::from_secs(60);
+
 fn request<'a>(l: &'a Login, journals: &'a [PathBuf], allow_refresh: bool) -> Request<'a> {
     Request {
         creds_dir: &l.dir,
         journals,
         allow_refresh,
         cancel: &NO_CANCEL,
-        timeout: Duration::from_secs(5),
+        timeout: READ_T,
         now_ms: now_ms(),
     }
 }
@@ -221,8 +232,24 @@ fn posts(fake: &FakeHttp) -> usize {
 
 /// Usage answers 200 to the new token and 401 to anything else; the token
 /// endpoint answers with `refresh`.
-fn refreshing(refresh: Reply) -> FakeHttp {
-    FakeHttp::start(move |s, _| {
+/// A fake server for a test that starts a token refresh. It holds
+/// [`crate::test_support::refresh_count_lock`] while it lives, so no other
+/// refresh runs beside a test that checks the process-wide refresh count.
+struct Refreshing {
+    fake: FakeHttp,
+    _serial: std::sync::MutexGuard<'static, ()>,
+}
+
+impl std::ops::Deref for Refreshing {
+    type Target = FakeHttp;
+    fn deref(&self) -> &FakeHttp {
+        &self.fake
+    }
+}
+
+fn refreshing(refresh: Reply) -> Refreshing {
+    let serial = crate::test_support::refresh_count_lock();
+    let fake = FakeHttp::start(move |s, _| {
         if s.path == TOKEN_PATH {
             return refresh.clone();
         }
@@ -231,7 +258,11 @@ fn refreshing(refresh: Reply) -> FakeHttp {
         } else {
             Reply::json(401, &json!({"error": "expired"}))
         }
-    })
+    });
+    Refreshing {
+        fake,
+        _serial: serial,
+    }
 }
 
 fn token_answer() -> Value {
@@ -487,6 +518,11 @@ fn reasons_are_the_documented_texts() {
     assert_eq!(reason::REFRESH_REFUSED, "refresh refused");
     assert_eq!(reason::REFRESH_FAILED, "refresh failed");
     assert_eq!(reason::REFRESH_NOT_SAVED, "refresh not saved");
+    // Issue #2271: its own reason, so `usage_source` can tell a login with
+    // nothing to refresh with from a refresh the server turned away.
+    assert_eq!(reason::NO_REFRESH_TOKEN, "no refresh token");
+    // Not a verdict on the login: it falls back to `claude`.
+    assert_eq!(reason::UNREADABLE_CREDS, "unreadable credentials");
 }
 
 // ---------------------------------------------------------------------------
@@ -565,17 +601,48 @@ fn a_file_over_64_kib_is_refused() {
 }
 
 #[test]
-fn no_usable_token_is_no_oauth_token() {
+fn no_token_is_no_oauth_token() {
     let fake = FakeHttp::start(|_, _| Reply::json(200, &body_100_55()));
     let l = login();
     for body in [
-        "not json",
-        r#"{"primaryApiKey":"sk-x"}"#,
-        r#"{"claudeAiOauth":{"accessToken":"with space"}}"#,
+        "{}",
+        r#"{"claudeAiOauth":{}}"#,
+        r#"{"claudeAiOauth":{"accessToken":""}}"#,
+        r#"{"claudeAiOauth":{"accessToken":null}}"#,
     ] {
         fs::write(l.path(), body).unwrap();
         assert_eq!(run(&fake, &l, true), Err(reason::NO_TOKEN), "{body}");
     }
+    assert!(fake.seen().is_empty());
+}
+
+/// A file that does not parse, or holds a token the validator rejects, is
+/// not "no oauth token": nothing says the login is absent.
+#[test]
+fn a_file_that_does_not_parse_is_unreadable_credentials() {
+    let fake = FakeHttp::start(|_, _| Reply::json(200, &body_100_55()));
+    let l = login();
+    for body in [
+        "not json",
+        "[]",
+        r#"{"primaryApiKey":"sk-x"}"#,
+        r#"{"claudeAiOauth":"x"}"#,
+        r#"{"claudeAiOauth":{"accessToken":17}}"#,
+        r#"{"claudeAiOauth":{"accessToken":"with space"}}"#,
+    ] {
+        fs::write(l.path(), body).unwrap();
+        assert_eq!(
+            run(&fake, &l, true),
+            Err(reason::UNREADABLE_CREDS),
+            "{body}"
+        );
+    }
+    let long = format!(
+        r#"{{"claudeAiOauth":{{"accessToken":"{}"}}}}"#,
+        "a".repeat(MAX_TOKEN + 1)
+    );
+    fs::write(l.path(), long).unwrap();
+    assert_eq!(run(&fake, &l, true), Err(reason::UNREADABLE_CREDS));
     assert!(fake.seen().is_empty());
 }
 
@@ -760,8 +827,9 @@ fn a_stalled_server_is_a_timeout_within_the_deadline() {
 /// Answers with a delay for each path: `old` for the 401 to the old token,
 /// `token` for the token answer to the refresh and `retry` for the 200 to
 /// the new token.
-fn refreshing_after(old: Duration, token: Duration, retry: Duration) -> FakeHttp {
-    FakeHttp::start(move |s, _| {
+fn refreshing_after(old: Duration, token: Duration, retry: Duration) -> Refreshing {
+    let serial = crate::test_support::refresh_count_lock();
+    let fake = FakeHttp::start(move |s, _| {
         if s.path == TOKEN_PATH {
             Reply::json(200, &token_answer()).after(token)
         } else if bearer(s) == Some(&format!("Bearer {NEW_ACCESS}")) {
@@ -769,7 +837,11 @@ fn refreshing_after(old: Duration, token: Duration, retry: Duration) -> FakeHttp
         } else {
             Reply::json(401, &json!({"error": "expired"})).after(old)
         }
-    })
+    });
+    Refreshing {
+        fake,
+        _serial: serial,
+    }
 }
 
 /// The deadline covers the whole read, not each request. With `T` =
@@ -827,7 +899,8 @@ fn a_slow_refresh_within_the_deadline_still_reads() {
     let l = login();
     let journals = l.journals();
     let mut req = request(&l, &journals, true);
-    req.timeout = Duration::from_secs(5);
+    req.timeout = READ_T;
+    assert!(d * 3 + REFRESH_BUDGET < READ_T);
     let r = read(&endpoints(&fake), &req).expect("read after a slow refresh");
     assert_eq!(r.report.week_all.map(|w| w.used_percentage), Some(55.0));
 }
@@ -869,7 +942,11 @@ fn a_refresh_with_too_little_time_left_is_not_sent() {
 /// token saved. The 401 comes at once, so the POST is sent with
 /// `SEND_MARGIN` to spare. The retry `GET` then has `T - TOKEN_D` (about
 /// 0.95 s); that window is fixed by the production step formula (`T - 1 s`)
-/// and cannot be widened from the test.
+/// and cannot be widened from the test. The save's syncs and rename run in
+/// it too, so a stall there on a loaded host, after the token answer is
+/// read, leaves the retry no time: it is `timeout`, as the one deadline says
+/// it must be, and the saved token is still what is pinned. A stall across
+/// the token answer itself is still `refresh not saved`.
 #[test]
 fn a_refresh_with_the_budget_left_saves_the_rotated_token() {
     let t = REFRESH_T;
@@ -882,8 +959,14 @@ fn a_refresh_with_the_budget_left_saves_the_rotated_token() {
     let journals = l.journals();
     let mut req = request(&l, &journals, true);
     req.timeout = t;
-    let r = read(&endpoints(&fake), &req).expect("read after a slow refresh");
-    assert_eq!(r.report.week_all.map(|w| w.used_percentage), Some(55.0));
+    match read(&endpoints(&fake), &req) {
+        Ok(r) => assert_eq!(r.report.week_all.map(|w| w.used_percentage), Some(55.0)),
+        Err(e) => assert_eq!(e, reason::TIMEOUT, "only the retry may run out"),
+    }
+    // A retry that was sent carried the rotated token.
+    for get in gets(&fake).iter().skip(1) {
+        assert_eq!(bearer(get), Some(format!("Bearer {NEW_ACCESS}").as_str()));
+    }
     assert_eq!(posts(&fake), 1);
     assert_eq!(l.doc()["claudeAiOauth"]["accessToken"], NEW_ACCESS);
     assert_eq!(l.doc()["claudeAiOauth"]["refreshToken"], NEW_REFRESH);
@@ -1368,13 +1451,13 @@ fn the_refresh_counter_covers_a_refresh_in_progress() {
             journals: &journals,
             allow_refresh: true,
             cancel: &NO_CANCEL,
-            timeout: Duration::from_secs(5),
+            timeout: READ_T,
             now_ms: now_ms(),
         };
         read(&ep, &req).is_ok()
     });
     let start = Instant::now();
-    while posts(&fake) == 0 && start.elapsed() < Duration::from_secs(3) {
+    while posts(&fake) == 0 && start.elapsed() < READ_T {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(
@@ -1453,4 +1536,303 @@ fn an_unusable_endpoint_fails_without_connecting() {
     );
     assert!(start.elapsed() < Duration::from_millis(500));
     assert_eq!(l.entries(), [CREDS]);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #2271: a login with nothing to refresh it with
+//
+// Contract:
+// - `reason::NO_REFRESH_TOKEN` = `no refresh token`.
+// - `read()` loads the credentials before it checks the endpoints, so a
+//   login with no file, no token, or a refused file gets its own reason even
+//   when the endpoints are unusable. `Deadline::after` still runs first.
+// - `read()` returns `no refresh token` when the access token is past
+//   `expiresAt` and the file has no usable `claudeAiOauth.refreshToken`
+//   (missing, empty, over 4096 bytes, not printable ASCII, not a string),
+//   whether or not refresh is allowed. Nothing is sent, no lock or temp
+//   file is made, and the file is left as it was.
+// - A missing or non-integer `expiresAt` is never treated as expired.
+// - `refresh()` itself keeps `refresh failed` for a missing refresh token:
+//   that path also serves a still-valid token due within the margin, and a
+//   still-valid token that got a 401, and neither means "not signed in".
+// - A refresh the token server turns away keeps `refresh failed`.
+// ---------------------------------------------------------------------------
+
+/// A private login whose token expires in `ms` and whose `refreshToken` is
+/// `refresh` (`None`: the key is absent).
+fn login_with_refresh(ms: i64, refresh: Option<Value>) -> Login {
+    let l = login_expiring_in(ms);
+    let mut doc = l.doc();
+    let oauth = doc["claudeAiOauth"].as_object_mut().unwrap();
+    match refresh {
+        Some(v) => {
+            oauth.insert("refreshToken".into(), v);
+        }
+        None => {
+            oauth.remove("refreshToken");
+        }
+    }
+    fs::write(l.path(), serde_json::to_vec_pretty(&doc).unwrap()).unwrap();
+    fs::set_permissions(l.path(), fs::Permissions::from_mode(0o600)).unwrap();
+    l
+}
+
+/// The fake server that answers every request: a POST would be a defect.
+fn answering_everything() -> FakeHttp {
+    FakeHttp::start(|s, _| {
+        if s.path == TOKEN_PATH {
+            Reply::json(200, &token_answer())
+        } else {
+            Reply::json(401, &json!({"error": "expired"}))
+        }
+    })
+}
+
+/// Endpoints the test guard refuses: `ep.usable()` is false.
+fn unusable_endpoints() -> Endpoints {
+    let (ep, _) = Endpoints::resolve_with(getter(&[("AMPLIHACK_TEST_HOME_GUARD", "1")]));
+    assert!(!ep.usable());
+    ep
+}
+
+fn run_unusable(l: &Login, allow_refresh: bool) -> Result<Direct, &'static str> {
+    let journals = l.journals();
+    read(&unusable_endpoints(), &request(l, &journals, allow_refresh))
+}
+
+#[test]
+fn an_expired_login_with_no_refresh_token_is_no_refresh_token_and_sends_nothing() {
+    let _serial = crate::test_support::refresh_count_lock();
+    let fake = answering_everything();
+    let l = login_with_refresh(-1000, None);
+    let before = fs::read(l.path()).unwrap();
+    assert_eq!(run(&fake, &l, true), Err(reason::NO_REFRESH_TOKEN));
+    assert!(fake.seen().is_empty(), "nothing sent: {:?}", fake.seen());
+    assert_eq!(fs::read(l.path()).unwrap(), before, "the file is untouched");
+    assert_eq!(l.entries(), [CREDS], "no lock or temp file is left");
+    assert_eq!(refreshes_in_progress(), 0, "the counter is released");
+}
+
+/// D2: the verdict does not depend on permission to refresh. With refresh
+/// not allowed the reason is `no refresh token`, not `token expired`.
+#[test]
+fn an_expired_login_with_no_refresh_token_is_no_refresh_token_without_refresh_allowed() {
+    let fake = answering_everything();
+    let l = login_with_refresh(-1000, None);
+    assert_eq!(run(&fake, &l, false), Err(reason::NO_REFRESH_TOKEN));
+    assert!(fake.seen().is_empty(), "{:?}", fake.seen());
+    assert_eq!(l.entries(), [CREDS]);
+}
+
+/// An absent refresh token (`""` or `null`) on an expired login is
+/// `no refresh token`, a final verdict.
+#[test]
+fn an_absent_refresh_token_on_an_expired_login_is_no_refresh_token() {
+    let _serial = crate::test_support::refresh_count_lock();
+    for bad in [json!(""), Value::Null] {
+        for allow in [true, false] {
+            let fake = answering_everything();
+            let l = login_with_refresh(-1000, Some(bad.clone()));
+            assert_eq!(
+                run(&fake, &l, allow),
+                Err(reason::NO_REFRESH_TOKEN),
+                "refreshToken {bad}, allow_refresh {allow}"
+            );
+            assert!(fake.seen().is_empty(), "refreshToken {bad}");
+            assert_eq!(l.entries(), [CREDS]);
+        }
+    }
+}
+
+/// A refresh token that is there but rejected (whitespace, too long, not a
+/// string) is not known to be absent: `unreadable credentials`, which falls
+/// back, and still nothing is sent.
+#[test]
+fn a_rejected_refresh_token_on_an_expired_login_is_unreadable_credentials() {
+    let _serial = crate::test_support::refresh_count_lock();
+    for bad in [
+        json!("has space"),
+        json!("x".repeat(MAX_TOKEN + 1)),
+        json!(42),
+    ] {
+        for allow in [true, false] {
+            let fake = answering_everything();
+            let l = login_with_refresh(-1000, Some(bad.clone()));
+            assert_eq!(
+                run(&fake, &l, allow),
+                Err(reason::UNREADABLE_CREDS),
+                "refreshToken {bad}, allow_refresh {allow}"
+            );
+            assert!(fake.seen().is_empty(), "refreshToken {bad}");
+            assert_eq!(l.entries(), [CREDS]);
+        }
+    }
+}
+
+/// D3: an expired token that has a refresh token, with refresh not allowed
+/// (the live `~/.claude` row), stays `token expired` so that the caller
+/// falls back to `claude`, which can renew it.
+#[test]
+fn an_expired_login_with_a_refresh_token_and_no_refresh_allowed_stays_token_expired() {
+    let fake = answering_everything();
+    let l = login_expiring_in(-1000);
+    assert_eq!(run(&fake, &l, false), Err(reason::EXPIRED));
+    assert!(fake.seen().is_empty());
+    assert_eq!(l.entries(), [CREDS]);
+}
+
+/// Regression for the WIP change that was reverted: a token that is still
+/// valid but due within the margin, with no refresh token, is not "not
+/// signed in". `refresh()` reports `refresh failed`, and nothing is POSTed.
+#[test]
+fn a_valid_token_due_within_the_margin_with_no_refresh_token_is_refresh_failed() {
+    let _serial = crate::test_support::refresh_count_lock();
+    let fake = answering_everything();
+    let l = login_with_refresh(30_000, None);
+    assert_eq!(run(&fake, &l, true), Err(reason::REFRESH_FAILED));
+    assert_eq!(posts(&fake), 0, "{:?}", fake.seen());
+    assert_eq!(l.entries(), [CREDS], "no lock or temp file is left");
+    assert_eq!(refreshes_in_progress(), 0);
+}
+
+/// Regression for the reverted WIP change: a valid token that gets a 401
+/// and has no refresh token is `refresh failed` after the one GET.
+#[test]
+fn a_401_with_no_refresh_token_is_refresh_failed_after_one_get() {
+    let _serial = crate::test_support::refresh_count_lock();
+    let fake = answering_everything();
+    let l = login_with_refresh(3_600_000, None);
+    assert_eq!(run(&fake, &l, true), Err(reason::REFRESH_FAILED));
+    assert_eq!(gets(&fake).len(), 1, "the one GET that gave the 401");
+    assert_eq!(posts(&fake), 0);
+    assert_eq!(l.entries(), [CREDS]);
+}
+
+/// A valid token with no refresh token reads as normal when the server
+/// accepts it: a missing refresh token alone is not a failure.
+#[test]
+fn a_valid_token_with_no_refresh_token_still_reads() {
+    let fake = FakeHttp::start(|_, _| Reply::json(200, &body_100_55()));
+    let l = login_with_refresh(3_600_000, None);
+    let r = run(&fake, &l, true).expect("a valid token reads");
+    assert_eq!(r.state, UsageState::SessionExhausted);
+    assert_eq!(gets(&fake).len(), 1);
+}
+
+/// S4: a missing or non-integer `expiresAt` is never treated as expired,
+/// so a login with no refresh token is read as normal.
+#[test]
+fn no_usable_expires_at_is_not_no_refresh_token() {
+    for at in [
+        None,
+        Some(json!("soon")),
+        Some(json!(1.5)),
+        Some(Value::Null),
+    ] {
+        let fake = FakeHttp::start(|_, _| Reply::json(200, &body_100_55()));
+        let l = login_with_refresh(3_600_000, None);
+        let mut doc = l.doc();
+        let oauth = doc["claudeAiOauth"].as_object_mut().unwrap();
+        match &at {
+            None => {
+                oauth.remove("expiresAt");
+            }
+            Some(v) => {
+                oauth.insert("expiresAt".into(), v.clone());
+            }
+        }
+        fs::write(l.path(), serde_json::to_vec_pretty(&doc).unwrap()).unwrap();
+        fs::set_permissions(l.path(), fs::Permissions::from_mode(0o600)).unwrap();
+        for allow in [true, false] {
+            let r = run(&fake, &l, allow);
+            assert_ne!(r, Err(reason::NO_REFRESH_TOKEN), "expiresAt {at:?}");
+        }
+    }
+}
+
+/// A refresh the server turns away is still `refresh failed`.
+#[test]
+fn a_refused_refresh_with_a_refresh_token_stays_refresh_failed() {
+    let fake = refreshing(Reply::json(400, &json!({"error": "invalid_grant"})));
+    let l = login_expiring_in(-1000);
+    assert_eq!(run(&fake, &l, true), Err(reason::REFRESH_FAILED));
+    assert_eq!(posts(&fake), 1);
+}
+
+#[test]
+fn the_no_refresh_token_reason_never_holds_a_token() {
+    let fake = answering_everything();
+    let l = login_with_refresh(-1000, None);
+    for allow in [true, false] {
+        let why = run(&fake, &l, allow).unwrap_err();
+        assert!(!why.contains(ACCESS) && !why.contains("FAKE"), "{why}");
+    }
+}
+
+// D4: the credentials are judged before the endpoints. A login that has
+// nothing to read with never comes back as `transport`.
+
+#[test]
+fn unusable_endpoints_with_no_token_is_no_oauth_token() {
+    let l = login();
+    fs::write(l.path(), r#"{"claudeAiOauth":{}}"#).unwrap();
+    for allow in [true, false] {
+        assert_eq!(run_unusable(&l, allow), Err(reason::NO_TOKEN));
+    }
+    // An API-key-only file is not a verdict on the login.
+    fs::write(l.path(), r#"{"primaryApiKey":"sk-x"}"#).unwrap();
+    for allow in [true, false] {
+        assert_eq!(run_unusable(&l, allow), Err(reason::UNREADABLE_CREDS));
+    }
+    assert_eq!(l.entries(), [CREDS]);
+}
+
+#[test]
+fn unusable_endpoints_with_no_file_is_no_credentials_file() {
+    let l = login();
+    fs::remove_file(l.path()).unwrap();
+    assert_eq!(run_unusable(&l, true), Err(reason::NO_FILE));
+    assert!(l.entries().is_empty(), "{:?}", l.entries());
+}
+
+#[test]
+fn unusable_endpoints_with_an_expired_login_and_no_refresh_token_is_no_refresh_token() {
+    let l = login_with_refresh(-1000, None);
+    for allow in [true, false] {
+        assert_eq!(run_unusable(&l, allow), Err(reason::NO_REFRESH_TOKEN));
+    }
+    assert_eq!(l.entries(), [CREDS]);
+}
+
+/// S1: a symlinked or group- or world-writable file is still `credentials
+/// refused` when the endpoints are unusable, never a not-signed-in reason.
+#[test]
+fn unusable_endpoints_with_a_refused_file_is_credentials_refused() {
+    let l = login();
+    let real = l.dir.join("real.json");
+    fs::rename(l.path(), &real).unwrap();
+    std::os::unix::fs::symlink(&real, l.path()).unwrap();
+    assert_eq!(run_unusable(&l, true), Err(reason::REFUSED));
+    fs::remove_file(l.path()).unwrap();
+    fs::rename(&real, l.path()).unwrap();
+    for mode in [0o620, 0o602, 0o666] {
+        fs::set_permissions(l.path(), fs::Permissions::from_mode(mode)).unwrap();
+        assert_eq!(run_unusable(&l, true), Err(reason::REFUSED), "{mode:o}");
+    }
+}
+
+/// A symlinked or group-writable file holding an expired login with no
+/// refresh token is refused before its contents are judged.
+#[test]
+fn a_refused_file_is_refused_before_its_refresh_token_is_looked_at() {
+    let fake = answering_everything();
+    let l = login_with_refresh(-1000, None);
+    fs::set_permissions(l.path(), fs::Permissions::from_mode(0o620)).unwrap();
+    assert_eq!(run(&fake, &l, true), Err(reason::REFUSED));
+    let real = l.dir.join("real.json");
+    fs::set_permissions(l.path(), fs::Permissions::from_mode(0o600)).unwrap();
+    fs::rename(l.path(), &real).unwrap();
+    std::os::unix::fs::symlink(&real, l.path()).unwrap();
+    assert_eq!(run(&fake, &l, true), Err(reason::REFUSED));
+    assert!(fake.seen().is_empty());
 }

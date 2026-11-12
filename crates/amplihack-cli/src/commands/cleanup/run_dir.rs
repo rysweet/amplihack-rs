@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 pub(crate) const RUN_JSON: &str = "run.json";
@@ -123,16 +123,56 @@ impl OwnedKind {
     }
 }
 
+/// Whether the pre-commit hook built a target first or found it already
+/// there (issue #2039, D3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TargetOrigin {
+    Created,
+    Reused,
+}
+
+impl TargetOrigin {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::Reused => "reused",
+        }
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        match text {
+            "created" => Some(Self::Created),
+            "reused" => Some(Self::Reused),
+            _ => None,
+        }
+    }
+}
+
+/// The extra fields of a five-field target line (issue #2039, D2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TargetRecord {
+    pub origin: TargetOrigin,
+    /// The absolute checkout the target belongs to. Only ever compared,
+    /// checked with `symlink_metadata` or hashed; never opened or removed.
+    pub checkout: PathBuf,
+}
+
+/// One `owned-paths` line. `target` is `Some` only for a five-field target
+/// line, which also has `kind == Target` and `branch == None`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OwnedPath {
     pub kind: OwnedKind,
     pub path: PathBuf,
     pub branch: Option<String>,
+    pub target: Option<TargetRecord>,
 }
 
-/// Parses `owned-paths`: `kind<TAB>path<TAB>branch` (the branch may be empty
-/// or missing). Reads at most 10 000 lines and ignores malformed, relative,
-/// unknown-kind and control-character lines.
+/// Parses `owned-paths`. A line is either the legacy
+/// `kind<TAB>path[<TAB>branch]` (the branch may be empty or missing), or the
+/// five-field target line `target<TAB>path<TAB><TAB>origin<TAB>checkout`
+/// written by the pre-commit hook since issue #2039. Reads at most 10 000
+/// lines and drops (never repairs) every other shape: relative paths, unknown
+/// kinds or origins, four or six or more fields, and control characters.
 pub(crate) fn parse_owned_paths(bytes: &[u8]) -> Vec<OwnedPath> {
     let mut out = Vec::new();
     for line in bytes.split(|b| *b == b'\n').take(OWNED_PATHS_MAX_LINES) {
@@ -155,31 +195,65 @@ fn parse_owned_line(line: &[u8]) -> Option<OwnedPath> {
         return None;
     }
     let text = std::str::from_utf8(line).ok()?;
-    let mut fields = text.split('\t');
-    let kind = match fields.next()? {
+    let fields: Vec<&str> = text.split('\t').collect();
+    let kind = match fields[0] {
         "worktree" => OwnedKind::Worktree,
         "target" => OwnedKind::Target,
         _ => return None,
     };
-    let path = PathBuf::from(fields.next()?);
+    let path = PathBuf::from(fields.get(1)?);
     if !path.is_absolute() {
         return None;
     }
-    let branch = fields.next().filter(|b| !b.is_empty()).map(String::from);
-    if fields.next().is_some() {
-        return None;
+    match fields.len() {
+        2 | 3 => Some(OwnedPath {
+            kind,
+            path,
+            branch: fields
+                .get(2)
+                .filter(|b| !b.is_empty())
+                .map(|b| (*b).to_string()),
+            target: None,
+        }),
+        5 => {
+            if kind != OwnedKind::Target || !fields[2].is_empty() {
+                return None;
+            }
+            let origin = TargetOrigin::parse(fields[3])?;
+            let checkout = PathBuf::from(fields[4]);
+            if !checkout.is_absolute() {
+                return None;
+            }
+            Some(OwnedPath {
+                kind,
+                path,
+                branch: None,
+                target: Some(TargetRecord { origin, checkout }),
+            })
+        }
+        _ => None,
     }
-    Some(OwnedPath { kind, path, branch })
 }
 
-/// Formats one `owned-paths` line.
+/// Formats one `owned-paths` line, in the same form it was read: three
+/// fields for a legacy line, five for a target line with a record.
 pub(crate) fn format_owned_line(item: &OwnedPath) -> Vec<u8> {
     let mut line = item.kind.as_str().as_bytes().to_vec();
     line.push(b'\t');
     line.extend_from_slice(item.path.as_os_str().as_bytes());
     line.push(b'\t');
-    if let Some(branch) = &item.branch {
-        line.extend_from_slice(branch.as_bytes());
+    match &item.target {
+        Some(record) => {
+            line.push(b'\t');
+            line.extend_from_slice(record.origin.as_str().as_bytes());
+            line.push(b'\t');
+            line.extend_from_slice(record.checkout.as_os_str().as_bytes());
+        }
+        None => {
+            if let Some(branch) = &item.branch {
+                line.extend_from_slice(branch.as_bytes());
+            }
+        }
     }
     line.push(b'\n');
     line
@@ -187,10 +261,28 @@ pub(crate) fn format_owned_line(item: &OwnedPath) -> Vec<u8> {
 
 /// Reads a file of at most `max` bytes without following a symlink.
 pub(crate) fn read_capped_nofollow(path: &Path, max: u64) -> std::io::Result<Vec<u8>> {
+    read_capped_nofollow_with_metadata(path, max).map(|(bytes, _)| bytes)
+}
+
+/// [`read_capped_nofollow`], also returning the metadata of the handle that
+/// was read, so owner and mode describe that file and not a later one.
+pub(crate) fn read_capped_nofollow_with_metadata(
+    path: &Path,
+    max: u64,
+) -> std::io::Result<(Vec<u8>, fs::Metadata)> {
+    // O_NONBLOCK: opening a FIFO with no writer returns at once instead of
+    // blocking; it has no effect on a regular file.
     let file = fs::OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("{} is not a regular file", path.display()),
+        ));
+    }
     let mut buf = Vec::new();
     file.take(max + 1).read_to_end(&mut buf)?;
     if buf.len() as u64 > max {
@@ -199,7 +291,7 @@ pub(crate) fn read_capped_nofollow(path: &Path, max: u64) -> std::io::Result<Vec
             format!("{} is larger than {max} bytes", path.display()),
         ));
     }
-    Ok(buf)
+    Ok((buf, metadata))
 }
 
 /// The `owned-paths` entries of a run folder (empty when the file is missing).
@@ -423,35 +515,63 @@ pub(crate) enum RunWorkspace {
 }
 
 impl RunWorkspace {
-    /// Creates the run folder, or falls back to a temp folder with a warning.
-    pub(crate) fn begin(recipe: &str, cwd: &Path) -> Result<Self> {
-        let scoped = super::work_root::resolve_from_env()
-            .and_then(|root| RunScope::begin(root, recipe, cwd));
-        match scoped {
-            Ok((scope, guard)) => Ok(Self::Scoped {
-                scope: Box::new(scope),
-                guard,
-            }),
-            Err(error) => {
-                eprintln!(
-                    "amplihack: warning: cannot use the work root ({error:#}); this run uses a \
-                     private temporary folder and no run folder or cleanup"
-                );
-                let dir = tempfile::Builder::new()
-                    .prefix("amplihack-workflow-")
-                    .tempdir()
-                    .context("failed to create isolated workflow runtime directory")?;
-                create_private_dir_all(&dir.path().join("tmp"))?;
-                create_private_dir_all(&dir.path().join("artifacts"))?;
-                Ok(Self::Legacy { dir })
-            }
-        }
+    /// Recovery never silently executes without durable admission.
+    pub(crate) fn begin_durable(recipe: &str, cwd: &Path) -> Result<Self> {
+        let root = super::work_root::resolve_from_env()?;
+        recipe_runner_rs::recovery::private_fs::Directory::open(&root.path, true)?;
+        let (scope, guard) = RunScope::begin(root, recipe, cwd)?;
+        Ok(Self::Scoped {
+            scope: Box::new(scope),
+            guard,
+        })
+    }
+    /// A dry run owns only temporary scratch space and never a run scope.
+    pub(crate) fn dry_runtime() -> Result<Self> {
+        let dir = tempfile::Builder::new()
+            .prefix("amplihack-dry-")
+            .tempdir()?;
+        create_private_dir_all(&dir.path().join("tmp"))?;
+        create_private_dir_all(&dir.path().join("artifacts"))?;
+        Ok(Self::Legacy { dir })
+    }
+    /// The durable run folder, or `None` for a dry run's temporary space.
+    ///
+    /// #2329: auto-drive keeps its private state in this folder, so it is
+    /// checked once here: a real directory (not a symlink) owned by the
+    /// current user and not writable by group or others.
+    pub(crate) fn durable_run_dir(&self) -> Result<Option<&Path>> {
+        let Self::Scoped { scope, .. } = self else {
+            return Ok(None);
+        };
+        let run_dir = scope.run_dir.as_path();
+        let metadata = fs::symlink_metadata(run_dir)
+            .with_context(|| format!("cannot inspect run folder {}", run_dir.display()))?;
+        anyhow::ensure!(
+            metadata.is_dir() && !metadata.file_type().is_symlink(),
+            "run folder {} is not a directory",
+            run_dir.display()
+        );
+        anyhow::ensure!(
+            metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o022 == 0,
+            "run folder {} is not owned by the current user or is writable by group or others",
+            run_dir.display()
+        );
+        Ok(Some(run_dir))
     }
 
     pub(crate) fn runtime_dir(&self) -> &Path {
         match self {
             Self::Scoped { guard, .. } => guard.path(),
             Self::Legacy { dir } => dir.path(),
+        }
+    }
+
+    /// The run folder `<work root>/runs/<id>/`; `None` for a dry run, which
+    /// has none (issue #2175: so it writes no process record either).
+    pub(crate) fn run_dir(&self) -> Option<&Path> {
+        match self {
+            Self::Scoped { scope, .. } => Some(&scope.run_dir),
+            Self::Legacy { .. } => None,
         }
     }
 

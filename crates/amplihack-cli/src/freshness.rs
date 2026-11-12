@@ -706,7 +706,7 @@ mod codex_delivery_contract_tests {
         fs::create_dir(&bin).unwrap();
         executable(
             &bin.join("recipe-runner-rs"),
-            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[]}'\n",
+            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"durable_recovery_v1\"]}'\n",
         );
         run_worker(test, dir.path(), &bin);
     }
@@ -731,7 +731,7 @@ mod codex_delivery_contract_tests {
         cargo_fixture(dir.path(), dir.path());
         executable(
             &dir.path().join("recipe-runner-rs"),
-            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"custom\",\"capabilities\":[\"codex_exec\"]}'\n",
+            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"custom\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}'\n",
         );
         run_worker(test, dir.path(), dir.path());
     }
@@ -1042,8 +1042,8 @@ mod downgrade_guard_tests {
         fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
     }
 
-    const COMPATIBLE: &str = "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\"]}'\n";
-    const INCOMPATIBLE: &str = "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[]}'\n";
+    const COMPATIBLE: &str = "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}'\n";
+    const INCOMPATIBLE: &str = "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"durable_recovery_v1\"]}'\n";
 
     /// Runs `test` in a child process. `runner` is the stub installed in
     /// `$CARGO_HOME/bin`; `extra` adds environment variables.

@@ -12,15 +12,20 @@ const VERSION: u64 = 1;
 const MAX_LEDGER_BYTES: u64 = 64 * 1024;
 /// A cycle time this far past `now` is accepted as clock skew; later ones
 /// are ignored.
-const MAX_SKEW_SECS: i64 = 300;
+pub(crate) const MAX_SKEW_SECS: i64 = 300;
 
 /// What the hook needs from the ledger.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CycleStatus {
     /// When the last cycle was recorded (at its end), epoch seconds.
     pub at: Option<i64>,
-    /// When that cycle started measuring usage, epoch seconds. Absent for
-    /// a cycle that measured nothing, and from rotators older than #1659.
+    /// When the usage that cycle relied on was read, epoch seconds. A
+    /// `stayed` cycle records when the live reading was taken: a passive
+    /// reading's `observed_at`, but never later than when the cycle started
+    /// measuring. Every other rotate outcome records when the cycle started
+    /// measuring, and `profile switch` records the time of the switch.
+    /// Absent for a cycle that measured nothing, and from rotators older
+    /// than #1659.
     pub measured_at: Option<i64>,
     /// The last cycle's outcome: `swapped`, `stayed`, `switched`, `held`,
     /// `alerted`, …

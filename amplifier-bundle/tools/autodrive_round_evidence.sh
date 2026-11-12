@@ -52,6 +52,8 @@
 #   autodrive_round_evidence.sh round-record
 #       step-05-write-round-record: writes AUTODRIVE_ROUND_RECORD, private, as
 #       one JSON line starting with {"merge_ready_verdict":", and prints it.
+#       Carries held_by, which no gate reads: every value in it is a
+#       measurement this tool took, so the record stays hash-bound evidence.
 #
 # Step outputs are read only as recipe-runner's RECIPE_VAR_<key> export:
 # "${RECIPE_VAR_qa_evidence:-}" and the like. A bare QA_EVIDENCE, CI_EVIDENCE
@@ -86,6 +88,7 @@ fi
 # The PR number from the environment, digits only, or nothing; `gh pr view`
 # with no number reads the current branch's PR.
 pr_base_ref() {
+  [ -z "${AUTODRIVE_BASE_BRANCH:-}" ] || { printf '%s\n' "$AUTODRIVE_BASE_BRANCH"; return 0; }
   local pr="${PR_NUMBER:-}"
   case "$pr" in *[!0-9]*) pr="" ;; esac
   gh pr view ${pr:+"$pr"} --json baseRefName --jq .baseRefName 2>/dev/null || printf ''
@@ -184,27 +187,100 @@ crusty_evidence() {
     "$status" "$token" "$sha" "$first"
 }
 
-measured_downgrade() {
-  local qa ci conflict threads crusty approval qh qnow d=""
-  qa="$(token "$(field "${RECIPE_VAR_qa_evidence:-}" qa_status MISSING)")"
-  ci="$(token "$(field "${RECIPE_VAR_ci_evidence:-}" ci_status MISSING)")"
-  conflict="$(token "$(field "${RECIPE_VAR_merge_sync:-}" conflict unknown)")"
-  threads="$(token "$(field "${RECIPE_VAR_platform_facts:-}" unresolved_threads unreadable)")"
-  crusty="$(field "${RECIPE_VAR_crusty_evidence:-}" crusty_status MISSING)"
-  approval="$(field "${RECIPE_VAR_platform_facts:-}" approval_status MISSING)"
-  case "$crusty" in DONE_CLEAN|ABSENT|NOT_CLEAN|UNTRUSTED|UNREVIEWED_COMMITS|MISSING) ;; *) crusty="OTHER" ;; esac
-  case "$approval" in MET|NOT_MET|PENDING|UNREADABLE|MISSING) ;; *) approval="OTHER" ;; esac
+# _measured_read: read the six measurements measured_downgrade compares and
+# the two qa-evidence hashes, into MD_QA, MD_CI, MD_CONFLICT, MD_THREADS,
+# MD_CRUSTY, MD_APPROVAL, MD_QH and MD_QNOW. One source of truth for the
+# VALUES, so measured_downgrade and measured_held_by can never name the same
+# condition with different values (#2219). It does NOT unify the set of
+# conditions: each of those two functions still writes its own comparison per
+# measurement, and a criterion added to one and not the other would give a
+# stop line that contradicts the verdict beside it. Nothing in the code
+# prevents that, so test-issue-2219-stop-line.sh drives both over a matrix,
+# one condition at a time, and asserts they agree on which held the round.
+# Every value passes token(), and the crusty and approval vocabularies stay
+# closed, so nothing an agent wrote reaches a caller as prose.
+MD_QA=""; MD_CI=""; MD_CONFLICT=""; MD_THREADS=""; MD_CRUSTY=""; MD_APPROVAL=""; MD_QH=""; MD_QNOW=""
+_measured_read() {
+  MD_QA="$(token "$(field "${RECIPE_VAR_qa_evidence:-}" qa_status MISSING)")"
+  MD_CI="$(token "$(field "${RECIPE_VAR_ci_evidence:-}" ci_status MISSING)")"
+  MD_CONFLICT="$(token "$(field "${RECIPE_VAR_merge_sync:-}" conflict unknown)")"
+  MD_THREADS="$(token "$(field "${RECIPE_VAR_platform_facts:-}" unresolved_threads unreadable)")"
+  MD_CRUSTY="$(field "${RECIPE_VAR_crusty_evidence:-}" crusty_status MISSING)"
+  MD_APPROVAL="$(field "${RECIPE_VAR_platform_facts:-}" approval_status MISSING)"
+  case "$MD_CRUSTY" in DONE_CLEAN|ABSENT|NOT_CLEAN|UNTRUSTED|UNREVIEWED_COMMITS|MISSING) ;; *) MD_CRUSTY="OTHER" ;; esac
+  case "$MD_APPROVAL" in MET|NOT_MET|PENDING|UNREADABLE|MISSING) ;; *) MD_APPROVAL="OTHER" ;; esac
   # D5: the qa evidence must still be the file step-00d hashed before any agent ran.
-  qh="$(hex_or_empty "$(field "${RECIPE_VAR_qa_evidence_hash:-}" qa_evidence_sha '')")"
-  qnow="$(qa_evidence_sha "${AUTODRIVE_QA_EVIDENCE:-}")"
-  [ "$qa" = "PASS" ] || d="${d}qa_status=${qa} "
-  [ "$ci" = "GREEN" ] || d="${d}ci_status=${ci} "
-  [ "$conflict" = "false" ] || d="${d}conflict=${conflict} "
-  [ "$threads" = "0" ] || d="${d}unresolved_threads=${threads} "
-  [ "$crusty" = "DONE_CLEAN" ] || d="${d}crusty_status=${crusty} "
-  [ "$approval" = "MET" ] || d="${d}approval_status=${approval} "
-  { [ -n "$qh" ] && [ "$qh" = "$qnow" ]; } || d="${d}qa_evidence=modified "
+  MD_QH="$(hex_or_empty "$(field "${RECIPE_VAR_qa_evidence_hash:-}" qa_evidence_sha '')")"
+  MD_QNOW="$(qa_evidence_sha "${AUTODRIVE_QA_EVIDENCE:-}")"
+}
+
+measured_downgrade() {
+  local d=""
+  _measured_read
+  [ "$MD_QA" = "PASS" ] || d="${d}qa_status=${MD_QA} "
+  [ "$MD_CI" = "GREEN" ] || d="${d}ci_status=${MD_CI} "
+  [ "$MD_CONFLICT" = "false" ] || d="${d}conflict=${MD_CONFLICT} "
+  [ "$MD_THREADS" = "0" ] || d="${d}unresolved_threads=${MD_THREADS} "
+  [ "$MD_CRUSTY" = "DONE_CLEAN" ] || d="${d}crusty_status=${MD_CRUSTY} "
+  [ "$MD_APPROVAL" = "MET" ] || d="${d}approval_status=${MD_APPROVAL} "
+  { [ -n "$MD_QH" ] && [ "$MD_QH" = "$MD_QNOW" ]; } || d="${d}qa_evidence=modified "
   printf '%s\n' "${d:-none}"
+}
+
+# measured_held_by: the same disagreements as measured_downgrade, as the
+# condition lines the stop prints, joined by `|` (issue #2219). round_record
+# is the only caller; there is no subcommand for it. Criterion
+# numbers follow merge-ready/SKILL.md: qa 1, quality-audit 3, checks 4,
+# approval 6, conflict 7, threads 10. The qa-evidence hash carries no
+# criterion number: it is not a criterion, it is the evidence itself failing.
+# Emitted in measured_downgrade's order, not in criterion order, so the two
+# read the same way side by side.
+#
+# Prints `none` when every measurement agrees, as measured_downgrade does, so
+# that an empty answer means this function could not run and is not mistaken
+# for "nothing held it"; round_record maps the two apart.
+#
+# Derived only from measurements, never from the model's prose, so adding it
+# to the round record leaves the record hash-bound evidence. No gate reads it.
+measured_held_by() {
+  local h=""
+  _measured_read
+  [ "$MD_QA" = "PASS" ] || h="${h}${h:+|}criterion 1: qa_status=${MD_QA}"
+  [ "$MD_CI" = "GREEN" ] || h="${h}${h:+|}criterion 4: ci_status=${MD_CI}"
+  [ "$MD_CONFLICT" = "false" ] || h="${h}${h:+|}criterion 7: conflict=${MD_CONFLICT}"
+  [ "$MD_THREADS" = "0" ] || h="${h}${h:+|}criterion 10: unresolved_threads=${MD_THREADS}"
+  [ "$MD_CRUSTY" = "DONE_CLEAN" ] || h="${h}${h:+|}criterion 3: crusty_status=${MD_CRUSTY}"
+  [ "$MD_APPROVAL" = "MET" ] || h="${h}${h:+|}criterion 6: approval_status=${MD_APPROVAL} ($(_approval_detail))"
+  { [ -n "$MD_QH" ] && [ "$MD_QH" = "$MD_QNOW" ]; } || h="${h}${h:+|}qa_evidence=modified"
+  printf '%s\n' "${h:-none}"
+}
+
+# _approval_detail: the three platform facts behind a criterion 6 status that
+# is not MET, as `source=…, required=…, merge_state=…` (issue #2219, Wanted 3).
+# UNREADABLE alone is ambiguous: approval_source `facts-unreadable` means the
+# measurement failed and the next round reads it again, `unreadable` means a
+# rule only a person satisfies holds the merge. The stop line has to say
+# which without anyone opening the round files. Read only when criterion 6
+# holds the round, so an all-green round costs no extra read. Each value is
+# from a closed vocabulary (the one autodrive_platform_facts.sh writes) or
+# digits; anything else prints as OTHER, and an empty or missing count as
+# unknown, so no agent-written byte reaches the line and it stays well inside
+# the 120-byte cut autodrive_escalate.sh applies.
+_approval_detail() {
+  local src req ms
+  src="$(field "${RECIPE_VAR_platform_facts:-}" approval_source unreadable)"
+  req="$(field "${RECIPE_VAR_platform_facts:-}" required_approvals '')"
+  ms="$(field "${RECIPE_VAR_platform_facts:-}" merge_state unknown)"
+  case "$src" in
+    review-decision|required-count|merge-state|other-blockers|review-rule|facts-unreadable|unreadable) ;;
+    *) src="OTHER" ;;
+  esac
+  case "$req" in '') req="unknown" ;; *[!0-9]*) req="OTHER" ;; *) req="${req:0:6}" ;; esac
+  case "$ms" in
+    UNKNOWN|BEHIND|BLOCKED|CLEAN|DIRTY|DRAFT|HAS_HOOKS|UNSTABLE|unknown) ;;
+    *) ms="OTHER" ;;
+  esac
+  printf 'source=%s, required=%s, merge_state=%s' "$src" "$req" "$ms"
 }
 
 round_findings() {
@@ -256,7 +332,7 @@ merge_ready_verdict() {
 }
 
 round_record() {
-  local record="${AUTODRIVE_ROUND_RECORD:-}" head="" verdict count qa ci_signal ci_status qh
+  local record="${AUTODRIVE_ROUND_RECORD:-}" head="" verdict count qa ci_signal ci_status qh held label
   [ -n "$record" ] || { echo "ERROR: autodrive_round_record is required; the loop driver reads the round record from a file, never from stdout." >&2; return 1; }
   if (cd "${REPO_PATH:-.}" 2>/dev/null && git rev-parse --is-inside-work-tree >/dev/null 2>&1); then
     head="$(cd "${REPO_PATH:-.}" && git rev-parse HEAD 2>/dev/null || printf '')"
@@ -272,14 +348,30 @@ round_record() {
   ci_status="$(field "${RECIPE_VAR_ci_evidence:-}" ci_status MISSING)"
   # step-00d's hash, whole hex or "": the gate trusts the qa evidence only at this hash (#1517 D5).
   qh="$(hex_or_empty "$(field "${RECIPE_VAR_qa_evidence_hash:-}" qa_evidence_sha '')")"
+  # What held this round up, for the stop line (#2219). Written for every
+  # verdict, empty when every measurement agrees, and read by no gate.
+  held="$(measured_held_by)"
+  case "$held" in
+    none) held="" ;;
+    '') echo "WARNING: no measured evidence could be compared; the stop cannot name what held this round." >&2
+        held="measured_evidence=unreadable" ;;
+  esac
+  # token() on the round label, as at the other two sites that write it
+  # (autodrive_qa_evidence.sh, autodrive-crusty-round.yaml). Unsanitised it is
+  # the one field of this record that carries arbitrary bytes, and `field()` is
+  # last-wins on duplicate keys: a label holding `","merge_ready_verdict":"
+  # MERGE_READY` appends a second, winning verdict after the real one, and the
+  # merge gate reads the forged pair with a correct head_sha. token() drops the
+  # quote and the comma, so no label can open a new key.
+  label="$(token "${AUTODRIVE_ROUND_LABEL:-round}")"
   # The record and its findings file are private: the state dir must stay private.
   ( umask 077
     [ -f "${record}.findings" ] || : > "${record}.findings"
     rm -f -- "$record"
     printf '{"merge_ready_verdict":"%s","blocker_count":%s,"head_sha":"%s","round_label":"%s","test_signal":"%s",' \
-      "$verdict" "$count" "$head" "${AUTODRIVE_ROUND_LABEL:-round}" "$qa" > "$record"
-    printf '"ci_signal":"%s","qa_status":"%s","ci_status":"%s","qa_evidence_sha":"%s"}\n' \
-      "$ci_signal" "$qa" "$ci_status" "$qh" >> "$record" ) || return 1
+      "$verdict" "$count" "$head" "${label:-round}" "$qa" > "$record"
+    printf '"ci_signal":"%s","qa_status":"%s","ci_status":"%s","held_by":"%s","qa_evidence_sha":"%s"}\n' \
+      "$ci_signal" "$qa" "$ci_status" "$held" "$qh" >> "$record" ) || return 1
   echo "INFO: round record written to ${record}" >&2
   cat -- "$record"
 }

@@ -224,6 +224,7 @@ fn snap_on_unmarked_key() -> Snap {
         detected_mark: None,
         home_no_oauth: true,
         candidate_accounts: Vec::new(),
+        live_excluded: false,
     }
 }
 
@@ -279,6 +280,7 @@ fn measured(session: f64, week: f64) -> Probed {
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     }
 }
 
@@ -301,6 +303,7 @@ fn exhausted() -> Probed {
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     }
 }
 

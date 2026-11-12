@@ -184,6 +184,7 @@ fn all_plan_logins_out(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErr
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     };
     decide_measured(ctx, snap, out, vec![(n(KEY), Probed::platform())], now())
 }
@@ -236,6 +237,7 @@ fn plenty_of_room(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     };
     decide_measured(ctx, snap, live, vec![(n(KEY), Probed::platform())], now())
 }
@@ -316,6 +318,7 @@ fn live_probe_fails(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError>
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     };
     let spare = Probed {
         reading: Reading::Measured {
@@ -328,6 +331,7 @@ fn live_probe_fails(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError>
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     };
     decide_measured(ctx, snap, failed, vec![(n("spare"), spare)], now())
 }
@@ -757,6 +761,7 @@ fn plan_out_credits_usable(ctx: &Ctx, snap: &Snap) -> Result<Measurement, Profil
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     };
     let credits = Probed {
         reading: Reading::Measured {
@@ -773,6 +778,7 @@ fn plan_out_credits_usable(ctx: &Ctx, snap: &Snap) -> Result<Measurement, Profil
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     };
     decide_measured(
         ctx,
@@ -867,12 +873,9 @@ fn a_corrupt_auto_switch_file_loses_the_marks_for_the_rotator() {
     let state = crate::commands::profile::auto_switch::kit::State::new(&f.root).unwrap();
     let snap = super::observe::snapshot(&c, &state).unwrap();
     assert!(snap.overflow.is_empty(), "{:?}", snap.overflow);
-    assert!(
-        snap.candidates.contains(&n(CREDITS)),
-        "{:?}",
-        snap.candidates
-    );
-    assert!(!snap.candidates.contains(&n(KEY)), "{:?}", snap.candidates);
+    // Issue #2218: which profiles are excluded is unknown, so every profile
+    // counts as excluded and none is a candidate, the credits one included.
+    assert!(snap.candidates.is_empty(), "{:?}", snap.candidates);
 }
 
 #[path = "tests_no_room.rs"]

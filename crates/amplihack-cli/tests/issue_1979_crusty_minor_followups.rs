@@ -39,7 +39,7 @@ use std::process::{Output, Stdio};
 use serde_json::{Value, json};
 
 use crate::support::auto_drive_light::{
-    FAKE_AMPLIHACK, jq_available, private_dir, private_file, read, repo_root, show, stderr, stdout,
+    FAKE_AMPLIHACK, jq_available, private_dir, private_file, read, show, stderr, stdout,
     step_command, tools_dir,
 };
 
@@ -632,20 +632,44 @@ fn classify_keeps_ids_that_only_contain_keyword_letters_minor() {
 }
 
 #[test]
-fn light_mode_keeps_its_substring_id_rule() {
-    // auto-drive-light (#1802) keeps the stricter substring id pattern; only
-    // the crusty loop reads ids as words.
-    let light = read("amplifier-bundle/tools/autodrive_light_round.sh");
+fn light_mode_uses_the_whole_word_id_rule() {
+    // Issue #1982: auto-drive-light has no id rule, and no round tool, of its
+    // own. Its rounds are classified by `classify`, which reads ids as whole
+    // words, so an id such as `section-1` is minor in light mode as it is in
+    // the crusty loop.
     assert!(
-        light.contains(r#"--arg kw "$KEYWORDS""#),
-        "light mode passes KEYWORDS"
+        !std::path::Path::new(&format!(
+            "{}/../../amplifier-bundle/tools/autodrive_light_round.sh",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .exists(),
+        "the light round tool is gone; classify decides"
+    );
+    let rules = read(&format!("amplifier-bundle/tools/{RULES}"));
+    assert!(
+        !rules
+            .lines()
+            .any(|l| l.trim_start().starts_with("KEYWORDS=")),
+        "{RULES} no longer defines the substring KEYWORDS list"
     );
     let followups = read(&format!("amplifier-bundle/tools/{TOOL}"));
     assert!(
-        !followups.contains(r#"--arg kw "$KEYWORDS""#)
-            && followups.contains(r#"--arg kw "$ID_KEYWORDS""#),
-        "{TOOL} passes ID_KEYWORDS, never the substring KEYWORDS"
+        followups.contains(r#"--arg kw "$ID_KEYWORDS""#),
+        "{TOOL} passes ID_KEYWORDS"
     );
+    if skip() {
+        return;
+    }
+    for id in ["section-1", "pr-body-testing-section"] {
+        let d = Drive::new();
+        let o = d.classify(1, &json!([concern(id, "minor", "Rename x")]).to_string());
+        assert_eq!(
+            stdout(&o).trim(),
+            "MINOR_ONLY",
+            "id {id:?} is minor under the one id rule\n{}",
+            show(&o)
+        );
+    }
 }
 
 #[test]
@@ -1594,9 +1618,32 @@ fn crusty_final(d: &Drive) -> Output {
 
 #[test]
 fn crusty_final_accepts_a_minor_only_terminal_record() {
+    if skip() {
+        return;
+    }
     let d = Drive::new();
-    private_file(&d.p("phases.tsv"), "crusty-loop\t2026-11-05T00:00:00Z\n");
     d.loop_writes_round(1, "MINOR_ONLY", 2);
+    d.minor(1, &three()[..2]);
+    // Completion authority comes from actual successful finalization, never
+    // a hand-written marker with missing follow-up obligations (#2336). The
+    // crusty loop's step-03 is an agent step on this branch (#2329), so the
+    // shared finalizer it and the re-review call is run directly.
+    let task = d.tmp.path().join("task.txt");
+    private_file(&task, "Implement the thing");
+    let finalize = tools_dir().join("autodrive_crusty_finalize.sh");
+    let recorded = d.bash(
+        None,
+        &[
+            finalize.as_os_str(),
+            d.state.as_os_str(),
+            OsStr::new(PR),
+            OsStr::new("1979"),
+            task.as_os_str(),
+        ],
+        &[],
+        "",
+    );
+    assert_eq!(recorded.status.code(), Some(0), "{}", show(&recorded));
     let o = crusty_final(&d);
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     assert_eq!(stdout(&o).trim(), "a".repeat(40));
@@ -1799,6 +1846,7 @@ fn round_step06_records_minor_only() {
     let script = step_command(ROUND, "step-06-write-round-record");
     let rec = d.record(1);
     let ctx = json!({"pr": "7", "head_sha": "a".repeat(40)}).to_string();
+    let tools = tools_dir();
     let env: Vec<(&str, &OsStr)> = vec![
         (
             "RECIPE_VAR_crusty_verdict",
@@ -1809,6 +1857,7 @@ fn round_step06_records_minor_only() {
         ("RECIPE_VAR_crusty_round_context", OsStr::new(&ctx)),
         ("AUTODRIVE_ROUND_RECORD", rec.as_os_str()),
         ("AUTODRIVE_ROUND_LABEL", OsStr::new("round-1")),
+        ("AUTODRIVE_LAUNCH_TOOLS", tools.as_os_str()),
     ];
     let o = d.bash(Some(&script), &[], &env, "");
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
@@ -1818,209 +1867,6 @@ fn round_step06_records_minor_only() {
 }
 
 /// Runs crusty-loop step-03 on a drive whose loop ended DONE.
-fn loop_step03(d: &Drive, plan_task_id: &str, env: &[(&str, &str)]) -> Output {
-    let script = step_command("autodrive-crusty-loop", "step-03-record-crusty-phase");
-    let root = repo_root();
-    let tools = tools_dir();
-    let pre = json!({"should_run": "true", "pr": PR, "state_dir": d.state}).to_string();
-    let mut v: Vec<(&str, &OsStr)> = vec![
-        ("RECIPE_VAR_crusty_loop_preflight", OsStr::new(&pre)),
-        (
-            "RECIPE_VAR_crusty_loop_result",
-            OsStr::new("{\"loop_result\":\"DONE\"}"),
-        ),
-        ("RECIPE_VAR_plan_task_id", OsStr::new(plan_task_id)),
-        (
-            "RECIPE_VAR_task_description",
-            OsStr::new("Implement the thing"),
-        ),
-        ("RECIPE_VAR_pr_number", OsStr::new(PR)),
-        ("AMPLIHACK_HOME", root.as_os_str()),
-        ("AUTODRIVE_LAUNCH_TOOLS", tools.as_os_str()),
-        ("REPO_PATH", d.tmp.path().as_os_str()),
-    ];
-    v.extend(env.iter().map(|(k, val)| (*k, OsStr::new(*val))));
-    d.bash(Some(&script), &[], &v, "")
-}
-
-fn marker_written(d: &Drive) -> bool {
-    d.read("phases.tsv")
-        .lines()
-        .any(|l| l.starts_with("crusty-loop\t"))
-}
-
-#[test]
-fn crusty_loop_step03_files_followups_before_the_marker() {
-    if skip() {
-        return;
-    }
-    let d = Drive::new();
-    d.loop_writes_round(1, "MINOR_ONLY", 2);
-    d.minor(1, &three()[..2]);
-    let o = loop_step03(&d, "1979", &[]);
-    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
-    assert_eq!(d.creates().len(), 2, "{}", show(&o));
-    assert_eq!(d.tsv_rows().len(), 2);
-    assert!(
-        marker_written(&d),
-        "the crusty-loop marker is written after filing\n{}",
-        show(&o)
-    );
-    assert!(
-        !d.read("resolved-concerns.txt").contains("naming-1"),
-        "minor ids are not marked resolved"
-    );
-}
-
-#[test]
-fn crusty_loop_step03_writes_no_marker_when_filing_fails() {
-    if skip() {
-        return;
-    }
-    let d = Drive::new();
-    d.loop_writes_round(1, "MINOR_ONLY", 2);
-    d.minor(1, &three()[..2]);
-    let o = loop_step03(&d, "1979", &[("FAKE_GH_CREATE_EXIT", "1")]);
-    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
-    assert!(
-        !marker_written(&d),
-        "no marker: the drive cannot reach READY\n{}",
-        show(&o)
-    );
-}
-
-#[test]
-fn crusty_loop_step03_writes_no_marker_without_a_task_id() {
-    if skip() {
-        return;
-    }
-    let d = Drive::new();
-    d.loop_writes_round(1, "MINOR_ONLY", 1);
-    d.minor(1, &three()[..1]);
-    let o = loop_step03(&d, "", &[]);
-    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
-    assert!(!marker_written(&d), "{}", show(&o));
-    assert!(d.creates().is_empty());
-}
-
-#[test]
-fn crusty_loop_step03_dry_run_collects_but_files_nothing() {
-    if skip() {
-        return;
-    }
-    // A dry run writes nothing to GitHub. The set is still collected, so the
-    // gate reports the unfiled finding and the rehearsal ends NOT_MERGED.
-    let d = Drive::new();
-    d.loop_writes_round(1, "MINOR_ONLY", 1);
-    d.minor(1, &three()[..1]);
-    let o = loop_step03(&d, "1979", &[("AUTODRIVE_DRY_RUN", "true")]);
-    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
-    assert!(d.creates().is_empty(), "no issue is filed\n{}", show(&o));
-    assert!(
-        d.read("followups.jsonl").contains("naming-1"),
-        "{}",
-        show(&o)
-    );
-    assert!(marker_written(&d), "{}", show(&o));
-    let g = d.check_as("gate");
-    assert_eq!(g.status.code(), Some(1), "{}", show(&g));
-    assert!(
-        stdout(&g).contains("followup-missing:naming-1"),
-        "{}",
-        show(&g)
-    );
-}
-
-#[test]
-fn crusty_loop_step03_clean_files_nothing_and_needs_no_task() {
-    if skip() {
-        return;
-    }
-    let d = Drive::new();
-    d.loop_writes_round(1, "CLEAN", 0);
-    let o = loop_step03(&d, "", &[]);
-    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
-    assert!(d.creates().is_empty());
-    assert!(marker_written(&d), "{}", show(&o));
-}
-
-#[test]
-fn crusty_loop_step03_files_only_from_amplihack_home() {
-    if skip() {
-        return;
-    }
-    // REPO_PATH holds a full bundle, as a PR checkout would. Without
-    // AMPLIHACK_HOME the state helper may still come from there, but the tool
-    // that writes to GitHub must not: the MINOR_ONLY loop is refused.
-    let d = Drive::new();
-    d.loop_writes_round(1, "MINOR_ONLY", 1);
-    d.minor(1, &three()[..1]);
-    let root = repo_root();
-    let root = root.to_str().unwrap();
-    let o = loop_step03(&d, "1979", &[("AMPLIHACK_HOME", ""), ("REPO_PATH", root)]);
-    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
-    assert!(d.creates().is_empty(), "no issue is filed\n{}", show(&o));
-    assert!(!marker_written(&d), "{}", show(&o));
-    assert!(stderr(&o).contains("followups-unfiled"), "{}", show(&o));
-}
-
-#[test]
-fn merge_loop_step02b_files_and_fails_the_step_on_error() {
-    if skip() {
-        return;
-    }
-    let script = step_command("autodrive-merge-loop", "step-02b-file-followups");
-    let root = repo_root();
-    let tools = tools_dir();
-    for (fail, want_rc) in [(false, 0), (true, 1)] {
-        let d = Drive::new();
-        d.minor_drive(&three()[..1]);
-        let pre = json!({"should_run": "true", "pr": PR, "state_dir": d.state}).to_string();
-        let mut v: Vec<(&str, &OsStr)> = vec![
-            ("RECIPE_VAR_merge_loop_preflight", OsStr::new(&pre)),
-            ("RECIPE_VAR_plan_task_id", OsStr::new("1979")),
-            (
-                "RECIPE_VAR_task_description",
-                OsStr::new("Implement the thing"),
-            ),
-            ("AMPLIHACK_HOME", root.as_os_str()),
-            ("AUTODRIVE_LAUNCH_TOOLS", tools.as_os_str()),
-            ("REPO_PATH", d.tmp.path().as_os_str()),
-        ];
-        if fail {
-            v.push(("FAKE_GH_CREATE_EXIT", OsStr::new("1")));
-        }
-        let o = d.bash(Some(&script), &[], &v, "");
-        assert_eq!(o.status.code(), Some(want_rc), "fail={fail}\n{}", show(&o));
-        assert_eq!(d.tsv_rows().len(), if fail { 0 } else { 1 });
-    }
-}
-
-#[test]
-fn merge_loop_step02b_dry_run_files_nothing() {
-    if skip() {
-        return;
-    }
-    let script = step_command("autodrive-merge-loop", "step-02b-file-followups");
-    let root = repo_root();
-    let tools = tools_dir();
-    let d = Drive::new();
-    d.minor_drive(&three()[..1]);
-    let pre = json!({"should_run": "true", "pr": PR, "state_dir": d.state}).to_string();
-    let v: Vec<(&str, &OsStr)> = vec![
-        ("RECIPE_VAR_merge_loop_preflight", OsStr::new(&pre)),
-        ("RECIPE_VAR_plan_task_id", OsStr::new("1979")),
-        ("AMPLIHACK_HOME", root.as_os_str()),
-        ("AUTODRIVE_LAUNCH_TOOLS", tools.as_os_str()),
-        ("REPO_PATH", d.tmp.path().as_os_str()),
-        ("AUTODRIVE_DRY_RUN", OsStr::new("true")),
-    ];
-    let o = d.bash(Some(&script), &[], &v, "");
-    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
-    assert!(d.creates().is_empty(), "no issue is filed\n{}", show(&o));
-    assert!(d.tsv_rows().is_empty(), "{}", show(&o));
-}
-
 #[test]
 fn auto_drive_passes_dry_run_to_the_crusty_loop() {
     let top = step("auto-drive-to-merge", "autodrive-crusty-loop");
@@ -2065,18 +1911,21 @@ fn new_files_exist_and_the_tool_is_executable() {
 }
 
 #[test]
-fn finding_rules_are_defined_once_and_sourced_by_both_rules() {
+fn finding_rules_are_defined_once_and_sourced_by_the_followups_tool() {
     let rules = read(&format!("amplifier-bundle/tools/{RULES}"));
-    for def in [
-        "KEYWORDS=",
-        "ID_KEYWORDS=",
-        "TEXT_KEYWORDS=",
-        "ZW=",
-        "cell()",
-    ] {
+    for def in ["ID_KEYWORDS=", "TEXT_KEYWORDS=", "ZW=", "cell()"] {
         assert!(rules.contains(def), "{RULES} defines {def}");
     }
-    for user in ["autodrive_light_round.sh", TOOL] {
+    assert!(
+        !rules
+            .lines()
+            .any(|l| l.trim_start().starts_with("KEYWORDS=")),
+        "{RULES} must not define the retired KEYWORDS list (#1982)"
+    );
+    // Only autodrive_followups.sh uses the rules; light mode handles no
+    // finding text since #1982 and has no round tool.
+    {
+        let user = TOOL;
         let body = read(&format!("amplifier-bundle/tools/{user}"));
         assert!(body.contains(RULES), "{user} sources {RULES}");
         assert!(
@@ -2117,9 +1966,14 @@ fn every_touched_recipe_and_tool_stays_within_400_lines() {
         "amplifier-bundle/tools/autodrive_followups.sh",
         "amplifier-bundle/tools/autodrive_finding_rules.sh",
         "amplifier-bundle/tools/autodrive_loop.sh",
+        "amplifier-bundle/tools/autodrive_loop_record.sh",
+        "amplifier-bundle/tools/autodrive_crusty_record.sh",
+        "amplifier-bundle/tools/autodrive_crusty_finalize.sh",
+        "amplifier-bundle/tools/autodrive_completion_context.sh",
         "amplifier-bundle/tools/autodrive_crusty_rereview.sh",
         "amplifier-bundle/tools/autodrive_state.sh",
-        "amplifier-bundle/tools/autodrive_merge_gate.sh",
+        // #2186: the expected-checks reader the CI evidence step runs.
+        "amplifier-bundle/tools/autodrive_expected_checks.sh",
         "amplifier-bundle/tools/autodrive_round_evidence.sh",
         "amplifier-bundle/recipes/autodrive-crusty-round.yaml",
         "amplifier-bundle/recipes/autodrive-crusty-loop.yaml",
@@ -2179,7 +2033,10 @@ fn zero_concerns_wording_is_gone() {
 
 #[test]
 fn verdict_allow_lists_admit_minor_only() {
-    let s06 = step_command(ROUND, "step-06-write-round-record");
+    let s06 = read("amplifier-bundle/tools/autodrive_crusty_record.sh");
+    assert!(
+        step_command(ROUND, "step-06-write-round-record").contains("autodrive_crusty_record.sh")
+    );
     assert!(
         s06.contains("CLEAN|MINOR_ONLY|CONCERNS"),
         "step-06 allow-list"
@@ -2212,17 +2069,48 @@ fn verdict_allow_lists_admit_minor_only() {
 }
 
 #[test]
-fn round_step03_classifies_after_the_light_rule() {
+fn round_step03_classifies_with_no_light_hook_before_it() {
     let s03 = step_command(ROUND, "step-03-extract-crusty-verdict");
-    let light = s03.find("autodrive_light_steps.sh").expect("light line");
-    let cls = s03.find("autodrive_followups.sh").expect("classify line");
     assert!(
-        cls > light,
-        "light mode keeps priority: classify runs after the light line"
+        s03.contains("autodrive_followups.sh"),
+        "step-03 runs classify"
+    );
+    assert!(
+        !s03.contains("autodrive_light") && !s03.contains("light-mode"),
+        "#1982: no light hook runs before classify"
     );
     assert!(
         s03.contains("AUTODRIVE_LAUNCH_TOOLS"),
         "loaded from the launch tools root"
+    );
+}
+
+#[test]
+fn docs_no_longer_give_light_mode_priority() {
+    // Issue #1982: light mode has no rule that runs before classify, so the
+    // #1979 section no longer says it keeps priority or compares ids as
+    // substrings.
+    let doc = read("docs/reference/auto-drive-to-merge.md");
+    assert!(
+        !doc.contains("Light mode keeps priority"),
+        "auto-drive-to-merge.md still says light mode keeps priority"
+    );
+    assert!(
+        !doc.contains("auto-drive-light.md#the-minor-only-rule"),
+        "auto-drive-to-merge.md still links the retired light rule"
+    );
+    assert!(
+        doc.contains("#### Cell sanitising"),
+        "the cell-sanitising text moved into auto-drive-to-merge.md"
+    );
+    let rules = read(&format!("amplifier-bundle/tools/{RULES}"));
+    assert!(
+        rules.contains("docs/reference/auto-drive-to-merge.md#cell-sanitising"),
+        "{RULES} links the moved cell-sanitising anchor"
+    );
+    assert!(
+        !rules.contains("auto-drive-light.md#cell-sanitising"),
+        "{RULES} must not link the retired light anchor"
     );
 }
 
@@ -2241,14 +2129,15 @@ fn only_the_crusty_loops_pass_the_second_clean_token() {
         !ml.contains("--also-clean-token"),
         "the merge-ready loop passes no second token"
     );
-    let rr_collect = rr.find(" collect").expect("re-review runs collect");
-    let rr_done = rr
+    assert!(rr.contains("bash \"$HERE/autodrive_crusty_finalize.sh\""));
+    let finalizer = read("amplifier-bundle/tools/autodrive_crusty_finalize.sh");
+    let collect = finalizer.find(" collect").unwrap();
+    let file = finalizer.find(" file").unwrap();
+    let check = finalizer.find(" check").unwrap();
+    let done = finalizer
         .rfind("autodrive_record_crusty_loop_done")
-        .expect("records done");
-    assert!(
-        rr_collect < rr_done,
-        "collect runs before the loop is recorded done"
-    );
+        .unwrap();
+    assert!(collect < file && file < check && check < done);
 }
 
 #[test]
@@ -2264,7 +2153,6 @@ fn plan_task_id_is_an_input_and_reaches_both_loops() {
             "{r} declares plan_task_id"
         );
     }
-    let top = read("amplifier-bundle/recipes/auto-drive-to-merge.yaml");
     for id in ["autodrive-crusty-loop", "autodrive-merge-loop"] {
         let s = step("auto-drive-to-merge", id);
         let text = serde_yaml::to_string(&s).unwrap();
@@ -2274,7 +2162,8 @@ fn plan_task_id_is_an_input_and_reaches_both_loops() {
         );
     }
     assert!(
-        top.contains("followups.tsv"),
+        read("crates/amplihack-cli/src/commands/orch/autodrive/followups.rs")
+            .contains("followups.tsv"),
         "the final summary lists follow-ups"
     );
 }
@@ -2289,16 +2178,16 @@ fn merge_loop_files_before_the_gate() {
         .iter()
         .position(|i| i == "step-02b-file-followups")
         .expect("step-02b exists");
-    let g = ids.iter().position(|i| i == "step-03-merge-gate").unwrap();
+    let g = ids.iter().position(|i| i == "step-03-finalize").unwrap();
     assert!(b < g, "step-02b runs before the gate");
     let s = step("autodrive-merge-loop", "step-02b-file-followups");
-    assert_eq!(s["type"].as_str(), Some("bash"));
+    assert_eq!(s["type"].as_str(), Some("agent"));
     assert_eq!(
         s["condition"].as_str(),
         Some("merge_loop_preflight.should_run == 'true'")
     );
     assert!(
-        s["command"]
+        s["prompt"]
             .as_str()
             .unwrap()
             .contains("autodrive_followups.sh")
@@ -2306,27 +2195,14 @@ fn merge_loop_files_before_the_gate() {
 }
 
 #[test]
-fn merge_gate_runs_the_gate_command_from_its_own_directory() {
-    let g = read("amplifier-bundle/tools/autodrive_merge_gate.sh");
-    assert!(
-        g.contains(
-            r#"bash "${GATE_HOME}/autodrive_followups.sh" gate --state-dir "$STATE_DIR" --pr "$PR""#
-        ),
-        "the follow-up check runs from GATE_HOME"
-    );
-    assert!(
-        g.contains(r#"&& note "$FU" || block "#),
-        "a pass is evidence, anything else blocks"
-    );
-    assert!(
-        g.contains("ERROR: followups-unfiled: autodrive_followups.sh gate did not run"),
-        "a missing or silent tool still blocks with the error token"
-    );
-    let t = read("amplifier-bundle/tools/autodrive_followups_check.sh");
-    assert!(
-        t.contains(r#"echo "ERROR: followups-unfiled: ${out}" >&2"#),
-        "the gate command prints the error"
-    );
+fn agent_followups_preserve_dry_run_and_parent_obligations() {
+    let prep = step("autodrive-crusty-loop", "step-03-record-crusty-phase");
+    assert_eq!(prep["type"].as_str(), Some("agent"));
+    let prompt = prep["prompt"].as_str().unwrap();
+    assert!(prompt.contains("Dry-run"));
+    assert!(prompt.contains("followup-missing"));
+    assert!(prompt.contains("linked to plan task"));
+    assert!(prompt.contains("Only after verified DONE"));
 }
 
 /// `check` and `gate` live in their own file beside the tool, and the tool

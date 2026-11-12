@@ -608,7 +608,6 @@ fn default_workflow_propagates_terminal_state_context_between_phase_recipes() {
         "terminal_state",
         "terminal_reason",
         "publish_status",
-        "should_publish",
         "should_finalize",
         "should_run_ci_wait",
         "should_merge",
@@ -618,6 +617,12 @@ fn default_workflow_propagates_terminal_state_context_between_phase_recipes() {
             "default-workflow context must propagate `{required_key}`"
         );
     }
+    // Issue #1976 (decision 17.113): the caller key `should_publish` was
+    // removed; publish steps gate on `terminal_state.should_publish` only.
+    assert!(
+        !context.contains_key(Value::String("should_publish".to_string())),
+        "default-workflow must not declare the removed `should_publish` context key"
+    );
 }
 
 #[test]

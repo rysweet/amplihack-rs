@@ -67,10 +67,12 @@ nav:
       - Claude Login Rotation: howto/claude-profile-rotation.md
       - Supervise Agent Sessions: howto/supervise-agent-sessions.md
       - Keep Tests from Leaking Rotator Daemons: howto/keep-tests-from-leaking-rotator-daemons.md
+      - Keep Tests off the Host Process Table: howto/keep-tests-off-the-host-process-table.md
       - Keep Tests out of the Real Profile Root: howto/keep-tests-out-of-the-real-profile-root.md
       - Give Test Logins a Fake Account Identity: howto/give-test-logins-a-fake-account-identity.md
       - Keep Tests from Changing PATH and HOME: howto/keep-tests-from-changing-path-and-home.md
       - Keep Tests from Prompting for Git Credentials: howto/keep-tests-from-prompting-for-git.md
+      - Run recipe::run Tests Inside a Recipe Session: howto/run-recipe-tests-inside-a-recipe-session.md
       - Wait Without Leaving Orphan Processes: howto/wait-without-orphan-processes.md
       - Profile Command Reference: reference/profile-command.md
       - Capacity Governor: reference/capacity-governor.md
@@ -84,6 +86,7 @@ nav:
       - Trust & Anti-Sycophancy: claude/context/TRUST.md
       - Rust Runner Execution Architecture: concepts/rust-runner-execution-architecture.md
       - Agent Binary Routing: concepts/agent-binary-routing.md
+      - Versioned Install Layout: concepts/versioned-install-layout.md
       - Launch Target Resolution: LAUNCH_TARGET_RESOLUTION.md
       - System Prompt Append: SYSTEM_PROMPT_APPEND.md
       - Memory Architecture: concepts/memory-backend-architecture.md
@@ -118,6 +121,7 @@ nav:
       - Investigation Workflow: claude/workflow/INVESTIGATION_WORKFLOW.md
       - Quick-Change Recipe: reference/quick-change-recipe.md
       - Auto-Drive-Light Recipe: reference/auto-drive-light.md
+      - Git Repository Environment Helper: reference/git-repo-env-helper.md
       - Recipe CLI Commands: howto/recipe-cli-commands.md
       - Clean Up After Recipe Runs: howto/clean-up-after-recipe-runs.md
       - Recipe CLI Reference: reference/recipe-cli-reference.md
@@ -136,9 +140,12 @@ nav:
       - Evidence & Bookkeeping Gate Hardening: reference/workflow-implementation-evidence.md
       - Publish Lockfile Sync: reference/workflow-publish-lockfile-sync.md
       - Commit Hook Repair: reference/recipe-commit-hook-repair.md
+      - Check Exit Status: reference/recipe-check-exit-status.md
       - Local Tracking Issue-Number Extraction: recipes/issue-815-804-local-tracking-issue-number.md
       - Caller Branch Worktree Alias: recipes/issue-1762-caller-branch-worktree-alias.md
       - Tracking Issue Selection: reference/workflow-tracking-issue-selection.md
+      - Workflow Delivery Inputs: reference/workflow-delivery-inputs.md
+      - Consensus Criticality Contract: reference/consensus-criticality-contract.md
   - Agents:
       - Overview: claude/agents/README.md
       - Core Agents:

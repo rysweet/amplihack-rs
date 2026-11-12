@@ -24,11 +24,17 @@ mod kind;
 #[cfg(unix)]
 mod limit_wait;
 #[cfg(unix)]
+mod organisation;
+/// Issue #2030: Commander option arity, for the `amplihack claude` passthrough rewrite.
+pub(crate) use limit_wait::claude_args::option_end as claude_option_end;
+#[cfg(unix)]
 mod login_check;
 mod name;
 mod overflow;
 mod pointer;
 mod probe_limits;
+mod probe_logs;
+mod probe_sandbox;
 mod root_cmd;
 mod root_config;
 mod rotate;
@@ -41,6 +47,7 @@ mod shared_dirs;
 mod store;
 mod supervise_gate;
 mod usage_cmd;
+mod usage_codex;
 #[cfg(unix)]
 mod usage_direct;
 mod usage_history;
@@ -74,6 +81,8 @@ mod tests_expected;
 #[cfg(all(test, unix))]
 mod tests_fake_http;
 #[cfg(all(test, unix))]
+mod tests_issue_2279_profile;
+#[cfg(all(test, unix))]
 mod tests_kind;
 #[cfg(all(test, unix))]
 mod tests_login_check;
@@ -83,6 +92,10 @@ mod tests_name;
 mod tests_pointer;
 #[cfg(test)]
 mod tests_probe_limits;
+#[cfg(all(test, unix))]
+mod tests_probe_logs;
+#[cfg(all(test, unix))]
+mod tests_probe_sandbox;
 #[cfg(test)]
 mod tests_root_config;
 #[cfg(test)]
@@ -99,6 +112,8 @@ mod tests_shared_dirs;
 mod tests_store;
 #[cfg(test)]
 mod tests_usage_cmd;
+#[cfg(test)]
+mod tests_usage_codex;
 #[cfg(all(test, unix))]
 mod tests_usage_direct;
 #[cfg(all(test, unix))]
@@ -155,6 +170,16 @@ pub use supervise_gate::maybe_supervise;
 /// profile even if the default pointer changes (issue #1567).
 pub const PROFILE_ENV: &str = "AMPLIHACK_CLAUDE_PROFILE";
 
+/// The hint of [`ProfileError::AutoSwitchConfig`] (issue #2218).
+pub(crate) const AUTO_SWITCH_CONFIG_HINT: &str = "fix what the message names and retry; do not \
+     remove <root>/.auto-switch, which holds the exclude list (see \"Settings file\" in \
+     docs/reference/profile-command.md)";
+
+/// The hint of [`ProfileError::AutoSwitchExcludeAtRisk`] (issue #2218).
+pub(crate) const EXCLUDE_AT_RISK_HINT: &str = "do not remove <root>/.auto-switch: that drops its \
+     exclude list, and the rotator would probe and refresh the logins it excluded; see \
+     \"Unreadable exclude list\" in docs/reference/profile-command.md";
+
 #[derive(Debug, thiserror::Error)]
 pub enum ProfileError {
     #[error("invalid profile name {0:?}")]
@@ -205,6 +230,11 @@ pub enum ProfileError {
     HostsForeignAccount { profile: String, live: String },
     #[error("auto-switch settings: {0}")]
     AutoSwitchConfig(String),
+    /// Issue #2218: a corrupt `.auto-switch` refused where removing it, the
+    /// generic `AutoSwitchConfig` fix, would drop its exclude list. The
+    /// message says which command recovers it; the hint never says remove.
+    #[error("auto-switch settings: {0}")]
+    AutoSwitchExcludeAtRisk(String),
     #[error("auto-switch state is inconsistent: {0}")]
     AutoSwitchInvariant(String),
     #[error("auto-switch install: {0}")]
@@ -293,9 +323,11 @@ impl ProfileError {
             Self::Leased { .. } | Self::HostsForeignAccount { .. } => {
                 "wait for that session to end, or run `amplihack profile auto-switch status`"
             }
-            Self::AutoSwitchConfig(_) => {
-                "remove <root>/.auto-switch and run `amplihack profile auto-switch on` or `off`"
-            }
+            // Issue #2218: never "remove the file". Every case that reaches
+            // it (a busy lock, a change over 4096 bytes, an unsafe root, a
+            // failed write) leaves a file whose exclude list is in force.
+            Self::AutoSwitchConfig(_) => AUTO_SWITCH_CONFIG_HINT,
+            Self::AutoSwitchExcludeAtRisk(_) => EXCLUDE_AT_RISK_HINT,
             Self::AutoSwitchInvariant(_) => {
                 "see the Recovery section of docs/howto/claude-profiles.md"
             }
@@ -436,11 +468,28 @@ pub enum ProfileCommands {
         args: Vec<String>,
     },
     /// Show each profile's weekly and session usage as a bar view, in the
-    /// order the rotator ranks headroom
+    /// order the rotator ranks headroom, then each Codex account's live
+    /// rate limits
+    ///
+    /// Rate: the capacity summary's rate covers the last 6 h. It starts at
+    /// the oldest history entry in that window written by `profile usage`
+    /// (which tried every login; one it could not read is left out of the
+    /// rate), or written by the rotator and holding every login read now.
+    /// That start entry must itself be at least 4.5 h old, or the rate and
+    /// runway are unknown. Only logins read at both ends count. Each login
+    /// counts its net rise within each week, and a week resets when its
+    /// reset time passes or its figure falls by more than 10 points, so a
+    /// smaller fall adds nothing and the rate is never negative. Each
+    /// login's use is weighted by its capacity weight.
+    ///
+    /// Passive: a stored reading younger than 300 s
+    /// (AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS, at most 3600) is used
+    /// without starting claude; the ~/.claude row and
+    /// AMPLIHACK_PROFILE_USAGE_PROBE=auto or text always probe.
     Usage {
-        /// Profiles to probe (default: all)
+        /// Profiles to probe (default: all, and the Codex accounts)
         names: Vec<String>,
-        /// Print a JSON array instead of the bar view
+        /// Print the profile rows as one JSON array (Claude only; the Codex rows are in --summary-json)
         #[arg(long)]
         json: bool,
         /// Print the previous 7-column table instead of the bar view
@@ -449,7 +498,12 @@ pub enum ProfileCommands {
         /// Show reset times in UTC instead of local time (bar view only)
         #[arg(long, conflicts_with_all = ["json", "table", "summary_json"])]
         utc: bool,
-        /// Print one JSON object: the --json rows and the capacity summary
+        /// Print one JSON object: the --json Claude rows, the capacity summary
+        /// and the Codex rows.
+        /// Its rate covers the last 6 h, starts at the oldest entry in that
+        /// window from `profile usage` or from a rotator cycle holding every
+        /// login read now, needs that entry to be at least 4.5 h old, and is
+        /// weighted
         #[arg(long, conflicts_with_all = ["json", "raw"])]
         summary_json: bool,
         /// Also print what `claude` wrote to stdout and stderr
@@ -503,6 +557,16 @@ pub enum ProfileCommands {
         #[command(subcommand)]
         command: kind::KindCommand,
     },
+    /// Delete the session logs old usage probes left in ~/.claude/projects
+    /// (never run automatically; try --dry-run first)
+    PruneProbeLogs {
+        /// Folder to clean (default: $HOME/.claude/projects/<encoded $HOME>)
+        #[arg(long)]
+        dir: Option<String>,
+        /// List the matching files and delete nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Status-line wrapper run by Claude Code (installed by `auto-switch install`)
     #[command(hide = true)]
     Statusline {
@@ -525,6 +589,20 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
     // stdout, and its exit code is the original status line's.
     if let ProfileCommands::Statusline { root, owner } = &cmd {
         std::process::exit(auto_switch::statusline(root.as_deref(), owner.as_deref()));
+    }
+    // Needs no profile store: it reads only the shared projects folder.
+    if let ProfileCommands::PruneProbeLogs { dir, dry_run } = &cmd {
+        let code = probe_logs::run(
+            dir.as_deref().map(std::path::Path::new),
+            *dry_run,
+            std::env::var_os("HOME").as_deref(),
+            &mut std::io::stdout().lock(),
+            &mut std::io::stderr().lock(),
+        );
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
     }
     // Before the root is resolved, so it can repair a damaged saved root.
     if let ProfileCommands::Root { dir } = cmd {
@@ -670,7 +748,9 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
         ProfileCommands::Kind { command } => {
             kind::run(&store, command, usage_cmd::home_dir().as_deref())?
         }
-        ProfileCommands::Statusline { .. } | ProfileCommands::Root { .. } => {
+        ProfileCommands::Statusline { .. }
+        | ProfileCommands::Root { .. }
+        | ProfileCommands::PruneProbeLogs { .. } => {
             unreachable!("handled above")
         }
     }
@@ -779,14 +859,18 @@ fn unsupported_mode(docker: bool, docker_env: bool, auto: bool) -> Option<Profil
 }
 
 fn docker_env_active() -> bool {
-    crate::docker::DockerDetector
-        .activation_source(false)
-        .is_some()
+    // Refuse the requested mode even when a missing/stopped daemon would
+    // prevent activation; profile validation must precede any disk access.
+    crate::docker::DockerDetector.requested_outside_container(false)
 }
 
 /// Profiles are not applied in Docker; fail closed rather than drop the profile.
 pub(super) fn reject_docker_env() -> Result<()> {
-    match unsupported_mode(false, docker_env_active(), false) {
+    reject_docker_mode(docker_env_active())
+}
+
+fn reject_docker_mode(active: bool) -> Result<()> {
+    match unsupported_mode(false, active, false) {
         Some(e) => Err(with_hint(e)),
         None => Ok(()),
     }

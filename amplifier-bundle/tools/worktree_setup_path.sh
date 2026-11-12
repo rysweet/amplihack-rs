@@ -45,6 +45,9 @@
 #   ignore     autodrive-build step-03: skips the run-branch PR lookup (#1676).
 #   invalid    workflow-terminal-state probe: exit 3 uses repo_path, any other
 #              failure is FAILED_INVALID_INPUT.
+#   fail-closed consensus-test-fix step7-run-tests: any failure, exit 3
+#              included, runs no check and reports all_passing "false"; the
+#              launch directory does not hold the change (#2190).
 
 set -u
 

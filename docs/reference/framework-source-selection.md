@@ -1,7 +1,7 @@
 ---
 title: Framework source selection reference
 description: Which source amplihack install, update and self-heal stage the framework bundle from, how versions are compared, and which checks and modes staging applies.
-last_updated: 2026-11-05
+last_updated: 2026-11-11
 review_schedule: as-needed
 owner: amplihack-maintainers
 doc_type: reference
@@ -23,6 +23,7 @@ version. A source with a different version is used only with an explicit
 - [Staging order](#staging-order)
 - [Fetch backoff](#fetch-backoff)
 - [Manifest check](#manifest-check)
+- [Auto-drive launch bundle](#auto-drive-launch-bundle)
 - [File modes](#file-modes)
 - [What happens on each failure](#what-happens-on-each-failure)
 - [Messages](#messages)
@@ -160,9 +161,10 @@ Exceeding a limit counts as a failed fetch and leaves the bundle unchanged.
 4. Compare the copy with the source ([manifest check](#manifest-check)).
 5. Set modes across the tree ([file modes](#file-modes)). The staging root gets
    `0755` last.
-6. Run `secure_merge_guard`, which applies the merge guard's specific modes.
-7. Run the compatibility check on the staged copy.
-8. Swap the staged copy into place as `amplifier-bundle`.
+6. Run the compatibility check on the staged copy.
+7. Swap the staged copy into place as `amplifier-bundle`.
+
+Auto-drive uses [independent trusted bundle selection](#auto-drive-launch-bundle); installation requires no merge gate or shim.
 
 If any step after the first fails, the staging directory is deleted, the
 installed bundle stays as it was and the stamp doesn't advance. A symlink at the
@@ -224,6 +226,24 @@ same-version source with local edits passes. Issue #1955 item 4 asked for a
 check against the release's manifest; what ships is the narrower
 copy-against-source check, and the release manifest is a follow-up. See [Known limits](#known-limits).
 
+## Auto-drive launch bundle
+
+The implementation binds trusted recipes, merge-ready criteria and templates, the
+loop-health evaluator, and helpers to a launch-selected bundle for the
+invocation. It does not select instructions from the PR worktree. That binding
+survives child context changes, shared consumers, and light-to-full escalation.
+
+Installation and compatibility checks do not require
+`autodrive_merge_gate.sh`, `gh-merge-guard` shim, gate-resolved `gh`, or
+gate-specific `BASH_ENV`. Launch cleanup removes only exact recognized retired
+environment entries and paths, preserving unrelated shell configuration
+without sourcing stale guard files. Unrelated `MergeGate` ownership
+coordination remains separate.
+
+Necessary filesystem and record operations use portable Rust handling.
+Agents choose available platform interfaces; helpers do not contact the
+hosting service or merge. See [auto-drive's trust contract](auto-drive-to-merge.md#trusted-execution-and-portability).
+
 ## File modes
 
 On Unix, staging sets modes itself. Source modes affect only whether a file is
@@ -236,8 +256,7 @@ executable, and the umask has no effect.
 | Any other file | `0644` |
 
 Nothing under the bundle is writable by group or others. This holds after every
-install, update and self-heal re-stage. The `recipe run` merge guard from #1551
-accepts the tree with no further `chmod`.
+install, update and self-heal re-stage. Trusted-bundle selection checks ownership and modes independently of merge enforcement.
 
 To check an installed bundle:
 
@@ -345,7 +364,7 @@ amplihack: warning: this build (1.2.0+snapshot.7deb23da4) cannot fetch a release
 ```text
 error: the staged bundle does not match its source /home/alice/src/amplihack-rs (1 missing, 0 extra, 1 changed):
   missing: recipes/default-workflow.yaml
-  changed: tools/autodrive_merge_gate.sh
+  changed: recipes/autodrive-merge-round.yaml
 ```
 
 Install never prints `Bundled framework source not found`.
@@ -447,6 +466,51 @@ Focused tests:
 ```sh
 cargo test -p amplihack-cli issue_1955
 ```
+
+### Testing the walk-ups
+
+The current-directory and executable walk-ups in `commands/install/clone.rs`
+read the filesystem through a private view, `FsView`, with three operations
+that match the production checks one for one:
+
+| Operation | Used for | Production behaviour (`RealFs`) |
+|---|---|---|
+| `exists(path)` | `.git`, as a directory or a worktree's `.git` file | `Path::exists` |
+| `is_dir(path)` | `amplifier-bundle`, `.claude` | `Path::is_dir` |
+| `regular_file_head(path, limit)` | `Cargo.toml` | `symlink_metadata().is_file()`, then open, then read at most `limit` (64 KiB) bytes (SEC-11). Anything that is not a regular file gives `None`. |
+
+`is_repository_root`, `has_bundle` and `looks_like_amplihack_source_in`,
+each taking the view and a directory, run the existing checks, in the
+existing order, against any view. Production passes `RealFs`, so install
+behaviour is unchanged: the #1275 bound, the #341 ordering and the
+`NotAmplihackSource` and `OutsideStartingRepository` notes are the same.
+
+The walk-up unit tests build a `Layout` instead: a map from path to `Dir`,
+`File(bytes)` or `Other` (for example a FIFO). A `Layout` implies no parent
+directories, so a test lists every entry it needs. These tests create no
+directories and do not depend on what lies above `TMPDIR`; a stray `.git`
+in `/tmp` cannot change their result. The one exception is
+`regular_file_head_stops_at_the_limit`, which tests `RealFs` and so writes a
+real file in a scratch directory; it reads only that file and walks up
+nothing.
+
+| Test | Checks |
+|---|---|
+| `walk_up_finds_the_checkout_that_contains_the_current_directory` | The checkout above the current directory is found (#341). |
+| `a_bundle_in_an_ancestor_outside_the_repository_is_refused_and_reported` | The walk stops at the repository root and reports `OutsideStartingRepository` (#1275). |
+| `without_an_enclosing_repository_only_the_starting_directory_is_considered` | With no `.git` marker, only the starting directory is a candidate. |
+| `a_directory_that_merely_carries_a_bundle_is_not_an_install_source` | A bundle alone is refused; a workspace `Cargo.toml` is accepted; an `Other` entry named `Cargo.toml` is refused. |
+| `a_git_file_marks_a_worktree_root` | A `.git` file marks a worktree root, not only a `.git` directory. |
+| `the_executable_walk_up_stays_inside_its_own_checkout` | The executable walk-up is bounded by its own checkout. |
+| `the_current_checkout_outranks_the_compile_time_workspace` | The #341 ordering, through `resolve_with_fs`. |
+| `the_walk_scope_ends_at_the_first_repository_marker` | The walk-up scope runs from the starting directory to the first repository marker; with no marker it is the starting directory alone. |
+| `the_source_check_is_asked_only_of_a_directory_with_a_bundle` | The walk is lazy (SR-7): the `.claude` and `Cargo.toml` checks run only where a bundle is, and an accepted walk asks nothing above its repository. |
+| `regular_file_head_stops_at_the_limit` | `RealFs` reads no more than `limit` bytes. |
+
+The predicate tests cover each marker: a `.git` file or directory, a
+bundle directory (only a directory counts), a `Cargo.toml` with and without
+the workspace marker, an `Other` named `Cargo.toml`, and a `.claude`
+directory.
 
 ## See also
 

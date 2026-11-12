@@ -637,6 +637,9 @@ root: /home/you/.claude-profiles (source: config)
 */30 * * * * amplihack profile usage --json > /tmp/claude-usage.json
 ```
 
+The saved file is the array of Claude rows, so a script reads it with
+`jq '.[]'`. It has no Codex rows; save `--summary-json` instead for those.
+
 ```bash
 tmux new-session -d -s work 'amplihack claude --profile work'
 ```
@@ -717,7 +720,7 @@ review   █░░░░░░░░░  10%  11-05 09:00  ░░░░░░░
 work     ███░░░░░░░  30%  11-05 09:00  ██░░░░░░░░  20%   11-01 12:00 ok                 *
 mistt    █████░░░░░  52%  11-05 09:00  ███░░░░░░░  35%   11-01 13:00 ok                 spend:not_probed
 team     █████░░░░░  55%  11-05 09:00  ██████████ 100%   11-01 23:50 session_exhausted
-scratch  no reading (not_logged_in)                                  not_logged_in      (fallback) spend:unknown
+scratch  not signed in (no credentials file)                         not_logged_in      spend:unknown
 times: Europe/London
 order: rotator pick (most room in the worse of session and week, then name)
 ```
@@ -731,8 +734,28 @@ few seconds. The token is read in memory only and is never printed, logged
 or passed to another process; an expired one is refreshed and saved back to
 the profile, as `claude` would do.
 
-Only when that fails, as for `scratch` above, which has no login, does
-amplihack start `claude` with `CLAUDE_CONFIG_DIR` set to that profile. It
+A profile with no login to use, such as `scratch` above, which has no
+`.credentials.json`, is shown as `not signed in (<reason>)` at once, with
+no warning on stderr. In `--json` the row has `"state": "not_logged_in"`
+and `"error": null`, as it would if `claude` had reported it; the reason is
+in the bar and table text only. No `claude` is started for
+it: `claude` would find the same empty profile. The same happens for a file with no OAuth token
+(`no oauth token`) and for an expired token with nothing to refresh it with
+(`no refresh token`). A file that is there but cannot be read as a login (not JSON,
+an unknown shape, or a rejected token) is `unreadable credentials`, not
+not signed in: that profile still goes to `claude`. The bar view shows the text in place of the bars;
+`--table` shows it in the `MARKS` column. Run
+`amplihack profile login scratch` to fix it.
+
+A missing `.credentials.json` counts as not signed in on Linux only. On
+macOS, Claude Code keeps the login in the Keychain, so such a profile still
+goes to `claude`. An expired token that does have a refresh token is not
+treated as signed out either: amplihack refreshes it, or, for the live
+`~/.claude` login, leaves `claude` to refresh it.
+
+Only when the direct read fails for another reason, such as a timeout or
+an HTTP error from the endpoint, does amplihack start `claude` with
+`CLAUDE_CONFIG_DIR` set to that profile. It
 asks with a `get_usage` request, then runs `claude -p /usage` and reads its
 `Current session` and `Current week` lines if it cannot use the answer.
 Such rows are marked `(fallback)`, and with `--raw` a `note:` line on
@@ -817,7 +840,7 @@ mark when it is not `n/a`; `--table` shows it in its `SPEND` column:
 | `n/a` | No spend limit was read for this row, and none was needed: usage credits are off, or the row came from a stored reading or is an API-key profile. It does not prove that credits are off. |
 | `ok` | `/usage` gave a usage reading and reported no used-up spend limit. |
 | `limit_reached` | The account's spend limit is used up. It cannot work past its plan limits on credits until the limit is raised or resets. |
-| `unknown` | A probe ran and the spend limit could not be read: a `--spend` probe did not answer in time or `claude` could not be found, `claude` did not give a usage reading (as for `scratch`, which is not logged in), or the row could not be read at all. |
+| `unknown` | A probe ran and the spend limit could not be read: a `--spend` probe did not answer in time or `claude` could not be found, `claude` did not give a usage reading, the profile is not signed in (as for `scratch`), or the row could not be read at all. |
 | `not_probed` | Usage credits are on and no spend probe was asked for: run with `--spend` to read it. Says nothing about the spend limit. |
 
 To check only some profiles, name them:
@@ -834,7 +857,7 @@ What the `STATE` column means:
 | `session_exhausted` / `weekly_exhausted` | Wait for the reset shown, or use another profile. |
 | `spend_limit` | Your organisation's spend limit was reached. |
 | `api_key` | An API-key profile, billed per token; its row reads `api-key (billed per token)` instead of bars and nothing is probed. Nothing to fix. See [API-key profiles and usage limits](#api-key-profiles-and-usage-limits). |
-| `not_logged_in` | `amplihack profile login <name>` |
+| `not_logged_in` | `amplihack profile login <name>`. A row that reads `not signed in (<reason>)` was found without starting `claude`; see [Logins with no token](../reference/profile-command.md#logins-with-no-token). |
 | `timeout` | The `claude` fallback did not answer in time (120 seconds by default, for the `get_usage` request and any `/usage` fallback together). The usage is unknown, not exhausted. Try again, or see [Probes on a busy host](#probes-on-a-busy-host). |
 | `unparsed` | Claude printed something unexpected. Run with `--raw` to see it. |
 | `error` | The probe could not run (the profile directory was refused, `claude` was needed but could not be found, started, read or waited for, or a direct read failed under `AMPLIHACK_PROFILE_USAGE_PROBE=direct`); the reason is printed on stderr. |
@@ -843,7 +866,7 @@ Claude's own text is shown only when you ask for it, for example to report
 output amplihack does not recognise:
 
 ```bash
-amplihack profile usage --raw scratch
+amplihack profile usage --raw spare
 ```
 
 `--raw` output can include your e-mail address, organisation name or
@@ -851,9 +874,10 @@ subscription type. Read it before you share it. For a `(fallback)` row it
 shows everything `claude` printed in the attempt that gave the row: for a
 `get_usage` answer, every JSON line, starting with the one `claude` prints
 when it starts; for `/usage`, the text. Other rows print
-`(direct: no claude output)` or `(passive: no claude output)`. With
+`(direct: no claude output)` or `(passive: no claude output)`; a
+`not signed in` row prints nothing. With
 `--raw`, a row whose direct read failed also prints why on stderr, for
-example `note: profile "scratch": direct read gave http 5xx; using claude`;
+example `note: profile "spare": direct read gave http 5xx; using claude`;
 without `--raw` that line is not printed.
 
 To see how each row was read, use the `source` key of `--json`:
@@ -867,7 +891,7 @@ review direct
 work passive
 mistt direct
 team direct
-scratch fallback
+scratch direct
 ```
 
 For scripts, use `--json`. This picks the profile with the most capacity:
@@ -907,6 +931,44 @@ logins, how many can take work now, the next session reset and how long the
 weekly capacity lasts at the recent rate; see
 [See how much capacity is left](claude-profile-rotation.md#see-how-much-capacity-is-left).
 `--summary-json` prints the rows and that summary as one JSON object.
+
+### See your Codex accounts in the same view
+
+With no profile names, `profile usage` also asks each Codex account under
+`~/.codex-profiles` (or `CODEX_PROFILES_ROOT`) for its rate limits, live,
+and lists it after the Claude output. `~/.codex` is included when it is
+signed in. Each row shows the five-hour and weekly use with their resets,
+any credit balance, the plan and the time of the reading, and `<- next`
+marks the account `codex-pick`'s rule picks from these live readings
+(`codex-pick` itself reads session files, which can be older, so the two
+can disagree):
+
+```
+Codex accounts under /home/ryan/.codex-profiles
+ffarmer  signed in      5h █░░░░░░░░░  12% 11-06 21:40 in 2h 31m  7d ████░░░░░░  41% 11-12 08:00 in 132h 51m  plan plus  read 19:09:00
+ggrant   signed in      7d ███░░░░░░░  34% 11-10 14:30 in 91h 21m  plan pro  read 19:09:00  <- next
+jjones   not signed in  read 19:09:00
+```
+
+The Codex block is printed last. The Claude rows and the capacity summary
+appear as soon as the Claude profiles are read, without waiting for a slow
+Codex account; the Codex block follows once every account has answered or
+timed out. The accounts are read at once, each with a 20-second limit
+(`AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS`); one that does not answer shows
+`timed out`, never an older figure. amplihack does not open `auth.json`;
+Codex reads its own login. `--json` stays the array of Claude rows and does
+not read Codex; the Codex rows are under `codex` in `--summary-json`:
+
+```bash
+amplihack profile usage --summary-json | jq -r '.codex[] | select(.next_choice) | .account'
+```
+
+```
+ggrant
+```
+
+See [Codex accounts](../reference/profile-command.md#codex-accounts) for
+the states, the choice rule and every JSON key.
 
 The command exits with status 0 whenever the probes ran, whatever their
 states. Like `profile run`, it is refused under Docker.
@@ -993,7 +1055,8 @@ AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS=0 amplihack profile usage
 
 To make sure no `claude` process is started for a reading, use `direct`.
 A profile whose direct read fails then reads `error`, with the reason on
-stderr, instead of falling back. A profile marked as overflow can only be
+stderr, instead of falling back; a profile with no login reads
+`not_logged_in`, as it does without the variable. A profile marked as overflow can only be
 read with `/usage`, so under `direct` it reads `error` with
 `direct read: overflow needs /usage`:
 
@@ -1002,7 +1065,7 @@ AMPLIHACK_PROFILE_USAGE_PROBE=direct amplihack profile usage
 ```
 
 ```
-warning: profile "scratch": direct read: no credentials file
+warning: profile "spare": direct read: http 5xx
 ```
 
 The [rotator](claude-profile-rotation.md#when-the-host-is-heavily-loaded)

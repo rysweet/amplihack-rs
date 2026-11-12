@@ -21,6 +21,54 @@ pub(crate) fn cwd_env_lock() -> &'static Mutex<()> {
     env_lock()
 }
 
+/// One lock for tests that start a token refresh or read the refresh count
+/// (issue #2036). The count (`usage_direct::refreshes_in_progress`) covers the
+/// whole process, and the rotator's stop waits for it to reach zero, so a test
+/// that checks it must not run beside another test's refresh. Poisoning is
+/// ignored: a failed test must not fail the others.
+pub(crate) fn refresh_count_lock() -> std::sync::MutexGuard<'static, ()> {
+    static REFRESH_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    REFRESH_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Drops `held`, an `flock`ed handle on `path`, and waits until the lock is
+/// really free.
+///
+/// An `flock` belongs to the open file description, not the fd. When another
+/// test in this process spawns a child while `held` is open, the forked child
+/// shares that description until it execs, so the lock can outlive
+/// `drop(held)` by a moment. A test that expects success right after the drop
+/// fails then with "in use". This waits, with a fresh descriptor, until the
+/// lock can be taken, and releases it again. Panics after 30 seconds.
+#[cfg(unix)]
+pub(crate) fn release_flock(held: std::fs::File, path: &Path) {
+    use std::os::fd::AsRawFd;
+    drop(held);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let probe = std::fs::File::open(path).unwrap();
+        // SAFETY: the fd is valid for the life of `probe`; closing it unlocks.
+        if unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return;
+        }
+        let error = std::io::Error::last_os_error();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{} still locked 30 s after release: {error}",
+            path.display()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// A synthetic process table per test (issue #2196).
+#[cfg(unix)]
+#[path = "test_support_proc.rs"]
+pub(crate) mod proc;
+
 #[path = "../tests/support/scratch_base.rs"]
 #[allow(dead_code)]
 mod scratch_base;
@@ -122,6 +170,27 @@ impl EnvGuard {
     }
 }
 
+/// The variables that name an outer recipe run (#1984): the shell helper's five
+/// run-identity names (amplifier-bundle/tools/git-repo-env.sh) plus the two
+/// depth variables. A test started inside a recipe-run session inherits them,
+/// and a runner it starts then joins the outer tree or is refused by its depth
+/// guard instead of starting a fresh top-level run. Sorted.
+pub(crate) const OUTER_RUN_IDENTITY_VARS: [&str; 7] = [
+    "AMPLIHACK_MAX_DEPTH",
+    "AMPLIHACK_RECIPE_RUN_ID",
+    "AMPLIHACK_RUN_DIR",
+    "AMPLIHACK_RUN_ID",
+    "AMPLIHACK_SESSION_DEPTH",
+    "AMPLIHACK_SESSION_TREE_DIR",
+    "AMPLIHACK_TREE_ID",
+];
+
+/// Remove every [`OUTER_RUN_IDENTITY_VARS`] entry until the guard drops. The
+/// caller must hold `env_lock()` (or `home_env_lock()`), as for any `EnvGuard`.
+pub(crate) fn clear_outer_run_env() -> EnvGuard {
+    EnvGuard::unset(OUTER_RUN_IDENTITY_VARS)
+}
+
 /// Runs `f` under the shared env lock with each variable set (or removed when
 /// `None`). The previous values are restored on return and on panic.
 pub(crate) fn with_env<T>(vars: &[(&str, Option<&OsStr>)], f: impl FnOnce() -> T) -> T {
@@ -149,6 +218,58 @@ impl Drop for EnvGuard {
                 }
             }
         }
+    }
+}
+
+/// A private work root for tests that run a recipe (issue #2067).
+///
+/// `amplihack recipe run` creates its run folder under the work root, which
+/// it takes from `AMPLIHACK_WORK_ROOT` (`cleanup::work_root::resolve_from_env`;
+/// nothing reads an inherited `AMPLIHACK_RUN_ID` or `AMPLIHACK_RUN_DIR`). A
+/// test run under a recipe inherits the caller's root, normally the real
+/// `~/.amplihack/work`, so without this guard each test leaves a run folder
+/// there. This guard points `AMPLIHACK_WORK_ROOT` at `<temp>/work`, removes
+/// `AMPLIHACK_WORK_ROOT_EXPLICIT`, and turns the end-of-run sweep off: the
+/// sweep also lists hook build folders under `$XDG_CACHE_HOME/amplihack` or
+/// `~/.cache/amplihack`, which are outside the work root and are not
+/// isolated here. On drop the variables are restored and then the folder is
+/// removed.
+///
+/// This guard is the only owner of these three variables in any fixture that
+/// uses it. Do not also capture or set them in another `EnvGuard` in the same
+/// fixture: two guards saving one variable restore it in the wrong order.
+/// For example, in a `(EnvGuard, IsolatedWorkRoot)` tuple the first element
+/// drops first, so this guard would then write back the value the other guard
+/// had set, and that value would leak into later tests.
+///
+/// Tests must hold `env_lock()` until this guard drops.
+pub(crate) struct IsolatedWorkRoot {
+    // Field order is drop order: restore the variables before removing the
+    // folder they point at.
+    _env: EnvGuard,
+    dir: tempfile::TempDir,
+}
+
+impl IsolatedWorkRoot {
+    pub(crate) fn new() -> Self {
+        let dir = tempdir_outside_framework_roots();
+        let env = EnvGuard::capture(&[
+            "AMPLIHACK_WORK_ROOT",
+            "AMPLIHACK_WORK_ROOT_EXPLICIT",
+            "AMPLIHACK_CLEANUP_ON_EXIT",
+        ]);
+        unsafe {
+            std::env::set_var("AMPLIHACK_WORK_ROOT", dir.path().join("work"));
+            std::env::remove_var("AMPLIHACK_WORK_ROOT_EXPLICIT");
+            std::env::set_var("AMPLIHACK_CLEANUP_ON_EXIT", "0");
+        }
+        Self { _env: env, dir }
+    }
+
+    /// The work root this guard set, `<temp>/work`. It is created by the
+    /// first run, not by the guard.
+    pub(crate) fn path(&self) -> PathBuf {
+        self.dir.path().join("work")
     }
 }
 
@@ -345,3 +466,6 @@ mod exec_stub;
 pub(crate) fn write_executable(path: &Path, body: &str) {
     exec_stub::write_executable(path, body, 0o755);
 }
+
+#[path = "test_support_proc_guard.rs"]
+mod proc_guard;
