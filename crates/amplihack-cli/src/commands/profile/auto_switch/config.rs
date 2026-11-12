@@ -233,6 +233,54 @@ pub fn read(root: &Path) -> FileState {
     }
 }
 
+/// The `exclude` list as [`read_exclude`] finds it (issue #2218).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExcludeFile {
+    /// The file is missing (no exclusions) or parses. `trusted` is false
+    /// when [`read`] would still call it corrupt: someone else's,
+    /// writable by group or others, or naming an unknown kind.
+    Read {
+        names: Vec<ProfileName>,
+        trusted: bool,
+    },
+    /// The file exists but cannot be read or does not parse.
+    Unreadable,
+}
+
+/// Issue #2218: the `exclude` list, whoever can write the file. An entry
+/// only takes actions away (an excluded login is never probed or
+/// refreshed), so following one from an untrusted file gives its writer
+/// nothing; [`read`] still refuses such a file for every other setting.
+/// A symlink, a file that is too large or one that does not parse is
+/// [`ExcludeFile::Unreadable`].
+pub fn read_exclude(root: &Path) -> ExcludeFile {
+    use amplihack_utils::secure_files::{owned_by_euid, read_bounded_nofollow, writable_by_others};
+    let (raw, meta) = match read_bounded_nofollow(&root.join(FILE), MAX_BYTES) {
+        Ok(None) => {
+            return ExcludeFile::Read {
+                names: Vec::new(),
+                trusted: true,
+            };
+        }
+        Ok(Some(found)) => found,
+        Err(_) => return ExcludeFile::Unreadable,
+    };
+    let Ok(toggle) = shared::parse_toggle(&raw) else {
+        return ExcludeFile::Unreadable;
+    };
+    let Ok(names) = toggle
+        .exclude
+        .iter()
+        .map(|n| ProfileName::parse(n))
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        return ExcludeFile::Unreadable;
+    };
+    let trusted =
+        owned_by_euid(&meta) && !writable_by_others(&meta) && Config::from_toggle(toggle).is_ok();
+    ExcludeFile::Read { names, trusted }
+}
+
 /// The settings an edit starts from: the file's, or the defaults when it
 /// is missing. A corrupt file is an error and is left alone. Reads only.
 pub fn read_editable(root: &Path) -> Result<Config, ProfileError> {

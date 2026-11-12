@@ -457,23 +457,54 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
     refusal_result(&refused)
 }
 
-/// The warning printed when the auto-switch config cannot be applied, so
-/// the exclude list is empty for this command or cycle (issue #2218).
-pub(super) const EXCLUDE_NOT_APPLIED: &str =
-    "warning: auto-switch config unreadable or unsafe; exclude list not applied";
+/// The warning printed when `<root>/.auto-switch` exists but cannot be
+/// read or parsed (issue #2218): which logins are excluded is unknown, so
+/// every profile is treated as excluded and none is probed or refreshed.
+pub(super) const EXCLUDE_UNREADABLE: &str = "warning: auto-switch config unreadable; \
+     every profile treated as excluded, none probed or refreshed";
 
-/// Issue #2218: the auto-switch `exclude` list under `root`, read once per
-/// command or rotate cycle. A corrupt or unsafe config gives no exclusions,
-/// as it gives no overflow profiles, and `warn` gets
-/// [`EXCLUDE_NOT_APPLIED`] once.
+/// The warning printed when `<root>/.auto-switch` parses but is unsafe or
+/// invalid for its other settings: its exclude list still applies.
+pub(super) const EXCLUDE_UNTRUSTED: &str = "warning: auto-switch config unsafe or invalid; \
+     exclude list applied, other settings ignored";
+
+/// Issue #2218: the auto-switch `exclude` list under `root`, or `None` when
+/// the file exists but cannot be read or parsed. `warn` gets
+/// [`EXCLUDE_UNREADABLE`] or [`EXCLUDE_UNTRUSTED`] at most once.
+#[cfg(unix)]
+pub(super) fn read_exclude(
+    root: &std::path::Path,
+    warn: impl FnOnce(&str),
+) -> Option<Vec<ProfileName>> {
+    use super::auto_switch::config::{ExcludeFile, read_exclude};
+    match read_exclude(root) {
+        ExcludeFile::Read { names, trusted } => {
+            if !trusted {
+                warn(EXCLUDE_UNTRUSTED);
+            }
+            Some(names)
+        }
+        ExcludeFile::Unreadable => {
+            warn(EXCLUDE_UNREADABLE);
+            None
+        }
+    }
+}
+
+/// Issue #2218: the profiles to treat as excluded under `root`, read once
+/// per command or rotate cycle: the `exclude` list, or every profile in
+/// the store when the file cannot be read (fails closed: a refresh of an
+/// excluded login signs out the other hosts that share it).
 #[cfg(unix)]
 pub(super) fn exclude_list(root: &std::path::Path, warn: impl FnOnce(&str)) -> Vec<ProfileName> {
-    use super::auto_switch::config::{Source as ConfigSource, effective};
-    let eff = effective(root);
-    if eff.source == ConfigSource::Corrupt {
-        warn(EXCLUDE_NOT_APPLIED);
-    }
-    eff.config.exclude
+    read_exclude(root, warn).unwrap_or_else(|| {
+        ProfileStore::new(root.to_path_buf())
+            .list()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|n| ProfileName::parse(n).ok())
+            .collect()
+    })
 }
 
 /// Auto-switch has no config on this platform, so nothing is excluded.

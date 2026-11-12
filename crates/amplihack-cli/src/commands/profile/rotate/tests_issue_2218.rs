@@ -577,7 +577,7 @@ mod local_proof {
     }
 
     #[test]
-    fn a_corrupt_exclude_config_excludes_nothing() {
+    fn a_corrupt_exclude_config_excludes_every_profile() {
         let (e, _) = fx();
         exclude(&e, &["work"]);
         set_ledger(&e, Some("work"), None);
@@ -593,7 +593,13 @@ mod local_proof {
             cfg
         };
         fs::write(&file, b"{ not json").unwrap();
-        assert_eq!(proof(&e), None, "the existing EXCLUDE_NOT_APPLIED rule");
+        // Which logins are excluded is unknown, so every profile is: the
+        // ledger's `work` is then named from local files only.
+        assert!(
+            proof(&e).is_some_and(|(n, _)| n.as_str() == "work"),
+            "an unreadable list fails closed: {:?}",
+            proof(&e)
+        );
     }
 
     // --- the local-only set behind Reader::bound ---------------------------

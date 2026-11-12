@@ -1,7 +1,7 @@
 //! Trusted snapshot acquisition, separated from measurement and decisions.
 use super::{CandidateInput, Ctx, LiveId, LoginKind, Skip, Snap, identify, kind, pin};
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{CREDS, Liveness, State, effective};
+use crate::commands::profile::auto_switch::kit::{CREDS, Liveness, State};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{PLATFORM_TIER, tiers_detail};
 
@@ -34,14 +34,14 @@ pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
         LiveId::Known(n) => Some(n.clone()),
         _ => None,
     };
-    let config = effective(root).config;
-    let live_excluded = live_name
-        .as_ref()
-        .is_some_and(|n| config.exclude.contains(n));
+    // Issue #2218: the shared reader, so an untrusted file still excludes
+    // and an unreadable one excludes every profile.
+    let exclude = crate::commands::profile::usage_cmd::exclude_list(root, |_| {});
+    let live_excluded = live_name.as_ref().is_some_and(|n| exclude.contains(n));
     let (overflow, ignored) = tiers_detail(&ctx.store, Some(&ctx.home));
     let input = CandidateInput {
         live: live_name.as_ref(),
-        exclude: config.exclude,
+        exclude,
         liveness,
         auto_switch: state.load_ledger()?,
     };

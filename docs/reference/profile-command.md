@@ -1387,16 +1387,24 @@ A profile that is both excluded and an [API-key](#api-key-usage) or
 [overflow](#rotate-overflow) profile is shown as excluded. Neither kind is
 probed.
 
-When `<root>/.auto-switch` is corrupt or unsafe, the exclude list cannot be
-read, and every profile is probed as if the list were empty. The command
-prints this line once on stderr in that case:
+When `<root>/.auto-switch` parses but is unsafe (group- or
+world-writable, or owned by another user) or invalid for its other
+settings, its exclude list still applies, and the command prints once on
+stderr:
 
 ```
-warning: auto-switch config unreadable or unsafe; exclude list not applied
+warning: auto-switch config unsafe or invalid; exclude list applied, other settings ignored
 ```
 
-`profile usage` warns and goes on, so that a damaged file does not hide every
-reading. The rotator and [`profile verify`](#profile-verify) do the same; see
+When the file exists but cannot be read or does not parse, the command
+cannot tell which profiles are excluded, so it treats every profile as
+excluded: none is probed or refreshed. It prints once on stderr:
+
+```
+warning: auto-switch config unreadable; every profile treated as excluded, none probed or refreshed
+```
+
+The rotator and [`profile verify`](#profile-verify) do the same; see
 [Unreadable exclude list](#unreadable-exclude-list). Fix the file with
 `amplihack profile auto-switch on` or `off`.
 
@@ -5639,7 +5647,8 @@ Every non-dry-run cycle runs these steps in order:
    2 seconds. If it is busy, log `skip: state lock busy` and end the cycle.
    Under the lock, run auto-switch [recovery](#session-end-and-recovery), then
    read the `exclude` list (an [unreadable list](#unreadable-exclude-list)
-   is logged and excludes nothing this cycle), then [rotate recovery](#rotate-recovery), then the one refresh of an
+   counts every profile as excluded and pauses the cycle before it
+   measures), then [rotate recovery](#rotate-recovery), then the one refresh of an
    [expired live login](#an-expired-live-login), then the
    [unreadable-ledger stop](#unreadable-ledger-stop), then
    [hand-change recovery](#rotate-hand-change-recovery), then
@@ -6966,7 +6975,7 @@ from this host would rotate its refresh token and sign that host out
 
 The `exclude` list is read once per cycle, under the rotate lock and before
 any recovery, refresh or identity read. A cycle that cannot read the list
-logs a warning and excludes nothing; see
+treats every profile as excluded and pauses; see
 [Unreadable exclude list](#unreadable-exclude-list).
 Call the excluded live profile `C`. The rotator identifies `C` from local
 files only, as described under
@@ -7155,10 +7164,8 @@ the live login again, for example after
   login is treated as the profile the ledger names, and may be probed or
   refreshed as that profile. Once a hand change is suspected, rule 2 or 3
   applies on the next cycle.
-- When `<root>/.auto-switch` is corrupt or unsafe, the list cannot be read
-  and the cycle excludes nothing, so an excluded login can be probed or
-  refreshed in that cycle; see
-  [Unreadable exclude list](#unreadable-exclude-list).
+- When `<root>/.auto-switch` cannot be read, the cycle pauses and sends
+  nothing; see [Unreadable exclude list](#unreadable-exclude-list).
 - A pin that holds rotation on `C`, set before `C` was excluded, still holds.
   The held cycles do not probe its spend: see [Pin and overflow](#pin-and-overflow).
 
@@ -7167,27 +7174,33 @@ Like a real cycle, it sends no request with `C`'s token and writes nothing.
 
 #### Unreadable exclude list
 
-When `<root>/.auto-switch` is corrupt or unsafe, the rotator cannot tell
-which logins are excluded. It treats the list as empty for that cycle, as it
-treats the overflow list, and logs this line once per cycle:
+An exclude entry only takes actions away, so the list is read from
+`<root>/.auto-switch` whenever the file parses, even when it is unsafe
+(group- or world-writable, or owned by another user) or invalid for its
+other settings. Those settings, such as overflow profiles, are still
+ignored, and the cycle logs once:
 
 ```
-warning: auto-switch config unreadable or unsafe; exclude list not applied
+warning: auto-switch config unsafe or invalid; exclude list applied, other settings ignored
 ```
 
-No profile is excluded in that cycle: no folder is marked, no
-[local proof](#local-proof-of-an-excluded-live-login) is made, and every
-login, including one listed in the damaged file, can be probed, refreshed
-and moved as usual. The cycle is not stopped. `rotate watch` already idles
-on a damaged settings file at the [toggle step](#rotate-cycle), so the line
-is seen mainly from a one-shot `rotate`, `--dry-run`, or a file damaged after
-the toggle step has read it. The list applies again from the first cycle
-that reads the file safely. Fix the file with
+When the file exists but cannot be read or does not parse, the rotator
+cannot tell which logins are excluded. A token refresh of an excluded login
+signs out the other hosts that share it, so the cycle fails closed: every
+profile is treated as excluded, so recovery, the live refresh and the
+identity checks send nothing, and the cycle stops before measuring. It logs:
+
+```
+warning: auto-switch config unreadable; every profile treated as excluded, none probed or refreshed
+ALERT: auto-switch config unreadable; rotation paused, no profile probed
+```
+
+Rotation resumes from the first cycle that reads the file. Fix the file with
 `amplihack profile auto-switch on` or `off`.
 
 [`profile usage`](#excluded-profiles) and [`profile verify`](#profile-verify)
-print the same warning on stderr and read every profile, as described in
-their sections.
+print the same warning on stderr and read no profile, as described in their
+sections.
 
 ### Rotate candidates
 
@@ -7813,9 +7826,9 @@ those profiles. `--fix` leaves them out of its plan and never touches their
 folders.
 
 The exclude list is read from `<root>/.auto-switch` once per run. When that
-file is corrupt or unsafe, `verify` prints
-`warning: auto-switch config unreadable or unsafe; exclude list not applied`
-on stderr and checks every profile.
+file cannot be read or does not parse, `verify` prints the
+`auto-switch config unreadable` warning on stderr and treats every profile
+as excluded; see [Unreadable exclude list](#unreadable-exclude-list).
 
 Without `--fix` nothing is written. The command exits non-zero when any
 folder holds an account other than its recorded one and is still there at
@@ -8561,7 +8574,9 @@ run and prints their `reread:` lines; see
 | `note: live profile <name> is excluded; moving off it` | Written before the `swap` line of a move off an excluded live profile. |
 | `refresh: live profile <name> is excluded; token not refreshed` | The [expired-login refresh](#an-expired-live-login) was skipped because a rule under [Local proof of an excluded live login](#local-proof-of-an-excluded-live-login) named `<name>` as the live profile. |
 | `skip: pinned profile <name> is excluded; spend not probed` | A held cycle did not probe the spend of a pinned excluded profile; see [Pin and overflow](#pin-and-overflow). |
-| `warning: auto-switch config unreadable or unsafe; exclude list not applied` | `<root>/.auto-switch` could not be read safely, so the cycle excluded no profile. Written once per cycle. See [Unreadable exclude list](#unreadable-exclude-list). |
+| `warning: auto-switch config unsafe or invalid; exclude list applied, other settings ignored` | `<root>/.auto-switch` parses but is unsafe or invalid for its other settings; its exclude list still applies. Written once per cycle. See [Unreadable exclude list](#unreadable-exclude-list). |
+| `warning: auto-switch config unreadable; every profile treated as excluded, none probed or refreshed` | `<root>/.auto-switch` exists but cannot be read or does not parse. Followed by the `rotation paused` ALERT. See [Unreadable exclude list](#unreadable-exclude-list). |
+| `ALERT: auto-switch config unreadable; rotation paused, no profile probed` | The cycle stopped before measuring because the exclude list could not be read. Written every cycle until the file is fixed. |
 | `ALERT: no login in ~/.claude; no swap` | `~/.claude/.credentials.json` is missing or not a regular file. |
 | `ALERT: the account in ~/.claude is not the one the ledger names (live=<name>); no swap` | ALERT `hand-change`: a [hand-change suspicion](#two-readings) is open, or recovery refused a confirmed one. Written on each affected cycle while the identity refusal persists. |
 | `ALERT: the account in ~/.claude is not the one the ledger names (live=<name>); profile <M> holds the same account and has its own login; recovery refused: <reason>; no swap` | A confirmed hand change whose move failed a [check](#checks-before-the-move). Followed by its `fix 1:` line. Written every cycle. |

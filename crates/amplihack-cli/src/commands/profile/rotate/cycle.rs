@@ -131,8 +131,12 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         return Ok(CycleOutcome::Held);
     }
     drop(lock);
-    // Issue #2218: once per cycle, when the exclude list cannot be applied.
-    let _ = usage_cmd::exclude_list(ctx.store.root(), |w| out.emit(now(), w));
+    // Issue #2218: an exclude list that cannot be read pauses rotation;
+    // every profile counted as excluded, so the steps above sent nothing.
+    if usage_cmd::read_exclude(ctx.store.root(), |w| out.emit(now(), w)).is_none() {
+        out.emit(now(), &format!("ALERT: {}", msg::EXCLUDE_PAUSED));
+        return Ok(CycleOutcome::Alerted);
+    }
     // Steps 4 and 5: measure without the lock, then decide. `claude` is
     // looked for only when a read falls back to it (issue #1844).
     let measuring = std::time::Instant::now();

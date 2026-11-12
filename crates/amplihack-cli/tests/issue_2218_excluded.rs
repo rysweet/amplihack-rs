@@ -50,7 +50,10 @@ use std::thread::JoinHandle;
 
 const TOKEN_PREFIX: &str = "fake-task2218-";
 const REFRESH_PREFIX: &str = "fake-task2218-refresh-";
-const NOT_APPLIED: &str = "auto-switch config unreadable or unsafe; exclude list not applied";
+const UNTRUSTED: &str =
+    "auto-switch config unsafe or invalid; exclude list applied, other settings ignored";
+const UNREADABLE: &str =
+    "auto-switch config unreadable; every profile treated as excluded, none probed or refreshed";
 
 // --- the recording endpoint ---------------------------------------------------
 
@@ -650,19 +653,99 @@ fn usage_does_not_count_an_excluded_profile_from_history_written_before_the_fix(
 }
 
 #[test]
-fn a_corrupt_config_warns_that_the_exclude_list_is_not_applied() {
+fn an_unsafe_config_still_applies_its_exclude_list() {
     let (f, ep) = fixture();
     exclude(&f, &["spare"]);
-    // Group-writable: read as corrupt, so the defaults (no exclusions) apply.
+    // Group-writable: unsafe for overflow and the other settings, but an
+    // exclude entry only takes actions away, so it still applies.
     let toggle = f.root.join(".auto-switch");
     fs::set_permissions(&toggle, fs::Permissions::from_mode(0o666)).unwrap();
+    let before = stamp(&f.slot("spare"));
     let out = usage(&f, &ep, &[]);
     let stderr = text(&out.stderr);
     assert_eq!(
-        stderr.matches(NOT_APPLIED).count(),
+        stderr.matches(UNTRUSTED).count(),
         1,
         "one warning: {}",
         describe(&out)
+    );
+    assert!(
+        text(&out.stdout).contains("excluded"),
+        "spare is shown excluded: {}",
+        describe(&out)
+    );
+    assert_no_request_for(&ep, "spare");
+    assert_eq!(stamp(&f.slot("spare")), before, "same bytes and mtime");
+}
+
+/// Writes a `.auto-switch` that does not parse, mode 0600.
+fn corrupt_config(f: &Fixture) {
+    let toggle = f.root.join(".auto-switch");
+    fs::write(&toggle, b"enabled=maybe\nexclude=spare\n").unwrap();
+    fs::set_permissions(&toggle, fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+#[test]
+fn usage_with_an_unreadable_config_probes_and_refreshes_no_profile() {
+    let (f, ep) = fixture();
+    exclude(&f, &["spare"]);
+    corrupt_config(&f);
+    let stamps: Vec<Stamp> = ["spare", "extra"].map(|p| stamp(&f.slot(p))).into();
+    let home = stamp(&f.home_login());
+    let out = usage(&f, &ep, &[]);
+    let stderr = text(&out.stderr);
+    assert_eq!(
+        stderr.matches(UNREADABLE).count(),
+        1,
+        "one warning: {}",
+        describe(&out)
+    );
+    assert!(
+        ep.requests().is_empty(),
+        "no request at all: {:?}\n{}",
+        ep.requests(),
+        describe(&out)
+    );
+    let after: Vec<Stamp> = ["spare", "extra"].map(|p| stamp(&f.slot(p))).into();
+    assert_eq!(after, stamps, "same bytes and mtime");
+    assert_eq!(stamp(&f.home_login()), home);
+}
+
+#[test]
+fn verify_with_an_unreadable_config_reads_no_profile() {
+    let (f, ep) = fixture();
+    corrupt_config(&f);
+    let out = run(&f, &ep, &["profile", "verify"]);
+    assert_eq!(
+        text(&out.stderr).matches(UNREADABLE).count(),
+        1,
+        "{}",
+        describe(&out)
+    );
+    assert!(ep.requests().is_empty(), "{:?}", ep.requests());
+}
+
+#[test]
+fn a_cycle_with_an_unreadable_config_pauses_and_sends_nothing() {
+    let (f, ep) = fixture();
+    exclude(&f, &["work"]);
+    corrupt_config(&f);
+    let home = stamp(&f.home_login());
+    let spare = stamp(&f.slot("spare"));
+    let _ = cycle(&f, &ep);
+    let log = f.log();
+    assert!(log.contains(UNREADABLE), "{log}");
+    assert!(
+        log.contains("ALERT: auto-switch config unreadable; rotation paused, no profile probed"),
+        "{log}"
+    );
+    assert!(ep.requests().is_empty(), "{:?}\n{log}", ep.requests());
+    assert_eq!(live(&f), "work", "nothing moved: {log}");
+    assert_eq!(stamp(&f.home_login()), home, "same bytes and mtime");
+    assert_eq!(stamp(&f.slot("spare")), spare);
+    assert!(
+        !f.rotate_dir().join("journal.json").exists(),
+        "no swap began"
     );
 }
 

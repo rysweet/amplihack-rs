@@ -94,6 +94,11 @@ pub mod excluded {
     /// Issue #2218: how the log shows an excluded live login's reading.
     pub const EXCLUDED_NOT_PROBED: &str = "excluded (not probed)";
 
+    /// Issue #2218: `<root>/.auto-switch` cannot be read, so which logins
+    /// are excluded is unknown and the cycle stops before measuring.
+    pub const EXCLUDE_PAUSED: &str =
+        "auto-switch config unreadable; rotation paused, no profile probed";
+
     /// Issue #2218: the live login is excluded; the cycle swaps off it.
     pub fn excluded_moving_off(live: &ProfileName) -> String {
         format!("note: live profile {live} is excluded; moving off it")
