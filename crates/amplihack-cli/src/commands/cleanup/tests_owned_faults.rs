@@ -541,3 +541,25 @@ fn selected_parent_replacement_before_creation_never_grants_authority() {
         fx.assert_sentinel(&original);
     });
 }
+
+#[test]
+fn malformed_record_diagnostics_do_not_expose_record_values() {
+    isolated(|fx| {
+        let owned = OwnedRunDir::create(&fx.external, "owned", "run").unwrap();
+        let sentinel = fx.sentinel(owned.path());
+        let path = fx.external.join(META).join(record_name("owned"));
+        let mut record: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let private_value = "fixture-value-that-must-not-be-logged";
+        record["schema_version"] = private_value.into();
+        fs::write(path, serde_json::to_vec(&record).unwrap()).unwrap();
+        match owned.remove() {
+            CleanupOutcome::Preserved(reason) => {
+                assert!(reason.contains("invalid ownership record"));
+                assert!(!reason.contains(private_value));
+            }
+            other => panic!("malformed evidence must preserve the directory: {other:?}"),
+        }
+        fx.assert_sentinel(&sentinel);
+    });
+}

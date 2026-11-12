@@ -627,7 +627,16 @@ fn read_record(dir: &File, name: &str) -> Result<Record> {
     let mut bytes = Vec::new();
     file.take(LIMIT + 1).read_to_end(&mut bytes)?;
     ensure!(bytes.len() as u64 <= LIMIT, "ownership record too large");
-    serde_json::from_slice(&bytes).context("invalid ownership record")
+    // Serde's detailed errors can echo untrusted record values. Report only
+    // the parse category and position; ownership evidence is not diagnostic data.
+    serde_json::from_slice(&bytes).map_err(|error| {
+        anyhow::anyhow!(
+            "invalid ownership record ({:?}) at line {}, column {}",
+            error.classify(),
+            error.line(),
+            error.column()
+        )
+    })
 }
 #[cfg(target_os = "linux")]
 struct Lock(File);
