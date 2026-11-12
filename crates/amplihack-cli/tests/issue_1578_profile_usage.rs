@@ -953,7 +953,7 @@ fn no_ledger_is_quiet_and_marks_nothing_live() {
     if cfg!(target_os = "linux") {
         assert_eq!(c["state"], "not_logged_in", "{c}");
         assert_eq!(c["source"], "direct", "{c}");
-        assert_eq!(c["error"], "direct read: no credentials file", "{c}");
+        assert!(c["error"].is_null(), "{c}");
         assert!(!f.records.join("env.c").exists());
     } else {
         assert_eq!(c["session"]["used_percentage"], 5.0);
@@ -1536,7 +1536,8 @@ fn a_token_less_profile_starts_no_claude_and_reads_not_signed_in() {
         assert_eq!(r["state"], "not_logged_in", "{r}");
         assert_eq!(r["source"], "direct", "{r}");
         assert_eq!(r["spend"], "unknown", "{r}");
-        assert_eq!(r["error"], format!("direct read: {why}"), "{r}");
+        // D6: not an error row, so `error` stays `null`.
+        assert!(r["error"].is_null(), "{why}: {r}");
         assert!(r["raw"].is_null(), "{r}");
         assert!(r["session"].is_null() && r["week_all"].is_null(), "{r}");
         // D7: the reason is in the row; no stderr warning repeats it.
@@ -1673,7 +1674,8 @@ fn direct_mode_gives_a_token_less_profile_the_same_row() {
             .unwrap();
         assert_eq!(r["state"], "not_logged_in", "{r}");
         assert_eq!(r["source"], "direct", "{r}");
-        assert_eq!(r["error"], format!("direct read: {why}"), "{r}");
+        // D6: not an error row, so `error` stays `null`.
+        assert!(r["error"].is_null(), "{why}: {r}");
     }
     assert!(f.probed().is_empty(), "{:?}", f.probed());
 }
@@ -1711,7 +1713,7 @@ fn a_token_less_profile_needs_no_claude_binary() {
     assert_eq!(rows.len(), 2);
     for r in &rows {
         assert_eq!(r["state"], "not_logged_in", "{r}");
-        assert_ne!(r["error"], "claude not found", "{r}");
+        assert!(r["error"].is_null(), "{r}");
     }
 }
 
@@ -1725,10 +1727,7 @@ fn summary_json_gives_a_token_less_profile_the_same_row() {
     for r in v["profiles"].as_array().unwrap() {
         assert_eq!(r["state"], "not_logged_in", "{r}");
         assert_eq!(r["source"], "direct", "{r}");
-        assert!(
-            r["error"].as_str().unwrap().starts_with("direct read: "),
-            "{r}"
-        );
+        assert!(r["error"].is_null(), "{r}");
     }
     for p in ["tl", "xr"] {
         assert_never_started(&f, p);

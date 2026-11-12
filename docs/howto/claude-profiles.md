@@ -736,8 +736,9 @@ the profile, as `claude` would do.
 
 A profile with no login to use, such as `scratch` above, which has no
 `.credentials.json`, is shown as `not signed in (<reason>)` at once, with
-no warning on stderr; the reason is in the row and in `--json` as
-`"error": "direct read: no credentials file"`. No `claude` is started for
+no warning on stderr. In `--json` the row has `"state": "not_logged_in"`
+and `"error": null`, as it would if `claude` had reported it; the reason is
+in the bar and table text only. No `claude` is started for
 it: `claude` would find the same empty profile. The same happens for a file with no OAuth token
 (`no oauth token`) and for an expired token with nothing to refresh it with
 (`no refresh token`). The bar view shows the text in place of the bars;

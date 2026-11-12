@@ -2924,12 +2924,12 @@ fn the_spend_plays_no_part_in_ordering() {
 //   other mark, and never adds `(fallback)`.
 // - The table shows `-` in every percentage and reset column.
 // - `error_warnings` skips these rows (D7): the reason is already in the
-//   row and in the JSON.
-// - `ErrorReason::json_str()` is `direct read: <why>` for `NotSignedIn`
-//   and `as_str()` for every other variant.
+//   row.
+// - `ErrorReason::json_error()` is `None` for `NotSignedIn` (D6) and
+//   `Some(as_str())` for every other variant.
 // - JSON (`--json` and the `profiles` array of `--summary-json`): `state`
-//   `not_logged_in`, `source` `direct`, `spend` `unknown`, `error`
-//   `direct read: <why>`, no `raw`, and no new key.
+//   `not_logged_in`, `source` `direct`, `spend` `unknown`, `error` `null`,
+//   no `raw`, and no new key.
 // - `source_notes` gives nothing for the row, and a row with no `raw`
 //   prints no `(direct: no claude output)` line.
 // ---------------------------------------------------------------------------
@@ -3059,21 +3059,18 @@ fn other_error_rows_still_warn_beside_a_not_signed_in_row() {
 }
 
 #[test]
-fn json_str_names_the_direct_read_for_not_signed_in() {
+fn json_error_is_none_for_not_signed_in() {
     for why in [
         direct_reason::NO_TOKEN,
         direct_reason::NO_FILE,
         direct_reason::NO_REFRESH_TOKEN,
     ] {
-        assert_eq!(
-            ErrorReason::NotSignedIn(why).json_str(),
-            format!("direct read: {why}")
-        );
+        assert_eq!(ErrorReason::NotSignedIn(why).json_error(), None);
     }
 }
 
 #[test]
-fn json_str_is_as_str_for_every_other_reason() {
+fn json_error_is_as_str_for_every_other_reason() {
     for e in [
         ErrorReason::ProfileRefused,
         ErrorReason::StartFailed,
@@ -3082,7 +3079,7 @@ fn json_str_is_as_str_for_every_other_reason() {
         ErrorReason::NoClaude,
         ErrorReason::Direct(direct_reason::NO_TOKEN),
     ] {
-        assert_eq!(e.json_str(), e.as_str(), "{e:?}");
+        assert_eq!(e.json_error(), Some(e.as_str()), "{e:?}");
     }
 }
 
@@ -3098,21 +3095,28 @@ fn json_of_a_not_signed_in_row_keeps_the_shape() {
     assert_eq!(v[1]["state"], "not_logged_in");
     assert_eq!(v[1]["source"], "direct");
     assert_eq!(v[1]["spend"], "unknown");
-    assert_eq!(v[1]["error"], "direct read: no oauth token");
+    assert!(v[1]["error"].is_null(), "{}", v[1]);
     assert!(v[1]["raw"].is_null(), "{}", v[1]);
     assert!(v[1]["session"].is_null() && v[1]["week_all"].is_null());
 }
 
+/// D6: `error` stays `null`, as it was when `claude` reported these
+/// logins, for every reason: a token-less file, no file, and an expired
+/// token with no refresh token. The state says the profile is not signed
+/// in. A real error row in the same output keeps its text.
 #[test]
-fn json_error_of_every_not_signed_in_reason_is_direct_read() {
+fn json_error_of_every_not_signed_in_reason_is_null() {
     for why in [
         direct_reason::NO_TOKEN,
         direct_reason::NO_FILE,
         direct_reason::NO_REFRESH_TOKEN,
     ] {
-        let v = json(&[not_signed_in_row("scratch", why)]);
-        assert_eq!(v[0]["error"], format!("direct read: {why}"));
+        let mut err = row("broken", report(UsageState::Error, None, None));
+        err.error = Some(ErrorReason::NoClaude);
+        let v = json(&[not_signed_in_row("scratch", why), err]);
+        assert!(v[0]["error"].is_null(), "{why}: {}", v[0]);
         assert_eq!(v[0]["state"], "not_logged_in");
+        assert_eq!(v[1]["error"], "claude not found");
     }
 }
 
@@ -3129,14 +3133,14 @@ fn summary_json_gives_the_same_error_for_a_not_signed_in_row() {
     ))
     .unwrap();
     let row = &v["profiles"][0];
-    assert_eq!(row["error"], "direct read: no refresh token");
+    assert!(row["error"].is_null(), "{row}");
     assert_eq!(row["state"], "not_logged_in");
     assert_eq!(row["source"], "direct");
     assert!(row["raw"].is_null(), "{row}");
     assert_eq!(v["profiles"], json(&[r]), "the same rows as --json");
 }
 
-/// The table and bars keep the display text; only JSON uses `json_str`.
+/// The table and bars keep the display text; JSON has `error: null`.
 #[test]
 fn the_table_keeps_the_display_text_not_the_json_text() {
     let out = render_table(&[not_signed_in_row("scratch", direct_reason::NO_TOKEN)]);

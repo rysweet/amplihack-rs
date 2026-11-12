@@ -289,13 +289,9 @@ fn reference_quotes_the_fixed_row_texts() {
         "unknown, still running".to_string(),
         "note: profile \"spare\": direct read gave http 5xx; using claude".to_string(),
         super::usage_cmd::not_saved_warning("spare"),
-        // Issue #2271: the row text and the JSON error of a login with no
-        // token. These rows print no stderr warning (D7).
+        // Issue #2271: the row text of a login with no token. These rows
+        // print no stderr warning (D7) and have `"error": null` (D6).
         ErrorReason::NotSignedIn("no oauth token").to_string(),
-        format!(
-            "\"error\": \"{}\"",
-            ErrorReason::NotSignedIn("no credentials file").json_str()
-        ),
         "no refresh token".to_string(),
     ] {
         assert!(

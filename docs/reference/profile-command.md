@@ -441,13 +441,14 @@ The row is:
   and reset column, and no `(fallback)` mark;
 - sorted with the other `not_logged_in` rows, after every row with a
   reading and before every `timeout`, `unparsed` and `error` row;
-- `"state": "not_logged_in"`, `"source": "direct"` and
-  `"error": "direct read: no credentials file"` in the
-  [JSON](#json-output) and in the rows of [Summary JSON](#summary-json).
-  No key is added, and the set of states is unchanged.
+- `"state": "not_logged_in"`, `"source": "direct"` and `"error": null` in
+  the [JSON](#json-output) and in the rows of [Summary JSON](#summary-json),
+  as for a `not_logged_in` row that `claude` reported. The row is not an
+  error row, so the reason is not in the JSON. No key is added, and the set
+  of states is unchanged.
 
 No `warning:` line goes to stderr for such a row: the reason is already in
-the row and in the JSON, and a root with many unused profiles would
+the row, and a root with many unused profiles would
 otherwise print one identical line for each. With `--raw` the row prints no
 `note:` line and no `(direct: no claude output)` line. The fix is the same
 as for any `not_logged_in` row: `amplihack profile login <name>`.
@@ -2509,7 +2510,7 @@ Each row has these keys:
 | `session_limit` | bool | `false` only when a reading showed no session window; `true` otherwise, including rows that could not be read. See [No session limit](#no-session-limit). Always present, immediately after `session`. |
 | `week_all` | window or `null` | The all-models week: `seven_day`, or the `Current week (all models)` line. Kept as reported when the session is exhausted. Always `null` for `timeout` and `error`. |
 | `week_models` | array of windows | Each usable `rate_limits.model_scoped` entry, or every other `Current week (<model>)` line, in the order given. Empty if none, and always empty for passive and direct rows. |
-| `error` | string or `null` | The [reason](#states) for an `error` row; `direct read: <reason>` for a `not_logged_in` row whose direct read found [no login to use](#logins-with-no-token); otherwise `null`. |
+| `error` | string or `null` | The [reason](#states) for an `error` row; otherwise `null`, including a `not_logged_in` row whose direct read found [no login to use](#logins-with-no-token). |
 | `raw` | object | Only with `--raw`: `{"stdout": "...", "stderr": "..."}` from the attempt that gave the row, both empty for passive and direct rows; see [Raw output](#raw-output). The key is absent, not `null`, without `--raw`. |
 
 A window is `{label, used_percentage, resets_text, resets_at}`. `label` is

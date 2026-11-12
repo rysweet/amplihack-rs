@@ -104,13 +104,14 @@ impl ErrorReason {
         }
     }
 
-    /// The `error` text in `--json` and `--summary-json`. Issue #2271: a
-    /// not-signed-in row names the direct read that found it, as a failed
-    /// direct read does; every other reason is [`Self::as_str`].
-    pub(super) fn json_str(self) -> std::borrow::Cow<'static, str> {
+    /// The `error` value in `--json` and `--summary-json`. Issue #2271
+    /// (D6): a not-signed-in row is not an error row, so its `error` is
+    /// `null`, as it was when `claude` reported the same login; its state
+    /// is `not_logged_in`. Every other reason is [`Self::as_str`].
+    pub(super) fn json_error(self) -> Option<std::borrow::Cow<'static, str>> {
         match self {
-            Self::NotSignedIn(why) => format!("direct read: {why}").into(),
-            other => other.as_str(),
+            Self::NotSignedIn(_) => None,
+            other => Some(other.as_str()),
         }
     }
 }
@@ -2083,7 +2084,10 @@ fn json_rows(rows: &[Row]) -> Vec<JsonRow<'_>> {
             session_limit: r.report.session_limit,
             week_all: r.report.week_all.as_ref(),
             week_models: &r.report.week_models,
-            error: r.error.map(|e| e.json_str().into_owned()),
+            error: r
+                .error
+                .and_then(ErrorReason::json_error)
+                .map(|e| e.into_owned()),
             raw: r.raw.as_ref(),
         })
         .collect()
