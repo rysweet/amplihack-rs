@@ -34,6 +34,36 @@ pub(crate) fn refresh_count_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Drops `held`, an `flock`ed handle on `path`, and waits until the lock is
+/// really free.
+///
+/// An `flock` belongs to the open file description, not the fd. When another
+/// test in this process spawns a child while `held` is open, the forked child
+/// shares that description until it execs, so the lock can outlive
+/// `drop(held)` by a moment. A test that expects success right after the drop
+/// fails then with "in use". This waits, with a fresh descriptor, until the
+/// lock can be taken, and releases it again. Panics after 30 seconds.
+#[cfg(unix)]
+pub(crate) fn release_flock(held: std::fs::File, path: &Path) {
+    use std::os::fd::AsRawFd;
+    drop(held);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let probe = std::fs::File::open(path).unwrap();
+        // SAFETY: the fd is valid for the life of `probe`; closing it unlocks.
+        if unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return;
+        }
+        let error = std::io::Error::last_os_error();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{} still locked 30 s after release: {error}",
+            path.display()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 /// A synthetic process table per test (issue #2196).
 #[cfg(unix)]
 #[path = "test_support_proc.rs"]
