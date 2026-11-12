@@ -22,6 +22,14 @@ pub(crate) fn reject_timed_acquisition() {
     );
 }
 
+// Called only after acquisition on the blocking path encounters EAGAIN/EACCES.
+// The parent keeps the owner alive until this event, then allows it to commit.
+pub(crate) fn observe_lock_contention() {
+    if std::env::var("STOP_STORAGE_FIXTURE").as_deref() == Ok("contender") {
+        event(json!({"contended":true}));
+    }
+}
+
 // Called only in this crate's unit-test executable, immediately after creating
 // the temporary file. The production library has neither this function nor its
 // call sites. Only an explicitly selected subprocess fixture can pause here.
@@ -137,9 +145,6 @@ fn subprocess_fixture() {
         }
         "probe" => event(json!({"locked":companion_is_locked(&target)})),
         "contender" => {
-            // Establish that a real owner exists before attempting the update.
-            assert!(companion_is_locked(&target));
-            event(json!({"owner_observed":true}));
             assert_eq!(
                 AtomicCounter::new(&target)
                     .with_blocking_lock()
@@ -312,10 +317,17 @@ fn blocking_counter_serialises_a_writer_behind_a_live_companion_lock() {
     let mut contender = child(root.path(), "contender", &target);
     assert_eq!(
         next_event(&mut BufReader::new(contender.stdout.as_mut().unwrap())),
-        json!({"owner_observed":true})
+        json!({"contended":true})
     );
+    assert!(owner.try_wait().unwrap().is_none());
     writeln!(owner.stdin.take().unwrap(), "release").unwrap();
     finish(owner);
     finish(contender);
     assert_eq!(AtomicCounter::new(&target).get().unwrap(), 2);
+    let mut probe = child(root.path(), "probe", &target);
+    assert_eq!(
+        next_event(&mut BufReader::new(probe.stdout.as_mut().unwrap())),
+        json!({"locked":false})
+    );
+    finish(probe);
 }

@@ -121,12 +121,14 @@ fn get_max_iterations() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stop::issue_2053_tests::Environment;
 
     #[test]
     fn lock_not_active_in_temp() {
         let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
+        let _environment = Environment::new();
         let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         assert!(!is_lock_active(&dirs));
@@ -137,6 +139,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
+        let _environment = Environment::new();
         let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(&dirs.locks).unwrap();
@@ -149,8 +152,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let home = crate::test_support::isolated_tempdir();
-        let _state = crate::test_support::isolate_state_home(home.path());
+        let _environment = Environment::new();
         let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(&dirs.locks).unwrap();
@@ -165,8 +167,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let home = crate::test_support::isolated_tempdir();
-        let _state = crate::test_support::isolate_state_home(home.path());
+        let _environment = Environment::new();
         let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(&dirs.locks).unwrap();
@@ -193,6 +194,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
+        let _environment = Environment::new();
         let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         let prompt = read_continuation_prompt(&dirs);
@@ -204,6 +206,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
+        let _environment = Environment::new();
         let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(&dirs.locks).unwrap();
@@ -218,6 +221,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
+        let _environment = Environment::new();
         let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(&dirs.locks).unwrap();
@@ -239,6 +243,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
+        let _environment = Environment::new();
         let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(&dirs.locks).unwrap();
@@ -255,8 +260,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let home = crate::test_support::isolated_tempdir();
-        let _state = crate::test_support::isolate_state_home(home.path());
+        let _environment = Environment::new();
         let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(&dirs.locks).unwrap();

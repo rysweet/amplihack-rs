@@ -435,6 +435,20 @@ The [CI Test job](../../.github/workflows/ci.yml) runs the workspace tests on
 validation remains pending; no passing run is available for this branch.
 These limit-resume cases do not validate Stop counter locking.
 
+The state crate's contention test holds the real companion lock in a child
+process. Private unit-test instrumentation first attempts acquisition on the
+contender's actual lock descriptor. Only an `EAGAIN` or `EACCES` contention
+result emits the event that lets the parent release the owner. The contender
+then completes through blocking acquisition; assertions check the final count
+and that another process can acquire the released lock. Production builds omit
+this instrumentation and acquire directly with `F_SETLKW`.
+
+Lock and power-steering unit tests use the shared isolated environment guard
+under the environment mutex. It restores storage and session settings, feature
+flags and the lock iteration threshold after each test. Tests of explicit
+overrides establish those values themselves, so inherited skip flags or a low
+iteration limit cannot change other tests' expectations.
+
 Live lock and temporary-file placement requires
 observation while the files exist; a clean checkout after execution alone
 cannot establish that property.

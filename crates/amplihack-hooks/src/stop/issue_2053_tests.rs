@@ -49,6 +49,8 @@ fn write(path: impl AsRef<Path>, text: &str) {
 
 /// Callers hold env_lock for this guard's entire lifetime. Every environment
 /// variable that can select a home, profile, framework or agent is isolated.
+/// Session overrides, Stop feature flags and the lock iteration threshold are
+/// cleared; tests exercising overrides must set them after creating the guard.
 pub(super) struct Environment {
     _vars: Vec<EnvVarGuard>,
     root: tempfile::TempDir,

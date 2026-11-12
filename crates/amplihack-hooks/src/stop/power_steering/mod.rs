@@ -133,6 +133,7 @@ pub(super) fn check_with_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stop::issue_2053_tests::Environment;
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -141,6 +142,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
+        let _environment = Environment::new();
         let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         assert!(!should_run(&dirs));
@@ -151,6 +153,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
+        let _environment = Environment::new();
         let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(&dirs.tools_amplihack).unwrap();
@@ -163,8 +166,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let home = crate::test_support::isolated_tempdir();
-        let _state = crate::test_support::isolate_state_home(home.path());
+        let _environment = Environment::new();
         let dir = crate::test_support::isolated_tempdir();
         let dirs = configured_dirs(dir.path());
         let transcript = write_transcript(
@@ -182,8 +184,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let home = crate::test_support::isolated_tempdir();
-        let _state = crate::test_support::isolate_state_home(home.path());
+        let _environment = Environment::new();
         let dir = crate::test_support::isolated_tempdir();
         let dirs = configured_dirs(dir.path());
         let transcript = write_transcript(
@@ -211,8 +212,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let home = crate::test_support::isolated_tempdir();
-        let _state = crate::test_support::isolate_state_home(home.path());
+        let _environment = Environment::new();
         let dir = crate::test_support::isolated_tempdir();
         let dirs = configured_dirs(dir.path());
         let transcript = write_transcript(
@@ -240,8 +240,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let home = crate::test_support::isolated_tempdir();
-        let _state = crate::test_support::isolate_state_home(home.path());
+        let _environment = Environment::new();
         let dir = crate::test_support::isolated_tempdir();
         let dirs = configured_dirs(dir.path());
         fs::create_dir_all(dir.path().join("tests")).unwrap();
@@ -270,8 +269,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let home = crate::test_support::isolated_tempdir();
-        let _state = crate::test_support::isolate_state_home(home.path());
+        let _environment = Environment::new();
         let dir = crate::test_support::isolated_tempdir();
         let dirs = configured_dirs(dir.path());
         fs::create_dir_all(dir.path().join("tests")).unwrap();
@@ -302,8 +300,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let home = crate::test_support::isolated_tempdir();
-        let _state = crate::test_support::isolate_state_home(home.path());
+        let _environment = Environment::new();
         let dir = crate::test_support::isolated_tempdir();
         let dirs = configured_dirs(dir.path());
         let transcript = write_transcript(

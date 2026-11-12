@@ -62,6 +62,9 @@ impl FileLock {
     ///
     /// Retries every 10ms until the lock is acquired or timeout expires.
     pub fn exclusive(path: &Path, timeout: Duration) -> Result<Self, FileLockError> {
+        #[cfg(all(test, unix))]
+        crate::stop_counter_tests::reject_timed_acquisition();
+
         let file = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -107,6 +110,17 @@ impl FileLock {
 fn lock_exclusive_blocking(file: &File) -> io::Result<()> {
     use std::os::fd::AsRawFd;
 
+    // The contender fixture first attempts acquisition on this same descriptor.
+    // Success owns the lock; failure establishes actual contention before the
+    // blocking call. Production goes directly to F_SETLKW.
+    #[cfg(test)]
+    if std::env::var("STOP_STORAGE_FIXTURE").as_deref() == Ok("contender") {
+        if try_lock_exclusive(file)? {
+            return Ok(());
+        }
+        crate::stop_counter_tests::observe_lock_contention();
+    }
+
     let mut flock = libc::flock {
         l_type: libc::F_WRLCK as libc::c_short,
         l_whence: libc::SEEK_SET as i16,
@@ -138,9 +152,6 @@ fn lock_exclusive_blocking(_file: &File) -> io::Result<()> {
 #[cfg(unix)]
 fn try_lock_exclusive(file: &File) -> Result<bool, io::Error> {
     use std::os::unix::io::AsRawFd;
-
-    #[cfg(test)]
-    crate::stop_counter_tests::reject_timed_acquisition();
 
     let fd = file.as_raw_fd();
     let mut flock = libc::flock {
