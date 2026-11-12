@@ -1451,7 +1451,12 @@ fn ci_read_after_a_step_01_push_is_pending_without_reading_checks() {
         let (out, log) = ci_read(&f, none_yet, &tools, &[("RECIPE_VAR_merge_sync", sync)]);
         assert!(out.status.success(), "{}\n{log}", diagnostic(&out));
         let record = ci_record(&out);
-        assert_eq!(record["ci_status"], "PENDING", "{decision}: {}", diagnostic(&out));
+        assert_eq!(
+            record["ci_status"],
+            "PENDING",
+            "{decision}: {}",
+            diagnostic(&out)
+        );
         assert_eq!(record["ci_signal"], "just-pushed", "{decision}");
         assert_eq!(record["head_sha"], f.head.as_str(), "{decision}");
         assert!(
@@ -1472,7 +1477,12 @@ fn ci_read_after_a_step_01_push_is_pending_without_reading_checks() {
         &[("RECIPE_VAR_merge_sync", f.no_update_sync().to_string())],
     );
     assert!(out.status.success(), "{}\n{log}", diagnostic(&out));
-    assert_eq!(ci_record(&out)["ci_status"], "NO_CHECKS", "{}", diagnostic(&out));
+    assert_eq!(
+        ci_record(&out)["ci_status"],
+        "NO_CHECKS",
+        "{}",
+        diagnostic(&out)
+    );
     assert!(log.contains("args=pr checks"), "{log}");
 
     // Only the head validated as a full object ID reaches the gate tool.

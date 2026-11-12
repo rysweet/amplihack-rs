@@ -11,7 +11,6 @@ use super::measure::{self, Live};
 use super::overflow::{OverflowInput, Tag};
 use super::pin::{self, PinState};
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::now;
 use crate::commands::profile::kind;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{OverflowEntry, PLATFORM_TIER};
@@ -55,6 +54,10 @@ pub struct Snap {
     pub home_no_oauth: bool,
     /// Each candidate's account; step 6 compares the target's (#1721).
     pub candidate_accounts: Vec<(ProfileName, Option<Account>)>,
+    /// Issue #2218: the live login is a known profile in the auto-switch
+    /// `exclude` list. It is never probed or refreshed, nothing measured is
+    /// recorded under its name, and the cycle moves off it.
+    pub live_excluded: bool,
 }
 
 impl Snap {
@@ -224,9 +227,12 @@ pub struct Measurement {
 }
 
 pub fn measure_and_decide(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
-    let measured_at = now();
+    let measured_at = (ctx.now)();
     let platform = snap.platform();
     let live = match &snap.live {
+        // Issue #2218: before the API-key case, so an excluded API-key
+        // profile is moved off as well.
+        LiveId::Known(_) if snap.live_excluded => Live::Excluded,
         _ if snap.platform_live() => Live::Platform,
         LiveId::Known(n) => Live::Profile(n),
         _ => Live::Unowned,
@@ -270,7 +276,7 @@ pub(super) fn decide_measured(
         .map(|(name, p)| Measured::new(name.clone(), p))
         .collect();
     let ledger = ctx.rs.load_ledger()?;
-    let t = now();
+    let t = (ctx.now)();
     let blocked = |n: &ProfileName| {
         ledger.as_ref().is_some_and(|l| {
             l.overflow_blocked
@@ -296,13 +302,16 @@ pub(super) fn decide_measured(
     let swapped_at = ledger.as_ref().and_then(|l| l.swapped_at);
     let platform_block = ledger.as_ref().and_then(|l| l.platform_block.clone());
     let blocks = ledger.map(|l| l.overflow_blocked).unwrap_or_default();
-    let live_name = match &snap.live {
-        LiveId::Known(n) => Some(n),
-        _ => None,
-    };
+    // Issue #2218: an excluded live login is decided on as if no profile
+    // owned it, so neither the hold, damping nor the home key keeps it, and
+    // no synthetic reading of it is taken for a measured one.
+    let live_name = snap.measured_live();
     let overflow = snap.decision_overflow();
+    let is_overflow = |n: &ProfileName| overflow.iter().any(|e| &e.name == n);
+    let live_over = live_name.is_some_and(is_overflow);
     let unmeasured_plan = snap.unmeasured_plan();
     let refused = snap.refused_plan();
+    // Every rule runs on the live reading as measured.
     let input = OverflowInput {
         settings: &ctx.settings,
         live_name,
@@ -317,9 +326,23 @@ pub(super) fn decide_measured(
         now: t,
     };
     let verdict = affinity::decide(snap, &input, &measured, &eligible, need);
+    // Issue #2211: this cycle's outlook, for this live plan login only. It is
+    // decided with the cycle's one `need`, worked out above on the reading as
+    // measured, so a projected or substituted figure never makes a confirmed
+    // organisation crossing, nor makes one sooner (`affinity::with_outlook`),
+    // and `live::with_outlook` takes from it only a threshold swap or the
+    // ALERT. The rules for leaving an overflow profile do not read the live
+    // session figure, so an outlook there changes nothing.
+    let outlook = ctx
+        .live_outlook
+        .as_ref()
+        .filter(|o| !snap.platform_live() && !live_over && live_name == Some(&o.name));
+    let verdict = match outlook {
+        None => verdict,
+        Some(o) => affinity::with_outlook(snap, &input, verdict, o, &measured, &eligible, need),
+    };
     // A spend limit on a live overflow profile is handled by its block, so
     // it does not count towards the failed live probes.
-    let live_over = live_name.is_some_and(|n| overflow.iter().any(|e| &e.name == n));
     let failed = if live_over && probe.spend_limit {
         ctx.failed_live
     } else {
@@ -336,10 +359,10 @@ pub(super) fn decide_measured(
     // Only here is the file read: a swap on this ground is rare. The strict
     // reader, not `key_check::home_key`: a key Claude may not read must not
     // keep a dead login live, and the swap it would have stopped is harmless.
-    let home_key = (is_failed_probe_swap(&decision) && !snap.platform_live())
+    let home_key = (is_failed_probe_swap(&decision, &probe.reading) && !snap.platform_live())
         .then(|| key_check::reachable(&ctx.home).ok())
         .flatten();
-    let (decision, note) = keep_for_home_key(decision, note, home_key);
+    let (decision, note) = keep_for_home_key(decision, note, home_key, &probe.reading);
     // A damped move off credits is a stay on them.
     let tag = match (&decision, verdict.tag) {
         (Decision::Stay, Some(Tag::Out)) => Some(Tag::On),
