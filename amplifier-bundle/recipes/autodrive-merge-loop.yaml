@@ -41,9 +41,9 @@ recursion:
   max_total_steps: 30
 
 context:
-  repository: ""  # Explicit target propagated by the composer.
-  repository: ""  # Required canonical OWNER/REPO target; never inferred.
-  merge_method: ""  # Optional: merge, squash, or rebase; empty selects repository policy.
+  # Optional merge method (#1888): merge, squash or rebase. Empty: the
+  # repository's .amplihack/auto-drive.toml, else the first allowed method.
+  merge_method: ""
   repo_path: "."
   pr_number: ""
   pr_url: ""
@@ -71,9 +71,6 @@ steps:
     type: "bash"
     parse_json: true
     command: |
-      # Bind before PR operations; load only launch-side installed tools.
-      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
-      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       set -uo pipefail
       REPO_CD_OK=0; cd "${REPO_PATH:-.}" 2>/dev/null && REPO_CD_OK=1
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
@@ -178,9 +175,6 @@ steps:
     condition: "merge_loop_preflight.should_run == 'true'"
     type: "bash"
     command: |
-      # Bind before PR operations; load only launch-side installed tools.
-      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
-      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || true
       LOOP_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/autodrive_loop.sh"
@@ -249,9 +243,9 @@ steps:
         --repo "$PR_WORKTREE" \
         --review-dir "$REVIEW_DIR" \
         --state-dir "$DIR" \
-        --context "repository=${RECIPE_VAR_repository:-}" \
         --context "repo_path=$PR_WORKTREE" \
         --context "pr_number=${PR}" \
+        --context "plan_task_id=${RECIPE_VAR_plan_task_id:-}" \
         --context "pr_url=${PR_URL:-}" \
         --context "autodrive_qa_evidence=${DIR}/qa-evidence.json" \
         --context "autodrive_state_dir=${DIR}" \
@@ -267,15 +261,12 @@ steps:
     output: "merge_loop_result"
 
   # Issue #1979: every minor crusty finding in the follow-up set gets its
-  # follow-up issue before the gate runs; the gate checks followups.tsv again
+  # follow-up issue (idempotently verified after Crusty finalization) before the gate runs; the gate checks followups.tsv again
   # itself. The tool comes from the installed bundle only, like the gate.
   - id: "step-02b-file-followups"
     condition: "merge_loop_preflight.should_run == 'true'"
     type: "bash"
     command: |
-      # Bind before PR operations; load only launch-side installed tools.
-      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
-      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || true
       [ -n "${AMPLIHACK_HOME:-}" ] || { echo "ERROR: AMPLIHACK_HOME is not set; follow-up issues are filed only by the installed bundle" >&2; exit 1; }
@@ -314,9 +305,6 @@ steps:
     type: "bash"
     parse_json: true
     command: |
-      # Bind before PR operations; load only launch-side installed tools.
-      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
-      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || true
       # Only the installed gate: the gh guard trusts the gate beside it under
@@ -333,9 +321,10 @@ steps:
       case "$DIR" in
         ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-merge-loop/step-03]" >&2; exit 1 ;;
       esac
-      ARGS=(--repository "${RECIPE_VAR_repository:-}" --merge-method "${RECIPE_VAR_merge_method:-}" --pr "$PR" --repo "${REPO_PATH:-.}" --state-dir "$DIR" \
+      ARGS=(--pr "$PR" --repo "${REPO_PATH:-.}" --state-dir "$DIR" \
             --round-record "${DIR}/merge-ready-latest.json" \
-            --qa-evidence "${DIR}/qa-evidence.json")
+            --qa-evidence "${DIR}/qa-evidence.json" \
+            --merge-method "${RECIPE_VAR_merge_method:-}")
       [ "${AUTODRIVE_DRY_RUN:-false}" = "true" ] && ARGS+=(--dry-run)
       # Issue #1551: the guard trusts the gate only with a clean environ: no
       # exported functions, shell-option or loader variables. Cleared in a
@@ -356,9 +345,6 @@ steps:
     condition: "merge_loop_preflight.should_run == 'true'"
     type: "bash"
     command: |
-      # Bind before PR operations; load only launch-side installed tools.
-      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
-      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || true
       STATE_HELPER="${AMPLIHACK_HOME:+${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_state.sh}"

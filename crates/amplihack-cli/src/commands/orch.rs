@@ -21,6 +21,7 @@ use std::path::PathBuf;
 
 use crate::commands::multitask;
 
+mod autodrive_completion;
 mod named_branch;
 mod select_workflow;
 mod workflow_log_inventory;
@@ -47,15 +48,37 @@ pub enum OrchCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum OrchHelperCommands {
-    /// Select an allowed repository merge method.
+    /// Select an allowed merge method for the merge gate (#1888). Prints one
+    /// JSON object: the selection, or `{"error": reason}` with a non-zero exit
+    /// (79 when gh refuses by policy), so the gate can record the reason.
     SelectMergeMethod {
+        /// The pull request URL `gh pr view` reported; it names the repository.
         #[arg(long)]
-        repository: String,
+        pr_url: String,
+        /// The checkout whose object store holds the base and the head.
         #[arg(long)]
         repo_root: PathBuf,
+        /// The fetched base branch tip.
+        #[arg(long, default_value = "")]
+        base: String,
+        /// The pull request head commit.
+        #[arg(long, default_value = "")]
+        head: String,
+        /// The recipe's merge_method context; empty when not given.
         #[arg(long, default_value = "")]
         merge_method: String,
     },
+    /// Prepare driver-owned identity and completion dispatch context.
+    AutodriveCompletionPrepare(autodrive_completion::Prepare),
+    /// Seal the round evidence before the next-action agent runs.
+    AutodriveCompletionSeal {
+        #[arg(long)]
+        private_state: PathBuf,
+    },
+    /// Atomically write the agent's typed next action.
+    AutodriveCompletionWrite(autodrive_completion::Write),
+    /// Validate the decision and complete or launch the convergence evaluator.
+    AutodriveCompletionDispatch(autodrive_completion::Dispatch),
     /// Read stdin, print the first complete JSON object found in it.
     ///
     /// Mirrors `orch_helper.extract_json`. Tries, in order: ```json blocks,
@@ -504,21 +527,40 @@ fn read_bounded_stdin() -> String {
 pub fn run(command: OrchHelperCommands) -> Result<()> {
     match command {
         OrchHelperCommands::SelectMergeMethod {
-            repository,
+            pr_url,
             repo_root,
+            base,
+            head,
             merge_method,
         } => {
-            let selection =
-                match super::merge_method::select(&repository, &repo_root, &merge_method) {
-                    Ok(selection) => selection,
-                    Err(error) if error.is::<super::merge_method::PolicyRefusal>() => {
-                        eprintln!("{error}");
-                        std::process::exit(79);
-                    }
-                    Err(error) => return Err(error),
-                };
-            println!("{}", serde_json::to_string(&selection)?);
-            Ok(())
+            let request = super::merge_method::SelectionRequest {
+                pr_url: &pr_url,
+                repo_root: &repo_root,
+                base: &base,
+                head: &head,
+                explicit: &merge_method,
+            };
+            match super::merge_method::select(&request) {
+                Ok(selection) => {
+                    println!("{}", serde_json::to_string(&selection)?);
+                    Ok(())
+                }
+                Err(error) => {
+                    let reason = format!("{error:#}");
+                    println!("{}", serde_json::json!({ "error": reason }));
+                    eprintln!("ERROR: select-merge-method: {reason}");
+                    let refused = error.is::<super::merge_method::PolicyRefusal>();
+                    std::process::exit(if refused { 79 } else { 1 });
+                }
+            }
+        }
+        OrchHelperCommands::AutodriveCompletionPrepare(args) => autodrive_completion::prepare(args),
+        OrchHelperCommands::AutodriveCompletionSeal { private_state } => {
+            autodrive_completion::seal(private_state)
+        }
+        OrchHelperCommands::AutodriveCompletionWrite(args) => autodrive_completion::write(args),
+        OrchHelperCommands::AutodriveCompletionDispatch(args) => {
+            autodrive_completion::dispatch(args)
         }
         OrchHelperCommands::ExtractJson { require_field } => {
             let input = read_stdin()?;
@@ -994,6 +1036,11 @@ pub fn is_known_type(label: &str) -> bool {
         label,
         "Q&A" | "Operations" | "Investigation" | "Development"
     )
+}
+
+#[cfg(test)]
+pub(crate) fn autodrive_health_verdict(log: &str) -> &'static str {
+    autodrive_completion::health_verdict(log)
 }
 
 #[cfg(test)]

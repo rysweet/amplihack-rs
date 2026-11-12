@@ -1,75 +1,160 @@
-# Sourced by test-auto-drive-to-merge.sh after gate_run and trusted fixtures.
-# No standalone harness: retain real head, QA, review, private-state and guard checks.
-mm_permissions() {
+# #1888 merge-method cases. Sourced by test-auto-drive-to-merge.sh after
+# gate_run, the fixture repository FX and REC/QA for GATE_HEAD exist; no
+# standalone harness, so every case keeps the real head, QA, review,
+# private-state and guard checks of the trusted gate.
+#
+# History used here, on top of the main fixture (merge base FX_M0 for main):
+#
+#   FX_M1 (main) --- MM_BASE (base adds .amplihack/auto-drive.toml) ----- refs/heads/mm-main
+#                       \
+#   CR_SHA2 ------------ MM_HEAD (a clean merge of mm-main: the file is at the merge base)
+#   CR_SHA2 --- MM_ADD (the pull request adds the file itself)
+#   FX_M1 --- MM_BAD (base adds an invalid file) ---- refs/heads/mm-bad; MM_BAD_HEAD merges it
+
+mm_permissions() { # mm_permissions <merge> <squash> <rebase>: what gh api reports
   GH_METHODS_JSON="$(jq -cn --argjson m "$1" --argjson s "$2" --argjson r "$3" \
     '{allow_merge_commit:$m,allow_squash_merge:$s,allow_rebase_merge:$r}')"
   export GH_METHODS_JSON
 }
-mm_case() { # label expected-method source [explicit-method]
-  local label="$1" method="$2" source="$3" rc bundle
-  shift 3
-  local -a args=()
-  [ $# -eq 0 ] || args=(--merge-method "$1")
-  GATE_PRIV=1 gate_run merges --round-record "$REC" --qa-evidence "$QA" ${args[@]+"${args[@]}"}; rc=$?
-  if [ -z "$method" ]; then
-    if [ "$rc" -ne 0 ] && ! grep -q '^pr merge ' "${GATE_DIR}/gh-calls" \
-       && printf '%s' "$GATE_OUT" | grep -qF '"merge_result":"NOT_MERGED"'; then
-      pass "1888-${label}" "rejected selection records blockers and executes no merge"
-    else
-      fail "1888-${label}" "rejected selection reached merge or lacked blocker result: rc=$rc $GATE_OUT"
-    fi
-    return
-  fi
-  bundle="$(printf '%s' "$GATE_OUT" | jq -r '.evidence_bundle // empty' 2>/dev/null)"
+mm_bundle() { printf '%s' "$GATE_OUT" | jq -r '.evidence_bundle // empty' 2>/dev/null; }
+# mm_files <head>: a MERGE_READY record and PASS qa evidence bound to <head>,
+# in MM_REC and MM_QA (gate_files is defined later in the suite).
+mm_files() {
+  MM_REC="${WORK}/mm-rec-${1}.json"; MM_QA="${WORK}/mm-qa-${1}.json"
+  mr_rec MERGE_READY "$1" > "$MM_REC"; qa_fixture "$1" PASS 3 > "$MM_QA"
+}
+
+# mm_merged <label> <method> <source> <config-commit|not-read> [gate args...]:
+# the gate merges with exactly --<method>, at the exact head, and records why.
+mm_merged() {
+  local label="$1" method="$2" source="$3" commit="$4" rc bundle head="${GH_HEAD:-$GATE_HEAD}"
+  shift 4
+  GATE_PRIV=1 gate_run merges --round-record "${MM_REC:-$REC}" --qa-evidence "${MM_QA:-$QA}" "$@"; rc=$?
+  bundle="$(mm_bundle)"
   if [ "$rc" -eq 0 ] && printf '%s' "$GATE_OUT" | grep -qF '"merge_result":"MERGED"' \
      && [ "$(grep -c '^pr merge ' "${GATE_DIR}/gh-calls")" -eq 1 ] \
-     && grep -qxF "pr merge 42 --repo owner-a/repo-a --${method} --delete-branch --match-head-commit ${GATE_HEAD}" "${GATE_DIR}/gh-calls" \
-     && [ -f "$bundle" ] && grep -qF "head_sha=${GATE_HEAD}" "$bundle" \
-     && grep -qF "merge_method=${method}" "$bundle" \
-     && grep -qF "merge_method_source=${source}" "$bundle" \
-     && grep -qE 'merge_method_rationale=.+ ' "$bundle"; then
-    pass "1888-${label}" "one allowed literal flag, exact head and method evidence, confirmed MERGED"
+     && grep -qxF "pr merge 42 --${method} --delete-branch --match-head-commit ${head}" "${GATE_DIR}/gh-calls" \
+     && [ -f "$bundle" ] && grep -qF "head_sha=${head}" "$bundle" \
+     && grep -qxF "  - merge_method=${method}" "$bundle" \
+     && grep -qxF "  - merge_method_source=${source}" "$bundle" \
+     && grep -qxF "  - merge_method_repository=owner-a/repo-a" "$bundle" \
+     && grep -qxF "  - merge_method_config_commit=${commit}" "$bundle" \
+     && grep -qE '^  - merge_method_rationale="Selected .+"$' "$bundle"; then
+    pass "1888-${label}" "merged with --${method} (${source}, config ${commit}) and the evidence says why"
   else
-    fail "1888-${label}" "selection/argv/evidence/confirmation failed: rc=$rc $GATE_OUT $(cat "${GATE_DIR}/err")"
+    fail "1888-${label}" "rc=$rc $GATE_OUT | $(grep -E 'BLOCKER|merge_method' "${GATE_DIR}/err" | tr '\n' ' ') | $(grep '^pr merge' "${GATE_DIR}/gh-calls" 2>/dev/null)"
   fi
 }
-# Every case uses the isolated fixture checkout, never the developer repository.
-mkdir -p "${FX}/.github"
-mm_permissions true false false; mm_case merge-only merge default
-mm_permissions false true false; mm_case squash-only squash default
-mm_permissions false false true; mm_case rebase-only rebase default
-mm_permissions true true true; mm_case default-order squash default
-mm_permissions true false true; mm_case fallback-order merge default
-mm_permissions false false false; mm_case none-allowed '' ''
+
+# mm_refused <label> <reason> [gate args...]: nothing merges, and the
+# evidence bundle's BLOCKERS name the reason, not only a generic line.
+mm_refused() {
+  local label="$1" reason="$2" rc bundle
+  shift 2
+  GATE_PRIV=1 gate_run merges --round-record "${MM_REC:-$REC}" --qa-evidence "${MM_QA:-$QA}" "$@"; rc=$?
+  MM_RC=$rc
+  bundle="$(mm_bundle)"
+  if [ "$rc" -ne 0 ] && ! grep -q '^pr merge ' "${GATE_DIR}/gh-calls" \
+     && printf '%s' "$GATE_OUT" | grep -qF '"merge_result":"NOT_MERGED"' \
+     && [ -f "$bundle" ] && sed -n '/^BLOCKERS$/,$p' "$bundle" | grep -qF -- "$reason"; then
+    pass "1888-${label}" "refused; the evidence names: ${reason}"
+  else
+    fail "1888-${label}" "rc=$rc $GATE_OUT | want '${reason}' | $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+  fi
+}
+
+# --- the default order, from what the repository allows -------------------
+# FX has no .amplihack, so the file is looked for at the merge base FX_M0.
+mm_permissions true false false; mm_merged merge-only merge default "$FX_M0"
+mm_permissions false true false; mm_merged squash-only squash default "$FX_M0"
+mm_permissions false false true; mm_merged rebase-only rebase default "$FX_M0"
+mm_permissions true true true;   mm_merged default-order squash default "$FX_M0"
+mm_permissions true false true;  mm_merged fallback-order merge default "$FX_M0"
+mm_permissions false false false
+mm_refused none-allowed "merge-method selection failed (exit 1): the repository allows no merge method"
+
+# --- the explicit context ---------------------------------------------------
 mm_permissions true true true
-printf 'merge_method: merge\n' > "${FX}/.github/amplihack.yml"
-mm_case repository merge repository
-mm_case empty-context merge repository ''
-mm_case explicit rebase explicit rebase
+mm_merged explicit rebase explicit not-read --merge-method rebase
+mm_merged empty-context squash default "$FX_M0" --merge-method ''
 mm_permissions false true false
-mm_case disallowed-repository '' ''
-mm_case allowed-override squash explicit squash
-mm_case disallowed-explicit '' '' rebase
-printf 'merge_method: [\n' > "${FX}/.github/amplihack.yml"
-mm_case invalid-config '' ''
-mm_case invalid-config-explicit '' '' squash
-rm -f "${FX}/.github/amplihack.yml"
+mm_merged allowed-override squash explicit not-read --merge-method squash
+mm_refused disallowed-explicit "selected merge method rebase is disallowed by repository permissions" --merge-method rebase
 mm_permissions true true true
-mm_case invalid-context '' '' auto
+mm_refused invalid-context "merge_method context must be exactly merge, squash or rebase" --merge-method auto
+
+# --- the working tree is never read -----------------------------------------
+mkdir -p "${FX}/.amplihack"
+printf 'merge_method = "rebase"\n' > "${FX}/.amplihack/auto-drive.toml"
+mm_merged working-tree-ignored squash default "$FX_M0"
+rm -rf "${FX:?}/.amplihack"
+
+# --- the file at the merge base -------------------------------------------
+MM_BASE="$(fx_change "$FX_M1" "base sets the merge method" '.amplihack/auto-drive.toml=merge_method = "merge"')"
+MM_HEAD="$(fx_merge "$CR_SHA2" "$MM_BASE")"
+MM_BAD="$(fx_change "$FX_M1" "base sets an invalid merge method" '.amplihack/auto-drive.toml=merge_method = merge')"
+MM_BAD_HEAD="$(fx_merge "$CR_SHA2" "$MM_BAD")"
+MM_ADD="$(fx_change "$CR_SHA2" "pull request sets its own merge method" '.amplihack/auto-drive.toml=merge_method = "rebase"')"
+if git -C "$FX" push -q origin "${MM_BASE}:refs/heads/mm-main" "${MM_BAD}:refs/heads/mm-bad" >/dev/null 2>&1; then
+  mm_files "$MM_HEAD"
+  GH_BASE=mm-main GH_HEAD="$MM_HEAD" mm_merged repository merge repository "$MM_BASE"
+  # A local origin/mm-main that is stale is overwritten by the gate's fetch.
+  git -C "$FX" update-ref refs/remotes/origin/mm-main "$FX_M1"
+  GH_BASE=mm-main GH_HEAD="$MM_HEAD" mm_merged repository-base-fetched merge repository "$MM_BASE"
+  GH_BASE=mm-main GH_HEAD="$MM_HEAD" mm_merged repository-explicit-wins rebase explicit not-read --merge-method rebase
+  mm_permissions false true true
+  GH_BASE=mm-main GH_HEAD="$MM_HEAD" mm_refused disallowed-repository \
+    "selected merge method merge is disallowed by repository permissions; no other method is tried"
+  mm_permissions true true true
+
+  mm_files "$MM_BAD_HEAD"
+  GH_BASE=mm-bad GH_HEAD="$MM_BAD_HEAD" mm_refused invalid-file \
+    ".amplihack/auto-drive.toml at merge base ${MM_BAD}: syntax"
+  # An explicit method means the file is not read, so it cannot block.
+  GH_BASE=mm-bad GH_HEAD="$MM_BAD_HEAD" mm_merged invalid-file-explicit squash explicit not-read --merge-method squash
+
+  # The pull request adds the file: refused, as a pull request changing
+  # .amplihack/qa.toml is. Crusty reviewed MM_ADD here, so the selection is
+  # the only thing that can block.
+  mm_files "$MM_ADD"
+  CR_SHA="$MM_ADD" GH_HEAD="$MM_ADD" mm_refused changed-in-pr \
+    ".amplihack/auto-drive.toml: changed-in-pr"
+  CR_SHA="$MM_ADD" GH_HEAD="$MM_ADD" mm_merged changed-in-pr-explicit merge explicit not-read --merge-method merge
+  MM_REC=""; MM_QA=""
+else
+  fail "1888-fixture" "could not push the merge-method base branches to the fixture origin"
+fi
+
+# --- an unknown merge base fails closed; an explicit method does not need one
+git -C "$FX" remote set-url origin "${WORK_PHYS}/no-such-origin.git"
+mm_refused base-unfetched "merge-method selection failed (exit 1): the base branch was not fetched"
+mm_merged base-unfetched-explicit merge explicit not-read --merge-method merge
+git -C "$FX" remote set-url origin "${FX_ORIGIN}"
+
+# --- the permission read ----------------------------------------------------
 GH_METHODS_RC=79; export GH_METHODS_RC
-mm_case api-failure '' ''
+mm_refused api-policy-refusal "gh api refused repository merge permissions (terminal policy exit 79)"
+if [ "$MM_RC" -eq 79 ]; then
+  pass "1888-api-policy-refusal-exit" "a policy refusal from gh api is surfaced as exit 79"
+else
+  fail "1888-api-policy-refusal-exit" "exit ${MM_RC}, want 79"
+fi
+GH_METHODS_RC=3
+mm_refused api-failure "gh api could not read repository merge permissions"
 unset GH_METHODS_RC
-GH_METHODS_JSON='[true,false,false]'; export GH_METHODS_JSON
-mm_case api-positional-array '' ''
-for GH_METHODS_JSON in '{}' 'null' 'bad-json' \
+# The values are literal JSON for the gh stub to print, not shell words.
+# shellcheck disable=SC2089,SC2090
+for GH_METHODS_JSON in '[true,false,false]' '{}' 'null' 'bad-json' \
   '{"allow_merge_commit":true,"allow_squash_merge":false}' \
   '{"allow_merge_commit":true,"allow_squash_merge":"true","allow_rebase_merge":false}'; do
   export GH_METHODS_JSON
-  mm_case api-schema '' ''
+  mm_refused api-schema "merge permissions"
 done
 unset GH_METHODS_JSON
+
+# --- the helper's output contract -------------------------------------------
 # Version skew or a broken helper must not be accepted by extract-json's
-# permissive prose extraction. Delegate all existing helper calls unchanged.
+# permissive prose extraction. Every other helper call is delegated unchanged.
 MM_HELPER_DIR="${WORK_PHYS}/method-helper"; mkdir -p "$MM_HELPER_DIR"
 cat > "$MM_HELPER_DIR/amplihack" <<'MM_HELPER'
 #!/bin/bash
@@ -80,18 +165,25 @@ fi
 exec "$REAL_AMPLIHACK" "$@"
 MM_HELPER
 chmod 0755 "$MM_HELPER_DIR/amplihack"
+MM_OK='{"method":"merge","source":"default","repository":"owner-a/repo-a","config_commit":"'"$FX_M0"'","rationale":"Selected merge"}'
+printf '%s\n' "$MM_OK" > "$MM_HELPER_DIR/response"
+GATE_HELPER="$MM_HELPER_DIR/amplihack" mm_merged helper-positive-control merge default "$FX_M0"
 for mm_bad in \
   '' '{}' 'null' '[]' \
-  '{"method":"merge","source":"default","rationale":null}' \
-  '{"method":"merge","source":"unknown","rationale":"invalid source"}' \
-  '{"method":"--admin","source":"explicit","rationale":"invalid method"}' \
-  '{"method":"merge","source":"default","rationale":"one"}{"method":"squash","source":"default","rationale":"two"}' \
-  'prefix {"method":"merge","source":"default","rationale":"prose"}' \
-  '{"method":"merge","source":"default","rationale":"trailing"} garbage'; do
+  '{"method":"merge","source":"default","repository":"owner-a/repo-a","config_commit":null,"rationale":"default needs a commit"}' \
+  '{"method":"merge","source":"explicit","repository":"owner-a/repo-a","config_commit":"'"$FX_M0"'","rationale":"explicit reads no file"}' \
+  '{"method":"merge","source":"default","repository":"owner-a/repo-a","config_commit":"HEAD","rationale":"not a sha"}' \
+  '{"method":"merge","source":"default","config_commit":"'"$FX_M0"'","rationale":"no repository"}' \
+  '{"method":"merge","source":"default","repository":"owner-a/repo-a","config_commit":"'"$FX_M0"'","rationale":null}' \
+  '{"method":"merge","source":"unknown","repository":"owner-a/repo-a","config_commit":"'"$FX_M0"'","rationale":"invalid source"}' \
+  '{"method":"--admin","source":"explicit","repository":"owner-a/repo-a","config_commit":null,"rationale":"invalid method"}' \
+  "${MM_OK}${MM_OK}" \
+  "prefix ${MM_OK}" \
+  "${MM_OK} garbage"; do
   printf '%s\n' "$mm_bad" > "$MM_HELPER_DIR/response"
-  GATE_HELPER="$MM_HELPER_DIR/amplihack" mm_case malformed-helper '' ''
+  GATE_HELPER="$MM_HELPER_DIR/amplihack" mm_refused malformed-helper "merge-method helper returned malformed or incompatible output"
 done
-# An executable lacking the new subcommand is a fail-closed version mismatch.
+# An executable lacking the subcommand is a fail-closed version mismatch.
 cat > "$MM_HELPER_DIR/missing" <<'MM_MISSING'
 #!/bin/bash
 if [ "${1:-} ${2:-} ${3:-}" = 'orch helper select-merge-method' ]; then
@@ -101,22 +193,12 @@ fi
 exec "$REAL_AMPLIHACK" "$@"
 MM_MISSING
 chmod 0755 "$MM_HELPER_DIR/missing"
-GATE_HELPER="$MM_HELPER_DIR/missing" mm_case missing-helper '' ''
+GATE_HELPER="$MM_HELPER_DIR/missing" mm_refused missing-helper "merge-method selection failed (exit 2): the helper gave no reason"
 
-# Conflicting ambient identity must never influence any gate operation.
-GH_REPO=owner-b/repo-b GATE_EXTRA_ENV=GH_REQUIRE_TARGET=owner-a/repo-a mm_case explicit-repository squash default
-if grep -q '^repo view' "${GATE_DIR}/gh-calls" || [ -f "${GATE_DIR}/gh-calls.wrong-target" ]; then
-  fail "1888-repository-binding" "a PR operation used ambient identity"
-elif grep -q '^api repos/owner-a/repo-a$' "${GATE_DIR}/gh-calls"; then
-  pass "1888-repository-binding" "permission query and every PR operation use explicit target"
+# The repository comes from the pull request URL, never from GH_REPO.
+GATE_EXTRA_ENV=GH_REPO=owner-b/repo-b mm_merged gh-repo-ignored squash default "$FX_M0"
+if grep -qxF 'api --hostname github.com repos/owner-a/repo-a' "${GATE_DIR}/gh-calls"; then
+  pass "1888-permissions-from-pr-url" "the permission read names the repository in the pull request URL"
 else
-  fail "1888-repository-binding" "permission query missing"
+  fail "1888-permissions-from-pr-url" "$(grep '^api' "${GATE_DIR}/gh-calls" | tr '\n' '|')"
 fi
-for missing_identity in "" owner "/repo" "owner/repo/extra"; do
-  GATE_REPOSITORY="$missing_identity" gate_run merges --round-record "$REC" --qa-evidence "$QA"; rc=$?
-  if [ "$rc" -ne 0 ] && [ ! -s "${GATE_DIR}/gh-calls" ]; then
-    pass "1888-invalid-identity" "invalid or missing target fails before gh"
-  else
-    fail "1888-invalid-identity" "invalid identity reached gh"
-  fi
-done

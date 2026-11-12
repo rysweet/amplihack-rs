@@ -67,9 +67,9 @@ recursion:
   max_total_steps: 120
 
 context:
-  repository: ""  # Explicit target propagated by the composer.
-  repository: ""  # Required canonical OWNER/REPO target; never inferred.
-  merge_method: ""  # Optional: merge, squash, or rebase; empty selects repository policy.
+  # Optional merge method (#1888): merge, squash or rebase. Empty: the
+  # repository's .amplihack/auto-drive.toml, else the first allowed method.
+  merge_method: ""
   # What to build. Passed straight through to default-workflow.
   task_description: ""
   requirements: ""
@@ -138,9 +138,6 @@ steps:
   - id: "autodrive-prerequisites"
     type: "bash"
     command: |
-      # Bind before PR operations; load only launch-side installed tools.
-      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
-      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
       TOP=""; T=""; SEARCHED=""
@@ -182,9 +179,6 @@ steps:
   - id: "autodrive-pr-input"
     type: "bash"
     command: |
-      # Bind before PR operations; load only launch-side installed tools.
-      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
-      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       # RECIPE_VAR_pr_number only: the runner sets it for every context value,
       # and a bare PR_NUMBER could be inherited from an enclosing run.
       printf '%s' "${RECIPE_VAR_pr_number:-}"
@@ -194,7 +188,6 @@ steps:
     type: "recipe"
     recipe: "autodrive-build"
     context:
-      repository: "{{repository}}"
       task_description: "{{task_description}}"
       requirements: "{{requirements}}"
       repo_path: "{{repo_path}}"
@@ -208,7 +201,6 @@ steps:
     type: "recipe"
     recipe: "autodrive-crusty-loop"
     context:
-      repository: "{{repository}}"
       repo_path: "{{repo_path}}"
       pr_number: "{{build_result.pr}}"
       autodrive_pr_input: "{{autodrive_pr_input}}"
@@ -229,9 +221,6 @@ steps:
   - id: "autodrive-check-unmerged"
     type: "bash"
     command: |
-      # Bind before PR operations; load only launch-side installed tools.
-      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
-      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       set -uo pipefail
       cd "${REPO_PATH:-.}" || { echo "ERROR: #1551: cannot enter REPO_PATH; refusing to check PR state in the wrong repo [autodrive-check-unmerged]" >&2; exit 1; }
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
@@ -260,7 +249,6 @@ steps:
     type: "recipe"
     recipe: "autodrive-merge-loop"
     context:
-      repository: "{{repository}}"
       merge_method: "{{merge_method}}"
       repo_path: "{{repo_path}}"
       pr_number: "{{build_result.pr}}"
@@ -279,9 +267,6 @@ steps:
     type: "bash"
     parse_json: true
     command: |
-      # Bind before PR operations; load only launch-side installed tools.
-      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
-      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       set -uo pipefail
       g() { printf '%s' "${1:-}" | amplihack orch helper extract-json --require-field "$2" \
               | amplihack orch helper extract-field --field "$2" --default "$3"; }

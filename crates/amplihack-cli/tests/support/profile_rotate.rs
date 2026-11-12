@@ -654,7 +654,9 @@ pub fn assert_text_has_no_secrets(s: &str) {
 /// The documented log grammar: one-shot and `watch` lines start with a UTC
 /// time; `--dry-run` lines do not. `switch <from>-><to>` is the line a
 /// `profile switch` swap writes (issue #1691). `reread:` lines (#1962) appear
-/// when a reading goes stale, as on a loaded host (#2042).
+/// when a reading goes stale, as on a loaded host (#2042). `affinity:` lines
+/// (#2136) follow a swap that is not within one organisation; a profile with
+/// no organisation record makes every swap to or from it `unresolved`.
 pub fn assert_log_grammar(line: &str, timed: bool) {
     let msg = if timed {
         let re = regex::Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z (.+)$").unwrap();
@@ -666,7 +668,7 @@ pub fn assert_log_grammar(line: &str, timed: bool) {
         line.to_string()
     };
     let kinds = regex::Regex::new(
-        r"^(cycle live=\S+( \S+:(s=\d+%,w=(\d+%|\?)|failed|per-token|unknown, still running))*|swap \S+->\S+ live (s=\d+% w=(\d+%|\?)|failed|unknown, still running) target s=\d+% w=(\d+%|\?) reason=(threshold|upgrade)|switch \S+->\S+|ALERT: .+|recovery: (rolled back|finished) an interrupted swap \S+->\S+|skip: .+|change: \S+ \S+ -> \S+ by pid=\d+ ppid=\d+ parent=\x22[^\x22]*\x22( recipe_run=\S+)?( invocation=\S+)?|stop: signal received; cycle abandoned|idle: auto-switch is off|sessions archive: .+|reread: \S+ (reading stale .+; fresh .+|(failed|limit reached|time limit reached); treated as unknown)|would .+)$",
+        r"^(cycle live=\S+( \S+:(s=\d+%,w=(\d+%|\?)|failed|per-token|unknown, still running))*|swap \S+->\S+ live (s=\d+% w=(\d+%|\?)|failed|unknown, still running) target s=\d+% w=(\d+%|\?) reason=(threshold|upgrade)|switch \S+->\S+|ALERT: .+|recovery: (rolled back|finished) an interrupted swap \S+->\S+|skip: .+|change: \S+ \S+ -> \S+ by pid=\d+ ppid=\d+ parent=\x22[^\x22]*\x22( recipe_run=\S+)?( invocation=\S+)?|stop: signal received; cycle abandoned|idle: auto-switch is off|sessions archive: .+|reread: \S+ (reading stale .+; fresh .+|(failed|limit reached|time limit reached); treated as unknown)|affinity: (crossing|unresolved) \S+->\S+: .+|would .+)$",
     )
     .unwrap();
     assert!(kinds.is_match(&msg), "line outside the grammar: {line:?}");

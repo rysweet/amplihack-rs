@@ -126,6 +126,7 @@ case "$*" in
 esac"#
             ),
         );
+        executable(&tools.join("codex-code-mode-host"), "#!/bin/sh\nexit 0\n");
         executable(&tools.join("node"), "#!/bin/sh\nprintf '%s\\n' 'v24.1.0'");
         executable(
             &tools.join("amplihack-hooks"),
@@ -133,7 +134,7 @@ esac"#
         );
         executable(
             &tools.join("recipe-runner-rs"),
-            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\"]}'",
+            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}'",
         );
         for name in [
             ".cargo",

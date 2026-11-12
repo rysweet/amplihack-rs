@@ -711,6 +711,7 @@ fn dispatch_memory(command: MemoryCommands) -> Result<()> {
 fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
     match command {
         RecipeCommands::Run {
+            fresh,
             recipe_path,
             context,
             context_file,
@@ -746,7 +747,7 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
                 || (!no_detach
                     && recipe::validate_path(working_dir.as_deref().unwrap_or("."), false)
                         .is_ok_and(|working| crate::user_config::recipe_detach(&working)));
-            if detach {
+            if detach && !dry_run {
                 let working = recipe::validate_path(working_dir.as_deref().unwrap_or("."), false)?;
                 let agent_binary = crate::env_builder::resolve_agent_binary_in(&working);
                 let mut args = recipe::detach::pane_args(
@@ -760,6 +761,9 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
                 // Issue #1811: the pane's run asks the governor, so it needs
                 // the same workstream, class and wait.
                 args.extend(governor.to_args());
+                if fresh {
+                    args.push("--fresh".into());
+                }
                 return recipe::detach::launch(recipe::detach::Launch {
                     args,
                     context: &resolved,
@@ -769,7 +773,7 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
                 });
             }
             let context = resolved;
-            recipe::run_recipe(
+            recipe::run_recipe_fresh(
                 &recipe_path,
                 &context,
                 dry_run,
@@ -778,6 +782,7 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
                 working_dir.as_deref(),
                 step_timeout,
                 &governor,
+                fresh,
             )
         }
         RecipeCommands::Stop { target } => recipe::stop::run_stop(&target),

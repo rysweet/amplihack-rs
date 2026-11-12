@@ -49,9 +49,9 @@ recursion:
   max_total_steps: 200
 
 context:
-  repository: ""  # Explicit target propagated by the composer.
-  repository: ""  # Required canonical OWNER/REPO target; never inferred.
-  merge_method: ""  # Optional: merge, squash, or rebase; empty selects repository policy.
+  # Optional merge method (#1888): merge, squash or rebase. Empty: the
+  # repository's .amplihack/auto-drive.toml, else the first allowed method.
+  merge_method: ""
   task_description: ""
   repo_path: "."
   issue_number: ""
@@ -103,9 +103,6 @@ steps:
   - id: "light-prereqs"
     type: "bash"
     command: |
-      # Bind before PR operations; load only launch-side installed tools.
-      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
-      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       set -uo pipefail
       die() { echo "ERROR: auto-drive-light/light-prereqs: $1" >&2; exit "${2:-1}"; }
       command -v jq >/dev/null 2>&1 || die "jq is not on PATH; auto-drive-light needs it"
@@ -152,9 +149,6 @@ steps:
   - id: "light-pr-input"
     type: "bash"
     command: |
-      # Bind before PR operations; load only launch-side installed tools.
-      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
-      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       printf '%s' "${RECIPE_VAR_pr_number:-}"
     output: "autodrive_pr_input"
 
@@ -167,9 +161,6 @@ steps:
   - id: "light-task-id"
     type: "bash"
     command: |
-      # Bind before PR operations; load only launch-side installed tools.
-      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
-      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       set -uo pipefail
       case "${AMPLIHACK_HOME:-}" in /*) ;; *) echo "ERROR: auto-drive-light/light-task-id: AMPLIHACK_HOME must be an absolute path" >&2; exit 1 ;; esac
       FU="${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_followups.sh"
@@ -184,20 +175,19 @@ steps:
     output: "light_task_id"
 
   # Build, steps 3 to 9: only for a new change.
+  # The quick/ branch starts from origin/HEAD, the base light-open-pr targets; inherited targets and
+  # base_branch are cleared, strict_delivery is not (docs/reference/workflow-delivery-inputs.md).
   - id: "light-worktree"
     type: "recipe"
     condition: "not pr_number and not existing_branch"
     recipe: "workflow-worktree"
-    context: { branch_prefix: "quick", existing_branch: "", pr_number: "" }
+    context: { branch_prefix: "quick", existing_branch: "", pr_number: "", base_branch: "", forbidden_base_branches: "" }
 
   # Before the agent: check the branch and identity, pin the base, snapshot git config.
   - id: "light-base-pin"
     type: "bash"
     condition: "not pr_number and not existing_branch"
     command: |
-      # Bind before PR operations; load only launch-side installed tools.
-      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
-      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       QC="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/quick_change_common.sh"; QC_STEP=light-base-pin; case "$QC" in /*) ;; *) echo "ERROR: auto-drive-light/light-base-pin: AMPLIHACK_HOME must be an absolute path" >&2; exit 1 ;; esac; . "$QC" || { echo "ERROR: auto-drive-light/light-base-pin: quick_change_common.sh not found under AMPLIHACK_HOME" >&2; exit 1; }
       git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || qc_die "requires a git repo at $QC_WT; either \`git init\` or rerun from a checkout"
       qc_branch >/dev/null
@@ -217,9 +207,6 @@ steps:
     condition: "not pr_number and not existing_branch"
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
-      Target repository: `{{repository}}`. When set, pass `--repo "{{repository}}"`
-      to every gh PR operation; never use ambient GH_REPO to choose the target.
-
       # Small change
 
       You are a leaf step inside a recipe that is already running. Make the
@@ -253,9 +240,6 @@ steps:
     type: "bash"
     condition: "not pr_number and not existing_branch"
     command: |
-      # Bind before PR operations; load only launch-side installed tools.
-      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
-      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       QC="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/quick_change_common.sh"; QC_STEP=light-qa; case "$QC" in /*) ;; *) echo "ERROR: auto-drive-light/light-qa: AMPLIHACK_HOME must be an absolute path" >&2; exit 1 ;; esac; . "$QC" || { echo "ERROR: auto-drive-light/light-qa: quick_change_common.sh not found under AMPLIHACK_HOME" >&2; exit 1; }
       RECIPE_VAR_quick_change_base="${RECIPE_VAR_light_base:-}"
       BASE="$(qc_base)"
@@ -283,9 +267,6 @@ steps:
     type: "bash"
     condition: "not pr_number and not existing_branch"
     command: |
-      # Bind before PR operations; load only launch-side installed tools.
-      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
-      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       QC="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/quick_change_common.sh"; QC_STEP=light-precommit; case "$QC" in /*) ;; *) echo "ERROR: auto-drive-light/light-precommit: AMPLIHACK_HOME must be an absolute path" >&2; exit 1 ;; esac; . "$QC" || { echo "ERROR: auto-drive-light/light-precommit: quick_change_common.sh not found under AMPLIHACK_HOME" >&2; exit 1; }
       RECIPE_VAR_quick_change_base="${RECIPE_VAR_light_base:-}"
       BASE="$(qc_base)"
@@ -318,9 +299,6 @@ steps:
     type: "bash"
     condition: "not pr_number and not existing_branch"
     command: |
-      # Bind before PR operations; load only launch-side installed tools.
-      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
-      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       QC="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/quick_change_common.sh"; QC_STEP=light-commit-push; case "$QC" in /*) ;; *) echo "ERROR: auto-drive-light/light-commit-push: AMPLIHACK_HOME must be an absolute path" >&2; exit 1 ;; esac; . "$QC" || { echo "ERROR: auto-drive-light/light-commit-push: quick_change_common.sh not found under AMPLIHACK_HOME" >&2; exit 1; }
       exec 3>&1 1>&2
       git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || qc_die "requires a git repo at $QC_WT; either \`git init\` or rerun from a checkout"; cd "$QC_WT"
@@ -359,9 +337,6 @@ steps:
     type: "bash"
     condition: "not pr_number and not existing_branch"
     command: |
-      # Bind before PR operations; load only launch-side installed tools.
-      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
-      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       QC="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/quick_change_common.sh"; QC_STEP=light-open-pr; case "$QC" in /*) ;; *) echo "ERROR: auto-drive-light/light-open-pr: AMPLIHACK_HOME must be an absolute path" >&2; exit 1 ;; esac; . "$QC" || { echo "ERROR: auto-drive-light/light-open-pr: quick_change_common.sh not found under AMPLIHACK_HOME" >&2; exit 1; }
       git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || qc_die "requires a git repo at $QC_WT; either \`git init\` or rerun from a checkout"; cd "$QC_WT"
       BRANCH="$(qc_branch)"
@@ -397,9 +372,6 @@ steps:
     type: "bash"
     parse_json: true
     command: |
-      # Bind before PR operations; load only launch-side installed tools.
-      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
-      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       set -uo pipefail
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
       die() { echo "ERROR: auto-drive-light/light-resolve-pr: $1" >&2; exit "${2:-1}"; }
@@ -469,9 +441,6 @@ steps:
     type: "bash"
     parse_json: true
     command: |
-      # Bind before PR operations; load only launch-side installed tools.
-      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
-      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       set -uo pipefail
       die() { echo "ERROR: auto-drive-light/light-eligibility: $1" >&2; exit "${2:-1}"; }
       case "${AMPLIHACK_HOME:-}" in /*) ;; *) die "AMPLIHACK_HOME must be an absolute path" ;; esac
@@ -536,7 +505,6 @@ steps:
     condition: "light_eligibility.decision == 'escalate'"
     recipe: "auto-drive-to-merge"
     context:
-      repository: "{{repository}}"
       merge_method: "{{merge_method}}"
       task_description: "{{task_description}}"
       repo_path: "{{repo_path}}"
@@ -553,7 +521,6 @@ steps:
     condition: "light_eligibility.decision == 'light'"
     recipe: "autodrive-crusty-loop"
     context:
-      repository: "{{repository}}"
       repo_path: "{{repo_path}}"
       pr_number: "{{build_result.pr}}"
       autodrive_pr_input: "{{autodrive_pr_input}}"
@@ -569,9 +536,6 @@ steps:
     type: "bash"
     condition: "light_eligibility.decision == 'light'"
     command: |
-      # Bind before PR operations; load only launch-side installed tools.
-      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
-      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       set -uo pipefail
       cd "${RECIPE_VAR_repo_path:-.}" || { echo "ERROR: #1551: cannot enter repo_path; refusing to check PR state in the wrong repo [light-check-unmerged]" >&2; exit 1; }
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
@@ -599,7 +563,6 @@ steps:
     condition: "light_eligibility.decision == 'light'"
     recipe: "autodrive-merge-loop"
     context:
-      repository: "{{repository}}"
       merge_method: "{{merge_method}}"
       repo_path: "{{repo_path}}"
       pr_number: "{{build_result.pr}}"
@@ -619,9 +582,6 @@ steps:
     type: "bash"
     parse_json: true
     command: |
-      # Bind before PR operations; load only launch-side installed tools.
-      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
-      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       set -uo pipefail
       j() { printf '%s' "${1:-}" | jq -r --arg k "$2" '.[$k] // "" | tostring' 2>/dev/null; }
       tok() { [[ "$1" =~ ^[A-Za-z0-9_-]{0,64}$ ]] && printf '%s' "$1"; }

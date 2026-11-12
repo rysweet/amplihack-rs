@@ -35,7 +35,9 @@ impl Liveness {
     }
 }
 
-/// The live set for this process on this machine.
+/// The live set for this process on this machine. The process table is the
+/// one `procfs::proc_root()` names: `/proc` in normal use, or a test
+/// fixture's synthetic table when every condition of the test seam holds.
 pub fn scan_system(root: &Path) -> Liveness {
     #[cfg(target_os = "linux")]
     {
