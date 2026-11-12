@@ -28,10 +28,10 @@ use amplihack_types::HookInput;
 use amplihack_utils::clock::Clock;
 use amplihack_utils::rotator_status::CycleStatus;
 use amplihack_utils::rotator_status::swap_record::{
-    SwapReading, SwapRecord, read_swap, rotate_dir,
+    SwapReading, SwapRecord, read_stop_time, read_swap, rotate_dir,
 };
 use amplihack_utils::secure_files::{
-    lock_exclusive_timeout, open_private_nofollow, write_private_atomic,
+    ExclusiveLock, lock_exclusive_timeout, open_private_nofollow, write_private_atomic,
 };
 use serde_json::json;
 use std::fs;
@@ -376,16 +376,27 @@ fn malformed_event_key_is_refused() {
 
 // ── FsGuard: lock ───────────────────────────────────────────────────────────
 
-#[test]
-fn stuck_lock_times_out_as_io_error() {
-    let r = root();
-    let d = resume_dir(r.path());
+/// The resume layout under `root` with its lock held, as a hook still
+/// committing leaves it. `events/` and `sessions/` exist already, so a
+/// commit reaches the lock without creating them: creating each syncs its
+/// parent, and one sync of the test's temporary directory on a loaded disk
+/// was measured at 10 s, which counted against the lock-wait bounds.
+fn held_lock(root: &Path) -> ExclusiveLock {
+    let d = resume_dir(root);
     private_dir(&d);
-    let held = lock_exclusive_timeout(
+    private_dir(&d.join("events"));
+    private_dir(&d.join("sessions"));
+    lock_exclusive_timeout(
         open_private_nofollow(&d.join("lock")).unwrap(),
         Duration::ZERO,
     )
-    .unwrap();
+    .unwrap()
+}
+
+#[test]
+fn stuck_lock_times_out_as_io_error() {
+    let r = root();
+    let held = held_lock(r.path());
     // Issue #2019: the give-up is checked on virtual time, so a loaded host
     // cannot fail it. The outcome (an Io error and no marker) is the proof.
     let clock = AdvancingClock::new();
@@ -473,13 +484,7 @@ fn default_lock_timeout_is_five_seconds() {
         Duration::from_millis(7)
     );
 
-    let d = resume_dir(r.path());
-    private_dir(&d);
-    let held = lock_exclusive_timeout(
-        open_private_nofollow(&d.join("lock")).unwrap(),
-        Duration::ZERO,
-    )
-    .unwrap();
+    let held = held_lock(r.path());
     let clock = AdvancingClock::new();
     let mut g = FsGuard::with_clock(r.path(), LOCK_TIMEOUT, clock.clone());
     assert_eq!(g.lock_timeout(), LOCK_TIMEOUT);
@@ -513,7 +518,7 @@ fn default_lock_timeout_is_five_seconds() {
 struct ReleasingClock {
     inner: Arc<AdvancingClock>,
     release_at: Duration,
-    held: Mutex<Option<amplihack_utils::secure_files::ExclusiveLock>>,
+    held: Mutex<Option<ExclusiveLock>>,
     released_at: Mutex<Option<Duration>>,
 }
 
@@ -539,13 +544,7 @@ impl Clock for ReleasingClock {
 #[test]
 fn a_lock_released_at_4_9_virtual_seconds_is_still_taken() {
     let r = root();
-    let d = resume_dir(r.path());
-    private_dir(&d);
-    let held = lock_exclusive_timeout(
-        open_private_nofollow(&d.join("lock")).unwrap(),
-        Duration::ZERO,
-    )
-    .unwrap();
+    let held = held_lock(r.path());
     let release_at = LOCK_TIMEOUT - Duration::from_millis(100);
     let clock = Arc::new(ReleasingClock {
         inner: AdvancingClock::new(),
@@ -572,13 +571,7 @@ fn a_lock_released_at_4_9_virtual_seconds_is_still_taken() {
 #[test]
 fn a_lock_released_only_at_5_virtual_seconds_is_given_up_on() {
     let r = root();
-    let d = resume_dir(r.path());
-    private_dir(&d);
-    let held = lock_exclusive_timeout(
-        open_private_nofollow(&d.join("lock")).unwrap(),
-        Duration::ZERO,
-    )
-    .unwrap();
+    let held = held_lock(r.path());
     let clock = Arc::new(ReleasingClock {
         inner: AdvancingClock::new(),
         release_at: LOCK_TIMEOUT + Duration::from_secs(60),
@@ -890,6 +883,9 @@ fn write_swap(root: &Path, seq: u64, at: i64, mode: u32) {
         private_dir(&dir);
     }
     let r = SwapRecord {
+        from_org: None,
+        to_org: None,
+        affinity: None,
         seq,
         live_login: "spare".into(),
         from_login: "work".into(),
@@ -958,6 +954,9 @@ impl Deps for DiskDeps {
     }
     fn read_swap(&mut self, now: i64) -> Option<SwapRecord> {
         read_swap(&self.root, now)
+    }
+    fn stop_time(&mut self, _transcript: Option<&Path>, _start: i64) -> Option<i64> {
+        None
     }
     fn pane(&mut self) -> Option<Pane> {
         None
@@ -1238,6 +1237,10 @@ impl Deps for SwapDeps {
     fn read_swap(&mut self, now: i64) -> Option<SwapRecord> {
         read_swap(&self.root, now)
     }
+    /// As the hook reads it: the real reader on the payload's path.
+    fn stop_time(&mut self, transcript: Option<&Path>, start: i64) -> Option<i64> {
+        transcript.and_then(|p| read_stop_time(p, start))
+    }
     fn pane(&mut self) -> Option<Pane> {
         None
     }
@@ -1329,6 +1332,79 @@ fn issue_2085_a_ledger_with_capacity_but_no_swap_record_never_resumes() {
     let out = run_on_disk(&r, |_| {});
     assert_eq!(out, Outcome::NoCapacityTimeout);
     assert!(no_resume_marker(r.path()));
+}
+
+// ── Issue #2236: the stop time read from the transcript on disk ────────────
+
+/// A transcript under `r` whose last entry is at `stop`, with `secret` in
+/// a field the hook must never log.
+fn write_transcript(r: &Path, stop: i64, mode: u32, secret: &str) -> PathBuf {
+    let ts = |t: i64| {
+        chrono::DateTime::from_timestamp(t, 0)
+            .unwrap()
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    };
+    let p = r.join("transcript.jsonl");
+    let body = format!(
+        "{{\"type\":\"user\",\"timestamp\":\"{}\",\"message\":\"{secret}\"}}\n\
+         {{\"type\":\"assistant\",\"timestamp\":\"{}\",\"message\":\"{secret}\"}}\n",
+        ts(stop - 300),
+        ts(stop)
+    );
+    fs::write(&p, body).unwrap();
+    fs::set_permissions(&p, fs::Permissions::from_mode(mode)).unwrap();
+    p
+}
+
+/// The hook started at `NOW`, ten seconds after the stop the transcript
+/// records, and finds a swap made three seconds after that stop.
+fn run_late_start(r: &tempfile::TempDir, transcript_mode: u32) -> Outcome {
+    write_swap(r.path(), 1, NOW - 7, 0o600);
+    let transcript = write_transcript(r.path(), NOW - 10, transcript_mode, "SECRET-2236-MARKER");
+    let mut d = SwapDeps {
+        root: r.path().to_path_buf(),
+        guard: FsGuard::new(r.path()),
+        clock: NOW,
+        wake: |_| {},
+        woken: false,
+    };
+    let input: HookInput = serde_json::from_value(json!({
+        "hook_event_name": "StopFailure",
+        "session_id": "s2236",
+        "error": "rate_limit",
+        "last_assistant_message": "You've hit your session limit",
+        "transcript_path": transcript,
+    }))
+    .unwrap();
+    run_with(&input, &mut d)
+}
+
+#[test]
+fn issue_2236_a_swap_between_the_transcript_stop_and_a_late_start_resumes() {
+    let r = root();
+    assert_eq!(run_late_start(&r, 0o600), Outcome::Resumed);
+    assert!(!no_resume_marker(r.path()));
+    let log = fs::read_to_string(resume_dir(r.path()).join("resume.log")).unwrap();
+    assert!(log.contains("outcome=resumed"), "{log}");
+    assert!(!log.contains("SECRET-2236-MARKER"), "{log}");
+    assert!(!log.contains("transcript"), "{log}");
+}
+
+#[test]
+fn issue_2236_a_transcript_others_can_write_falls_back_to_the_slack_rule() {
+    // A refused transcript gives no stop time: the swap seven seconds
+    // before the start is then before the stop, as before #2236.
+    for mode in [0o620, 0o602] {
+        let r = root();
+        assert_eq!(
+            run_late_start(&r, mode),
+            Outcome::NoCapacityTimeout,
+            "mode {mode:o}"
+        );
+        assert!(no_resume_marker(r.path()), "mode {mode:o}");
+        let log = fs::read_to_string(resume_dir(r.path()).join("resume.log")).unwrap();
+        assert!(!log.contains("SECRET-2236-MARKER"), "{log}");
+    }
 }
 
 // ── Issue #2085 (S2): watched directories ───────────────────────────────────

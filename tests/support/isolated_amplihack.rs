@@ -45,9 +45,8 @@
 #![allow(dead_code)]
 
 use std::ffi::OsStr;
-use std::fs::{DirBuilder, OpenOptions};
-use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::fs::DirBuilder;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
@@ -127,30 +126,15 @@ pub fn shared_temp_home() -> &'static Path {
     })
 }
 
-/// The constant `self/environ` of every fake process table.
-pub const SELF_ENVIRON: &[u8] = b"AMPLIHACK_FAKE=1\0";
-
-/// Fill an existing directory `root` with the files every fake process
-/// table holds: `self/` (mode 0700) and `self/environ` (mode 0600) with
-/// [`SELF_ENVIRON`]. `self/environ` must exist, or the liveness scan reports
-/// "unsupported" and counts every profile as live. The one builder for both
-/// [`shared_empty_proc_root`] and `FakeProc` (issue #2042); panics on any
-/// I/O failure.
-pub fn seed_proc_tree(root: &Path) {
-    let dir = root.join("self");
-    DirBuilder::new()
-        .mode(0o700)
-        .create(&dir)
-        .unwrap_or_else(|e| panic!("create {}: {e}", dir.display()));
-    let environ = dir.join("environ");
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&environ)
-        .and_then(|mut f| f.write_all(SELF_ENVIRON))
-        .unwrap_or_else(|e| panic!("write {}: {e}", environ.display()));
-}
+#[path = "proc_tree_seed.rs"]
+// `cli_integration` loads this file twice, here and through the other of
+// `isolated_amplihack.rs` / `fake_proc.rs`: one source, the same constants,
+// and `fake_proc.rs` must not name `isolated_amplihack` so the lib tests can
+// include it too (issue #2196).
+#[allow(dead_code, clippy::duplicate_mod)]
+mod proc_tree_seed;
+#[allow(unused_imports)]
+pub use proc_tree_seed::{SELF_ENVIRON, seed_proc_tree};
 
 /// An empty fake process table shared by this test process:
 /// `<shared_temp_home>/fake-proc/`, mode 0700, seeded by [`seed_proc_tree`]

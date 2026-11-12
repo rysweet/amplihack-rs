@@ -216,10 +216,11 @@ fn run(
     run_direct(fake, l, allow_refresh).map(|d| d.report)
 }
 
-/// The whole success: the report and, when credits are on, the shape.
+/// The whole success: the report and, when credits are on, the shape. The
+/// read runs on a clock that does not move (`run_with`), so a loaded host
+/// cannot use up its deadline before the fake answers.
 fn run_direct(fake: &FakeHttp, l: &Login, allow_refresh: bool) -> Result<Direct, &'static str> {
-    let journals = l.journals();
-    read(&endpoints(fake), &request(l, &journals, allow_refresh))
+    run_with(fake, l, allow_refresh)
 }
 
 fn bearer(s: &Seen) -> Option<&str> {
@@ -337,18 +338,21 @@ fn request_guarded<'a>(l: &'a Login, journals: &'a [PathBuf], allow_refresh: boo
 
 /// `read_with` on a clock that does not move, with a counter of the test's
 /// own; the counter must be back at zero when the read returns.
-fn run_with(fake: &FakeHttp, l: &Login, allow_refresh: bool) -> Result<Direct, &'static str> {
+fn read_frozen(ep: &Endpoints, req: &Request) -> Result<Direct, &'static str> {
     let clock = FakeClock::new();
     let counter = AtomicUsize::new(0);
-    let journals = l.journals();
-    let req = request_guarded(l, &journals, allow_refresh);
-    let r = read_with(
-        &endpoints(fake),
-        &req,
-        &Ctx::new(&*clock, &counter, HANG_GUARD),
-    );
+    let r = read_with(ep, req, &Ctx::new(&*clock, &counter, HANG_GUARD));
     assert_eq!(counter.load(Ordering::SeqCst), 0, "a refresh count leaked");
     r
+}
+
+/// `read_frozen` against `fake` with a `HANG_GUARD` deadline.
+fn run_with(fake: &FakeHttp, l: &Login, allow_refresh: bool) -> Result<Direct, &'static str> {
+    let journals = l.journals();
+    read_frozen(
+        &endpoints(fake),
+        &request_guarded(l, &journals, allow_refresh),
+    )
 }
 
 /// A gate a fake server's handler blocks on until the test opens it. The
@@ -1164,6 +1168,13 @@ fn a_refresh_with_the_budget_left_saves_the_rotated_token() {
     )
     .expect("read after a slow refresh");
     assert_eq!(r.report.week_all.map(|w| w.used_percentage), Some(55.0));
+    // The retry carried the rotated token.
+    let retries = gets(&fake);
+    assert_eq!(retries.len(), 2, "one 401 and one retry");
+    assert_eq!(
+        bearer(&retries[1]),
+        Some(format!("Bearer {NEW_ACCESS}").as_str())
+    );
     assert_eq!(posts(&fake), 1);
     assert_eq!(l.doc()["claudeAiOauth"]["accessToken"], NEW_ACCESS);
     assert_eq!(l.doc()["claudeAiOauth"]["refreshToken"], NEW_REFRESH);
@@ -1221,7 +1232,7 @@ fn a_refused_connection_reads_transport() {
     let (ep, _) = Endpoints::resolve(Some(OsStr::new(&base)), Some(OsStr::new(&base)));
     let journals = l.journals();
     assert_eq!(
-        read(&ep, &request(&l, &journals, true)),
+        read_frozen(&ep, &request(&l, &journals, true)),
         Err(reason::TRANSPORT)
     );
 }
@@ -1609,7 +1620,7 @@ fn a_refused_token_connection_is_refresh_failed() {
     let before = fs::read(l.path()).unwrap();
     let journals = l.journals();
     let req = request(&l, &journals, true);
-    assert_eq!(read(&ep, &req), Err(reason::REFRESH_FAILED));
+    assert_eq!(read_frozen(&ep, &req), Err(reason::REFRESH_FAILED));
     assert!(!super::usage_source::not_saved(reason::REFRESH_FAILED));
     assert_eq!(fs::read(l.path()).unwrap(), before);
     assert!(!l.lock().exists());

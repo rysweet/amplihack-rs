@@ -169,9 +169,13 @@ fn amplihack_install_command_with_binary(
         .arg("--local")
         .arg(source)
         .env("HOME", home)
-        // Asset completeness uses the Claude staging fixture. A launcher
-        // context above the checkout must not select a real Codex install.
-        .env("AMPLIHACK_AGENT_BINARY", "claude")
+        // This contract stages generic assets; ambient provider installs and
+        // launcher context must not trigger a real Codex inventory probe.
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", hooks_bin.parent().unwrap().display()),
+        )
+        // Nor may it install the mermaid CLI through a host `npm`.
         .env("AMPLIHACK_SKIP_MMDC", "1")
         .env("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", hooks_bin)
         .env("RECIPE_RUNNER_RS_PATH", recipe_runner)
@@ -464,6 +468,8 @@ fn install_stages_every_source_skill_agent_and_command_directory() {
     let workspace = workspace_root();
 
     amplihack_install_command(home.path(), &hooks_bin, workspace)
+        // Asset staging must not inherit the checkout's persisted launcher.
+        .env("AMPLIHACK_AGENT_BINARY", "copilot")
         .assert()
         .success();
 

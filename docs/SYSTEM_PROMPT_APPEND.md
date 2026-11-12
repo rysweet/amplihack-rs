@@ -240,6 +240,7 @@ The file is written by `ensure_contract_file(home)`:
 | | |
 | --- | --- |
 | Path | `<amplihack home>/private/system-prompt-append.md` |
+| Amplihack home | `AMPLIHACK_HOME` if set, non-empty and not a Git checkout (#2361); otherwise `~/.amplihack`. See [Agent Prompt Channels Reference](reference/agent-prompt-channels.md#the-contract-file) |
 | Directory | `private/`, mode 0700, owned by the current user; a symlink or a foreign owner fails the launch |
 | File | regular file, mode 0600, owned by the current user |
 | When written | at a launch that injects, if the file is missing, has the wrong mode, owner or type, or its bytes differ from the fragment |

@@ -164,6 +164,15 @@ fn install_stages_amplifier_bundle_from_local_checkout_not_stale_source() {
             fs::create_dir_all(&bin_dir).unwrap();
             let hooks_stub = write_stub_hooks_binary(&bin_dir);
 
+            let runner = bin_dir.join("recipe-runner-rs");
+            write_executable(
+                &runner,
+                "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}'\n",
+                0o700,
+            );
+            child_set_var("RECIPE_RUNNER_RS_PATH", &runner);
+            child_set_var("AMPLIHACK_SKIP_MMDC", "1");
+            child_set_var("PATH", format!("{}:/usr/bin:/bin", bin_dir.display()));
             child_set_var("HOME", home.path());
             // This fixture checks local asset provenance with Claude staging;
             // it has no native Codex plugin fixture or credentials.
@@ -174,6 +183,10 @@ fn install_stages_amplifier_bundle_from_local_checkout_not_stale_source() {
             // Issue #1699: `run_install` refreshes every profile under this
             // root; an inherited value would point at the real profiles.
             child_remove_var("AMPLIHACK_CLAUDE_PROFILE_ROOT");
+            // This fixture tests bundle provenance, independently of the
+            // provider selected by the agent running the test suite.
+            child_set_var("AMPLIHACK_AGENT_BINARY", "copilot");
+            child_remove_var("AMPLIHACK_AGENT_BINARY_SOURCE");
             child_set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
             child_set_current_dir(checkout.path());
 

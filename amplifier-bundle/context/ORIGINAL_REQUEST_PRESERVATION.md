@@ -46,8 +46,15 @@ amplihack approach:
 ```
 crates/amplihack-hooks/src/context_preservation/
 crates/amplihack-hooks/src/pre_compact/
-${AMPLIHACK_HOME:-~/.amplihack}/runtime/sessions/<session_key>/logs/ORIGINAL_REQUEST.md
+<hook state root>/runtime/sessions/<session_key>/logs/ORIGINAL_REQUEST.md
 ```
+
+The hook state root is `$AMPLIHACK_HOME` when that is an absolute path with no
+`..` component and not a Git checkout (no `.git` directory, file or symlink at
+its root), and `$HOME/.amplihack` otherwise. When `AMPLIHACK_HOME` names a
+checkout, as it can under `recipe run -w <checkout>`, the file is under
+`$HOME/.amplihack/runtime/`, not in the checkout. See the Hook State Root
+Reference (`docs/reference/hook-state-root.md` in amplihack-rs).
 
 ## Golden Rule
 

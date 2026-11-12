@@ -859,3 +859,93 @@ fn error_rows_have_an_unknown_spend() {
     let p = fallback_with(&lazy, |_| Fallback::new().run(ProbeMode::Auto));
     assert_eq!(p.spend, Spend::Unknown, "claude not found");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1974 (AC5): fresh passive readings start no probe; one stale
+// reading starts one fallback, for that login only.
+// ---------------------------------------------------------------------------
+
+/// Two profiles `a` and `b` under one root, each with a stored reading
+/// observed `ages[i]` seconds ago.
+fn two_logins(ages: [i64; 2]) -> Setup {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let root = tmp.path().join("profiles");
+    for p in ["a", "b"] {
+        fs::create_dir_all(root.join(p)).unwrap();
+        fs::set_permissions(root.join(p), fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    let root = root.canonicalize().unwrap();
+    let state = root.join(".auto-switch.d");
+    fs::create_dir_all(&state).unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+    let n = now();
+    let entry = |age: i64| {
+        json!({
+            "five_hour": {"used_percentage": 7.0, "resets_at": n + 3600},
+            "seven_day": {"used_percentage": 9.0, "resets_at": n + 86_400},
+            "observed_at": n - age,
+            "source": "statusline"
+        })
+    };
+    let usage = json!({"version": 1, "accounts": {"a": entry(ages[0]), "b": entry(ages[1])}});
+    let p = state.join("usage.json");
+    fs::write(&p, usage.to_string()).unwrap();
+    fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).unwrap();
+    Setup { _tmp: tmp, root }
+}
+
+fn plan_for(root: &std::path::Path, name: &str) -> Plan {
+    Plan {
+        creds_dir: root.join(name),
+        passive: Some(ProfileName::parse(name).unwrap()),
+        allow_refresh: true,
+        overflow: false,
+    }
+}
+
+#[test]
+fn fresh_passive_readings_start_no_probe_for_any_login() {
+    let s = two_logins([5, 60]);
+    let fake = failing_server();
+    let env = env_for(&fake, ProbeMode::Ordered);
+    let mut probed = Vec::new();
+    for name in ["a", "b"] {
+        let fb = Fallback::new();
+        let p = read(&env, &plan_for(&s.root, name), &s.root, now(), |m| {
+            fb.run(m)
+        });
+        assert_eq!(p.source, Some(Source::Passive), "{name}");
+        if !fb.calls().is_empty() {
+            probed.push(name);
+        }
+    }
+    assert!(probed.is_empty(), "probed {probed:?}");
+    assert!(fake.seen().is_empty(), "no direct read either");
+}
+
+#[test]
+fn one_stale_reading_starts_one_fallback_for_that_login_only() {
+    // `b` is older than the 300 s default window.
+    let s = two_logins([5, 301]);
+    let fake = failing_server();
+    let env = env_for(&fake, ProbeMode::Ordered);
+    let mut calls = Vec::new();
+    for name in ["a", "b"] {
+        let fb = Fallback::new();
+        let p = read(&env, &plan_for(&s.root, name), &s.root, now(), |m| {
+            fb.run(m)
+        });
+        for m in fb.calls() {
+            calls.push((name, m));
+        }
+        let want = if name == "a" {
+            Source::Passive
+        } else {
+            Source::Fallback
+        };
+        assert_eq!(p.source, Some(want), "{name}");
+    }
+    assert_eq!(calls, [("b", ProbeMode::Auto)]);
+}

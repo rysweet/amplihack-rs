@@ -125,7 +125,8 @@ fn write_executable(path: &Path, content: &str) {
 /// Logs: `$GH_LOG` gets `"$*"` per call; `$GH_ARGV_LOG` gets each argument
 /// on its own line followed by `---`; `$GH_PROMPT_LOG` gets every write or
 /// lookup call (`issue list`, `issue create`, `label create`, `repo view`,
-/// `api rate_limit`, `api user`) made without `GH_PROMPT_DISABLED=1`.
+/// `api rate_limit`, `api user`, `api --hostname`) made without
+/// `GH_PROMPT_DISABLED=1`.
 ///
 /// Scripted behaviour (a `*_SEQ` variable is a space-separated list of
 /// tokens, one per call; after the end the last token repeats):
@@ -136,6 +137,15 @@ fn write_executable(path: &Path, content: &str) {
 ///   never call it.
 ///   `GH_API_USER_EXIT` makes it fail with a fake token on stderr.
 /// - `api repos/...`: 404.
+/// - `api --hostname H repos/O/R/issues/N --jq F` (strict_delivery): answers
+///   only that exact shape, and only for `H` = `STRICT_HOST` (default
+///   `github.com`), `O/R` = `STRICT_REPO` and `N` = `STRICT_NUMBER`; any other
+///   api call with `--hostname` fails, so a wrong endpoint cannot pass.
+///   `STRICT_ISSUE` picks the REST document, and the real `jq` applies `F` to
+///   it, as `gh api --jq` does: `open` (default), `closed` (closed as not
+///   planned), `pull` (a pull request: `pull_request` set, a `/pull/` URL),
+///   `moved` (an open issue whose URL is in another repository) or `fail`
+///   (HTTP 502).
 /// - `api rate_limit`: reset epoch `GH_RESET_EPOCH`, or now + `GH_RESET_IN`
 ///   (default 10). Honours `--jq` by printing the bare epoch.
 /// - `repo view`: `GH_REPO_NWO` (default `example-org/example-repo`), as
@@ -152,7 +162,7 @@ const FAKE_GH: &str = r#"#!/bin/sh
 printf '%s\n' "$*" >> "$GH_LOG"
 { for a in "$@"; do printf '%s\n' "$a"; done; printf '%s\n' '---'; } >> "$GH_ARGV_LOG"
 case "$1:$2" in
-  issue:list|issue:create|label:create|repo:view|api:rate_limit|api:user)
+  issue:list|issue:create|label:create|repo:view|api:rate_limit|api:user|api:--hostname)
     [ "${GH_PROMPT_DISABLED:-}" = "1" ] || printf '%s\n' "$*" >> "$GH_PROMPT_LOG" ;;
 esac
 next_token() {
@@ -174,6 +184,20 @@ case "$1:$2" in
     if [ -n "${GH_API_USER_EXIT:-}" ]; then echo "HTTP 401: Bad credentials token ghp_USERFAKEUSERFAKE" >&2; exit "$GH_API_USER_EXIT"; fi
     printf '%s\n' "${GH_USER_LOGIN:-example-user}"
     exit 0 ;;
+  api:--hostname)
+    if [ "$#" -ne 6 ] || [ "$3" != "${STRICT_HOST:-github.com}" ] || [ "$4" != "repos/${STRICT_REPO:-}/issues/${STRICT_NUMBER:-}" ] || [ "$5" != "--jq" ]; then
+      echo "fake gh: unexpected strict api call: $*" >&2; exit 7
+    fi
+    issue="https://$3/$STRICT_REPO/issues/$STRICT_NUMBER"
+    case "${STRICT_ISSUE:-open}" in
+      open) doc="{\"state\":\"open\",\"html_url\":\"$issue\"}" ;;
+      closed) doc="{\"state\":\"closed\",\"state_reason\":\"not_planned\",\"html_url\":\"$issue\"}" ;;
+      pull) doc="{\"state\":\"open\",\"html_url\":\"https://$3/$STRICT_REPO/pull/$STRICT_NUMBER\",\"pull_request\":{\"url\":\"x\"}}" ;;
+      moved) doc="{\"state\":\"open\",\"html_url\":\"https://$3/elsewhere/moved/issues/$STRICT_NUMBER\"}" ;;
+      fail) echo "HTTP 502: Bad Gateway token ghp_STRICTFAKESTRICTFAKE" >&2; exit 1 ;;
+    esac
+    printf '%s\n' "$doc" | jq -r "$6"
+    exit $? ;;
   api:*) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
   repo:view)
     if [ -n "${GH_REPO_VIEW_EXIT:-}" ]; then echo "gh: could not determine repository" >&2; exit "$GH_REPO_VIEW_EXIT"; fi
@@ -226,11 +250,21 @@ echo "fake gh: unexpected invocation: $*" >&2
 exit 7
 "#;
 
+/// Fake `git`. `check-ref-format --branch` rejects only the shapes the tests
+/// use; `rev-parse --verify --quiet refs/remotes/origin/B^{commit}` succeeds
+/// for each `B` in the space-separated `GIT_ORIGIN_BRANCHES`.
 const FAKE_GIT: &str = r#"#!/bin/sh
 printf '%s\n' "$*" >> "$GIT_LOG"
 case "$1:$2" in
   rev-parse:--is-inside-work-tree) exit 0 ;;
   remote:get-url) printf '%s\n' "${GIT_REMOTE_URL:-https://github.com/example-org/example-repo.git}"; exit 0 ;;
+  check-ref-format:--branch)
+    case "$3" in ''|-*|*..*|*' '*|HEAD) exit 128 ;; esac
+    printf '%s\n' "$3"; exit 0 ;;
+  rev-parse:--verify)
+    b="${4#refs/remotes/origin/}"; b="${b%^\{commit\}}"
+    case " ${GIT_ORIGIN_BRANCHES:-} " in *" $b "*) echo 0123456789abcdef0123456789abcdef01234567; exit 0 ;; esac
+    exit 1 ;;
 esac
 echo "fake git: unexpected invocation: $*" >&2
 exit 2
@@ -262,6 +296,22 @@ impl Sandbox {
         write_executable(&bin.join("git"), FAKE_GIT);
         write_executable(&bin.join("sleep"), FAKE_SLEEP);
         write_executable(&bin.join("az"), FAKE_AZ);
+        // Keep the sandbox PATH private while finding the installed prerequisite
+        // on macOS, where Homebrew tools are outside /usr/local/bin.
+        for (name, lookup) in [
+            ("timeout", "command -v timeout"),
+            ("jq", "command -v jq"),
+            ("sha256sum", "command -v sha256sum || command -v gsha256sum"),
+            ("stat", "command -v gstat || command -v stat"),
+        ] {
+            let output = Command::new("bash").args(["-c", lookup]).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{name} must be installed for process fixtures"
+            );
+            let tool = String::from_utf8(output.stdout).unwrap();
+            std::os::unix::fs::symlink(tool.trim(), bin.join(name)).unwrap();
+        }
         Sandbox { temp }
     }
 
@@ -1659,6 +1709,44 @@ fn missing_issue_create_helper_exits_two() {
     assert!(run.creates().is_empty(), "{}", run.diag());
 }
 
+#[test]
+fn missing_delivery_input_helper_exits_two() {
+    // Step-03 checks strict_delivery before it chooses a path, so without the
+    // helper it cannot tell a strict run from an ordinary one and must stop.
+    let sandbox = Sandbox::new();
+    let home = sandbox.path("fakehome");
+    let tools = home.join("amplifier-bundle").join("tools");
+    fs::create_dir_all(&tools).unwrap();
+    for f in fs::read_dir(tools_dir()).unwrap() {
+        let f = f.unwrap();
+        let name = f.file_name();
+        if name != "workflow_delivery_inputs.sh" && f.path().is_file() {
+            fs::copy(f.path(), tools.join(&name)).unwrap();
+        }
+    }
+    let output = sandbox
+        .bash(&step_body("step-03-create-issue"))
+        .env("AMPLIHACK_HOME", &home)
+        .env("RECIPE_VAR_remote_host_type", "other")
+        .env("RECIPE_VAR_issue_number", "")
+        .env("TASK_DESCRIPTION", TITLE)
+        .output()
+        .unwrap();
+    let run = Run { output, sandbox };
+    run.assert_exit(2);
+    assert!(
+        run.stderr()
+            .contains("ERROR: delivery-input helper not found"),
+        "{}",
+        run.diag()
+    );
+    assert!(
+        !run.stdout().contains("tracking_system=local"),
+        "{}",
+        run.diag()
+    );
+}
+
 // ===========================================================================
 // Helper unit tests (sourced directly)
 // ===========================================================================
@@ -2215,4 +2303,379 @@ fn parallel_launch_forwards_create_issue_to_workstreams() {
         step.contains("AMPLIHACK_CREATE_ISSUE=\"${RECIPE_VAR_create_issue:-}\""),
         "launch-parallel-round-1 must pass create_issue to `orch run`"
     );
+}
+
+// ===========================================================================
+// strict_delivery (docs/reference/workflow-delivery-inputs.md)
+// ===========================================================================
+
+/// A strict run whose issue (`plan/tasks#42`) lives outside this checkout's
+/// repository (`example-org/example-repo`, the fake origin).
+const STRICT_URL: &str = "https://github.com/plan/tasks/issues/42";
+
+fn strict_env<'a>(overrides: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
+    let mut env: Vec<(&str, &str)> = vec![
+        ("RECIPE_VAR_strict_delivery", "true"),
+        ("RECIPE_VAR_repository", "plan/tasks"),
+        ("RECIPE_VAR_pr_repository", "example-org/example-repo"),
+        ("RECIPE_VAR_closing_reference", "plan/tasks#42"),
+        ("RECIPE_VAR_existing_branch", "feat/plan-tasks-42"),
+        ("RECIPE_VAR_create_issue", "false"),
+        ("STRICT_REPO", "plan/tasks"),
+        ("STRICT_NUMBER", "42"),
+    ];
+    for (k, v) in overrides {
+        env.retain(|(key, _)| key != k);
+        env.push((k, v));
+    }
+    env
+}
+
+/// `(issue_number, input overrides, expected reason)` for one refused run.
+type StrictCase<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str);
+
+fn run_strict(issue_number: &str, overrides: &[(&str, &str)]) -> Run {
+    // The task text names another issue and asks for a new one; a strict run
+    // must ignore both.
+    run_step(
+        issue_number,
+        "Create another issue #999 for this",
+        &strict_env(overrides),
+    )
+}
+
+impl Run {
+    /// Exit 2, nothing on stdout (no URL and no local tracking block), the
+    /// reason on stderr, and no issue search, creation or label call.
+    fn assert_strict_refusal(&self, reason: &str) {
+        self.assert_exit(2);
+        assert!(
+            self.stdout().trim().is_empty(),
+            "a refused strict run prints nothing for step-03b\n{}",
+            self.diag()
+        );
+        assert!(
+            self.stderr().contains(reason),
+            "stderr must say {reason:?}\n{}",
+            self.diag()
+        );
+        assert!(
+            !self.stderr().contains("ghp_"),
+            "gh's stderr must stay discarded\n{}",
+            self.diag()
+        );
+        self.assert_no_gh_write_or_search();
+        assert!(
+            self.calls_of("issue", "view").is_empty(),
+            "a strict run never looks up a task-text or local issue\n{}",
+            self.diag()
+        );
+    }
+}
+
+#[test]
+fn strict_delivery_confirms_the_owning_repository_issue_with_one_exact_read() {
+    let run = run_strict("42", &[]);
+    run.assert_exit(0);
+    assert_eq!(run.stdout().trim(), STRICT_URL, "{}", run.diag());
+    let calls = run.gh_calls();
+    assert_eq!(calls.len(), 1, "exactly one gh call\n{}", run.diag());
+    let call = &calls[0];
+    assert_eq!(
+        call[..5],
+        [
+            "api",
+            "--hostname",
+            "github.com",
+            "repos/plan/tasks/issues/42",
+            "--jq"
+        ],
+        "the read names the host and the owning repository's issue endpoint\n{}",
+        run.diag()
+    );
+    assert!(
+        call[5].contains("pull_request")
+            && call[5].contains("state")
+            && call[5].contains("html_url"),
+        "the filter must report a pull request, the issue's state and its URL: {:?}",
+        call[5]
+    );
+    assert!(
+        run.sandbox.read("gh.prompt").is_empty(),
+        "the read runs with GH_PROMPT_DISABLED=1"
+    );
+    run.assert_no_gh_write_or_search();
+    assert_eq!(
+        step_03b_issue_number(&run, "Create another issue #999 for this"),
+        "42",
+        "step-03b keeps the caller's number"
+    );
+}
+
+#[test]
+fn strict_delivery_same_repository_issue_uses_a_bare_reference() {
+    let run = run_strict(
+        "42",
+        &[
+            ("RECIPE_VAR_repository", "example-org/example-repo"),
+            ("RECIPE_VAR_closing_reference", "#42"),
+            ("STRICT_REPO", "example-org/example-repo"),
+        ],
+    );
+    run.assert_exit(0);
+    assert_eq!(
+        run.stdout().trim(),
+        "https://github.com/example-org/example-repo/issues/42",
+        "{}",
+        run.diag()
+    );
+}
+
+#[test]
+fn strict_delivery_ignores_the_remote_host_type() {
+    // base_branch no longer forces a host; strict_delivery reads GitHub
+    // because its contract is GitHub's, whatever host detection said.
+    for host in ["other", "azdo"] {
+        let run = run_strict("42", &[("RECIPE_VAR_remote_host_type", host)]);
+        run.assert_exit(0);
+        assert_eq!(run.stdout().trim(), STRICT_URL, "{host}: {}", run.diag());
+    }
+}
+
+#[test]
+fn strict_delivery_fails_closed_when_the_issue_cannot_be_read() {
+    let run = run_strict("42", &[("STRICT_ISSUE", "fail")]);
+    run.assert_strict_refusal("could not read plan/tasks#42 on github.com (gh exit 1)");
+    assert_eq!(run.calls_of("api", "--hostname").len(), 1);
+}
+
+#[test]
+fn strict_delivery_rejects_a_pull_request_number() {
+    run_strict("42", &[("STRICT_ISSUE", "pull")])
+        .assert_strict_refusal("plan/tasks#42 on github.com is not an issue");
+}
+
+#[test]
+fn strict_delivery_rejects_an_issue_that_answers_from_another_repository() {
+    run_strict("42", &[("STRICT_ISSUE", "moved")])
+        .assert_strict_refusal("plan/tasks#42 on github.com is not an issue");
+}
+
+#[test]
+fn strict_delivery_rejects_a_closed_issue() {
+    // A task closed (here as not planned) while it waited in the caller's
+    // queue is not implemented, as on the ordinary path (#1595).
+    let run = run_strict("42", &[("STRICT_ISSUE", "closed")]);
+    run.assert_strict_refusal("plan/tasks#42 is closed, not open");
+    assert_eq!(run.calls_of("api", "--hostname").len(), 1);
+}
+
+#[test]
+fn strict_delivery_rejects_each_missing_or_contradictory_input_before_any_read() {
+    let cases: &[StrictCase] = &[
+        ("", &[], "issue_number must be the number"),
+        ("#42", &[], "issue_number must be the number"),
+        ("local-issue-42", &[], "issue_number must be the number"),
+        (
+            "42",
+            &[("RECIPE_VAR_create_issue", "true")],
+            "create_issue must not be set",
+        ),
+        (
+            "42",
+            &[("RECIPE_VAR_create_issue", " Yes ")],
+            "create_issue must not be set",
+        ),
+        (
+            "42",
+            &[("RECIPE_VAR_repository", "")],
+            "repository must be the owner/repo",
+        ),
+        (
+            "42",
+            &[("RECIPE_VAR_repository", "plan/../tasks")],
+            "repository must be the owner/repo",
+        ),
+        (
+            "42",
+            &[("RECIPE_VAR_pr_repository", "")],
+            "pr_repository must be the owner/repo",
+        ),
+        (
+            "42",
+            &[("RECIPE_VAR_pr_repository", "someone/else")],
+            "pr_repository 'someone/else' is not this checkout's origin repository ('example-org/example-repo')",
+        ),
+        (
+            "42",
+            &[("RECIPE_VAR_closing_reference", "#42")],
+            "closing_reference must be 'plan/tasks#42'",
+        ),
+        (
+            "42",
+            &[("RECIPE_VAR_closing_reference", "")],
+            "closing_reference must be 'plan/tasks#42'",
+        ),
+        (
+            "42",
+            &[("RECIPE_VAR_existing_branch", "")],
+            "strict_delivery=true requires existing_branch",
+        ),
+        (
+            "42",
+            &[("RECIPE_VAR_base_branch", "dev")],
+            "base_branch 'dev' has no remote-tracking ref origin/dev",
+        ),
+        (
+            "42",
+            &[
+                ("RECIPE_VAR_base_branch", "coordination/tasks"),
+                (
+                    "RECIPE_VAR_forbidden_base_branches",
+                    "release/* coordination/*",
+                ),
+                ("GIT_ORIGIN_BRANCHES", "coordination/tasks"),
+            ],
+            "matches forbidden_base_branches pattern 'coordination/*'",
+        ),
+        (
+            "42",
+            &[
+                ("RECIPE_VAR_base_branch", "feat/plan-tasks-42"),
+                ("GIT_ORIGIN_BRANCHES", "feat/plan-tasks-42"),
+            ],
+            "is the branch being delivered",
+        ),
+    ];
+    for (issue, overrides, reason) in cases {
+        let run = run_strict(issue, overrides);
+        run.assert_strict_refusal(reason);
+        assert!(
+            run.gh_calls().is_empty(),
+            "issue={issue:?} {overrides:?}: inputs are checked before any gh call\n{}",
+            run.diag()
+        );
+    }
+}
+
+#[test]
+fn strict_delivery_accepts_an_existing_authorized_base() {
+    let run = run_strict(
+        "42",
+        &[
+            ("RECIPE_VAR_base_branch", "dev"),
+            (
+                "RECIPE_VAR_forbidden_base_branches",
+                "release/* coordination/*",
+            ),
+            ("GIT_ORIGIN_BRANCHES", "main dev"),
+        ],
+    );
+    run.assert_exit(0);
+    assert_eq!(run.stdout().trim(), STRICT_URL, "{}", run.diag());
+}
+
+#[test]
+fn strict_delivery_off_keeps_ordinary_selection_with_base_branch_set() {
+    // base_branch does not change ordinary selection, with strict_delivery
+    // `false` or empty: on a non-GitHub host step-03 still uses local
+    // tracking, and on GitHub the explicit number is looked up in this
+    // repository as before. This is also the control for the refusals in
+    // `unrecognised_strict_value_or_strict_only_input_without_strict_fails_step_03`:
+    // the same run with the strict-only inputs cleared proceeds.
+    for strict in ["false", ""] {
+        let mut env = strict_env(&[
+            ("RECIPE_VAR_strict_delivery", strict),
+            ("RECIPE_VAR_repository", ""),
+            ("RECIPE_VAR_pr_repository", ""),
+            ("RECIPE_VAR_closing_reference", ""),
+            ("RECIPE_VAR_base_branch", "dev"),
+            ("RECIPE_VAR_remote_host_type", "other"),
+        ]);
+        let run = run_step("42", "Fix the thing", &env);
+        run.assert_local();
+        assert!(
+            run.gh_calls().is_empty(),
+            "strict={strict:?}: {}",
+            run.diag()
+        );
+
+        env.retain(|(k, _)| *k != "RECIPE_VAR_remote_host_type");
+        env.push(("GH_VIEW_ISSUE", "42"));
+        let run = run_step("42", "Fix the thing", &env);
+        run.assert_exit(0);
+        assert_eq!(
+            run.stdout().trim(),
+            format!("{REPO_URL}/issues/42"),
+            "strict={strict:?}: {}",
+            run.diag()
+        );
+        assert!(
+            run.calls_of("api", "--hostname").is_empty(),
+            "strict={strict:?}: {}",
+            run.diag()
+        );
+    }
+}
+
+#[test]
+fn unrecognised_strict_value_or_strict_only_input_without_strict_fails_step_03() {
+    // A strict_delivery other than true/false/empty must not quietly run the
+    // ordinary path, which may pick an issue from the task text, create one
+    // or fall back to local tracking. Nor may repository, pr_repository or
+    // closing_reference be ignored because strict_delivery is off. Each run
+    // below is otherwise a valid strict run, on a host where the ordinary path
+    // would silently use local tracking.
+    let not_a_value = "strict_delivery must be exactly 'true', 'false' or empty";
+    let cases: &[(&[(&str, &str)], &str)] = &[
+        (&[("RECIPE_VAR_strict_delivery", "1")], not_a_value),
+        (&[("RECIPE_VAR_strict_delivery", "yes")], not_a_value),
+        (&[("RECIPE_VAR_strict_delivery", "TRUE")], not_a_value),
+        (&[("RECIPE_VAR_strict_delivery", " true")], not_a_value),
+        (&[("RECIPE_VAR_strict_delivery", "off")], not_a_value),
+        (
+            &[("RECIPE_VAR_strict_delivery", "false")],
+            "strict_delivery is off but strict-only inputs are set: repository pr_repository closing_reference.",
+        ),
+        (
+            &[
+                ("RECIPE_VAR_strict_delivery", ""),
+                ("RECIPE_VAR_pr_repository", ""),
+                ("RECIPE_VAR_closing_reference", ""),
+            ],
+            "strict_delivery is off but strict-only inputs are set: repository.",
+        ),
+        (
+            &[
+                ("RECIPE_VAR_strict_delivery", "false"),
+                ("RECIPE_VAR_repository", ""),
+                ("RECIPE_VAR_closing_reference", ""),
+            ],
+            "strict_delivery is off but strict-only inputs are set: pr_repository.",
+        ),
+        (
+            &[
+                ("RECIPE_VAR_strict_delivery", "false"),
+                ("RECIPE_VAR_repository", ""),
+                ("RECIPE_VAR_pr_repository", ""),
+            ],
+            "strict_delivery is off but strict-only inputs are set: closing_reference.",
+        ),
+    ];
+    for (overrides, reason) in cases {
+        let mut all: Vec<(&str, &str)> = vec![("RECIPE_VAR_remote_host_type", "other")];
+        all.extend_from_slice(overrides);
+        let run = run_strict("42", &all);
+        run.assert_strict_refusal(reason);
+        assert!(
+            run.gh_calls().is_empty(),
+            "{overrides:?}: refused before any gh call\n{}",
+            run.diag()
+        );
+        assert!(
+            !run.stdout().contains("tracking_system=local"),
+            "{overrides:?}: never falls back to local tracking\n{}",
+            run.diag()
+        );
+    }
 }
