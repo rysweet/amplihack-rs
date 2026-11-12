@@ -178,8 +178,8 @@ steps:
       # before any use and passed as one quoted argument. The regex refuses a
       # leading zero, which bash arithmetic would read as octal.
       IV=120
-      if [ -n "${RECIPE_VAR_autodrive_ci_watch_interval+set}" ] || [ -n "${AUTODRIVE_CI_WATCH_INTERVAL+set}" ]; then
-        IV_RAW="${RECIPE_VAR_autodrive_ci_watch_interval-${AUTODRIVE_CI_WATCH_INTERVAL-}}"
+      if [ -n "${RECIPE_VAR_autodrive_ci_watch_interval+set}" ]; then
+        IV_RAW="${RECIPE_VAR_autodrive_ci_watch_interval}"
         if [ "${#IV_RAW}" -le 6 ] && [[ "$IV_RAW" =~ ^[1-9][0-9]{1,5}$ ]] && [ "$IV_RAW" -ge 60 ]; then
           IV="$IV_RAW"
         else
