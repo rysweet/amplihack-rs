@@ -20,6 +20,9 @@ mod parse;
 mod process_tree;
 mod resolve;
 pub mod run;
+/// Issue #2175: the record `recipe stop <run_id>` finds a run by.
+#[cfg(target_os = "linux")]
+mod run_record;
 pub mod show_validate;
 /// Issue #1606: `recipe stop`.
 pub mod stop;

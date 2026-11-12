@@ -46,7 +46,7 @@ After the round record is written, an agent selects the next action:
 Completed reviews repeated in persisted history or within the same run are
 still complete. An unchanged `MINOR_ONLY` verdict is not evidence of
 nonconvergence. A finding that was previously major still follows the
-[minor-classification rules](auto-drive-to-merge.md#how-a-round-becomes-minor_only);
+[minor-classification rules](auto-drive-to-merge.md#crusty-review);
 history does not override those rules.
 
 This selection is agent judgment under SR-103. Shell code does not choose an
@@ -169,7 +169,8 @@ A filing failure, missing dependency, missing receipt or dry run with
 unrecorded required follow-ups leaves the phase incomplete. An older marker
 cannot authorize a newer unfinished review. Existing valid receipts remain
 available for recovery without duplicate issues. Later merge-loop filing
-remains idempotent and the merge gate still checks follow-up evidence.
+remains idempotent, and finalization refuses to report readiness while a
+required follow-up is unrecorded.
 
 ## Behavior examples
 
@@ -197,4 +198,4 @@ errors require correction of the installation or evidence source; replaying
 a decision or editing a phase marker cannot resume the run safely. Follow-up
 failures leave existing receipts available for a rerun after the recording
 problem is resolved. No completion decision authorizes a merge; the existing
-merge-ready checks and merge gate remain authoritative.
+merge-ready checks and finalization remain authoritative.

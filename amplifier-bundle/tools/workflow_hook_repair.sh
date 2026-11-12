@@ -144,9 +144,11 @@ hook_repair_is_rejection() {
 }
 
 # hook_repair_terminal_refusal <rc> <log>: exit 79, or the guard's marker outside
-# input echoes. Copied from autodrive_loop.sh terminal_refusal, except that
-# the last grep reads all its input (no -q), so a marker followed by a large
-# log is not lost to SIGPIPE under pipefail.
+# input echoes. Copied from the #1510 terminal_refusal autodrive_loop.sh used to
+# have, except that the last grep reads all its input (no -q), so a marker
+# followed by a large log is not lost to SIGPIPE under pipefail. The auto-drive
+# loop no longer reads text for this (#1437, autodrive_refusal.sh); this repair
+# loop still does, and its filter must stay equal to log_body.
 hook_repair_terminal_refusal() {
   [ "${1:-0}" = "$HOOK_REPAIR_EXIT_TERMINAL" ] && return 0
   [ -f "${2:-}" ] && awk 'NR > 1 { if (prev ~ /^Recipe: / && $0 ~ /^(Run ID|Status): /) { cut = 1; exit } print prev } { prev = $0 } END { if (NR > 0 && !cut) print prev }' "$2" 2>/dev/null \

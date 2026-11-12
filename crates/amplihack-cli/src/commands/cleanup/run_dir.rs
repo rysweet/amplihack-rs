@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 pub(crate) const RUN_JSON: &str = "run.json";
@@ -261,10 +261,28 @@ pub(crate) fn format_owned_line(item: &OwnedPath) -> Vec<u8> {
 
 /// Reads a file of at most `max` bytes without following a symlink.
 pub(crate) fn read_capped_nofollow(path: &Path, max: u64) -> std::io::Result<Vec<u8>> {
+    read_capped_nofollow_with_metadata(path, max).map(|(bytes, _)| bytes)
+}
+
+/// [`read_capped_nofollow`], also returning the metadata of the handle that
+/// was read, so owner and mode describe that file and not a later one.
+pub(crate) fn read_capped_nofollow_with_metadata(
+    path: &Path,
+    max: u64,
+) -> std::io::Result<(Vec<u8>, fs::Metadata)> {
+    // O_NONBLOCK: opening a FIFO with no writer returns at once instead of
+    // blocking; it has no effect on a regular file.
     let file = fs::OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("{} is not a regular file", path.display()),
+        ));
+    }
     let mut buf = Vec::new();
     file.take(max + 1).read_to_end(&mut buf)?;
     if buf.len() as u64 > max {
@@ -273,7 +291,7 @@ pub(crate) fn read_capped_nofollow(path: &Path, max: u64) -> std::io::Result<Vec
             format!("{} is larger than {max} bytes", path.display()),
         ));
     }
-    Ok(buf)
+    Ok((buf, metadata))
 }
 
 /// The `owned-paths` entries of a run folder (empty when the file is missing).
@@ -516,10 +534,44 @@ impl RunWorkspace {
         create_private_dir_all(&dir.path().join("artifacts"))?;
         Ok(Self::Legacy { dir })
     }
+    /// The durable run folder, or `None` for a dry run's temporary space.
+    ///
+    /// #2329: auto-drive keeps its private state in this folder, so it is
+    /// checked once here: a real directory (not a symlink) owned by the
+    /// current user and not writable by group or others.
+    pub(crate) fn durable_run_dir(&self) -> Result<Option<&Path>> {
+        let Self::Scoped { scope, .. } = self else {
+            return Ok(None);
+        };
+        let run_dir = scope.run_dir.as_path();
+        let metadata = fs::symlink_metadata(run_dir)
+            .with_context(|| format!("cannot inspect run folder {}", run_dir.display()))?;
+        anyhow::ensure!(
+            metadata.is_dir() && !metadata.file_type().is_symlink(),
+            "run folder {} is not a directory",
+            run_dir.display()
+        );
+        anyhow::ensure!(
+            metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o022 == 0,
+            "run folder {} is not owned by the current user or is writable by group or others",
+            run_dir.display()
+        );
+        Ok(Some(run_dir))
+    }
+
     pub(crate) fn runtime_dir(&self) -> &Path {
         match self {
             Self::Scoped { guard, .. } => guard.path(),
             Self::Legacy { dir } => dir.path(),
+        }
+    }
+
+    /// The run folder `<work root>/runs/<id>/`; `None` for a dry run, which
+    /// has none (issue #2175: so it writes no process record either).
+    pub(crate) fn run_dir(&self) -> Option<&Path> {
+        match self {
+            Self::Scoped { scope, .. } => Some(&scope.run_dir),
+            Self::Legacy { .. } => None,
         }
     }
 
