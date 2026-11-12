@@ -1532,16 +1532,18 @@ gh pr view "$PR_NUMBER" --json baseRefName,mergeStateStatus
 
 `PR_NUMBER` must be all digits. The base name must pass
 `git check-ref-format --branch`, must not start with `-` and must not contain
-`@{`. An empty or unreadable base name falls back to `main`; a base name that
-is present but fails validation gives `state-unreadable`.
+`@{`. When `gh pr view` fails, or the base name or merge state is empty, the
+step reports `state-unreadable` before any fetch; there is no default base. A
+base name that is present but fails validation gives `state-unreadable` too.
 
-The step takes the first row that matches, in table order. The first two rows
-are decided before any fetch; the step then runs `git fetch origin "$BASE"`
+The step takes the first row that matches, in table order. The first three
+rows are decided before any fetch; the step then runs `git fetch origin "$BASE"`
 and tests the rest:
 
 | Condition | Action | `sync_reason` | `synced` | `conflict` |
 | --- | --- | --- | --- | --- |
-| Not a git work tree | nothing | `not-a-repo` | `false` | `unknown` |
+| `REPO_PATH` cannot be entered, or is not a git work tree | nothing | `not-a-repo` | `false` | `unknown` |
+| The PR could not be read, or its base name or merge state is empty | nothing, not even a fetch | `state-unreadable` | `false` | `false` |
 | The base name failed validation | nothing, not even a fetch | `state-unreadable` | `false` | `false` |
 | `git fetch` fails, or `origin/<base>` is unreadable after it | nothing | `fetch-failed` | `false` | `false` |
 | `HEAD` already contains `origin/<base>` | nothing | `up-to-date` | `false` | `false` |
@@ -1549,21 +1551,28 @@ and tests the rest:
 | `DIRTY`, and the local merge conflicts | `git merge --abort`, no push | `conflict` | `false` | `true` |
 | `DIRTY`, and the local merge is clean (GitHub's state is stale) | push once | `dirty-stale` | `true` | `false` |
 | `behind-strict` or `dirty-stale` applied, but the merge left the tree unchanged | merge undone, no push | `no-op-merge` | `false` | `false` |
-| `behind-strict` or `dirty-stale` applied, but `git push` was rejected | the merge commit stays local | `push-failed` | `false` | `false` |
+| `behind-strict` or `dirty-stale` applied, but `git push` was rejected | merge undone, nothing pushed | `push-failed` | `false` | `false` |
 | `CLEAN`, `BLOCKED`, `UNSTABLE`, `HAS_HOOKS` or any other value | nothing | `not-required` | `false` | `false` |
-| `mergeStateStatus` is `UNKNOWN` or empty, or `gh`/`jq` failed | nothing | `state-unreadable` | `false` | `false` |
+| `mergeStateStatus` is `UNKNOWN` | nothing | `state-unreadable` | `false` | `false` |
 
 A merge that leaves the tree unchanged (`git diff --quiet "$PRE" HEAD`, where
 `PRE` is the head before the merge) is not pushed. The step undoes it with
 `git reset --keep "$PRE"`, so the local head stays the pushed head that CI ran
 on, and reports `sync_reason: no-op-merge` with `synced: false`. The push is a plain `git push` to the branch's upstream: no
-force, no hook-skipping flag, no retry. The branch-protection API is not
+force, no hook-skipping flag, no retry. When the push is rejected, the step
+undoes the merge with the same `git reset --keep "$PRE"` and reports
+`push-failed`, so the local head stays the pushed head, step-01b reads CI for
+that head, and the next round tries the sync again. The branch-protection API is not
 called; `mergeStateStatus` already says whether GitHub needs the branch to
 move.
 
 A repository without the strict up-to-date rule can now reach the merge gate
 while behind its base. That is intended: GitHub's own merge check and the
-gate's re-read stay authoritative.
+gate's re-read stay authoritative. A branch the step leaves `BEHIND` (for
+example after `push-failed` or `no-op-merge`) is never merge-ready, because
+criterion 8 is met only for `CLEAN`, `HAS_HOOKS` or `UNSTABLE`, and
+`autodrive_merge_gate.sh` blocks a `BEHIND` `mergeStateStatus` before any
+merge.
 
 `merge_sync` is one JSON line built with `jq -cn --arg`:
 
@@ -1696,6 +1705,11 @@ superseded by a re-run, gives `RED`; re-run or remove it to clear the round.
 `PENDING` is not merge-ready: criterion 4 holds the round on anything but
 `GREEN`.
 
+Step-01b reads only GitHub Actions runs. Status checks that an outside
+service posts on the commit are not part of `ci_status`, so they do not make
+it `RED`; criterion 8 is the backstop, because GitHub keeps `mergeStateStatus`
+off `CLEAN` while a required check of any kind has not passed.
+
 `PENDING` from step-01b carries `ci_signal` `no-run-for-head`, which does not
 contain the text `PENDING`. The [no-progress stop](#no-progress-stop-and-usage-budget)
 exempts only signals that contain it, so two rounds in a row with the same
@@ -1717,7 +1731,7 @@ fix the workflow's trigger, then relaunch the drive.
 | --- | --- |
 | `ci_status` | `GREEN`, `RED`, `PENDING`, `NO_CHECKS` or `UNREADABLE`. Criterion 4 holds the round on anything but `GREEN`. |
 | `ci_total` | Runs kept for the head. |
-| `ci_pending` | Always `0`. For `GREEN` and `RED` the wait has returned; for `PENDING` and `NO_CHECKS` there is no run at the head to wait on; for `UNREADABLE` nothing was counted. |
+| `ci_pending` | Runs still in progress after the wait, which is always `0`; it does not mean that `ci_status` is `PENDING`. For `GREEN` and `RED` the wait has returned; for `PENDING` and `NO_CHECKS` there is no run at the head to wait on; for `UNREADABLE` nothing was counted. |
 | `ci_failing` | Runs with a failing conclusion. |
 | `ci_signal` | `<ci_status>:<failing>/<total>`, or `unreadable`, `no-repo` or `no-run-for-head`. The value the round record and the [no-progress stop](#no-progress-stop-and-usage-budget) compare. |
 | `head_sha` | The SHA the runs were bound to. For information only: the merge gate binds to `headRefOid` and passes `--match-head-commit`. |

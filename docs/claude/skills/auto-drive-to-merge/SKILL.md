@@ -339,9 +339,10 @@ allowance. The interval only sets how often `gh` refreshes the run; the round
 adds no sleep, polling loop or retry of its own, and the wait ends when the
 runs finish. Until a run exists at the head, CI is `PENDING`, which is not
 merge-ready; two such rounds in a row with the same head and open items stop
-the loop as `STUCK`, so a workflow that never fires cannot keep it running. The round merges the base and pushes only when GitHub reports the
-branch `BEHIND`, or `DIRTY` while the local merge is clean, so it does not
-restart CI on every round. See
+the loop as `STUCK`, so a workflow that never fires cannot keep it running.
+The round merges the base and pushes only when GitHub reports the branch
+`BEHIND`, or `DIRTY` while the local merge is clean, so it does not restart
+CI on every round. See
 [Merge evidence steps](../../../docs/reference/auto-drive-to-merge.md#merge-evidence-steps).
 Test suites, builds, and model calls run to their natural end. A false
 timeout costs more than a slow run.

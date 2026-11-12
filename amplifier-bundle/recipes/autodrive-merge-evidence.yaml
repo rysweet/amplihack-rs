@@ -48,6 +48,9 @@ steps:
   # local merge is clean). Every other state leaves the branch alone, so a
   # round does not restart CI it is about to wait on. Policy table:
   # docs/reference/auto-drive-to-merge.md#when-the-round-syncs-with-the-base.
+  # A branch this step leaves BEHIND is never merge-ready: criterion 8 is met
+  # only for CLEAN, HAS_HOOKS or UNSTABLE, and autodrive_merge_gate.sh blocks
+  # a BEHIND mergeStateStatus before any merge.
   - id: "step-01-sync-with-base"
     type: "bash"
     parse_json: true
@@ -63,7 +66,7 @@ steps:
       [ -n "$TOOLS_D" ] || TOOLS_D="${AMPLIHACK_HOME:-}/amplifier-bundle/tools"
       [ ! -L "$TOOLS_D/git-repo-env.sh" ] && . "$TOOLS_D/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env || { echo "STOP: cannot load git-repo-env.sh from the tools directory (#2033)" >&2; exit 1; }
       echo "INFO: cleared git env: ${AMPLIHACK_GIT_ENV_CLEARED}; run env: ${AMPLIHACK_RUN_ENV_CLEARED} (#2033)" >&2
-      cd "${REPO_PATH:-.}" 2>/dev/null || true
+      cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH; the branch cannot be synced." >&2; printf '{"base":"","synced":"false","conflict":"unknown","head_sha":"","git_observed":"false","sync_reason":"not-a-repo"}\n'; exit 0; }
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "[skip] not a git repo; the branch cannot be brought up to date and is reported unsynced, never as clean" >&2
@@ -98,14 +101,12 @@ steps:
           fi
           ;;
       esac
-      if [ -z "$BASE" ]; then
-        BASE="main"
-      else
-        case "$BASE" in
-          -*|*@\{*) emit "" false false state-unreadable ;;
-        esac
-        git check-ref-format --branch "$BASE" >/dev/null 2>&1 || emit "" false false state-unreadable
-      fi
+      # Without the PR's base and state nothing is fetched, merged or pushed.
+      [ -n "$STATE" ] && [ -n "$BASE" ] || emit "" false false state-unreadable
+      case "$BASE" in
+        -*|*@\{*) emit "" false false state-unreadable ;;
+      esac
+      git check-ref-format --branch "$BASE" >/dev/null 2>&1 || emit "" false false state-unreadable
       if ! git fetch origin "$BASE" >/dev/null 2>&1; then
         echo "WARNING: could not fetch origin/${BASE}; up-to-date state is unknown and will be reported as unverified." >&2
         emit "$BASE" false false fetch-failed
@@ -132,7 +133,8 @@ steps:
         emit "$BASE" false false no-op-merge
       fi
       if ! git push >&2; then
-        echo "WARNING: merged origin/${BASE} but the push was rejected; the merge commit stays local and CI has no run for this head." >&2
+        echo "WARNING: merged origin/${BASE} but the push was rejected; the merge is undone so the next round retries the sync." >&2
+        git reset -q --keep "$PRE" || echo "WARNING: could not undo the unpushed merge; the local head differs from the pushed head." >&2
         emit "$BASE" false false push-failed
       fi
       emit "$BASE" true false "$REASON"

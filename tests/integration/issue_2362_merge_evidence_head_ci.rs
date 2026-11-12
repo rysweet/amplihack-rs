@@ -446,9 +446,11 @@ impl Sandbox {
         }
     }
 
+    /// The stub's call log. Panics when the stub never ran, so a test that
+    /// asserts an absent call cannot pass on an empty log.
     fn calls(&self) -> Vec<String> {
         fs::read_to_string(self.state().join("calls.log"))
-            .unwrap_or_default()
+            .expect("stub gh never ran: calls.log missing")
             .lines()
             .map(str::to_string)
             .collect()
@@ -1168,7 +1170,13 @@ fn sync_policy_pushes_only_when_github_requires_it() {
         assert_eq!(field(&out, "sync_reason"), case.reason, "{name}: {out}");
         assert_eq!(field(&out, "synced"), case.synced, "{name}: {out}");
         assert_eq!(field(&out, "conflict"), case.conflict, "{name}: {out}");
-        assert_eq!(field(&out, "base"), "main", "{name}: {out}");
+        // An empty state stops the step before the base is used.
+        let want_base = if case.merge_state.is_empty() {
+            ""
+        } else {
+            "main"
+        };
+        assert_eq!(field(&out, "base"), want_base, "{name}: {out}");
         assert_eq!(field(&out, "git_observed"), "true", "{name}: {out}");
         assert_eq!(field(&out, "head_sha"), sb.head(), "{name}: {out}");
 
@@ -1268,7 +1276,7 @@ fn a_merge_that_changes_nothing_is_not_pushed() {
 }
 
 #[test]
-fn push_failure_is_reported_and_ci_is_not_green() {
+fn push_failure_undoes_the_merge_and_reports_old_head_ci() {
     let sb = Sandbox::new();
     sb.merge_state("BEHIND");
     sb.active_workflow();
@@ -1291,16 +1299,98 @@ fn push_failure_is_reported_and_ci_is_not_green() {
         before_origin,
         "the rejected push must not move origin"
     );
-
-    let evidence = sb.result(WAIT_STEP).json(WAIT_STEP);
-    assert_eq!(field(&evidence, "head_sha"), sb.head(), "{evidence}");
-    // The unpushed merge has no run: PENDING, never GREEN.
-    assert_eq!(field(&evidence, "ci_status"), "PENDING", "{evidence}");
-    assert_eq!(
-        field(&evidence, "ci_signal"),
-        "no-run-for-head",
-        "{evidence}"
+    // The unpushed merge is undone, so the local head is the pushed head
+    // and the next round tries the sync again.
+    assert_eq!(sb.head(), old, "the rejected merge must be undone");
+    assert_eq!(field(&sync_out, "head_sha"), old, "{sync_out}");
+    assert!(
+        !sb.work().join(".git/MERGE_HEAD").exists(),
+        "no merge may be left in progress"
     );
+
+    // CI is read for the head GitHub has, where run 801 succeeded.
+    let evidence = sb.result(WAIT_STEP).json(WAIT_STEP);
+    assert_eq!(field(&evidence, "head_sha"), old, "{evidence}");
+    assert_eq!(field(&evidence, "ci_status"), "GREEN", "{evidence}");
+}
+
+#[test]
+fn a_missing_repo_path_never_syncs_the_current_repository() {
+    // REPO_PATH names no directory; the step runs from inside `work`, a
+    // repository that is behind and would otherwise be merged and pushed.
+    let sb = Sandbox::new();
+    sb.merge_state("BEHIND");
+    behind(&sb);
+    let missing = sb.root.join("no-such-repo");
+    let (before_head, before_origin) = (sb.head(), sb.origin_ref("feat"));
+    let (before_main, before_origin_main) = (
+        sb.git(&sb.seed(), &["rev-parse", "main"]),
+        sb.origin_ref("main"),
+    );
+
+    let (out, result) = sb.step_json_env(SYNC_STEP, &[("REPO_PATH", missing.to_str().unwrap())]);
+    assert_eq!(field(&out, "sync_reason"), "not-a-repo", "{out}");
+    assert_eq!(field(&out, "synced"), "false", "{out}");
+    assert_eq!(field(&out, "git_observed"), "false", "{out}");
+    assert_eq!(field(&out, "head_sha"), "", "{out}");
+    assert!(
+        result.stderr.contains("cannot cd to REPO_PATH"),
+        "{}",
+        result.stderr
+    );
+    assert!(!missing.exists(), "the step must not create REPO_PATH");
+    assert_eq!(
+        sb.head(),
+        before_head,
+        "the current repository must not merge"
+    );
+    assert_eq!(
+        sb.origin_ref("feat"),
+        before_origin,
+        "nothing may be pushed"
+    );
+    assert_eq!(
+        sb.git(&sb.seed(), &["rev-parse", "main"]),
+        before_main,
+        "the other repository must not change"
+    );
+    assert_eq!(
+        sb.origin_ref("main"),
+        before_origin_main,
+        "nothing may be pushed"
+    );
+    assert!(
+        !sb.work().join(".git/MERGE_HEAD").exists(),
+        "no merge may be started"
+    );
+    // The step stops before it reads the PR, so gh never runs.
+    assert!(
+        !sb.state().join("calls.log").exists(),
+        "gh must not be called for a missing REPO_PATH"
+    );
+}
+
+#[test]
+fn unreadable_pr_state_is_not_reported_up_to_date() {
+    // gh pr view fails while the branch is level with origin/main: the step
+    // reports state-unreadable, never up-to-date, and does not fetch.
+    let sb = Sandbox::new();
+    sb.set("pr_view_fail", "");
+    let fetch_head = sb.work().join(".git/FETCH_HEAD");
+    assert!(!fetch_head.exists(), "the fresh clone has no FETCH_HEAD");
+    let (before_head, before_origin) = (sb.head(), sb.origin_ref("feat"));
+
+    let out = sync(&sb);
+    assert_eq!(field(&out, "sync_reason"), "state-unreadable", "{out}");
+    assert_eq!(field(&out, "synced"), "false", "{out}");
+    assert_eq!(field(&out, "base"), "", "{out}");
+    assert_eq!(sb.head(), before_head, "must not merge");
+    assert_eq!(sb.origin_ref("feat"), before_origin, "must not push");
+    assert!(!fetch_head.exists(), "an unreadable PR must not fetch");
+    let calls = sb.calls();
+    assert_eq!(calls.len(), 1, "only the PR is read: {calls:#?}");
+    assert!(calls[0].starts_with("pr view"), "{calls:#?}");
+    assert!(!calls.iter().any(|c| c.contains("fetch")), "{calls:#?}");
 }
 
 // ---------------------------------------------------------------------------
