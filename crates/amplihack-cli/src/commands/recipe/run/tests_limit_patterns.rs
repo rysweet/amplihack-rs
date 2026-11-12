@@ -217,3 +217,74 @@ fn reset_hint_quotes_the_text_after_the_anchor_as_today() {
         "the classifier's hint is a thin wrapper"
     );
 }
+
+// Issue #2230: Claude Code now names the session window "5-hour limit".
+
+/// The line from #2230.
+const FIVE_HOUR: &str = "You've hit your 5-hour limit · resets 8:20pm (America/Los_Angeles)";
+/// 2026-10-18 20:20:00 -07:00, the reset FIVE_HOUR states at NOW.
+const LA_2020: i64 = 1_792_380_000;
+/// 2026-10-18 21:00:00 -07:00, past 20:20 and its 10-minute grace.
+const LA_2100: i64 = 1_792_382_400;
+
+#[test]
+fn the_five_hour_limit_message_is_read_from_stderr() {
+    assert_eq!(
+        limit_message(FIVE_HOUR.as_bytes(), b"", NOW),
+        msg(Some(LA_2020), false)
+    );
+}
+
+#[test]
+fn a_per_model_limit_message_is_read_from_stderr() {
+    let opus = "You've hit your Opus limit · resets 8:20pm (America/Los_Angeles)";
+    assert_eq!(
+        limit_message(opus.as_bytes(), b"", NOW),
+        msg(Some(LA_2020), false)
+    );
+}
+
+#[test]
+fn the_five_hour_limit_message_is_read_from_the_last_line_of_stdout() {
+    let out = format!("attempt output\n{FIVE_HOUR}\n\n");
+    assert_eq!(
+        limit_message(b"", out.as_bytes(), NOW),
+        msg(Some(LA_2020), false)
+    );
+}
+
+#[test]
+fn the_five_hour_limit_message_with_a_curly_apostrophe_is_read() {
+    let curly = FIVE_HOUR.replace('\'', "\u{2019}");
+    assert_eq!(
+        limit_message(curly.as_bytes(), b"", NOW),
+        msg(Some(LA_2020), false)
+    );
+    assert_eq!(
+        classify_failure_text(&curly),
+        (FailureClass::UsageLimit, Some("5-hour limit"))
+    );
+}
+
+#[test]
+fn a_five_hour_reset_already_passed_today_is_tomorrows() {
+    assert_eq!(
+        limit_message(FIVE_HOUR.as_bytes(), b"", LA_2100),
+        msg(Some(LA_2020 + 86_400), false)
+    );
+}
+
+#[test]
+fn reset_hint_quotes_the_five_hour_reset() {
+    assert_eq!(
+        reset_hint(FIVE_HOUR).as_deref(),
+        Some("8:20pm (America/Los_Angeles)")
+    );
+}
+
+#[test]
+fn prose_naming_a_model_limit_is_not_a_limit_message() {
+    let out = "Here is the answer.\nThe Opus limit is documented here\n";
+    assert_eq!(limit_message(b"", out.as_bytes(), NOW), None);
+    assert_eq!(limit_message(out.as_bytes(), b"", NOW), None);
+}

@@ -3,43 +3,36 @@
 # the auto-drive-to-merge merge loop. step-02-qa-team-scenarios of
 # autodrive-merge-evidence.yaml runs this file (moved out of the step, PR #1520).
 #
-# Criterion 1 follows qa-team's repo-type table: one or two measurements,
-# both always run so the evidence lists every cause at once. (1) The suite
-# command from the first source present (#1763): env, .amplihack/qa.toml, one
-# clean CI step, or `cargo test`, `npm test` or `pytest` detected in the
-# project the changed paths pick (QA_UNRESOLVED when they pick none, and
-# nothing runs). (2) Only where autodrive_gadugi_required says true (a Node
-# project, or AUTODRIVE_QA_SCENARIO_DIR set): the qa-team scenarios, validated
-# with `gadugi-test validate` and run one `gadugi-test run --scenario` per
-# file. Elsewhere gadugi_status is NOT_REQUIRED and gadugi-test is never
-# called: qa-team's Rust CLI rule substitutes `cargo test`, and a measured docs_only drops (2) in a Node project too (#2219).
+# Criterion 1 follows qa-team's repo-type table: one or two measurements, both always run so the evidence
+# lists every cause at once. (1) The suite command from the first source present (#1763): env,
+# .amplihack/qa.toml, one clean CI step, or `cargo test`, `npm test` or `pytest` detected in the project the
+# changed paths pick (QA_UNRESOLVED when they pick none, and nothing runs). (2) Only where
+# autodrive_gadugi_required says true (a Node project, or AUTODRIVE_QA_SCENARIO_DIR set): the qa-team scenarios,
+# validated with `gadugi-test validate` and run one `gadugi-test run --scenario` per file. Elsewhere gadugi_status
+# is NOT_REQUIRED and gadugi-test is never called: qa-team's Rust CLI rule substitutes `cargo test`, and a
+# measured docs_only drops (2) in a Node project too (#2219).
 #
 # Input comes from the environment only:
 #   REPO_PATH              the repository to measure (default: the working directory)
 #   AUTODRIVE_QA_EVIDENCE  file the evidence is written to, private (optional)
 #   AUTODRIVE_ROUND_LABEL  recorded as qa_round
 #   AUTODRIVE_QA_BASE      the base branch name, for the changed paths
-#   AUTODRIVE_REQUIRE_CI   true in merge preparation: QA needs completed GREEN CI (#2342),
-#                          read from RECIPE_VAR_ci_evidence
-#   AUTODRIVE_QA_COMMAND, AUTODRIVE_QA_DIR, AUTODRIVE_QA_COMMANDS and
-#   AUTODRIVE_QA_SCENARIO_DIR, described where they are read below.
-# Output: one JSON line on stdout, and the same line in AUTODRIVE_QA_EVIDENCE.
-# qa_status is PASS only when every measurement that applies passes. Exit 0
-# whenever evidence was produced, PASS or not; exit 1 when REPO_PATH, a
-# temporary file or the helpers beside this file are unavailable, so that no
-# evidence exists. Executed, never sourced; the helpers are sourced from
-# beside this file and from nowhere else.
+#   AUTODRIVE_REQUIRE_CI   exactly true: QA needs completed GREEN CI in RECIPE_VAR_ci_evidence (#2342)
+#   AUTODRIVE_QA_COMMAND, AUTODRIVE_QA_DIR, AUTODRIVE_QA_COMMANDS and AUTODRIVE_QA_SCENARIO_DIR, described below.
+# Output: one JSON line on stdout, and the same line in AUTODRIVE_QA_EVIDENCE. qa_status is PASS only when every
+# measurement that applies passes. Exit 0 whenever evidence was produced, PASS or not; exit 1 when REPO_PATH, a
+# temporary file or the helpers beside this file are unavailable. Executed, never sourced; helpers come from beside it.
 # NO-TIMEOUT POLICY (issue #439): a test suite is never cut off mid-run.
 set -uo pipefail
-# This file's own directory, found before the cd below because BASH_SOURCE may
-# be relative. Without the helpers there the tool cannot tell which
-# measurements apply, so it produces no evidence. An exported CDPATH would
-# make a relative `cd` resolve outside the repository and run the suite there,
-# silently (#1516 security review).
+# This file's own directory, found before the cd below (BASH_SOURCE may be relative); without the helpers there,
+# no evidence. CDPATH is unset so a relative `cd` cannot run the suite outside the repository (#1516 review).
+# Inherited GIT_* and outer-run AMPLIHACK_* are cleared before any cd or git (#2033).
 unset CDPATH
 H="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
-{ [ -n "$H" ] && [ -f "$H/autodrive_state.sh" ] && [ -f "$H/autodrive_trust.sh" ]; } \
-  || { echo "ERROR: autodrive-qa-helpers-not-found: autodrive_state.sh or autodrive_trust.sh is missing" >&2; exit 1; }
+{ [ -n "$H" ] && [ -f "$H/autodrive_state.sh" ] && [ -f "$H/autodrive_trust.sh" ] && [ -f "$H/git-repo-env.sh" ] \
+    && [ ! -L "$H/git-repo-env.sh" ] && . "$H/git-repo-env.sh"; } \
+  || { echo "ERROR: autodrive-qa-helpers-not-found: autodrive_state.sh, autodrive_trust.sh or git-repo-env.sh is missing" >&2; exit 1; }
+amplihack_clear_git_repo_env; amplihack_clear_run_identity_env; GCLR="$AMPLIHACK_GIT_ENV_CLEARED"; RCLR="$AMPLIHACK_RUN_ENV_CLEARED"
 cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
 ROOT="$(pwd -P)"
 EVIDENCE="${AUTODRIVE_QA_EVIDENCE:-}"
@@ -77,10 +70,9 @@ case "${KIND}:${GREQ}:${DOCSONLY}" in # node:false is legal only beside docs_onl
      exit 1 ;;
 esac
 [ -z "$NOSCOPE" ] || PATHS="(unknown)"
-# Where a detected command runs: `<type><TAB><dir>` or `unresolved<TAB><candidates>`,
-# checked again here: an odd token, an unsafe directory, or a type that
-# disagrees with KIND leaves no detected command, so the evidence is BLOCKED
-# rather than run at the root.
+# Where a detected command runs: `<type><TAB><dir>` or `unresolved<TAB><candidates>`, checked again here: an odd
+# token, an unsafe directory, or a type that disagrees with KIND leaves no detected command, so the evidence is
+# BLOCKED rather than run at the root.
 TKIND="${TARGET%%$'\t'*}"; TDIR="${TARGET#*$'\t'}"; UNRES=""; TBAD=""
 case "$TARGET" in *$'\t'*) ;; *) TBAD="1" ;; esac
 case "$TKIND" in
@@ -93,11 +85,9 @@ if [ -n "$TBAD" ]; then
   echo "ERROR: autodrive_qa_target disagreed with autodrive_repo_type or gave an unsafe directory." >&2
   KIND="unknown"; TDIR="."; UNRES=""
 fi
-# Free text is sanitised before it reaches the JSON: no quotes, backslashes or
-# control bytes, so a hostile log line or directory name can neither break the
-# evidence nor carry terminal escapes. ANSI CSI sequences (ECMA-48) go whole;
-# tabs, CRs and newlines become spaces and backslashes '/', so a coloured or
-# tabular runner log keeps its words (#1531).
+# Free text is sanitised before it reaches the JSON: no quotes, backslashes or control bytes, so a hostile log
+# line or directory name can neither break the evidence nor carry terminal escapes. ANSI CSI sequences (ECMA-48)
+# go whole; tabs, CRs and newlines become spaces and backslashes '/', so a coloured or tabular log keeps its words (#1531).
 san() { LC_ALL=C sed "s|$(printf '\033')\[[0-?]*[ -/]*[@-~]||g" | LC_ALL=C tr '\t\r\n\\' '   /' \
   | LC_ALL=C tr -d '\000-\037\177"'; }
 # Text cut to a byte length is made ASCII first: a cut through a multibyte
@@ -114,32 +104,23 @@ else
   echo "[skip] not a git repo; the qa evidence records no head sha, so the merge gate refuses it rather than merging unbound evidence" >&2
 fi
 res() { printf '%s\t%s\n' "${1##*/}" "$2" >> "$RES"; } # res <file> <PASS|FAIL|INVALID>
-# #2342: with AUTODRIVE_REQUIRE_CI=true, nothing runs unless RECIPE_VAR_ci_evidence is completed GREEN CI
-# for this script's own HEAD_SHA (empty blocks). The helper's reason ("still pending", "contains failures",
-# "another head") is copied to stderr and, through san and ascii, into the cause; its messages name a field
-# and never its value. Its stdout is discarded, so stdout stays the one evidence line. No re-read after
-# the suite: the merge gate refuses a head_sha that is not the head it merges, and blocks when it cannot
-# read that head.
-CI_BLOCKED=""; if [ "${AUTODRIVE_REQUIRE_CI:-false}" = "true" ]; then
-  if ! CI_WHY="$(printf '%s' "${RECIPE_VAR_ci_evidence:-}" \
-      | amplihack orch helper extract-json --require-field ci_status \
-      | amplihack orch helper ci-evidence-ready --head "$HEAD_SHA" 2>&1 >/dev/null)"; then
-    CI_BLOCKED="true"
-    [ -z "$CI_WHY" ] || printf '%s\n' "$CI_WHY" >&2
-    CI_WHY="$(printf '%s' "$CI_WHY" | san | ascii | cut -c1-200)"
-    cause "completed green CI for the current head is required before QA${CI_WHY:+: $CI_WHY}"
-  fi
+# #2342: with AUTODRIVE_REQUIRE_CI=true, nothing runs unless RECIPE_VAR_ci_evidence is completed GREEN CI for this
+# script's own HEAD_SHA (empty blocks). The helper's reason names a field, never its value; it goes to stderr and,
+# through san and ascii, into the cause. Its stdout is discarded. The merge gate refuses any other head_sha.
+CI_BLOCKED=""; if [ "${AUTODRIVE_REQUIRE_CI:-false}" = "true" ] && ! CI_WHY="$(printf '%s' "${RECIPE_VAR_ci_evidence:-}" \
+    | amplihack orch helper extract-json --require-field ci_status \
+    | amplihack orch helper ci-evidence-ready --head "$HEAD_SHA" 2>&1 >/dev/null)"; then
+  CI_BLOCKED="true"; [ -z "$CI_WHY" ] || printf '%s\n' "$CI_WHY" >&2
+  CI_WHY="$(printf '%s' "$CI_WHY" | san | ascii | cut -c1-200)"
+  cause "completed green CI for the current head is required before QA${CI_WHY:+: $CI_WHY}"
 fi
 # --- suite commands --------------------------------------------------
-# The first source present wins, even when it gives no usable command: env,
-# repo-file (an invalid qa.toml is BLOCKED, qa-config-invalid), ci (when it
-# gives none, its reason is qa_ci_skip), then detected. The operator variables
-# come from the environment only (a recipe context default would hide them).
-# Set but empty means "no command", never "detect one":
-#   AUTODRIVE_QA_COMMAND   one command, word-split with globbing off, run in
-#                          AUTODRIVE_QA_DIR (the issue #1516 semantics)
-#   AUTODRIVE_QA_COMMANDS  one command per line (blank and # lines skipped),
-#                          each run alone with bash -c from the repository root
+# The first source present wins, even when it gives no usable command: env, repo-file (an invalid qa.toml is
+# BLOCKED, qa-config-invalid), ci (when it gives none, its reason is qa_ci_skip), then detected. The operator
+# variables come from the environment only (a recipe context default would hide them). Set but empty means
+# "no command", never "detect one":
+#   AUTODRIVE_QA_COMMAND   one command, word-split with globbing off, run in AUTODRIVE_QA_DIR (#1516 semantics)
+#   AUTODRIVE_QA_COMMANDS  one command per line (blank and # lines skipped), each run alone with bash -c from the root
 # qa_dir records where the word or detected command ran, else `.`.
 QA_DIR="$TDIR"; QD="."; SRC=""; CFGBAD=""; QUNRES=""
 TYPE="unknown"; KINDS=(); TEXTS=()
@@ -403,7 +384,7 @@ F="${F}"'"qa_round":"%s","head_sha":"%s","docs_only":"%s","gadugi_required":"%s"
 F="${F}"'"gadugi_validate_exit_code":"%s","gadugi_run_exit_code":"%s","gadugi_scenario_count":"%s",'
 F="${F}"'"gadugi_scenario_dir":"%s","gadugi_scenarios_validated":"%s","gadugi_scenarios_run":"%s",'
 F="${F}"'"gadugi_scenarios_passed":"%s","gadugi_scenarios_failed":"%s","gadugi_failed_scenarios":"%s",'
-F="${F}"'"gadugi_scenario_results":"%s"}\n'
+F="${F}"'"gadugi_scenario_results":"%s","git_env_cleared":"%s","run_env_cleared":"%s"}\n'
 # shellcheck disable=SC2059 # F is the fixed format above, never input
 OUT="$(printf "$F" \
   "$STATUS" "$REASON" "$TYPE" "$(printf '%s' "$QD" | san | ascii | cut -c1-200)" "$(printf '%s' "$CMDTEXT" | san | ascii | cut -c1-500)" \
@@ -413,7 +394,7 @@ OUT="$(printf "$F" \
   "$DOCSONLY" "$GREQ" "$G_STATUS" "$G_VRC" "$G_RRC" "$COUNT" "$(printf '%s' "$SREL" | san)" \
   "$VALIDATED" "$RUNS" "$PASSED" "$FAILED" \
   "$(printf '%s' "${UNNAMED} ${STAGEFAIL} ${RUNFAIL} ${SYMFAIL}" | san | tr -s ' ' | sed 's/^ //; s/ $//')" \
-  "$(printf '%s' "$RESULTS" | san)")"
+  "$(printf '%s' "$RESULTS" | san)" "$(printf '%s' "$GCLR" | san | ascii)" "$(printf '%s' "$RCLR" | san | ascii)")"
 # Private to this user (#1517 D5), and never written through a planted symlink.
 [ -z "$EVIDENCE" ] || ( umask 077; rm -f -- "$EVIDENCE"; printf '%s' "$OUT" > "$EVIDENCE" )
 printf '%s\n' "$OUT"
