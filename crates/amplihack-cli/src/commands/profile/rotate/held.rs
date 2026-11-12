@@ -87,7 +87,8 @@ fn watch_pinned_spend(
     name: &ProfileName,
 ) -> Result<(), ProfileError> {
     // Issue #2218: an excluded profile is never probed, pinned or not.
-    if exclude_list(ctx.store.root(), |_| {}).contains(name) {
+    // An unknown list counts `name` as excluded (fails closed).
+    if exclude_list(ctx.store.root(), |_| {}).map_or(true, |l| l.contains(name)) {
         out.emit(now(), &msg::pinned_excluded(name));
         return Ok(());
     }

@@ -389,7 +389,8 @@ pub(super) fn reader(ctx: &Ctx, env: SourceEnv, claude_bound: usize, now: i64) -
         home: Some(ctx.home.clone()),
         no_refresh: ctx.no_refresh_dirs(),
         overflow: crate::commands::profile::overflow::overflow_names(ctx.store.root()),
-        excluded: usage_cmd::exclude_list(ctx.store.root(), |_| {}),
+        // An unknown list (`None`) excludes every profile (issue #2218).
+        excluded: usage_cmd::exclude_list(ctx.store.root(), |_| {}).ok(),
         now,
         keep_raw: false,
     }

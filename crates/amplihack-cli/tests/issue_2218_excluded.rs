@@ -751,6 +751,108 @@ fn a_cycle_with_an_unreadable_config_pauses_and_sends_nothing() {
 
 // --- profile seed-record -------------------------------------------------------
 
+const PAUSED: &str = "auto-switch config unreadable; rotation paused, no profile probed";
+
+#[test]
+fn a_dry_run_with_an_unreadable_config_would_pause_like_a_cycle() {
+    let (f, ep) = fixture();
+    exclude(&f, &["work"]);
+    corrupt_config(&f);
+    let home = stamp(&f.home_login());
+    let out = run(&f, &ep, &["profile", "rotate", "--dry-run"]);
+    let stdout = text(&out.stdout);
+    assert!(
+        stdout.contains(&format!("would alert: {PAUSED}")),
+        "{}",
+        describe(&out)
+    );
+    assert!(
+        !stdout.lines().any(|l| l.contains("cycle")),
+        "nothing measured: {}",
+        describe(&out)
+    );
+    assert!(ep.requests().is_empty(), "{:?}", ep.requests());
+    assert_eq!(stamp(&f.home_login()), home, "same bytes and mtime");
+}
+
+fn toggle_text(f: &Fixture) -> String {
+    fs::read_to_string(f.root.join(".auto-switch")).unwrap()
+}
+
+#[test]
+fn auto_switch_on_over_an_unsafe_config_keeps_its_exclude_list() {
+    let (f, ep) = fixture();
+    exclude(&f, &["spare"]);
+    let toggle = f.root.join(".auto-switch");
+    fs::set_permissions(&toggle, fs::Permissions::from_mode(0o666)).unwrap();
+    f.ok(&["profile", "auto-switch", "on"]);
+    assert!(
+        toggle_text(&f).contains("exclude=spare\n"),
+        "{}",
+        toggle_text(&f)
+    );
+    // The rewritten file is trusted again, and `spare` is still excluded.
+    let out = usage(&f, &ep, &[]);
+    assert!(!text(&out.stderr).contains(UNTRUSTED), "{}", describe(&out));
+    assert_no_request_for(&ep, "spare");
+}
+
+#[test]
+fn auto_switch_on_or_off_over_an_unparseable_config_is_refused_without_exclude() {
+    let (f, ep) = fixture();
+    corrupt_config(&f);
+    let before = toggle_text(&f);
+    for args in [
+        &["profile", "auto-switch", "on"][..],
+        &["profile", "auto-switch", "off"][..],
+    ] {
+        let out = run(&f, &ep, args);
+        assert!(!out.status.success(), "{args:?}: {}", describe(&out));
+        assert!(
+            text(&out.stderr).contains("exclude list is unknown"),
+            "{args:?}: {}",
+            describe(&out)
+        );
+        assert_eq!(toggle_text(&f), before, "{args:?}: file unchanged");
+    }
+    // Naming the list is the way out, and it is the list that is written.
+    f.ok(&["profile", "auto-switch", "on", "--exclude", "spare"]);
+    assert!(
+        toggle_text(&f).contains("exclude=spare\n"),
+        "{}",
+        toggle_text(&f)
+    );
+}
+
+#[test]
+fn auto_switch_status_shows_the_exclude_list_the_rotator_applies() {
+    let (f, ep) = fixture();
+    exclude(&f, &["spare"]);
+    fs::set_permissions(
+        f.root.join(".auto-switch"),
+        fs::Permissions::from_mode(0o666),
+    )
+    .unwrap();
+    let out = run(&f, &ep, &["profile", "auto-switch", "status"]);
+    assert!(
+        text(&out.stdout).contains("exclude: spare"),
+        "untrusted: {}",
+        describe(&out)
+    );
+    corrupt_config(&f);
+    let out = run(&f, &ep, &["profile", "auto-switch", "status"]);
+    let line = text(&out.stdout)
+        .lines()
+        .find(|l| l.starts_with("exclude: "))
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        line.contains("spare") && line.contains("extra"),
+        "unreadable: every profile: {}",
+        describe(&out)
+    );
+}
+
 #[test]
 fn seed_record_for_an_excluded_profile_with_no_record_sends_no_request() {
     let (f, ep) = fixture();

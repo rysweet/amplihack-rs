@@ -82,7 +82,7 @@ pub fn locked_prelude(
     // Issue #2218: once per cycle, before any identity read: excluded
     // folders, and `~/.claude` when it holds an excluded login, are
     // identified from local files only, so no request carries their token.
-    ctx.set_excluded_dirs(local_only_dirs(&ctx.store, &ctx.rs, &ctx.home));
+    ctx.set_excluded_dirs(local_only_dirs(&ctx.store, &ctx.rs, &ctx.home)?);
     match super::recover::recover_with(&ctx.store, &ctx.rs, &ctx.home, ctx.identity_reader()) {
         Ok(RecoverOutcome::None) => {}
         Ok(RecoverOutcome::RolledBack { from, to }) => {

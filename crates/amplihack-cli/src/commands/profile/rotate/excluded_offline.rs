@@ -28,6 +28,7 @@ use super::Account;
 // Its own line: `tests_source_scan` refuses a read next to the login name.
 use super::super::handfix_plan::ino_ctime;
 use super::super::login_identity::Budget;
+use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
     CLAUDE_JSON, MAX_CLAUDE_JSON, State, euid, read_bounded_nofollow, same_private_bytes,
     writable_by_others,
@@ -35,7 +36,7 @@ use crate::commands::profile::auto_switch::kit::{
 use crate::commands::profile::auto_switch::kit::{CREDS, now};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
-use crate::commands::profile::usage_cmd::exclude_list;
+use crate::commands::profile::usage_cmd::{exclude_list, read_exclude};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -58,12 +59,23 @@ pub enum Match {
 /// The excluded profile whose login is in `<home>/.claude`, and the rule
 /// that named it; `None` when no rule matches or nothing is excluded. The
 /// exclude list is read quietly: each command or cycle warns once itself.
+/// An error when the list falls back to every profile and the store cannot
+/// be listed: no answer is better than "nothing is excluded".
 pub fn live_excluded_offline(
     store: &ProfileStore,
     rs: &RotateState,
     home: &Path,
+) -> Result<Option<(ProfileName, Match)>, ProfileError> {
+    let excluded = exclude_list(store.root(), |_| {})?;
+    Ok(find_live(store, rs, home, excluded))
+}
+
+fn find_live(
+    store: &ProfileStore,
+    rs: &RotateState,
+    home: &Path,
+    excluded: Vec<ProfileName>,
 ) -> Option<(ProfileName, Match)> {
-    let excluded = exclude_list(store.root(), |_| {});
     if excluded.is_empty() {
         return None;
     }
@@ -113,7 +125,12 @@ pub fn status_live(
     ledger_live: Option<String>,
 ) -> String {
     ledger_live
-        .or_else(|| live_excluded_offline(store, rs, home?).map(|(n, _)| n.as_str().to_string()))
+        .or_else(|| {
+            live_excluded_offline(store, rs, home?)
+                .ok()
+                .flatten()
+                .map(|(n, _)| n.as_str().to_string())
+        })
         .unwrap_or_else(|| "-".into())
 }
 
@@ -128,7 +145,8 @@ pub fn may_write_back(
     home: &Path,
     name: &ProfileName,
 ) -> bool {
-    match live_excluded_offline(store, rs, home) {
+    // An error proves nothing, so nothing is written back.
+    match live_excluded_offline(store, rs, home).ok().flatten() {
         Some((n, Match::SameBytes)) => &n == name,
         Some((n, Match::Ledger)) if &n == name => {
             let calm = rs
@@ -197,15 +215,14 @@ pub(in crate::commands::profile::rotate) fn local_only_dirs(
     store: &ProfileStore,
     rs: &RotateState,
     home: &Path,
-) -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = exclude_list(store.root(), |_| {})
-        .iter()
-        .map(|p| slot(store, p))
-        .collect();
-    if live_excluded_offline(store, rs, home).is_some() {
+) -> Result<Vec<PathBuf>, ProfileError> {
+    // An error, not a shorter list, when the exclude list is unknown.
+    let excluded = exclude_list(store.root(), |_| {})?;
+    let mut dirs: Vec<PathBuf> = excluded.iter().map(|p| slot(store, p)).collect();
+    if find_live(store, rs, home, excluded).is_some() {
         dirs.push(home.join(".claude"));
     }
-    dirs
+    Ok(dirs)
 }
 
 /// A budget whose local-only folders are [`local_only_dirs`], for the
@@ -214,10 +231,10 @@ pub(in crate::commands::profile::rotate) fn gated_budget(
     store: &ProfileStore,
     rs: &RotateState,
     home: &Path,
-) -> Budget {
+) -> Result<Budget, ProfileError> {
     let budget = Budget::new();
-    budget.set_local_only(home, local_only_dirs(store, rs, home));
-    budget
+    budget.set_local_only(home, local_only_dirs(store, rs, home)?);
+    Ok(budget)
 }
 
 /// Whether `name` is in the exclude list, read quietly.
@@ -225,5 +242,20 @@ pub(in crate::commands::profile::rotate) fn is_excluded(
     store: &ProfileStore,
     name: &ProfileName,
 ) -> bool {
-    exclude_list(store.root(), |_| {}).contains(name)
+    // An unknown list counts as excluding `name` (fails closed).
+    exclude_list(store.root(), |_| {}).map_or(true, |l| l.contains(name))
+}
+
+/// Issue #2218: the `ALERT:` text that pauses a rotate cycle, and a dry
+/// run's `would alert:`, when `.auto-switch` exists but cannot be read or
+/// parsed: every profile counts as excluded, so there is nothing to
+/// measure or rotate to. `warn` gets the reader's warning. `None` when the
+/// list can be read.
+pub(in crate::commands::profile::rotate) fn exclude_paused(
+    store: &ProfileStore,
+    warn: impl FnOnce(&str),
+) -> Option<&'static str> {
+    read_exclude(store.root(), warn)
+        .is_none()
+        .then_some(super::super::log::msg::EXCLUDE_PAUSED)
 }

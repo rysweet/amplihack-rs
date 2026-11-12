@@ -118,7 +118,7 @@ fn held_in(dir: &Path, read: Read<'_>) -> Held {
 /// excluded profile (issue #2218) is decided before its folder is checked
 /// or read, and so is `~/.claude` when the local proof names one there.
 pub fn survey(store: &ProfileStore, home: &Path, read: Read<'_>) -> Result<Vec<Row>, ProfileError> {
-    let excluded = exclude_list(store.root(), |w| eprintln!("{w}"));
+    let excluded = exclude_list(store.root(), |w| eprintln!("{w}"))?;
     let rs = RotateState::new(store.root());
     let ledger_live = rs
         .load_ledger()
@@ -128,7 +128,7 @@ pub fn survey(store: &ProfileStore, home: &Path, read: Read<'_>) -> Result<Vec<R
         .and_then(|s| ProfileName::parse(&s).ok());
     // Issue #2218: the rotator's local proof decides whether `~/.claude`
     // holds an excluded login, so it is never read when it does.
-    let (live, home_held) = match live_excluded_offline(store, &rs, home) {
+    let (live, home_held) = match live_excluded_offline(store, &rs, home)? {
         Some((name, _)) => (Some(name), Held::Excluded),
         None => (ledger_live, held_in(&home.join(".claude"), read)),
     };

@@ -709,3 +709,99 @@ fn config_write_is_called_only_from_update() {
     }
     assert!(offenders.is_empty(), "unlocked writers: {offenders:?}");
 }
+
+// --- Issue #2218: one exclude reader, and `on`/`off` keep the list -----------
+
+#[test]
+fn default_on_invalid_update_keeps_the_exclude_list_of_an_untrusted_file() {
+    let _proc = crate::test_support::proc::fake_proc_scope();
+    let tmp = private_root();
+    let root = tmp.path();
+    write_file(
+        root,
+        "enabled=on\nthreshold=70\nexclude=work,spare\noverflow=cred\n",
+    );
+    // Group-writable: `read` calls it corrupt, `read_exclude` still parses it.
+    fs::set_permissions(root.join(".auto-switch"), fs::Permissions::from_mode(0o666)).unwrap();
+    assert_eq!(config::read(root), FileState::Corrupt);
+    let c = config::update(root, ReadMode::DefaultOnInvalid, |c| {
+        c.enabled = true;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(c.exclude, names(&["work", "spare"]));
+    // The other settings of the unsafe file are not trusted: defaults.
+    assert_eq!(
+        file_text(root),
+        "enabled=on\nthreshold=90\nexclude=work,spare\n"
+    );
+}
+
+#[test]
+fn an_unparseable_file_is_not_recoverable_and_a_parseable_one_is() {
+    let tmp = private_root();
+    let root = tmp.path();
+    assert!(config::exclude_recoverable(root), "missing");
+    write_file(root, "enabled=maybe\nexclude=work\n");
+    assert!(!config::exclude_recoverable(root), "does not parse");
+    write_file(root, "enabled=on\nthreshold=90\nexclude=work\n");
+    fs::set_permissions(root.join(".auto-switch"), fs::Permissions::from_mode(0o666)).unwrap();
+    assert!(config::exclude_recoverable(root), "unsafe but parses");
+}
+
+#[test]
+fn excluded_profiles_is_the_list_or_every_profile() {
+    let tmp = private_root();
+    let root = tmp.path();
+    for p in ["work", "spare"] {
+        fs::create_dir(root.join(p)).unwrap();
+    }
+    assert_eq!(config::excluded_profiles(root).unwrap(), names(&[]));
+    write_file(root, "enabled=on\nthreshold=90\nexclude=work\n");
+    fs::set_permissions(root.join(".auto-switch"), fs::Permissions::from_mode(0o666)).unwrap();
+    assert_eq!(config::excluded_profiles(root).unwrap(), names(&["work"]));
+    write_file(root, "enabled=maybe\nexclude=work\n");
+    let mut every = config::excluded_profiles(root).unwrap();
+    every.sort();
+    assert_eq!(every, names(&["spare", "work"]));
+}
+
+#[test]
+fn excluded_profiles_is_an_error_not_empty_when_the_store_cannot_be_listed() {
+    let tmp = private_root();
+    let real = tmp.path().join("real");
+    fs::create_dir(&real).unwrap();
+    fs::set_permissions(&real, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::create_dir(real.join("work")).unwrap();
+    write_file(&real, "enabled=maybe\nexclude=work\n");
+    // The store refuses a symlinked root, so listing it fails.
+    let link = tmp.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    assert!(config::excluded_profiles(&link).is_err());
+    assert!(
+        crate::commands::profile::usage_cmd::exclude_list(&link, |_| {}).is_err(),
+        "the fail-closed fallback never comes back empty"
+    );
+}
+
+#[test]
+fn effective_applies_the_shared_exclude_list_to_a_corrupt_file() {
+    let tmp = private_root();
+    let root = tmp.path();
+    fs::create_dir(root.join("work")).unwrap();
+    fs::create_dir(root.join("spare")).unwrap();
+    write_file(root, "enabled=on\nthreshold=90\nexclude=work\n");
+    fs::set_permissions(root.join(".auto-switch"), fs::Permissions::from_mode(0o666)).unwrap();
+    // Whatever AMPLIHACK_CLAUDE_AUTO_SWITCH says: it decides `on`, not the list.
+    assert_eq!(config::read(root), FileState::Corrupt);
+    let eff = config::effective(root);
+    assert_eq!(eff.config.exclude, names(&["work"]), "untrusted: its list");
+    write_file(root, "enabled=maybe\n");
+    let mut every = config::effective(root).config.exclude;
+    every.sort();
+    assert_eq!(
+        every,
+        names(&["spare", "work"]),
+        "unparseable: every profile"
+    );
+}

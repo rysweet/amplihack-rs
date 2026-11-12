@@ -52,9 +52,14 @@ pub fn record(root: &Path, out: &mut Sink, first: &Snap, probes: &Probes, at: i6
 pub fn capacity(root: &Path, now: i64) -> (String, Vec<String>) {
     // One read: the newest entry is "now", the rest are the history.
     let (mut entries, refused) = usage_history::read_all(root, now);
-    let excluded = usage_cmd::exclude_list(root, |_| {});
-    if !excluded.is_empty() {
-        let is_excluded = |n: &str| excluded.iter().any(|x| x.as_str() == n);
+    // An unknown list (`Err`) leaves every profile out (issue #2218).
+    let excluded = usage_cmd::exclude_list(root, |_| {}).ok();
+    if excluded.as_ref().is_none_or(|l| !l.is_empty()) {
+        let is_excluded = |n: &str| {
+            excluded
+                .as_ref()
+                .is_none_or(|l| l.iter().any(|x| x.as_str() == n))
+        };
         for e in &mut entries {
             e.profiles.retain(|n, _| !is_excluded(n));
             e.unknown.retain(|n| !is_excluded(n));

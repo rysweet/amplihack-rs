@@ -6,6 +6,7 @@ use super::cycle::{Ctx, CycleOutcome};
 use super::decide::Decision;
 use super::fresh::{self, Reread};
 use super::handfix;
+use super::identify::excluded_offline;
 use super::ledger::{Phase, spend_reset};
 use super::log::{Sink, msg, timestamp};
 use super::observe::{
@@ -39,7 +40,7 @@ pub(super) fn would(decision: &Decision) -> CycleOutcome {
 pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
     ctx.identity_budget.reset();
     // Issue #2218: as a real cycle does, before any identity read.
-    let dirs = super::identify::excluded_offline::local_only_dirs(&ctx.store, &ctx.rs, &ctx.home);
+    let dirs = excluded_offline::local_only_dirs(&ctx.store, &ctx.rs, &ctx.home)?;
     ctx.set_excluded_dirs(dirs);
     let mut out = Sink::new(None, true, false);
     if exists(&ctx.rs.journal) {
@@ -108,6 +109,11 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
             out.emit(0, &format!("would stay ({why})"));
             return Ok(CycleOutcome::Held);
         }
+    }
+    // Issue #2218: where a real cycle pauses on an unreadable exclude list.
+    if let Some(alert) = excluded_offline::exclude_paused(&ctx.store, |w| out.emit(0, w)) {
+        out.emit(0, &format!("would alert: {alert}"));
+        return Ok(CycleOutcome::Alerted);
     }
     // Tests stub the measurement as for a real cycle.
     let m = match ctx.measure {

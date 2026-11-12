@@ -52,7 +52,7 @@ pub fn recover(
 ) -> Result<RecoverOutcome, ProfileError> {
     // Issue #2218: as in a cycle, an excluded login's identity comes from
     // local files (daemon start-up recovery).
-    let budget = super::identify::excluded_offline::gated_budget(store, rs, home);
+    let budget = super::identify::excluded_offline::gated_budget(store, rs, home)?;
     let read = super::login_identity::default_read();
     recover_with(
         store,

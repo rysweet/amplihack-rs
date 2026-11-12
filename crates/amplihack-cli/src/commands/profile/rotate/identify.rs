@@ -183,7 +183,7 @@ pub fn live(
     // Issue #2218: an excluded login is named from local files, so no
     // request is sent with its token.
     if login_kind(&home.join(".claude").join(CREDS)) == LoginKind::OAuth
-        && let Some((name, _)) = excluded_offline::live_excluded_offline(store, rs, home)
+        && let Some((name, _)) = excluded_offline::live_excluded_offline(store, rs, home)?
     {
         return Ok((LiveId::Known(name), None));
     }

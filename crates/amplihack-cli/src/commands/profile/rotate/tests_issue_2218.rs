@@ -304,7 +304,7 @@ mod local_proof {
     }
 
     fn proof(e: &Env) -> Option<(crate::commands::profile::name::ProfileName, Match)> {
-        live_excluded_offline(&e.store, &e.rs, &e.home)
+        live_excluded_offline(&e.store, &e.rs, &e.home).expect("exclude list")
     }
 
     // --- rule 1: the ledger ---------------------------------------------
@@ -343,7 +343,7 @@ mod local_proof {
         CALLS.with(|c| c.set(0));
         let mut c = ctx(e);
         c.identity = counting;
-        c.set_excluded_dirs(local_only_dirs(&e.store, &e.rs, &e.home));
+        c.set_excluded_dirs(local_only_dirs(&e.store, &e.rs, &e.home).expect("exclude list"));
         let _ = c.identity_reader().oauth(&home_dir(e));
         calls()
     }
@@ -356,7 +356,11 @@ mod local_proof {
         // `~/.claude.json` still names work: only the bytes say extra.
         copy_slot_to_live(&e, "extra");
         assert_eq!(proof(&e), Some((n("extra"), Match::SameBytes)));
-        assert!(local_only_dirs(&e.store, &e.rs, &e.home).contains(&home_dir(&e)));
+        assert!(
+            local_only_dirs(&e.store, &e.rs, &e.home)
+                .expect("exclude list")
+                .contains(&home_dir(&e))
+        );
         assert_eq!(requests_for_home(&e), 0, "no request with extra's token");
     }
 
@@ -388,7 +392,11 @@ mod local_proof {
             fs::read(e.slot("extra")).unwrap()
         );
         assert_eq!(proof(&e), None);
-        assert!(!local_only_dirs(&e.store, &e.rs, &e.home).contains(&home_dir(&e)));
+        assert!(
+            !local_only_dirs(&e.store, &e.rs, &e.home)
+                .expect("exclude list")
+                .contains(&home_dir(&e))
+        );
         assert_eq!(requests_for_home(&e), 1, "~/.claude is read as before");
     }
 
@@ -410,7 +418,11 @@ mod local_proof {
         set_home_json(&e, "u-work");
         swapped(&e, 0);
         assert_eq!(proof(&e), None);
-        assert!(!local_only_dirs(&e.store, &e.rs, &e.home).contains(&home_dir(&e)));
+        assert!(
+            !local_only_dirs(&e.store, &e.rs, &e.home)
+                .expect("exclude list")
+                .contains(&home_dir(&e))
+        );
         assert_eq!(requests_for_home(&e), 1, "~/.claude is read as spare's");
     }
 
@@ -755,7 +767,7 @@ mod local_proof {
         e.rs.save_journal(&e.journal(Phase::S1)).unwrap();
         e.exchanged();
         CALLS.with(|c| c.set(0));
-        let budget = gated_budget(&e.store, &e.rs, &e.home);
+        let budget = gated_budget(&e.store, &e.rs, &e.home).expect("exclude list");
         let outcome = recover_with(
             &e.store,
             &e.rs,

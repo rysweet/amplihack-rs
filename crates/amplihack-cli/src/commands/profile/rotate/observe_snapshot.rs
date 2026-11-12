@@ -36,7 +36,7 @@ pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
     };
     // Issue #2218: the shared reader, so an untrusted file still excludes
     // and an unreadable one excludes every profile.
-    let exclude = crate::commands::profile::usage_cmd::exclude_list(root, |_| {});
+    let exclude = crate::commands::profile::usage_cmd::exclude_list(root, |_| {})?;
     let live_excluded = live_name.as_ref().is_some_and(|n| exclude.contains(n));
     let (overflow, ignored) = tiers_detail(&ctx.store, Some(&ctx.home));
     let input = CandidateInput {

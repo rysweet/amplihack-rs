@@ -24,7 +24,8 @@ pub const CONFIG_LOCK_WAIT: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadMode {
     /// The defaults in both cases (`auto-switch on` and `off`, which exist
-    /// to recover from a damaged file).
+    /// to recover from a damaged file), except that a corrupt or unsafe
+    /// file's `exclude` list is kept when it still parses (issue #2218).
     DefaultOnInvalid,
     /// The defaults when missing; a corrupt file is refused and left alone
     /// (threshold, exclude, overflow add and remove).
@@ -211,6 +212,12 @@ pub fn effective_from(env: EnvToggle, file: &FileState) -> Effective {
 
 /// The effective setting for this process: the environment first, then the
 /// file. An unrecognised environment value warns once per process.
+///
+/// Issue #2218: for a corrupt or unsafe file every other setting is the
+/// default, but `config.exclude` is [`excluded_profiles`], the same list the
+/// rotator, `profile usage` and `profile verify` apply, so no reader of the
+/// exclude list fails open. When even that cannot be worked out, `on` is
+/// false: nothing may be swapped in if nothing is known to be excluded.
 pub fn effective(root: &Path) -> Effective {
     let env = env_toggle(std::env::var_os(TOGGLE_ENV).as_deref());
     if env == EnvToggle::Invalid {
@@ -219,7 +226,15 @@ pub fn effective(root: &Path) -> Effective {
             eprintln!("warning: {TOGGLE_ENV} must be 1 or 0; using <root>/{FILE}");
         });
     }
-    effective_from(env, &read(root))
+    let file = read(root);
+    let mut eff = effective_from(env, &file);
+    if file == FileState::Corrupt {
+        match excluded_profiles(root) {
+            Ok(names) => eff.config.exclude = names,
+            Err(_) => eff.on = false,
+        }
+    }
+    eff
 }
 
 /// The file as it is. One not owned by the current user, or writable by
@@ -248,9 +263,12 @@ pub enum ExcludeFile {
 }
 
 /// Issue #2218: the `exclude` list, whoever can write the file. An entry
-/// only takes actions away (an excluded login is never probed or
-/// refreshed), so following one from an untrusted file gives its writer
-/// nothing; [`read`] still refuses such a file for every other setting.
+/// only takes probes and refreshes away (an excluded login is never probed
+/// or refreshed), so following one from an untrusted file cannot make the
+/// rotator sign a login out or spend credits; [`read`] still refuses such a
+/// file for every other setting. The trade-off is availability: whoever
+/// can write the file can exclude every profile and so stop rotation (a
+/// denial of service), which the `exclude list applied` warning names.
 /// A symlink, a file that is too large or one that does not parse is
 /// [`ExcludeFile::Unreadable`].
 pub fn read_exclude(root: &Path) -> ExcludeFile {
@@ -279,6 +297,27 @@ pub fn read_exclude(root: &Path) -> ExcludeFile {
     let trusted =
         owned_by_euid(&meta) && !writable_by_others(&meta) && Config::from_toggle(toggle).is_ok();
     ExcludeFile::Read { names, trusted }
+}
+
+/// Issue #2218: the one rule for which profiles are excluded, followed by
+/// every reader of the list: the file's `exclude` list (trusted or not), or
+/// every profile in the store when the file cannot be read or parsed. A
+/// store that cannot be listed is an error, never an empty list, so the
+/// fallback cannot fail open.
+pub fn excluded_profiles(root: &Path) -> Result<Vec<ProfileName>, ProfileError> {
+    match read_exclude(root) {
+        ExcludeFile::Read { names, .. } => Ok(names),
+        ExcludeFile::Unreadable => every_profile(root),
+    }
+}
+
+/// Every profile in the store under `root`, or the listing error.
+pub fn every_profile(root: &Path) -> Result<Vec<ProfileName>, ProfileError> {
+    let names = crate::commands::profile::ProfileStore::new(root.to_path_buf()).list()?;
+    Ok(names
+        .iter()
+        .filter_map(|n| ProfileName::parse(n).ok())
+        .collect())
 }
 
 /// The settings an edit starts from: the file's, or the defaults when it
@@ -334,13 +373,13 @@ pub fn update_within(
         }
         ReadMode::DefaultOnInvalid => match read(root) {
             FileState::Valid(c) => (Some(c.clone()), c),
-            other => {
-                was = Some(if other == FileState::Missing {
-                    "unset"
-                } else {
-                    "corrupt"
-                });
+            FileState::Missing => {
+                was = Some("unset");
                 (None, Config::default())
+            }
+            FileState::Corrupt => {
+                was = Some("corrupt");
+                (None, recovered(root))
             }
         },
     };
@@ -369,6 +408,28 @@ pub fn update_within(
     #[cfg(not(unix))]
     let _ = was;
     Ok(c)
+}
+
+/// Issue #2218: what `on` and `off` start from over a corrupt or unsafe
+/// file: the defaults, but with the `exclude` list kept when the file still
+/// parses, so recovering the file does not drop its exclusions. A file that
+/// does not parse has no list to keep; `auto-switch on` and `off` refuse it
+/// unless `--exclude` names the list ([`exclude_recoverable`]).
+fn recovered(root: &Path) -> Config {
+    let exclude = match read_exclude(root) {
+        ExcludeFile::Read { names, .. } => names,
+        ExcludeFile::Unreadable => Vec::new(),
+    };
+    Config {
+        exclude,
+        ..Config::default()
+    }
+}
+
+/// Issue #2218: whether `on` or `off` can rewrite the file without being
+/// told the exclude list: it is missing, or it parses (trusted or not).
+pub fn exclude_recoverable(root: &Path) -> bool {
+    !matches!(read_exclude(root), ExcludeFile::Unreadable)
 }
 
 /// Writes the file unlocked; callers go through `update`.

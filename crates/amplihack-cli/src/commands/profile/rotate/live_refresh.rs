@@ -69,12 +69,17 @@ pub fn refresh_expired_live(ctx: &Ctx, out: &mut Sink) {
         return;
     }
     let dir = ctx.home.join(".claude");
-    if let Some(name) = excluded_live(ctx) {
+    match excluded_live(ctx) {
         // Logged only when a refresh was due; the expiry is read locally.
-        if usage_direct::expired(&dir, chrono::Utc::now().timestamp_millis()) {
-            out.emit(now(), &msg::excluded_not_refreshed(&name));
+        Ok(Some(name)) => {
+            if usage_direct::expired(&dir, chrono::Utc::now().timestamp_millis()) {
+                out.emit(now(), &msg::excluded_not_refreshed(&name));
+            }
+            return;
         }
-        return;
+        Ok(None) => {}
+        // Issue #2218: an unknown exclude list refreshes nothing.
+        Err(_) => return,
     }
     if login_kind(&dir.join(CREDS)) != LoginKind::OAuth {
         return;
@@ -88,6 +93,7 @@ pub fn refresh_expired_live(ctx: &Ctx, out: &mut Sink) {
 
 /// The excluded profile whose login is in `~/.claude`, by any rule of the
 /// local proof (`super::super::live_excluded_offline`); no request is made.
-fn excluded_live(ctx: &Ctx) -> Option<ProfileName> {
-    super::super::live_excluded_offline(&ctx.store, &ctx.rs, &ctx.home).map(|(n, _)| n)
+fn excluded_live(ctx: &Ctx) -> Result<Option<ProfileName>, crate::commands::profile::ProfileError> {
+    let found = super::super::live_excluded_offline(&ctx.store, &ctx.rs, &ctx.home)?;
+    Ok(found.map(|(n, _)| n))
 }

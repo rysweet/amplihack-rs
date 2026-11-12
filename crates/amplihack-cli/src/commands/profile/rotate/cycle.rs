@@ -10,7 +10,7 @@ use super::fresh::{self, Reread};
 use super::held::held_cycle;
 use super::history;
 use super::identify::LiveId;
-use super::identify::excluded_offline::may_write_back;
+use super::identify::excluded_offline::{exclude_paused, may_write_back};
 use super::ledger::{RotateLedger, newer_than};
 use super::log::{msg, shown, shown_of};
 use super::observe::{Measurement, Snap, live_name, measure_and_decide, platform_block_reason};
@@ -30,7 +30,6 @@ use super::swap_record;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::now;
 use crate::commands::profile::shared_dirs;
-use crate::commands::profile::usage_cmd;
 use std::time::Duration;
 
 pub(super) const LOCK_WAIT: Duration = Duration::from_secs(2);
@@ -131,10 +130,9 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         return Ok(CycleOutcome::Held);
     }
     drop(lock);
-    // Issue #2218: an exclude list that cannot be read pauses rotation;
-    // every profile counted as excluded, so the steps above sent nothing.
-    if usage_cmd::read_exclude(ctx.store.root(), |w| out.emit(now(), w)).is_none() {
-        out.emit(now(), &format!("ALERT: {}", msg::EXCLUDE_PAUSED));
+    // Issue #2218: an unreadable exclude list pauses rotation.
+    if let Some(alert) = exclude_paused(&ctx.store, |w| out.emit(now(), w)) {
+        out.emit(now(), &format!("ALERT: {alert}"));
         return Ok(CycleOutcome::Alerted);
     }
     // Steps 4 and 5: measure without the lock, then decide. `claude` is

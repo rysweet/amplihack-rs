@@ -342,7 +342,7 @@ pub fn explicit(
     let rs = RotateState::new(store.root());
     let state = State::new(store.root())?;
     // Issue #2218: an excluded profile's identity comes from local files.
-    let budget = super::identify::excluded_offline::gated_budget(store, &rs, home);
+    let budget = super::identify::excluded_offline::gated_budget(store, &rs, home)?;
     let read = default_read();
     let scope = Scope {
         store,

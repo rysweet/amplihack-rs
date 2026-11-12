@@ -63,12 +63,36 @@ fn exclude_arg(names: &[String]) -> Result<Vec<ProfileName>, ProfileError> {
         .collect()
 }
 
+/// The refusal of `on` or `off` over a `.auto-switch` that does not parse
+/// (issue #2218).
+pub(crate) const EXCLUDE_UNKNOWN_REFUSAL: &str = "auto-switch config does not parse, so its \
+     exclude list is unknown; not changed. Run `amplihack profile auto-switch on --exclude \
+     NAME,...` naming the logins that must stay excluded (`--exclude ''` for none)";
+
+/// Issue #2218: `on` and `off` rewrite a corrupt file from the defaults,
+/// keeping its exclude list when it parses. When it does not parse there is
+/// no list to keep, and writing an empty one would let the rotator probe
+/// and refresh the logins that were excluded, so they refuse unless the
+/// list is given with `on --exclude`.
+fn require_recoverable_exclude(root: &std::path::Path) -> Result<(), ProfileError> {
+    if config::exclude_recoverable(root) {
+        Ok(())
+    } else {
+        Err(ProfileError::AutoSwitchConfig(
+            EXCLUDE_UNKNOWN_REFUSAL.into(),
+        ))
+    }
+}
+
 pub fn handle(store: &ProfileStore, cmd: AutoSwitchCommand) -> Result<()> {
     let root = store.root();
     match cmd {
         AutoSwitchCommand::On { threshold, exclude } => {
             let threshold = threshold.as_deref().map(threshold_arg).transpose()?;
             let exclude = exclude.as_deref().map(exclude_arg).transpose()?;
+            if exclude.is_none() {
+                require_recoverable_exclude(root)?;
+            }
             let c = config::update(root, ReadMode::DefaultOnInvalid, |c| {
                 c.enabled = true;
                 if let Some(t) = threshold {
@@ -90,6 +114,7 @@ pub fn handle(store: &ProfileStore, cmd: AutoSwitchCommand) -> Result<()> {
             }
         }
         AutoSwitchCommand::Off => {
+            require_recoverable_exclude(root)?;
             config::update(root, ReadMode::DefaultOnInvalid, |c| {
                 c.enabled = false;
                 Ok(())

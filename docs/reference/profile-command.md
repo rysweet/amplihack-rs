@@ -1410,8 +1410,8 @@ warning: auto-switch config unreadable; every profile treated as excluded, none 
 ```
 
 The rotator and [`profile verify`](#profile-verify) do the same; see
-[Unreadable exclude list](#unreadable-exclude-list). Fix the file with
-`amplihack profile auto-switch on` or `off`.
+[Unreadable exclude list](#unreadable-exclude-list), which also says how to
+fix the file without losing the exclusions.
 
 #### States
 
@@ -4503,9 +4503,9 @@ What each command writes depends on the current file:
 |------------------------|--------------|-----------------------------|
 | valid | rewrites it with the new `enabled` | rewrites it, keeping the other keys |
 | missing | creates it | creates it with `enabled=off`, defaults for the key not given |
-| corrupt regular file owned by you | replaces it; `threshold` and `exclude` start from their defaults unless given | refused with `AutoSwitchConfig`; run `on` or `off` first |
+| corrupt regular file owned by you | replaces it; `threshold` starts from its default unless given. `exclude` keeps the file's list when it parses; when it does not parse, `on` and `off` are refused unless `on --exclude` names the list ([Unreadable exclude list](#unreadable-exclude-list)) | refused with `AutoSwitchConfig`; run `on` or `off` first |
 | owned by another user | refused with `AutoSwitchConfig` | refused with `AutoSwitchConfig` |
-| owned by you, writable by group or others | replaced with mode `0600`, as for a corrupt file | refused with `AutoSwitchConfig`; run `on` or `off` first |
+| owned by you, writable by group or others | replaced with mode `0600`, as for a corrupt file; its exclude list is kept | refused with `AutoSwitchConfig`; run `on` or `off` first |
 | symlink or not a regular file | refused with `AutoSwitchConfig` | refused with `AutoSwitchConfig` |
 
 A file is never written through a symlink, and a file owned by someone else
@@ -7176,11 +7176,14 @@ the live login again, for example after
 
 `--dry-run` prints the same decision as `would swap:` or `would alert:`.
 Like a real cycle, it sends no request with `C`'s token and writes nothing.
+When `<root>/.auto-switch` cannot be read it stops where a real cycle
+pauses, before measuring, and prints
+`would alert: auto-switch config unreadable; rotation paused, no profile probed`.
 
 #### Unreadable exclude list
 
-An exclude entry only takes actions away, so the list is read from
-`<root>/.auto-switch` whenever the file parses, even when it is unsafe
+An exclude entry only takes probes and refreshes away, so the list is read
+from `<root>/.auto-switch` whenever the file parses, even when it is unsafe
 (group- or world-writable, or owned by another user) or invalid for its
 other settings. Those settings, such as overflow profiles, are still
 ignored, and the cycle logs once:
@@ -7200,12 +7203,47 @@ warning: auto-switch config unreadable; every profile treated as excluded, none 
 ALERT: auto-switch config unreadable; rotation paused, no profile probed
 ```
 
-Rotation resumes from the first cycle that reads the file. Fix the file with
-`amplihack profile auto-switch on` or `off`.
+Rotation resumes from the first cycle that reads the file. To fix the file:
+
+- When it parses but is unsafe or invalid, run
+  `amplihack profile auto-switch on` or `off`. They rewrite it with mode
+  `0600` and the defaults for every other setting, and keep its exclude
+  list, so the logins it excluded stay excluded.
+- When it does not parse, its exclude list is unknown, and `on` and `off`
+  refuse it with `AutoSwitchConfig`:
+
+  ```
+  auto-switch config does not parse, so its exclude list is unknown; not changed. Run `amplihack profile auto-switch on --exclude NAME,...` naming the logins that must stay excluded (`--exclude ''` for none)
+  ```
+
+  Run `amplihack profile auto-switch on --exclude NAME,...` with the logins
+  that must stay excluded. Writing an empty list by mistake would let the
+  next cycle probe and refresh those logins, which signs out the other hosts
+  that share them.
 
 [`profile usage`](#excluded-profiles) and [`profile verify`](#profile-verify)
 print the same warning on stderr and read no profile, as described in their
 sections.
+
+Every other reader of the exclude list follows the same rule: in-session
+auto-switch swaps, its re-run and takeover checks, the capacity figures and
+`profile auto-switch status`, whose `exclude:` line shows the list in force.
+For a corrupt or unsafe file their other settings are still the defaults,
+but the exclude list is the file's when it parses and every profile when it
+does not. With `AMPLIHACK_CLAUDE_AUTO_SWITCH=1` and a file that does not
+parse, auto-switch is on but every profile is excluded, so it swaps nothing.
+If the file does not parse and the profile root cannot be listed either,
+"every profile" is unknown, and it is never treated as an empty list: `profile usage`, `profile verify` and the rotate
+cycle fail with the error, the live refresh is skipped, and in-session
+auto-switch counts as off.
+
+Applying the list from an unsafe file is a trade-off. It cannot make the
+rotator probe or refresh a login, sign one out or spend credits, but anyone
+who can write the file can exclude every profile and so stop rotation: a
+denial of service. Keep the profile root private (mode `0700`, owned by
+you), which `profile` already requires for writes, and treat the
+`exclude list applied, other settings ignored` warning as a sign that
+someone else can write the file.
 
 ### Rotate candidates
 
@@ -10590,7 +10628,7 @@ failures use this format.
 | `InvalidSavedRoot`: `~/.amplihack/profile-root` is invalid (the message names the file and the [reason](#saved-root-file-format)), or `profile root <dir>` cannot write it safely | `fix or remove ~/.amplihack/profile-root, or run: amplihack profile root <absolute dir>` |
 | `Leased`: the profile's login is live in another profile's session | `` wait for that session to end, or run `amplihack profile auto-switch status` `` |
 | `HostsForeignAccount`: the profile's directory holds another account's login | `` wait for that session to end, or run `amplihack profile auto-switch status` `` |
-| `AutoSwitchConfig`: `.auto-switch` is a symlink or cannot be written, is corrupt when `threshold`, `exclude`, `overflow add` or `overflow remove` needs to keep its other keys, the change would exceed 4096 bytes, or the [settings lock](#settings-file) stayed busy for 10 seconds (the message ends in `retry`; run the command again) | `` remove <root>/.auto-switch and run `amplihack profile auto-switch on` or `off` `` |
+| `AutoSwitchConfig`: `.auto-switch` is a symlink or cannot be written, is corrupt when `threshold`, `exclude`, `overflow add` or `overflow remove` needs to keep its other keys, does not parse when `on` or `off` is run without `--exclude` (its exclude list is unknown; see [Unreadable exclude list](#unreadable-exclude-list)), the change would exceed 4096 bytes, or the [settings lock](#settings-file) stayed busy for 10 seconds (the message ends in `retry`; run the command again) | `` remove <root>/.auto-switch and run `amplihack profile auto-switch on` or `off` `` |
 | `AutoSwitchUnsupported`: an `auto-switch` command on a platform without Unix file semantics | `auto-switch needs Linux or another Unix; leave it off` |
 | `AutoSwitchInvariant`: the state files are damaged or a login is not where the state says | `see the Recovery section of docs/howto/claude-profiles.md` |
 | `AutoSwitchInstall`: a profile's `settings.json` is a symlink, owned by someone else, not a JSON object, or cannot be written | `` fix or remove the reported file, then run `amplihack profile auto-switch repair` `` |

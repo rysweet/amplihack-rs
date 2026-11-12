@@ -292,7 +292,7 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
     // on stderr, still listed as not probed, and the others are reported;
     // with no names it is listed as not probed. An unknown name has already
     // failed above.
-    let excluded = exclude_list(store.root(), |w| eprintln!("{w}"));
+    let excluded = exclude_list(store.root(), |w| eprintln!("{w}"))?;
     let refused: Vec<ProfileName> = if names.is_empty() {
         Vec::new()
     } else {
@@ -319,7 +319,7 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
     let live = detect_live(store, home.as_deref(), &profiles);
     // Issue #2218: when `~/.claude` holds an excluded profile's login, by
     // the rotator's local proof, no other profile is read against it.
-    let excluded_live = excluded_live(store, home.as_deref());
+    let excluded_live = excluded_live(store, home.as_deref())?;
     let live = live.filter(|l| excluded_live.as_ref().is_none_or(|b| b == &l.name));
     // Issue #1700: API-key profiles are never probed; a probe costs tokens
     // or times out, and there are no plan limits to read. Issue #2218: an
@@ -357,7 +357,7 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
         home: home.clone(),
         no_refresh: no_refresh_dirs(store),
         overflow: super::overflow::overflow_names(store.root()),
-        excluded,
+        excluded: Some(excluded),
         now,
         keep_raw: raw,
     };
@@ -494,36 +494,47 @@ pub(super) fn read_exclude(
 /// Issue #2218: the profiles to treat as excluded under `root`, read once
 /// per command or rotate cycle: the `exclude` list, or every profile in
 /// the store when the file cannot be read (fails closed: a refresh of an
-/// excluded login signs out the other hosts that share it).
+/// excluded login signs out the other hosts that share it). The rule is
+/// `config::excluded_profiles`, which `config::effective` follows too; a
+/// store that cannot be listed is an error, never an empty list.
 #[cfg(unix)]
-pub(super) fn exclude_list(root: &std::path::Path, warn: impl FnOnce(&str)) -> Vec<ProfileName> {
-    read_exclude(root, warn).unwrap_or_else(|| {
-        ProfileStore::new(root.to_path_buf())
-            .list()
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|n| ProfileName::parse(n).ok())
-            .collect()
-    })
+pub(super) fn exclude_list(
+    root: &std::path::Path,
+    warn: impl FnOnce(&str),
+) -> Result<Vec<ProfileName>, ProfileError> {
+    match read_exclude(root, warn) {
+        Some(names) => Ok(names),
+        None => super::auto_switch::config::every_profile(root),
+    }
 }
 
 /// Auto-switch has no config on this platform, so nothing is excluded.
 #[cfg(not(unix))]
-pub(super) fn exclude_list(_: &std::path::Path, _: impl FnOnce(&str)) -> Vec<ProfileName> {
-    Vec::new()
+pub(super) fn exclude_list(
+    _: &std::path::Path,
+    _: impl FnOnce(&str),
+) -> Result<Vec<ProfileName>, ProfileError> {
+    Ok(Vec::new())
 }
 
 /// Issue #2218: the excluded profile a rule of the local proof names as
 /// the login in `<home>/.claude`; read from local files only.
 #[cfg(unix)]
-fn excluded_live(store: &ProfileStore, home: Option<&std::path::Path>) -> Option<ProfileName> {
+fn excluded_live(
+    store: &ProfileStore,
+    home: Option<&std::path::Path>,
+) -> Result<Option<ProfileName>, ProfileError> {
     let rs = super::rotate::ledger::RotateState::new(store.root());
-    super::rotate::live_excluded_offline(store, &rs, home?).map(|(b, _)| b)
+    let Some(home) = home else { return Ok(None) };
+    Ok(super::rotate::live_excluded_offline(store, &rs, home)?.map(|(b, _)| b))
 }
 
 #[cfg(not(unix))]
-fn excluded_live(_: &ProfileStore, _: Option<&std::path::Path>) -> Option<ProfileName> {
-    None
+fn excluded_live(
+    _: &ProfileStore,
+    _: Option<&std::path::Path>,
+) -> Result<Option<ProfileName>, ProfileError> {
+    Ok(None)
 }
 
 /// The stderr line for a named profile that is excluded (issue #2218).
@@ -1102,8 +1113,9 @@ pub(super) struct RowReader {
     pub(super) no_refresh: Option<Vec<String>>,
     pub(super) overflow: Vec<ProfileName>,
     /// Issue #2218: the auto-switch `exclude` list. These profiles are never
-    /// read: no credential read, no request and no refresh.
-    pub(super) excluded: Vec<ProfileName>,
+    /// read: no credential read, no request and no refresh. `None` when the
+    /// list cannot be worked out, which counts every profile as excluded.
+    pub(super) excluded: Option<Vec<ProfileName>>,
     pub(super) now: i64,
     pub(super) keep_raw: bool,
 }
@@ -1111,7 +1123,7 @@ pub(super) struct RowReader {
 impl RowReader {
     /// Issue #2218: whether `name` is in the auto-switch `exclude` list.
     pub(super) fn is_excluded(&self, name: &ProfileName) -> bool {
-        self.excluded.contains(name)
+        self.excluded.as_ref().is_none_or(|l| l.contains(name))
     }
 
     /// One profile, against `~/.claude` when `live`. An excluded profile is
