@@ -65,6 +65,7 @@ nav:
       - Uninstall: howto/uninstall.md
       - Claude Login Profiles: howto/claude-profiles.md
       - Claude Login Rotation: howto/claude-profile-rotation.md
+      - Spread Launches Across Accounts: howto/account-pick.md
       - Supervise Agent Sessions: howto/supervise-agent-sessions.md
       - Keep Tests from Leaking Rotator Daemons: howto/keep-tests-from-leaking-rotator-daemons.md
       - Keep Tests off the Host Process Table: howto/keep-tests-off-the-host-process-table.md
@@ -75,6 +76,7 @@ nav:
       - Run recipe::run Tests Inside a Recipe Session: howto/run-recipe-tests-inside-a-recipe-session.md
       - Wait Without Leaving Orphan Processes: howto/wait-without-orphan-processes.md
       - Profile Command Reference: reference/profile-command.md
+      - Account Pick Reference: reference/account-pick.md
       - Capacity Governor: reference/capacity-governor.md
       - Sessions Command Reference: reference/sessions-command.md
       - Agent Command Reference: reference/agent-command.md

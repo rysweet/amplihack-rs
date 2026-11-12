@@ -1,0 +1,10 @@
+#!/bin/sh
+# codex-pick: print the Codex home with the most headroom (issue #2006).
+#
+# A thin wrapper kept until the factory calls `amplihack account pick`
+# directly. Options such as --floor N and --list pass through unchanged;
+# see docs/reference/account-pick.md.
+set -eu
+AMPLIHACK_ACCOUNT_PICK_CALLER=codex-pick
+export AMPLIHACK_ACCOUNT_PICK_CALLER
+exec amplihack account pick --cli codex "$@"

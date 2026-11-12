@@ -16,6 +16,9 @@ Profiles control **file staging** - which files get staged when you run `ampliha
 > [Claude login profiles](howto/claude-profiles.md#choose-a-profile). A login
 > profile can also use a Claude Platform API key, billed per token; see
 > [API-key profiles and usage limits](howto/claude-profiles.md#api-key-profiles-and-usage-limits).
+> When no login profile is chosen, launches can pick the account with the
+> most headroom; see
+> [How to spread launches across accounts](howto/account-pick.md).
 
 User-facing docs use `amplihack claude` as the explicit launcher. `amplihack launch` still works as a compatibility alias.
 

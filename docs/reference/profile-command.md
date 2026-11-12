@@ -11,7 +11,9 @@ Manage Claude Code login profiles. See the
 [how-to](../howto/claude-profiles.md) for a walkthrough.
 
 See also the [capacity governor](./capacity-governor.md), which reads the
-usage readings described here to decide when new work may start.
+usage readings described here to decide when new work may start, and
+[`amplihack account pick`](./account-pick.md), which uses the same readings to
+choose the account for each launch when no profile is pinned.
 
 ## Synopsis
 

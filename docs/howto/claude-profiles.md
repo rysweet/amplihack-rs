@@ -442,9 +442,16 @@ See [Clearing the default profile](#clearing-the-default-profile) and
 [Launching the rotator's live profile](#launching-the-rotators-live-profile).
 
 Resolution order: `--profile` flag, then an inherited
-`AMPLIHACK_CLAUDE_PROFILE`, then the default pointer, then none. An explicit
+`AMPLIHACK_CLAUDE_PROFILE`, then the default pointer, then a picked profile,
+then none. An explicit
 `--profile` never reads the inherited value or the pointer, so it works even if
-the pointer is dangling or corrupt. With
+the pointer is dangling or corrupt. A profile is picked only when none of the
+first three is set and neither `CLAUDE_CONFIG_DIR` nor
+`AMPLIHACK_CLAUDE_CONFIG_DIR` is set. Docker and `--auto` launches never
+pick. The picker chooses the login profile with
+the most headroom left after running jobs, and is turned off with
+`AMPLIHACK_ACCOUNT_PICK=off` or `codex`. See
+[How to spread launches across accounts](account-pick.md). With
 no profile, `CLAUDE_CONFIG_DIR` is neither set nor altered, so existing
 behavior (including an ambient `CLAUDE_CONFIG_DIR` you exported yourself) is
 unchanged. When a profile is selected, it overrides the ambient value for the

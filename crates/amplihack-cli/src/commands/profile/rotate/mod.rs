@@ -70,7 +70,7 @@ mod login_identity;
 #[cfg(unix)]
 mod lost;
 #[cfg(unix)]
-mod measure;
+pub(super) mod measure;
 #[cfg(unix)]
 mod observe;
 #[cfg(unix)]

@@ -158,6 +158,9 @@ impl Fixture {
             // These tests cover the usage-limit wait; the #1811 capacity
             // governor would hold their exhausted readings first.
             .env("AMPLIHACK_GOVERNOR", "off")
+            // Issue #2006: an unpinned step would otherwise pick a login
+            // profile first, probing each with the counted fake `claude`.
+            .env("AMPLIHACK_ACCOUNT_PICK", "off")
             .env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_NOW", TEST_NOW.to_string())
             .env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "1000000")
             .env("LIMIT_CALLS", "1")

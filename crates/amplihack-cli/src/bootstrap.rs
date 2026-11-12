@@ -30,14 +30,18 @@ const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub fn prepare_launcher(tool: &str) -> Result<()> {
-    freshness::with_provider(tool, || prepare_selected_launcher(tool))
+    freshness::with_provider(tool, || prepare_selected_launcher(tool, None))
 }
 
-pub(crate) fn prepare_codex_launcher(binary: &Path) -> Result<()> {
-    install::with_codex_binary(binary, || prepare_launcher("codex"))
+/// Prepares a Codex launch. `codex_home` is the home Codex will run on when
+/// the launch chose one (issue #2006); `None` is `$CODEX_HOME` or `~/.codex`.
+pub(crate) fn prepare_codex_launcher(binary: &Path, codex_home: Option<&Path>) -> Result<()> {
+    install::with_codex_binary(binary, || {
+        freshness::with_provider("codex", || prepare_selected_launcher("codex", codex_home))
+    })
 }
 
-fn prepare_selected_launcher(tool: &str) -> Result<()> {
+fn prepare_selected_launcher(tool: &str, chosen_codex_home: Option<&Path>) -> Result<()> {
     // SEC-WS2-02: Non-interactive mode (CI, pipes, AMPLIHACK_NONINTERACTIVE=1)
     // skips all interactive setup. The environment is assumed pre-provisioned.
     // This matches Python launcher behavior and prevents hangs in sandboxes.
@@ -108,7 +112,11 @@ fn prepare_selected_launcher(tool: &str) -> Result<()> {
             // Issue #1453 — clear the misleading file amplihack used to write
             // before writing the one Codex actually reads.
             retire_stale_openai_codex_config();
-            configure_codex()?;
+            let home = match chosen_codex_home {
+                Some(h) => h.to_path_buf(),
+                None => codex_home()?,
+            };
+            configure_codex(&home)?;
         }
         _ => {}
     }
@@ -1142,8 +1150,8 @@ fn codex_home() -> Result<PathBuf> {
 #[cfg(test)]
 use toml_edit::DocumentMut;
 
-fn configure_codex() -> Result<()> {
-    amplihack_launcher::codex_config::configure(&codex_home()?, true)
+fn configure_codex(home: &Path) -> Result<()> {
+    amplihack_launcher::codex_config::configure(home, true)
 }
 
 /// Retire the file amplihack wrote to `~/.openai/codex/config.json` before
@@ -1309,7 +1317,7 @@ mod tests {
         let previous_codex_home = std::env::var_os("CODEX_HOME");
         unsafe { std::env::remove_var("CODEX_HOME") };
 
-        let result = configure_codex();
+        let result = configure_codex(&codex_home().unwrap());
 
         let restore = || {
             match &previous_codex_home {
@@ -1401,7 +1409,7 @@ mod tests {
             codex_home.to_str().expect("temp path is UTF-8"),
         )]);
 
-        configure_codex().unwrap();
+        configure_codex(&super::codex_home().unwrap()).unwrap();
 
         let document = fs::read_to_string(codex_home.join("config.toml"))
             .expect("CODEX_HOME must be honoured")
@@ -1438,7 +1446,7 @@ mod tests {
         )
         .unwrap();
 
-        configure_codex().unwrap();
+        configure_codex(&codex_home().unwrap()).unwrap();
 
         let raw = fs::read_to_string(&config_path).unwrap();
         let document = raw.parse::<DocumentMut>().unwrap();
@@ -1469,7 +1477,8 @@ mod tests {
         let original = "[\"not\", \"a\", \"table\"]\n";
         fs::write(&config_path, original).unwrap();
 
-        let error = configure_codex().expect_err("malformed config must be preserved");
+        let error = configure_codex(&codex_home().unwrap())
+            .expect_err("malformed config must be preserved");
 
         assert_eq!(fs::read_to_string(&config_path).unwrap(), original);
         assert!(
@@ -1494,7 +1503,8 @@ mod tests {
         let original = "[approval_policy]\nsomething = \"else\"\n";
         fs::write(&config_path, original).unwrap();
 
-        let error = configure_codex().expect_err("non-string approval_policy must be preserved");
+        let error = configure_codex(&codex_home().unwrap())
+            .expect_err("non-string approval_policy must be preserved");
 
         assert_eq!(fs::read_to_string(&config_path).unwrap(), original);
         assert!(
@@ -1980,7 +1990,7 @@ mod codex_preservation_contract_tests {
             );
             fs::write(&config, &bytes).unwrap();
             fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
-            configure_codex().unwrap();
+            configure_codex(&codex_home().unwrap()).unwrap();
             assert_eq!(fs::read_to_string(&config).unwrap(), bytes);
             assert_eq!(
                 fs::metadata(&config).unwrap().permissions().mode() & 0o777,
@@ -1998,7 +2008,7 @@ mod codex_preservation_contract_tests {
         fs::write(&outside, "# unrelated file\n").unwrap();
         std::os::unix::fs::symlink(&outside, &target).unwrap();
         let _env = EnvGuard::set([("CODEX_HOME", dir.path().to_str().unwrap())]);
-        let result = configure_codex();
+        let result = configure_codex(&codex_home().unwrap());
         assert_eq!(fs::read_to_string(outside).unwrap(), "# unrelated file\n");
         assert!(result.is_err());
         assert!(

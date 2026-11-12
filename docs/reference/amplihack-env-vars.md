@@ -38,6 +38,11 @@ A variable with a config key keeps working and outranks the config files. See
 |------|----------|------------|------|
 | `AMPLIHACK_1552_REQUIRE_RECIPE_RUNNER` | test-only |  | Makes the #1552 integration test fail instead of skip when no runner is installed. |
 | `AMPLIHACK_1570_REQUIRE_RECIPE_RUNNER` | test-only |  | Same, for the #1570 context-file test. |
+| `AMPLIHACK_ACCOUNT_JOB_COST_PCT` | user preference |  | Headroom points the account picker subtracts per running job or lease; finite, above `0`, at most `100`; default `15`. See [Ranking](account-pick.md#ranking). |
+| `AMPLIHACK_ACCOUNT_LEASE_DIR` | user preference |  | Directory of the account picker's leases and locks; absolute; default `~/.amplihack/state/account-leases`. See [Leases](account-pick.md#leases). |
+| `AMPLIHACK_ACCOUNT_LEASE_TTL_SECS` | user preference |  | Age at which an account-pick lease expires, `1` to `86400`; default `120`. See [Sweep](account-pick.md#sweep). |
+| `AMPLIHACK_ACCOUNT_PICK` | user preference |  | Account picking in launches: `on` (default), `codex` (Codex launches only) or `off`. `amplihack account pick` ignores it. See [The off switch and the rotator](account-pick.md#the-off-switch-and-the-rotator). |
+| `AMPLIHACK_ACCOUNT_PICK_CALLER` | internal |  | Set to `codex-pick` by `scripts/codex-pick` so `amplihack account pick` keeps codex-pick's no-account wording. |
 | `AMPLIHACK_AGENTS` | internal |  | Not an env var: the hooks crate's static list of known agent names. |
 | `AMPLIHACK_AGENT_BINARY` | user preference | `agent.binary` | Agent CLI override; also exported to children with a source tag. |
 | `AMPLIHACK_AGENT_BINARY_SOURCE` | internal |  | Tag describing where an exported `AMPLIHACK_AGENT_BINARY` came from (`session:`, `default:`, `tmux_server:`, `user_config:`). |
@@ -55,12 +60,14 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_BLARIFY_MODE` | user preference |  | Blarify indexing mode. |
 | `AMPLIHACK_CLAUDE_AUTO_SWITCH` | user preference |  | Enables Claude profile auto-switch. |
 | `AMPLIHACK_CLAUDE_BINARY_PATH` | user preference |  | Path to the `claude` executable. |
+| `AMPLIHACK_CLAUDE_CONFIG_DIR` | internal |  | Raw `CLAUDE_CONFIG_DIR` carried to recipe steps; set by `amplihack recipe run` when unset. A Claude launch with no `CLAUDE_CONFIG_DIR` restores it from this, and it pins the launch against account picking. See [Pins](account-pick.md#pins). |
 | `AMPLIHACK_CLAUDE_PROFILE` | user preference |  | Claude profile to launch with. |
 | `AMPLIHACK_CLAUDE_PROFILE_ROOT` | user preference |  | Directory that holds Claude profiles. The test helper `isolated(..)` removes it from every child; see [Keep Tests out of the Real Profile Root](../howto/keep-tests-out-of-the-real-profile-root.md). |
 | `AMPLIHACK_CLEANUP_KEEP_HOURS` | user preference |  | Hours run-owned worktrees and targets are kept after a run's PR closes or the run ends, and the minimum age of untagged targets and system temporary leftovers (not `run-tmp`); default `24`, maximum `87600`. See [Settings](../howto/clean-up-after-recipe-runs.md#settings). |
 | `AMPLIHACK_CLEANUP_ON_EXIT` | user preference |  | `0` skips the end-of-run cleanup sweep; default `1`. The run's `runtime/` folder is still removed. See [What happens when a run ends](../howto/clean-up-after-recipe-runs.md#what-happens-when-a-run-ends). |
 | `AMPLIHACK_CLI_INTEGRATION_QUIET_CHILD` | test-only |  | Test-support child-process switch. |
 | `AMPLIHACK_CODEX_BINARY_PATH` | test-only |  | Set only by install tests; the lookup itself is `AMPLIHACK_<TOOL>_BINARY_PATH`. |
+| `AMPLIHACK_CODEX_HOME` | internal |  | Codex home carried to nested launches; set by `amplihack codex` on its child and by `amplihack recipe run` from `CODEX_HOME`. `amplihack codex` with no `CODEX_HOME` restores it from this and does not pick an account. See [Pins](account-pick.md#pins). |
 | `AMPLIHACK_CODEX_TERMINAL_TEST_FIXTURE` | test-only |  | Launcher test fixture switch. |
 | `AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS` | user preference |  | Seconds each Codex account's live rate-limit read may take in `amplihack profile usage`, `1` to `300`; default `20`. Any other value warns once and uses the default. See [Codex read deadline](profile-command.md#codex-read-deadline). |
 | `AMPLIHACK_CONTEXT` | internal |  | Prefix of the `AMPLIHACK_CONTEXT_<KEY>` variables `recipe run` exports for context values. |
@@ -303,3 +310,4 @@ environment is not changed.
 
 - [User Configuration](./user-config.md) — The config files, their keys and the `amplihack config` command
 - [Environment Variables](./environment-variables.md) — Detailed behaviour of the variables amplihack sets and reads
+- [Account pick](./account-pick.md): The `AMPLIHACK_ACCOUNT_*` variables and the Codex and Claude home pins

@@ -133,6 +133,16 @@ pub(super) fn build_command_for_dir(
     if let (true, Some(dir)) = (is_claude_compatible, claude_config_dir) {
         cmd.env("CLAUDE_CONFIG_DIR", dir);
         pin_profile_for_descendants(&mut cmd, dir);
+    } else if is_claude_compatible {
+        // Issue #2006: a raw config directory pinned by a parent reaches a
+        // recipe step only as `AMPLIHACK_CLAUDE_CONFIG_DIR` (the runner keeps
+        // only `AMPLIHACK_*` variables); restore it for this child.
+        #[cfg(unix)]
+        if let Some(dir) =
+            crate::commands::account::launch::claude_config_from_alias(&|k| std::env::var_os(k))
+        {
+            cmd.env("CLAUDE_CONFIG_DIR", dir);
+        }
     }
 
     inject_uvx_plugin_args(&mut cmd, &binary.name, extra_args, add_dir_override);

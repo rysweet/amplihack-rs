@@ -21,6 +21,12 @@ the separate feature that swaps logins inside sessions started with
 `amplihack claude --profile`. Both use the same on/off toggle and the same
 state lock, so they never move logins at the same time.
 
+The [account picker](account-pick.md) is a third, separate feature: a launch
+with no profile set may run as the login profile with the most headroom, with
+`CLAUDE_CONFIG_DIR` set to that profile. Such sessions are not on
+`~/.claude`, so rotation does not manage them. Set
+`AMPLIHACK_ACCOUNT_PICK=codex` to keep Claude launches on `~/.claude`.
+
 Rotation and manual switching identify each login from trusted evidence
 bound to that login. Running sessions can rewrite `~/.claude.json`; its
 `oauthAccount` is display state and cannot establish ownership. A stale
