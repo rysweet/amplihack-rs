@@ -418,8 +418,8 @@ fn no_short_timeouts_anywhere() {
             }
         }
     }
-    // #2342: request backoff is an agent implementation detail. Preserve the
-    // no-timeout protection without prescribing a polling interval.
+    // #2342: the CI wait is `gh run watch` in an agent step, so no polling
+    // interval is pinned. Short sleeps and timeouts stay forbidden below.
     for path in control_path_files() {
         let text = read(&path);
         for (n, line) in text.lines().enumerate() {
@@ -428,6 +428,10 @@ fn no_short_timeouts_anywhere() {
                 continue;
             }
             for short in [
+                "sleep 1",
+                "sleep 2",
+                "sleep 3",
+                "sleep 5",
                 "timeout 5",
                 "timeout 10",
                 "timeout 30",
