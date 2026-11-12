@@ -251,26 +251,30 @@ pub fn read(root: &Path) -> FileState {
 /// The `exclude` list as [`read_exclude`] finds it (issue #2218).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExcludeFile {
-    /// The file is missing (no exclusions) or parses. `trusted` is false
-    /// when [`read`] would still call it corrupt: someone else's,
-    /// writable by group or others, or naming an unknown kind.
+    /// The file is missing (no exclusions), or is a private regular file
+    /// of yours that parses. `trusted` is false when [`read`] would still
+    /// call it corrupt for its other settings, such as an unknown kind.
     Read {
         names: Vec<ProfileName>,
         trusted: bool,
     },
-    /// The file exists but cannot be read or does not parse.
+    /// The file exists but cannot be trusted for its list: it cannot be
+    /// read, does not parse, or is owned by another user or writable by
+    /// group or others.
     Unreadable,
 }
 
-/// Issue #2218: the `exclude` list, whoever can write the file. An entry
-/// only takes probes and refreshes away (an excluded login is never probed
-/// or refreshed), so following one from an untrusted file cannot make the
-/// rotator sign a login out or spend credits; [`read`] still refuses such a
-/// file for every other setting. The trade-off is availability: whoever
-/// can write the file can exclude every profile and so stop rotation (a
-/// denial of service), which the `exclude list applied` warning names.
-/// A symlink, a file that is too large or one that does not parse is
-/// [`ExcludeFile::Unreadable`].
+/// Issue #2218: the `exclude` list, or [`ExcludeFile::Unreadable`] when
+/// the list cannot be trusted. A list is only as trustworthy as whoever can
+/// write it, and a writer can remove an entry as easily as add one:
+/// rewriting `exclude=shared` to `exclude=` would get `shared` probed and
+/// refreshed, signing out the other hosts that share it. So a file owned by
+/// another user, or writable by group or others, is `Unreadable` like a
+/// symlink, a file that is too large or one that does not parse, and every
+/// profile then counts as excluded. The worst such a writer can do is stop
+/// rotation (a denial of service); it can never un-exclude a login. Only a
+/// private file of yours that is invalid for its other settings keeps its
+/// list, with `trusted: false`: [`read`] still refuses it for those.
 pub fn read_exclude(root: &Path) -> ExcludeFile {
     use amplihack_utils::secure_files::{owned_by_euid, read_bounded_nofollow, writable_by_others};
     let (raw, meta) = match read_bounded_nofollow(&root.join(FILE), MAX_BYTES) {
@@ -283,6 +287,9 @@ pub fn read_exclude(root: &Path) -> ExcludeFile {
         Ok(Some(found)) => found,
         Err(_) => return ExcludeFile::Unreadable,
     };
+    if !owned_by_euid(&meta) || writable_by_others(&meta) {
+        return ExcludeFile::Unreadable;
+    }
     let Ok(toggle) = shared::parse_toggle(&raw) else {
         return ExcludeFile::Unreadable;
     };
@@ -294,14 +301,14 @@ pub fn read_exclude(root: &Path) -> ExcludeFile {
     else {
         return ExcludeFile::Unreadable;
     };
-    let trusted =
-        owned_by_euid(&meta) && !writable_by_others(&meta) && Config::from_toggle(toggle).is_ok();
+    let trusted = Config::from_toggle(toggle).is_ok();
     ExcludeFile::Read { names, trusted }
 }
 
 /// Issue #2218: the one rule for which profiles are excluded, followed by
-/// every reader of the list: the file's `exclude` list (trusted or not), or
-/// every profile in the store when the file cannot be read or parsed. A
+/// every reader of the list: the file's `exclude` list, or every profile in
+/// the store when the file cannot be read, does not parse or is not a
+/// private file of yours. A
 /// store that cannot be listed is an error, never an empty list, so the
 /// fallback cannot fail open.
 pub fn excluded_profiles(root: &Path) -> Result<Vec<ProfileName>, ProfileError> {
@@ -420,9 +427,10 @@ pub fn update_within(
 }
 
 /// Issue #2218: what `on` and `off` start from over a corrupt or unsafe
-/// file: the defaults, but with the `exclude` list kept when the file still
-/// parses, so recovering the file does not drop its exclusions. A file that
-/// does not parse has no list to keep; `auto-switch on` and `off` refuse it
+/// file: the defaults, but with the `exclude` list kept when it is a
+/// private file of yours that still parses, so recovering the file does not
+/// drop its exclusions. A file that does not parse, or that others could
+/// have edited, has no list to keep; `auto-switch on` and `off` refuse it
 /// unless `--exclude` names the list ([`exclude_recoverable`]).
 fn recovered(root: &Path) -> Config {
     let exclude = match read_exclude(root) {
@@ -435,11 +443,12 @@ fn recovered(root: &Path) -> Config {
     }
 }
 
-/// The refusal of an edit over a `.auto-switch` that does not parse
-/// (issue #2218): `on` and `off` without `--exclude`, and every edit that
-/// keeps the file's other keys.
-pub(crate) const EXCLUDE_UNKNOWN_REFUSAL: &str = "auto-switch config does not parse, so its \
-     exclude list is unknown; not changed. Run `amplihack profile auto-switch on --exclude \
+/// The refusal of an edit over a `.auto-switch` whose list cannot be
+/// trusted (issue #2218): one that does not parse, or one writable by group
+/// or others. Given to `on` and `off` without `--exclude`, and to every
+/// edit that keeps the file's other keys.
+pub(crate) const EXCLUDE_UNKNOWN_REFUSAL: &str = "auto-switch config does not parse or \
+     others can write it, so its exclude list is unknown; not changed. Run `amplihack profile auto-switch on --exclude \
      NAME,...` or `off --exclude NAME,...` naming the logins that must stay excluded \
      (`--exclude ''` for none)";
 
@@ -452,7 +461,7 @@ pub(crate) const EXCLUDE_UNKNOWN_REFUSAL: &str = "auto-switch config does not pa
 fn corrupt_refusal(root: &Path) -> ProfileError {
     ProfileError::AutoSwitchExcludeAtRisk(if exclude_recoverable(root) {
         format!(
-            "{FILE} is unsafe or invalid; not changed. Run `amplihack profile auto-switch on` \
+            "{FILE} is invalid; not changed. Run `amplihack profile auto-switch on` \
              or `off` first: they rewrite it and keep its exclude list"
         )
     } else {
@@ -463,10 +472,10 @@ fn corrupt_refusal(root: &Path) -> ProfileError {
 /// Issue #2218: the refusal of every write over a `.auto-switch` that no
 /// command may replace: a symlink, something that is not a regular file, or
 /// a file owned by another user (for example one left by `sudo amplihack
-/// profile auto-switch ...`). Such a file is still in force: [`read_exclude`]
-/// applies the list of one that parses, whoever owns it, and one it cannot
-/// read excludes every profile. Removing it would leave no exclusions, so
-/// the logins it excludes would be probed and refreshed; the refusal says
+/// profile auto-switch ...`). While it is there [`read_exclude`] cannot
+/// trust it, so every profile counts as excluded and rotation is paused.
+/// Removing it would leave no exclusions, so the logins it was meant to
+/// exclude would be probed and refreshed; the refusal says
 /// how to make it writable instead, and its hint never says remove. `None`
 /// when the file is missing or is a regular file of yours.
 pub(crate) fn unreplaceable_refusal(root: &Path) -> Option<ProfileError> {
@@ -481,9 +490,10 @@ pub(crate) fn unreplaceable_refusal(root: &Path) -> Option<ProfileError> {
         return None;
     };
     Some(ProfileError::AutoSwitchExcludeAtRisk(format!(
-        "{FILE} {fix}, so auto-switch cannot replace it; not changed. Its exclude list is \
-         still in force (one that cannot be read excludes every profile). Make it a regular \
-         file of yours holding the same `exclude=` line: fix the owner with `chown`, or \
+        "{FILE} {fix}, so auto-switch cannot replace it; not changed. Until it is fixed \
+         every profile counts as excluded and rotation is paused. Make it a regular \
+         file of yours holding the `exclude=` line you intend (check it: another user \
+         could have edited it): fix the owner with `chown`, or \
          replace the symlink with a copy of its target. Do not delete it"
     )))
 }
@@ -496,7 +506,8 @@ pub(crate) fn own_regular_file(root: &Path) -> bool {
 }
 
 /// Issue #2218: whether `on` or `off` can rewrite the file without being
-/// told the exclude list: it is missing, or it parses (trusted or not).
+/// told the exclude list: it is missing, or it is a private file of yours
+/// that parses.
 pub fn exclude_recoverable(root: &Path) -> bool {
     !matches!(read_exclude(root), ExcludeFile::Unreadable)
 }

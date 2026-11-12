@@ -458,14 +458,17 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
 }
 
 /// The warning printed when `<root>/.auto-switch` exists but cannot be
-/// read or parsed (issue #2218): which logins are excluded is unknown, so
-/// every profile is treated as excluded and none is probed or refreshed.
-pub(super) const EXCLUDE_UNREADABLE: &str = "warning: auto-switch config unreadable; \
+/// read or parsed, or is owned by another user or writable by group or
+/// others (issue #2218): which logins are excluded is unknown, so every
+/// profile is treated as excluded and none is probed or refreshed.
+pub(super) const EXCLUDE_UNREADABLE: &str = "warning: auto-switch config unreadable or unsafe; \
      every profile treated as excluded, none probed or refreshed";
 
-/// The warning printed when `<root>/.auto-switch` parses but is unsafe or
-/// invalid for its other settings: its exclude list still applies.
-pub(super) const EXCLUDE_UNTRUSTED: &str = "warning: auto-switch config unsafe or invalid; \
+/// The warning printed when `<root>/.auto-switch` is a private file of
+/// yours that parses but is invalid for its other settings (an unknown
+/// kind, say): its exclude list still applies. An unsafe file never gets
+/// this warning; it gets [`EXCLUDE_UNREADABLE`].
+pub(super) const EXCLUDE_UNTRUSTED: &str = "warning: auto-switch config invalid; \
      exclude list applied, other settings ignored";
 
 /// Issue #2218: the auto-switch `exclude` list under `root`, or `None` when

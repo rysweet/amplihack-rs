@@ -1392,21 +1392,21 @@ A profile that is both excluded and an [API-key](#api-key-usage) or
 [overflow](#rotate-overflow) profile is shown as excluded. Neither kind is
 probed.
 
-When `<root>/.auto-switch` parses but is unsafe (group- or
-world-writable, or owned by another user) or invalid for its other
-settings, its exclude list still applies, and the command prints once on
-stderr:
+When `<root>/.auto-switch` is a private file of yours that parses but is
+invalid for its other settings (an unknown kind, say), its exclude list
+still applies, and the command prints once on stderr:
 
 ```
-warning: auto-switch config unsafe or invalid; exclude list applied, other settings ignored
+warning: auto-switch config invalid; exclude list applied, other settings ignored
 ```
 
-When the file exists but cannot be read or does not parse, the command
+When the file exists but cannot be read, does not parse, or is unsafe
+(owned by another user, or writable by group or others), the command
 cannot tell which profiles are excluded, so it treats every profile as
 excluded: none is probed or refreshed. It prints once on stderr:
 
 ```
-warning: auto-switch config unreadable; every profile treated as excluded, none probed or refreshed
+warning: auto-switch config unreadable or unsafe; every profile treated as excluded, none probed or refreshed
 ```
 
 The rotator and [`profile verify`](#profile-verify) do the same; see
@@ -4352,7 +4352,7 @@ so a login moved while the switch was on stays protected after `off`.
 | Command | Behavior |
 |---------|----------|
 | `auto-switch on [--threshold N] [--exclude a,b]` | Writes `enabled=on`, plus the threshold and exclusions if given, and prints `auto-switch: on (threshold N%)`. If any profile's [status-line wrapper](#status-line-wrapper) is `missing` or `stale`, prints the `profiles without the wrapper` [note](#status-notes) to stderr. |
-| `auto-switch off [--exclude a,b]` | Writes `enabled=off`. The threshold and exclusions are kept; `--exclude` replaces the exclusions, and is needed only when `.auto-switch` does not parse ([Unreadable exclude list](#unreadable-exclude-list)). Logins in running sessions are not moved; they return when each session ends. Like `auto-switch on`, appends a [`change:` line](#rotate-change-log) to the rotate log when `enabled` changes. |
+| `auto-switch off [--exclude a,b]` | Writes `enabled=off`. The threshold and exclusions are kept; `--exclude` replaces the exclusions, and is needed only when `.auto-switch` does not parse or others can write it ([Unreadable exclude list](#unreadable-exclude-list)). Logins in running sessions are not moved; they return when each session ends. Like `auto-switch on`, appends a [`change:` line](#rotate-change-log) to the rotate log when `enabled` changes. |
 | `auto-switch status` | **Read-only.** Takes no lock, runs no recovery and changes nothing on disk. Prints the effective setting and where it comes from (`env`, `file`, `default` or `corrupt`), the threshold, the exclusions, whether in-session swaps are available, one row per profile (latest readings, where its login is, wrapper state), the hosted directories, an invariant line, and then any [notes](#status-notes). Prints profile names, percentages and times only. |
 | `auto-switch threshold N` | Sets the threshold, `1` to `100`. Keeps `enabled` and `exclude`. |
 | `auto-switch exclude [names…]` | Replaces the exclusion list. With no names, clears it. Each name must pass the [name rules](#name-rules); it does not have to exist (`status` lists names that do not). Keeps `enabled`, `threshold` and `overflow`. |
@@ -4503,9 +4503,9 @@ What each command writes depends on the current file:
 |------------------------|--------------|-----------------------------|
 | valid | rewrites it with the new `enabled` | rewrites it, keeping the other keys |
 | missing | creates it | creates it with `enabled=off`, defaults for the key not given |
-| corrupt regular file owned by you | replaces it; `threshold` starts from its default unless given. `exclude` keeps the file's list when it parses; when it does not parse, `on` and `off` are refused with `AutoSwitchExcludeAtRisk` unless `--exclude` names the list (`on --exclude …` or `off --exclude …`; see [Unreadable exclude list](#unreadable-exclude-list)) | refused with `AutoSwitchExcludeAtRisk`, naming the recovery: `on` or `off` first when it parses, `on --exclude …` or `off --exclude …` when it does not |
-| owned by another user | refused with `AutoSwitchExcludeAtRisk`, even with `--exclude`: its list is in force, so the message says to fix the owner with `chown`, not to delete it | refused with `AutoSwitchExcludeAtRisk`, as for `on` / `off` |
-| owned by you, writable by group or others | replaced with mode `0600`, as for a corrupt file; its exclude list is kept | refused with `AutoSwitchExcludeAtRisk`; run `on` or `off` first |
+| corrupt regular file owned by you | replaces it; `threshold` starts from its default unless given. `exclude` keeps the file's list when it parses and is private; when it does not parse, `on` and `off` are refused with `AutoSwitchExcludeAtRisk` unless `--exclude` names the list (`on --exclude …` or `off --exclude …`; see [Unreadable exclude list](#unreadable-exclude-list)) | refused with `AutoSwitchExcludeAtRisk`, naming the recovery: `on` or `off` first when it parses, `on --exclude …` or `off --exclude …` when it does not |
+| owned by another user | refused with `AutoSwitchExcludeAtRisk`, even with `--exclude`: while it is there every profile counts as excluded, so the message says to fix the owner with `chown`, not to delete it | refused with `AutoSwitchExcludeAtRisk`, as for `on` / `off` |
+| owned by you, writable by group or others | its list is not trusted (anyone who can write the file could have removed an entry), so `on` and `off` are refused with `AutoSwitchExcludeAtRisk` unless `--exclude` names the list; with it, the file is replaced with mode `0600` | refused with `AutoSwitchExcludeAtRisk`; run `on --exclude …` or `off --exclude …` first |
 | symlink or not a regular file | refused with `AutoSwitchExcludeAtRisk`, even with `--exclude`: the message says to replace it with a regular file of yours holding the same `exclude=` line, not to delete it | refused with `AutoSwitchExcludeAtRisk`, as for `on` / `off` |
 
 A file is never written through a symlink, and a file owned by someone else
@@ -7683,64 +7683,68 @@ the live login again, for example after
   login is treated as the profile the ledger names, and may be probed or
   refreshed as that profile. Once a hand change is suspected, rule 2 or 3
   applies on the next cycle.
-- When `<root>/.auto-switch` cannot be read, the cycle pauses and sends
-  nothing; see [Unreadable exclude list](#unreadable-exclude-list).
+- When `<root>/.auto-switch` cannot be read or is unsafe, the cycle pauses
+  and sends nothing; see [Unreadable exclude list](#unreadable-exclude-list).
 - A pin that holds rotation on `C`, set before `C` was excluded, still holds.
   The held cycles do not probe its spend: see [Pin and overflow](#pin-and-overflow).
 
 `--dry-run` prints the same decision as `would swap:` or `would alert:`.
 Like a real cycle, it sends no request with `C`'s token and writes nothing.
-When `<root>/.auto-switch` cannot be read it stops where a real cycle
-pauses, before measuring, and prints
-`would alert: auto-switch config unreadable; rotation paused, no profile probed`.
+When `<root>/.auto-switch` cannot be read or is unsafe it stops where a
+real cycle pauses, before measuring, and prints
+`would alert: auto-switch config unreadable or unsafe; rotation paused, no profile probed`.
 
 #### Unreadable exclude list
 
-An exclude entry only takes probes and refreshes away, so the list is read
-from `<root>/.auto-switch` whenever the file parses, even when it is unsafe
-(group- or world-writable, or owned by another user) or invalid for its
-other settings. Those settings, such as overflow profiles, are still
-ignored, and the cycle logs once:
+An exclude list is only as trustworthy as whoever can write it, and a
+writer can remove an entry as easily as add one. Rewriting `exclude=shared`
+to `exclude=` would get `shared` probed and refreshed, and that refresh
+signs out the other hosts that share the login. So the list is read from
+`<root>/.auto-switch` only when it is a regular file owned by you and not
+writable by group or others (group write by your own private group is
+allowed, as elsewhere). A private file of yours that parses but is invalid
+for its other settings, such as an unknown kind, still has its list
+applied, since only you could have written it; those other settings, such
+as overflow profiles, are ignored, and the cycle logs once:
 
 ```
-warning: auto-switch config unsafe or invalid; exclude list applied, other settings ignored
+warning: auto-switch config invalid; exclude list applied, other settings ignored
 ```
 
-When the file exists but cannot be read or does not parse, the rotator
-cannot tell which logins are excluded. A token refresh of an excluded login
-signs out the other hosts that share it, so the cycle fails closed: every
-profile is treated as excluded, so recovery, the live refresh and the
-identity checks send nothing, and the cycle stops before measuring. It logs:
+When the file exists but cannot be read, does not parse, or is unsafe
+(owned by another user, or writable by group or others), the rotator cannot
+tell which logins are excluded, so the cycle fails closed: every profile is
+treated as excluded, so recovery, the live refresh and the identity checks
+send nothing, and the cycle stops before measuring. It logs:
 
 ```
-warning: auto-switch config unreadable; every profile treated as excluded, none probed or refreshed
-ALERT: auto-switch config unreadable; rotation paused, no profile probed
+warning: auto-switch config unreadable or unsafe; every profile treated as excluded, none probed or refreshed
+ALERT: auto-switch config unreadable or unsafe; rotation paused, no profile probed
 ```
 
 Rotation resumes from the first cycle that reads the file. To fix the file:
 
-- When it is a regular file of yours that parses but is unsafe (group- or
-  world-writable) or invalid, run `amplihack profile auto-switch on` or
-  `off`. They rewrite it with mode `0600` and the defaults for every other
-  setting, and keep its exclude list, so the logins it excluded stay
-  excluded.
+- When it is a private file of yours that parses but is invalid for its
+  other settings, run `amplihack profile auto-switch on` or `off`. They
+  rewrite it with mode `0600` and the defaults for every other setting, and
+  keep its exclude list, so the logins it excluded stay excluded.
 - When it is owned by another user (for example one left by
   `sudo amplihack profile auto-switch …`), is a symlink, or is not a
   regular file, no command replaces it, and every command that writes it
-  refuses with `AutoSwitchExcludeAtRisk`, `--exclude` or not. The file is
-  still in force: a list that parses is applied whoever owns it, and a file
-  that cannot be read excludes every profile. Do not delete it, which
-  leaves no exclusions. Make it a regular file of yours with the same
-  `exclude=` line instead: `sudo chown "$USER" <root>/.auto-switch` for a
+  refuses with `AutoSwitchExcludeAtRisk`, `--exclude` or not. While it is
+  there every profile counts as excluded. Do not delete it, which leaves no
+  exclusions. Make it a regular file of yours holding the `exclude=` line
+  you intend instead (check the line: another user could have edited it): `sudo chown "$USER" <root>/.auto-switch` for a
   foreign owner, or, for a symlink, copy its target over it
   (`cp --remove-destination "$(readlink -f <root>/.auto-switch)" <root>/.auto-switch`).
-  Then run `on` or `off` as above.
-- When it does not parse, its exclude list is unknown, and `on`, `off`,
-  `threshold`, `exclude`, `overflow add` and `overflow remove` refuse it
-  with `AutoSwitchExcludeAtRisk`:
+  Then run `on --exclude …` or `off --exclude …` as below.
+- When it does not parse, or it is your file but writable by group or
+  others, its exclude list is unknown: whoever else can write it could have
+  removed an entry. `on`, `off`, `threshold`, `exclude`, `overflow add` and
+  `overflow remove` refuse it with `AutoSwitchExcludeAtRisk`:
 
   ```
-  error: auto-switch settings: auto-switch config does not parse, so its exclude list is unknown; not changed. Run `amplihack profile auto-switch on --exclude NAME,...` or `off --exclude NAME,...` naming the logins that must stay excluded (`--exclude ''` for none)
+  error: auto-switch settings: auto-switch config does not parse or others can write it, so its exclude list is unknown; not changed. Run `amplihack profile auto-switch on --exclude NAME,...` or `off --exclude NAME,...` naming the logins that must stay excluded (`--exclude ''` for none)
   hint: do not remove <root>/.auto-switch: that drops its exclude list, and the rotator would probe and refresh the logins it excluded; see "Unreadable exclude list" in docs/reference/profile-command.md
   ```
 
@@ -7760,21 +7764,21 @@ Every other reader of the exclude list follows the same rule: in-session
 auto-switch swaps, its re-run and takeover checks, the capacity figures and
 `profile auto-switch status`, whose `exclude:` line shows the list in force.
 For a corrupt or unsafe file their other settings are still the defaults,
-but the exclude list is the file's when it parses and every profile when it
-does not. With `AMPLIHACK_CLAUDE_AUTO_SWITCH=1` and a file that does not
-parse, auto-switch is on but every profile is excluded, so it swaps nothing.
-If the file does not parse and the profile root cannot be listed either,
+but the exclude list is the file's when it is a private file of yours that
+parses, and every profile otherwise. With `AMPLIHACK_CLAUDE_AUTO_SWITCH=1`
+and a file that does not parse or is unsafe, auto-switch is on but every
+profile is excluded, so it swaps nothing. If the list is unknown and the
+profile root cannot be listed either,
 "every profile" is unknown, and it is never treated as an empty list: `profile usage`, `profile verify` and the rotate
 cycle fail with the error, the live refresh is skipped, and in-session
 auto-switch counts as off.
 
-Applying the list from an unsafe file is a trade-off. It cannot make the
-rotator probe or refresh a login, sign one out or spend credits, but anyone
-who can write the file can exclude every profile and so stop rotation: a
-denial of service. Keep the profile root private (mode `0700`, owned by
-you), which `profile` already requires for writes, and treat the
-`exclude list applied, other settings ignored` warning as a sign that
-someone else can write the file.
+Treating an unsafe file as unreadable is a trade-off. Whoever can write it
+cannot un-exclude a login, because nothing they write is applied, but they
+can stop rotation by making the file unsafe or unparseable: every profile
+is then excluded, a denial of service. That is the only power they get.
+Treat the `unreadable or unsafe` warning as a sign that the file needs
+fixing, and possibly that someone else can write it.
 
 ### Rotate candidates
 
@@ -8400,8 +8404,8 @@ those profiles. `--fix` leaves them out of its plan and never touches their
 folders.
 
 The exclude list is read from `<root>/.auto-switch` once per run. When that
-file cannot be read or does not parse, `verify` prints the
-`auto-switch config unreadable` warning on stderr and treats every profile
+file cannot be read, does not parse or is unsafe, `verify` prints the
+`auto-switch config unreadable or unsafe` warning on stderr and treats every profile
 as excluded; see [Unreadable exclude list](#unreadable-exclude-list).
 
 Without `--fix` nothing is written. The command exits non-zero when any
@@ -9149,9 +9153,9 @@ run and prints their `reread:` lines; see
 | `note: live profile <name> is excluded; moving off it` | Written before the `swap` line of a move off an excluded live profile. |
 | `refresh: live profile <name> is excluded; token not refreshed` | The [expired-login refresh](#an-expired-live-login) was skipped because a rule under [Local proof of an excluded live login](#local-proof-of-an-excluded-live-login) named `<name>` as the live profile. |
 | `skip: pinned profile <name> is excluded; spend not probed` | A held cycle did not probe the spend of a pinned excluded profile; see [Pin and overflow](#pin-and-overflow). |
-| `warning: auto-switch config unsafe or invalid; exclude list applied, other settings ignored` | `<root>/.auto-switch` parses but is unsafe or invalid for its other settings; its exclude list still applies. Written once per cycle. See [Unreadable exclude list](#unreadable-exclude-list). |
-| `warning: auto-switch config unreadable; every profile treated as excluded, none probed or refreshed` | `<root>/.auto-switch` exists but cannot be read or does not parse. Followed by the `rotation paused` ALERT. See [Unreadable exclude list](#unreadable-exclude-list). |
-| `ALERT: auto-switch config unreadable; rotation paused, no profile probed` | The cycle stopped before measuring because the exclude list could not be read. Written every cycle until the file is fixed. |
+| `warning: auto-switch config invalid; exclude list applied, other settings ignored` | `<root>/.auto-switch` is a private file of yours that parses but is invalid for its other settings (an unknown kind, say); its exclude list still applies. A file others can write never gets this warning. Written once per cycle. See [Unreadable exclude list](#unreadable-exclude-list). |
+| `warning: auto-switch config unreadable or unsafe; every profile treated as excluded, none probed or refreshed` | `<root>/.auto-switch` exists but cannot be read, does not parse, or is owned by another user or writable by group or others. Followed by the `rotation paused` ALERT. See [Unreadable exclude list](#unreadable-exclude-list). |
+| `ALERT: auto-switch config unreadable or unsafe; rotation paused, no profile probed` | The cycle stopped before measuring because the exclude list could not be read or trusted. Written every cycle until the file is fixed. |
 | `ALERT: no login in ~/.claude; no swap` | `~/.claude/.credentials.json` is missing or not a regular file. |
 | `ALERT: the account in ~/.claude is not the one the ledger names (live=<name>); no swap` | ALERT `hand-change`: a [hand-change suspicion](#two-readings) is open, or recovery refused a confirmed one. Written on each affected cycle while the identity refusal persists. |
 | `ALERT: the account in ~/.claude is not the one the ledger names (live=<name>); profile <M> holds the same account and has its own login; recovery refused: <reason>; no swap` | A confirmed hand change whose move failed a [check](#checks-before-the-move). Followed by its `fix 1:` line. Written every cycle. |
@@ -11166,7 +11170,7 @@ failures use this format.
 | `Leased`: the profile's login is live in another profile's session | `` wait for that session to end, or run `amplihack profile auto-switch status` `` |
 | `HostsForeignAccount`: the profile's directory holds another account's login | `` wait for that session to end, or run `amplihack profile auto-switch status` `` |
 | `AutoSwitchConfig`: `.auto-switch` cannot be written, the change would exceed 4096 bytes, or the [settings lock](#settings-file) stayed busy for 10 seconds (the message ends in `retry`; run the command again) | `` fix what the message names and retry; do not remove <root>/.auto-switch, which holds the exclude list (see "Settings file" in docs/reference/profile-command.md) `` |
-| `AutoSwitchExcludeAtRisk`: `.auto-switch` is a symlink, not a regular file, or owned by another user (no command replaces it; the message says to fix the owner with `chown` or replace the symlink with a regular file holding the same `exclude=` line), or it is a corrupt regular file of yours; in each case removing it would drop its exclude list. Either `on` or `off` is run without `--exclude` while it does not parse (its exclude list is unknown), or `threshold`, `exclude`, `overflow add` or `overflow remove` needs to keep its other keys. The message names the recovery: `on --exclude NAME,...` or `off --exclude NAME,...` when it does not parse, `on` or `off` when it does. See [Unreadable exclude list](#unreadable-exclude-list) | `` do not remove <root>/.auto-switch: that drops its exclude list, and the rotator would probe and refresh the logins it excluded; see "Unreadable exclude list" in docs/reference/profile-command.md `` |
+| `AutoSwitchExcludeAtRisk`: `.auto-switch` is a symlink, not a regular file, or owned by another user (no command replaces it; the message says to fix the owner with `chown` or replace the symlink with a regular file holding the same `exclude=` line), or it is a corrupt regular file of yours; in each case removing it would drop its exclude list. Either `on` or `off` is run without `--exclude` while it does not parse or others can write it (its exclude list is unknown), or `threshold`, `exclude`, `overflow add` or `overflow remove` needs to keep its other keys. The message names the recovery: `on --exclude NAME,...` or `off --exclude NAME,...` when the list is unknown, `on` or `off` when it is a private file of yours that parses. See [Unreadable exclude list](#unreadable-exclude-list) | `` do not remove <root>/.auto-switch: that drops its exclude list, and the rotator would probe and refresh the logins it excluded; see "Unreadable exclude list" in docs/reference/profile-command.md `` |
 | `AutoSwitchUnsupported`: an `auto-switch` command on a platform without Unix file semantics | `auto-switch needs Linux or another Unix; leave it off` |
 | `AutoSwitchInvariant`: the state files are damaged or a login is not where the state says | `see the Recovery section of docs/howto/claude-profiles.md` |
 | `AutoSwitchInstall`: a profile's `settings.json` is a symlink, owned by someone else, not a JSON object, or cannot be written | `` fix or remove the reported file, then run `amplihack profile auto-switch repair` `` |

@@ -270,7 +270,7 @@ pub(in crate::commands::profile::rotate) fn is_excluded(
 
 /// Issue #2218: the `ALERT:` text that pauses a rotate cycle, and a dry
 /// run's `would alert:`, when `.auto-switch` exists but cannot be read or
-/// parsed: every profile counts as excluded, so there is nothing to
+/// parsed, or is not a private file of yours: every profile counts as excluded, so there is nothing to
 /// measure or rotate to. `warn` gets the reader's warning. `None` when the
 /// list can be read.
 pub(in crate::commands::profile::rotate) fn exclude_paused(

@@ -30,7 +30,8 @@ pub enum AutoSwitchCommand {
     /// Turn auto-switch off (keeps the threshold and exclusions)
     Off {
         /// Profiles never switched to (comma-separated); needed only when
-        /// the settings file does not parse, so its list is unknown
+        /// the settings file does not parse or is writable by group or
+        /// others, so its list is unknown
         #[arg(long, value_delimiter = ',')]
         exclude: Option<Vec<String>>,
     },
@@ -69,12 +70,13 @@ fn exclude_arg(names: &[String]) -> Result<Vec<ProfileName>, ProfileError> {
 }
 
 /// The refusal of `on` or `off` over a `.auto-switch` that does not parse
-/// (issue #2218).
+/// or that others can write (issue #2218).
 use super::config::EXCLUDE_UNKNOWN_REFUSAL;
 
 /// Issue #2218: `on` and `off` rewrite a corrupt file from the defaults,
-/// keeping its exclude list when it parses. When it does not parse there is
-/// no list to keep, and writing an empty one would let the rotator probe
+/// keeping its exclude list when it is a private file of yours that parses.
+/// When it does not parse, or group or others can write it (so anyone could
+/// have removed an entry), there is no list to keep, and writing an empty one would let the rotator probe
 /// and refresh the logins that were excluded, so they refuse unless the
 /// list is given with `--exclude`. A symlink or someone else's file is
 /// left to `config::update`, which refuses it with

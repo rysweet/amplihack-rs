@@ -718,24 +718,31 @@ fn config_write_is_called_only_from_update() {
 // --- Issue #2218: one exclude reader, and `on`/`off` keep the list -----------
 
 #[test]
-fn default_on_invalid_update_keeps_the_exclude_list_of_an_untrusted_file() {
+fn default_on_invalid_update_keeps_the_exclude_list_of_an_invalid_private_file() {
     let _proc = crate::test_support::proc::fake_proc_scope();
     let tmp = private_root();
     let root = tmp.path();
     write_file(
         root,
-        "enabled=on\nthreshold=70\nexclude=work,spare\noverflow=cred\n",
+        "enabled=on\nthreshold=70\nexclude=work,spare\noverflow=cred\nkind=work:bogus\n",
     );
-    // Group-writable: `read` calls it corrupt, `read_exclude` still parses it.
-    fs::set_permissions(root.join(".auto-switch"), fs::Permissions::from_mode(0o666)).unwrap();
+    // A private file of yours with an unknown kind: `read` calls it
+    // corrupt, `read_exclude` still trusts its list.
     assert_eq!(config::read(root), FileState::Corrupt);
+    assert_eq!(
+        config::read_exclude(root),
+        config::ExcludeFile::Read {
+            names: names(&["work", "spare"]),
+            trusted: false
+        }
+    );
     let c = config::update(root, ReadMode::DefaultOnInvalid, |c| {
         c.enabled = true;
         Ok(())
     })
     .unwrap();
     assert_eq!(c.exclude, names(&["work", "spare"]));
-    // The other settings of the unsafe file are not trusted: defaults.
+    // The other settings of the invalid file are not trusted: defaults.
     assert_eq!(
         file_text(root),
         "enabled=on\nthreshold=90\nexclude=work,spare\n"
@@ -749,9 +756,27 @@ fn an_unparseable_file_is_not_recoverable_and_a_parseable_one_is() {
     assert!(config::exclude_recoverable(root), "missing");
     write_file(root, "enabled=maybe\nexclude=work\n");
     assert!(!config::exclude_recoverable(root), "does not parse");
-    write_file(root, "enabled=on\nthreshold=90\nexclude=work\n");
-    fs::set_permissions(root.join(".auto-switch"), fs::Permissions::from_mode(0o666)).unwrap();
-    assert!(config::exclude_recoverable(root), "unsafe but parses");
+    write_file(
+        root,
+        "enabled=on\nthreshold=90\nexclude=work\nkind=work:bogus\n",
+    );
+    assert!(
+        config::exclude_recoverable(root),
+        "private, invalid kind, parses"
+    );
+    // Anyone who can write the file could have removed an entry, so a list
+    // others can write is unknown even though it parses. (Group write by
+    // your own private group does not count: `writable_by_others`.)
+    for mode in [0o602, 0o666] {
+        write_file(root, "enabled=on\nthreshold=90\nexclude=work\n");
+        fs::set_permissions(root.join(".auto-switch"), fs::Permissions::from_mode(mode)).unwrap();
+        assert_eq!(
+            config::read_exclude(root),
+            config::ExcludeFile::Unreadable,
+            "mode {mode:o}"
+        );
+        assert!(!config::exclude_recoverable(root), "mode {mode:o}");
+    }
 }
 
 #[test]
@@ -762,13 +787,25 @@ fn excluded_profiles_is_the_list_or_every_profile() {
         fs::create_dir(root.join(p)).unwrap();
     }
     assert_eq!(config::excluded_profiles(root).unwrap(), names(&[]));
-    write_file(root, "enabled=on\nthreshold=90\nexclude=work\n");
-    fs::set_permissions(root.join(".auto-switch"), fs::Permissions::from_mode(0o666)).unwrap();
+    write_file(
+        root,
+        "enabled=on\nthreshold=90\nexclude=work\nkind=work:bogus\n",
+    );
     assert_eq!(config::excluded_profiles(root).unwrap(), names(&["work"]));
-    write_file(root, "enabled=maybe\nexclude=work\n");
-    let mut every = config::excluded_profiles(root).unwrap();
-    every.sort();
-    assert_eq!(every, names(&["spare", "work"]));
+    for body in [
+        "enabled=maybe\nexclude=work\n",
+        "enabled=on\nthreshold=90\nexclude=\n",
+    ] {
+        write_file(root, body);
+        if !body.contains("maybe") {
+            // Writable by others with an empty list: it cannot un-exclude.
+            fs::set_permissions(root.join(".auto-switch"), fs::Permissions::from_mode(0o666))
+                .unwrap();
+        }
+        let mut every = config::excluded_profiles(root).unwrap();
+        every.sort();
+        assert_eq!(every, names(&["spare", "work"]), "{body:?}");
+    }
 }
 
 #[test]
@@ -795,12 +832,18 @@ fn effective_applies_the_shared_exclude_list_to_a_corrupt_file() {
     let root = tmp.path();
     fs::create_dir(root.join("work")).unwrap();
     fs::create_dir(root.join("spare")).unwrap();
-    write_file(root, "enabled=on\nthreshold=90\nexclude=work\n");
-    fs::set_permissions(root.join(".auto-switch"), fs::Permissions::from_mode(0o666)).unwrap();
+    write_file(
+        root,
+        "enabled=on\nthreshold=90\nexclude=work\nkind=work:bogus\n",
+    );
     // Whatever AMPLIHACK_CLAUDE_AUTO_SWITCH says: it decides `on`, not the list.
     assert_eq!(config::read(root), FileState::Corrupt);
     let eff = config::effective(root);
-    assert_eq!(eff.config.exclude, names(&["work"]), "untrusted: its list");
+    assert_eq!(
+        eff.config.exclude,
+        names(&["work"]),
+        "invalid kind: its list"
+    );
     write_file(root, "enabled=maybe\n");
     let mut every = config::effective(root).config.exclude;
     every.sort();
@@ -809,6 +852,11 @@ fn effective_applies_the_shared_exclude_list_to_a_corrupt_file() {
         names(&["spare", "work"]),
         "unparseable: every profile"
     );
+    write_file(root, "enabled=on\nthreshold=90\nexclude=\n");
+    fs::set_permissions(root.join(".auto-switch"), fs::Permissions::from_mode(0o666)).unwrap();
+    let mut every = config::effective(root).config.exclude;
+    every.sort();
+    assert_eq!(every, names(&["spare", "work"]), "unsafe: every profile");
 }
 
 /// Issue #2218: an edit that keeps the other keys refuses a corrupt file of
@@ -835,8 +883,19 @@ fn an_edit_over_a_corrupt_file_of_yours_names_the_recovery_that_keeps_the_list()
     assert!(err.hint().starts_with("do not remove"), "{}", err.hint());
     assert_eq!(file_text(root), "enabled=maybe\nexclude=work\n");
 
+    // Group-writable: its list is unknown too, so the same refusal.
     write_file(root, "enabled=on\nthreshold=90\nexclude=work\n");
     fs::set_permissions(root.join(".auto-switch"), fs::Permissions::from_mode(0o666)).unwrap();
+    let err = edit(root);
+    let ProfileError::AutoSwitchExcludeAtRisk(msg) = &err else {
+        panic!("{err:?}");
+    };
+    assert!(msg.contains("exclude list is unknown"), "{msg}");
+
+    write_file(
+        root,
+        "enabled=on\nthreshold=90\nexclude=work\nkind=work:bogus\n",
+    );
     let err = edit(root);
     let ProfileError::AutoSwitchExcludeAtRisk(msg) = &err else {
         panic!("{err:?}");
@@ -846,9 +905,9 @@ fn an_edit_over_a_corrupt_file_of_yours_names_the_recovery_that_keeps_the_list()
 
 /// Issue #2218: a `.auto-switch` no command may replace (a symlink, a
 /// directory, or a file owned by another user, which shares this code path
-/// but cannot be created without root) is still in force, so every write
-/// over it is refused with a hint that never says remove: removing it would
-/// leave no exclusions. Nothing is written, and the target is untouched.
+/// but cannot be created without root) makes every profile count as
+/// excluded while it is there, so every write over it is refused with a
+/// hint that never says remove: removing it would leave no exclusions. Nothing is written, and the target is untouched.
 #[test]
 fn a_write_over_an_unreplaceable_file_never_advises_removing_it() {
     for (kind, setup) in [

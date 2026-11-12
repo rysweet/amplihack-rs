@@ -782,8 +782,9 @@ fn symlinked_settings_file_is_never_written_through() {
     let out = f.run_args(&["profile", "auto-switch", "on"]);
     assert!(!out.status.success());
     let stderr = text(&out.stderr);
-    // Issue #2218: the symlink is still in force, so the advice is to make
-    // it a regular file, never to remove it.
+    // Issue #2218: while the symlink is there every profile counts as
+    // excluded, so the advice is to make it a regular file, never to
+    // remove it (that would leave no exclusions).
     assert!(stderr.contains("is a symlink"), "{stderr}");
     assert!(stderr.contains("Do not delete it"), "{stderr}");
     assert!(

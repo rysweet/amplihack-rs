@@ -50,10 +50,9 @@ use std::thread::JoinHandle;
 
 const TOKEN_PREFIX: &str = "fake-task2218-";
 const REFRESH_PREFIX: &str = "fake-task2218-refresh-";
-const UNTRUSTED: &str =
-    "auto-switch config unsafe or invalid; exclude list applied, other settings ignored";
-const UNREADABLE: &str =
-    "auto-switch config unreadable; every profile treated as excluded, none probed or refreshed";
+const UNTRUSTED: &str = "auto-switch config invalid; exclude list applied, other settings ignored";
+const UNREADABLE: &str = "auto-switch config unreadable or unsafe; every profile treated as \
+     excluded, none probed or refreshed";
 
 // --- the recording endpoint ---------------------------------------------------
 
@@ -653,13 +652,15 @@ fn usage_does_not_count_an_excluded_profile_from_history_written_before_the_fix(
 }
 
 #[test]
-fn an_unsafe_config_still_applies_its_exclude_list() {
+fn an_invalid_private_config_still_applies_its_exclude_list() {
     let (f, ep) = fixture();
     exclude(&f, &["spare"]);
-    // Group-writable: unsafe for overflow and the other settings, but an
-    // exclude entry only takes actions away, so it still applies.
+    // A private file of yours with an unknown kind: invalid for its other
+    // settings, but only you could have written its list, so it applies.
     let toggle = f.root.join(".auto-switch");
-    fs::set_permissions(&toggle, fs::Permissions::from_mode(0o666)).unwrap();
+    let mut body = fs::read_to_string(&toggle).unwrap();
+    body.push_str("kind=work:bogus\n");
+    fs::write(&toggle, body).unwrap();
     let before = stamp(&f.slot("spare"));
     let out = usage(&f, &ep, &[]);
     let stderr = text(&out.stderr);
@@ -676,6 +677,47 @@ fn an_unsafe_config_still_applies_its_exclude_list() {
     );
     assert_no_request_for(&ep, "spare");
     assert_eq!(stamp(&f.slot("spare")), before, "same bytes and mtime");
+}
+
+/// Crusty round 9: anyone who can write `.auto-switch` can remove an entry
+/// as easily as add one. A file others can write whose list was rewritten
+/// from `exclude=spare` to `exclude=` must not get `spare` probed or
+/// refreshed: the file is unsafe, so every profile counts as excluded.
+#[test]
+fn a_config_others_can_write_cannot_unexclude_a_login() {
+    let (f, ep) = fixture();
+    exclude(&f, &["spare"]);
+    let toggle = f.root.join(".auto-switch");
+    let body = fs::read_to_string(&toggle).unwrap();
+    assert!(body.contains("exclude=spare\n"), "{body}");
+    fs::write(&toggle, body.replace("exclude=spare\n", "exclude=\n")).unwrap();
+    // World-writable: the fixture's group may be the user's private group,
+    // whose write bit `writable_by_others` does not count.
+    fs::set_permissions(&toggle, fs::Permissions::from_mode(0o666)).unwrap();
+    let stamps: Vec<Stamp> = ["spare", "extra"].map(|p| stamp(&f.slot(p))).into();
+    let home = stamp(&f.home_login());
+    let out = usage(&f, &ep, &[]);
+    assert_eq!(
+        text(&out.stderr).matches(UNREADABLE).count(),
+        1,
+        "one warning: {}",
+        describe(&out)
+    );
+    assert!(!text(&out.stderr).contains(UNTRUSTED), "{}", describe(&out));
+    assert!(
+        ep.requests().is_empty(),
+        "no request at all: {:?}\n{}",
+        ep.requests(),
+        describe(&out)
+    );
+    // A cycle pauses rather than measuring or refreshing anything.
+    let _ = cycle(&f, &ep);
+    let log = f.log();
+    assert!(log.contains(&format!("ALERT: {PAUSED}")), "{log}");
+    assert!(ep.requests().is_empty(), "{:?}\n{log}", ep.requests());
+    let after: Vec<Stamp> = ["spare", "extra"].map(|p| stamp(&f.slot(p))).into();
+    assert_eq!(after, stamps, "same bytes and mtime");
+    assert_eq!(stamp(&f.home_login()), home);
 }
 
 /// Writes a `.auto-switch` that does not parse, mode 0600.
@@ -735,10 +777,7 @@ fn a_cycle_with_an_unreadable_config_pauses_and_sends_nothing() {
     let _ = cycle(&f, &ep);
     let log = f.log();
     assert!(log.contains(UNREADABLE), "{log}");
-    assert!(
-        log.contains("ALERT: auto-switch config unreadable; rotation paused, no profile probed"),
-        "{log}"
-    );
+    assert!(log.contains(&format!("ALERT: {PAUSED}")), "{log}");
     assert!(ep.requests().is_empty(), "{:?}\n{log}", ep.requests());
     assert_eq!(live(&f), "work", "nothing moved: {log}");
     assert_eq!(stamp(&f.home_login()), home, "same bytes and mtime");
@@ -751,7 +790,7 @@ fn a_cycle_with_an_unreadable_config_pauses_and_sends_nothing() {
 
 // --- profile seed-record -------------------------------------------------------
 
-const PAUSED: &str = "auto-switch config unreadable; rotation paused, no profile probed";
+const PAUSED: &str = "auto-switch config unreadable or unsafe; rotation paused, no profile probed";
 
 #[test]
 fn a_dry_run_with_an_unreadable_config_would_pause_like_a_cycle() {
@@ -780,20 +819,46 @@ fn toggle_text(f: &Fixture) -> String {
 }
 
 #[test]
-fn auto_switch_on_over_an_unsafe_config_keeps_its_exclude_list() {
+fn auto_switch_on_or_off_over_a_config_others_can_write_is_refused_without_exclude() {
     let (f, ep) = fixture();
     exclude(&f, &["spare"]);
     let toggle = f.root.join(".auto-switch");
     fs::set_permissions(&toggle, fs::Permissions::from_mode(0o666)).unwrap();
-    f.ok(&["profile", "auto-switch", "on"]);
+    let before = toggle_text(&f);
+    // Someone else may have edited the list, so it is not kept: the user
+    // must name it.
+    for args in [
+        &["profile", "auto-switch", "on"][..],
+        &["profile", "auto-switch", "off"][..],
+    ] {
+        let out = run(&f, &ep, args);
+        assert!(!out.status.success(), "{args:?}: {}", describe(&out));
+        assert!(
+            text(&out.stderr).contains("exclude list is unknown"),
+            "{args:?}: {}",
+            describe(&out)
+        );
+        assert_eq!(toggle_text(&f), before, "{args:?}: file unchanged");
+    }
+    f.ok(&["profile", "auto-switch", "on", "--exclude", "spare"]);
     assert!(
         toggle_text(&f).contains("exclude=spare\n"),
         "{}",
         toggle_text(&f)
     );
+    assert_eq!(
+        fs::metadata(&toggle).unwrap().permissions().mode() & 0o777,
+        0o600,
+        "rewritten private"
+    );
     // The rewritten file is trusted again, and `spare` is still excluded.
     let out = usage(&f, &ep, &[]);
     assert!(!text(&out.stderr).contains(UNTRUSTED), "{}", describe(&out));
+    assert!(
+        !text(&out.stderr).contains(UNREADABLE),
+        "{}",
+        describe(&out)
+    );
     assert_no_request_for(&ep, "spare");
 }
 
@@ -863,9 +928,14 @@ fn auto_switch_status_shows_the_exclude_list_the_rotator_applies() {
     )
     .unwrap();
     let out = run(&f, &ep, &["profile", "auto-switch", "status"]);
+    let line = text(&out.stdout)
+        .lines()
+        .find(|l| l.starts_with("exclude: "))
+        .unwrap_or_default()
+        .to_string();
     assert!(
-        text(&out.stdout).contains("exclude: spare"),
-        "untrusted: {}",
+        line.contains("spare") && line.contains("extra"),
+        "unsafe: every profile: {}",
         describe(&out)
     );
     corrupt_config(&f);

@@ -34,8 +34,9 @@ pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
         LiveId::Known(n) => Some(n.clone()),
         _ => None,
     };
-    // Issue #2218: the shared reader, so an untrusted file still excludes
-    // and an unreadable one excludes every profile.
+    // Issue #2218: the shared reader, so a private file that is invalid for
+    // other settings still excludes, and an unreadable or unsafe one
+    // excludes every profile.
     let exclude = crate::commands::profile::usage_cmd::exclude_list(root, |_| {})?;
     let live_excluded = live_name.as_ref().is_some_and(|n| exclude.contains(n));
     let (overflow, ignored) = tiers_detail(&ctx.store, Some(&ctx.home));
