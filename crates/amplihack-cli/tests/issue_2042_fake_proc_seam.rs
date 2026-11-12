@@ -158,8 +158,12 @@ fn auto_switch_status_reports_a_tree_without_self_environ() {
         readable.contains("in-session swap: available (Linux)"),
         "{readable}"
     );
-    fs::remove_file(fake.path().join("self/environ")).unwrap();
-    let unreadable = status(fake.path());
+    // A second tree, not the first one edited: the first status call keeps
+    // a running-session snapshot keyed by its process table (issue #2040),
+    // and a cached read of that table would answer for the edited tree.
+    let broken = FakeProc::new();
+    fs::remove_file(broken.path().join("self/environ")).unwrap();
+    let unreadable = status(broken.path());
     assert!(
         unreadable.contains("in-session swap: unavailable (/proc cannot be read here"),
         "the child read the host /proc, not the fake tree: {unreadable}"
