@@ -1,5 +1,5 @@
-//! Test modules for `rotate` that use no other test module and are used by
-//! none, gathered here so that `rotate/mod.rs` stays within its line budget
+//! Test modules for `rotate` that no other test module uses, gathered here
+//! so that `rotate/mod.rs` stays within its line budget
 //! (`rotate_files_stay_within_the_line_budget`). Each file still sits beside
 //! `mod.rs`; the glob import below keeps their `super::` paths pointing at
 //! the `rotate` items they test.
@@ -28,6 +28,10 @@ mod tests_issue_1947;
 #[path = "tests_issue_2136.rs"]
 #[cfg(target_os = "linux")]
 mod tests_issue_2136;
+#[path = "tests_issue_2211.rs"]
+mod tests_issue_2211;
+#[path = "tests_issue_2211_cycle.rs"]
+mod tests_issue_2211_cycle;
 #[path = "tests_ledger.rs"]
 mod tests_ledger;
 #[path = "tests_live_readers.rs"]
