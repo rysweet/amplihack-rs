@@ -7,6 +7,8 @@ delivers its work. `base_branch` names the branch a pull request targets.
 `strict_delivery` is for a caller that has already assigned the issue and the
 branch, for example a dispatcher that hands queued work to many runs. The two
 are independent: setting a base does not change how the issue is chosen.
+They apply where `default-workflow` runs; [Where the inputs apply](#where-the-inputs-apply)
+lists the paths that do not use them.
 
 ## Contents
 
@@ -15,8 +17,9 @@ are independent: setting a base does not change how the issue is chosen.
 - [`forbidden_base_branches`](#forbidden_base_branches)
 - [`strict_delivery`](#strict_delivery)
 - [How the issue is referenced](#how-the-issue-is-referenced)
-- [How the inputs reach each phase](#how-the-inputs-reach-each-phase)
 - [What strict delivery does not do](#what-strict-delivery-does-not-do)
+- [How the inputs reach each phase](#how-the-inputs-reach-each-phase)
+- [Where the inputs apply](#where-the-inputs-apply)
 - [Example](#example)
 - [Helpers](#helpers)
 - [Tests](#tests)
@@ -229,10 +232,48 @@ to `default-workflow` when it calls it in-process. What happens then:
 | `base_branch` | Taken as the base. It must still pass `delivery_base_ref`, and step-04's receipt records it, but nothing can tell it apart from a value meant for this run. |
 | `forbidden_base_branches` | Taken as the deny list. A list in the wrong syntax fails the run when `base_branch` is set. |
 
-No bundled recipe sets any of these keys. A parent that needs one of these
-names for something else clears it in the calling step's `context:`
+No bundled recipe gives any of these keys a value of its own. `quick-change`
+and `auto-drive-light` clear `base_branch` and `forbidden_base_branches`, and
+`smart-classify-route` declares `strict_delivery` so that it can read it; see
+[Where the inputs apply](#where-the-inputs-apply). A parent that needs one of
+these names for something else clears it in the calling step's `context:`
 (for example `base_branch: ""`) before it calls `default-workflow`, or uses
 another name.
+
+## Where the inputs apply
+
+The inputs take effect where `default-workflow` runs: on its own, or in-process
+under another recipe, such as `smart-orchestrator`'s development route when the
+task stays on one workstream. Two recipes start a branch and open a pull
+request without `default-workflow`'s publish phase, and one route runs
+`default-workflow` in separate processes:
+
+| Path | `base_branch`, `forbidden_base_branches` | `strict_delivery` |
+| ---- | ---------------------------------------- | ----------------- |
+| `quick-change`, and `auto-drive-light` for a new change | Cleared in the call to `workflow-worktree`. The `quick/` branch starts from `origin/HEAD`, and the pull request targets the branch `origin/HEAD` names, so the two agree. A `base_branch` from the caller is not used. | Left as inherited. Step-04 refuses to create a branch when it is `"true"`, so a strict run stops before any agent runs. |
+| `smart-orchestrator`, task split into parallel workstreams | Not forwarded. `launch-parallel-round-1` passes only `create_issue` to `amplihack orch run`. Each development workstream runs `default-workflow` in its own process, whose declared defaults replace any inherited value, so each branch starts from, and each pull request targets, the remote default branch. | Never split. `activate-workflow` keeps the run on one workstream when `strict_delivery` is anything but empty or `"false"`, and says so on stderr. |
+
+The runner merges a sub-recipe's context back into its caller's. Once
+`quick-change` or `auto-drive-light` has called `workflow-worktree`,
+`base_branch` and `forbidden_base_branches` are empty for the rest of the run,
+in that recipe and in the recipes that called it. A `quick-change` hand-over
+to `default-workflow` therefore continues the `quick/` branch with no
+`base_branch`, and its pull request also targets the remote default branch.
+
+`auto-drive-light` continuing an existing branch or pull request
+(`existing_branch` or `pr_number` set) does not call `workflow-worktree` and
+opens no pull request.
+
+A strict development task that `smart-orchestrator` keeps on one workstream
+goes to `default-workflow` in-process, which applies the contract above. `quick-change`
+is not chosen, because strict delivery requires `existing_branch`, which rules
+it out (#1740); a strict run without `existing_branch` is refused by step-03 of
+`default-workflow` or by step-04 under `quick-change`.
+
+To deliver to `base_branch` through `smart-orchestrator`, pass
+`force_single_workstream=true` and `workflow=default-workflow`, which keep the
+task on one workstream and off `quick-change`, or call `default-workflow`
+directly.
 
 ## Example
 

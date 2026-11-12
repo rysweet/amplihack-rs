@@ -385,7 +385,9 @@ mod issue_1595_tracking_issue_selection;
 #[path = "issue_1881_local_default_tracking_test.rs"]
 mod issue_1881_local_default_tracking;
 // base_branch and strict_delivery: the shared helper, the step-15/16 guard,
-// step-06d for an issue in another repository, and step-04's base.
+// step-06d for an issue in another repository, step-04's base, finalize, and
+// the callers that do not deliver to base_branch (quick-change, auto-drive-light,
+// smart-orchestrator's parallel launcher).
 #[path = "workflow_delivery_inputs_test.rs"]
 mod workflow_delivery_inputs;
 

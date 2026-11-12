@@ -5,7 +5,10 @@
 //! (goal already met) for an issue owned by another repository, step-04's base
 //! for a new and for an existing branch, and finalize (the terminal-state
 //! probe, step-21 and step-22b) accepting a pull request opened on
-//! `base_branch`. Step-03 is covered in `issue_1881_local_default_tracking_test.rs`
+//! `base_branch`. It also covers the paths that do not deliver to
+//! `base_branch`: quick-change and auto-drive-light clear it in their call to
+//! workflow-worktree, and smart-orchestrator keeps a strict run off the
+//! parallel launcher. Step-03 is covered in `issue_1881_local_default_tracking_test.rs`
 //! and step-16 in `issue_2306_publish/recovery.rs`.
 
 use std::fs;
@@ -579,6 +582,298 @@ fn existing_branch_never_proceeds_on_a_bad_base() {
                 .count(),
             1,
             "{base}: no task worktree is set up on a bad base\n{worktrees}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// workflow-worktree's other callers: quick-change and auto-drive-light
+// ---------------------------------------------------------------------------
+
+/// Every step in a bundled recipe that calls `workflow-worktree`, with the
+/// name of the recipe it is in.
+fn workflow_worktree_calls() -> Vec<(String, Value)> {
+    let dir = workspace_root().join("amplifier-bundle/recipes");
+    let mut paths: Vec<PathBuf> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("yaml"))
+        .collect();
+    paths.sort();
+    let mut calls = Vec::new();
+    for path in paths {
+        let name = path.file_stem().unwrap().to_str().unwrap().to_owned();
+        let doc: Value = serde_yaml::from_str(&fs::read_to_string(&path).unwrap())
+            .unwrap_or_else(|e| panic!("{name}.yaml does not parse: {e}"));
+        for step in doc["steps"].as_sequence().into_iter().flatten() {
+            if step["type"].as_str() == Some("recipe")
+                && step["recipe"].as_str() == Some("workflow-worktree")
+            {
+                calls.push((name.clone(), step.clone()));
+            }
+        }
+    }
+    calls
+}
+
+#[test]
+fn workflow_worktree_callers_outside_default_workflow_clear_base_branch() {
+    // Step-04 honours an inherited base_branch, and the runner lays a
+    // caller's whole context over workflow-worktree's defaults. Only
+    // default-workflow opens its pull request on base_branch (step-16). Any
+    // other caller opens it on origin/HEAD's branch, so it clears base_branch
+    // and forbidden_base_branches in its call and the branch starts where the
+    // pull request is aimed. strict_delivery stays inherited: step-04 then
+    // refuses a strict run instead of delivering it on a new branch. See
+    // "Where the inputs apply" in docs/reference/workflow-delivery-inputs.md.
+    let calls = workflow_worktree_calls();
+    let callers: Vec<&str> = calls.iter().map(|(r, _)| r.as_str()).collect();
+    for expected in ["default-workflow", "quick-change", "auto-drive-light"] {
+        assert!(
+            callers.contains(&expected),
+            "{expected} calls workflow-worktree; found {callers:?}"
+        );
+    }
+    for (recipe, step) in &calls {
+        let id = step["id"].as_str().unwrap_or("?");
+        let ctx = &step["context"];
+        if recipe == "default-workflow" {
+            for key in ["base_branch", "forbidden_base_branches", "strict_delivery"] {
+                assert!(
+                    ctx[key].is_null(),
+                    "default-workflow/{id} passes {key} through to step-04"
+                );
+            }
+            continue;
+        }
+        for key in ["base_branch", "forbidden_base_branches"] {
+            assert_eq!(
+                ctx[key].as_str(),
+                Some(""),
+                "{recipe}/{id} must clear {key}: only default-workflow opens its pull request on base_branch"
+            );
+        }
+        assert!(
+            ctx["strict_delivery"].is_null(),
+            "{recipe}/{id} must leave strict_delivery inherited, so step-04 refuses a strict run"
+        );
+    }
+}
+
+/// The variables step-04 sees when `recipe`'s call to `workflow-worktree`
+/// runs under a parent context `inherited`. As in recipe-runner-rs: the
+/// parent context, then the call's own `context:`, laid over
+/// workflow-worktree's defaults, and each key exported as `RECIPE_VAR_<key>`
+/// and as its uppercase alias.
+fn worktree_call_env(recipe: &str, inherited: &[(&str, &str)]) -> Vec<(String, String)> {
+    let call = workflow_worktree_calls()
+        .into_iter()
+        .find(|(r, _)| r == recipe)
+        .map(|(_, step)| step)
+        .unwrap_or_else(|| panic!("{recipe} calls workflow-worktree"));
+    let path = workspace_root().join("amplifier-bundle/recipes/workflow-worktree.yaml");
+    let worktree: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    let mut ctx = std::collections::BTreeMap::new();
+    for (k, v) in worktree["context"]
+        .as_mapping()
+        .expect("workflow-worktree context")
+    {
+        ctx.insert(
+            k.as_str().unwrap().to_owned(),
+            v.as_str().unwrap().to_owned(),
+        );
+    }
+    for (k, v) in inherited {
+        ctx.insert((*k).to_owned(), (*v).to_owned());
+    }
+    for (k, v) in call["context"].as_mapping().expect("call context") {
+        ctx.insert(
+            k.as_str().unwrap().to_owned(),
+            v.as_str().unwrap().to_owned(),
+        );
+    }
+    ctx.into_iter()
+        .flat_map(|(k, v)| {
+            [
+                (format!("RECIPE_VAR_{k}"), v.clone()),
+                (k.to_uppercase(), v),
+            ]
+        })
+        .collect()
+}
+
+fn run_worktree_call(repo: &Repo, recipe: &str, inherited: &[(&str, &str)]) -> Output {
+    let env = worktree_call_env(recipe, inherited);
+    let pairs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    run_step04(repo, &pairs)
+}
+
+/// The branch `recipe`'s pull request step passes to `gh pr create --base`,
+/// worked out in `repo` by that step's own lines.
+fn pull_request_base(repo: &Repo, recipe: &str, step_id: &str) -> String {
+    let command = step_command(recipe, step_id);
+    assert!(
+        command.contains("--base \"$DEFAULT\""),
+        "{recipe}/{step_id} opens the pull request on $DEFAULT"
+    );
+    let lines: Vec<&str> = command
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("DEFAULT="))
+        .collect();
+    assert_eq!(lines.len(), 2, "{recipe}/{step_id}: {lines:?}");
+    let script = format!(
+        "set -euo pipefail\n{}\nprintf '%s' \"$DEFAULT\"\n",
+        lines.join("\n")
+    );
+    let out = bash(&script, &repo.path(), &[]);
+    assert!(out.status.success(), "{}", describe(&out));
+    text(&out.stdout)
+}
+
+#[test]
+fn light_recipes_start_the_branch_on_the_base_their_pull_request_targets() {
+    // A base_branch given to smart-orchestrator reaches quick-change and
+    // auto-drive-light. Their branch must still start on the branch their
+    // pull request targets, or the pull request carries every commit on dev
+    // that main lacks.
+    for (recipe, pr_step) in [
+        ("quick-change", "quick-change-create-pr"),
+        ("auto-drive-light", "light-open-pr"),
+    ] {
+        let repo = Repo::new();
+        let out = run_worktree_call(
+            &repo,
+            recipe,
+            &[
+                ("base_branch", "dev"),
+                ("forbidden_base_branches", "release/*"),
+                ("issue_number", "77"),
+                ("task_description", "fix a typo"),
+            ],
+        );
+        assert!(out.status.success(), "{recipe}: {}", describe(&out));
+        let r = receipt(&out);
+        let base = pull_request_base(&repo, recipe, pr_step);
+        assert_eq!(base, "main", "{recipe}");
+        assert_eq!(r["base_ref"], format!("origin/{base}"), "{recipe}: {r}");
+        let wt = PathBuf::from(r["worktree_path"].as_str().unwrap());
+        assert_eq!(
+            git(&wt, &["rev-parse", "HEAD"]),
+            repo.rev("origin/main"),
+            "{recipe}"
+        );
+        assert!(
+            !wt.join("dev-only.txt").exists(),
+            "{recipe}: dev's commits stay out of a pull request into main"
+        );
+    }
+}
+
+#[test]
+fn light_recipes_refuse_an_inherited_strict_delivery() {
+    for recipe in ["quick-change", "auto-drive-light"] {
+        let repo = Repo::new();
+        let out = run_worktree_call(
+            &repo,
+            recipe,
+            &[("strict_delivery", "true"), ("base_branch", "dev")],
+        );
+        assert_eq!(out.status.code(), Some(1), "{recipe}: {}", describe(&out));
+        assert!(
+            text(&out.stderr).contains("strict_delivery=true requires existing_branch"),
+            "{recipe}: {}",
+            describe(&out)
+        );
+        assert!(out.stdout.is_empty(), "{recipe}: no receipt");
+        assert!(
+            !repo.path().join("worktrees").exists(),
+            "{recipe}: no branch is created for a strict run"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// smart-orchestrator: parallel workstreams do not carry the inputs
+// ---------------------------------------------------------------------------
+
+/// smart-classify-route's activate-workflow with a decomposition of three
+/// workstreams. Returns the step's output and stderr.
+fn run_activate_workflow(strict: &str, force_single: &str) -> (String, String) {
+    let dir = TempDir::new().unwrap();
+    let bin = dir.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let fake = bin.join("amplihack");
+    fs::write(
+        &fake,
+        "#!/usr/bin/env bash\n[ \"$*\" = \"orch helper count-workstreams\" ] || exit 97\ncat >/dev/null\nprintf 3\n",
+    )
+    .unwrap();
+    fs::set_permissions(
+        &fake,
+        <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
+    )
+    .unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let project = dir.path().join("project");
+    fs::create_dir(&project).unwrap();
+    let out = bash(
+        &step_command("smart-classify-route", "activate-workflow"),
+        &project,
+        &[
+            ("PATH", &path),
+            ("CLAUDE_PROJECT_DIR", project.to_str().unwrap()),
+            (
+                "RECIPE_VAR_decomposition_json",
+                "{\"workstreams\":[{},{},{}]}",
+            ),
+            ("RECIPE_VAR_task_type", "Development"),
+            ("RECIPE_VAR_force_single_workstream", force_single),
+            ("RECIPE_VAR_strict_delivery", strict),
+        ],
+    );
+    assert!(out.status.success(), "{}", describe(&out));
+    (text(&out.stdout), text(&out.stderr))
+}
+
+#[test]
+fn smart_orchestrator_keeps_a_strict_run_on_one_workstream() {
+    // launch-parallel-round-1 hands each workstream only create_issue, and
+    // each workstream's default-workflow runs in its own process with its
+    // declared defaults. A strict run split that way would create a branch
+    // per workstream from the remote default, so activate-workflow keeps it
+    // on one workstream, where default-workflow runs in-process and keeps
+    // strict_delivery. A value step-03 does not accept also stays on one
+    // workstream, so step-03 can refuse it.
+    let doc: Value = serde_yaml::from_str(
+        &fs::read_to_string(
+            workspace_root().join("amplifier-bundle/recipes/smart-classify-route.yaml"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(doc["context"]["strict_delivery"].as_str(), Some("false"));
+    for (strict, force_single, want) in [
+        ("", "", "3"),
+        ("false", "", "3"),
+        ("false", "true", "1"),
+        ("true", "", "1"),
+        ("TRUE", "", "1"),
+    ] {
+        let (count, stderr) = run_activate_workflow(strict, force_single);
+        assert_eq!(
+            count, want,
+            "strict={strict:?} force={force_single:?}\n{stderr}"
+        );
+        let names_strict = stderr.contains("strict_delivery is set");
+        assert_eq!(
+            names_strict,
+            !matches!(strict, "" | "false"),
+            "strict={strict:?}: the override says why\n{stderr}"
         );
     }
 }
