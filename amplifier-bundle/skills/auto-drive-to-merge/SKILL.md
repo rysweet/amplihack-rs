@@ -76,7 +76,7 @@ flowchart TD
 
     F --> F1{every criterion re-verified<br/>in THIS run, bound to ONE sha?<br/>every minor finding has a follow-up issue?}
     F1 -->|no| STOP3[NOT_MERGED + evidence bundle]
-    F1 -->|yes| G[gh pr merge --squash --delete-branch<br/>--match-head-commit sha<br/>--subject PR title --body-file -<br/>PR body piped on stdin]
+    F1 -->|yes| G[gh pr merge --squash --delete-branch<br/>--match-head-commit sha<br/>--subject PR title --body-file -<br/>PR body up to the merge-ready report, on stdin]
     G --> H{platform confirms MERGED?}
     H -->|no| STOP3
     H -->|yes| I[MERGED]
@@ -275,9 +275,21 @@ evidence was captured.
 The gate also decides the squash commit message rather than letting GitHub
 concatenate the branch's commits (#2056). From the same `gh pr view` read that
 captured the head SHA, it takes the PR title as the subject (`<title> (#N)`,
-control characters stripped) and the PR body as the message body. The body is
-piped to `gh` on standard input (`--body-file -`) from the gate's own memory and
-is never handed over as a file path, so nothing written to disk between the
+control characters stripped) and the PR body, up to the merge-ready report, as
+the message body. Under auto-drive the body carries merge-ready's pre-merge
+report, which says the PR is open and can say `NOT_MERGE_READY`; nothing
+refreshes it after the last round. So the body is cut at the first line that
+starts with `<!-- merge-ready-report` (the marker the merge-ready template
+writes above its report) or `## Merge readiness`, ASCII case ignored, and the
+blank lines before that line go too. A body with neither line is used whole,
+and what is above the line lands as written, so it should say only what stays
+true after the merge. The evidence line records `report_cut=yes` or `no`. For a
+PR with a single commit this is a change of subject: GitHub's default
+(`COMMIT_OR_PR_TITLE`) would have used that commit's subject, and the gate uses
+the title.
+
+The body is piped to `gh` on standard input (`--body-file -`) from the gate's
+own memory and is never handed over as a file path, so nothing written to disk between the
 checks and the merge can change it. A copy goes to
 `<state-dir>/merge-message-<pr>-<sha12>.txt` as a record only. So a
 stale trailer, a `Fixes #N` line from a branch this one is stacked on, or any

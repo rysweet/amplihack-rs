@@ -22,7 +22,7 @@ builtin unset -f gh git jq
 
 AUTODRIVE_EXIT_POLICY_REFUSAL=79
 PR=""; REPO="."; ROUND_RECORD=""; QA_EVIDENCE=""; STATE_DIR=""; DRY_RUN="false"
-MERGE_SUBJECT=""; MERGE_BODY=""; MERGE_RECORD=""; SHA12=""  # squash message (#2056), set in 5b
+MERGE_SUBJECT=""; MERGE_BODY=""; MERGE_REPORT_CUT=""; MERGE_RECORD=""; SHA12=""  # squash message (#2056), set in 5b
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -138,9 +138,9 @@ fi
 # --- 5b. The squash commit message, read in THIS run (#2056) ---------------
 # `gh pr merge --squash` with no message flags leaves GitHub to concatenate the
 # BRANCH'S commits, so a stale trailer or a `Fixes #N` from a branch this one is
-# stacked on lands in the base. Subject and body come from this head SHA's STATE_JSON,
-# read with jq (never field()) by autodrive_merge_message.sh. MERGE_BODY is piped to
-# gh in section 9; MERGE_RECORD is a copy for the record that nothing reads back.
+# stacked on lands in the base. Subject and body, cut before any merge-ready report, come
+# from this head SHA's STATE_JSON via jq (never field()) in autodrive_merge_message.sh.
+# MERGE_BODY is piped to gh in section 9; MERGE_RECORD is a copy that nothing reads back.
 if [ "$STATE_DIR_GIVEN" != "true" ] || [ -z "$GATE_HOME" ] || [ ! -f "${GATE_HOME}/autodrive_merge_message.sh" ] \
    || ! . "${GATE_HOME}/autodrive_merge_message.sh" || ! . "${GATE_HOME}/autodrive_state.sh" \
    || ! autodrive_private "$STATE_DIR" || ! SHA12="$(autodrive_merge_sha12 "$HEAD_SHA")"; then
@@ -154,7 +154,7 @@ elif ! autodrive_merge_body "$STATE_JSON"; then
 elif MERGE_RECORD="${STATE_DIR}/merge-message-${PR}-${SHA12}.txt"; ! autodrive_merge_record "$MERGE_BODY" "$MERGE_RECORD"; then
   block "the record of the squash message for #${PR} could not be written under ${STATE_DIR} (the directory is unwritable, or something at merge-message-${PR}-${SHA12}.txt could not be replaced); the message is written down before anything is merged"
 else
-  note "squash_message merge_subject=\"${MERGE_SUBJECT}\" body_record=${MERGE_RECORD} body_bytes=$(printf '%s' "$MERGE_BODY" | wc -c | tr -d '[:space:]')"
+  note "squash_message merge_subject=\"${MERGE_SUBJECT}\" body_record=${MERGE_RECORD} body_bytes=$(printf '%s' "$MERGE_BODY" | wc -c | tr -d '[:space:]') report_cut=${MERGE_REPORT_CUT}"
 fi
 
 # --- 6. qa-team scenario evidence ------------------------------------------

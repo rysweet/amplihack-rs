@@ -2801,8 +2801,8 @@ fi
 gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
 MSG_BUNDLE="${GATE_DIR}/merge-evidence-42-${GATE_HEAD:0:12}.txt"
 if grep -qF 'merge_subject=' "${MSG_BUNDLE}" && grep -qF "body_record=$(msg_path)" "${MSG_BUNDLE}" \
-   && grep -qF "body_bytes=${#MSG_BODY}" "${MSG_BUNDLE}"; then
-  pass "MSG-evidence-note" "the evidence bundle records the subject, where the record is, and how many bytes go to gh"
+   && grep -qF "body_bytes=${#MSG_BODY} report_cut=no" "${MSG_BUNDLE}"; then
+  pass "MSG-evidence-note" "the evidence bundle records the subject, where the record is, how many bytes go to gh, and that no report was cut"
 else
   fail "MSG-evidence-note" "the bundle does not record the squash message: $(grep -F 'merge_' "${MSG_BUNDLE}" | tr '\n' ' ')"
 fi
@@ -3006,6 +3006,96 @@ if msg_merged && [ -f "$(msg_sent)" ] && [ "$(msg_bytes "$(msg_sent)")" = "20" ]
   pass "MSG-body-trailing-newline" "a trailing newline in the body reaches gh exactly once"
 else
   fail "MSG-body-trailing-newline" "want 20 bytes, gh received $( [ -f "$(msg_sent)" ] && msg_bytes "$(msg_sent)" || echo 'nothing' )"
+fi
+
+# 5m-29b. THE MERGE-READY REPORT IS LEFT OUT (crusty round 8 on PR #2262).
+# Under auto-drive the pull request body is also merge-ready's pre-merge
+# report: the template ends with `Final platform state: <... / open / ...>`
+# and a verdict, and nothing refreshes it after the last merge-ready round
+# (#2255 merged with `Verdict: NOT_MERGE_READY` in its body). Committed whole,
+# that would be on main for good. The helper cuts the body at the first line
+# starting `<!-- merge-ready-report` (the template's marker) or
+# `## Merge readiness` (its heading), drops the blank lines before it, and
+# keeps a body with neither line whole. Every case asserts the exact bytes gh
+# receives on stdin, and the record and the evidence line beside them.
+#
+# The marker line is read out of the template itself, so a template whose
+# marker the helper does not recognise fails here, not on main.
+MSG_TEMPLATE="${REPO_ROOT}/amplifier-bundle/skills/merge-ready/pr-description-template.md"
+MSG_MARKER="$(grep -m1 '^<!-- merge-ready-report' "${MSG_TEMPLATE}" 2>/dev/null)"
+MSG_DESC=$'## Summary\n\nWhat changed and why.\n\n## Test plan\n\n- the contract suite'
+MSG_REPORT=$'## Merge readiness\n\n- Current head revision: `0123456789ab`\n\n### Final merge/close verification\n\n- Final action performed: `no`\n- Final platform state: `open`\n\n### Verdict\n\n- Verdict: `NOT_MERGE_READY`\n'
+msg_sent_is() { # msg_sent_is <bytes>: gh received exactly <bytes>, and the record holds the same
+  [ -f "$(msg_sent)" ] && cmp -s "$(msg_sent)" <(printf '%s' "$1") \
+    && [ -f "$(msg_path)" ] && cmp -s "$(msg_path)" "$(msg_sent)"
+}
+msg_cut_noted() { # msg_cut_noted <yes|no>: the evidence bundle records whether a report was cut
+  grep -qF "report_cut=$1" "${GATE_DIR}/merge-evidence-42-${GATE_HEAD:0:12}.txt" 2>/dev/null
+}
+msg_got() { # msg_got: what gh received, for a failure message
+  if [ -f "$(msg_sent)" ]; then
+    printf '%s bytes: %s' "$(msg_bytes "$(msg_sent)")" "$(head -c 160 "$(msg_sent)" | od -An -c | tr -s ' \n' ' ')"
+  else
+    printf 'nothing'
+  fi
+}
+if [ -z "${MSG_MARKER}" ]; then
+  fail "MSG-report-cut-at-marker" "${MSG_TEMPLATE} has no line starting '<!-- merge-ready-report', so merge-ready writes no marker for the gate to cut at"
+else
+  GH_BODY="${MSG_DESC}"$'\n\n'"${MSG_MARKER}"$'\n'"${MSG_REPORT}" \
+    gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+  if msg_merged && msg_sent_is "${MSG_DESC}" && msg_cut_noted yes \
+     && ! grep -qF 'Final platform state' "$(msg_sent)" && ! grep -qF 'merge-ready-report' "$(msg_sent)"; then
+    pass "MSG-report-cut-at-marker" "a body carrying the merge-ready report under the template's marker reaches gh as the description alone, cut at the marker"
+  else
+    fail "MSG-report-cut-at-marker" "rc=${MSG_RC}: want the ${#MSG_DESC}-byte description, gh received $(msg_got)"
+  fi
+fi
+
+# A report written without the marker, as every report before it was (#2241,
+# #2255, #2299, #2345, #2379 and this PR's own), is cut at the template's
+# heading. Two blank lines before it: all of them go.
+GH_BODY="${MSG_DESC}"$'\n\n\n'"${MSG_REPORT}" \
+  gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+if msg_merged && msg_sent_is "${MSG_DESC}" && msg_cut_noted yes; then
+  pass "MSG-report-cut-at-heading" "a report with no marker is cut at the template's '## Merge readiness' heading, with the blank lines before it"
+else
+  fail "MSG-report-cut-at-heading" "rc=${MSG_RC}: want the ${#MSG_DESC}-byte description, gh received $(msg_got)"
+fi
+
+# A body edited in GitHub's web form comes back with CRLF line endings, and an
+# agent may capitalise the heading. The CR before each LF is kept above the
+# cut, as everything there is; the one ending the last kept line goes with the
+# blank lines.
+MSG_DESC_CRLF=$'## Summary\r\n\r\nWhat changed and why.'
+GH_BODY="${MSG_DESC_CRLF}"$'\r\n\r\n## Merge Readiness\r\n\r\n- Final platform state: `open`\r\n' \
+  gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+if msg_merged && msg_sent_is "${MSG_DESC_CRLF}" && msg_cut_noted yes; then
+  pass "MSG-report-cut-crlf" "a CRLF body with a capitalised heading is cut at it, keeping the description's own line endings"
+else
+  fail "MSG-report-cut-crlf" "rc=${MSG_RC}: want the ${#MSG_DESC_CRLF}-byte description, gh received $(msg_got)"
+fi
+
+# The boundary is a line that STARTS with the marker or heading. The same words
+# inside a sentence, or indented as a code block, do not cut, and such a body
+# reaches gh whole, byte for byte, trailing newline included. Without this
+# control, a helper that cut at any mention would pass the cases above.
+MSG_MENTION="${MSG_DESC}"$'\n\nThe template\'s ## Merge readiness heading and its <!-- merge-ready-report marker:\n\n    ## Merge readiness\n    <!-- merge-ready-report -->\n'
+GH_BODY="${MSG_MENTION}" gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+if msg_merged && msg_sent_is "${MSG_MENTION}" && msg_cut_noted no; then
+  pass "MSG-report-mention-not-cut" "the marker or heading mid-line or indented cuts nothing; the body reaches gh whole"
+else
+  fail "MSG-report-mention-not-cut" "rc=${MSG_RC}: want all ${#MSG_MENTION} bytes, gh received $(msg_got)"
+fi
+
+# A body that is nothing but the report leaves no description, and gh gets an
+# empty body rather than the report. That is the empty-body case of #2263.
+GH_BODY="${MSG_MARKER:-<!-- merge-ready-report -->}"$'\n'"${MSG_REPORT}" \
+  gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+if msg_merged && msg_sent_is "" && msg_cut_noted yes; then
+  pass "MSG-report-only-body" "a body that is only the merge-ready report gives gh an empty body, not the report"
+else
+  fail "MSG-report-only-body" "rc=${MSG_RC}: want 0 bytes, gh received $(msg_got)"
 fi
 
 # 5m-30. The two failures are reported apart: an unreadable body points at

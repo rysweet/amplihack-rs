@@ -1061,6 +1061,75 @@ fn the_skill_documents_the_squash_message_flags() {
     }
 }
 
+/// Crusty round 8 on PR #2262: under auto-drive the pull request body is also
+/// merge-ready's pre-merge report ("Final platform state: open", a verdict),
+/// and nothing refreshes it after the last round, so the helper cuts the
+/// squash body where that report starts. Where it starts is a convention
+/// between two files, the merge-ready template that writes the report and the
+/// helper that cuts it. This pins both ends: the template's marker line and
+/// heading are the two boundaries the helper's CODE matches, the marker sits
+/// directly above the heading, and the skill tells the agent to keep it.
+#[test]
+fn the_merge_ready_template_marks_where_the_squash_body_ends() {
+    let template = read(
+        &workspace_root().join("amplifier-bundle/skills/merge-ready/pr-description-template.md"),
+    );
+    let skill = read(&workspace_root().join("amplifier-bundle/skills/merge-ready/SKILL.md"));
+    let helper = shell_code(&read(&tool_path("autodrive_merge_message.sh")));
+
+    // The helper compares lowercased lines, so its needles are lowercase.
+    for needle in [
+        "startswith(\"<!-- merge-ready-report\")",
+        "startswith(\"## merge readiness\")",
+        "ascii_downcase",
+    ] {
+        assert!(
+            helper.contains(needle),
+            "autodrive_merge_message.sh's code must cut the body with `{needle}`, the \
+             boundary the merge-ready template writes"
+        );
+    }
+
+    let lines: Vec<&str> = template.lines().collect();
+    let markers: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.starts_with("<!-- merge-ready-report"))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        markers.len(),
+        1,
+        "the merge-ready template must carry exactly one line starting \
+         `<!-- merge-ready-report`, the line the merge gate cuts the squash body at"
+    );
+    let marker = markers[0];
+    assert!(
+        lines[marker].ends_with("-->"),
+        "the marker must be a complete HTML comment on one line, so it does not render: {}",
+        lines[marker]
+    );
+    assert_eq!(
+        lines.get(marker + 1).copied(),
+        Some("## Merge readiness"),
+        "the marker must sit directly above the template's `## Merge readiness` heading, so \
+         the whole report is below it"
+    );
+    // No line above the marker may start like a boundary either, or the cut
+    // would come early in every description written from the template.
+    for l in &lines[..marker] {
+        assert!(
+            !l.to_ascii_lowercase().starts_with("## merge readiness"),
+            "a `## Merge readiness` line above the marker would cut the body there: {l}"
+        );
+    }
+    assert!(
+        skill.contains("<!-- merge-ready-report"),
+        "merge-ready's SKILL.md must tell the agent to keep the marker line, since the \
+         merge gate cuts the squash body at it"
+    );
+}
+
 // ── No silent merge ──────────────────────────────────────────────────────────
 
 #[test]
@@ -5448,6 +5517,16 @@ fn run_auto_drive_contract_shell_test(inherited: Inherited) {
          message for a head commit authored by Fixture <fixture.invalid> must equal the one \
          for the usual author and carry no Co-authored-by line (#2056)\n{stdout}"
     );
+    // Crusty round 8 on PR #2262: the merge-ready report is cut off the
+    // squash body, at the template's marker and, for a report written without
+    // it, at its heading. Required by name for the reason the case above is.
+    for case in ["MSG-report-cut-at-marker", "MSG-report-cut-at-heading"] {
+        assert!(
+            stdout.contains(&format!("PASS[{case}]")),
+            "{case} did not pass (inherited={inherited:?}); the bytes gh receives on stdin must \
+             stop where the merge-ready report starts\n{stdout}"
+        );
+    }
     // Section 5 lost its own `command -v jq` in #2186, so section 5b names a
     // missing jq itself instead of calling the pull request title unreadable.
     assert!(

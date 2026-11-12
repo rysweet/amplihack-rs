@@ -8,7 +8,8 @@
 # ever true of a single commit. A wrong trailer on a pushed commit cannot be
 # corrected afterwards: correcting it needs a force-push, and this workflow
 # does not rewrite pushed commits. So the gate supplies the message itself,
-# from the pull request's title and body; what GitHub adds to it is not seen here.
+# from the pull request's title and the description part of its body, without
+# the merge-ready report; what GitHub adds to it is not seen here.
 #
 # This file only DEFINES functions; sourcing it has no side effects, so the
 # gate may source it twice. It is sourced by autodrive_merge_gate.sh from
@@ -80,11 +81,15 @@ autodrive_merge_sha12() {
 # is C2 9B, which `tr -d '\000-\037\177'` keeps, and deleting bytes 80-9F
 # instead would cut characters such as U+039B (CE 9B) in half (crusty round 7).
 #
-# The ` (#N)` suffix is GitHub's own convention, and on this repository it is
-# literally what the platform would have produced (`squash_merge_commit_title`
-# is COMMIT_OR_PR_TITLE). A title already ending with exactly this pull
-# request's suffix keeps it, so the suffix is never doubled; a title ending
-# with ANOTHER pull request's number still gets its own.
+# The ` (#N)` suffix is GitHub's own convention. It is what the platform would
+# have produced for a pull request with two or more commits, and NOT for one
+# with a single commit: `squash_merge_commit_title` is COMMIT_OR_PR_TITLE, which
+# takes that commit's subject when there is only one (#1934 landed under its
+# commit's subject, not its title). The gate always uses the title, so a
+# one-commit pull request now lands under its title (crusty round 8). A title
+# already ending with exactly this pull request's suffix keeps it, so the
+# suffix is never doubled; a title ending with ANOTHER pull request's number
+# still gets its own.
 autodrive_merge_subject() {
   local json="${1:-}" pr="${2:-}" subject
   subject="$(printf '%s' "$json" | jq -r '
@@ -103,11 +108,12 @@ autodrive_merge_subject() {
   esac
 }
 
-# autodrive_merge_body <pr-view-json>: set MERGE_BODY to the pull request body,
-# byte for byte, with NUL removed. 0 — set. 1 — the body is unreadable, and
-# MERGE_BODY is left empty.
+# autodrive_merge_body <pr-view-json>: set MERGE_BODY to the pull request's
+# description: the body up to the merge-ready report, with NUL removed, and
+# MERGE_REPORT_CUT to `yes` when a report was cut off, `no` otherwise. 0 — set.
+# 1 — the body is unreadable, and MERGE_BODY is left empty.
 #
-# It sets a variable rather than printing, because the caller would have to
+# It sets variables rather than printing, because the caller would have to
 # capture what it printed with `$(...)`, which strips every trailing newline.
 #
 # An absent `body` key is NOT an empty body: it is a read that came back
@@ -119,27 +125,59 @@ autodrive_merge_subject() {
 # read went wrong, and the gate should not depend on a platform cap it does
 # not enforce itself. It is measured on the JSON string, before NUL removal.
 #
+# THE MERGE-READY REPORT IS LEFT OUT (crusty round 8). Under auto-drive the
+# body is not only a description: the merge-ready skill writes its evidence
+# report into it before the merge, and that report says the pull request is
+# open and, on a round that found blockers, NOT_MERGE_READY. Nothing refreshes
+# it after the last merge-ready round, so committed it would stay wrong on
+# `main` for good (#2255 merged with `Verdict: NOT_MERGE_READY` in its body).
+# The body is cut at the FIRST line that starts with `<!-- merge-ready-report`,
+# the marker the template writes above its report, or with `## Merge
+# readiness`, the template's own heading, which every report written before
+# the marker existed carries. ASCII case and a trailing CR are ignored. That
+# line and everything after it are dropped, then the blank lines before it and
+# the CR ending the last line kept. A body with neither line is kept whole. The cut is by line, not by Markdown
+# parse: a boundary line inside a fenced block cuts there too, and costs the
+# description its tail, never adds the report. One that does not start the
+# line, or is indented, does not cut.
+#
 # `jq -j`, never `jq -r`: -r appends a newline the body does not contain, so
 # every squash commit would gain a spurious blank line. NUL is removed because
-# neither git nor a bash variable can carry it. Nothing else is removed — the
-# body is the author's text and lands verbatim, trailing newline included: the
-# `x` appended inside the capture is what keeps `$(...)` from stripping it.
+# neither git nor a bash variable can carry it. Nothing else is removed from a
+# body with no report — it lands verbatim, trailing newline included: the `x`
+# appended inside the capture is what keeps `$(...)` from stripping it. jq
+# prints `c` (cut) or `w` (whole) before the body, and that flag is peeled off;
+# output with neither flag is an unreadable body, not a whole one.
 #
 # jq's own exit status decides, under pipefail, and the `x` is only appended
 # when the whole pipeline succeeded. A jq that fails part-way therefore leaves
 # MERGE_BODY empty and returns 1, which the gate blocks on — it never becomes
 # a short body that `gh` would commit. That is why the gate does not pipe jq
 # straight into `gh`: there, a jq failure would hand `gh` an empty body.
+# shellcheck disable=SC2034 # MERGE_BODY and MERGE_REPORT_CUT are read by the gate, which sources this file
 autodrive_merge_body() {
   local json="${1:-}" body
-  MERGE_BODY=""
+  MERGE_BODY=""; MERGE_REPORT_CUT=""
   printf '%s' "$json" | jq -e '
       has("body") and ((.body | type) as $t | ($t == "string" or $t == "null"))
       and (((.body // "") | utf8bytelength) <= 65536)' >/dev/null 2>&1 || return 1
-  body="$(set -o pipefail; printf '%s' "$json" | jq -j '.body // ""' 2>/dev/null | tr -d '\000' && printf x)" \
+  body="$(set -o pipefail; printf '%s' "$json" | jq -j '
+      def boundary: rtrimstr("\r") | ascii_downcase
+        | startswith("<!-- merge-ready-report") or startswith("## merge readiness");
+      def blank: explode | all(. == 32 or . == 9 or . == 13);
+      (.body // "") as $b | ($b | split("\n")) as $l
+      | (first(range($l | length) | select($l[.] | boundary)) // null) as $i
+      | if $i == null then "w" + $b
+        else "c" + ($l[:$i] | until(length == 0 or (.[-1] | blank | not); .[:-1])
+                   | join("\n") | rtrimstr("\r")) end' 2>/dev/null | tr -d '\000' && printf x)" \
     || return 1
-  # shellcheck disable=SC2034 # read by autodrive_merge_gate.sh, which sources this file
-  MERGE_BODY="${body%x}"
+  body="${body%x}"
+  case "$body" in
+    c*) MERGE_REPORT_CUT="yes" ;;
+    w*) MERGE_REPORT_CUT="no" ;;
+    *) return 1 ;;
+  esac
+  MERGE_BODY="${body#?}"
 }
 
 # autodrive_merge_record <body> <path>: write <body> to <path>, byte for byte,
