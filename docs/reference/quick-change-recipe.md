@@ -1,7 +1,7 @@
 ---
 title: Quick-Change Recipe
-description: The single-session recipe for small changes, the diff limits that hand work over to default-workflow, and how smart-orchestrator selects it.
-last_updated: 2026-10-31
+description: Small changes on new or existing branches, pinned diff limits, publication and change-based titles.
+last_updated: 2026-11-12
 review_schedule: quarterly
 owner: amplihack
 doc_type: reference
@@ -9,9 +9,9 @@ doc_type: reference
 
 # Quick-Change Recipe
 
-`quick-change` makes a small change in one agent session, runs the repository's own checks, then commits, pushes and opens a pull request. It stops once the PR is open. It does not review, merge, drive CI or finalise.
+`quick-change` makes a small change in one agent session, runs the repository's own checks, then commits and pushes. A new branch gets a pull request. With `existing_branch` set, the recipe updates that exact branch and leaves its existing PR unchanged. It does not review, merge, drive CI or finalise.
 
-When the change turns out to be larger than the limits allow, a bash step (not the agent) hands the work over to `default-workflow`.
+When the change turns out to be larger than the limits allow, a bash step (not the agent) hands the work over to `default-workflow`. That workflow uses its normal PR publication, review and finalisation steps; quick-change's no-PR-operations guarantee for continuation applies only while quick-change handles the change. See [Hand-over to default-workflow](#hand-over-to-default-workflow).
 
 The recipe is `amplifier-bundle/recipes/quick-change.yaml`. It was added for issue #1740.
 
@@ -20,6 +20,7 @@ The recipe is `amplifier-bundle/recipes/quick-change.yaml`. It was added for iss
 - [When it runs](#when-it-runs)
 - [Running it](#running-it)
 - [Context variables](#context-variables)
+- [Existing-branch continuation](#existing-branch-continuation)
 - [Steps](#steps)
 - [Diff limits](#diff-limits)
 - [Hand-over to default-workflow](#hand-over-to-default-workflow)
@@ -47,7 +48,7 @@ smart-orchestrator selects `quick-change` for a `Development` task with exactly 
 
 The prompt tells the classifier to choose `default-workflow` when in doubt, and never to recommend `quick-change` for a feature, a behaviour change visible to users, or a task with more than one workstream.
 
-A task that targets a branch it already has, through `existing_branch`, `pr_number` or a `Branch: <ref>` line in the task text, gets `default-workflow` instead. Everything else, including every non-Development task, routes as before. See [Routing from smart-orchestrator](#routing-from-smart-orchestrator).
+A task that targets a branch it already has, through `existing_branch`, `pr_number` or a `Branch: <ref>` line in the task text, gets `default-workflow` through smart-orchestrator. To use quick-change continuation, call the recipe directly with `existing_branch`. See [Existing-branch continuation](#existing-branch-continuation) and [Routing from smart-orchestrator](#routing-from-smart-orchestrator).
 
 ## Running it
 
@@ -101,8 +102,9 @@ The run log shows the routing choice on stderr:
 | `quick_change_max_files` | `"3"` | File limit for the diff. Must match `^[0-9]{1,6}$`. |
 | `quick_change_max_lines` | `"150"` | Line limit (additions plus deletions). Must match `^[0-9]{1,6}$`. |
 | `allow_no_op` | `"false"` | When exactly `"true"`, an empty diff finishes the run with verdict `empty` and no commit, push or PR, in place of failing it. smart-classify-route sets it for docs-only, audit, orchestration and meta tasks, and smart-execute-routing passes it on, as it does to `default-workflow`. See [Empty diff](#empty-diff). |
-| `existing_branch`, `pr_number` | `""` | Not used by `quick-change`, which always creates a new `quick/` branch. Its worktree step passes both as empty, so values inherited from the orchestrator are ignored; the orchestrator does not choose `quick-change` when either is set, or when the task text names a branch (see [Precedence](#precedence)). The recipe sets `existing_branch` itself when it invokes `default-workflow` on hand-over. |
-| `base_branch`, `forbidden_base_branches`, `strict_delivery` | inherited | The [delivery inputs](workflow-delivery-inputs.md#where-the-inputs-apply) of `default-workflow`, not declared here. The worktree step passes `base_branch` and `forbidden_base_branches` as empty, so the `quick/` branch starts from `origin/HEAD`, the branch the PR targets, and a base inherited from the orchestrator is not used. `strict_delivery` is passed through: when it is `"true"`, step 04 of `workflow-worktree` refuses to create the branch and the run stops. |
+| `existing_branch` | `""` | Empty creates a new `quick/` branch. Otherwise, the exact branch must exist on `origin`; its checkout is reused or created without replacing local history or work. The `quick/` prefix is not required. On `proceed`, commits are pushed to this branch and no PR is created or modified. Hand-over uses `default-workflow`'s normal PR behaviour. See [Existing-branch continuation](#existing-branch-continuation). |
+| `pr_number` | not declared | Not used. The worktree call clears it; continuing an existing PR requires `existing_branch`, with no PR lookup. |
+| `base_branch`, `forbidden_base_branches`, `strict_delivery` | inherited | The [delivery inputs](workflow-delivery-inputs.md#where-the-inputs-apply) of `default-workflow`, not declared here. The worktree step clears `base_branch` and `forbidden_base_branches`. A new `quick/` branch starts from `origin/HEAD`, which the new PR targets. Continuation retains the selected branch's local history. `strict_delivery` is passed through: `"true"` refuses new-branch creation; it does not replace a supplied existing branch. |
 
 No GitHub issue is created by `quick-change`. A hand-over can create one; see [Hand-over to default-workflow](#hand-over-to-default-workflow).
 
@@ -119,41 +121,83 @@ amplihack recipe run smart-orchestrator \
 
 A value that does not match `^[0-9]{1,6}$` fails the `quick-change-diff-limits` step with exit code 2. There is no option that skips the diff-limit step.
 
+## Existing-branch continuation
+
+Call `quick-change` directly to fix review findings on an existing PR branch. Run from any checkout of the repository, including the checkout already on that branch. Git, access to `origin` and a resolvable commit identity are required; `existing_branch` is the branch name without `origin/` or `refs/heads/`.
+
+For example, for the existing branch from issue #2210:
+
+```bash
+amplihack recipe run quick-change \
+  -c task_description="Fix the remaining review findings for #2210" \
+  -c repo_path=. \
+  -c existing_branch=quick/issue-2210-fix-issue-2210-amplihack \
+  -c issue_number=2210
+```
+
+This command requires that branch to exist on `origin`. A successful run with verdict `proceed` adds its change commit to that exact branch and verifies the pushed SHA. The existing PR receives the new commits through Git; quick-change does not discover, create, rename, edit, comment on or change the draft status of a PR. This restriction ends on hand-over, when `default-workflow` takes over publication and PR handling.
+
+### Remote validation and checkout selection
+
+Before setup can publish anything or the builder starts, the recipe validates the Git ref, refuses protected names (including origin's default branch), checks for the exact `refs/heads/<existing_branch>` on `origin` and fetches it. A local branch or stale remote-tracking ref alone does not satisfy this check. Similar remote names do not match. A missing branch is refused with a diagnostic naming it; an origin-access failure is reported separately.
+
+| Checkout state | Selection |
+| --- | --- |
+| The caller's checkout is on the requested branch | Reuse that checkout, including its existing work. |
+| Another accessible registered worktree is on the branch | Reuse that worktree. |
+| The branch exists locally but has no worktree | Attach the existing local branch without resetting it to origin. |
+| Only origin has the branch | Create a local tracking branch with the exact requested name and check it out. |
+| A registered checkout is inaccessible, or the destination conflicts | Stop with a diagnostic; do not replace the checkout or substitute another branch. |
+
+Selection preserves local commits and staged, unstaged and untracked work. It does not stash, discard, reset or force a checkout. No alias or replacement branch is created, even when the caller already has the requested branch checked out. Continuation selection runs before general orphan-worktree cleanup can affect the selected checkout.
+
+The quick-change worktree call forwards `existing_branch` unchanged and sets `worktree_policy: quick-change`. This policy selects exact continuation; other workflows retain their existing worktree-selection behaviour by default. The returned `worktree_setup` identifies the actual checkout path and exact branch name, without alias metadata. The recipe verifies branch identity before implementation, commit and push.
+
+### Base, existing work and publication
+
+The selected checkout's local `HEAD` is pinned before implementation. This SHA remains the base throughout the run, even when local history differs from origin. Earlier commits already present at that SHA do not count towards the limits. Applicable staged, unstaged and untracked work does count, alongside builder edits and hook repairs, and is included in the resulting change commit. Ignored files and existing publication exclusions still apply.
+
+For example, if a branch already has ten commits and its checkout has two modified files and one untracked file, the base is the tenth commit. The three files count towards the default three-file limit; the ten earlier commits do not. Any additional applicable file can trigger hand-over.
+
+Publication uses the explicit, non-force destination `refs/heads/<existing_branch>:refs/heads/<existing_branch>` on `origin`, with the same artifact guards, hooks, configuration checks, repair and remote-SHA verification as a new-branch run. A rejected non-fast-forward push fails visibly and leaves local history and work available for inspection. The recipe does not reset, rebase, force-push or switch to another branch to overcome that rejection.
+
+Check failures and hook repairs remain visible as run warnings. Since continuation leaves the PR unchanged, it cannot mark that PR as a draft or add those warnings to its body. Successful continuation removes the run's state directory after verified publication. Empty changes retain the [existing no-op behaviour](#empty-diff); oversized changes follow [hand-over](#hand-over-to-default-workflow) with the exact branch and continuation policy.
+
 ## Steps
 
 | # | Step ID | Type | What it does |
 | --- | --- | --- | --- |
-| 1 | `quick-change-worktree` | recipe | Runs `workflow-worktree` with `branch_prefix: quick` and with `existing_branch`, `pr_number`, `base_branch` and `forbidden_base_branches` set to empty. Output `worktree_setup`. |
+| 1 | `quick-change-worktree` | recipe | Runs `workflow-worktree` with `branch_prefix: quick`, `worktree_policy: quick-change` and `existing_branch` forwarded unchanged. Clears `pr_number`, `base_branch` and `forbidden_base_branches`. Validates and selects an existing branch before any setup publication, or creates a new `quick/` branch. Output `worktree_setup`. |
 | 2 | `quick-change-record-base` | bash | Checks the branch (see [Branch name](#branch-name)), checks that a safe commit identity resolves, so a run that could never commit stops before the agent and the checks, removes other runs' state directories that have been idle for 14 days (see [State directory](#state-directory)), pins the base commit (`git rev-parse HEAD`) and snapshots the git configuration, hooks and push URL into the state directory. |
-| 3 | `quick-change-implement` | agent | The only agent step. `amplihack:core:builder` makes the change in the worktree. |
+| 3 | `quick-change-implement` | agent | The only agent step. `amplihack:core:builder` makes the change and returns a structured change summary and proposed `commit_subject`, without committing or publishing. |
 | 4 | `quick-change-diff-limits` | bash | Runs `quick_change_diff_limits.sh`. Output `quick_change_verdict`: `proceed`, `handover`, or `empty` when the diff is empty and `allow_no_op` is `"true"`. Has no condition. Fails the run on git configuration drift, an empty diff without `allow_no_op`, or a fault in the tool. |
 | 5 | `quick-change-write-handover` | bash | On `handover`, writes the patch file and the hand-over note. |
 | 6 | `quick-change-handover` | recipe | On `handover`, runs `default-workflow`. |
 | 7 | `quick-change-run-checks` | bash | On `proceed`, runs `quick_change_checks.sh`. Output `quick_change_checks`. |
 | 8 | `quick-change-commit` | bash | On `proceed`, runs the artifact guard, stages, runs the guard again, sets the commit identity, commits with `git commit -F` and measures the committed change again. Output `quick_change_commit_repaired`: `yes` when hook repair ran, else `no`. |
 | 9 | `quick-change-push` | bash | On `proceed`, pushes the branch, measures the committed change again and verifies the remote ref. Output `quick_change_push_repaired`: `yes` when hook repair ran, else `no`. |
-| 10 | `quick-change-create-pr` | bash | On `proceed`, opens the PR, then removes the state directory. Always the last step. |
+| 10 | `quick-change-create-pr` | bash | On `proceed`, reports warnings and completes existing-branch continuation without any PR operation, or opens a new-branch PR. Removes successful-run state. Always the last step. |
 
 The agent works under the leaf-step constraints of #1333: it does not start an orchestrator, recipe or workflow. It is also told not to commit, and not to change git configuration, hooks, remotes or refs. These instructions are guidance; the controls that enforce them are the bash steps listed under [Security limits](#security-limits).
 
 ### Branch name
 
-The branch comes from `workflow-worktree`, so it follows that recipe's pattern with the `quick` prefix:
+Without `existing_branch`, the branch comes from `workflow-worktree` with the `quick` prefix:
 
 ```text
 quick/issue-1740-route-small-tasks
 quick/issue-0-fix-broken-link
 ```
 
-`issue-0` is used when there is no issue number. The branch must pass `git check-ref-format`, must start with `quick/`, and must not be the default branch or a protected name. `quick-change-record-base` checks the branch before the agent runs, and the commit and push steps check it again. A branch that fails stops the recipe; this covers the worktree step's `feat/` fallback name.
+`issue-0` is used when there is no issue number. Every branch must pass `git check-ref-format` and must not be the default branch or a protected name. New branches must start with `quick/`; continuation branches must exactly equal `existing_branch` and need no prefix. `quick-change-record-base` checks before the agent runs, and the commit and push steps check again. A branch that fails stops the recipe; this covers a `feat/` fallback name on an ordinary new-branch run.
 
-A task text that names its own branch (`Branch: <ref>` and the other directive forms of #1426) gets that branch from `workflow-worktree`, ahead of the `quick/` prefix, so `quick-change` cannot run it. smart-orchestrator therefore never selects `quick-change` for such a task; see [Precedence](#precedence). Run on its own with `amplihack recipe run quick-change`, such a task still stops at `quick-change-record-base`, after `workflow-worktree` has created the branch.
+Without `existing_branch`, task text that names its own branch (`Branch: <ref>` and the other directive forms of #1426) takes precedence over the `quick/` prefix in `workflow-worktree`. A resulting branch outside `quick/` fails the new-branch check. smart-orchestrator selects `default-workflow` for tasks naming a branch; see [Precedence](#precedence). Direct continuation requires an explicit `existing_branch`, which takes precedence over task-text directives.
 
 ### State directory
 
 Each run keeps its files in `~/.amplihack/state/quick-change/<n>`, where `<n>` is the `cksum` of the worktree path. The directory is absolute, outside the worktree and created with `umask 077`; it is exported to the tools as `QUICK_CHANGE_STATE_DIR`. Files are written with `mktemp` followed by `mv`, so a symlink planted at the target path is replaced rather than followed. The directory holds the pinned base, the git configuration snapshot, the checks table and, on hand-over, the patch and note.
 
-`quick-change-create-pr` removes the directory once the PR is open. Nothing removes it at the end of a hand-over, a run with verdict `empty` or a failed run: a hand-over patch is the backup for the run that continues it, and a failed run's files are there to inspect. Instead, `quick-change-record-base` deletes every other run's directory that has not been modified for 14 days. So a hand-over leaves a full patch of the change under `$HOME` until a later run starts at least 14 days afterwards, readable only by the user.
+`quick-change-create-pr` removes the directory once the PR is open or existing-branch continuation has completed after verified publication. Nothing removes it at the end of a hand-over, a run with verdict `empty` or a failed run: a hand-over patch is the backup for the run that continues it, and a failed run's files are there to inspect. Instead, `quick-change-record-base` deletes every other run's directory that has not been modified for 14 days. So a hand-over leaves a full patch of the change under `$HOME` until a later run starts at least 14 days afterwards, readable only by the user.
 
 ## Diff limits
 
@@ -161,7 +205,8 @@ Each run keeps its files in `~/.amplihack/state/quick-change/<n>`, where `<n>` i
 
 ### Measurement
 
-- The base is the commit pinned by `quick-change-record-base` before the agent ran. It is passed as `--base` and must be a 40-character hex SHA and an ancestor of `HEAD`.
+- The base is the selected checkout's local `HEAD`, pinned by `quick-change-record-base` before the agent ran. It is passed as `--base` and must be a 40-character hex SHA and an ancestor of `HEAD`. Missing or inconsistent base data stops the run; the base is never recomputed from main, origin or the final `HEAD`.
+- Measurement includes all applicable changes against that SHA: pre-existing staged and unstaged work, untracked files, implementation edits and repair changes. Commits already present at the pinned `HEAD` are outside this run's diff limits, including local commits absent from origin.
 - Untracked files are included: the tool runs `git add -N -A` first. Files matched by `.gitignore` are not counted.
 - The diff is read with `git -c core.quotepath=off diff --no-renames --numstat -z`, so paths containing spaces, tabs or newlines parse correctly. A rename counts as two files.
 - Binary files count as one file and zero lines.
@@ -238,12 +283,9 @@ quick-change: git configuration or hooks differ from the snapshot taken before t
 
 The message does not say who made the change. Besides the agent, it can be a check, hook repair, or another process that writes the shared configuration with something other than the entries above, such as a new remote. The `changed` list in the JSON names the snapshot lines that differ.
 
-The worktree is left in place for inspection. Do not pass its branch to a later run as `existing_branch`. Remove it once inspected:
+The checkout and branch are left in place for inspection. Preserve local commits and staged, unstaged and untracked work, including work that predates the run. Before changing the checkout, keep a backup outside it that also includes any needed ignored files; the run's state directory is not a complete checkout backup.
 
-```bash
-git worktree remove --force worktrees/quick/issue-0-fix-broken-link
-git branch -D quick/issue-0-fix-broken-link
-```
+Use the `changed` list to investigate the affected configuration, hooks and remote settings. Resolve unintended changes and verify the effective configuration and push destination before retrying with `existing_branch`. Local configuration and hooks can be shared by other worktrees, so coordinate corrections with other runs. Starting another run only takes a new snapshot; it does not establish that the drift was safe. Checkout removal and branch deletion are optional cleanup only after all needed work is preserved and configuration drift is resolved; neither action repairs shared configuration.
 
 ### The diff-limits tool
 
@@ -290,7 +332,7 @@ A task where the agent rightly finds nothing to change, such as a documentation 
 | `"true"` | Verdict `empty`. Every later step runs only on `proceed` or `handover`, so none runs: no checks, commit, push, PR or hand-over. The run finishes successfully. |
 | anything else, including `"True"` and `"1"` | The step exits 3 and the run fails. |
 
-Only the exact value `"true"` counts, as in `default-workflow`'s own no-op check, so a value that happens to look true cannot turn an agent that did nothing into a successful run. The `quick/` branch that `workflow-worktree` created is left in place; `default-workflow` leaves its branch the same way in this case. `allow_no_op` changes nothing else: a non-empty diff gets `proceed` or `handover` as usual, and git configuration drift still stops the run.
+Only the exact value `"true"` counts, as in `default-workflow`'s own no-op check, so a value that happens to look true cannot turn an agent that did nothing into a successful run. The selected branch and checkout are left in place, whether newly created or reused. `allow_no_op` changes nothing else: a non-empty diff gets `proceed` or `handover` as usual, and git configuration drift still stops the run.
 
 ## Hand-over to default-workflow
 
@@ -300,7 +342,11 @@ When the verdict is `handover`:
 2. Nothing is committed or pushed by `quick-change`. The worktree and branch are left as they are, including any commit the agent made against its instructions.
 3. `quick-change-handover` runs `default-workflow` with the original task, the note appended, and `existing_branch` set from `worktree_setup.branch_name`.
 
-`default-workflow` then reuses the `quick/` branch through its own steps:
+For an existing-branch continuation, the hand-over also forwards the exact continuation policy. The same checkout, local history and existing work are retained; the note and patch describe the complete change against the original pinned SHA. Hand-over does not select an alias or restart from main.
+
+The no-PR-operations guarantee ends at hand-over. The continuation policy governs checkout selection only; it does not restrict `default-workflow`'s publication. Its `workflow-publish` phase can discover an existing PR or create one, and later steps can update, review and finalise it according to that workflow's controls. Existing-branch hand-over therefore does not promise to leave the PR unchanged.
+
+For an ordinary new-branch run, `default-workflow` reuses the `quick/` branch through its own steps:
 
 - Step 04 (`workflow-worktree`) finds the worktree already registered for the `quick/` branch and reuses it as it is. It does not reset, clean or check out anything on that path, so the changes from `quick-change`, committed by the agent or not, are still in the worktree when the builder starts.
 - `workflow-prep` creates a tracking issue, because `quick-change` did not. This is a second issue when the task already had one.
@@ -400,11 +446,13 @@ A skipped check is never counted as passed. Skip reasons come from a closed set:
 | `jq not on PATH` | `package.json` scripts cannot be read |
 | `no "lint" script` / `no "test" script` | The script is absent from `package.json` |
 
-A failing check does not stop the recipe. The PR is opened as a draft and its body says "Checks failed". The PR step takes the checks result from the runner's output of `quick-change-run-checks`, and stops if the copy in the state directory differs from it, so a rewritten summary file cannot turn a failed run into a ready-for-review PR. The tool exits 0 once the checks have run and 2 on a usage error.
+A failing check does not stop the recipe. A new PR is opened as a draft and its body says "Checks failed"; continuation reports the warning without modifying the existing PR. The final step takes the checks result from the runner's output of `quick-change-run-checks`, and stops if the copy in the state directory differs from it, so a rewritten summary file cannot turn a failed run into a ready-for-review PR. The tool exits 0 once the checks have run and 2 on a usage error.
 
 The PR step also checks every row of the stored table against the form the tool writes (a code-span label, then `exit N` or one of the skip reasons above) and the row counts against the summary, so the table cannot carry other text into the PR body. These patterns in `quick_change_common.sh` repeat strings that `quick_change_checks.sh` and `quick_change_diff_limits.sh` produce. `issue_1740_state_gates` feeds `qc_checks_summary`, `qc_checks_table` and `qc_handover_reason` what the two tools print, covering every skip reason and every hand-over reason, and reads both tools' source: a new skip reason or hand-over rule fails that test until the gate accepts it, rather than failing a run after the branch is pushed or the agent's work is done.
 
 ## Pull request
+
+This section describes ordinary new-branch publication with verdict `proceed`. With that verdict, existing-branch continuation completes after verified publication and warning reporting, before any PR operation. A [hand-over](#hand-over-to-default-workflow) instead uses `default-workflow`'s normal PR handling.
 
 The PR body is built in a file and passed with `--body-file`. The commit message is passed with `git commit -F`. Neither goes through argv (#1570).
 
@@ -438,16 +486,33 @@ The Checks table above is what `quick_change_checks.sh` wrote for a one-line cha
 
 | Item | Rule |
 | --- | --- |
-| Title | Task text with control characters and backticks removed and leading markdown markers (`#`, `>`, `*`, `_`, `-`) stripped, cut to 72 characters; `quick change` when nothing is left |
+| Title | A suitable change commit subject created after the pinned base during this run, preferring the principal change commit over mechanical repair commits. Otherwise, a descriptive summary naming the main applicable changed path. See [Commit subjects and PR titles](#commit-subjects-and-pr-titles). |
 | Request | The task text, cut to 4000 bytes on a UTF-8 boundary |
 | `Refs #N` | Only when the issue number matches `^[1-9][0-9]{0,8}$` |
 | Draft | When `QUICK_CHANGE_CHECKS=failed`, `none` or `unverified`, or when hook repair ran in the commit or push step |
 
-The body's first section is headed "Request" because it holds the task text as given, not a summary of the change: no agent-written text reaches the PR (S8). The commit message body is the same text.
+The body's first section is headed "Request" because it holds the task text as given. The commit message body is the same text. The independently generated subject describes the actual change; only a validated subject is eligible for the PR title.
 
 When the checks failed, the body starts with "Checks failed"; when no check ran, it starts with "No checks ran"; when the status is `unverified`, it starts with "No build or test covered this change; the checks that passed do not read it". When hook repair ran, it also says "Hook repair changed the code after the checks ran; the checks table describes the pre-repair tree." The create-PR step reads `quick_change_commit_repaired` and `quick_change_push_repaired` from the runner's outputs, never from the state directory, and fails when either is missing.
 
-The push uses an explicit refspec, `git push -u origin refs/heads/<branch>:refs/heads/<branch>`, only after the snapshot (which holds a checksum of the push URL) still matches, and is followed by `verify_pushed_ref.sh`. `gh pr create` runs through `workflow_gh_retry.sh` under an outer timeout.
+The push uses an explicit refspec, `git push -u origin refs/heads/<branch>:refs/heads/<branch>`, only after the snapshot (which holds a checksum of the push URL) still matches, and is followed by `verify_pushed_ref.sh`. `gh pr create` runs once, without timed retries, interval probes or a wall-clock window. A failure is reported directly and leaves the local work available for recovery.
+
+### Commit subjects and PR titles
+
+The builder returns a structured change summary and proposed `commit_subject`; it does not commit or publish. The subject describes the change independently of the task's first line. The publication step validates the proposal before using it as a commit subject.
+
+The validator rejects an empty proposal, a path alone, a leading `Brief:`, multiple lines, control characters or an overlong subject. Rejection selects a deterministic fallback describing the change category and naming the main applicable changed path, such as `docs: update docs/index.md`. The fallback contains descriptive words and preserves the full path; it never truncates path identity or cuts a word to fit.
+
+PR-title selection considers only suitable subjects from commits after the pinned base. It prefers the principal change commit over a mechanical hook-repair subject and never selects an unrelated historical commit. If no suitable subject exists, it uses the same descriptive, path-aware fallback. Neither the commit-subject nor PR-title route uses raw task-text truncation.
+
+For example, this task starts with a brief path:
+
+```text
+Brief: docs/reference/quick-change-recipe.md
+Correct the recipe CLI link in docs/index.md for #2240.
+```
+
+A suitable subject is `docs: correct the recipe CLI link in docs/index.md`. That subject becomes the new PR's title. The body retains `Refs #2240` or `Fixes #2240`, independently of the brief line and title selection. `issue_number` takes precedence over an issue reference found in task text; no issue reference is inferred from a generated title.
 
 ### Hook repair
 
@@ -455,7 +520,7 @@ When a `pre-commit` or `pre-push` hook rejects the commit or push, the step uses
 
 - In the commit step, a change that now exceeds the limits fails the step (exit 5), and nothing is pushed.
 - In the push step, the loop commits the fix and pushes it itself, so the check runs after the push. A failure leaves the branch on `origin`, but the run stops before a PR is opened.
-- When the change is still within the limits, the PR is opened as a draft, because the checks table describes the tree before the repair.
+- When the change is still within the limits, a new PR is opened as a draft, because the checks table describes the tree before the repair. Existing-branch continuation reports the repair warning and leaves the existing PR unchanged.
 
 ## Routing from smart-orchestrator
 
@@ -496,7 +561,7 @@ Classifier output with the new fields:
 | 7 | Classifier recommends `default-workflow` | `default-workflow` | `classifier` | |
 | 8 | No recommendation, or any other value | `default-workflow` | `default` | |
 
-After the table, a `quick-change` result becomes `default-workflow` when the run already has a branch, because `quick-change` works only on a new `quick/` branch and its branch check would stop the run. The source is kept. The checks are made in the order `workflow-worktree` uses:
+After the table, a `quick-change` result becomes `default-workflow` when the run already has a branch. This is the orchestrator's routing policy; direct quick-change runs support [existing-branch continuation](#existing-branch-continuation). The source is kept. The checks are made in the order `workflow-worktree` uses:
 
 | Condition | `reason=` | Warning when the source is `override` |
 | --- | --- | --- |
@@ -633,6 +698,7 @@ The agent's prompt instructions are not relied on. The controls are in the bash 
 - The diff-limit step and the push step compare git configuration, hooks and the push URL with the snapshot taken before the agent ran, and refuse to continue when any of them differ. The snapshot covers remotes, URL rewrites, `http.*`, credential helpers, `core.hooksPath`, `core.sshCommand`, `core.fsmonitor`, `core.gitProxy`, `core.askPass`, `protocol.*`, includes, clean and smudge filters, `core.attributesFile`, commit signing and `push.default`, at every configuration level, plus the local and per-worktree configuration files and the hooks directory. The configuration files leave out `branch.<name>.<key>` entries, which other runs write; the entries of the run's own branch are compared at every level instead, as described under [Shared configuration](#rules).
 - Every step after the agent reads the pinned base from the state directory and checks it against the value the runner holds in memory (`quick_change_base`), so rewriting the stored base stops the run.
 - The push goes to `origin` with an explicit refspec and no force, mirror, tags or delete, and only after the snapshot comparison passes. No step merges.
+- Existing-branch setup validates and fetches the exact origin ref before setup publication or implementation. Local-only and stale tracking refs do not establish remote existence. Branch identity must equal the supplied `existing_branch` before implementation, commit and push; protected-branch refusal applies to both continuation and new-branch runs.
 - Untrusted text reaches bash only through `RECIPE_VAR_*` variables; no `command:` block contains `{{`. No step uses `eval`, `bash -c "$VAR"` or `set -x`.
 
 Known limits:
@@ -644,7 +710,8 @@ Known limits:
 - An existing lockfile is excluded from the line limit. A large lockfile change, including one that points a package at a different download URL, proceeds when the other limits are met and is left to PR review.
 - Changed file names are passed to `pre-commit run --files` as they are. An agent-created file whose name starts with `-` is read by pre-commit as an option.
 - A new file created with the executable bit is counted like any other new file; only a mode change to an existing file, or a symlink, forces a hand-over.
-- When hook repair during the push grows the change beyond the limits, the branch is already on `origin` and no PR is opened. Delete the remote branch by hand if it is not wanted.
+- When hook repair during the push grows the change beyond the limits, the branch is already on `origin` and the run fails. A new-branch run opens no PR; an existing PR remains unchanged and may already show those commits.
+- The remote-existence check is point-in-time validation. Later remote changes remain subject to non-force push and remote-SHA verification; the recipe does not poll GitHub or reset local history to accommodate them.
 - The repository configuration is shared by every worktree. Other branches' entries are left out of the drift check, but any other change another process makes there while a run is in progress, such as adding a remote, stops that run as drift.
 - A file outside every package directory that a crate compiles in through a relative path, such as `include_str!("../../../docs/x.md")`, runs no clippy or test here, because the tool does not read `include_str!` calls. CI builds it.
 - A changed `.rs` file is checked with the package of the nearest `Cargo.toml` that has a `[package]` section and is not the workspace root. A file that a different package compiles through a `path` key or a `#[path]` attribute, but that sits under another member's directory, is checked with that member, whose checks do not build it.
@@ -653,6 +720,7 @@ Known limits:
 ## Out of scope
 
 - Review, CI repair, merge and finalisation. Use [Auto Drive To Merge](./auto-drive-to-merge.md) for those.
+- Discovering or modifying the existing PR during continuation, including changing its title, body or draft status.
 - Version bumps. `quick-change` does not use `workflow-publish`.
 - Adaptive workflow selection (#1708).
 

@@ -250,15 +250,20 @@ request without `default-workflow`'s publish phase, and one route runs
 
 | Path | `base_branch`, `forbidden_base_branches` | `strict_delivery` |
 | ---- | ---------------------------------------- | ----------------- |
-| `quick-change`, and `auto-drive-light` for a new change | Cleared in the call to `workflow-worktree`. The `quick/` branch starts from `origin/HEAD`, and the pull request targets the branch `origin/HEAD` names, so the two agree. A `base_branch` from the caller is not used. | Left as inherited. Step-04 refuses to create a branch when it is `"true"`, so a strict run stops before any agent runs. |
+| `quick-change` and `auto-drive-light` for a new change | Cleared in the call to `workflow-worktree`. The `quick/` branch starts from `origin/HEAD`, and the pull request targets the branch `origin/HEAD` names, so the two agree. A `base_branch` from the caller is not used. | Left as inherited. Step-04 refuses to create a branch when it is `"true"`, so a strict run stops before any agent runs. |
+| Direct `quick-change` with `existing_branch` | Cleared in the call to `workflow-worktree`. The supplied branch is validated on origin and selected exactly, preserving local history and work; its local `HEAD` is pinned for diff measurement. On `proceed`, no new PR is opened or existing PR retargeted. Hand-over uses `default-workflow`'s normal PR handling. | Left as inherited. Existing-branch selection does not create a replacement branch. |
 | `smart-orchestrator`, task split into parallel workstreams | Not forwarded. `launch-parallel-round-1` passes only `create_issue` to `amplihack orch run`. Each development workstream runs `default-workflow` in its own process, whose declared defaults replace any inherited value, so each branch starts from, and each pull request targets, the remote default branch. | Never split. `activate-workflow` keeps the run on one workstream when `strict_delivery` is anything but empty or `"false"`, and says so on stderr. |
 
 The runner merges a sub-recipe's context back into its caller's. Once
 `quick-change` or `auto-drive-light` has called `workflow-worktree`,
 `base_branch` and `forbidden_base_branches` are empty for the rest of the run,
 in that recipe and in the recipes that called it. A `quick-change` hand-over
-to `default-workflow` therefore continues the `quick/` branch with no
-`base_branch`, and its pull request also targets the remote default branch.
+to `default-workflow` therefore continues the selected branch with no
+`base_branch`. For a new-branch run, its pull request targets the remote default
+branch. An existing-branch continuation forwards the exact continuation policy
+and retains the selected checkout. That policy governs checkout selection;
+it does not suppress `default-workflow`'s PR operations after hand-over.
+See [Quick-Change Recipe](quick-change-recipe.md#hand-over-to-default-workflow).
 
 `auto-drive-light` continuing an existing branch or pull request
 (`existing_branch` or `pr_number` set) does not call `workflow-worktree` and

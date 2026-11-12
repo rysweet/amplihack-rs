@@ -38,7 +38,7 @@
   "oxidizer-workflow": "a32ed52db99486e2",
   "qa-workflow": "5d8ffe53942b4076",
   "quality-audit-cycle": "8723f68c54501a63",
-  "quick-change": "d252bf65adf4efd6",
+  "quick-change": "f12d0f908ca1640b",
   "sdk-comparison": "a4ead8f91eb1e93a",
   "self-improvement-loop": "f9fe001854a0742b",
   "smart-classify-route": "96f14a9eee9a7fbe",
@@ -55,5 +55,5 @@
   "workflow-publish": "250aae725873ae9f",
   "workflow-refactor-review": "ad94b72c16cecd5d",
   "workflow-tdd": "4a8574462bc30532",
-  "workflow-worktree": "6ed477c9530e4426"
+  "workflow-worktree": "ff3c1ff1605118e7"
 }

@@ -90,6 +90,8 @@ qc_base() {
   [[ "$base" =~ ^[0-9a-f]{40}$ ]] || qc_die "pinned base is not a 40-character hex SHA"
   [ -n "${RECIPE_VAR_quick_change_base:-}" ] || qc_die "runner did not provide quick_change_base"
   [ "$base" = "$RECIPE_VAR_quick_change_base" ] || qc_die "pinned base in the state directory differs from the recorded base; not continuing"
+  git -C "$QC_WT" cat-file -e "$base^{commit}" 2>/dev/null || qc_die "pinned base $base is not a commit"
+  git -C "$QC_WT" merge-base --is-ancestor "$base" HEAD || qc_die "pinned base $base is not an ancestor of HEAD"
   printf '%s' "$base"
 }
 
@@ -190,32 +192,113 @@ qc_require_identity() {
     || qc_die "no safe commit identity; set one before running, as the commit step would fail after the agent's work"
 }
 
-# qc_branch: print the worktree's branch after checking that it is valid,
-# starts with quick/ and is not a default or protected name (S4).
+# qc_branch: require exact continuation identity, or a new quick/ branch.
+# Both paths refuse default and protected names (S4).
 qc_branch() {
   local branch default
-  branch="$(git -C "$QC_WT" symbolic-ref -q --short HEAD)" || qc_die "the worktree is not on a branch"
+  branch="$(git -C "$QC_WT" symbolic-ref -q HEAD)" || qc_die "the worktree is not on a branch"
+  case "$branch" in refs/heads/*) branch="${branch#refs/heads/}" ;; *) qc_die "HEAD is not a local branch ref" ;; esac
   git check-ref-format --branch "$branch" >/dev/null 2>&1 || qc_die "branch '$branch' fails check-ref-format"
+  if [ -n "${RECIPE_VAR_existing_branch:-}" ]; then
+    [ "$branch" = "$RECIPE_VAR_existing_branch" ] || qc_die "branch '$branch' differs from requested existing_branch '$RECIPE_VAR_existing_branch'"
+  else
+    case "$branch" in
+      quick/*) ;;
+      *) qc_die "branch '$branch' does not start with quick/" ;;
+    esac
+  fi
+  default="$(git -C "$QC_WT" symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null || true)"
   case "$branch" in
-    quick/*) ;;
-    *) qc_die "branch '$branch' does not start with quick/" ;;
-  esac
-  default="$(git -C "$QC_WT" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-  case "$branch" in
-    main|master|develop|trunk|"${default#origin/}") qc_die "refusing to publish to protected branch '$branch'" ;;
+    main|master|develop|trunk|"${default#refs/remotes/origin/}") qc_die "refusing to publish to protected branch '$branch'" ;;
   esac
   printf '%s' "$branch"
 }
 
-# qc_title: the task text as one line with control characters and backticks
-# removed and leading markdown markers (#, >, *, _, -) stripped, cut to 72
-# characters (S7).
+# Subject validation and generation use the change, never task truncation.
+# Proposals are bounded; deterministic fallbacks retain the full path even
+# when that makes the generated subject longer than the proposal limit.
+qc_valid_subject() {
+  [ ! -e "$QC_WT/$1" ] && [ ! -L "$QC_WT/$1" ] || return 1
+  # A deleted path with spaces can look like descriptive words too.
+  if git -C "$QC_WT" cat-file -e "${RECIPE_VAR_quick_change_base:-HEAD}:$1" 2>/dev/null; then return 1; fi
+  printf '%s' "$1" | jq -R -s -e '
+    length > 0 and length <= 72
+    and (test("[\\x00-\\x1f\\x7f-\\x9f`]") | not)
+    and (test("^\\s|\\s$") | not)
+    and (test("^Brief:"; "i") | not)
+    and (test("(…|\\.\\.\\.)$") | not)
+    and test("^[A-Za-z][A-Za-z0-9() _-]*:? +[A-Za-z0-9]")
+  ' >/dev/null
+}
+
+qc_fallback_title() {
+  local base names rec path added deleted score best=-1 main="" category=fix action=update
+  base="$(qc_base)" || return
+  names="$(mktemp "$QUICK_CHANGE_STATE_DIR/.title.XXXXXX")" || qc_die "cannot allocate title diff"
+  git -C "$QC_WT" -c core.fsmonitor=false diff --no-ext-diff --no-textconv --no-renames --numstat -z "$base" > "$names" \
+    || qc_die "cannot measure changed paths for the title"
+  # Git's stable path order breaks ties. Binary files still count as paths.
+  while IFS= read -r -d '' rec; do
+    added="${rec%%$'\t'*}"; rec="${rec#*$'\t'}"
+    deleted="${rec%%$'\t'*}"; path="${rec#*$'\t'}"
+    case "$added:$deleted" in *-*) score=0 ;; *) score=$((added + deleted)) ;; esac
+    if [ "$score" -gt "$best" ]; then best="$score"; main="$path"; fi
+  done < "$names"
+  rm -f "$names"
+  [ -n "$main" ] || qc_die "no changed path for a descriptive title"
+  # Represent unusual path characters without allowing multiline titles.
+  main="$(printf '%s' "$main" | jq -R -s -r 'if test("[\\x00-\\x1f\\x7f-\\x9f]") then tojson else . end')"
+  case "$main" in docs/*|*.md|*.rst|*.txt) category=docs ;; *lock*) category=chore ;; esac
+  printf '%s: %s %s' "$category" "$action" "$main"
+}
+
+qc_commit_subject() {
+  local proposal
+  proposal="$(printf '%s' "${RECIPE_VAR_quick_change_implementation:-}" | jq -c '.commit_subject | select(type == "string")')" \
+    || qc_die "builder result is not structured JSON"
+  # Validate JSON before decoding: command substitution removes trailing
+  # newlines, which must not turn an invalid proposal into a valid subject.
+  if [ -n "$proposal" ] && printf '%s' "$proposal" | jq -e 'test("[\\x00-\\x1f\\x7f-\\x9f]") | not' >/dev/null; then
+    proposal="$(printf '%s' "$proposal" | jq -r '.')"
+    if qc_valid_subject "$proposal"; then printf '%s' "$proposal"; return; fi
+  fi
+  qc_fallback_title
+}
+
+# Prefer the first suitable non-mechanical subject after the immutable base.
+# A hook may have rewritten the principal subject, so read actual commits.
 qc_title() {
-  local t
-  t="$(printf '%s' "${RECIPE_VAR_task_description:-}" | LC_ALL=C tr '[:cntrl:]`' ' ' \
-    | sed -E -e 's/^[#>*_[:space:]-]+//' -e 's/  +/ /g' -e 's/ $//')"
-  t="${t:0:72}"
-  printf '%s' "${t:-quick change}"
+  local base subjects subject mechanical=""
+  base="$(qc_base)" || return
+  subjects="$(git -C "$QC_WT" log --reverse --format=%s "$base..HEAD")" || qc_die "cannot read this run's commit subjects"
+  while IFS= read -r subject; do
+    qc_valid_subject "$subject" || continue
+    case "$subject" in
+      'fix: address '* | 'style: '* | 'chore: format '*) [ -n "$mechanical" ] || mechanical="$subject" ;;
+      *) printf '%s' "$subject"; return ;;
+    esac
+  done <<< "$subjects"
+  if [ -n "$mechanical" ]; then printf '%s' "$mechanical"; else qc_fallback_title; fi
+}
+
+# Interpret the diff tool's closed verdict contract. Keep errors visible and
+# store the exact result for the hand-over step's runner/state comparison.
+qc_diff_verdict() {
+  local out="$1" rc="$2" line verdict
+  printf '%s\n' "$out" >&2
+  case "$rc" in
+    0) ;;
+    3) [ "${RECIPE_VAR_allow_no_op:-}" = true ] || exit 3
+       echo "quick-change: allow_no_op is true; finishing with no commit, push or PR" >&2 ;;
+    4) exit 4 ;;
+    *) echo "ERROR: $QC_STEP: the diff-limits tool failed (exit $rc)" >&2; exit 2 ;;
+  esac
+  printf '%s\n' "$out" | qc_write diff-limits
+  line="${out%%$'\n'*}"; verdict="${line#QUICK_CHANGE_VERDICT=}"; verdict="${verdict%% *}"
+  case "$rc:$verdict" in
+    0:proceed|0:handover|3:empty) printf '%s' "$verdict" ;;
+    *) echo "ERROR: $QC_STEP: unexpected verdict line '$line'" >&2; exit 2 ;;
+  esac
 }
 
 # qc_request: the task text with control characters other than newline and

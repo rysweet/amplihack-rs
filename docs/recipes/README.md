@@ -358,12 +358,12 @@ Three recipes take a task to a pull request with less supervision than `default-
 | | `quick-change` | `auto-drive-light` | `auto-drive-to-merge` |
 | --- | --- | --- | --- |
 | Build | One agent session | One agent session | `default-workflow`, including design and architect steps |
-| Ends at | An open PR | A merged PR | A merged PR |
+| Ends at | An open PR, or verified publication to an existing PR branch | A merged PR | A merged PR |
 | Size check | Diff limits (3 files, 150 lines by default), hands over to `default-workflow` | Eligibility rules (300 lines, no new modules, public API, schema or recipe contract changes by default), escalates to `auto-drive-to-merge` | None |
 | Crusty review loop | No | Yes. A round whose findings are all minor ends the loop, and each finding is filed as its own follow-up issue linked to the task before merge | Yes, the same per-finding model |
 | Merge gate | No | The same gate as `auto-drive-to-merge` | Yes |
 | Selected by smart-orchestrator | Yes, for small single-workstream tasks | No, run by name | No, run by name or skill |
-| Existing PR | Not supported | `pr_number` or `existing_branch` | `pr_number` or `existing_branch` |
+| Existing PR | Direct recipe call with `existing_branch`; no PR operations on `proceed`. [Hand-over](../reference/quick-change-recipe.md#hand-over-to-default-workflow) uses `default-workflow`'s PR handling | `pr_number` or `existing_branch` | `pr_number` or `existing_branch` |
 
 Use `quick-change` when you will review and merge the PR yourself. Use `auto-drive-light` for a small change that should be driven to merge without supervision. Use `auto-drive-to-merge` for a feature, a public interface change or anything that needs design.
 

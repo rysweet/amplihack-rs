@@ -26,6 +26,9 @@
 mod isolated_amplihack;
 mod support;
 
+#[path = "issue_2240_quick_change_continuation.rs"]
+mod issue_2240_quick_change_continuation;
+
 #[path = "issue_1753_expired_live.rs"]
 mod issue_1753_expired_live;
 #[path = "issue_1753_login_identity.rs"]

@@ -121,10 +121,11 @@ fn allow_no_op_is_declared_forwarded_and_read_by_the_diff_limits_step() {
         .as_str()
         .unwrap()
         .to_string();
-    assert!(
-        cmd.contains("\"${RECIPE_VAR_allow_no_op:-}\" = true"),
-        "{cmd}"
-    );
+    assert!(cmd.contains("qc_diff_verdict"), "{cmd}");
+    let common =
+        std::fs::read_to_string(repo_root().join("amplifier-bundle/tools/quick_change_common.sh"))
+            .unwrap();
+    assert!(common.contains("\"${RECIPE_VAR_allow_no_op:-}\" = true"));
 
     let routing = recipe("smart-execute-routing");
     let forwarded = step(&routing, "execute-single-round-1-quick-change")["context"]["allow_no_op"]

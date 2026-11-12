@@ -6,8 +6,7 @@ tags: ["development", "prep", "worktree", "git"]
 
 # workflow-worktree: extracted from default-workflow.yaml as a composable phase brick.
 #
-# Preserves every original step verbatim — the layered review steps the LLM
-# converges through must remain intact. Context flows in from the parent
+# Context flows in from the parent
 # workflow via recipe-runner's automatic context-merging in
 # `_execute_sub_recipe()`; outputs declared by these steps propagate back to
 # the parent and are visible to subsequent phase recipes.
@@ -17,7 +16,7 @@ recursion:
   max_depth: 6
   max_total_steps: 80
 
-context: { base_branch: "", forbidden_base_branches: "", strict_delivery: "false" }  # caller delivery inputs: docs/reference/workflow-delivery-inputs.md
+context: { worktree_policy: "", base_branch: "", forbidden_base_branches: "", strict_delivery: "false" }  # caller delivery inputs: docs/reference/workflow-delivery-inputs.md
 
 steps:
   - id: "step-04-setup-worktree"
@@ -47,7 +46,7 @@ steps:
       TOOLS_DIR="$(dirname "$SWEEP_HELPER")"
       # An AMPLIHACK_HOME older than a checkout's recipe lacks newer helpers, so when that tier is
       # incomplete and the checkout holds every helper in STEP_TOOLS, use the checkout's (#1808).
-      STEP_TOOLS="workflow_worktree_root.sh workflow_branch_name.sh workflow_pr_branch.sh workflow_caller_branch_alias.sh workflow_alias_reuse.sh workflow_worktree_deconflict.sh workflow_fetch_origin.sh amplihack_run_owned.sh workflow_runtime_root.sh workflow_delivery_inputs.sh"
+      STEP_TOOLS="workflow_worktree_root.sh workflow_branch_name.sh workflow_pr_branch.sh workflow_caller_branch_alias.sh workflow_alias_reuse.sh workflow_worktree_deconflict.sh workflow_fetch_origin.sh amplihack_run_owned.sh workflow_runtime_root.sh workflow_delivery_inputs.sh workflow_worktree_existing_branch.sh"
       tools_complete() { local t; for t in $STEP_TOOLS; do [ -f "$1/$t" ] || return 1; done; }
       tools_complete "$TOOLS_DIR" || ! tools_complete "$REPO_PATH/amplifier-bundle/tools" || TOOLS_DIR="$REPO_PATH/amplifier-bundle/tools"
       # Worktree anchoring (#1134): nested recipe RUNNERS are legitimate, and a
@@ -65,6 +64,11 @@ steps:
         WT_BASE="$(bash "$ROOT_HELPER" base "$MAIN_REPO_PATH")" || exit 1
       fi
       [ "$MAIN_REPO_PATH" = "$REPO_PATH" ] || echo "INFO: caller checkout '$REPO_PATH' is a linked worktree — anchoring new worktrees at main repository '$MAIN_REPO_PATH' (issue #1134)." >&2
+      # Exact continuation precedes cleanup: neither sweep nor aliases may
+      # remove or replace the requested checkout or its pre-existing work.
+      if [ "${RECIPE_VAR_worktree_policy:-}" = quick-change ] && [ -n "${EXISTING_BRANCH:-}" ]; then
+        exec bash "$TOOLS_DIR/workflow_worktree_existing_branch.sh" "$REPO_PATH" "$MAIN_REPO_PATH" "$WT_BASE" "$EXISTING_BRANCH"
+      fi
       # Self-healing orphan sweep (#840): best-effort prune of worktrees/branches
       # leaked by prior FAILED runs so a re-run converges instead of colliding. Never
       # aborts setup. Swept at the MAIN repo, where they now all live (#1134).
@@ -393,7 +397,3 @@ steps:
         "$CREATED"
     output: "worktree_setup"
     parse_json: true
-
-  # ==========================================================================
-  # STEP 5: RESEARCH AND DESIGN
-  # ==========================================================================
