@@ -20,6 +20,7 @@ files.
   - [recipe.usage_limit_wait and recipe.usage_limit_max_wait_secs](#recipeusage_limit_wait)
   - [orchestrator.max_depth](#orchestratormax_depth)
   - [Governor keys](#governor-keys)
+  - [Rotator keys](#rotator-keys)
   - [sessions.daily_archive](#sessionsdaily_archive)
   - [sessions.archive_days and sessions.archive_dest](#sessionsarchive_days-and-sessionsarchive_dest)
 - [The config command](#the-config-command)
@@ -161,6 +162,10 @@ command, so it never prints `flag`.
 | `governor.eval_interval_secs` | integer seconds, 1 to 3600 | `60` | — | — | user only |
 | `governor.wait_secs` | integer seconds, 0 to 86400 | `600` | — | — | user only |
 | `governor.max_reading_age_secs` | integer seconds, 60 to 86400 | `3600` | — | — | user only |
+| `rotator.session_at` | integer percent, 1 to 100 | `85` | `AMPLIHACK_ROTATE_SESSION_AT` | `--session-at` | user only |
+| `rotator.week_at` | integer percent, 1 to 100 | `90` | `AMPLIHACK_ROTATE_WEEK_AT` | `--week-at` | user only |
+| `rotator.interval` | integer seconds, 1 to 86400 | `600` | `AMPLIHACK_ROTATE_INTERVAL` | `--interval` | user only |
+| `rotator.codex_credit_floor` | integer credits, 0 to 100000000 | `3000` | — | — | user only |
 | `sessions.daily_archive` | bool | `true` | — | — | user only |
 | `sessions.archive_days` | integer days, 1 to 4294967295 | `3` | — | `--days` | user only |
 | `sessions.archive_dest` | absolute path | (unset: `~/.amplihack/session-archive`) | — | `--dest` | user only |
@@ -417,6 +422,119 @@ amplihack config set governor.max_concurrency 2
 amplihack config set governor.wait_secs 1800
 ```
 
+### Rotator keys
+
+The thresholds that decide whether an account still has room. The Claude
+login rotator and auto-switch read the first three; `profile usage` reads all
+four and prints them in its
+[thresholds line](./profile-command.md#thresholds-in-force).
+
+| Key | Effect |
+|-----|--------|
+| `rotator.session_at` | The rotator swaps away from the live login when its session use reaches this percentage. Also the session part of the plan-capacity test that auto-switch uses for [overflow profiles](./profile-command.md#rotate-overflow) while no rotator runs. |
+| `rotator.week_at` | The same for weekly use. It is also the review reserve: `100 - week_at` percent of each login's weekly allowance is held back for review work. The default `90` keeps 10%. The reserve cannot be set on its own, and it is separate from [`governor.reserve_points`](#governor-keys). |
+| `rotator.interval` | Time between rotator cycles, for `profile rotate start` and `profile rotate watch`. |
+| `rotator.codex_credit_floor` | The credit balance a Codex account must be above to count as having room once its rate limits are used up. Used for the `<- next` choice in [`profile usage`](./profile-command.md#codex-next-choice). `0` lets any account with a positive balance be chosen. |
+
+For the first three, a `profile rotate` flag beats the variable, the
+variable beats the user file, and the user file beats the default:
+
+```text
+--session-at  >  AMPLIHACK_ROTATE_SESSION_AT  >  rotator.session_at  >  85
+```
+
+`rotator.codex_credit_floor` has no variable and no flag. The defaults are the
+values the rotator used before these keys existed, so nothing changes until
+a key is set.
+
+```console
+$ amplihack config set rotator.session_at 70
+$ amplihack config set rotator.interval 120
+$ amplihack config get rotator.session_at --show-origin
+70  # user (/home/alice/.amplihack/config.toml)
+$ AMPLIHACK_ROTATE_SESSION_AT=60 amplihack config get rotator.session_at --show-origin
+60  # env (AMPLIHACK_ROTATE_SESSION_AT)
+```
+
+All four are user-only. A project file's `rotator.*` value is reported and
+ignored, so a cloned repository cannot move your swap points or make a Codex
+account with few credits look usable:
+
+```text
+/home/alice/src/myapp/.amplihack/config.toml: rotator.codex_credit_floor: can only be set in the user file; ignored
+```
+
+`profile rotate start` and autostart read `rotator.session_at`,
+`rotator.week_at` and `rotator.interval` once, when they start the
+background rotator, and pass the values to it as flags. The background
+rotator never reads the config file, so a change to these three reaches a
+rotator that is already running only after `profile rotate stop` and
+`start`. The rotator does not use `rotator.codex_credit_floor`; `profile usage`
+reads it on each run, so a change to it applies at once.
+`profile rotate switch` makes no threshold decision and does not read them.
+
+A value that cannot be used is never replaced by the default. A value out of
+range or of the wrong type in the file, a file that cannot be read or parsed,
+or a user file that group or others can write:
+
+- stops `profile rotate` (once, `start` and `watch`) with exit status 1 and
+  a message naming the key and how to fix it:
+
+  ```text
+  error: invalid rotate setting rotator.session_at: must be an integer from 1 to 100; fix it with `amplihack config set rotator.session_at <value>` or `amplihack config unset rotator.session_at`
+  ```
+
+- stops autostart from starting a rotator; the reason is written to
+  `rotate.err` and the launch carries on;
+- closes the auto-switch overflow gate while no rotator runs, with the same
+  message on the `overflow gate:` line;
+- does not stop `profile usage`, which prints the message in place of that
+  key's value. A bad `rotator.codex_credit_floor` means no Codex account is marked
+  `<- next`.
+
+These messages, including the `error` field of `profile usage --summary-json`,
+name the key and the reason only. They never contain the file's path or its
+contents.
+
+When the whole file is at fault (it cannot be read or parsed, it is owned by
+another user, or group or others can write it), `config set` and
+`config unset` cannot help, so the message gives a different fix. The reason
+says what is wrong with the file. Every `rotator.*` key then fails in the
+same way, including keys the file does not set, so the rotator never falls
+back to a default while the file is at fault. A file owned by another user
+or writable by group or others counts as at fault here only when it sets at
+least one `rotator.*` key; when it sets none, the rotator uses its defaults
+as if the file were absent. A file that cannot be read or parsed always
+counts, because nobody can tell which keys it sets:
+
+```text
+error: invalid rotate setting rotator.week_at: ignored because the file is writable by group or others; fix the user config file first (`amplihack config list --show-origin` shows its path and the problem)
+```
+
+For a group-writable file, `chmod go-w` on that path is the fix. For a file
+that cannot be parsed, run `amplihack config edit`. `amplihack doctor` also
+prints the path.
+
+An invalid `AMPLIHACK_ROTATE_*` variable is handled in the same way as an
+invalid key: `profile rotate` stops and names the variable. `config get` and
+`config list` follow their usual rule for an
+[invalid environment value](#config-list). They mark the variable as
+`# env (invalid: ...)` and show the value from the file or the default, so
+`config get` can show a value that `profile rotate` would not use.
+
+`config set` checks the range before it writes, so the file only holds a bad
+value when it was edited by hand:
+
+```sh
+amplihack config set rotator.session_at 101
+```
+
+```text
+error: rotator.session_at: must be an integer from 1 to 100
+```
+
+The exit status is 2.
+
 ### sessions.daily_archive
 
 Whether the Claude login rotator runs its
@@ -660,11 +778,13 @@ have just cloned, so it is trusted less.
 
 - **The user file must be owned by you and not writable by group or others.**
   If it is not, its user-only keys (`agent.binary`, `paths.home`, `node.*`,
-  `recipe.log_dir`, `governor.*`) are ignored and reported. Its other keys still apply.
+  `recipe.log_dir`, `governor.*`, `rotator.*`) are ignored and reported. Its other keys still apply.
 - **The project file never names a path, a command, an executable or the
   agent CLI.** `agent.binary` and every path-valued key are user-only.
 - **The project file cannot change the capacity governor.** Every
   `governor.*` key is user-only.
+- **The project file cannot change the rotator thresholds.** Every
+  `rotator.*` key is user-only.
 - **`config set --project` and `config edit --project` refuse a project
   `config.toml` that is a symlink, or whose directory resolves outside the git
   repository**, and exit 1.
@@ -789,5 +909,6 @@ so the user file is the only place the consent lives.
 - [Active Agent Binary](./active-agent-binary.md) — The full agent-binary resolver, including the `user_config` layer
 - [amplihack doctor](./doctor-command.md) — The `Effective config` section
 - [Capacity Governor](./capacity-governor.md): What the `governor.*` keys control
+- [Profile command: Rotate settings](./profile-command.md#rotate-settings): What the `rotator.*` keys control
 - [Memory Configuration Consent](../features/memory-consent-prompt.md) — The NODE_OPTIONS prompt whose answer `node.heap_consent` stores
 - [Config Write Durability](../concepts/config-write-durability.md): Why the launcher's consent save skips the `fsync` that other config writes perform

@@ -18,6 +18,7 @@ pub(crate) mod migrate;
 pub(crate) mod safe;
 pub(crate) mod schema;
 pub(crate) mod schema_governor;
+pub(crate) mod schema_rotator;
 
 #[cfg(test)]
 mod tests_load;
@@ -372,11 +373,55 @@ pub(crate) fn sessions_daily_archive(home: &Path) -> Result<bool, String> {
 /// others, or when the test guard forbids `home`. The caller then does not
 /// run.
 pub(crate) fn sessions_key(home: &Path, name: &str) -> Result<Option<Value>, String> {
+    user_keys(home, &[name])
+        .pop()
+        .expect("one name gives one result")
+}
+
+/// Several user-only keys from one load of `<home>/.amplihack/config.toml`,
+/// one result per name and in the same order, failing closed as
+/// [`sessions_key`] does. The process environment plays no part: each
+/// consumer parses its own variables.
+pub(crate) fn user_keys(home: &Path, names: &[&str]) -> Vec<Result<Option<Value>, String>> {
+    user_keys_detail(home, names)
+        .into_iter()
+        .map(|r| r.map_err(|p| p.full))
+        .collect()
+}
+
+/// Why a key read by [`user_keys_detail`] cannot be used.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct KeyProblem {
+    /// The whole diagnostic, with the file's path when there is one, for
+    /// local diagnostics only.
+    pub full: String,
+    /// Only the reason (`must be an integer from 1 to 100`, `ignored
+    /// because the file is writable by group or others`), never the path,
+    /// so a caller that names the key can quote it.
+    pub reason: String,
+    /// The fault is with the whole file (unreadable, unparseable, owned by
+    /// another user or writable by group or others), so `config set` and
+    /// `config unset` cannot fix it.
+    pub whole_file: bool,
+}
+
+/// [`user_keys`] with the reason kept apart from the path.
+pub(crate) fn user_keys_detail(
+    home: &Path,
+    names: &[&str],
+) -> Vec<Result<Option<Value>, KeyProblem>> {
     if guard_forbids(home) {
-        return Err(format!(
-            "{TEST_HOME_GUARD_ENV} is set and HOME ({}) is outside the temp dir",
-            display_path(home)
-        ));
+        // The path goes in `full` only: `reason` reaches rotate errors and
+        // JSON output, which must never quote HOME (issue #2007 S1).
+        let problem = KeyProblem {
+            full: format!(
+                "{TEST_HOME_GUARD_ENV} is set and HOME ({}) is outside the temp dir",
+                display_path(home)
+            ),
+            reason: format!("{TEST_HOME_GUARD_ENV} is set and HOME is outside the temp dir"),
+            whole_file: true,
+        };
+        return names.iter().map(|_| Err(problem.clone())).collect();
     }
     let effective = load(&LoadCtx {
         home: Some(home.to_path_buf()),
@@ -385,15 +430,28 @@ pub(crate) fn sessions_key(home: &Path, name: &str) -> Result<Option<Value>, Str
         env: &|_| None,
         migrate: false,
     });
-    let user = display_path(&files::user_file(home));
-    let problem = effective
-        .diagnostics
+    let user_path = files::user_file(home);
+    let user = display_path(&user_path);
+    // The loader records an insecure file against each user-only key it
+    // sets, but the fault is the file's, not the key's.
+    let insecure = safe::insecure_reason(&user_path).map(display_safe);
+    names
         .iter()
-        .find(|d| d.path == user && d.key.as_deref().is_none_or(|key| key == name));
-    if let Some(d) = problem {
-        return Err(d.to_string());
-    }
-    Ok(effective.file_value(name).cloned())
+        .map(|name| {
+            let problem = effective
+                .diagnostics
+                .iter()
+                .find(|d| d.path == user && d.key.as_deref().is_none_or(|key| key == *name));
+            match problem {
+                Some(d) => Err(KeyProblem {
+                    full: d.to_string(),
+                    reason: d.reason.clone(),
+                    whole_file: d.key.is_none() || insecure.as_deref() == Some(d.reason.as_str()),
+                }),
+                None => Ok(effective.file_value(name).cloned()),
+            }
+        })
+        .collect()
 }
 
 /// Save `consent` as `node.heap_consent` in the user file, without syncing it

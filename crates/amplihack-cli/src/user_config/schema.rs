@@ -275,6 +275,10 @@ pub(crate) static KEYS: &[KeyDef] = &[
     super::schema_governor::GOVERNOR_EVAL_INTERVAL_SECS,
     super::schema_governor::GOVERNOR_WAIT_SECS,
     super::schema_governor::GOVERNOR_MAX_READING_AGE_SECS,
+    super::schema_rotator::ROTATOR_SESSION_AT,
+    super::schema_rotator::ROTATOR_WEEK_AT,
+    super::schema_rotator::ROTATOR_INTERVAL,
+    super::schema_rotator::ROTATOR_CODEX_FLOOR,
     KeyDef {
         name: "sessions.daily_archive",
         // Turns on a job that removes files from ~/.claude/projects; a

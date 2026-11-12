@@ -33,6 +33,10 @@ fn keys_are_in_documented_order() {
             "governor.eval_interval_secs",
             "governor.wait_secs",
             "governor.max_reading_age_secs",
+            "rotator.session_at",
+            "rotator.week_at",
+            "rotator.interval",
+            "rotator.codex_credit_floor",
             "sessions.daily_archive",
             "sessions.archive_days",
             "sessions.archive_dest",
@@ -78,6 +82,10 @@ fn user_only_keys_are_agent_home_node_log_dir_governor_and_sessions() {
             "governor.eval_interval_secs",
             "governor.wait_secs",
             "governor.max_reading_age_secs",
+            "rotator.session_at",
+            "rotator.week_at",
+            "rotator.interval",
+            "rotator.codex_credit_floor",
             "sessions.daily_archive",
             "sessions.archive_days",
             "sessions.archive_dest"
@@ -229,4 +237,64 @@ fn governor_keys_are_user_only_with_documented_ranges_and_defaults() {
     }
     assert!(parse_cli("governor.wait_secs", "0").is_ok());
     assert!(parse_cli("governor.reserve_points", "100").is_ok());
+}
+
+/// Issue #2007: the `rotator.*` keys are user-only, so a repository cannot
+/// move the swap points or steer the Codex choice. Three have the rotator's
+/// `AMPLIHACK_ROTATE_*` variable (so `config get --show-origin` reports it);
+/// `codex_credit_floor` has none.
+#[test]
+fn rotator_keys_are_user_only_with_documented_ranges_defaults_and_env() {
+    let cases: [(&str, u64, u64, u64, Option<&str>); 4] = [
+        (
+            "rotator.session_at",
+            85,
+            1,
+            100,
+            Some("AMPLIHACK_ROTATE_SESSION_AT"),
+        ),
+        (
+            "rotator.week_at",
+            90,
+            1,
+            100,
+            Some("AMPLIHACK_ROTATE_WEEK_AT"),
+        ),
+        (
+            "rotator.interval",
+            600,
+            1,
+            86_400,
+            Some("AMPLIHACK_ROTATE_INTERVAL"),
+        ),
+        ("rotator.codex_credit_floor", 3000, 0, 100_000_000, None),
+    ];
+    for (name, default, min, max, env) in cases {
+        let def = key_def(name).unwrap_or_else(|| panic!("{name} missing"));
+        assert_eq!(def.scope, Scope::UserOnly, "{name}");
+        assert_eq!(def.kind, ValueKind::Int { min, max }, "{name}");
+        assert_eq!(def.env, env, "{name}");
+        assert_eq!(def.default_value(), Some(Value::Int(default)), "{name}");
+        assert!(parse_cli(name, &min.to_string()).is_ok(), "{name}={min}");
+        assert!(parse_cli(name, &max.to_string()).is_ok(), "{name}={max}");
+        let over = parse_cli(name, &(max + 1).to_string()).expect_err(name);
+        assert_eq!(over.exit_code(), 2, "{name}");
+        assert!(over.to_string().contains(name), "{over}");
+        if min > 0 {
+            assert!(parse_cli(name, &(min - 1).to_string()).is_err(), "{name}");
+        }
+        for bad in ["abc", "-1", "1.5", ""] {
+            assert!(parse_cli(name, bad).is_err(), "{name}={bad:?}");
+        }
+    }
+}
+
+#[test]
+fn a_session_at_of_101_names_the_key_and_the_range() {
+    let err = parse_cli("rotator.session_at", "101").unwrap_err();
+    assert_eq!(err.exit_code(), 2);
+    assert_eq!(
+        err.to_string(),
+        "rotator.session_at: must be an integer from 1 to 100"
+    );
 }

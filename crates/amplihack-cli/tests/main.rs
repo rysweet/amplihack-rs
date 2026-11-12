@@ -327,6 +327,8 @@ mod issue_1979_crusty_minor_followups;
 mod issue_1985_codex_agent_step_flags;
 #[path = "issue_2001_codex_usage.rs"]
 mod issue_2001_codex_usage;
+#[path = "issue_2007_rotator_config.rs"]
+mod issue_2007_rotator_config;
 #[path = "issue_2010_codex_exec_notice.rs"]
 mod issue_2010_codex_exec_notice;
 #[path = "issue_2042_fake_proc_seam.rs"]

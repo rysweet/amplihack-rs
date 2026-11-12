@@ -46,13 +46,13 @@ pub enum OwnerAction {
 }
 
 /// Thresholds and margins. Kept as text so the error can name the flag; see
-/// `settings::resolve`.
+/// `settings::resolve_with`.
 #[derive(Debug, Clone, Default, clap::Args)]
 pub struct TuneFlags {
-    /// Swap when the live session usage reaches N% (default 85)
+    /// Swap when the live session usage reaches N% (default 85, or rotator.session_at config)
     #[arg(long, value_name = "N")]
     pub session_at: Option<String>,
-    /// Swap when the live weekly usage reaches N% (default 90)
+    /// Swap when the live weekly usage reaches N% (default 90, or rotator.week_at config)
     #[arg(long, value_name = "N")]
     pub week_at: Option<String>,
     /// Points of headroom the target needs over the live login (default 5)
@@ -76,7 +76,7 @@ pub struct TuneFlags {
 pub struct WatchFlags {
     #[command(flatten)]
     pub tune: TuneFlags,
-    /// Seconds between cycles (default 600)
+    /// Seconds between cycles (default 600, or rotator.interval config)
     #[arg(long, value_name = "SECS")]
     pub interval: Option<String>,
     /// Set by `start`: the pid file is already written

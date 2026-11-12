@@ -1052,3 +1052,90 @@ fn on_launch_with_the_guard_set_creates_nothing() {
     }
     assert!(!f.state_dir_exists(), "Stop B ends it before ensure()");
 }
+
+// --- Issue #2007: `rotator.*` keys under the injected HOME -----------------
+
+/// `<home>/.amplihack/config.toml` with `body` at `file_mode`.
+fn user_config(home: &Path, body: &str, file_mode: u32) {
+    let dir = home.join(".amplihack");
+    fs::create_dir_all(&dir).unwrap();
+    mode(&dir, 0o700);
+    let file = dir.join("config.toml");
+    fs::write(&file, body).unwrap();
+    mode(&file, file_mode);
+}
+
+#[test]
+fn autostart_honours_rotator_interval_and_session_at_from_the_user_file() {
+    let f = fx();
+    user_config(
+        &f.home,
+        "[rotator]\ninterval = 120\nsession_at = 70\n",
+        0o600,
+    );
+    let (o, _) = f.run();
+    assert_eq!(o, Outcome::Started(FAKE_PID));
+    let seen = f.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].0.interval, 120, "rotator.interval");
+    assert_eq!(seen[0].0.session_at, 70, "rotator.session_at");
+    assert_eq!(seen[0].0.week_at, 90, "unset keys keep the default");
+}
+
+#[test]
+fn autostart_variable_beats_the_user_file() {
+    let f = fx();
+    user_config(&f.home, "[rotator]\ninterval = 120\n", 0o600);
+    let (o, _) = f.run_with(Opts {
+        env: vec![("AMPLIHACK_ROTATE_INTERVAL", "60")],
+        ..Opts::default()
+    });
+    assert_eq!(o, Outcome::Started(FAKE_PID));
+    assert_eq!(f.seen.lock().unwrap()[0].0.interval, 60);
+}
+
+#[test]
+fn an_unsafe_user_file_fails_autostart_without_spawning_or_printing() {
+    // G2: a group-writable user file fails closed. The launch is not
+    // aborted, nothing is printed, no rotator starts with the defaults, and
+    // `rotate.err` names the fix but not the path.
+    let f = fx();
+    user_config(&f.home, "[rotator]\ninterval = 120\n", 0o660);
+    let (o, err) = f.run();
+    assert_eq!(o, Outcome::Failed);
+    assert_eq!(err, "", "nothing on the launch's stderr");
+    assert_eq!(f.spawned(), 0, "no silent fallback to the defaults");
+    let log = f.rotate_err();
+    assert!(log.contains("autostart: failed: "), "{log:?}");
+    assert!(log.contains("fix the user config file first"), "{log:?}");
+    assert!(
+        !log.contains(&f.home.display().to_string()),
+        "no path in the reason: {log:?}"
+    );
+}
+
+#[test]
+fn an_unsafe_user_file_with_no_rotator_key_still_autostarts_with_the_defaults() {
+    // A 0664 file is common under umask 002. When it sets no `rotator.*`
+    // key there is nothing to distrust, so rotation must not stop (#2457).
+    let f = fx();
+    user_config(&f.home, "[sessions]\narchive_days = 7\n", 0o660);
+    let (o, _) = f.run();
+    assert_eq!(o, Outcome::Started(FAKE_PID));
+    let seen = f.seen.lock().unwrap();
+    assert_eq!(
+        seen[0].0.week_at, 90,
+        "the default, not a value from the file"
+    );
+}
+
+#[test]
+fn an_out_of_range_user_value_fails_autostart_naming_the_key() {
+    let f = fx();
+    user_config(&f.home, "[rotator]\nsession_at = 101\n", 0o600);
+    let (o, _) = f.run();
+    assert_eq!(o, Outcome::Failed);
+    assert_eq!(f.spawned(), 0);
+    let log = f.rotate_err();
+    assert!(log.contains("rotator.session_at"), "{log:?}");
+}

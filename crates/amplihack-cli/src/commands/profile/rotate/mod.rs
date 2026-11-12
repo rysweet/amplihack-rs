@@ -38,7 +38,7 @@ mod fresh;
 #[cfg(unix)]
 mod fresh_msg;
 #[cfg(unix)]
-mod gate_record;
+pub(super) mod gate_record;
 #[cfg(unix)]
 mod guide;
 #[cfg(unix)]
@@ -102,7 +102,7 @@ pub(super) mod seed;
 #[cfg(unix)]
 mod sessions_daily;
 #[cfg(unix)]
-mod settings;
+pub(crate) mod settings;
 #[cfg(unix)]
 mod spend_blocks;
 #[cfg(unix)]
@@ -255,11 +255,11 @@ pub(crate) fn autostart_on_launch(_docker_flag: bool) {}
 pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
-        let env = |k: &str| std::env::var_os(k);
+        let (env, cfg) = (|k: &str| std::env::var_os(k), settings::user_file_cfg());
         let home = settings::home_dir();
         match args.action {
             None => {
-                let s = settings::resolve(&args.tune, None, &env)?;
+                let s = settings::resolve_with(&args.tune, None, &env, &cfg)?;
                 let mode = if args.dry_run {
                     cycle::Mode::DryRun
                 } else {
@@ -276,12 +276,12 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
                     let why = "--supervised applies to rotate watch only";
                     return Err(super::ProfileError::RotateRefused(why.into()).into());
                 }
-                let s = settings::resolve(&w.tune, w.interval.as_deref(), &env)?;
+                let s = settings::resolve_with(&w.tune, w.interval.as_deref(), &env, &cfg)?;
                 daemon::start(store, &home?, &s)?;
             }
             Some(RotateAction::Watch(w)) => {
                 owner::check_flag(&w.supervised)?;
-                let s = settings::resolve(&w.tune, w.interval.as_deref(), &env)?;
+                let s = settings::resolve_with(&w.tune, w.interval.as_deref(), &env, &cfg)?;
                 daemon::watch(store, home?, s, w.spawned, w.supervised.clone())?;
             }
             Some(RotateAction::Stop) => control::stop(store, home.as_deref().ok())?,

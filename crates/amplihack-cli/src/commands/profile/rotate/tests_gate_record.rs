@@ -95,13 +95,26 @@ impl Fake {
     }
 
     fn gate(&self, env: &[(&str, &str)]) -> (Option<Gate>, GateSource) {
+        self.gate_cfg(env, &super::settings::no_config)
+    }
+
+    /// [`Fake::gate`] with the user file's `rotator.*` values (issue #2007).
+    fn gate_cfg(
+        &self,
+        env: &[(&str, &str)],
+        cfg: &dyn Fn(&str) -> Result<Option<u64>, String>,
+    ) -> (Option<Gate>, GateSource) {
         let vars: HashMap<String, OsString> = env
             .iter()
             .map(|(k, v)| (k.to_string(), OsString::from(v)))
             .collect();
-        super::overflow_gate_at(&self.root, &self.proc_root, OsStr::new(EXE), &|k| {
-            vars.get(k).cloned()
-        })
+        super::overflow_gate_at(
+            &self.root,
+            &self.proc_root,
+            OsStr::new(EXE),
+            &|k| vars.get(k).cloned(),
+            cfg,
+        )
     }
 }
 
@@ -260,6 +273,74 @@ fn the_status_line_names_the_source() {
     assert!(
         gate_record::status_line(Some(g), &GateSource::Environment).contains("no rotator runs")
     );
+}
+
+// --- rotator.* config keys (issue #2007) -------------------------------------
+
+#[test]
+fn the_status_line_names_config_as_a_source() {
+    let g = gate(&settings(1800, false));
+    assert_eq!(
+        gate_record::status_line(Some(g), &GateSource::Environment),
+        "overflow gate: wait 1800s, unknown reset waits, plan capacity below 85% session and 90% week (no rotator runs; from AMPLIHACK_ROTATE_*, rotator.* config or defaults)"
+    );
+}
+
+#[test]
+fn without_a_rotator_the_config_thresholds_apply_below_the_variables() {
+    let f = fake();
+    let cfg = |k: &str| -> Result<Option<u64>, String> {
+        Ok(match k {
+            "rotator.session_at" => Some(70),
+            "rotator.week_at" => Some(80),
+            _ => None,
+        })
+    };
+    let (g, src) = f.gate_cfg(&[], &cfg);
+    assert_eq!(src, GateSource::Environment);
+    let g = g.unwrap();
+    assert_eq!((g.session_at, g.week_at), (70, 80));
+    let (g, _) = f.gate_cfg(&[("AMPLIHACK_ROTATE_WEEK_AT", "95")], &cfg);
+    let g = g.unwrap();
+    assert_eq!((g.session_at, g.week_at), (70, 95));
+}
+
+#[test]
+fn a_bad_config_value_closes_the_gate_and_names_the_key() {
+    let f = fake();
+    for key in ["rotator.session_at", "rotator.week_at"] {
+        let cfg = move |k: &str| -> Result<Option<u64>, String> {
+            if k == key {
+                Err("must be an integer from 1 to 100".to_string())
+            } else {
+                Ok(None)
+            }
+        };
+        let (g, src) = f.gate_cfg(&[], &cfg);
+        assert_eq!(g, None, "{key}");
+        assert!(
+            matches!(src, GateSource::Closed(ref why) if why.contains(key)),
+            "{key}: {src:?}"
+        );
+        let line = gate_record::status_line(g, &src);
+        assert_eq!(
+            line,
+            format!(
+                "overflow gate: closed (invalid rotate setting {key}: must be an integer from 1 to 100; fix it with `amplihack config set {key} <value>` or `amplihack config unset {key}`)"
+            )
+        );
+    }
+}
+
+#[test]
+fn a_running_rotator_s_record_beats_a_bad_config_value() {
+    let f = fake();
+    f.rotator_runs(PID);
+    gate_record::write(&f.rs, PID, &settings(7200, true)).unwrap();
+    let cfg = |_: &str| -> Result<Option<u64>, String> { Err("broken".to_string()) };
+    let (g, src) = f.gate_cfg(&[], &cfg);
+    assert_eq!(src, GateSource::Rotator(PID));
+    assert_eq!(g, Some(gate(&settings(7200, true))));
 }
 
 // --- Auto-switch follows the running rotator --------------------------------
@@ -670,4 +751,37 @@ fn agreement_holds_with_non_default_rotator_thresholds() {
             );
         }
     }
+}
+
+// --- Issue #2007: a group-writable user file closes the gate ----------------
+
+#[test]
+fn a_group_writable_user_file_closes_the_gate_with_the_whole_file_fix() {
+    use super::settings::UserConfig;
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().canonicalize().unwrap().join("home");
+    let dir = home.join(".amplihack");
+    fs::create_dir_all(&dir).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    let file = dir.join("config.toml");
+    fs::write(&file, "[rotator]\nweek_at = 80\n").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o664)).unwrap();
+    let user = UserConfig::at(&home);
+
+    let f = fake();
+    let (g, src) = f.gate_cfg(&[], &|k| user.get(k));
+    assert_eq!(g, None, "fails closed");
+    let line = gate_record::status_line(g, &src);
+    assert!(
+        line.starts_with("overflow gate: closed (invalid rotate setting rotator."),
+        "{line}"
+    );
+    assert!(
+        line.ends_with(
+            ": ignored because the file is writable by group or others; fix the user config file first (`amplihack config list --show-origin` shows its path and the problem))"
+        ),
+        "{line}"
+    );
+    assert!(!line.contains(&home.display().to_string()), "{line}");
+    assert!(!line.contains("amplihack config set"), "{line}");
 }

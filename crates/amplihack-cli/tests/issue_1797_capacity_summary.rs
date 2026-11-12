@@ -140,8 +140,14 @@ fn summary_lines(stdout: &str) -> Vec<&str> {
         .split_once("\n\nweekly headroom")
         .unwrap_or_else(|| panic!("no summary after a blank line: {stdout}"));
     let mut v = vec!["weekly headroom"];
-    // The Codex block (issue #2001) follows after one empty line.
-    v.extend(block.lines().skip(1).take_while(|l| !l.is_empty()));
+    // The `Rotator thresholds:` line (issue #2007) follows the summary directly;
+    // the Codex block (issue #2001) follows after one empty line.
+    v.extend(
+        block
+            .lines()
+            .skip(1)
+            .take_while(|l| !l.is_empty() && !l.starts_with("Rotator thresholds: ")),
+    );
     v
 }
 

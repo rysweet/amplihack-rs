@@ -477,14 +477,15 @@ start` runs, with the same pid file, log and
 - It uses the profile root the launch resolved.
 - It keeps the `AMPLIHACK_ROTATE_*` [thresholds](#change-the-thresholds) and
   the `AMPLIHACK_PROFILE_USAGE_*` [probe settings](#when-the-host-is-heavily-loaded)
-  set in the environment of the launch that started it, and that launch's
-  `amplihack` binary. To change them, run `rotate stop`, then
+  set in the environment of the launch that started it, the `rotator.*`
+  [config keys](#set-the-thresholds-permanently) as they were at that moment,
+  and that launch's `amplihack` binary. To change them, run `rotate stop`, then
   `rotate start` with the settings you want.
 - It does not run [recovery](#recovery) before it starts; its first cycle
   does that under the lock.
 
-If a `AMPLIHACK_ROTATE_*` value in the launch's environment is invalid, the
-rotator is not started. The launch carries on, and the reason is written to
+If a `AMPLIHACK_ROTATE_*` value in the launch's environment or a `rotator.*`
+value in the config file is invalid, the rotator is not started. The launch carries on, and the reason is written to
 `<root>/.auto-switch.d/rotate/rotate.err`, as is every other failure to
 start. Each start adds a line naming the pid and binary:
 
@@ -765,17 +766,18 @@ the exact rules.
 
 ## Change the thresholds
 
-| Flag | Variable | Default | Meaning |
-|------|----------|---------|---------|
-| `--session-at N` | `AMPLIHACK_ROTATE_SESSION_AT` | `85` | Swap when the live session use reaches N%. |
-| `--week-at N` | `AMPLIHACK_ROTATE_WEEK_AT` | `90` | Swap when the live weekly use reaches N%. |
-| `--margin N` | `AMPLIHACK_ROTATE_MARGIN` | `5` | A threshold swap needs a target with at least N more points of headroom. |
-| `--upgrade-margin N` | `AMPLIHACK_ROTATE_UPGRADE_MARGIN` | `30` | Swap without reaching a threshold when a target has at least N more points of headroom. |
-| `--hold SECS` | `AMPLIHACK_ROTATE_HOLD` | `3600` | No upgrade swap for this long after any swap. `0` turns the hold off. |
-| `--overflow-wait SECS` | `AMPLIHACK_ROTATE_OVERFLOW_WAIT` | `1800` | Use an [overflow profile](#use-usage-credits-when-every-plan-login-is-exhausted) only when the next plan reset is further away than this. |
-| `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | Time between cycles, for `start` and `watch` only. |
+| Flag | Variable | Key | Default | Meaning |
+|------|----------|-----|---------|---------|
+| `--session-at N` | `AMPLIHACK_ROTATE_SESSION_AT` | `rotator.session_at` | `85` | Swap when the live session use reaches N%. |
+| `--week-at N` | `AMPLIHACK_ROTATE_WEEK_AT` | `rotator.week_at` | `90` | Swap when the live weekly use reaches N%. |
+| `--margin N` | `AMPLIHACK_ROTATE_MARGIN` | — | `5` | A threshold swap needs a target with at least N more points of headroom. |
+| `--upgrade-margin N` | `AMPLIHACK_ROTATE_UPGRADE_MARGIN` | — | `30` | Swap without reaching a threshold when a target has at least N more points of headroom. |
+| `--hold SECS` | `AMPLIHACK_ROTATE_HOLD` | — | `3600` | No upgrade swap for this long after any swap. `0` turns the hold off. |
+| `--overflow-wait SECS` | `AMPLIHACK_ROTATE_OVERFLOW_WAIT` | — | `1800` | Use an [overflow profile](#use-usage-credits-when-every-plan-login-is-exhausted) only when the next plan reset is further away than this. |
+| `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `rotator.interval` | `600` | Time between cycles, for `start` and `watch` only. |
 
-A flag beats the variable, and the variable beats the default. For example, to
+A flag beats the variable, the variable beats a `rotator.*` config key (for
+the keys that have one), and the key beats the default. For example, to
 rotate earlier and check every five minutes:
 
 ```bash
@@ -785,8 +787,51 @@ amplihack profile rotate start --session-at 75 --interval 300
 Flags for `start` and `watch` go after the subcommand.
 `amplihack profile rotate --session-at 75 start` is a usage error.
 
-`start` fixes the settings when it starts. Changing a variable later has no
-effect on a running background process; run `stop` and then `start`.
+`start` fixes the settings when it starts. Changing a variable or a config
+key later has no effect on a running background process; run `stop` and then
+`start`.
+
+### Set the thresholds permanently
+
+To keep a switch point without passing a flag every time, set it in the
+user config file. For example, to swap at 70% session use and check every
+two minutes:
+
+```bash
+amplihack config set rotator.session_at 70
+amplihack config set rotator.interval 120
+amplihack profile rotate stop
+amplihack profile rotate start
+```
+
+| Key | Default | Same as |
+|-----|---------|---------|
+| `rotator.session_at` | `85` | `--session-at` |
+| `rotator.week_at` | `90` | `--week-at` |
+| `rotator.interval` | `600` | `--interval` |
+| `rotator.codex_credit_floor` | `3000` | the credit floor for the Codex `<- next` choice in `profile usage` |
+
+`--week-at` also sets the review reserve: with `rotator.week_at 85`, 15% of
+each login's weekly allowance is kept back for review work.
+
+A flag still wins for one command, and an `AMPLIHACK_ROTATE_*` variable wins
+over the file:
+
+```
+flag  >  AMPLIHACK_ROTATE_*  >  rotator.* config  >  default
+```
+
+The keys are read from your user file only; a project's
+`.amplihack/config.toml` cannot set them. If the file holds a value that
+cannot be used, `rotate` stops with an error naming the key and how to fix
+it, and autostart does not start a rotator. It never falls back to the
+default. See [Rotator keys](../reference/user-config.md#rotator-keys).
+
+The host's `~/.local/bin/codex-pick` script is not changed by
+`rotator.codex_credit_floor`; it keeps its own `--floor` option.
+
+To check what is in force, run `amplihack profile usage` and read its
+`Rotator thresholds:` line (see [See how much capacity is left](#see-how-much-capacity-is-left)).
 
 ## When a swap happens
 
@@ -1664,8 +1709,22 @@ as usable only below a lower session percentage, set
 `AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT=80` or pass
 `--usable-session-pct 80`.
 
-For scripts, `amplihack profile usage --summary-json` prints the rows and the
-summary as one JSON object. The details are in
+After the summary, one line gives the thresholds in force and where each
+came from. Here the rotator was started with `--session-at 70` and
+`rotator.interval` is set to `120`:
+
+```
+Rotator thresholds: session-at 70% (rotator) · week-at 90% (rotator, review reserve 10%) · interval 120s (config) · codex credit floor 3000 (default)
+```
+
+`rotator` means the value was read from the running rotator, so it is the
+value in use even when the config file says otherwise. The interval is not
+recorded by the rotator, so it shows what the next `rotate start` would use.
+A key with a bad value shows the error in its place; `profile usage` keeps
+working so you can see it. The line is not printed with `--raw`.
+
+For scripts, `amplihack profile usage --summary-json` prints the rows, the
+summary and the thresholds as one JSON object. The details are in
 [Capacity summary](../reference/profile-command.md#capacity-summary). To
 clear the history, delete `usage-history.jsonl` and `usage-history.lock`.
 

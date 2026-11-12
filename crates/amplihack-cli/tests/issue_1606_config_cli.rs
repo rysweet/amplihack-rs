@@ -28,6 +28,10 @@ const SCHEMA_ORDER: &[&str] = &[
     "recipe.usage_limit_wait",
     "recipe.usage_limit_max_wait_secs",
     "orchestrator.max_depth",
+    "rotator.session_at",
+    "rotator.week_at",
+    "rotator.interval",
+    "rotator.codex_credit_floor",
     "sessions.daily_archive",
     "sessions.archive_days",
     "sessions.archive_dest",
@@ -336,6 +340,10 @@ fn list_prints_every_key_in_schema_order_with_defaults() {
             "governor.eval_interval_secs = 60",
             "governor.wait_secs = 600",
             "governor.max_reading_age_secs = 3600",
+            "rotator.session_at = 85",
+            "rotator.week_at = 90",
+            "rotator.interval = 600",
+            "rotator.codex_credit_floor = 3000",
             "sessions.daily_archive = true",
             "sessions.archive_days = 3",
             "sessions.archive_dest = (unset)",
@@ -453,6 +461,13 @@ fn set_rejects_invalid_values_with_exit_2() {
         ("agent.binary", "gpt"),
         ("paths.home", "relative/dir"),
         ("paths.home", "/tmp/../etc"),
+        ("rotator.session_at", "101"),
+        ("rotator.session_at", "0"),
+        ("rotator.week_at", "101"),
+        ("rotator.interval", "0"),
+        ("rotator.interval", "86401"),
+        ("rotator.codex_credit_floor", "100000001"),
+        ("rotator.codex_credit_floor", "-1"),
     ] {
         let out = fx.amp(&["config", "set", key, value]);
         assert_exit(&out, 2);
@@ -475,6 +490,11 @@ fn set_accepts_boundary_values() {
         ("node.max_old_space_mb", "32768"),
         ("recipe.step_timeout", "1"),
         ("agent.binary", "AMPLIFIER"),
+        ("rotator.session_at", "1"),
+        ("rotator.session_at", "100"),
+        ("rotator.interval", "86400"),
+        ("rotator.codex_credit_floor", "0"),
+        ("rotator.codex_credit_floor", "100000000"),
     ] {
         assert_ok(&fx.amp(&["config", "set", key, value]));
     }
@@ -491,6 +511,8 @@ fn set_user_only_key_with_project_is_a_usage_error() {
         ("paths.home", dir.to_str().unwrap()),
         ("node.heap_consent", "true"),
         ("node.max_old_space_mb", "16384"),
+        ("rotator.session_at", "70"),
+        ("rotator.codex_credit_floor", "0"),
     ] {
         let out = fx.amp(&["config", "set", key, value, "--project"]);
         assert_exit(&out, 2);
@@ -1457,4 +1479,31 @@ fn doctor_prints_effective_config_with_origins() {
         "{text}"
     );
     assert!(text.contains("Config problems:"), "{text}");
+}
+
+// ── rotator.* keys (issue #2007) ────────────────────────────────────────────
+
+#[test]
+fn set_rotator_session_at_101_exits_2_with_the_documented_message() {
+    let fx = Fx::new();
+    let out = fx.amp(&["config", "set", "rotator.session_at", "101"]);
+    assert_exit(&out, 2);
+    assert!(
+        stderr(&out).contains("rotator.session_at: must be an integer from 1 to 100"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!fx.user_file().exists(), "no invalid value may be written");
+}
+
+#[test]
+fn a_rotator_variable_is_the_env_origin_of_its_key() {
+    let fx = Fx::new();
+    fx.write_user("[rotator]\nsession_at = 70\n");
+    assert_eq!(fx.get("rotator.session_at"), "70");
+    let row = fx.list_row(
+        "rotator.session_at",
+        &[("AMPLIHACK_ROTATE_SESSION_AT", "60")],
+    );
+    assert!(row.starts_with("rotator.session_at = 60  # env"), "{row}");
 }
