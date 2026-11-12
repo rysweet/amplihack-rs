@@ -611,6 +611,9 @@ fn api_failures_and_schema_errors_fail_closed() {
         r#"{"allow_merge_commit":"true","allow_squash_merge":true,"allow_rebase_merge":true}"#,
         r#"{"allow_merge_commit":true,"allow_squash_merge":null,"allow_rebase_merge":true}"#,
         r#"{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":1}"#,
+        // What a read-only token really gets: GitHub omits the allow_* fields
+        // (it does not set them to null), the rest of the repository is there.
+        r#"{"full_name":"o/r","permissions":{"admin":false,"maintain":false,"push":false,"triage":false,"pull":true}}"#,
     ] {
         let out = f.run(Call {
             settings: body.to_string(),

@@ -21,7 +21,9 @@
 # request whose own changes touch it; else the first of squash, merge and
 # rebase that is allowed. Allowed means the repository settings allow it AND
 # every ruleset pull_request rule on the base branch (baseRefName) that lists
-# allowed_merge_methods lists it. The repository is the one the pull request
+# allowed_merge_methods lists it AND, for merge, no ruleset
+# required_linear_history rule is active on the base branch (GitHub then
+# accepts only squash or rebase). The repository is the one the pull request
 # URL names. A disallowed method is never used and nothing falls back.
 # Contract: docs/reference/auto-drive-to-merge.md, "Choosing the merge method".
 
