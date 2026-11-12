@@ -63,6 +63,7 @@ fn runtime_dir_boundary_is_80_bytes_of_runtime_tmp() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn runtime_guard_removes_folder_on_drop_and_on_panic() {
     super::super::tests_owned_run_dir::isolated(|fx| {
         let make = || {
@@ -321,6 +322,7 @@ fn runtime_tmp_limit_is_shared_and_80_bytes() {
 /// root is recorded in `run.json` and the per-run folder is removed when the
 /// guard drops.
 #[test]
+#[cfg(target_os = "linux")]
 fn begin_with_explicit_root_records_and_removes_the_external_folder() {
     super::super::tests_owned_run_dir::isolated(|fx| {
         let base = fx.base.clone();

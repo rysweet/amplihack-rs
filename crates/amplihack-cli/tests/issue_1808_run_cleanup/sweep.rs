@@ -261,9 +261,9 @@ fn worktree_also_recorded_by_an_active_run_is_kept() {
 }
 
 /// D6: a reused pid (alive, wrong start ticks) does not make a dead run look
-/// active, so its leftover `runtime/` is removed as `run-tmp`.
+/// active. Its historical unmarked runtime is still preserved.
 #[test]
-fn reused_pid_with_wrong_start_ticks_is_not_active() {
+fn reused_pid_with_wrong_start_ticks_is_inactive_but_unmarked_runtime_survives() {
     let mut fx = Fx::new();
     let pid = fx.live_process(&fx.root.clone());
     let mut run = SeedRun::ended(0);
@@ -277,15 +277,15 @@ fn reused_pid_with_wrong_start_ticks_is_not_active() {
     let report = fx.cleanup_json(&["--apply"]);
     let e = entry_for(&report, &dir.join("runtime"));
     assert_eq!(e["category"], "run-tmp");
-    assert_eq!(e["action"], "removed");
-    assert!(!dir.join("runtime").exists());
+    assert_eq!(e["action"], "skipped");
+    assert!(dir.join("runtime/tmp").exists());
     assert!(dir.join("run.json").exists());
 }
 
-/// `run-tmp` ignores the keep period: a killed run's `runtime/` (and the
-/// short `r/<id>` form) is removed as soon as the run is inactive.
+/// Historical unmarked runtime directories survive regardless of age,
+/// including the default and shortened layouts.
 #[test]
-fn run_tmp_of_killed_run_is_removed_without_keep_period() {
+fn unmarked_runtime_of_killed_run_is_preserved_in_both_layouts() {
     let fx = Fx::new();
     let mut run = SeedRun::ended(0);
     run.ended_hours_ago = None;
@@ -299,12 +299,12 @@ fn run_tmp_of_killed_run_is_removed_without_keep_period() {
     let report = fx.cleanup_json(&["--apply"]);
     assert_eq!(
         entry_for(&report, &dir.join("runtime"))["action"],
-        "removed"
+        "skipped"
     );
-    assert!(!dir.join("runtime").exists());
+    assert!(dir.join("runtime/tmp").exists());
     assert!(
-        !short_dir.exists(),
-        "the r/<short id> runtime is run-tmp too"
+        short_dir.join("tmp").exists(),
+        "legacy short runtime survives"
     );
 }
 

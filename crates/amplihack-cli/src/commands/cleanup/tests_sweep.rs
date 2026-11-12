@@ -55,6 +55,13 @@ impl Fx {
             .work
             .runs_dir()
             .join("0123abcd-0000-0000-0000-000000000001");
+        fs::create_dir_all(&dir).unwrap();
+        super::super::owned_run_dir::OwnedRunDir::create(
+            &dir,
+            "runtime",
+            "0123abcd-0000-0000-0000-000000000001",
+        )
+        .unwrap();
         fs::create_dir_all(dir.join("runtime/tmp")).unwrap();
         let report = RunReport {
             schema_version: RUN_SCHEMA_VERSION,
@@ -161,7 +168,7 @@ fn unreadable_run_json_at_apply_skips() {
     let items = collect(&settings).unwrap();
     assert_eq!(
         items.iter().filter(|i| !matches!(i.op, Op::Skip)).count(),
-        2,
+        if cfg!(target_os = "linux") { 2 } else { 1 },
         "{items:#?}"
     );
     fs::write(run_dir.join(RUN_JSON), "{ not json").unwrap();
@@ -170,7 +177,11 @@ fn unreadable_run_json_at_apply_skips() {
     for path in [target.clone(), run_dir.join("runtime")] {
         let e = entry(&entries, &path);
         assert_eq!(e.action, Action::Skipped, "{e:?}");
-        assert!(e.reason.contains("run.json"), "{e:?}");
+        assert!(
+            e.reason.contains("run.json")
+                || (!cfg!(target_os = "linux") && e.reason.contains("cleanup unavailable")),
+            "{e:?}"
+        );
         assert!(path.exists());
     }
 }
@@ -186,7 +197,8 @@ fn unchanged_items_are_removed() {
     let entries = run_sweep(&settings, true).unwrap();
 
     assert_eq!(entry(&entries, &target).action, Action::Removed);
-    assert!(!target.exists() && !run_dir.join("runtime").exists());
+    assert!(!target.exists());
+    assert_eq!(run_dir.join("runtime").exists(), !cfg!(target_os = "linux"));
     assert!(
         !run_dir.join(OWNED_PATHS).exists(),
         "an empty owned-paths is removed (P2-1)"
@@ -763,7 +775,7 @@ fn seed_ext(fx: &Fx, active: bool, runtime_dir: Option<&Path>) -> PathBuf {
         attempts: Vec::new(),
         steps: Vec::new(),
         log_path: None,
-        runtime_root: None,
+        runtime_root: runtime_dir.map(|_| fx.root.join("ext")),
         runtime_dir: runtime_dir.map(|p| p.display().to_string()),
     };
     fs::write(dir.join(RUN_JSON), serde_json::to_vec(&report).unwrap()).unwrap();
@@ -772,9 +784,11 @@ fn seed_ext(fx: &Fx, active: bool, runtime_dir: Option<&Path>) -> PathBuf {
 
 /// `<root>/ext/ahr-0123abcd0000`, a private folder holding a file.
 fn ext_dir(fx: &Fx) -> PathBuf {
-    let dir = dir_with_file(&fx.root.join("ext").join(EXT_NAME));
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
-    dir
+    let root = fx.root.join("ext");
+    fs::create_dir_all(&root).unwrap();
+    let owned = super::super::owned_run_dir::OwnedRunDir::create(&root, EXT_NAME, EXT_ID).unwrap();
+    fs::write(owned.path().join("keep-me"), b"keep").unwrap();
+    owned.path().to_owned()
 }
 
 fn check(fx: &Fx, path: &Path, uid: u32) -> Result<(), String> {
@@ -869,6 +883,7 @@ fn external_check_refuses_a_folder_inside_the_work_root() {
 /// AC5: a dead run's recorded folder is removed by the sweep, and the root
 /// that holds it is kept.
 #[test]
+#[cfg(target_os = "linux")]
 fn recorded_external_folder_of_a_dead_run_is_removed() {
     let fx = Fx::new();
     let dir = ext_dir(&fx);
@@ -969,6 +984,7 @@ fn uninspectable_recorded_folder_is_reported_and_kept() {
 /// D10, S12: a `run.json` rewritten between collection and apply, to name
 /// another folder or none, means the collected folder is refused.
 #[test]
+#[cfg(target_os = "linux")]
 fn recorded_folder_is_refused_when_run_json_changes_before_apply() {
     for rewrite in [Some("other"), None] {
         let fx = Fx::new();
@@ -1010,6 +1026,7 @@ fn ext_dir_named(fx: &Fx, parent: &str) -> PathBuf {
 
 /// S14: links inside a removed folder are removed, never followed.
 #[test]
+#[cfg(target_os = "linux")]
 fn links_inside_a_removed_recorded_folder_are_not_followed() {
     let fx = Fx::new();
     let dir = ext_dir(&fx);

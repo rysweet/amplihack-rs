@@ -2,6 +2,8 @@
 //! phases rather than a race or a timing-dependent helper process.
 //! Safety hold: do not execute before the production guard commit.
 
+#![cfg(target_os = "linux")]
+
 use super::super::run_dir::RunScope;
 use super::super::run_tmp_root::TmpRootInputs;
 use super::super::tests_owned_run_dir::isolated;

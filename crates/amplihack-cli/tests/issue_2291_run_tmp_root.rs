@@ -242,10 +242,9 @@ fn reason(e: &serde_json::Value) -> String {
     e["reason"].as_str().unwrap_or_default().to_string()
 }
 
-/// AC5 and AC8: one sweep removes a dead run's recorded folder and keeps a
-/// live run's folder under the same root.
+/// Historical reports alone cannot authorize removal, regardless of liveness.
 #[test]
-fn ac8_cleanup_removes_a_dead_runs_folder_and_keeps_a_live_runs() {
+fn ac8_cleanup_preserves_unmarked_dead_and_live_run_folders() {
     let fx = Fx::new_short();
     let root = ext_root(&fx);
     let mut dead = SeedRun::ended(0);
@@ -264,8 +263,11 @@ fn ac8_cleanup_removes_a_dead_runs_folder_and_keeps_a_live_runs() {
 
     let e = entry_for(&report, &dead_dir);
     assert_eq!(e["category"], "run-tmp", "{e:#}");
-    assert_eq!(e["action"], "removed", "{e:#}");
-    assert!(!dead_dir.exists());
+    assert_eq!(e["action"], "skipped", "{e:#}");
+    assert!(
+        dead_dir.join("tmp/scratch").exists(),
+        "legacy unmarked directory survives"
+    );
     let e = entry_for(&report, &live_dir);
     assert_eq!(e["action"], "skipped", "{e:#}");
     assert!(reason(&e).contains("run is active"), "{e:#}");
@@ -276,10 +278,9 @@ fn ac8_cleanup_removes_a_dead_runs_folder_and_keeps_a_live_runs() {
     assert!(root.is_dir(), "the root is kept");
 }
 
-/// AC5: the end-of-run sweep also removes an earlier killed run's recorded
-/// folder.
+/// The end-of-run sweep preserves an unmarked historical runtime folder.
 #[test]
-fn ac5_end_of_run_sweep_removes_an_earlier_runs_recorded_folder() {
+fn ac5_end_of_run_sweep_preserves_an_unmarked_historical_folder() {
     let fx = Fx::new_short();
     let root = ext_root(&fx);
     let mut dead = SeedRun::ended(0);
@@ -291,7 +292,10 @@ fn ac5_end_of_run_sweep_removes_an_earlier_runs_recorded_folder() {
 
     let out = fx.recipe_run(&runner(true), |_| {});
     assert!(out.status.success(), "{}", describe(&out));
-    assert!(!dead_dir.exists(), "the end-of-run sweep removes it");
+    assert!(
+        dead_dir.join("tmp/scratch").exists(),
+        "the end-of-run sweep preserves unmarked history"
+    );
 }
 
 /// AC5: recorded paths that fail the shape checks are reported and left

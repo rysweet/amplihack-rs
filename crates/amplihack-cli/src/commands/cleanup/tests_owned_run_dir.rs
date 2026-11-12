@@ -337,6 +337,7 @@ fn two_individually_valid_records_must_describe_the_same_creation() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn missing_external_record_cannot_be_repaired_from_an_internal_marker() {
     isolated(|fx| {
         let (_scope, guard) = begin(fx, &fx.work, true);

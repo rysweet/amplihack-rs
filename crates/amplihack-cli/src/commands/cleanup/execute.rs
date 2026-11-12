@@ -31,10 +31,10 @@ fn is_managed(item: &Item, roots: &ManagedRoots) -> bool {
     let c = item.canonical.as_path();
     match &item.op {
         Op::Skip | Op::Fail | Op::Archive { .. } => true,
-        Op::RemoveRunTmp { run_dir, .. } => item.run_id.as_deref().is_some_and(|id| {
+        Op::RemoveRunTmp { run_dir, owned } => item.run_id.as_deref().is_some_and(|id| {
             c == roots.runs.join(id).join("runtime")
                 || c == roots.short_runtime.join(short_id(id))
-                || recorded_external_matches(run_dir, id, c, roots)
+                || recorded_external_matches(run_dir, id, c, roots, owned)
         }),
         Op::RemoveWorktree { main, .. } => is_contained(OwnedKind::Worktree, c, roots, Some(main)),
         Op::RemoveDir { .. } if item.category == Category::TmpLeftover => {
@@ -52,12 +52,27 @@ fn is_managed(item: &Item, roots: &ManagedRoots) -> bool {
 /// `run.json`, read again now, still records, and it passes the same checks
 /// as at collection. The liveness, in-use and real-folder checks follow in
 /// `execute`.
-fn recorded_external_matches(run_dir: &Path, id: &str, c: &Path, roots: &ManagedRoots) -> bool {
+fn recorded_external_matches(
+    run_dir: &Path,
+    id: &str,
+    c: &Path,
+    roots: &ManagedRoots,
+    owned: &super::super::owned_run_dir::OwnedRunDir,
+) -> bool {
     let Some(work_root) = roots.runs.parent() else {
         return false;
     };
     RunReport::read(run_dir).is_ok_and(|report| {
         report.runtime_dir.as_deref().map(Path::new) == Some(c)
+            && report
+                .runtime_root
+                .as_deref()
+                .map(fs::canonicalize)
+                .transpose()
+                .ok()
+                .flatten()
+                .as_deref()
+                == owned.root_path()
             && external_runtime_check(c, id, work_root, euid()).is_ok()
     })
 }

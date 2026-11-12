@@ -2,24 +2,35 @@
 //! and inside the leaf bind its identity to an independently retained root.
 //! Linux removal uses no-follow descriptors, statx mount IDs and no-replace
 //! claims. Other platforms preserve candidates rather than weaken this contract.
-use anyhow::{Context, Result, bail, ensure};
+#[cfg(target_os = "linux")]
+use anyhow::Context;
+use anyhow::{Result, bail, ensure};
+#[cfg(target_os = "linux")]
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File};
+use std::fs;
+#[cfg(target_os = "linux")]
+use std::fs::File;
+#[cfg(target_os = "linux")]
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+#[cfg(target_os = "linux")]
 use std::sync::Arc;
 
+#[cfg(target_os = "linux")]
 const META: &str = ".amplihack-ownership";
 const MARKER: &str = ".amplihack-owner.json";
+#[cfg(target_os = "linux")]
 const LIMIT: u64 = 16384;
 
 #[derive(Debug)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) enum CleanupOutcome {
     Removed,
     Preserved(String),
     Failed(String),
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Identity {
@@ -30,6 +41,7 @@ struct Identity {
     birth_nsec: u32,
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Observation {
@@ -37,6 +49,7 @@ struct Observation {
     identity: Identity,
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Record {
@@ -52,10 +65,14 @@ struct Record {
 #[derive(Debug, Clone)]
 pub(crate) struct OwnedRunDir {
     path: PathBuf,
+    #[cfg(target_os = "linux")]
     root: Arc<File>,
+    #[cfg(target_os = "linux")]
     metadata: Arc<File>,
     // Retaining the descriptor also prevents inode reuse during this lifecycle.
+    #[cfg(target_os = "linux")]
     candidate: Arc<File>,
+    #[cfg(target_os = "linux")]
     record: Record,
 }
 
@@ -64,6 +81,18 @@ impl OwnedRunDir {
         &self.path
     }
 
+    pub(crate) fn root_path(&self) -> Option<&Path> {
+        #[cfg(target_os = "linux")]
+        {
+            Some(&self.record.root.path)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
+        }
+    }
+
+    #[cfg(target_os = "linux")]
     pub(crate) fn create(root: &Path, leaf: &str, run_id: &str) -> Result<Self> {
         valid_leaf(leaf)?;
         ensure!(!run_id.is_empty(), "empty run identifier");
@@ -74,8 +103,17 @@ impl OwnedRunDir {
         let metadata = Arc::new(metadata_dir(&root, true)?);
         let _lock = Lock::acquire(&metadata)?;
         // mkdirat is exclusive: never mark a pre-existing leaf, even if empty.
-        sys::mkdir(&root, leaf)?;
         let path = root_path.join(leaf);
+        if let Err(error) = sys::mkdir(&root, leaf) {
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists)
+            {
+                bail!("per-run folder {path:?} already exists");
+            }
+            return Err(error)
+                .with_context(|| format!("per-run folder {path:?} could not be created"));
+        }
         let initialize = || -> Result<Self> {
             let candidate = Arc::new(sys::open_child_dir(&root, leaf)?);
             sys::private_dir(&candidate)?;
@@ -98,6 +136,8 @@ impl OwnedRunDir {
             };
             let bytes = serde_json::to_vec(&record)?;
             write_record(&candidate, MARKER, &bytes)?;
+            #[cfg(test)]
+            test_event("after_internal_record", &path)?;
             write_record(&metadata, &record_name(leaf), &bytes)?;
             let owned = Self {
                 path: path.clone(),
@@ -115,6 +155,7 @@ impl OwnedRunDir {
 
     /// Stale discovery can recover authority only from two matching records.
     /// The caller supplies the root independently of the candidate/record.
+    #[cfg(target_os = "linux")]
     pub(crate) fn load(root: &Path, path: &Path, run_id: &str) -> Result<Self> {
         let root_path = fs::canonicalize(root)?;
         let root = Arc::new(sys::open_dir(&root_path)?);
@@ -149,6 +190,7 @@ impl OwnedRunDir {
         Ok(owned)
     }
 
+    #[cfg(target_os = "linux")]
     fn validate(&self) -> Result<()> {
         let r = &self.record;
         ensure!(
@@ -205,6 +247,7 @@ impl OwnedRunDir {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
     fn protected(&self) -> Result<()> {
         let r = &self.record;
         for observation in r.protected.iter().chain(observations()?.iter()) {
@@ -224,10 +267,37 @@ impl OwnedRunDir {
         Ok(())
     }
 
-    pub(crate) fn check(&self) -> Result<()> {
-        self.validate()
+    #[cfg(target_os = "linux")]
+    fn validate_claim(&self, claim: &str) -> Result<()> {
+        ensure!(
+            read_record(&self.candidate, MARKER)? == self.record,
+            "internal evidence changed during traversal"
+        );
+        self.validate_claim_location(claim)
     }
 
+    #[cfg(target_os = "linux")]
+    fn validate_claim_location(&self, claim: &str) -> Result<()> {
+        ensure!(
+            sys::identity(&sys::open_dir(&self.record.root.path)?)? == self.record.root.identity,
+            "root replaced during traversal"
+        );
+        ensure!(
+            sys::identity(&sys::open_child_dir(&self.root, claim)?)? == self.record.candidate,
+            "claim replaced during traversal"
+        );
+        ensure!(
+            sys::identity(&metadata_dir(&self.root, false)?)? == sys::identity(&self.metadata)?,
+            "metadata replaced during traversal"
+        );
+        ensure!(
+            read_record(&self.metadata, &record_name(&self.record.leaf))? == self.record,
+            "external evidence changed during traversal"
+        );
+        self.protected()
+    }
+
+    #[cfg(target_os = "linux")]
     pub(crate) fn remove(&self) -> CleanupOutcome {
         let _lock = match Lock::acquire(&self.metadata) {
             Ok(lock) => lock,
@@ -235,10 +305,15 @@ impl OwnedRunDir {
                 return CleanupOutcome::Preserved(format!("ownership lock unavailable: {e:#}"));
             }
         };
-        if let Err(e) = self
-            .validate()
-            .and_then(|_| sys::walk(&self.candidate, self.record.candidate.mount, false))
-        {
+        if let Err(e) = self.validate().and_then(|_| {
+            sys::walk(
+                &self.candidate,
+                self.record.candidate.mount,
+                false,
+                false,
+                &|| self.validate(),
+            )
+        }) {
             return CleanupOutcome::Preserved(format!("{e:#}"));
         }
         let claim = format!(".amplihack-claim-{}", uuid::Uuid::new_v4());
@@ -246,6 +321,8 @@ impl OwnedRunDir {
             return CleanupOutcome::Preserved(format!("cannot claim run directory: {e:#}"));
         }
         let claimed = || -> Result<File> {
+            #[cfg(test)]
+            test_event("after_claim", &self.record.root.path.join(&claim))?;
             let fd = sys::open_child_dir(&self.root, &claim)?;
             ensure!(
                 sys::identity(&fd)? == self.record.candidate,
@@ -265,7 +342,9 @@ impl OwnedRunDir {
                 read_record(&self.metadata, &record_name(&self.record.leaf))? == self.record,
                 "claimed external evidence changed"
             );
-            sys::walk(&fd, self.record.candidate.mount, false)?;
+            sys::walk(&fd, self.record.candidate.mount, false, false, &|| {
+                self.validate_claim(&claim)
+            })?;
             Ok(fd)
         };
         let fd = match claimed() {
@@ -278,7 +357,12 @@ impl OwnedRunDir {
             }
         };
         let removal = || -> Result<()> {
-            sys::walk(&fd, self.record.candidate.mount, true)?;
+            sys::walk(&fd, self.record.candidate.mount, true, true, &|| {
+                self.validate_claim(&claim)
+            })?;
+            self.validate_claim(&claim)?;
+            sys::unlink(&fd, MARKER, false)?;
+            self.validate_claim_location(&claim)?;
             ensure!(
                 sys::identity(&sys::open_child_dir(&self.root, &claim)?)? == self.record.candidate,
                 "claim replaced during removal"
@@ -311,9 +395,11 @@ fn valid_leaf(leaf: &str) -> Result<()> {
     );
     Ok(())
 }
+#[cfg(target_os = "linux")]
 fn record_name(leaf: &str) -> String {
     format!("{leaf}.json")
 }
+#[cfg(target_os = "linux")]
 fn observations() -> Result<Vec<Observation>> {
     let mut paths = vec![PathBuf::from("/tmp"), std::env::temp_dir()];
     for key in ["TMPDIR", "HOME"] {
@@ -331,6 +417,7 @@ fn observations() -> Result<Vec<Observation>> {
         })
         .collect()
 }
+#[cfg(target_os = "linux")]
 fn metadata_dir(root: &File, create: bool) -> Result<File> {
     if create {
         sys::mkdir_if_missing(root, META)?;
@@ -339,6 +426,7 @@ fn metadata_dir(root: &File, create: bool) -> Result<File> {
     sys::private_dir(&fd)?;
     Ok(fd)
 }
+#[cfg(target_os = "linux")]
 fn write_record(dir: &File, name: &str, bytes: &[u8]) -> Result<()> {
     let mut file = sys::create_file(dir, name)?;
     file.write_all(bytes)?;
@@ -346,6 +434,7 @@ fn write_record(dir: &File, name: &str, bytes: &[u8]) -> Result<()> {
     dir.sync_all()?;
     Ok(())
 }
+#[cfg(target_os = "linux")]
 fn read_record(dir: &File, name: &str) -> Result<Record> {
     let file = sys::open_file(dir, name)?;
     sys::private_file(&file)?;
@@ -354,7 +443,9 @@ fn read_record(dir: &File, name: &str) -> Result<Record> {
     ensure!(bytes.len() as u64 <= LIMIT, "ownership record too large");
     Ok(serde_json::from_slice(&bytes).context("invalid ownership record")?)
 }
+#[cfg(target_os = "linux")]
 struct Lock(File);
+#[cfg(target_os = "linux")]
 impl Lock {
     fn acquire(dir: &File) -> Result<Self> {
         let file = match sys::create_file(dir, "lock") {
@@ -366,6 +457,7 @@ impl Lock {
         Ok(Self(file))
     }
 }
+#[cfg(target_os = "linux")]
 impl Drop for Lock {
     fn drop(&mut self) {
         if let Err(e) = fs2::FileExt::unlock(&self.0) {
@@ -473,6 +565,8 @@ mod sys {
         }
     }
     pub(super) fn identity(fd: &File) -> Result<Identity> {
+        #[cfg(test)]
+        test_event("identity", Path::new(""))?;
         Ok(id(&stat(fd.as_raw_fd(), c"", libc::AT_EMPTY_PATH)?))
     }
     pub(super) fn private_dir(fd: &File) -> Result<()> {
@@ -495,6 +589,8 @@ mod sys {
         Ok(())
     }
     pub(super) fn rename(root: &File, from: &str, to: &str) -> Result<()> {
+        #[cfg(test)]
+        test_event("rename", Path::new(from))?;
         cvt(unsafe {
             libc::renameat2(
                 root.as_raw_fd(),
@@ -557,9 +653,19 @@ mod sys {
         }
         Ok(out)
     }
-    pub(super) fn walk(fd: &File, mount: u64, remove: bool) -> Result<()> {
+    pub(super) fn walk(
+        fd: &File,
+        mount: u64,
+        remove: bool,
+        keep_marker: bool,
+        validate: &dyn Fn() -> Result<()>,
+    ) -> Result<()> {
+        validate()?;
         ensure!(identity(fd)?.mount == mount, "directory mount boundary");
         for leaf in entries(fd)? {
+            if keep_marker && leaf.as_bytes() == MARKER.as_bytes() {
+                continue;
+            }
             let before = stat(fd.as_raw_fd(), &leaf, 0)?;
             ensure!(before.stx_mnt_id == mount, "entry mount boundary");
             let directory = before.stx_mode as u32 & libc::S_IFMT == libc::S_IFDIR;
@@ -569,9 +675,22 @@ mod sys {
                     identity(&child)? == id(&before),
                     "directory replaced during traversal"
                 );
-                walk(&child, mount, remove)?;
+                walk(&child, mount, remove, false, &|| {
+                    validate()?;
+                    ensure!(
+                        id(&stat(fd.as_raw_fd(), &leaf, 0)?) == id(&before),
+                        "ancestor replaced during traversal"
+                    );
+                    Ok(())
+                })?;
             }
             if remove {
+                #[cfg(test)]
+                test_event(
+                    "before_unlink",
+                    &fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd()))?,
+                )?;
+                validate()?;
                 ensure!(
                     id(&stat(fd.as_raw_fd(), &leaf, 0)?) == id(&before),
                     "entry replaced before unlink"
@@ -590,26 +709,57 @@ mod sys {
 }
 
 #[cfg(not(target_os = "linux"))]
-mod sys {
-    use super::*;
-    macro_rules! unsupported {
-        ($name:ident($($arg:ident: $ty:ty),*) -> $ret:ty) => {
-            pub(super) fn $name($($arg: $ty),*) -> Result<$ret> {
-                $(let _ = $arg;)*
-                bail!("owned run cleanup requires Linux descriptor and mount identity support")
+impl OwnedRunDir {
+    /// Keep execution available where cleanup cannot prove mount identities.
+    /// This handle deliberately carries no removal authority.
+    pub(crate) fn create(root: &Path, leaf: &str, run_id: &str) -> Result<Self> {
+        use std::io::Write;
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        valid_leaf(leaf)?;
+        ensure!(!run_id.is_empty(), "empty run identifier");
+        let path = fs::canonicalize(root)?.join(leaf);
+        if let Err(error) = fs::DirBuilder::new().mode(0o700).create(&path) {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                bail!("per-run folder {path:?} already exists");
             }
+            bail!("per-run folder {path:?} could not be created: {error}");
         }
+        let mut record = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path.join(MARKER))?;
+        record.write_all(
+            br#"{"schema_version":0,"cleanup":"preserved: mount identity unavailable"}"#,
+        )?;
+        tracing::warn!(
+            ?path,
+            "run directory will be preserved: mount identity unavailable"
+        );
+        Ok(Self { path })
     }
-    unsupported!(open_dir(path: &Path) -> File);
-    unsupported!(open_child_dir(dir: &File, leaf: &str) -> File);
-    unsupported!(open_file(dir: &File, leaf: &str) -> File);
-    unsupported!(create_file(dir: &File, leaf: &str) -> File);
-    unsupported!(mkdir(dir: &File, leaf: &str) -> ());
-    unsupported!(mkdir_if_missing(dir: &File, leaf: &str) -> ());
-    unsupported!(identity(fd: &File) -> Identity);
-    unsupported!(private_dir(fd: &File) -> ());
-    unsupported!(private_file(fd: &File) -> ());
-    unsupported!(rename(root: &File, from: &str, to: &str) -> ());
-    unsupported!(unlink(root: &File, leaf: &str, directory: bool) -> ());
-    unsupported!(walk(fd: &File, mount: u64, remove: bool) -> ());
+    pub(crate) fn load(_root: &Path, _path: &Path, _run_id: &str) -> Result<Self> {
+        bail!("owned cleanup unavailable: Linux mount identity support required")
+    }
+    pub(crate) fn remove(&self) -> CleanupOutcome {
+        CleanupOutcome::Preserved("Linux descriptor and mount identity support unavailable".into())
+    }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+type TestHook = Box<dyn FnMut(&str, &Path) -> Result<()>>;
+#[cfg(all(test, target_os = "linux"))]
+thread_local! {
+    static TEST_HOOK: std::cell::RefCell<Option<TestHook>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(all(test, target_os = "linux"))]
+fn test_event(event: &str, path: &Path) -> Result<()> {
+    TEST_HOOK.with(|hook| match hook.borrow_mut().as_mut() {
+        Some(hook) => hook(event, path),
+        None => Ok(()),
+    })
+}
+#[cfg(all(test, target_os = "linux"))]
+#[path = "tests_owned_faults.rs"]
+mod tests_faults;

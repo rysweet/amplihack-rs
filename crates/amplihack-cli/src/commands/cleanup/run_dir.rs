@@ -99,7 +99,13 @@ impl RuntimeGuard {
             CleanupOutcome::Removed => {}
             CleanupOutcome::Preserved(reason) | CleanupOutcome::Failed(reason) => {
                 tracing::warn!(path = ?self.path, %reason, "run runtime preserved");
-                eprintln!("amplihack: runtime {:?} preserved: {reason}", self.path);
+                if let Err(error) = writeln!(
+                    std::io::stderr().lock(),
+                    "amplihack: runtime {:?} preserved: {reason}",
+                    self.path
+                ) {
+                    tracing::warn!(%error, "could not report preserved runtime");
+                }
             }
         }
     }
@@ -598,7 +604,7 @@ impl RunWorkspace {
         };
         let root = explicit_root.clone().unwrap_or_else(std::env::temp_dir);
         let run_id = new_run_id();
-        let leaf = super::run_tmp_root::external_dir_name(&run_id).context("invalid dry run id")?;
+        let leaf = format!("{DRY_DIR_PREFIX}{}", &short_id(&run_id)[..DRY_RAND_LEN]);
         let guard = RuntimeGuard::owned(OwnedRunDir::create(&root, &leaf, &run_id)?);
         create_private_dir_all(&guard.path().join("tmp"))?;
         create_private_dir_all(&guard.path().join("artifacts"))?;
