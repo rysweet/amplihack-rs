@@ -1337,6 +1337,12 @@ jq '.hooks.StopFailure' ~/.claude/settings.json
 ]
 ```
 
+If this prints `null`, something has stripped the hooks from the file. The
+rotator puts them back at the end of its next cycle, and sessions started with
+`amplihack claude` receive them through `--settings` in any case. Run
+`amplihack doctor` to see which settings files have drifted; see the
+[hooks block reference](../reference/hook-block.md).
+
 ### What happens on a limit
 
 1. The turn ends with a usage-limit error, and Claude Code runs the hook in

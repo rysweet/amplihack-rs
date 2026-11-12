@@ -364,6 +364,7 @@ fn claude_launch_emits_file_flag_with_contract_path() {
                 false,
                 None,
                 Some(&contract),
+                None,
             )
             .unwrap(),
         )
@@ -400,6 +401,7 @@ fn contract_path_missing_is_an_error_when_injecting() {
             false,
             None,
             None,
+            None,
         )
         .expect_err("injecting without a contract path is a bug, not a silent skip")
     });
@@ -425,6 +427,7 @@ fn user_supplied_append_file_suppresses_injection() {
                 false,
                 None,
                 Some(&contract),
+                None,
             )
             .unwrap(),
         )
@@ -449,8 +452,19 @@ fn copilot_and_codex_get_no_contract_and_need_no_path() {
         };
         let argv = without_opt_out(|| {
             args_of(
-                &build_command_for_dir(&bin, false, false, false, &[], None, false, None, None)
-                    .unwrap_or_else(|e| panic!("{name}: {e:#}")),
+                &build_command_for_dir(
+                    &bin,
+                    false,
+                    false,
+                    false,
+                    &[],
+                    None,
+                    false,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap_or_else(|e| panic!("{name}: {e:#}")),
             )
         });
         assert!(

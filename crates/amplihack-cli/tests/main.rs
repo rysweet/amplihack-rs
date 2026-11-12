@@ -341,6 +341,8 @@ mod issue_2042_seam_dry_run_and_refusal;
 mod issue_2190_recipe_steps_report_real_exit_status;
 #[path = "issue_2211_live_freshness.rs"]
 mod issue_2211_live_freshness;
+#[path = "issue_2218_excluded.rs"]
+mod issue_2218_excluded;
 #[path = "issue_2317_codex_step_commits_in_worktree.rs"]
 mod issue_2317_codex_step_commits_in_worktree;
 #[path = "issue_2336_autodrive_completion.rs"]
@@ -423,6 +425,9 @@ mod signal_validator_parity;
 mod spec_conformance;
 #[path = "system_prompt_append_fragment.rs"]
 mod system_prompt_append_fragment;
+
+#[path = "issue_2279_doctor.rs"]
+mod issue_2279_doctor;
 
 #[path = "issue_2297_codex_installation.rs"]
 mod issue_2297_codex_installation;

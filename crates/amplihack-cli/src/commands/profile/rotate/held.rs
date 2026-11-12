@@ -22,6 +22,7 @@ use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Lock, State, exists, now};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::run::resolve_claude_binary;
+use crate::commands::profile::usage_cmd::exclude_list;
 
 /// The spend-limit probe of a held cycle: whether the live login, the
 /// pinned overflow profile named, reported a spend limit.
@@ -85,6 +86,12 @@ fn watch_pinned_spend(
     first: &Snap,
     name: &ProfileName,
 ) -> Result<(), ProfileError> {
+    // Issue #2218: an excluded profile is never probed, pinned or not.
+    // An unknown list counts `name` as excluded (fails closed).
+    if exclude_list(ctx.store.root(), |_| {}).map_or(true, |l| l.contains(name)) {
+        out.emit(now(), &msg::pinned_excluded(name));
+        return Ok(());
+    }
     let spend_limit = match ctx.probe_held {
         Some(stub) => stub(ctx, name)?,
         None => {

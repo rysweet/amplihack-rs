@@ -785,8 +785,10 @@ Advanced configuration, deployment patterns, and environment management.
 
 - [Profile Management](PROFILE_MANAGEMENT.md) - Multiple environment configurations
 - [Hook Configuration](HOOK_CONFIGURATION_GUIDE.md) - Customize framework behavior
+- [amplihack Hooks Block](reference/hook-block.md) - The single hooks definition, every writer that keeps it in `settings.json`, the launch `--settings` file and the `doctor` drift report
+- [One Source for the Hooks Block](concepts/hook-block-single-source.md) - Why install, launch, profiles and the rotator share one merge, and why launches also pass `--settings`
 - [Hook Payload Compatibility](HOOK_PAYLOAD_COMPATIBILITY.md) - Claude Code, Amplifier, and Copilot CLI tool-input payload shapes and normalization
-- [Global Hook Cleanup & Doctor Hook Detection](HOOK_MIGRATION_AND_DOCTOR.md) - Safe global-vs-project-local hook cleanup on session start and how `amplihack doctor` detects installed hooks
+- [Global Hooks at Session Start & Doctor Hook Detection](HOOK_MIGRATION_AND_DOCTOR.md) - Why session start keeps global hooks alongside project-local ones, and how `amplihack doctor` checks installed hooks
 - [Shell Command Hook](SHELL_COMMAND_HOOK.md) - Custom shell integrations
 
 ### Deployment
