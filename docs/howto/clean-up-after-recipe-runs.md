@@ -2,7 +2,7 @@
 title: Clean up after recipe runs
 description: Locate, retain, remove, or archive run-owned files and recovery state.
 doc_type: howto
-last_updated: 2026-11-11
+last_updated: 2026-11-12
 ---
 
 # Clean Up After Recipe Runs
@@ -376,8 +376,10 @@ When `amplihack recipe run` finishes, whether the run succeeded, failed or
 panicked, the runner:
 
 1. Removes `<run dir>/runtime/`, including everything steps wrote to
-   `TMPDIR` and `artifacts/`. Durable `recovery/` state and
-   copied artifacts will remain outside that disposable folder.
+   `TMPDIR` and `artifacts/`, unless a running process still uses it. Durable
+   `recovery/` state and copied artifacts will remain outside that disposable
+   folder. See
+   [A runtime folder still in use is kept](#a-runtime-folder-still-in-use-is-kept).
 2. Finalises `run.json` with the end time, outcome and step summary.
 3. Unless `AMPLIHACK_CLEANUP_ON_EXIT=0` is set, sweeps the whole work root for
    run-owned items that are now eligible (the categories `run-tmp`,
@@ -421,6 +423,50 @@ When the sweep removes something from a run, it adds an entry to that run's
 ```
 
 If nothing was removed, no record is written.
+
+### A runtime folder still in use is kept
+
+A step can start a process that outlives the run, such as a build server, a
+language server or a background job a test left behind. If the runner removed
+`runtime/` under such a process, the process, and any agent that inherited its
+`TMPDIR`, would be left pointing at a folder that no longer exists.
+
+So before step 1 removes `runtime/`, the runner checks the process table once.
+The folder is in use if any running process other than the runner itself:
+
+- has its working folder inside it;
+- holds a file open inside it; or
+- has `TMPDIR`, `TMP` or `TEMP` set to a path inside it.
+
+These are the same checks the sweep and `amplihack cleanup` make for
+`run-tmp`. If the folder is in use, the runner leaves it in place, does not
+change its permissions or move it, and prints one line on stderr:
+
+```text
+amplihack: runtime folder ~/.amplihack/work/r/<id> is still in use by a running process; leaving it in place — the end-of-run cleanup sweep will remove it later
+```
+
+The real message shows the full absolute path of the folder. The run's exit
+status does not change. The message names only the folder, never the process
+or its environment.
+
+The kept folder is an ordinary `run-tmp` candidate. Once the run has ended it
+is no longer active, so the next sweep, from a later run or from
+`amplihack cleanup --apply`, removes it after checking again that no process
+uses it. A process that runs for a long time keeps the folder until a sweep
+runs after that process exits. To remove it now, stop the process and run:
+
+```bash
+amplihack cleanup --apply --only run-tmp
+```
+
+The check needs `/proc`. Where `/proc` cannot be read, as on macOS, the
+runner removes `runtime/` at the end of the run as before, while the sweep
+still keeps every folder it cannot prove unused.
+
+The folder of a `recipe run --dry-run` is not checked: it lives in the system
+temporary folder, no sweep ever looks at it, and keeping it would leave it
+there for good. It is removed at the end of the dry run.
 
 If the work root cannot be used, for example because it is group-writable,
 execution stops with an error. Failed recovery admission or durable publication
@@ -1145,6 +1191,38 @@ output stay as described in [Hygiene Cleanup](../operations/hygiene-cleanup.md).
 
 ## Troubleshooting
 
+**A run printed `runtime folder ... is still in use by a running process`.**
+A process started during the run still has its working folder, an open file
+or its `TMPDIR` in the run's runtime folder. Nothing needs to be done: a later
+sweep removes the folder once that process exits. To find processes that
+hold it, set `DIR` to the path from the message:
+
+```bash
+DIR="$HOME/.amplihack/work/r/<id>"   # the path from the message
+for p in /proc/[0-9]*; do
+  { readlink "$p/cwd"; ls -l "$p/fd";
+    tr '\0' '\n' < "$p/environ" | grep -E '^(TMPDIR|TMP|TEMP)='; } 2>/dev/null \
+    | grep -qE "$DIR(/|$)" && echo "${p#/proc/} $(tr '\0' ' ' < "$p/cmdline")"
+done
+```
+
+The loop reads every process, so it can take a minute or more on a busy host.
+
+See [A runtime folder still in use is kept](#a-runtime-folder-still-in-use-is-kept).
+
+**A dry run fails with `inherited TMPDIR ... does not exist (or is not a
+directory)` or `is not an absolute directory`.** `recipe run --dry-run`
+creates its folder inside `TMPDIR`, and the `TMPDIR` it inherited is missing,
+is a file, or is a relative path. This happens most often in a shell that was
+started inside an earlier run, whose runtime folder has since been removed.
+The runner does not create the folder for you, because that path may belong
+to another run. Point `TMPDIR` at a folder that exists:
+
+```bash
+export TMPDIR=/tmp
+amplihack recipe run default-workflow --dry-run -c task_description="Check plan"
+```
+
 **`work root ... is writable by group or others`.** An existing
 `~/.amplihack/work` created with a permissive umask is refused. Fix it with:
 
@@ -1152,7 +1230,7 @@ output stay as described in [Hygiene Cleanup](../operations/hygiene-cleanup.md).
 chmod 700 ~/.amplihack/work
 ```
 
-Until then, runs fall back to a private temporary folder and print a warning.
+Until then, `amplihack recipe run` stops with this error before any step runs.
 
 **A worktree is always skipped with `not recorded in owned-paths`.** The
 worktree was created outside the bundled helpers, or by a release before this

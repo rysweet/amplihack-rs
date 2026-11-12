@@ -50,7 +50,23 @@ pub(crate) fn short_id(run_id: &str) -> String {
         .collect()
 }
 
-/// Removes a runtime folder when dropped, including during unwinding.
+/// What [`RuntimeGuard::remove`] did with the runtime folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimeRemoval {
+    /// The folder is gone (or was already gone).
+    Removed,
+    /// Another process still uses the folder, so it was left in place for a
+    /// later sweep (issue #2486).
+    KeptInUse,
+    /// Removing it failed; a warning was printed.
+    Failed,
+}
+
+/// Removes a runtime folder when dropped, including during unwinding, unless
+/// another process still uses it (issue #2486): a child that outlives the run
+/// and still has its working folder, an open file or TMPDIR/TMP/TEMP there
+/// keeps the folder, and the end-of-run sweep removes it once no process
+/// holds it.
 #[derive(Debug)]
 pub(crate) struct RuntimeGuard {
     path: Option<PathBuf>,
@@ -65,24 +81,41 @@ impl RuntimeGuard {
         self.path.as_deref().unwrap_or(Path::new(""))
     }
 
-    /// Removes the folder now and reports a failure as a warning.
-    pub(crate) fn remove(mut self) {
-        self.remove_inner();
+    /// Removes the folder now, unless a process still uses it, and reports a
+    /// failure as a warning.
+    pub(crate) fn remove(mut self) -> RuntimeRemoval {
+        self.remove_inner()
     }
 
-    fn remove_inner(&mut self) {
+    fn remove_inner(&mut self) -> RuntimeRemoval {
         let Some(path) = self.path.take() else {
-            return;
+            return RuntimeRemoval::Removed;
         };
+        // One fresh scan: a child started by the last step may still run.
+        // Without `/proc` `found_user` is false and the folder is removed as
+        // before; the sweep still fails closed on its own scan.
+        if super::procs::ProcScan::take().found_user(&path) {
+            tracing::warn!(
+                path = %path.display(),
+                "runtime folder is still in use by a running process; leaving it in place"
+            );
+            eprintln!(
+                "amplihack: runtime folder {} is still in use by a running process; \
+                 leaving it in place \u{2014} the end-of-run cleanup sweep will remove it later",
+                path.display()
+            );
+            return RuntimeRemoval::KeptInUse;
+        }
         match fs::remove_dir_all(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Ok(()) => RuntimeRemoval::Removed,
+            Err(error) if error.kind() == ErrorKind::NotFound => RuntimeRemoval::Removed,
             Err(error) => {
                 tracing::warn!(path = %path.display(), %error, "could not remove the run's runtime folder");
                 eprintln!(
                     "amplihack: warning: could not remove the run's runtime folder {}: {error}",
                     path.display()
                 );
+                RuntimeRemoval::Failed
             }
         }
     }
@@ -90,7 +123,7 @@ impl RuntimeGuard {
 
 impl Drop for RuntimeGuard {
     fn drop(&mut self) {
-        self.remove_inner();
+        let _ = self.remove_inner();
     }
 }
 
@@ -508,10 +541,30 @@ impl RunWorkspace {
         })
     }
     /// A dry run owns only temporary scratch space and never a run scope.
+    ///
+    /// The scratch space goes under the inherited TMPDIR, which must be an
+    /// existing absolute folder (issue #2486). It is never created here:
+    /// re-creating a missing inherited TMPDIR could bring back a folder of
+    /// another run that was already removed.
     pub(crate) fn dry_runtime() -> Result<Self> {
+        let base = std::env::temp_dir();
+        if !base.is_absolute() {
+            bail!(
+                "amplihack: inherited TMPDIR {base:?} is not an absolute directory; \
+                 refusing to start the run \u{2014} set TMPDIR to an existing directory"
+            );
+        }
+        match fs::metadata(&base) {
+            Ok(meta) if meta.is_dir() => {}
+            _ => bail!(
+                "amplihack: inherited TMPDIR {base:?} does not exist (or is not a directory); \
+                 refusing to start the run \u{2014} set TMPDIR to an existing directory"
+            ),
+        }
         let dir = tempfile::Builder::new()
             .prefix("amplihack-dry-")
-            .tempdir()?;
+            .tempdir_in(&base)
+            .with_context(|| format!("cannot create a dry-run folder under {base:?}"))?;
         create_private_dir_all(&dir.path().join("tmp"))?;
         create_private_dir_all(&dir.path().join("artifacts"))?;
         Ok(Self::Legacy { dir })
@@ -521,6 +574,44 @@ impl RunWorkspace {
             Self::Scoped { guard, .. } => guard.path(),
             Self::Legacy { dir } => dir.path(),
         }
+    }
+
+    /// Re-creates this run's own `<runtime>/tmp` and `<runtime>/artifacts`
+    /// before an attempt, at the same path every time (issue #2486), so a
+    /// step never starts with a TMPDIR that no longer exists. A real folder
+    /// is kept as it is; a symbolic link or a file there is refused, because
+    /// `create_private_dir_all` would follow a link.
+    pub(crate) fn prepare_attempt(&self) -> Result<()> {
+        let runtime = self.runtime_dir();
+        for (name, label) in [("tmp", "TMPDIR"), ("artifacts", "artifacts folder")] {
+            let dir = runtime.join(name);
+            match fs::symlink_metadata(&dir) {
+                Ok(meta) if meta.file_type().is_dir() => {}
+                Ok(_) => bail!(
+                    "amplihack: this run's {} {} is a symbolic link or not a directory; \
+                     refusing to launch the step",
+                    label,
+                    dir.display()
+                ),
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    if let Err(error) = create_private_dir_all(&dir) {
+                        bail!(
+                            "amplihack: cannot create this run's {} {}: {error:#}; \
+                             refusing to launch the step",
+                            label,
+                            dir.display()
+                        );
+                    }
+                }
+                Err(error) => bail!(
+                    "amplihack: cannot check this run's {} {}: {error}; \
+                     refusing to launch the step",
+                    label,
+                    dir.display()
+                ),
+            }
+        }
+        Ok(())
     }
 
     /// The variables every step sees.
@@ -570,7 +661,7 @@ impl RunWorkspace {
         }
     }
 
-    /// Removes `runtime/`, finalises `run.json` and, when `sweep` is true and
+    /// Removes `runtime/` (unless a process still uses it), finalises `run.json` and, when `sweep` is true and
     /// `AMPLIHACK_CLEANUP_ON_EXIT` is not `0`, runs the end-of-run sweep.
     pub(crate) fn finish(
         self,
@@ -581,7 +672,9 @@ impl RunWorkspace {
     ) {
         match self {
             Self::Scoped { mut scope, guard } => {
-                guard.remove();
+                // A folder still in use is kept; the sweep below (or a later
+                // one) removes it once no process holds it (issue #2486).
+                let _ = guard.remove();
                 scope.finish(outcome, steps, log_path);
                 if sweep && super::cleanup_on_exit_enabled() {
                     super::sweep::end_of_run(&scope.work_root);

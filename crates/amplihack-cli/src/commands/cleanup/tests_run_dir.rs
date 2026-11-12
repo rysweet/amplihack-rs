@@ -269,3 +269,335 @@ fn five_field_lines_count_toward_the_10000_line_cap() {
     assert_eq!(parsed.len(), 10_000);
     assert!(parsed.iter().all(|o| o.target.is_some()));
 }
+
+// ----- issue #2486: a runtime folder in use is kept; tmp/ is re-created --------
+//
+// Contract:
+// - `pub(crate) enum RuntimeRemoval { Removed, KeptInUse, Failed }`
+//   (`Debug`, `PartialEq`); `RuntimeGuard::remove(self) -> RuntimeRemoval`.
+//   A missing folder counts as `Removed`.
+// - The guard takes one fresh `ProcScan` from `procfs::proc_root()` and keeps
+//   the folder when the scan is available and a process has its working
+//   folder, an open file or TMPDIR/TMP/TEMP under it. `Drop` does the same.
+// - `RunWorkspace::prepare_attempt(&self) -> anyhow::Result<()>` re-creates a
+//   missing `<runtime>/tmp` and `<runtime>/artifacts` (mode 0700), accepts a
+//   real folder as it is, and refuses a symlink or a file there with an error
+//   naming the path and "refusing to launch the step".
+//
+// Lib tests never read the host `/proc`: each test installs its own fake
+// table and links in only the children it started (issue #2196). Children
+// are reaped with `wait()`; nothing sleeps or polls.
+
+use crate::test_support::proc::fake_proc_scope;
+use std::io::BufRead;
+use std::os::unix::fs::PermissionsExt;
+use std::process::{Child, Command, Stdio};
+
+/// A child the test started; killed and reaped if the test fails first.
+struct Holder(Child);
+
+impl Holder {
+    /// Closes the child's stdin and waits for it to exit.
+    fn finish(mut self) {
+        drop(self.0.stdin.take());
+        let status = self.0.wait().expect("wait for holder");
+        assert!(status.success(), "holder exited with {status}");
+    }
+}
+
+impl Drop for Holder {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn runtime_with_tmp() -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let rt = tmp.path().join("runtime");
+    std::fs::create_dir_all(rt.join("tmp")).unwrap();
+    std::fs::create_dir_all(rt.join("artifacts")).unwrap();
+    std::fs::write(rt.join("tmp/scratch"), "x").unwrap();
+    (tmp, rt)
+}
+
+/// A shell with piped stdin: it runs until the test closes stdin. `spawn`
+/// can return before the kernel has filled in the new program's
+/// environment (`/proc/<pid>/environ` reads empty for a moment after a vfork
+/// spawn), so the child prints `ready` once it runs and the test waits for
+/// that line. It then reads stdin to EOF without another `exec`, so its
+/// environment stays readable.
+fn cat_holder(cwd: &Path, tmpdir: &Path) -> Holder {
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg("echo ready; while read -r _; do :; done")
+        .current_dir(cwd)
+        .env("TMPDIR", tmpdir)
+        .env("TMP", tmpdir)
+        .env("TEMP", tmpdir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sh");
+    let mut line = String::new();
+    std::io::BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert_eq!(line.trim(), "ready");
+    Holder(child)
+}
+
+#[test]
+fn runtime_guard_keeps_folder_held_by_child_then_removes_after_exit() {
+    let procs = fake_proc_scope();
+    let (_tmp, rt) = runtime_with_tmp();
+    let holder = cat_holder(&rt.join("tmp"), &rt.join("tmp"));
+    procs.fake.link_own(holder.0.id());
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).remove(),
+        RuntimeRemoval::KeptInUse
+    );
+    assert!(
+        rt.join("tmp/scratch").is_file(),
+        "a folder in use is left in place, contents and all"
+    );
+
+    holder.finish();
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).remove(),
+        RuntimeRemoval::Removed
+    );
+    assert!(!rt.exists(), "removed once the holder has exited");
+}
+
+#[test]
+fn runtime_guard_drop_also_keeps_a_folder_in_use() {
+    let procs = fake_proc_scope();
+    let (_tmp, rt) = runtime_with_tmp();
+    let holder = cat_holder(&rt.join("tmp"), &rt.join("tmp"));
+    procs.fake.link_own(holder.0.id());
+
+    drop(RuntimeGuard::new(rt.clone()));
+    assert!(rt.join("tmp").is_dir(), "Drop must check too");
+    holder.finish();
+}
+
+/// A child whose only link to the folder is TMPDIR in its environment (cwd
+/// elsewhere, nothing open) still keeps it: a killed run's child may have
+/// nothing open between writes.
+#[test]
+fn runtime_guard_keeps_folder_named_only_by_a_tmpdir_variable() {
+    let procs = fake_proc_scope();
+    let (tmp, rt) = runtime_with_tmp();
+    let holder = cat_holder(tmp.path(), &rt.join("tmp"));
+    procs.fake.link_own(holder.0.id());
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).remove(),
+        RuntimeRemoval::KeptInUse
+    );
+    assert!(rt.is_dir());
+    holder.finish();
+}
+
+/// An open file under the folder keeps it. The child says `ready` after it
+/// opened the file, so the test waits on that line, not on time.
+#[test]
+fn runtime_guard_keeps_folder_with_a_file_open_in_it() {
+    let procs = fake_proc_scope();
+    let (tmp, rt) = runtime_with_tmp();
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg("exec 3<\"$1\"; echo ready; exec cat")
+        .arg("sh")
+        .arg(rt.join("tmp/scratch"))
+        .current_dir(tmp.path())
+        .env_remove("TMPDIR")
+        .env_remove("TMP")
+        .env_remove("TEMP")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sh");
+    let mut line = String::new();
+    std::io::BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert_eq!(line.trim(), "ready");
+    let holder = Holder(child);
+    procs.fake.link_own(holder.0.id());
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).remove(),
+        RuntimeRemoval::KeptInUse
+    );
+    assert!(rt.join("tmp/scratch").is_file());
+    holder.finish();
+}
+
+/// A process in a sibling whose name only starts with the folder's name
+/// (`runtime-sib`) does not keep `runtime`.
+#[test]
+fn runtime_guard_ignores_a_sibling_with_a_longer_name() {
+    let procs = fake_proc_scope();
+    let (tmp, rt) = runtime_with_tmp();
+    let sibling = tmp.path().join("runtime-sib");
+    std::fs::create_dir_all(&sibling).unwrap();
+    let holder = cat_holder(&sibling, &sibling);
+    procs.fake.link_own(holder.0.id());
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).remove(),
+        RuntimeRemoval::Removed
+    );
+    assert!(!rt.exists());
+    assert!(sibling.is_dir(), "the sibling is never touched");
+    holder.finish();
+}
+
+#[test]
+fn runtime_guard_with_no_users_removes_and_missing_counts_as_removed() {
+    let _procs = fake_proc_scope();
+    let (_tmp, rt) = runtime_with_tmp();
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).remove(),
+        RuntimeRemoval::Removed
+    );
+    assert!(!rt.exists());
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).remove(),
+        RuntimeRemoval::Removed,
+        "a folder that is already gone is not a failure"
+    );
+}
+
+fn scoped_workspace(base: &Path) -> RunWorkspace {
+    let work = WorkRoot {
+        path: base.join("work"),
+        explicit: true,
+    };
+    let (scope, guard) = RunScope::begin(work, "issue-2486", base).unwrap();
+    RunWorkspace::Scoped {
+        scope: Box::new(scope),
+        guard,
+    }
+}
+
+fn mode(path: &Path) -> u32 {
+    std::fs::symlink_metadata(path)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o7777
+}
+
+#[test]
+fn prepare_attempt_recreates_missing_tmp_and_artifacts() {
+    let _procs = fake_proc_scope();
+    let base = tempfile::tempdir().unwrap();
+    let ws = scoped_workspace(base.path());
+    let rt = ws.runtime_dir().to_path_buf();
+    std::fs::remove_dir_all(rt.join("tmp")).unwrap();
+    std::fs::remove_dir_all(rt.join("artifacts")).unwrap();
+
+    ws.prepare_attempt().expect("prepare_attempt");
+    for name in ["tmp", "artifacts"] {
+        assert!(rt.join(name).is_dir(), "{name} re-created");
+        assert_eq!(mode(&rt.join(name)), 0o700, "{name} mode");
+    }
+    // Same path every attempt: the env still names it.
+    let env = ws.env();
+    let tmpdir = env.iter().find(|(k, _)| *k == "TMPDIR").unwrap();
+    assert_eq!(PathBuf::from(&tmpdir.1), rt.join("tmp"));
+}
+
+/// The whole runtime folder gone (another sweep or a stray `rm -rf`): the
+/// next attempt still gets an existing TMPDIR at the same path.
+#[test]
+fn prepare_attempt_recreates_a_runtime_folder_removed_entirely() {
+    let _procs = fake_proc_scope();
+    let base = tempfile::tempdir().unwrap();
+    let ws = scoped_workspace(base.path());
+    let rt = ws.runtime_dir().to_path_buf();
+    std::fs::remove_dir_all(&rt).unwrap();
+
+    ws.prepare_attempt().expect("prepare_attempt");
+    assert!(rt.join("tmp").is_dir());
+    assert!(rt.join("artifacts").is_dir());
+}
+
+#[test]
+fn prepare_attempt_keeps_an_existing_tmp_and_its_contents() {
+    let _procs = fake_proc_scope();
+    let base = tempfile::tempdir().unwrap();
+    let ws = scoped_workspace(base.path());
+    let rt = ws.runtime_dir().to_path_buf();
+    std::fs::write(rt.join("tmp/from-attempt-1"), "kept").unwrap();
+
+    ws.prepare_attempt().expect("prepare_attempt");
+    assert_eq!(
+        std::fs::read_to_string(rt.join("tmp/from-attempt-1")).unwrap(),
+        "kept",
+        "a retry reuses its scratch space"
+    );
+}
+
+#[test]
+fn prepare_attempt_refuses_symlinked_tmp_and_leaves_the_target_alone() {
+    let _procs = fake_proc_scope();
+    let base = tempfile::tempdir().unwrap();
+    let ws = scoped_workspace(base.path());
+    let rt = ws.runtime_dir().to_path_buf();
+    let elsewhere = base.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("sentinel"), "s").unwrap();
+    std::fs::remove_dir_all(rt.join("tmp")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, rt.join("tmp")).unwrap();
+
+    let err = format!("{:#}", ws.prepare_attempt().expect_err("must refuse"));
+    assert!(
+        err.contains(&rt.join("tmp").display().to_string()),
+        "names the path: {err}"
+    );
+    assert!(err.contains("refusing to launch the step"), "{err}");
+    assert!(
+        std::fs::symlink_metadata(rt.join("tmp"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(elsewhere.join("sentinel").is_file(), "target untouched");
+}
+
+#[test]
+fn prepare_attempt_refuses_artifacts_that_is_a_file() {
+    let _procs = fake_proc_scope();
+    let base = tempfile::tempdir().unwrap();
+    let ws = scoped_workspace(base.path());
+    let rt = ws.runtime_dir().to_path_buf();
+    std::fs::remove_dir_all(rt.join("artifacts")).unwrap();
+    std::fs::write(rt.join("artifacts"), "not a folder").unwrap();
+
+    let err = format!("{:#}", ws.prepare_attempt().expect_err("must refuse"));
+    assert!(
+        err.contains(&rt.join("artifacts").display().to_string()),
+        "{err}"
+    );
+    assert!(err.contains("refusing to launch the step"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(rt.join("artifacts")).unwrap(),
+        "not a folder"
+    );
+}
+
+#[test]
+fn prepare_attempt_recreates_tmp_in_a_dry_run_workspace() {
+    let ws = RunWorkspace::dry_runtime().expect("dry runtime");
+    let rt = ws.runtime_dir().to_path_buf();
+    std::fs::remove_dir_all(rt.join("tmp")).unwrap();
+    ws.prepare_attempt().expect("prepare_attempt");
+    assert!(rt.join("tmp").is_dir());
+}
