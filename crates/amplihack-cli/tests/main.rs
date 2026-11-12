@@ -339,6 +339,8 @@ mod issue_2042_proc_root_guard;
 mod issue_2042_seam_dry_run_and_refusal;
 #[path = "issue_2190_recipe_steps_report_real_exit_status.rs"]
 mod issue_2190_recipe_steps_report_real_exit_status;
+#[path = "issue_2211_live_freshness.rs"]
+mod issue_2211_live_freshness;
 #[path = "issue_2317_codex_step_commits_in_worktree.rs"]
 mod issue_2317_codex_step_commits_in_worktree;
 #[path = "issue_2336_autodrive_completion.rs"]

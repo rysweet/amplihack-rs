@@ -661,6 +661,17 @@ fn local_testing_prompt_cannot_declare_ready_while_checks_fail() {
             && prompt.contains("MUST be false"),
         "step8 must state that ready_to_commit MUST be false while checks fail"
     );
+    // Fail closed like the step conditions (`!= 'true'`): a missing or
+    // garbled all_passing must also force ready_to_commit=false, so the
+    // rule may not key on the literal "false".
+    assert!(
+        prompt.contains(r#"test_results.all_passing is not "true""#),
+        "step8 rule must fire whenever all_passing is not \"true\""
+    );
+    assert!(
+        !prompt.contains(r#"all_passing is "false""#),
+        "step8 rule must not key on the literal \"false\""
+    );
 }
 
 // ---------------------------------------------------------------------------

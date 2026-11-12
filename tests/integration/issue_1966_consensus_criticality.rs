@@ -93,6 +93,10 @@ const EDITED_RECIPES: &[&str] = &[
     "consensus-requirements-debate",
     "consensus-publish",
     "consensus-merge-finalize",
+    // #2190 edits these two; listing them keeps a merge from main that
+    // changes either file from leaving its manifest hash stale unnoticed.
+    "consensus-test-fix",
+    "autodrive-merge-evidence",
 ];
 
 /// D7: conditional remediation steps a valid fixture run does not trigger.

@@ -130,7 +130,7 @@ steps:
       **Test Results:** {{test_results}}
       **Hook Fixes:** {{hook_fixes}}
 
-      If test_results.all_passing is "false" and hook_fixes.all_passing is not true
+      If test_results.all_passing is not "true" and hook_fixes.all_passing is not true
       (or hook_fixes is empty), ready_to_commit MUST be false.
 
       Test scenarios:
