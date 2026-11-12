@@ -145,6 +145,7 @@ fn write_install_tooling(home: &Path) -> PathBuf {
     let bin_dir = home.join("test-bin");
     let hooks_bin = write_success_executable(&bin_dir, "amplihack-hooks");
     write_success_executable(&bin_dir, "recipe-runner-rs");
+    write_success_executable(&bin_dir, "codex");
     hooks_bin
 }
 
@@ -168,8 +169,21 @@ fn amplihack_install_command_with_binary(
         .arg("--local")
         .arg(source)
         .env("HOME", home)
+        // This contract stages generic assets; ambient provider installs and
+        // launcher context must not trigger a real Codex inventory probe.
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", hooks_bin.parent().unwrap().display()),
+        )
         .env("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", hooks_bin)
         .env("RECIPE_RUNNER_RS_PATH", recipe_runner)
+        // This contract checks staged framework assets. Keep provider discovery
+        // off the host's Codex installation and the enclosing agent session.
+        .env("AMPLIHACK_AGENT_BINARY", "claude")
+        .env(
+            "AMPLIHACK_CODEX_BINARY_PATH",
+            hooks_bin.parent().unwrap().join("codex"),
+        )
         .env_remove("AMPLIHACK_HOME")
         .env_remove("CLAUDECODE");
     cmd
@@ -452,6 +466,8 @@ fn install_stages_every_source_skill_agent_and_command_directory() {
     let workspace = workspace_root();
 
     amplihack_install_command(home.path(), &hooks_bin, workspace)
+        // Asset staging must not inherit the checkout's persisted launcher.
+        .env("AMPLIHACK_AGENT_BINARY", "copilot")
         .assert()
         .success();
 

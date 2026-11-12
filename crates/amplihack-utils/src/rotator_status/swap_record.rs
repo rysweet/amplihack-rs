@@ -39,6 +39,12 @@ pub struct SwapReading {
 /// One swap.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SwapRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_org: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_org: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub affinity: Option<crate::organisation_affinity::Affinity>,
     /// The previous record's `seq + 1`, or 1. Never compared for order.
     pub seq: u64,
     /// The login made live.
@@ -84,6 +90,15 @@ pub fn parse_swap(raw: &[u8], now: i64) -> Option<SwapRecord> {
         return None;
     }
     let r: SwapRecord = serde_json::from_slice(raw).ok()?;
+    use crate::organisation_affinity::{Affinity, valid_id};
+    if ![&r.from_org, &r.to_org]
+        .into_iter()
+        .all(|o| o.as_deref().is_none_or(valid_id))
+        || r.affinity
+            .is_some_and(|a| a != Affinity::between(r.from_org.as_deref(), r.to_org.as_deref()))
+    {
+        return None;
+    }
     let time_ok = |t: i64| t > 0 && t <= now.saturating_add(MAX_SKEW_SECS);
     let names_ok = valid_live_name(&r.live_login) && valid_live_name(&r.from_login);
     (names_ok && time_ok(r.swapped_at) && time_ok(r.reading.measured_at)).then_some(r)

@@ -3,6 +3,29 @@ set -euo pipefail
 
 export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Usage: workflow_pr_ready.sh [--base BRANCH]
+#   --base BRANCH  The base the pull request was opened against: the run's
+#                  base_branch, which step-16 passed to `gh pr create --base`.
+#                  Empty or absent keeps the discovery below (origin/HEAD, then
+#                  origin/main, origin/master, origin/develop), which matches a
+#                  pull request step-16 opened without --base. A set value is
+#                  never replaced by a discovered one
+#                  (docs/reference/workflow-delivery-inputs.md).
+EXPECTED_BASE_INPUT=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --base)
+      [ "$#" -ge 2 ] || { echo "ERROR: workflow_pr_ready.sh: --base needs a value" >&2; exit 2; }
+      EXPECTED_BASE_INPUT="$2"; shift 2 ;;
+    *) echo "ERROR: workflow_pr_ready.sh: unknown argument '$1' (usage: workflow_pr_ready.sh [--base BRANCH])" >&2; exit 2 ;;
+  esac
+done
+if [ -n "$EXPECTED_BASE_INPUT" ] && ! git check-ref-format --branch "$EXPECTED_BASE_INPUT" >/dev/null 2>&1; then
+  printf 'ERROR: workflow_pr_ready.sh: --base %q is not a valid branch name\n' "$EXPECTED_BASE_INPUT" >&2
+  exit 2
+fi
+
 PR_SCOPE_HELPER="${WORKFLOW_PR_SCOPE_HELPER:-${SCRIPT_DIR}/workflow_pr_scope.sh}"
 # workflow_pr_scope.sh validates headRefName, baseRefName, headRefOid,
 # isCrossRepository, expected_pr_title_prefix, and created_after.
@@ -56,6 +79,7 @@ gh_with_retry() {
 
 resolve_expected_base_branch() {
   local candidate
+  if [ -n "$EXPECTED_BASE_INPUT" ]; then printf '%s\n' "$EXPECTED_BASE_INPUT"; return 0; fi
   candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
   if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then printf '%s\n' "${candidate#origin/}"; return 0; fi
   for candidate in origin/main origin/master origin/develop; do

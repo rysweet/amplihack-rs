@@ -364,6 +364,9 @@ fn ledger(live: &str) -> CycleStatus {
 /// A swap record `after` seconds past `START`, measured 30 s earlier.
 fn record_at(seq: u64, after: i64, session: u8, week: u8) -> SwapRecord {
     SwapRecord {
+        from_org: None,
+        to_org: None,
+        affinity: None,
         seq,
         live_login: "spare".into(),
         from_login: "work".into(),
@@ -1570,3 +1573,6 @@ fn two_waiters_for_one_session_with_distinct_events_resume_once() {
     assert!(outs.contains(&Outcome::Duplicate), "{outs:?}");
     assert_eq!(d.guard.sessions[&session_key("s")].len(), 1);
 }
+
+#[path = "support/issue_2136_delivery.rs"]
+mod issue_2136_delivery;
