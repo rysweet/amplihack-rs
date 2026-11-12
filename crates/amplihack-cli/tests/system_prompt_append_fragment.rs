@@ -116,15 +116,15 @@ fn fragment_resolves_the_unless_the_user_requested_it_clause() {
 }
 
 #[test]
-fn fragment_carries_the_world_visible_warning() {
-    // The contents are passed on the command line and are visible in `ps` to
-    // every user on the host. The rule is needed precisely BECAUSE the file
-    // looks like a config file, which is where such things normally go.
+fn fragment_header_names_the_file_flag_and_forbids_secrets() {
+    // Issue #2030: the contract is no longer passed on the command line; it is
+    // written to a 0600 file and passed with --append-system-prompt-file. The
+    // header says so, and still forbids credentials: every session on every
+    // install gets these bytes.
     let text = fragment_text().to_lowercase();
     assert!(
-        text.contains("process table") || text.contains("visible"),
-        "the fragment's own header must warn that its bytes are world-visible \
-         in the process table:\n{text}"
+        text.contains("--append-system-prompt-file"),
+        "the fragment's own header must say it is delivered by file:\n{text}"
     );
     assert!(
         text.contains("never") && (text.contains("credential") || text.contains("secret")),
@@ -364,7 +364,7 @@ fn the_documented_fragment_is_the_shipped_fragment_verbatim() {
     let doc = std::fs::read_to_string(&doc_path)
         .unwrap_or_else(|e| panic!("cannot read {}: {e}", doc_path.display()));
 
-    let anchor = "<!-- Compiled into the binary at build time";
+    let anchor = "<!-- Compiled into the binary";
     assert!(
         shipped.starts_with(anchor),
         "the shipped fragment no longer starts with the anchor this test keys \

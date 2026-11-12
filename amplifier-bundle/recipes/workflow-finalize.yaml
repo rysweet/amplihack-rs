@@ -16,12 +16,12 @@ inputs:
 
 context:
   worktree_setup: ""
+  base_branch: ""  # the base step-16 gave the PR; every base check here uses it (docs/reference/workflow-delivery-inputs.md)
   allow_no_op: false
   terminal_success: "false"
   terminal_state: ""
   terminal_reason: ""
   publish_status: ""
-  should_publish: "true"
   should_finalize: "true"
   should_run_ci_wait: "true"
   should_merge: "true"
@@ -241,7 +241,7 @@ steps:
       # Helper contract: command -v gh; command -v jq; gh auth status; timeout; gh pr view; gh pr list; git branch --show-current; PR_NUMBER; isDraft; state; mergedAt; for pr_target in discovered targets; no PR_URL, valid PR_NUMBER, or branch PR found; terminal_status may be already-merged, closed-after-merge, or closed-unmerged; closed-unmerged exits with exit 1.
       READY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_pr_ready.sh"; [ -f "$READY_HELPER" ] || READY_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_pr_ready.sh"; [ -f "$READY_HELPER" ] || READY_HELPER="$(pwd)/amplifier-bundle/tools/workflow_pr_ready.sh"; [ -f "$READY_HELPER" ] || READY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_pr_ready.sh"; [ -f "$READY_HELPER" ] || READY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_pr_ready.sh"
       [ -f "$READY_HELPER" ] || { echo "ERROR: workflow PR-ready helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $READY_HELPER; cwd=$(pwd)" >&2; exit 1; }
-      bash "$READY_HELPER"
+      bash "$READY_HELPER" --base "${RECIPE_VAR_base_branch:-}"
     output: "pr_ready_result"
 
   - id: "step-22-ensure-mergeable"
@@ -284,7 +284,7 @@ steps:
       # Terminal-state contract: FAILED_CLOSED_UNMERGED, FAILED_MEANINGFUL_DIFF, BLOCKED_CI, MERGED, CLOSED_OBSOLETE, NO_DIFF_SUCCESS, FOLLOWUP_CREATED.
       FINAL_STATUS_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_final_status.sh"; [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_final_status.sh"; [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="$(pwd)/amplifier-bundle/tools/workflow_final_status.sh"; [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_final_status.sh"; [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_final_status.sh"
       [ -f "$FINAL_STATUS_HELPER" ] || { echo "ERROR: workflow final-status helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $FINAL_STATUS_HELPER; cwd=$(pwd)" >&2; exit 1; }
-      bash "$FINAL_STATUS_HELPER"
+      bash "$FINAL_STATUS_HELPER" --base "${RECIPE_VAR_base_branch:-}"
     output: "final_status"
 
   - id: "collect-finalization-evidence"
@@ -293,7 +293,7 @@ steps:
     command: |
       set -euo pipefail
       FINALIZER_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="$(pwd)/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $FINALIZER_HELPER; cwd=$(pwd)" >&2; exit 2; }
-      bash "$FINALIZER_HELPER" collect
+      bash "$FINALIZER_HELPER" collect --base "${RECIPE_VAR_base_branch:-}"
     output: "finalization_evidence"
 
   - id: "agentic-finalizer"

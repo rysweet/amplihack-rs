@@ -249,4 +249,5 @@ the value through a guard, and remove `ROOT_ENV` from every child it starts.
 - [Keep Tests out of the Real Profile Root](./keep-tests-out-of-the-real-profile-root.md) - `isolated(..)`, the profile-root refusal and the real-root guard (#1699)
 - [Keep Tests from Leaking Rotator Daemons](./keep-tests-from-leaking-rotator-daemons.md) - The other stops `isolated(..)` sets
 - [Best-Effort Mermaid CLI Provisioning](../features/mermaid-cli-best-effort-install.md#testing) - The flow tests that use the configure hook
+- [Keep Tests Passing Under Host Load](./keep-tests-passing-under-host-load.md) - Shared wait helpers, test inputs and knobs that keep tests independent of host speed (#1973)
 - [Developing amplihack](./develop-amplihack.md) - Build and test setup

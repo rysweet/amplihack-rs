@@ -240,6 +240,9 @@ fn fresh_probe(
     // The reading time of a re-read is when it finished.
     p.observed_at = Some(now());
     p.carried = false;
+    // Issue #1970: a re-read is made with passive readings off, so it is a
+    // direct reading and never checked as a stale cached one.
+    p.passive = false;
     lines.push(fresh_msg::stale(to, &Shown::of(old), &Shown::of(&p)));
     if damped && !swap_back::room(&p.reading, &ctx.settings) {
         lines.push(fresh_msg::still_damped(to));

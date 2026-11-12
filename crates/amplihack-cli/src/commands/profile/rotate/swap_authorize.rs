@@ -4,7 +4,7 @@
 use super::identify::Account;
 use super::identity_claims::{self, Claim, Claims};
 use super::ledger::RotateState;
-use super::login_identity::{Bound, Reader, SwapIdentity, UNAVAILABLE};
+use super::login_identity::{Bound, Reader, SwapIdentity, UNAVAILABLE, unavailable_line};
 use super::swap::Source;
 use super::swap_expect::{ACCOUNT_MISMATCH, Pending};
 use crate::commands::profile::ProfileError;
@@ -17,6 +17,11 @@ use std::path::Path;
 /// Report a refusal before any login movement.
 pub fn refused(why: impl Into<String>) -> ProfileError {
     ProfileError::RotateRefused(why.into())
+}
+
+/// Report a failed identity read by its cause (issue #1962).
+fn read_refused(cause: &'static str) -> ProfileError {
+    refused(unavailable_line(cause))
 }
 
 /// Whether full trusted ledger provenance establishes this profile's ownership.
@@ -145,8 +150,12 @@ pub fn authorize(
         }
     }
     let state = State::new(store.root()).map_err(|_| refused(UNAVAILABLE))?;
-    let outgoing = reader.bound(outgoing_dir, platform_out).map_err(refused)?;
-    let incoming = reader.bound(incoming_dir, platform_in).map_err(refused)?;
+    let outgoing = reader
+        .bound(outgoing_dir, platform_out)
+        .map_err(read_refused)?;
+    let incoming = reader
+        .bound(incoming_dir, platform_in)
+        .map_err(read_refused)?;
     if let Proof::Recovery(Some(prior)) = proof
         && !prior.names(outgoing.account(), incoming.account())
     {
@@ -173,8 +182,8 @@ pub fn authorize(
                 )));
             }
             None => {
-                let scan =
-                    identity_claims::scan(store, &state, Some(to), a, reader).map_err(refused)?;
+                let scan = identity_claims::scan(store, &state, Some(to), a, reader)
+                    .map_err(read_refused)?;
                 if matches!(scan.claim, Claim::Claimed) {
                     return Err(refused(
                         "trusted login identity: incoming login is claimed by another profile",
@@ -202,9 +211,9 @@ pub fn authorize(
                         _ => rs.load_ledger()?.is_some_and(|l| ledger_owns(&l, name, a)),
                     };
                     if !came_from {
-                        return Err(refused(
-                            "trusted login identity: outgoing ownership is not established; verify the live profile",
-                        ));
+                        return Err(refused(format!(
+                            "trusted login identity: outgoing ownership is not established; run: amplihack profile seed-record {name}"
+                        )));
                     }
                     let scan = identity_claims::scan_except(
                         store,
@@ -214,7 +223,7 @@ pub fn authorize(
                         reader,
                         Some(outgoing_dir),
                     )
-                    .map_err(refused)?;
+                    .map_err(read_refused)?;
                     if matches!(scan.claim, Claim::Claimed) {
                         return Err(refused(
                             "trusted login identity: outgoing login is claimed by another profile",
@@ -230,7 +239,7 @@ pub fn authorize(
         (Source::Adopt, Some(a)) => {
             let scan =
                 identity_claims::scan_except(store, &state, None, a, reader, Some(outgoing_dir))
-                    .map_err(refused)?;
+                    .map_err(read_refused)?;
             let claimed = matches!(scan.claim, Claim::Claimed);
             claims.push(scan);
             if claimed {

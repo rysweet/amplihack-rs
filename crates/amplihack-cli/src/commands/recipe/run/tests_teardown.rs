@@ -37,7 +37,7 @@ mod execute {
 use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Environment-variable name the deterministic-teardown feature must honour to
 /// configure the SIGTERM -> SIGKILL grace window (in whole seconds).
@@ -83,16 +83,36 @@ impl Drop for EnvVarGuard {
     }
 }
 
+/// Kills and reaps a child when dropped, so a test that panics before its
+/// own cleanup does not leave the child running (PR #1885).
+struct KillOnDrop(std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Points the run's work root at `dir/work` and turns the end-of-run sweep
+/// off. Without this a test inherits `AMPLIHACK_WORK_ROOT` (or falls back to
+/// `$HOME/.amplihack/work`), so `finish` sweeps the developer's real run
+/// folders: it can delete them, and on a full work root the sweep alone
+/// outlasts the timing bounds these tests assert. Same isolation as
+/// `tests_execute.rs`.
+fn isolate_work_root(dir: &Path) -> [EnvVarGuard; 3] {
+    [
+        EnvVarGuard::set("AMPLIHACK_WORK_ROOT", dir.join("work")),
+        EnvVarGuard::unset("AMPLIHACK_WORK_ROOT_EXPLICIT"),
+        EnvVarGuard::set("AMPLIHACK_CLEANUP_ON_EXIT", "0"),
+    ]
+}
+
 /// Write an executable `/bin/sh` stub at `path` and chmod it 0755.
 fn write_stub(path: &Path, body: &str) {
     std::fs::write(path, body).expect("failed to write runner stub");
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
         .expect("failed to chmod runner stub");
-}
-
-/// True if a process with `pid` still exists (signal 0 probe).
-fn process_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
 }
 
 // -------------------------------------------------------------------------
@@ -119,7 +139,7 @@ fn test_failure_path_reaps_orphaned_descendants() {
     write_stub(
         &runner,
         &format!(
-            "#!/bin/sh\n(/bin/sleep 2; echo leaked > '{}') &\nexit 1\n",
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\n(/bin/sleep 2; echo leaked > '{}') &\nexit 1\n",
             marker.display()
         ),
     );
@@ -129,6 +149,7 @@ fn test_failure_path_reaps_orphaned_descendants() {
 
     let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
     let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    let _work_env = isolate_work_root(temp.path());
     // Ensure a fast failure is not misread as a timeout.
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
 
@@ -179,7 +200,7 @@ fn test_timeout_teardown_sends_sigterm_before_sigkill() {
     write_stub(
         &runner,
         &format!(
-            "#!/bin/sh\ntrap 'echo graceful > \"{}\"; exit 0' TERM\n/bin/sleep 30\n",
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ntrap 'echo graceful > \"{}\"; exit 0' TERM\n/bin/sleep 30\n",
             marker.display()
         ),
     );
@@ -189,6 +210,7 @@ fn test_timeout_teardown_sends_sigterm_before_sigkill() {
 
     let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
     let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    let _work_env = isolate_work_root(temp.path());
     let _timeout_env = EnvVarGuard::set(RUNNER_TIMEOUT_ENV, "1");
     // Explicit, generous grace so the trapped child can finish cleanly.
     let _grace_env = EnvVarGuard::set(TEARDOWN_GRACE_ENV, "5");
@@ -249,7 +271,7 @@ fn test_teardown_grace_window_is_configurable() {
         write_stub(
             &runner,
             &format!(
-                "#!/bin/sh\ntrap '/bin/sleep 1; echo done > \"{}\"; exit 0' TERM\n/bin/sleep 30\n",
+                "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ntrap '/bin/sleep 1; echo done > \"{}\"; exit 0' TERM\n/bin/sleep 30\n",
                 marker.display()
             ),
         );
@@ -258,6 +280,7 @@ fn test_teardown_grace_window_is_configurable() {
 
         let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
         let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+        let _work_env = isolate_work_root(temp.path());
         let result = execute::execute_recipe_via_rust(
             &recipe,
             &BTreeMap::new(),
@@ -309,18 +332,22 @@ fn test_teardown_is_scoped_to_runner_process_group() {
     let temp = tempfile::tempdir().expect("failed to create temp dir");
 
     // Sibling process in the TEST's process group (NOT the runner's session).
-    let mut sibling = std::process::Command::new("/bin/sleep")
-        .arg("8")
-        .spawn()
-        .expect("failed to spawn sibling process");
-    let sibling_pid = sibling.id();
+    // It runs until the test ends, so its survival does not depend on how
+    // long the recipe run takes on a loaded host. The guard kills and reaps
+    // it when the test ends, including when an assertion panics first.
+    let mut sibling = KillOnDrop(
+        std::process::Command::new("/bin/sleep")
+            .arg("infinity")
+            .spawn()
+            .expect("failed to spawn sibling process"),
+    );
 
     let runner = temp.path().join("recipe-runner-rs");
     let marker = temp.path().join("orphan-marker");
     write_stub(
         &runner,
         &format!(
-            "#!/bin/sh\n(/bin/sleep 2; echo leaked > '{}') &\nexit 1\n",
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\n(/bin/sleep 2; echo leaked > '{}') &\nexit 1\n",
             marker.display()
         ),
     );
@@ -329,9 +356,9 @@ fn test_teardown_is_scoped_to_runner_process_group() {
 
     let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
     let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    let _work_env = isolate_work_root(temp.path());
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
 
-    let started = Instant::now();
     let result = execute::execute_recipe_via_rust(
         &recipe,
         &BTreeMap::new(),
@@ -352,19 +379,13 @@ fn test_teardown_is_scoped_to_runner_process_group() {
 
     // The unrelated sibling (outside the runner's process group) must survive
     // the teardown, proving the reaper is pgid-scoped and not a broadcast.
+    // `try_wait` rather than `kill(pid, 0)`: an unreaped child that was
+    // killed is a zombie, and `kill(pid, 0)` still succeeds on a zombie.
     assert!(
-        started.elapsed() < Duration::from_secs(8),
-        "test setup ran too long to validate sibling survival"
-    );
-    assert!(
-        process_alive(sibling_pid),
+        matches!(sibling.0.try_wait(), Ok(None)),
         "teardown must be scoped to the runner's process group and must NOT \
          signal unrelated processes (issue #964)"
     );
-
-    // Clean up the sibling deterministically.
-    unsafe { libc::kill(sibling_pid as libc::pid_t, libc::SIGKILL) };
-    let _ = sibling.wait();
 }
 
 // =========================================================================
@@ -408,7 +429,7 @@ fn write_marker_stub(path: &Path, marker: &Path, exit_code: u8) {
     write_stub(
         path,
         &format!(
-            "#!/bin/sh\necho spawned > '{}'\nexit {}\n",
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\necho spawned > '{}'\nexit {}\n",
             marker.display(),
             exit_code
         ),
@@ -431,6 +452,7 @@ fn depth_guard_spawned(session_depth: &str, max_depth: Option<&str>) -> bool {
 
     let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
     let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    let _work_env = isolate_work_root(temp.path());
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
     // Issue #1326: a genuine nested run names a tree that has sealed a ceiling.
     // Pin both so the probe does not depend on the ambient process ancestry of
@@ -636,7 +658,7 @@ fn test_caller_git_state_restored_after_terminal_failure() {
     // fixed argv layout: <recipe> --output-format json -C <working_dir> ...
     write_stub(
         &runner,
-        "#!/bin/sh\ngit -C \"$5\" config core.bare true\nexit 1\n",
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ngit -C \"$5\" config core.bare true\nexit 1\n",
     );
 
     let recipe = temp.path().join("recipe.yaml");
@@ -645,6 +667,7 @@ fn test_caller_git_state_restored_after_terminal_failure() {
 
     let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
     let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    let _work_env = isolate_work_root(temp.path());
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
 
     let result =
@@ -697,7 +720,7 @@ fn test_restore_preserves_durable_child_worktree() {
     write_stub(
         &runner,
         &format!(
-            "#!/bin/sh\nmkdir -p '{}'\necho durable > '{}'\ngit -C \"$5\" config core.bare true\nexit 1\n",
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nmkdir -p '{}'\necho durable > '{}'\ngit -C \"$5\" config core.bare true\nexit 1\n",
             child_marker.parent().unwrap().display(),
             child_marker.display()
         ),
@@ -709,6 +732,7 @@ fn test_restore_preserves_durable_child_worktree() {
 
     let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
     let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    let _work_env = isolate_work_root(temp.path());
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
 
     let result =
@@ -762,7 +786,7 @@ fn test_caller_git_state_restored_after_structured_failure_result() {
     // path. `$5` is the `-C` value in the fixed argv layout.
     write_stub(
         &runner,
-        "#!/bin/sh\ngit -C \"$5\" config core.bare true\n\
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ngit -C \"$5\" config core.bare true\n\
          printf '{\"recipe_name\":\"structured-fail\",\"success\":false}\\n'\nexit 0\n",
     );
 
@@ -772,6 +796,7 @@ fn test_caller_git_state_restored_after_structured_failure_result() {
 
     let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
     let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    let _work_env = isolate_work_root(temp.path());
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
 
     let result =
@@ -843,9 +868,23 @@ fn generated_tree_ids_are_valid_and_distinct() {
 }
 
 /// The caller holds the shared environment lock through restoration.
-fn fixture_environment() -> crate::test_support::EnvGuard {
-    let saved = crate::test_support::EnvGuard::capture(&["AMPLIHACK_AGENT_BINARY", "HOME"]);
+///
+/// Each run gets a private work root and no end-of-run sweep (issue #2067;
+/// see `test_support::IsolatedWorkRoot`).
+fn fixture_environment() -> (
+    crate::test_support::EnvGuard,
+    crate::test_support::IsolatedWorkRoot,
+) {
+    let mut keys = vec!["AMPLIHACK_AGENT_BINARY", "HOME"];
+    keys.extend(crate::test_support::OUTER_RUN_IDENTITY_VARS);
+    let saved = crate::test_support::EnvGuard::capture(&keys);
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
     unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
-    saved
+    // Issue #1984: inside a recipe-run session the outer run's identity and
+    // depth would reach the runner, which then joins or is refused by the outer
+    // tree. Tests that need a value set it after this fixture.
+    for key in crate::test_support::OUTER_RUN_IDENTITY_VARS {
+        unsafe { std::env::remove_var(key) };
+    }
+    (saved, crate::test_support::IsolatedWorkRoot::new())
 }

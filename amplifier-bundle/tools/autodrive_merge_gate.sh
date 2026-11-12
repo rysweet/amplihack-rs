@@ -127,25 +127,21 @@ case "$THREADS" in
   *) block "${THREADS} unresolved review thread(s)" ;;
 esac
 
-# --- 5. CI on THIS head SHA -------------------------------------------------
-# `gh pr checks` exits non-zero when checks are failing or pending, and also
-# when it cannot read them. All three are blockers; only a readable, complete,
-# all-green rollup passes.
-CHECKS_JSON="$(gh pr checks "$PR" --json name,state,bucket,link 2>/dev/null)"
-if ! command -v jq >/dev/null 2>&1; then
-  block "jq is unavailable, so the CI rollup cannot be read; a criterion we cannot read is a failure"
-elif [ -z "$CHECKS_JSON" ]; then
-  block "CI status for #${PR} is unreadable; an unreadable CI status is a failure, not a pass"
-else
-  PENDING="$(printf '%s' "$CHECKS_JSON" | jq -r '[.[] | select(.bucket=="pending")] | length' 2>/dev/null)"
-  FAILING="$(printf '%s' "$CHECKS_JSON" | jq -r '[.[] | select(.bucket=="fail" or .bucket=="cancel")] | length' 2>/dev/null)"
-  TOTAL="$(printf '%s' "$CHECKS_JSON" | jq -r 'length' 2>/dev/null)"
-  note "ci_checks total=${TOTAL} pending=${PENDING} failing=${FAILING}"
-  if [ -z "$TOTAL" ] || [ "$TOTAL" = "0" ]; then
-    block "no CI checks reported for #${PR}; zero checks is not a green build"
-  fi
-  [ "${PENDING:-x}" = "0" ] || block "${PENDING:-unreadable} CI check(s) still pending"
-  [ "${FAILING:-x}" = "0" ] || block "${FAILING:-unreadable} CI check(s) failing or cancelled"
+# --- 5. CI on THIS head SHA (#2186) ----------------------------------------
+# CI green means every expected check exists at HEAD_SHA and passed: the base
+# branch's required checks and every job of each pull_request workflow at the
+# head, read by autodrive_expected_checks.sh beside this gate (never from a
+# path the PR fills). Its evidence: lines become notes and its blocker: lines
+# blockers. The verdict is its LAST line only, and passes only as GREEN, exit 0.
+BASE_REF="$(field "$STATE_JSON" baseRefName "")"; CI_BLOCKED=""
+CI_OUT="$(/bin/bash -p "${GATE_HOME}/autodrive_expected_checks.sh" "$HEAD_SHA" "$BASE_REF" 2>/dev/null)"; CI_RC=$?
+while IFS= read -r L; do
+  case "$L" in "evidence: "*) note "${L#evidence: }" ;; "blocker: "*) block "${L#blocker: }"; CI_BLOCKED=1 ;; esac
+done <<< "$CI_OUT"
+CI_STATUS="$(printf '%s\n' "$CI_OUT" | tail -n1 | jq -r '.ci_status // empty' 2>/dev/null)"
+note "ci_status=$(printf '%s' "${CI_STATUS:-none}" | tr -cd 'A-Z_a-z') ci_exit=${CI_RC}"
+if [ "$CI_STATUS" != "GREEN" ] || [ "$CI_RC" -ne 0 ]; then
+  [ -n "$CI_BLOCKED" ] || block "expected checks unreadable: the reader gave no verdict or no blocker"
 fi
 
 # --- 6. qa-team scenario evidence ------------------------------------------
@@ -201,30 +197,25 @@ else
   fi
 fi
 
-# --- 6b. Criterion 3: the crusty loop of this run ended DONE and CLEAN -------
-# Under auto-drive the quality-audit criterion is met by the crusty loop: the
-# `crusty-loop` marker in phases.tsv (written only after the loop reports DONE)
-# and a final CLEAN verdict in crusty-latest.json. These files are evidence, so
-# they are read only from a state dir that was given explicitly, is owned by
-# this user and writable by nobody else, and only when they are regular files
-# rather than symlinks. The state helper is sourced from beside this gate and
-# from nowhere a pull request could populate. The writers make the directory
-# and every file private whatever the caller's umask (autodrive_state.sh,
-# PRIVATE STATE), so on a host whose umask is 0002 this check still passes for
-# state the workflow wrote itself.
-#
-# Since #1517 the last loop-written round record must also check out against
+# --- 6b. Criterion 3: crusty loop DONE, CLEAN or MINOR_ONLY with follow-ups filed (#1979)
+# The crusty loop meets the quality-audit criterion: the `crusty-loop` marker in
+# phases.tsv (written only after the loop reports DONE) and a final CLEAN or
+# MINOR_ONLY verdict in crusty-latest.json; MINOR_ONLY also needs a follow-up
+# issue filed for every minor finding (autodrive_followups.sh gate).
+# This evidence is read only from a state dir given explicitly, owned by this
+# user and writable by nobody else, and only from regular files, not symlinks.
+# The state helper is sourced from beside this gate, never from a path a pull
+# request could populate. Writers make the directory and files private whatever
+# the umask (autodrive_state.sh, PRIVATE STATE), so a 0002 umask still passes.
+# Since #1517 the last loop-written round record must also match
 # crusty-records.tsv, the manifest autodrive_loop.sh writes before any agent
-# runs: autodrive_crusty_final rejects an injected, edited or archived record.
-# These checks only add to the ones above; none of them replaces one.
-# autodrive_private <path> comes from autodrive_state.sh: owned by this user,
-# not a symlink, no group or world write bit.
-#
+# runs, so autodrive_crusty_final rejects an injected, edited or archived
+# record. These checks add to the ones above. autodrive_private <path> (from
+# autodrive_state.sh): owned by this user, not a symlink, no group/world write.
 # block_unless_private <what> <name>...: blocks each named file in STATE_DIR
-# that is a symlink, or that exists and is not a private regular file, as not
-# evidence of <what>. An empty name, or a file that does not exist, passes
-# here; the checks that read the file decide what absence means. Returns 1
-# when any file blocked.
+# that is a symlink, or exists and is not a private regular file, as not
+# evidence of <what>. An empty name or an absent file passes; the checks that
+# read the file decide what absence means. Returns 1 when any file blocked.
 block_unless_private() {
   local what="$1" f p rc=0
   shift
@@ -253,7 +244,12 @@ elif block_unless_private "crusty state" phases.tsv crusty-latest.json crusty-re
     CRUSTY_VERDICT="MISSING"
     [ -f "${STATE_DIR}/crusty-latest.json" ] && CRUSTY_VERDICT="$(field "$(cat "${STATE_DIR}/crusty-latest.json")" crusty_verdict MISSING)"
     note "crusty_phase_done=true crusty_verdict=$(printf '%s' "$CRUSTY_VERDICT" | tr -cd 'A-Za-z_')"
-    [ "$CRUSTY_VERDICT" = "CLEAN" ] || block "the crusty loop's final crusty_verdict is not CLEAN in ${STATE_DIR}/crusty-latest.json; criterion 3 is not met"
+    case "$CRUSTY_VERDICT" in
+      CLEAN|MINOR_ONLY)
+        FU_NONE="ERROR: followups-unfiled: autodrive_followups.sh gate did not run beside the merge gate (#1979)"
+        FU="$(bash "${GATE_HOME}/autodrive_followups.sh" gate --state-dir "$STATE_DIR" --pr "$PR")" && note "$FU" || block "${FU:-$FU_NONE}" ;;
+      *) block "the crusty loop's final crusty_verdict is not CLEAN in ${STATE_DIR}/crusty-latest.json; criterion 3 is not met" ;;
+    esac
     # The record the manifest's last row names must be private too. Its
     # name is validated before any path is built from it.
     CRUSTY_ROW="$(autodrive_crusty_manifest_row "$STATE_DIR")" || CRUSTY_ROW=""
@@ -304,7 +300,6 @@ if [ -n "$CRUSTY_REVIEWED" ] && [ "$TRUST_OK" = "true" ]; then
      || ! env -u GIT_DIR -u GIT_WORK_TREE GIT_NO_REPLACE_OBJECTS=1 git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
     block "head ${HEAD_SHA:-<none>} is not in the local clone, so the commits after the clean crusty round cannot be read; criterion 3 is not met"
   else
-    BASE_REF="$(field "$STATE_JSON" baseRefName "")"
     BASE_SHA="$(autodrive_base_sha "$PWD" "$BASE_REF")" || BASE_SHA=""
     note "base_ref=$(printf '%s' "$BASE_REF" | tr -cd 'A-Za-z0-9._/-') base_sha=${BASE_SHA:-<none>}"
     RANGE="$(autodrive_crusty_range "$PWD" "$CRUSTY_REVIEWED" "$HEAD_SHA" "$BASE_SHA")" || true

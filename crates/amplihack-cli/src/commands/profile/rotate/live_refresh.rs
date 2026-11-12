@@ -4,14 +4,16 @@
 //! running session refreshed would be refused on every cycle and rotation
 //! would stall. The refresh is not identity evidence: the snapshot reads the
 //! refreshed credential's identity afresh, and only that reading can let a
-//! login move. See "An expired live login" in
-//! docs/reference/profile-command.md.
+//! login move. Issue #1962: the target is `~/.claude` alone, so neither the
+//! rotate ledger nor the lease view stops it: without this refresh no identity
+//! can be read and rotation stalls. A barred profile folder is never refreshed
+//! here. See "An expired live login" in docs/reference/profile-command.md.
 
 use super::super::cycle::Ctx;
 use super::super::identify::{LoginKind, login_kind};
 use super::super::log::{Sink, msg};
 use crate::commands::profile::auto_switch::kit::{CREDS, now};
-use crate::commands::profile::usage_cmd::{PROBE_CANCEL, no_refresh_dirs};
+use crate::commands::profile::usage_cmd::PROBE_CANCEL;
 use crate::commands::profile::usage_direct::{self, Endpoints};
 use std::path::Path;
 use std::time::Duration;
@@ -54,22 +56,12 @@ pub fn refresh_direct(root: &Path, creds_dir: &Path) -> Result<bool, &'static st
 }
 
 /// Refreshes the OAuth login in `~/.claude` once when its token has
-/// expired. Not when the lease view cannot be read, not when the rotate
-/// ledger cannot be read (the live profile is then unknown, so the lease
-/// view cannot clear it), and not when the lease view names the live
-/// profile as one whose token may not be refreshed (SR-3(d)). With no
-/// ledger at all there is no live profile for a lease to name. A refresh
-/// that fails is logged; the snapshot then finds no trusted identity, and
-/// the cycle alerts and moves nothing.
+/// expired. Never in a read-only run (`--dry-run`). A pending journal, a held
+/// lock, a directory others can write and an unexpired token are refused by
+/// `usage_direct`. A refresh that fails is logged; the snapshot then finds no
+/// trusted identity, and the cycle alerts and moves nothing.
 pub fn refresh_expired_live(ctx: &Ctx, out: &mut Sink) {
-    let Some(no_refresh) = no_refresh_dirs(&ctx.store) else {
-        return;
-    };
-    let Ok(ledger) = ctx.rs.load_ledger() else {
-        return;
-    };
-    let live = ledger.and_then(|l| l.live);
-    if live.is_some_and(|n| no_refresh.contains(&n)) {
+    if ctx.read_only {
         return;
     }
     let dir = ctx.home.join(".claude");

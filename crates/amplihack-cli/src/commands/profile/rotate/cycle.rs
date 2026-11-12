@@ -4,15 +4,13 @@
 
 use super::alert::{alert, alert_key, refusal_kind};
 use super::capacity::{self, Room};
-use super::cred_identity::{DEFAULT_READ, ReadFn};
 use super::decide::Decision;
 use super::dry_run::dry_run;
-use super::fresh::{self, Reread, RereadFn};
+use super::fresh::{self, Reread};
 use super::held::held_cycle;
 use super::history;
-use super::identify::{LiveId, Skip};
-use super::key_check::{self, KeyCheckFn};
-use super::ledger::{RotateLedger, RotateState, newer_than};
+use super::identify::LiveId;
+use super::ledger::{RotateLedger, newer_than};
 use super::log::{msg, shown, shown_of};
 use super::observe::{Measurement, Snap, live_name, measure_and_decide, platform_block_reason};
 use super::overflow::Tag;
@@ -25,90 +23,23 @@ use super::plan_room::no_room;
 pub use super::prelude::prototype_guard;
 use super::prelude::{Prelude, locked_prelude};
 use super::revalidate::{self, Verdict};
-use super::settings::Settings;
 use super::swap::{self, Source};
 use super::swap_back;
+use super::swap_record;
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{Liveness, now, scan_system};
-use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::auto_switch::kit::now;
 use crate::commands::profile::shared_dirs;
-use crate::commands::profile::store::ProfileStore;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 pub(super) const LOCK_WAIT: Duration = Duration::from_secs(2);
+#[path = "cycle_ctx.rs"]
+mod ctx;
 #[path = "cycle_outcome.rs"]
 mod outcome;
+pub use ctx::Ctx;
 pub use outcome::{CycleOutcome, Mode};
 /// Steps 4 and 5 of a cycle: measure, then decide.
 pub(super) type MeasureFn = fn(&Ctx, &Snap) -> Result<Measurement, ProfileError>;
-
-/// Cycle state and the watch process's retained readings.
-pub struct Ctx {
-    pub store: ProfileStore,
-    pub rs: RotateState,
-    pub home: PathBuf,
-    pub settings: Settings,
-    pub stop: Option<Arc<AtomicBool>>,
-    pub(super) last_skips: Option<Vec<(ProfileName, Skip)>>,
-    pub(super) last_proto: Option<&'static str>,
-    last_gate: Option<String>,
-    pub(super) failed_live: u32,
-    /// Finds running sessions; tests inject synthetic liveness.
-    pub(super) scan: fn(&Path) -> Liveness,
-    /// Tests inject measurement while the lock is released.
-    pub(super) measure: Option<MeasureFn>,
-    /// Freshness re-read by the configured method; None reads nothing.
-    pub(super) reread: Option<RereadFn>,
-    /// Replaces a held cycle's spend-limit probe when set; only tests do.
-    pub(super) probe_held: Option<super::held::HeldProbeFn>,
-    /// Waits before step 6 reads the state again; tests act in it instead.
-    pub(super) pause: fn(&Ctx),
-    /// Login check before a move onto the API-key profile.
-    pub(super) key_check: KeyCheckFn,
-    /// The `$HOME` key setting `note_home_key` last logged.
-    pub(super) home_key: Option<&'static str>,
-    /// Usage reads carried across watch cycles.
-    pub(super) in_flight: Option<std::sync::Mutex<super::measure::Reads>>,
-    /// Bounded login identity reader, injected by tests.
-    pub(super) identity: ReadFn,
-    pub(super) identity_budget: super::login_identity::Budget,
-}
-
-impl Ctx {
-    pub fn new(store: ProfileStore, home: PathBuf, settings: Settings) -> Self {
-        let rs = RotateState::new(store.root());
-        Self {
-            store,
-            rs,
-            home,
-            settings,
-            stop: None,
-            last_skips: None,
-            last_proto: None,
-            last_gate: None,
-            failed_live: 0,
-            scan: scan_system,
-            measure: None,
-            reread: None,
-            probe_held: None,
-            pause: |_| std::thread::sleep(revalidate::REREAD_PAUSE),
-            key_check: key_check::reachable,
-            home_key: None,
-            in_flight: None,
-            identity: DEFAULT_READ,
-            identity_budget: super::login_identity::Budget::new(),
-        }
-    }
-
-    pub(super) fn stopping(&self) -> bool {
-        self.stop
-            .as_ref()
-            .is_some_and(|s| s.load(Ordering::Relaxed))
-    }
-}
 
 /// Records the cycle as ended at `t`, after measuring from `measured_at`,
 /// with its overflow tag; see [`overflow_record::record`].
@@ -124,6 +55,8 @@ pub(super) fn save(
 }
 
 pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError> {
+    // Issue #1962: set for each run, so a real cycle never inherits it.
+    ctx.read_only = mode == Mode::DryRun;
     if mode == Mode::DryRun {
         return dry_run(ctx);
     }
@@ -159,6 +92,11 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                 let reason = line.strip_prefix("ALERT: swap refused: ").unwrap_or(&line);
                 return Err(ProfileError::RotateRefused(reason.into()));
             }
+            return Ok(CycleOutcome::Alerted);
+        }
+        // Issue #1962: every cycle, and nothing is saved over the ledger.
+        Prelude::LedgerUnreadable { line } => {
+            out.emit(now(), &format!("ALERT: {line}"));
             return Ok(CycleOutcome::Alerted);
         }
         // Issue #1693: the prelude already wrote the guidance.
@@ -277,6 +215,11 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         ctx.rs.save_ledger(&l)?;
     }
     let mut swapped = None;
+    // Issue #2085: the swap record's time is when the swap finished, not the
+    // cycle's `t`, which is taken before revalidation and the swap. A session
+    // that stops on the outgoing login in between must read as stopped
+    // before the swap, or the limit-resume hook judges the record stale.
+    let mut swapped_at = t;
     let outcome = match decision {
         Decision::Swap { to, reason } => 'swap: {
             // Issue #1804: a refusal moves nothing and writes no journal.
@@ -324,11 +267,20 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                 }
                 Err(e) => return Err(e),
             };
+            swapped_at = now();
             swapped = Some([to.clone(), from.clone()]);
             let target = shown_of(&others_shown, &to);
             let seen = (next_plan_reset, unknown_plan.len());
             note_per_token(&mut out, &first, tag, &to, seen, check);
             out.emit(now(), &msg::swap(&from, &to, &live_shown, &target, reason));
+            if let Some(line) = amplihack_utils::organisation_affinity::Affinity::between(
+                first.source_org(),
+                first.org_of(&to),
+            )
+            .log_line(from.as_str(), to.as_str())
+            {
+                out.emit(now(), &line);
+            }
             let (off_key, onto_key) = (first.platform_live(), first.platform() == Some(&to));
             note_move(
                 &mut out,
@@ -386,6 +338,19 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     }
     let at = capacity::recorded_at(outcome, probed.as_ref(), measured_at);
     save(ctx, &mut l, outcome, now(), Some(at), tag)?;
+    // Issue #2085: the record the limit-resume hook waits for, under the lock.
+    if let Some([to, from]) = &swapped {
+        swap_record::after_swap(
+            &ctx.rs,
+            &mut out,
+            from,
+            to,
+            &others,
+            measured_at,
+            swapped_at,
+            (first.source_org(), first.org_of(to)),
+        );
+    }
     // Issue #1634: link the session dirs of both profiles swapped, after the
     // lock is released so a long merge never stalls a launch waiting on it.
     drop(lock);

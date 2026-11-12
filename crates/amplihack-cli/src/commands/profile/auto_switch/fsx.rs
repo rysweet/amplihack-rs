@@ -21,8 +21,9 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 pub use amplihack_utils::secure_files::{
-    check_private_dir, ensure_private_dir, euid, fsync_dir, invalid, read_bounded,
-    read_bounded_nofollow, writable_by_others, write_atomic_keep_mode, write_private_atomic,
+    PrivateTemp, check_private_dir, dir_writable_by_others, ensure_private_dir, euid, fsync_dir,
+    invalid, read_bounded, read_bounded_nofollow, writable_by_others, write_atomic_keep_mode,
+    write_private_atomic,
 };
 
 pub fn now() -> i64 {

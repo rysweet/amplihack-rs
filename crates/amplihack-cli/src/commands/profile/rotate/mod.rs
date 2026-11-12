@@ -1,7 +1,5 @@
-//! `amplihack profile rotate` (issue #1592): keeps the login in `~/.claude`
-//! on the account with the most capacity left, by moving logins between
-//! `~/.claude` and the profiles. One-shot, `--dry-run`, and a background
-//! `watch`; `profile switch NAME` uses the same swap and pins rotation.
+//! `amplihack profile rotate` (issue #1592): keeps the login in `~/.claude` on
+//! the account with the most capacity left; `profile switch` uses the same swap.
 //! See docs/reference/profile-command.md.
 #[cfg(unix)]
 mod account;
@@ -100,6 +98,8 @@ mod recover;
 #[cfg(unix)]
 mod revalidate;
 #[cfg(unix)]
+pub(super) mod seed;
+#[cfg(unix)]
 mod sessions_daily;
 #[cfg(unix)]
 mod settings;
@@ -117,6 +117,8 @@ mod swap_check;
 mod swap_expect;
 #[cfg(unix)]
 mod swap_finish;
+#[cfg(unix)]
+mod swap_record;
 #[cfg(unix)]
 mod switch;
 #[cfg(all(test, unix))]
@@ -203,11 +205,9 @@ pub(super) use self::{identify::is_live, observe::Probes, platform_block::platfo
 #[cfg(unix)]
 pub(in crate::commands::profile) use autostart::autostart_line;
 #[cfg(unix)]
-pub(super) use control::{clear_overflow_block, overflow_blocks};
-#[cfg(unix)]
-pub(super) use log::timestamp;
-#[cfg(unix)]
 pub(crate) use {autostart::autostart_on_launch, older_readers::warn_foreign_rotator};
+#[cfg(unix)]
+pub(super) use {control::clear_overflow_block, control::overflow_blocks, log::timestamp};
 
 // Auto-switch's overflow gate (`gate_record`): the running rotator's own
 #[cfg(all(test, unix))]
@@ -242,7 +242,7 @@ fn foreign_note_for(
 fn warn_switch_hold(root: &std::path::Path) {
     let exe = std::env::current_exe().ok();
     let rs = ledger::RotateState::new(root);
-    if let Some(note) = foreign_note_for(&rs, std::path::Path::new("/proc"), exe.as_deref()) {
+    if let Some(note) = foreign_note_for(&rs, &daemon::proc_root(), exe.as_deref()) {
         eprintln!("{note}");
     }
 }

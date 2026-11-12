@@ -8,8 +8,9 @@ pub use super::candidate::adjusted;
 pub use super::capacity::{Rotated, refresh_from_rotation as capacity_from_rotation};
 pub use super::config::{Source, effective};
 pub use super::fsx::{
-    check_root_private, ensure_private_dir, euid, exists, fsync_dir, movable_login, now,
-    read_bounded_nofollow, writable_by_others, write_atomic_keep_mode, write_private_atomic,
+    check_root_private, dir_writable_by_others, ensure_private_dir, euid, exists, fsync_dir,
+    movable_login, now, read_bounded_nofollow, writable_by_others, write_atomic_keep_mode,
+    write_private_atomic,
 };
 pub use super::liveness::{Liveness, scan_system};
 pub use super::mv::{

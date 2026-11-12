@@ -9,10 +9,12 @@
 
 use super::cycle::{Ctx, LOCK_WAIT};
 use super::handfix;
+use super::handfix_msg::ledger_unreadable;
 use super::identify::Skip;
 use super::log::{Sink, msg, open_or_warn};
 use super::observe::{Snap, live_alert, live_name, snapshot};
 use super::overflow_record::log_ignored;
+use super::seed;
 use super::swap::RecoverOutcome;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Lock, State, now, recover_auto_switch};
@@ -38,6 +40,12 @@ pub enum Prelude {
     LiveUnusable {
         kind: &'static str,
         live: Option<ProfileName>,
+        line: String,
+    },
+    /// Issue #1962: the rotate ledger cannot be read. The live login was
+    /// refreshed and read; `line` is the stop, without `ALERT: `. Nothing may
+    /// be saved over the ledger.
+    LedgerUnreadable {
         line: String,
     },
     /// Issue #1693, rotate cycle only: `~/.claude` was logged in by hand and
@@ -87,6 +95,11 @@ pub fn locked_prelude(
     // Issue #1753 (R1): after swap recovery, so no journal is pending, and
     // before anything reads the live login's identity, which never refreshes.
     live_refresh::refresh_expired_live(ctx, &mut out);
+    // Issue #1962: only after the refresh, so the stop names a fresh reading.
+    if let Err(e) = ctx.rs.load_ledger() {
+        let line = ledger_stop(ctx, &e);
+        return Ok((out, Prelude::LedgerUnreadable { line }));
+    }
     // Issue #1693: after swap recovery, so the ledger it reads is settled,
     // and before the snapshot, so the snapshot reads the recovered ledger.
     if hand_change && handfix::step(ctx, &state, &mut out, now())? == handfix::Step::Guided {
@@ -94,10 +107,17 @@ pub fn locked_prelude(
     }
     let first = snapshot(ctx, &state)?;
     log_skips(ctx, &mut out, &first);
-    for (name, why) in &first.skips {
-        if *why == Skip::NoAccount {
-            out.emit(now(), &format!("ALERT: trusted login identity unavailable for profile {name}; verify it before retrying"));
-        }
+    for (name, cause) in &first.candidate_refusals {
+        out.emit(
+            now(),
+            &format!("ALERT: trusted login identity unavailable for profile {name}: {cause}"),
+        );
+    }
+    // Issue #1962: a rotate cycle only; `profile switch` never seeds.
+    if hand_change && let Some(line) = seed::in_cycle(ctx, &state, &first, &mut out) {
+        let live = live_name(&first.live).cloned();
+        let kind = seed::SAME_ACCOUNT;
+        return Ok((out, Prelude::LiveUnusable { kind, live, line }));
     }
     if let Some((kind, line)) = live_alert(&first) {
         let live = live_name(&first.live).cloned();
@@ -106,6 +126,21 @@ pub fn locked_prelude(
     let first = Box::new(first);
     Ok((out, Prelude::Ready { lock, state, first }))
 }
+
+/// The stop for an unreadable rotate ledger, with a fresh reading of
+/// `~/.claude` and, when the load refused a field, which one (issue #1947).
+/// Shared with `--dry-run`, which runs it without a refresh.
+pub(super) fn ledger_stop(ctx: &Ctx, load: &ProfileError) -> String {
+    let read = ctx.identity_reader().oauth(&ctx.home.join(".claude"));
+    let cause = match read {
+        Ok(_) => LIVE_READABLE,
+        Err(cause) => cause,
+    };
+    ledger_unreadable(super::ledger::refused_field(load), cause)
+}
+
+/// The live-identity part of [`ledger_stop`] when `~/.claude` could be read.
+const LIVE_READABLE: &str = "readable";
 
 /// Logs the skipped profiles and the ignored prototype ledger when they
 /// differ from what this process last logged, and each API-key profile

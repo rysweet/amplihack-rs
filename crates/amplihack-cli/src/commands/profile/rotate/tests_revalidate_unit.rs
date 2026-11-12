@@ -33,6 +33,8 @@ fn base() -> Snap {
         account: Some("u-work".into()),
         trusted_live: None,
         identity_refusal: None,
+        identity_cause: None,
+        candidate_refusals: Vec::new(),
         candidates: vec![n("spare"), n("spare2"), n("third")],
         skips: vec![(n("work"), Skip::Live)],
         sees_sessions: true,

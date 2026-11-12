@@ -42,8 +42,12 @@
 #      base merge or a description or evidence change needs no re-review, and
 #      an unreadable range is left to step-01b and the merge gate, which block.
 #   2. On "true": the crusty loop, `autodrive_loop.sh --loop-name crusty` on
-#      the same state dir. When it ends DONE, autodrive_record_crusty_loop_done
-#      writes the resolved concern ids and the marker back.
+#      the same state dir, with MINOR_ONLY as a second clean token (#1979).
+#      When it ends DONE, `autodrive_followups.sh collect` adds the last
+#      round's minor findings to the follow-up set, files or verifies them,
+#      then autodrive_record_crusty_loop_done writes
+#      the resolved concern ids and the marker back. A failed collect writes
+#      no marker.
 #
 # Prints one JSON line on stdout:
 #   {"before_round_result":"<result>","range":"<token>","crusty_loop_result":"<token>"}
@@ -70,7 +74,7 @@
 set -uo pipefail
 export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
 
-REPO=""; REVIEW_DIR=""; DIR=""; PR=""; PR_URL_V=""; TASK_FILE=""; BUDGET_ARGS=()
+REPO=""; REVIEW_DIR=""; DIR=""; PR=""; PR_URL_V=""; TASK_FILE=""; TASK_ID=""; BUDGET_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) REPO="${2:-}"; shift 2 ;;
@@ -80,6 +84,7 @@ while [ $# -gt 0 ]; do
       case "${2:-}" in
         pr_number=*) PR="${2#*=}" ;;
         pr_url=*) PR_URL_V="${2#*=}" ;;
+        plan_task_id=*) TASK_ID="${2#*=}" ;;
         autodrive_budget_loop_rounds=*|autodrive_budget_total_rounds=*|autodrive_budget_wall_seconds=*)
           BUDGET_ARGS+=(--context "${2:-}") ;;
         autodrive_budget_*) echo "WARNING: autodrive_crusty_rereview.sh: '${2%%=*}' is not a budget key; it is not forwarded to the crusty loop." >&2 ;;
@@ -102,7 +107,7 @@ result() { # result <before_round_result> <range> <crusty_loop_result> <exit>
 }
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
-for t in autodrive_round_evidence.sh autodrive_loop.sh autodrive_state.sh autodrive_trust.sh; do
+for t in autodrive_round_evidence.sh autodrive_loop.sh autodrive_state.sh autodrive_trust.sh autodrive_followups.sh autodrive_crusty_finalize.sh; do
   [ -n "$HERE" ] && [ -f "$HERE/$t" ] && continue
   echo "ERROR: autodrive-tools-not-found: ${t} is not beside autodrive_crusty_rereview.sh (${HERE:-<unknown>})" >&2
   result crusty-rereview-unavailable not-checked "" 1
@@ -133,7 +138,7 @@ echo "INFO: commits after the clean crusty round need review; running the crusty
 OUT="$(bash "$HERE/autodrive_loop.sh" \
   --loop-name "crusty" \
   --round-recipe "autodrive-crusty-round" \
-  --clean-token "CLEAN" \
+  --clean-token "CLEAN" --also-clean-token MINOR_ONLY \
   --verdict-field "crusty_verdict" \
   --repo "$REPO" \
   --review-dir "$REVIEW_DIR" \
@@ -162,7 +167,10 @@ if [ "$RC" -ne 0 ] || [ "$LOOP_RESULT" != "DONE" ]; then
   echo "ERROR: the crusty re-review ended '${LOOP_RESULT:-unknown}' (rc=${RC}); the crusty-loop marker stays absent and criterion 3 is not met." >&2
   result crusty-rereview-not-done "$RANGE" "$LOOP_RESULT" 1
 fi
-autodrive_record_crusty_loop_done "$DIR" \
-  || { echo "ERROR: could not record the crusty re-review in the state dir." >&2; result crusty-rereview-not-done "$RANGE" DONE 1; }
+bash "$HERE/autodrive_crusty_finalize.sh" "$DIR" "$PR" "$TASK_ID" "$TASK_FILE"
+RC=$?
+[ "$RC" -ne 79 ] || result crusty-rereview-refused "$RANGE" TERMINAL_POLICY_REFUSAL 79
+[ "$RC" -eq 0 ] \
+  || { echo "ERROR: followups-unfiled: the crusty re-review could not finalize; marker stays absent." >&2; result crusty-rereview-not-done "$RANGE" DONE 1; }
 echo "INFO: the crusty re-review ended DONE; the crusty-loop marker is written back." >&2
 result crusty-rereview-done "$RANGE" DONE 0

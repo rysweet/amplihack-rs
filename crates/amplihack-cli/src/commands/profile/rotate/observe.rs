@@ -8,7 +8,7 @@ use super::identify::{self, Account, CandidateInput, LiveId, LoginKind, Skip};
 use super::key_check;
 use super::log::msg;
 use super::measure::{self, Live};
-use super::overflow::{OverflowInput, Tag, decide_overflow};
+use super::overflow::{OverflowInput, Tag};
 use super::pin::{self, PinState};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::now;
@@ -28,6 +28,10 @@ pub struct Snap {
     pub trusted_live: Option<Account>,
     /// A fixed, redacted authorization refusal, naming only the profile.
     pub identity_refusal: Option<String>,
+    /// Why `trusted_live` is empty: one of "Identity read causes".
+    pub identity_cause: Option<&'static str>,
+    /// Why each candidate skipped as `no account` had no trusted reading.
+    pub candidate_refusals: Vec<(ProfileName, &'static str)>,
     pub candidates: Vec<ProfileName>,
     pub skips: Vec<(ProfileName, Skip)>,
     pub sees_sessions: bool,
@@ -138,6 +142,8 @@ impl Snap {
     }
 }
 
+#[path = "affinity.rs"]
+pub(super) mod affinity;
 #[path = "observe_snapshot.rs"]
 mod take;
 pub use take::snapshot;
@@ -160,10 +166,11 @@ pub fn live_alert(snap: &Snap) -> Option<(&'static str, String)> {
         return Some((kind, format!("ALERT: swap refused: {reason}")));
     }
     if !snap.home_no_oauth && snap.trusted_live.is_none() && !matches!(snap.live, LiveId::NoLogin) {
-        return Some((
-            "trusted-identity",
-            format!("ALERT: {}", super::login_identity::UNAVAILABLE),
-        ));
+        let text = snap.identity_cause.map_or_else(
+            || super::login_identity::UNAVAILABLE.to_string(),
+            super::login_identity::unavailable_line,
+        );
+        return Some(("trusted-identity", format!("ALERT: {text}")));
     }
     live_alert_for(&snap.live, snap.home_no_oauth)
 }
@@ -262,10 +269,30 @@ pub(super) fn decide_measured(
         .iter()
         .map(|(name, p)| Measured::new(name.clone(), p))
         .collect();
+    let ledger = ctx.rs.load_ledger()?;
+    let t = now();
+    let blocked = |n: &ProfileName| {
+        ledger.as_ref().is_some_and(|l| {
+            l.overflow_blocked
+                .get(n.as_str())
+                .is_some_and(|b| t < b.until)
+                || (snap.platform() == Some(n)
+                    && l.platform_block.as_ref().is_some_and(|b| t < b.until))
+        })
+    };
+    let on_overflow =
+        live_name(&snap.live).is_some_and(|n| snap.overflow.iter().any(|e| &e.name == n));
+    let need = amplihack_utils::organisation_affinity::Need::of(
+        on_overflow,
+        !on_overflow && super::decide::needs_swap(&ctx.settings, &probe.reading),
+    );
+    let eligible: Vec<bool> = measured
+        .iter()
+        .map(|c| !c.spend_limit && !blocked(&c.name))
+        .collect();
     // A ledger that cannot be read ends the cycle here, before any move onto
     // credits: its spend blocks are unknown. Only a missing ledger means no
     // blocks.
-    let ledger = ctx.rs.load_ledger()?;
     let swapped_at = ledger.as_ref().and_then(|l| l.swapped_at);
     let platform_block = ledger.as_ref().and_then(|l| l.platform_block.clone());
     let blocks = ledger.map(|l| l.overflow_blocked).unwrap_or_default();
@@ -273,22 +300,23 @@ pub(super) fn decide_measured(
         LiveId::Known(n) => Some(n),
         _ => None,
     };
-    let t = now();
     let overflow = snap.decision_overflow();
     let unmeasured_plan = snap.unmeasured_plan();
-    let verdict = decide_overflow(&OverflowInput {
+    let refused = snap.refused_plan();
+    let input = OverflowInput {
         settings: &ctx.settings,
         live_name,
         live: &probe,
         candidates: &measured,
         unmeasured_plan: &unmeasured_plan,
-        refused: &snap.refused_plan(),
+        refused: &refused,
         overflow: &overflow,
         blocks: &blocks,
         platform_block: platform_block.as_ref(),
         swapped_at,
         now: t,
-    });
+    };
+    let verdict = affinity::decide(snap, &input, &measured, &eligible, need);
     // A spend limit on a live overflow profile is handled by its block, so
     // it does not count towards the failed live probes.
     let live_over = live_name.is_some_and(|n| overflow.iter().any(|e| &e.name == n));

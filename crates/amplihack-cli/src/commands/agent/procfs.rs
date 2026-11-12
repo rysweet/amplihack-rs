@@ -1,54 +1,25 @@
 //! Reading `/proc` (R3, R4, S2, S11): bounded parsers that never panic on
 //! hostile input, what counts as a `claude` process (A5), one snapshot of
-//! this user's live processes per pass (A11), and the test seam (S27).
+//! this user's live processes per pass (A11). The test seam (S27) is in
+//! `procfs/root.rs`.
+
+mod root;
 
 pub use super::claude_names::{CLAUDE, ClaudeNames, is_claude, is_claude_with};
-use amplihack_utils::secure_files::writable_by_others;
+pub use root::proc_root;
+#[cfg(test)]
+pub(crate) use root::{ProcRootOverride, checked_fake_tree, override_proc_root};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::ffi::OsStr;
 use std::fs;
 use std::io::Read;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 const STAT_LIMIT: u64 = 64 * 1024;
 const CMDLINE_LIMIT: u64 = 256 * 1024;
 const ENVIRON_LIMIT: u64 = 16 * 1024 * 1024;
-/// The first buffer for a `/proc` file. `/proc` reports a size of 0, so an
-/// empty buffer would grow from 32 bytes and take eight reads for a
-/// `status`; one page holds a whole `stat`, `status` or typical `cmdline`.
+/// The first buffer for a `/proc` file, which reports size 0: an empty buffer would grow from 32
+/// bytes over eight reads; one page holds a whole `stat`, `status` or typical `cmdline`.
 const FIRST_READ: usize = 4096;
-
-/// `/proc`, or the synthetic root a test names in `AMPLIHACK_TEST_PROC_ROOT`
-/// when every condition of [`proc_root_from`] holds.
-pub fn proc_root() -> PathBuf {
-    proc_root_from(
-        std::env::var_os("AMPLIHACK_TEST_PROC_ROOT").as_deref(),
-        std::env::var_os(crate::user_config::TEST_HOME_GUARD_ENV).as_deref(),
-        &std::env::temp_dir(),
-    )
-}
-
-/// The seam is honoured only under a non-empty test guard, for a path whose
-/// canonical form lies inside the canonical temp dir, and for a directory
-/// owned by this user that others cannot write (S27).
-pub fn proc_root_from(var: Option<&OsStr>, guard: Option<&OsStr>, temp_dir: &Path) -> PathBuf {
-    let real = PathBuf::from("/proc");
-    let (Some(var), true) = (var, guard.is_some_and(|g| !g.is_empty())) else {
-        return real;
-    };
-    let (Ok(root), Ok(temp)) = (Path::new(var).canonicalize(), temp_dir.canonicalize()) else {
-        return real;
-    };
-    let private = fs::metadata(&root).is_ok_and(|m| {
-        m.is_dir() && m.uid() == amplihack_utils::secure_files::euid() && !writable_by_others(&m)
-    });
-    if root.starts_with(&temp) && root != temp && private {
-        root
-    } else {
-        real
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stat {

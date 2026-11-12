@@ -13,8 +13,8 @@
 //! environment except [`Endpoints::from_env`], and nothing prints.
 
 use super::auto_switch::kit::{
-    CREDS, euid, read_bounded_nofollow, release_refresh_lock_at, take_refresh_lock_at,
-    writable_by_others,
+    CREDS, dir_writable_by_others, euid, read_bounded_nofollow, release_refresh_lock_at,
+    take_refresh_lock_at, writable_by_others,
 };
 use super::rotate::identify::Account;
 use super::usage_parse::UsageReport;
@@ -657,6 +657,12 @@ pub(super) fn refresh_expired(ep: &Endpoints, req: &Request<'_>) -> Result<bool,
     refresh(ep, req, &creds.access, deadline).map(|_| true)
 }
 
+/// Issue #1962: whether the token in `creds_dir` is at or past its expiry, so a
+/// `--dry-run` can say that a real cycle would refresh it. Sends nothing.
+pub(super) fn expired(creds_dir: &Path, now_ms: i64) -> bool {
+    load(creds_dir).is_ok_and(|c| c.expires_at_ms.is_some_and(|at| at <= now_ms))
+}
+
 /// The agent for the `GET`s. Its DNS lookups end at the read's deadline.
 fn agent(ep: &Endpoints, timeout: Duration, deadline: Deadline) -> ureq::Agent {
     let step = MAX_STEP
@@ -789,7 +795,7 @@ impl Drop for Held<'_> {
 /// else can write.
 fn dir_private(dir: &Path) -> bool {
     std::fs::symlink_metadata(dir)
-        .is_ok_and(|m| m.is_dir() && m.uid() == euid() && m.mode() & 0o022 == 0)
+        .is_ok_and(|m| m.is_dir() && m.uid() == euid() && !dir_writable_by_others(dir, &m))
 }
 
 fn journal_present(journals: &[PathBuf]) -> bool {

@@ -1,5 +1,6 @@
 //! `--dry-run`: the preview of a cycle, built from the same measurements and
-//! decision without a lock or a write.
+//! decision without a lock or a write. Issue #1962: read-only on every read
+//! path, so it never refreshes a token and never starts `claude`.
 
 use super::cycle::{Ctx, CycleOutcome};
 use super::decide::Decision;
@@ -12,9 +13,12 @@ use super::observe::{
 };
 use super::overflow_record::{alert_line, target_check};
 use super::pin::{self, Gate as PinGate};
+use super::prelude::ledger_stop;
+use super::seed;
 use super::swap;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{State, exists, now};
+use crate::commands::profile::usage_direct;
 
 /// The outcome `--dry-run` reports for `decision`, matching the line it
 /// printed. It is not always what a live cycle would record: a live stay
@@ -54,6 +58,15 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         }
     }
     let state = State::new(ctx.store.root())?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    if usage_direct::expired(&ctx.home.join(".claude"), now_ms) {
+        out.emit(0, "would refresh: expired login in ~/.claude");
+    }
+    // Issue #1962: as a real cycle stops, after what its refresh would do.
+    if let Err(e) = ctx.rs.load_ledger() {
+        out.emit(0, &format!("would alert: {}", ledger_stop(ctx, &e)));
+        return Ok(CycleOutcome::Alerted);
+    }
     // Issues #1693, #1886: what hand-change recovery would do, from the same
     // identity reads; it stops here unless it could only not tell.
     let env_for = || handfix::Env::system(ctx.store.root(), &state, ctx.scan);
@@ -68,6 +81,9 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         return Ok(CycleOutcome::Alerted);
     }
     let snap = snapshot(ctx, &state)?;
+    if seed::preview(ctx, &state, &snap, &mut out) {
+        return Ok(CycleOutcome::Alerted);
+    }
     if let Some((_, line)) = live_alert(&snap) {
         let text = line.strip_prefix("ALERT: ").unwrap_or(&line);
         out.emit(0, &format!("would alert: {text}"));

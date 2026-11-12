@@ -1,6 +1,12 @@
 //! Recognize command positions without rewriting caller arguments.
 use std::io::{self, ErrorKind};
 
+use super::codex_options;
+
+/// Options of interactive `codex resume` and older releases that no saved
+/// help in `codex_options` lists. They take no value.
+const UNLISTED_FLAGS: &[&str] = &["--include-non-interactive", "--full-auto", "--prompt"];
+
 pub(super) struct Mode {
     pub exec: bool,
     pub resume: bool,
@@ -65,29 +71,10 @@ pub(super) fn classify(args: &[String]) -> io::Result<Mode> {
                 index += 1;
                 continue;
             }
-            let long_value = [
-                "--ask-for-approval",
-                "--model",
-                "--profile",
-                "--config",
-                "--sandbox",
-                "--cd",
-                "--image",
-                "--add-dir",
-                "--enable",
-                "--disable",
-                "--local-provider",
-                "--output-last-message",
-                "--output-schema",
-                "--color",
-                "--thread-source",
-                "--remote",
-                "--remote-auth-token-env",
-            ]
-            .contains(&name);
-            let short_value = ["-a", "-m", "-p", "-c", "-s", "-C", "-i", "-o"]
-                .iter()
-                .any(|prefix| arg.starts_with(prefix));
+            // `-mvalue` carries its value; `-m` takes the next word.
+            let short_name = arg.get(..2).filter(|_| !arg.starts_with("--"));
+            let long_value = arg.starts_with("--") && codex_options::takes_value(name);
+            let short_value = short_name.is_some_and(codex_options::takes_value);
             if (long_value && !arg.contains('=')) || (short_value && arg.len() == 2) {
                 index += 1;
                 if index == args.len() {
@@ -98,33 +85,8 @@ pub(super) fn classify(args: &[String]) -> io::Result<Mode> {
                 }
             } else if !long_value
                 && !short_value
-                && ![
-                    "--strict-config",
-                    "--approve-for-me",
-                    "--dangerously-bypass-hook-trust",
-                    "--worktree",
-                    "--ignore-user-config",
-                    "--ignore-rules",
-                    "--last",
-                    "--all",
-                    "--full-auto",
-                    "--dangerously-bypass-approvals-and-sandbox",
-                    "--yolo",
-                    "--oss",
-                    "--search",
-                    "--no-alt-screen",
-                    "--no-daemon",
-                    "--include-non-interactive",
-                    "--skip-git-repo-check",
-                    "--ephemeral",
-                    "--json",
-                    "--help",
-                    "-h",
-                    "--version",
-                    "-V",
-                    "--prompt",
-                ]
-                .contains(&name)
+                && !codex_options::is_flag(name)
+                && !UNLISTED_FLAGS.contains(&name)
             {
                 return Err(io::Error::new(
                     ErrorKind::InvalidInput,

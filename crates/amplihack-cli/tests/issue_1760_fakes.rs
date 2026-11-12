@@ -93,7 +93,7 @@ exit 0
 "#;
 
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
-case "$1" in --version) echo '2.1.314 (Claude Code)'; exit 0 ;; esac
+case "$1" in --version) echo '2.1.319 (Claude Code)'; exit 0 ;; esac
 d='@RECORDS@'
 echo "$$" > "$d/claude.pid"
 : > "$d/claude.argv"; for a in "$@"; do printf '%s\0' "$a" >> "$d/claude.argv"; done

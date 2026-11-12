@@ -78,6 +78,7 @@ pub(super) fn alert(
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
     if kind == "trusted-identity"
         || kind == "account_mismatch"
+        || kind == super::seed::SAME_ACCOUNT
         || line.contains("trusted login identity")
     {
         // Always written, unlike `alert_once`, but stored as `should_alert`

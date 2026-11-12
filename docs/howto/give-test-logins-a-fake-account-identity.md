@@ -1,8 +1,8 @@
 ---
 title: Give Test Logins a Fake Account Identity
 type: howto
-updated: 2026-11-04
-related: issue #1753, issue #1693, issue #1699
+updated: 2026-11-07
+related: issue #1753, issue #1693, issue #1699, issue #1946
 ---
 
 # Give Test Logins a Fake Account Identity
@@ -26,6 +26,7 @@ names partway through a test.
 - [Choose a helper](#choose-a-helper)
 - [Use the rotate fixture](#use-the-rotate-fixture)
 - [Use `give_logins` in other fixtures](#use-give_logins-in-other-fixtures)
+- [Seed a login in a rotate unit test](#seed-a-login-in-a-rotate-unit-test)
 - [Change the account a login names](#change-the-account-a-login-names)
 - [Test a profile with no recorded account](#test-a-profile-with-no-recorded-account)
 - [Test that a command creates no state](#test-that-a-command-creates-no-state)
@@ -38,11 +39,12 @@ names partway through a test.
 |---|---|---|
 | `Fixture::new()` from the rotate support (profiles `work`, `spare`, `extra`) | Built in. `login(path)` writes each credential and the fixture starts its own endpoint. | `crates/amplihack-cli/tests/support/profile_rotate.rs` |
 | Its own fixture with named profiles under a temp `HOME` | `give_logins(home, root, live, stored)` | `crates/amplihack-cli/tests/support/profile_default.rs` |
+| A unit test inside `commands/profile/rotate` | `tests_fixture_identity::body(path)` to seed, `tests_fixture_identity::read(dir)` to identify | `crates/amplihack-cli/src/commands/profile/rotate/tests_fixture_identity.rs` |
 
-Both helpers bind their endpoint to `127.0.0.1` on a free port, accept only
+The two integration helpers bind their endpoint to `127.0.0.1` on a free port, accept only
 tokens that start with their own fake prefix, and stop the server when the
-owner is dropped. Neither reads the real `HOME`. `login(path)` and
-`give_logins` assert that every path they write is under the system temp
+owner is dropped. Neither reads the real `HOME`. The integration
+`login(path)` and `give_logins` assert that every path they write is under the system temp
 directory. `private_file(..)` does not check its path, so build the path
 from the fixture's `home` or `root`.
 
@@ -116,6 +118,74 @@ impl Fixture {
 
 `configure` sets `AMPLIHACK_PROFILE_USAGE_API_BASE` and
 `AMPLIHACK_PROFILE_USAGE_TOKEN_URL` to the guard's loopback address.
+
+## Seed a login in a rotate unit test
+
+Unit tests in `crates/amplihack-cli/src/commands/profile/rotate` do not
+start an endpoint. Under `cfg(test)`, `cred_identity::DEFAULT_READ` is
+`tests_fixture_identity::read`, which takes the account from a synthetic
+`task1753FakeIdentity` block in the credential file itself. Write each
+credential with `tests_fixture_identity::body(path)`. Existing tests
+already do this, for example `tests_live_readers.rs`,
+`tests_adopt_unreadable.rs` and the `login(path)` helpers in
+`tests_swap.rs` and `tests_identify.rs`. Import the module by its full path, which works
+from any module under `rotate`:
+
+```rust
+use crate::commands::profile::rotate::tests::tests_fixture_identity::{body, read};
+
+let tmp = tempfile::tempdir().unwrap();
+let creds = tmp.path().join("home/.claude/.credentials.json");
+std::fs::create_dir_all(creds.parent().unwrap()).unwrap();
+std::fs::write(&creds, body(&creds)).unwrap();
+assert_eq!(read(&tmp.path().join("home/.claude")).unwrap().key(), "u-work");
+```
+
+`body(path)` returns the credential JSON: token `SENTINEL`, and the
+account named in the session's `.claude.json`. When the credential's
+directory ends in `.claude`, the session is that directory's parent, so
+`<tmp>/home/.claude` reads `<tmp>/home/.claude.json`; otherwise the session
+is the directory itself, so a stored profile `<tmp>/root/<name>` reads
+`<tmp>/root/<name>/.claude.json`. When that file names no account, it uses
+`u-<name>` with `<name>@example.com`, where `<name>` is `work` for any
+directory ending in `.claude` and the directory name otherwise.
+
+`body(path)` also registers the fixture's root, the first directory below
+the system temp directory (`<tmp>` above), as a directory the reader may
+open. Registration is never removed, even after the `TempDir` is deleted;
+tempfile names are random, so reuse is unlikely.
+
+`body(path)` panics when `path`:
+
+- is not under the system temp directory;
+- contains a `..` component;
+- lies directly in the system temp directory, so that the temp directory
+  itself would become the root.
+
+`read(dir)` returns `Err("not a task fixture")`, without opening any file,
+unless `dir` is absolute, contains no `..` component and lies at or below a
+registered root. The comparison is by whole path component and nothing is
+canonicalised, so each of these is refused even when it holds a valid
+credential:
+
+| Directory passed to `read` | Why it is refused |
+|---|---|
+| A `tempfile::tempdir()` that no `body()` call has seeded | Not registered |
+| `<tmp>/home/../../<other tempdir>` | Contains `..` |
+| `<tmp>xyz`, a sibling whose name starts with the fixture's name | A different component from `<tmp>` |
+
+The remaining errors are unchanged: `"fake login missing"`,
+`"fake login invalid"`, `"fake identity missing"` and
+`"fake identity invalid"`.
+
+A credential written by any means other than `body()` is identifiable only
+if some `body()` call has already registered its fixture root. A swap that
+moves a login between `<tmp>/home/.claude` and `<tmp>/root/<name>` stays
+readable, because both lie under the same root. If a new fixture needs the
+reader for a directory that `body()` has not seeded, seed one credential in
+it with `body()`. Do not widen the check in `read()`: before #1946 it
+accepted any directory under the system temp directory, including other
+tests' fixtures.
 
 ## Change the account a login names
 
@@ -235,15 +305,24 @@ assert!(
 
 ## Check your test
 
-Run the test by name, then its whole module and the line budget, through
-the same wrapper the pre-push hook uses. The wrapper runs the command it is
-given, so name `cargo` first:
+Run every command below through the same wrapper the pre-push hook uses.
+The wrapper runs the command it is given, so name `cargo` first.
+
+For an integration test, run the test by name, then its whole module and
+the line budget:
 
 ```bash
 nice -n 15 ionice -c3 scripts/git-hook-cargo.sh cargo test -p amplihack-cli --test cli_integration \
   issue_1592_oneshot::an_unknown_login_is_adopted_as_default_original
 nice -n 15 ionice -c3 scripts/git-hook-cargo.sh cargo test -p amplihack-cli --test cli_integration \
   issue_1592_oneshot cycle2_module_budget
+```
+
+For a rotate unit test, run the module's unit tests:
+
+```bash
+nice -n 15 ionice -c3 scripts/git-hook-cargo.sh cargo test -p amplihack-cli --lib \
+  commands::profile::rotate
 ```
 
 Then search the diff for real paths and tokens. This is a minimal check,
@@ -262,5 +341,6 @@ or be explained in the pull request.
 
 - [`amplihack profile` reference](../reference/profile-command.md#identity-and-duplicate-logins) - Account identity, recorded accounts and the duplicate-login warning
 - [Claude profile rotation](./claude-profile-rotation.md) - How rotation uses login-bound identity
+- [Keep Tests Passing Under Host Load](./keep-tests-passing-under-host-load.md#rotator-tests) - The identity knobs `Fixture::base` sets, and how to test budget exhaustion
 - [Keep Tests out of the Real Profile Root](./keep-tests-out-of-the-real-profile-root.md) - `isolated(..)` and the real-root guard
 - [Keep Tests from Changing PATH and HOME](./keep-tests-from-changing-path-and-home.md) - Giving a child its own `HOME`

@@ -697,6 +697,9 @@ mod capacity_warning {
         let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
+        // The run folder goes under a private work root, not the caller's
+        // (issue #2067).
+        let _work_root = crate::test_support::IsolatedWorkRoot::new();
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
         let root = tmp.path().join("profiles");
@@ -723,7 +726,7 @@ mod capacity_warning {
         std::fs::write(
             &runner,
             format!(
-                "#!/bin/sh\n: > '{}'\n\
+                "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\n: > '{}'\n\
                  printf '%s' '{{\"recipe_name\":\"probe\",\"success\":true,\"step_results\":[],\"context\":{{}}}}'\n",
                 ran.display()
             ),
@@ -736,12 +739,8 @@ mod capacity_warning {
             "name: probe\nsteps:\n  - id: echo\n    type: bash\n    command: echo hi\n",
         )
         .unwrap();
-        let _orchestration = crate::test_support::EnvGuard::unset([
-            "AMPLIHACK_SESSION_TREE_DIR",
-            "AMPLIHACK_TREE_ID",
-            "AMPLIHACK_MAX_DEPTH",
-            "AMPLIHACK_RECIPE_RUN_ID",
-        ]);
+        // #1984: the outer run's identity is cleared; the depth under test is set below.
+        let _orchestration = crate::test_support::clear_outer_run_env();
         let _env = crate::test_support::EnvGuard::set([
             ("HOME", home.to_str().unwrap()),
             ("AMPLIHACK_CLAUDE_PROFILE_ROOT", root.to_str().unwrap()),
@@ -805,6 +804,129 @@ mod capacity_warning {
         ] {
             let (out, _) = run_with_capacity(state, toggle, depth);
             assert!(!out.contains("Claude accounts"), "{why}: {out}");
+        }
+    }
+}
+
+// -------------------------------------------------------------------------
+// Issue #1976 (decision 17.113): the removed `should_publish` context key.
+//
+// The key is the text before the first `=`, trimmed and compared exactly.
+// Every value is refused. The message names the key once and never the value.
+// -------------------------------------------------------------------------
+mod issue_1976_removed_keys {
+    use super::super::removed_keys::{
+        REMOVED_CONTEXT_KEYS, reject_removed_context_keys, removed_key,
+    };
+
+    fn reject(pairs: &[&str]) -> (Option<i32>, String) {
+        let pairs: Vec<String> = pairs.iter().map(|p| (*p).to_string()).collect();
+        let mut out = Vec::new();
+        let code = reject_removed_context_keys(&pairs, &mut out)
+            .err()
+            .map(|e| crate::command_error::exit_code(&e).expect("a CliExitError"));
+        (code, String::from_utf8(out).expect("utf-8 message"))
+    }
+
+    #[test]
+    fn the_table_lists_should_publish() {
+        assert!(
+            REMOVED_CONTEXT_KEYS
+                .iter()
+                .any(|(key, _)| *key == "should_publish"),
+            "{REMOVED_CONTEXT_KEYS:?}"
+        );
+    }
+
+    #[test]
+    fn every_value_of_should_publish_is_matched() {
+        for arg in [
+            "should_publish=false",
+            "should_publish=true",
+            "should_publish=True",
+            "should_publish=no",
+            "should_publish=0",
+            "should_publish=",
+            "should_publish=a=b",
+            "should_publish",
+        ] {
+            assert_eq!(removed_key(arg), Some("should_publish"), "{arg:?}");
+        }
+    }
+
+    #[test]
+    fn whitespace_around_the_key_is_trimmed() {
+        for arg in [
+            " should_publish=false",
+            "should_publish =false",
+            "\tshould_publish\t=true",
+        ] {
+            assert_eq!(removed_key(arg), Some("should_publish"), "{arg:?}");
+        }
+    }
+
+    #[test]
+    fn other_keys_are_not_matched() {
+        for arg in [
+            "should_publish_extra=false",
+            "xshould_publish=false",
+            "Should_Publish=false",
+            "SHOULD_PUBLISH=false",
+            "task_description=should_publish=false",
+            "terminal_state.should_publish=false",
+            "create_issue=false",
+            "",
+            "=should_publish",
+        ] {
+            assert_eq!(removed_key(arg), None, "{arg:?}");
+        }
+    }
+
+    #[test]
+    fn a_removed_key_fails_with_exit_1_and_the_decided_message() {
+        let (code, out) = reject(&["task_description=x", "should_publish=false"]);
+        assert_eq!(code, Some(1), "{out}");
+        assert_eq!(
+            out.trim_end(),
+            "Error: context key 'should_publish' was removed by #1976 (decision 17.113). \
+             It never stopped a run from publishing; do not rely on it. \
+             Remove '-c should_publish=…' from the command."
+        );
+        for needle in ["should_publish", "removed", "#1976"] {
+            assert!(out.contains(needle), "missing {needle:?}: {out}");
+        }
+    }
+
+    #[test]
+    fn a_key_passed_twice_is_named_once() {
+        let (code, out) = reject(&["should_publish=false", " should_publish = true"]);
+        assert_eq!(code, Some(1));
+        assert_eq!(out.lines().count(), 1, "{out}");
+        assert_eq!(
+            out.matches("context key 'should_publish'").count(),
+            1,
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn the_value_is_never_echoed() {
+        let (code, out) = reject(&["should_publish=SECRET123"]);
+        assert_eq!(code, Some(1));
+        assert!(!out.contains("SECRET123"), "{out}");
+        assert!(!out.contains("should_publish=SECRET"), "{out}");
+    }
+
+    #[test]
+    fn no_removed_key_passes_and_writes_nothing() {
+        for pairs in [
+            &[][..],
+            &["task_description=publish should_publish=false"][..],
+            &["should_publish_extra=1", "Should_Publish=false"][..],
+        ] {
+            let (code, out) = reject(pairs);
+            assert_eq!(code, None, "{pairs:?}: {out}");
+            assert!(out.is_empty(), "{pairs:?}: {out}");
         }
     }
 }

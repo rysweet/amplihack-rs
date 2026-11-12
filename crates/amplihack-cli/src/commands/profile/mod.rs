@@ -24,21 +24,30 @@ mod kind;
 #[cfg(unix)]
 mod limit_wait;
 #[cfg(unix)]
+mod organisation;
+/// Issue #2030: Commander option arity, for the `amplihack claude` passthrough rewrite.
+pub(crate) use limit_wait::claude_args::option_end as claude_option_end;
+#[cfg(unix)]
 mod login_check;
 mod name;
 mod overflow;
 mod pointer;
 mod probe_limits;
+mod probe_logs;
+mod probe_sandbox;
 mod root_cmd;
 mod root_config;
 mod rotate;
 mod rotate_args;
 mod run;
+#[cfg(unix)]
+mod seed_cmd;
 mod settings_refresh;
 mod shared_dirs;
 mod store;
 mod supervise_gate;
 mod usage_cmd;
+mod usage_codex;
 #[cfg(unix)]
 mod usage_direct;
 mod usage_history;
@@ -81,6 +90,10 @@ mod tests_name;
 mod tests_pointer;
 #[cfg(test)]
 mod tests_probe_limits;
+#[cfg(all(test, unix))]
+mod tests_probe_logs;
+#[cfg(all(test, unix))]
+mod tests_probe_sandbox;
 #[cfg(test)]
 mod tests_root_config;
 #[cfg(test)]
@@ -97,6 +110,8 @@ mod tests_shared_dirs;
 mod tests_store;
 #[cfg(test)]
 mod tests_usage_cmd;
+#[cfg(test)]
+mod tests_usage_codex;
 #[cfg(all(test, unix))]
 mod tests_usage_direct;
 #[cfg(all(test, unix))]
@@ -217,6 +232,9 @@ pub enum ProfileError {
     RotateRefused(String),
     #[error("profile verify: {0}")]
     Verify(String),
+    /// `profile seed-record` refused: the whole line, reason included.
+    #[error("{0}")]
+    SeedRefused(String),
     #[error("rotate state is inconsistent: {0}")]
     RotateInconsistent(String),
     #[error("rotation gate did not settle")]
@@ -309,6 +327,9 @@ impl ProfileError {
             }
             Self::Verify(_) => {
                 "nothing was moved; see \"profile verify\" in docs/reference/profile-command.md"
+            }
+            Self::SeedRefused(_) => {
+                "nothing was moved; see \"profile seed-record\" in docs/reference/profile-command.md"
             }
             Self::RotateInconsistent(_) => {
                 "see the Recovery section of docs/howto/claude-profile-rotation.md"
@@ -428,11 +449,28 @@ pub enum ProfileCommands {
         args: Vec<String>,
     },
     /// Show each profile's weekly and session usage as a bar view, in the
-    /// order the rotator ranks headroom
+    /// order the rotator ranks headroom, then each Codex account's live
+    /// rate limits
+    ///
+    /// Rate: the capacity summary's rate covers the last 6 h. It starts at
+    /// the oldest history entry in that window written by `profile usage`
+    /// (which tried every login; one it could not read is left out of the
+    /// rate), or written by the rotator and holding every login read now.
+    /// That start entry must itself be at least 4.5 h old, or the rate and
+    /// runway are unknown. Only logins read at both ends count. Each login
+    /// counts its net rise within each week, and a week resets when its
+    /// reset time passes or its figure falls by more than 10 points, so a
+    /// smaller fall adds nothing and the rate is never negative. Each
+    /// login's use is weighted by its capacity weight.
+    ///
+    /// Passive: a stored reading younger than 300 s
+    /// (AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS, at most 3600) is used
+    /// without starting claude; the ~/.claude row and
+    /// AMPLIHACK_PROFILE_USAGE_PROBE=auto or text always probe.
     Usage {
-        /// Profiles to probe (default: all)
+        /// Profiles to probe (default: all, and the Codex accounts)
         names: Vec<String>,
-        /// Print a JSON array instead of the bar view
+        /// Print the profile rows as one JSON array (Claude only; the Codex rows are in --summary-json)
         #[arg(long)]
         json: bool,
         /// Print the previous 7-column table instead of the bar view
@@ -441,7 +479,12 @@ pub enum ProfileCommands {
         /// Show reset times in UTC instead of local time (bar view only)
         #[arg(long, conflicts_with_all = ["json", "table", "summary_json"])]
         utc: bool,
-        /// Print one JSON object: the --json rows and the capacity summary
+        /// Print one JSON object: the --json Claude rows, the capacity summary
+        /// and the Codex rows.
+        /// Its rate covers the last 6 h, starts at the oldest entry in that
+        /// window from `profile usage` or from a rotator cycle holding every
+        /// login read now, needs that entry to be at least 4.5 h old, and is
+        /// weighted
         #[arg(long, conflicts_with_all = ["json", "raw"])]
         summary_json: bool,
         /// Also print what `claude` wrote to stdout and stderr
@@ -480,11 +523,30 @@ pub enum ProfileCommands {
         #[arg(long)]
         fix: bool,
     },
+    /// Show the account a profile with no record would be recorded with, from one
+    /// fresh reading; --write records it. Moves no login
+    #[cfg(unix)]
+    SeedRecord {
+        name: String,
+        /// Write the record, under the rotate lock; never replaces a record
+        #[arg(long)]
+        write: bool,
+    },
     /// Show or override each profile's kind: subscription or api-key (billed per token)
     #[cfg(unix)]
     Kind {
         #[command(subcommand)]
         command: kind::KindCommand,
+    },
+    /// Delete the session logs old usage probes left in ~/.claude/projects
+    /// (never run automatically; try --dry-run first)
+    PruneProbeLogs {
+        /// Folder to clean (default: $HOME/.claude/projects/<encoded $HOME>)
+        #[arg(long)]
+        dir: Option<String>,
+        /// List the matching files and delete nothing
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Status-line wrapper run by Claude Code (installed by `auto-switch install`)
     #[command(hide = true)]
@@ -508,6 +570,20 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
     // stdout, and its exit code is the original status line's.
     if let ProfileCommands::Statusline { root, owner } = &cmd {
         std::process::exit(auto_switch::statusline(root.as_deref(), owner.as_deref()));
+    }
+    // Needs no profile store: it reads only the shared projects folder.
+    if let ProfileCommands::PruneProbeLogs { dir, dry_run } = &cmd {
+        let code = probe_logs::run(
+            dir.as_deref().map(std::path::Path::new),
+            *dry_run,
+            std::env::var_os("HOME").as_deref(),
+            &mut std::io::stdout().lock(),
+            &mut std::io::stderr().lock(),
+        );
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
     }
     // Before the root is resolved, so it can repair a damaged saved root.
     if let ProfileCommands::Root { dir } = cmd {
@@ -638,6 +714,8 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
         ProfileCommands::Rotate(args) => rotate::run(&store, source, *args)?,
         ProfileCommands::Overflow { command } => overflow::run(&store, command)?,
         #[cfg(unix)]
+        ProfileCommands::SeedRecord { name, write } => seed_cmd::run(&store, &name, write)?,
+        #[cfg(unix)]
         ProfileCommands::Verify { fix } => {
             let s = verify_cmd::run(&store, fix)?;
             if s.mismatches > s.moved {
@@ -651,7 +729,9 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
         ProfileCommands::Kind { command } => {
             kind::run(&store, command, usage_cmd::home_dir().as_deref())?
         }
-        ProfileCommands::Statusline { .. } | ProfileCommands::Root { .. } => {
+        ProfileCommands::Statusline { .. }
+        | ProfileCommands::Root { .. }
+        | ProfileCommands::PruneProbeLogs { .. } => {
             unreachable!("handled above")
         }
     }
@@ -767,7 +847,11 @@ fn docker_env_active() -> bool {
 
 /// Profiles are not applied in Docker; fail closed rather than drop the profile.
 pub(super) fn reject_docker_env() -> Result<()> {
-    match unsupported_mode(false, docker_env_active(), false) {
+    reject_docker_mode(docker_env_active())
+}
+
+fn reject_docker_mode(active: bool) -> Result<()> {
+    match unsupported_mode(false, active, false) {
         Some(e) => Err(with_hint(e)),
         None => Ok(()),
     }

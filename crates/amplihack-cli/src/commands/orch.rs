@@ -21,6 +21,7 @@ use std::path::PathBuf;
 
 use crate::commands::multitask;
 
+mod autodrive_completion;
 mod named_branch;
 mod select_workflow;
 mod workflow_log_inventory;
@@ -47,6 +48,17 @@ pub enum OrchCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum OrchHelperCommands {
+    /// Prepare driver-owned identity and completion dispatch context.
+    AutodriveCompletionPrepare(autodrive_completion::Prepare),
+    /// Seal the round evidence before the next-action agent runs.
+    AutodriveCompletionSeal {
+        #[arg(long)]
+        private_state: PathBuf,
+    },
+    /// Atomically write the agent's typed next action.
+    AutodriveCompletionWrite(autodrive_completion::Write),
+    /// Validate the decision and complete or launch the convergence evaluator.
+    AutodriveCompletionDispatch(autodrive_completion::Dispatch),
     /// Read stdin, print the first complete JSON object found in it.
     ///
     /// Mirrors `orch_helper.extract_json`. Tries, in order: ```json blocks,
@@ -494,6 +506,14 @@ fn read_bounded_stdin() -> String {
 /// CLI entry point for `amplihack orch helper <subcommand>`.
 pub fn run(command: OrchHelperCommands) -> Result<()> {
     match command {
+        OrchHelperCommands::AutodriveCompletionPrepare(args) => autodrive_completion::prepare(args),
+        OrchHelperCommands::AutodriveCompletionSeal { private_state } => {
+            autodrive_completion::seal(private_state)
+        }
+        OrchHelperCommands::AutodriveCompletionWrite(args) => autodrive_completion::write(args),
+        OrchHelperCommands::AutodriveCompletionDispatch(args) => {
+            autodrive_completion::dispatch(args)
+        }
         OrchHelperCommands::ExtractJson { require_field } => {
             let input = read_stdin()?;
             let found = match require_field.as_deref() {
@@ -872,13 +892,25 @@ pub fn build_workstreams_config_with_override(
             .unwrap_or(&name)
             .to_string();
         let recipe = normalise_workstream_recipe(ws, top_level_task_type, override_workflow);
-        entries.push(serde_json::json!({
+        let mut entry = serde_json::json!({
             "issue": "TBD",
             "branch": format!("feat/orch-{idx}-{slug}"),
             "description": name,
             "task": task,
             "recipe": recipe,
-        }));
+        });
+        // Issue #1966: copy is_critical_code through for the consensus
+        // workflow to validate. A string is kept as is and a Boolean becomes
+        // "true" or "false"; any other type is left out.
+        let criticality = match ws.get("is_critical_code") {
+            Some(serde_json::Value::String(s)) => Some(s.clone()),
+            Some(serde_json::Value::Bool(b)) => Some(b.to_string()),
+            _ => None,
+        };
+        if let Some(v) = criticality {
+            entry["is_critical_code"] = serde_json::Value::String(v);
+        }
+        entries.push(entry);
     }
 
     let dir = std::env::temp_dir();
@@ -956,6 +988,11 @@ pub fn is_known_type(label: &str) -> bool {
         label,
         "Q&A" | "Operations" | "Investigation" | "Development"
     )
+}
+
+#[cfg(test)]
+pub(crate) fn autodrive_health_verdict(log: &str) -> &'static str {
+    autodrive_completion::health_verdict(log)
 }
 
 #[cfg(test)]

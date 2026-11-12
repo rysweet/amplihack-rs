@@ -816,6 +816,7 @@ fn an_existing_entry_directory_is_an_error_and_nothing_moves_into_it() {
 
 #[test]
 fn a_lease_taken_while_claude_runs_stops_the_check_without_moving_anything() {
+    let _proc = crate::test_support::proc::fake_proc_scope();
     // S-1: the lease check runs again after the child exits.
     use super::auto_switch::kit::{Ledger, State};
     let e = env();

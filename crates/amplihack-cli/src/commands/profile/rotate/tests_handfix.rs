@@ -159,6 +159,9 @@ fn fx_at(home_rel: &str, l_own: bool, m_own: bool, capacity: bool) -> Fx {
     let tmp = tempfile::tempdir().unwrap();
     fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let base = tmp.path().canonicalize().unwrap();
+    // #1946: `Fx::answer` writes the synthetic identity itself, not through
+    // `body()`, so the fixture registers its root with the test reader here.
+    super::tests::tests_fixture_identity::own_root(&base);
     let home = base.join(home_rel);
     let root = base.join("root");
     let store = ProfileStore::new(root.clone());
@@ -983,7 +986,7 @@ fn guidance_repeats_every_cycle_until_resolved() {
 fn a_note_is_written_once_and_cleared_by_a_clear_finding() {
     let f = fx(true, false);
     f.answer("~/.claude", Err(reason::HTTP_429));
-    let note = msg::note_unsure(&n(L), &super::cred_identity::Why::HomeFailed);
+    let note = msg::note_unsure(&n(L), &super::cred_identity::Why::Home(reason::HTTP_429));
     for k in 0..3 {
         assert_eq!(f.step(&seam(), T + GAP * k), Step::Noted);
     }

@@ -168,7 +168,9 @@ fn an_unreadable_home_account_retries_and_the_next_cycle_recovers() {
     let alerts: Vec<String> = f
         .logged()
         .into_iter()
-        .filter(|l| !l.starts_with("skip: "))
+        // Issue #1962: this ledger has no login identity and `L` no record, so the
+        // cycle also notes why it cannot seed. That line is not a fix line.
+        .filter(|l| !l.starts_with("skip: ") && !l.starts_with("note: no record for live"))
         .collect();
     assert_eq!(alerts, vec![msg::home_unreadable(&n(L))], "no fix lines");
 
@@ -194,6 +196,7 @@ fn an_unreadable_home_account_retries_and_the_next_cycle_recovers() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_profile_switch_is_never_taken_for_a_hand_change() {
+    let _proc = crate::test_support::proc::fake_proc_scope();
     let f = fx(false, true);
     // A correct ledger: ~/.claude holds M's login.
     let mut l = f.ledger();

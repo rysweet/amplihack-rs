@@ -32,6 +32,38 @@ mod issue_1753_expired_live;
 mod issue_1753_login_identity;
 #[path = "issue_1753_refusal_named_once.rs"]
 mod issue_1753_refusal_named_once;
+#[path = "issue_1947_login_identity.rs"]
+mod issue_1947_login_identity;
+#[path = "issue_1962_candide_cause.rs"]
+mod issue_1962_candide_cause;
+#[path = "issue_1962_causes.rs"]
+mod issue_1962_causes;
+#[path = "issue_1962_dir_rule.rs"]
+mod issue_1962_dir_rule;
+#[path = "issue_1962_dry_run.rs"]
+mod issue_1962_dry_run;
+#[path = "issue_1962_refresh_ledger.rs"]
+mod issue_1962_refresh_ledger;
+#[path = "issue_1962_seed.rs"]
+mod issue_1962_seed;
+#[path = "issue_1962_seed_cmd.rs"]
+mod issue_1962_seed_cmd;
+#[path = "issue_1962_seed_output.rs"]
+mod issue_1962_seed_output;
+#[path = "issue_1962_seed_scan.rs"]
+mod issue_1962_seed_scan;
+#[path = "issue_1974_probe_sandbox.rs"]
+mod issue_1974_probe_sandbox;
+#[path = "issue_1976_orphaned_nested_run.rs"]
+mod issue_1976_orphaned_nested_run;
+#[path = "issue_1976_real_runner_nested_run.rs"]
+mod issue_1976_real_runner_nested_run;
+#[path = "issue_1976_removed_should_publish.rs"]
+mod issue_1976_removed_should_publish;
+#[path = "issue_2030_guards.rs"]
+mod issue_2030_guards;
+#[path = "issue_2030_no_prompt_in_argv.rs"]
+mod issue_2030_no_prompt_in_argv;
 
 #[path = "active_agent_binary_default_test.rs"]
 mod active_agent_binary_default;
@@ -175,6 +207,18 @@ mod issue_1740_routing_recipes;
 mod issue_1740_select_workflow;
 #[path = "issue_1740_state_gates.rs"]
 mod issue_1740_state_gates;
+#[path = "issue_1741_fixture.rs"]
+mod issue_1741_fixture;
+#[path = "issue_1741_recipe_recovery.rs"]
+mod issue_1741_recipe_recovery;
+#[path = "issue_1741_recovery_admission.rs"]
+mod issue_1741_recovery_admission;
+#[path = "issue_1741_recovery_compatibility.rs"]
+mod issue_1741_recovery_compatibility;
+#[path = "issue_1741_recovery_security.rs"]
+mod issue_1741_recovery_security;
+#[path = "issue_1741_runner_contract.rs"]
+mod issue_1741_runner_contract;
 #[path = "issue_1743_autodrive_budget.rs"]
 mod issue_1743_autodrive_budget;
 #[path = "issue_1745_home_statusline.rs"]
@@ -265,6 +309,38 @@ mod issue_1818_no_session_limit;
 mod issue_1846_exhausted_reading;
 #[path = "issue_1870_reread_probe_mode.rs"]
 mod issue_1870_reread_probe_mode;
+#[path = "issue_1954_first_install_restager.rs"]
+mod issue_1954_first_install_restager;
+#[path = "issue_1954_install_leaves_live_runs_alone.rs"]
+mod issue_1954_install_leaves_live_runs_alone;
+#[path = "issue_1954_no_foreign_signals.rs"]
+mod issue_1954_no_foreign_signals;
+#[path = "issue_1955_install_cli.rs"]
+mod issue_1955_install_cli;
+#[path = "issue_1973_rotate_fixture.rs"]
+mod issue_1973_rotate_fixture;
+#[path = "issue_1973_wait_helpers.rs"]
+mod issue_1973_wait_helpers;
+#[path = "issue_1979_crusty_minor_followups.rs"]
+mod issue_1979_crusty_minor_followups;
+#[path = "issue_1985_codex_agent_step_flags.rs"]
+mod issue_1985_codex_agent_step_flags;
+#[path = "issue_2001_codex_usage.rs"]
+mod issue_2001_codex_usage;
+#[path = "issue_2010_codex_exec_notice.rs"]
+mod issue_2010_codex_exec_notice;
+#[path = "issue_2042_fake_proc_seam.rs"]
+mod issue_2042_fake_proc_seam;
+#[path = "issue_2042_host_proc_strace.rs"]
+mod issue_2042_host_proc_strace;
+#[path = "issue_2042_proc_root_guard.rs"]
+mod issue_2042_proc_root_guard;
+#[path = "issue_2042_seam_dry_run_and_refusal.rs"]
+mod issue_2042_seam_dry_run_and_refusal;
+#[path = "issue_2317_codex_step_commits_in_worktree.rs"]
+mod issue_2317_codex_step_commits_in_worktree;
+#[path = "issue_2336_autodrive_completion.rs"]
+mod issue_2336_autodrive_completion;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]
@@ -343,3 +419,6 @@ mod signal_validator_parity;
 mod spec_conformance;
 #[path = "system_prompt_append_fragment.rs"]
 mod system_prompt_append_fragment;
+
+#[path = "issue_2297_codex_installation.rs"]
+mod issue_2297_codex_installation;

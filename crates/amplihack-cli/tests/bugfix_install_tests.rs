@@ -1,7 +1,7 @@
 //! TDD tests for install/update bug fixes: #254, #249, #257.
 //!
 //! These tests verify:
-//! - #254: REPO_ARCHIVE_URL and REPO_GIT_URL point to amplihack-rs;
+//! - #254: REPO_GIT_URL points to amplihack-rs (#1955 removed REPO_ARCHIVE_URL);
 //!   find_framework_repo_root() accepts `amplifier-bundle/` marker
 //! - #249: run_update() calls ensure_framework_installed() after binary swap
 //! - #257: verify_sha256() uses http_get_with_retry() (tested via contract)
@@ -105,25 +105,17 @@ fn find_framework_repo_root_fails_when_no_marker_present() {
 // ============================================================================
 
 #[test]
-fn repo_archive_url_points_to_amplihack_rs() {
-    // Contract: REPO_ARCHIVE_URL must reference the Rust repo, not the
-    // Python repo. We verify this by checking the binary's source code
-    // was compiled with the correct constant.
-    //
-    // Since the constant is pub(super), we verify indirectly by checking
-    // that the types.rs file contains the correct URL.
+fn install_never_downloads_the_default_branch() {
+    // Issue #1955 replaced the #254 contract here. There is no archive URL
+    // constant any more: the only download is the exact release tag, so a
+    // binary can't stage a bundle from `main`.
     let types_src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/commands/install/types.rs"
     ));
     assert!(
-        types_src.contains("amplihack-rs/archive/refs/heads/main.tar.gz"),
-        "REPO_ARCHIVE_URL must point to amplihack-rs repo"
-    );
-    assert!(
-        !types_src.contains("amplihack/archive/refs/heads/main.tar.gz")
-            || types_src.contains("amplihack-rs/archive"),
-        "REPO_ARCHIVE_URL must not point to old Python amplihack repo"
+        !types_src.contains("refs/heads/main") && !types_src.contains("REPO_ARCHIVE_URL"),
+        "install must not name a main-branch archive"
     );
 }
 

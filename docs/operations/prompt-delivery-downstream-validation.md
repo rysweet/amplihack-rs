@@ -88,8 +88,8 @@ reproduction when possible.
 
 | Setting | Purpose |
 | --- | --- |
-| `AMPLIHACK_PROMPT_DELIVERY=auto` | Default selector; uses argv for short prompts and a verified long-form channel when supported. |
-| `AMPLIHACK_PROMPT_DELIVERY=argv` | Force structured argv delivery for compatibility diagnostics. |
+| `AMPLIHACK_PROMPT_DELIVERY=auto` | Default selector; tries stdin, then a file reference, then a prompt-file flag at every prompt size, and never uses argv. See [Agent Prompt Channels Reference](../reference/agent-prompt-channels.md). |
+| `AMPLIHACK_PROMPT_DELIVERY=argv` | No longer accepted; logs a warning and behaves as `auto`. |
 | `AMPLIHACK_PROMPT_DELIVERY=tempfile` | Request prompt-file delivery; rejected for binaries without a verified prompt-file contract. |
 | `AMPLIHACK_PROMPT_DELIVERY=stdin` | Request stdin delivery; rejected or degraded according to the binary capability matrix. |
 | `AMPLIHACK_AGENT_BINARY` | Names the agent CLI that nested launchers call back into. It does not mark a delegated subprocess; `AMPLIHACK_NONINTERACTIVE=1` does (#1525). |
