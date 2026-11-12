@@ -196,6 +196,7 @@ fn an_unreadable_home_account_retries_and_the_next_cycle_recovers() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_profile_switch_is_never_taken_for_a_hand_change() {
+    let _proc = crate::test_support::proc::fake_proc_scope();
     let f = fx(false, true);
     // A correct ledger: ~/.claude holds M's login.
     let mut l = f.ledger();

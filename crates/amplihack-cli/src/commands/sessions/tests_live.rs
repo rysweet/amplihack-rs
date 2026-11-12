@@ -385,10 +385,12 @@ fn unreadable_config_dirs_fail_the_build_closed() {
         ..Default::default()
     };
     let err = build(&t.home, &t.root, &p).unwrap_err();
+    // The error names the process-table root `build` read: in lib tests
+    // that is the shared fake table, never `/proc` (issue #2196).
     assert_eq!(
         err,
         (
-            PathBuf::from("/proc"),
+            crate::test_support::proc::shared_default_root().to_path_buf(),
             io::ErrorKind::PermissionDenied.into()
         )
     );

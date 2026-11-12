@@ -8,12 +8,23 @@ review_schedule: as-needed
 # How to Rotate Claude Logins Automatically
 
 `amplihack profile rotate` keeps the default Claude login in `~/.claude` on
-the account with the most capacity left. It measures every
+an eligible account with capacity, preferring the live login's organisation.
+It measures every
 [login profile](claude-profiles.md) with
 [`profile usage`](claude-profiles.md#check-usage-across-profiles), and when the
 account in `~/.claude` is close to its session or weekly limit it moves a
 better profile's login into `~/.claude` and puts the outgoing login back in the
 profile it came from.
+
+[Organisation affinity](../reference/profile-organisation-affinity.md) restricts
+selection before capacity ranking: crossing is allowed only for necessary
+capacity relief without an eligible same-organisation target with capacity.
+Plan-room and upgrade moves never make a confirmed crossing, including
+fallbacks; an unknown organisation is not a crossing, so missing metadata never
+keeps a session on an overflow login. The rotate log and `rotate status`
+distinguish confirmed crossings from unresolved affinity. A session stopped
+at a limit receives the warning with the resume that follows the swap, read
+from the swap record; a stop that does not end in a resume gets none.
 
 Use it when you run plain `claude` (no `CLAUDE_CONFIG_DIR`) and have several
 profiles. [Auto-switch](claude-profiles.md#switch-accounts-automatically) is
@@ -1229,7 +1240,9 @@ jq '.hooks.StopFailure' ~/.claude/settings.json
    happens:
    - **The rotator writes a new swap record.** The hook reads it and
      resumes the session if the record is newer than the stop and the new
-     login has room (see [The swap record](#the-swap-record)). Otherwise it
+     login has room (see [The swap record](#the-swap-record)). The stop is
+     the time of the last entry in the session's transcript, or one second
+     before the hook started if that is earlier or cannot be read. Otherwise it
      logs `swap-stale` or `swap-no-room` and keeps waiting.
    - **You send a prompt in that session**, for example `continue`. The hook
      ends as `moved-on`. Background task reports and `/usage` are not
@@ -1255,7 +1268,9 @@ The hook never does both. A session that got keys never also gets the exit
 `2` message, so it is never told to continue twice.
 
 The hook trusts the rotator's reading. It never applies the thresholds
-itself and never reads a login, a credentials file or the transcript.
+itself and never reads a login or a credentials file. From the transcript
+it reads only the time of the last entry, which tells it when the session
+stopped, and it logs nothing from it.
 
 ### The swap record
 
@@ -1404,8 +1419,11 @@ of the pane id, not the id. The other outcomes are listed in the
 - **Recorded before acting.** The resume is on disk under the lock before
   the first key or the exit `2`, so a resume cut short is never repeated.
 - **One resume per limit event.** A second hook run for the same session,
-  the same error text and the same live login logs `duplicate`. A limit
-  after the rotator swapped to another login is a new event.
+  the same error text and the same login logs `duplicate`. The login is the
+  one the session stopped on: when the rotator swapped away from it just
+  before the hook started, that is the swap record's `from_login`, not the
+  new live login. A limit after the rotator swapped to another login is a
+  new event.
 - **One wake per wait.** When two hooks wait for the same session, only the
   first to act resumes it; the other logs `duplicate` or `moved-on`.
 - **At most 3 resumes per session in 24 hours.** After that it logs `cap`.
@@ -1429,7 +1447,10 @@ The hook acts only when Claude Code runs it, on a `StopFailure` event with
   again. A limit after the rotator swapped to another login is a new event,
   and the hook waits for the next swap.
 - **A stop on one login, then a swap to another.** The swap's record wakes
-  the session once, and the log line reads `swap_live=<second login>`.
+  the session once, and the log line reads `swap_live=<second login>`. This
+  holds when the swap finishes between the stop and the hook's start. If the
+  session then hits a limit on the second login, that is a new event and
+  the hook waits for the next swap.
 
 ### Continue a session yourself
 
