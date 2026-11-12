@@ -734,9 +734,9 @@ fn forbidden_flags_never_appear_in_an_executable_position() {
             r#"MERGE_ARGV=(pr merge "$PR" "$MERGE_FLAG" --delete-branch --match-head-commit "$HEAD_SHA")"#
         ) && gate.contains(
             r#"[ "$MERGE_FLAG" = "--squash" ] && MERGE_ARGV+=(--subject "$MERGE_SUBJECT" --body-file -)"#
-        ),
+        ) && gate.contains(r#"[ "$MERGE_FLAG" = "--merge" ] && MERGE_ARGV+=(--body-file -)"#),
         "the merge argv must be a fixed literal list whose only variable word is the method flag, \
-         with the message flags appended for --squash alone"
+         with the subject and body appended for --squash and the body alone for --merge"
     );
     // #1888: the method flag is set in exactly one place, to one of three
     // literals, and the gate itself only initialises it.
@@ -765,14 +765,15 @@ fn forbidden_flags_never_appear_in_an_executable_position() {
     // comparison of two IFS-joined arrays cannot tell one element holding
     // spaces from several, and a twin-array comparison is a tautology however
     // it is spelled. What still rules out an injected flag is the element
-    // count for each method (7 for --merge and --rebase, 11 for --squash,
-    // which alone carries the message) plus the pinned literal positions.
+    // count for each method (7 for --rebase; 9 for --merge, which carries the
+    // body so GitHub never commits the uncut PR body under PR_BODY; 11 for
+    // --squash, subject and body) plus the pinned literal positions.
     assert!(
         !gate.contains(r#"if [ "${MERGE_ARGV[*]}" != "${EXPECTED_ARGV[*]}" ]"#),
         "the IFS-joined argv self-check cannot survive a subject containing spaces"
     );
     for pin in [
-        r#"case "${#MERGE_ARGV[@]}:${MERGE_ARGV[3]}" in 7:--merge|7:--rebase|11:--squash) ARGV_OK="true" ;; *) ARGV_OK="false" ;; esac"#,
+        r#"case "${#MERGE_ARGV[@]}:${MERGE_ARGV[3]}" in 7:--rebase|9:--merge|11:--squash) ARGV_OK="true" ;; *) ARGV_OK="false" ;; esac"#,
         r#"if [ "$ARGV_OK" != "true" ]"#,
         r#""${MERGE_ARGV[0]}" != "pr""#,
         r#""${MERGE_ARGV[1]}" != "merge""#,
@@ -780,6 +781,7 @@ fn forbidden_flags_never_appear_in_an_executable_position() {
         r#""${MERGE_ARGV[4]}" != "--delete-branch""#,
         r#""${MERGE_ARGV[5]}" != "--match-head-commit""#,
         r#""${MERGE_ARGV[6]}" != "$HEAD_SHA""#,
+        r#"[ "${MERGE_ARGV[3]}" = "--merge" ] && { [ "${MERGE_ARGV[7]}" != "--body-file" ] || [ "${MERGE_ARGV[8]}" != "-" ]; }"#,
         r#"[ "${MERGE_ARGV[3]}" = "--squash" ] && { [ "${MERGE_ARGV[7]}" != "--subject" ]"#,
         r#""${MERGE_ARGV[8]}" != "$MERGE_SUBJECT""#,
         r#""${MERGE_ARGV[9]}" != "--body-file""#,
@@ -1533,6 +1535,7 @@ fn the_forbidden_flag_scanner_catches_every_spelling() {
         "gh pr view \"$PR\" --json state,mergedAt",
         r#"MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA" --subject "$MERGE_SUBJECT" --body-file -)"#,
         r#"[ "$MERGE_FLAG" = "--squash" ] && MERGE_ARGV+=(--subject "$MERGE_SUBJECT" --body-file -)"#,
+        r#"[ "$MERGE_FLAG" = "--merge" ] && MERGE_ARGV+=(--body-file -)"#,
         r#"gh pr merge "$PR" --squash --subject "$MERGE_SUBJECT""#,
         r#"printf '%s' "$MERGE_BODY" | gh pr merge "$PR" --squash --body-file -"#,
         "gh pr view \"$PR\" --json state,mergedAt,title,body",
@@ -5560,7 +5563,15 @@ fn run_auto_drive_contract_shell_test(inherited: Inherited) {
     // The #1888 merge-method cases live in a sourced file. Its first case and
     // the suite's end-of-file check must both pass, so deleting the `source`
     // line, or the file, cannot drop the cases while the suite stays green.
-    for case in ["1888-merge-only", "1888-cases-loaded"] {
+    // So must the merge-commit body cases (#1888, #2056): a `--merge` given
+    // no body lets GitHub commit the uncut PR body, the merge-ready report
+    // included, under `merge_commit_message: PR_BODY`.
+    for case in [
+        "1888-merge-only",
+        "1888-merge-body-cut",
+        "1888-merge-body-no-report",
+        "1888-cases-loaded",
+    ] {
         assert!(
             stdout.contains(&format!("PASS[{case}]")),
             "{case} did not pass (inherited={inherited:?}); the merge-method cases in \

@@ -35,7 +35,7 @@ pub(crate) const USER_BASH_ENV: &str = "AMPLIHACK_MERGE_GUARD_USER_BASH_ENV";
 /// for its CI verdict (#2186), `autodrive_platform_facts.sh` for the review
 /// threads and `autodrive_followups.sh gate`, which loads
 /// `autodrive_finding_rules.sh` and `autodrive_followups_check.sh` (#1979),
-/// and sources `autodrive_merge_message.sh`, which composes the squash
+/// and sources `autodrive_merge_message.sh`, which composes the commit
 /// message (#2056), and `autodrive_merge_method.sh`, which chooses the merge
 /// flag (#1888).
 /// Replacing any of them is as good as replacing the shim, so they get the

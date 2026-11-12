@@ -1263,11 +1263,14 @@ fi
 # longer be a comparison of two IFS-joined arrays: once one element holds
 # spaces, `${MERGE_ARGV[*]}` cannot tell one element from several, and a
 # twin-array comparison is a tautology however it is spelled. What rules out
-# an injected flag is the element COUNT for each method (#1888: 7 for --merge
-# and --rebase, 11 for --squash) plus the pinned literal positions.
+# an injected flag is the element COUNT for each method (#1888: 7 for --rebase,
+# 9 for --merge, which takes the body alone, 11 for --squash) plus the pinned
+# literal positions.
 if grep -qF 'MERGE_ARGV=(pr merge "$PR" "$MERGE_FLAG" --delete-branch --match-head-commit "$HEAD_SHA")' "${GATE}" \
    && grep -qF '[ "$MERGE_FLAG" = "--squash" ] && MERGE_ARGV+=(--subject "$MERGE_SUBJECT" --body-file -)' "${GATE}" \
-   && grep -qF 'case "${#MERGE_ARGV[@]}:${MERGE_ARGV[3]}" in 7:--merge|7:--rebase|11:--squash) ARGV_OK="true"' "${GATE}" \
+   && grep -qF '[ "$MERGE_FLAG" = "--merge" ] && MERGE_ARGV+=(--body-file -)' "${GATE}" \
+   && grep -qF 'case "${#MERGE_ARGV[@]}:${MERGE_ARGV[3]}" in 7:--rebase|9:--merge|11:--squash) ARGV_OK="true"' "${GATE}" \
+   && grep -qF '[ "${MERGE_ARGV[3]}" = "--merge" ] && { [ "${MERGE_ARGV[7]}" != "--body-file" ] || [ "${MERGE_ARGV[8]}" != "-" ]; }' "${GATE}" \
    && grep -qF '"${MERGE_ARGV[7]}" != "--subject"' "${GATE}" \
    && grep -qF '"${MERGE_ARGV[9]}" != "--body-file"' "${GATE}" \
    && grep -qF '"${MERGE_ARGV[10]}" != "-"' "${GATE}" \

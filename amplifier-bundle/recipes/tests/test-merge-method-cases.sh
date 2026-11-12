@@ -52,18 +52,23 @@ mm_files() {
 }
 
 # mm_argv_is <method> <head>: gh was handed exactly the gate's argv for
-# <method>, element by element (the stub's #2056 merge-argv log). Only a
-# squash carries the message flags; --merge and --rebase get none, so gh is
-# given no body to read either.
+# <method>, element by element (the stub's #2056 merge-argv log), and read
+# exactly the body it should. A squash ends `--subject <title> (#42)
+# --body-file -` (11 elements) and a merge commit `--body-file -` (9): both
+# read 5b's body on stdin, which must equal MM_WANT_BODY, by default the
+# stub's whole body. Without it GitHub would write a merge commit's body from
+# merge_commit_message, which under PR_BODY is the uncut body (#1888, #2056).
+# --rebase writes no commit of its own: 7 elements, and no body read.
 mm_argv_is() {
   local want
   want="$(printf '%s\n' pr merge 42 "--$1" --delete-branch --match-head-commit "$2")"
-  if [ "$1" = squash ]; then
-    want="${want}$(printf '\n%s' --subject "${GH_TITLE-fix(#2056): bind the squash message to the pull request} (#42)" --body-file -)"
-  elif [ -e "${GATE_DIR}/gh-calls.merge-body" ]; then
-    return 1
-  fi
-  [ "$(cat "${GATE_DIR}/gh-calls.merge-argv" 2>/dev/null)" = "$want" ]
+  case "$1" in
+    squash) want="${want}$(printf '\n%s' --subject "${GH_TITLE-fix(#2056): bind the squash message to the pull request} (#42)" --body-file -)" ;;
+    merge) want="${want}$(printf '\n%s' --body-file -)" ;;
+    *) [ ! -e "${GATE_DIR}/gh-calls.merge-body" ] || return 1 ;;
+  esac
+  [ "$(cat "${GATE_DIR}/gh-calls.merge-argv" 2>/dev/null)" = "$want" ] || return 1
+  [ "$1" = rebase ] || cmp -s "${GATE_DIR}/gh-calls.merge-body" <(printf '%s' "${MM_WANT_BODY-${GH_BODY-The pull request body.}}")
 }
 
 # mm_merged <label> <method> <source> <config-commit|not-read> [gate args...]:
@@ -320,6 +325,39 @@ if grep -qxF 'api --hostname github.com repos/owner-a/repo-a' "${GATE_DIR}/gh-ca
 else
   fail "1888-permissions-from-pr-url" "$(grep '^api' "${GATE_DIR}/gh-calls" | tr '\n' '|')"
 fi
+
+# --- a merge commit never commits the merge-ready report --------------------
+# Under auto-drive the body ends with merge-ready's report, which says the pull
+# request is open and can say NOT_MERGE_READY; nothing refreshes it (#2056).
+# Given no body, GitHub writes a merge commit's body from the repository's
+# merge_commit_message, and PR_BODY ("Pull request title and description")
+# would commit that report for good. So --merge reads 5b's body on stdin, cut
+# at the report: gh must receive the description alone, and the evidence must
+# say a report was cut. The same body through --rebase is not read at all.
+# The report is the template's own marker and heading, as merge-ready writes it.
+MM_DESC=$'## Summary\n\nWhy this lands as a merge commit.'
+MM_REPORT=$'<!-- merge-ready-report -->\n## Merge readiness\n\n- Final platform state: `open`\n\n### Verdict\n\n- Verdict: `NOT_MERGE_READY`\n'
+mm_report_left_out() { # mm_report_left_out <label>: gh read a body, no part of the report, and the bundle says one was cut
+  # The body must exist and be non-empty: a gate that passes --merge no body
+  # leaves nothing to search, and the report check would pass on nothing.
+  if grep -qE "^  - squash_message .* body_bytes=${#MM_DESC} report_cut=yes\$" "$(mm_bundle)" 2>/dev/null \
+     && [ -s "${GATE_DIR}/gh-calls.merge-body" ] \
+     && ! grep -qE 'NOT_MERGE_READY|Final platform state|merge-ready-report|Merge readiness' "${GATE_DIR}/gh-calls.merge-body"; then
+    pass "1888-$1" "the merge commit body gh received is the description alone; the merge-ready report was cut and the evidence says so"
+  else
+    fail "1888-$1" "gh received: $(od -An -c "${GATE_DIR}/gh-calls.merge-body" 2>/dev/null | tr -s ' \n' ' ' | cut -c1-200) | $(grep -F 'squash_message' "$(mm_bundle)" 2>/dev/null)"
+  fi
+}
+mm_permissions true false false
+GH_BODY="${MM_DESC}"$'\n\n'"${MM_REPORT}" MM_WANT_BODY="${MM_DESC}" mm_merged merge-body-cut merge default "$FX_M1"
+mm_report_left_out merge-body-no-report
+# The explicit context takes the same path: the source of the method changes nothing.
+mm_permissions true true true
+GH_BODY="${MM_DESC}"$'\n\n'"${MM_REPORT}" MM_WANT_BODY="${MM_DESC}" mm_merged merge-body-cut-explicit merge explicit not-read --merge-method merge
+mm_report_left_out merge-body-no-report-explicit
+# A body that is nothing but the report leaves gh an empty body, never the report.
+GH_BODY="${MM_REPORT}" MM_WANT_BODY='' mm_merged merge-body-report-only merge explicit not-read --merge-method merge
+GH_BODY="${MM_DESC}"$'\n\n'"${MM_REPORT}" mm_merged rebase-body-unread rebase explicit not-read --merge-method rebase
 
 # --- the merge flag is checked before the bundle, whatever 7b did -----------
 # A gate copy whose autodrive_merge_method.sh loads but defines no function:

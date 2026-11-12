@@ -76,7 +76,7 @@ flowchart TD
 
     F --> F1{every criterion re-verified<br/>in THIS run, bound to ONE sha?<br/>every minor finding has a follow-up issue?}
     F1 -->|no| STOP3[NOT_MERGED + evidence bundle]
-    F1 -->|yes| G[gh pr merge --merge, --squash or --rebase<br/>--delete-branch --match-head-commit sha<br/>a squash adds --subject PR title --body-file -<br/>PR body up to the merge-ready report, on stdin]
+    F1 -->|yes| G[gh pr merge --merge, --squash or --rebase<br/>--delete-branch --match-head-commit sha<br/>a squash adds --subject PR title --body-file -<br/>a merge commit adds --body-file -<br/>PR body up to the merge-ready report, on stdin]
     G --> H{platform confirms MERGED?}
     H -->|no| STOP3
     H -->|yes| I[MERGED]
@@ -287,11 +287,15 @@ and what is above the line lands as written, so it should say only what stays
 true after the merge. The evidence line records `report_cut=yes` or `no`. For a
 PR with a single commit this is a change of subject: GitHub's default
 (`COMMIT_OR_PR_TITLE`) would have used that commit's subject, and the gate uses
-the title. Only a squash takes this message. With `--merge` or `--rebase`
-(see `merge_method`, #1888) the branch's commits land as they are, so the gate
-passes no message flags and GitHub writes its own merge commit message. The
-gate still composes and records the message for every method, and a title or
-body it cannot read still blocks.
+the title. A merge commit (`--merge`, see `merge_method`, #1888) takes the
+body alone, as `--body-file -`, and GitHub writes its own headline. Without
+it, GitHub would write the merge commit's body from the repository's
+`merge_commit_message` setting, and under `PR_BODY` ("Pull request title and
+description") that is the whole PR body, merge-ready report included. The
+gate does not read that setting, so the description also replaces a
+`PR_TITLE` or `BLANK` body. A rebase writes no commit of its own and takes no
+message. The gate still composes and records the message for every method,
+and a title or body it cannot read still blocks.
 
 The body is piped to `gh` on standard input (`--body-file -`) from the gate's
 own memory and is never handed over as a file path, so nothing written to disk between the
@@ -421,7 +425,7 @@ run to their natural end. A false timeout costs more than a slow run.
 | `amplifier-bundle/recipes/autodrive-merge-loop.yaml` | Phase 3 loop + merge gate. |
 | `amplifier-bundle/tools/autodrive_loop.sh` | Shared driver; Crusty next-action decisions pass through the Rust completion dispatcher. |
 | `amplifier-bundle/tools/autodrive_merge_gate.sh` | The evidence gate and the fixed merge argv. |
-| `amplifier-bundle/tools/autodrive_merge_message.sh` | Sourced by the gate: composes the squash subject and body, which the gate pipes to `gh` on stdin, and writes a record of the body (#2056). |
+| `amplifier-bundle/tools/autodrive_merge_message.sh` | Sourced by the gate: composes the squash subject and the body, which the gate pipes to `gh` on stdin for a squash or a merge commit, and writes a record of the body (#2056). |
 | `amplifier-bundle/tools/autodrive_expected_checks.sh` | Read-only: builds the expected checks for one head SHA and decides `ci_status`. |
 | `amplifier-bundle/tools/autodrive_followups.sh` | Classifies minor-only rounds, files the follow-up issues and lists them on the plan task issue. |
 | `amplifier-bundle/tools/autodrive_followups_check.sh` | The `check` and `gate` commands: the merge gate's offline follow-up check. |

@@ -3331,11 +3331,19 @@ Element 10 is the literal `-`, which `gh` reads as standard input: the body is
 piped in from the gate's own memory and is never handed over as a path ([How
 the body reaches `gh`](#how-the-body-reaches-gh)).
 
-For `--merge` or `--rebase` ([Choosing the merge method](#choosing-the-merge-method-1888))
-`MERGE_ARGV` is elements 0 to 6 only, with that flag at element 3: a merge
-commit or a rebase keeps the branch's commits as they are, so no message is
-passed. The same pipe still runs, and `gh`, given no `--body-file -`, does not
-read standard input.
+The three methods ([Choosing the merge method](#choosing-the-merge-method-1888))
+share elements 0 to 6, with their flag at element 3, and differ only in what
+follows:
+
+| Method | Elements | After element 6 | What GitHub is given |
+| --- | --- | --- | --- |
+| `--squash` | 11 | `--subject` `$MERGE_SUBJECT` `--body-file` `-` | The subject and the body ([The squash commit message](#the-squash-commit-message-2056)) |
+| `--merge` | 9 | `--body-file` `-` | The body alone; GitHub writes the headline ([The merge commit message](#the-merge-commit-message-1888)) |
+| `--rebase` | 7 | nothing | Nothing: a rebase writes no commit of its own |
+
+For `--merge`, element 8 is the literal `-`, as element 10 is for a squash, and
+the body is piped in the same way. For `--rebase` the same pipe still runs,
+and `gh`, given no `--body-file -`, does not read standard input.
 
 The self-check pins the element count and every literal by position, rather
 than comparing two arrays built from the same literals, which would be
@@ -3377,13 +3385,16 @@ itself, from the pull request's title and its body up to the merge-ready
 report ([The merge-ready report is left out](#the-merge-ready-report-is-left-out)).
 That is the part this change controls.
 
-Only a squash takes this message. With `--merge` or `--rebase`
-([Choosing the merge method](#choosing-the-merge-method-1888)) the branch's
-commits land as they are, so the gate passes no `--subject` or `--body-file`
-and GitHub writes its own merge commit message. Section 5b runs before the
-method is chosen, so the message is still composed and recorded for every
-method, and a title or body it cannot read blocks whatever the method. What GitHub then writes into the
-commit is not observed by anything in this change; see [the co-author
+A squash takes the whole message. A merge commit takes the body alone, because
+GitHub would otherwise write the merge commit's body from a repository setting
+that can be the whole pull request body, merge-ready report included ([The
+merge commit message](#the-merge-commit-message-1888)). A rebase takes
+nothing: it replays the branch's commits onto the base and writes no commit of
+its own, so there is no message for GitHub to compose. Section 5b runs before
+the method is chosen, so the message is still composed and recorded for every
+method, and a title or body it cannot read blocks whatever the method,
+`--rebase` included. What GitHub then writes into the commit is not observed by
+anything in this change; see [the co-author
 premise](#premise-github-adds-no-co-authored-by-lines-to-a-supplied-body-2263)
 and [the empty-body limitation](#limitation-an-empty-pull-request-body-2263).
 
@@ -3416,11 +3427,70 @@ it reads the title. Without it, a host with no `jq` would also be told
 `pull request #N title is unreadable`, which sends the operator to the pull
 request instead of to the missing tool. With it, the 5b blocker reads `jq is
 not installed, so the title and body of pull request #N cannot be read for
-the squash message` (`MSG-no-jq-names-jq`).
+the commit message` (`MSG-no-jq-names-jq`).
 
 The gate reads no criterion out of the body. The one thing it looks for there
 is the line where the merge-ready report starts, and that decides only where
 the message ends. The body is a message, not a criterion.
+
+#### The merge commit message (#1888)
+
+A merge commit is not one of the branch's commits. GitHub creates it at merge
+time and writes its message itself. `gh pr merge --merge` with no message flags
+leaves both parts to two repository settings ([REST "Update a
+repository"](https://docs.github.com/en/rest/repos/repos#update-a-repository)):
+
+| Setting | Values | What GitHub writes |
+| --- | --- | --- |
+| `merge_commit_title` | `PR_TITLE`, `MERGE_MESSAGE` | The headline: the pull request title, or `Merge pull request #N from owner/branch` |
+| `merge_commit_message` | `PR_BODY`, `PR_TITLE`, `BLANK` | The body: the whole pull request body (the settings page calls it "Pull request title and description"), the title, or nothing |
+
+Under `PR_BODY` the whole body is committed, merge-ready report included, and
+that report is the text [#2056 keeps out of history](#the-merge-ready-report-is-left-out):
+it says the pull request is open and can say `NOT_MERGE_READY`, nothing
+refreshes it, and once committed it cannot be corrected. An owner who requires
+merge commits, the case #1888 was opened for, is the one most likely to have
+chosen that setting.
+
+So for `--merge` the gate passes `--body-file -` with the same body a squash
+gets, cut at the report, and no `--subject`. `gh` sends the body as the
+GraphQL `commitBody` ("Commit body to use for the merge commit; if omitted, a
+default message will be used", [`MergePullRequestInput`](https://docs.github.com/en/graphql/reference/input-objects#mergepullrequestinput);
+[`gh pr merge`](https://cli.github.com/manual/gh_pr_merge): `--body-file` and
+`--subject` set "the merge commit" text, not only a squash's). With no
+`commitHeadline`, GitHub writes the headline from `merge_commit_title`, by
+default `Merge pull request #N from owner/branch`, which is what an owner who
+requires merge commits expects.
+
+The gate does not read `merge_commit_message`, and the body it passes
+replaces whatever that setting names. An owner who chose `PR_TITLE` gets the
+description in the merge commit's body instead of the title; one who chose
+`BLANK` gets the description instead of an empty body. Reading the setting and
+passing the body only under `PR_BODY` would keep those two choices, but it
+needs a second settings read in the gate. The rule the gate takes is simpler:
+the report is never committed, whatever the setting says. This repository has
+`merge_commit_message: PR_TITLE` and `merge_commit_title: MERGE_MESSAGE` (`gh
+api repos/rysweet/amplihack-rs`, read 2026-11-12).
+
+One gap remains, and it is the [empty-body
+limitation](#limitation-an-empty-pull-request-body-2263). A body that is
+nothing but the report is cut to nothing, and `gh` is handed an empty body. If
+GitHub treats an empty `commitBody` as omitted, it falls back to
+`merge_commit_message`, and under `PR_BODY` that is the uncut body, report
+included. #2263 is where that is settled.
+
+`1888-merge-body-cut` and `1888-merge-body-cut-explicit` merge, with
+`--merge`, a body that carries the report under the template's marker. They
+assert the nine-element argv element by element, and that `gh` received the
+description alone, byte for byte. `1888-merge-body-no-report` and
+`1888-merge-body-no-report-explicit` check that `gh` read a non-empty body with
+no line of the report in it, and that the evidence line says `report_cut=yes`.
+Run against the gate as it was at `1778b491`, which gave `--merge` no body,
+`FORBIDDEN-fixed-argv` and every `--merge` case fail.
+`1888-merge-body-report-only` gives `gh` an empty body, never the report, and
+`1888-rebase-body-unread` shows that the same body through `--rebase` is not
+read at all. Every `--merge` case in the merge-method suite checks the body
+`gh` received, not only the argv.
 
 #### The merge-ready report is left out
 
@@ -3432,7 +3502,9 @@ state: <… / open / …>` and a verdict. Nothing refreshes that report after th
 last merge-ready round. #2255 was merged at head `3b8db36f`; its body had last
 been edited at that same head and still read `Verdict: NOT_MERGE_READY`.
 Committed whole, every auto-drive squash commit would carry such a report and
-say for good that the pull request was still open. #2056 exists because text
+say for good that the pull request was still open, and so would every merge
+commit in a repository whose `merge_commit_message` is `PR_BODY` ([The merge
+commit message](#the-merge-commit-message-1888)). #2056 exists because text
 that was true for a moment lands in history and cannot be corrected, so the
 gate does not commit the report (crusty round 8 on #2262).
 
@@ -3497,7 +3569,7 @@ What the cut does not do:
 The body goes to `gh` on standard input, from the gate's own memory:
 
 ```bash
-printf '%s' "$MERGE_BODY" | gh "${MERGE_ARGV[@]}"    # element 10 is the literal `-`
+printf '%s' "$MERGE_BODY" | gh "${MERGE_ARGV[@]}"    # the last element is the literal `-` (10 for --squash, 8 for --merge)
 ```
 
 It is never handed over as a path. An earlier version of this change wrote
@@ -3581,7 +3653,7 @@ anything is written, so a write failure is never reported as a read failure.
 
 | Condition | Outcome |
 | --- | --- |
-| `jq` not installed | blocker, naming `jq`: `jq is not installed, so the title and body of pull request #N cannot be read for the squash message` |
+| `jq` not installed | blocker, naming `jq`: `jq is not installed, so the title and body of pull request #N cannot be read for the commit message` |
 | `jq` fails on the pull request metadata | blocker |
 | `.title` absent, or JSON `null` | blocker |
 | `.title` empty or whitespace-only | blocker: every pull request has a title, so an empty one means the read is wrong |
@@ -3603,9 +3675,11 @@ same rule: `pull request #N title is unreadable; a criterion we cannot read
 never merges`.
 
 Before the merge runs, section 9 checks the argv once more: the element count
-for the flag at element 3 (7 for `--merge` and `--rebase`, 11 for `--squash`),
-every literal by position, and for a squash element 7 `--subject`, element 8
-the subject, element 10 equal to `-`, and a non-empty subject. On the code as
+for the flag at element 3 (7 for `--rebase`, 9 for `--merge`, 11 for
+`--squash`), every literal by position, for a merge commit element 7
+`--body-file` and element 8 `-`, and for a squash element 7 `--subject`,
+element 8 the subject, element 9 `--body-file`, element 10 `-`, and a
+non-empty subject. On the code as
 written that refusal cannot fire — the argv is a literal, section 7b blocks any
 other flag, and section 5b blocks every way the subject could be empty — so it
 is there for the edit that would break one of those, and its message names both
@@ -3673,10 +3747,9 @@ same way. It shows the argv, and changing it for the subject alone would make
 the printed line disagree with the array the self-check compares. What stops
 a subject from forging a line in either place is the control-character
 stripping, not quotation marks: a subject cannot contain a newline, so it
-cannot become a second line of output anywhere. For a squash both lines then
-say that the body goes in on standard input and where its record is; for
-`--merge` and `--rebase` they end `(no message flags with --merge)` or
-`(no message flags with --rebase)`:
+cannot become a second line of output anywhere. For a squash and a merge
+commit both lines then say that the body goes in on standard input and where
+its record is; for `--rebase` they end `(no message flags with --rebase)`:
 
 ```
 AUTO_DRIVE_MERGE: DRY_RUN — would run: gh pr merge 2198 --squash --delete-branch --match-head-commit 23008e4d… --subject docs: record main's required CI checks (#2198) --body-file - (body on stdin; a copy is in /…/merge-message-2198-23008e4d1f2c.txt)
@@ -3692,7 +3765,11 @@ with the concatenated commit messages this change exists to avoid;
 #2263 is where it is settled. Every pull request this workflow builds has a
 body, so the case arises for one handed in through `pr_number`, and for a body
 that is nothing but the merge-ready report, which the cut leaves empty
-(`body_bytes=0 report_cut=yes`).
+(`body_bytes=0 report_cut=yes`). With `--merge` the fallback would be the
+body `merge_commit_message` names, so in a repository set to `PR_BODY` a body
+that is only the report would then be committed whole; that is the one way
+the report can still reach a merge commit ([The merge commit
+message](#the-merge-commit-message-1888)).
 
 #### Premise: GitHub adds no `Co-authored-by` lines to a supplied body (#2263)
 
@@ -3816,9 +3893,10 @@ not read once an earlier one is present.
 
 The method chosen must then be allowed. A method that is not allowed blocks
 the merge; the gate never falls back to another method. The gate maps the
-method to exactly one flag. For `--merge` and `--rebase` the merge argv is
-otherwise the fixed list it always was; `--squash` also takes the message
-flags of [The squash commit message](#the-squash-commit-message-2056):
+method to exactly one flag. For `--rebase` the merge argv is otherwise the
+fixed list it always was; `--squash` also takes the subject and body of [The
+squash commit message](#the-squash-commit-message-2056), and `--merge` the body
+alone ([The merge commit message](#the-merge-commit-message-1888)):
 
 | Method | Repository setting | Ruleset `allowed_merge_methods` value | Under a `required_linear_history` rule | Flag |
 | --- | --- | --- | --- | --- |
@@ -6413,7 +6491,7 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `crates/amplihack-cli/src/commands/merge_method/` | Rust | The merge-method selection behind `select-merge-method`. `mod.rs`: the source order and the allowed set. `repo_file.rs`: the `.amplihack/auto-drive.toml` base-tip read, its changed-paths check and grammar. `github.rs`: the pull request URL, the repository settings read and the paginated branch-rules read. |
 | `amplifier-bundle/tools/autodrive_expected_checks.sh` | tool | [#2186](#expected-checks-at-the-head-2186): read-only. Builds the expected check set for one head SHA and decides `ci_status`. Run, never sourced, by the merge gate and by merge-evidence step-03. A gate file, so the merge guard's mode check covers it. |
 | `amplifier-bundle/tools/autodrive_followups.sh` | tool | [#1979](#minor-findings-end-the-crusty-loop-1979): `classify` (derives `MINOR_ONLY` in crusty-round step-03), `collect` (builds the follow-up set from the round that ended the loop), `file` (one `gh issue create` per unfiled minor finding, then one comment on the plan task issue listing them), `resolve-task` (the task-id rule, #1982). |
-| `amplifier-bundle/tools/autodrive_merge_message.sh` | tool | Sourced only; no side effects. [#2056](#the-squash-commit-message-2056): reads `.title` and `.body` out of the gate's one `gh pr view` result with `jq`, composes the squash subject, sets `MERGE_BODY` to the body up to the merge-ready report for the gate to pipe to `gh`, and writes the record of that body into the private state directory. Every unreadable case, a failing `jq` included, is returned to the gate as a blocker. |
+| `amplifier-bundle/tools/autodrive_merge_message.sh` | tool | Sourced only; no side effects. [#2056](#the-squash-commit-message-2056): reads `.title` and `.body` out of the gate's one `gh pr view` result with `jq`, composes the squash subject, sets `MERGE_BODY` to the body up to the merge-ready report for the gate to pipe to `gh` on `--squash` and `--merge`, and writes the record of that body into the private state directory. Every unreadable case, a failing `jq` included, is returned to the gate as a blocker. |
 | `amplifier-bundle/tools/autodrive_followups_check.sh` | tool | [#1979](#the-follow-up-check-in-the-merge-gate): `check` and `gate`, sourced by `autodrive_followups.sh`: the merge gate's offline follow-up check. |
 | `amplifier-bundle/tools/autodrive_finding_rules.sh` | tool | Sourced only; no side effects. The single definition of the security keyword lists, `cell()` and the minor-finding predicate, used by `autodrive_followups.sh`. |
 | `amplifier-bundle/tools/gh-merge-guard/gh` | tool | The `gh` shim that refuses a merge outside the gate ([#1551](#merges-outside-the-gate-are-refused-1551)). |
@@ -6464,7 +6542,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | [The squash commit message](#the-squash-commit-message-2056) (#2056): the eleven-element `--squash` argv asserted exactly, element 10 the literal `-`, in the real gate and in the #1551 stand-in gate, which also merges with the body piped into `gh` (`T3-gate-stdin`) and shows the shim passing that body to the real `gh` byte for byte; the body `gh` receives — read by a stub that treats `--body-file` as the real `gh` does, stdin for `-` and the named path otherwise — equal to the pull request body byte for byte, for an ordinary body, an empty one, a JSON `null` one, one ending in a newline and one of exactly 65,536 bytes, with the record holding the same bytes; an unreadable title and an absent `body` key each ending `NOT_MERGED` with no `pr merge` line in the stub's log; a title of `--admin` — a flag this workflow never passes and which is prohibited in it — reaching `gh` at element 8 as the subject, asserted positionally, since the string is present in the argv and the claim is that no element *other* than 8 holds it; a title that already ends ` (#42)` not doubled; a dry run printing `--subject`, the composed subject, `--body-file -` and the record's path; a body quoting a complete platform-state JSON object, bare and inside a fenced block, changing no criterion the gate reads; and the two regression cases from the issue, a wrong `Co-Authored-By` trailer on a branch commit, and `Fixes #N` and `Task:` lines from a branch this one is stacked on, neither of which reaches the body `gh` receives. A third case, `MSG-fixture-author-no-coauthor`, which the Rust wrapper also requires by name, is an argv and stdin case with a different author on the fixture: the head commit is authored by `Fixture <fixture.invalid>` with a message that carries no trailer, and the composed message (the subject at argv element 8 and the body `gh` reads on stdin) is byte for byte the one composed for a control run whose head commit is authored by `t`, holds no `Co-authored-by` line, and does not name that identity. It first checks that the fixture commit really is authored that way and the control is not, so a fixture change cannot make it pass vacuously. It does not answer the merge owner's question from software-factory #321, where GitHub, composing its default message, turned a branch commit's author into `Co-authored-by: Fixture <fixture.invalid>`: the stub `gh` composes nothing, so whether GitHub adds such a line to a supplied body is outside what any case here can see ([the co-author premise](#premise-github-adds-no-co-authored-by-lines-to-a-supplied-body-2263), #2263). A host without `jq` is told so: the gate runs on a `PATH` with `jq` removed, and section 5b's blocker names `jq` rather than calling the title unreadable (`MSG-no-jq-names-jq`). The race has its own cases: the record rewritten by the stub `gh` itself as it starts — after every check the gate makes, the latest point any writer could win — with `gh` still receiving the composed body (`MSG-race-at-gh-start`), and a control in which the same stub, handed a path, commits the rewrite, so that case can fail (`MSG-race-control-path`); the record rewritten earlier, at the section 6b fetch, likewise changing nothing (`MSG-record-rewritten-before-merge`); and a `jq` that prints part of a body and then fails, which blocks the merge instead of handing `gh` a short body (`MSG-jq-failure-blocks`). The merge-ready report has five, each asserting the exact bytes `gh` receives on stdin and the `report_cut=` evidence: a report under the marker line read out of the template itself, cut at it (`MSG-report-cut-at-marker`); a report with no marker, cut at `## Merge readiness` with the blank lines before it (`MSG-report-cut-at-heading`); a CRLF body with a capitalised heading (`MSG-report-cut-crlf`); a control in which the marker and heading appear mid-line and indented and the body reaches `gh` whole (`MSG-report-mention-not-cut`); and a body that is only the report, which gives `gh` an empty body (`MSG-report-only-body`). The Rust wrapper requires the marker and heading cases by name | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh`, `amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh`, `tests/integration/auto_drive_to_merge_test.rs`. The Rust file also carries the structural assertions. Each is matched against code lines only, full-line comments removed, and `the_helper_checks_fail_when_only_the_comments_keep_the_contract` replays crusty's round-4 mutation on PR #2262 — `umask 077; set -C;` removed from the helper's code and `jq -j` changed to `jq -r`, the comments untouched — and requires those assertions to fail. They pin exactly one `gh pr view` in the gate carrying `headRefOid`, which is the pre-merge read, with `title` and `body` on that same `--json` list (the gate has a second `gh pr view` at section 10, the post-merge `state,mergedAt,mergeCommit` confirmation, so an assertion counting `gh pr view "$PR" --json` occurrences would be wrong — it must pin the `headRefOid` one); the pipe `printf '%s' "$MERGE_BODY" \| gh "${MERGE_ARGV[@]}"` with `PIPESTATUS[1]` as the merge status and no `--body-file "$…"` path; `autodrive_merge_message.sh` in `AUTODRIVE_TOOLS` and inside the brick budget; the merge-ready template's marker line and `## Merge readiness` heading being the two boundaries the helper's code matches; and both `SKILL.md` mirrors still byte-identical. They cannot see a race; the behavioural cases above are what cover it |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
 | [Choosing the merge method](#choosing-the-merge-method-1888) (#1888), helper: every permission combination with no file, `config_commit` the base tip; the file at the base tip as `repository`; a file the base gains, changes or drops after the branch point deciding for a pull request that was never brought up to date, and an invalid one blocking it; an untracked copy and an uncommitted edit ignored; an explicit method winning without the file being read, even when it is invalid or the base is unfetched; a pull request that adds, edits or deletes the file refused with `changed-in-pr` before `gh` runs, while rewriting the same bytes, editing `.amplihack/qa.toml` or merging in a base that gained the file is not a change; an empty diff refused with `paths-empty`; one case per refusal token, none echoing file content; symlinks at both levels; an empty, non-SHA or absent base; disallowed methods never falling back; exact explicit values; `gh api` exit 79, other failures and every schema error for the settings read, including a read-only response that has no `allow_*` fields; ruleset `allowed_merge_methods` limiting the default, an explicit and a repository method, a settings/ruleset mismatch with nothing in common, a rule on the second page, rules that do not limit the method; a `required_linear_history` rule turning a merge default into rebase, refusing an explicit and a repository merge with the rule named, allowing an explicit rebase, leaving nothing when only merge is allowed, and counting on a later page beside a `pull_request` rule, with the rationale naming the rule; the base branch named in the rules path, and exit 79, other failures and malformed answers for the rules read; an invalid base branch name never reaching `gh`; malformed pull request URLs never reaching `gh`; `GH_REPO` and `GIT_DIR` set and ignored; the three recipes forwarding `merge_method` with no `repository` context. [Reader parity](#how-the-two-repository-files-relate): the shell `autodrive_qa_config` and the Rust reader over one fixture set (grammar, size, tree entries, `changed-in-pr`, `paths-empty`), the same token from each. Unit tests: the default over every settings and rules combination with and without linear history, the rules parser (pages, intersection, linear history, `null`, unknown values, malformed shapes) and the phrases naming each limit, base branch names, the grammar and the URL. Real git history, a fake `gh` | `crates/amplihack-cli/tests/issue_1888_merge_method_selection.rs`, and the unit tests in `crates/amplihack-cli/src/commands/merge_method/` |
-| The same through the real gate, run as `/bin/bash -p`, with the contract suite's fixture repository: one literal flag per method in the merge argv, the five evidence lines, the refusal reason as the blocker line, exit 79, the base fetched over a stale local ref, a pull request that branched before the base gained the file merging with the base's method, a base that dropped the file again giving the default, a ruleset that allows only merge, a ruleset that refuses an explicit method, a settings/ruleset mismatch, a ruleset rule on the second page, rules that do not limit the method recorded as such in the rationale, a `required_linear_history` rule turning a merge default into `--rebase` with the rule named in the rationale and refusing an explicit `--merge`, unreadable and malformed rules and exit 79 from the rules read, a malformed or missing helper refused, a selector file that defines no function (exit 127) or is missing blocked by the gate's own merge-flag check, every case checking that the fake `gh` served it the settings and rules it set up (not the #2186 CI route's answer for the same endpoint), and both reads naming the pull request URL's repository and base branch with `GH_REPO` set elsewhere. The file's last line sets `MM_CASES_DONE=1`; the suite fails `1888-cases-loaded` without it, and the Rust wrapper requires `PASS[1888-merge-only]` and `PASS[1888-cases-loaded]`, so a missing, renamed or truncated file fails instead of dropping its cases | `amplifier-bundle/recipes/tests/test-merge-method-cases.sh`, sourced by `test-auto-drive-to-merge.sh` |
+| The same through the real gate, run as `/bin/bash -p`, with the contract suite's fixture repository: one literal flag per method in the merge argv, the five evidence lines, the refusal reason as the blocker line, exit 79, the base fetched over a stale local ref, a pull request that branched before the base gained the file merging with the base's method, a base that dropped the file again giving the default, a ruleset that allows only merge, a ruleset that refuses an explicit method, a settings/ruleset mismatch, a ruleset rule on the second page, rules that do not limit the method recorded as such in the rationale, a `required_linear_history` rule turning a merge default into `--rebase` with the rule named in the rationale and refusing an explicit `--merge`, unreadable and malformed rules and exit 79 from the rules read, a malformed or missing helper refused, a selector file that defines no function (exit 127) or is missing blocked by the gate's own merge-flag check, the nine-element `--merge` argv with the body `gh` received compared byte for byte on every `--merge` case, a body carrying the merge-ready report reaching `gh` on `--merge` as the description alone with `report_cut=yes` recorded (`1888-merge-body-cut`, `1888-merge-body-no-report`, and the same with an explicit method), a report-only body giving `gh` an empty body, the same body never read on `--rebase`, every case checking that the fake `gh` served it the settings and rules it set up (not the #2186 CI route's answer for the same endpoint), and both reads naming the pull request URL's repository and base branch with `GH_REPO` set elsewhere. The file's last line sets `MM_CASES_DONE=1`; the suite fails `1888-cases-loaded` without it, and the Rust wrapper requires `PASS[1888-merge-only]`, `PASS[1888-merge-body-cut]`, `PASS[1888-merge-body-no-report]` and `PASS[1888-cases-loaded]`, so a missing, renamed or truncated file fails instead of dropping its cases | `amplifier-bundle/recipes/tests/test-merge-method-cases.sh`, sourced by `test-auto-drive-to-merge.sh` |
 | [Criterion 6 without a required review](#criterion-6-reviews-and-approvals) (#2219): a fake `gh` returning each endpoint's post-`--jq` answer per scenario; a required count of `0` with no review rule, and an unprotected branch, still `MET` through `required-count`, including under `BLOCKED`, so a readable count decides before the merge state is consulted; a classic `0` beside a *failed* rulesets read staying `UNREADABLE`, so `REQ` is not widened; `BLOCKED` beside a code-owner, last-push or required-reviewer rule as `NOT_MET` with `review-rule`; `BLOCKED` with no rule named, and a `DRAFT` merge state, as `UNREADABLE` with `unreadable`; a failed `gh pr view`, a `reviewDecision` the tool does not know (even beside a readable count of 2), and an `UNKNOWN` merge state with the count unreadable, as `UNREADABLE` with `facts-unreadable`; an `UNKNOWN` merge state beside a *readable* count still decided by that count; `CLEAN`, `HAS_HOOKS` and `UNSTABLE`, and every agent-clearable blocker, winning over a named review rule; no reclassified case reaching `MET`; and `approval_blocker` carrying the id for each source, empty only on `MET`. No `jq`, no timers | `amplifier-bundle/recipes/tests/test-issue-2219-approval-no-review-required.sh` |
 | [Documentation-only pull requests](#documentation-only-pull-requests) (#2219): `autodrive_qa_docs_only` and `autodrive_gadugi_required` over synthetic git repositories, both sides of the predicate and both of the function that reads it: prose-only changes `true`, and `.markdown`, `.rst`, a `docs/` `.txt` and root `LICENSE`, `NOTICE`, `COPYING` with them; a `.txt` outside `docs/` and outside the root documentation names `false` (`tests/fixtures/expected.txt`, `src/templates/welcome.txt`, `fuzz/corpus/seed.txt`, `testdata/golden.txt`, `scripts/deploy.txt`), and the near-miss pin spellings `requirements-dev.txt`, `dev-requirements.txt`, `constraints-dev.txt`, `Makefile.txt` and `requirements/base.txt` `false` with them, while `README.txt`, `CHANGELOG.txt` and `CONTRIBUTING.txt` stay `true`, a `docs/` component qualifies a `.txt` at any depth and `notdocs/notes.txt` does not; a `.js`, `.json`, `.sh`, `.github/`, `.amplihack/`, `.claude/`, `.cursor/`, `AGENTS.md`, `CLAUDE.md`, `amplifier-bundle/` or `SKILL.md` path `false`; `requirements.txt`, `docs/requirements.txt`, `constraints.txt` and `CMakeLists.txt` `false`, the pin spellings under `docs/` (`docs/requirements-dev.txt`, `docs/dev-requirements.txt`, `docs/requirements/base.txt`, `docs/constraints-dev.txt`) `false` while ordinary prose under `docs/` stays `true`, with every `.txt` entry of `AUTODRIVE_ROOT_PROJECT_FILES` pinned against the predicate so the two lists cannot drift; `docs/.hidden.md` `true`, since a dot-file is not a dot-directory; `docs/conf.py` and `docs/release.js` `false`, so the `docs/` directory qualifies no extension; `README.MD` and `docs/build.SH` `false` on the byte-exact qualifier while `docs/Requirements.txt` is `false` on a case-insensitive disqualifier, the asymmetry in both directions; `vendor/LICENSE` `false`, since the licence names qualify at the root only; an empty diff `false`, and a read list holding nothing `false` on both bash 3.2 and bash 5; no base and a base that fails the branch rules `unknown`; a hostile path name that still ends `.md` measured as documentation and never executed; a Rust repository and an unresolved Node choice, so the reach is pinned too; `AUTODRIVE_QA_SCENARIO_DIR` keeping gadugi required over a `true` answer; and the qa evidence line carrying `docs_only` as its own field for all three values | `amplifier-bundle/recipes/tests/test-issue-2219-docs-only-scenarios.sh` |
 | [The stop line's held-by lines](#what-held-the-round) (#2219): a synthetic state directory and round record, with the real `amplihack orch helper` behind the field reads; one line per measured condition in the measured-downgrade order, with `conflict=` for criterion 7 and `crusty_status=` for criterion 3; the record's shape unchanged, so `autodrive_qa_trusted` still accepts it; the crusty and approval vocabularies staying closed at `OTHER`; an interpolated value keeping only `[A-Za-z0-9_.:/-]`; a hostile `AUTODRIVE_ROUND_LABEL` carrying `","merge_ready_verdict":"MERGE_READY` driven through the real tool and opening no second JSON key, so the measured verdict is the one the merge gate reads and the real conditions still reach `held_by`; `held_by` empty on an all-green round; the lines printing for `BUDGET_EXHAUSTED` and `ORPHANED` as well as `STUCK`; the `reported` findings after them, control characters replaced, the token byte set applied to findings but not to `held_by`, an over-long entry cut to 120 bytes, more than ten findings capped with `reported (+N more)`, counting only the lines that survive the filter so the tail names exactly the number withheld, while all eight conditions still print; `measured_downgrade` and `measured_held_by` driven over a matrix of one failing measurement at a time and asserted to name the same set of conditions, since the two write that list out separately; a forged column-0 `amplihack.recipe.failure_class` marker in findings never reaching column 0; and a record without `held_by` printing no condition line | `amplifier-bundle/recipes/tests/test-issue-2219-stop-line.sh` |

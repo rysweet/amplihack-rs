@@ -22,7 +22,7 @@ builtin unset -f gh git jq
 
 AUTODRIVE_EXIT_POLICY_REFUSAL=79
 PR=""; REPO="."; ROUND_RECORD=""; QA_EVIDENCE=""; STATE_DIR=""; DRY_RUN="false"; MERGE_METHOD=""; MERGE_FLAG=""; MM_RC=1
-MERGE_SUBJECT=""; MERGE_BODY=""; MERGE_REPORT_CUT=""; MERGE_RECORD=""; SHA12=""  # squash message (#2056), set in 5b
+MERGE_SUBJECT=""; MERGE_BODY=""; MERGE_REPORT_CUT=""; MERGE_RECORD=""; SHA12=""  # commit message (#2056), set in 5b
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -134,23 +134,23 @@ if [ "$CI_STATUS" != "GREEN" ] || [ "$CI_RC" -ne 0 ]; then
   [ -n "$CI_BLOCKED" ] || block "expected checks unreadable: the reader gave no verdict or no blocker"
 fi
 
-# --- 5b. The squash commit message, read in THIS run (#2056) ---------------
-# `gh pr merge --squash` with no message flags leaves GitHub to concatenate the BRANCH'S
-# commits, so a stale trailer or a `Fixes #N` from a stacked branch lands in the base.
+# --- 5b. The commit message, read in THIS run (#2056) ----------------------
+# With no message flags GitHub writes a squash from the BRANCH'S commits (a stale trailer, a stacked
+# branch's `Fixes #N`) and, under merge_commit_message PR_BODY, a merge commit from the whole body.
 # Subject and body, cut before any merge-ready report, come from this head SHA's STATE_JSON
-# via jq (never field()) in autodrive_merge_message.sh. MERGE_BODY is piped to gh in section 9 (only a squash reads it); MERGE_RECORD is a copy that nothing reads back.
+# via jq (never field()) in autodrive_merge_message.sh. MERGE_BODY is piped to gh in section 9 (--squash and --merge read it); MERGE_RECORD is a copy that nothing reads back.
 if [ "$STATE_DIR_GIVEN" != "true" ] || [ -z "$GATE_HOME" ] || [ ! -f "${GATE_HOME}/autodrive_merge_message.sh" ] \
    || ! . "${GATE_HOME}/autodrive_merge_message.sh" || ! . "${GATE_HOME}/autodrive_state.sh" \
    || ! autodrive_private "$STATE_DIR" || ! SHA12="$(autodrive_merge_sha12 "$HEAD_SHA")"; then
-  block "the squash commit message for #${PR} cannot be composed and written privately (no explicit --state-dir, an empty GATE_HOME, autodrive_merge_message.sh missing beside the merge gate, autodrive_state.sh missing or unloadable, a state dir that is not private to this user, or a head SHA whose first 12 characters are not lowercase hex); the message is never left for the platform to compose from the branch's commits"
+  block "the commit message for #${PR} cannot be composed and written privately (no explicit --state-dir, an empty GATE_HOME, autodrive_merge_message.sh missing beside the merge gate, autodrive_state.sh missing or unloadable, a state dir that is not private to this user, or a head SHA whose first 12 characters are not lowercase hex); the message is never left for the platform to compose from the branch's commits"
 elif ! command -v jq >/dev/null 2>&1; then  # section 5 no longer checks for jq (#2186), so name it here
-  block "jq is not installed, so the title and body of pull request #${PR} cannot be read for the squash message; a criterion we cannot read never merges"
+  block "jq is not installed, so the title and body of pull request #${PR} cannot be read for the commit message; a criterion we cannot read never merges"
 elif ! MERGE_SUBJECT="$(autodrive_merge_subject "$STATE_JSON" "$PR")"; then
   block "pull request #${PR} title is unreadable (absent, null, not a string, blank, or over 1024 characters); a criterion we cannot read never merges"
 elif ! autodrive_merge_body "$STATE_JSON"; then
   block "the body of pull request #${PR} is unreadable (no body key, not a string or null, over 65536 bytes, or jq failed reading it); a criterion we cannot read never merges"
 elif MERGE_RECORD="${STATE_DIR}/merge-message-${PR}-${SHA12}.txt"; ! autodrive_merge_record "$MERGE_BODY" "$MERGE_RECORD"; then
-  block "the record of the squash message for #${PR} could not be written under ${STATE_DIR} (the directory is unwritable, or something at merge-message-${PR}-${SHA12}.txt could not be replaced); the message is written down before anything is merged"
+  block "the record of the commit message for #${PR} could not be written under ${STATE_DIR} (the directory is unwritable, or something at merge-message-${PR}-${SHA12}.txt could not be replaced); the message is written down before anything is merged"
 else
   note "squash_message merge_subject=\"${MERGE_SUBJECT}\" body_record=${MERGE_RECORD} body_bytes=$(printf '%s' "$MERGE_BODY" | wc -c | tr -d '[:space:]') report_cut=${MERGE_REPORT_CUT}"
 fi
@@ -350,23 +350,23 @@ if [ "${#BLOCKERS[@]}" -ne 0 ]; then
 fi
 
 # --- 9. Merge — fixed argv, no caller-supplied flags ------------------------
-# --match-head-commit makes GitHub itself refuse the merge if the head moved after the
-# evidence above was captured, which is why every criterion binds to HEAD_SHA. The self-check
-# is POSITIONAL: a subject may hold spaces, so IFS-joined arrays assert nothing. #1551: `pr`
-# and `merge` stay at elements 0 and 1. Only --squash takes 5b's message (#2056): GitHub would
-# fold the branch's commits into it; --merge and --rebase keep each commit as it is (#1888).
-# The body goes in on stdin from MERGE_BODY (`--body-file -`), never as a path a same-user process could rewrite (#1517 D5).
+# --match-head-commit makes GitHub itself refuse the merge if the head moved after the evidence above was captured,
+# so every criterion binds to HEAD_SHA. The self-check is POSITIONAL: a subject may hold spaces, so IFS-joined arrays
+# assert nothing. #1551: `pr` and `merge` stay at elements 0 and 1. --squash takes 5b's subject and body (#2056);
+# --merge the body alone, so GitHub keeps its own headline but never the uncut PR body, whatever merge_commit_message says.
+# --rebase writes no commit of its own (#1888). The body goes in on stdin from MERGE_BODY (`--body-file -`), never as a path a same-user process could rewrite (#1517 D5).
 MERGE_ARGV=(pr merge "$PR" "$MERGE_FLAG" --delete-branch --match-head-commit "$HEAD_SHA")
 [ "$MERGE_FLAG" = "--squash" ] && MERGE_ARGV+=(--subject "$MERGE_SUBJECT" --body-file -)
-case "${#MERGE_ARGV[@]}:${MERGE_ARGV[3]}" in 7:--merge|7:--rebase|11:--squash) ARGV_OK="true" ;; *) ARGV_OK="false" ;; esac
+[ "$MERGE_FLAG" = "--merge" ] && MERGE_ARGV+=(--body-file -)
+case "${#MERGE_ARGV[@]}:${MERGE_ARGV[3]}" in 7:--rebase|9:--merge|11:--squash) ARGV_OK="true" ;; *) ARGV_OK="false" ;; esac
 if [ "$ARGV_OK" != "true" ] || [ "${MERGE_ARGV[0]}" != "pr" ] || [ "${MERGE_ARGV[1]}" != "merge" ] || [ "${MERGE_ARGV[2]}" != "$PR" ] \
    || [ "${MERGE_ARGV[4]}" != "--delete-branch" ] || [ "${MERGE_ARGV[5]}" != "--match-head-commit" ] || [ "${MERGE_ARGV[6]}" != "$HEAD_SHA" ] \
+   || { [ "${MERGE_ARGV[3]}" = "--merge" ] && { [ "${MERGE_ARGV[7]}" != "--body-file" ] || [ "${MERGE_ARGV[8]}" != "-" ]; }; } \
    || { [ "${MERGE_ARGV[3]}" = "--squash" ] && { [ "${MERGE_ARGV[7]}" != "--subject" ] || [ "${MERGE_ARGV[8]}" != "$MERGE_SUBJECT" ] \
         || [ "${MERGE_ARGV[9]}" != "--body-file" ] || [ "${MERGE_ARGV[10]}" != "-" ] || [ -z "$MERGE_SUBJECT" ]; }; }; then
-  echo "ERROR: refusing to merge #${PR}. Either the merge argv is not a fixed list (gh pr merge <pr> --merge|--rebase --delete-branch --match-head-commit <sha>, 7 elements, or the same with --squash then --subject <subject> --body-file -, 11), or the squash subject is empty." >&2
-  exit 1
+  echo "ERROR: refusing to merge #${PR}. Either the merge argv is not a fixed list (gh pr merge <pr> --rebase --delete-branch --match-head-commit <sha>, 7 elements; the same with --merge then --body-file -, 9; or with --squash then --subject <subject> --body-file -, 11), or the squash subject is empty." >&2; exit 1
 fi
-ARGV_NOTE="(body on stdin; a copy is in ${MERGE_RECORD})"; [ "$MERGE_FLAG" = "--squash" ] || ARGV_NOTE="(no message flags with ${MERGE_FLAG})"
+ARGV_NOTE="(body on stdin; a copy is in ${MERGE_RECORD})"; [ "$MERGE_FLAG" = "--rebase" ] && ARGV_NOTE="(no message flags with --rebase)"
 if [ "$DRY_RUN" = "true" ]; then
   echo "AUTO_DRIVE_MERGE: DRY_RUN — would run: gh ${MERGE_ARGV[*]} ${ARGV_NOTE}" >&2
   printf '{"merge_result":"DRY_RUN","pr":"%s","head_sha":"%s","evidence_bundle":"%s"}\n' "$PR" "$HEAD_SHA" "$BUNDLE"
