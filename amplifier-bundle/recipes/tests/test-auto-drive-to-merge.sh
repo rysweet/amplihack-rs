@@ -782,10 +782,11 @@ for case_ in explicit inside default context other-repo not-a-checkout sibling-w
     not-a-checkout) RD_ARGS=(--review-dir "${WORK}/not-a-checkout"); RUN_IN="${LAUNCH}" ;;
     sibling-worktree) RD_ARGS=(--review-dir "${WORK}/sibling-wt"); RUN_IN="${LAUNCH}" ;;
   esac
+  # ${RD_ARGS[@]+...}: the default case leaves RD_ARGS empty, and Bash before 4.4 (macOS ships 3.2) calls that unbound under set -u.
   ( cd "${RUN_IN}" && PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
     bash "${LOOP}" --loop-name "health-contract" --round-recipe "autodrive-crusty-round" \
       --clean-token "CLEAN" --verdict-field "crusty_verdict" \
-      --repo "${TAMPERED}" "${RD_ARGS[@]}" --state-dir "${LOOP_DIR}" --task-file "${T1528_TASK}" \
+      --repo "${TAMPERED}" ${RD_ARGS[@]+"${RD_ARGS[@]}"} --state-dir "${LOOP_DIR}" --task-file "${T1528_TASK}" \
       >"${LOOP_DIR}.out" 2>"${LOOP_DIR}.err" ); rc=$?
   if [ "$rc" -ne 0 ] && [ ! -s "${LOOP_DIR}.calls" ] \
      && grep -qF '"loop_result":"UNTRUSTED_REVIEW_DIR"' "${LOOP_DIR}.out" \
@@ -2536,7 +2537,8 @@ LT_MARK="${WORK}/lt-marker"
 lt_guard() { # lt_guard <dir>: a stub autodrive_worktree_guard.sh that writes LT_MARK and exits 0
   mkdir -p -- "$1"
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\nprintf "lt-stamp\\n"\nexit 0\n' "${LT_MARK}" > "$1/autodrive_worktree_guard.sh"
-  chmod 0700 -- "$1/autodrive_worktree_guard.sh"
+  # Put -- before the mode: BSD chmod stops parsing options at the first operand and would read -- as a file.
+  chmod -- 0700 "$1/autodrive_worktree_guard.sh"
 }
 lt_snapshot() { # lt_snapshot <cwd>: files under the cwd, and the review dir's status
   find "$1" -print 2>/dev/null | LC_ALL=C sort

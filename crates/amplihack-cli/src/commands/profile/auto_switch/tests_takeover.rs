@@ -10,7 +10,7 @@
 use super::config::{self, FileState};
 use super::fsx;
 use super::overflow_inputs::OverflowInputs;
-use super::takeover::{another_login_with, could_take_over, home_check, is_fresh, profile_check};
+use super::takeover::{another_login_with, home_check, is_fresh, profile_check};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::Gate;
 use crate::commands::profile::rotate::GateSource;
@@ -18,6 +18,13 @@ use crate::commands::profile::store::ProfileStore;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+
+/// `takeover::could_take_over` with no home directory: it would read
+/// `$HOME/.claude` for the login there, and a test must never read the real
+/// one (issue #2196).
+fn could_take_over(store: Option<&ProfileStore>, own: Option<&str>) -> bool {
+    super::takeover::could_take_over_at(store, own, None)
+}
 
 fn private(path: &Path, body: &str, mode: u32) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();

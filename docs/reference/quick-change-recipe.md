@@ -102,6 +102,7 @@ The run log shows the routing choice on stderr:
 | `quick_change_max_lines` | `"150"` | Line limit (additions plus deletions). Must match `^[0-9]{1,6}$`. |
 | `allow_no_op` | `"false"` | When exactly `"true"`, an empty diff finishes the run with verdict `empty` and no commit, push or PR, in place of failing it. smart-classify-route sets it for docs-only, audit, orchestration and meta tasks, and smart-execute-routing passes it on, as it does to `default-workflow`. See [Empty diff](#empty-diff). |
 | `existing_branch`, `pr_number` | `""` | Not used by `quick-change`, which always creates a new `quick/` branch. Its worktree step passes both as empty, so values inherited from the orchestrator are ignored; the orchestrator does not choose `quick-change` when either is set, or when the task text names a branch (see [Precedence](#precedence)). The recipe sets `existing_branch` itself when it invokes `default-workflow` on hand-over. |
+| `base_branch`, `forbidden_base_branches`, `strict_delivery` | inherited | The [delivery inputs](workflow-delivery-inputs.md#where-the-inputs-apply) of `default-workflow`, not declared here. The worktree step passes `base_branch` and `forbidden_base_branches` as empty, so the `quick/` branch starts from `origin/HEAD`, the branch the PR targets, and a base inherited from the orchestrator is not used. `strict_delivery` is passed through: when it is `"true"`, step 04 of `workflow-worktree` refuses to create the branch and the run stops. |
 
 No GitHub issue is created by `quick-change`. A hand-over can create one; see [Hand-over to default-workflow](#hand-over-to-default-workflow).
 
@@ -122,7 +123,7 @@ A value that does not match `^[0-9]{1,6}$` fails the `quick-change-diff-limits` 
 
 | # | Step ID | Type | What it does |
 | --- | --- | --- | --- |
-| 1 | `quick-change-worktree` | recipe | Runs `workflow-worktree` with `branch_prefix: quick` and with `existing_branch` and `pr_number` set to empty. Output `worktree_setup`. |
+| 1 | `quick-change-worktree` | recipe | Runs `workflow-worktree` with `branch_prefix: quick` and with `existing_branch`, `pr_number`, `base_branch` and `forbidden_base_branches` set to empty. Output `worktree_setup`. |
 | 2 | `quick-change-record-base` | bash | Checks the branch (see [Branch name](#branch-name)), checks that a safe commit identity resolves, so a run that could never commit stops before the agent and the checks, removes other runs' state directories that have been idle for 14 days (see [State directory](#state-directory)), pins the base commit (`git rev-parse HEAD`) and snapshots the git configuration, hooks and push URL into the state directory. |
 | 3 | `quick-change-implement` | agent | The only agent step. `amplihack:core:builder` makes the change in the worktree. |
 | 4 | `quick-change-diff-limits` | bash | Runs `quick_change_diff_limits.sh`. Output `quick_change_verdict`: `proceed`, `handover`, or `empty` when the diff is empty and `allow_no_op` is `"true"`. Has no condition. Fails the run on git configuration drift, an empty diff without `allow_no_op`, or a fault in the tool. |
