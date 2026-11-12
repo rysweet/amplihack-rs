@@ -13,17 +13,49 @@ tags: ["git", "push", "recovery", "issue-2471"]
 #
 # Called by step-15-push-recovery (workflow-publish), step-18c-push-recovery
 # (workflow-pr-review) and step-20b-push-recovery (workflow-finalize). Each
-# call step resets push_recovery and push_recovery_result to "", so a value
-# left by an earlier call never reaches this one.
+# call step resets push_recovery_snapshot, push_recovery and
+# push_recovery_result to "", so a value left by an earlier call never reaches
+# this one.
+#
+# push_recovery_snapshot is the gate's own record of the worktree (HEAD,
+# status, local branch), written before the agent runs. The gate compares the
+# worktree with it. The agent's `evidence` is information only.
 #
 # Security: no bash command here contains a template placeholder; every value
 # is read from RECIPE_VAR_* with jq, so agent text is never parsed as shell.
 # No step sets continue_on_error: a gate failure ends the run. No timeouts,
 # waits or timed retries.
 recursion: { max_depth: 6, max_total_steps: 10 }
-context: { push_step: "", push_output_key: "", push_recovery: "", push_recovery_result: "", worktree_setup: "", base_branch: "", forbidden_base_branches: "", issue_number: "" }
+context: { push_step: "", push_output_key: "", push_recovery_snapshot: "", push_recovery: "", push_recovery_result: "", worktree_setup: "", base_branch: "", forbidden_base_branches: "", issue_number: "" }
 
 steps:
+  - id: "push_recovery_snapshot"
+    type: "bash"
+    command: |
+      set -euo pipefail
+      export GIT_PAGER=cat PAGER=cat LESS=FRX
+      # The gate's record of the worktree, taken before the agent runs. It decides nothing:
+      # with no linked worktree it prints {"linked":"false"} and the gate decides.
+      command -v jq >/dev/null 2>&1 || { echo "push-failure-recovery: push-unverified: jq is required by the snapshot" >&2; exit 1; }
+      TOOL_DIRS=(); [ -z "${WORKFLOW_RUNTIME_ARTIFACT_HELPER:-}" ] || TOOL_DIRS+=("${WORKFLOW_RUNTIME_ARTIFACT_HELPER%/*}")
+      for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -z "$c" ] || TOOL_DIRS+=("$c/amplifier-bundle/tools"); done
+      find_tool() { local d; for d in "${TOOL_DIRS[@]}"; do [ -f "$d/$1" ] && { printf '%s' "$d/$1"; return 0; }; done; return 1; }
+      WT_TOOL="$(find_tool worktree_setup_path.sh)" || WT_TOOL=""
+      WT=""; [ -z "$WT_TOOL" ] || WT="$(bash "$WT_TOOL" push-failure-recovery-snapshot)" || WT=""
+      unlinked() { jq -nc '{linked: "false"}'; exit 0; }
+      [ -n "$WT" ] && cd -P -- "$WT" 2>/dev/null || unlinked
+      gd="$(git rev-parse --absolute-git-dir 2>/dev/null)" || unlinked
+      cd_="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || unlinked
+      [ "$gd" != "$cd_" ] && [ "$(git rev-parse --show-toplevel 2>/dev/null)" = "$(pwd -P)" ] || unlinked
+      HEAD_SHA="$(git rev-parse --verify HEAD)"
+      STATUS="$(git status --porcelain)"
+      DIRTY=false; [ -z "$(git status --porcelain --untracked-files=no)" ] || DIRTY=true
+      LOCAL="$(git symbolic-ref -q --short HEAD)" || LOCAL=""
+      jq -nc --arg path "$(pwd -P)" --arg head "$HEAD_SHA" --arg status "$STATUS" --arg dirty "$DIRTY" --arg local "$LOCAL" \
+        '{linked: "true", path: $path, head: $head, status: $status, tracked_dirty: $dirty, local_branch: $local}'
+    output: "push_recovery_snapshot"
+    parse_json: true
+
   - id: "push_recovery"
     agent: "amplihack:pre-commit-diagnostic"
     prompt: |
@@ -48,9 +80,6 @@ steps:
       `git rev-parse --git-common-dir`), make no push and return cause `NONE`
       with `branch` set to `""`.
 
-      Before anything else, run `git status --porcelain` in the worktree and
-      put its exact output (empty when clean) in `evidence[0]`.
-
       ## Evidence to collect
 
       - `git status`, `git rev-parse --abbrev-ref @{u}`,
@@ -73,6 +102,10 @@ steps:
 
       - The upstream is set and its branch, without `origin/`, differs from
         `branch_name`.
+      - HEAD is detached, or the checked-out branch is `main`, `master`, the
+        base branch or a name in `forbidden_base_branches`.
+      - `git status --porcelain --untracked-files=no` is not empty: the
+        step's commit did not happen.
       - HEAD is behind its upstream (`git rev-list --count HEAD..@{u}` is not
         0): the history has diverged.
 
@@ -89,7 +122,8 @@ steps:
 
       Never use `--no-verify`, `--force`, `--force-with-lease`, a `+` refspec,
       `--delete`, `--mirror`, `--all` or `--tags`. Never push to `main`,
-      `master`, the base branch or any name in `forbidden_base_branches`.
+      `master`, the base branch (`RECIPE_VAR_base_branch`) or any name in the
+      comma-separated list in `RECIPE_VAR_forbidden_base_branches`.
       Never override `core.hooksPath`, change git config or hook files, edit,
       stage or commit files, or read credential or token files. Leave sign-in
       variables alone. No waiting and no second attempt.
@@ -113,7 +147,7 @@ steps:
       (no variable values, no credentials, URL user-info as `***`):
 
       {"failed": "<what failed, one line>", "cause": "CHANGE|ENVIRONMENT|NONE",
-       "branch": "<branch_name>", "evidence": ["<git status --porcelain>", "inherited: <names>", "..."],
+       "branch": "<branch_name>", "evidence": ["inherited: <names>", "<each finding, one line>"],
        "actions": ["<each command you ran that changed state, e.g. the env -u ... git push>"],
        "push_result": "pushed|failed|not-attempted", "explanation": "<the reason, in plain words>"}
     output: "push_recovery"
@@ -126,13 +160,40 @@ steps:
       export GIT_PAGER=cat PAGER=cat LESS=FRX
       # Gate: trusts nothing the agent says it did. Values come only from RECIPE_VAR_* via jq.
       redact() { sed -E -e 's#([A-Za-z][A-Za-z0-9+.-]*://)[^@/[:space:]]+@#\1***@#g' -e 's#(gh[pousr]_|github_pat_)[A-Za-z0-9_]+#***#g' -e 's#([Bb]earer)[[:space:]]+[^[:space:]]+#\1 ***#g' -e 's#x-access-token:[^@[:space:]]+#x-access-token:***#g'; }
-      fail() { printf 'push-failure-recovery: %s: %s\n' "$1" "$(printf '%s' "$2" | tr '\n\r' '  ' | head -c 600 | redact)" >&2; exit 1; }
+      fail() { printf 'push-failure-recovery: %s: %s\n' "$1" "$(printf '%s' "$2" | tr '\n\r' '  ' | redact | head -c 600)" >&2; exit 1; }
       command -v jq >/dev/null 2>&1 || fail push-unverified "jq is required by the push recovery gate"
       AGENT="${RECIPE_VAR_push_recovery:-}"; KEY="${RECIPE_VAR_push_output_key:-}"; STEP="${RECIPE_VAR_push_step:-unknown step}"
       # Rule 2: the agent's JSON, every field and enum.
-      printf '%s' "$AGENT" | jq -e 'type == "object" and (.failed | type == "string") and (.cause | IN("CHANGE", "ENVIRONMENT", "NONE")) and (.branch | type == "string") and (.evidence | type == "array" and length >= 1 and all(type == "string")) and (.actions | type == "array" and all(type == "string")) and (.push_result | IN("pushed", "failed", "not-attempted")) and (.explanation | type == "string")' >/dev/null 2>&1 || fail invalid-agent-output "$STEP: the recovery agent's output is not the documented JSON object"
-      CAUSE="$(printf '%s' "$AGENT" | jq -r '.cause')"; AGENT_BRANCH="$(printf '%s' "$AGENT" | jq -r '.branch')"; STATUS0="$(printf '%s' "$AGENT" | jq -r '.evidence[0]')"
-      SAFE="$(printf '%s' "$AGENT" | jq -c 'def clean: tostring | .[0:4096] | gsub("\\{\\{"; "{ {") | gsub("\\}\\}"; "} }") | gsub("(?<s>[A-Za-z][A-Za-z0-9+.-]*://)[^@/\\s]+@"; "\(.s)***@") | gsub("(gh[pousr]_|github_pat_)[A-Za-z0-9_]+"; "***") | gsub("(?<b>[Bb]earer)\\s+\\S+"; "\(.b) ***") | gsub("x-access-token:[^@\\s]+"; "x-access-token:***"); . as $a | ($a | with_entries(.value |= (if type == "array" then map(clean) else clean end)))')"
+      printf '%s' "$AGENT" | jq -e '
+        type == "object"
+        and (.failed | type == "string")
+        and (.cause | IN("CHANGE", "ENVIRONMENT", "NONE"))
+        and (.branch | type == "string")
+        and (.evidence | type == "array" and all(type == "string"))
+        and (.actions | type == "array" and all(type == "string"))
+        and (.push_result | IN("pushed", "failed", "not-attempted"))
+        and (.explanation | type == "string")' >/dev/null 2>&1 \
+        || fail invalid-agent-output "$STEP: the recovery agent's output is not the documented JSON object"
+      CAUSE="$(printf '%s' "$AGENT" | jq -r '.cause')"; AGENT_BRANCH="$(printf '%s' "$AGENT" | jq -r '.branch')"
+      # Redact first, then cut, so a cut cannot split a credential out of its pattern.
+      SAFE="$(printf '%s' "$AGENT" | jq -c '
+        def clean: tostring
+          | gsub("\\{\\{"; "{ {") | gsub("\\}\\}"; "} }")
+          | gsub("(?<s>[A-Za-z][A-Za-z0-9+.-]*://)[^@/\\s]+@"; "\(.s)***@")
+          | gsub("(gh[pousr]_|github_pat_)[A-Za-z0-9_]+"; "***")
+          | gsub("(?<b>[Bb]earer)\\s+\\S+"; "\(.b) ***")
+          | gsub("x-access-token:[^@\\s]+"; "x-access-token:***")
+          | .[0:4096];
+        with_entries(.value |= (if type == "array" then map(clean) else clean end))')"
+      # The snapshot step's record, written before the agent ran: the only worktree state the gate trusts.
+      SNAP="${RECIPE_VAR_push_recovery_snapshot:-}"
+      printf '%s' "$SNAP" | jq -e '
+        type == "object" and (.linked | IN("true", "false"))
+        and (.linked == "false" or (
+          ([.path, .head, .status, .local_branch] | all(type == "string"))
+          and (.tracked_dirty | IN("true", "false"))))' >/dev/null 2>&1 \
+        || fail push-unverified "$STEP: the worktree snapshot taken before the agent ran is missing or malformed"
+      snap() { printf '%s' "$SNAP" | jq -r ".$1"; }
       emit() { jq -nc --arg pushed "$1" --arg sha "$2" --arg branch "$3" --arg reason "$4" --argjson recovery "$SAFE" '{pushed: $pushed, sha: $sha, branch: $branch, reason: $reason, recovery_attempted: "true", recovery: $recovery}'; }
       # Rule 3: helpers from the bundle, never from the task worktree (a branch under test must not replace the check).
       TOOL_DIRS=(); [ -z "${WORKFLOW_RUNTIME_ARTIFACT_HELPER:-}" ] || TOOL_DIRS+=("${WORKFLOW_RUNTIME_ARTIFACT_HELPER%/*}")
@@ -140,13 +201,16 @@ steps:
       find_tool() { local d; for d in "${TOOL_DIRS[@]}"; do [ -f "$d/$1" ] && { printf '%s' "$d/$1"; return 0; }; done; return 1; }
       WT_TOOL="$(find_tool worktree_setup_path.sh)" || WT_TOOL=""; VERIFY="$(find_tool verify_pushed_ref.sh)" || VERIFY=""
       # Rule 4: a linked task worktree.
-      WT=""; [ -z "$WT_TOOL" ] || WT="$(bash "$WT_TOOL" push-failure-recovery 2>/dev/null)" || WT=""
+      WT=""; [ -z "$WT_TOOL" ] || WT="$(bash "$WT_TOOL" push-failure-recovery)" || WT=""
       LINKED=false
       if [ -n "$WT" ] && cd -P -- "$WT" 2>/dev/null; then { gd=$(git rev-parse --absolute-git-dir) && cd_=$(git rev-parse --path-format=absolute --git-common-dir) && [ "$gd" != "$cd_" ] && [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ] && LINKED=true; } 2>/dev/null || true; fi
       if [ "$LINKED" != true ]; then
-        if [ "$CAUSE" = NONE ] && [ "$KEY" != commit_result ]; then emit false "" "" no-worktree; exit 0; fi
+        [ "$(snap linked)" = false ] || fail worktree-changed "$STEP: the linked worktree in the snapshot is gone"
+        # Only step-20b has an intended skip with no worktree; every other step ends here.
+        if [ "$CAUSE" = NONE ] && [ "$KEY" = cleanup_push_result ]; then emit false "" "" no-worktree; exit 0; fi
         fail not-linked-worktree "$STEP: no linked task worktree from worktree_setup.worktree_path; nothing can be verified"
       fi
+      [ "$(snap linked)" = true ] && [ "$(snap path)" = "$(pwd -P)" ] || fail worktree-changed "$STEP: the worktree is not the one in the snapshot"
       # Rule 5: the gate works out the branch itself.
       SETUP_BRANCH="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r 'if type == "object" then (.branch_name // "") | tostring else "" end' 2>/dev/null)" || SETUP_BRANCH=""
       UP="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)" || UP=""
@@ -158,14 +222,24 @@ steps:
       # Rule 7: protected names, normalised.
       norm() { local n="$1"; n="${n#refs/heads/}"; n="${n#origin/}"; printf '%s' "$n"; }
       read -r -a FORBID <<< "$(printf '%s' "${RECIPE_VAR_forbidden_base_branches:-}" | tr ',\n\t' '   ')" || true
-      for p in main master "${RECIPE_VAR_base_branch:-}" "${FORBID[@]}"; do if [ -n "$p" ] && [ "$(norm "$BRANCH")" = "$(norm "$p")" ]; then fail protected-branch "$STEP: '$BRANCH' is a protected branch"; fi; done
+      PROTECTED=(main master "${RECIPE_VAR_base_branch:-}" "${FORBID[@]}")
+      is_protected() { local p; for p in "${PROTECTED[@]}"; do [ -n "$p" ] && [ "$(norm "$1")" = "$(norm "$p")" ] && return 0; done; return 1; }
+      ! is_protected "$BRANCH" || fail protected-branch "$STEP: '$BRANCH' is a protected branch"
       # Rule 8: ref safety, before any remote read.
       case "$BRANCH" in -*) fail unsafe-ref "$STEP: branch name starts with '-'" ;; esac
       git check-ref-format --branch "$BRANCH" >/dev/null 2>&1 || fail unsafe-ref "$STEP: '$BRANCH' is not a valid branch name"
       HEAD_SHA="$(git rev-parse --verify HEAD 2>/dev/null)" || HEAD_SHA=""
       printf '%s' "$HEAD_SHA" | grep -qE '^[0-9a-f]{40}$' || fail unsafe-ref "$STEP: HEAD is not a full commit id"
-      # Rule 9: the agent made no edits.
-      [ "$(git status --porcelain)" = "$STATUS0" ] || fail worktree-changed "$STEP: git status differs from the agent's first evidence entry"
+      # Rule 8b: the local branch, as the push steps refuse it (step-15: protected; step-18c/20b: detached).
+      LOCAL="$(git symbolic-ref -q --short HEAD)" || LOCAL=""
+      [ -n "$LOCAL" ] || fail unsafe-ref "$STEP: HEAD is detached"
+      [ "$LOCAL" = "$(snap local_branch)" ] || fail worktree-changed "$STEP: the checked-out branch changed while the agent ran"
+      ! is_protected "$LOCAL" || fail unsafe-ref "$STEP: local branch '$LOCAL' is protected"
+      [ "$LOCAL" = "$BRANCH" ] || [ "$UP" = "origin/$BRANCH" ] || fail branch-mismatch "$STEP: local branch '$LOCAL' neither is nor tracks '$BRANCH'"
+      # Rule 9: nothing changed since the snapshot, and the step's commit happened.
+      [ "$HEAD_SHA" = "$(snap head)" ] || fail worktree-changed "$STEP: HEAD moved while the agent ran"
+      [ "$(git status --porcelain)" = "$(snap status)" ] || fail worktree-changed "$STEP: git status changed while the agent ran"
+      { [ "$(snap tracked_dirty)" = false ] && [ -z "$(git status --porcelain --untracked-files=no)" ]; } || fail uncommitted-changes "$STEP: tracked changes were not committed"
       # Rule 10: ancestry, as the #978 refusal.
       if [ -n "$UP" ]; then
         git fetch --quiet origin >/dev/null 2>&1 || fail push-unverified "$STEP: git fetch origin failed"
@@ -181,7 +255,8 @@ steps:
       if [ -n "$VERIFY" ]; then
         VOUT="$(bash "$VERIFY" origin "$BRANCH" "$HEAD_SHA" 2>&1)" || fail push-unverified "$STEP ($CAUSE): origin/$BRANCH is not HEAD $HEAD_SHA: $VOUT"
       else
-        REMOTE_SHA="$(git ls-remote origin -- "refs/heads/$BRANCH" 2>/dev/null | awk 'NR == 1 { print $1 }')" || REMOTE_SHA=""
+        REMOTE_OUT="$(git ls-remote origin -- "refs/heads/$BRANCH" 2>&1)" || fail push-unverified "$STEP ($CAUSE): git ls-remote origin failed: $REMOTE_OUT"
+        REMOTE_SHA="$(printf '%s\n' "$REMOTE_OUT" | awk 'NR == 1 { print $1 }')"
         [ "$REMOTE_SHA" = "$HEAD_SHA" ] || fail push-unverified "$STEP ($CAUSE): origin/$BRANCH is '${REMOTE_SHA:-missing}', not HEAD $HEAD_SHA"
       fi
       printf 'push-failure-recovery: %s: %s verified at %s\n' "$REASON" "$BRANCH" "$HEAD_SHA" >&2

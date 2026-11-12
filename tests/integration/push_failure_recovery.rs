@@ -371,6 +371,8 @@ esac
     /// - `rogue`: pushes `HEAD:refs/heads/feat/x` and claims `ENVIRONMENT`
     ///   even though the upstream is another branch;
     /// - `claim-env`: makes no push but claims `ENVIRONMENT`;
+    /// - `commit-push`: disobeys the prompt, commits a new file and pushes it,
+    ///   then claims `ENVIRONMENT`;
     /// - `none`: no push, `NONE`;
     /// - `none-noworktree`: no worktree to work in, `NONE`.
     fn write_fake_launcher(&self) {
@@ -408,12 +410,11 @@ printf '%s\n' "$step" >> "$T/agent-calls.log"
 mode=$(cat "$T/agent-mode")
 names=$(compgen -e | LC_ALL=C grep -E '^(RECIPE_VAR_|WORKFLOW_)' | LC_ALL=C sort | paste -sd' ' -)
 unset_args=(); for v in $names; do unset_args+=(-u "$v"); done
-status0=""; branch="$BR"
+branch="$BR"
 if [ "$mode" = none-noworktree ]; then
   branch=""
 else
   cd "$WT" || {{ echo "fake agent: no worktree" >&2; exit 96; }}
-  status0=$(git status --short)
 fi
 action="env $(printf -- '-u %s ' $names)git push origin HEAD:refs/heads/$BR"
 push_clean() {{ env "${{unset_args[@]}}" git push origin "HEAD:refs/heads/$BR" > "$T/agent-push.log" 2>&1; }}
@@ -429,14 +430,19 @@ case "$mode" in
   rogue)
     if push_clean; then push_result=pushed; else push_result=failed; fi
     cause=ENVIRONMENT; evidence_last="pushed anyway"; actions=$(jq -nc --arg a "$action" '[$a]') ;;
+  commit-push)
+    printf 'untested\n' > agent-edit.txt
+    git add agent-edit.txt && git -c user.email=a@example.invalid -c user.name=A -c commit.gpgsign=false commit -q --no-verify -m untested
+    if push_clean; then push_result=pushed; else push_result=failed; fi
+    cause=ENVIRONMENT; evidence_last="committed and pushed"; actions=$(jq -nc --arg a "$action" '[$a]') ;;
   claim-env) cause=ENVIRONMENT; evidence_last="claimed without a push" ;;
   none|none-noworktree) cause=NONE; evidence_last="nothing needed pushing" ;;
   *) echo "fake agent: unknown mode $mode" >&2; exit 95 ;;
 esac
 jq -nc --arg failed "$step: push rejected" --arg cause "$cause" --arg branch "$branch" \
-  --arg s0 "$status0" --arg names "inherited: $names" --arg last "$evidence_last" \
+  --arg names "inherited: $names" --arg last "$evidence_last" \
   --argjson actions "$actions" --arg pr "$push_result" \
-  '{{failed:$failed, cause:$cause, branch:$branch, evidence:[$s0, $names, $last], actions:$actions, push_result:$pr, explanation:"fixture agent"}}'
+  '{{failed:$failed, cause:$cause, branch:$branch, evidence:[$names, $last], actions:$actions, push_result:$pr, explanation:"fixture agent"}}'
 "#,
                 root = shell_quote(&self.root()),
                 wt = shell_quote(&self.wt().display().to_string()),
@@ -452,6 +458,17 @@ jq -nc --arg failed "$step: push rejected" --arg cause "$cause" --arg branch "$b
     }
     fn touch(&self, name: &str) {
         fs::write(self.p(name), "").unwrap();
+    }
+    /// A `pre-commit` hook in the shared hooks directory that rejects every
+    /// commit in the worktree.
+    fn reject_commits(&self) {
+        let hook = self.p("src/.git/hooks/pre-commit");
+        fs::write(
+            &hook,
+            "#!/bin/sh\necho 'fixture: commit rejected' >&2\nexit 1\n",
+        )
+        .unwrap();
+        make_private_executable(&hook);
     }
 
     fn head(&self) -> String {
@@ -534,13 +551,13 @@ jq -nc --arg failed "$step: push rejected" --arg cause "$cause" --arg branch "$b
         )
     }
 
-    fn pr_review_recipe(&self) -> PathBuf {
+    fn pr_review_recipe(&self, worktree: &Path) -> PathBuf {
         let review = recipe_yaml("workflow-pr-review");
         let steps = vec![
             step_by_id(&review, "step-18c-push-feedback-changes"),
             step_by_id(&review, "step-18c-push-recovery"),
         ];
-        self.write_recipe("fixture-pr-review", "workflow-pr-review", steps, &self.wt())
+        self.write_recipe("fixture-pr-review", "workflow-pr-review", steps, worktree)
     }
 
     fn finalize_recipe(&self, worktree: &Path) -> PathBuf {
@@ -640,11 +657,16 @@ impl Untouched {
             "the run moved the remote main"
         );
         for value in [INHERITED_ISSUE, INHERITED_STARTED_AT] {
-            let recorded = ["commit_result", "push_recovery", "push_recovery_result"]
-                .iter()
-                .map(|k| run.ctx(k).to_string())
-                .collect::<Vec<_>>()
-                .join("\n");
+            let recorded = [
+                "commit_result",
+                "push_recovery_snapshot",
+                "push_recovery",
+                "push_recovery_result",
+            ]
+            .iter()
+            .map(|k| run.ctx(k).to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
             assert!(
                 !recorded.contains(value),
                 "a recorded result holds the value of an inherited variable ({value}): {recorded}"
@@ -898,14 +920,121 @@ fn step15_stale_commit_result_in_the_caller_context_does_not_skip_recovery() {
     before.assert_held(&f, &run);
 }
 
+/// step-15's commit fails, so the change stays staged and HEAD is the older
+/// commit, which origin already has. An agent that answers NONE must not turn
+/// that into a push: the gate sees tracked changes the snapshot recorded
+/// before the agent ran, and PR creation does not run.
+#[test]
+fn step15_failed_commit_is_not_reported_as_pushed() {
+    let _ = runner_or_skip!();
+    let f = Fixture::new(Upstream::AtHead);
+    f.reject_commits();
+    fs::write(f.wt().join("README.md"), "the uncommitted change\n").unwrap();
+    f.set_agent_mode("none");
+    let before = Untouched::capture(&f);
+    let run = f.run(&f.publish_recipe("fixture-publish"), &[], &[]);
+
+    assert_eq!(
+        run.status("step-15-commit-push"),
+        "failed",
+        "{}",
+        run.debug()
+    );
+    assert_eq!(f.agent_calls(), vec!["step-15-commit-push"]);
+    assert_failed_with(&run, "uncommitted-changes");
+    assert_ne!(run.status("step-16-create-draft-pr"), "completed");
+    before.assert_held(&f, &run);
+}
+
+/// An agent that commits and pushes a commit the run never tested is caught
+/// by the snapshot's HEAD, even though origin equals the new HEAD.
+#[test]
+fn step15_agent_commit_is_refused_as_worktree_changed() {
+    let _ = runner_or_skip!();
+    let f = Fixture::new(Upstream::Ahead);
+    f.set_agent_mode("commit-push");
+    let before = Untouched::capture(&f);
+    let run = f.run(&f.publish_recipe("fixture-publish"), &[], &[]);
+
+    assert_eq!(
+        f.agent_calls(),
+        vec!["step-15-commit-push"],
+        "{}",
+        run.debug()
+    );
+    assert_failed_with(&run, "worktree-changed");
+    assert_ne!(run.status("step-16-create-draft-pr"), "completed");
+    before.assert_held(&f, &run);
+}
+
+/// step-15 refuses to commit on a protected local branch. An agent that
+/// pushes HEAD to the task branch anyway is refused by the gate's own
+/// local-branch check.
+#[test]
+fn step15_protected_local_branch_is_refused_even_if_the_agent_pushes() {
+    let _ = runner_or_skip!();
+    let f = Fixture::new(Upstream::Ahead);
+    f.git(&f.wt(), &["switch", "-q", "-c", "master"]);
+    f.set_agent_mode("rogue");
+    let before = Untouched::capture(&f);
+    let run = f.run(&f.publish_recipe("fixture-publish"), &[], &[]);
+
+    assert_eq!(
+        run.status("step-15-commit-push"),
+        "failed",
+        "{}",
+        run.debug()
+    );
+    assert_failed_with(&run, "unsafe-ref");
+    assert_ne!(run.status("step-16-create-draft-pr"), "completed");
+    before.assert_held(&f, &run);
+}
+
 // --- step-18c ------------------------------------------------------------------
+
+/// step-18c has no intended skip: with its worktree gone, the run ends even
+/// when the agent answers NONE.
+#[test]
+fn step18c_missing_worktree_ends_the_run() {
+    let _ = runner_or_skip!();
+    let f = Fixture::new(Upstream::Ahead);
+    f.set_agent_mode("none-noworktree");
+    let before = Untouched::capture(&f);
+    let base_ref = f.remote_ref(BRANCH);
+    let run = f.run(&f.pr_review_recipe(&f.p("gone")), &[], &[]);
+
+    assert_failed_with(&run, "not-linked-worktree");
+    assert_eq!(f.remote_ref(BRANCH), base_ref);
+    before.assert_held(&f, &run);
+}
+
+/// step-18c refuses a detached HEAD. An agent that pushes it to the task
+/// branch anyway is refused by the gate.
+#[test]
+fn step18c_detached_head_is_refused_even_if_the_agent_pushes() {
+    let _ = runner_or_skip!();
+    let f = Fixture::new(Upstream::Ahead);
+    f.git(&f.wt(), &["switch", "-q", "--detach"]);
+    f.set_agent_mode("rogue");
+    let before = Untouched::capture(&f);
+    let run = f.run(&f.pr_review_recipe(&f.wt()), &[], &[]);
+
+    assert_eq!(
+        run.status("step-18c-push-feedback-changes"),
+        "failed",
+        "{}",
+        run.debug()
+    );
+    assert_failed_with(&run, "unsafe-ref");
+    before.assert_held(&f, &run);
+}
 
 #[test]
 fn step18c_environment_fault_is_recovered() {
     let _ = runner_or_skip!();
     let f = Fixture::new(Upstream::Ahead);
     let before = Untouched::capture(&f);
-    let run = f.run(&f.pr_review_recipe(), &[], &[]);
+    let run = f.run(&f.pr_review_recipe(&f.wt()), &[], &[]);
 
     assert_eq!(run.code, 0, "{}", run.debug());
     assert_eq!(run.status("step-18c-push-feedback-changes"), "failed");
@@ -929,7 +1058,11 @@ fn step18c_stale_recovery_keys_do_not_reach_the_call() {
     let base_ref = f.remote_ref(BRANCH);
     let stale_agent = r#"push_recovery={"failed":"x","cause":"ENVIRONMENT","branch":"feat/x","evidence":[""],"actions":[],"push_result":"pushed","explanation":"stale"}"#;
     let stale_gate = r#"push_recovery_result={"pushed":"true","sha":"","branch":"feat/x","reason":"recovered-environment","recovery_attempted":"true"}"#;
-    let run = f.run(&f.pr_review_recipe(), &[stale_agent, stale_gate], &[]);
+    let run = f.run(
+        &f.pr_review_recipe(&f.wt()),
+        &[stale_agent, stale_gate],
+        &[],
+    );
 
     assert_eq!(
         f.agent_calls(),

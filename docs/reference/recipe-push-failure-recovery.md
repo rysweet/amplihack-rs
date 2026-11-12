@@ -84,6 +84,7 @@ push step (continue_on_error: true)
    │ failed or not pushed
    ▼
 <step>-push-recovery  (type: recipe → push-failure-recovery)
+   ├─ push_recovery_snapshot bash: record HEAD, status, local branch
    ├─ push_recovery          agent: judge cause, at most one clean push
    ├─ push_recovery_result   bash gate: check independently, fail closed
    └─ push_recovery_commit   bash: write commit_result back (step-15 only)
@@ -114,7 +115,8 @@ failure.
 step-20b's script also has an intended skip path (`skip()`), which exits 0
 without printing `Cleanup Complete`, so recovery runs after it. The agent
 finds no linked worktree to push from, returns `NONE`, and the gate exits 0
-with `pushed: "false"` and reason `no-worktree`. See [Causes](#causes-change-environment-none).
+with `pushed: "false"` and reason `no-worktree`. This is the only step where
+a missing worktree passes; step-15 and step-18c have no skip path. See [Causes](#causes-change-environment-none).
 
 A stale `commit_result` from a parent run cannot make recovery skip. See
 [Stale values](#stale-values-from-earlier-steps-or-runs).
@@ -128,7 +130,7 @@ sub-recipe: it calls no other recipe.
 |---|---|
 | `recursion.max_depth` | `6` |
 | `recursion.max_total_steps` | `10` |
-| Steps | `push_recovery` (agent), `push_recovery_result` (bash), `push_recovery_commit` (bash) |
+| Steps | `push_recovery_snapshot` (bash), `push_recovery` (agent), `push_recovery_result` (bash), `push_recovery_commit` (bash) |
 | `continue_on_error` | none of its steps sets it, so a gate failure ends the run |
 
 ### Context
@@ -141,6 +143,7 @@ sub-recipe: it calls no other recipe.
 | `base_branch` | the run's base branch; never pushed to | inherited |
 | `forbidden_base_branches` | extra protected branch names, separated by commas or whitespace | inherited |
 | `issue_number` | the run's issue number; used only in the record | inherited |
+| `push_recovery_snapshot` | the gate's record of the worktree before the agent runs; reset to `""` by the call step | `push_recovery_snapshot` step |
 | `push_recovery` | the agent's JSON output; reset to `""` by the call step | `push_recovery` step |
 | `push_recovery_result` | the gate's JSON output; reset to `""` by the call step | `push_recovery_result` step |
 
@@ -167,12 +170,12 @@ Each phase recipe adds one call step directly after its push step. In
     type: "recipe"
     recipe: "push-failure-recovery"
     condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true' && commit_result.pushed != 'true' && commit_result.reason != 'no-upstream'"
-    context: { push_step: "step-15-commit-push", push_output_key: "commit_result", push_recovery: "", push_recovery_result: "" }
+    context: { push_step: "step-15-commit-push", push_output_key: "commit_result", push_recovery_snapshot: "", push_recovery: "", push_recovery_result: "" }
 ```
 
 step-18c and step-20b follow the same pattern with their own `push_step`,
-`push_output_key` and condition. Every call step resets `push_recovery` and
-`push_recovery_result` to `""`. See
+`push_output_key` and condition. Every call step resets
+`push_recovery_snapshot`, `push_recovery` and `push_recovery_result` to `""`. See
 [Stale values](#stale-values-from-earlier-steps-or-runs).
 
 `default-workflow.yaml` gets one change to go with this. Its call steps for
@@ -180,6 +183,23 @@ the three phase recipes reset each push output key: `workflow-publish` gets
 `context: { commit_result: "" }`, `workflow-pr-review` gets
 `context: { feedback_push_result: "" }` and `workflow-finalize` gets
 `context: { cleanup_push_result: "" }`.
+
+## The snapshot
+
+Step `push_recovery_snapshot`, `type: "bash"`, `output: "push_recovery_snapshot"`,
+`parse_json: true`. It runs before the agent, so the agent cannot write it. It
+finds the task worktree as the gate does (rules 3 and 4) and prints:
+
+```json
+{"linked": "true", "path": "/abs/worktree", "head": "<40-hex HEAD>",
+ "status": "<git status --porcelain>", "tracked_dirty": "true|false",
+ "local_branch": "<git symbolic-ref -q --short HEAD, or empty>"}
+```
+
+`tracked_dirty` is `"true"` when `git status --porcelain --untracked-files=no`
+is not empty. With no linked worktree it prints `{"linked": "false"}` and
+exits 0; the gate decides what that means. It never sets `continue_on_error`,
+so a git error here ends the run.
 
 ## The recovery agent
 
@@ -196,8 +216,7 @@ not start another workflow, recipe or orchestrator (the
 
 ### What the agent does
 
-1. Works only in the run's linked task worktree. It records the output of
-   `git status --porcelain` before doing anything else, as `evidence[0]`.
+1. Works only in the run's linked task worktree.
 2. Collects evidence:
    - `git status`, `git rev-list @{u}..HEAD` and the remote branch ref;
    - step-15's existing hook-repair evidence files in the git directory, if any
@@ -217,8 +236,9 @@ not start another workflow, recipe or orchestrator (the
    - **Diverged history** (`diverged-upstream`): after `git fetch origin`,
      `git rev-list --count HEAD..@{u}` is not 0.
 
-   If the upstream is on another branch, or the history has diverged, the
-   agent makes **no push** and returns `CHANGE` with `push_result:
+   If the upstream is on another branch, the history has diverged, HEAD is
+   detached, the checked-out branch is protected, or tracked changes are not
+   committed (the step's commit failed), the agent makes **no push** and returns `CHANGE` with `push_result:
    "not-attempted"`. step-15 refuses these cases on purpose, and a person has
    to decide what to do. A push to `refs/heads/<branch_name>` would get round
    that refusal and could create a new remote branch.
@@ -242,8 +262,8 @@ There is no waiting, no timed retry and no second attempt.
 
 - push with `--no-verify`, `--force`, `--force-with-lease`, a `+` refspec,
   `--delete`, `--mirror`, `--all` or `--tags`;
-- push to `main`, `master`, `base_branch` or any name in
-  `forbidden_base_branches`;
+- push to `main`, `master`, `base_branch` (`RECIPE_VAR_base_branch`) or any
+  name in `forbidden_base_branches` (`RECIPE_VAR_forbidden_base_branches`);
 - push from the main checkout, or to a different remote branch;
 - push when the upstream is on a branch other than `worktree_setup.branch_name`,
   or when HEAD is behind its upstream;
@@ -265,7 +285,6 @@ The agent prints one JSON object:
   "cause": "ENVIRONMENT",
   "branch": "feat/issue-2471-fix-amplihack-rs-issue",
   "evidence": [
-    "",
     "inherited: RECIPE_VAR_issue_number, RECIPE_VAR_pr_number, WORKFLOW_STARTED_AT",
     "the clean push succeeded"
   ],
@@ -282,7 +301,7 @@ The agent prints one JSON object:
 | `failed` | string | what failed, in one line |
 | `cause` | string | `CHANGE`, `ENVIRONMENT` or `NONE` |
 | `branch` | string | the branch the agent pushed or would push |
-| `evidence` | array of strings | `evidence[0]` is the initial `git status --porcelain` output, empty when clean |
+| `evidence` | array of strings | the agent's findings; information only, the gate checks none of it |
 | `actions` | array of strings | the commands run, with values redacted |
 | `push_result` | string | `pushed`, `failed` or `not-attempted` |
 | `explanation` | string | the reason, in plain words |
@@ -298,13 +317,13 @@ that is not JSON makes the gate fail.
 | `ENVIRONMENT`, clean push failed | sign-in failure, GitHub call limit, missing tool | the ref check fails; exit 1, recording the environment cause |
 | `CHANGE` | the clean push fails on a test the change broke, a real conflict, or a lint failure in changed files; or the upstream is on another branch, or the history has diverged, so no push is made | reason `cause-in-change`; exit 1 |
 | `NONE`, branch already at HEAD | nothing needed pushing | checks the remote ref equals HEAD; exit 0 with `pushed: "true"`, reason `already-at-head` |
-| `NONE`, no linked worktree | step-20b `skip()`, or step-18c with no worktree; never valid on the `commit_result` path | exit 0 with `pushed: "false"`, reason `no-worktree`; exit 1 on the `commit_result` path |
+| `NONE`, no linked worktree | step-20b `skip()` | exit 0 with `pushed: "false"`, reason `no-worktree`; exit 1 (`not-linked-worktree`) for step-15 and step-18c |
 
-`NONE` never produces `pushed: "true"` without a checked ref. On the
-`commit_result` path, a checked ref gives `pushed: "true"`. step-16 runs only
-when `commit_result.pushed == 'true'`, so `NONE` with `pushed: "false"` there
-would skip PR creation without failing the run. That is why the gate exits 1
-for `NONE` with no worktree on the `commit_result` path.
+`NONE` never produces `pushed: "true"` without a checked ref. Only
+`cleanup_push_result` (step-20b) accepts a missing worktree: on the
+`commit_result` path, `pushed: "false"` would skip PR creation without failing
+the run, and step-18c has no skip path, so its review would go on without the
+feedback changes.
 
 ## The gate
 
@@ -315,12 +334,13 @@ anything the agent says it did.
 Rules, in order. The first rule that fails ends the gate with exit 1 and the
 reason shown:
 
-1. **Inputs.** Reads values only from `RECIPE_VAR_*`, through `rv_field` or
+1. **Inputs.** Reads values only from `RECIPE_VAR_*`, through
    `jq`. The command contains no `{{...}}` placeholder, so agent text is never
    parsed as shell.
-2. **Agent JSON** (`invalid-agent-output`). `jq -e` checks that the output is
-   an object with every field, and that `cause` and `push_result` are known
-   values.
+2. **Agent JSON and snapshot** (`invalid-agent-output`, `push-unverified`).
+   `jq -e` checks that the agent's output is an object with every field, and
+   that `cause` and `push_result` are known values. The snapshot must be a
+   well-formed record from the snapshot step.
 3. **Helpers.** Finds `worktree_setup_path.sh` and `verify_pushed_ref.sh` with
    the same search step-15 uses: the directory of
    `WORKFLOW_RUNTIME_ARTIFACT_HELPER` when it is set, then `AMPLIHACK_HOME`,
@@ -331,10 +351,12 @@ reason shown:
 4. **Worktree** (`not-linked-worktree`). Resolves the task worktree from
    `worktree_setup` with `worktree_setup_path.sh`. The directory must be a
    linked worktree: `git rev-parse --git-dir` differs from
-   `--git-common-dir`. If none is found and the cause is `NONE` on a
-   path other than `commit_result`, the gate prints its record with
-   `pushed: "false"` and reason `no-worktree`, and exits 0. It exits 1 in
-   every other case where no worktree is found.
+   `--git-common-dir`. Helper errors are shown, not hidden. If none is found,
+   the snapshot also found none, the cause is `NONE` and the key is
+   `cleanup_push_result`, the gate prints its record with `pushed: "false"`
+   and reason `no-worktree`, and exits 0. It exits 1 in every other case where
+   no worktree is found. A worktree found by only one of the snapshot and the
+   gate, or at a different path, fails with `worktree-changed`.
 5. **Branch** (`branch-mismatch`). The gate works out the branch itself:
    `worktree_setup.branch_name`, else the worktree's upstream branch without
    `origin/`. It fails if neither exists or if the agent's `branch` differs.
@@ -346,13 +368,24 @@ reason shown:
 7. **Protected names** (`protected-branch`). After stripping `refs/heads/`
    and `origin/` prefixes and splitting `forbidden_base_branches` on commas
    or whitespace, the gate refuses `main`, `master`, `base_branch` and every
-   listed name.
+   listed name. The same list is used in rule 8b.
 8. **Ref safety** (`unsafe-ref`). `git check-ref-format --branch` must pass,
    the name must not start with `-`, and HEAD must match `^[0-9a-f]{40}$`.
    Rules 4 to 8 all run before any remote read. Names are passed to git
    after `--` where git accepts it.
-9. **No edits** (`worktree-changed`). `git status --porcelain` must match
-   `evidence[0]`. If the agent changed files, the gate fails.
+8b. **Local branch** (`unsafe-ref`, `worktree-changed`, `branch-mismatch`).
+   `git symbolic-ref -q --short HEAD` must not be empty (step-18c and step-20b
+   refuse a detached HEAD), must equal the snapshot's `local_branch`, must not
+   be a protected name (step-15 refuses those), and must equal the branch
+   from rule 5 or have `origin/<branch>` as its upstream (the #1762 alias).
+9. **Snapshot** (`worktree-changed`, `uncommitted-changes`). HEAD and
+   `git status --porcelain` must equal the snapshot's `head` and `status`, so
+   an agent that edits, commits or switches branch is caught. Then the
+   snapshot's `tracked_dirty` must be `"false"` and
+   `git status --porcelain --untracked-files=no` must be empty. Every push
+   step stages all tracked changes before it commits, so a tracked change left
+   over means its commit did not happen (`uncommitted-changes`). This runs
+   before rule 11, so `NONE` and `ENVIRONMENT` cannot skip it.
 10. **Ancestry** (`diverged-upstream`). If an upstream is set, the gate runs
     `git fetch origin`, then `git rev-list --count HEAD..@{u}` must be 0. This
     matches step-15's #978 refusal.
@@ -361,7 +394,8 @@ reason shown:
     - `ENVIRONMENT` and `NONE` with a worktree: check that the remote ref
       equals HEAD with `verify_pushed_ref.sh origin <branch> <sha>`. If the
       helper is not found, the gate compares `git ls-remote origin --
-      refs/heads/<branch>` itself. Unlike step-15, a missing helper is not a
+      refs/heads/<branch>` itself; an `ls-remote` error is shown as it is,
+      not as a missing ref. Unlike step-15, a missing helper is not a
       warning. Any mismatch or error ends the gate with `push-unverified`.
 
 On exit 1 the gate prints one line to stderr:
@@ -381,17 +415,18 @@ record.
 |---|---|---|---|
 | `recovered-environment` | 0 | `"true"` | `ENVIRONMENT`, remote ref equals HEAD |
 | `already-at-head` | 0 | `"true"` | `NONE`, remote ref equals HEAD |
-| `no-worktree` | 0 | `"false"` | `NONE`, no linked worktree, not the `commit_result` path |
+| `no-worktree` | 0 | `"false"` | `NONE`, no linked worktree, `cleanup_push_result` only |
 | `invalid-agent-output` | 1 | none | rule 2 |
-| `not-linked-worktree` | 1 | none | rule 4, including `NONE` with no worktree on the `commit_result` path |
+| `not-linked-worktree` | 1 | none | rule 4, including `NONE` with no worktree on step-15 or step-18c |
 | `branch-mismatch` | 1 | none | rule 5 |
 | `upstream-mismatch` | 1 | none | rule 6 |
 | `protected-branch` | 1 | none | rule 7 |
-| `unsafe-ref` | 1 | none | rule 8 |
-| `worktree-changed` | 1 | none | rule 9 |
+| `unsafe-ref` | 1 | none | rules 8 and 8b: bad name, detached HEAD, protected local branch |
+| `worktree-changed` | 1 | none | rules 4, 8b, 9: the worktree differs from the snapshot |
+| `uncommitted-changes` | 1 | none | rule 9: tracked changes left, so the step's commit failed |
 | `diverged-upstream` | 1 | none | rule 10 |
 | `cause-in-change` | 1 | none | `CHANGE` |
-| `push-unverified` | 1 | none | the ref check failed or could not run |
+| `push-unverified` | 1 | none | the snapshot is missing, or the ref check failed or could not run |
 | `invalid-gate-output` | 1 | none | the write-back step found no verified gate record (`commit_result` path only) |
 
 ## Gate output
@@ -411,7 +446,7 @@ untrusted, under `recovery`:
   "recovery": {
     "failed": "step-15-commit-push: pre-push hook rejected the push",
     "cause": "ENVIRONMENT",
-    "evidence": ["", "inherited: RECIPE_VAR_issue_number, RECIPE_VAR_pr_number, WORKFLOW_STARTED_AT", "the clean push succeeded"],
+    "evidence": ["inherited: RECIPE_VAR_issue_number, RECIPE_VAR_pr_number, WORKFLOW_STARTED_AT", "the clean push succeeded"],
     "actions": ["env -u RECIPE_VAR_issue_number -u RECIPE_VAR_pr_number -u WORKFLOW_STARTED_AT git push origin HEAD:refs/heads/feat/issue-2471-fix-amplihack-rs-issue"],
     "push_result": "pushed",
     "explanation": "pre-push tests read RECIPE_VAR_issue_number from the run; the push passed once those variables were removed"
@@ -424,10 +459,12 @@ The keys `pushed`, `sha`, `branch` and `reason` match step-15's
 
 Before the agent's strings go into the record, the gate:
 
-- cuts each string to 4096 characters;
 - replaces `{{` and `}}`, so a later prompt cannot expand them;
 - redacts credentials: URL user-info becomes `scheme://***@`, and `gh*_`,
-  `github_pat_`, `Bearer` and `x-access-token` strings are masked.
+  `github_pat_`, `Bearer` and `x-access-token` strings are masked;
+- then cuts each string to 4096 characters. Redacting first means a cut
+  cannot split a credential out of its pattern. `fail()` also redacts before
+  it cuts its message to 600 bytes.
 
 The gate prints only with `printf '%s'`.
 
@@ -459,7 +496,7 @@ Three kinds of stale value follow from this. Each has its own guard:
 |---|---|---|
 | `RECIPE_VAR_commit_result` in the process environment, e.g. `{"pushed":"true"}` from a parent run | inherited by the runner process | The runner does not load `RECIPE_VAR_*` from its environment into the context, and conditions read only the context. Because the phase recipe declares `commit_result: ""`, every bash step is given `RECIPE_VAR_commit_result=""`, which replaces the inherited value. |
 | `commit_result`, `feedback_push_result` or `cleanup_push_result` in a calling recipe's context | passed with `--set` by a parent run, or copied up from an earlier sub-recipe | The caller wins over the phase recipe's `""` default, so that default alone is not enough. The `default-workflow` call steps reset each key in their `context:` map (see [Calling the sub-recipe](#calling-the-sub-recipe)). |
-| `push_recovery` or `push_recovery_result` from step-15's recovery, reaching step-18c's or step-20b's call | copied back to `workflow-publish`, then to `default-workflow`, then down to `workflow-pr-review` | Each recovery call step resets both keys to `""` in its `context:` map. Inside a call, every key is also written before it is read: the agent step and the gate have no condition, and the write-back step reads only the gate's output from the same call. |
+| `push_recovery_snapshot`, `push_recovery` or `push_recovery_result` from step-15's recovery, reaching step-18c's or step-20b's call | copied back to `workflow-publish`, then to `default-workflow`, then down to `workflow-pr-review` | Each recovery call step resets all three keys to `""` in its `context:` map. Inside a call, every key is also written before it is read: the snapshot, agent and gate steps have no condition, and the write-back step reads only the gate's output from the same call. |
 
 The stale-value tests in [Tests](#tests) check all three guards against the
 installed runner.
@@ -474,6 +511,7 @@ A run whose push step failed only because of inherited variables:
 ```text
 step-15-commit-push      failed (continue_on_error)
 step-15-push-recovery    running push-failure-recovery
+  push_recovery_snapshot linked=true tracked_dirty=false
   push_recovery          cause=ENVIRONMENT push_result=pushed
   push_recovery_result   pushed=true reason=recovered-environment
   push_recovery_commit   commit_result written
@@ -492,12 +530,12 @@ run failed: step push_recovery_result exited 1
 
 ## Step budget
 
-Each phase recipe gains one call step. Each call runs at most three steps, so a
-run adds at most nine. That is well inside `max_total_steps` (80 per phase
+Each phase recipe gains one call step. Each call runs at most four steps, so a
+run adds at most twelve. That is well inside `max_total_steps` (80 per phase
 sub-recipe, 120 for `default-workflow`). All step ids are unique across the
-sub-recipes. `workflow-pr-review.yaml` and `workflow-finalize.yaml` were
-compacted (one-line `recursion:` and `context:` maps, blank lines removed) to
-stay under the 400-line phase budget.
+sub-recipes. `workflow-publish.yaml` (398 lines), `workflow-pr-review.yaml`
+(398) and `workflow-finalize.yaml` (397) have no room left under the
+400-line phase budget; the next step added to any of them needs a split.
 
 ## Security limits
 
@@ -508,6 +546,10 @@ stay under the 400-line phase budget.
   test cannot replace them.
 - The gate never reports `pushed: "true"` without checking the remote ref
   against HEAD itself.
+- The gate compares the worktree only with its own snapshot, taken before the
+  agent ran. The agent's `evidence` is information only.
+- The gate refuses a detached HEAD and a protected local branch, as the push
+  steps do, so `continue_on_error` does not turn those refusals into a push.
 - No bash command contains a `{{...}}` placeholder.
 - The only push allowed is `HEAD:refs/heads/<branch>` to `origin`, with hooks
   on.
@@ -524,7 +566,8 @@ stay under the 400-line phase budget.
   gate, so server-side branch protection is still the real defence for
   protected branches.
 - An agent that force-pushes HEAD to the task branch would pass the ref check.
-  This is accepted, because HEAD is the run's tested commit.
+  This is accepted, because the snapshot proves HEAD is the commit the run
+  had before the agent ran.
 - The agent's `CHANGE` or `ENVIRONMENT` judgement can be wrong. A wrong
   `ENVIRONMENT` call still needs a push that passed hooks; a wrong `CHANGE`
   call ends the run, which is the conservative failure.
@@ -573,6 +616,11 @@ Cases:
 | stale caller context | a caller context with `commit_result` set to `{"pushed":"true"}` does not skip recovery, because the `default-workflow` call step resets it |
 | stale recovery keys | values of `push_recovery` and `push_recovery_result` left by step-15's recovery do not reach step-18c's call |
 | step-18c, step-20b | the same harness runs the other two call steps; step-20b `skip()` gives `no-worktree` with exit 0 |
+| failed commit | a `pre-commit` hook rejects step-15's commit, origin already equals the old HEAD, the fake agent returns `NONE`; the run fails with `uncommitted-changes` and step-16 does not run |
+| agent commits | the fake agent commits a new file, pushes it and returns `ENVIRONMENT`; the run fails with `worktree-changed` |
+| protected local branch | the worktree is on `master`, so step-15 refuses; the fake agent pushes `HEAD:refs/heads/feat/x` anyway; the run fails with `unsafe-ref` |
+| step-18c without a worktree | the fake agent returns `NONE`; the run fails with `not-linked-worktree` |
+| step-18c detached HEAD | step-18c refuses; the fake agent pushes anyway; the run fails with `unsafe-ref` |
 
 Every case also checks that the workspace `git status` and the remote `main`
 are unchanged, and that the record holds no variable values.

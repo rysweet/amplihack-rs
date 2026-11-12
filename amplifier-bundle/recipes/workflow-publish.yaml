@@ -322,7 +322,7 @@ steps:
     type: "recipe"
     recipe: "push-failure-recovery"
     condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true' && commit_result.pushed != 'true' && commit_result.reason != 'no-upstream'"
-    context: { push_step: "step-15-commit-push", push_output_key: "commit_result", push_recovery: "", push_recovery_result: "" }
+    context: { push_step: "step-15-commit-push", push_output_key: "commit_result", push_recovery_snapshot: "", push_recovery: "", push_recovery_result: "" }
 
   - id: "step-16-create-draft-pr"
     type: "bash"

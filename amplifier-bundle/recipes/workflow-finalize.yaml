@@ -224,7 +224,7 @@ steps:
     type: "recipe"
     recipe: "push-failure-recovery"
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true' && 'Cleanup Complete' not in cleanup_push_result"
-    context: { push_step: "step-20b-push-cleanup", push_output_key: "cleanup_push_result", push_recovery: "", push_recovery_result: "" }
+    context: { push_step: "step-20b-push-cleanup", push_output_key: "cleanup_push_result", push_recovery_snapshot: "", push_recovery: "", push_recovery_result: "" }
   - id: "step-21-pr-ready"
     type: "bash"
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_run_ci_wait == 'true'"
