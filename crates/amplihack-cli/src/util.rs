@@ -972,16 +972,19 @@ mod tests {
     }
 
     /// The timed helpers keep their behaviour: an explicit limit still ends
-    /// a hung child.
+    /// a hung child. The child blocks in the shell's own `read` on a pipe the
+    /// test never writes, so no separate process outlives the timeout.
     #[cfg(unix)]
     #[test]
     fn the_timed_helpers_still_time_out() {
         let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
+        let (reader, writer) = std::io::pipe().unwrap();
         let mut cmd = std::process::Command::new("/bin/sh");
-        cmd.args(["-c", "sleep 30"]);
+        cmd.args(["-c", "read -r _"]).stdin(reader);
         let err = run_output_with_timeout(cmd, Duration::from_millis(300)).unwrap_err();
+        drop(writer);
         assert!(format!("{err:#}").contains("timed out after"), "{err:#}");
     }
 
