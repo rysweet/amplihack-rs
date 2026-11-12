@@ -269,3 +269,115 @@ fn five_field_lines_count_toward_the_10000_line_cap() {
     assert_eq!(parsed.len(), 10_000);
     assert!(parsed.iter().all(|o| o.target.is_some()));
 }
+
+// ----- issue #2291 (D8): the optional `runtime_dir` field -------------------
+
+fn minimal_report_json() -> &'static str {
+    r#"{"schema_version":1,"run_id":"3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3"}"#
+}
+
+#[test]
+fn report_without_runtime_dir_reads_as_none() {
+    let report: RunReport = serde_json::from_str(minimal_report_json()).unwrap();
+    assert_eq!(report.runtime_dir, None);
+    assert_eq!(report.schema_version, RUN_SCHEMA_VERSION);
+}
+
+#[test]
+fn runtime_dir_none_is_not_written() {
+    let report: RunReport = serde_json::from_str(minimal_report_json()).unwrap();
+    let json = serde_json::to_value(&report).unwrap();
+    assert!(json.get("runtime_dir").is_none(), "{json:#}");
+}
+
+#[test]
+fn runtime_dir_round_trips() {
+    let mut report: RunReport = serde_json::from_str(minimal_report_json()).unwrap();
+    report.runtime_dir = Some("/scratch/ahr-3f0c9a526d1e".into());
+    let json = serde_json::to_string(&report).unwrap();
+    let back: RunReport = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        back.runtime_dir.as_deref(),
+        Some("/scratch/ahr-3f0c9a526d1e")
+    );
+}
+
+#[test]
+fn schema_version_stays_1() {
+    assert_eq!(RUN_SCHEMA_VERSION, 1);
+}
+
+#[test]
+fn runtime_tmp_limit_is_shared_and_80_bytes() {
+    assert_eq!(MAX_RUNTIME_TMP_BYTES, 80);
+}
+
+/// Issue #2291: `begin_with` takes explicit inputs, so a run can be started
+/// under an external root without touching the process environment. The
+/// root is recorded in `run.json` and the per-run folder is removed when the
+/// guard drops.
+#[test]
+fn begin_with_explicit_root_records_and_removes_the_external_folder() {
+    let tmp = tempfile::tempdir_in("/tmp").unwrap();
+    let base = fs::canonicalize(tmp.path()).unwrap();
+    let ext = base.join("ext");
+    let work = WorkRoot {
+        path: base.join("work"),
+        explicit: false,
+    };
+    let inputs = TmpRootInputs {
+        run_tmp_root: Some(ext.clone().into_os_string()),
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        euid: unsafe { libc::geteuid() },
+        ..TmpRootInputs::default()
+    };
+
+    let (scope, guard) = RunScope::begin_with(work, "test", &base, &inputs).unwrap();
+
+    assert_eq!(scope.runtime_root.as_deref(), Some(ext.as_path()));
+    let runtime = guard.path().to_path_buf();
+    assert_eq!(runtime.parent(), Some(ext.as_path()));
+    assert!(runtime.join("tmp").is_dir());
+    let report = RunReport::read(&scope.run_dir).unwrap();
+    assert_eq!(
+        report.runtime_dir.as_deref(),
+        Some(runtime.to_str().unwrap())
+    );
+
+    drop(guard);
+    assert!(!runtime.exists(), "the guard removes the external folder");
+    assert!(ext.is_dir(), "the root itself is kept");
+}
+
+/// Issue #2291: a dry run under an explicit root at the 59-byte budget still
+/// gets a `tmp/` within 80 bytes, because `ahd-<6 random>` is no longer than
+/// `ahr-<12 hex>`. The folder is removed when the workspace drops.
+#[test]
+fn dry_run_under_a_root_at_the_budget_stays_within_80_bytes() {
+    let tmp = tempfile::tempdir_in("/tmp").unwrap();
+    let base = fs::canonicalize(tmp.path()).unwrap();
+    let pad = 59 - base.as_os_str().len() - 1;
+    let root = base.join("r".repeat(pad));
+    fs::create_dir(&root).unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(root.as_os_str().len(), 59);
+    let inputs = TmpRootInputs {
+        run_tmp_root: Some(root.clone().into_os_string()),
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        euid: unsafe { libc::geteuid() },
+        ..TmpRootInputs::default()
+    };
+
+    let ws = RunWorkspace::dry_runtime_with(&inputs).unwrap();
+
+    let dir = ws.runtime_dir().to_path_buf();
+    assert_eq!(dir.parent(), Some(root.as_path()));
+    let name = dir.file_name().unwrap().to_str().unwrap();
+    assert!(name.starts_with("ahd-"), "{name}");
+    assert_eq!(name.len(), "ahd-".len() + 6, "{name}");
+    assert!(dir.join("tmp").is_dir());
+    assert!(dir.join("tmp").as_os_str().len() <= 80, "{dir:?}");
+    drop(ws);
+    assert!(!dir.exists(), "the dry-run folder is removed on drop");
+    assert!(root.is_dir(), "the root itself is kept");
+}

@@ -195,6 +195,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_RUNTIME_ROOT` | internal |  | Runtime root handed to recipe steps. |
 | `AMPLIHACK_RUN_DIR` | internal |  | Run folder `<work root>/runs/<run id>` handed to recipe steps. |
 | `AMPLIHACK_RUN_ID` | internal |  | Id of one `amplihack recipe run` invocation, handed to recipe steps; names the run folder. Differs from `AMPLIHACK_RECIPE_RUN_ID`, which is the id of the current attempt. |
+| `AMPLIHACK_RUN_TMP_ROOT` | user preference |  | Absolute folder in which each recipe run creates its private temporary folder `ahr-<short id>`; created with mode `0700` if missing, and must lie outside the work root and `$HOME/.amplihack`. Takes precedence over the caller's `TMPDIR`. An unusable value prints one warning and the run uses the default layout. A run that uses an external folder exports the root to its steps, so nested runs create sibling folders. See [Where a run's temp folder goes](../howto/clean-up-after-recipe-runs.md#where-a-runs-temp-folder-goes). |
 | `AMPLIHACK_RUST_BINARY` | user preference |  | Binary for the Rust trial. |
 | `AMPLIHACK_RUST_RUNTIME` | internal |  | Marks a process launched by the Rust CLI. |
 | `AMPLIHACK_RUST_TRIAL_HOME` | user preference |  | Home for the Rust trial. |
@@ -272,7 +273,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_WORKSTREAM_PROGRESS_FILE` | internal |  | Progress file handed to a multitask workstream. |
 | `AMPLIHACK_WORKSTREAM_STATE_FILE` | internal |  | State file handed to a multitask workstream. |
 | `AMPLIHACK_WORKTREE_PATH` | internal |  | Worktree path handed to a multitask workstream. |
-| `AMPLIHACK_WORK_ROOT` | user preference |  | Folder for run folders, targets, clones and the log archive; default `$HOME/.amplihack/work`. When set by the caller (see `AMPLIHACK_WORK_ROOT_EXPLICIT`), worktrees also go under it. Clones are never cleaned up. See [Clean Up After Recipe Runs](../howto/clean-up-after-recipe-runs.md#settings). |
+| `AMPLIHACK_WORK_ROOT` | user preference |  | Folder for run folders, targets, clones and the log archive; default `$HOME/.amplihack/work`. When set by the caller (see `AMPLIHACK_WORK_ROOT_EXPLICIT`), worktrees also go under it. Clones are never cleaned up. A run's temporary folder goes under it only when neither `AMPLIHACK_RUN_TMP_ROOT` nor the caller's `TMPDIR` applies. See [Clean Up After Recipe Runs](../howto/clean-up-after-recipe-runs.md#settings) and [`AMPLIHACK_RUN_TMP_ROOT`](../howto/clean-up-after-recipe-runs.md#where-a-runs-temp-folder-goes). |
 | `AMPLIHACK_WORK_ROOT_EXPLICIT` | internal |  | Handed to recipe steps; decides whether worktrees move under the work root. Passed through unchanged when already set, so a nested run keeps its parent's value; otherwise `1` when `AMPLIHACK_WORK_ROOT` is set and `0` when not. |
 
 ### Variables outside the `AMPLIHACK_*` namespace

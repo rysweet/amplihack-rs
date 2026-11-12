@@ -21,6 +21,7 @@ logs and removes temporary folders left by killed runs.
 - [Quick start](#quick-start)
 - [Settings](#settings)
 - [Where a run writes](#where-a-run-writes)
+- [Where a run's temp folder goes](#where-a-runs-temp-folder-goes)
 - [Preserve or retire recovery state](#preserve-or-retire-recovery-state)
 - [What happens when a run ends](#what-happens-when-a-run-ends)
 - [When a run is eligible for cleanup](#when-a-run-is-eligible-for-cleanup)
@@ -72,10 +73,11 @@ for these settings.
 | Variable | Flag | Default | Meaning |
 | --- | --- | --- | --- |
 | `AMPLIHACK_WORK_ROOT` | none | `$HOME/.amplihack/work` | Folder that holds run folders, targets, clones, the archive and, when set explicitly, worktrees. |
+| `AMPLIHACK_RUN_TMP_ROOT` | none | unset | Absolute folder for each run's private temporary folder, `ahr-<short id>`. When unset, the caller's `TMPDIR` is used if it is suitable (on macOS, not the login folder under `/var/folders`), and otherwise the work root. See [Where a run's temp folder goes](#where-a-runs-temp-folder-goes). |
 | `AMPLIHACK_CLEANUP_KEEP_HOURS` | `--keep-hours N` | `24` | How long run-owned worktrees and targets are kept after a run's PR closes or the run ends, and how old untagged targets and system temporary leftovers must be. Does not apply to `run-tmp`. Maximum `87600`. |
 | `AMPLIHACK_LOG_ARCHIVE_DAYS` | `--log-days N` | `30` | Recipe logs and session logs whose modification time is older than this are archived. Maximum `36500`. |
 | `AMPLIHACK_LOG_ARCHIVE_DIR` | none | `<work root>/archive` | Where log archives and `MANIFEST.jsonl` are written. |
-| `AMPLIHACK_CLEANUP_ON_EXIT` | none | `1` | Set to `0` to skip the end-of-run sweep. The run's `runtime/` folder is still removed. |
+| `AMPLIHACK_CLEANUP_ON_EXIT` | none | `1` | Set to `0` to skip the end-of-run sweep. The run's temporary folder is still removed. |
 | `AMPLIHACK_TARGET_LINK_ROOTS` | none | unset | Extra colon-separated absolute folders where linked targets may point. Not needed for links made by the host cargo wrapper. See [Linked targets](#linked-targets). |
 
 Recipe logs stay in `recipe.log_dir` (default `~/.amplihack/recipe-logs`).
@@ -121,7 +123,11 @@ The runner creates one folder per run:
 └── .cleanup.lock
 ```
 
-Every step of the run sees these variables:
+This is the default layout. When `AMPLIHACK_RUN_TMP_ROOT` or the caller's
+`TMPDIR` names a suitable root, `runtime/` is replaced by a folder under that
+root; see [Where a run's temp folder goes](#where-a-runs-temp-folder-goes).
+
+On the default layout, every step of the run sees these variables:
 
 | Variable | Value |
 | --- | --- |
@@ -153,9 +159,10 @@ their own temporary folders are not recovery authority.
 
 If `<run dir>/runtime/tmp` would be longer than 80 bytes, which can happen
 with a long home path, the runtime folder is placed at
-`<work root>/r/<first 12 hex digits of the run id>` instead. This leaves room
-under the 108-byte limit on Unix socket paths for tools that create sockets in
-`TMPDIR`.
+`<work root>/r/<first 12 hex digits of the run id>` instead. Tools create
+Unix sockets in `TMPDIR`, and a socket path is limited to 108 bytes on Linux
+and 104 on macOS; [Socket paths](#socket-paths) says what an 80-byte `TMPDIR`
+leaves room for.
 
 ### The run report
 
@@ -314,6 +321,321 @@ The default work root (`$HOME/.amplihack/work`) applies to run folders,
 targets, clones and the archive whether or not the variable is set. Only
 worktrees need the variable set explicitly.
 
+## Where a run's temp folder goes
+
+By default a run's temporary folder is `<run dir>/runtime`, inside the work
+root. A caller who wants temporary files on another disk, such as a tmpfs or
+a scratch SSD, can say so in either of two ways. The runner checks them in
+this order and uses the first that applies:
+
+1. **`AMPLIHACK_RUN_TMP_ROOT`**, when it is set and not empty.
+2. **The caller's `TMPDIR`**, when `AMPLIHACK_RUN_TMP_ROOT` is unset or empty.
+3. **The default layout**, `<run dir>/runtime` (or `<work root>/r/<short id>`
+   when that path would be too long; see [Where a run writes](#where-a-run-writes)).
+
+Under rule 1 or rule 2 the run creates one private folder directly inside the
+chosen root:
+
+```text
+<root>/ahr-<first 12 hex digits of the run id>/
+├── tmp/          # TMPDIR, TMP and TEMP for every step
+└── artifacts/    # AMPLIHACK_WORKFLOW_ARTIFACT_DIR
+```
+
+`ahr` stands for "amplihack run". The name is short because it counts
+against the path-length limit in [Rules for the root](#rules-for-the-root).
+
+Steps never get the root itself as their `TMPDIR`. The folder replaces
+`<run dir>/runtime`, which is then not created; `run.json`, `owned-paths` and
+`cleanup-record.json` stay in `<work root>/runs/<run id>/` as before.
+
+### Choose a root for one run
+
+```bash
+export AMPLIHACK_RUN_TMP_ROOT=/scratch/amplihack-tmp
+
+amplihack recipe run default-workflow \
+  -c task_description="Fix flaky login tests" \
+  -c repo_path=.
+```
+
+A step of that run sees:
+
+```text
+TMPDIR=/scratch/amplihack-tmp/ahr-3f0c9a526d1e/tmp
+TMP=/scratch/amplihack-tmp/ahr-3f0c9a526d1e/tmp
+TEMP=/scratch/amplihack-tmp/ahr-3f0c9a526d1e/tmp
+AMPLIHACK_WORKFLOW_RUNTIME_DIR=/scratch/amplihack-tmp/ahr-3f0c9a526d1e
+AMPLIHACK_RUNTIME_ROOT=/scratch/amplihack-tmp/ahr-3f0c9a526d1e
+AMPLIHACK_WORKFLOW_ARTIFACT_DIR=/scratch/amplihack-tmp/ahr-3f0c9a526d1e/artifacts
+AMPLIHACK_RUN_TMP_ROOT=/scratch/amplihack-tmp
+```
+
+With `AMPLIHACK_RUN_TMP_ROOT` unset, a caller's `TMPDIR` has the same effect:
+
+```bash
+TMPDIR=/scratch/amplihack-tmp amplihack recipe run default-workflow \
+  -c task_description="Fix flaky login tests" -c repo_path=.
+# step TMPDIR: /scratch/amplihack-tmp/ahr-3f0c9a526d1e/tmp
+```
+
+### Rules for the root
+
+`AMPLIHACK_RUN_TMP_ROOT` must:
+
+- be an absolute path;
+- be a folder, or be missing, in which case the runner creates it, and any
+  missing parents, with mode `0700`;
+- be owned by you or by root, and, if it is writable by group or others, have
+  the sticky bit set (as `/tmp` does);
+- not be, or lie inside, the work root or `$HOME/.amplihack`, compared after
+  both are resolved, and by whole path components, so `/data/work2` is outside
+  `/data/work`;
+- be valid UTF-8 once resolved.
+
+The caller's `TMPDIR` must meet the same rules, with three differences: the
+runner never creates it, so it must already exist; it must also lie outside
+the folder named by any `AMPLIHACK_WORKFLOW_RUNTIME_DIR` the caller set; and
+on macOS it must not be the login temp folder (see
+[The macOS login TMPDIR](#the-macos-login-tmpdir)). Some of these failures
+are skipped without a warning; see
+[When the runner falls back](#when-the-runner-falls-back).
+
+The resolved path of `<root>/ahr-<12 hex>/tmp` must be at most 80 bytes, the
+same limit as the default layout; [Socket paths](#socket-paths) explains the
+figure. The part after the root, `/ahr-<12 hex>/tmp`, takes 21 bytes, so a
+resolved root of up to 59 bytes fits; a root of 60 bytes is refused with a
+warning, whichever variable named it.
+
+The runner always resolves the root (following symbolic links) before it
+uses it. The resolved path is what steps see, what `run.json` records and
+what cleanup compares.
+
+### The macOS login TMPDIR
+
+On macOS, launchd gives every login a `TMPDIR` in a per-user folder,
+`/var/folders/<2>/<30>/T/`; `getconf DARWIN_USER_TEMP_DIR` prints it. Rule 2
+skips that folder without a warning, comparing both paths after resolving
+them, and the run uses the default layout, as it did before the runner
+honoured `TMPDIR`. There are two reasons:
+
+- The folder is on the same APFS volume as a standard home folder, so using
+  it would move nothing off the work root's disk.
+- It resolves through `/private/var` to 56 bytes, so every step's `TMPDIR`
+  would be `<56 bytes>/ahr-<12 hex>/tmp`, 77 bytes. That is too long for
+  Python multiprocessing and `ssh-agent` under the 104-byte macOS socket
+  limit; see [Socket paths](#socket-paths). The default layout gives
+  `<work root>/r/<12 hex>/tmp`: 46 bytes with the default work root of
+  `/Users/<4 characters>/.amplihack/work`.
+
+A `TMPDIR` you set to another folder, including a folder below the login one,
+is honoured under the usual rules, and `AMPLIHACK_RUN_TMP_ROOT` may name the
+login folder itself. The runner reads the folder with
+`confstr(_CS_DARWIN_USER_TEMP_DIR)`. Other systems have no such folder, and
+rule 2 works there as described above.
+
+### Socket paths
+
+Tools create Unix sockets below `TMPDIR`. The kernel limits a socket path to
+the size of `sun_path`, including the terminating NUL: 108 bytes on Linux
+([unix(7)](https://man7.org/linux/man-pages/man7/unix.7.html)) and 104 on
+macOS (XNU
+[`bsd/sys/un.h`](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/un.h)).
+There is no single limit. A step's `TMPDIR` of 80 bytes, the most the runner
+gives, leaves 27 bytes below it on Linux and 23 on macOS. Some common tools
+need more:
+
+| Tool | Socket path below `TMPDIR` | Longest `TMPDIR` that works |
+| --- | --- | --- |
+| Python `multiprocessing` listeners | `/pymp-<8>/sock-<12>` (3.14) or `/pymp-<8>/listener-<8>` (earlier): 32 bytes | Linux: 75 bytes. macOS: 59 bytes on 3.14, 71 before |
+| `ssh-agent` started without `-a` | `/ssh-<12>/agent.<pid>`: 24 bytes plus the process id | Linux: 76 bytes with a 7-digit id. macOS: 74 bytes with a 5-digit id |
+
+Past its limit, Python 3.14 ignores `TMPDIR` for these sockets and uses
+`/tmp` ([cpython#132124](https://github.com/python/cpython/issues/132124));
+earlier versions fail with `AF_UNIX path too long`. `ssh-agent` cannot create
+its socket.
+
+What a step gets:
+
+| Layout | Step `TMPDIR` | Length |
+| --- | --- | --- |
+| Default | `<work root>/runs/<run id>/runtime/tmp` | work root + 54 bytes, used while that is at most 80 |
+| Default, long work root | `<work root>/r/<12 hex>/tmp` | work root + 19 bytes |
+| External root | `<root>/ahr-<12 hex>/tmp` | root + 21 bytes, at most 80 |
+
+So a work root of 22 to 26 bytes, such as `/home/<4 characters>/.amplihack/work`
+on Linux, gives steps a `TMPDIR` of 76 to 80 bytes, which is past the limit
+for Python multiprocessing. Whether to lower the 80-byte limit is tracked in
+[#2412](https://github.com/rysweet/amplihack-rs/issues/2412).
+
+To keep every step's `TMPDIR` short whatever the home path, set
+`AMPLIHACK_RUN_TMP_ROOT=/tmp`. Steps then get `/tmp/ahr-<12 hex>/tmp`, which
+is 25 bytes, or 33 bytes on macOS, where `/tmp` resolves to `/private/tmp`.
+`/tmp` is owned by root and has the sticky bit set, so it meets the rules
+above. If `/tmp` is a tmpfs, see [tmpfs roots](#tmpfs-roots).
+
+### The per-run folder
+
+`ahr-<12 hex>` is created with a single, non-recursive `mkdir` at
+mode `0700`. If a file, folder or symbolic link of that name already exists,
+the run does not use it: it prints a warning and falls back to the default
+layout. After creating it, the runner checks that it is a real folder, owned
+by you, with no group or other permissions; if not, it removes it and falls
+back. Two runs never share a folder, because each run id gives a different
+name.
+
+### When the runner falls back
+
+When a root cannot be used, the run still starts, on the default layout. It
+prints exactly one line on stderr, naming the variable, the path and the
+reason:
+
+```text
+amplihack: AMPLIHACK_RUN_TMP_ROOT="tmp/runs" is not an absolute path; using the default run folder
+amplihack: AMPLIHACK_RUN_TMP_ROOT="/data/amplihack-work/tmp" is inside the work root; using the default run folder
+amplihack: TMPDIR="/scratch/a-rather-long-folder-name/for-temporary-files/of-recipe-runs" would make the run temp path 90 bytes (limit 80); using the default run folder
+amplihack: TMPDIR="/shared/tmp" is writable by other users without the sticky bit; using the default run folder
+```
+
+Paths are printed quoted and escaped, so a newline or terminal control code
+in a variable cannot forge another output line.
+
+| Reason | Applies to |
+| --- | --- |
+| `is not an absolute path` | `AMPLIHACK_RUN_TMP_ROOT` |
+| `could not be created: <error>` | `AMPLIHACK_RUN_TMP_ROOT` |
+| `is not a folder` | `AMPLIHACK_RUN_TMP_ROOT` |
+| `is inside the work root` or `is inside $HOME/.amplihack` | `AMPLIHACK_RUN_TMP_ROOT` |
+| `is owned by another user` | both |
+| `is writable by other users without the sticky bit` | both |
+| `is not valid UTF-8` | both |
+| `would make the run temp path <n> bytes (limit 80)` | both |
+| `per-run folder "<path>" already exists` | both |
+| `per-run folder "<path>" could not be created: <error>` | both |
+| `per-run folder "<path>" is not private` | both |
+
+A `TMPDIR` is not an error, and the run uses the default layout and prints
+nothing, when it is unset, empty or relative, when it does not exist or is not
+a folder, when it is the [macOS login temp folder](#the-macos-login-tmpdir),
+or when it lies inside the work root, inside `$HOME/.amplihack` or inside the
+folder named by the caller's `AMPLIHACK_WORKFLOW_RUNTIME_DIR`. The last case
+is the normal one for a sub-recipe, because its `TMPDIR` is the parent run's
+own temporary folder; see [Nested runs](#nested-runs).
+
+A `TMPDIR` that is too long is not skipped silently: it prints the length
+warning. Falling back without a word would put the run's temporary files back
+on the work root's disk while the caller believes they are elsewhere. The
+macOS login `TMPDIR` is skipped before the length is checked, so a default
+macOS login does not see this warning.
+
+A bad `AMPLIHACK_RUN_TMP_ROOT` never falls through to `TMPDIR`. If you set the
+variable, either it is used or the default layout is.
+
+Each run prints at most one such warning. A sub-recipe that meets the same
+problem prints its own.
+
+### Nested runs
+
+When a run uses a folder under an external root, whether the root came from
+`AMPLIHACK_RUN_TMP_ROOT` or from `TMPDIR`, it exports
+`AMPLIHACK_RUN_TMP_ROOT=<resolved root>` to its steps. A sub-recipe started by
+a step therefore applies rule 1 and creates a sibling folder,
+`<root>/ahr-<its own short id>`, instead of nesting inside the
+parent's `tmp/`. The path length stays the same at every depth.
+
+A run on the default layout passes the caller's `AMPLIHACK_RUN_TMP_ROOT`
+through unchanged, and removes nothing from the environment.
+
+A sub-recipe never builds its folder inside the parent's temporary folder. Its
+`TMPDIR` is the parent's `<run dir>/runtime/tmp`, or, under a
+[dry run](#dry-runs-and-the-explicit-root) without an explicit root,
+`<system tmp>/ahd-<random>/tmp`. Both lie inside the parent's
+`AMPLIHACK_WORKFLOW_RUNTIME_DIR`, so rule 2 is skipped without a warning and
+the sub-recipe uses the default layout.
+
+### Removal and cleanup
+
+The run removes its per-run folder when it ends, whether it succeeded, failed
+or panicked, exactly as it removes `<run dir>/runtime`. The root is never
+removed, even if the runner created it.
+
+While the run is going, `run.json` records the folder, so a run killed with
+`SIGKILL` can still be cleaned up. An excerpt of `run.json`, with the other
+fields left out:
+
+```json
+{
+  "schema_version": 1,
+  "run_id": "3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3",
+  "runtime_dir": "/scratch/amplihack-tmp/ahr-3f0c9a526d1e"
+}
+```
+
+`runtime_dir` appears only for a folder under an external root. Runs on the
+default layout leave it out, and reports written by earlier releases read as
+if it were absent.
+
+`amplihack cleanup` and the end-of-run sweep treat a recorded folder as a
+`run-tmp` item. It is removed when the run is no longer active and no running
+process uses it, as for `<run dir>/runtime`. Before that, cleanup checks the
+recorded path, and reports it as `skipped` with
+`recorded temp folder refused: <reason>` if any check fails:
+
+| Reason | Meaning |
+| --- | --- |
+| `not an absolute path` | `runtime_dir` is relative. |
+| `wrong name` | The last component is not `ahr-<short id of this run>`. |
+| `is a symbolic link` | The recorded path is a link, whatever it points to. This check comes before the next one. |
+| `not a folder` | The recorded path is a file or another non-folder that is not a link. |
+| `owned by another user` | The folder's owner is not you. |
+| `path is not canonical` | The path resolves somewhere else, for example because a parent folder was replaced by a link. |
+| `inside the work root` | The recorded path lies in the work root, where only the default layout belongs. |
+
+A recorded path that no longer exists, or a `run.json` that cannot be read,
+produces no item, and the folder, if any, is left alone. Cleanup never
+removes an `ahr-*` folder that no `run.json` records; the prefix is
+not one of the `tmp-leftover` patterns.
+
+Just before removing a recorded folder, `amplihack cleanup --apply` reads
+`run.json` again. The folder is removed only if the report still records the
+same resolved path, with the right name and owner. A path changed between
+the dry run and the apply is refused with
+`no longer inside the folders cleanup manages`. Links inside the folder are
+removed, never followed.
+
+### Dry runs and the explicit root
+
+A dry run (`amplihack recipe run --dry-run`) has no run folder. It uses a
+private temporary folder instead. If `AMPLIHACK_RUN_TMP_ROOT` is usable under
+the rules above, that folder is `<root>/ahd-<6 random characters>`, and the
+run exports the root to its steps. Otherwise it is `ahd-<6 random characters>`
+in the system temporary folder, which already follows `TMPDIR`. The name is no
+longer than `ahr-<12 hex>`, so a root that fits a run's folder also fits a dry
+run's. The folder is removed when the run ends, but nothing records it, so one
+left by a killed dry run under an explicit root is not swept; remove it by
+hand.
+
+### Build targets stay out of the run folder
+
+A run never moves Cargo build output into its temporary folder.
+
+- A `CARGO_TARGET_DIR` set by the caller reaches every step unchanged.
+- When `CARGO_TARGET_DIR` is unset, `scripts/git-hook-cargo.sh` uses
+  `<work root>/targets`, then `${XDG_CACHE_HOME:-$HOME/.cache}/amplihack`.
+  Only when neither can be used does it fall back to a temporary folder. If
+  `TMPDIR` then lies inside `AMPLIHACK_WORKFLOW_RUNTIME_DIR`, as it does in
+  every step, the hook uses `AMPLIHACK_RUN_TMP_ROOT` when that is an absolute
+  path, and `/tmp` otherwise. A target is therefore never deleted with the run
+  folder. See [Fallback to TMPDIR](../reference/pre-commit-build-cache.md#fallback-to-tmpdir).
+
+### tmpfs roots
+
+If `TMPDIR` is `/tmp` and `/tmp` is a tmpfs, a run's temporary files now use
+memory, not the work root's disk. Large step output in `TMPDIR` counts
+against the tmpfs size. To keep runs on disk, set `AMPLIHACK_RUN_TMP_ROOT` to
+a folder on the disk you want, or unset `TMPDIR` for the run to use the
+default layout.
+
 ## Preserve or retire recovery state
 
 Durable recovery storage and `--fresh` are supported. Recovery retirement
@@ -375,9 +697,10 @@ For publication and retention invariants, see
 When `amplihack recipe run` finishes, whether the run succeeded, failed or
 panicked, the runner:
 
-1. Removes `<run dir>/runtime/`, including everything steps wrote to
-   `TMPDIR` and `artifacts/`. Durable `recovery/` state and
-   copied artifacts will remain outside that disposable folder.
+1. Removes the run's temporary folder, `<run dir>/runtime/` or
+   `<root>/ahr-<short id>/`, including everything steps wrote to
+   `TMPDIR` and `artifacts/`. Durable `recovery/` state and copied artifacts
+   remain outside that disposable folder.
 2. Finalises `run.json` with the end time, outcome and step summary.
 3. Unless `AMPLIHACK_CLEANUP_ON_EXIT=0` is set, sweeps the whole work root for
    run-owned items that are now eligible (the categories `run-tmp`,
@@ -804,7 +1127,7 @@ amplihack cleanup --apply --skip-logs
 
 | Category | What it collects | Action |
 | --- | --- | --- |
-| `run-tmp` | `<work root>/runs/<id>/runtime` (or `<work root>/r/<short id>`) left by a run that is no longer active, such as one that was killed. The keep period does not apply: the folder is removed as soon as the run is inactive and no running process (such as a child the killed run left behind) uses it. | remove |
+| `run-tmp` | `<work root>/runs/<id>/runtime` (or `<work root>/r/<short id>`), or the external folder recorded as `runtime_dir` in `run.json`, left by a run that is no longer active, such as one that was killed. The keep period does not apply: the folder is removed as soon as the run is inactive and no running process (such as a child the killed run left behind) uses it. | remove |
 | `run-worktree` | Worktrees recorded in a run's `owned-paths`, under `<work root>/worktrees/` or `<main checkout>/worktrees/`, once the run is eligible. | `git worktree remove`; the branch is kept |
 | `run-target` | Targets recorded in a run's `owned-paths`: on the events in [When a target is removed](#when-a-target-is-removed), or for legacy lines once the run is eligible. Also the target removed by `--worktree-target`. A linked target loses both its destination and the link. | remove |
 | `untagged-target` | Folders directly under `<work root>/targets/`, and `amplihack-precommit-target-*` folders in the hook cache base, that no run recorded and that have not been modified within the keep period. | remove |
@@ -813,9 +1136,10 @@ amplihack cleanup --apply --skip-logs
 | `session-log` | Files in `${CODEX_HOME:-~/.codex}/sessions`, including its nested date folders, older than `--log-days`. Claude sessions under `~/.claude/projects` are listed but skipped with ``archived by `amplihack sessions archive` ``: that command archives each whole session as one restorable unit, never touches a session a running `claude` still uses, and runs once a day from the login rotator. See [the sessions command](../reference/sessions-command.md). | archive |
 
 `amplihack-workflow-*` folders were the per-run temporary folders of earlier
-releases. Runs now use `<run dir>/runtime` instead, so new ones no longer
-appear. `replay-*` and `release-*` come from tools outside amplihack; cleanup
-only collects them.
+releases. Runs now use `<run dir>/runtime` or a recorded `ahr-*`
+folder instead, and dry runs use `ahd-*`, so no new ones appear.
+`replay-*` and `release-*` come from tools outside amplihack; cleanup only
+collects them.
 
 The `tmp-leftover` category is skipped entirely when cleanup runs as root, and
 when the system temporary folder is neither owned by you nor sticky.
@@ -1013,6 +1337,9 @@ Cleanup deletes only items inside the folders it manages, at the depth it
 expects:
 
 - `<work root>/runs/<id>/runtime` and `<work root>/r/<short id>`;
+- an `ahr-<short id>` folder that the run's `run.json` records as
+  `runtime_dir`, after the checks in
+  [Removal and cleanup](#removal-and-cleanup);
 - recorded worktrees under `<work root>/worktrees/` or
   `<main checkout>/worktrees/`;
 - folders directly under `<work root>/targets/`, and
@@ -1188,9 +1515,38 @@ removed. `git worktree remove` run by hand does not remove the target; call
 `amplihack cleanup --apply --worktree-target <path>` with the same path.
 
 **A tool cannot create a socket in `TMPDIR`.** Check the length of
-`$TMPDIR`. Runs switch to the shorter `<work root>/r/<short id>` layout when
-the default path is over 80 bytes; a very long `AMPLIHACK_WORK_ROOT` can still
-exceed the socket limit, so choose a shorter one.
+`$TMPDIR` against the table in [Socket paths](#socket-paths). Runs switch to
+the shorter `<work root>/r/<short id>` layout only when the default path is
+over 80 bytes, so a step's `TMPDIR` can be up to 80 bytes, which is too long
+for Python multiprocessing on Linux and macOS. Set
+`AMPLIHACK_RUN_TMP_ROOT=/tmp` for a 25-byte step `TMPDIR` (33 bytes on
+macOS). An external root, from `AMPLIHACK_RUN_TMP_ROOT` or `TMPDIR`, whose
+resolved path is longer than 59 bytes is refused with a warning, and the run
+uses the default layout.
+
+**A run prints `amplihack: AMPLIHACK_RUN_TMP_ROOT="..." <reason>; using the default run folder`** (or `TMPDIR="..."`).
+The root failed one of the rules in
+[Rules for the root](#rules-for-the-root); the reason is in the line. Fix the
+variable, or unset it. For a `TMPDIR` that is too long, setting
+`AMPLIHACK_RUN_TMP_ROOT` to a shorter folder on the same disk also works. The
+run itself is not affected.
+
+**Steps still write to `~/.amplihack/work/runs/<id>/runtime` although `TMPDIR`
+is set.** Check that `TMPDIR` is an absolute path to a folder that exists and
+lies outside the work root, `$HOME/.amplihack` and any
+`AMPLIHACK_WORKFLOW_RUNTIME_DIR` inherited from a parent run. A `TMPDIR` that
+fails these checks is ignored without a warning; set `AMPLIHACK_RUN_TMP_ROOT`
+instead to get a warning that names the reason. On macOS, the login `TMPDIR`
+under `/var/folders` is ignored on purpose; see
+[The macOS login TMPDIR](#the-macos-login-tmpdir). The other refusals of a
+`TMPDIR`, such as a resolved path longer than 59 bytes, print a warning; see
+[When the runner falls back](#when-the-runner-falls-back).
+
+**An `ahr-*` folder is left after a run was killed.** Run
+`amplihack cleanup`. If the item is listed as `skipped` with
+`recorded temp folder refused`, the folder or its record was changed; check
+the reason, and remove the folder by hand if it is yours. A folder that no
+`run.json` records is never removed by cleanup.
 
 ## Related documentation
 

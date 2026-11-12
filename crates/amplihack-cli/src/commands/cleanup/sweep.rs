@@ -211,6 +211,42 @@ fn canonical_or_self(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// Checks a `runtime_dir` recorded in `run.json` (issue #2291, D9, S11)
+/// before the sweep may treat it as the run's temporary folder. The first
+/// failure, in the documented order, is the reason.
+fn external_runtime_check(
+    path: &Path,
+    id: &str,
+    work_root: &Path,
+    euid: u32,
+) -> Result<(), String> {
+    if !path.is_absolute() {
+        return Err("not an absolute path".into());
+    }
+    let name = super::run_tmp_root::external_dir_name(id);
+    if name.is_none() || path.file_name() != name.as_deref().map(std::ffi::OsStr::new) {
+        return Err("wrong name".into());
+    }
+    let meta =
+        fs::symlink_metadata(path).map_err(|error| format!("cannot be inspected: {error}"))?;
+    if meta.file_type().is_symlink() {
+        return Err("is a symbolic link".into());
+    }
+    if !meta.file_type().is_dir() {
+        return Err("not a folder".into());
+    }
+    if meta.uid() != euid {
+        return Err("owned by another user".into());
+    }
+    if canonical_or_self(path) != path {
+        return Err("path is not canonical".into());
+    }
+    if path.starts_with(canonical_or_self(work_root)) || path.starts_with(work_root) {
+        return Err("inside the work root".into());
+    }
+    Ok(())
+}
+
 /// Size and newest mtime of a folder tree, from one walk.
 struct TreeStats {
     size: u64,
@@ -794,7 +830,7 @@ impl Collector<'_> {
                     Some(id),
                 ));
             }
-            let runtime_dirs = [
+            let mut runtime_dirs = vec![
                 run.dir.join("runtime"),
                 root.short_runtime_dir().join(short_id(id)),
             ];
@@ -834,6 +870,26 @@ impl Collector<'_> {
                 }
             };
             let active = run_is_active(&report);
+
+            // Issue #2291: a per-run folder under an external root, as
+            // `run.json` records it. A missing path produces no item.
+            if want_tmp
+                && let Some(recorded) = report.runtime_dir.as_deref().map(PathBuf::from)
+                && !matches!(
+                    fs::symlink_metadata(&recorded),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound
+                )
+            {
+                match external_runtime_check(&recorded, id, &root.path, euid()) {
+                    Ok(()) => runtime_dirs.push(recorded),
+                    Err(reason) => self.items.push(Item::skip(
+                        Category::RunTmp,
+                        &recorded,
+                        format!("recorded temp folder refused: {reason}"),
+                        Some(id),
+                    )),
+                }
+            }
 
             if want_tmp {
                 for dir in runtime_dirs.iter().filter(|d| is_real_dir(d)) {
