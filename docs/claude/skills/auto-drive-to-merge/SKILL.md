@@ -116,7 +116,7 @@ amplihack recipe run auto-drive-to-merge -c pr_number=1234 -c autodrive_dry_run=
 | `autodrive_budget_loop_rounds` | `12` | Rounds either loop may run in total, across every run on the same state directory. `0` or empty means unlimited. |
 | `autodrive_budget_total_rounds` | `20` | Rounds both loops together may run. `0` or empty means unlimited. |
 | `autodrive_budget_wall_seconds` | `14400` | Seconds that rounds, before-round steps and evaluator runs may take in total. `0` or empty means unlimited. |
-| `autodrive_ci_watch_interval` | `120` | Seconds between `gh` refreshes while each merge round watches the CI runs at the head. An integer of at least `60` with no leading zero; any other value falls back to `120` with a note on stderr. Lower it to `60` only when faster turns matter more than the shared GitHub API allowance (see [The watch interval](../../../docs/reference/auto-drive-to-merge.md#the-watch-interval)). |
+| `autodrive_ci_watch_interval` | `120` | Seconds between `gh` refreshes while each merge round watches the CI runs at the head. An integer of at least `60` with no leading zero; any other value falls back to `120` with a note on stderr. Lower it to `60` only when faster turns matter more than the shared GitHub API allowance (see "The watch interval" in `docs/reference/auto-drive-to-merge.md`). |
 
 ## Why there is no iteration cap
 
@@ -343,7 +343,7 @@ the loop as `STUCK`, so a workflow that never fires cannot keep it running.
 The round merges the base and pushes only when GitHub reports the branch
 `BEHIND`, or `DIRTY` while the local merge is clean, so it does not restart
 CI on every round. See
-[Merge evidence steps](../../../docs/reference/auto-drive-to-merge.md#merge-evidence-steps).
+"Merge evidence steps" in `docs/reference/auto-drive-to-merge.md`.
 Test suites, builds, and model calls run to their natural end. A false
 timeout costs more than a slow run.
 
