@@ -28,11 +28,29 @@
 //! verdict is NOT transient. Retrying an impossible step forever is its own
 //! bug, and it is the more expensive one: a missed retry costs one run, an
 //! unbounded retry costs the whole budget and hides the real failure.
+//!
+//! The same rule covers the structural guard's own line. Text never decides a
+//! refusal (#1437): only a failed step's terminating exit `79` does. But when a
+//! failed step's evidence quotes `BLOCKED_TERMINAL orchestration_unavailable`
+//! and the verdict would otherwise be `transient_transport`, it is
+//! `indeterminate` instead. The guard may have refused a step the envelope
+//! decoder cannot see (`termination.rs` names those cases), and retrying the
+//! run would retry into it.
 
-use super::super::{RecipeRunResult, RecipeRunStepResult};
+use super::super::RecipeRunResult;
+use super::failure_evidence::{
+    EVIDENCE_TAIL_LINES, is_completed_status, quotes_structural_guard, repo_selection_repo_hint,
+    step_evidence, tail_lines, truncate_evidence,
+};
+use super::failure_markers::{
+    AGENT_API_MARKERS, ENVIRONMENTAL_MARKERS, REPO_SELECTION_MARKERS, STRUCTURAL_REFUSAL_MARKER,
+    TRANSIENT_MARKERS, WORK_MARKERS,
+};
 use super::limit_patterns;
 use serde_json::{Value as JsonValue, json};
 use std::io::Write;
+
+pub(crate) use super::failure_evidence::usage_limit_reset_hint;
 
 /// Greppable prefix for the classification marker written to stderr. A
 /// supervisor tailing a run log can find every classification decision — and
@@ -43,15 +61,13 @@ pub(crate) const FAILURE_CLASS_MARKER_PREFIX: &str = "amplihack.recipe.failure_c
 /// agentic layer can read it as data rather than scraping prose.
 pub(crate) const FAILURE_CLASS_RESULT_KEY: &str = "failure_classification";
 
-/// Trailing lines of a failed step's captured output that count as evidence.
-/// The terminating error lives at the tail; earlier output describes work that
-/// already happened and must not decide the class.
-const EVIDENCE_TAIL_LINES: usize = 40;
-
-/// Upper bound on the evidence text handed to the marker/result payload.
-const EVIDENCE_MAX_CHARS: usize = 2000;
-
 /// What kind of failure this was.
+///
+/// When evidence carries markers from more than one class, precedence is
+/// `Work` > `Environmental` > `UsageLimit` > `AgentApi` > `TransientTransport` > `Indeterminate`
+/// (see `classify_failure_text`). A 404 that carries an environmental marker
+/// (`api error: 404`, `404 not found`, `not_found_error`, `model_not_found`)
+/// is therefore `Environmental` (#1421), never `AgentApi` (#1437).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FailureClass {
     /// Unambiguously transient transport fault: the request never reached a
@@ -76,6 +92,19 @@ pub(crate) enum FailureClass {
     /// retryable — but calling it `Indeterminate` told the operator nothing was
     /// known when in fact the cause and its reset time were stated plainly.
     UsageLimit,
+    /// The agent transport itself never reached a verdict: the agent / session
+    /// endpoint rejected the request outright (`Execution failed: 400`, "the
+    /// resource you requested was not found", a vanished session). Issue #1437: this used to
+    /// fall through to `Indeterminate` — "nothing in the evidence identifies the
+    /// failure" — about a message that names its own cause, and a supervising
+    /// loop reading that as a structural refusal stopped a run whose agent had
+    /// already committed and pushed real work.
+    ///
+    /// It is NOT mechanically retryable: the identical request gets the
+    /// identical rejection. It is also NOT a structural refusal — nothing
+    /// declined to do the work, a call failed — so a loop is free to decide, on
+    /// its own evidence, whether another round is worthwhile.
+    AgentApi,
     /// Nothing in the evidence identifies the failure. Treated as terminal —
     /// "we do not know" is not a licence to retry.
     Indeterminate,
@@ -88,6 +117,7 @@ impl FailureClass {
             Self::Environmental => "environmental",
             Self::Work => "work",
             Self::UsageLimit => "usage_limit",
+            Self::AgentApi => "agent_api",
             Self::Indeterminate => "indeterminate",
         }
     }
@@ -104,15 +134,37 @@ impl FailureClass {
 #[derive(Debug, Clone)]
 pub(crate) struct FailureVerdict {
     pub(crate) class: FailureClass,
-    /// The literal marker that decided the class. `None` for `Indeterminate`.
+    /// The deciding marker (or the guard signal when diagnostics are elided).
+    /// `None` for `Indeterminate`, except when quoted guard text vetoed a
+    /// mechanical retry: then it is the guard's phrase and
+    /// `structural_refusal` stays `false`.
     pub(crate) signal: Option<&'static str>,
-    /// The tail of output the decision was made from.
+    /// Bounded diagnostic output; structural termination is retained separately.
     pub(crate) evidence: String,
     pub(crate) failed_steps: Vec<String>,
     pub(crate) completed_steps: Vec<String>,
+    /// A failed step terminated with the reserved guard status before evidence truncation.
+    pub(crate) structural_refusal: bool,
 }
 
 impl FailureVerdict {
+    /// Did a STRUCTURAL GUARD refuse this run — the sealed recursion ceiling,
+    /// the width cap, the free-memory floor (#1326/#1327/#1329/#1332)?
+    ///
+    /// This is the single bit a supervising loop needs to tell "stop, and never
+    /// retry into the guard" from "a call failed; decide for yourself whether
+    /// another round is worthwhile". It is published on the classification JSON
+    /// as `structural_refusal` so a loop reads ONE boolean produced by the layer
+    /// that knows, instead of grepping a whole transcript for a word that also
+    /// appears in refusals a descendant already handled (issue #1437).
+    ///
+    /// Computed only from each failed step's terminating status before combined
+    /// diagnostics are truncated. Captured guard text, runner stderr and run
+    /// status cannot set this flag.
+    pub(crate) fn is_structural_refusal(&self) -> bool {
+        self.structural_refusal
+    }
+
     /// One-line human summary naming the class and the deciding marker.
     pub(crate) fn reasoning(&self) -> String {
         // Issue #1435: this error already told the operator what to do — pick a
@@ -149,6 +201,37 @@ impl FailureVerdict {
                 self.signal.unwrap_or("a usage limit marker")
             );
         }
+        // Issue #1437: name the cause. "Stopped" without a reason is what made
+        // this expensive to diagnose in the first place.
+        if self.class == FailureClass::AgentApi {
+            return format!(
+                "classified `agent_api` — evidence contains {:?}. The agent transport \
+                 rejected the request outright, so no verdict was ever reached. This is \
+                 NOT a structural policy refusal and NOT a work failure; it is also not \
+                 retried mechanically, because the identical request gets the identical \
+                 rejection. A supervising loop may start a fresh round.",
+                self.signal.unwrap_or("an agent endpoint rejection")
+            );
+        }
+        if !self.is_structural_refusal() && self.signal == Some(STRUCTURAL_REFUSAL_MARKER) {
+            return format!(
+                "classified `{}` — the failure evidence quotes the structural guard's line \
+                 ({STRUCTURAL_REFUSAL_MARKER:?}) and also carries a transport marker, but no \
+                 failed step terminated with exit 79 in the runner's error envelope. Quoted \
+                 text never decides a refusal (#1437), so this is not one; it does veto a \
+                 mechanical retry, because the guard may have refused a nested step and a \
+                 retry would run into it again. Not retried.",
+                self.class.as_str()
+            );
+        }
+        if self.is_structural_refusal() {
+            return format!(
+                "classified `{}` — a structural guard refused this run \
+                 ({STRUCTURAL_REFUSAL_MARKER:?}, #1326/#1327/#1329/#1332). This is a FINAL \
+                 answer: retrying into the guard is precisely what the guard exists to stop.",
+                self.class.as_str()
+            );
+        }
         match self.signal {
             Some(signal) => format!(
                 "classified `{}` — evidence contains {signal:?}",
@@ -171,6 +254,10 @@ impl FailureVerdict {
             "action": action,
             "attempt": attempt,
             "retryable": self.class.is_mechanically_retryable(),
+            // Issue #1437: the one bit a supervising loop needs. `true` ONLY
+            // when a structural guard refused THIS run; a transcript that
+            // merely quotes a refusal a descendant already handled is `false`.
+            "structural_refusal": self.is_structural_refusal(),
             "failed_steps": self.failed_steps,
             "completed_steps": self.completed_steps,
             "evidence": self.evidence,
@@ -178,168 +265,10 @@ impl FailureVerdict {
     }
 }
 
-/// Markers that only a transport-level fault produces. Every entry is a status
-/// line or a socket-level error string — none of them is something a compiler,
-/// a test runner, or an agent's prose would emit as its own terminal message.
-///
-/// Note what is deliberately absent: 401/403/404. An auth rejection or an
-/// unknown-model answer is a *stable* server answer, not an overloaded one, and
-/// retrying it just burns budget. Those are classified `Environmental` below.
-const TRANSIENT_MARKERS: &[&str] = &[
-    // Anthropic / OpenAI style overload and rate-limit envelopes.
-    "api error: 529",
-    "529 overloaded",
-    "overloaded_error",
-    "api error: 503",
-    "503 service unavailable",
-    "api error: 502",
-    "502 bad gateway",
-    "api error: 500",
-    "500 internal server error",
-    "504 gateway timeout",
-    "api error: 429",
-    "429 too many requests",
-    "rate_limit_error",
-    "rate limit exceeded",
-    "server_error",
-    "service temporarily unavailable",
-    // Transport / socket level.
-    "connection reset by peer",
-    "connection closed before message completed",
-    "econnreset",
-    "etimedout",
-    "epipe",
-    "socket hang up",
-    "tls handshake timed out",
-    "temporary failure in name resolution",
-    "upstream connect error",
-    "request timed out",
-];
-
-/// Markers that mean the environment cannot support the work as configured.
-/// Retrying the identical invocation cannot help — something has to change
-/// first — so these are terminal for the mechanical retry.
-const ENVIRONMENTAL_MARKERS: &[&str] = &[
-    "api error: 401",
-    "401 unauthorized",
-    "authentication_error",
-    "invalid api key",
-    "invalid x-api-key",
-    "api error: 403",
-    "403 forbidden",
-    "permission_error",
-    // Issue #1421: a model the API does not know. This is the most misleading
-    // failure the runner sees — it looks like an API blip, so it used to fall
-    // through to `Indeterminate` ("nothing in the evidence identifies the
-    // failure") when in fact the evidence names the exact problem. It is
-    // environmental by definition: retrying the identical call with the same
-    // model can never succeed, something has to change first.
-    "api error: 404",
-    "404 not found",
-    "not_found_error",
-    "credit balance is too low",
-    "command not found",
-    "no such file or directory",
-    "permission denied",
-    "no space left on device",
-    "disk quota exceeded",
-    "gh auth login",
-    "not logged in",
-];
-
-/// Markers for a repository-selection precondition failure (issue #1435).
-///
-/// `workflow-worktree` refuses a repository with no `origin` remote before
-/// anything tries to fetch from it (issue #1323, merged as #1374) — a workflow
-/// that will eventually push cannot proceed without one. That refusal is
-/// correct, and its message names both the cause and the remedy:
-///
-/// ```text
-/// ERROR: '/home/me/src' is a git repository but has no 'origin' remote, so this
-///        workflow cannot resolve a base ref or push its work.
-///        This looks like a multi-repository workspace. Repositories found:
-///          /home/me/src/amplihack-rs
-///        Point repo_path at the one to work in (issue #1323).
-/// ```
-///
-/// The classifier used to answer `indeterminate` — "no transport, environmental,
-/// or work marker found" — about that. It is `Environmental` by this taxonomy's
-/// own definition: the environment cannot support the work as configured, and
-/// retrying the identical call cannot help because the identical `repo_path`
-/// will be refused identically. A human has to pick a repository or add an
-/// origin.
-///
-/// These are held apart from `ENVIRONMENTAL_MARKERS` for one reason: the
-/// verdict quotes the remedy back (see `FailureVerdict::reasoning`), and that
-/// only makes sense when the deciding signal came from this table.
-///
-/// Every entry is a literal from the precondition's own output. Note what is
-/// deliberately absent: bare `repository`, bare `origin`, and git's own
-/// `fatal: not a git repository` / `does not appear to be a git repository`.
-/// Those are everyday git noise; a marker broad enough to catch them would
-/// reclassify ordinary failures, which is worse than the bug being fixed.
-const REPO_SELECTION_MARKERS: &[&str] = &[
-    "has no 'origin' remote",
-    "point repo_path at",
-    "add an 'origin' remote",
-];
-
-/// Markers that mean the work itself failed. These win over everything: a run
-/// whose evidence says a test failed is not retried because a 529 also appears
-/// somewhere in the same tail.
-const WORK_MARKERS: &[&str] = &[
-    "test result: failed",
-    "test failed",
-    "tests failed",
-    "assertion failed",
-    "assertionerror",
-    "panicked at",
-    "error[e",
-    "could not compile",
-    "compilation failed",
-    "compilation error",
-    "traceback (most recent call last)",
-    "syntaxerror",
-    "merge conflict",
-    "hook failed",
-    // Terminal policy refusals from the recursion / width guards (#1326,
-    // #1327, #1332). These are FINAL answers by construction; retrying into a
-    // guard is precisely the behaviour those guards exist to stop.
-    "blocked_terminal",
-    "orchestration_unavailable",
-];
-
-/// The reset time a usage-limit message carries, if it states one (#1390).
-/// Returned verbatim rather than parsed into a timestamp: the operator needs
-/// to read it. The anchor lives with the other patterns (#1618).
-pub(crate) fn usage_limit_reset_hint(text: &str) -> Option<String> {
-    limit_patterns::reset_hint(text)
-}
-
-/// The repository a repository-selection precondition refused, if it names one.
-///
-/// Returned verbatim for the same reason the reset hint is (#1390): the
-/// operator has to recognise the path, and a normalised or re-rooted version of
-/// it would be a different path than the one they passed as `repo_path`.
-pub(crate) fn repo_selection_repo_hint(text: &str) -> Option<String> {
-    const NEEDLE: &str = "is a git repository but has no 'origin' remote";
-    let line = text
-        .lines()
-        .find(|line| line.to_ascii_lowercase().contains(NEEDLE))?;
-    let open = line.find('\'')?;
-    let rest = &line[open + 1..];
-    let close = rest.find('\'')?;
-    let repo = rest[..close].trim();
-    if repo.is_empty() {
-        None
-    } else {
-        Some(repo.to_string())
-    }
-}
-
 /// Classify a blob of failure evidence. Pure: same text in, same verdict out.
 ///
-/// Precedence is `Work` > `Environmental` > `UsageLimit` > `TransientTransport`.
+/// Precedence is `Work` > `Environmental` > `UsageLimit` > `AgentApi` >
+/// `TransientTransport`.
 /// Ambiguity therefore resolves toward NOT retrying, which is the cheap
 /// direction to be wrong in.
 pub(crate) fn classify_failure_text(text: &str) -> (FailureClass, Option<&'static str>) {
@@ -363,6 +292,13 @@ pub(crate) fn classify_failure_text(text: &str) -> (FailureClass, Option<&'stati
     if let Some(marker) = first_match(&haystack, &limit_patterns::all_markers()) {
         return (FailureClass::UsageLimit, Some(marker));
     }
+    // Before TRANSIENT_MARKERS: an agent-endpoint rejection is a stable answer,
+    // not an overloaded one, and it must not be read as "retry in a moment"
+    // (#1437). After the three above so a real work/environment/limit cause
+    // still wins when both appear.
+    if let Some(marker) = first_match(&haystack, AGENT_API_MARKERS) {
+        return (FailureClass::AgentApi, Some(marker));
+    }
     if let Some(marker) = first_match(&haystack, TRANSIENT_MARKERS) {
         return (FailureClass::TransientTransport, Some(marker));
     }
@@ -378,58 +314,6 @@ fn first_match(haystack: &str, markers: &[&'static str]) -> Option<&'static str>
         .map(|(_, marker)| marker)
 }
 
-/// A step status the runner reports for work that finished successfully.
-fn is_completed_status(status: &str) -> bool {
-    matches!(
-        status.trim().to_ascii_lowercase().as_str(),
-        "success" | "succeeded" | "completed" | "ok" | "passed" | "skipped"
-    )
-}
-
-/// Collect the tail of everything a failed step emitted. The runner surfaces
-/// the agent's own stdout here — which is where `API Error: 529 Overloaded`
-/// actually lands; the step's `error` field only ever says
-/// "amplihack claude failed (exit 1)".
-fn step_evidence(step: &RecipeRunStepResult) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    if !step.error.trim().is_empty() {
-        parts.push(step.error.trim().to_string());
-    }
-    if !step.output.trim().is_empty() {
-        parts.push(tail_lines(&step.output, EVIDENCE_TAIL_LINES));
-    }
-    if !step.recent_stdout.is_empty() {
-        parts.push(tail_of(&step.recent_stdout, EVIDENCE_TAIL_LINES));
-    }
-    if !step.recent_stderr.is_empty() {
-        parts.push(tail_of(&step.recent_stderr, EVIDENCE_TAIL_LINES));
-    }
-    parts.join("\n")
-}
-
-fn tail_lines(text: &str, max_lines: usize) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    let start = lines.len().saturating_sub(max_lines);
-    lines[start..].join("\n")
-}
-
-fn tail_of(lines: &[String], max_lines: usize) -> String {
-    let start = lines.len().saturating_sub(max_lines);
-    lines[start..].join("\n")
-}
-
-fn truncate_evidence(mut text: String) -> String {
-    if text.chars().count() <= EVIDENCE_MAX_CHARS {
-        return text;
-    }
-    let keep: String = text
-        .chars()
-        .skip(text.chars().count() - EVIDENCE_MAX_CHARS)
-        .collect();
-    text = format!("…(earlier evidence elided)…\n{keep}");
-    text
-}
-
 /// Classify a structured run result the runner reported as failed.
 ///
 /// Evidence is drawn from the FAILED steps only. A run's completed phases are
@@ -439,6 +323,8 @@ pub(crate) fn classify_run_failure(result: &RecipeRunResult, stderr_tail: &str) 
     let mut failed_steps = Vec::new();
     let mut completed_steps = Vec::new();
     let mut evidence_parts: Vec<String> = Vec::new();
+    let mut structural_refusal = false;
+    let mut quotes_guard = false;
 
     for step in &result.step_results {
         if is_completed_status(&step.status) {
@@ -447,6 +333,13 @@ pub(crate) fn classify_run_failure(result: &RecipeRunResult, stderr_tail: &str) 
         }
         failed_steps.push(step.step_id.clone());
         let evidence = step_evidence(step);
+        // Preserve step provenance before truncation can remove its header or
+        // runner stderr can displace the step's entire diagnostic evidence.
+        // Captured evidence can quote a descendant refusal that was handled
+        // inline before this step later failed for an unrelated reason (#1437).
+        structural_refusal |= step.termination_exit_code() == Some(79);
+        // Read before truncation too. It can only stop a retry, never set the flag.
+        quotes_guard |= quotes_structural_guard(&evidence);
         if !evidence.trim().is_empty() {
             evidence_parts.push(format!("[{}] {evidence}", step.step_id));
         }
@@ -465,13 +358,35 @@ pub(crate) fn classify_run_failure(result: &RecipeRunResult, stderr_tail: &str) 
     }
 
     let evidence = truncate_evidence(evidence_parts.join("\n"));
-    let (class, signal) = classify_failure_text(&evidence);
+    let (mut class, mut signal) =
+        veto_retry_on_quoted_guard(classify_failure_text(&evidence), quotes_guard);
+    // The runner's scoped supervisor evidence survives nested error summaries.
+    // Work and environmental failures keep their established higher priority.
+    if matches!(
+        class,
+        FailureClass::Indeterminate | FailureClass::TransientTransport
+    ) && result
+        .extra
+        .get("failure_cause")
+        .is_some_and(|cause| cause["class"] == "usage_limit" && cause["origin"].is_object())
+    {
+        class = FailureClass::UsageLimit;
+        signal = Some("durable scoped usage-limit evidence");
+    }
+    // A failed step that terminated with exit 79 was refused by a structural
+    // guard (#1437). That outranks every class read from text, which is why
+    // it is decided last.
+    if structural_refusal && class != FailureClass::Work {
+        class = FailureClass::Work;
+        signal = Some(STRUCTURAL_REFUSAL_MARKER);
+    }
     FailureVerdict {
         class,
         signal,
         evidence,
         failed_steps,
         completed_steps,
+        structural_refusal,
     }
 }
 
@@ -479,14 +394,35 @@ pub(crate) fn classify_run_failure(result: &RecipeRunResult, stderr_tail: &str) 
 /// unparseable stdout, a runner that died before emitting JSON). The error
 /// chain is the only evidence there is, and it already carries the stderr tail.
 pub(crate) fn classify_error(error: &anyhow::Error) -> FailureVerdict {
-    let evidence = truncate_evidence(format!("{error:#}"));
-    let (class, signal) = classify_failure_text(&evidence);
+    let chain = format!("{error:#}");
+    let quotes_guard = quotes_structural_guard(&chain);
+    let evidence = truncate_evidence(chain);
+    let (class, signal) =
+        veto_retry_on_quoted_guard(classify_failure_text(&evidence), quotes_guard);
     FailureVerdict {
         class,
         signal,
         evidence,
         failed_steps: Vec::new(),
         completed_steps: Vec::new(),
+        structural_refusal: false,
+    }
+}
+
+/// Text cannot decide a refusal, but it can stop a retry (#1437 review).
+///
+/// A `transient_transport` verdict whose evidence quotes the guard's line
+/// (a failed step's evidence, or the error chain when there is no structured
+/// result) becomes `indeterminate`, with the guard's phrase as its signal.
+/// Every other class is unchanged: none of them is retried anyway.
+fn veto_retry_on_quoted_guard(
+    (class, signal): (FailureClass, Option<&'static str>),
+    quotes_guard: bool,
+) -> (FailureClass, Option<&'static str>) {
+    if quotes_guard && class == FailureClass::TransientTransport {
+        (FailureClass::Indeterminate, Some(STRUCTURAL_REFUSAL_MARKER))
+    } else {
+        (class, signal)
     }
 }
 
@@ -516,7 +452,25 @@ pub(crate) fn emit_failure_class_marker(verdict: &FailureVerdict, attempt: u32, 
         attempt,
         "recipe run failure classified (issue #1267)"
     );
-    let line = marker_line(&payload);
-    let stderr = std::io::stderr();
-    let _ = writeln!(stderr.lock(), "{line}");
+    write_failure_class_marker(&payload);
+}
+
+/// Write the classification attached to a failed result once more, after the
+/// result table (issue #1437).
+///
+/// The table goes to stdout after `emit_failure_class_marker` has run, and a
+/// step's multi-line output reaches it unindented, so a line in it can look
+/// like a marker. A supervisor reads the LAST marker in a log, so the runner's
+/// own classification has to be the last line it writes.
+pub(crate) fn emit_final_failure_class_marker(result: &RecipeRunResult) {
+    let Some(payload) = result.extra.get(FAILURE_CLASS_RESULT_KEY) else {
+        return;
+    };
+    let _ = std::io::stdout().flush();
+    write_failure_class_marker(payload);
+}
+
+fn write_failure_class_marker(payload: &JsonValue) {
+    let line = marker_line(payload);
+    let _ = writeln!(std::io::stderr().lock(), "{line}");
 }

@@ -26,6 +26,9 @@
 mod isolated_amplihack;
 mod support;
 
+#[path = "issue_2329_autodrive_outcomes.rs"]
+mod issue_2329_autodrive_outcomes;
+
 #[path = "issue_1753_expired_live.rs"]
 mod issue_1753_expired_live;
 #[path = "issue_1753_login_identity.rs"]
@@ -52,6 +55,8 @@ mod issue_1962_seed_cmd;
 mod issue_1962_seed_output;
 #[path = "issue_1962_seed_scan.rs"]
 mod issue_1962_seed_scan;
+#[path = "issue_1974_probe_sandbox.rs"]
+mod issue_1974_probe_sandbox;
 #[path = "issue_1976_orphaned_nested_run.rs"]
 mod issue_1976_orphaned_nested_run;
 #[path = "issue_1976_real_runner_nested_run.rs"]
@@ -101,10 +106,10 @@ mod issue_1348_documented_cli_commands_exist;
 mod issue_1356_release_tags_last;
 #[path = "issue_1358_sccache_installed_before_cargo.rs"]
 mod issue_1358_sccache_installed_before_cargo;
+#[path = "issue_1437_final_marker.rs"]
+mod issue_1437_final_marker;
 #[path = "issue_1526_release_version_stamp.rs"]
 mod issue_1526_release_version_stamp;
-#[path = "issue_1551_merge_guard.rs"]
-mod issue_1551_merge_guard;
 #[path = "issue_1552_investigation_report_written.rs"]
 mod issue_1552_investigation_report_written;
 #[path = "issue_1553_max_total_steps_cap.rs"]
@@ -205,6 +210,18 @@ mod issue_1740_routing_recipes;
 mod issue_1740_select_workflow;
 #[path = "issue_1740_state_gates.rs"]
 mod issue_1740_state_gates;
+#[path = "issue_1741_fixture.rs"]
+mod issue_1741_fixture;
+#[path = "issue_1741_recipe_recovery.rs"]
+mod issue_1741_recipe_recovery;
+#[path = "issue_1741_recovery_admission.rs"]
+mod issue_1741_recovery_admission;
+#[path = "issue_1741_recovery_compatibility.rs"]
+mod issue_1741_recovery_compatibility;
+#[path = "issue_1741_recovery_security.rs"]
+mod issue_1741_recovery_security;
+#[path = "issue_1741_runner_contract.rs"]
+mod issue_1741_runner_contract;
 #[path = "issue_1743_autodrive_budget.rs"]
 mod issue_1743_autodrive_budget;
 #[path = "issue_1745_home_statusline.rs"]
@@ -323,6 +340,16 @@ mod issue_2042_host_proc_strace;
 mod issue_2042_proc_root_guard;
 #[path = "issue_2042_seam_dry_run_and_refusal.rs"]
 mod issue_2042_seam_dry_run_and_refusal;
+#[path = "issue_2190_recipe_steps_report_real_exit_status.rs"]
+mod issue_2190_recipe_steps_report_real_exit_status;
+#[path = "issue_2211_live_freshness.rs"]
+mod issue_2211_live_freshness;
+#[path = "issue_2218_excluded.rs"]
+mod issue_2218_excluded;
+#[path = "issue_2317_codex_step_commits_in_worktree.rs"]
+mod issue_2317_codex_step_commits_in_worktree;
+#[path = "issue_2336_autodrive_completion.rs"]
+mod issue_2336_autodrive_completion;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]
@@ -401,6 +428,9 @@ mod signal_validator_parity;
 mod spec_conformance;
 #[path = "system_prompt_append_fragment.rs"]
 mod system_prompt_append_fragment;
+
+#[path = "issue_2279_doctor.rs"]
+mod issue_2279_doctor;
 
 #[path = "issue_2297_codex_installation.rs"]
 mod issue_2297_codex_installation;

@@ -736,7 +736,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn temp_state_dir() -> (TempDir, PathBuf) {
-        let td = TempDir::new_in("/tmp").expect("tempdir");
+        let td = TempDir::new().expect("tempdir");
         let p = td.path().to_path_buf();
         (td, p)
     }

@@ -8,7 +8,6 @@
 #   Local — ${AMPLIHACK_STATE_DIR:-$HOME/.amplihack/state}/auto-drive/<key>/
 #   Fast, always available, survives a crashed run on the same host.
 #
-#
 # The authoritative answer to "is this already merged?" is not that store: it
 # is the platform (`gh pr view --json state`). State files record what THIS
 # workflow did; they never assert a merge that GitHub does not confirm.
@@ -26,9 +25,9 @@
 #
 # This file only DEFINES functions; sourcing it has no side effects.
 #
-# PRIVATE STATE. The merge gate reads the crusty and qa evidence in this store
+# PRIVATE STATE. Native finalization validates the crusty and qa evidence in this store
 # only when the directory and each file are owned by this user, are not
-# symlinks, and have no group or world write bit (autodrive_merge_gate.sh,
+# symlinks, and have no group or world write bit (native evidence validation,
 # sections 6b and 6c). The caller's umask must not decide that: under the
 # umask 0002 that hosts with user private groups use, a plain mkdir or `>`
 # makes every file group-writable and the gate refuses every merge. So the
@@ -67,16 +66,17 @@ autodrive_state_dir() {
   printf '%s\n' "$dir"
 }
 
-# autodrive_private_dir <dir> -> makes <dir> a state dir the merge gate accepts,
-# whatever the caller's umask, or prints a named ERROR and returns 1.
+# autodrive_private_dir <dir> -> makes <dir> an owner-only state dir that
+# finalization and completion preparation accept, whatever the caller's umask,
+# or prints a named ERROR and returns 1.
 #
 #   ERROR: state-dir-not-private: <dir> is empty, a symlink, not a directory,
 #     not owned by this user, or cannot be created or changed. Nothing in it is
 #     touched.
 #
-# <dir> and any missing parent are created under umask 077, and <dir> loses its
-# group and world write bits (chmod go-w). Existing parents are left as they
-# are.
+# <dir> and any missing parent are created under umask 077, and <dir> is set
+# to mode 0700: completion preparation requires owner-only access, including
+# for existing state directories. Existing parents are left as they are.
 #
 # An entry directly in <dir> that the gate would refuse (a symlink, an entry
 # not owned by this user, or one with a group or world write bit) was written
@@ -95,7 +95,7 @@ autodrive_private_dir() {
     echo "ERROR: state-dir-not-private: no state directory was given" >&2; return 1
   fi
   if [ -L "$dir" ]; then
-    echo "ERROR: state-dir-not-private: ${dir} is a symlink; the merge gate never reads evidence through one" >&2; return 1
+    echo "ERROR: state-dir-not-private: ${dir} is a symlink; finalization never reads evidence through one" >&2; return 1
   fi
   if ! ( umask 077 && mkdir -p -- "$dir" ) 2>/dev/null || [ ! -d "$dir" ]; then
     echo "ERROR: state-dir-not-private: ${dir} could not be created as a directory" >&2; return 1
@@ -103,8 +103,8 @@ autodrive_private_dir() {
   if [ ! -O "$dir" ]; then
     echo "ERROR: state-dir-not-private: ${dir} is not owned by this user, so others may write in it; choose another AUTODRIVE_STATE_DIR" >&2; return 1
   fi
-  if ! chmod go-w -- "$dir" 2>/dev/null; then
-    echo "ERROR: state-dir-not-private: could not remove the group and world write bits from ${dir}" >&2; return 1
+  if ! chmod -- 700 "$dir" 2>/dev/null; then  # -- before the mode: BSD chmod stops parsing options at the first operand and would read -- as a file
+    echo "ERROR: state-dir-not-private: could not set owner-only access on ${dir}" >&2; return 1
   fi
   me="$(id -u)" || { echo "ERROR: state-dir-not-private: the current user id cannot be read" >&2; return 1; }
   list="$(autodrive_untrusted_entries "$dir" "$me" -print)" \
@@ -122,8 +122,8 @@ autodrive_private_dir() {
 }
 
 # autodrive_private <path>: <path> is owned by this user, is not a symlink, and
-# has no group or world write bit. The merge gate's test for every state file
-# it reads as evidence (autodrive_merge_gate.sh sections 6b and 6c).
+# has no group or world write bit. Finalization's test for every state file
+# it reads as evidence (native evidence validation).
 autodrive_private() {
   local loose
   [ -L "$1" ] && return 1
@@ -133,7 +133,7 @@ autodrive_private() {
 }
 
 # autodrive_untrusted_entries <dir> <uid> <find action...> -> runs the action
-# on each entry directly in <dir> that the merge gate would refuse: a symlink,
+# on each entry directly in <dir> that finalization would refuse: a symlink,
 # an entry not owned by <uid>, or one with a group or world write bit. These
 # are the tests of autodrive_private above, applied to a whole directory.
 autodrive_untrusted_entries() {
@@ -146,8 +146,8 @@ autodrive_untrusted_entries() {
 #
 # A phase is recorded as done only after its own gate passed in a real run.
 # For most phases `autodrive_phase_done` only lets a resumed run skip work; the
-# merge gate re-verifies those criteria in the run that merges. The exception
-# is `crusty-loop`: the merge gate reads that marker, together with the final
+# finalizer re-verifies those criteria in the run that merges. The exception
+# is `crusty-loop`: finalization reads that marker, together with the final
 # verdict in crusty-latest.json, as evidence for merge-ready criterion 3 (issue
 # #1517), and only from a state dir private to this user. The only permitted
 # writers are autodrive_record_crusty_loop_done below, which writes the marker
@@ -179,7 +179,11 @@ autodrive_phase_done() {
 # own verdict was CLEAN or MINOR_ONLY (whose .findings is empty, #1979), so every
 # concern listed is settled. Callers check for DONE first; this function does not.
 autodrive_record_crusty_loop_done() {
-  local dir="${1:?state dir}" f id
+  local dir="${1:?state dir}" f id row tmp
+  row="$(autodrive_crusty_manifest_row "$dir")" || { echo "ERROR: cannot bind crusty completion to manifest" >&2; return 1; }
+  tmp="$(umask 077; mktemp "$dir/.crusty-completion.XXXXXX")" || return 1
+  printf '%s\n' "$row" > "$tmp" && mv -f -- "$tmp" "$dir/crusty-completion.txt" \
+    || { rm -f -- "$tmp"; return 1; }
   for f in "$dir"/crusty-round-*.json.findings; do
     [ -f "$f" ] || continue
     while IFS= read -r id; do
@@ -214,8 +218,6 @@ autodrive_clear_phase() {
   return 1
 }
 
-# --- criterion 3: the crusty loop's last loop-written record ---------------
-
 # autodrive_blob_hash <dir> < file -> the git blob hash of stdin. git runs with
 # <dir> as its working directory, so the config of whatever checkout the caller
 # is in cannot change the object format or apply filters. The loop computes
@@ -247,7 +249,6 @@ autodrive_manifest_row() {
     }'
 }
 
-# autodrive_crusty_manifest_row <dir> -> autodrive_manifest_row <dir> crusty.
 autodrive_crusty_manifest_row() { autodrive_manifest_row "${1:-}" crusty; }
 
 # autodrive_crusty_final <state dir> -> criterion 3 under auto-drive (#1517).
@@ -299,17 +300,15 @@ autodrive_crusty_final() {
   fi
   rm -f -- "$copy"
   if [ -n "$tok" ]; then printf '%s\n' "$tok"; return 1; fi
+  if [ ! -f "$dir/crusty-completion.txt" ] || [ -L "$dir/crusty-completion.txt" ] \
+     || [ "$(cat "$dir/crusty-completion.txt")" != "$row" ]; then
+    printf 'crusty-completion-stale\n'; return 1
+  fi
   printf '%s\n' "$sha"
 }
 
-# --- resolved crusty concerns ---------------------------------------------
-#
-# Concern identifiers that a previous run addressed AND had confirmed clean by
-# a later crusty round. Passed back into crusty so a resumed run does not
-# reopen settled ground. Crusty may still re-raise one with NEW evidence — the
-# record informs the reviewer, it does not gag it. It is written ONLY by this
-# host, from rounds this host actually ran; nothing off-host can seed it.
-
+# Resolved ids are host-written evidence of earlier addressed concerns. A
+# reviewer may re-raise one with new evidence; this record informs, not gags.
 autodrive_record_resolved() {
   local dir="${1:?state dir}"
   shift

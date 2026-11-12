@@ -102,6 +102,7 @@ pub(super) fn build_command(
         false, // subprocess_safe
         None,  // claude_config_dir
         Some(Path::new(TEST_CONTRACT_PATH)),
+        None, // hook_settings
     )
     .expect("a contract path is supplied")
 }
@@ -117,6 +118,7 @@ pub(super) fn build_command_for_dir(
     subprocess_safe: bool,
     claude_config_dir: Option<&Path>,
     contract_file: Option<&Path>,
+    hook_settings: Option<&Path>,
 ) -> Result<Command> {
     let mut cmd = Command::new(&binary.path);
 
@@ -231,9 +233,18 @@ pub(super) fn build_command_for_dir(
         cmd.arg(path);
     }
 
+    // Issue #2279 (D5): amplihack's hooks block as a settings source of its
+    // own, by path (#2030), before the user's arguments. The caller decides
+    // whether it applies (`hook_settings::prepare`).
+    if let Some(path) = hook_settings {
+        cmd.arg("--settings");
+        cmd.arg(path);
+    }
+
     // Issue #1985: a recipe agent step on Codex (`amplihack codex -- exec …`)
-    // gets workspace-write with network access and the hook-trust bypass,
-    // unless the caller chose otherwise. Interactive argv is unchanged.
+    // gets `--sandbox danger-full-access` and the hook-trust bypass, the same
+    // trust as Claude's `--dangerously-skip-permissions` (#2317), unless the
+    // caller chose a sandbox. Interactive argv is unchanged.
     // Issue #2010: one stderr line names what was added. As with
     // `model_args`, print what the module returns and add what it returns;
     // nothing here decides anything. Nothing is written to stdout.

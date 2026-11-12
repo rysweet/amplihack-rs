@@ -4,6 +4,8 @@
 //! Contract (docs/reference/auto-drive-to-merge.md, "No-progress stop and
 //! usage budget"):
 //!
+//! - Crusty completes a verified clean objective without an evaluator call.
+//!   Unresolved Crusty rounds require a completion decision and sealed evidence.
 //! - After a round that is not clean, and before the evaluator, the driver
 //!   compares the PR head SHA and the normalised open items with the last row
 //!   of `<loop>-progress.tsv`. When the previous row is not clean and both
@@ -49,6 +51,7 @@ S="$STUB_STATE"
 case "${1:-} ${2:-}" in
   "recipe show") exit 0 ;;
   "orch helper")
+    case "${3:-}" in autodrive-completion-*) exec "$REAL_AMPLIHACK" "$@" ;; esac
     in="$(cat)"
     if [ "${3:-}" = "extract-json" ]; then
       f=""; while [ $# -gt 0 ]; do [ "$1" = "--require-field" ] && f="${2:-}"; shift; done
@@ -61,7 +64,7 @@ case "${1:-} ${2:-}" in
         case "$1" in --field) f="${2:-}" ;; --default) d="${2:-}" ;; esac; shift
       done
       v=""
-      [ -n "$in" ] && v="$(printf '%s' "$in" | jq -r --arg f "$f" '.[$f] // empty | if type == "string" then . else tojson end' 2>/dev/null)"
+      [ -n "$in" ] && v="$(printf '%s' "$in" | jq -r --arg f "$f" 'if .[$f] == null then empty else .[$f] end | if type == "string" then . else tojson end' 2>/dev/null)"
       if [ -n "$v" ]; then printf '%s' "$v"; else printf '%s' "$d"; fi
       exit 0
     fi
@@ -76,7 +79,13 @@ name="$(basename -- "${3:-}" .yaml)"
 printf '%s\0' "recipe" "run" "$name" "${@:4}" > "$STUB_LOG/call-$(printf '%05d' "$n")"
 if [ "$name" = "loop-health-evaluator" ]; then
   label=""; prev=""
-  for a in "$@"; do [ "$prev" = "-c" ] && case "$a" in loop_round_label=*) label="${a#loop_round_label=}" ;; esac; prev=$a; done
+  for a in "$@"; do
+    case "$prev:$a" in
+      -c:loop_round_label=*) label="${a#loop_round_label=}" ;;
+      --context-from-file:loop_round_label=*) label="$(cat -- "${a#*=}")" ;;
+    esac
+    prev=$a
+  done
   printf '%s\n' "$label" >> "$S/evaluator-calls"
   [ -f "$S/eval_rc" ] && { echo "orphaned: parent recipe run 4242 exited; stopping" >&2; exit "$(cat "$S/eval_rc")"; }
   h=$(wc -l < "$S/evaluator-calls")
@@ -118,10 +127,18 @@ if [ "$commit" = "1" ]; then
 fi
 field=crusty_verdict; [ "$name" = "autodrive-merge-round" ] && field=merge_ready_verdict
 if [ "$verdict" != "-" ]; then
-  printf '{"%s":"%s"}\n' "$field" "$verdict" > "$record"
+  head="$(git -C "$wd" rev-parse HEAD)"
+  printf '{"%s":"%s","head_sha":"%s","reviewed_head_sha":"%s","round_label":"%s"}\n' "$field" "$verdict" "$head" "$head" "$label" > "$record"
   : > "$record.findings"
   if [ -n "$items" ]; then printf '%s\n' "$items" | tr ',' '\n' > "$record.findings"; fi
   [ "$light" = "1" ] && printf '{"verdict_source":"light-minor-rule"}\n' > "$record.light.json"
+fi
+if [ -n "${AUTODRIVE_COMPLETION_STATE:-}" ] && [ -f "$record" ]; then
+  chmod 0600 "$record" "$record.findings"
+  "$REAL_AMPLIHACK" orch helper autodrive-completion-seal --private-state "$AUTODRIVE_COMPLETION_STATE" || exit 2
+  action=evaluate
+  case "$verdict" in CLEAN|MINOR_ONLY) action=complete ;; esac
+  "$REAL_AMPLIHACK" orch helper autodrive-completion-write --private-state "$AUTODRIVE_COMPLETION_STATE" --action "$action" --reason 'Budget fixture judgement' || exit 2
 fi
 echo "round ran"
 exit "${rc_s:-0}"
@@ -129,6 +146,8 @@ exit "${rc_s:-0}"
 
 const GH_STUB: &str = r#"#!/usr/bin/env bash
 set -u
+# Head verification is read-only; comment assertions count only comment calls.
+if [ "${1:-} ${2:-}" = 'pr view' ]; then git -C "$STUB_REPO" rev-parse HEAD; exit $?; fi
 exec 9>"$STUB_STATE/gh.lock"; flock 9
 n=$(cat "$STUB_STATE/gh-calls" 2>/dev/null || echo 0); n=$((n + 1)); printf '%s' "$n" > "$STUB_STATE/gh-calls"
 flock -u 9; exec 9>&-
@@ -180,7 +199,9 @@ impl Fixture {
         // fails on any file naming them, and every fixture path appears in the
         // stub logs (tests/support/scratch_base.rs).
         let tmp = tempfile::tempdir_in(crate::support::scratch_base::scratch_base()).unwrap();
-        let p = |n: &str| tmp.path().join(n);
+        // Completion helpers require physical paths on macOS (/var is a symlink).
+        let physical = tmp.path().canonicalize().unwrap();
+        let p = |n: &str| physical.join(n);
         let (bin, log, stub, state, repo, cwd, task) = (
             p("bin"),
             p("log"),
@@ -268,6 +289,12 @@ impl Fixture {
             .env("PATH", path)
             .env("STUB_LOG", &self.log)
             .env("STUB_STATE", &self.stub)
+            .env("STUB_REPO", &self.repo)
+            .env("AMPLIHACK_BIN", self.bin.join("amplihack"))
+            .env(
+                "REAL_AMPLIHACK",
+                crate::support::amplihack_bin::amplihack_bin(),
+            )
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .current_dir(&self.cwd)
             .output()
@@ -524,8 +551,8 @@ fn open_items_are_compared_after_normalisation() {
 #[test]
 fn a_clean_previous_round_never_matches_and_an_empty_set_reads_none() {
     let Some(fx) = Fixture::new() else { return };
-    fx.plan(&["CLEAN|0|0|0|", "CONCERNS|0|0|0|"]);
-    let o = fx.run("crusty", &[]);
+    fx.plan(&["MERGE_READY|0|0|0|", "CONCERNS|0|0|0|"]);
+    let o = fx.run("merge-ready", &[]);
     let r = result(&o);
     assert_eq!(r["round_label"], "round-3", "{}", show(&o));
     assert!(
@@ -536,7 +563,7 @@ fn a_clean_previous_round_never_matches_and_an_empty_set_reads_none() {
         "{r}"
     );
     assert_eq!(fx.evaluator_calls(), ["round-1", "round-2"]);
-    let rows = fx.state_file("crusty-progress.tsv").unwrap();
+    let rows = fx.state_file("merge-ready-progress.tsv").unwrap();
     let first: Vec<&str> = rows.lines().next().unwrap().split('\t').collect();
     assert_eq!(
         first,
@@ -621,7 +648,7 @@ fn failed_rounds_on_one_head_do_not_stop_and_the_evaluator_decides() {
         let Some(fx) = Fixture::new() else { return };
         fx.plan(&[plan]);
         fx.set("eval_stuck_after", "3");
-        let o = fx.run("crusty", &[]);
+        let o = fx.run("merge-ready", &[]);
         let r = result(&o);
         assert!(
             !r["reason"].as_str().unwrap().contains(DECIDED),
@@ -633,7 +660,9 @@ fn failed_rounds_on_one_head_do_not_stop_and_the_evaluator_decides() {
             4,
             "{plan}: every round reached the evaluator"
         );
-        let rows = fx.state_file("crusty-progress.tsv").expect("progress file");
+        let rows = fx
+            .state_file("merge-ready-progress.tsv")
+            .expect("progress file");
         assert_eq!(rows.lines().count(), 4, "{plan}:\n{rows}");
         for row in rows.lines() {
             assert_eq!(
@@ -700,13 +729,25 @@ fn an_evaluator_that_exits_75_stops_the_loop_as_orphaned_not_stuck() {
     assert_eq!(fx.round_calls(), ["round-1"]);
 }
 
-/// Exit 1 is still an ordinary failed round that reaches the evaluator.
+/// Crusty requires sealed evidence even when its child exits with an ordinary failure.
+#[test]
+fn a_crusty_round_without_completion_evidence_stops_before_the_evaluator() {
+    let Some(fx) = Fixture::new() else { return };
+    fx.plan(&["-|0|0|0||0|1"]);
+    let o = fx.run("crusty", &[]);
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    assert_eq!(result(&o)["loop_result"], "INVALID_DECISION");
+    assert!(fx.evaluator_calls().is_empty(), "{}", show(&o));
+    assert_eq!(fx.round_calls(), ["round-1"]);
+}
+
+// The generic loop can still evaluate an ordinary failed round without a record.
 #[test]
 fn only_exit_75_is_an_orphan_stop() {
     let Some(fx) = Fixture::new() else { return };
     fx.plan(&["-|0|0|0||0|1"]);
     fx.set("eval_stuck_after", "1");
-    let o = fx.run("crusty", &[]);
+    let o = fx.run("merge-ready", &[]);
     let r = result(&o);
     assert_ne!(r["loop_result"], "ORPHANED", "{}", show(&o));
     assert!(!fx.evaluator_calls().is_empty(), "{}", show(&o));
@@ -1109,7 +1150,8 @@ fn a_clean_round_is_not_stopped_after_it_ran() {
     let done = run_with(&fx, "crusty", &[(BUDGET_KEYS[0], "1")]);
     assert_eq!(done.status.code(), Some(0), "{}", show(&done));
     assert_eq!(result(&done)["loop_result"], "DONE");
-    assert_eq!(fx.evaluator_calls(), ["round-1"]);
+    assert!(fx.evaluator_calls().is_empty());
+    assert_eq!(result(&done)["source"], "objective-completion");
 }
 
 /// PR #1862 review: a round stopped as STUCK appends its own row, so a
@@ -1150,8 +1192,8 @@ fn a_resume_after_a_stuck_stop_names_the_stuck_round_in_the_summary() {
 #[test]
 fn a_continued_clean_round_stops_at_the_next_pre_round_check() {
     let Some(fx) = Fixture::new() else { return };
-    fx.plan(&["CLEAN|0|0|0|"]);
-    let o = run_with(&fx, "crusty", &[(BUDGET_KEYS[0], "1")]);
+    fx.plan(&["MERGE_READY|0|0|0|"]);
+    let o = run_with(&fx, "merge-ready", &[(BUDGET_KEYS[0], "1")]);
     let r = result(&o);
     assert_eq!(r["loop_result"], "BUDGET_EXHAUSTED", "{}", show(&o));
     assert_eq!(r["round_label"], "round-1");
@@ -2117,81 +2159,5 @@ fn new_helpers_stay_small_and_never_merge_or_bypass() {
     assert!(driver.contains("no iteration cap"));
 }
 
-// ── The run report ───────────────────────────────────────────────────────────
-
-fn report(crusty: &str, merge_loop: &str, merge_result: &str) -> Output {
-    let tmp = tempfile::tempdir().unwrap();
-    let bin = tmp.path().join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
-    crate::support::exec_stub::write_executable(&bin.join("amplihack"), AMPLIHACK_STUB, 0o755);
-    let cmd =
-        crate::support::auto_drive_light::step_command("auto-drive-to-merge", "autodrive-report");
-    let path = format!(
-        "{}:{}",
-        bin.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-    crate::isolated_amplihack::isolated("bash")
-        .arg("-c")
-        .arg(cmd)
-        .env("PATH", path)
-        .env("STUB_STATE", tmp.path())
-        .env("STUB_LOG", tmp.path())
-        .env("RECIPE_VAR_pr_number", "1743")
-        .env("RECIPE_VAR_crusty_loop_result", crusty)
-        .env("RECIPE_VAR_merge_loop_result", merge_loop)
-        .env(
-            "RECIPE_VAR_merge_gate_result",
-            format!(r#"{{"pr":"1743","merge_result":"{merge_result}"}}"#),
-        )
-        .output()
-        .unwrap()
-}
-
-fn report_json(o: &Output) -> serde_json::Value {
-    stdout(o)
-        .lines()
-        .rev()
-        .find_map(|l| serde_json::from_str(l).ok())
-        .unwrap_or_else(|| panic!("no JSON\n{}", show(o)))
-}
-
-const DONE: &str = r#"{"loop":"x","loop_result":"DONE","round_label":"round-1"}"#;
-
-#[test]
-fn report_treats_a_budget_or_code_stuck_stop_as_not_merged() {
-    if !jq_available() {
-        return;
-    }
-    let budget =
-        r#"{"loop":"merge-ready","loop_result":"BUDGET_EXHAUSTED","round_label":"round-12"}"#;
-    let o = report(DONE, budget, "MERGED");
-    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
-    let j = report_json(&o);
-    assert_eq!(j["outcome"], "NOT_MERGED");
-    assert_eq!(j["merge_loop"], "BUDGET_EXHAUSTED");
-    assert!(
-        stderr(&o).contains("the merge-ready loop stopped as BUDGET_EXHAUSTED"),
-        "{}",
-        show(&o)
-    );
-
-    let stuck = r#"{"loop":"crusty","loop_result":"STUCK","round_label":"round-2"}"#;
-    let o = report(stuck, DONE, "DRY_RUN");
-    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
-    assert_eq!(report_json(&o)["outcome"], "NOT_MERGED");
-}
-
-#[test]
-fn report_reduces_merge_loop_to_a_plain_token() {
-    if !jq_available() {
-        return;
-    }
-    let o = report(DONE, r#"{"loop_result":"DONE\"x"}"#, "MERGED");
-    assert_eq!(report_json(&o)["merge_loop"], "unknown", "{}", show(&o));
-    let o = report(DONE, DONE, "MERGED");
-    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
-    let j = report_json(&o);
-    assert_eq!(j["outcome"], "MERGED");
-    assert_eq!(j["merge_loop"], "DONE");
-}
+// Report reduction is covered by orch::autodrive's typed outcome tests,
+// including no-progress, budget, usage-limit, dependency, and orphan stops.

@@ -28,7 +28,13 @@ pub enum AutoSwitchCommand {
         exclude: Option<Vec<String>>,
     },
     /// Turn auto-switch off (keeps the threshold and exclusions)
-    Off,
+    Off {
+        /// Profiles never switched to (comma-separated); needed only when
+        /// the settings file does not parse or is writable by group or
+        /// others, so its list is unknown
+        #[arg(long, value_delimiter = ',')]
+        exclude: Option<Vec<String>>,
+    },
     /// Show the setting, readings, where each login is, and the wrapper state
     /// (read-only)
     Status,
@@ -63,12 +69,38 @@ fn exclude_arg(names: &[String]) -> Result<Vec<ProfileName>, ProfileError> {
         .collect()
 }
 
+/// The refusal of `on` or `off` over a `.auto-switch` that does not parse
+/// or that others can write (issue #2218).
+use super::config::EXCLUDE_UNKNOWN_REFUSAL;
+
+/// Issue #2218: `on` and `off` rewrite a corrupt file from the defaults,
+/// keeping its exclude list when it is a private file of yours that parses.
+/// When it does not parse, or group or others can write it (so anyone could
+/// have removed an entry), there is no list to keep, and writing an empty one would let the rotator probe
+/// and refresh the logins that were excluded, so they refuse unless the
+/// list is given with `--exclude`. A symlink or someone else's file is
+/// left to `config::update`, which refuses it with
+/// `config::unreplaceable_refusal`: no command can replace it, and the
+/// refusal says how to make it replaceable without deleting it.
+fn require_recoverable_exclude(root: &std::path::Path) -> Result<(), ProfileError> {
+    if config::exclude_recoverable(root) || !config::own_regular_file(root) {
+        Ok(())
+    } else {
+        Err(ProfileError::AutoSwitchExcludeAtRisk(
+            EXCLUDE_UNKNOWN_REFUSAL.into(),
+        ))
+    }
+}
+
 pub fn handle(store: &ProfileStore, cmd: AutoSwitchCommand) -> Result<()> {
     let root = store.root();
     match cmd {
         AutoSwitchCommand::On { threshold, exclude } => {
             let threshold = threshold.as_deref().map(threshold_arg).transpose()?;
             let exclude = exclude.as_deref().map(exclude_arg).transpose()?;
+            if exclude.is_none() {
+                require_recoverable_exclude(root)?;
+            }
             let c = config::update(root, ReadMode::DefaultOnInvalid, |c| {
                 c.enabled = true;
                 if let Some(t) = threshold {
@@ -89,9 +121,16 @@ pub fn handle(store: &ProfileStore, cmd: AutoSwitchCommand) -> Result<()> {
                 }
             }
         }
-        AutoSwitchCommand::Off => {
+        AutoSwitchCommand::Off { exclude } => {
+            let exclude = exclude.as_deref().map(exclude_arg).transpose()?;
+            if exclude.is_none() {
+                require_recoverable_exclude(root)?;
+            }
             config::update(root, ReadMode::DefaultOnInvalid, |c| {
                 c.enabled = false;
+                if let Some(e) = exclude {
+                    c.exclude = e;
+                }
                 Ok(())
             })?;
             println!("auto-switch: off");
@@ -334,6 +373,9 @@ fn status(store: &ProfileStore) -> Result<String> {
             }
         }
         Err(_) => writeln!(out, "hosted directories: unknown (ledger unreadable)")?,
+    }
+    if let Some(line) = super::affinity::status_line(&state, |t| ago(Some(t), now)) {
+        writeln!(out, "{line}")?;
     }
     let pending = swap::pending_journal(&state);
     let problem = match &ledger {

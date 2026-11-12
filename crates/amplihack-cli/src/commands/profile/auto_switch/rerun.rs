@@ -17,7 +17,7 @@ use super::state::{Ledger, State};
 use super::takeover::{capacity_candidate, profile_check};
 use super::usage::{Reading, ReadingSource, Window};
 use crate::commands::profile::attempt::{
-    Limited, Signals, note_key_error, run_attempt, usage_limited,
+    Limited, Signals, note_key_error, run_attempt_with_recovery, usage_limited,
 };
 use crate::commands::profile::limit_wait::plan::{self, NoWait, WaitFor};
 use crate::commands::profile::limit_wait::scratch::{self, RerunStdin};
@@ -62,6 +62,8 @@ pub fn nested_candidate(
     current: &str,
     skip: &[String],
 ) -> Option<Pick> {
+    let source_host = current;
+    let current = ledger.account_in(source_host);
     let now = fsx::now();
     let overflow = OverflowInputs::load(&state.root, cfg, now);
     let pool = Pool {
@@ -78,7 +80,28 @@ pub fn nested_candidate(
             && ledger.leased_to(n).is_none()
             && login_ready(state, &overflow, c)
     };
-    let picked = candidate::select_with_overflow(&pool, &overflow.pool(), current, eligible);
+    let on_overflow = overflow.order.iter().any(|p| p.as_str() == current);
+    let need = amplihack_utils::organisation_affinity::Need::of(
+        on_overflow,
+        !on_overflow && candidate::is_exhausted(readings.get(current), cfg.threshold, now),
+    );
+    let restriction = super::affinity::restrict(
+        state,
+        ledger,
+        &pool,
+        &overflow,
+        source_host,
+        current,
+        need,
+        eligible,
+    );
+    let picked = candidate::select_restricted(
+        &pool,
+        &overflow.pool(),
+        current,
+        |p| eligible(p) && restriction.allowed.contains(p),
+        |p| restriction.plan_room.contains(p),
+    );
     if picked.is_none_or(|p| overflow.platform.as_ref() != Some(p)) {
         let held = per_token::key_held(&pool, &overflow, current, eligible);
         per_token::record_key_held(state, &held);
@@ -196,13 +219,20 @@ pub fn substitute(
     };
     let profiles = profile_names(store);
     let skip = vec![inherited.to_string()];
-    nested_candidate(state, &ledger, &profiles, &readings, cfg, &account, &skip).map(|c| {
-        Substitute {
-            profile: c.profile,
-            reason,
-            inherited_reset,
-            per_token: c.per_token,
-        }
+    nested_candidate(
+        state,
+        &ledger,
+        &profiles,
+        &readings,
+        cfg,
+        inherited.as_str(),
+        &skip,
+    )
+    .map(|c| Substitute {
+        profile: c.profile,
+        reason,
+        inherited_reset,
+        per_token: c.per_token,
     })
 }
 
@@ -364,15 +394,30 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
     }
     let mut tried: Vec<String> = Vec::new();
     let mut n = 0u32;
+    let mut recovery = recipe_runner_rs::recovery::ipc::Client::from_environment()?;
     loop {
         n += 1;
+        if n > 1
+            && let Some(client) = &recovery
+        {
+            recovery = Some(client.renew()?);
+        }
         let switch_dir = switch
             .as_ref()
             .zip(profile.as_ref())
             .map(|(sw, p)| (p, sw.state.profile_dir(p.as_str())));
         let env = switch_dir.as_ref().map(|(p, d)| (*p, d.as_path()));
         let input = stdin.for_attempt(n);
-        let attempt = match run_attempt(&exe, &args, &rerun_dir, env, input, n, &signals) {
+        let attempt = match run_attempt_with_recovery(
+            &exe,
+            &args,
+            &rerun_dir,
+            env,
+            input,
+            n,
+            &signals,
+            recovery.as_ref(),
+        ) {
             Ok(a) => a,
             // The first attempt never started, so a plain launch can follow.
             Err(e) if n == 1 && profile.is_none() => {
@@ -389,6 +434,9 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         let Some(lim) = usage_limited(&attempt, waiter.now()) else {
             return attempt.finish(None);
         };
+        if let Some(client) = &recovery {
+            client.outcome(recipe_runner_rs::recovery::model::Outcome::UsageLimit)?;
+        }
         if profile.is_none() {
             // This attempt ran under the inherited profile: its limit is the
             // freshest word on that profile.
@@ -571,7 +619,7 @@ fn next_profile(
                 &profile_names(store),
                 &readings,
                 cfg,
-                &account,
+                profile.as_str(),
                 tried,
             )
         }

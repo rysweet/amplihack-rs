@@ -4,9 +4,11 @@
 //! docs/reference/profile-command.md. Each end-to-end case builds the real
 //! state on the `tests_swap.rs` fixture (a running process, an auto-switch
 //! lease, the exclude list, a park marker) and asserts, through
-//! `assert_refused`, that nothing changed. A running session is a real child
-//! process with `CLAUDE_CONFIG_DIR` set, found by the same `/proc` scan the
-//! rotator uses, so those cases are Linux only. `not_a_candidate` is also
+//! `assert_refused`, that nothing changed. A running session is an entry in
+//! the fixture's synthetic process table (issue #2196) with
+//! `CLAUDE_CONFIG_DIR` set, found by the same scan the rotator uses, so those
+//! cases are Linux only. Each one also removes the entry and checks that the
+//! refusal goes with it. `not_a_candidate` is also
 //! checked for every reason directly, including the ones the fixture cannot
 //! reach end to end (`/proc` unreadable, a `hosting` directory without a
 //! running session).
@@ -27,31 +29,22 @@ use super::tests_swap::{CREDS, Env, env, ino_at, n, private};
 use super::tests_switch::assert_refused;
 use crate::commands::profile::auto_switch::kit::Liveness;
 use crate::commands::profile::pointer;
+use crate::test_support::proc::FAKE_PID_BASE;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
 
-/// A child process whose environment names `dir` as its Claude config
-/// directory; killed when dropped.
-struct Session(std::process::Child);
-
-impl Session {
-    fn in_dir(dir: &Path) -> Self {
-        Self(
-            std::process::Command::new("/bin/sleep")
-                .arg("600")
-                .env("CLAUDE_CONFIG_DIR", dir)
-                .spawn()
-                .expect("spawn sleep"),
-        )
-    }
+/// A fake running `claude` whose `CLAUDE_CONFIG_DIR` is profile `name`'s
+/// directory, in `e`'s synthetic process table. Returns its pid, for
+/// [`end_session`].
+fn session_in(e: &Env, k: u32, name: &str) -> u32 {
+    let pid = FAKE_PID_BASE + k;
+    e.proc.running_session(pid, &e.root.join(name));
+    pid
 }
 
-impl Drop for Session {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
+/// The session at `pid` exits: its entry leaves the table.
+fn end_session(e: &Env, pid: u32) {
+    e.proc.fake.remove(pid);
 }
 
 /// Writes the auto-switch ledger: directory → the account live in it.
@@ -84,13 +77,17 @@ fn ledger_bytes(e: &Env) -> Vec<u8> {
 #[test]
 fn a_profile_with_a_running_session_is_refused() {
     let e = env();
-    let _s = Session::in_dir(&e.root.join("spare"));
+    let pid = session_in(&e, 1, "spare");
     assert_refused(
         &e,
         "spare",
         "profile spare is not a rotate candidate (session running): \
          a running process has CLAUDE_CONFIG_DIR set to it",
     );
+    // Negative check: with the session gone, the same switch goes through.
+    end_session(&e, pid);
+    super::tests_switch::switch(&e, "spare").unwrap();
+    e.assert_finished();
 }
 
 #[cfg(target_os = "linux")]
@@ -98,7 +95,7 @@ fn a_profile_with_a_running_session_is_refused() {
 fn a_running_session_in_another_profile_does_not_block_the_switch() {
     let e = env();
     e.store.add(&n("other")).unwrap();
-    let _s = Session::in_dir(&e.root.join("other"));
+    session_in(&e, 1, "other");
     super::tests_switch::switch(&e, "spare").unwrap();
     e.assert_finished();
 }
@@ -110,7 +107,7 @@ fn a_profile_whose_login_is_leased_is_refused() {
     // spare's account is live in `host`, whose session is still running, so
     // auto-switch recovery leaves the lease in place.
     e.store.add(&n("host")).unwrap();
-    let _s = Session::in_dir(&e.root.join("host"));
+    let pid = session_in(&e, 1, "host");
     hosts(&e, &[("host", "spare")]);
     let before = ledger_bytes(&e);
     assert_refused(
@@ -120,6 +117,17 @@ fn a_profile_whose_login_is_leased_is_refused() {
          auto-switch has lent its login to another profile's session",
     );
     assert_eq!(ledger_bytes(&e), before, "the lease is untouched");
+    // Negative check: once host's session has exited, recovery ends the
+    // lease and the same switch goes through.
+    end_session(&e, pid);
+    assert_eq!(
+        super::tests_switch::switch(&e, "spare").unwrap(),
+        Switched::Moved {
+            from: n("work"),
+            to: n("spare")
+        },
+        "the lease held only while host's session ran"
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -130,11 +138,21 @@ fn a_profile_hosting_another_login_is_refused() {
     // in it. The rotator checks the running session first, so that is the
     // reason given; `hosting` itself is checked below.
     e.store.add(&n("other")).unwrap();
-    let _s = Session::in_dir(&e.root.join("spare"));
+    let pid = session_in(&e, 1, "spare");
     hosts(&e, &[("spare", "other")]);
     let before = ledger_bytes(&e);
     assert_refused(&e, "spare", "(session running)");
     assert_eq!(ledger_bytes(&e), before, "the hosted login is untouched");
+    // Negative check: without the session, recovery gives the hosted login
+    // back to `other`, so the refusal is spare's missing login instead of
+    // `session running`.
+    end_session(&e, pid);
+    match super::tests_switch::switch(&e, "spare").unwrap() {
+        Switched::DefaultOnly { reason, .. } => {
+            assert!(reason.contains("has no stored login"), "{reason}");
+        }
+        other => panic!("expected the no-stored-login refusal, got {other:?}"),
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -216,6 +234,7 @@ fn snap_with(skip: Skip, sees_sessions: bool) -> Snap {
         detected_mark: None,
         home_no_oauth: false,
         candidate_accounts: Vec::new(),
+        live_excluded: false,
     }
 }
 
@@ -364,9 +383,18 @@ fn a_refused_switch_keeps_an_earlier_hold_and_says_so() {
         super::tests_switch::switch(&e, "work").unwrap(),
         Switched::AlreadyLive(n("work"))
     );
-    let _s = Session::in_dir(&e.root.join("spare"));
+    let pid = session_in(&e, 1, "spare");
     let held = assert_refused(&e, "spare", "(session running)");
     assert_eq!(held, Some(n("work")));
     assert_eq!(pin::read(&e.rs), PinState::Pinned(n("work")));
     assert_eq!(pointer::read(&e.root).unwrap(), Some(n("spare")));
+    // Negative check: with the session gone, spare is switched to.
+    end_session(&e, pid);
+    assert!(
+        matches!(
+            super::tests_switch::switch(&e, "spare"),
+            Ok(Switched::Moved { .. })
+        ),
+        "the refusal came from the running session"
+    );
 }

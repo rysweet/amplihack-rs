@@ -1740,6 +1740,32 @@ mod request {
 
     const ANSWER: &str = "cat > \"$d/stdin\"; cat \"$d/answer\"";
 
+    /// Issue #1974: both probe argument sets end with this flag, so
+    /// `claude` writes no session log for the probe.
+    const NO_PERSIST: &str = "--no-session-persistence";
+
+    /// The recorded `$*` of the usage request.
+    fn req() -> String {
+        format!("{} {NO_PERSIST}", ARGS.join(" "))
+    }
+
+    /// The recorded `$*` of the `/usage` text attempt.
+    const TEXT: &str = "-p /usage --no-session-persistence";
+
+    #[test]
+    fn both_argument_sets_end_with_no_session_persistence() {
+        let f = Fake::new(ANSWER, USAGE).answer(&error_answer());
+        f.probe(ProbeMode::Auto, 20, false);
+        f.probe(ProbeMode::Text, 20, false);
+        let starts = f.starts();
+        assert_eq!(starts.len(), 3, "{starts:?}");
+        for s in &starts {
+            assert!(s.ends_with(NO_PERSIST), "{s:?} must end with {NO_PERSIST}");
+            assert_eq!(s.matches(NO_PERSIST).count(), 1, "{s:?} has the flag once");
+        }
+        assert_eq!(starts, [req(), TEXT.to_string(), TEXT.to_string()]);
+    }
+
     #[test]
     fn an_accepted_answer_is_used_with_one_start() {
         let f = Fake::new(ANSWER, USAGE).answer(&accepted());
@@ -1751,7 +1777,7 @@ mod request {
         assert_eq!(session(&p), 20.0);
         assert_eq!(p.error, None);
         assert_eq!(p.raw, None);
-        assert_eq!(f.starts(), [ARGS.join(" ")]);
+        assert_eq!(f.starts(), [req()]);
         assert_eq!(f.read("stdin"), Some(format!("{REQUEST_LINE}\n")));
     }
 
@@ -1795,7 +1821,7 @@ mod request {
         let f = Fake::new(ANSWER, COST_TEXT).answer(&answer);
         let p = f.probe(ProbeMode::Auto, 20, false);
         assert_eq!(reading(&p), Reading::Failed);
-        assert_eq!(f.starts(), [ARGS.join(" "), "-p /usage".to_string()]);
+        assert_eq!(f.starts(), [req(), TEXT.to_string()]);
     }
 
     /// `primaryApiKey` answers like a plain plan login, so figures in that
@@ -1806,7 +1832,7 @@ mod request {
         let f = Fake::new(ANSWER, COST_TEXT).answer(&answer);
         let p = f.probe(ProbeMode::Auto, 20, false);
         assert!(matches!(reading(&p), Reading::Measured { .. }));
-        assert_eq!(f.starts(), [ARGS.join(" ")]);
+        assert_eq!(f.starts(), [req()]);
     }
 
     /// With no figures, as when the usage read failed, `primaryApiKey` ends
@@ -1817,7 +1843,7 @@ mod request {
         let f = Fake::new(ANSWER, COST_TEXT).answer(&answer);
         let p = f.probe(ProbeMode::Auto, 20, false);
         assert_eq!(reading(&p), Reading::Failed);
-        assert_eq!(f.starts(), [ARGS.join(" "), "-p /usage".to_string()]);
+        assert_eq!(f.starts(), [req(), TEXT.to_string()]);
     }
 
     #[test]
@@ -1826,7 +1852,7 @@ mod request {
         let p = f.probe(ProbeMode::Auto, 20, true);
         assert_eq!(p.report.state, UsageState::Ok);
         assert_eq!(session(&p), 37.0);
-        assert_eq!(f.starts(), [ARGS.join(" "), "-p /usage".to_string()]);
+        assert_eq!(f.starts(), [req(), TEXT.to_string()]);
         // `--raw` shows the attempt that gave the row.
         let raw = p.raw.unwrap();
         assert!(raw.stdout.contains("Current session"), "{raw:?}");
@@ -1855,7 +1881,7 @@ mod request {
         assert_eq!(p.report.state, UsageState::Timeout);
         assert_eq!(p.error, None);
         assert!(p.report.session.is_none() && p.report.week_all.is_none());
-        assert_eq!(f.starts(), [ARGS.join(" ")]);
+        assert_eq!(f.starts(), [req()]);
         assert!(p.raw.is_some(), "the request attempt's output");
     }
 
@@ -1878,7 +1904,7 @@ mod request {
         let p = f.probe(ProbeMode::Text, 20, false);
         assert_eq!(p.report.state, UsageState::Ok);
         assert_eq!(session(&p), 37.0);
-        assert_eq!(f.starts(), ["-p /usage"]);
+        assert_eq!(f.starts(), [TEXT]);
         assert_eq!(f.read("stdin"), None);
         assert_eq!(f.read("stdin-usage").as_deref(), Some(""));
     }
@@ -1921,7 +1947,7 @@ mod request {
         let r = probe_with(build, ProbeMode::Auto, Duration::from_secs(20), NOW, false);
         assert!(r.is_err());
         assert_eq!(calls.get(), 2);
-        assert_eq!(f.starts(), [ARGS.join(" ")]);
+        assert_eq!(f.starts(), [req()]);
     }
 
     #[test]
@@ -1953,7 +1979,7 @@ mod request {
         );
         assert_eq!(session(&probes[0]), 37.0, "cred read with /usage");
         assert_eq!(session(&probes[1]), 20.0, "plan read with the request");
-        assert_eq!(f.starts(), ["-p /usage".to_string(), ARGS.join(" ")]);
+        assert_eq!(f.starts(), [TEXT.to_string(), req()]);
     }
 
     // -----------------------------------------------------------------------
@@ -1978,7 +2004,7 @@ mod request {
     fn an_accepted_get_usage_answer_has_no_spend_to_read() {
         let f = Fake::new(ANSWER, USAGE).answer(&accepted());
         let p = f.probe(ProbeMode::Auto, 20, false);
-        assert_eq!(f.starts(), [ARGS.join(" ")]);
+        assert_eq!(f.starts(), [req()]);
         assert_eq!(p.spend, Spend::NotApplicable);
         assert_eq!(p.extra_shape, None);
     }
@@ -2000,7 +2026,7 @@ mod request {
     fn the_auto_fallback_to_usage_text_reads_the_spend() {
         let f = Fake::new(ANSWER, SPEND_TEXT).answer(&error_answer());
         let p = f.probe(ProbeMode::Auto, 20, false);
-        assert_eq!(f.starts(), [ARGS.join(" "), "-p /usage".to_string()]);
+        assert_eq!(f.starts(), [req(), TEXT.to_string()]);
         assert_eq!(p.spend, Spend::LimitReached);
     }
 
@@ -2884,4 +2910,268 @@ fn the_spend_plays_no_part_in_ordering() {
     let mut rows = vec![b, a];
     order(&mut rows, NOW);
     assert_eq!(names(&rows), ["aa", "bb"]);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #2271: rows for a login with no token
+//
+// Contract:
+// - `ErrorReason::NotSignedIn(why)` shows as `not signed in (<why>)`; it
+//   holds a fixed reason only.
+// - A not-signed-in row (`Probe::not_signed_in`): state `not_logged_in`,
+//   source `direct`, spend `unknown`, error `not signed in (<why>)`.
+// - `marks()` (the `--table` MARKS cell) puts the text last, after every
+//   other mark, and never adds `(fallback)`.
+// - The table shows `-` in every percentage and reset column.
+// - `error_warnings` skips these rows (D7): the reason is already in the
+//   row.
+// - `ErrorReason::json_error()` is `None` for `NotSignedIn` (D6) and
+//   `Some(as_str())` for every other variant.
+// - JSON (`--json` and the `profiles` array of `--summary-json`): `state`
+//   `not_logged_in`, `source` `direct`, `spend` `unknown`, `error` `null`,
+//   no `raw`, and no new key.
+// - `source_notes` gives nothing for the row, and a row with no `raw`
+//   prints no `(direct: no claude output)` line.
+// ---------------------------------------------------------------------------
+
+use super::usage_cmd::Probe;
+
+/// The fixed texts of `usage_direct::reason`, which is Unix-only; these
+/// tests run on every platform.
+mod direct_reason {
+    pub(super) const NO_TOKEN: &str = "no oauth token";
+    pub(super) const NO_FILE: &str = "no credentials file";
+    pub(super) const NO_REFRESH_TOKEN: &str = "no refresh token";
+}
+
+/// A row as `profile usage` builds it from `Probe::not_signed_in(why)`.
+fn not_signed_in_row(name: &str, why: &'static str) -> Row {
+    let p = Probe::not_signed_in(why);
+    let mut r = row(name, p.report);
+    r.error = p.error;
+    r.raw = p.raw;
+    r.source = p.source;
+    r.direct_failure = p.direct_failure;
+    r.spend = p.spend;
+    r.extra_shape = p.extra_shape;
+    r
+}
+
+#[test]
+fn not_signed_in_shows_the_fixed_reason() {
+    for (why, text) in [
+        (direct_reason::NO_TOKEN, "not signed in (no oauth token)"),
+        (
+            direct_reason::NO_FILE,
+            "not signed in (no credentials file)",
+        ),
+        (
+            direct_reason::NO_REFRESH_TOKEN,
+            "not signed in (no refresh token)",
+        ),
+    ] {
+        let e = ErrorReason::NotSignedIn(why);
+        assert_eq!(e.as_str(), text);
+        assert_eq!(e.to_string(), text);
+        assert!(!text.contains('/'), "no path: {text}");
+    }
+}
+
+#[test]
+fn a_not_signed_in_row_has_the_documented_fields() {
+    let r = not_signed_in_row("scratch", direct_reason::NO_FILE);
+    assert_eq!(r.report.state, UsageState::NotLoggedIn);
+    assert_eq!(r.source, Some(Source::Direct));
+    assert_eq!(r.spend, Spend::Unknown);
+    assert_eq!(r.direct_failure, Some(direct_reason::NO_FILE));
+    assert!(r.raw.is_none() && r.extra_shape.is_none());
+}
+
+#[test]
+fn the_table_marks_end_with_the_text_and_never_say_fallback() {
+    let mut r = not_signed_in_row("scratch", direct_reason::NO_TOKEN);
+    assert_eq!(marks(&r), "not signed in (no oauth token)");
+    r.default = true;
+    assert_eq!(marks(&r), "* not signed in (no oauth token)");
+    r.leased_to = Some("work".into());
+    r.overflow = true;
+    let m = marks(&r);
+    assert!(m.ends_with(" not signed in (no oauth token)"), "{m}");
+    assert!(m.starts_with("* leased→work"), "{m}");
+    assert!(!m.contains("fallback"), "{m}");
+}
+
+#[test]
+fn the_table_row_shows_the_text_the_state_and_dashes() {
+    let rows = vec![
+        ok("work", Some((20.0, None)), Some((30.0, None))),
+        not_signed_in_row("scratch", direct_reason::NO_FILE),
+    ];
+    let out = render_table(&rows);
+    let l = line_of(&out, "scratch");
+    assert!(l.contains("not signed in (no credentials file)"), "{out}");
+    assert!(l.contains("not_logged_in"), "{out}");
+    assert!(!l.contains("(fallback)") && !l.contains('%'), "{out}");
+    let cells: Vec<&str> = l.split_whitespace().collect();
+    assert_eq!(
+        cells[cells.len() - 5..],
+        ["-", "-", "-", "-", "unknown"],
+        "{l}"
+    );
+    assert_eq!(out.matches("not signed in").count(), 1, "shown once: {out}");
+}
+
+/// D7: nine identical warnings would add noise and nothing else.
+#[test]
+fn a_not_signed_in_row_prints_no_warning() {
+    let rows = [
+        ok("work", Some((1.0, None)), None),
+        not_signed_in_row("scratch", direct_reason::NO_FILE),
+        not_signed_in_row("spare", direct_reason::NO_TOKEN),
+        not_signed_in_row("old", direct_reason::NO_REFRESH_TOKEN),
+    ];
+    assert!(
+        error_warnings(&rows).is_empty(),
+        "{:?}",
+        error_warnings(&rows)
+    );
+}
+
+/// Other error rows still warn, next to the skipped not-signed-in rows.
+#[test]
+fn other_error_rows_still_warn_beside_a_not_signed_in_row() {
+    let mut broken = row("broken", report(UsageState::Error, None, None));
+    broken.error = Some(ErrorReason::Direct(direct_reason::NO_TOKEN));
+    let mut gone = row("gone", report(UsageState::Error, None, None));
+    gone.error = Some(ErrorReason::NoClaude);
+    let rows = [
+        not_signed_in_row("scratch", direct_reason::NO_TOKEN),
+        broken,
+        gone,
+    ];
+    assert_eq!(
+        error_warnings(&rows),
+        [
+            "warning: profile \"broken\": direct read: no oauth token",
+            "warning: profile \"gone\": claude not found",
+        ]
+    );
+}
+
+#[test]
+fn json_error_is_none_for_not_signed_in() {
+    for why in [
+        direct_reason::NO_TOKEN,
+        direct_reason::NO_FILE,
+        direct_reason::NO_REFRESH_TOKEN,
+    ] {
+        assert_eq!(ErrorReason::NotSignedIn(why).json_error(), None);
+    }
+}
+
+#[test]
+fn json_error_is_as_str_for_every_other_reason() {
+    for e in [
+        ErrorReason::ProfileRefused,
+        ErrorReason::StartFailed,
+        ErrorReason::ReadFailed,
+        ErrorReason::WaitFailed,
+        ErrorReason::NoClaude,
+        ErrorReason::Direct(direct_reason::NO_TOKEN),
+    ] {
+        assert_eq!(e.json_error(), Some(e.as_str()), "{e:?}");
+    }
+}
+
+#[test]
+fn json_of_a_not_signed_in_row_keeps_the_shape() {
+    let plain = sourced(
+        row("aa", report(UsageState::NotLoggedIn, None, None)),
+        Some(Source::Direct),
+    );
+    let r = not_signed_in_row("scratch", direct_reason::NO_TOKEN);
+    let v = json(&[plain, r]);
+    assert_eq!(keys(&v[1]), keys(&v[0]), "no key added");
+    assert_eq!(v[1]["state"], "not_logged_in");
+    assert_eq!(v[1]["source"], "direct");
+    assert_eq!(v[1]["spend"], "unknown");
+    assert!(v[1]["error"].is_null(), "{}", v[1]);
+    assert!(v[1]["raw"].is_null(), "{}", v[1]);
+    assert!(v[1]["session"].is_null() && v[1]["week_all"].is_null());
+}
+
+/// D6: `error` stays `null`, as it was when `claude` reported these
+/// logins, for every reason: a token-less file, no file, and an expired
+/// token with no refresh token. The state says the profile is not signed
+/// in. A real error row in the same output keeps its text.
+#[test]
+fn json_error_of_every_not_signed_in_reason_is_null() {
+    for why in [
+        direct_reason::NO_TOKEN,
+        direct_reason::NO_FILE,
+        direct_reason::NO_REFRESH_TOKEN,
+    ] {
+        let mut err = row("broken", report(UsageState::Error, None, None));
+        err.error = Some(ErrorReason::NoClaude);
+        let v = json(&[not_signed_in_row("scratch", why), err]);
+        assert!(v[0]["error"].is_null(), "{why}: {}", v[0]);
+        assert_eq!(v[0]["state"], "not_logged_in");
+        assert_eq!(v[1]["error"], "claude not found");
+    }
+}
+
+/// `--summary-json` holds the same `profiles` rows as `--json`.
+#[test]
+fn summary_json_gives_the_same_error_for_a_not_signed_in_row() {
+    use super::usage_cmd::render_summary_json;
+    let r = not_signed_in_row("scratch", direct_reason::NO_REFRESH_TOKEN);
+    let v: serde_json::Value = serde_json::from_str(&render_summary_json(
+        NOW,
+        std::slice::from_ref(&r),
+        None,
+        &[],
+    ))
+    .unwrap();
+    let row = &v["profiles"][0];
+    assert!(row["error"].is_null(), "{row}");
+    assert_eq!(row["state"], "not_logged_in");
+    assert_eq!(row["source"], "direct");
+    assert!(row["raw"].is_null(), "{row}");
+    assert_eq!(v["profiles"], json(&[r]), "the same rows as --json");
+}
+
+/// The table and bars keep the display text; JSON has `error: null`.
+#[test]
+fn the_table_keeps_the_display_text_not_the_json_text() {
+    let out = render_table(&[not_signed_in_row("scratch", direct_reason::NO_TOKEN)]);
+    assert!(out.contains("not signed in (no oauth token)"), "{out}");
+    assert!(!out.contains("direct read:"), "{out}");
+}
+
+#[test]
+fn a_not_signed_in_row_gets_no_source_note_and_no_raw_line() {
+    let r = not_signed_in_row("scratch", direct_reason::NO_FILE);
+    assert!(source_notes(std::slice::from_ref(&r)).is_empty());
+    let out = render_table(&[r]);
+    assert!(!out.contains("no claude output"), "{out}");
+    assert!(!out.contains("raw stdout"), "{out}");
+}
+
+/// D6: a not-signed-in row sorts as `(2, 0)`: after every row with a
+/// reading and before `timeout`, `unparsed` and `error` rows.
+#[test]
+fn a_not_signed_in_row_sorts_after_readings_and_before_errors() {
+    let mut err = row("aa-error", report(UsageState::Error, None, None));
+    err.error = Some(ErrorReason::NoClaude);
+    let mut rows = vec![
+        err,
+        row("ab-timeout", report(UsageState::Timeout, None, None)),
+        not_signed_in_row("ac-scratch", direct_reason::NO_TOKEN),
+        ok("zz-work", Some((90.0, None)), Some((90.0, None))),
+    ];
+    order(&mut rows, NOW);
+    assert_eq!(
+        names(&rows),
+        ["zz-work", "ac-scratch", "ab-timeout", "aa-error"]
+    );
 }

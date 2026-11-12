@@ -139,7 +139,7 @@ fn test_failure_path_reaps_orphaned_descendants() {
     write_stub(
         &runner,
         &format!(
-            "#!/bin/sh\n(/bin/sleep 2; echo leaked > '{}') &\nexit 1\n",
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\n(/bin/sleep 2; echo leaked > '{}') &\nexit 1\n",
             marker.display()
         ),
     );
@@ -200,7 +200,7 @@ fn test_timeout_teardown_sends_sigterm_before_sigkill() {
     write_stub(
         &runner,
         &format!(
-            "#!/bin/sh\ntrap 'echo graceful > \"{}\"; exit 0' TERM\n/bin/sleep 30\n",
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ntrap 'echo graceful > \"{}\"; exit 0' TERM\n/bin/sleep 30\n",
             marker.display()
         ),
     );
@@ -271,7 +271,7 @@ fn test_teardown_grace_window_is_configurable() {
         write_stub(
             &runner,
             &format!(
-                "#!/bin/sh\ntrap '/bin/sleep 1; echo done > \"{}\"; exit 0' TERM\n/bin/sleep 30\n",
+                "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ntrap '/bin/sleep 1; echo done > \"{}\"; exit 0' TERM\n/bin/sleep 30\n",
                 marker.display()
             ),
         );
@@ -347,7 +347,7 @@ fn test_teardown_is_scoped_to_runner_process_group() {
     write_stub(
         &runner,
         &format!(
-            "#!/bin/sh\n(/bin/sleep 2; echo leaked > '{}') &\nexit 1\n",
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\n(/bin/sleep 2; echo leaked > '{}') &\nexit 1\n",
             marker.display()
         ),
     );
@@ -429,7 +429,7 @@ fn write_marker_stub(path: &Path, marker: &Path, exit_code: u8) {
     write_stub(
         path,
         &format!(
-            "#!/bin/sh\necho spawned > '{}'\nexit {}\n",
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\necho spawned > '{}'\nexit {}\n",
             marker.display(),
             exit_code
         ),
@@ -658,7 +658,7 @@ fn test_caller_git_state_restored_after_terminal_failure() {
     // fixed argv layout: <recipe> --output-format json -C <working_dir> ...
     write_stub(
         &runner,
-        "#!/bin/sh\ngit -C \"$5\" config core.bare true\nexit 1\n",
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ngit -C \"$5\" config core.bare true\nexit 1\n",
     );
 
     let recipe = temp.path().join("recipe.yaml");
@@ -720,7 +720,7 @@ fn test_restore_preserves_durable_child_worktree() {
     write_stub(
         &runner,
         &format!(
-            "#!/bin/sh\nmkdir -p '{}'\necho durable > '{}'\ngit -C \"$5\" config core.bare true\nexit 1\n",
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nmkdir -p '{}'\necho durable > '{}'\ngit -C \"$5\" config core.bare true\nexit 1\n",
             child_marker.parent().unwrap().display(),
             child_marker.display()
         ),
@@ -786,7 +786,7 @@ fn test_caller_git_state_restored_after_structured_failure_result() {
     // path. `$5` is the `-C` value in the fixed argv layout.
     write_stub(
         &runner,
-        "#!/bin/sh\ngit -C \"$5\" config core.bare true\n\
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ngit -C \"$5\" config core.bare true\n\
          printf '{\"recipe_name\":\"structured-fail\",\"success\":false}\\n'\nexit 0\n",
     );
 
@@ -875,8 +875,16 @@ fn fixture_environment() -> (
     crate::test_support::EnvGuard,
     crate::test_support::IsolatedWorkRoot,
 ) {
-    let saved = crate::test_support::EnvGuard::capture(&["AMPLIHACK_AGENT_BINARY", "HOME"]);
+    let mut keys = vec!["AMPLIHACK_AGENT_BINARY", "HOME"];
+    keys.extend(crate::test_support::OUTER_RUN_IDENTITY_VARS);
+    let saved = crate::test_support::EnvGuard::capture(&keys);
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
     unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+    // Issue #1984: inside a recipe-run session the outer run's identity and
+    // depth would reach the runner, which then joins or is refused by the outer
+    // tree. Tests that need a value set it after this fixture.
+    for key in crate::test_support::OUTER_RUN_IDENTITY_VARS {
+        unsafe { std::env::remove_var(key) };
+    }
     (saved, crate::test_support::IsolatedWorkRoot::new())
 }

@@ -8,7 +8,7 @@ use std::fs;
 fn an_exhausted_shared_budget_starts_no_identity_read() {
     let e = env();
     let budget = Budget::new();
-    budget.0.set(
+    budget.started.set(
         std::time::Instant::now()
             .checked_sub(super::super::cred_identity::identity_budget())
             .expect(

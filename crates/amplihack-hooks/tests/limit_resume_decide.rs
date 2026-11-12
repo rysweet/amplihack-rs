@@ -40,6 +40,7 @@ use amplihack_utils::rotator_status::{CycleStatus, MAX_WAIT};
 use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
+use std::path::{Path, PathBuf};
 
 const START: i64 = 1_792_592_000;
 const DEADLINE: i64 = START + MAX_WAIT.as_secs() as i64;
@@ -197,6 +198,10 @@ struct Fake {
     fail_key: Option<usize>,
     /// The session exits once this many keys were sent.
     gone_after_keys: Option<usize>,
+    /// What `stop_time` returns: the stop the transcript records (#2236).
+    stop: Option<i64>,
+    /// Each `stop_time` call: the transcript path it was given and `start`.
+    stop_calls: Vec<(Option<PathBuf>, i64)>,
 }
 
 impl Fake {
@@ -230,6 +235,8 @@ impl Fake {
             key_attempts: 0,
             fail_key: None,
             gone_after_keys: None,
+            stop: None,
+            stop_calls: Vec::new(),
         }
     }
 
@@ -380,6 +387,12 @@ impl Deps for Fake {
         }
         r
     }
+    fn stop_time(&mut self, transcript: Option<&Path>, start: i64) -> Option<i64> {
+        // Reads nothing: the reader itself is tested in amplihack-utils.
+        self.stop_calls
+            .push((transcript.map(Path::to_path_buf), start));
+        self.stop
+    }
     fn pane(&mut self) -> Option<Pane> {
         self.pane_calls += 1;
         if self.lose_pane_on_call.is_some_and(|n| self.pane_calls >= n) {
@@ -417,6 +430,9 @@ fn ledger(live: &str) -> CycleStatus {
 /// A swap record `after` seconds past `START`, measured 30 s earlier.
 fn record_at(seq: u64, after: i64, session: u8, week: u8) -> SwapRecord {
     SwapRecord {
+        from_org: None,
+        to_org: None,
+        affinity: None,
         seq,
         live_login: "spare".into(),
         from_login: "work".into(),
@@ -1227,6 +1243,7 @@ fn stop_hook_active_never_resumes_and_touches_no_guard_state() {
     );
     assert_eq!(out, Outcome::StopHookActive);
     assert_eq!(d.guard.calls, 0, "checked before any guard I/O");
+    assert!(d.stop_calls.is_empty(), "the transcript is not read");
     assert_eq!(d.arms, 0);
     assert_eq!(d.key_attempts, 0);
     assert_eq!(d.outcomes(), [Outcome::StopHookActive]);
@@ -2333,3 +2350,350 @@ fn non_string_error_values_never_reach_the_log() {
         }
     }
 }
+
+// ── Issue #2236: the stop time from the transcript ──────────────────────────
+
+/// The stop the transcript records, ten seconds before the hook started.
+const STOP: i64 = START - 10;
+
+#[test]
+fn the_transcript_path_from_the_payload_is_passed_to_stop_time_once() {
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
+    let out = run_with(
+        &input(json!({
+            "hook_event_name": "StopFailure",
+            "session_id": "s",
+            "error": "rate_limit",
+            "last_assistant_message": "hit your limit",
+            "transcript_path": "/nonexistent/t.jsonl",
+        })),
+        &mut d,
+    );
+    assert_eq!(out, Outcome::Resumed);
+    assert_eq!(
+        d.stop_calls,
+        [(Some(PathBuf::from("/nonexistent/t.jsonl")), START)],
+        "read once, with the hook's start"
+    );
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
+    run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(d.stop_calls, [(None, START)], "no path in the payload");
+}
+
+#[test]
+fn issue_2236_a_snapshot_after_a_known_stop_resumes_without_waiting() {
+    // The hook started ten seconds after the stop and noted a swap made
+    // three seconds after it, onto a login with room.
+    let mut d = Fake::new();
+    d.stop = Some(STOP);
+    d.swap = Some(record_at(6, -7, 12, 40));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::Resumed);
+    assert!(d.waits.is_empty(), "no wait: {:?}", d.waits);
+    assert_eq!(d.guard.events.len(), 1);
+}
+
+#[test]
+fn issue_2236_without_a_stop_the_same_snapshot_still_waits() {
+    // The fallback is today's rule: seven seconds before the start is
+    // before the stop.
+    let mut d = Fake::new();
+    d.swap = Some(record_at(6, -7, 12, 40));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::NoCapacityTimeout);
+    assert_eq!(d.waits, [DEADLINE]);
+    assert_no_resume(&d);
+}
+
+#[test]
+fn issue_2236_a_snapshot_before_a_known_stop_waits() {
+    let mut d = Fake::new();
+    d.stop = Some(STOP);
+    d.swap = Some(record_at(6, -15, 12, 40));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::NoCapacityTimeout);
+    assert!(!d.waits.is_empty(), "it waits for the next swap");
+    assert_no_resume(&d);
+}
+
+#[test]
+fn issue_2236_a_full_snapshot_after_a_known_stop_is_no_room_and_waits() {
+    let mut d = Fake::new();
+    d.stop = Some(STOP);
+    d.swap = Some(record_at(6, -7, 100, 40));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::NoCapacityTimeout);
+    assert!(
+        d.outcomes().contains(&Outcome::SwapNoRoom),
+        "{:?}",
+        d.outcomes()
+    );
+    assert_no_resume(&d);
+}
+
+#[test]
+fn issue_2236_the_wait_loop_judges_with_the_stop() {
+    // No snapshot. The first read after arming finds a swap made between a
+    // known stop and the late start: after the stop, so it resumes.
+    let mut d = Fake::new();
+    d.stop = Some(STOP);
+    d.swap_race = Some(record_at(6, -7, 12, 40));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::Resumed);
+    assert!(d.waits.is_empty(), "no wait: {:?}", d.waits);
+    // Without the stop the same record is stale and logged.
+    let mut d = Fake::new();
+    d.swap_race = Some(record_at(6, -7, 12, 40));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::NoCapacityTimeout);
+    assert_eq!(
+        d.outcomes(),
+        [Outcome::SwapStale, Outcome::NoCapacityTimeout]
+    );
+}
+
+#[test]
+fn issue_2236_a_stop_never_makes_a_snapshot_in_the_slack_second_wait() {
+    // D2: the stop only widens the window. A stop in the start second keeps
+    // the one-second allowance, so this snapshot still resumes.
+    let mut d = Fake::new();
+    d.stop = Some(START);
+    d.swap = Some(record_at(6, -1, 12, 40));
+    assert_eq!(
+        run_with(&limit_input("s", "hit your limit"), &mut d),
+        Outcome::Resumed
+    );
+}
+
+#[test]
+fn issue_2236_the_stop_time_is_never_logged() {
+    let mut d = Fake::new();
+    d.stop = Some(STOP);
+    d.swap = Some(record_at(6, -7, 12, 40));
+    run_with(&limit_input("s", "hit your limit"), &mut d);
+    let shown = format!("{:?}", d.logs);
+    assert!(!shown.contains(&STOP.to_string()), "{shown}");
+}
+
+// ── Issue #2235: the event key names the login the session stopped on ───────
+
+#[test]
+fn issue_2235_a_snapshot_after_the_stop_keys_the_event_on_its_outgoing_login() {
+    // The rotator swapped work → spare between the stop and the hook's
+    // start, so the ledger already shows spare. The session stopped on
+    // work, and the event must say so.
+    let mut d = Fake::new();
+    d.cycle = Some(ledger("spare"));
+    d.stop = Some(START - 5);
+    d.swap = Some(record_at(6, -3, 12, 40));
+    let msg = "You've hit your session limit";
+    assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Resumed);
+    let on_work = event_key("s", Some("rate_limit"), None, Some(msg), Some("work"));
+    let on_spare = event_key("s", Some("rate_limit"), None, Some(msg), Some("spare"));
+    assert!(d.guard.events.contains(&on_work), "{:?}", d.guard.events);
+    assert!(!d.guard.events.contains(&on_spare));
+    assert_eq!(d.last_log().event, on_work[..12]);
+    assert_eq!(
+        d.last_log().live.as_deref(),
+        Some("spare"),
+        "the log still names the ledger's live login"
+    );
+}
+
+#[test]
+fn issue_2235_a_limit_on_the_new_login_is_a_new_event_not_a_duplicate() {
+    // Run 1 resumes the session on spare. It then hits a limit on spare
+    // with the same text: a new stop, later than the swap, so it must wait
+    // for the next swap rather than be dropped as a duplicate.
+    let mut d = Fake::new();
+    d.cycle = Some(ledger("spare"));
+    d.stop = Some(START - 5);
+    d.swap = Some(record_at(6, -3, 12, 40));
+    let msg = "You've hit your session limit";
+    assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Resumed);
+
+    d.restart_at(START + 20);
+    d.stop = Some(START + 15);
+    let out = run_with(&limit_input("s", msg), &mut d);
+    assert_eq!(out, Outcome::NoCapacityTimeout);
+    assert_eq!(d.guard.events.len(), 1, "no second resume");
+    let on_spare = event_key("s", Some("rate_limit"), None, Some(msg), Some("spare"));
+    assert_eq!(d.last_log().event, on_spare[..12]);
+}
+
+#[test]
+fn issue_2235_a_stop_in_the_start_second_keys_the_slack_snapshot_on_its_outgoing_login() {
+    // The usual case: the hook starts in the stop's second and the swap
+    // finished the second before. The resume goes through the slack
+    // allowance, so the event must name the outgoing login, and a later
+    // limit on the new login with the same text must wait, not be dropped
+    // as a duplicate.
+    let mut d = Fake::new();
+    d.cycle = Some(ledger("spare"));
+    d.stop = Some(START);
+    d.swap = Some(record_at(6, -1, 12, 40));
+    let msg = "You've hit your session limit";
+    assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Resumed);
+    let on_work = event_key("s", Some("rate_limit"), None, Some(msg), Some("work"));
+    let on_spare = event_key("s", Some("rate_limit"), None, Some(msg), Some("spare"));
+    assert!(d.guard.events.contains(&on_work), "{:?}", d.guard.events);
+    assert!(!d.guard.events.contains(&on_spare));
+
+    d.restart_at(START + 30);
+    d.stop = Some(START + 30);
+    let out = run_with(&limit_input("s", msg), &mut d);
+    assert_ne!(out, Outcome::Duplicate);
+    assert_eq!(out, Outcome::NoCapacityTimeout);
+    assert_eq!(d.guard.events.len(), 1, "no second resume");
+    assert_eq!(d.last_log().event, on_spare[..12]);
+}
+
+#[test]
+fn issue_2235_a_copy_of_a_start_second_stop_one_second_later_is_a_duplicate() {
+    // Stop at T, swap at T-1. Copy A starts at T and resumes through the
+    // slack allowance. Copy B of the same stop starts at T+1. Its key must
+    // not depend on its start: it is a duplicate, not a run that waits.
+    let mut d = Fake::new();
+    d.cycle = Some(ledger("spare"));
+    d.stop = Some(START);
+    d.swap = Some(record_at(6, -1, 12, 40));
+    let msg = "You've hit your session limit";
+    assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Resumed);
+
+    d.restart_at(START + 1);
+    let waits = d.waits.len();
+    assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Duplicate);
+    assert_eq!(d.waits.len(), waits, "copy B never waits");
+    assert_eq!(d.guard.events.len(), 1, "one resume");
+    let on_work = event_key("s", Some("rate_limit"), None, Some(msg), Some("work"));
+    assert_eq!(d.last_log().event, on_work[..12]);
+}
+
+#[test]
+fn issue_2235_a_fresh_swap_never_resumes_a_late_copy_of_a_start_second_stop() {
+    // As above, but a new swap is ready for copy B. Before keying on the
+    // stop alone, copy B keyed on spare, waited, and resumed the session a
+    // second time on that swap (its commit only refuses resumes after its
+    // own start). It must stop at the duplicate check and record nothing.
+    let mut d = Fake::new();
+    d.cycle = Some(ledger("spare"));
+    d.stop = Some(START);
+    d.swap = Some(record_at(6, -1, 12, 40));
+    let msg = "You've hit your session limit";
+    assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Resumed);
+    let resumes = d.guard.sessions.get(&session_key("s")).map(Vec::len);
+
+    d.restart_at(START + 1);
+    d.script.push_back(Act::Swap(record_at(7, 20, 12, 40)));
+    assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Duplicate);
+    assert_eq!(d.guard.events.len(), 1, "one resume event");
+    assert_eq!(
+        d.guard.sessions.get(&session_key("s")).map(Vec::len),
+        resumes,
+        "one resume recorded for the session"
+    );
+    assert_eq!(d.script.len(), 1, "the fresh swap was never waited for");
+}
+
+#[test]
+fn issue_2235_without_a_stop_the_slack_snapshot_also_keys_on_its_outgoing_login() {
+    // The snapshot in the slack second counts as after the stop, and the
+    // key follows the same rule as the decision to resume.
+    let mut d = Fake::new();
+    d.cycle = Some(ledger("spare"));
+    d.swap = Some(record_at(6, 0, 12, 40));
+    let msg = "hit your limit";
+    assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Resumed);
+    let on_work = event_key("s", Some("rate_limit"), None, Some(msg), Some("work"));
+    assert!(d.guard.events.contains(&on_work), "{:?}", d.guard.events);
+}
+
+#[test]
+fn issue_2235_a_snapshot_before_the_stop_keys_on_the_live_login() {
+    let mut d = Fake::new();
+    d.cycle = Some(ledger("spare"));
+    d.stop = Some(STOP);
+    d.swap = Some(record_at(6, -60, 12, 40));
+    let msg = "hit your limit";
+    assert_eq!(
+        run_with(&limit_input("s", msg), &mut d),
+        Outcome::NoCapacityTimeout
+    );
+    let on_spare = event_key("s", Some("rate_limit"), None, Some(msg), Some("spare"));
+    assert_eq!(d.last_log().event, on_spare[..12]);
+}
+
+#[test]
+fn issue_2235_a_snapshot_dated_after_the_start_keys_on_the_live_login() {
+    // A clock ahead: the record was on disk before the hook started, so it
+    // is not the swap the session stopped across.
+    let mut d = Fake::new();
+    d.cycle = Some(ledger("spare"));
+    d.stop = Some(STOP);
+    d.swap = Some(record_at(6, 5, 12, 40));
+    let msg = "hit your limit";
+    assert_eq!(
+        run_with(&limit_input("s", msg), &mut d),
+        Outcome::NoCapacityTimeout
+    );
+    let on_spare = event_key("s", Some("rate_limit"), None, Some(msg), Some("spare"));
+    assert_eq!(d.last_log().event, on_spare[..12]);
+}
+
+#[test]
+fn issue_2235_a_second_hook_for_the_same_stop_after_the_resume_is_a_duplicate() {
+    // The resume is recorded under the outgoing login. A second delivery
+    // of the same stop (same transcript, same snapshot) must key on that
+    // login too, although its last resume is now later than the swap, and
+    // exit as a duplicate rather than wait for the next swap.
+    let mut d = Fake::new();
+    d.cycle = Some(ledger("spare"));
+    d.stop = Some(START - 5);
+    d.swap = Some(record_at(6, -3, 12, 40));
+    let msg = "hit your limit";
+    assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Resumed);
+    // A second copy of the same hook, started in the same second.
+    d.restart_at(START);
+    assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Duplicate);
+    assert_eq!(d.guard.events.len(), 1, "one resume");
+}
+
+#[test]
+fn issue_2235_stop_hook_active_still_touches_no_guard_state_with_a_snapshot() {
+    let mut d = Fake::new();
+    d.stop = Some(STOP);
+    d.swap = Some(record_at(6, -7, 12, 40));
+    let out = run_with(
+        &input(json!({
+            "hook_event_name": "StopFailure",
+            "session_id": "s",
+            "error": "rate_limit",
+            "stop_hook_active": true
+        })),
+        &mut d,
+    );
+    assert_eq!(out, Outcome::StopHookActive);
+    assert_eq!(d.guard.calls, 0);
+    assert_eq!(d.arms, 0);
+}
+
+#[test]
+fn issue_2235_a_later_copy_of_the_same_stop_is_a_duplicate() {
+    // As above, but the copy starts well after the resume: the key still
+    // comes from the stop and the snapshot alone.
+    let mut d = Fake::new();
+    d.cycle = Some(ledger("spare"));
+    d.stop = Some(START - 30);
+    d.swap = Some(record_at(6, -10, 12, 40));
+    let msg = "hit your limit";
+    assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Resumed);
+    d.restart_at(START + 60);
+    assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Duplicate);
+    assert_eq!(d.guard.events.len(), 1, "one resume");
+}
+
+#[path = "support/issue_2136_delivery.rs"]
+mod issue_2136_delivery;
+
+#[path = "support/issue_1932_affinity_pane.rs"]
+mod issue_1932_affinity_pane;

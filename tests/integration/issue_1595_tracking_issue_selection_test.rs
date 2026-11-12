@@ -219,6 +219,7 @@ impl Sandbox {
                 ),
             )
             .env("HOME", self.path("home"))
+            .env("TMPDIR", self.path("home"))
             .env("AMPLIHACK_HOME", workspace_root())
             .env("REPO_PATH", self.path("repo"))
             .env("GH_LOG", self.path("gh.log"))
