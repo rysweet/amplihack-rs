@@ -15,7 +15,7 @@
 //! - `cycle::prototype_guard(root: &Path) -> Result<(), ProfileError>`.
 
 use super::cycle::prototype_guard;
-use super::daemon::{DaemonState, alive_at, state_at};
+use super::daemon::{DaemonState, alive, alive_at, state_at};
 use amplihack_utils::rotator_status::parse_pid;
 
 fn is_rotator(cmdline: &[u8], exe_name: &OsStr) -> bool {
@@ -226,6 +226,25 @@ fn alive_is_false_with_no_rotator_and_true_without_a_proc() {
     assert!(
         alive_at(&f.rs, &f.proc_root.join("missing")),
         "unverifiable counts as alive, so a wait is never ended on a guess"
+    );
+}
+
+#[test]
+fn alive_reads_the_process_table_through_proc_root() {
+    let f = fake();
+    f.pid_file("31337");
+    let _seam = crate::commands::agent::procfs::override_proc_root(&f.proc_root);
+    assert!(
+        !alive(f.rs.root.as_path()),
+        "no such process in the fake tree"
+    );
+    f.process(
+        31337,
+        &["/opt/other/amplihack", "profile", "rotate", "watch"],
+    );
+    assert!(
+        alive(f.rs.root.as_path()),
+        "the fake tree's rotator is seen"
     );
 }
 

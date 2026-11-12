@@ -30,12 +30,9 @@ const MAX_PID_FILE: usize = 32;
 
 pub use amplihack_utils::rotator_status::DaemonState;
 pub(super) use amplihack_utils::rotator_status::running_on_host;
-
 #[path = "daemon_alive.rs"]
 mod liveness;
-pub(in crate::commands::profile) use liveness::alive;
-#[cfg(test)]
-pub(in crate::commands::profile) use liveness::alive_at;
+pub(in crate::commands::profile) use liveness::*;
 
 pub(super) fn daemon_err(msg: impl Into<String>) -> ProfileError {
     ProfileError::RotateDaemon(msg.into())

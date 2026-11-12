@@ -1,6 +1,6 @@
 //! Rotator liveness for usage-limit waits (issue #2022), split from daemon.rs.
 
-use super::{DaemonState, ProfileError, RotateState, prototype_guard};
+use super::{DaemonState, ProfileError, RotateState, proc_root, prototype_guard};
 use std::path::Path;
 
 /// Whether a rotator process of this user is alive for `root`, under any
@@ -9,9 +9,10 @@ use std::path::Path;
 /// on the rotator (issue #2022). Unlike [`super::running`] it does not compare the
 /// daemon's `argv[0]` with this binary's name, which reads `amplihack
 /// (deleted)` once an install replaces the binary, so an upgrade during a
-/// wait does not look like a stopped rotator. Without a `/proc` it is true.
+/// wait does not look like a stopped rotator. It reads the process table
+/// through [`proc_root`] (issue #2042). Without a `/proc` it is true.
 pub(in crate::commands::profile) fn alive(root: &Path) -> bool {
-    alive_at(&RotateState::new(root), Path::new("/proc"))
+    alive_at(&RotateState::new(root), &proc_root())
 }
 
 /// [`alive`] against another `/proc`.
