@@ -24,7 +24,7 @@ use amplihack_hooks::limit_resume::{
 use amplihack_types::HookInput;
 use amplihack_utils::rotator_status::CycleStatus;
 use amplihack_utils::rotator_status::swap_record::{
-    SwapReading, SwapRecord, read_swap, rotate_dir,
+    SwapReading, SwapRecord, read_stop_time, read_swap, rotate_dir,
 };
 use amplihack_utils::secure_files::{
     ExclusiveLock, lock_exclusive_timeout, open_private_nofollow, write_private_atomic,
@@ -768,6 +768,9 @@ impl Deps for DiskDeps {
     fn read_swap(&mut self, now: i64) -> Option<SwapRecord> {
         read_swap(&self.root, now)
     }
+    fn stop_time(&mut self, _transcript: Option<&Path>, _start: i64) -> Option<i64> {
+        None
+    }
     fn pane(&mut self) -> Option<Pane> {
         None
     }
@@ -1047,6 +1050,10 @@ impl Deps for SwapDeps {
     fn read_swap(&mut self, now: i64) -> Option<SwapRecord> {
         read_swap(&self.root, now)
     }
+    /// As the hook reads it: the real reader on the payload's path.
+    fn stop_time(&mut self, transcript: Option<&Path>, start: i64) -> Option<i64> {
+        transcript.and_then(|p| read_stop_time(p, start))
+    }
     fn pane(&mut self) -> Option<Pane> {
         None
     }
@@ -1138,6 +1145,79 @@ fn issue_2085_a_ledger_with_capacity_but_no_swap_record_never_resumes() {
     let out = run_on_disk(&r, |_| {});
     assert_eq!(out, Outcome::NoCapacityTimeout);
     assert!(no_resume_marker(r.path()));
+}
+
+// ── Issue #2236: the stop time read from the transcript on disk ────────────
+
+/// A transcript under `r` whose last entry is at `stop`, with `secret` in
+/// a field the hook must never log.
+fn write_transcript(r: &Path, stop: i64, mode: u32, secret: &str) -> PathBuf {
+    let ts = |t: i64| {
+        chrono::DateTime::from_timestamp(t, 0)
+            .unwrap()
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    };
+    let p = r.join("transcript.jsonl");
+    let body = format!(
+        "{{\"type\":\"user\",\"timestamp\":\"{}\",\"message\":\"{secret}\"}}\n\
+         {{\"type\":\"assistant\",\"timestamp\":\"{}\",\"message\":\"{secret}\"}}\n",
+        ts(stop - 300),
+        ts(stop)
+    );
+    fs::write(&p, body).unwrap();
+    fs::set_permissions(&p, fs::Permissions::from_mode(mode)).unwrap();
+    p
+}
+
+/// The hook started at `NOW`, ten seconds after the stop the transcript
+/// records, and finds a swap made three seconds after that stop.
+fn run_late_start(r: &tempfile::TempDir, transcript_mode: u32) -> Outcome {
+    write_swap(r.path(), 1, NOW - 7, 0o600);
+    let transcript = write_transcript(r.path(), NOW - 10, transcript_mode, "SECRET-2236-MARKER");
+    let mut d = SwapDeps {
+        root: r.path().to_path_buf(),
+        guard: FsGuard::new(r.path()),
+        clock: NOW,
+        wake: |_| {},
+        woken: false,
+    };
+    let input: HookInput = serde_json::from_value(json!({
+        "hook_event_name": "StopFailure",
+        "session_id": "s2236",
+        "error": "rate_limit",
+        "last_assistant_message": "You've hit your session limit",
+        "transcript_path": transcript,
+    }))
+    .unwrap();
+    run_with(&input, &mut d)
+}
+
+#[test]
+fn issue_2236_a_swap_between_the_transcript_stop_and_a_late_start_resumes() {
+    let r = root();
+    assert_eq!(run_late_start(&r, 0o600), Outcome::Resumed);
+    assert!(!no_resume_marker(r.path()));
+    let log = fs::read_to_string(resume_dir(r.path()).join("resume.log")).unwrap();
+    assert!(log.contains("outcome=resumed"), "{log}");
+    assert!(!log.contains("SECRET-2236-MARKER"), "{log}");
+    assert!(!log.contains("transcript"), "{log}");
+}
+
+#[test]
+fn issue_2236_a_transcript_others_can_write_falls_back_to_the_slack_rule() {
+    // A refused transcript gives no stop time: the swap seven seconds
+    // before the start is then before the stop, as before #2236.
+    for mode in [0o620, 0o602] {
+        let r = root();
+        assert_eq!(
+            run_late_start(&r, mode),
+            Outcome::NoCapacityTimeout,
+            "mode {mode:o}"
+        );
+        assert!(no_resume_marker(r.path()), "mode {mode:o}");
+        let log = fs::read_to_string(resume_dir(r.path()).join("resume.log")).unwrap();
+        assert!(!log.contains("SECRET-2236-MARKER"), "{log}");
+    }
 }
 
 // ── Issue #2085 (S2): watched directories ───────────────────────────────────
