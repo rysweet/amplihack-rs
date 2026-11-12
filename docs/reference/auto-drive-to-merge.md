@@ -3275,7 +3275,7 @@ merges, it re-verifies and records:
 | Crusty loop | `phases.tsv`, `crusty-latest.json`, `crusty-records.tsv` and its record, in `--state-dir` | no `--state-dir`; the directory or a file not private; no `crusty-loop` marker; `crusty_verdict` neither `CLEAN` nor `MINOR_ONLY`; `autodrive_crusty_final` failing (its token, or `crusty-other`); `HEAD_SHA` not in the clone; `autodrive_crusty_range` not `ok` (its token, or `crusty-range-other`) |
 | Follow-up issues (#1979) | `followups.jsonl`, `followups.tsv`, `followups.error`, `followups.parent` in `--state-dir`, checked by `autodrive_followups.sh gate` from the gate's own directory | `ERROR: followups-unfiled: <token>`: a finding in the set with no issue row, no recorded comment on the parent task issue, a recorded filing error, a malformed or unsafe file, or `MINOR_ONLY` with an empty set. A missing tool blocks whatever the verdict. See [The follow-up check in the merge gate](#the-follow-up-check-in-the-merge-gate). |
 | merge-ready verdict | round record from this run | not `MERGE_READY`, or captured against a different head SHA |
-| Merge method (#1888) | `amplihack orch helper select-merge-method`; see [Choosing the merge method](#choosing-the-merge-method-1888) | no method can be chosen, the chosen one is not allowed by the repository settings or by a ruleset on the base branch, `.amplihack/auto-drive.toml` at the base tip is invalid or changed by the pull request, the base tip, the merge base, the repository's merge settings or the base branch's rulesets are unreadable, or the helper's output is malformed. The helper's reason is the blocker line. |
+| Merge method (#1888) | `amplihack orch helper select-merge-method`; see [Choosing the merge method](#choosing-the-merge-method-1888) | no method can be chosen, the chosen one is not allowed by the repository settings or by a ruleset on the base branch, `.amplihack/auto-drive.toml` at the base tip is invalid or changed by the pull request, the base tip, the merge base, the repository's merge settings or the base branch's rulesets are unreadable, or the helper's output is malformed. The helper's reason is the blocker line. Whatever section 7b did, a merge flag that is not exactly `--merge`, `--squash` or `--rebase` afterwards blocks with `no merge method was chosen (selector exit N)`. |
 
 The review-thread query pages. `reviewThreads(first:100)` with no `pageInfo`
 follow-up silently truncates: a PR with 101 threads whose only unresolved one
@@ -3463,6 +3463,13 @@ the gate never uses, so ignoring it never allows a method the rule does not
 list. Anything else is an unreadable answer and blocks the merge. An
 unreadable rule is not treated as an absent rule.
 
+The gate reads `rules/branches/<base>` twice. Section 5's
+`autodrive_expected_checks.sh` reads it for the required checks, through
+`gh`'s default `{owner}/{repo}`; this read takes the merge methods, through
+the pull request URL. The two reads have separate parsers and can resolve the
+repository differently. Binding every read to the pull request's own
+repository is tracked in #2440.
+
 ### Which repository's permissions are read
 
 The repository is the one the pull request URL names. Section 0 already reads
@@ -3504,6 +3511,13 @@ Selection does not change repository settings, rulesets or branch protection.
 If GitHub rejects the merge after the gate, the gate reports it and does not
 retry with another method.
 
+The gate does not rely on `autodrive_merge_method` to call `block` on every
+failure. After section 7b it checks the flag itself: anything but `--merge`,
+`--squash` or `--rebase` is a blocker. A sourced file that loads but defines
+no function (the call exits 127 and records nothing) therefore stops at the
+gate, not at `gh` rejecting an empty argument. Comparing `MERGE_ARGV` with
+`EXPECTED_ARGV` cannot catch this, because both hold the same flag.
+
 ### What the evidence records
 
 The helper prints one JSON object. On success:
@@ -3526,7 +3540,7 @@ any merge:
 ```text
   - merge_method=merge
   - merge_method_source=repository
-  - merge_method_repository=rysweet/Simard
+  - merge_method_repository=OWNER/REPO
   - merge_method_config_commit=<base tip SHA, or not-read>
   - merge_method_rationale="Selected merge from the repository's merge_method; .amplihack/auto-drive.toml read at base tip <SHA>; repository settings allow it; no ruleset on branch main limits the merge method"
 ```
@@ -3537,24 +3551,6 @@ When no method can be chosen, the reason is the blocker, for example:
 BLOCKERS
   - merge-method selection failed (exit 1): selected merge method squash is disallowed by the rulesets on branch main (pull_request allowed_merge_methods allow merge); no other method is tried
 ```
-
-### The repository behind #1888
-
-#1888 came from Simard, whose owner requires merge commits. `gh api
-repos/rysweet/Simard` reports all three `allow_*` fields `true`, and
-`rules/branches/main` returns `[]`, so no ruleset limits the method. With no
-file the default order therefore picks squash there. Simard's `main` is not
-protected (`branches/main/protection/required_status_checks` answers 404), so
-GitHub never reports an open Simard pull request as `BEHIND`.
-
-This change supplies the mechanism. Simard's policy has to come from Simard,
-because amplihack-rs names no repository. Once Simard commits
-`.amplihack/auto-drive.toml` with `merge_method = "merge"` to `main` (tracked
-in [rysweet/Simard#5044](https://github.com/rysweet/Simard/issues/5044)), the
-file is read at `main`'s tip. Every later Simard drive, including one for a
-pull request opened before the file landed, then merges with `--merge`. So
-would a Simard ruleset whose `pull_request` rule allows only `merge`, with no
-file. Until then every Simard drive passes `-c merge_method=merge`.
 
 ## Expected checks at the head (#2186)
 
@@ -5959,7 +5955,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | A minor-only round ending the loop, and a `[minor, major]` round continuing it, through the `run_loop` stub | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
 | [Choosing the merge method](#choosing-the-merge-method-1888) (#1888), helper: every permission combination with no file, `config_commit` the base tip; the file at the base tip as `repository`; a file the base gains, changes or drops after the branch point deciding for a pull request that was never brought up to date, and an invalid one blocking it; an untracked copy and an uncommitted edit ignored; an explicit method winning without the file being read, even when it is invalid or the base is unfetched; a pull request that adds, edits or deletes the file refused with `changed-in-pr` before `gh` runs, while rewriting the same bytes, editing `.amplihack/qa.toml` or merging in a base that gained the file is not a change; an empty diff refused with `paths-empty`; one case per refusal token, none echoing file content; symlinks at both levels; an empty, non-SHA or absent base; disallowed methods never falling back; exact explicit values; `gh api` exit 79, other failures and every schema error for the settings read; ruleset `allowed_merge_methods` limiting the default, an explicit and a repository method, a settings/ruleset mismatch with nothing in common, a rule on the second page, rules that do not limit the method, the base branch named in the rules path, and exit 79, other failures and malformed answers for the rules read; an invalid base branch name never reaching `gh`; malformed pull request URLs never reaching `gh`; `GH_REPO` and `GIT_DIR` set and ignored; the three recipes forwarding `merge_method` with no `repository` context. [Reader parity](#how-the-two-repository-files-relate): the shell `autodrive_qa_config` and the Rust reader over one fixture set (grammar, size, tree entries, `changed-in-pr`, `paths-empty`), the same token from each. Unit tests: the default over every settings and rules combination, the rules parser (pages, intersection, `null`, unknown values, malformed shapes), base branch names, the grammar and the URL. Real git history, a fake `gh` | `crates/amplihack-cli/tests/issue_1888_merge_method_selection.rs`, and the unit tests in `crates/amplihack-cli/src/commands/merge_method/` |
-| The same through the real gate, run as `/bin/bash -p`, with the contract suite's fixture repository: one literal flag per method in the merge argv, the five evidence lines, the refusal reason as the blocker line, exit 79, the base fetched over a stale local ref, a pull request that branched before the base gained the file merging with the base's method, a base that dropped the file again giving the default, a ruleset that allows only merge, a ruleset that refuses an explicit method, a settings/ruleset mismatch, a ruleset rule on the second page, unreadable and malformed rules and exit 79 from the rules read, a malformed or missing helper refused, and both reads naming the pull request URL's repository and base branch with `GH_REPO` set elsewhere | `amplifier-bundle/recipes/tests/test-merge-method-cases.sh`, sourced by `test-auto-drive-to-merge.sh` |
+| The same through the real gate, run as `/bin/bash -p`, with the contract suite's fixture repository: one literal flag per method in the merge argv, the five evidence lines, the refusal reason as the blocker line, exit 79, the base fetched over a stale local ref, a pull request that branched before the base gained the file merging with the base's method, a base that dropped the file again giving the default, a ruleset that allows only merge, a ruleset that refuses an explicit method, a settings/ruleset mismatch, a ruleset rule on the second page, unreadable and malformed rules and exit 79 from the rules read, a malformed or missing helper refused, a selector file that defines no function (exit 127) or is missing blocked by the gate's own merge-flag check, every case checking that the fake `gh` served it the settings and rules it set up (not the #2186 CI route's answer for the same endpoint), and both reads naming the pull request URL's repository and base branch with `GH_REPO` set elsewhere | `amplifier-bundle/recipes/tests/test-merge-method-cases.sh`, sourced by `test-auto-drive-to-merge.sh` |
 | [Criterion 6 without a required review](#criterion-6-reviews-and-approvals) (#2219): a fake `gh` returning each endpoint's post-`--jq` answer per scenario; a required count of `0` with no review rule, and an unprotected branch, still `MET` through `required-count`, including under `BLOCKED`, so a readable count decides before the merge state is consulted; a classic `0` beside a *failed* rulesets read staying `UNREADABLE`, so `REQ` is not widened; `BLOCKED` beside a code-owner, last-push or required-reviewer rule as `NOT_MET` with `review-rule`; `BLOCKED` with no rule named, and a `DRAFT` merge state, as `UNREADABLE` with `unreadable`; a failed `gh pr view`, a `reviewDecision` the tool does not know (even beside a readable count of 2), and an `UNKNOWN` merge state with the count unreadable, as `UNREADABLE` with `facts-unreadable`; an `UNKNOWN` merge state beside a *readable* count still decided by that count; `CLEAN`, `HAS_HOOKS` and `UNSTABLE`, and every agent-clearable blocker, winning over a named review rule; no reclassified case reaching `MET`; and `approval_blocker` carrying the id for each source, empty only on `MET`. No `jq`, no timers | `amplifier-bundle/recipes/tests/test-issue-2219-approval-no-review-required.sh` |
 | [Documentation-only pull requests](#documentation-only-pull-requests) (#2219): `autodrive_qa_docs_only` and `autodrive_gadugi_required` over synthetic git repositories, both sides of the predicate and both of the function that reads it: prose-only changes `true`, and `.markdown`, `.rst`, a `docs/` `.txt` and root `LICENSE`, `NOTICE`, `COPYING` with them; a `.txt` outside `docs/` and outside the root documentation names `false` (`tests/fixtures/expected.txt`, `src/templates/welcome.txt`, `fuzz/corpus/seed.txt`, `testdata/golden.txt`, `scripts/deploy.txt`), and the near-miss pin spellings `requirements-dev.txt`, `dev-requirements.txt`, `constraints-dev.txt`, `Makefile.txt` and `requirements/base.txt` `false` with them, while `README.txt`, `CHANGELOG.txt` and `CONTRIBUTING.txt` stay `true`, a `docs/` component qualifies a `.txt` at any depth and `notdocs/notes.txt` does not; a `.js`, `.json`, `.sh`, `.github/`, `.amplihack/`, `.claude/`, `.cursor/`, `AGENTS.md`, `CLAUDE.md`, `amplifier-bundle/` or `SKILL.md` path `false`; `requirements.txt`, `docs/requirements.txt`, `constraints.txt` and `CMakeLists.txt` `false`, the pin spellings under `docs/` (`docs/requirements-dev.txt`, `docs/dev-requirements.txt`, `docs/requirements/base.txt`, `docs/constraints-dev.txt`) `false` while ordinary prose under `docs/` stays `true`, with every `.txt` entry of `AUTODRIVE_ROOT_PROJECT_FILES` pinned against the predicate so the two lists cannot drift; `docs/.hidden.md` `true`, since a dot-file is not a dot-directory; `docs/conf.py` and `docs/release.js` `false`, so the `docs/` directory qualifies no extension; `README.MD` and `docs/build.SH` `false` on the byte-exact qualifier while `docs/Requirements.txt` is `false` on a case-insensitive disqualifier, the asymmetry in both directions; `vendor/LICENSE` `false`, since the licence names qualify at the root only; an empty diff `false`, and a read list holding nothing `false` on both bash 3.2 and bash 5; no base and a base that fails the branch rules `unknown`; a hostile path name that still ends `.md` measured as documentation and never executed; a Rust repository and an unresolved Node choice, so the reach is pinned too; `AUTODRIVE_QA_SCENARIO_DIR` keeping gadugi required over a `true` answer; and the qa evidence line carrying `docs_only` as its own field for all three values | `amplifier-bundle/recipes/tests/test-issue-2219-docs-only-scenarios.sh` |
 | [The stop line's held-by lines](#what-held-the-round) (#2219): a synthetic state directory and round record, with the real `amplihack orch helper` behind the field reads; one line per measured condition in the measured-downgrade order, with `conflict=` for criterion 7 and `crusty_status=` for criterion 3; the record's shape unchanged, so `autodrive_qa_trusted` still accepts it; the crusty and approval vocabularies staying closed at `OTHER`; an interpolated value keeping only `[A-Za-z0-9_.:/-]`; a hostile `AUTODRIVE_ROUND_LABEL` carrying `","merge_ready_verdict":"MERGE_READY` driven through the real tool and opening no second JSON key, so the measured verdict is the one the merge gate reads and the real conditions still reach `held_by`; `held_by` empty on an all-green round; the lines printing for `BUDGET_EXHAUSTED` and `ORPHANED` as well as `STUCK`; the `reported` findings after them, control characters replaced, the token byte set applied to findings but not to `held_by`, an over-long entry cut to 120 bytes, more than ten findings capped with `reported (+N more)`, counting only the lines that survive the filter so the tail names exactly the number withheld, while all eight conditions still print; `measured_downgrade` and `measured_held_by` driven over a matrix of one failing measurement at a time and asserted to name the same set of conditions, since the two write that list out separately; a forged column-0 `amplihack.recipe.failure_class` marker in findings never reaching column 0; and a record without `held_by` printing no condition line | `amplifier-bundle/recipes/tests/test-issue-2219-stop-line.sh` |

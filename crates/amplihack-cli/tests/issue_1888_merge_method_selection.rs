@@ -332,7 +332,7 @@ fn the_file_at_the_base_tip_is_the_repository_preference() {
     let f = Fixture::with(
         &[(
             CONFIG,
-            Some("# Simard requires merge commits\nmerge_method = \"merge\"\n"),
+            Some("# this repository requires merge commits\nmerge_method = \"merge\"\n"),
         )],
         &[("src.rs", Some("v1\n"))],
         &[],

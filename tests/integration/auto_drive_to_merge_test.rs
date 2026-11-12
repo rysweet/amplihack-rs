@@ -760,6 +760,22 @@ fn forbidden_flags_never_appear_in_an_executable_position() {
         gate.contains(r#"if [ "${MERGE_ARGV[*]}" != "${EXPECTED_ARGV[*]}" ]"#),
         "the merge argv must be asserted unchanged immediately before execution"
     );
+    // Both arrays hold the same "$MERGE_FLAG", so comparing them cannot catch
+    // an empty flag. The gate checks the flag itself after section 7b and
+    // before it writes the bundle, whatever the selector returned.
+    let check = gate
+        .find(r#"case "$MERGE_FLAG" in --merge|--squash|--rebase) ;; *) block "#)
+        .expect("the gate must block on a merge flag that is not --merge, --squash or --rebase");
+    let selector = gate
+        .find(r#"autodrive_merge_method "$MERGE_METHOD""#)
+        .expect("section 7b calls the selector");
+    let bundle = gate
+        .find("# --- 8. Record the evidence bundle")
+        .expect("section 8 writes the bundle");
+    assert!(
+        selector < check && check < bundle,
+        "the merge flag check must sit after the selector call and before section 8"
+    );
 }
 
 // ── No silent merge ──────────────────────────────────────────────────────────

@@ -291,11 +291,11 @@ mod tests {
     #[test]
     fn pr_url_names_the_repository() {
         assert_eq!(
-            parse_pr_url("https://github.com/rysweet/Simard/pull/5038").unwrap(),
+            parse_pr_url("https://github.com/Owner-A/Repo_B.c/pull/5038").unwrap(),
             Repository {
                 host: "github.com".into(),
-                owner: "rysweet".into(),
-                name: "Simard".into()
+                owner: "Owner-A".into(),
+                name: "Repo_B.c".into()
             }
         );
         assert!(parse_pr_url("https://ghe.example.com/my-org/x.y_z/pull/1").is_ok());

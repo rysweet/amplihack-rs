@@ -1281,20 +1281,21 @@ echo "$*" >> "${GH_CALLS:-/dev/null}"
 # #1888: the selector's two reads name the repository in the pull request URL
 # and run with no --jq, so they are answered HERE, before #2186's CI route
 # below, which would otherwise take them (a settings 404 and the CI
-# fixture's rules). GH_METHODS_JSON and GH_METHODS_RC
-# (test-merge-method-cases.sh) change the permissions; by default every
-# method is allowed.
+# fixture's rules). Each answer served is also written to gh-calls.methods or
+# gh-calls.rules, so a case can check that the selector read its own fixture.
+# GH_METHODS_JSON and GH_METHODS_RC (test-merge-method-cases.sh) change the
+# permissions; by default every method is allowed.
 if [ "$*" = "api --hostname github.com repos/owner-a/repo-a" ]; then
-  if [ "${GH_METHODS_JSON+x}" = x ]; then
-    printf '%s\n' "$GH_METHODS_JSON"
-  else
-    printf '%s\n' '{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":true}'
-  fi
+  if [ "${GH_METHODS_JSON+x}" = x ]; then a="$GH_METHODS_JSON"
+  else a='{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":true}'; fi
+  [ -z "${GH_CALLS:-}" ] || printf '%s\n' "$a" >> "${GH_CALLS}.methods"
+  printf '%s\n' "$a"
   exit "${GH_METHODS_RC:-0}"
 fi
 # The active rules on the base branch, every page. GH_RULES_JSON and
 # GH_RULES_RC change the answer; by default no rule applies.
 if [ "$*" = "api --hostname github.com --paginate repos/owner-a/repo-a/rules/branches/${GH_BASE-main}" ]; then
+  [ -z "${GH_CALLS:-}" ] || printf '%s\n' "${GH_RULES_JSON-[]}" >> "${GH_CALLS}.rules"
   printf '%s\n' "${GH_RULES_JSON-[]}"
   exit "${GH_RULES_RC:-0}"
 fi

@@ -28,6 +28,20 @@ mm_pr_rule() { # mm_pr_rule <method>...: one pull_request rule listing them
   jq -cn '[{type:"pull_request",parameters:{required_approving_review_count:0,allowed_merge_methods:$ARGS.positional}}]' --args "$@"
 }
 mm_bundle() { printf '%s' "$GATE_OUT" | jq -r '.evidence_bundle // empty' 2>/dev/null; }
+# The gh stub answers the selector's two reads before #2186's CI route, and
+# writes each answer it served to gh-calls.methods and gh-calls.rules. A case
+# checks those, so it knows the selector read the fixture the case set up and
+# not the CI fixture's answer for the same endpoint.
+MM_SETTINGS_ALL='{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":true}'
+mm_served() { # mm_served <methods|rules> <answer>: served exactly once, this run
+  [ -f "${GATE_DIR}/gh-calls.$1" ] && [ "$(cat "${GATE_DIR}/gh-calls.$1")" = "$2" ]
+}
+mm_own_settings() { mm_served methods "${GH_METHODS_JSON-$MM_SETTINGS_ALL}"; }
+mm_own_rules() { mm_served rules "${GH_RULES_JSON-[]}"; }
+mm_fixture_note() {
+  printf 'served settings=%s rules=%s' "$(cat "${GATE_DIR}/gh-calls.methods" 2>/dev/null)" \
+    "$(cat "${GATE_DIR}/gh-calls.rules" 2>/dev/null)"
+}
 # mm_files <head>: a MERGE_READY record and PASS qa evidence bound to <head>,
 # in MM_REC and MM_QA (gate_files is defined later in the suite).
 mm_files() {
@@ -50,15 +64,19 @@ mm_merged() {
      && grep -qxF "  - merge_method_source=${source}" "$bundle" \
      && grep -qxF "  - merge_method_repository=owner-a/repo-a" "$bundle" \
      && grep -qxF "  - merge_method_config_commit=${commit}" "$bundle" \
-     && grep -qE '^  - merge_method_rationale="Selected .+"$' "$bundle"; then
+     && grep -qE '^  - merge_method_rationale="Selected .+"$' "$bundle" \
+     && { [ -n "${GATE_HELPER:-}" ] || { mm_own_settings && mm_own_rules; }; }; then
     pass "1888-${label}" "merged with --${method} (${source}, config ${commit}) and the evidence says why"
   else
-    fail "1888-${label}" "rc=$rc $GATE_OUT | $(grep -E 'BLOCKER|merge_method' "${GATE_DIR}/err" | tr '\n' ' ') | $(grep '^pr merge' "${GATE_DIR}/gh-calls" 2>/dev/null)"
+    fail "1888-${label}" "rc=$rc $GATE_OUT | $(grep -E 'BLOCKER|merge_method' "${GATE_DIR}/err" | tr '\n' ' ') | $(grep '^pr merge' "${GATE_DIR}/gh-calls" 2>/dev/null) | $(mm_fixture_note)"
   fi
 }
 
 # mm_refused <label> <reason> [gate args...]: nothing merges, and the
-# evidence bundle's BLOCKERS name the reason, not only a generic line.
+# evidence bundle's BLOCKERS name the reason, not only a generic line. A case
+# that sets GH_RULES_JSON or GH_RULES_RC must also have been served that rules
+# answer (and the settings before it); one that sets GH_METHODS_RC, or runs
+# with MM_READS_SETTINGS=1, must have been served its settings answer.
 mm_refused() {
   local label="$1" reason="$2" rc bundle
   shift 2
@@ -67,10 +85,12 @@ mm_refused() {
   bundle="$(mm_bundle)"
   if [ "$rc" -ne 0 ] && ! grep -q '^pr merge ' "${GATE_DIR}/gh-calls" \
      && printf '%s' "$GATE_OUT" | grep -qF '"merge_result":"NOT_MERGED"' \
-     && [ -f "$bundle" ] && sed -n '/^BLOCKERS$/,$p' "$bundle" | grep -qF -- "$reason"; then
+     && [ -f "$bundle" ] && sed -n '/^BLOCKERS$/,$p' "$bundle" | grep -qF -- "$reason" \
+     && { [ -z "${GH_RULES_JSON+x}${GH_RULES_RC+x}" ] || { mm_own_settings && mm_own_rules; }; } \
+     && { [ -z "${GH_METHODS_RC+x}${MM_READS_SETTINGS:-}" ] || mm_own_settings; }; then
     pass "1888-${label}" "refused; the evidence names: ${reason}"
   else
-    fail "1888-${label}" "rc=$rc $GATE_OUT | want '${reason}' | $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+    fail "1888-${label}" "rc=$rc $GATE_OUT | want '${reason}' | $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ') | $(mm_fixture_note)"
   fi
 }
 
@@ -206,7 +226,7 @@ for GH_METHODS_JSON in '[true,false,false]' '{}' 'null' 'bad-json' \
   '{"allow_merge_commit":true,"allow_squash_merge":false}' \
   '{"allow_merge_commit":true,"allow_squash_merge":"true","allow_rebase_merge":false}'; do
   export GH_METHODS_JSON
-  mm_refused api-schema "merge permissions"
+  MM_READS_SETTINGS=1 mm_refused api-schema "merge permissions"
 done
 unset GH_METHODS_JSON
 
@@ -261,3 +281,19 @@ if grep -qxF 'api --hostname github.com repos/owner-a/repo-a' "${GATE_DIR}/gh-ca
 else
   fail "1888-permissions-from-pr-url" "$(grep '^api' "${GATE_DIR}/gh-calls" | tr '\n' '|')"
 fi
+
+# --- the merge flag is checked before the bundle, whatever 7b did -----------
+# A gate copy whose autodrive_merge_method.sh loads but defines no function:
+# the call exits 127 without calling block, so only the gate's final
+# MERGE_FLAG check stands between an empty flag and `gh pr merge 42 ""`.
+MM_NOFN="${WORK_PHYS}/mm-no-function"; mkdir -p "$MM_NOFN"
+cp "${TOOLS}"/autodrive_*.sh "$MM_NOFN/"
+printf '# autodrive_merge_method.sh with its function removed\n' > "$MM_NOFN/autodrive_merge_method.sh"
+GATE_SCRIPT="$MM_NOFN/autodrive_merge_gate.sh" mm_refused function-missing \
+  "no merge method was chosen (selector exit 127); the merge needs exactly one of --merge, --squash or --rebase"
+# The same copy with the file gone: 7b's own blocker, and the flag check too.
+rm -f "$MM_NOFN/autodrive_merge_method.sh"
+GATE_SCRIPT="$MM_NOFN/autodrive_merge_gate.sh" mm_refused file-missing \
+  "autodrive_merge_method.sh is missing beside the merge gate"
+GATE_SCRIPT="$MM_NOFN/autodrive_merge_gate.sh" mm_refused file-missing-flag \
+  "no merge method was chosen (selector exit 1)"

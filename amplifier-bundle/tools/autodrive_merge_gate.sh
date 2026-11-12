@@ -7,8 +7,8 @@
 # CI status means "we do not know", and "we do not know" does not merge.
 #
 # The merge argv is a FIXED literal list built in this file. Its one variable
-# word is --merge, --squash or --rebase (section 7b), so no argument can thread
-# a branch-protection bypass through it — the prohibition is structural here.
+# word must be --merge, --squash or --rebase; section 7b blocks on anything
+# else, so no argument can thread a branch-protection bypass through it.
 # A bypass flag and a hook-skipping commit flag are NEVER used anywhere in this
 # workflow; see docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
 #
@@ -333,6 +333,9 @@ fi
 # --- 7b. The merge method (#1888), chosen by autodrive_merge_method.sh -----
 if [ -n "$GATE_HOME" ] && [ -f "${GATE_HOME}/autodrive_merge_method.sh" ] && . "${GATE_HOME}/autodrive_merge_method.sh"; then autodrive_merge_method "$MERGE_METHOD"; MM_RC=$?
 else block "autodrive_merge_method.sh is missing beside the merge gate (${GATE_HOME:-<unknown>}) or could not be loaded; no merge method can be chosen"; fi
+# Whatever happened above (a selector that returned without blocking, say exit
+# 127 for a missing function), the argv's one variable word is checked here.
+case "$MERGE_FLAG" in --merge|--squash|--rebase) ;; *) block "no merge method was chosen (selector exit ${MM_RC}); the merge needs exactly one of --merge, --squash or --rebase" ;; esac
 
 # --- 8. Record the evidence bundle BEFORE any merge ------------------------
 BUNDLE="${STATE_DIR}/merge-evidence-${PR}-${HEAD_SHA:0:12}.txt"
