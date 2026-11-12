@@ -28,13 +28,9 @@ impl Fixture {
     }
 
     pub fn git(&self, dir: &Path, args: &[&str]) -> String {
-        let mut c = amplihack_git::command_in(dir);
-        c.env_clear()
-            .env("HOME", &self.home)
-            .env("PATH", std::env::var_os("PATH").unwrap())
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", self.home.join(".gitconfig"));
-        crate::isolated_amplihack::no_git_prompt(&mut c);
+        // Hooks inherit the same isolated profile roots as recipe commands.
+        let mut c = self.command("git");
+        c.current_dir(dir);
         success(&c.args(args).output().unwrap())
     }
 }

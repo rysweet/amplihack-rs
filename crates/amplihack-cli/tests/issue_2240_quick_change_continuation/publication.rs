@@ -200,10 +200,13 @@ fn fallback_does_not_truncate_long_path_identity() {
     success(&f.qc("run-checks"));
     commit(&mut f);
     assert_descriptive(&f.git(&f.selected(), &["show", "-s", "--format=%s"]), &path);
+    success(&f.qc("push"));
+    success(&f.qc("create-pr"));
+    assert_descriptive(&f.read_home("pr-title"), &path);
 }
 
 #[test]
-fn pr_title_prefers_principal_change_subject_over_later_mechanical_repair() {
+fn pr_title_uses_most_recent_usable_change_commit_subject() {
     let mut f = Fixture::new("");
     prepare(&mut f, SUBJECT);
     commit(&mut f);
@@ -220,7 +223,49 @@ fn pr_title_prefers_principal_change_subject_over_later_mechanical_repair() {
     );
     success(&f.qc("push"));
     success(&f.qc("create-pr"));
-    assert_eq!(f.read_home("pr-title"), SUBJECT);
+    assert_eq!(
+        f.read_home("pr-title"),
+        "fix: address formatting pre-push rejection"
+    );
+}
+
+#[test]
+fn pr_body_keeps_task_issue_reference_without_explicit_issue_number() {
+    for reference in ["Fixes #2240", "Refs #2240"] {
+        let mut f = Fixture::new("");
+        f.ctx.set("issue_number", json!(""));
+        f.ctx.set(
+            "task_description",
+            json!(format!("/briefs/review-findings.md\n{reference}")),
+        );
+        prepare(&mut f, SUBJECT);
+        commit(&mut f);
+        success(&f.qc("push"));
+        success(&f.qc("create-pr"));
+        assert_eq!(f.read_home("pr-title"), SUBJECT);
+        assert!(f.read_home("pr-body").contains(reference));
+    }
+}
+
+#[test]
+fn continuation_reports_check_warnings_before_finishing_without_gh() {
+    let mut f = Fixture::new(BRANCH);
+    f.branch(true);
+    prepare(&mut f, SUBJECT);
+    let summary = "QUICK_CHANGE_CHECKS=failed ran=1 failed=1 skipped=0";
+    f.ctx.set("quick_change_checks", json!(summary));
+    fs::write(f.state().join("checks-summary"), summary).unwrap();
+    fs::write(
+        f.state().join("checks-table.md"),
+        "| `review check` | exit 1 |\n",
+    )
+    .unwrap();
+    commit(&mut f);
+    success(&f.qc("push"));
+    let out = f.qc("create-pr");
+    success(&out);
+    assert!(super::fixture::stderr(&out).contains("Checks failed"));
+    assert!(f.read_home("gh-calls").is_empty());
 }
 
 #[test]
@@ -243,6 +288,83 @@ mv "$1.reworded" "$1"
     success(&f.qc("create-pr"));
     assert_descriptive(&f.read_home("pr-title"), "README.md");
     assert!(!f.read_home("pr-title").contains("historical"));
+}
+
+#[test]
+fn long_change_subject_is_shortened_at_a_word_boundary() {
+    let mut f = Fixture::new("");
+    success(&f.select());
+    success(&f.qc("record-base"));
+    f.write(&f.selected(), "README.md", "base\nreview fix\n");
+    let prefix = "fix: preserve the exact continuation branch and all existing review work";
+    let subject = format!("{prefix} before publishing the completed change");
+    assert!(prefix.len() <= 72 && subject.len() > 72);
+    f.git(&f.selected(), &["add", "README.md"]);
+    f.git(&f.selected(), &["commit", "-qm", &subject]);
+    assert_eq!(success(&f.common("qc_title")), prefix);
+}
+
+#[test]
+fn unusable_latest_subject_does_not_hide_a_usable_change_subject() {
+    let mut f = Fixture::new("");
+    prepare(&mut f, SUBJECT);
+    commit(&mut f);
+    f.write(&f.selected(), "notes.md", "newer review notes\n");
+    f.git(&f.selected(), &["add", "notes.md"]);
+    f.git(
+        &f.selected(),
+        &["commit", "-qm", "Brief: /briefs/review.md"],
+    );
+    assert_eq!(success(&f.common("qc_title")), SUBJECT);
+}
+
+#[test]
+fn fallback_selects_largest_change_and_breaks_ties_by_complete_path() {
+    for (first, second, expected) in [
+        ("small\n", "larger\nchange\n", "z-notes.md"),
+        ("equal\n", "equal\n", "a-notes.md"),
+    ] {
+        let mut f = Fixture::new("");
+        success(&f.select());
+        success(&f.qc("record-base"));
+        f.write(&f.selected(), "a-notes.md", first);
+        f.write(&f.selected(), "z-notes.md", second);
+        f.git(&f.selected(), &["add", "-N", "."]);
+        assert_descriptive(&success(&f.common("qc_fallback_title")), expected);
+    }
+}
+
+#[test]
+fn fallback_supports_binary_deleted_and_unusual_paths_without_executing_them() {
+    for path in [
+        "diagram.dat",
+        "notes with spaces.md",
+        "notes\twith\ncontrols.md",
+        "$(touch injected).md",
+    ] {
+        let mut f = Fixture::new("");
+        success(&f.select());
+        success(&f.qc("record-base"));
+        fs::write(f.selected().join(path), b"binary\0content\xff").unwrap();
+        f.git(
+            &f.selected(),
+            &["--literal-pathspecs", "add", "-N", "--", path],
+        );
+        let title = success(&f.common("qc_fallback_title"));
+        let displayed_path = if path.chars().any(char::is_control) {
+            serde_json::to_string(path).unwrap()
+        } else {
+            path.to_owned()
+        };
+        assert_descriptive(&title, &displayed_path);
+        assert!(!f.selected().join("injected").exists());
+        assert!(!f.caller.join("injected").exists());
+    }
+    let mut f = Fixture::new("");
+    success(&f.select());
+    success(&f.qc("record-base"));
+    f.git(&f.selected(), &["rm", "README.md"]);
+    assert_descriptive(&success(&f.common("qc_fallback_title")), "README.md");
 }
 
 #[test]
@@ -302,4 +424,31 @@ fn rejecting_remote_hook_is_run_and_publication_fails_visibly() {
     assert_eq!(f.git(&f.origin, &["rev-parse", &branch]), before);
     assert_ne!(f.git(&f.selected(), &["rev-parse", "HEAD"]), before);
     assert!(f.read_home("gh-calls").is_empty());
+}
+
+#[test]
+fn full_task_references_survive_request_truncation_and_respect_issue_precedence() {
+    for (issue, reference, expected) in [
+        ("2240", "Fixes #2240", "Fixes #2240"),
+        ("2240", "Fixes #2210", "Refs #2240"),
+        ("", "Fixes #2240", "Fixes #2240"),
+    ] {
+        let mut f = Fixture::new("");
+        f.ctx.set("issue_number", json!(issue));
+        f.ctx.set(
+            "task_description",
+            json!(format!(
+                "Brief: /briefs/review.md\n{}\n{reference}",
+                "review ".repeat(700)
+            )),
+        );
+        prepare(&mut f, SUBJECT);
+        commit(&mut f);
+        let message = f.git(&f.selected(), &["show", "-s", "--format=%B"]);
+        assert!(message.lines().any(|line| line == expected), "{message}");
+        success(&f.qc("push"));
+        success(&f.qc("create-pr"));
+        let body = f.read_home("pr-body");
+        assert!(body.lines().any(|line| line == expected), "{body}");
+    }
 }

@@ -2,8 +2,9 @@
 //!
 //! Synthetic checkouts, a local bare origin and fake gh isolate publication.
 //! RecipeContext renders child overrides and exports the real setup JSON;
-//! no test fabricates worktree_setup or replaces guards, hooks or repair.
-//! Only the builder's edits and structured result are supplied by the tests.
+//! no test fabricates worktree_setup or replaces guards or repair logic.
+//! Recording Git hooks execute normally; builder and repair-agent edits and
+//! structured results are supplied by the tests.
 //! Command completion and hook records provide synchronisation, without timers.
 #![cfg(unix)]
 

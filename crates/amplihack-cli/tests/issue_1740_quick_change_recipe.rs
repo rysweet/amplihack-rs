@@ -288,7 +288,7 @@ fn common_preamble_never_resolves_tools_from_the_worktree() {
 }
 
 #[test]
-fn commit_and_push_re_measure_after_hook_repair() {
+fn commit_and_push_measure_at_publication_boundaries() {
     let r = recipe();
     for (id, output) in [
         ("quick-change-commit", "quick_change_commit_repaired"),
@@ -299,11 +299,11 @@ fn commit_and_push_re_measure_after_hook_repair() {
             .find("hook_repair_run")
             .unwrap_or_else(|| panic!("{id} must use hook_repair_run"));
         let measure = cmd
-            .find("--committed")
-            .unwrap_or_else(|| panic!("{id} must re-measure with --committed"));
+            .rfind("qc_measure_committed")
+            .unwrap_or_else(|| panic!("{id} must measure the complete committed change"));
         assert!(
             repair < measure,
-            "{id}: --committed must follow hook_repair_run"
+            "{id}: measurement must follow hook_repair_run"
         );
         assert!(
             cmd.contains("BASE=\"$(qc_base)\""),
@@ -321,9 +321,15 @@ fn commit_and_push_re_measure_after_hook_repair() {
     }
     let push = command(&r, "quick-change-push");
     assert!(
-        push.find("--committed").unwrap() < push.rfind("verify_pushed_ref.sh").unwrap(),
+        push.rfind("qc_measure_committed").unwrap() < push.rfind("verify_pushed_ref.sh").unwrap(),
         "the push step re-measures before verifying the remote ref"
     );
+    assert!(
+        push.find("qc_measure_committed").unwrap() < push.find("git push -u").unwrap(),
+        "continuation must measure before its single push"
+    );
+    let common = read("amplifier-bundle/tools/quick_change_common.sh");
+    assert!(common.contains("--committed") && common.contains("--base \"$BASE\""));
     let commit = command(&r, "quick-change-commit");
     let add = commit.find("git add -A").unwrap();
     let guard = |from: usize| commit[from..].find("artifact-guard").map(|i| i + from);

@@ -208,7 +208,7 @@ fn pinned_base_must_match_runner_output_and_cannot_disappear() {
 }
 
 #[test]
-fn oversized_pre_existing_work_hands_over_on_exact_branch_with_patch() {
+fn oversized_continuation_stops_before_unrestricted_delegation_with_patch() {
     let mut f = Fixture::new(BRANCH);
     f.branch(true);
     f.write(
@@ -219,10 +219,135 @@ fn oversized_pre_existing_work_hands_over_on_exact_branch_with_patch() {
     success(&f.select());
     let base = success(&f.qc("record-base"));
     assert_eq!(success(&f.qc("diff-limits")), "handover");
-    let note = success(&f.qc("write-handover"));
+    crate::support::exec_stub::write_executable(
+        &f.tmp.path().join("bin/gh"),
+        "#!/bin/bash\nprintf '%s\\n' \"$*\" >> \"$HOME/gh-calls\"\necho 'PR operations forbidden' >&2\nexit 1\n",
+        0o755,
+    );
+    let head = f.git(&f.selected(), &["rev-parse", "HEAD"]);
+    let out = f.qc("write-handover");
+    assert!(
+        !out.status.success(),
+        "continuation allowed unrestricted handover"
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains("stopping before delegation") && err.contains("may create or modify a PR"),
+        "{err}"
+    );
+    let note = std::fs::read_to_string(f.state().join("handover-note")).unwrap();
     assert!(note.contains(BRANCH) && note.contains(&base), "{note}");
     let patch = std::fs::read_to_string(f.state().join("quick-change-handover.patch")).unwrap();
     assert!(patch.contains("pre-existing review work"));
+    assert_eq!(f.git(&f.selected(), &["rev-parse", "HEAD"]), head);
+    assert_eq!(
+        std::fs::read_to_string(f.selected().join("notes.md")).unwrap(),
+        "pre-existing review work\n".repeat(151)
+    );
+    let steps = recipe("quick-change");
+    let ids: Vec<_> = steps["steps"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        ids.iter()
+            .position(|id| *id == "quick-change-write-handover")
+            .unwrap()
+            < ids
+                .iter()
+                .position(|id| *id == "quick-change-handover")
+                .unwrap()
+    );
+    assert!(f.read_home("gh-calls").is_empty());
+}
+
+#[test]
+fn continuation_recovery_patch_restores_binary_untracked_and_tracked_work_privately() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut f = Fixture::new(BRANCH);
+    f.branch(true);
+    // Seed an existing binary before pinning the selected branch's base.
+    std::fs::write(f.caller.join("diagram.dat"), b"before\0\xff").unwrap();
+    f.git(&f.caller, &["add", "diagram.dat"]);
+    f.git(&f.caller, &["commit", "-qm", "add review diagram"]);
+    f.git(&f.caller, &["push", "-q", "origin", BRANCH]);
+    success(&f.select());
+    let base = success(&f.qc("record-base"));
+    std::fs::write(f.selected().join("diagram.dat"), b"after\0\xfe").unwrap();
+    std::fs::write(f.selected().join("new diagram.dat"), b"new\0\xfd").unwrap();
+    f.write(
+        &f.selected(),
+        "notes.md",
+        &"oversized review notes\n".repeat(151),
+    );
+    assert_eq!(success(&f.qc("diff-limits")), "handover");
+    let expected = f.git(&f.selected(), &["diff", "--binary", &base]);
+    let out = f.qc("write-handover");
+    assert!(!out.status.success());
+    let patch = f.state().join("quick-change-handover.patch");
+    assert_eq!(
+        std::fs::metadata(&patch).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let restored = f.tmp.path().join("recovered checkout");
+    f.git(
+        &f.caller,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            restored.to_str().unwrap(),
+            &base,
+        ],
+    );
+    f.git(&restored, &["apply", "--index", patch.to_str().unwrap()]);
+    assert_eq!(f.git(&restored, &["diff", "--binary", &base]), expected);
+    for path in ["diagram.dat", "new diagram.dat", "notes.md"] {
+        assert_eq!(
+            std::fs::read(restored.join(path)).unwrap(),
+            std::fs::read(f.selected().join(path)).unwrap(),
+            "recovery lost {path}"
+        );
+    }
+    assert_eq!(f.git(&f.selected(), &["rev-parse", "HEAD"]), base);
+    assert_eq!(f.git(&f.origin, &["rev-parse", BRANCH]), base);
+    assert!(f.read_home("gh-calls").is_empty());
+}
+
+#[test]
+fn ordinary_handover_keeps_exact_checkout_without_a_setup_push() {
+    let mut f = Fixture::new("");
+    success(&f.select());
+    let selected = f.selected();
+    let branch = f.git(&selected, &["branch", "--show-current"]);
+    let refs = f.git(&f.origin, &["show-ref"]);
+    success(&f.qc("record-base"));
+    f.write(&selected, "notes.md", &"ordinary change\n".repeat(151));
+    assert_eq!(success(&f.qc("diff-limits")), "handover");
+    assert!(success(&f.qc("write-handover")).contains(&branch));
+    let handover = step("quick-change", "quick-change-handover");
+    assert!(
+        f.ctx
+            .evaluate(handover["condition"].as_str().unwrap())
+            .unwrap()
+    );
+    let parent = f.ctx.clone();
+    for (key, value) in handover["context"].as_mapping().unwrap() {
+        f.ctx.set(
+            key.as_str().unwrap(),
+            json!(parent.render(value.as_str().unwrap())),
+        );
+    }
+    success(&f.run("workflow-worktree", "step-04-setup-worktree"));
+    assert_eq!(f.selected(), selected);
+    assert_eq!(f.git(&f.origin, &["show-ref"]), refs);
+    assert_eq!(
+        std::fs::read_to_string(selected.join("notes.md")).unwrap(),
+        "ordinary change\n".repeat(151)
+    );
     assert!(f.read_home("gh-calls").is_empty());
 }
 

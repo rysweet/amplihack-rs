@@ -222,7 +222,7 @@ qc_valid_subject() {
   # A deleted path with spaces can look like descriptive words too.
   if git -C "$QC_WT" cat-file -e "${RECIPE_VAR_quick_change_base:-HEAD}:$1" 2>/dev/null; then return 1; fi
   printf '%s' "$1" | jq -R -s -e '
-    length > 0 and length <= 72
+    length > 0
     and (test("[\\x00-\\x1f\\x7f-\\x9f`]") | not)
     and (test("^\\s|\\s$") | not)
     and (test("^Brief:"; "i") | not)
@@ -252,33 +252,61 @@ qc_fallback_title() {
   printf '%s: %s %s' "$category" "$action" "$main"
 }
 
+# Validate the original subject before shortening; controls or a Brief: prefix
+# beyond the title limit must not become valid through truncation.
+qc_short_subject() {
+  qc_valid_subject "$1" || return 1
+  printf '%s' "$1" | jq -R -s -e -r '
+    if length <= 72 then . else .[0:73] | sub("\\s+[^\\s]*$"; "") end
+    | select(length > 0 and length <= 72)
+  '
+}
+
 qc_commit_subject() {
-  local proposal
+  local proposal subject
   proposal="$(printf '%s' "${RECIPE_VAR_quick_change_implementation:-}" | jq -c '.commit_subject | select(type == "string")')" \
     || qc_die "builder result is not structured JSON"
-  # Validate JSON before decoding: command substitution removes trailing
-  # newlines, which must not turn an invalid proposal into a valid subject.
+  # Decode only after rejecting controls: shell substitution trims newlines.
   if [ -n "$proposal" ] && printf '%s' "$proposal" | jq -e 'test("[\\x00-\\x1f\\x7f-\\x9f]") | not' >/dev/null; then
     proposal="$(printf '%s' "$proposal" | jq -r '.')"
-    if qc_valid_subject "$proposal"; then printf '%s' "$proposal"; return; fi
+    if subject="$(qc_short_subject "$proposal")"; then printf '%s' "$subject"; return; fi
   fi
   qc_fallback_title
 }
 
-# Prefer the first suitable non-mechanical subject after the immutable base.
-# A hook may have rewritten the principal subject, so read actual commits.
+# Read newest first; only commits after the immutable base describe this run.
 qc_title() {
-  local base subjects subject mechanical=""
+  local base subjects subject title fallback
   base="$(qc_base)" || return
-  subjects="$(git -C "$QC_WT" log --reverse --format=%s "$base..HEAD")" || qc_die "cannot read this run's commit subjects"
+  subjects="$(git -C "$QC_WT" log --format=%s "$base..HEAD")" || qc_die "cannot read this run's commit subjects"
   while IFS= read -r subject; do
-    qc_valid_subject "$subject" || continue
-    case "$subject" in
-      'fix: address '* | 'style: '* | 'chore: format '*) [ -n "$mechanical" ] || mechanical="$subject" ;;
-      *) printf '%s' "$subject"; return ;;
-    esac
+    # A generated fallback retains complete path identity, even above 72.
+    if [ "${#subject}" -gt 72 ]; then
+      fallback="$(qc_fallback_title)" || return
+      if [ "$subject" = "$fallback" ]; then printf '%s' "$fallback"; return; fi
+    fi
+    if title="$(qc_short_subject "$subject")"; then printf '%s' "$title"; return; fi
   done <<< "$subjects"
-  if [ -n "$mechanical" ]; then printf '%s' "$mechanical"; else qc_fallback_title; fi
+  qc_fallback_title
+}
+
+# Recheck the full committed change after commit hooks and before continuation
+# publication. Retain a private binary patch if a continuation exceeds limits.
+qc_measure_committed() {
+  local out rc=0
+  out="$(bash "$QC_TOOLS/quick_change_diff_limits.sh" "$QC_WT" --base "$BASE" --committed \
+    --max-files "${RECIPE_VAR_quick_change_max_files:-3}" \
+    --max-lines "${RECIPE_VAR_quick_change_max_lines:-150}")" || rc=$?
+  printf '%s\n' "$out" >&2
+  if [ "$rc" -eq 5 ] && [ -n "${RECIPE_VAR_existing_branch:-}" ]; then
+    git -C "$QC_WT" -c core.fsmonitor=false diff --binary --no-ext-diff --no-textconv "$BASE" | qc_write quick-change-handover.patch
+    qc_die "continuation cannot proceed within quick-change limits; checkout and state preserved at $QC_WT and $QUICK_CHANGE_STATE_DIR; patch at $QUICK_CHANGE_STATE_DIR/quick-change-handover.patch"
+  fi
+  [ "$rc" -eq 0 ] || return "$rc"
+  case "${out%%$'\n'*}" in
+    "QUICK_CHANGE_VERDICT=proceed "*) ;;
+    *) qc_die "unexpected verdict after re-measuring the committed change" ;;
+  esac
 }
 
 # Interpret the diff tool's closed verdict contract. Keep errors visible and
@@ -321,4 +349,17 @@ qc_issue() {
   fi
   [[ "$n" =~ ^[1-9][0-9]{0,8}$ ]] && printf '%s' "$n"
   return 0
+}
+
+# Keep a selected issue's closing reference even beyond the request excerpt.
+qc_reference() {
+  local issue
+  issue="$(qc_issue)"
+  [ -n "$issue" ] || return 0
+  if printf '%s' "${RECIPE_VAR_task_description:-}" | jq -R -s -e --arg n "$issue" \
+    'test("(^|[^A-Za-z])Fixes[[:space:]]+#" + $n + "([^0-9]|$)"; "i")' >/dev/null; then
+    printf 'Fixes #%s' "$issue"
+  else
+    printf 'Refs #%s' "$issue"
+  fi
 }

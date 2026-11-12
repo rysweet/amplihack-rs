@@ -3,7 +3,7 @@
 # never publish, sweep, prune, reset, stash or create an alias here.
 # Usage: <caller checkout> <main repository> <worktree base> <branch>
 set -euo pipefail
-export GIT_PAGER=cat PAGER=cat LESS=FRX
+export GIT_PAGER=cat PAGER=cat LESS=FRX GIT_TERMINAL_PROMPT=0
 
 die() { echo "ERROR: existing-branch setup: $*" >&2; exit 1; }
 [ "$#" -eq 4 ] || die "expected caller, main repository, worktree base and branch"
@@ -33,7 +33,8 @@ REMOTE_DEFAULT="$(printf '%s\n' "$REMOTE" | awk '$1 == "ref:" && $3 == "HEAD" { 
 # ls-remote patterns can match a suffix: accept only the exact ref, once.
 SHA="$(printf '%s\n' "$REMOTE" | awk -v ref="$REF" '$2 == ref { n++; sha=$1 } END { if (n == 1) print sha }')"
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || die "branch '$BRANCH' does not exist on origin as an exact heads ref"
-git fetch --no-tags origin "$REF:refs/remotes/origin/$BRANCH" >&2 \
+# Ignore configured mappings, which may target (and force-update) local heads.
+git fetch --no-tags --refmap= origin "$REF:refs/remotes/origin/$BRANCH" >&2 \
   || die "cannot fetch branch '$BRANCH' from origin; local history retained"
 
 # NUL-delimited porcelain preserves spaces, backslashes and newlines in paths.
@@ -65,6 +66,20 @@ else
   CREATED=true
   WT="$(cd "$WT" && pwd -P)" || die "cannot resolve checkout for '$BRANCH'"
 fi
+# Common-directory output can be relative to the checkout. Resolve both paths
+# physically so linked worktrees match, but unrelated repos at stale paths do not.
+common_dir() {
+  local checkout="$1" common
+  common="$(git -C "$checkout" rev-parse --git-common-dir)" || return 1
+  case "$common" in
+    /*) ;;
+    *) common="$checkout/$common" ;;
+  esac
+  (cd "$common" && pwd -P)
+}
+CALLER_COMMON="$(common_dir "$(pwd -P)")" || die "cannot resolve caller's Git common directory"
+WT_COMMON="$(common_dir "$WT")" || die "cannot resolve Git common directory for checkout '$WT'"
+[ "$CALLER_COMMON" = "$WT_COMMON" ] || die "checkout '$WT' belongs to a different repository; inspect its registration before retrying"
 [ "$(git -C "$WT" symbolic-ref -q HEAD)" = "$REF" ] || die "checkout '$WT' is not on requested branch '$BRANCH'"
 echo "INFO: Continuing exact branch '$BRANCH' at '$WT'; local history and work retained." >&2
 # Reused checkouts remain caller-owned: cleanup must not adopt dirty work.

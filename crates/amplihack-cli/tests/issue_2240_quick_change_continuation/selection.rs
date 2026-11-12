@@ -81,6 +81,93 @@ fn unregistered_local_branch_keeps_commits_ahead_of_origin() {
 }
 
 #[test]
+fn configured_fetch_mapping_cannot_replace_divergent_local_history_or_dirty_work() {
+    let mut f = Fixture::new(BRANCH);
+    f.branch(true);
+    let shared = f.git(&f.caller, &["rev-parse", "HEAD"]);
+    f.write(&f.caller, "remote.md", "remote-only commit\n");
+    f.git(&f.caller, &["add", "remote.md"]);
+    f.git(&f.caller, &["commit", "-qm", "remote-only commit"]);
+    f.git(&f.caller, &["push", "-q", "origin", BRANCH]);
+    let remote = f.git(&f.caller, &["rev-parse", "HEAD"]);
+    f.git(&f.caller, &["checkout", "-q", "-B", BRANCH, &shared]);
+    f.write(&f.caller, "local.md", "local-only commit\n");
+    f.git(&f.caller, &["add", "local.md"]);
+    f.git(&f.caller, &["commit", "-qm", "divergent local commit"]);
+    let local = f.git(&f.caller, &["rev-parse", "HEAD"]);
+    f.git(&f.caller, &["checkout", "-q", "main"]);
+    let other = f.tmp.path().join("dirty branch checkout");
+    f.git(
+        &f.caller,
+        &["worktree", "add", other.to_str().unwrap(), BRANCH],
+    );
+    f.write(&other, "notes.md", "staged notes\n");
+    f.git(&other, &["add", "notes.md"]);
+    f.write(&other, "notes.md", "staged notes\nunstaged notes\n");
+    f.write(&other, "untracked.md", "untracked notes\n");
+    let status = f.git(&other, &["status", "--porcelain=v1"]);
+    let index = f.git(&other, &["diff", "--cached"]);
+    f.git(
+        &f.caller,
+        &[
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/heads/*",
+        ],
+    );
+    // Make the remote-tracking ref stale to prove the explicit mapping works.
+    let tracking = format!("refs/remotes/origin/{BRANCH}");
+    f.git(&f.caller, &["update-ref", &tracking, &shared]);
+    success(&f.select_direct());
+    assert_eq!(f.selected(), other.canonicalize().unwrap());
+    assert_eq!(f.git(&f.selected(), &["rev-parse", "HEAD"]), local);
+    assert_eq!(f.git(&f.caller, &["rev-parse", &tracking]), remote);
+    assert_eq!(f.git(&f.selected(), &["status", "--porcelain=v1"]), status);
+    assert_eq!(f.git(&f.selected(), &["diff", "--cached"]), index);
+    assert_eq!(
+        fs::read_to_string(f.selected().join("notes.md")).unwrap(),
+        "staged notes\nunstaged notes\n"
+    );
+    assert_eq!(
+        fs::read_to_string(f.selected().join("untracked.md")).unwrap(),
+        "untracked notes\n"
+    );
+}
+
+#[test]
+fn stale_registered_path_with_same_branch_in_unrelated_repo_is_refused() {
+    let mut f = Fixture::new(BRANCH);
+    f.branch(true);
+    f.git(&f.caller, &["checkout", "-q", "main"]);
+    let old = f.tmp.path().join("registered");
+    let moved = f.tmp.path().join("moved");
+    f.git(
+        &f.caller,
+        &["worktree", "add", old.to_str().unwrap(), BRANCH],
+    );
+    fs::rename(&old, &moved).unwrap();
+    fs::create_dir(&old).unwrap();
+    f.git(&old, &["init", "-q", "-b", BRANCH]);
+    f.write(&old, "precious.md", "unrelated dirty work\n");
+    let before = f.git(&f.caller, &["show-ref"]);
+    let out = f.select_direct();
+    assert!(!out.status.success(), "unrelated checkout accepted");
+    assert!(
+        stderr(&out).contains("different repository"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(f.ctx.get("worktree_setup.worktree_path").is_none());
+    assert_eq!(f.git(&f.caller, &["show-ref"]), before);
+    assert!(moved.join("old-work.md").exists());
+    assert_eq!(
+        fs::read_to_string(old.join("precious.md")).unwrap(),
+        "unrelated dirty work\n"
+    );
+    assert!(f.read_home("gh-calls").is_empty());
+}
+
+#[test]
 fn remote_only_branch_is_checked_out_under_its_exact_name() {
     let mut f = Fixture::new(BRANCH);
     f.branch(true);
@@ -114,6 +201,26 @@ fn remote_only_branch_is_checked_out_under_its_exact_name() {
         "remote validation must precede fetch and checkout"
     );
     assert_eq!(success(&f.qc("record-base")), remote_head);
+}
+
+#[test]
+fn registered_checkout_path_with_newline_is_reused_without_parsing_it_as_records() {
+    let mut f = Fixture::new(BRANCH);
+    f.branch(true);
+    f.git(&f.caller, &["checkout", "-q", "main"]);
+    let other = f.tmp.path().join("review\ncheckout");
+    f.git(
+        &f.caller,
+        &["worktree", "add", other.to_str().unwrap(), BRANCH],
+    );
+    f.write(&other, "notes.md", "preserve review findings\n");
+    success(&f.select_direct());
+    assert_eq!(f.selected(), other.canonicalize().unwrap());
+    assert_eq!(
+        fs::read_to_string(other.join("notes.md")).unwrap(),
+        "preserve review findings\n"
+    );
+    assert!(f.read_home("gh-calls").is_empty());
 }
 
 fn assert_remote_refusal(f: &mut Fixture) {
