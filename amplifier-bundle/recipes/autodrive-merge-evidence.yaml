@@ -159,6 +159,69 @@ steps:
       because the watch was interrupted; report it with a non-zero ci_pending.
     output: "ci_evidence"
 
+  # #2186 after #2342: step-03 waits; this step measures. It reads the
+  # published head and its checks once, with no wait of its own, and keeps the
+  # #2186 rule that GREEN means every expected check exists at the head and
+  # passed: GREEN is lowered to the verdict of autodrive_expected_checks.sh,
+  # run read-only and only from AMPLIHACK_HOME (never from a path the PR
+  # fills). Its ci_evidence replaces the agent's, so step-02 is gated on a
+  # measured record rather than on the agent's report.
+  - id: "step-03b-expected-checks"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -uo pipefail
+      cd "${REPO_PATH:-.}" 2>/dev/null || true
+      export GH_PAGER=cat PAGER=cat LESS=FRX
+      PR="${PR_NUMBER:-}"
+      case "$PR" in ''|*[!0-9]*) PR="$(gh pr view --json number --jq .number 2>/dev/null || printf '')" ;; esac
+      if [ -z "$PR" ] || ! command -v jq >/dev/null 2>&1; then
+        echo "ERROR: cannot read CI (pr='${PR:-none}'). Unreadable CI is a FAILURE, not a pass." >&2
+        printf '{"ci_status":"UNREADABLE","ci_total":"0","ci_pending":"","ci_failing":"","head_sha":"","ci_signal":"unreadable"}\n'
+        exit 0
+      fi
+      HB="$(gh pr view "$PR" --json headRefOid,baseRefName --jq '.headRefOid + " " + .baseRefName' 2>/dev/null)" || HB=""
+      H="${HB%% *}"; B="${HB#* }"
+      HS="$(printf '%s' "$H" | grep -xE '[0-9a-fA-F]{40}|[0-9a-fA-F]{64}' || printf '')"
+      JSON="$(gh pr checks "$PR" --json name,state,bucket 2>/dev/null)"
+      TOTAL="$(printf '%s' "$JSON" | jq -r 'length' 2>/dev/null)"
+      PENDING="$(printf '%s' "$JSON" | jq -r '[.[]|select(.bucket=="pending")]|length' 2>/dev/null)"
+      FAILING="$(printf '%s' "$JSON" | jq -r '[.[]|select(.bucket=="fail" or .bucket=="cancel")]|length' 2>/dev/null)"
+      if [ -z "$JSON" ] || [ -z "${PENDING:-}" ]; then
+        STATUS="UNREADABLE"; PENDING=""
+      elif [ "${TOTAL:-0}" = "0" ]; then
+        STATUS="NO_CHECKS"
+        echo "ERROR: #${PR} reports zero CI checks. Zero checks is not a green build." >&2
+      elif [ "${FAILING:-1}" != "0" ]; then
+        STATUS="RED"
+      elif [ "$PENDING" != "0" ]; then
+        STATUS="PENDING"
+      else
+        STATUS="GREEN"
+      fi
+      SIG="${STATUS}:${FAILING:-?}/${TOTAL:-?}"
+      if [ "$STATUS" = "GREEN" ]; then
+        ECS=""; EC_RC=1
+        if [ -n "${AMPLIHACK_HOME:-}" ] && [ -f "${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_expected_checks.sh" ] \
+           && [ -n "$H" ] && [ -n "$B" ] && [ "$H" != "$HB" ]; then
+          EC_OUT="$(/bin/bash -p "${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_expected_checks.sh" "$H" "$B" 2>/dev/null)"; EC_RC=$?
+          EC_LAST="$(printf '%s\n' "$EC_OUT" | tail -n1)"
+          ECS="$(printf '%s' "$EC_LAST" | jq -r '.ci_status // empty' 2>/dev/null)"
+        fi
+        case "${ECS}:${EC_RC}" in
+          GREEN:0) ;;
+          RED:*|PENDING:*|MISSING:*)
+            STATUS="$ECS"
+            M="$(printf '%s' "$EC_LAST" | jq -r '.missing | join(",")' 2>/dev/null | tr -cd 'A-Za-z0-9 ._/()&:,+-')"
+            SIG="$(printf '%s' "${STATUS}:missing=${M}" | cut -c1-300)" ;;
+          *) STATUS="UNREADABLE"; SIG="expected-checks-unreadable" ;;
+        esac
+      fi
+      echo "INFO: CI for #${PR} at ${HS:-unknown head}: ${STATUS} (total=${TOTAL:-?} failing=${FAILING:-?} signal=${SIG})" >&2
+      printf '{"ci_status":"%s","ci_total":"%s","ci_pending":"%s","ci_failing":"%s","head_sha":"%s","ci_signal":"%s"}\n' \
+        "$STATUS" "${TOTAL:-0}" "$PENDING" "${FAILING:-}" "$HS" "$SIG"
+    output: "ci_evidence"
+
   # Criterion 1 is measured by amplifier-bundle/tools/autodrive_qa_evidence.sh:
   # the repository's suite commands, then, only where autodrive_gadugi_required
   # says true (a Node repository, or AUTODRIVE_QA_SCENARIO_DIR set), the qa-team

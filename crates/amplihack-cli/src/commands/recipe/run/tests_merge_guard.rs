@@ -413,6 +413,50 @@ fn every_helper_the_gate_sources_is_a_gate_file() {
     }
 }
 
+/// Issue #2186: the gate also *runs* helpers (`autodrive_expected_checks.sh`
+/// decides CI), and those load others through `$HERE` or a loop, which the
+/// sourced-file scan above cannot see. Every `autodrive_*.sh` that a gate
+/// file names outside a comment must itself be a gate file, so the set is
+/// closed and a helper the gate trusts cannot escape the mode check.
+#[test]
+fn every_helper_a_gate_file_names_is_a_gate_file() {
+    let tools = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../amplifier-bundle/tools");
+    let mut named = Vec::new();
+    for name in GATE_FILES {
+        let text = fs::read_to_string(tools.join(name)).expect("a shipped gate file");
+        for line in text.lines().filter(|l| !l.trim_start().starts_with('#')) {
+            for (at, _) in line.match_indices("autodrive_") {
+                let rest = &line[at..];
+                let end = rest
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
+                    .unwrap_or(rest.len());
+                let file = &rest[..end];
+                if file.ends_with(".sh") {
+                    named.push((name, file.to_string()));
+                }
+            }
+        }
+    }
+    for helper in [
+        "autodrive_expected_checks.sh",
+        "autodrive_platform_facts.sh",
+        "autodrive_followups.sh",
+    ] {
+        assert!(
+            named
+                .iter()
+                .any(|(by, f)| *by == "autodrive_merge_gate.sh" && f == helper),
+            "the scan must see the merge gate run {helper}; found {named:?}"
+        );
+    }
+    for (by, file) in &named {
+        assert!(
+            GATE_FILES.contains(&file.as_str()),
+            "{by} names {file}, which is missing from GATE_FILES"
+        );
+    }
+}
+
 /// Issue #1763: `autodrive_trust.sh` loads `autodrive_qa_scope.sh` from its
 /// own directory, so the scope helper runs inside the gate process and needs
 /// the shim's mode check, and it must be shipped.
