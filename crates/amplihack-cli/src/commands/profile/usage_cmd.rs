@@ -57,7 +57,9 @@ const READ_GRACE: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(25);
 /// Reset text and labels are cut to this many characters in the table.
 const MAX_TEXT: usize = 64;
-/// Set by `profile rotate watch` on SIGTERM or SIGINT: running probes stop.
+/// Set on SIGTERM or SIGINT by `profile rotate watch`, and by `profile usage`
+/// while it runs (issue #1710: `workstreams status` stops it this way at its
+/// deadline). Running probes stop and queued ones start no `claude`.
 pub(super) static PROBE_CANCEL: std::sync::LazyLock<Arc<AtomicBool>> =
     std::sync::LazyLock::new(Arc::default);
 /// With one of these set, `claude` may report that credential's usage rather
@@ -1638,8 +1640,22 @@ struct Attempt {
 /// On Unix the child leads its own process group, and the whole group is
 /// killed before the child is reaped on every path, so processes `claude`
 /// started (MCP servers, for example) do not outlive it.
-fn attempt(mut cmd: Command, input: Option<&[u8]>, deadline: Instant) -> Attempt {
-    if PROBE_CANCEL.load(Ordering::Relaxed) {
+fn attempt(cmd: Command, input: Option<&[u8]>, deadline: Instant) -> Attempt {
+    attempt_until(cmd, input, deadline, &PROBE_CANCEL)
+}
+
+/// [`attempt`], stopped by `cancel` rather than [`PROBE_CANCEL`], so that a
+/// test can cancel one attempt without cancelling every probe in the
+/// process. Once `cancel` is set, nothing is started (issue #1710): a probe
+/// still queued behind a full pool at a `workstreams status` deadline is
+/// `Cancelled`, never spawned and then killed.
+fn attempt_until(
+    mut cmd: Command,
+    input: Option<&[u8]>,
+    deadline: Instant,
+    cancel: &AtomicBool,
+) -> Attempt {
+    if cancel.load(Ordering::Relaxed) {
         return Attempt {
             ended: Ended::Cancelled,
             output: None,
@@ -1703,7 +1719,7 @@ fn attempt(mut cmd: Command, input: Option<&[u8]>, deadline: Instant) -> Attempt
                 let _ = child.wait();
                 break;
             }
-            Ok(false) if PROBE_CANCEL.load(Ordering::Relaxed) => Ended::Cancelled,
+            Ok(false) if cancel.load(Ordering::Relaxed) => Ended::Cancelled,
             Ok(false) if Instant::now() >= deadline => Ended::Deadline,
             Ok(false) => {
                 std::thread::sleep(POLL);
@@ -1779,7 +1795,8 @@ fn exited(child: &mut std::process::Child) -> std::io::Result<bool> {
 /// Sends SIGKILL to the process group the child leads (see [`attempt`]). The
 /// group id is the child's pid, and every caller runs this before the child
 /// is reaped, so the pid cannot have been reused and this cannot reach
-/// another process group.
+/// another process group. `amplihack_utils::bounded_process` has a copy
+/// with the same guard; issue #2498 tracks merging the two.
 #[cfg(unix)]
 fn kill_group(child: &std::process::Child) {
     // Never pid 0 (our own group) or 1 (`kill(-1)` is every process).
@@ -2425,3 +2442,7 @@ fn persist(store: &ProfileStore, observed: &[Observation], json: bool) {
         eprintln!("{m}");
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "tests_usage_cancel.rs"]
+mod tests_cancel;

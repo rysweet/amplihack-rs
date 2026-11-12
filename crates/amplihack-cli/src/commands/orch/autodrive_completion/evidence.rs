@@ -1,4 +1,6 @@
 use super::{private_state::State, secure_fs};
+// Issue #1710 (D8): auto-drive's file names have one owner in Rust.
+use crate::commands::recipe::autodrive_paths::CRUSTY_LATEST;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -76,13 +78,13 @@ pub fn validate(state: &State, expected: &Snapshot) -> Result<serde_json::Value>
     );
     let bytes = secure_fs::read(&state.record, LIMIT)?;
     ensure!(
-        bytes == secure_fs::read(&state.state_dir.join("crusty-latest.json"), LIMIT)?,
+        bytes == secure_fs::read(&state.state_dir.join(CRUSTY_LATEST), LIMIT)?,
         "latest round copy differs"
     );
     ensure!(
         actual.sidecars["findings"].as_ref()
             == Some(&secure_fs::read(
-                &state.state_dir.join("crusty-latest.json.findings"),
+                &state.state_dir.join(format!("{CRUSTY_LATEST}.findings")),
                 LIMIT
             )?),
         "latest findings copy differs"

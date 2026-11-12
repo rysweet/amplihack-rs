@@ -7,8 +7,15 @@
 //! started (MCP servers, for example) do not outlive it.
 //!
 //! The pipes are read on detached threads, so a process that keeps a pipe
-//! open never blocks the caller. Used by `amplihack profile usage`, the
-//! detached recipe launch and `amplihack workstreams status` (issue #1710).
+//! open never blocks the caller. Used by the detached recipe launch (the
+//! `git remote get-url` in `recipe::run_record`) and by `amplihack
+//! workstreams status` (issue #1710).
+//!
+//! `amplihack profile usage` does not use it: its probes write a request
+//! line to stdin, which [`run`] does not support, so `usage_cmd::attempt`
+//! keeps its own copy of the process-group handling. Issue #2498 tracks
+//! merging the two; until then, a fix to one (such as the pid guard in
+//! [`kill_group`]) belongs in both.
 
 use std::io::Read;
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -277,7 +284,7 @@ fn exited(child: &mut Child) -> std::io::Result<bool> {
 /// the pid cannot have been reused and this cannot reach another group.
 #[cfg(unix)]
 fn kill_group(child: &Child) {
-    let Ok(pid) = i32::try_from(child.id()) else {
+    let Some(pid) = group_id(child.id()) else {
         return;
     };
     // SAFETY: `kill` has no memory-safety preconditions. A negative pid
@@ -287,6 +294,16 @@ fn kill_group(child: &Child) {
 
 #[cfg(not(unix))]
 fn kill_group(_child: &Child) {}
+
+/// The group [`kill_group`] may signal for a child with this pid. Never 0
+/// (`kill(0)` is our own group) or 1 (`kill(-1)` is every process we may
+/// signal), as in `usage_cmd::kill_group`, and never a pid that does not
+/// fit `pid_t`. A spawned child is never pid 0 or 1; the guard makes sure a
+/// wrong pid cannot widen the kill.
+#[cfg(unix)]
+fn group_id(pid: u32) -> Option<libc::pid_t> {
+    libc::pid_t::try_from(pid).ok().filter(|p| *p > 1)
+}
 
 #[cfg(all(test, unix))]
 mod tests {
@@ -425,5 +442,17 @@ wait "$probe"
             "group kill closes the pipe within the grace period"
         );
         assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn the_group_kill_never_targets_our_own_group_or_every_process() {
+        // kill(0) would be this process's group, kill(-1) every process the
+        // user may signal.
+        assert_eq!(group_id(0), None);
+        assert_eq!(group_id(1), None);
+        assert_eq!(group_id(2), Some(2));
+        assert_eq!(group_id(4_194_304), Some(4_194_304));
+        // Does not fit pid_t: would wrap to a negative pid.
+        assert_eq!(group_id(u32::MAX), None);
     }
 }

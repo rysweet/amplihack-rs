@@ -416,6 +416,14 @@ fn deadline_cancels_and_reaps_usage_probes_in_later_batches() {
     // Turn one: spare-00..07 sleep and exit. Turn two: spare-08..15 hang
     // until the deadline. spare-16 waits for a free worker, and none is
     // free before the deadline: turn two's own timeouts end after it.
+    //
+    // What this proves: turn two was running and was cancelled (`hung`),
+    // and every probe's process group was reaped. It does not prove that
+    // the queued spare-16 is skipped rather than started: a stub spawned
+    // after the cancel is killed on the first poll, usually before it can
+    // log, so its absence from `started` would mostly hold without the
+    // check either. That check is proven by
+    // `profile::usage_cmd::tests_cancel::a_cancel_set_before_the_attempt_spawns_nothing`.
     for n in 0..=2 * FIRST_TURN {
         fx.add_profile(&format!("spare-{n:02}"));
     }
@@ -437,7 +445,7 @@ fn deadline_cancels_and_reaps_usage_probes_in_later_batches() {
     assert_eq!(
         names,
         want,
-        "turns one and two start, the queued spare-16 never does; stdout: {}; stderr: {}",
+        "turns one and two start, and no spare-16 probe reaches its first line; stdout: {}; stderr: {}",
         stdout(&out),
         stderr(&out)
     );
