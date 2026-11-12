@@ -13,7 +13,7 @@
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 use tempfile::TempDir;
 
 const URL: &str = "https://github.com/owner/project/pull/7";
@@ -127,34 +127,35 @@ exit "$TEST_API_RC"
     ) -> Output {
         let root = self.tmp.path();
         fs::write(root.join("response"), body).unwrap();
-        let mut cmd = Command::new(crate::support::amplihack_bin::amplihack_bin());
-        cmd.env_clear()
-            .env(
-                "PATH",
-                format!(
-                    "{}:{}",
-                    root.join("bin").display(),
-                    std::env::var("PATH").unwrap_or_default()
-                ),
-            )
-            .env("HOME", root.join("home"))
-            .env("XDG_CONFIG_HOME", root.join("home/.config"))
-            .env("GH_CONFIG_DIR", root.join("home/gh"))
-            .env("AMPLIHACK_HOME", root.join("home/amplihack"))
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            // Neither may choose the repository or the checkout.
-            .env("GH_REPO", "owner-b/repo-b")
-            .env("GIT_DIR", root.join("home"))
-            .env("TMPDIR", root.join("tmp"))
-            .env("TEST_CALLS", root.join("calls"))
-            .env("TEST_RESPONSE", root.join("response"))
-            .env("TEST_API_RC", rc.to_string())
-            .current_dir(root.join("home"))
-            .args(["orch", "helper", "select-merge-method", "--pr-url", url])
-            .arg("--repo-root")
-            .arg(self.repo())
-            .args(["--base", base, "--head", &self.head]);
+        // `isolated` clears the environment except PATH, TMPDIR and the like;
+        // everything this selector may read is then set here.
+        let mut cmd =
+            crate::isolated_amplihack::isolated(crate::support::amplihack_bin::amplihack_bin());
+        cmd.env(
+            "PATH",
+            format!(
+                "{}:{}",
+                root.join("bin").display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env("HOME", root.join("home"))
+        .env("XDG_CONFIG_HOME", root.join("home/.config"))
+        .env("GH_CONFIG_DIR", root.join("home/gh"))
+        .env("AMPLIHACK_HOME", root.join("home/amplihack"))
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        // Neither may choose the repository or the checkout.
+        .env("GH_REPO", "owner-b/repo-b")
+        .env("GIT_DIR", root.join("home"))
+        .env("TEST_CALLS", root.join("calls"))
+        .env("TEST_RESPONSE", root.join("response"))
+        .env("TEST_API_RC", rc.to_string())
+        .current_dir(root.join("home"))
+        .args(["orch", "helper", "select-merge-method", "--pr-url", url])
+        .arg("--repo-root")
+        .arg(self.repo())
+        .args(["--base", base, "--head", &self.head]);
         if let Some(value) = explicit {
             cmd.args(["--merge-method", value]);
         }

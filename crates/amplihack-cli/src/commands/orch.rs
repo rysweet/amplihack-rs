@@ -64,8 +64,10 @@ pub enum OrchHelperCommands {
         /// The pull request head commit.
         #[arg(long, default_value = "")]
         head: String,
-        /// The recipe's merge_method context; empty when not given.
-        #[arg(long, default_value = "")]
+        /// The recipe's merge_method context; empty when not given. Any
+        /// value is taken, `--admin` included, so that a bad one is refused
+        /// with a reason rather than a usage error.
+        #[arg(long, default_value = "", allow_hyphen_values = true)]
         merge_method: String,
     },
     /// Prepare driver-owned identity and completion dispatch context.
