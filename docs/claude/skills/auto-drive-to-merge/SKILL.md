@@ -285,8 +285,9 @@ the same helper from `$AMPLIHACK_HOME` and lowers `ci_status` to `MISSING`,
 `PENDING`, `RED` or `UNREADABLE`. Known limits: a workflow whose `paths:` or
 `types:` filter can skip a head, or whose branch pattern jq cannot compile, is
 expected only if it ran; matrix legs are not counted, so one leg satisfies the
-job; jobs match by literal name or prefix; required checks match by name, not
-app id; workflows are read at the head while `pull_request` runs build the
+job; jobs match by exact name or by the whole name with each `${{ }}` read as
+any text, and two jobs that share one name are `UNREADABLE` (#2420); required
+checks match by name, not app id; workflows are read at the head while `pull_request` runs build the
 merge commit, so a job the base branch renamed or removed reads as missing
 until the base is merged in (details: "Limits of the expected set" in the full
 reference below).

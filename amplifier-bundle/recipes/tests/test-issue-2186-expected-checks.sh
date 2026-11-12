@@ -1062,6 +1062,183 @@ expect "EC-match-tie-none-created" "with no leg of either, both same-prefix jobs
   "blocker: expected check 'Test <matrix.os>' was never created at ${HEAD}" \
   "blocker: expected check 'Test <matrix.py>' was never created at ${HEAD}"
 
+# A matrix job skipped before its matrix expanded is reported under its raw
+# name, `${{ }}` and all (crusty round 6, item 1; home-assistant/core run
+# 42858618158). That is rule 1, an exact match, and beats the template match
+# a sibling with the same literal text gets, so neither job is tied.
+raw_jobs() { # raw_jobs <name a> <name b>: m.yml with two `if: false` jobs and run 1005
+  local fx; fx="$(new_fx)"
+  ec_wf "$fx" m.yml "name: M
+on: pull_request
+jobs:
+  a:
+    name: $1
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo
+  b:
+    name: $2
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo
+"
+  ec_run "$fx" 1005 .github/workflows/m.yml __HEAD__; ec_job "$fx" 1005 Lint completed success; printf '%s' "$fx"
+}
+PG='Run ${{ matrix.postgresql-group }} tests Python ${{ matrix.python-version }}'
+MARIA='Run ${{ matrix.mariadb-group }} tests Python ${{ matrix.python-version }}'
+FX="$(raw_jobs "$PG" "$MARIA")"; ec_job "$FX" 1005 "$PG" completed skipped; ec_job "$FX" 1005 "$MARIA" completed skipped
+run_helper "$FX"
+expect "EC-match-raw-siblings" "two skipped jobs with one literal prefix, reported under their raw names, are GREEN" GREEN 0 \
+  "evidence: expected 'Run <matrix.postgresql-group> tests Python <matrix.python-version>': skipped" \
+  "evidence: expected 'Run <matrix.mariadb-group> tests Python <matrix.python-version>': skipped"
+ec_drop_job "$FX" 1005 "$MARIA"
+run_helper "$FX"
+expect "EC-match-raw-sibling-gone" "the raw name of one sibling does not stand in for the other" MISSING 1 \
+  "blocker: expected check 'Run <matrix.mariadb-group> tests Python <matrix.python-version>' was never created at ${HEAD}"
+# An expression-only job meets its own raw name too: the exact match scores
+# highest, and the expression-only branch takes it as well as the unclaimed jobs.
+FX="$(raw_jobs '${{ matrix.target }}' 'Build')"; ec_job "$FX" 1005 '${{ matrix.target }}' completed skipped
+ec_job "$FX" 1005 Build completed success
+run_helper "$FX"
+expect "EC-match-raw-expression-only" "a skipped expression-only job reported under its raw name is GREEN" GREEN 0 \
+  "evidence: expected '<matrix.target>': skipped"
+# Two expression-only jobs are told apart when each is reported under its raw
+# name; only a job that neither raw name claims leaves them UNREADABLE.
+FX="$(raw_jobs '${{ matrix.a }}' '${{ matrix.b }}')"; ec_job "$FX" 1005 '${{ matrix.a }}' completed skipped
+ec_job "$FX" 1005 '${{ matrix.b }}' completed skipped
+run_helper "$FX"
+expect "EC-match-raw-two-expression-only" "two expression-only jobs both reported raw are GREEN" GREEN 0
+ec_job "$FX" 1005 "x1" completed success
+run_helper "$FX"
+expect "EC-match-raw-two-expression-only-unclaimed" "a job neither raw name claims leaves them UNREADABLE" UNREADABLE 1 \
+  "blocker: expected checks unreadable: job '<matrix.a>' of .github/workflows/m.yml cannot be matched: 2 of its jobs are named only by an expression; give them literal names"
+# GitHub re-serialises a raw expression (pydantic/pydantic #14268 shows
+# `${{ (matrix.interpreter || 'all') }}` for `${{ matrix.interpreter || 'all' }}`),
+# so a raw name is also matched by rule 2: each `${{ }}` stands for any text.
+FX="$(raw_jobs "Build on \${{ matrix.os }} (\${{ matrix.interpreter || 'all' }})" "Build PGO on \${{ matrix.os }}")"
+ec_job "$FX" 1005 "Build on \${{ matrix.os }} (\${{ (matrix.interpreter || 'all') }})" completed skipped
+ec_job "$FX" 1005 "Build PGO on \${{ matrix.os }}" completed skipped
+run_helper "$FX"
+expect "EC-match-raw-reserialized" "a raw name with a re-serialised expression is matched by the template" GREEN 0 \
+  "evidence: expected 'Build on <matrix.os> (<(matrix.interpreter || all)>)': skipped"
+
+# Rule 2 compares the whole name, not only the text before the first ${{
+# (crusty round 6, item 2). deno's ci.generated.yml at #32579 names its test
+# jobs `test ${{ matrix.test_crate }} ${{ matrix.shard_label }}debug macos-x86_64`
+# and `...release macos-x86_64`: the text after the expressions tells them apart.
+DEB='test ${{ matrix.test_crate }} ${{ matrix.shard_label }}debug macos-x86_64'
+REL='test ${{ matrix.test_crate }} ${{ matrix.shard_label }}release macos-x86_64'
+FX="$(two_jobs "'$DEB'" "'$REL'")"
+for n in "test integration (1/2) debug macos-x86_64" "test libs debug macos-x86_64" \
+         "test integration (1/2) release macos-x86_64" "test libs release macos-x86_64"; do
+  ec_job "$FX" 1005 "$n" completed success
+done
+run_helper "$FX"
+expect "EC-match-deno-whole-name" "deno's debug and release jobs, which differ after the expressions, are GREEN" GREEN 0 \
+  "evidence: expected 'test libs debug macos-x86_64': success" "evidence: expected 'test libs release macos-x86_64': success"
+ec_drop_job "$FX" 1005 "test integration (1/2) release macos-x86_64"; ec_drop_job "$FX" 1005 "test libs release macos-x86_64"
+run_helper "$FX"
+expect "EC-match-deno-release-gone" "with every release leg gone, the release job is MISSING, not met by a debug leg" MISSING 1 \
+  "blocker: expected check 'test <matrix.test_crate> <matrix.shard_label>release macos-x86_64' was never created at ${HEAD}"
+match_case rule2-suffix-compared "rule 2 compares the literal text after the expression" '  t:
+    name: Run ${{ matrix.g }} tests
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo
+' "Run unit testsuite" MISSING "blocker: expected check 'Run <matrix.g> tests' was never created at ${HEAD}"
+match_case rule2-reusable-tail "rule 2 with a reusable workflow's ' / ' tail" '  t:
+    name: Run ${{ matrix.g }} tests
+    uses: ./.github/workflows/reusable.yml
+' "Run unit tests / pytest" GREEN
+match_case rule2-matrix-tail "rule 2 with GitHub's ' (' matrix tail" '  t:
+    name: Run ${{ inputs.g }} tests
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo
+' "Run unit tests (ubuntu-latest)" GREEN
+# A name that starts with an expression still has literal text to match: it is
+# not expression-only, and GitHub trims the space an empty expansion leaves.
+match_case rule2-leading "a name starting with an expression is matched whole" '  t:
+    name: ${{ matrix.os }} tests
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo
+' "ubuntu tests" GREEN
+match_case rule2-leading-trimmed "a leading expression that is empty leaves the trimmed text" '  t:
+    name: ${{ matrix.os }} tests
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo
+' "tests" GREEN
+match_case rule2-leading-not-expression-only "a name starting with an expression is not met by any job" '  t:
+    name: ${{ matrix.os }} tests
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo
+' "anything" MISSING "blocker: expected check '<matrix.os> tests' was never created at ${HEAD}"
+match_case rule2-metacharacters "regex metacharacters in a name are literal" '  t:
+    name: "C++ [x] ${{ matrix.v }} (a|b).*"
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo
+' "C++ [x] 17 (a|b).*" GREEN
+match_case rule2-metacharacters-literal "a metacharacter does not act as a pattern" '  t:
+    name: "C++ ${{ matrix.v }} (a|b)"
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo
+' "C 17 a" MISSING "blocker: expected check 'C++ <matrix.v> (a|b)' was never created at ${HEAD}"
+# Each literal between two expressions matches at its leftmost place, atomically,
+# and a run of expressions with only spaces between is one: a name with many
+# expressions cannot make the regex engine give up, which would turn the whole
+# evaluation into a bare UNREADABLE. 25 of them against an 80-part leg.
+MANY="x$(for i in $(seq 25); do printf -- '-${{ matrix.a }}'; done)-z"
+LEG="x$(for i in $(seq 80); do printf -- '-a'; done)"
+FX="$(new_fx)"; ec_wf "$FX" m.yml "name: M
+on: pull_request
+jobs:
+  a:
+    name: ${MANY}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo
+"
+ec_run "$FX" 1005 .github/workflows/m.yml __HEAD__; ec_job "$FX" 1005 "$LEG" completed success
+run_helper "$FX"
+check "EC-match-many-expressions" "a name with 25 expressions against a near-miss leg is MISSING, not an evaluation failure" verdict_is MISSING 1
+ran_check "EC-match-many-expressions-no-failure" "the evaluation did not fail" \
+  bash -c '! grep -qF "the evaluation failed" "$1"' _ "${WORK}/out"
+MANY="x$(for i in $(seq 25); do printf ' ${{ matrix.a }}'; done) z"; LEG="x$(for i in $(seq 80); do printf ' a'; done)"
+ec_wf "$FX" m.yml "name: M
+on: pull_request
+jobs:
+  a:
+    name: ${MANY}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo
+"
+run_helper "$FX"
+check "EC-match-many-spaced-expressions" "25 space-separated expressions against a near-miss leg are MISSING too" verdict_is MISSING 1
+
+# Two jobs with one name (home-assistant's ci.yaml: pytest-full and
+# pytest-partial, run under opposite `if:`) cannot be told apart by any name
+# rule: the skipped one's raw name and the other's leg both match both jobs.
+# The helper does not read "any one of them" into this; it stays UNREADABLE.
+SAME='Run tests Python ${{ matrix.python-version }} (${{ matrix.group }})'
+FX="$(raw_jobs "$SAME" "$SAME")"; ec_job "$FX" 1005 "$SAME" completed skipped
+ec_job "$FX" 1005 "Run tests Python 3.14.10 (hue)" completed success
+run_helper "$FX"
+expect "EC-match-same-name-template" "two jobs with one templated name stay UNREADABLE" UNREADABLE 1 \
+  "blocker: expected checks unreadable: job 'Run tests Python <matrix.python-version> (<matrix.group>)' of .github/workflows/m.yml cannot be matched: another of its jobs matches 'Run tests Python <matrix.python-version> (<matrix.group>)' as well; give them distinct literal names"
+
 # tokio's ci.yml at PR #8771 (crusty round 4, item 5): `wasm32-wasip1` is named
 # only by `${{ matrix.target }}`, and its legs are the run's jobs that no other
 # defined job matches. Before, it was "never created" though both legs ran.
@@ -1161,17 +1338,22 @@ name_case plain-blank "a blank line before a plain name's continuation is a line
       all' "Build" UNREADABLE "$BREAK"
 name_case empty-block "an empty block-scalar name is refused by name" '    name: >-' "n" UNREADABLE \
   "blocker: expected checks unreadable: .github/workflows/n.yml could not be scanned (job n: name: is an empty block scalar)"
-# Only the text before the first ${{ is matched, so a line break after it
-# changes nothing and is not refused. cpython's reusable-san.yml splits its
+# A line break inside a ${{ }} is whitespace in the expression, not in the
+# shown name, so it is not refused. cpython's reusable-san.yml splits its
 # expression over lines inside a folded name: `${{ inputs.sanitizer }}${{`,
 # then deeper lines, then `}}`.
-name_case after-expression "a line break after the first \${{ is not refused" '    name: >-
+name_case after-expression "a line break inside a \${{ }} is not refused" '    name: >-
       San ${{
         matrix.s
       }}' "San tsan" GREEN
-name_case literal-after-expression "a literal (|) name breaking after its first \${{ is matched by its prefix" '    name: |
+# The whole name is matched (crusty round 6, item 2), so a line break kept
+# between two expressions is in the shown name and is refused like any other.
+name_case literal-after-expression "a literal (|) name breaking between two expressions is refused by name" '    name: |
       Build ${{ matrix.t }}
-      ${{ matrix.u }}' "Build x86_64" GREEN
+      ${{ matrix.u }}' "Build x86_64" UNREADABLE "$BREAK"
+name_case folded-between-expressions "a folded name continued after an expression is joined, not refused" '    name: >-
+      Build ${{ matrix.t }}
+      for ${{ matrix.u }}' "Build x86_64 for linux" GREEN
 name_case break-before-expression "a line break before the first \${{ is still refused" '    name: >-
       Build
         ${{ matrix.t }}' "Build x86_64" UNREADABLE "$BREAK"

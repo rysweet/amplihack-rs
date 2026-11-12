@@ -3,19 +3,17 @@
 #
 #   /bin/bash -p autodrive_expected_checks.sh <HEAD_SHA> <BASE_REF>
 #
-# CI green means every EXPECTED check exists at HEAD_SHA and passed: the
-# required checks of BASE_REF (rulesets plus classic protection as the branch
-# object reports it), and every job of each active workflow at HEAD_SHA that
-# runs on pull_request for BASE_REF. A missing, pending or failing check, any
-# other pending or failing check at the head, zero checks, and anything that
-# cannot be read all block. `neutral` passes, as GitHub passes it.
+# CI green means every EXPECTED check exists at HEAD_SHA and passed: the required checks of BASE_REF
+# (rulesets plus classic protection as the branch object reports it), and every job of each active
+# workflow at HEAD_SHA that runs on pull_request for BASE_REF. A missing, pending or failing check,
+# any other pending or failing check at the head, zero checks, and anything that cannot be read all
+# block. `neutral` passes, as GitHub passes it.
 #
-# Output (stdout): `evidence:` lines, `blocker:` lines, then ONE final JSON
-# line {"ci_status":"GREEN|RED|PENDING|MISSING|UNREADABLE","missing":[..],
-# "blockers":N}; callers read only that line. Exit 0 only when GREEN, 1
-# otherwise, 2 for bad arguments (before any gh call). Read-only `gh api` GETs;
-# it never sleeps, loops to wait or repeats a request. Untrusted text is data:
-# cleaned before it is printed, never evaluated. Needs jq 1.6 (@base64d).
+# Output (stdout): `evidence:` lines, `blocker:` lines, then ONE final JSON line
+# {"ci_status":"GREEN|RED|PENDING|MISSING|UNREADABLE","missing":[..],"blockers":N}; callers read
+# only that line. Exit 0 only when GREEN, 1 otherwise, 2 for bad arguments (before any gh call).
+# Read-only `gh api` GETs; it never sleeps, loops to wait or repeats a request. Untrusted text is
+# data: cleaned before it is printed, never evaluated. Needs jq 1.6 (@base64d).
 # See docs/reference/auto-drive-to-merge.md ("Expected checks at the head").
 
 # The jq and awk programs below are single-quoted on purpose.
@@ -133,6 +131,7 @@ function items(s, k,   n, a, i, v) {
   } else if (s != "") print k "\t" s
 }
 function flush() { if (jk != "") { gsub(/\t/, " ", jk); gsub(/\t/, " ", jn); print "J\t" jk "\t" jn }; jk = "" }
+function inx(s,   a) { a = gsub(/[$][{][{]/, "", s); return a > gsub(/[}][}]/, "", s) }
 function bsend() {
   if (be) print "X\tjob " jk ": name: keeps a line break"; else if (bs != "f" && !bn) print "X\tjob " jk ": name: is an empty block scalar"
   bs = ""
@@ -141,14 +140,14 @@ BEGIN { SQ = sprintf("%c", 39); KEYRE = "^[^ #-][^:]*:([ \t]|$)" }
 { sub(/\r$/, "") }
 # Lines deeper than a job-level name: continue it: a block scalar (bs | or >, indent bc) or a
 # plain or quoted value (bs f, raw fr), joined by one space. A line break the value keeps (blank,
-# deeper or second | line) is refused before the first ${{ only: no text after it is matched.
+# deeper or second | line) is refused unless inx() says it falls inside a ${{ }}: the whole name is matched.
 bs != "" {
   if ($0 ~ /^[ \t]*$/) { bg = 1; next }
   i = ind($0)
   if (i <= bi) bsend()
   else {
     if (bc == 0) bc = i
-    if ((bg || (bs != "f" && (i != bc || (bs == "|" && bn)))) && !index(jn, "${{")) be = 1
+    if ((bg || (bs != "f" && (i != bc || (bs == "|" && bn)))) && !inx(jn)) be = 1
     else if (bs == "f") { fr = fr " " trim(substr($0, i + 1)); jn = val(fr) }
     else jn = (bn ? jn " " : "") trim(substr($0, i + 1))
     bn++; next
@@ -280,12 +279,10 @@ done < "${T}/paths"
 jq -R -s -c 'split("\n") | map(select(length > 0))' "${T}/unr" > "${T}/unr.json"
 jq -s -c '.' "${T}/wfs.jsonl" > "${T}/wfs.json"
 
-# --- Evaluate. Categories: U unreadable, M missing, R red, P pending. S1:
-# check-runs kept per (name, suite), latest id; a required name passes only if
-# every kept run passes; a status never overrides a failing check-run. S3: the
-# suites of a path's runs other than the one D6 chose are dropped. D8: a job
-# absent from a completed run is MISSING, `if:` or not; from a running one,
-# PENDING.
+# --- Evaluate. Categories: U unreadable, M missing, R red, P pending. S1: check-runs kept per
+# (name, suite), latest id; a required name passes only if every kept run passes; a status never
+# overrides a failing check-run. S3: the suites of a path's runs other than the one D6 chose are
+# dropped. D8: a job absent from a completed run is MISSING, `if:` or not; from a running one, PENDING.
 EVAL='
 def cl: tostring | gsub("\\$\\{\\{\\s*"; "<") | gsub("\\s*\\}\\}"; ">")
   | gsub("[[:cntrl:]\"\u0027\\\\$`{}]"; "") | .[0:120];
@@ -295,18 +292,21 @@ def st: (.status | cl) + "/" + ((.conclusion // "none") | cl);
 def ok($skip): .status == "completed" and (.conclusion == "success" or .conclusion == "neutral"
   or ($skip and .conclusion == "skipped"));
 def disp: if .name == "" then .key else .name end;
-# pre: the literal text before the first ${{ (trailing space kept), null when
-# there is none. score($j): [3] rule 1, [2] rules 3-4, [1, prefix length] rule
-# 2, [] none. A reported job meets only the defined jobs that match it best.
-def pre: disp | if contains("${{") then split("${{")[0] | sub("^\\s+"; "") else null end;
-def score($j): . as $n | ($j | disp) as $d | ($j | pre) as $p |
-  if $p != null then (if $p != "" and (($n | startswith($p)) or $n == ($p | sub("\\s+$"; "")))
-                      then [1, ($p | length)] else [] end)
-  elif $n == $d then [3]
-  elif ($n | startswith($j.key + " (")) or ($n | startswith($d + " (")) or ($n | startswith($d + " / ")) then [2]
-  else [] end;
+# sk: the name, each run of ${{ }} (spaces between kept in the run) read as \u0001. tre (rule 2): the
+# whole name as a regex: the ends GitHub trims are optional, each inner literal matches atomically at its
+# leftmost place (no backtracking blow-up), then rule 3-4 tails; "" if no literal is left, null if no ${{.
+def sk: disp | gsub("\\$\\{\\{.*?\\}\\}"; "\u0001") | gsub("\u0001(\\s*\u0001)+"; "\u0001");
+def esc: gsub("(?<c>[.*+?^${}()|\\[\\]\\\\])"; "\\\(.c)");
+def tre: sk | if contains("\u0001") | not then null else capture("^(?<a>[\\s\u0001]*)(?<b>([^\\s\u0001](.*[^\\s\u0001])?)?)(?<c>[\\s\u0001]*)$")
+  | map_values(. // "") | if .b == "" then "" else (.b | split("\u0001")) as $p | "^" + (if .a == "" then "" else "(?:.*" + (.a | sub("^.*\u0001"; "") | esc) + ")?" end)
+    + ($p[0] | esc) + ([$p[1:-1][] | "(?>.*?" + esc + ")"] | add // "") + (if ($p | length) > 1 then ".*" + ($p[-1] | esc) else "" end)
+    + (if .c == "" then "" else "(?:" + (.c | sub("\u0001.*$"; "") | esc) + ".*)?" end) + "(?: \\(.*| / .*)?$" end end;
+# score($j): [3] rule 1 (the exact name, ${{ }} included), [2] rules 3-4, [1, literal length] rule 2, [] none.
+def score($j): ($j | disp) as $d | if . == $d then [3] elif $j.re == "" then [] elif $j.re != null then
+  (if test($j.re) then [1, $j.lit] else [] end) elif startswith($j.key + " (") or startswith($d + " (")
+  or startswith($d + " / ") then [2] else [] end;
 def uniq: reduce .[] as $x ([]; if any(.[]; . == $x) then . else . + [$x] end);
-$req[0] as $req | $wfs[0] as $wfs | $st[0] as $st
+$req[0] as $req | $st[0] as $st | ($wfs[0] | map(.defined |= map(.re = tre | .lit = (sk | gsub("\u0001"; "") | length)))) as $wfs
 | ([ $wfs[] | select(.run != null) | {key: .path, value: .run.id} ] | from_entries) as $pick
 | [ $runs[0] | group_by(.path)[] | ($pick[.[0].path] // max_by(.id).id) as $keep
     | .[] | select(.id != $keep) | .suite | select(. != null) ] as $old
@@ -327,15 +327,15 @@ $req[0] as $req | $wfs[0] as $wfs | $st[0] as $st
          {k: "B", c: "M", t: ("expected workflow " + ($w.path | q) + " run " + ($w.run.id | tostring)
             + " was cancelled before it created any job" + at + "; re-run it"), miss: ($w.path | cl)}
        else
-        # An expression-only name ($x) is met by jobs no other defined job matches. A reported job
-        # two defined jobs match equally ($tie) belongs to neither: both are unreadable, not both met.
-        ([$w.defined[] | select(pre == "")] | length) as $nx
+        # An expression-only name ($x) is met by its own exact name and by jobs no other defined job
+        # matches. A reported job two defined jobs match equally ($tie) belongs to neither: both are unreadable.
+        ([$w.defined[] | select(.re == "")] | length) as $nx
         | ($w.jobs | map(.name as $n | [$w.defined[] | . as $k | $n | score($k)] as $s | ($s | max) as $b
             | .best = $b | .tied = ([$s[] | select(. == $b)] | length))) as $rj
-        | $w.defined[] as $j | ($j | disp) as $d | (($j | pre) == "") as $x
-        | [$rj[] | if $x then select(.best == []) else select(.best != [] and (.name | score($j)) == .best) end] as $m
+        | $w.defined[] as $j | ($j | disp) as $d | ($j.re == "") as $x
+        | [$rj[] | select((.best != [] or $x) and (.name | score($j)) == .best)] as $m
         | [$m[] | select(.best != [] and .tied > 1) | .name] as $tie | ("expected checks unreadable: job " + ($d | q) + " of " + ($w.path | cl)) as $u |
-        if $x and $nx > 1 then
+        if $x and $nx > 1 and any($rj[]; .best == []) then
           {k: "B", c: "U", t: ($u + " cannot be matched: " + ($nx | tostring) + " of its jobs are named only by an expression; give them literal names"), name: $d}
         elif ($tie | length) > 0 then {k: "B", c: "U", t: ($u + " cannot be matched: another of its jobs matches "
              + ($tie[0] | q) + " as well; give them distinct literal names"), name: $d}

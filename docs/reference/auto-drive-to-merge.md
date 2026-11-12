@@ -3486,17 +3486,20 @@ The expected display name is the job's `name:`, or its key when it has no
 
 A comment after the indicator (`name: >- # note`) is not part of the value,
 and a line starting with `#` inside a block scalar is. A `name:` value that
-keeps a line break **before its first `${{`** cannot be matched to a reported
-name. These values are refused by name, so the workflow is `UNREADABLE` and
-the blocker says why (`job <key>: name: keeps a line break`):
+keeps a line break **outside a `${{ … }}` expression** cannot be matched to a
+reported name, because the whole name is compared (rule 2 below) and the
+shown name then holds a line break. These values are refused by name, so the
+workflow is `UNREADABLE` and the blocker says why
+(`job <key>: name: keeps a line break`):
 
 - a blank line inside the value;
 - a line indented deeper than the first content line of a block scalar;
-- a literal (`|`) block scalar of two or more lines.
+- a literal (`|`) block scalar of two or more lines, including
+  `Build ${{ matrix.t }}` followed by `${{ matrix.u }}` on a second line.
 
-A line break **after** the first `${{` is not refused. Matching uses only the
-literal text before the first `${{` (rule 2 below), so nothing after it is
-compared. The lines are joined with one space. cpython's `reusable-san.yml`
+A line break **inside** a `${{ … }}` is not refused: it is whitespace in the
+expression, not in the shown name, and the whole expression stands for any
+text. The lines are joined with one space. cpython's `reusable-san.yml`
 splits its name this way:
 
 ```yaml
@@ -3521,30 +3524,56 @@ because then the helper cannot tell whether the workflow is expected.
 
 A reported job matches a defined job when its name:
 
-1. equals the expected name; or
-2. starts with the literal text before the first `${{`, keeping a trailing
-   space, or equals that text with the trailing space removed. So
-   `Build ${{ matrix.target }}` matches `Build x86_64-unknown-linux-gnu` but
-   not `Builds`. On tokio's `ci.yml`, `features exclude ${{ matrix.name }}`
-   matches the leg GitHub reports as `features exclude`: the expression was
-   empty, and GitHub trims the trailing space; or
+1. equals the expected name exactly, `${{ … }}` included. GitHub reports a
+   matrix job that was skipped before its matrix expanded under its raw
+   name: home-assistant/core run 42858618158 shows
+   `Run ${{ matrix.postgresql-group }} tests Python ${{ matrix.python-version }}`
+   as `skipped`, byte for byte the `name:` in `ci.yaml`; or
+2. matches the whole expected name with each `${{ … }}` read as any text.
+   Runs of expressions with only spaces between them count as one. GitHub
+   trims the shown name, so the space beside an expression at either end may
+   be missing when the expression was empty. A ` (…` or ` / …` tail, as in
+   rules 3 and 4, is allowed too. So `Build ${{ matrix.target }}` matches
+   `Build x86_64-unknown-linux-gnu` but not `Builds`. On tokio's `ci.yml`,
+   `features exclude ${{ matrix.name }}` matches the leg GitHub reports as
+   `features exclude`, because the expression was empty and GitHub trims the
+   trailing space. On deno's `ci.generated.yml`,
+   `test ${{ matrix.test_crate }} ${{ matrix.shard_label }}debug macos-x86_64`
+   matches `test libs debug macos-x86_64` but not
+   `test libs release macos-x86_64`, which belongs to the `…release
+   macos-x86_64` job. This rule also covers a raw name whose expression
+   GitHub has rewritten: pydantic/pydantic #14268 reports
+   `${{ (matrix.interpreter || 'all') }}` for the `name:` text
+   `${{ matrix.interpreter || 'all' }}`; or
 3. starts with `<key> (` or `<name> (`, for a matrix job: GitHub adds the
    matrix values in brackets when `name:` does not use them; or
 4. starts with `<name> / `, for a reusable workflow.
 
+Rules 3 and 4 apply to a literal `name:`. For a `name:` with an expression,
+rule 2 allows the same tails. A literal between two expressions matches at
+its leftmost place, atomically. This is the standard glob algorithm, and it
+finds a match whenever one exists. It also keeps the regex engine from giving
+up on a name with many expressions, which would make the whole evaluation
+`UNREADABLE`.
+
 **A reported job satisfies only the defined jobs that match it best.** Rule 1
-beats rules 3 and 4, which beat rule 2. Between two rule-2 matches, the longer
-prefix wins. So if every leg of `Test ${{ matrix.os }}` is never created, a
-sibling job named `Test docs` does not stand in for them. On cpython's
-`build.yml`, `Windows MSI${{ '' }}` belongs to its own job (prefix
-`Windows MSI`), not to the folded `Windows ${{ … }}` job (prefix `Windows `).
+beats rules 3 and 4, which beat rule 2. Between two rule-2 matches, the name
+with more literal text wins. So if every leg of `Test ${{ matrix.os }}` is
+never created, a sibling job named `Test docs` does not stand in for them. On
+cpython's `build.yml`, `Windows MSI${{ '' }}` belongs to its own job (literal
+`Windows MSI`), not to the folded `Windows ${{ … }}` job (literal `Windows`).
+Two sibling jobs that are both skipped and reported under their raw names
+each match their own name by rule 1. home-assistant's
+`Run ${{ matrix.mariadb-group }} tests …` and
+`Run ${{ matrix.postgresql-group }} tests …` are an example, so neither is
+tied.
 
 **A reported job belongs to at most one defined job.** If two defined jobs
-match it equally well, for example `Test ${{ matrix.os }}` and
-`Test ${{ matrix.py }}` (both prefix `Test `) or two jobs both named `Lint`,
-the helper cannot tell whose leg it is. It does not let one leg satisfy both,
-because the other job might never have been created. Each of them blocks as
-`UNREADABLE` and names the leg:
+match it equally well, the helper cannot tell whose leg it is. Examples are
+`Test ${{ matrix.os }}` and `Test ${{ matrix.py }}` with the leg
+`Test ubuntu-latest`, or two jobs both named `Lint`. The helper does not let
+one leg satisfy both, because the other job might never have been created.
+Each of them blocks as `UNREADABLE` and names the leg:
 
 ```text
 blocker: expected checks unreadable: job 'Test <matrix.os>' of .github/workflows/m.yml cannot be matched: another of its jobs matches 'Test ubuntu-latest' as well; give them distinct literal names
@@ -3552,25 +3581,45 @@ blocker: expected checks unreadable: job 'Test <matrix.os>' of .github/workflows
 
 If neither job reported a leg, nothing is tied, and both are `MISSING`.
 
-**A job whose name is only an expression** (`name: ${{ matrix.target }}`) has
-no literal text to match. It is satisfied by the jobs of its run that no other
-defined job matches. On tokio's `ci.yml`, those are `wasm32-wasip1` and
-`wasm32-wasip1-threads`. While the run is going and no such job exists, it is
-`PENDING`. When the run has completed and no such job exists, it is `MISSING`.
-No check called `<matrix.target>` can exist, so the blocker names the job by
-its key and gives the reason and the fix, and `missing` holds the key:
+**A repository with two jobs that share one `name:` cannot be driven.** No
+rule that matches by name can tell such jobs apart. home-assistant/core's
+`ci.yaml` names `pytest-full` (line 951) and `pytest-partial` (line 1510)
+both `Run tests Python ${{ matrix.python-version }} (${{ matrix.group }})`,
+and they run under opposite `if:` conditions. Whichever one runs reports a
+leg, and the other is reported under the raw name. Both reports match both
+jobs, so both jobs are `UNREADABLE` at every head until one is renamed.
+Treating jobs with one name as one group that passes when any member reports
+would accept, for those jobs, the weakness already accepted for matrix legs
+(see [Limits](#limits-of-the-expected-set)). That is the owner's decision,
+tracked in #2420. Until it is made, the helper keeps the stricter rule.
+
+**A job whose name is only an expression** (`name: ${{ matrix.target }}`, or
+several expressions with nothing literal between them) has no literal text to
+match. A name such as `${{ matrix.os }} tests` is not expression-only: rule 2
+matches its literal ` tests`. An expression-only job is satisfied by its own
+raw name (rule 1, when it was skipped before its matrix expanded) and by the
+jobs of its run that no other defined job matches. On tokio's `ci.yml`,
+those are `wasm32-wasip1` and `wasm32-wasip1-threads`. While the run is going
+and no such job exists, it is `PENDING`. When the run has completed and no
+such job exists, it is `MISSING`. No check called `<matrix.target>` can
+exist, so the blocker names the job by its key and gives the reason and the
+fix, and `missing` holds the key:
 
 ```text
 blocker: expected job 'wasm32-wasip1' of .github/workflows/ci.yml was never created at <sha>: its name '<matrix.target>' is only an expression and every job of run 1011 matches another job; if it ran, give it a literal name
 ```
 
-If one workflow has two or more jobs named only by an expression, the helper
-cannot tell their jobs apart. Each of them then blocks as `UNREADABLE`, with a
-reason that names it:
+If one workflow has two or more jobs named only by an expression and its run
+has a job that no defined job matches, the helper cannot tell whose job that
+is. Each of them then blocks as `UNREADABLE`, with a reason that names it:
 
 ```text
 blocker: expected checks unreadable: job '<matrix.a>' of .github/workflows/m.yml cannot be matched: 2 of its jobs are named only by an expression; give them literal names
 ```
+
+If every job of the run is claimed, for example because each expression-only
+job was skipped and reported under its own raw name, nothing is ambiguous and
+they are matched as above.
 
 ### Which conclusions pass
 
@@ -3773,16 +3822,21 @@ the base branch, which the helper always enforces.
   passes. The helper does not expand matrices. The defence is to require each
   leg on the base branch: this repository requires every `Build` leg, and a
   required leg that was never created blocks as `MISSING`.
-- **Name matching.** Defined jobs are matched by literal name or literal
-  prefix (see [Matching a defined job](#matching-a-defined-job-to-a-reported-job)).
-  A job named only by an expression is met by the jobs of its run that no
-  other defined job matches, so a leg whose computed name happens to start
-  with another job's literal prefix is counted for that other job. Two jobs
-  named only by an expression in one workflow, or two defined jobs that match
-  one reported job equally, are `UNREADABLE` by name. Rules 3 (`<key> (` or
-  `<name> (` for a matrix job) and 4 (`<name> / ` for a reusable workflow) are added
-  on top of the literal-prefix rule. They can match a job that a plain prefix
-  would not, so each has its own test.
+- **Name matching.** Defined jobs are matched by exact name, or by the whole
+  name with each `${{ … }}` read as any text (see
+  [Matching a defined job](#matching-a-defined-job-to-a-reported-job)). An
+  expression stands for any text, so a leg whose computed name happens to fit
+  another job's pattern better is counted for that other job. A job named
+  only by an expression is met by its own raw name and by the jobs of its run
+  that no other defined job matches. Two jobs named only by an expression in
+  one workflow, when a job of the run is unclaimed, or two defined jobs that
+  match one reported job equally, are `UNREADABLE` by name. **A workflow with
+  two jobs that share one `name:` is therefore `UNREADABLE` at every head,
+  and auto-drive cannot merge in that repository** (home-assistant/core's
+  `pytest-full` and `pytest-partial`; the owner's decision on treating them
+  as "any one of them" is #2420). Rules 3 (`<key> (` or `<name> (` for a
+  matrix job) and 4 (`<name> / ` for a reusable workflow) can match a job
+  that the name alone would not, so each has its own test.
 - **No app pinning.** Required checks match by context name. The
   `integration_id` in a ruleset is not compared. Pin `integration_id` in the
   ruleset if a check name could be posted by another app.
@@ -5645,7 +5699,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 
 | Test | Location |
 | --- | --- |
-| [Expected checks at the head](#expected-checks-at-the-head-2186) (#2186): every expected check present and green; a missing job named; a missing required check; each matching rule, rules 3 (`<key> (`) and 4 (`<name> / `) included; `neutral` passing on expected, required and other checks; a `skipped` required status with no job behind it blocking; a defined job absent from a completed run blocking as `MISSING` whether or not it has a job-level `if:` and whatever the run concluded (`startup_failure`, `failure`, `cancelled`, `success`, with no jobs), and as `PENDING` while the run is queued or in progress; branch patterns matched against the base (`**`, `*` stopping at `/`, `?`, a character class, `!` with the last match deciding, `branches-ignore` globs); the `paths filter`, `types filter` and `branch pattern` notes for a workflow with no run, and a `types: [labeled]` workflow that ran having its jobs expected; an `on:` block list at the key's own indent; the helper's committed mode read from `git ls-files`, not the checkout; `rules/branches` returning `[]` and an unprotected branch (`protected: false`) read as no required checks, not unreadable; the status order `UNREADABLE`, `MISSING`, `RED`, `PENDING` when several apply; the exact text of all six blocker lines; bad arguments exiting `2` while the gate reports a CI blocker with exit `1`; the gate adding the unreadable blocker only when the helper printed no `blocker:` line; a workflow with no run; a check present only on another SHA; unreadable rules or jobs; the admin-only protection endpoint never called; a by-design skipped job passing; a spoofed check-run in a second suite kept `RED`; a bad workflow path, an injected name and bad arguments; a missing helper blocking the gate; merge-evidence step-03 lowering `GREEN` to `MISSING` and to `UNREADABLE`; the light drive's merge loop running the gate; no `sleep` or wait loop in the helper; no route matching `gh … api …/merge`; the 400-line budget for the gate and the helper; the helper free of bash-4 features (`declare -A`, `mapfile`, `readarray`, `${var,,}`, `${var^^}`) so it runs on macOS `/bin/bash` 3.2. Fake `gh` on `PATH` serving fixtures, no network | `amplifier-bundle/recipes/tests/test-issue-2186-expected-checks.sh` (the helper and its two callers); the gate's runtime cases in `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh`; budget list in `crates/amplihack-cli/tests/issue_1979_crusty_minor_followups.rs` |
+| [Expected checks at the head](#expected-checks-at-the-head-2186) (#2186): every expected check present and green; a missing job named; a missing required check; each matching rule, rules 3 (`<key> (`) and 4 (`<name> / `) included; two sibling jobs and an expression-only job, skipped and reported under their raw names, matched by rule 1; a raw name whose expression GitHub rewrote matched by rule 2; deno's job names that differ only after their expressions told apart; the literal text after an expression compared; a leading expression trimmed; regex metacharacters in a name read literally; a name with 25 expressions against a near-miss leg `MISSING`, not an evaluation failure; two jobs with one templated name kept `UNREADABLE`; a line break between two expressions refused; `neutral` passing on expected, required and other checks; a `skipped` required status with no job behind it blocking; a defined job absent from a completed run blocking as `MISSING` whether or not it has a job-level `if:` and whatever the run concluded (`startup_failure`, `failure`, `cancelled`, `success`, with no jobs), and as `PENDING` while the run is queued or in progress; branch patterns matched against the base (`**`, `*` stopping at `/`, `?`, a character class, `!` with the last match deciding, `branches-ignore` globs); the `paths filter`, `types filter` and `branch pattern` notes for a workflow with no run, and a `types: [labeled]` workflow that ran having its jobs expected; an `on:` block list at the key's own indent; the helper's committed mode read from `git ls-files`, not the checkout; `rules/branches` returning `[]` and an unprotected branch (`protected: false`) read as no required checks, not unreadable; the status order `UNREADABLE`, `MISSING`, `RED`, `PENDING` when several apply; the exact text of all six blocker lines; bad arguments exiting `2` while the gate reports a CI blocker with exit `1`; the gate adding the unreadable blocker only when the helper printed no `blocker:` line; a workflow with no run; a check present only on another SHA; unreadable rules or jobs; the admin-only protection endpoint never called; a by-design skipped job passing; a spoofed check-run in a second suite kept `RED`; a bad workflow path, an injected name and bad arguments; a missing helper blocking the gate; merge-evidence step-03 lowering `GREEN` to `MISSING` and to `UNREADABLE`; the light drive's merge loop running the gate; no `sleep` or wait loop in the helper; no route matching `gh … api …/merge`; the 400-line budget for the gate and the helper; the helper free of bash-4 features (`declare -A`, `mapfile`, `readarray`, `${var,,}`, `${var^^}`) so it runs on macOS `/bin/bash` 3.2. Fake `gh` on `PATH` serving fixtures, no network | `amplifier-bundle/recipes/tests/test-issue-2186-expected-checks.sh` (the helper and its two callers); the gate's runtime cases in `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh`; budget list in `crates/amplihack-cli/tests/issue_1979_crusty_minor_followups.rs` |
 | The bundle guard still passes with the helper added to the merge round's tools (#2186) | `crates/amplihack-cli/tests/issue_1561_step_outputs_prefer_recipe_var.rs` (`cargo test -p amplihack-cli --test cli_integration issue_1561`) |
 | The #1551 fake-`gh` stub serving the check-run, status, rules, branch, workflow and run endpoints the gate now reads, if the stub changes for #2186 | `amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh` |
 | Executable contract test: loop, verdicts, forbidden-flag scan, merge-gate refusals, qa evidence against stub `cargo` and `gadugi-test`, crusty records and range; a step output read through `RECIPE_VAR_` only, the [#1511 repro](#reading-step-outputs) (`1511-repro`), the `state_dir` refusals and their silence on a safe value, the static `RECIPE_VAR_` check, the inherited-variable rows (`1561-stale-*`, `1561-empty-tools-dir-fails-closed`, `1561-NO_MERGE-*`, `MERGEREADY-no-round-tool-inherited`), and every row of the [loop-health line table](#reading-the-loop-health-line) | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
