@@ -12,6 +12,7 @@ pub(super) struct Success {
     pub from: ProfileName,
     pub to: ProfileName,
     pub reason: Reason,
+    pub check: super::overflow_msg::CheckNote,
 }
 /// Safe refusals are only returned when no active journal owns any movement.
 pub(super) enum Attempts {
@@ -49,7 +50,8 @@ pub(super) fn run(
             super::identify::LiveId::Known(n) => Source::Profile(n.clone()),
             _ => Source::Adopt,
         };
-        let placement = || -> Result<ProfileName, ProfileError> {
+        let mut checked = None;
+        let mut placement = || -> Result<ProfileName, ProfileError> {
             if exists(&ctx.rs.journal) {
                 return Err(ProfileError::RotateInconsistent(
                     "pending journal before candidate attempt".into(),
@@ -99,8 +101,16 @@ pub(super) fn run(
                     "candidate usage is stale; waits for the next cycle",
                 ));
             }
-            super::overflow_record::target_check(ctx, first, &to)
-                .map_err(super::swap_authorize::refused)?;
+            let check = match super::overflow_record::target_check(ctx, first, &to) {
+                Ok(check) => check,
+                Err(why) => {
+                    let mut ledger = ctx.rs.load_ledger()?.unwrap_or_default();
+                    super::overflow_record::refuse_key(out, &mut ledger, &to, &why, t);
+                    ctx.rs.save_ledger(&ledger)?;
+                    return Err(super::swap_authorize::refused(why));
+                }
+            };
+            checked = Some(check);
             let reading = m
                 .others
                 .iter()
@@ -127,7 +137,18 @@ pub(super) fn run(
             )
         };
         match placement() {
-            Ok(from) => return Ok(Attempts::Swapped(Success { from, to, reason })),
+            Ok(from) => {
+                return Ok(Attempts::Swapped(Success {
+                    from,
+                    to,
+                    reason,
+                    check: checked.ok_or_else(|| {
+                        ProfileError::RotateInconsistent(
+                            "committed candidate has no login check".into(),
+                        )
+                    })?,
+                }));
+            }
             Err(error) => {
                 out.emit(t, &format!("candidate {to}: refused or failed: {error}"));
                 // Even an I/O error can follow a rename. Never infer placement
@@ -141,7 +162,16 @@ pub(super) fn run(
                         ctx.now,
                     )? {
                         RecoverOutcome::RolledForward { from, to } => {
-                            return Ok(Attempts::Swapped(Success { from, to, reason }));
+                            return Ok(Attempts::Swapped(Success {
+                                from,
+                                to,
+                                reason,
+                                check: checked.ok_or_else(|| {
+                                    ProfileError::RotateInconsistent(
+                                        "recovered candidate has no login check".into(),
+                                    )
+                                })?,
+                            }));
                         }
                         RecoverOutcome::RolledBack { .. } => {}
                         _ => {

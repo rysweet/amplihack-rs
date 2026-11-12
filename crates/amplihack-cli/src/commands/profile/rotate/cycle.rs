@@ -16,7 +16,7 @@ use super::observe::{Measurement, Snap, live_name, measure_and_decide, platform_
 use super::overflow::Tag;
 use super::overflow_record::{
     self, alert_line, block_spend_limited, note_home_key, note_live, note_move, note_per_token,
-    refresh_capacity, stay_note, target_check,
+    refresh_capacity, stay_note,
 };
 use super::pin::{self, Gate as PinGate}; // the switch-hold gate
 use super::plan_room::no_room;
@@ -270,8 +270,8 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                     break 'swap CycleOutcome::Alerted;
                 }
             };
-            let (from, to, reason) = (success.from, success.to, success.reason);
-            let check = target_check(ctx, &first, &to).map_err(ProfileError::RotateRefused)?;
+            let (from, to, reason, check) =
+                (success.from, success.to, success.reason, success.check);
             swapped_at = (ctx.now)();
             swapped = Some([to.clone(), from.clone()]);
             let target = shown_of(&others_shown, &to);

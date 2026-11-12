@@ -1,4 +1,49 @@
 use super::*;
+
+#[test]
+fn an_api_key_refusal_preserves_its_actionable_alert_once_across_cycles() {
+    let e = fixture();
+    private(&e.slot("spare"), "{}");
+    let key_inode = ino_at(&e.slot("spare"));
+    private(
+        &e.root.join(".auto-switch"),
+        "enabled=off\noverflow=spare\nkind=spare:platform\n",
+    );
+    let mut c = context(&e);
+    sample(100.0, 100.0, 0, T + 10_000);
+    c.measure = Some(|ctx, snap| {
+        let full = SAMPLE.with(|p| p.borrow().clone());
+        let probes = snap
+            .candidates
+            .iter()
+            .map(|name| (name.clone(), full.clone()))
+            .collect();
+        decide_measured(ctx, snap, full, probes, clock())
+    });
+    c.key_check = |_| Err("fake failure".into());
+    for _ in 0..2 {
+        assert_ne!(drive(&e, &mut c).unwrap(), CycleOutcome::Swapped);
+    }
+    let lines = log(&e);
+    assert_eq!(
+        lines
+            .matches("key_check_refused spare: fake failure")
+            .count(),
+        1,
+        "{lines}"
+    );
+    assert_eq!(
+        lines
+            .matches("ALERT: API key profile spare failed its login check")
+            .count(),
+        1,
+        "{lines}"
+    );
+    assert_eq!(ino_at(&e.live()), Some(e.l));
+    assert_eq!(ino_at(&e.slot("spare")), key_inode);
+    assert!(!e.rs.journal.exists());
+    assert!(!e.rs.dir.join("swap.json").exists());
+}
 use std::os::unix::fs::PermissionsExt;
 
 #[test]
