@@ -200,6 +200,9 @@ cleanup_nested_worktrees() {
       "$prefix"*)
         git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 \
           || rm -rf -- "$wt" 2>/dev/null || true
+        # Issue #2039: the removed worktree's pre-commit target, through the
+        # single audited entry point; best effort.
+        command -v amplihack >/dev/null 2>&1 && amplihack cleanup --apply --worktree-target "$wt" >/dev/null || true
         ;;
     esac
   done < <(git -C "$repo" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')

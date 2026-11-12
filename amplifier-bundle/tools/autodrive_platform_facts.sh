@@ -9,14 +9,16 @@
 # Prints ONE JSON line, always, and exits 0:
 #   {"pr","state","is_draft","mergeable","merge_state","review_decision",
 #    "head_sha","base_ref","unresolved_threads",
-#    "required_approvals","approval_status","approval_source"}
+#    "required_approvals","approval_blocker","approval_status","approval_source"}
 # Every value is a fixed token, digits, a hex SHA, or a branch name of
 # [A-Za-z0-9._/-]. Anything else is reported as unreadable, never passed on.
 #
 # Criterion 6, reviews and approvals (#1518)
 # ------------------------------------------
 # approval_status is MET, NOT_MET, PENDING or UNREADABLE, and approval_source
-# says what decided it:
+# says what decided it. approval_blocker is the blocker id the merge round
+# reports for anything but MET, decided here so that no agent maps a source
+# to a blocker itself (#1517, #1518); it is empty when the status is MET.
 #   review-decision  GitHub's reviewDecision: APPROVED is MET;
 #                    CHANGES_REQUESTED and REVIEW_REQUIRED are NOT_MET.
 #   required-count   reviewDecision is empty and the required approval count
@@ -42,10 +44,31 @@
 #                    person.
 #                    An unreadable thread count is not a thread, so it alone
 #                    never makes PENDING.
+#   review-rule      reviewDecision is empty, the count cannot be read, the
+#                    merge state is BLOCKED, no blocker an agent can clear is
+#                    outstanding, and one of the two reads NAMED a review rule
+#                    at a count of 0 (a code-owner, last-push or listed-
+#                    reviewer rule, recorded in CLASSIC_RULE or RULES_RULE):
+#                    NOT_MET. Everything else that can block has been excluded
+#                    and a rule that only a person satisfies is known to
+#                    apply, so the missing review is the blocker and the round
+#                    says so by name rather than calling it unreadable.
+#                    Confined to BLOCKED: CLEAN, HAS_HOOKS and UNSTABLE still
+#                    win, and an agent-clearable blocker still gives PENDING.
+#   facts-unreadable this tool could not take the measurement: `gh pr view`
+#                    failed, reviewDecision came back as a token outside the
+#                    allow-list, or mergeStateStatus is UNKNOWN (GitHub has
+#                    not computed it) while the count cannot be read either.
+#                    UNREADABLE. A failed measurement is not a finding about
+#                    the pull request, so the merge round re-reads it on the
+#                    next round instead of routing it to a person.
 #   unreadable       none of the above: UNREADABLE. BLOCKED with every check
-#                    passed, no conflict, the branch up to date and no
-#                    unresolved review thread leaves only the rules a person
-#                    satisfies, a required review among them.
+#                    passed, no conflict, the branch up to date, no unresolved
+#                    review thread and NO rule named by either read leaves
+#                    only the rules a person satisfies, a required review
+#                    among them, without this tool being able to name which.
+#                    A draft pull request lands here too: DRAFT is a readable
+#                    state that says nothing about reviews.
 # A check has passed when its conclusion (a check run) or state (a status
 # context) is SUCCESS, NEUTRAL or SKIPPED; anything else, an unfinished run
 # included, has not.
@@ -56,7 +79,7 @@
 # blocked (Mergify, "GitHub Rulesets Compatibility",
 # https://docs.mergify.com/merge-queue/github-rulesets/). A count of 0 that
 # comes with such a rule is therefore unknown, not 0, and the merge state
-# decides: BLOCKED gives UNREADABLE, never MET.
+# decides: BLOCKED gives NOT_MET through review-rule, never MET.
 #
 # required_approvals is the highest of two counts:
 #   classic   required_approving_review_count from
@@ -184,10 +207,18 @@ elif [ -n "$RULES" ] && [ "$RULES" -gt 0 ]; then
 fi
 
 APPROVAL="UNREADABLE"; SOURCE="unreadable"
-if [ "$VIEW_OK" = "true" ]; then
+if [ "$VIEW_OK" != "true" ]; then
+  # The one read every other field hangs off failed: a failed measurement,
+  # not a finding about the pull request (see facts-unreadable above).
+  SOURCE="facts-unreadable"
+else
   case "$DECISION" in
     APPROVED) APPROVAL="MET"; SOURCE="review-decision" ;;
     CHANGES_REQUESTED | REVIEW_REQUIRED) APPROVAL="NOT_MET"; SOURCE="review-decision" ;;
+    UNKNOWN)
+      # A token outside the allow-list: the field itself could not be read,
+      # whatever the merge state or a readable count might otherwise say.
+      SOURCE="facts-unreadable" ;;
     '')
       if [ -n "$REQ" ]; then
         SOURCE="required-count"
@@ -201,16 +232,40 @@ if [ "$VIEW_OK" = "true" ]; then
         case "$MSTATE" in
           CLEAN | HAS_HOOKS | UNSTABLE) APPROVAL="MET"; SOURCE="merge-state" ;;
           DIRTY | BEHIND) APPROVAL="PENDING"; SOURCE="other-blockers" ;;
-          BLOCKED) [ "$OTHER" = "false" ] || { APPROVAL="PENDING"; SOURCE="other-blockers"; } ;;
+          BLOCKED)
+            if [ "$OTHER" = "true" ]; then
+              APPROVAL="PENDING"; SOURCE="other-blockers"
+            # A review rule only a person satisfies, named by either read at
+            # a count of 0 (see review-rule above).
+            elif [ -n "$CLASSIC_RULE" ] || [ -n "$RULES_RULE" ]; then
+              APPROVAL="NOT_MET"; SOURCE="review-rule"
+            fi ;;
+          UNKNOWN)
+            # GitHub has not computed the state and the count is unreadable:
+            # nothing was measured, so nobody is woken for it.
+            SOURCE="facts-unreadable" ;;
         esac
       fi
       ;;
   esac
 fi
+# The blocker id for the round, one per source (see the header). Decided
+# here, never by the assessment agent.
+BLOCKER=""
+case "$APPROVAL" in
+  MET) ;;
+  PENDING) BLOCKER="approval-pending-other-blockers" ;;
+  *) case "${SOURCE}:${DECISION}" in
+       facts-unreadable:*) BLOCKER="approval-facts-unreadable" ;;
+       unreadable:*) BLOCKER="approval-state-unreadable" ;;
+       review-decision:CHANGES_REQUESTED) BLOCKER="changes-requested" ;;
+       *) BLOCKER="required-approval-missing" ;;
+     esac ;;
+esac
 SHOWN_C="${CLASSIC:-unreadable}"; [ -z "$CLASSIC_RULE" ] || SHOWN_C="unknown(${CLASSIC_RULE})"
 SHOWN_R="${RULES:-unreadable}"; [ -z "$RULES_RULE" ] || SHOWN_R="unknown(${RULES_RULE})"
-echo "INFO: approval: status=${APPROVAL} source=${SOURCE} required=${REQ:-unknown} classic=${SHOWN_C}" \
+echo "INFO: approval: status=${APPROVAL} source=${SOURCE} blocker=${BLOCKER:-none} required=${REQ:-unknown} classic=${SHOWN_C}" \
   "rulesets=${SHOWN_R} review_decision=${DECISION:-<empty>} merge_state=${MSTATE} mergeable=${MERGEABLE} checks=${CHECKS} threads=${THREADS}" >&2
 
-printf '{"pr":"%s","state":"%s","is_draft":"%s","mergeable":"%s","merge_state":"%s","review_decision":"%s","head_sha":"%s","base_ref":"%s","unresolved_threads":"%s","required_approvals":"%s","approval_status":"%s","approval_source":"%s"}\n' \
-  "$PR" "$STATE" "$DRAFT" "$MERGEABLE" "$MSTATE" "$DECISION" "$HEAD" "$BASE" "$THREADS" "$REQ" "$APPROVAL" "$SOURCE"
+printf '{"pr":"%s","state":"%s","is_draft":"%s","mergeable":"%s","merge_state":"%s","review_decision":"%s","head_sha":"%s","base_ref":"%s","unresolved_threads":"%s","required_approvals":"%s","approval_blocker":"%s","approval_status":"%s","approval_source":"%s"}\n' \
+  "$PR" "$STATE" "$DRAFT" "$MERGEABLE" "$MSTATE" "$DECISION" "$HEAD" "$BASE" "$THREADS" "$REQ" "$BLOCKER" "$APPROVAL" "$SOURCE"

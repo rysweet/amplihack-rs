@@ -197,7 +197,7 @@ check env-dotted-and-explicit claude claude-opus-5.5 yes - \
 # copilot and codex: the dotted spelling is Copilot's own.
 check copilot-explicit copilot claude-opus-4.5 no - -- --model claude-opus-4.5
 check copilot-env copilot NONE no - AMPLIHACK_DEFAULT_MODEL=claude-opus-5.5 --
-check codex-explicit codex claude-opus-4.5 no - -- --model claude-opus-4.5
+check codex-explicit codex claude-opus-4.5 no - QA_STUB_VERSION=0.98.0 -- --model claude-opus-4.5
 
 # The LiteLLM gateway routes on the exact name.
 check gateway-explicit claude claude-opus-5.5 no - "${GATEWAY[@]}" -- --model claude-opus-5.5

@@ -369,6 +369,9 @@ jobs:
       - name: Recipes — auto-drive QA evidence record is valid JSON (issue #1531)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1531-qa-evidence-json.sh
+      - name: Recipes — auto-drive QA clears inherited GIT_* and run identity (issue #2033)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-2033-qa-git-env.sh
       - name: Recipes — #1551 no merge outside gate
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh
@@ -381,6 +384,15 @@ jobs:
       - name: Recipes — auto-drive QA command source and path scoping (issue #1763)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1763-qa-scope.sh
+      - name: Recipes — criterion 6 when no review is required (issue #2219)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-2219-approval-no-review-required.sh
+      - name: Recipes — documentation-only pull requests need no gadugi scenario (issue #2219)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-2219-docs-only-scenarios.sh
+      - name: Recipes — the stop names what held the pull request (issue #2219)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-2219-stop-line.sh
       - name: Recipes — fatal allowlist preserved; bookkeeping gates degraded (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-fatal-allowlist-preserved.sh
@@ -572,8 +584,16 @@ jobs:
         run: bash scripts/install-pinned-recipe-runner.sh
       - name: Disk + sccache stats (before)
         run: df -h / && if [ "${RUSTC_WRAPPER:-}" = sccache ] && command -v sccache >/dev/null; then sccache --show-stats; fi
+      # Issue #2042: issue_2042_host_proc_strace traces profile, sessions and
+      # cleanup commands and fails on any read of the host process table.
+      # Without strace it skips, so CI installs it and requires it.
+      - name: Install strace (issue #2042)
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends strace
       # nextest: better parallelism and lower peak disk than `cargo test`.
-      - run: cargo nextest run --workspace --locked
+      # Report every failing target; an early failure must not hide other contracts.
+      - run: cargo nextest run --workspace --locked --no-fail-fast
+        env:
+          AMPLIHACK_TEST_REQUIRE_STRACE: "1"
       # Issue #1278: CI is the only place this suite runs WITHOUT git's hook
       # variables set, which is exactly why the unpassable pre-push gate stayed
       # invisible for so long. Re-run the crates that spawn git with GIT_DIR and
@@ -754,9 +774,10 @@ jobs:
             cross: false
             gnu_cross_toolchain: false
           - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-latest
+            # Build on ARM directly; no apt mirror or GNU cross-toolchain install.
+            runner: ubuntu-24.04-arm
             cross: false
-            gnu_cross_toolchain: true
+            gnu_cross_toolchain: false
           - target: x86_64-apple-darwin
             runner: macos-latest
             cross: false

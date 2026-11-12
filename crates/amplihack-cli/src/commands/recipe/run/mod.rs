@@ -14,6 +14,12 @@ pub(crate) mod limit_patterns;
 mod limit_reset;
 /// Issue #1551 — the `gh` merge guard for auto-drive runs.
 pub(crate) mod merge_guard;
+/// Issue #1976 — a nested run watches its parent `recipe run`.
+pub(crate) mod orphan_record;
+pub(crate) mod parent_watch;
+mod recovery;
+/// Issue #1976 — context keys that were removed, refused before any work.
+pub(crate) mod removed_keys;
 /// Issue #1267 — bounded mechanical retry for transient transport faults.
 mod retry;
 /// Issue #1606: SIGHUP/SIGINT/SIGTERM stop the whole recipe tree.
@@ -23,7 +29,9 @@ pub use context_sources::resolve_context_args;
 /// Issue #1569: the auto-switch rerun supervisor uses the same classifier, so
 /// it and the runner never disagree about what a usage limit is.
 pub(crate) use failure_class::{FailureClass, classify_failure_text};
+pub(crate) use removed_keys::reject_removed_context_keys;
 
+#[cfg(test)]
 use execute::execute_recipe_via_rust;
 use format::format_recipe_run_result;
 
@@ -37,18 +45,6 @@ fn execute_recipe_via_rust_for_test(
     search_dirs: &[PathBuf],
     step_timeout: Option<u64>,
 ) -> Result<RecipeRunResult> {
-    struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
-    impl Drop for EnvRestore {
-        fn drop(&mut self) {
-            for (key, value) in self.0.drain(..) {
-                match value {
-                    Some(value) => unsafe { std::env::set_var(key, value) },
-                    None => unsafe { std::env::remove_var(key) },
-                }
-            }
-        }
-    }
-
     let inherited_identity = [
         (
             "AMPLIHACK_TREE_ID",
@@ -62,24 +58,8 @@ fn execute_recipe_via_rust_for_test(
     let is_outer_orchestration = inherited_identity
         .iter()
         .all(|(key, inherited)| std::env::var_os(key).as_deref() == *inherited);
-    let _restore = is_outer_orchestration.then(|| {
-        EnvRestore(
-            [
-                "AMPLIHACK_SESSION_TREE_DIR",
-                "AMPLIHACK_TREE_ID",
-                "AMPLIHACK_SESSION_DEPTH",
-                "AMPLIHACK_MAX_DEPTH",
-                "AMPLIHACK_RECIPE_RUN_ID",
-            ]
-            .into_iter()
-            .map(|key| {
-                let previous = std::env::var_os(key);
-                unsafe { std::env::remove_var(key) };
-                (key, previous)
-            })
-            .collect(),
-        )
-    });
+    // #1984: the one list of outer-run variables, RUN_DIR and RUN_ID included.
+    let _restore = is_outer_orchestration.then(crate::test_support::clear_outer_run_env);
 
     // A test that has not chosen otherwise must not run the end-of-run sweep:
     // it resolves the work root from the inherited `AMPLIHACK_WORK_ROOT` or
@@ -90,8 +70,10 @@ fn execute_recipe_via_rust_for_test(
     let _no_sweep = std::env::var_os(crate::commands::cleanup::CLEANUP_ON_EXIT_ENV)
         .is_none()
         .then(|| {
-            unsafe { std::env::set_var(crate::commands::cleanup::CLEANUP_ON_EXIT_ENV, "0") };
-            EnvRestore(vec![(crate::commands::cleanup::CLEANUP_ON_EXIT_ENV, None)])
+            crate::test_support::EnvGuard::set([(
+                crate::commands::cleanup::CLEANUP_ON_EXIT_ENV,
+                "0",
+            )])
         });
 
     execute_recipe_via_rust(
@@ -155,6 +137,33 @@ pub fn run_recipe(
     )
 }
 
+/// CLI launch with explicit fresh execution; internal callers retain the default.
+#[allow(clippy::too_many_arguments)]
+pub fn run_recipe_fresh(
+    recipe_path: &str,
+    context_args: &[String],
+    dry_run: bool,
+    verbose: bool,
+    format: &str,
+    working_dir: Option<&str>,
+    step_timeout: Option<u64>,
+    governor: &GovernorArgs,
+    fresh: bool,
+) -> Result<()> {
+    run_recipe_with_options(
+        recipe_path,
+        context_args,
+        dry_run,
+        verbose,
+        format,
+        working_dir,
+        step_timeout,
+        &RootSandboxPreflight::live().governed(governor),
+        &mut io::stderr(),
+        fresh,
+    )
+}
+
 /// Where the issue #1482 pre-flight gets the agent binary and the
 /// root-sandbox decision; injected so tests reach the call in
 /// [`run_recipe_with`] whatever uid and configuration they run under.
@@ -198,6 +207,36 @@ pub(crate) fn run_recipe_with(
     preflight: &RootSandboxPreflight,
     preflight_out: &mut dyn Write,
 ) -> Result<()> {
+    run_recipe_with_options(
+        recipe_path,
+        context_args,
+        dry_run,
+        verbose,
+        format,
+        working_dir,
+        step_timeout,
+        preflight,
+        preflight_out,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_recipe_with_options(
+    recipe_path: &str,
+    context_args: &[String],
+    dry_run: bool,
+    verbose: bool,
+    format: &str,
+    working_dir: Option<&str>,
+    step_timeout: Option<u64>,
+    preflight: &RootSandboxPreflight,
+    preflight_out: &mut dyn Write,
+    fresh: bool,
+) -> Result<()> {
+    // Issue #1976: also checked in the CLI before --detach; this copy covers
+    // the detached pane's child and every caller inside the crate.
+    reject_removed_context_keys(context_args, &mut io::stderr())?;
     let format = OutputFormat::parse(format)?;
     let (context, errors) = parse_context_args(context_args);
     if !errors.is_empty() {
@@ -223,7 +262,7 @@ pub(crate) fn run_recipe_with(
     });
     let validated_path = resolve_recipe_path(recipe_path, &abs_working_dir)?;
     let recipe = parse_recipe_from_path(&validated_path)?;
-    let (merged_context, inferred) = infer_missing_context(&recipe.context, &context);
+    let (mut merged_context, inferred) = infer_missing_context(&recipe.context, &context);
     if verbose {
         writeln!(io::stderr(), "Executing recipe: {}", recipe.name)?;
         if dry_run {
@@ -238,6 +277,7 @@ pub(crate) fn run_recipe_with(
             )?;
         }
     }
+    recovery::normalize(&mut merged_context, &abs_working_dir);
     // Issue #1481: resolve the agent binary once, from the directory the steps
     // run in, and hand that one answer to both the #1482 pre-flight and the
     // runner. Resolving the pre-flight's copy from the process cwd let the two
@@ -270,7 +310,7 @@ pub(crate) fn run_recipe_with(
         &validated_path,
         std::env::var(merge_guard::MERGE_GUARD_ENV).ok().as_deref(),
     );
-    let result = match execute_recipe_via_rust(
+    let result = match execute::execute_recipe_via_rust_fresh(
         &validated_path,
         &merged_context,
         dry_run,
@@ -280,6 +320,7 @@ pub(crate) fn run_recipe_with(
         step_timeout,
         agent_binary,
         merge_guard,
+        fresh,
     ) {
         Ok(result) => result,
         Err(error) => {
@@ -446,6 +487,10 @@ mod tests_limit_patterns;
 mod tests_limit_reset;
 #[cfg(test)]
 mod tests_merge_guard;
+#[cfg(all(test, unix))]
+mod tests_merge_guard_pin;
+#[cfg(test)]
+mod tests_parent_watch;
 #[cfg(test)]
 mod tests_root_sandbox;
 #[cfg(test)]

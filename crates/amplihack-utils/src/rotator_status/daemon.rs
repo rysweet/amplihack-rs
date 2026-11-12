@@ -87,6 +87,14 @@ pub fn daemon_state(pid_file: &Path, proc_root: &Path, exe_name: Option<&OsStr>)
     }
 }
 
+/// Whether `pid_file` names `pid` as a running rotator per the real
+/// `/proc`, never a test's fake process table: for the check made just
+/// before the rotator is signalled, so a fake tree cannot choose a real pid
+/// to signal (issue #2042).
+pub fn running_on_host(pid_file: &Path, pid: u32, exe_name: &OsStr) -> bool {
+    daemon_state(pid_file, Path::new("/proc"), Some(exe_name)) == DaemonState::Running(pid)
+}
+
 /// The rotator for `root` cannot record a cycle the hook can use: no
 /// rotator of this user runs (under any binary name), or its ledger exists
 /// but cannot be read. Without a `/proc` only the ledger is checked.

@@ -1004,26 +1004,89 @@ Runs in the background when a turn ends on an API error that matches
 `rate_limit`. Claude Code is expected to run `StopFailure` instead of `Stop`
 for these turns, so the `Stop` hook never sees a usage-limit stop; this, the
 `stop_hook_active` field on `StopFailure`, and the wake on exit `2` were verified
-on Claude Code 2.1.307 (`stop_hook_active` is absent there and treated as false). When auto-switch is on and
-the error is a usage limit, the hook waits up to 7 days for
-`amplihack profile rotate` to record a cycle with capacity that started
-measuring after the hook did, then exits `2` with
-a one-line continue message on stderr, which wakes the session. It reads the
-ledger every 15 seconds for the first hour, then every 5 minutes. It stops
-waiting if auto-switch is turned off, you send a prompt in that session (the
-session moved on; see hook 6), or the session exits, and does not wait at all
-when no rotator is running. In every other case it exits `0` and prints
-nothing; stdout is always empty. It resumes at most once per limit event, once
-per session per wait, and 3 times per session in 24 hours, and never reads a
-credentials or token file or the transcript. The 608400-second timeout covers the 7-day wait
-plus one 5-minute ledger read; Claude Code 2.1.307 accepts it. Requires Claude Code 2.1.306 or later:
-`amplihack install` runs `claude --version` and leaves this entry out (removing
-an earlier one) for an older version, because Claude Code before 2.1.78
-ignores a settings file that names `StopFailure`. An entry an earlier release
-wrote is also removed by the next launch when that `claude` is too old, and an
-automatic re-stage after an upgrade, which never edits `settings.json`, prints a
-warning naming `amplihack install`. Full
-rules: [Rotate session resume](profile-command.md#rotate-session-resume).
+on Claude Code 2.1.307 (`stop_hook_active` is absent there and treated as false).
+Full rules: [Rotate session resume](profile-command.md#rotate-session-resume).
+
+**What it waits for.** When auto-switch is on, the error is a usage limit and
+a rotator is running, the hook waits up to 7 days for the rotator to write a
+[swap record](profile-command.md#swap-record),
+`<root>/.auto-switch.d/rotate/swap.json`, that differs from the one present
+at the stop, was swapped after the stop (a swap in the hook's start second
+or the second before it counts, and so does the record present at the stop
+when it was written then), and shows the new
+login below 100% on both windows. Only a swap writes that file; a stay, an
+ALERT and `profile switch` do not. It does not wait at all when no rotator is
+running.
+
+**How it waits.** One blocking `poll(2)`, with nothing read on an interval,
+on:
+
+- an inotify watch on `rotate/` for `swap.json` being closed after writing or
+  renamed into place;
+- an inotify watch on `resume/prompted/` for a prompt marker renamed into
+  place (the session moved on; see hook 6);
+- a pidfd on the hook's parent, the Claude Code process (the session exited);
+- a timeout of the time left until 7 days after the start, which ends the
+  wait and never resumes.
+
+After the watches are in place it reads `swap.json` once, so a swap made
+during setup is not missed. Both directories must be real directories owned
+by the user and not writable by group or others, and the parent pid must not
+be 1. Watching needs Linux with `pidfd_open` (kernel 5.3 or later). On any
+other system, or when a watch cannot be set up or is lost, the hook ends as
+`watch-lost`. It never falls back to polling.
+
+In the code, the wait sits behind the hook's `Deps` trait: `arm()` sets up
+the watches, `wait_event(deadline)` returns one of `Swap`, `Prompted`,
+`SessionGone`, `WatchLost` or `Deadline`, `read_swap()` reads the record,
+`pane()` returns the verified pane, `send_keys(pane, key)` sends one key,
+and `session_alive_now()` checks the pidfd and the foreground process
+group without blocking. Tests replace
+`Deps` with a fake that scripts the events.
+
+**How it resumes.** It records the resume under its lock first, then takes
+exactly one path:
+
+- **Keys, exit `0`, outcome `resumed-keys`.** When `$TMUX` is set and
+  `$TMUX_PANE` is `%` followed by digits, and that pane's `#{pane_tty}` is
+  Claude Code's standard input with Claude Code as the terminal's foreground
+  process group (checked once, just before the commit), it runs
+  `tmux send-keys -t %N Escape`, then `C-u`, then `-l continue`, then
+  `Enter`, as four separate commands, each waited on for its exit status.
+  Before each key it checks that the session is still running and still in
+  the terminal's foreground, so a session that exits or is suspended
+  (Ctrl-Z) gets no more keys. A failure stops the remaining keys and ends as
+  `resume-keys-failed`, still exit `0`. If the session exits or is suspended
+  in the instant before a key, at most that one key is at risk.
+  `C-u` clears the whole input line, so text the user typed in the stopped
+  session and did not submit is deleted. Only a submitted prompt counts as
+  moving on (hook 6 records it); an unsent draft does not stop the resume.
+  The keys are not yet confirmed against a real Claude Code timed wait; see
+  [#2215](https://github.com/rysweet/amplihack-rs/issues/2215).
+- **Wake, exit `2`, outcome `resumed`.** Without such a pane, it exits `2`
+  with a one-line continue message on stderr, which wakes the session.
+
+It never sends a digit, `/usage-credits`, `/rate-limit-options` or any text
+other than `continue`, and never sends keys to a pane it did not note at the
+stop. `tmux` is found through `PATH` and uses the server named by `$TMUX`;
+both are trusted because they belong to the same user as the session.
+
+**Exit codes.** `2` only for `resumed`. Every other outcome, including
+`resumed-keys`, `resume-keys-failed`, `watch-lost`, `no-capacity-timeout`,
+`moved-on`, `session-gone`, `disabled`, `duplicate`, `cap`,
+`stop-hook-active`, `rotator-down` and `guard-failed`, exits `0` and prints
+nothing. stdout is always empty.
+
+It resumes at most once per limit event, once per session per wait, and 3
+times per session in 24 hours, and never reads a credentials or token file
+or the transcript. The 608400-second timeout covers the 7-day wait plus a
+300-second margin; Claude Code 2.1.307 accepts it. Requires Claude Code
+2.1.306 or later: `amplihack install` runs `claude --version` and leaves this
+entry out (removing an earlier one) for an older version, because Claude Code
+before 2.1.78 ignores a settings file that names `StopFailure`. An entry an
+earlier release wrote is also removed by the next launch when that `claude`
+is too old, and an automatic re-stage after an upgrade, which never edits
+`settings.json`, prints a warning naming `amplihack install`.
 
 ## Capacity notice in hooks
 

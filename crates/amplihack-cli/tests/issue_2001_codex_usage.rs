@@ -175,20 +175,24 @@ impl Codex {
     }
 }
 
-/// A pipe made with `O_CLOEXEC` on both ends, so no process started by
-/// another test inherits it.
+/// A pipe with `O_CLOEXEC` on both ends, so that a process started by
+/// another test does not inherit it.
+///
+/// `std::io::pipe` is used because `libc::pipe2` does not exist on macOS,
+/// so the previous spelling did not build there (#2210). How std sets the
+/// flag differs by platform:
+///
+/// - On Linux (and the BSDs) std calls `pipe2(O_CLOEXEC)`, so the flag is
+///   set atomically and no other thread can fork in between.
+/// - On macOS std calls `pipe()` and then sets `FD_CLOEXEC` on each end.
+///   A child forked by another test in that gap inherits the write end
+///   across `exec`, and [`run`]'s wait for end-of-file then lasts until
+///   that unrelated child exits. macOS has no atomic alternative, so the
+///   window remains there. These tests run in Linux CI, where it does not
+///   arise.
 fn cloexec_pipe() -> (OwnedFd, OwnedFd) {
-    let mut fds = [0; 2];
-    // SAFETY: `fds` is a valid two-element array.
-    let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
-    assert_eq!(rc, 0, "pipe2: {}", std::io::Error::last_os_error());
-    // SAFETY: both descriptors are new and owned only here.
-    unsafe {
-        (
-            std::os::fd::FromRawFd::from_raw_fd(fds[0]),
-            std::os::fd::FromRawFd::from_raw_fd(fds[1]),
-        )
-    }
+    let (r, w) = std::io::pipe().expect("pipe");
+    (OwnedFd::from(r), OwnedFd::from(w))
 }
 
 /// Runs `c` until it and every process it started have exited, and fails

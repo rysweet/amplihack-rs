@@ -646,6 +646,7 @@ fn crusty_round_has_no_light_branch_in_any_step() {
             "step-04-address-concerns",
             "step-05-verify-concerns-addressed",
             "step-06-write-round-record",
+            "step-07-select-next-action",
         ]
     );
     let step = |id: &str| {
@@ -687,8 +688,8 @@ fn crusty_round_has_no_light_branch_in_any_step() {
     );
     assert_eq!(
         round["context"].as_mapping().unwrap().len(),
-        10,
-        "no new context key on autodrive-crusty-round"
+        11,
+        "completion state is the only new context key on autodrive-crusty-round"
     );
 }
 

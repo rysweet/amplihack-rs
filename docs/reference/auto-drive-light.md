@@ -1,7 +1,7 @@
 ---
 title: Auto-Drive-Light Recipe
 description: The smaller drive-to-merge recipe for small pull requests, its eligibility rules, escalation to auto-drive-to-merge, the task id its follow-up issues name, and how it shares auto-drive-to-merge's per-finding follow-up model.
-last_updated: 2026-11-08
+last_updated: 2026-11-11
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -13,7 +13,7 @@ doc_type: reference
 
 `auto-drive-light` builds a small change in one agent session, opens a pull request, and drives that PR to merge through the same crusty loop, merge loop and evidence gate as [`auto-drive-to-merge`](auto-drive-to-merge.md). It has no workflow-design, consensus-design or architect steps and never calls `default-workflow`.
 
-A bash step measures the PR after it is opened. If the change exceeds any eligibility rule, the run hands the same PR to `auto-drive-to-merge`. Minor review findings are handled exactly as in `auto-drive-to-merge`: a crusty round whose findings are all minor ends the crusty loop, and each finding is filed as its own follow-up issue, linked to the task, before the PR can merge.
+A bash step measures the PR after it is opened. If the change exceeds any eligibility rule, the run hands the same PR to `auto-drive-to-merge`. Minor review findings follow the [Crusty completion contract](autodrive-crusty-completion.md): an evidence-valid `CLEAN` or `MINOR_ONLY` completes iteration without a loop-health evaluator call. Both primary reviews and rereviews file or verify each required follow-up, linked to the task, before recording phase completion and advancing. A filing failure or dry run with unrecorded required follow-ups leaves the phase incomplete.
 
 The recipe is `amplifier-bundle/recipes/auto-drive-light.yaml`. It was added for issue #1802. Issue #1982 moved its minor findings to the follow-up model of #1979.
 
@@ -30,6 +30,7 @@ The recipe is `amplifier-bundle/recipes/auto-drive-light.yaml`. It was added for
 - [Minor findings and follow-up issues](#minor-findings-and-follow-up-issues)
 - [Merge criteria](#merge-criteria)
 - [State files](#state-files)
+- [Orphaned rounds](#orphaned-rounds)
 - [Recursion limits](#recursion-limits)
 - [Security limits](#security-limits)
 - [Limitations](#limitations)
@@ -312,12 +313,27 @@ All files live in the autodrive state directory. They are written under `umask 0
 | --- | --- | --- |
 | `light-eligibility.json` | `light-eligibility` | The tool's JSON line: decision, reason, base, head, measurements, limits. |
 | `escalation.json` | `light-eligibility` | Reason, measurements, `base_sha`, `head_sha`. Present only after an escalation, and never removed by the recipe. |
+| `orphaned.json` | a nested `amplihack recipe run` | Written when a round's parent run exited. See [Orphaned rounds](#orphaned-rounds). |
 
 The follow-up files (`<record>.minor`, `<record>.severity`, `followups.jsonl`, `followups.tsv`, `followups.error` and `followups.parent`) are those of [auto-drive-to-merge's state files](auto-drive-to-merge.md#state-files). `light-report` reads `followups.tsv` and no other follow-up file.
 
 Files left by an earlier version in a reused state directory (`light-mode`, `follow-up-issue`, `follow-up-linked`, `follow-up-posted-ids`, `follow-up-failed`, `<record>.concerns.tsv` and `<record>.light.json`) are ignored. Nothing reads them and nothing migrates them.
 
 Logs written by the light steps contain only fixed tokens, SHAs and digits. `gh` stderr goes through `gh_sanitize_stderr`.
+
+## Orphaned rounds
+
+The light recipe's crusty and merge rounds run through `autodrive_loop.sh`,
+so they follow the same rule as `auto-drive-to-merge`. When the parent
+`amplihack recipe run` of a round exits, the round prints
+`orphaned: parent recipe run <pid> exited; stopping`, writes `orphaned.json`
+in the state directory, tears down its runner and exits `75`. Its final
+correlation record has `status: "orphaned"`, and the loop stops as
+`ORPHANED` with exit `75`. A `--detach` pane root is never watched. See [Orphaned rounds](auto-drive-to-merge.md#orphaned-rounds) for the
+file format and the checks made before it is written.
+
+An escalated run counts the same way: the nested `auto-drive-to-merge` run's
+own rounds watch that run, not the light run above it.
 
 ## Recursion limits
 
@@ -339,7 +355,7 @@ The recipe header sets `recursion.max_depth: 6` and `recursion.max_total_steps: 
 
 - **Measured once, before the loops.** Eligibility is measured when the PR is resolved (and again on a resumed run whose PR head has moved). A head that grows past the limits during the crusty loop stays on the light path. It still gets the review and merge criteria of `auto-drive-to-merge`, because the light path runs the same loops and gate; see [Nothing is measured inside the loops](#nothing-is-measured-inside-the-loops). The `path` in the report is the decision made before the loops, not the size of the merged change.
 - **Follow-ups come from the last round only.** As in `auto-drive-to-merge`, `collect` reads only the round that ended the loop. Minor findings raised in any earlier round are filed only when the final record is `MINOR_ONLY` and still lists them.
-- **Filing happens only after DONE.** Follow-up issues are filed when the crusty loop ends DONE, and again by merge-loop step-02b. A run that stops earlier, for example `STUCK` or `BUDGET_EXHAUSTED`, files none, and a dry run files none.
+- **Review completion precedes filing.** Both primary Crusty reviews and rereviews file or verify required follow-ups after objective `DONE`, before phase completion. Merge-loop step-02b repeats filing idempotently. Failed recording or a dry run with unrecorded required follow-ups prevents advancement. A run that stops before review completion files no new follow-ups.
 - **A task id is needed for minor findings.** A drive that ends `MINOR_ONLY` with no `plan_task_id`, no `issue_number` and no `Closes`, `Fixes` or `Resolves #N` in the PR body or `task_description` stops with `followup-task-unresolved` and does not merge.
 - **The parent comment says the PR closes the issue.** The comment that `file` posts on the task issue says "Merging that PR closes this issue". A light PR's body says `Refs #N`, so merging it does not close the issue; the comment is inaccurate for light runs. The comment format is shared with `auto-drive-to-merge` and is not changed for light mode.
 - **Escalation is permanent.** Once `escalation.json` exists, the state directory never returns to light mode. A new `autodrive_state_dir`, or deleting the file by hand, is needed.
