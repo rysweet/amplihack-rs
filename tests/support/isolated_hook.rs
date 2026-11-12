@@ -2,24 +2,36 @@
 //!
 //! `HookSandbox::new()` owns a temporary directory holding `home/`,
 //! `amplihack-home/`, `profiles/` and `project/`. `command(bin)` returns a
-//! `Command` that sets `HOME`, `AMPLIHACK_HOME`,
-//! `AMPLIHACK_CLAUDE_PROFILE_ROOT` and `CLAUDE_PROJECT_DIR` to those
-//! directories, runs in `project/`, and removes `REPO_PATH`,
-//! `CLAUDE_CONFIG_DIR`, `GIT_DIR`, `GIT_WORK_TREE` and `GIT_INDEX_FILE`.
-//! The rest of the environment is inherited (no `env_clear`). Callers may
-//! override any of these values on the returned `Command`.
+//! `Command` whose environment is cleared (`env_clear`) and then rebuilt from
+//! three parts only:
 //!
-//! Without this, a hook child inherits the `AMPLIHACK_HOME` and working
-//! directory of the test process, and its `test-session` records reach
-//! whatever checkout the test run started in.
+//! - the variables of the test process accepted by [`is_kept`]: the names in
+//!   [`KEPT_VARS`] and the names starting with one of [`KEPT_PREFIXES`];
+//! - [`NO_GIT_PROMPT_ENV`], which `.cargo/config.toml` gives the test process
+//!   and `env_clear` drops;
+//! - `HOME`, `AMPLIHACK_HOME`, `AMPLIHACK_CLAUDE_PROFILE_ROOT` and
+//!   `CLAUDE_PROJECT_DIR`, set to the sandbox directories.
 //!
-//! This is separate from `tests/support/isolated_amplihack.rs` (#1606),
-//! which starts the `amplihack` binary with `env_clear()` and a kept-variable
-//! list. Hook tests run with the rest of the test process environment and
-//! set hook-specific variables of their own, which a cleared environment
-//! with a fixed kept list would drop. This helper therefore removes only the
-//! variables that steer state into a checkout or a Git repository, and sets
-//! the four directories above.
+//! The child runs in `project/`. Callers add the hook-specific variables a
+//! test needs, and may override any of the values above, on the returned
+//! `Command`.
+//!
+//! Nothing else reaches the child. Without this, a hook child inherits the
+//! `AMPLIHACK_HOME` and working directory of the test process, and its
+//! `test-session` records reach whatever checkout the test run started in.
+//! An earlier version removed a fixed list of variables and inherited the
+//! rest; any variable missing from that list (`AMPLIHACK_SIGNAL_STATE_DIR`,
+//! `AMPLIHACK_GRAPH_DB_PATH`, `AMPLIHACK_WORK_ROOT`, ...) still reached the
+//! child. `bins/amplihack-hooks/tests/issue_2361_hook_sandbox_environment.rs`
+//! fails if any variable outside the three parts above reaches a child.
+//!
+//! The kept list is the one `tests/support/isolated_amplihack.rs` (#1606)
+//! uses for the `amplihack` binary. That helper also sets the variables that
+//! only the `amplihack` binary reads (the home guard, the fake process table,
+//! the rotator autostart switch), so hook tests do not use it directly.
+//!
+//! The in-process golden tests (`tests/golden/run_golden.rs`) apply the same
+//! kept list to the test process itself, under their environment lock.
 //!
 //! The `#[path]` value is relative to the directory of the including file:
 //!
@@ -34,15 +46,29 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Variables removed from every hook child: each can point a hook, or a git
-/// call made by a hook, at a real checkout or a real profile.
-pub const REMOVED_VARS: &[&str] = &[
-    "REPO_PATH",
-    "CLAUDE_CONFIG_DIR",
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_INDEX_FILE",
+/// Variables a hook child keeps from the test process, by exact name. The
+/// same names as `KEPT_VARS` in `tests/support/isolated_amplihack.rs`.
+pub const KEPT_VARS: &[&str] = &[
+    "PATH", "TMPDIR", "LANG", "TERM", "USER", "LOGNAME", "SHELL", "TZ",
 ];
+
+/// Variables a hook child keeps from the test process, by prefix: the
+/// toolchain (`CARGO*`, `RUST*`) and the locale (`LC_*`).
+pub const KEPT_PREFIXES: &[&str] = &["CARGO", "RUST", "LC_"];
+
+/// The variables that stop git from asking for a credential (#1764), with
+/// their values: the three that `.cargo/config.toml` sets for the test
+/// process.
+pub const NO_GIT_PROMPT_ENV: [(&str, &str); 3] = [
+    ("GIT_TERMINAL_PROMPT", "0"),
+    ("GIT_ASKPASS", "true"),
+    ("SSH_ASKPASS", "true"),
+];
+
+/// Whether a hook child keeps the test process's value of `name`.
+pub fn is_kept(name: &str) -> bool {
+    KEPT_VARS.contains(&name) || KEPT_PREFIXES.iter().any(|p| name.starts_with(p))
+}
 
 /// A temporary tree that owns every directory a hook child may write to.
 pub struct HookSandbox {
@@ -94,15 +120,19 @@ impl HookSandbox {
     /// narrower project directory.
     pub fn command_in(&self, bin: impl AsRef<OsStr>, project: &Path) -> Command {
         let mut command = Command::new(bin);
+        command.env_clear();
+        for (key, value) in std::env::vars_os() {
+            if key.to_str().is_some_and(is_kept) {
+                command.env(&key, value);
+            }
+        }
         command
+            .envs(NO_GIT_PROMPT_ENV)
             .env("HOME", self.home())
             .env("AMPLIHACK_HOME", self.amplihack_home())
             .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", self.profiles())
             .env("CLAUDE_PROJECT_DIR", project)
             .current_dir(project);
-        for var in REMOVED_VARS {
-            command.env_remove(var);
-        }
         command
     }
 }

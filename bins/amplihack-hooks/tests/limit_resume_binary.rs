@@ -165,15 +165,13 @@ fn limit_payload(session: &str) -> String {
 }
 
 fn spawn(e: &Env, toggle: Option<&str>, stdin: &[u8]) -> (std::process::Child, Instant) {
+    // The sandbox's cleared environment carries no AMPLIHACK_CLAUDE_AUTO_SWITCH,
+    // TMUX or TMUX_PANE from the test process. With no pane, a resume takes
+    // the exit-2 path and never sends keys to the terminal the tests run in.
     let mut cmd = e.sandbox.command(env!("CARGO_BIN_EXE_amplihack-hooks"));
     cmd.arg("limit-resume")
         .env("HOME", &e.home)
         .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &e.root)
-        .env_remove("AMPLIHACK_CLAUDE_AUTO_SWITCH")
-        // No pane: a resume takes the exit-2 path and never sends keys to
-        // the terminal the tests run in.
-        .env_remove("TMUX")
-        .env_remove("TMUX_PANE")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

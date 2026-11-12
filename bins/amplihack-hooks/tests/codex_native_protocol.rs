@@ -20,13 +20,12 @@ fn hook_bytes(subcommand: &str, payload: &str, provider: &str) -> Value {
         .env("CODEX_HOME", sandbox.home().join(".codex"))
         .env("AMPLIHACK_AGENT_BINARY", provider)
         .env("AMPLIHACK_RECIPE_RUN_ID", "test-leaf-run");
+    // The agent binary is inherited runtime context, not host protocol
+    // selection. Exercise the same explicit marker written by the Codex
+    // plugin's packaged hook command; the sandbox's cleared environment
+    // carries no marker from the test process.
     if provider == "codex" {
-        // The agent binary is inherited runtime context, not host protocol
-        // selection. Exercise the same explicit marker written by the Codex
-        // plugin's packaged hook command.
         command.env("AMPLIHACK_HOOK_PROTOCOL", "codex");
-    } else {
-        command.env_remove("AMPLIHACK_HOOK_PROTOCOL");
     }
     let mut child = command
         .stdin(Stdio::piped())

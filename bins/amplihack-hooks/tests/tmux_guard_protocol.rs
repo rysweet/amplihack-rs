@@ -7,7 +7,7 @@ mod isolated_hook;
 use isolated_hook::HookSandbox;
 use serde_json::{Value, json};
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 const INCIDENT: &str = "TMUX_TMPDIR=$SB/tmuxsock tmux kill-server";
 const SCOPED: &str = "env -u TMUX tmux -S /tmp/tx1733/a.sock kill-server";
@@ -17,35 +17,25 @@ const REQUIRED: &[&str] = &[
     "TMUX_TMPDIR alone does not redirect tmux while $TMUX is set",
 ];
 
-/// Runs the hook with a cleared environment: only `PATH` is inherited, so
-/// nothing from the caller (`TMUX`, `CLAUDE_CONFIG_DIR`, a profile root, the
-/// auto-drive marker) reaches it, and every path it could write to is inside
-/// a temporary directory.
+/// Runs the hook in a [`HookSandbox`] (#2361), whose environment is cleared
+/// and rebuilt from a kept list, so nothing from the caller (`TMUX`,
+/// `CLAUDE_CONFIG_DIR`, a profile root, the auto-drive marker) reaches it, and
+/// every path it could write to is inside a temporary directory.
 fn hook_bytes(subcommand: &str, payload: &str, provider: &str) -> Value {
     hook_bytes_with_env(subcommand, payload, provider, &[])
 }
 
-/// [`hook_bytes`] with `extra_env` added to the cleared environment.
+/// [`hook_bytes`] with `extra_env` added to the sandbox environment.
 fn hook_bytes_with_env(
     subcommand: &str,
     payload: &str,
     provider: &str,
     extra_env: &[(&str, &str)],
 ) -> Value {
-    // The directories of a HookSandbox (#2361), set again after env_clear.
     let sandbox = HookSandbox::new();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_amplihack-hooks"));
-    command.env_clear();
-    if let Some(path) = std::env::var_os("PATH") {
-        command.env("PATH", path);
-    }
+    let mut command = sandbox.command(env!("CARGO_BIN_EXE_amplihack-hooks"));
     command
         .arg(subcommand)
-        .current_dir(sandbox.project())
-        .env("HOME", sandbox.home())
-        .env("AMPLIHACK_HOME", sandbox.amplihack_home())
-        .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", sandbox.profiles())
-        .env("CLAUDE_PROJECT_DIR", sandbox.project())
         .env("CODEX_HOME", sandbox.home().join(".codex"))
         .env("AMPLIHACK_AGENT_BINARY", provider)
         .env("AMPLIHACK_RECIPE_RUN_ID", "test-leaf-run");

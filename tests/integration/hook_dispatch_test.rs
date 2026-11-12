@@ -321,6 +321,8 @@ fn session_start_dispatches_background_blarify_indexing() {
     .expect("stub script");
     fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).expect("chmod");
 
+    // The sandbox's cleared environment carries no AMPLIHACK_GRAPH_DB_PATH,
+    // so the hook derives the graph path from the project root.
     let sandbox = HookSandbox::new();
     let mut child = sandbox
         .command_in(&bin, &project_root)
@@ -328,7 +330,6 @@ fn session_start_dispatches_background_blarify_indexing() {
         .arg("session-start")
         .env("AMPLIHACK_AMPLIHACK_BINARY_PATH", &stub)
         .env("AMPLIHACK_BLARIFY_MODE", "background")
-        .env_remove("AMPLIHACK_GRAPH_DB_PATH")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
