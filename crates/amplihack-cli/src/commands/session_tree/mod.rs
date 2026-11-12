@@ -445,9 +445,9 @@ mod tests {
         let lock = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        // Anchor to /tmp directly; do NOT mutate the global TMPDIR — other
-        // crate tests anchor `TempDir::new()` against it concurrently.
-        let dir = TempDir::new_in("/tmp").unwrap();
+        // Respect the caller's temp root while holding the shared env lock;
+        // do not mutate TMPDIR while other tests use it.
+        let dir = TempDir::new().unwrap();
         let saved = TREE_ENV_KEYS
             .iter()
             .map(|key| (*key, std::env::var_os(key)))
