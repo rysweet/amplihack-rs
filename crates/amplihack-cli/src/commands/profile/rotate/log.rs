@@ -280,7 +280,6 @@ pub mod msg {
     /// identity was read.
     pub const LIVE_REFRESHED: &str =
         "refresh: expired login in ~/.claude refreshed; identity read again";
-    pub const LIVE_REFRESH_FAILED: &str = "refresh: expired login in ~/.claude not refreshed";
     /// Issue #2218: the lines about an excluded live or pinned profile.
     pub use super::shown::excluded::*;
     pub const CHANGED: &str = "skip: state changed during measurement";

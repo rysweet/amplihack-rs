@@ -55,11 +55,12 @@ pub struct RotateJournal {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_lock_ino: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parking: Option<super::super::duplicate::Parking>,
+    pub(in crate::commands::profile::rotate) parking: Option<super::super::duplicate::Parking>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub completion: Option<super::super::swap_record::Completion>,
+    pub(in crate::commands::profile::rotate) completion:
+        Option<super::super::swap_record::Completion>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub outgoing: Option<super::super::custody::Custody>,
+    pub(in crate::commands::profile::rotate) outgoing: Option<super::super::custody::Custody>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outgoing_lock_ino: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
