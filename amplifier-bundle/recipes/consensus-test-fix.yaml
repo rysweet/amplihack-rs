@@ -45,10 +45,10 @@ steps:
       TEST_RC=""
       if [ -f Cargo.toml ]; then
         TEST_CMD="cargo test --workspace --locked"
-        cargo test --workspace --locked >>"$LOG" 2>&1; TEST_RC=$?
+        if cargo test --workspace --locked >>"$LOG" 2>&1; then TEST_RC=0; else TEST_RC=$?; fi
       elif [ -f package.json ]; then
         TEST_CMD="npm test"
-        npm test >>"$LOG" 2>&1; TEST_RC=$?
+        if npm test >>"$LOG" 2>&1; then TEST_RC=0; else TEST_RC=$?; fi
       else
         echo "[skip] no Cargo.toml or package.json; no native test command detected" >&2
       fi
@@ -59,7 +59,7 @@ steps:
       PC_RC=""
       if [ -f .pre-commit-config.yaml ]; then
         PC_CMD="pre-commit run --all-files"
-        pre-commit run --all-files >>"$LOG" 2>&1; PC_RC=$?
+        if pre-commit run --all-files >>"$LOG" 2>&1; then PC_RC=0; else PC_RC=$?; fi
       else
         echo "[skip] no .pre-commit-config.yaml; pre-commit not run" >&2
       fi

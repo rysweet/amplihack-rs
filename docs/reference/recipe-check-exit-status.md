@@ -31,7 +31,7 @@ and a later step decides what to do from the exit code and reads that file.
 Do this:
 
 ```bash
-cmd >>"$LOG" 2>&1; RC=$?
+if cmd >>"$LOG" 2>&1; then RC=0; else RC=$?; fi
 if gh pr checks >>"$LOG" 2>&1; then CI_RC=0; else CI_RC=$?; fi
 ```
 
@@ -346,7 +346,7 @@ case "$LOG" in
   "" | *[!A-Za-z0-9._/+-]*)
     printf '{"all_passing":"false","log_file":""}\n'; exit 0 ;;
 esac
-cargo clippy --workspace -- -D warnings >>"$LOG" 2>&1; RC=$?
+if cargo clippy --workspace -- -D warnings >>"$LOG" 2>&1; then RC=0; else RC=$?; fi
 tail -c 262144 "$LOG" >&2
 if [ "$RC" -eq 0 ]; then PASS=true; else PASS=false; fi
 printf '{"clippy_exit_code":"%s","all_passing":"%s","log_file":"%s"}\n' \
@@ -357,7 +357,9 @@ printf '{"clippy_exit_code":"%s","all_passing":"%s","log_file":"%s"}\n' \
    into `printf`. `TMPDIR` comes from the environment, and other characters
    could break the JSON or put template syntax into a later prompt. This
    check is required. Both shipped check steps use it.
-2. Capture `$?` on the line right after the command, with nothing between.
+2. Record the exit code with `if cmd; then RC=0; else RC=$?; fi`. This form
+   keeps the real code and still prints the JSON if the step later runs
+   under `set -e`, where `cmd; RC=$?` would end the step first.
 3. Keep stdout for the JSON only.
 4. Give the next step a condition of the form `<output>.all_passing != 'true'`.
 5. Do not check `PATH` before running a check the project asks for. A
