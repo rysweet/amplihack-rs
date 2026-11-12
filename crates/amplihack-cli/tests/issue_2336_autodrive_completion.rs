@@ -9,8 +9,9 @@
 
 #[path = "issue_2336_autodrive_completion_failures.rs"]
 mod failures;
+// Shared with issue_2391_minor_findings_setting (a file is a module once per crate).
 #[path = "support/autodrive_completion.rs"]
-mod fixture;
+pub(crate) mod fixture;
 #[path = "issue_2336_autodrive_completion_live.rs"]
 mod live;
 #[path = "issue_2336_autodrive_completion_regressions.rs"]

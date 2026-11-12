@@ -13,7 +13,7 @@ doc_type: reference
 
 `auto-drive-light` builds a small change in one agent session, opens a pull request, and drives that PR to merge through the same crusty loop, merge loop and evidence gate as [`auto-drive-to-merge`](auto-drive-to-merge.md). It has no workflow-design, consensus-design or architect steps and never calls `default-workflow`.
 
-A bash step measures the PR after it is opened. If the change exceeds any eligibility rule, the run hands the same PR to `auto-drive-to-merge`. Minor review findings follow the [Crusty completion contract](autodrive-crusty-completion.md): an evidence-valid `CLEAN` or `MINOR_ONLY` completes iteration without a loop-health evaluator call. Both primary reviews and rereviews file or verify each required follow-up, linked to the task, before recording phase completion and advancing. A filing failure or dry run with unrecorded required follow-ups leaves the phase incomplete.
+A bash step measures the PR after it is opened. If the change exceeds any eligibility rule, the run hands the same PR to `auto-drive-to-merge`. Minor review findings are addressed by default, as in `auto-drive-to-merge`. With `autodrive_minor_findings=follow_up` they follow the [Crusty completion contract](autodrive-crusty-completion.md): an evidence-valid `MINOR_ONLY` completes iteration without a loop-health evaluator call, and both primary reviews and rereviews file or verify each required follow-up, linked to the task, before recording phase completion and advancing. A filing failure or dry run with unrecorded required follow-ups leaves the phase incomplete.
 
 The recipe is `amplifier-bundle/recipes/auto-drive-light.yaml`. It was added for issue #1802. Issue #1982 moved its minor findings to the follow-up model of #1979.
 
@@ -106,6 +106,7 @@ AUTODRIVE_LIGHT_ELIGIBILITY=light reason=within-limits
 | `light_max_recipe_contract` | `"0"` | Limit on recipes whose `context:` key set changed. |
 | `autodrive_state_dir` | `""` | Durable state root. Empty means derive it from the repository remote and the PR, as `auto-drive-to-merge` does. Must be an absolute path with no `..` component and no control characters. |
 | `autodrive_dry_run` | `"false"` | Passed to the merge loop unchanged. |
+| `autodrive_minor_findings` | `""` | `address` (empty means `address`) or `follow_up`. Passed unchanged to the crusty loop, the merge loop and the escalation. See [Minor findings and follow-up issues](#minor-findings-and-follow-up-issues). |
 | `no_merge` | `"true"` | Applies to the build only. See [The no_merge value](#the-no_merge-value). |
 
 Every limit must match `^[0-9]{1,6}$` and is read as base 10, so `010` means ten. The `light-eligibility` step validates all five limits itself, before it calls the eligibility tool, and fails with exit code 2 on any other value. An invalid limit therefore stops the run; it is never turned into an escalation. There is no option that skips the eligibility check and no force-light override: selecting `auto-drive-light` by name is still subject to the check.
@@ -226,7 +227,7 @@ When the decision is `escalate`, `light-eligibility` does two things before `lig
 1. Writes `escalation.json` with the reason, the measurements, `base_sha` and `head_sha`, unless it is already present.
 2. Sets `light_eligibility.decision` to `escalate`.
 
-`light-escalate` is a `type: recipe` step that runs `auto-drive-to-merge` with `pr_number` taken from `build_result`, `existing_branch` empty, `autodrive_state_dir` set to the same state directory, and `plan_task_id` set to the effective task id. `task_description`, `repo_path`, `autodrive_dry_run` and `no_merge` are passed unchanged. Only the PR number is passed because `autodrive-build` uses `pr_number` whenever it is set and looks a branch up only when it is empty. Because the PR already exists, the nested build phase is a no-op: no second branch, build or PR is created. The nested recipe then runs its full crusty loop, merge loop and gate, and files follow-up issues in the same way as a light run.
+`light-escalate` is a `type: recipe` step that runs `auto-drive-to-merge` with `pr_number` taken from `build_result`, `existing_branch` empty, `autodrive_state_dir` set to the same state directory, and `plan_task_id` set to the effective task id. `task_description`, `repo_path`, `autodrive_dry_run`, `autodrive_minor_findings` and `no_merge` are passed unchanged. Only the PR number is passed because `autodrive-build` uses `pr_number` whenever it is set and looks a branch up only when it is empty. Because the PR already exists, the nested build phase is a no-op: no second branch, build or PR is created. The nested recipe then runs its full crusty loop, merge loop and gate, and files follow-up issues in the same way as a light run.
 
 Every later light step has a condition on `light_eligibility.decision == 'light'` and is skipped. `light-escalate` is the only step in the recipe that names `auto-drive-to-merge`. Exit code 79 from the nested run is passed through and never retried.
 
@@ -242,13 +243,18 @@ A `light-mode` file left in a reused state directory by an earlier version is ig
 
 ## Minor findings and follow-up issues
 
-Light mode has no minor-finding rule of its own. A light drive classifies, collects, files and gates minor findings through `autodrive_followups.sh`, exactly as `auto-drive-to-merge` does:
+Light mode has no minor-finding rule of its own. It takes `autodrive_minor_findings` from its caller and passes it to `light-crusty-loop`, `light-merge-loop` and `light-escalate`, so a light drive treats minor findings exactly as `auto-drive-to-merge` does:
+
+- under `address`, the default, an all-minor round stays `CONCERNS`, every finding is addressed, and no follow-up issue is filed;
+- under `follow_up`, a light drive classifies, collects, files and gates minor findings through `autodrive_followups.sh`, as described below.
+
+Under `follow_up`:
 
 - crusty-round step-03 runs `classify`, so a `CONCERNS` round whose findings are all minor is recorded as `MINOR_ONLY`, with `verdict_source` `crusty` and `concern_count` equal to the number of lines in `<record>.minor`;
 - crusty-loop step-03 and merge-loop step-02b run `collect` and `file`, which create one issue per finding and one comment on the parent task;
 - the merge gate runs `gate`, which blocks a `MINOR_ONLY` drive until every follow-up is filed.
 
-The severity rules, the recurrence rule, the word lists, the issue format, the parent comment, the state files and the failure tokens are all documented in [Minor findings end the crusty loop (#1979)](auto-drive-to-merge.md#minor-findings-end-the-crusty-loop-1979). A light drive that escalates part-way therefore produces follow-ups of the same shape as one that does not.
+The severity rules, the recurrence rule, the word lists, the issue format, the parent comment, the state files and the failure tokens are all documented in [Minor findings: address or follow up (#1979, #2391)](auto-drive-to-merge.md#minor-findings-end-the-crusty-loop-1979), with the values and their normalisation in [The `autodrive_minor_findings` setting](auto-drive-to-merge.md#the-autodrive_minor_findings-setting). A light drive that escalates part-way therefore produces follow-ups of the same shape as one that does not.
 
 Issue #1982 asked whether light mode should keep its own deferral (one issue per drive, filed inside the round, which turned the round `CLEAN`) or use the per-finding model of #1979. Light mode now uses the per-finding model, so one drive produces one shape of follow-up, whichever recipe ran it. Only `classify` decides whether a round is minor-only.
 
@@ -362,8 +368,8 @@ The recipe header sets `recursion.max_depth: 6` and `recursion.max_total_steps: 
 - **Existing branch without a PR.** `existing_branch` without an open PR is refused with `light-existing-branch-no-pr`.
 - **Fork PRs.** PRs from another repository are refused with `light-cross-repo`.
 - **`qa_command` runs PR code.** For a new change it runs the agent's own changes. Set it only to commands you would run on the change yourself.
-- **The security word list is fixed.** A `minor` finding with a neutral id whose summary and evidence describe a security problem without using any word on the list is still filed as a follow-up issue rather than fixed. The rule relies on crusty grading security findings as `major` or `blocking`, and the word list is a second check, not a replacement.
-- **Disclosure: minor findings are published.** Each follow-up issue copies the finding's sanitised summary and evidence, up to 200 characters each. In a public repository this publishes them. A security finding that crusty graded `minor` and that the word list does not catch is therefore made public before it is fixed. Do not use `auto-drive-light` on a public repository where that is unacceptable.
+- **The security word list is fixed.** Under `follow_up`, a `minor` finding with a neutral id whose summary and evidence describe a security problem without using any word on the list is still filed as a follow-up issue rather than fixed. The rule relies on crusty grading security findings as `major` or `blocking`, and the word list is a second check, not a replacement.
+- **Disclosure: minor findings are published under `follow_up`.** Each follow-up issue copies the finding's sanitised summary and evidence, up to 200 characters each. In a public repository this publishes them. A security finding that crusty graded `minor` and that the word list does not catch is therefore made public before it is fixed. Under the default, `address`, nothing is published this way. Do not set `follow_up` on a public repository where that is unacceptable.
 - **A task id may look like a URL.** `plan_task_id` may contain `/` and `:`, so a value such as `https://example.org/t/1` is accepted and shown as `Task: https://example.org/t/1` in each follow-up issue. It cannot close the issue's HTML comment marker, because `>` is not allowed.
 - **Branch prefix.** New changes use the `quick/` branch prefix from `quick_change_common.sh`. `auto-drive-light` has no equivalent of the `branch_prefix` key that `auto-drive-to-merge` offers (default `feat`). Repositories with other branch-naming conventions need `existing_branch` or `pr_number`.
 - **Eligibility heuristics.** The public API rule reads `lib.rs` only, so a `pub` item added in another module and re-exported through an existing `pub use` is not counted. The recipe contract rule compares top-level `context:` keys only.
@@ -377,7 +383,7 @@ The recipe header sets `recursion.max_depth: 6` and `recursion.max_total_steps: 
 | `amplifier-bundle/tools/autodrive_light_eligibility.sh` | tool | Stateless eligibility measurement. |
 | `amplifier-bundle/tools/autodrive_followups.sh`, `autodrive_followups_check.sh` | tool | `classify`, `collect`, `file`, `check` and `gate`: the only follow-up path, shared with `auto-drive-to-merge` (#1979). `resolve-task`: the one task-id rule, called by `light-task-id`. Checked by `light-prereqs`. |
 | `amplifier-bundle/tools/autodrive_finding_rules.sh` | tool | Sourced only. The security word lists, `cell()` and the minor-finding predicate, used by `autodrive_followups.sh`. Checked by `light-prereqs`. |
-| `amplifier-bundle/recipes/autodrive-crusty-round.yaml` | recipe | Shared with `auto-drive-to-merge` and unchanged by light mode: step-03 runs `autodrive_followups.sh classify` on a crusty `CONCERNS` verdict. No step has a light branch. |
+| `amplifier-bundle/recipes/autodrive-crusty-round.yaml` | recipe | Shared with `auto-drive-to-merge` and unchanged by light mode: under `autodrive_minor_findings=follow_up`, step-03 runs `autodrive_followups.sh classify` on a crusty `CONCERNS` verdict. No step has a light branch. |
 | `amplifier-bundle/recipes/_recipe_manifest.json` | manifest | Hash entries for `auto-drive-light` and `autodrive-crusty-round`. |
 | `crates/amplihack-cli/tests/issue_1802_auto_drive_light_eligibility.rs` | test | Eligibility rules, boundaries and faults. |
 | `crates/amplihack-cli/tests/issue_1802_auto_drive_light_round.rs` | test | Byte-identical step-03 and step-06 output for a light state directory, with or without a leftover `light-mode` file; no light hook in the round and no in-loop light tool; a head grown past the limits classified with no `gh` call and no escalation; an end-to-end light round through the real follow-up tools with a `gh` stub that fails if step-03 calls it. |

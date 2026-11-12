@@ -3,7 +3,8 @@ description: |
   One round of the auto-drive-to-merge crusty loop: put the PR in front of the
   `crusty-old-engineer` skill acting as the maintainer's proxy, read its
   STRUCTURED verdict, address every concern it raised, and record a
-  machine-checkable round record. An all-minor CONCERNS is MINOR_ONLY (#1979).
+  machine-checkable round record. An all-minor CONCERNS is MINOR_ONLY only when
+  autodrive_minor_findings is follow_up (#1979, #2391); by default it is addressed.
 
   This brick performs exactly ONE round and contains no loop of its own. The
   loop lives in autodrive-crusty-loop.yaml. Its completion-first dispatcher
@@ -44,6 +45,8 @@ context:
   autodrive_resolved_concerns_file: ""
   # Issue #1561: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
   crusty_fix_evidence: ""
+  # #2391: follow_up ends the loop on MINOR_ONLY; anything else (empty = address) addresses minors.
+  autodrive_minor_findings: ""
 
 steps:
   # Judging agents start outside the tree under review (#1528): autodrive_worktree_guard.sh.
@@ -232,11 +235,11 @@ steps:
         COUNT="$(grep -c . "${RECORD}.findings" 2>/dev/null || true)"
       fi
       case "$COUNT" in ''|*[!0-9]*) COUNT=0 ;; esac
-      # Issue #1979: a crusty CONCERNS whose findings are all minor is MINOR_ONLY
-      # (autodrive_followups.sh classify, from the launch tools only); COUNT is then the number in <record>.minor.
+      # #1979/#2391: only under autodrive_minor_findings=follow_up (exact; never echoed) is an all-minor
+      # CONCERNS MINOR_ONLY (autodrive_followups.sh classify, launch tools only); COUNT is then <record>.minor.
       FU="${AUTODRIVE_LAUNCH_TOOLS:-}"
       FU="/${FU#/}/autodrive_followups.sh"
-      if [ "$VERDICT" = CONCERNS ] && [ "$SOURCE" = crusty ] && [ -n "$RECORD" ]; then
+      if [ "${AUTODRIVE_MINOR_FINDINGS:-}" = follow_up ] && [ "$VERDICT" = CONCERNS ] && [ "$SOURCE" = crusty ] && [ -n "$RECORD" ]; then
         if [ ! -f "$FU" ]; then
           echo "WARNING: autodrive_followups.sh not found under AUTODRIVE_LAUNCH_TOOLS; minor findings are not classified and CONCERNS stands." >&2
         elif [ "$(printf '%s' "$CONCERNS" | bash "$FU" classify --record "$RECORD" --state-dir "$(dirname -- "$RECORD")")" = MINOR_ONLY ]; then
@@ -265,7 +268,8 @@ steps:
 
       ## What to do
 
-      Work through the `concerns` array. For each one, either fix the cause or
+      Work through the `concerns` array: every concern, minor ones included,
+      is in scope. For each one, either fix the cause or
       — where the concern rests on a mistaken reading — make the code or the
       docs say plainly what crusty misread, so the next round has the evidence.
       Neither of those is an argument in a comment thread: the change lands in
@@ -360,12 +364,13 @@ steps:
       Assess whether this Crusty review objective is complete BEFORE asking
       for convergence evaluation (SR-103). Read the round record at
       {{autodrive_round_record}} and its .findings, .minor and .severity sidecars.
+      MINOR_ONLY occurs only when autodrive_minor_findings is follow_up.
       CLEAN and MINOR_ONLY complete the review objective when the current
       reviewed-head evidence is valid. Repeated completed reviews in history
       do not mean nonconvergence. Select complete for either completed state.
       MINOR_ONLY requires follow-up recording in the separate phase finalizer;
       that finalizer must succeed before advancement to merge-ready.
-      Select evaluate only while blocking or major concerns remain unresolved.
+      Select evaluate while blocking, major or (under address) minor concerns remain unresolved.
       Missing evidence, failed execution, or terminal refusal (exit 79) cannot
       justify completion. If evidence is invalid, stop with a visible error.
 

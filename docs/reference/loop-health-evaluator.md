@@ -13,8 +13,11 @@ work?** It looks at the accumulated evidence of the loop and emits one
 structured verdict — `CONTINUE`, `DONE`, or `STUCK`.
 
 Auto-drive Crusty reviews check objective completion before invoking this
-brick. An evidence-valid `CLEAN` or `MINOR_ONLY` ends review iteration without
-an evaluator call; required follow-up recording still gates phase completion.
+brick. An evidence-valid `CLEAN`, or `MINOR_ONLY` when the caller sets
+`autodrive_minor_findings=follow_up`, ends review iteration without an
+evaluator call; required follow-up recording still gates phase completion.
+Under the default, `address`, a review with only minor findings left is
+unresolved and reaches this evaluator like any other.
 This also applies to Crusty rereviews between merge-ready rounds. The
 merge-ready loop's own evaluator policy is unchanged. See the
 [Crusty completion contract](autodrive-crusty-completion.md).

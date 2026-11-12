@@ -253,7 +253,12 @@ fn run_step(e: &Env, id: &str, tools: &Path, env: &[(&str, &str)]) -> Output {
 }
 
 fn step03(e: &Env, tools: &Path, review: &str, env: &[(&str, &str)]) -> Output {
-    let mut v = vec![("RECIPE_VAR_crusty_review", review)];
+    // #2391: these cases were written for minor findings ending the loop,
+    // which is the follow_up setting; a caller's `env` may override it.
+    let mut v = vec![
+        ("RECIPE_VAR_crusty_review", review),
+        ("AUTODRIVE_MINOR_FINDINGS", "follow_up"),
+    ];
     v.extend_from_slice(env);
     run_step(e, STEP03, tools, &v)
 }

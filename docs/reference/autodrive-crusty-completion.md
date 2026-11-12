@@ -12,9 +12,14 @@ doc_type: reference
 > [Home](../index.md) > [Auto Drive To Merge](auto-drive-to-merge.md) > Crusty Completion
 
 Auto-drive checks whether the Crusty review objective is complete before
-dispatching the loop-health evaluator. An evidence-valid `CLEAN` or
-`MINOR_ONLY` round completes review iteration without an evaluator call.
-Required follow-up recording then gates phase completion.
+dispatching the loop-health evaluator. An evidence-valid `CLEAN` round
+completes review iteration without an evaluator call. So does an
+evidence-valid `MINOR_ONLY` round, which exists only when the caller sets
+`autodrive_minor_findings=follow_up`; required follow-up recording then gates
+phase completion. Under the default, `address`, an all-minor round is
+`CONCERNS` and goes to remediation and evaluation like any other unresolved
+review (see
+[the `autodrive_minor_findings` setting](auto-drive-to-merge.md#the-autodrive_minor_findings-setting)).
 
 This contract applies to both the primary Crusty loop and Crusty rereviews
 started between merge-ready rounds. It also applies when
@@ -39,8 +44,8 @@ After the round record is written, an agent selects the next action:
 | Current review state | Action | Next step |
 | --- | --- | --- |
 | Successful, evidence-valid `CLEAN` | `complete` | Finalize required follow-ups, then record phase completion. |
-| Successful, evidence-valid `MINOR_ONLY` | `complete` | File or verify every minor follow-up before recording phase completion. |
-| Blocking or major concerns remain | `evaluate` | Retain remediation, progress and budget checks, then evaluate convergence where applicable. |
+| Successful, evidence-valid `MINOR_ONLY` (only under `follow_up`) | `complete` | File or verify every minor follow-up before recording phase completion. |
+| Blocking or major concerns remain, or, under `address`, minor concerns remain | `evaluate` | Retain remediation, progress and budget checks, then evaluate convergence where applicable. |
 | Missing or invalid evidence, unsuccessful child, or terminal refusal | Cannot authorize completion | Fail visibly or preserve the applicable failure handling. |
 
 Completed reviews repeated in persisted history or within the same run are

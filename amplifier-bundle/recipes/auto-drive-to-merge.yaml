@@ -91,9 +91,15 @@ context:
 
   # When "true", the merge gate verifies everything and reports what it WOULD
   # merge without merging. Every other guarantee is unchanged. No follow-up
-  # issue is filed (#1979), so a MINOR_ONLY drive ends NOT_MERGED with
-  # followup-missing:<id> for each minor finding.
+  # issue is filed (#1979), so a MINOR_ONLY drive (autodrive_minor_findings
+  # follow_up) ends NOT_MERGED with followup-missing:<id> for each minor finding.
   autodrive_dry_run: "false"
+
+  # #2391: what the Crusty loop does with minor findings. "address" (the
+  # default) addresses every finding, minor ones included, and loops until
+  # CLEAN. "follow_up" ends the loop on MINOR_ONLY and files one linked
+  # follow-up issue per minor finding (#1979). Any other value means address.
+  autodrive_minor_findings: "address"
 
   # Phase 1 never merges; auto-drive owns the merge decision.
   no_merge: "true"
@@ -207,6 +213,7 @@ steps:
       plan_task_id: "{{plan_task_id}}"
       autodrive_state_dir: "{{build_result.state_dir}}"
       autodrive_dry_run: "{{autodrive_dry_run}}"
+      autodrive_minor_findings: "{{autodrive_minor_findings}}"
       autodrive_budget_loop_rounds: "{{autodrive_budget_loop_rounds}}"
       autodrive_budget_total_rounds: "{{autodrive_budget_total_rounds}}"
       autodrive_budget_wall_seconds: "{{autodrive_budget_wall_seconds}}"
@@ -255,6 +262,7 @@ steps:
       plan_task_id: "{{plan_task_id}}"
       autodrive_state_dir: "{{build_result.state_dir}}"
       autodrive_dry_run: "{{autodrive_dry_run}}"
+      autodrive_minor_findings: "{{autodrive_minor_findings}}"
       autodrive_budget_loop_rounds: "{{autodrive_budget_loop_rounds}}"
       autodrive_budget_total_rounds: "{{autodrive_budget_total_rounds}}"
       autodrive_budget_wall_seconds: "{{autodrive_budget_wall_seconds}}"

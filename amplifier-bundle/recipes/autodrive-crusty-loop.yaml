@@ -2,17 +2,18 @@ name: "autodrive-crusty-loop"
 description: |
   Phase 2 of auto-drive-to-merge: iterate `autodrive-crusty-round` — the
   `crusty-old-engineer` skill acting as the maintainer's proxy — until crusty
-  reports CLEAN, or reports minor findings only (MINOR_ONLY, issue #1979), or
-  until the agentic loop-health evaluator says the loop has stopped making
-  progress. Any blocking or major finding keeps the loop going. When the loop
-  ends on MINOR_ONLY, step-03 files one follow-up issue per minor finding,
-  linked to the plan task, before the phase is recorded; if they cannot be
-  filed, the phase is not recorded and the drive cannot become READY.
+  reports CLEAN, or until the agentic loop-health evaluator says the loop has
+  stopped making progress. By default (autodrive_minor_findings=address, #2391)
+  every finding, minor ones included, is addressed and keeps the loop going.
+  With autodrive_minor_findings=follow_up, minor findings only (MINOR_ONLY,
+  issue #1979) also end the loop, and step-03 files one follow-up issue per
+  minor finding, linked to the plan task, before the phase is recorded; if
+  they cannot be filed, the phase is not recorded and the drive cannot become READY.
 
   There is NO iteration cap here. Not a max-rounds integer, not a backstop.
   The operator's usage budget (#1743) is a resumable cost ceiling, not the
   convergence terminator. An agent assesses objective completion first.
-  Evidence-valid CLEAN or MINOR_ONLY completes iteration without an evaluator.
+  Evidence-valid CLEAN (or MINOR_ONLY under follow_up) completes iteration without an evaluator.
   For unresolved reviews, `loop-health-evaluator` (issue #1337) reads measured
   evidence — recurring concerns and changed signals — and answers CONTINUE /
   DONE / STUCK. Absence of progress stops the loop; number of attempts does not.
@@ -60,6 +61,8 @@ context:
   autodrive_budget_loop_rounds: ""
   autodrive_budget_total_rounds: ""
   autodrive_budget_wall_seconds: ""
+  # #2391: address (empty means address) or follow_up; normalised in step-02.
+  autodrive_minor_findings: ""
   crusty_loop_result: ""
 
 steps:
@@ -236,10 +239,21 @@ steps:
       TASK_IN="$(umask 077; mktemp)" || exit 1
       trap 'rm -f -- "$TASK_IN"' EXIT
       write_context_value task_description "$TASK_IN" || { echo "ERROR: task_description unavailable" >&2; exit 1; }
+      # #2391: autodrive_minor_findings, trimmed and allow-listed. Twin of the block
+      # in autodrive_crusty_rereview.sh; keep the two identical.
+      MF="${RECIPE_VAR_autodrive_minor_findings:-}"
+      MF="${MF#"${MF%%[![:space:]]*}"}"; MF="${MF%"${MF##*[![:space:]]}"}"
+      case "$MF" in
+        follow_up|address) ;;
+        '') MF=address ;;
+        *) printf "WARNING: autodrive_minor_findings='%s' is not recognised; using 'address'\n" "$(printf '%s' "$MF" | tr -d '[:cntrl:]')" >&2
+           MF=address ;;
+      esac
+      ALSO_CLEAN=(); [ "$MF" != follow_up ] || ALSO_CLEAN=(--also-clean-token MINOR_ONLY)
       bash "$LOOP_HELPER" --task-file "$TASK_IN" \
         --loop-name "crusty" \
         --round-recipe "$ROUND_RECIPE" \
-        --clean-token "CLEAN" --also-clean-token MINOR_ONLY \
+        --clean-token "CLEAN" ${ALSO_CLEAN[@]+"${ALSO_CLEAN[@]}"} \
         --verdict-field "crusty_verdict" \
         --repo "$PR_WORKTREE" \
         --review-dir "$REVIEW_DIR" \
@@ -247,6 +261,7 @@ steps:
         --context "repo_path=$PR_WORKTREE" \
         --context "pr_number=${PR}" \
         --context "pr_url=${PR_URL:-}" \
+        --context "autodrive_minor_findings=${MF}" \
         --context "autodrive_budget_loop_rounds=${RECIPE_VAR_autodrive_budget_loop_rounds:-}" \
         --context "autodrive_budget_total_rounds=${RECIPE_VAR_autodrive_budget_total_rounds:-}" \
         --context "autodrive_budget_wall_seconds=${RECIPE_VAR_autodrive_budget_wall_seconds:-}"
