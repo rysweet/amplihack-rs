@@ -34,11 +34,14 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Production sources only: test files may name the files they create.
+/// Production sources only: test files may name the files they create. A
+/// test file is `tests_*.rs`, `*_tests.rs` or `tests.rs`; every `tests.rs`
+/// under `src` is a `#[cfg(test)]` module (for example
+/// `orch/autodrive/tests.rs`, included by `orch.rs`).
 fn is_test_file(p: &Path) -> bool {
     p.file_name()
         .and_then(|n| n.to_str())
-        .is_some_and(|n| n.starts_with("tests_") || n.ends_with("_tests.rs"))
+        .is_some_and(|n| n == "tests.rs" || n.starts_with("tests_") || n.ends_with("_tests.rs"))
 }
 
 #[test]

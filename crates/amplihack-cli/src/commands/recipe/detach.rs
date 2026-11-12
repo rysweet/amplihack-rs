@@ -48,8 +48,8 @@ use amplihack_utils::agent_binary::{
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use super::run_identity::RUN_ID_ENV;
 use super::detached_record;
+use super::run_identity::RUN_ID_ENV;
 use crate::user_config::safe::{display_safe, read_bounded};
 
 /// Variables the pane gets from tmux itself, kept from the pane's own

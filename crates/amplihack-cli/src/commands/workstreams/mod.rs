@@ -50,8 +50,8 @@ use crate::commands::recipe::autodrive_paths::{
     CRUSTY_ROUND_PREFIX, MERGE_READY_ROUND_PREFIX, concern_count, round_count, state_dir,
     state_key, state_root,
 };
-use crate::commands::recipe::run_identity::caller_identity_from_env;
 use crate::commands::recipe::detached_record::{self, RunRecord};
+use crate::commands::recipe::run_identity::caller_identity_from_env;
 use discover::Discovered;
 use manifest::ManifestRow;
 use render::{LoginsSection, PrCell, Snapshot, WorkRow};

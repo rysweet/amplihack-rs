@@ -242,6 +242,6 @@ mod recipe_tests;
 #[cfg(test)]
 mod tests_autodrive_paths;
 #[cfg(test)]
-mod tests_run_identity;
-#[cfg(test)]
 mod tests_detached_record;
+#[cfg(test)]
+mod tests_run_identity;

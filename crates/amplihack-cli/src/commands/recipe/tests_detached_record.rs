@@ -22,11 +22,11 @@
 //! - `repo_slug(origin_url)` is the GitHub `owner/name`, never the URL.
 //! - `origin_repo(dir, timeout)` reads `origin` with a bounded git call.
 
-use super::run::{FAILURE_CLASS_MARKER_PREFIX, FailureClass};
 use super::detached_record::{
     Outcome, RunRecord, build, classify_tail, origin_repo, read, read_owned_by, read_tail,
     record_path, repo_slug, write_new, write_outcome,
 };
+use super::run::{FAILURE_CLASS_MARKER_PREFIX, FailureClass};
 use chrono::{TimeZone, Utc};
 use serde_json::{Map, Value, json};
 use std::fs;
