@@ -74,7 +74,8 @@ fn independently_allocated_reviews_in_one_state_directory_release_only_their_own
     fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
     let mut checkouts = Vec::new();
     for _ in 0..2 {
-        let mut command = Command::new(crate::support::amplihack_bin::amplihack_bin());
+        let mut command =
+            crate::isolated_amplihack::isolated(crate::support::amplihack_bin::amplihack_bin());
         f.environment(&mut command);
         let output = command
             .args(["internal", "review-allocate"])
@@ -94,7 +95,8 @@ fn independently_allocated_reviews_in_one_state_directory_release_only_their_own
     ));
     assert!(!checkouts[0].exists());
     assert!(checkouts[1].is_dir());
-    let mut command = Command::new(crate::support::amplihack_bin::amplihack_bin());
+    let mut command =
+        crate::isolated_amplihack::isolated(crate::support::amplihack_bin::amplihack_bin());
     f.environment(&mut command);
     succeeds(
         &command
@@ -122,7 +124,8 @@ fn legacy_main_review_input_becomes_an_owned_pr_generation_and_releases_from_sta
     fs::create_dir(&state).unwrap();
     fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
     let before = f.snapshot();
-    let mut command = Command::new(crate::support::amplihack_bin::amplihack_bin());
+    let mut command =
+        crate::isolated_amplihack::isolated(crate::support::amplihack_bin::amplihack_bin());
     f.environment(&mut command);
     let made = command
         .args(["internal", "review-next"])
@@ -138,7 +141,8 @@ fn legacy_main_review_input_becomes_an_owned_pr_generation_and_releases_from_sta
         f.git_in(&checkout, &["rev-parse", "HEAD"]),
         f.git_in(&pr, &["rev-parse", "HEAD"])
     );
-    let mut command = Command::new(crate::support::amplihack_bin::amplihack_bin());
+    let mut command =
+        crate::isolated_amplihack::isolated(crate::support::amplihack_bin::amplihack_bin());
     f.environment(&mut command);
     succeeds(
         &command
@@ -162,7 +166,8 @@ fn round_publication_binds_the_recorded_commit_and_generation() {
         b"{\"blocker_count\":2,\"merge_ready_verdict\":\"NOT_MERGE_READY\"}",
     )
     .unwrap();
-    let mut command = Command::new(crate::support::amplihack_bin::amplihack_bin());
+    let mut command =
+        crate::isolated_amplihack::isolated(crate::support::amplihack_bin::amplihack_bin());
     f.environment(&mut command);
     let output = command
         .args(["internal", "review-bind-record"])
@@ -199,7 +204,8 @@ fn conflicting_review_commit_is_not_rewritten_during_publication() {
     let record = f.root.join("round.json");
     let bytes = b"{\"reviewed_head_sha\":\"0000000000000000000000000000000000000000\"}";
     fs::write(&record, bytes).unwrap();
-    let mut command = Command::new(crate::support::amplihack_bin::amplihack_bin());
+    let mut command =
+        crate::isolated_amplihack::isolated(crate::support::amplihack_bin::amplihack_bin());
     f.environment(&mut command);
     let output = command
         .args(["internal", "review-bind-record"])

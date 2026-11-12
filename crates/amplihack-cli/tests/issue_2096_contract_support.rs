@@ -15,7 +15,7 @@ pub(super) fn driver() -> &'static Path {
                 .args(["--edition=2024", "--crate-name", "issue_2096_driver"])
                 .arg(
                     Path::new(env!("CARGO_MANIFEST_DIR"))
-                        .join("tests/fixtures/issue_2096/runner.rs"),
+                        .join("test-fixtures/issue_2096/runner.rs"),
                 )
                 .arg("-o")
                 .arg(&binary)

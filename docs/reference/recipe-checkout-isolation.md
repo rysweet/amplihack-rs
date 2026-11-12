@@ -120,13 +120,18 @@ caller's `--working-dir`, because that identifies the run. Execution happens
 in a private `exec dir` that belongs to one attempt:
 
 - A resumed run prepares a fresh checkout before its first step. It never
-  reuses a checkout an earlier attempt removed.
+  reuses the contents of a checkout an earlier attempt removed.
 - The recovery descriptor is written in the run folder. A descriptor path that
   resolves inside the `exec dir` is refused.
-- Step fingerprints include the `exec dir` path, so replay re-runs steps that
-  depend on the checkout instead of reusing their results. This is safe but
-  repeats work; keying the repository resource on the caller identity is
-  follow-up [#2493](https://github.com/rysweet/amplihack-rs/issues/2493).
+- A run with a recovery identity prepares each attempt's checkout at
+  `<work root>/exec/<identity>/`, so every attempt presents the same
+  repository path and replay can reuse steps that depend on the checkout
+  ([#2493](https://github.com/rysweet/amplihack-rs/issues/2493)). The path is
+  created new by each attempt and removed at release. If an earlier attempt
+  still holds it (a killed attempt, or durable worktrees in its private
+  repository), the new attempt says so and uses a fresh random path; replay
+  then re-runs the checkout-dependent steps. A run without an identity always
+  uses a random path.
 
 Each attempt keeps its own recording. A later successful attempt does not
 remove an earlier attempt's evidence.

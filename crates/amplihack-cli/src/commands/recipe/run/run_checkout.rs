@@ -38,14 +38,21 @@ impl RunCheckout {
         reason = "direct component contracts import this source module separately"
     )]
     pub(crate) fn prepare(working_dir: &Path, scratch: &Path, dry_run: bool) -> Result<Self> {
-        Self::prepare_with_inputs(working_dir, scratch, dry_run, &[])
+        Self::prepare_with_inputs(working_dir, scratch, dry_run, &[], None)
     }
 
+    /// `stable_storage`, when given, is where this attempt's private
+    /// repository and checkout are created: a path derived from the run's
+    /// recovery identity, so a relaunch prepares its fresh checkout at the same
+    /// path and replay can match checkout-dependent steps. It must not exist;
+    /// when an earlier attempt still holds it (durable dependencies, or an
+    /// attempt that was killed), this attempt uses a fresh random path instead.
     pub(crate) fn prepare_with_inputs(
         working_dir: &Path,
         scratch: &Path,
         dry_run: bool,
         inputs: &[PathBuf],
+        stable_storage: Option<&Path>,
     ) -> Result<Self> {
         if dry_run {
             return Ok(Self::Caller(
@@ -106,10 +113,17 @@ impl RunCheckout {
         let parent = scratch
             .parent()
             .context("runtime directory has no parent")?;
-        let storage = tempfile::Builder::new()
-            .prefix("execution-")
-            .tempdir_in(parent)?
-            .keep();
+        let storage = match stable_storage {
+            Some(stable) => claim_stable_storage(stable)?,
+            None => None,
+        };
+        let storage = match storage {
+            Some(storage) => storage,
+            None => tempfile::Builder::new()
+                .prefix("execution-")
+                .tempdir_in(parent)?
+                .keep(),
+        };
         let repository = storage.join("repository.git");
         let root = storage.join("checkout");
         let owner = uuid::Uuid::new_v4().to_string();
@@ -236,7 +250,16 @@ impl RunCheckout {
         };
         let mut mapped = BTreeMap::new();
         for (key, value) in context {
-            let path = Path::new(value);
+            // A symlink alias of the caller's checkout names the same files, so
+            // an existing absolute path is compared by its canonical form.
+            let canonical = Path::new(value)
+                .is_absolute()
+                .then(|| Path::new(value).canonicalize().ok())
+                .flatten();
+            let path = match &canonical {
+                Some(resolved) if resolved.starts_with(caller_top) => resolved.as_path(),
+                _ => Path::new(value),
+            };
             let replacement = if path.is_absolute() && path.starts_with(caller_top) {
                 if path
                     .components()
@@ -251,7 +274,7 @@ impl RunCheckout {
             } else {
                 if caller_top
                     .to_str()
-                    .is_some_and(|prefix| value.contains(prefix))
+                    .is_some_and(|prefix| embeds_path(value, prefix))
                 {
                     bail!(
                         "context {key} embeds a caller-checkout path in opaque text; pass the path as a separate context value"
@@ -418,4 +441,49 @@ fn git(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
         );
     }
     Ok(output.stdout)
+}
+/// Creates `stable` (mode 0700, exclusively) and its private parents.
+/// `Ok(None)` when it already exists: an earlier attempt still holds it.
+fn claim_stable_storage(stable: &Path) -> Result<Option<PathBuf>> {
+    use std::os::unix::fs::DirBuilderExt;
+    let parent = stable
+        .parent()
+        .context("stable execution path has no parent")?;
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(parent)
+        .with_context(|| format!("cannot create {}", parent.display()))?;
+    let metadata = fs::symlink_metadata(parent)
+        .with_context(|| format!("cannot inspect {}", parent.display()))?;
+    if !metadata.is_dir() || metadata.mode() & 0o077 != 0 {
+        bail!(
+            "execution storage parent {} must be a private directory (mode 0700)",
+            parent.display()
+        );
+    }
+    match fs::DirBuilder::new().mode(0o700).create(stable) {
+        Ok(()) => Ok(Some(stable.to_path_buf())),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            eprintln!(
+                "amplihack: {} is still held by an earlier attempt; this attempt uses a fresh \
+                 execution path, so recovery replay re-runs steps that depend on the checkout",
+                stable.display()
+            );
+            Ok(None)
+        }
+        Err(error) => Err(error)
+            .with_context(|| format!("cannot create execution storage {}", stable.display())),
+    }
+}
+/// Whether `text` contains `root` as a whole path: followed by `/` or by the
+/// end of a path (end of text, whitespace, a quote or another delimiter), not
+/// as the prefix of a longer name such as `<root>-alias`.
+fn embeds_path(text: &str, root: &str) -> bool {
+    text.match_indices(root).any(|(at, _)| {
+        text[at + root.len()..]
+            .chars()
+            .next()
+            .is_none_or(|next| !(next.is_alphanumeric() || matches!(next, '-' | '_' | '.')))
+    })
 }

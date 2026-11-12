@@ -169,11 +169,10 @@ check_review_dir() { # check_review_dir <who>: stops the loop unless REVIEW_STAM
 PRE="$(bash "${LOOP_HOME}/autodrive_worktree_guard.sh" loop-preflight \
   "$LOOP_NAME" "$REPO" "$REVIEW_DIR" "$(basename "$ROUND_RECIPE" .yaml)" "$CTX_REFUSED")" || { printf '%s\n' "$PRE"; exit 1; }
 { read -r REVIEW_REAL; read -r ROUND_RECIPE_PATH; read -r HEALTH_RECIPE_PATH; } <<<"$PRE"
-# Every independently launched loop owns its generation, including a nested
-# re-review using the same evidence directory. A child never releases the
-# parent's generation or its registry.
+# Each independently launched loop (nested re-reviews too) owns its generation;
+# a child never releases the parent's generation or its registry.
 REVIEW_OWNED="$("$AMPLIHACK_BIN" internal review-allocate "$REPO" "$STATE_DIR")" || exit 1
-trap 'rc=$?; "$AMPLIHACK_BIN" internal review-release "$REVIEW_OWNED" || rc=1; exit "$rc"' EXIT
+trap 'rc=$?; "$AMPLIHACK_BIN" internal review-release "$REVIEW_OWNED" || rc=1; rm -f -- "${TASK_FILE:-}"; exit "$rc"' EXIT # keeps #1570's task-copy removal
 REVIEW_REAL="$REVIEW_OWNED"
 # --- preflight: the terminator must resolve BEFORE round 1 (why: see the ERROR)
 if [ -z "$HEALTH_RECIPE_PATH" ] || ! "$AMPLIHACK_BIN" recipe show "$HEALTH_RECIPE_PATH" >/dev/null 2>&1; then
@@ -260,7 +259,7 @@ while :; do
       -c "autodrive_round_record=${RECORD}" \
       -c "autodrive_round_label=${ROUND_LABEL}" \
       -c "autodrive_resolved_concerns_file=${STATE_DIR}/resolved-concerns.txt" \
-      ${COMPLETION_CTX[@]+"${COMPLETION_CTX[@]}"} "${ROUND_CTX[@]}" -c "review_dir=${REVIEW_REAL}" -c "review_launch_dir=${REVIEW_LAUNCH}" -c "reviewed_head_sha=${REVIEWED_SHA}" -c "autodrive_launch_tools=${LOOP_HOME}" ) >"$LOG" 2>&1
+      ${COMPLETION_CTX[@]+"${COMPLETION_CTX[@]}"} "${ROUND_CTX[@]}" -c "repo_path=${REPO}" -c "review_dir=${REVIEW_REAL}" -c "review_launch_dir=${REVIEW_LAUNCH}" -c "reviewed_head_sha=${REVIEWED_SHA}" -c "autodrive_launch_tools=${LOOP_HOME}" ) >"$LOG" 2>&1
   ROUND_RC=$?; usage_add round "$T0"
   tail -n 200 "$LOG" >&2 || true; orphan_stop "$ROUND_RC" "round ${ROUND_LABEL}" # exit 75 (#1976)
 

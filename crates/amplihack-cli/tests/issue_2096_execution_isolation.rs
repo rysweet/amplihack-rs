@@ -39,6 +39,11 @@ mod review_isolation;
 /// `--recovery-descriptor` argument, when given, to `descriptor`.
 const STUB_RUNNER: &str = r#"#!/bin/sh
 set -eu
+# The launch-time capability probe (runner_validation::probe).
+if [ "${1:-}" = --capabilities ]; then
+  printf '%s\n' '{"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]}'
+  exit 0
+fi
 out="$ISSUE_2096_OBSERVATIONS"
 mkdir -p "$out"
 printf '%s' "$(pwd -P)" > "$out/startup_cwd"
@@ -659,10 +664,13 @@ fn a_failed_run_finishes_checkout_recording_admission_and_workspace() {
     );
 }
 
-/// A relaunch with the same identity after a failure gets a new private
-/// checkout; the first one is gone and is never reused. The recovery
-/// descriptor lives in the run folder, never inside the checkout, and the
-/// caller's checkout is unchanged by either launch.
+/// A relaunch with the same identity after a failure gets a freshly prepared
+/// private checkout: the first one is removed when its attempt ends, and the
+/// relaunch starts at the caller's HEAD, not at the commit the first attempt
+/// made. Both attempts use the path derived from the recovery identity, so
+/// replay sees the same repository path (#2493). The recovery descriptor lives
+/// in the run folder, never inside the checkout, and the caller's checkout is
+/// unchanged by either launch.
 #[test]
 fn a_relaunch_after_a_failure_gets_a_fresh_checkout_and_leaves_the_caller_unchanged() {
     let f = Fixture::new();
@@ -696,9 +704,9 @@ fn a_relaunch_after_a_failure_gets_a_fresh_checkout_and_leaves_the_caller_unchan
     let second_run = f.new_run_folder(&before);
     let second_cwd = PathBuf::from(String::from_utf8(f.observed("second", "cwd")).unwrap());
 
-    assert_ne!(
+    assert_eq!(
         first_cwd, second_cwd,
-        "the relaunch reused the first checkout"
+        "both attempts of one recovery identity use its stable execution path"
     );
     assert_ne!(
         second_cwd, f.repo,

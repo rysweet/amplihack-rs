@@ -231,13 +231,15 @@ if [ "${1:-}" = "recipe" ] && [ "${2:-}" = "run" ]; then
   esac; done
   fixture_next_action() {
     [ -n "${AUTODRIVE_COMPLETION_STATE:-}" ] && [ -f "$RECORD" ] || return 0
-    local wt="" label="" previous=""
+    local wt="" repo="" label="" previous=""
     for a in "$@"; do
       [ "$previous" != --working-dir ] || wt="$a"
-      case "$a" in autodrive_round_label=*) label="${a#*=}" ;; esac
+      case "$a" in autodrive_round_label=*) label="${a#*=}" ;; repo_path=*) repo="${a#*=}" ;; esac
       previous="$a"
     done
-    local head="$(git -C "$wt" rev-parse HEAD)" action=evaluate
+    # The PR head lives in repo_path; since #2096 the judging round starts in
+    # the review generation's trusted launch dir, which is not the PR checkout.
+    local head="$(git -C "${repo:-$wt}" rev-parse HEAD)" action=evaluate
     # Legacy fixture records lack the mechanical head/round fields. Supply
     # authentic fixture measurements at the recipe execution boundary.
     if [ ! -f "${AUTODRIVE_COMPLETION_STATE%.json}.evidence" ]; then

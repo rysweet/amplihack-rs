@@ -576,6 +576,14 @@ impl RunWorkspace {
         }
     }
 
+    /// The work root of a durable run, or `None` for a dry run.
+    pub(crate) fn work_root_path(&self) -> Option<PathBuf> {
+        match self {
+            Self::Scoped { scope, .. } => Some(scope.work_root.path.clone()),
+            Self::Legacy { .. } => None,
+        }
+    }
+
     /// The durable run folder `<work root>/runs/<run id>/`, or `None` for a
     /// legacy run that has only a temporary folder (issue #2096).
     pub(crate) fn run_dir(&self) -> Option<&Path> {

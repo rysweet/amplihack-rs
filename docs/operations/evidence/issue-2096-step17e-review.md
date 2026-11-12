@@ -74,8 +74,10 @@ description and CI; whether issue #2096 closes is decided at the merge gate.
    are removed, because no step runs in the caller's checkout.
 5. Lifecycle: early failures finish the recovery admission as `Failure`;
    release runs in the order checkout, recording, admission, workspace, with
-   every error kept; resumed runs prepare a fresh execution checkout. Test
-   helpers fail on I/O errors and non-zero exits.
+   every error kept; resumed runs prepare a fresh execution checkout at a
+   path derived from the recovery identity, so replay can still reuse
+   checkout-dependent steps (#2493). Test helpers fail on I/O errors and
+   non-zero exits.
 
 The current contract is in
 [recipe checkout isolation](../../reference/recipe-checkout-isolation.md).

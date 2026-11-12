@@ -692,11 +692,24 @@ pub(super) fn execute_recipe_via_rust_fresh(
             );
         }
     };
+    // A run with a recovery identity (its own admission, or a nested run under
+    // its parent's delegated recovery) prepares each attempt's fresh checkout
+    // at a path derived from that identity, so a relaunch presents the same
+    // repository path and replay can reuse checkout-dependent steps (#2493).
+    let recovering = admission.is_some() || delegated.is_some();
+    let stable_storage = match (recovering, workspace.borrow().work_root_path()) {
+        (true, Some(root)) => {
+            super::recovery::identity(recipe_path, &recipe_name, working_dir, context)
+                .map(|identity| root.join("exec").join(&identity[..identity.len().min(32)]))
+        }
+        _ => None,
+    };
     let mut checkout = match super::run_checkout::RunCheckout::prepare_with_inputs(
         working_dir,
         &scratch,
         dry_run,
         &[recipe_path.to_path_buf()],
+        stable_storage.as_deref(),
     ) {
         Ok(checkout) => checkout,
         Err(error) => {
@@ -711,10 +724,12 @@ pub(super) fn execute_recipe_via_rust_fresh(
     };
     let exec_dir = checkout.exec_dir().to_path_buf();
     // The recovery descriptor lives in the run folder; one inside the private
-    // checkout would be state a step could rewrite (S-AZ4).
+    // checkout would be state a step could rewrite (S-AZ4). A run outside Git
+    // executes in the caller's own directory, which may hold the work root,
+    // so only a private checkout is checked.
     let descriptor_outside_checkout = || -> Result<()> {
         if let Some(admission) = &admission
-            && !dry_run
+            && matches!(checkout, super::run_checkout::RunCheckout::Private { .. })
         {
             let descriptor = admission.descriptor_path();
             let parent = descriptor

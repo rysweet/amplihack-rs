@@ -2,6 +2,8 @@
 
 pub const SHIM: &str = r#"#!/usr/bin/env bash
 set -uo pipefail
+# The loop allocates, validates and releases its review generation (#2096).
+if [ "${1:-}" = internal ]; then exec "$REAL_AMPLIHACK" "$@"; fi
 if [ "${1:-} ${2:-}" = 'orch helper' ]; then
   if [[ "${3:-}" == autodrive-completion-* ]] && [ -f "$FIXTURE/no-completion-helper" ]; then
     echo 'error: unsupported completion helper; update amplihack' >&2; exit 2

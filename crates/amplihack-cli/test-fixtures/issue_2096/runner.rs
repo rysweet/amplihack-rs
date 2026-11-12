@@ -28,6 +28,13 @@ fn git(args: &[&str], clean_environment: bool) -> std::process::Output {
 
 fn main() {
     let arguments: Vec<_> = env::args_os().collect();
+    // The launch-time capability probe (runner_validation::probe).
+    if arguments.get(1).is_some_and(|a| a == "--capabilities") {
+        println!(
+            r#"{{"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]}}"#
+        );
+        return;
+    }
     if std::path::Path::new(&arguments[0]).file_name() == Some(std::ffi::OsStr::new("gh")) {
         let expected: Vec<_> = [
             "pr",

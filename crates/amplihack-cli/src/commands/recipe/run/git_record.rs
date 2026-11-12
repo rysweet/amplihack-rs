@@ -93,6 +93,9 @@ pub(crate) struct Entry {
 pub(crate) struct GitRecord {
     state: State,
     required: bool,
+    /// Runner launches attempted through `spawn`. Zero means no runner,
+    /// and so no step, ever ran.
+    spawned: std::cell::Cell<u32>,
 }
 
 #[derive(Debug)]
@@ -147,6 +150,7 @@ impl GitRecord {
         let State::Enabled { run_dir, trace_dir } = &self.state else {
             bail!("required Git recorder is unavailable");
         };
+        self.spawned.set(self.spawned.get() + 1);
         let path = trace_dir.join(format!("observer-{attempt_id}.jsonl"));
         let run_id = run_dir
             .file_name()
@@ -173,6 +177,7 @@ impl GitRecord {
             .and_then(|()| fs::set_permissions(&trace_dir, fs::Permissions::from_mode(0o700)));
         match created {
             Ok(()) => Self {
+                spawned: std::cell::Cell::new(0),
                 required: false,
                 state: State::Enabled {
                     run_dir: run_dir.to_path_buf(),
@@ -193,6 +198,7 @@ impl GitRecord {
 
     fn disabled() -> Self {
         Self {
+            spawned: std::cell::Cell::new(0),
             state: State::Disabled,
             required: false,
         }
@@ -251,6 +257,20 @@ impl GitRecord {
         let State::Enabled { run_dir, trace_dir } = self.state else {
             return Ok(());
         };
+        if self.required && self.spawned.get() == 0 {
+            // The run stopped before any runner started (a refused guard or
+            // context check): no step ran, so there is nothing to record.
+            return match fs::remove_dir(&trace_dir) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error).with_context(|| {
+                    format!(
+                        "cannot release unused recorder storage {}",
+                        trace_dir.display()
+                    )
+                }),
+            };
+        }
         let mut text = String::new();
         if self.required {
             let metadata = fs::symlink_metadata(&trace_dir)

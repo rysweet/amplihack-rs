@@ -829,6 +829,8 @@ T23_BIN="$WORK/t23-bin"; mkdir -p "$T23_BIN"
 cat > "$T23_BIN/amplihack" <<'STUB'
 #!/usr/bin/env bash
 [ "${1:-}" = orch ] && exec "$REAL_AMPLIHACK" "$@"
+# The loop allocates and releases its private review generation (#2096).
+[ "${1:-}" = internal ] && exec "$REAL_AMPLIHACK" "$@"
 [ "${1:-} ${2:-}" = "recipe show" ] && exec "$REAL_AMPLIHACK" "$@"
 [ "${1:-} ${2:-}" = "recipe run" ] || exit 3
 R="$3"; WD="."; REC=""; prev=""

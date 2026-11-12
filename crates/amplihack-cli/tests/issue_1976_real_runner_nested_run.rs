@@ -13,13 +13,15 @@
 //! 2. The nested run's own step, also under the real runner, writes a
 //!    readiness file and blocks reading a FIFO nobody writes.
 //! 3. The test kills the outer `recipe run` with `SIGKILL`, so it cannot tear
-//!    anything down. The outer step's shell lives on (the runner has its own
-//!    process group) and writes the nested run's exit code.
+//!    anything down. Since #2096 the outer run observes its whole runner tree
+//!    with ptrace and `PTRACE_O_EXITKILL`, so the kernel kills every process
+//!    it was observing: the nested run and both steps die with it, and nothing
+//!    outlives the run unobserved.
 //!
 //! The test asserts that the step saw the outer run's own pid and start time,
-//! and that the nested run stopped with exit 75 and the orphan line naming
-//! that pid. No sleeps and no wall-clock windows: the waits are the readiness
-//! file, the exit-code file and child exits.
+//! that no process of the nested run survives, and that the outer step never
+//! recorded an exit code. No sleeps and no wall-clock windows: the waits are
+//! the readiness file, child exits and the process table.
 //!
 //! The real runner is `RECIPE_RUNNER_QA_BINARY`, else `recipe-runner-rs` on
 //! `PATH`. Without one the test says so and returns, unless
@@ -105,7 +107,8 @@ impl Drop for Cleanup {
 }
 
 #[test]
-fn a_step_under_the_real_runner_gets_the_parent_variables_and_its_nested_run_stops_with_75() {
+fn a_step_under_the_real_runner_gets_the_parent_variables_and_its_nested_run_dies_with_the_observed_tree()
+ {
     let Some(runner) = real_runner() else {
         assert!(
             std::env::var_os(REQUIRE_ENV).is_none(),
@@ -243,14 +246,38 @@ fn a_step_under_the_real_runner_gets_the_parent_variables_and_its_nested_run_sto
     parent.kill().expect("SIGKILL the outer recipe run");
     wait_child("the outer recipe run to be reaped", &mut parent);
     cleanup.parent_pid = None;
-    wait_until("the nested run's exit code", || rc_file.is_file());
-    let rc = fs::read_to_string(&rc_file).unwrap();
-    let nested_err = fs::read_to_string(records.join("nested.stderr")).unwrap();
-    assert_eq!(rc.trim(), "75", "the nested run exits 75\n{nested_err}");
+    let marks = [inner.display().to_string(), fifo.display().to_string()];
+    wait_until("every process of the nested run to be gone", || {
+        processes_naming(&marks).is_empty()
+    });
     assert!(
-        nested_err.contains(&format!(
-            "orphaned: parent recipe run {parent_pid} exited; stopping"
-        )),
-        "the nested run names the orphan stop:\n{nested_err}"
+        !rc_file.exists(),
+        "the outer step outlived its observed run and recorded {:?}",
+        fs::read_to_string(&rc_file)
     );
+}
+
+/// Pids of live processes whose command line contains any of `marks`. A
+/// process that exits while it is read is not live, so a read error for it
+/// is skipped; an unreadable `/proc` fails the test.
+fn processes_naming(marks: &[String]) -> Vec<i32> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir("/proc").expect("read /proc") {
+        let entry = entry.expect("list /proc");
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|s| s.parse::<i32>().ok())
+        else {
+            continue;
+        };
+        let Ok(cmdline) = fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&cmdline);
+        if marks.iter().any(|mark| text.contains(mark.as_str())) {
+            found.push(pid);
+        }
+    }
+    found
 }

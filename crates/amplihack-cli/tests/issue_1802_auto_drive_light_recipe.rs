@@ -688,8 +688,8 @@ fn crusty_round_has_no_light_branch_in_any_step() {
     );
     assert_eq!(
         round["context"].as_mapping().unwrap().len(),
-        11,
-        "completion state is the only new context key on autodrive-crusty-round"
+        13,
+        "completion state (#2345) and the review generation's launch dir and commit (#2096) are the only new context keys on autodrive-crusty-round"
     );
 }
 
