@@ -658,7 +658,7 @@ fn hook_never_reads_target_link_roots() {
 /// the hook falls back to a temp folder. Returns the step-like runtime folder
 /// (`AMPLIHACK_WORKFLOW_RUNTIME_DIR`) and its `tmp/` (the step's `TMPDIR`).
 fn step_runtime(fx: &Fx) -> (PathBuf, PathBuf, PathBuf) {
-    let runtime = fx.root.join("runroot/amplihack-run-0123456789ab");
+    let runtime = fx.root.join("runroot/ahr-0123456789ab");
     let tmp = runtime.join("tmp");
     fs::create_dir_all(&tmp).unwrap();
     // A file, so `mkdir -p "$XDG_CACHE_HOME/amplihack"` fails.

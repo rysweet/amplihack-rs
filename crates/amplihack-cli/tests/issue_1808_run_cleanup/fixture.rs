@@ -156,7 +156,7 @@ impl Fx {
     }
 
     /// Issue #2291: a fixture whose root is at most 30 bytes, so a run's
-    /// `<root>/tmp/amplihack-run-<12 hex>/tmp` fits the 80-byte limit even
+    /// `<root>/tmp/ahr-<12 hex>/tmp` fits the 80-byte limit even
     /// when the test process has a long `TMPDIR`.
     pub fn new_short() -> Self {
         let short =
@@ -778,14 +778,14 @@ exit 7"#;
 
 /// The runtime folder a run with the caller `TMPDIR` `tmp` picks for `run_id`
 /// under `work` (issue #2291, D1). A `tmp` outside `work` is honoured:
-/// `<canonical tmp>/amplihack-run-<12 hex>`, unless its `tmp/` would pass
+/// `<canonical tmp>/ahr-<12 hex>`, unless its `tmp/` would pass
 /// 80 bytes. Otherwise the 80-byte rule of the default layout applies.
 pub fn expected_runtime_dir(work: &Path, run_id: &str, tmp: &Path) -> PathBuf {
     let short: String = run_id.chars().filter(|c| *c != '-').take(12).collect();
     let canon_tmp = fs::canonicalize(tmp).unwrap_or_else(|_| tmp.to_path_buf());
     let canon_work = fs::canonicalize(work).unwrap_or_else(|_| work.to_path_buf());
     if !canon_tmp.starts_with(&canon_work) {
-        let external = canon_tmp.join(format!("amplihack-run-{short}"));
+        let external = canon_tmp.join(format!("ahr-{short}"));
         if external.join("tmp").as_os_str().len() <= 80 {
             return external;
         }

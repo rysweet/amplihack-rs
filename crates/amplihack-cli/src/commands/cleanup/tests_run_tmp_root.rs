@@ -7,7 +7,8 @@
 //!
 //! Contract (nothing here reads the process environment):
 //! - `pub(crate) const RUN_TMP_ROOT_ENV: &str = "AMPLIHACK_RUN_TMP_ROOT";`
-//! - `pub(crate) const RUN_DIR_PREFIX: &str = "amplihack-run-";`
+//! - `pub(crate) const RUN_DIR_PREFIX: &str = "ahr-";`, so the part after the
+//!   root, `/ahr-<12 hex>/tmp`, is 21 bytes and a root of up to 59 bytes fits;
 //! - `pub(crate) struct TmpRootInputs { pub run_tmp_root: Option<OsString>,
 //!   pub tmpdir: Option<OsString>, pub parent_runtime_dir: Option<OsString>,
 //!   pub home: Option<PathBuf>, pub euid: u32 }`, with `Default` and
@@ -21,11 +22,11 @@
 //! - `pub(crate) fn choose_runtime_dir(work_root: &Path, run_id: &str,
 //!   inputs: &TmpRootInputs) -> Chosen`. `Default` holds exactly
 //!   `runtime_dir_for(work_root, run_id)`. `External` holds the canonical
-//!   root and `<root>/amplihack-run-<short_id>`, which the call has created
+//!   root and `<root>/ahr-<short_id>`, which the call has created
 //!   (non-recursive, mode 0700); `tmp/` and `artifacts/` are left to the
 //!   caller;
 //! - `pub(crate) fn external_dir_name(run_id: &str) -> Option<String>`:
-//!   `Some("amplihack-run-<12 hex>")`, `None` when the short id is shorter;
+//!   `Some("ahr-<12 hex>")`, `None` when the short id is shorter;
 //! - `pub(crate) fn usable_explicit_root(work_root: &Path,
 //!   inputs: &TmpRootInputs) -> Result<Option<PathBuf>, String>`: legacy
 //!   mode only; `Ok(None)` when the variable is unset or empty,
@@ -119,7 +120,7 @@ impl Fx {
     }
 }
 
-/// A temp folder whose canonical path leaves room for a 49-byte root.
+/// A temp folder whose canonical path leaves room for a 56-byte root.
 fn short_tempdir() -> tempfile::TempDir {
     let t = tempfile::tempdir().unwrap();
     if fs::canonicalize(t.path()).unwrap().as_os_str().len() <= 30 {
@@ -170,15 +171,21 @@ fn assert_warns(chosen: &Chosen, var: &str, reason: &str) {
 #[test]
 fn constants_name_the_variable_and_prefix() {
     assert_eq!(RUN_TMP_ROOT_ENV, "AMPLIHACK_RUN_TMP_ROOT");
-    assert_eq!(RUN_DIR_PREFIX, "amplihack-run-");
+    assert_eq!(RUN_DIR_PREFIX, "ahr-");
+}
+
+/// The per-run name is short so the macOS default `TMPDIR` (56 bytes once
+/// resolved) fits the 80-byte limit with room to spare.
+#[test]
+fn suffix_is_21_bytes_and_the_root_budget_59() {
+    assert_eq!(RUN_SUFFIX_BYTES, "/ahr-3f0c9a526d1e/tmp".len());
+    assert_eq!(RUN_SUFFIX_BYTES, 21);
+    assert_eq!(MAX_ROOT_BYTES, 59);
 }
 
 #[test]
 fn external_dir_name_uses_the_12_hex_short_id() {
-    assert_eq!(
-        external_dir_name(ID).as_deref(),
-        Some("amplihack-run-3f0c9a526d1e")
-    );
+    assert_eq!(external_dir_name(ID).as_deref(), Some("ahr-3f0c9a526d1e"));
 }
 
 #[test]
@@ -224,7 +231,7 @@ fn tmpdir_inside_the_work_root_uses_the_default_without_warning() {
     assert_eq!(default_of(&chosen), fx.default_dir());
     assert_eq!(chosen.warning, None);
     assert!(
-        !inside.join(format!("amplihack-run-{SHORT}")).exists(),
+        !inside.join(format!("ahr-{SHORT}")).exists(),
         "nothing is created inside the work root"
     );
 }
@@ -237,7 +244,7 @@ fn caller_tmpdir_is_used_when_the_root_variable_is_unset() {
     let chosen = fx.choose(&fx.with_tmpdir(&caller));
     let (dir, root) = external(&chosen);
     assert_eq!(root, caller);
-    assert_eq!(dir, caller.join(format!("amplihack-run-{SHORT}")));
+    assert_eq!(dir, caller.join(format!("ahr-{SHORT}")));
     assert!(dir.is_dir());
     assert_eq!(chosen.warning, None);
 }
@@ -270,9 +277,9 @@ fn root_variable_wins_over_tmpdir() {
     let chosen = fx.choose(&inputs);
     let (dir, got_root) = external(&chosen);
     assert_eq!(got_root, root);
-    assert_eq!(dir, root.join(format!("amplihack-run-{SHORT}")));
+    assert_eq!(dir, root.join(format!("ahr-{SHORT}")));
     assert!(
-        !caller.join(format!("amplihack-run-{SHORT}")).exists(),
+        !caller.join(format!("ahr-{SHORT}")).exists(),
         "TMPDIR is not used"
     );
     assert_eq!(chosen.warning, None);
@@ -291,7 +298,7 @@ fn bad_root_variable_does_not_fall_through_to_tmpdir() {
     let chosen = fx.choose(&inputs);
     assert_eq!(default_of(&chosen), fx.default_dir());
     assert_warns(&chosen, "AMPLIHACK_RUN_TMP_ROOT", "is not an absolute path");
-    assert!(!caller.join(format!("amplihack-run-{SHORT}")).exists());
+    assert!(!caller.join(format!("ahr-{SHORT}")).exists());
 }
 
 // ----- rule 1: AMPLIHACK_RUN_TMP_ROOT -----------------------------------
@@ -355,7 +362,7 @@ fn root_inside_the_work_root_is_refused() {
     let chosen = fx.choose(&fx.with_root(&inside));
     assert_eq!(default_of(&chosen), fx.default_dir());
     assert_warns(&chosen, "AMPLIHACK_RUN_TMP_ROOT", "is inside the work root");
-    assert!(!inside.join(format!("amplihack-run-{SHORT}")).exists());
+    assert!(!inside.join(format!("ahr-{SHORT}")).exists());
 }
 
 /// S6: the comparison is by resolved path, so a link into the work root is
@@ -422,7 +429,7 @@ fn world_writable_root_without_sticky_bit_is_refused() {
         "AMPLIHACK_RUN_TMP_ROOT",
         "is writable by other users without the sticky bit",
     );
-    assert!(!root.join(format!("amplihack-run-{SHORT}")).exists());
+    assert!(!root.join(format!("ahr-{SHORT}")).exists());
 }
 
 #[test]
@@ -493,11 +500,11 @@ fn root_of_len(fx: &Fx, len: usize) -> PathBuf {
     p
 }
 
-/// D5: `/amplihack-run-<12 hex>/tmp` adds 31 bytes, so 49 fits.
+/// D5: `/ahr-<12 hex>/tmp` adds 21 bytes, so 59 fits.
 #[test]
-fn root_of_49_bytes_fits_the_80_byte_limit() {
+fn root_of_59_bytes_fits_the_80_byte_limit() {
     let fx = Fx::new();
-    let root = root_of_len(&fx, 49);
+    let root = root_of_len(&fx, 59);
     let chosen = fx.choose(&fx.with_root(&root));
     let (dir, _) = external(&chosen);
     assert_eq!(dir.join("tmp").as_os_str().len(), 80);
@@ -505,9 +512,9 @@ fn root_of_49_bytes_fits_the_80_byte_limit() {
 }
 
 #[test]
-fn root_of_50_bytes_is_refused_with_the_length() {
+fn root_of_60_bytes_is_refused_with_the_length() {
     let fx = Fx::new();
-    let root = root_of_len(&fx, 50);
+    let root = root_of_len(&fx, 60);
     let chosen = fx.choose(&fx.with_root(&root));
     assert_eq!(default_of(&chosen), fx.default_dir());
     assert_warns(
@@ -515,16 +522,81 @@ fn root_of_50_bytes_is_refused_with_the_length() {
         "AMPLIHACK_RUN_TMP_ROOT",
         "would make the run temp path 81 bytes (limit 80)",
     );
-    assert!(!root.join(format!("amplihack-run-{SHORT}")).exists());
+    assert!(!root.join(format!("ahr-{SHORT}")).exists());
 }
 
+/// The macOS default `TMPDIR`, `/var/folders/<2>/<30>/T/`, is given through
+/// a link (`/var` is `/private/var`) and with a trailing slash, and resolves
+/// to 56 bytes. It is honoured with no warning: the run temp path is 77
+/// bytes. Before the per-run name was shortened this printed a warning on
+/// every macOS run.
 #[test]
-fn long_tmpdir_warns_naming_tmpdir() {
+fn macos_shaped_tmpdir_of_56_resolved_bytes_is_used_without_a_warning() {
     let fx = Fx::new();
-    let root = root_of_len(&fx, 60);
-    let chosen = fx.choose(&fx.with_tmpdir(&root));
+    // `<base>/<pad>/T`, 56 bytes, reached as `<base>/var/T/`.
+    let pad = 56 - fx.base.as_os_str().len() - 1 - "/T".len();
+    let private_var = fx.dir(&"p".repeat(pad));
+    let resolved = private_var.join("T");
+    fs::create_dir(&resolved).unwrap();
+    fs::set_permissions(&resolved, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(resolved.as_os_str().len(), 56);
+    symlink(&private_var, fx.base.join("var")).unwrap();
+    let mut given = fx.base.join("var/T").into_os_string();
+    given.push("/");
+
+    let chosen = fx.choose(&fx.with_tmpdir(&given));
+    assert_eq!(chosen.warning, None);
+    let (dir, root) = external(&chosen);
+    assert_eq!(root, resolved);
+    assert_eq!(dir, resolved.join(format!("ahr-{SHORT}")));
+    assert_eq!(dir.join("tmp").as_os_str().len(), 77);
+}
+
+/// A caller's `TMPDIR` past the 59-byte budget is refused with a warning
+/// naming `TMPDIR`, not skipped silently: a silent skip would put the run
+/// back on the work root's disk without a word (#2291). One byte less fits.
+#[test]
+fn tmpdir_past_the_59_byte_budget_warns_naming_tmpdir() {
+    let fx = Fx::new();
+    let fits = root_of_len(&fx, 59);
+    let chosen = fx.choose(&fx.with_tmpdir(&fits));
+    assert_eq!(external(&chosen).1, fits);
+    assert_eq!(chosen.warning, None);
+
+    let fx = Fx::new();
+    let long = root_of_len(&fx, 60);
+    let chosen = fx.choose(&fx.with_tmpdir(&long));
     assert_eq!(default_of(&chosen), fx.default_dir());
-    assert_warns(&chosen, "TMPDIR", "would make the run temp path 91 bytes");
+    assert_warns(
+        &chosen,
+        "TMPDIR",
+        "would make the run temp path 81 bytes (limit 80)",
+    );
+    assert!(!long.join(format!("ahr-{SHORT}")).exists());
+}
+
+/// The length is measured on the resolved root: a short `TMPDIR` that links
+/// to a 60-byte folder is refused, with the warning naming the value given.
+#[test]
+fn tmpdir_resolving_past_the_budget_warns_with_the_given_value() {
+    let fx = Fx::new();
+    let resolved = root_of_len(&fx, 60);
+    let given = fx.base.join("v");
+    symlink(&resolved, &given).unwrap();
+
+    let chosen = fx.choose(&fx.with_tmpdir(&given));
+    assert_eq!(default_of(&chosen), fx.default_dir());
+    assert_warns(
+        &chosen,
+        "TMPDIR",
+        "would make the run temp path 81 bytes (limit 80)",
+    );
+    assert!(
+        warning(&chosen).starts_with(&format!("amplihack: TMPDIR={given:?} ")),
+        "{}",
+        warning(&chosen)
+    );
+    assert!(!resolved.join(format!("ahr-{SHORT}")).exists());
 }
 
 // ----- rule 2: TMPDIR ---------------------------------------------------
@@ -574,7 +646,7 @@ fn tmpdir_inside_the_parent_runtime_dir_is_skipped_silently() {
         assert_eq!(default_of(&chosen), fx.default_dir(), "{parent_var:?}");
         assert_eq!(chosen.warning, None);
     }
-    assert!(!parent_tmp.join(format!("amplihack-run-{SHORT}")).exists());
+    assert!(!parent_tmp.join(format!("ahr-{SHORT}")).exists());
 }
 
 /// A parent runtime dir that merely shares a prefix does not count.
@@ -637,7 +709,7 @@ fn per_run_folder_is_private_and_owned_by_the_user() {
 fn existing_per_run_folder_is_never_reused() {
     let fx = Fx::new();
     let root = fx.dir("runroot");
-    let planted = root.join(format!("amplihack-run-{SHORT}"));
+    let planted = root.join(format!("ahr-{SHORT}"));
     fs::create_dir(&planted).unwrap();
     fs::write(planted.join("planted"), "x").unwrap();
     let chosen = fx.choose(&fx.with_root(&root));
@@ -651,7 +723,7 @@ fn planted_symlink_at_the_per_run_name_is_refused() {
     let fx = Fx::new();
     let root = fx.dir("runroot");
     let elsewhere = fx.dir("elsewhere");
-    let planted = root.join(format!("amplihack-run-{SHORT}"));
+    let planted = root.join(format!("ahr-{SHORT}"));
     symlink(&elsewhere, &planted).unwrap();
     let chosen = fx.choose(&fx.with_root(&root));
     assert_eq!(default_of(&chosen), fx.default_dir());

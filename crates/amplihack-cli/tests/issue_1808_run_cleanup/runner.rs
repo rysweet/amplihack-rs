@@ -30,7 +30,7 @@ fn success_runner() -> String {
 /// AC7 and R3: TMPDIR, TMP and TEMP all point at the run's `tmp/`, which
 /// exists while the step runs and is gone afterwards; `run.json` stays. Since
 /// issue #2291 the fixture's `TMPDIR`, which lies outside the work root, is
-/// honoured, so that folder is `<tmp>/amplihack-run-<12 hex>/tmp` (see
+/// honoured, so that folder is `<tmp>/ahr-<12 hex>/tmp` (see
 /// [`expected_runtime_dir`]).
 #[test]
 fn ac7_successful_run_gets_per_run_tmpdir_which_is_removed_at_end() {

@@ -102,7 +102,7 @@ fn ac1_caller_tmpdir_is_honoured_and_runtime_in_work_is_never_created() {
 
     let env = fx.recorded_env();
     let run_id = env["AMPLIHACK_RUN_ID"].clone();
-    let dir = canon(&fx.tmp).join(format!("amplihack-run-{}", short_id(&run_id)));
+    let dir = canon(&fx.tmp).join(format!("ahr-{}", short_id(&run_id)));
     assert_all_under(&env, &dir);
     assert_eq!(
         env["AMPLIHACK_RUN_TMP_ROOT"],
@@ -138,7 +138,7 @@ fn ac2_run_tmp_root_wins_over_tmpdir_and_holds_every_runtime_variable() {
 
     let env = fx.recorded_env();
     let run_id = env["AMPLIHACK_RUN_ID"].clone();
-    let dir = canon(&root).join(format!("amplihack-run-{}", short_id(&run_id)));
+    let dir = canon(&root).join(format!("ahr-{}", short_id(&run_id)));
     assert_all_under(&env, &dir);
     assert_eq!(
         env["AMPLIHACK_RUN_TMP_ROOT"],
@@ -158,7 +158,7 @@ fn ac2_run_tmp_root_wins_over_tmpdir_and_holds_every_runtime_variable() {
         0,
         "the per-run folder is gone"
     );
-    let caller_side = canon(&fx.tmp).join(format!("amplihack-run-{}", short_id(&run_id)));
+    let caller_side = canon(&fx.tmp).join(format!("ahr-{}", short_id(&run_id)));
     assert!(!caller_side.exists(), "TMPDIR is not used");
 }
 
@@ -177,7 +177,7 @@ fn ac4_failing_run_removes_the_per_run_folder() {
 
     let env = fx.recorded_env();
     let run_id = env["AMPLIHACK_RUN_ID"].clone();
-    let dir = canon(&root).join(format!("amplihack-run-{}", short_id(&run_id)));
+    let dir = canon(&root).join(format!("ahr-{}", short_id(&run_id)));
     assert_eq!(env["TMPDIR"], dir.join("tmp").display().to_string());
     assert!(!dir.exists(), "removed after a failure too");
     let run_dir = fx.runs_dir().join(&run_id);
@@ -225,7 +225,7 @@ fn default_layout_run_json_has_no_runtime_dir() {
 
 /// A folder named for `run`, with a file in it, under `root`.
 fn external_for(root: &Path, run: &SeedRun) -> PathBuf {
-    let dir = root.join(format!("amplihack-run-{}", short_id(&run.id)));
+    let dir = root.join(format!("ahr-{}", short_id(&run.id)));
     fs::create_dir_all(dir.join("tmp")).unwrap();
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
     fs::write(dir.join("tmp/scratch"), "scratch").unwrap();
@@ -308,7 +308,7 @@ fn ac5_cleanup_refuses_bad_recorded_folders() {
 
     // A symbolic link with the right name, pointing at a real folder.
     let mut link_run = SeedRun::ended(0);
-    let link = root.join(format!("amplihack-run-{}", short_id(&link_run.id)));
+    let link = root.join(format!("ahr-{}", short_id(&link_run.id)));
     symlink(&victim, &link).unwrap();
     link_run.runtime_dir = Some(link.clone());
     fx.seed_run(&link_run);
@@ -316,7 +316,7 @@ fn ac5_cleanup_refuses_bad_recorded_folders() {
 
     // A real folder whose name is not this run's.
     let mut named_run = SeedRun::ended(0);
-    let wrong = root.join("amplihack-run-ffffffffffff");
+    let wrong = root.join("ahr-ffffffffffff");
     fs::create_dir_all(&wrong).unwrap();
     named_run.runtime_dir = Some(wrong.clone());
     fx.seed_run(&named_run);
@@ -324,7 +324,7 @@ fn ac5_cleanup_refuses_bad_recorded_folders() {
 
     // A file with the right name.
     let mut file_run = SeedRun::ended(0);
-    let file = root.join(format!("amplihack-run-{}", short_id(&file_run.id)));
+    let file = root.join(format!("ahr-{}", short_id(&file_run.id)));
     fs::write(&file, "not a folder").unwrap();
     file_run.runtime_dir = Some(file.clone());
     fx.seed_run(&file_run);
@@ -332,9 +332,7 @@ fn ac5_cleanup_refuses_bad_recorded_folders() {
 
     // The right name, inside the work root.
     let mut inside_run = SeedRun::ended(0);
-    let inside = fx
-        .work
-        .join(format!("amplihack-run-{}", short_id(&inside_run.id)));
+    let inside = fx.work.join(format!("ahr-{}", short_id(&inside_run.id)));
     fs::create_dir_all(&inside).unwrap();
     inside_run.runtime_dir = Some(inside.clone());
     fx.seed_run(&inside_run);
@@ -356,16 +354,16 @@ fn ac5_cleanup_refuses_bad_recorded_folders() {
 }
 
 /// AC5: a recorded folder that no longer exists produces no entry, and an
-/// unrecorded `amplihack-run-*` folder in the temp folder is never swept.
+/// unrecorded `ahr-*` folder in the temp folder is never swept.
 #[test]
 fn ac5_missing_or_unrecorded_folders_produce_no_entry() {
     let fx = Fx::new_short();
     let root = ext_root(&fx);
     let mut gone = SeedRun::ended(0);
-    let missing = root.join(format!("amplihack-run-{}", short_id(&gone.id)));
+    let missing = root.join(format!("ahr-{}", short_id(&gone.id)));
     gone.runtime_dir = Some(missing.clone());
     fx.seed_run(&gone);
-    let unrecorded = fx.tmp.join("amplihack-run-0123456789ab");
+    let unrecorded = fx.tmp.join("ahr-0123456789ab");
     fs::create_dir_all(unrecorded.join("tmp")).unwrap();
     set_mtime_hours_ago(&unrecorded, 24 * 30);
 
@@ -436,6 +434,82 @@ fn ac6_unusable_root_warns_once_and_uses_the_default_layout() {
         );
         assert!(!default.exists(), "the default runtime/ is removed at end");
     }
+}
+
+/// Moves the fixture's `TMPDIR` to a folder whose resolved path is `len`
+/// bytes and leaves a link at the old, shorter name, the way macOS reaches
+/// `/private/var/folders/...` through `/var`. HOME and the process table
+/// stay inside the resolved `TMPDIR`, as the isolation guards require.
+fn relink_tmpdir_to_len(fx: &Fx, len: usize) -> PathBuf {
+    let long = fx
+        .root
+        .join("t".repeat(len - fx.root.as_os_str().len() - 1));
+    assert_eq!(long.as_os_str().len(), len);
+    fs::rename(&fx.tmp, &long).unwrap();
+    symlink(&long, &fx.tmp).unwrap();
+    assert!(fx.tmp.as_os_str().len() < len, "{}", fx.tmp.display());
+    long
+}
+
+/// The macOS default: `TMPDIR` names `/var/folders/<2>/<30>/T/`, which
+/// resolves through `/private/var` to 56 bytes. With the 21-byte
+/// `/ahr-<12 hex>/tmp` suffix that is a 77-byte run temp path, so the
+/// caller's `TMPDIR` is honoured and stderr carries no warning.
+#[test]
+fn ac1_macos_shaped_tmpdir_of_56_resolved_bytes_is_honoured_without_a_warning() {
+    let fx = Fx::new_short();
+    let long = relink_tmpdir_to_len(&fx, 56);
+
+    let out = fx.recipe_run(&runner(true), |_| {});
+    assert!(out.status.success(), "{}", describe(&out));
+    let stderr = stderr_of(&out);
+    assert!(root_warnings(&stderr).is_empty(), "{stderr}");
+
+    let env = fx.recorded_env();
+    let run_id = env["AMPLIHACK_RUN_ID"].clone();
+    let dir = long.join(format!("ahr-{}", short_id(&run_id)));
+    assert_all_under(&env, &dir);
+    assert_eq!(dir.join("tmp").as_os_str().len(), 77);
+    assert_eq!(
+        env["AMPLIHACK_RUN_TMP_ROOT"],
+        long.display().to_string(),
+        "the resolved root is exported"
+    );
+    assert!(!env.contains_key("RUNTIME_IN_WORK"), "{env:?}");
+    assert!(!dir.exists(), "the per-run folder is removed at end");
+}
+
+/// AC6: a caller `TMPDIR` that resolves past the 59-byte budget is refused
+/// with one warning naming `TMPDIR`, not skipped silently, so a run that
+/// lands back on the work root's disk says so (#2291).
+#[test]
+fn ac6_tmpdir_resolving_past_the_budget_warns_once_naming_tmpdir() {
+    let fx = Fx::new_short();
+    let long = relink_tmpdir_to_len(&fx, 60);
+
+    let out = fx.recipe_run(&runner(true), |_| {});
+    assert!(out.status.success(), "{}", describe(&out));
+    let stderr = stderr_of(&out);
+    let warnings = root_warnings(&stderr);
+    assert_eq!(warnings.len(), 1, "exactly one warning: {stderr}");
+    assert!(warnings[0].starts_with(WARN_TMPDIR), "{}", warnings[0]);
+    assert!(
+        warnings[0].contains("would make the run temp path 81 bytes (limit 80)"),
+        "{}",
+        warnings[0]
+    );
+    assert!(warnings[0].ends_with(FALLBACK_TAIL), "{}", warnings[0]);
+
+    let env = fx.recorded_env();
+    let run_id = env["AMPLIHACK_RUN_ID"].clone();
+    let default = default_runtime(&fx.work, &run_id);
+    assert_eq!(env["TMPDIR"], default.join("tmp").display().to_string());
+    assert_eq!(
+        env["AMPLIHACK_RUN_TMP_ROOT"], "__unset__",
+        "no root is exported for a default-layout run"
+    );
+    let external = long.join(format!("ahr-{}", short_id(&run_id)));
+    assert!(!external.exists(), "no per-run folder in the long TMPDIR");
 }
 
 // ----- g: AC7, CARGO_TARGET_DIR -----------------------------------------

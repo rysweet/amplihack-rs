@@ -735,7 +735,7 @@ fn remove_target_refuses_a_shape_change_at_apply() {
 // into `Item::skip(RunTmp, path, "recorded temp folder refused: <reason>")`.
 
 const EXT_ID: &str = "0123abcd-0000-0000-0000-000000000002";
-const EXT_NAME: &str = "amplihack-run-0123abcd0000";
+const EXT_NAME: &str = "ahr-0123abcd0000";
 
 /// A run `EXT_ID` whose `run.json` records `runtime_dir`. An active run uses
 /// this test process's own pid and start ticks; a dead one has pid 0 and no
@@ -767,7 +767,7 @@ fn seed_ext(fx: &Fx, active: bool, runtime_dir: Option<&Path>) -> PathBuf {
     dir
 }
 
-/// `<root>/ext/amplihack-run-0123abcd0000`, a private folder holding a file.
+/// `<root>/ext/ahr-0123abcd0000`, a private folder holding a file.
 fn ext_dir(fx: &Fx) -> PathBuf {
     let dir = dir_with_file(&fx.root.join("ext").join(EXT_NAME));
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
@@ -794,7 +794,7 @@ fn external_check_accepts_a_private_folder_with_this_runs_name() {
 fn external_check_refuses_a_relative_path() {
     let fx = Fx::new();
     refused(
-        check(&fx, Path::new("ext/amplihack-run-0123abcd0000"), euid()),
+        check(&fx, Path::new("ext/ahr-0123abcd0000"), euid()),
         "not an absolute path",
     );
 }
@@ -802,10 +802,12 @@ fn external_check_refuses_a_relative_path() {
 #[test]
 fn external_check_refuses_another_runs_name() {
     let fx = Fx::new();
-    let other = dir_with_file(&fx.root.join("ext/amplihack-run-ffffffffffff"));
+    let other = dir_with_file(&fx.root.join("ext/ahr-ffffffffffff"));
     refused(check(&fx, &other, euid()), "wrong name");
     let bare = dir_with_file(&fx.root.join("ext/0123abcd0000"));
     refused(check(&fx, &bare, euid()), "wrong name");
+    let long_prefix = dir_with_file(&fx.root.join("ext/amplihack-run-0123abcd0000"));
+    refused(check(&fx, &long_prefix, euid()), "wrong name");
 }
 
 /// The link check comes before the folder check, whatever the link names.
@@ -1020,12 +1022,9 @@ fn links_inside_a_removed_recorded_folder_are_not_followed() {
     assert!(outside.join("keep-me").exists(), "the link target survives");
 }
 
-/// S16: `amplihack-run-` is not a `tmp-leftover` pattern, so a folder no
+/// S16: `ahr-` is not a `tmp-leftover` pattern, so a folder no
 /// `run.json` records is never removed by age.
 #[test]
 fn per_run_prefix_is_not_a_tmp_leftover_pattern() {
-    assert!(!has_prefix(
-        Path::new("/x/amplihack-run-0123abcd0000"),
-        TMP_PREFIXES
-    ));
+    assert!(!has_prefix(Path::new("/x/ahr-0123abcd0000"), TMP_PREFIXES));
 }

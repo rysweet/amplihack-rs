@@ -5,7 +5,8 @@
 //! ephemeral `runtime/` folder that [`RuntimeGuard`] removes when the run ends.
 
 use super::run_tmp_root::{
-    RUN_TMP_ROOT_ENV, RuntimeChoice, TmpRootInputs, choose_runtime_dir, usable_explicit_root,
+    DRY_DIR_PREFIX, DRY_RAND_LEN, RUN_TMP_ROOT_ENV, RuntimeChoice, TmpRootInputs,
+    choose_runtime_dir, usable_explicit_root,
 };
 use super::work_root::{WORK_ROOT_ENV, WorkRoot, create_private_dir_all};
 use anyhow::{Context, Result, bail};
@@ -545,8 +546,13 @@ impl RunWorkspace {
     /// A dry run owns only temporary scratch space and never a run scope.
     /// It still honours `AMPLIHACK_RUN_TMP_ROOT` (issue #2291, D12).
     pub(crate) fn dry_runtime() -> Result<Self> {
-        let inputs = TmpRootInputs::from_env();
-        let explicit_root = match usable_explicit_root(&legacy_work_root(&inputs), &inputs) {
+        Self::dry_runtime_with(&TmpRootInputs::from_env())
+    }
+
+    /// [`Self::dry_runtime`] with explicit inputs, so tests need no process
+    /// environment.
+    pub(crate) fn dry_runtime_with(inputs: &TmpRootInputs) -> Result<Self> {
+        let explicit_root = match usable_explicit_root(&legacy_work_root(inputs), inputs) {
             Ok(root) => root,
             Err(warning) => {
                 eprintln!("{warning}");
@@ -554,7 +560,7 @@ impl RunWorkspace {
             }
         };
         let mut builder = tempfile::Builder::new();
-        builder.prefix("amplihack-dry-");
+        builder.prefix(DRY_DIR_PREFIX).rand_bytes(DRY_RAND_LEN);
         let dir = match &explicit_root {
             Some(root) => builder.tempdir_in(root),
             None => builder.tempdir(),

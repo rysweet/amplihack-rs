@@ -293,12 +293,12 @@ fn runtime_dir_none_is_not_written() {
 #[test]
 fn runtime_dir_round_trips() {
     let mut report: RunReport = serde_json::from_str(minimal_report_json()).unwrap();
-    report.runtime_dir = Some("/scratch/amplihack-run-3f0c9a526d1e".into());
+    report.runtime_dir = Some("/scratch/ahr-3f0c9a526d1e".into());
     let json = serde_json::to_string(&report).unwrap();
     let back: RunReport = serde_json::from_str(&json).unwrap();
     assert_eq!(
         back.runtime_dir.as_deref(),
-        Some("/scratch/amplihack-run-3f0c9a526d1e")
+        Some("/scratch/ahr-3f0c9a526d1e")
     );
 }
 
@@ -347,4 +347,37 @@ fn begin_with_explicit_root_records_and_removes_the_external_folder() {
     drop(guard);
     assert!(!runtime.exists(), "the guard removes the external folder");
     assert!(ext.is_dir(), "the root itself is kept");
+}
+
+/// Issue #2291: a dry run under an explicit root at the 59-byte budget still
+/// gets a `tmp/` within 80 bytes, because `ahd-<6 random>` is no longer than
+/// `ahr-<12 hex>`. The folder is removed when the workspace drops.
+#[test]
+fn dry_run_under_a_root_at_the_budget_stays_within_80_bytes() {
+    let tmp = tempfile::tempdir_in("/tmp").unwrap();
+    let base = fs::canonicalize(tmp.path()).unwrap();
+    let pad = 59 - base.as_os_str().len() - 1;
+    let root = base.join("r".repeat(pad));
+    fs::create_dir(&root).unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(root.as_os_str().len(), 59);
+    let inputs = TmpRootInputs {
+        run_tmp_root: Some(root.clone().into_os_string()),
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        euid: unsafe { libc::geteuid() },
+        ..TmpRootInputs::default()
+    };
+
+    let ws = RunWorkspace::dry_runtime_with(&inputs).unwrap();
+
+    let dir = ws.runtime_dir().to_path_buf();
+    assert_eq!(dir.parent(), Some(root.as_path()));
+    let name = dir.file_name().unwrap().to_str().unwrap();
+    assert!(name.starts_with("ahd-"), "{name}");
+    assert_eq!(name.len(), "ahd-".len() + 6, "{name}");
+    assert!(dir.join("tmp").is_dir());
+    assert!(dir.join("tmp").as_os_str().len() <= 80, "{dir:?}");
+    drop(ws);
+    assert!(!dir.exists(), "the dry-run folder is removed on drop");
+    assert!(root.is_dir(), "the root itself is kept");
 }

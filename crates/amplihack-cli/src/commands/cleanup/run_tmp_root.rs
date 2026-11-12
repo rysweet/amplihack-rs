@@ -17,11 +17,31 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
 pub(crate) const RUN_TMP_ROOT_ENV: &str = "AMPLIHACK_RUN_TMP_ROOT";
-pub(crate) const RUN_DIR_PREFIX: &str = "amplihack-run-";
+/// Short on purpose: every byte of the per-run name comes out of the 80-byte
+/// budget for `<root>/<name>/tmp`. With `ahr-` the part after the root is 21
+/// bytes, so a resolved root of up to 59 bytes fits. That covers the macOS
+/// default `TMPDIR`, `/var/folders/<2>/<30>/T/`, which resolves through
+/// `/private/var` to 56 bytes.
+pub(crate) const RUN_DIR_PREFIX: &str = "ahr-";
+/// The dry-run folder, `<root>/ahd-<random>`. Its part after the root must
+/// never be longer than the per-run folder's, because both are checked
+/// against the same root budget.
+pub(crate) const DRY_DIR_PREFIX: &str = "ahd-";
+/// Random characters `tempfile` adds after [`DRY_DIR_PREFIX`].
+pub(crate) const DRY_RAND_LEN: usize = 6;
 
 const TMPDIR_ENV: &str = "TMPDIR";
 const PARENT_RUNTIME_ENV: &str = "AMPLIHACK_WORKFLOW_RUNTIME_DIR";
 const SHORT_ID_LEN: usize = 12;
+/// `/<RUN_DIR_PREFIX><12 hex>/tmp`: the bytes a run adds after the root.
+const RUN_SUFFIX_BYTES: usize = 1 + RUN_DIR_PREFIX.len() + SHORT_ID_LEN + "/tmp".len();
+/// The longest resolved root whose run temp path fits the 80-byte limit.
+const MAX_ROOT_BYTES: usize = MAX_RUNTIME_TMP_BYTES - RUN_SUFFIX_BYTES;
+
+const _: () = assert!(
+    1 + DRY_DIR_PREFIX.len() + DRY_RAND_LEN + "/tmp".len() <= RUN_SUFFIX_BYTES,
+    "a dry-run folder must fit wherever a per-run folder fits"
+);
 
 /// The values the chooser looks at, taken from the environment by
 /// [`TmpRootInputs::from_env`] and passed in so tests need no process
@@ -64,7 +84,7 @@ impl TmpRootInputs {
 pub(crate) enum RuntimeChoice {
     /// `runtime_dir_for(work_root, run_id)`.
     Default(PathBuf),
-    /// `<root>/amplihack-run-<short id>` under the canonical `root`.
+    /// `<root>/ahr-<short id>` under the canonical `root`.
     External { dir: PathBuf, root: PathBuf },
 }
 
@@ -107,7 +127,7 @@ fn warning_line(rule: Rule, value: &Path, reason: &str) -> String {
     )
 }
 
-/// `amplihack-run-<12 hex>`, or `None` when the run id has fewer than 12
+/// `ahr-<12 hex>`, or `None` when the run id has fewer than 12
 /// hex digits.
 pub(crate) fn external_dir_name(run_id: &str) -> Option<String> {
     let short = short_id(run_id);
@@ -247,9 +267,11 @@ fn usable_root(
     if root.to_str().is_none() {
         return Err(Refused::Warn("is not valid UTF-8".into()));
     }
-    // `/amplihack-run-<12 hex>/tmp`.
-    let len = root.as_os_str().len() + 1 + RUN_DIR_PREFIX.len() + SHORT_ID_LEN + "/tmp".len();
-    if len > MAX_RUNTIME_TMP_BYTES {
+    // Warned under both rules: a root past [`MAX_ROOT_BYTES`] is one the
+    // caller chose, and skipping it silently would put the run back on the
+    // work root's disk without a word. The macOS default `TMPDIR` fits.
+    if root.as_os_str().len() > MAX_ROOT_BYTES {
+        let len = root.as_os_str().len() + RUN_SUFFIX_BYTES;
         return Err(Refused::Warn(format!(
             "would make the run temp path {len} bytes (limit {MAX_RUNTIME_TMP_BYTES})"
         )));
