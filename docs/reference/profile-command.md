@@ -67,7 +67,7 @@ amplihack launch|claude --profile <name> [...]
 | `remove <name>` | Requires `--yes`. Resolves and verifies the path is inside the root, reads the default pointer, deletes the directory, then clears a matching pointer. A missing pointer means no default; a corrupt, unreadable or dangling pointer fails closed before any deletion (repair with `switch`). Never deletes the root; never follows symlinks, so the shared session links are removed and the sessions in `~/.claude` are kept. `*.pre-share-*` backups inside the profile are deleted with it. |
 | `login <name>` | Checks the profile's [shared session links](#shared-session-directories), then always runs the `claude` binary (ignores binary selection), interactively, with `CLAUDE_CONFIG_DIR=<profile dir>`. Then refuses a login whose account another profile or `~/.claude` already holds, and restores the previous login. See [Login check](#login-check). |
 | `run <name> -- <args>` | One-shot launch through the normal launch path. Args are forwarded as a literal argv vector; no shell is involved. |
-| `usage [<name>...]` | Reads each profile's usage from Anthropic's OAuth usage endpoint with the profile's own token, several profiles at a time, and starts `claude` only for a profile whose direct read fails, or, with `--spend`, to read the spend limit of an account with [usage credits on](#usage-credits-on); then shows its weekly and session usage as bars and its spend status as a mark, sorted by the rotator's headroom, followed by a [capacity summary](#capacity-summary) and, with no names, a live reading of each [Codex account](#codex-accounts). `--table` for the text table, `--utc` for UTC reset times, `--json` or `--summary-json` for scripts, `--raw` to include Claude's output. Refreshes auto-switch readings and adds to the [usage history](#usage-history). See [Usage command](#usage-command). |
+| `usage [<name>...]` | Reads each profile's usage from Anthropic's OAuth usage endpoint with the profile's own token, several profiles at a time, and starts `claude` only for a profile whose direct read fails for a reason other than a [missing login](#logins-with-no-token), or, with `--spend`, to read the spend limit of an account with [usage credits on](#usage-credits-on); then shows its weekly and session usage as bars and its spend status as a mark, sorted by the rotator's headroom, followed by a [capacity summary](#capacity-summary) and, with no names, a live reading of each [Codex account](#codex-accounts). `--table` for the text table, `--utc` for UTC reset times, `--json` or `--summary-json` for scripts, `--raw` to include Claude's output. Refreshes auto-switch readings and adds to the [usage history](#usage-history). See [Usage command](#usage-command). |
 | `auto-switch …` | Turn [auto-switch](#auto-switch) on or off, set its threshold and exclusions, show its state, or install and repair the status-line wrapper. See [Auto-switch commands](#auto-switch-commands). |
 | `overflow …` | Mark or unmark a credit-backed profile that the rotator may use when every plan login is exhausted, list the marks, or lift a spend-limit block. See [Overflow commands](#overflow-commands). |
 | `rotate …` | Keep the login in `~/.claude` on the account with the most capacity: once, as a dry run, or in a background process with `start`, `stop` and `status`; `autostart` controls whether launches start that process. See [Rotate](#rotate). |
@@ -95,7 +95,8 @@ reset, how long the weekly capacity lasts at the recent rate, and which
 weekly limits reset in the next 24 hours. With no
 names it covers every profile under the root, as `list` does, and then
 reads each [Codex account](#codex-accounts) live and lists it after the
-Claude output, marking the one `codex-pick`'s rule picks from these live
+Claude output, the warnings and the [usage history](#usage-history) update,
+marking the one `codex-pick`'s rule picks from these live
 readings. Each name
 must pass the [name rules](#name-rules) and must exist. A name given twice
 is probed once. Names select Claude profiles only; with names, Codex is not
@@ -124,9 +125,11 @@ result decides the row:
 2. **Direct read.** amplihack asks Anthropic's OAuth usage endpoint itself,
    with the login stored in the profile's `.credentials.json`. No `claude`
    process is started. See [Direct read](#direct-read).
-3. **Fallback.** Only when the direct read fails: the `claude` probe
-   described below, which sends the `get_usage` request and then, if
-   needed, runs `claude -p /usage`.
+3. **Fallback.** Only when the direct read fails for a reason other than
+   a [missing login](#logins-with-no-token): the `claude` probe described
+   below, which sends the `get_usage` request and then, if needed, runs
+   `claude -p /usage`. A profile with no login to use ends at step 2 as
+   `not_logged_in`, and no `claude` is started for it.
 
 Every row records which step gave it as its [source](#reading-source):
 `passive`, `direct` or `fallback`. Some profiles skip steps:
@@ -137,8 +140,9 @@ Every row records which step gave it as its [source](#reading-source):
 | [API-key profile](#api-key-usage) | None. It is not probed, as before. |
 | Marked as [overflow](#rotate-overflow) | Fallback only, as `/usage` text. The spend limit is visible only in `/usage`, so the [spend-limit block](#overflow-spend-limit-block) keeps working. Source `fallback`. Under `AMPLIHACK_PROFILE_USAGE_PROBE=direct` the row is not probed and reads `error`; see [Probe method](#probe-method). |
 | A direct answer shows usage credits turned on (`extra_usage` is not absent, `null` or `{"is_enabled": false}`) | The windows and state come from the direct answer. Source `direct`. Spend `not_probed`, unless `--spend` asks for one `/usage` text probe, under the normal per-probe timeout (`--timeout-secs`, 120 s by default), that reads only the spend status; see [Usage credits on](#usage-credits-on). If neither window in the answer is usable, the direct read fails with `usage credits on` and the profile goes to the fallback. |
+| A direct read finds no login: `no oauth token` or `no refresh token` (Unix), or, on Linux only, `no credentials file` in a directory that exists | Passive, then direct. The row is `not_logged_in` with source `direct`, and no `claude` is started. See [Logins with no token](#logins-with-no-token). |
 | Any profile, with `AMPLIHACK_PROFILE_USAGE_PROBE` set to `auto` or `text` | Fallback only, with the method named. See [Probe method](#probe-method). |
-| Any profile, with `AMPLIHACK_PROFILE_USAGE_PROBE=direct` | Passive, then direct. A failed direct read gives state `error`, and the reading starts no `claude`. An account with usage credits on gives its direct windows, with spend `not_probed`, because no spend probe runs, even under `--spend`. Overflow profiles read `error` without a direct read. The one exception is the rotator's [held-cycle spend-limit check](#pin-and-overflow). |
+| Any profile, with `AMPLIHACK_PROFILE_USAGE_PROBE=direct` | Passive, then direct. A failed direct read gives state `error`, or `not_logged_in` for a [missing login](#logins-with-no-token), and the reading starts no `claude`. An account with usage credits on gives its direct windows, with spend `not_probed`, because no spend probe runs, even under `--spend`. Overflow profiles read `error` without a direct read. The one exception is the rotator's [held-cycle spend-limit check](#pin-and-overflow). |
 
 When every row is passive or direct, no `claude` process is started, and
 amplihack does not look for the `claude` binary at all, unless `--spend`
@@ -276,8 +280,10 @@ gives a `session_exhausted` row with `session` at 100% and `week_all` at
 55%. The weekly figure is always the one reported, whatever the session
 reads. Unknown fields are ignored. A body that is not a JSON object, or in
 which neither `five_hour` nor `seven_day` has a valid `utilization`, is
-`unparseable`. A direct read never gives `spend_limit`, `not_logged_in` or
-`unparsed`.
+`unparseable`. A direct read that gets an answer never gives `spend_limit`,
+`not_logged_in` or `unparsed`. A direct read that finds no login to use
+gives `not_logged_in` without any request; see
+[Logins with no token](#logins-with-no-token).
 
 **Timing.** The connect and read timeouts of each `GET` are
 `min(10 seconds, deadline - 1 second)`, at least 500 milliseconds, and the
@@ -333,12 +339,20 @@ A direct read that fails gives one of these fixed reasons. None of them
 holds a token, a URL, a response body or an underlying error message; only
 the numeric HTTP status class is kept.
 
+The read checks the credentials file first: it is opened and checked, then
+an expired token with no refresh token is caught, and only then are the
+[endpoint settings](#direct-read) used. A profile with no login therefore
+gives `no credentials file`, `no oauth token` or `no refresh token` even
+when the endpoint settings are unusable, and never `transport`.
+
 | Reason | When |
 |--------|------|
 | `no credentials file` | The credentials file is missing. |
 | `credentials refused` | The file is a symlink, not a regular file, owned by someone else, writable by group or others, over 64 KiB, or could not be read. |
-| `no oauth token` | The file is not JSON, or has no usable `claudeAiOauth.accessToken`. |
-| `token expired` | The token has expired and amplihack may not [refresh](#token-refresh) it in this directory. |
+| `no oauth token` | The file says there is no login: it is the empty object `{}`, or its `claudeAiOauth` object has no `accessToken`, or one that is `null` or empty. |
+| `unreadable credentials` | The file is there but is not a login this read recognises: it is not JSON (a format change, or a file caught mid-write), is not a JSON object, is a non-empty object with no `claudeAiOauth` (an API-key login, or a renamed key), has a `claudeAiOauth` that is not an object, or has an `accessToken` that is not a string or is over 4096 bytes or holds whitespace or a non-printable byte. Also given for an expired token whose `refreshToken` is there but rejected the same way. |
+| `no refresh token` | The token has expired (`expiresAt` is at or before now), and the file has no `claudeAiOauth.refreshToken` (missing, `null` or empty). A refresh token that is there but rejected (not a string, over 4096 bytes or holding whitespace) gives `unreadable credentials` instead. Checked before any request, whether or not amplihack may [refresh](#token-refresh) in this directory. No request is sent. A missing or non-numeric `expiresAt` does not count as expired. |
+| `token expired` | The token has expired, the file has a refresh token, and amplihack may not [refresh](#token-refresh) it in this directory, so `claude` is left to refresh it. |
 | `http 401`, `http 403`, `http 429` | The endpoint answered with that status (a `401` after any allowed refresh). |
 | `http 3xx`, `http 4xx`, `http 5xx` | Any other status of that class. |
 | `timeout` | A timeout or the deadline was reached. |
@@ -347,11 +361,12 @@ the numeric HTTP status class is kept.
 | `usage credits on` | The answer shows usage credits on (`extra_usage.is_enabled` as `true`, or an `extra_usage` amplihack does not recognise), and neither `five_hour` nor `seven_day` has a valid `utilization`. When either window is usable, the read succeeds instead; see [Usage credits on](#usage-credits-on). |
 | `refresh busy` | The token needs a refresh, but the refresh lock is held or a swap is in progress. |
 | `refresh refused` | The checks before a refresh failed (see [Token refresh](#token-refresh)). |
-| `refresh failed` | The refresh request did not reach the token server (a DNS lookup that failed or ran out of time, or a failed connection or TLS handshake), or the server turned it away with a `3xx` or `4xx` status. The old refresh token is still on file. |
+| `refresh failed` | A token that is still valid needed a refresh (it is due within the refresh margin, or the endpoint answered `401`) and the file has no usable refresh token; or the refresh request did not reach the token server (a DNS lookup that failed or ran out of time, or a failed connection or TLS handshake), or the server turned it away with a `3xx` or `4xx` status. When a refresh request was sent, the old refresh token is still on file. |
 | `refresh not saved` | The refresh request may have reached the token server, but its new login was not written: the answer was a `5xx` or a `2xx` other than `200`, the answer did not arrive before the deadline, the connection failed after the request was sent, a `200` answer was not usable, or the write failed. |
 
 Except under `AMPLIHACK_PROFILE_USAGE_PROBE=direct`, a failed direct read
-moves on to the fallback. The table marks the row `(fallback)` and the JSON
+moves on to the fallback, unless its reason means the profile has no login
+to use; see [Logins with no token](#logins-with-no-token). The table marks the row `(fallback)` and the JSON
 gives `source` `fallback`; the reason is printed only with `--raw`, as one
 line to stderr for that row:
 
@@ -370,6 +385,96 @@ Under `direct`, the row's state is `error` and its reason is
 profile under `direct` is not read at all and reads `error` with
 `direct read: overflow needs /usage`, because it can only be read with
 `/usage`.
+
+##### Logins with no token
+
+Some direct-read reasons mean the profile has no login that `claude` could
+use either. For these, the direct read's result is final: amplihack does
+not look for `claude` or start it, and the row is ready as soon as the
+credentials file has been checked. This holds in the default order and
+under `AMPLIHACK_PROFILE_USAGE_PROBE=direct`; `auto` and `text` do no direct
+read and are unchanged.
+
+| Reason | Final when |
+|--------|------------|
+| `no oauth token` | Always, on Unix. The file is `{}`, or its `claudeAiOauth` has no `accessToken` or an empty one. |
+| `no refresh token` | Always, on Unix. The token has expired and there is nothing to refresh it with; `claude` would fail the same way. |
+| `no credentials file` | On Linux only, and only when the directory read is a real directory (checked with `lstat`, so not a symlink). A symlinked directory, and the live login when `$HOME` is not set, still go to the fallback. |
+
+Every other reason still goes to the fallback, including
+`credentials refused` (the file exists but is a symlink, has loose
+permissions or could not be read: a login may be there), `token expired`
+(the token has expired but has a refresh token, and `claude` can refresh
+it), `refresh refused`, `refresh failed`, `refresh busy`,
+`refresh not saved`, `unreadable credentials` (the file did not parse or held a token the read rejects: a statement about this read, not about the login), `timeout`, `transport`, `unparseable`,
+`usage credits on` and every `http` status: these can be passing
+conditions, or ones `claude` can still get past. Only the reason is used to
+decide; the token is never read again or shown. Checking for a missing
+file reads only the directory's own metadata; nothing inside it is opened
+or listed.
+
+On macOS, Claude Code keeps its login in the Keychain, so a profile with no
+`.credentials.json` may still be signed in. There, `no credentials file`
+goes to the fallback as before, except under
+`AMPLIHACK_PROFILE_USAGE_PROBE=direct`, where the row reads `error`. On
+platforms other than Unix every failed direct read goes to the fallback,
+again except under `AMPLIHACK_PROFILE_USAGE_PROBE=direct`, where the row
+reads `error`.
+
+A credentials file that is corrupt, in a format this read does not
+recognise, or that `claude` is rewriting at the moment it is read, gives
+`unreadable credentials`, not `no oauth token`. It goes to the fallback, and
+the rotator logs `warning: rotate: probe of <name> failed` for it when the
+probe fails, and holds the move onto overflow, as for any failed probe.
+
+The decision uses only the profile's own credentials file. A login that
+works only through `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or
+`CLAUDE_CODE_OAUTH_TOKEN` in the environment, with no token in the
+profile's file, reads `not signed in` as well; `claude` is not started to
+try that credential. With any of these set, `profile usage` already warns
+on stderr that the readings may be that credential's; see
+[Refreshing auto-switch readings](#refreshing-auto-switch-readings). The
+row is read again on every run, so it changes as soon as the profile has a
+login.
+
+The row is:
+
+- state `not_logged_in`, source `direct`, spend `unknown`, and no
+  [raw output](#raw-output);
+- in the bar view, `not signed in (<reason>)` in place of the bars, for
+  example `not signed in (no oauth token)`; the marks column after `STATE`
+  does not repeat it and shows only the row's other marks, such as `*` and
+  `spend:unknown`, with no `(fallback)` mark;
+- with `--table`, `not signed in (<reason>)` in the `MARKS` cell, after any
+  other marks (`* not signed in (no oauth token)`), `-` in every percentage
+  and reset column, and no `(fallback)` mark;
+- sorted with the other `not_logged_in` rows, after every row with a
+  reading and before every `timeout`, `unparsed` and `error` row;
+- `"state": "not_logged_in"`, `"source": "direct"` and `"error": null` in
+  the [JSON](#json-output) and in the rows of [Summary JSON](#summary-json),
+  as for a `not_logged_in` row that `claude` reported. The row is not an
+  error row, so the reason is not in the JSON. No key is added, and the set
+  of states is unchanged.
+
+No `warning:` line goes to stderr for such a row: the reason is already in
+the row, and a root with many unused profiles would
+otherwise print one identical line for each. With `--raw` the row prints no
+`note:` line and no `(direct: no claude output)` line. The fix is the same
+as for any `not_logged_in` row: `amplihack profile login <name>`.
+
+A `not_logged_in` row that `claude` itself reported, in the fallback or
+under `auto` or `text`, is shown as before, with the `(fallback)` mark.
+
+The [rotator](#rotate-decision-rule) uses the same reads, so it also starts
+no `claude` for a login with no token. It treats the row as it treats any
+`not_logged_in` result: never a target, and `<name>:failed` in the cycle
+line. Like any `not_logged_in` result, and unlike a probe that timed out,
+it is not unknown, so it does not hold the move onto
+[overflow](#rotate-overflow) profiles. It writes no
+`warning: rotate: probe of <name> failed` line for it, to stderr or to
+`rotate.err`, so an unused profile does not add a line to every cycle. The
+verdict is read-only: no login is written, refreshed, moved
+or removed because of it.
 
 ##### Usage credits on
 
@@ -522,7 +627,10 @@ for:
   see [Local proof of an excluded live login](#local-proof-of-an-excluded-live-login).
 
 In the first two cases a session may be using the login, and `claude` refreshes it
-itself, so the row falls back with `token expired` or `http 401`. The one
+itself, so the row falls back with `token expired` or `http 401`. An
+expired token with no refresh token is the exception: it gives
+`no refresh token` in every directory, and the row is
+[not signed in](#logins-with-no-token). The one
 exception is outside the usage read: a rotate cycle refreshes the login in
 `~/.claude` once, by these steps, when its token has already expired, so
 that its identity can be read (see
@@ -591,7 +699,7 @@ waits on it. Remove it with `rmdir <dir>/.oauth_refresh.lock` when no
 | Source | Meaning |
 |--------|---------|
 | `passive` | A fresh stored reading. Nothing was asked. |
-| `direct` | The OAuth usage endpoint answered. |
+| `direct` | The OAuth usage endpoint answered, or the direct read found [no login to use](#logins-with-no-token) and the row ended there. |
 | `fallback` | `claude` gave the row: the direct read failed (including `usage credits on` with no usable window), the profile is marked as overflow, or `AMPLIHACK_PROFILE_USAGE_PROBE` is `auto` or `text`. A [spend probe](#spend-probe) never makes a row `fallback`. |
 
 The table shows `(fallback)` among a fallback row's [marks](#marks). The
@@ -1424,7 +1532,7 @@ Every profile gets exactly one state:
 | `session_exhausted` | The session is at 100% or more and a session limit applies. A reading with [no session limit](#no-session-limit) never has this state. |
 | `weekly_exhausted` | The all-models week is at 100% or more and the session is not. |
 | `spend_limit` | The `/usage` output reported that the organisation's spend limit was reached. Any percentages read are kept. |
-| `not_logged_in` | The `/usage` output had no usage line of any kind (model week lines included) and reported that the profile is not signed in. Run `amplihack profile login <name>`. A profile [live in `~/.claude`](#logins-in-claude) is probed against `~/.claude`, so its missing `.credentials.json` does not give this state. |
+| `not_logged_in` | A direct read found [no login to use](#logins-with-no-token), or the `/usage` output had no usage line of any kind (model week lines included) and reported that the profile is not signed in. Run `amplihack profile login <name>`. A profile [live in `~/.claude`](#logins-in-claude) is probed against `~/.claude`, so its missing `.credentials.json` does not give this state. |
 | `timeout` | The fallback passed its [deadline](#probe-deadline), in either attempt. The account's usage is unknown. A direct read that times out falls back instead, except under `direct`, where it gives `error`. |
 | `unparsed` | The `/usage` output had nothing recognisable. Run again with `--raw` to see what Claude said. |
 | `error` | The probe could not run. The reason goes to stderr in both modes, and the JSON also has it in `error`. |
@@ -1469,7 +1577,7 @@ rotator's decisions do not use it.
 | `n/a` | No `/usage` text was read for spend, and none was needed: a direct row whose account has usage credits off, a [passive](#passive-readings) row, an [API-key](#api-key-usage) row, and a [fallback](#fallback-probe) row given by an accepted `get_usage` answer, which is accepted only when credits are off. |
 | `ok` | `/usage` text was read, gave a usage reading, and did not report a used-up spend limit: a [spend probe](#spend-probe) whose output parsed as `ok`, `session_exhausted` or `weekly_exhausted`, or a fallback row from `/usage` in one of those states. |
 | `limit_reached` | `/usage` text reported a used-up spend limit: a spend probe whose output parsed as `spend_limit`, or a fallback row in state `spend_limit`. |
-| `unknown` | A probe ran, or was asked for, and the spend status could not be read: a direct row with usage credits on whose `--spend` probe was killed at the [probe deadline](#probe-deadline), could not run (including `claude` not found), or gave output that parsed as `not_logged_in` or `unparsed`; and every fallback row in state `not_logged_in`, `unparsed`, `timeout` or `error`. |
+| `unknown` | A probe ran, or was asked for, and the spend status could not be read: a direct row with usage credits on whose `--spend` probe was killed at the [probe deadline](#probe-deadline), could not run (including `claude` not found), or gave output that parsed as `not_logged_in` or `unparsed`; every fallback row in state `not_logged_in`, `unparsed`, `timeout` or `error`; and a direct row with [no login to use](#logins-with-no-token). |
 | `not_probed` | Usage credits are on and no spend probe was asked for: a direct row with usage credits on in a run without `--spend`, or under `AMPLIHACK_PROFILE_USAGE_PROBE=direct`. The rotator's rows are always `not_probed`. |
 
 `n/a` does not mean that usage credits are off. A passive row says nothing
@@ -1531,7 +1639,8 @@ figure it shows before the week runs out; `s=100%` always means a session
 limit was reached.
 
 The rotator writes one line to stderr (`rotate.err` for a background
-rotator) for each `timeout` or `error` result, with `~/.claude` as the name
+rotator) for each `timeout` or `error` result, except a profile with
+[no login to use](#logins-with-no-token), with `~/.claude` as the name
 of the live login. Both are fixed text:
 
 ```
@@ -1598,6 +1707,7 @@ end of `S-RESET` they show one message:
 | Row | Message |
 |-----|---------|
 | [API-key](#api-key-usage) (`api_key`) | `api-key (billed per token)` |
+| A direct read with [no login to use](#logins-with-no-token) | `not signed in (<reason>)`, for example `not signed in (no oauth token)` |
 | `not_logged_in`, `timeout`, `unparsed`, `error` | `no reading (<state>)`, for example `no reading (timeout)` |
 | [Excluded](#excluded-profiles) (`excluded`) | `excluded (not probed)` |
 
@@ -1728,19 +1838,22 @@ amplihack profile usage --table --spend
 ```
 
 ```
-PROFILE   MARKS                STATE              SESSION           SESSION RESETS                     WEEK  WEEK RESETS                        SPEND
-review    -                    ok                 5%                2026-10-17T04:00:00Z               10%   2026-10-22T09:00:00Z               n/a
-work      * hosts:personal     ok                 20%               2026-10-17T02:00:00Z               30%   2026-10-22T09:00:00Z               n/a
-weekly    -                    ok                 no session limit  -                                  47%   2026-10-22T09:00:00Z               n/a
-mistt     -                    ok                 35%               2026-10-17T03:00:00Z               52%   2026-10-22T09:00:00Z               ok
-credit    overflow (fallback)  ok                 40%               Oct 16, 9pm (America/Los_Angeles)  61%   Oct 22, 2am (America/Los_Angeles)  ok
-org2      -                    session_exhausted  100%              2026-10-16T22:10:00Z               71%   2026-10-22T09:00:00Z               limit_reached
-team      -                    session_exhausted  100%              2026-10-16T23:50:00Z               55%   2026-10-22T09:00:00Z               n/a
-personal  leased→work          not_logged_in      -                 -                                  -     -                                  unknown
-spare     (fallback)           timeout            -                 -                                  -     -                                  unknown
+PROFILE   MARKS                                STATE              SESSION           SESSION RESETS                     WEEK  WEEK RESETS                        SPEND
+review    -                                    ok                 5%                2026-10-17T04:00:00Z               10%   2026-10-22T09:00:00Z               n/a
+work      * hosts:personal                     ok                 20%               2026-10-17T02:00:00Z               30%   2026-10-22T09:00:00Z               n/a
+weekly    -                                    ok                 no session limit  -                                  47%   2026-10-22T09:00:00Z               n/a
+mistt     -                                    ok                 35%               2026-10-17T03:00:00Z               52%   2026-10-22T09:00:00Z               ok
+credit    overflow (fallback)                  ok                 40%               Oct 16, 9pm (America/Los_Angeles)  61%   Oct 22, 2am (America/Los_Angeles)  ok
+org2      -                                    session_exhausted  100%              2026-10-16T22:10:00Z               71%   2026-10-22T09:00:00Z               limit_reached
+team      -                                    session_exhausted  100%              2026-10-16T23:50:00Z               55%   2026-10-22T09:00:00Z               n/a
+personal  leased→work                          not_logged_in      -                 -                                  -     -                                  unknown
+scratch   not signed in (no credentials file)  not_logged_in      -                 -                                  -     -                                  unknown
+spare     (fallback)                           timeout            -                 -                                  -     -                                  unknown
 order: rotator pick (most room in the worse of session and week, then name)
 ```
 
+`scratch` has no `.credentials.json`, so its direct read was
+[final](#logins-with-no-token) and its `MARKS` cell names the reason.
 `credit` is marked as overflow, so it was probed with `/usage` and shows
 Claude's own reset text. `team` is at its session limit and has used 55%
 of its week; the weekly figure is shown as reported. `spare` failed its
@@ -1793,6 +1906,11 @@ For each `error` row, one line goes to stderr, with or without `--json`:
 warning: profile "review": could not start claude
 ```
 
+A row with [no login to use](#logins-with-no-token) prints no such line;
+its reason is in the row. In the table it shows `not signed in (<reason>)` in `MARKS`, after any
+other marks, `not_logged_in` in `STATE`, `-` in every percentage and reset
+column and `unknown` in `SPEND`, as `scratch` does in the example above.
+
 With `--raw`, each row whose direct read failed and that went on to
 `claude` also prints one `note:` line to stderr, as shown under
 [Direct read failures](#direct-read-failures), and each direct row whose
@@ -1810,8 +1928,9 @@ review    -                 ok                 5%                2026-10-17T04:0
   (direct: no claude output)
 ```
 
-A passive row prints `(passive: no claude output)`. The body of a direct
-answer is never printed. A direct row whose account has usage credits on
+A passive row prints `(passive: no claude output)`. A row with
+[no login to use](#logins-with-no-token) prints nothing under it. The body
+of a direct answer is never printed. A direct row whose account has usage credits on
 prints the same `(direct: no claude output)` line: the output of its
 [spend probe](#spend-probe) is not shown. In the JSON, such a row's `raw` is
 `{"stdout": "", "stderr": ""}`.
@@ -1907,6 +2026,7 @@ The [spend status](#spend-status) plays no part in the order.
 |------|---------|
 | `*` | The default profile, as in `list`. |
 | `(fallback)` | The row came from `claude`, not from a passive or direct read. See [Reading source](#reading-source). |
+| `not signed in (<reason>)` | A direct read found [no login to use](#logins-with-no-token). Always the last mark. `--table` only: the bar view shows this text in place of the bars and leaves it out of its marks column. |
 | `leased→<dir>` | This profile's login is live in profile `<dir>`'s directory, lent by [auto-switch](#leases). |
 | `hosts:<account>` | This profile's directory currently holds the login of profile `<account>`, so the numbers on this row belong to `<account>`. |
 | `live in ~/.claude` | This profile's login is in the default directory `~/.claude`, and the numbers on this row were read from there. See [Logins in `~/.claude`](#logins-in-claude). |
@@ -2161,6 +2281,17 @@ kkim      timed out      after 20s  read 19:09:00
 mmoss     error: codex app-server exited (exit status: 1): error: unrecognized subcommand 'app-server'  read 19:09:00
 ~/.codex  signed in      5h ████████░░  88% 11-06 20:15 in 1h 6m  7d ███████░░░  70% 11-09 03:00 in 55h 51m  plan plus  read 19:09:00
 ```
+
+The Codex accounts are read while the Claude profiles are read. The Claude
+output never waits for Codex, and the Codex block is printed last. In the
+bar view and with `--table`, amplihack prints the Claude rows, their footer lines and the capacity
+summary to stdout and flushes it, then writes the stderr warnings and any
+`--raw` notes, then updates the [auto-switch readings](#refreshing-auto-switch-readings)
+and the [usage history](#usage-history), and only then waits for the Codex
+reads to finish and prints the Codex block. A slow Codex account delays
+only the Codex block, never the Claude output. stdout and stderr each keep
+their own order. `--summary-json` waits for both and prints one document,
+as before.
 
 Codex rows never change the Claude rows, the
 [capacity summary](#capacity-summary), the [usage history](#usage-history),
@@ -2507,7 +2638,7 @@ Each row has these keys:
 | `session_limit` | bool | `false` only when a reading showed no session window; `true` otherwise, including rows that could not be read. See [No session limit](#no-session-limit). Always present, immediately after `session`. |
 | `week_all` | window or `null` | The all-models week: `seven_day`, or the `Current week (all models)` line. Kept as reported when the session is exhausted. Always `null` for `timeout` and `error`. |
 | `week_models` | array of windows | Each usable `rate_limits.model_scoped` entry, or every other `Current week (<model>)` line, in the order given. Empty if none, and always empty for passive and direct rows. |
-| `error` | string or `null` | The [reason](#states) for an `error` row, otherwise `null`. |
+| `error` | string or `null` | The [reason](#states) for an `error` row; otherwise `null`, including a `not_logged_in` row whose direct read found [no login to use](#logins-with-no-token). |
 | `raw` | object | Only with `--raw`: `{"stdout": "...", "stderr": "..."}` from the attempt that gave the row, both empty for passive and direct rows; see [Raw output](#raw-output). The key is absent, not `null`, without `--raw`. |
 
 A window is `{label, used_percentage, resets_text, resets_at}`. `label` is
@@ -8012,7 +8143,8 @@ A cause never holds a token, an account or server text.
 | `timeout` | No answer within the 5-second timeout. |
 | `transport` | The connection or TLS failed, the server closed it, or the endpoint setting is unusable, so nothing was sent. |
 | `unparseable` | The body is too large, is not a JSON object, or names no account. |
-| `no oauth token` | The login file has no usable token. |
+| `no oauth token` | The login file says there is no login (`{}`, or no `accessToken`). |
+| `unreadable credentials` | The login file is not JSON, is not the expected shape, or holds a token the read rejects. |
 | `directory not private` | The directory fails the [login directory rule](#login-directory-rule). |
 | `login file not trusted` | The login file is missing where a login is required, is a symlink or not a regular file, belongs to another owner, can be written by group or others, has more than one link, or is on a different device from its directory. A [seeding scan](#seeding-a-record) treats a definitely missing login in another profile as no login, not as this cause. |
 | `login changed during read` | The file or directory changed between the checks before and after the read. |

@@ -957,3 +957,82 @@ fn bar_marks_add_the_spend_unless_it_is_n_a() {
     r.spend = Spend::NotApplicable;
     assert_eq!(bar_marks(&r), ["*"]);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #2271: a login with no token in the bar view
+//
+// Contract:
+// - A row whose error is `ErrorReason::NotSignedIn(why)` shows
+//   `not signed in (<why>)` in place of the bars, not
+//   `no reading (not_logged_in)`.
+// - `bar_marks` leaves the text out, so the line holds it once; the marks
+//   column keeps the row's other marks and `spend:unknown`, with no
+//   `(fallback)`.
+// - A `not_logged_in` row from `/usage` text keeps `no reading (...)`.
+// ---------------------------------------------------------------------------
+
+use super::usage_cmd::{ErrorReason, Probe};
+
+fn not_signed_in_row(name: &str, why: &'static str) -> Row {
+    let p = Probe::not_signed_in(why);
+    let mut r = row(name, p.report);
+    r.error = p.error;
+    r.raw = p.raw;
+    r.source = p.source;
+    r.direct_failure = p.direct_failure;
+    r.spend = p.spend;
+    r.extra_shape = p.extra_shape;
+    r
+}
+
+#[test]
+fn a_not_signed_in_row_shows_the_reason_in_place_of_the_bars() {
+    let rows = vec![
+        ok("work", Some((30.0, None)), Some((20.0, None))),
+        not_signed_in_row("scratch", "no credentials file"),
+    ];
+    let out = render_bars(&rows, &TimeView::Utc, false);
+    let l = line_of(&out, "scratch");
+    assert!(l.contains("not signed in (no credentials file)"), "{l}");
+    assert!(!l.contains("no reading"), "{l}");
+    assert!(!l.contains('%') && !l.contains('█'), "{l}");
+    assert!(l.contains("not_logged_in"), "the state column: {l}");
+    assert_eq!(l.matches("not signed in").count(), 1, "once: {l}");
+    assert!(l.ends_with("spend:unknown"), "{l}");
+    assert!(!l.contains("fallback"), "{l}");
+}
+
+#[test]
+fn bar_marks_leave_out_the_not_signed_in_text() {
+    let mut r = not_signed_in_row("scratch", "no oauth token");
+    assert_eq!(bar_marks(&r), ["spend:unknown"]);
+    r.default = true;
+    assert_eq!(bar_marks(&r), ["*", "spend:unknown"]);
+}
+
+#[test]
+fn every_final_reason_has_its_own_span() {
+    for why in ["no oauth token", "no credentials file", "no refresh token"] {
+        let out = render_bars(&[not_signed_in_row("x", why)], &TimeView::Utc, false);
+        let l = line_of(&out, "x");
+        assert!(l.contains(&format!("not signed in ({why})")), "{l}");
+    }
+}
+
+#[test]
+fn a_not_logged_in_row_from_usage_text_still_says_no_reading() {
+    let mut r = row("x", report(UsageState::NotLoggedIn, None, None));
+    r.source = Some(Source::Fallback);
+    let out = render_bars(&[r], &TimeView::Utc, false);
+    let l = line_of(&out, "x");
+    assert!(l.contains("no reading (not_logged_in)"), "{l}");
+    assert!(!l.contains("not signed in"), "{l}");
+}
+
+#[test]
+fn other_error_rows_keep_no_reading() {
+    let mut r = row("x", report(UsageState::Error, None, None));
+    r.error = Some(ErrorReason::Direct("http 5xx"));
+    let out = render_bars(&[r], &TimeView::Utc, false);
+    assert!(line_of(&out, "x").contains("no reading (error)"), "{out}");
+}

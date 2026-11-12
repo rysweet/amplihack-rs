@@ -106,6 +106,8 @@ mod issue_1348_documented_cli_commands_exist;
 mod issue_1356_release_tags_last;
 #[path = "issue_1358_sccache_installed_before_cargo.rs"]
 mod issue_1358_sccache_installed_before_cargo;
+#[path = "issue_1437_final_marker.rs"]
+mod issue_1437_final_marker;
 #[path = "issue_1526_release_version_stamp.rs"]
 mod issue_1526_release_version_stamp;
 #[path = "issue_1551_merge_guard.rs"]
@@ -340,6 +342,8 @@ mod issue_2042_host_proc_strace;
 mod issue_2042_proc_root_guard;
 #[path = "issue_2042_seam_dry_run_and_refusal.rs"]
 mod issue_2042_seam_dry_run_and_refusal;
+#[path = "issue_2190_recipe_steps_report_real_exit_status.rs"]
+mod issue_2190_recipe_steps_report_real_exit_status;
 #[path = "issue_2211_live_freshness.rs"]
 mod issue_2211_live_freshness;
 #[path = "issue_2218_excluded.rs"]

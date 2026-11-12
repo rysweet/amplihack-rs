@@ -366,11 +366,38 @@ The parent check needs Linux `/proc` and a root-owned `/bin/bash`, so
 
 ## Exit code 79 is terminal
 
-Exit `79` (and `BLOCKED_TERMINAL`) is a final answer from a structural guard,
-not an infrastructure hiccup. It is surfaced, it stops the run, and it is
-**never** retried into — not at a deeper level, not with a raised ceiling. The
-loop driver propagates `79` as its own exit code so a parent sees the refusal
-rather than a generic failure.
+Exit `79` is a final answer from a structural guard, not an infrastructure
+hiccup. It is surfaced, it stops the run, and it is **never** retried into —
+not at a deeper level, not with a raised ceiling. The loop driver propagates
+`79` as its own exit code so a parent sees the refusal rather than a generic
+failure.
+
+Not every failure is terminal (issue #1437). A child the loop ran — the
+`--before-round` step, a round, or a loop-health evaluator run — is a refusal
+only when one of these holds:
+
+- its exit status is `79`;
+- it exited with a non-zero status and the last
+  `amplihack.recipe.failure_class` marker in its log has
+  `"structural_refusal": true`. A child that exited `0` is never a refusal,
+  whatever its log holds.
+
+The exit code and the runner's last marker decide; transcript text never does.
+A round log holds every file the round's agents read and every refusal a
+descendant already handled inline, so a quoted `BLOCKED_TERMINAL
+orchestration_unavailable` decides nothing. Any other non-zero exit is an
+ordinary failure, reported as `rc=<n> class=<class> retryable=<bool>`, with
+` signal=<signal>` appended when the marker has one (class `work`,
+`environmental`, `usage_limit`, `agent_api`, `transient_transport`,
+`indeterminate`, or `unknown` when the log has no marker). After a round or
+an evaluator run, `loop-health-evaluator` decides whether another round is
+worthwhile. Its evidence collector applies the same two rules to the
+round's exit code and output, and the crusty loop's completion dispatch
+applies them to the evaluator it starts, so a round that handled a
+descendant's refusal inline is judged on its work. A failed `--before-round` step still ends the loop
+with `BEFORE_ROUND_FAILED` and exit `1`, never `79`.
+`autodrive_refusal.sh`, sourced by the loop driver and the collector, applies
+these rules.
 
 ## Resumability
 
