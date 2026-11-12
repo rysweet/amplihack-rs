@@ -559,7 +559,7 @@ fn prepare_attempt_refuses_symlinked_tmp_and_leaves_the_target_alone() {
 
     let err = format!("{:#}", ws.prepare_attempt().expect_err("must refuse"));
     assert!(
-        err.contains(&rt.join("tmp").display().to_string()),
+        err.contains(&format!("{:?}", rt.join("tmp"))),
         "names the path: {err}"
     );
     assert!(err.contains("refusing to launch the step"), "{err}");
@@ -583,7 +583,7 @@ fn prepare_attempt_refuses_artifacts_that_is_a_file() {
 
     let err = format!("{:#}", ws.prepare_attempt().expect_err("must refuse"));
     assert!(
-        err.contains(&rt.join("artifacts").display().to_string()),
+        err.contains(&format!("{:?}", rt.join("artifacts"))),
         "{err}"
     );
     assert!(err.contains("refusing to launch the step"), "{err}");

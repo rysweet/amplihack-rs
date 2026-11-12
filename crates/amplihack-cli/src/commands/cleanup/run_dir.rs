@@ -96,13 +96,12 @@ impl RuntimeGuard {
         // before; the sweep still fails closed on its own scan.
         if super::procs::ProcScan::take().found_user(&path) {
             tracing::warn!(
-                path = %path.display(),
+                path = ?path,
                 "runtime folder is still in use by a running process; leaving it in place"
             );
             eprintln!(
-                "amplihack: runtime folder {} is still in use by a running process; \
-                 leaving it in place \u{2014} the end-of-run cleanup sweep will remove it later",
-                path.display()
+                "amplihack: runtime folder {path:?} is still in use by a running process; \
+                 leaving it in place \u{2014} the end-of-run cleanup sweep will remove it later"
             );
             return RuntimeRemoval::KeptInUse;
         }
@@ -588,26 +587,26 @@ impl RunWorkspace {
             match fs::symlink_metadata(&dir) {
                 Ok(meta) if meta.file_type().is_dir() => {}
                 Ok(_) => bail!(
-                    "amplihack: this run's {} {} is a symbolic link or not a directory; \
+                    "amplihack: this run's {} {:?} is a symbolic link or not a directory; \
                      refusing to launch the step",
                     label,
-                    dir.display()
+                    dir
                 ),
                 Err(error) if error.kind() == ErrorKind::NotFound => {
                     if let Err(error) = create_private_dir_all(&dir) {
                         bail!(
-                            "amplihack: cannot create this run's {} {}: {error:#}; \
+                            "amplihack: cannot create this run's {} {:?}: {error:#}; \
                              refusing to launch the step",
                             label,
-                            dir.display()
+                            dir
                         );
                     }
                 }
                 Err(error) => bail!(
-                    "amplihack: cannot check this run's {} {}: {error}; \
+                    "amplihack: cannot check this run's {} {:?}: {error}; \
                      refusing to launch the step",
                     label,
-                    dir.display()
+                    dir
                 ),
             }
         }
@@ -661,8 +660,9 @@ impl RunWorkspace {
         }
     }
 
-    /// Removes `runtime/` (unless a process still uses it), finalises `run.json` and, when `sweep` is true and
-    /// `AMPLIHACK_CLEANUP_ON_EXIT` is not `0`, runs the end-of-run sweep.
+    /// Removes `runtime/` (unless a process still uses it), finalises
+    /// `run.json` and, when `sweep` is true and `AMPLIHACK_CLEANUP_ON_EXIT` is
+    /// not `0`, runs the end-of-run sweep.
     pub(crate) fn finish(
         self,
         outcome: Outcome,

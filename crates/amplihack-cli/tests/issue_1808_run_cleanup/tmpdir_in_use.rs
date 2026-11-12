@@ -64,8 +64,12 @@ struct Gate {
 
 impl Gate {
     fn release(mut self) {
-        // Blocking open: returns once the stub opens its read end.
-        let mut f = fs::OpenOptions::new().write(true).open(&self.go).unwrap();
+        // O_RDWR: opening never blocks, even if the stub is already gone.
+        let mut f = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&self.go)
+            .unwrap();
         writeln!(f, "go").unwrap();
         self.released = true;
     }
@@ -200,7 +204,7 @@ fn child_holding_run_tmpdir_keeps_folder_until_it_exits_then_sweep_removes_it() 
         .collect();
     assert_eq!(notes.len(), 1, "exactly one 'still in use' line: {stderr}");
     assert!(
-        notes[0].contains(&runtime.display().to_string()),
+        notes[0].contains(&format!("{runtime:?}")),
         "the line names the runtime folder {runtime:?}: {}",
         notes[0]
     );
