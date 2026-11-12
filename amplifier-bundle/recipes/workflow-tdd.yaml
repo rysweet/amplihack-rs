@@ -122,7 +122,7 @@ steps:
       ## Inputs
       **Original task (authoritative — judge intent against this):**
       {{task_description}}
-      **Linked issue:** #{{issue_number}}
+      **Linked issue:** #{{issue_number}}, as step-03 recorded it: {{issue_creation}}
       **Implement-step output (look for `Files modified:`, `Diff summary:`,
       `No-op justification:`, and the orchestration sentinel
       `No files modified — orchestration task`):**
@@ -150,9 +150,11 @@ steps:
          headRefName, baseRefName, headRefOid, isCrossRepository=false,
          expected_pr_title_prefix, created_after, and issue/work-item scope.
       3. **Sibling branches / worktrees** — `git branch -a --contains HEAD` and `git worktree list`.
-      4. **Linked GitHub issue** —
-         `gh issue view {{issue_number}} --json state,closedByPullRequestsReferences`
-         (skip if `{{issue_number}}` is empty). If the issue is `CLOSED` by a
+      4. **Linked GitHub issue** — when step-03 recorded a GitHub issue URL
+         above, run `gh issue view <that URL> --json state,closedByPullRequestsReferences`.
+         The URL names the repository that owns the issue, which need not be
+         this checkout's (`strict_delivery`), so never look the number up
+         here instead. Skip this check without such a URL. If the issue is `CLOSED` by a
          merged PR whose diff matches the task, verdict = `WORK_VERIFIED`
          (this is the issue #360 case the legacy guard handled).
       5. **Scoped PR evidence** — use only a persisted PR URL/number or

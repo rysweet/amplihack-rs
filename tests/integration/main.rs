@@ -384,6 +384,10 @@ mod issue_1595_tracking_issue_selection;
 // open issue with exactly the same title, and bounds creation retries.
 #[path = "issue_1881_local_default_tracking_test.rs"]
 mod issue_1881_local_default_tracking;
+// base_branch and strict_delivery: the shared helper, the step-15/16 guard,
+// step-06d for an issue in another repository, and step-04's base.
+#[path = "workflow_delivery_inputs_test.rs"]
+mod workflow_delivery_inputs;
 
 // Issues #815/#804: default-workflow local tracking issue-number extraction.
 // step-03b must accept hash-based `local-<hash>` references (propagate them),

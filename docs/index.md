@@ -377,6 +377,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [PR-Ownership Lease Reference](reference/pr-ownership-lease.md) - `PrLease`, `LeaseStore`, `Clock`, `LeaseError`, on-disk format, configuration, and the behavior contract locked by `pr_lease_behavior.rs`
 - [Step 03 Host-Aware Tracking Idempotency](reference/recipe-step-03-idempotency.md) - GitHub issue, Azure Boards work-item, and local tracking reuse/create behavior
 - [Tracking Issue Selection Reference](reference/workflow-tracking-issue-selection.md) - How step 03 honours `issue_number` on GitHub, reuses only open issues referenced in the task text (#1595), defaults to local tracking unless `create_issue=true`, reuses exact-title matches, and bounds rate-limit retries with jittered backoff (#1881)
+- [Workflow Delivery Inputs Reference](reference/workflow-delivery-inputs.md) - `base_branch` (the pull request's base everywhere it is used) and the opt-in `strict_delivery` contract for a caller that has already assigned the issue and the branch
 - [Workflow Issue Extraction Reference](reference/workflow-issue-extraction.md) - Three-tier issue-number resolution (direct URL → PR closing-refs → `#N` verify) in step 03b
 - [Multi-Provider Workflow Reference](reference/multi-provider-workflow.md) - Provider-neutral helper routing for GitHub, Azure DevOps, local, and unsupported repositories
 - [How to Use the Workflow with Azure DevOps](howto/use-workflow-with-azure-devops.md) - Run default-workflow against an AzDO repository

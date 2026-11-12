@@ -65,6 +65,11 @@ BODY_FILE_HELPER="${WORKFLOW_BODY_FILE_HELPER:-${SCRIPT_DIR}/workflow_body_file.
 [ -f "$BODY_FILE_HELPER" ] || { echo "ERROR: workflow_publish_pr.sh requires the body-file helper at $BODY_FILE_HELPER" >&2; exit 2; }
 # shellcheck source=/dev/null
 . "$BODY_FILE_HELPER"
+# base_branch and strict_delivery checks (docs/reference/workflow-delivery-inputs.md).
+DELIVERY_INPUTS_HELPER="${WORKFLOW_DELIVERY_INPUTS_HELPER:-${SCRIPT_DIR}/workflow_delivery_inputs.sh}"
+[ -f "$DELIVERY_INPUTS_HELPER" ] || { echo "ERROR: workflow_publish_pr.sh requires the delivery-input helper at $DELIVERY_INPUTS_HELPER" >&2; exit 2; }
+# shellcheck source=workflow_delivery_inputs.sh
+. "$DELIVERY_INPUTS_HELPER"
 
 emit_publish_result() {
   jq -nc \
@@ -147,12 +152,12 @@ load_pr_fields() {
 }
 
 resolve_pr_base_ref() {
-  local candidate authorized="${RECIPE_VAR_base_branch:-}"
-  if [ -n "$authorized" ]; then
-    git check-ref-format --branch "$authorized" >/dev/null || return 1
-    case "$authorized" in refs/*|coordination/*|@|"$CURRENT_BRANCH") echo "ERROR: invalid factory delivery base" >&2; return 1 ;; esac
-    git show-ref --verify --quiet "refs/remotes/origin/$authorized" || { echo "ERROR: authorized factory base is absent locally; fetch that branch without retargeting" >&2; return 1; }
-    printf 'origin/%s\n' "$authorized"; return 0
+  local candidate
+  # base_branch, when the caller sets it, is the base: no discovery and no
+  # fallback (delivery_base_ref in workflow_delivery_inputs.sh).
+  if [ -n "${RECIPE_VAR_base_branch:-}" ]; then
+    delivery_base_ref "$RECIPE_VAR_base_branch" "$CURRENT_BRANCH" "${RECIPE_VAR_forbidden_base_branches:-}"
+    return
   fi
   candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
   if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then printf '%s\n' "$candidate"; return 0; fi
@@ -223,7 +228,7 @@ gh_pr_create_with_retry() (
     return "$status"
   fi
   # WRITE path: no REST fallback (never blind-create); rate limits wait for reset.
-  gh_start_owned _gh_retry_core "pr create" pr create --draft --base "$BASE_BRANCH" ${PR_HEAD_ARG:+--head="$PR_HEAD_ARG"} --title "$PR_TITLE" --body-file "$body_file"
+  gh_start_owned _gh_retry_core "pr create" pr create --draft ${RECIPE_VAR_base_branch:+--base="$BASE_BRANCH"} ${PR_HEAD_ARG:+--head="$PR_HEAD_ARG"} --title "$PR_TITLE" --body-file "$body_file"
   wait "$GH_OWNED_PID" || status=$?
   GH_OWNED_PID=""
   gh_remove_capture "$body_file"
@@ -421,14 +426,16 @@ defuse_mentions() {
   }'
 }
 
-# cap_pr_title <base> <issue-number>: base cut so that "<base> (#N)" fits in
-# 200 bytes, never inside a UTF-8 sequence, trailing spaces and full stops
-# dropped. The " (#N)" suffix is always kept when there is an issue: the claim
-# check's title signal relies on it. An empty issue number adds no suffix.
+# cap_pr_title <base> <issue-reference>: base cut so that "<base> (<ref>)" fits
+# in 200 bytes, never inside a UTF-8 sequence, trailing spaces and full stops
+# dropped. <ref> is ISSUE_TAG: `#N`, or `owner/repo#N` for a strict_delivery
+# issue in another repository, because GitHub links a bare #N to this
+# repository's issue N. The suffix is always kept when there is an issue: the
+# claim check's title signal relies on it. An empty reference adds no suffix.
 cap_pr_title() {
   local base="$1" suffix="" limit
   # Issue #1976: no linked issue, no suffix and nothing for the claim check.
-  [ -z "$2" ] || suffix=" (#$2)"
+  [ -z "$2" ] || suffix=" ($2)"
   limit=$((200 - ${#suffix}))
   base="$(head -c "$limit" <<<"$base")" || return $?
   # Drop an incomplete trailing multibyte sequence left by the byte cut: a lead
@@ -794,6 +801,25 @@ if ! command -v gh >/dev/null 2>&1; then echo "ERROR: workflow_publish_pr.sh req
 REPO_IDENTITY="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" || true)"
 [ -n "$REPO_IDENTITY" ] || finish_publish "FAILED_PR_IDENTITY" "invalid-pr-identity" "failure" "unable to determine current GitHub repo identity from origin remote" 1
 
+# ISSUE_TAG is how the title, body and summary name the issue. GitHub resolves
+# a bare #N in this repository, so a strict_delivery issue owned by another
+# repository is written owner/repo#N (docs/reference/workflow-delivery-inputs.md).
+# The caller's pr_repository and closing_reference are checked against this
+# checkout before any provider write; a disagreement fails the publish.
+ISSUE_TAG=""
+ISSUE_REPO="$REPO_IDENTITY"
+if $HAS_ISSUE_LINK; then ISSUE_TAG="#${ISSUE_NUM}"; fi
+if [ "${RECIPE_VAR_strict_delivery:-false}" = true ]; then
+  $HAS_ISSUE_LINK || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" "strict_delivery requires the caller's numeric issue_number" 1
+  [ -n "${RECIPE_VAR_repository:-}" ] || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" "strict_delivery requires repository, the owner/repo that owns issue ${ISSUE_NUM}" 1
+  same_github_repository "${RECIPE_VAR_pr_repository:-}" "$REPO_IDENTITY" || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" \
+    "strict_delivery: pr_repository '${RECIPE_VAR_pr_repository:-}' is not this checkout's origin repository '${REPO_IDENTITY}'" 1
+  ISSUE_TAG="$(strict_issue_tag "$ISSUE_NUM" "$RECIPE_VAR_repository" "$REPO_IDENTITY")"
+  ISSUE_REPO="$RECIPE_VAR_repository"
+  [ "${RECIPE_VAR_closing_reference:-}" = "$ISSUE_TAG" ] || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" \
+    "strict_delivery: closing_reference '${RECIPE_VAR_closing_reference:-}' must be '${ISSUE_TAG}' (issue ${ISSUE_NUM} in ${RECIPE_VAR_repository}, pull request in ${REPO_IDENTITY})" 1
+fi
+
 PUBLISH_OPERATION="scoped_pr_lookup"
 PR_JSON="$(scoped_pr_lookup)"
 load_pr_fields "$PR_JSON"
@@ -840,6 +866,13 @@ fi
 # evidence that an issue is unclaimed — nor that it is claimed.
 if ! $HAS_ISSUE_LINK; then
   : # Issue #1976: no linked issue, so there is no claim to check.
+elif [ "$ISSUE_TAG" != "#${ISSUE_NUM}" ]; then
+  # The helper asks about issue N of THIS repository, which is not the issue
+  # here. A strict_delivery run publishes the branch its caller assigned
+  # (existing_branch is required), so the failure the check exists for, a run
+  # deriving a second branch for one issue, cannot happen; the scoped lookup
+  # above already found no pull request for this head.
+  echo "INFO: issue claim check skipped: ${ISSUE_TAG} is owned by another repository and this strict_delivery run publishes its assigned branch" >&2
 elif [ -f "$CLAIM_CHECK_HELPER" ]; then
   if ! CLAIM_OUTPUT="$(bash "$CLAIM_CHECK_HELPER" --issue "$ISSUE_NUM" --repo "$REPO_IDENTITY" --head "$CURRENT_BRANCH" 2>&1 >/dev/null)"; then
     printf '%s\n' "$CLAIM_OUTPUT" >&2
@@ -854,8 +887,8 @@ fi
 # Every operation below is checked, including commands inside helper functions.
 usable_title() {
   local base="$1"
-  [ "$base" != "(#${ISSUE_NUM})" ] || return 1
-  [ -z "$ISSUE_NUM" ] || base="${base%" (#${ISSUE_NUM})"}"
+  [ "$base" != "(${ISSUE_TAG})" ] || return 1
+  [ -z "$ISSUE_TAG" ] || base="${base%" (${ISSUE_TAG})"}"
   case "$base" in *[![:space:].]*) return 0 ;; *) return 1 ;; esac
 }
 
@@ -869,7 +902,7 @@ prepare_title_text() {
   METADATA_OPERATION="defuse_issue_refs"
   text="$(defuse_issue_refs "$text")" || return $?
   METADATA_OPERATION="cap_pr_title (head and UTF-8 boundary)"
-  PR_TITLE="$(cap_pr_title "$text" "$ISSUE_NUM")" || return $?
+  PR_TITLE="$(cap_pr_title "$text" "$ISSUE_TAG")" || return $?
   usable_title "$PR_TITLE"
 }
 
@@ -907,7 +940,7 @@ derive_pr_title() {
   PR_TITLE_SOURCE="template"
   raw=""
   if $HAS_ISSUE_LINK; then
-    raw="$(lookup_issue_title "$ISSUE_NUM" "${RECIPE_VAR_repository:-$REPO_IDENTITY}")" || return $?
+    raw="$(lookup_issue_title "$ISSUE_NUM" "$ISSUE_REPO")" || return $?
   fi
   METADATA_OPERATION="normalise_pr_title_text (title normalization)"
   text="$(normalise_pr_title_text "$raw")" || return $?
@@ -930,7 +963,7 @@ derive_pr_title() {
     text="$(normalise_pr_title_text "$text")" || return $?
     text="$(defuse_issue_refs "$text")" || return $?
     METADATA_OPERATION="cap_pr_title (head and UTF-8 boundary)"
-    PR_TITLE="$(cap_pr_title "$text" "$ISSUE_NUM")" || return $?
+    PR_TITLE="$(cap_pr_title "$text" "$ISSUE_TAG")" || return $?
     usable_title "$PR_TITLE" || return 1
   else
     prepare_title_text "$text" || return $?
@@ -941,10 +974,10 @@ recover_pr_title() {
   local raw branch suffix="" limit
   PR_TITLE_SOURCE="recovery-issue"
   if $HAS_ISSUE_LINK; then
-    if raw="$(lookup_issue_title "$ISSUE_NUM" "${RECIPE_VAR_repository:-$REPO_IDENTITY}")" && prepare_title_text "$raw"; then
+    if raw="$(lookup_issue_title "$ISSUE_NUM" "$ISSUE_REPO")" && prepare_title_text "$raw"; then
       return 0
     fi
-    suffix=" (#${ISSUE_NUM})"
+    suffix=" (${ISSUE_TAG})"
   fi
   # Independent of every external formatter, Git query and failed normalizer.
   # An ASCII allowlist also makes the byte cap independent of the locale.
@@ -980,14 +1013,14 @@ fi
 # "#" match literally under extglob.
 if [ "$PR_TITLE_SOURCE" != "template" ]; then
   SUMMARY_TITLE="$PR_TITLE"
-  if $HAS_ISSUE_LINK; then SUMMARY_TITLE="${SUMMARY_TITLE%" (#${ISSUE_NUM})"}"; fi
+  if $HAS_ISSUE_LINK; then SUMMARY_TITLE="${SUMMARY_TITLE%" (${ISSUE_TAG})"}"; fi
   if SUMMARY_TITLE="$(sanitize_body_evidence "$SUMMARY_TITLE" 2>/dev/null)"; then :; else
     summary_status=$?
     printf 'WARNING: optional defuse_mentions summary failed (exit %s)\n' "$summary_status" >&2
     SUMMARY_TITLE="Branch changes"
   fi
   if $HAS_ISSUE_LINK; then
-    PR_SUMMARY="Workflow-generated PR for #${ISSUE_NUM}: ${SUMMARY_TITLE}."
+    PR_SUMMARY="Workflow-generated PR for ${ISSUE_TAG}: ${SUMMARY_TITLE}."
   else
     PR_SUMMARY="Workflow-generated PR: ${SUMMARY_TITLE}."
   fi
@@ -1023,13 +1056,7 @@ else
     echo "WARNING: workflow_issue_reference.sh not found at ${ISSUE_REFERENCE_HELPER} — using the non-closing 'Refs' keyword (#1361)" >&2
     ISSUE_KEYWORD="Refs"
   fi
-  ISSUE_LINK="${ISSUE_KEYWORD:-Refs} #${ISSUE_NUM}"
-  if [ -n "${RECIPE_VAR_base_branch:-}" ]; then
-    expected="#${ISSUE_NUM}"
-    [ "${RECIPE_VAR_repository:?}" = "${RECIPE_VAR_pr_repository:?}" ] || expected="$RECIPE_VAR_repository#${ISSUE_NUM}"
-    [ "${RECIPE_VAR_closing_reference:?}" = "$expected" ] || { echo "ERROR: factory closing reference disagrees with issue association" >&2; exit 2; }
-    ISSUE_LINK="Closes $expected"
-  fi
+  ISSUE_LINK="${ISSUE_KEYWORD:-Refs} ${ISSUE_TAG}"
 fi
 # Treat evidence as untrusted multiline text; generated issue links stay outside
 # this boundary so the diff-based closing policy remains unchanged.
@@ -1044,7 +1071,7 @@ done
 PR_BODY=$(printf '## Summary\n%s\n\n## Issue\n%s\n\n## Changed files\n%s\n\n## Diff stat\n```text\n%s\n```\n\n## Behavior\n%s\n\n## Validation\n%s\n\n## Risk\n%s\n\n## Checklist\n- [x] Branch has %s commit(s) ahead of %s\n- [ ] Code review completed\n- [ ] Philosophy check passed\n\n---\n*This PR was created as a draft for review before merging.*\n' "$PR_SUMMARY" "$ISSUE_LINK" "$CHANGED_FILES_BODY" "$DIFF_STAT_BODY" "$BEHAVIOR_BODY" "$VALIDATION_BODY" "$RISK_BODY" "$COMMITS_AHEAD" "$BASE_BRANCH") || {
   echo 'WARNING: optional rich PR body construction failed; using a minimal summary' >&2
   PR_BODY="$(printf '## Summary\nBranch changes prepared for review.\n\n')"
-  if $HAS_ISSUE_LINK; then PR_BODY="${PR_BODY}"$'\n\n'"Refs #${ISSUE_NUM}"; else PR_BODY="${PR_BODY}"$'\n\n'"No linked issue."; fi
+  if $HAS_ISSUE_LINK; then PR_BODY="${PR_BODY}"$'\n\n'"Refs ${ISSUE_TAG}"; else PR_BODY="${PR_BODY}"$'\n\n'"No linked issue."; fi
 }
 
 PUBLISH_STATE="FOLLOWUP_CREATED"

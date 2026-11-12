@@ -17,7 +17,7 @@ inputs:
     description: "Absolute path to the repository root. Provided by parent recipe context."
 
 # #1561/#1684/#1968: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
-context: { base_branch: "", repository: "", pr_repository: "", closing_reference: "", worktree_setup: "", allow_no_op: false, terminal_success: "false", terminal_state: "", terminal_reason: "", publish_status: "", should_finalize: "true", should_run_ci_wait: "true", should_merge: "true", repo_path: "", version_bump: "", local_testing_gate: "", precommit_results: "", task_description: "" }
+context: { base_branch: "", forbidden_base_branches: "", strict_delivery: "false", repository: "", pr_repository: "", closing_reference: "", worktree_setup: "", allow_no_op: false, terminal_success: "false", terminal_state: "", terminal_reason: "", publish_status: "", should_finalize: "true", should_run_ci_wait: "true", should_merge: "true", repo_path: "", version_bump: "", local_testing_gate: "", precommit_results: "", task_description: "" }
 
 steps:
   - id: "publish-terminal-state"
@@ -36,7 +36,7 @@ steps:
        **Task:** {{task_description}}
 
        Required:
-       1. Review `git diff ${RECIPE_VAR_base_branch:-main}...HEAD`.
+       1. Review `git diff <base>...HEAD`, where <base> is `{{worktree_setup.base_ref}}`, or `main` when that is empty.
        2. Classify as PATCH (fix/docs/refactor), MINOR (backward-compatible feature/API), or MAJOR (breaking).
        3. Update `[workspace.package].version` ONLY when warranted:
           - **PATCH (fix/docs/refactor): DO NOT modify the `version` line.** Set
@@ -47,7 +47,8 @@ steps:
        Useful commands:
        ```bash
        cd {{repo_path}}
-       git diff "${RECIPE_VAR_base_branch:-main}...HEAD" --stat
+       BASE="{{worktree_setup.base_ref}}"
+       git diff "${BASE:-main}...HEAD" --stat
        CURRENT_VERSION=$(grep -E '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
        echo "Current version: $CURRENT_VERSION"
        # MINOR/MAJOR only (PATCH: no sed): sed -i 's/version = "X.Y.Z"/version = "NEW.VERSION"/' Cargo.toml
@@ -128,8 +129,9 @@ steps:
       fi
       { gd=$(git rev-parse --absolute-git-dir) && cd_=$(git rev-parse --path-format=absolute --git-common-dir) && [ "$gd" != "$cd_" ] && [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ]; } 2>/dev/null || { echo "ERROR: step-15-commit-push: $(pwd -P) is not the top of a linked task worktree; refusing to stage or commit; never commits in REPO_PATH (#1528)" >&2; exit 1; }
       # Security: refuse to commit/push on protected branches, even inside a linked worktree.
+      # base_branch is refused in addition to main and master, never instead of them.
       _CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
-      if { [ -n "${RECIPE_VAR_base_branch:-}" ] && [ "$_CURRENT_BRANCH" = "$RECIPE_VAR_base_branch" ]; } || { [ -z "${RECIPE_VAR_base_branch:-}" ] && { [ "$_CURRENT_BRANCH" = "main" ] || [ "$_CURRENT_BRANCH" = "master" ]; }; }; then echo "ERROR: step-15 landed on protected branch '$_CURRENT_BRANCH' — refusing to commit. Worktree setup likely failed." >&2; exit 1; fi
+      if [ "$_CURRENT_BRANCH" = "main" ] || [ "$_CURRENT_BRANCH" = "master" ] || { [ -n "${RECIPE_VAR_base_branch:-}" ] && [ "$_CURRENT_BRANCH" = "$RECIPE_VAR_base_branch" ]; }; then echo "ERROR: step-15 landed on protected branch '$_CURRENT_BRANCH' — refusing to commit. Worktree setup likely failed." >&2; exit 1; fi
       echo "=== Step 15: Commit and Push ===" >&2
       # FIX (#495): commit_result MUST be emitted on every exit path so step-16
       # (PR creation) can be gated on the actual push outcome. Trap installed
@@ -170,6 +172,9 @@ steps:
       # FIX (#469/#311): env vars are injection-safe; ${VAR:-} nounset reads so an unset value can't abort before the #944 fallback below.
       TASK_DESC="${TASK_DESCRIPTION:-}"
       ISSUE_NUMBER="${ISSUE_NUMBER:-}"
+      # strict_delivery: an issue owned by another repository is written owner/repo#N; a bare #N would name this repository's issue N (docs/reference/workflow-delivery-inputs.md).
+      ISSUE_TAG="#${ISSUE_NUMBER}"
+      [ "${RECIPE_VAR_strict_delivery:-false}" != true ] || [ "${RECIPE_VAR_repository:-}" = "${RECIPE_VAR_pr_repository:-}" ] || ISSUE_TAG="${RECIPE_VAR_repository:-}#${ISSUE_NUMBER}"
       # FIX (#944): commit prefix from step-14's real change type (PATCH->fix:,
       # MINOR->feat:, MAJOR->feat!:), not a hardcoded 'feat:'. Unknown -> bugfix heuristic.
       CHANGE_CLASS="$(printf '%s' "${RECIPE_VAR_version_bump:-}" | jq -r 'if type=="object" and has("change_classification") and .change_classification != null then .change_classification | tostring else empty end' 2>/dev/null)" || { echo "WARNING: step-15-commit-push: version_bump is not valid JSON; treated as missing (#1561)" >&2; CHANGE_CLASS=""; }
@@ -196,7 +201,7 @@ steps:
       CLOSE_KW="Refs"; IR=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_issue_reference.sh" ] && { IR="$c/amplifier-bundle/tools/workflow_issue_reference.sh"; break; }; done
       if [ -n "$IR" ]; then CLOSE_KW="$(git diff --cached --name-only | bash "$IR" --keyword)" || CLOSE_KW="Refs"; else echo "WARNING: workflow_issue_reference.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack) — using the non-closing 'Refs' keyword (#1361)" >&2; fi
       case "$HOST_TYPE" in
-        github) ISSUE_REF="${CLOSE_KW} #${ISSUE_NUMBER}"; ISSUE_IMPL="issue #${ISSUE_NUMBER}" ;;
+        github) ISSUE_REF="${CLOSE_KW} ${ISSUE_TAG}"; ISSUE_IMPL="issue ${ISSUE_TAG}" ;;
         azdo)   ISSUE_REF="AB#${ISSUE_NUMBER}"; ISSUE_IMPL="AB#${ISSUE_NUMBER}" ;;
         *)      ISSUE_REF="Ref #${ISSUE_NUMBER}"; ISSUE_IMPL="issue #${ISSUE_NUMBER}" ;;
       esac
@@ -278,7 +283,7 @@ steps:
         # shellcheck disable=SC2064
         trap "rm -f \"$push_stderr_file\"; _emit_commit_result" EXIT
         if hook_repair_run push step-15-commit-push \
-          --fix-message "fix: address {hook_ids} pre-push rejection${ISSUE_NUMBER:+ (#$ISSUE_NUMBER)}" \
+          --fix-message "fix: address {hook_ids} pre-push rejection${ISSUE_NUMBER:+ ($ISSUE_TAG)}" \
           --output "$push_stderr_file" -- git push ${REMOTE_BRANCH:+origin "HEAD:$REMOTE_BRANCH"}; then
           redact_sensitive_file "$push_stderr_file" >&2  # kept for the step log; never printed raw (#978)
           # FIX (#1269): confirm the published commit is the tested one. A missing
@@ -323,7 +328,7 @@ steps:
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-16 requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
       git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "ERROR: step-16-create-draft-pr requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2; exit 1; }
       if _CURRENT_BRANCH=$(git branch --show-current 2>/dev/null); then :; else _publish_status=$?; printf 'ERROR: git branch --show-current failed (exit %s)\n' "$_publish_status" >&2; trap - EXIT; exit "$_publish_status"; fi
-      if { [ -n "${RECIPE_VAR_base_branch:-}" ] && [ "$_CURRENT_BRANCH" = "$RECIPE_VAR_base_branch" ]; } || { [ -z "${RECIPE_VAR_base_branch:-}" ] && { [ "$_CURRENT_BRANCH" = "main" ] || [ "$_CURRENT_BRANCH" = "master" ]; }; }; then echo "ERROR: step-16 landed on protected branch '$_CURRENT_BRANCH' — refusing to create PR. Worktree setup likely failed." >&2; exit 1; fi
+      if [ "$_CURRENT_BRANCH" = "main" ] || [ "$_CURRENT_BRANCH" = "master" ] || { [ -n "${RECIPE_VAR_base_branch:-}" ] && [ "$_CURRENT_BRANCH" = "$RECIPE_VAR_base_branch" ]; }; then echo "ERROR: step-16 landed on protected branch '$_CURRENT_BRANCH' — refusing to create PR. Worktree setup likely failed." >&2; exit 1; fi
       RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
       [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
       [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"

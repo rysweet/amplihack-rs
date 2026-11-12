@@ -50,12 +50,21 @@ context:
   # Path to the repository
   repo_path: "."
 
-  # Factory dispatch supplies these from verified instance policy and issue evidence.
+  # Delivery inputs. Reference: docs/reference/workflow-delivery-inputs.md.
+  # base_branch: the branch a new branch starts from and the pull request
+  # targets. Empty => discover the remote default branch, as before.
   base_branch: ""
+  # forbidden_base_branches: whitespace-separated globs base_branch must not match.
+  forbidden_base_branches: ""
+  # strict_delivery: "true" when the caller has already assigned the issue
+  # (issue_number in `repository`, on github.com) and the branch
+  # (existing_branch). The run then fails rather than create, substitute or
+  # retarget anything; pr_repository and closing_reference are checked at
+  # step-03 and step-16.
+  strict_delivery: "false"
   repository: ""
   pr_repository: ""
   closing_reference: ""
-  github_host: ""
 
   # Branch name prefix (default: feat)
   branch_prefix: "feat"
@@ -143,7 +152,7 @@ context:
 recovery:
   version: 1
   persist:
-    context: ["github_host", "closing_reference", "pr_repository", "repository", "base_branch", "adaptive_recipe", "allow_no_op", "api_design", "architecture_design", "auto_init_repo", "blocking_issues_addressed", "branch_name", "branch_prefix", "ci_status", "clarified_requirements", "cleanup_status", "codebase_analysis", "create_issue", "database_design", "decomposition_json", "design_spec", "doc_review_checkpoint", "doc_review_feedback", "documentation", "existing_branch", "final_cleanup", "final_documentation", "final_requirements", "finalization_handoff", "force_single_workstream", "goal_already_met", "identity_preflight", "implementation", "implementation_terminal_evidence", "infra_error_details", "issue_claim_check", "issue_creation", "issue_number", "issue_url", "no_merge", "ops_modified_files", "philosophy_check", "pr_feedback_changes", "pr_number", "pr_philosophy_review", "pr_review", "pr_security_review", "pr_url", "pre_commit_review", "preflight_status", "publish_status", "quality_audit_results", "quick_change_verdict", "recursion_guard", "refactored_code", "reflection_1", "reflection_2", "reflection_final", "remote_host_type", "repo_path", "requirements", "resume_checkpoint", "review_feedback", "round_1_result", "round_2_result", "round_3_result", "security_requirements", "selected_workflow", "session_complete_status", "session_id", "session_info", "should_finalize", "should_merge", "should_run_ci_wait", "skip_pre_agent_validation", "summary", "task_description", "task_type", "terminal_reason", "terminal_state", "terminal_success", "test_spec", "tree_id", "verification_terminal_evidence", "workflow", "workflow_init", "workspace_status", "workstream", "workstream_count", "workstreams_file", "worktree_path", "worktree_setup"]
+    context: ["base_branch", "closing_reference", "forbidden_base_branches", "pr_repository", "repository", "strict_delivery", "adaptive_recipe", "allow_no_op", "api_design", "architecture_design", "auto_init_repo", "blocking_issues_addressed", "branch_name", "branch_prefix", "ci_status", "clarified_requirements", "cleanup_status", "codebase_analysis", "create_issue", "database_design", "decomposition_json", "design_spec", "doc_review_checkpoint", "doc_review_feedback", "documentation", "existing_branch", "final_cleanup", "final_documentation", "final_requirements", "finalization_handoff", "force_single_workstream", "goal_already_met", "identity_preflight", "implementation", "implementation_terminal_evidence", "infra_error_details", "issue_claim_check", "issue_creation", "issue_number", "issue_url", "no_merge", "ops_modified_files", "philosophy_check", "pr_feedback_changes", "pr_number", "pr_philosophy_review", "pr_review", "pr_security_review", "pr_url", "pre_commit_review", "preflight_status", "publish_status", "quality_audit_results", "quick_change_verdict", "recursion_guard", "refactored_code", "reflection_1", "reflection_2", "reflection_final", "remote_host_type", "repo_path", "requirements", "resume_checkpoint", "review_feedback", "round_1_result", "round_2_result", "round_3_result", "security_requirements", "selected_workflow", "session_complete_status", "session_id", "session_info", "should_finalize", "should_merge", "should_run_ci_wait", "skip_pre_agent_validation", "summary", "task_description", "task_type", "terminal_reason", "terminal_state", "terminal_success", "test_spec", "tree_id", "verification_terminal_evidence", "workflow", "workflow_init", "workspace_status", "workstream", "workstream_count", "workstreams_file", "worktree_path", "worktree_setup"]
     outputs: ["workflow-prep", "workflow-worktree", "workflow-design", "workflow-tdd", "workflow-refactor-review", "workflow-precommit-test", "workflow-publish", "workflow-pr-review", "workflow-finalize"]
 
 steps:
@@ -156,19 +165,6 @@ steps:
     recovery: {"replay": "never"}
     type: "recipe"
     recipe: "workflow-prep"
-    context:
-      issue_number: "{{issue_number}}"
-      create_issue: "{{create_issue}}"
-      base_branch: "{{base_branch}}"
-      repository: "{{repository}}"
-      pr_repository: "{{pr_repository}}"
-      closing_reference: "{{closing_reference}}"
-      repo_path: "{{repo_path}}"
-      existing_branch: "{{existing_branch}}"
-      should_merge: "{{should_merge}}"
-      no_merge: "{{no_merge}}"
-      github_host: "{{github_host}}"
-
 
   - id: "workflow-worktree"
     recovery: {"replay": "never"}

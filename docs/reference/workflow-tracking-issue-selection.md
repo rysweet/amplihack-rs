@@ -20,6 +20,7 @@ choice reaches `step-03b`.
 - [Issue creation helper contract](#issue-creation-helper-contract)
 - [Diagnostics](#diagnostics)
 - [Behaviour by example](#behaviour-by-example)
+- [Strict delivery](#strict-delivery)
 - [Azure DevOps and local tracking](#azure-devops-and-local-tracking)
 - [Known limitations](#known-limitations)
 - [Tests](#tests)
@@ -67,6 +68,9 @@ attached to an old merged pull request, and a task that cited closed issue
 
 Orders 1–3 run whatever `create_issue` says, so an explicit `issue_number`
 or a validated `#N` is reused without the opt-in.
+
+This order does not apply when `strict_delivery` is `"true"`; see
+[Strict delivery](#strict-delivery).
 
 At most five task-text candidates are looked up. The first accepted
 candidate wins.
@@ -547,6 +551,19 @@ process substitution, so its exit status is not used.
 Prints the issue URL and returns 0 when `N` passes every validation check.
 Returns 1 with no output otherwise, including when `N` is not all digits.
 
+### `select_strict_delivery_issue`
+
+Used only when `strict_delivery` is `"true"`. Its arguments are the caller's
+inputs, and it reads nothing from the caller's scope. It prints the confirmed
+issue URL and returns 0, or returns 2 with the reason on stderr. See the
+[Workflow Delivery Inputs Reference](workflow-delivery-inputs.md#strict_delivery).
+
+### `azdo_task_work_item`
+
+Prints the work item the task text names for the Azure DevOps reuse lookup:
+the first `AB#N`, otherwise the first `#N`, otherwise nothing. Step-03 called
+this logic inline before it moved here.
+
 ### `derive_local_tracking_id`
 
 Unchanged in purpose. Its `local-issue-N` / `local-ab-N` pass-through pattern
@@ -718,13 +735,24 @@ By default step-04 then names the branch `${BRANCH_PREFIX:-feat}/issue-<N>-<slug
 a branch named in the task text, or an existing branch or pull request for the
 task, takes precedence. The tests check only the step-03b read-back.
 
+## Strict delivery
+
+When `strict_delivery` is `"true"`, the caller has already chosen the issue,
+and step-03 confirms it instead of choosing one. `select_strict_delivery_issue`
+reads `issue_number` in `repository`, which may differ from this checkout's
+repository. If the inputs or the read do not confirm it, the step fails. It
+never creates an issue, reads the task text or falls back to local tracking,
+whatever `remote_host_type` says. The inputs, the checks and what later steps
+do with the issue are described in the
+[Workflow Delivery Inputs Reference](workflow-delivery-inputs.md).
+
 ## Azure DevOps and local tracking
 
 The selection described above applies only to `github` hosts.
 
 | Host | `issue_number=763` | Task-text reference |
 | ---- | ------------------ | ------------------- |
-| `azdo` | Prints `AB#763` | `REF_ISSUE_NUM` (first `AB#N`, otherwise first `#N`), unchanged |
+| `azdo` | Prints `AB#763` | `REF_ISSUE_NUM` from `azdo_task_work_item` (first `AB#N`, otherwise first `#N`), unchanged |
 | `other` | `local-issue-763` | Used by `derive_local_tracking_id`, unchanged |
 | not a git repository | `local-issue-763` | Used by `derive_local_tracking_id`, unchanged |
 
@@ -847,31 +875,4 @@ scripts/check-brick-budget.sh
 - [Issue Deduplication Reference](issue-dedup.md) - how recipes avoid duplicate issues
 - [Workflow Issue Extraction Reference](workflow-issue-extraction.md) - how step-03b turns the step-03 output into `issue_number`
 - [Local Tracking Issue-Number Extraction](../recipes/issue-815-804-local-tracking-issue-number.md) - the local metadata format used when an explicit lookup fails
-
-
-## Factory plan-task delivery inputs
-
-Factory dispatch supplies a verified owning-repository issue and explicit delivery
-policy: `issue_number`, `create_issue=false`, `repository`, `github_host`,
-`pr_repository`, `base_branch`, `closing_reference`, `repo_path`,
-`existing_branch`, `should_merge=false` and `no_merge=true`. The default recipe
-forwards these into nested preparation. When `base_branch` is set, preparation
-reobserves the exact issue through the supplied host and owning repository; an
-unavailable association fails instead of creating or substituting a local issue.
-The requirements agent carries these protected inputs into downstream handoffs.
-
-The existing-branch worktree receipt preserves that base. Publication resolves
-its exact remote-tracking ref without using the remote default as a fallback,
-passes `--base` to GitHub creation, and uses the repository-qualified closing
-reference when issue and PR repositories differ. Ordinary callers without an
-explicit factory base retain their existing base-discovery and issue policy.
-GitHub closing-relationship verification remains the factory's independent job;
-a phrase in the PR body alone does not certify delivery on a nondefault branch.
-See [software-factory issue 13](https://github.com/mistt-repo/software-factory/issues/13).
-
-Candidate validation on macOS: 47 publishing process/native-runner tests and 78
-tracking/preparation tests pass. The 38 workflow-decomposition tests outside the
-unaffected `zero_bs_transport` module pass. That module's existing Linux-specific
-`/usr/bin/cat` fixture is not portable to this host; full Linux CI is separate.
-Native-runner tests use a private Cargo installation from pin
-`90286bc50b84ded773795d2c8301b689f680db0b`; the shared installation is unchanged.
+- [Workflow Delivery Inputs Reference](workflow-delivery-inputs.md) - `base_branch` and the `strict_delivery` contract

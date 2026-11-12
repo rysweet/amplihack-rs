@@ -17,7 +17,7 @@ recursion:
   max_depth: 6
   max_total_steps: 80
 
-context: { base_branch: "" }
+context: { base_branch: "", forbidden_base_branches: "", strict_delivery: "false" }  # caller delivery inputs: docs/reference/workflow-delivery-inputs.md
 
 steps:
   - id: "step-04-setup-worktree"
@@ -38,7 +38,7 @@ steps:
       REPO_PATH="$(pwd -P)"
 
       # Canonical 5-tier helper ladder (#829/#840/#962). Lifecycle logic lives in
-      # tools/ so this recipe stays < 400 lines; a missing helper is a no-op, except pr_number's.
+      # tools/ so this recipe stays < 400 lines; a missing helper is a no-op, except pr_number's and base_branch's.
       SWEEP_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_worktree_sweep.sh"
       [ -f "$SWEEP_HELPER" ] || SWEEP_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_sweep.sh"
       [ -f "$SWEEP_HELPER" ] || SWEEP_HELPER="$(pwd)/amplifier-bundle/tools/workflow_worktree_sweep.sh"
@@ -47,7 +47,7 @@ steps:
       TOOLS_DIR="$(dirname "$SWEEP_HELPER")"
       # An AMPLIHACK_HOME older than a checkout's recipe lacks newer helpers, so when that tier is
       # incomplete and the checkout holds every helper in STEP_TOOLS, use the checkout's (#1808).
-      STEP_TOOLS="workflow_worktree_root.sh workflow_branch_name.sh workflow_pr_branch.sh workflow_caller_branch_alias.sh workflow_alias_reuse.sh workflow_worktree_deconflict.sh workflow_fetch_origin.sh amplihack_run_owned.sh workflow_runtime_root.sh"
+      STEP_TOOLS="workflow_worktree_root.sh workflow_branch_name.sh workflow_pr_branch.sh workflow_caller_branch_alias.sh workflow_alias_reuse.sh workflow_worktree_deconflict.sh workflow_fetch_origin.sh amplihack_run_owned.sh workflow_runtime_root.sh workflow_delivery_inputs.sh"
       tools_complete() { local t; for t in $STEP_TOOLS; do [ -f "$1/$t" ] || return 1; done; }
       tools_complete "$TOOLS_DIR" || ! tools_complete "$REPO_PATH/amplifier-bundle/tools" || TOOLS_DIR="$REPO_PATH/amplifier-bundle/tools"
       # Worktree anchoring (#1134): nested recipe RUNNERS are legitimate, and a
@@ -270,7 +270,7 @@ steps:
         echo "ERROR: no supported remote base ref found. Expected origin/HEAD, origin/master, or origin/develop." >&2
         return 1
       }
-      BASE_REF="$(resolve_base_ref)" || exit 1
+      BASE_REF="$(if [ -n "${RECIPE_VAR_base_branch:-}" ] || [ "${RECIPE_VAR_strict_delivery:-false}" = true ]; then bash "$TOOLS_DIR/workflow_delivery_inputs.sh" worktree "${RECIPE_VAR_base_branch:-}" "${RECIPE_VAR_strict_delivery:-false}" "" "${RECIPE_VAR_forbidden_base_branches:-}"; else resolve_base_ref; fi)" || exit 1  # base_branch is the base, never replaced; a strict run has no new branch
       BASE_BRANCH="${BASE_REF#origin/}"
 
       # BRANCH NAMING (#1426): the explicit branch, else <prefix>/issue-<N>-<tail>.

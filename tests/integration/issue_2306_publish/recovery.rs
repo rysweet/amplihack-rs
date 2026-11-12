@@ -502,8 +502,61 @@ fn malformed_creation_output_reports_identity_failure_without_recreating() {
     }
 }
 
+// base_branch and strict_delivery (docs/reference/workflow-delivery-inputs.md).
+
+fn create_args(f: &PublishFixture) -> Vec<Vec<u8>> {
+    fs::read(f.tmp.path().join("create.argv"))
+        .unwrap()
+        .split(|b| *b == 0)
+        .map(<[u8]>::to_vec)
+        .collect()
+}
+
+fn refused_without_create(f: &PublishFixture, output: &std::process::Output, reason: &str) {
+    assert!(!output.status.success(), "{}", describe(output));
+    assert!(
+        !f.tmp.path().join("create.argv").exists(),
+        "no pull request may be created: {}",
+        describe(output)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(reason)
+            || String::from_utf8_lossy(&output.stdout).contains(reason),
+        "expected {reason:?}: {}",
+        describe(output)
+    );
+}
+
+/// The fixture with origin/dev at origin/main, the strict inputs for issue
+/// 2306 of `plan/tasks` and a pull request into `owner/repo` (the origin).
+fn strict_command(f: &PublishFixture) -> std::process::Command {
+    f.git(&[
+        "update-ref",
+        "refs/remotes/origin/dev",
+        "refs/remotes/origin/main",
+    ]);
+    let mut command = f.publish_command();
+    command
+        .env("RECIPE_VAR_base_branch", "dev")
+        .env("RECIPE_VAR_strict_delivery", "true")
+        .env("RECIPE_VAR_repository", "plan/tasks")
+        .env("RECIPE_VAR_pr_repository", "owner/repo")
+        .env("RECIPE_VAR_closing_reference", "plan/tasks#2306");
+    command
+}
+
 #[test]
-fn factory_delivery_uses_the_authorized_base_and_qualified_closing_reference() {
+fn ordinary_publish_lets_github_choose_the_base() {
+    let f = PublishFixture::new();
+    f.assert_created(&f.publish());
+    assert!(
+        !create_args(&f).iter().any(|a| a.starts_with(b"--base")),
+        "without base_branch, gh pr create names no base, as before"
+    );
+}
+
+#[test]
+fn base_branch_is_passed_to_github_without_discovery() {
     let f = PublishFixture::new();
     f.git(&[
         "update-ref",
@@ -513,30 +566,152 @@ fn factory_delivery_uses_the_authorized_base_and_qualified_closing_reference() {
     let output = f
         .publish_command()
         .env("RECIPE_VAR_base_branch", "dev")
-        .env("RECIPE_VAR_repository", "plan/tasks")
-        .env("RECIPE_VAR_pr_repository", "owner/repo")
-        .env("RECIPE_VAR_closing_reference", "plan/tasks#2306")
         .output()
         .unwrap();
     f.assert_created(&output);
-    let args = fs::read(f.tmp.path().join("create.argv")).unwrap();
-    let args: Vec<_> = args.split(|b| *b == 0).collect();
-    assert!(
-        args.windows(2)
-            .any(|p| p == [b"--base".as_slice(), b"dev".as_slice()])
-    );
-    assert!(f.read("body.md").contains("Closes plan/tasks#2306"));
+    assert!(create_args(&f).contains(&b"--base=dev".to_vec()));
+    assert_eq!(f.read("title"), format!("{ISSUE_TITLE} (#2306)"));
 }
 
 #[test]
-fn factory_delivery_never_falls_back_when_its_authorized_base_is_absent() {
+fn base_branch_is_never_replaced_when_it_is_absent_forbidden_or_the_head() {
+    for (base, forbidden, reason) in [
+        ("dev", "", "has no remote-tracking ref origin/dev"),
+        (
+            "coordination/tasks",
+            "release/* coordination/*",
+            "matches forbidden_base_branches pattern 'coordination/*'",
+        ),
+        // The step-16 guard refuses this before the base is resolved.
+        (
+            BRANCH,
+            "",
+            "landed on protected branch 'feat/issue-2306-publish'",
+        ),
+    ] {
+        let f = PublishFixture::new();
+        if base != "dev" {
+            f.git(&[
+                "update-ref",
+                &format!("refs/remotes/origin/{base}"),
+                "refs/remotes/origin/main",
+            ]);
+        }
+        let output = f
+            .publish_command()
+            .env("RECIPE_VAR_base_branch", base)
+            .env("RECIPE_VAR_forbidden_base_branches", forbidden)
+            .output()
+            .unwrap();
+        refused_without_create(&f, &output, reason);
+    }
+}
+
+#[test]
+fn step_16_refuses_main_even_when_base_branch_names_another_branch() {
     let f = PublishFixture::new();
+    f.git(&[
+        "update-ref",
+        "refs/remotes/origin/dev",
+        "refs/remotes/origin/main",
+    ]);
+    f.git(&["checkout", "main"]);
     let output = f
         .publish_command()
         .env("RECIPE_VAR_base_branch", "dev")
         .output()
         .unwrap();
-    assert!(!output.status.success(), "{}", describe(&output));
-    assert!(!f.tmp.path().join("create.argv").exists());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("authorized factory base"));
+    refused_without_create(&f, &output, "landed on protected branch 'main'");
+}
+
+#[test]
+fn strict_delivery_names_another_repository_issue_in_full() {
+    let f = PublishFixture::new();
+    let output = strict_command(&f).output().unwrap();
+    f.assert_created(&output);
+    let body = f.read("body.md");
+    assert!(body.contains("Closes plan/tasks#2306"), "{body}");
+    assert!(
+        !body.contains(" #2306"),
+        "no bare #2306, which GitHub would resolve in owner/repo:\n{body}"
+    );
+    assert!(
+        body.contains("Workflow-generated PR for plan/tasks#2306"),
+        "{body}"
+    );
+    assert_eq!(f.read("title"), format!("{ISSUE_TITLE} (plan/tasks#2306)"));
+    let log = f.read("gh.log");
+    assert!(
+        log.contains("issue view 2306 --repo plan/tasks --json title"),
+        "the title is read from the owning repository:\n{log}"
+    );
+    assert!(
+        !log.contains("--repo owner/repo --json state"),
+        "the claim check would read owner/repo#2306, an unrelated issue:\n{log}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("issue claim check skipped"),
+        "{}",
+        describe(&output)
+    );
+    assert!(create_args(&f).contains(&b"--base=dev".to_vec()));
+}
+
+#[test]
+fn strict_delivery_in_the_same_repository_keeps_a_bare_reference() {
+    let f = PublishFixture::new();
+    let output = strict_command(&f)
+        .env("RECIPE_VAR_repository", "Owner/Repo")
+        .env("RECIPE_VAR_closing_reference", "#2306")
+        .output()
+        .unwrap();
+    f.assert_created(&output);
+    let body = f.read("body.md");
+    assert!(body.contains("Closes #2306"), "{body}");
+    assert_eq!(f.read("title"), format!("{ISSUE_TITLE} (#2306)"));
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("issue claim check skipped"),
+        "the claim check runs for an issue in this repository: {}",
+        describe(&output)
+    );
+}
+
+#[test]
+fn strict_delivery_refuses_inputs_that_disagree_with_the_checkout() {
+    for (key, value, reason) in [
+        (
+            "RECIPE_VAR_closing_reference",
+            "#2306",
+            "closing_reference '#2306' must be 'plan/tasks#2306'",
+        ),
+        (
+            "RECIPE_VAR_closing_reference",
+            "other/repo#2306",
+            "closing_reference 'other/repo#2306' must be 'plan/tasks#2306'",
+        ),
+        (
+            "RECIPE_VAR_pr_repository",
+            "plan/tasks",
+            "pr_repository 'plan/tasks' is not this checkout's origin repository 'owner/repo'",
+        ),
+        (
+            "RECIPE_VAR_repository",
+            "",
+            "strict_delivery requires repository",
+        ),
+        (
+            "ISSUE_NUMBER",
+            "",
+            "strict_delivery requires the caller's numeric issue_number",
+        ),
+    ] {
+        let f = PublishFixture::new();
+        let output = strict_command(&f).env(key, value).output().unwrap();
+        refused_without_create(&f, &output, reason);
+        assert_eq!(
+            json(&output)["state"],
+            "FAILED_INVALID_INPUT",
+            "{key}={value}"
+        );
+    }
 }
