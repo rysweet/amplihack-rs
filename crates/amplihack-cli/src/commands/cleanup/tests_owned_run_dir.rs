@@ -543,8 +543,9 @@ fn workspace_completion_propagates_cleanup_failure_and_finalizes_the_report() {
     isolated(|fx| {
         let (scope, guard) = begin(fx, &fx.work, false);
         let report_path = scope.run_dir.join("run.json");
+        let record = marker(guard.path());
         let sentinel = fx.sentinel(guard.path());
-        fs::remove_file(marker(guard.path())).unwrap();
+        fs::remove_file(record).unwrap();
         let workspace = RunWorkspace::Scoped {
             scope: Box::new(scope),
             guard,

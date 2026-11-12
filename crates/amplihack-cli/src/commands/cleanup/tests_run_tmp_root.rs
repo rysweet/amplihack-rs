@@ -86,6 +86,19 @@ impl Fx {
     }
 
     fn dir(&self, name: &str) -> PathBuf {
+        // Keep ordinary accepted roots below the real 59-byte limit even
+        // when the mandatory private launcher itself has a long path. Exact
+        // boundary padding names remain unchanged.
+        let name = match name {
+            "runroot" => "r",
+            "callertmp" => "t",
+            "realroot" => "x",
+            "openroot" => "o",
+            "grouproot" => "g",
+            "stickyroot" => "s",
+            "elsewhere" => "e",
+            other => other,
+        };
         let p = self.base.join(name);
         fs::create_dir_all(&p).unwrap();
         fs::set_permissions(&p, fs::Permissions::from_mode(0o700)).unwrap();
@@ -295,7 +308,7 @@ fn bad_root_variable_does_not_fall_through_to_tmpdir() {
 #[test]
 fn missing_root_is_created_private_with_its_parents() {
     let fx = Fx::new();
-    let root = fx.base.join("new/runroot");
+    let root = fx.base.join("n/r");
     let chosen = fx.choose(&fx.with_root(&root));
     let (dir, got_root) = external(&chosen);
     assert_eq!(got_root, root);
@@ -747,8 +760,13 @@ fn macos_login_tmpdir_past_the_budget_is_skipped_without_a_warning() {
 #[test]
 fn tmpdir_below_the_macos_login_tmpdir_is_used() {
     let fx = Fx::new();
-    let (resolved, given) = login_tmpdir_of_len(&fx, 40);
-    let below = resolved.join("mine");
+    let login_len = fx.base.as_os_str().len() + 4;
+    assert!(
+        login_len + "/m".len() <= MAX_ROOT_BYTES,
+        "private fixture path must leave room for a login child"
+    );
+    let (resolved, given) = login_tmpdir_of_len(&fx, login_len);
+    let below = resolved.join("m");
     fs::create_dir(&below).unwrap();
     fs::set_permissions(&below, fs::Permissions::from_mode(0o700)).unwrap();
     let inputs = TmpRootInputs {
