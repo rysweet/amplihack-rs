@@ -197,12 +197,14 @@ fn reachable_autodrive_shell_helpers_do_not_require_proc_or_gnu_chmod() {
                 "{} requires /proc: {line}",
                 path.display()
             );
+            // GNU-only form: `chmod MODE -- PATH`. BSD chmod stops parsing
+            // options at the mode and reads `--` as a file. `chmod -- MODE PATH`
+            // (#2257) is portable.
             let words: Vec<_> = line.split_whitespace().collect();
-            assert!(
-                !(words.contains(&"chmod") && words.contains(&"--")),
-                "{} requires GNU chmod: {line}",
-                path.display()
-            );
+            let gnu_only = words
+                .windows(3)
+                .any(|w| w[0] == "chmod" && w[1] != "--" && w[2] == "--");
+            assert!(!gnu_only, "{} requires GNU chmod: {line}", path.display());
         }
     }
 }

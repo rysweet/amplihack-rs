@@ -110,7 +110,8 @@ for recipe in "${AUTODRIVE_RECIPES[@]}"; do
 done
 for tool in "$TOOLS"/autodrive_*.sh; do
   bash -n "$tool" || exit 1
-  if sed '/^[[:space:]]*#/d' "$tool" | grep -E '/proc/|chmod[^;]* -- ' >/dev/null; then
+  # GNU-only `chmod MODE -- PATH`; the portable `chmod -- MODE PATH` (#2257) passes.
+  if sed '/^[[:space:]]*#/d' "$tool" | grep -E '/proc/|chmod[[:space:]]+[^-[:space:];][^[:space:];]*[[:space:]]+--([[:space:]]|$)' >/dev/null; then
     echo "FAIL: platform-specific prerequisite in $tool" >&2; exit 1
   fi
 done

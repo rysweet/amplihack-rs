@@ -719,6 +719,9 @@ fn altered_or_missing_referenced_artifacts_do_not_establish_readiness() {
     use sha2::{Digest, Sha256};
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
+    // tempfile creates 0777 minus the caller's umask; the store requires a
+    // private directory whatever the umask.
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let store = EvidenceStore::create(dir.path()).unwrap();
     let auth = authorization("true", "false");
     let expected: Binding = serde_json::from_value(binding(&auth)).unwrap();
@@ -766,6 +769,13 @@ fn unexpected_earlier_merge_cannot_be_hidden_by_later_request() {
 fn completion_receipt_requires_both_signals_and_cannot_be_replayed() {
     use crate::commands::orch::autodrive::completion as receipts;
     let dir = tempfile::tempdir().unwrap();
+    // tempfile creates 0777 minus the caller's umask; the store requires a
+    // private directory whatever the umask.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
     let store = EvidenceStore::create(dir.path()).unwrap();
     let auth = authorization("true", "false");
     let raw = candidate(&auth);
