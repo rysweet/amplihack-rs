@@ -2911,3 +2911,267 @@ fn the_spend_plays_no_part_in_ordering() {
     order(&mut rows, NOW);
     assert_eq!(names(&rows), ["aa", "bb"]);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #2271: rows for a login with no token
+//
+// Contract:
+// - `ErrorReason::NotSignedIn(why)` shows as `not signed in (<why>)`; it
+//   holds a fixed reason only.
+// - A not-signed-in row (`Probe::not_signed_in`): state `not_logged_in`,
+//   source `direct`, spend `unknown`, error `not signed in (<why>)`.
+// - `marks()` (the `--table` MARKS cell) puts the text last, after every
+//   other mark, and never adds `(fallback)`.
+// - The table shows `-` in every percentage and reset column.
+// - `error_warnings` skips these rows (D7): the reason is already in the
+//   row.
+// - `ErrorReason::json_error()` is `None` for `NotSignedIn` (D6) and
+//   `Some(as_str())` for every other variant.
+// - JSON (`--json` and the `profiles` array of `--summary-json`): `state`
+//   `not_logged_in`, `source` `direct`, `spend` `unknown`, `error` `null`,
+//   no `raw`, and no new key.
+// - `source_notes` gives nothing for the row, and a row with no `raw`
+//   prints no `(direct: no claude output)` line.
+// ---------------------------------------------------------------------------
+
+use super::usage_cmd::Probe;
+
+/// The fixed texts of `usage_direct::reason`, which is Unix-only; these
+/// tests run on every platform.
+mod direct_reason {
+    pub(super) const NO_TOKEN: &str = "no oauth token";
+    pub(super) const NO_FILE: &str = "no credentials file";
+    pub(super) const NO_REFRESH_TOKEN: &str = "no refresh token";
+}
+
+/// A row as `profile usage` builds it from `Probe::not_signed_in(why)`.
+fn not_signed_in_row(name: &str, why: &'static str) -> Row {
+    let p = Probe::not_signed_in(why);
+    let mut r = row(name, p.report);
+    r.error = p.error;
+    r.raw = p.raw;
+    r.source = p.source;
+    r.direct_failure = p.direct_failure;
+    r.spend = p.spend;
+    r.extra_shape = p.extra_shape;
+    r
+}
+
+#[test]
+fn not_signed_in_shows_the_fixed_reason() {
+    for (why, text) in [
+        (direct_reason::NO_TOKEN, "not signed in (no oauth token)"),
+        (
+            direct_reason::NO_FILE,
+            "not signed in (no credentials file)",
+        ),
+        (
+            direct_reason::NO_REFRESH_TOKEN,
+            "not signed in (no refresh token)",
+        ),
+    ] {
+        let e = ErrorReason::NotSignedIn(why);
+        assert_eq!(e.as_str(), text);
+        assert_eq!(e.to_string(), text);
+        assert!(!text.contains('/'), "no path: {text}");
+    }
+}
+
+#[test]
+fn a_not_signed_in_row_has_the_documented_fields() {
+    let r = not_signed_in_row("scratch", direct_reason::NO_FILE);
+    assert_eq!(r.report.state, UsageState::NotLoggedIn);
+    assert_eq!(r.source, Some(Source::Direct));
+    assert_eq!(r.spend, Spend::Unknown);
+    assert_eq!(r.direct_failure, Some(direct_reason::NO_FILE));
+    assert!(r.raw.is_none() && r.extra_shape.is_none());
+}
+
+#[test]
+fn the_table_marks_end_with_the_text_and_never_say_fallback() {
+    let mut r = not_signed_in_row("scratch", direct_reason::NO_TOKEN);
+    assert_eq!(marks(&r), "not signed in (no oauth token)");
+    r.default = true;
+    assert_eq!(marks(&r), "* not signed in (no oauth token)");
+    r.leased_to = Some("work".into());
+    r.overflow = true;
+    let m = marks(&r);
+    assert!(m.ends_with(" not signed in (no oauth token)"), "{m}");
+    assert!(m.starts_with("* leased→work"), "{m}");
+    assert!(!m.contains("fallback"), "{m}");
+}
+
+#[test]
+fn the_table_row_shows_the_text_the_state_and_dashes() {
+    let rows = vec![
+        ok("work", Some((20.0, None)), Some((30.0, None))),
+        not_signed_in_row("scratch", direct_reason::NO_FILE),
+    ];
+    let out = render_table(&rows);
+    let l = line_of(&out, "scratch");
+    assert!(l.contains("not signed in (no credentials file)"), "{out}");
+    assert!(l.contains("not_logged_in"), "{out}");
+    assert!(!l.contains("(fallback)") && !l.contains('%'), "{out}");
+    let cells: Vec<&str> = l.split_whitespace().collect();
+    assert_eq!(
+        cells[cells.len() - 5..],
+        ["-", "-", "-", "-", "unknown"],
+        "{l}"
+    );
+    assert_eq!(out.matches("not signed in").count(), 1, "shown once: {out}");
+}
+
+/// D7: nine identical warnings would add noise and nothing else.
+#[test]
+fn a_not_signed_in_row_prints_no_warning() {
+    let rows = [
+        ok("work", Some((1.0, None)), None),
+        not_signed_in_row("scratch", direct_reason::NO_FILE),
+        not_signed_in_row("spare", direct_reason::NO_TOKEN),
+        not_signed_in_row("old", direct_reason::NO_REFRESH_TOKEN),
+    ];
+    assert!(
+        error_warnings(&rows).is_empty(),
+        "{:?}",
+        error_warnings(&rows)
+    );
+}
+
+/// Other error rows still warn, next to the skipped not-signed-in rows.
+#[test]
+fn other_error_rows_still_warn_beside_a_not_signed_in_row() {
+    let mut broken = row("broken", report(UsageState::Error, None, None));
+    broken.error = Some(ErrorReason::Direct(direct_reason::NO_TOKEN));
+    let mut gone = row("gone", report(UsageState::Error, None, None));
+    gone.error = Some(ErrorReason::NoClaude);
+    let rows = [
+        not_signed_in_row("scratch", direct_reason::NO_TOKEN),
+        broken,
+        gone,
+    ];
+    assert_eq!(
+        error_warnings(&rows),
+        [
+            "warning: profile \"broken\": direct read: no oauth token",
+            "warning: profile \"gone\": claude not found",
+        ]
+    );
+}
+
+#[test]
+fn json_error_is_none_for_not_signed_in() {
+    for why in [
+        direct_reason::NO_TOKEN,
+        direct_reason::NO_FILE,
+        direct_reason::NO_REFRESH_TOKEN,
+    ] {
+        assert_eq!(ErrorReason::NotSignedIn(why).json_error(), None);
+    }
+}
+
+#[test]
+fn json_error_is_as_str_for_every_other_reason() {
+    for e in [
+        ErrorReason::ProfileRefused,
+        ErrorReason::StartFailed,
+        ErrorReason::ReadFailed,
+        ErrorReason::WaitFailed,
+        ErrorReason::NoClaude,
+        ErrorReason::Direct(direct_reason::NO_TOKEN),
+    ] {
+        assert_eq!(e.json_error(), Some(e.as_str()), "{e:?}");
+    }
+}
+
+#[test]
+fn json_of_a_not_signed_in_row_keeps_the_shape() {
+    let plain = sourced(
+        row("aa", report(UsageState::NotLoggedIn, None, None)),
+        Some(Source::Direct),
+    );
+    let r = not_signed_in_row("scratch", direct_reason::NO_TOKEN);
+    let v = json(&[plain, r]);
+    assert_eq!(keys(&v[1]), keys(&v[0]), "no key added");
+    assert_eq!(v[1]["state"], "not_logged_in");
+    assert_eq!(v[1]["source"], "direct");
+    assert_eq!(v[1]["spend"], "unknown");
+    assert!(v[1]["error"].is_null(), "{}", v[1]);
+    assert!(v[1]["raw"].is_null(), "{}", v[1]);
+    assert!(v[1]["session"].is_null() && v[1]["week_all"].is_null());
+}
+
+/// D6: `error` stays `null`, as it was when `claude` reported these
+/// logins, for every reason: a token-less file, no file, and an expired
+/// token with no refresh token. The state says the profile is not signed
+/// in. A real error row in the same output keeps its text.
+#[test]
+fn json_error_of_every_not_signed_in_reason_is_null() {
+    for why in [
+        direct_reason::NO_TOKEN,
+        direct_reason::NO_FILE,
+        direct_reason::NO_REFRESH_TOKEN,
+    ] {
+        let mut err = row("broken", report(UsageState::Error, None, None));
+        err.error = Some(ErrorReason::NoClaude);
+        let v = json(&[not_signed_in_row("scratch", why), err]);
+        assert!(v[0]["error"].is_null(), "{why}: {}", v[0]);
+        assert_eq!(v[0]["state"], "not_logged_in");
+        assert_eq!(v[1]["error"], "claude not found");
+    }
+}
+
+/// `--summary-json` holds the same `profiles` rows as `--json`.
+#[test]
+fn summary_json_gives_the_same_error_for_a_not_signed_in_row() {
+    use super::usage_cmd::render_summary_json;
+    let r = not_signed_in_row("scratch", direct_reason::NO_REFRESH_TOKEN);
+    let v: serde_json::Value = serde_json::from_str(&render_summary_json(
+        NOW,
+        std::slice::from_ref(&r),
+        None,
+        &[],
+    ))
+    .unwrap();
+    let row = &v["profiles"][0];
+    assert!(row["error"].is_null(), "{row}");
+    assert_eq!(row["state"], "not_logged_in");
+    assert_eq!(row["source"], "direct");
+    assert!(row["raw"].is_null(), "{row}");
+    assert_eq!(v["profiles"], json(&[r]), "the same rows as --json");
+}
+
+/// The table and bars keep the display text; JSON has `error: null`.
+#[test]
+fn the_table_keeps_the_display_text_not_the_json_text() {
+    let out = render_table(&[not_signed_in_row("scratch", direct_reason::NO_TOKEN)]);
+    assert!(out.contains("not signed in (no oauth token)"), "{out}");
+    assert!(!out.contains("direct read:"), "{out}");
+}
+
+#[test]
+fn a_not_signed_in_row_gets_no_source_note_and_no_raw_line() {
+    let r = not_signed_in_row("scratch", direct_reason::NO_FILE);
+    assert!(source_notes(std::slice::from_ref(&r)).is_empty());
+    let out = render_table(&[r]);
+    assert!(!out.contains("no claude output"), "{out}");
+    assert!(!out.contains("raw stdout"), "{out}");
+}
+
+/// D6: a not-signed-in row sorts as `(2, 0)`: after every row with a
+/// reading and before `timeout`, `unparsed` and `error` rows.
+#[test]
+fn a_not_signed_in_row_sorts_after_readings_and_before_errors() {
+    let mut err = row("aa-error", report(UsageState::Error, None, None));
+    err.error = Some(ErrorReason::NoClaude);
+    let mut rows = vec![
+        err,
+        row("ab-timeout", report(UsageState::Timeout, None, None)),
+        not_signed_in_row("ac-scratch", direct_reason::NO_TOKEN),
+        ok("zz-work", Some((90.0, None)), Some((90.0, None))),
+    ];
+    order(&mut rows, NOW);
+    assert_eq!(
+        names(&rows),
+        ["zz-work", "ac-scratch", "ab-timeout", "aa-error"]
+    );
+}

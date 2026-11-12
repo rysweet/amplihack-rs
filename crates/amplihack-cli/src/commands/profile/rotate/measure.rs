@@ -13,13 +13,22 @@ use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::probe_limits::{self, ProbeMode};
 use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::usage_cmd::{self, Probe, RowReader};
-use crate::commands::profile::usage_parse::UsageState;
-use crate::commands::profile::usage_source::{self, ClaudeGate, LazyBinary, SourceEnv};
+use crate::commands::profile::usage_source::{ClaudeGate, LazyBinary, SourceEnv};
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
 use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
+
+// `probe_reading` belongs to `measure`; it has its own file to keep
+// `measure.rs` under the line budget.
+#[path = "probe_reading.rs"]
+mod probe_reading;
+#[cfg(test)]
+#[path = "tests_issue_2271_measure.rs"]
+mod tests_issue_2271_measure;
+
+pub(super) use probe_reading::reading;
 
 /// Whose login is in `~/.claude`.
 pub enum Live<'a> {
@@ -46,32 +55,6 @@ impl Live<'_> {
             _ => Probed::platform(),
         }
     }
-}
-
-/// The reading for `p`. A failed or timed-out probe counts as "swap needed",
-/// so its cause goes to stderr (the daemon's `rotate.err`); the text is fixed
-/// and never Claude's output. Both read `Failed`: never a target and never
-/// exhausted, and probed again next cycle. Both are also unknown, which
-/// blocks a move onto overflow. A profile directory refused just before the
-/// spawn is no exception (issue #1698): that login may have capacity. From
-/// the next cycle the profile is skipped as `directory refused` before any
-/// probe, and that skip holds the move until the directory is fixed.
-pub(super) fn reading(who: &str, p: &Probe) -> Probed {
-    // SR-10: logged whether or not the row fell back to `claude`.
-    if p.direct_failure.is_some_and(usage_source::not_saved) {
-        eprintln!("{}", usage_cmd::not_saved_warning(who));
-    }
-    if p.error.is_some() || p.report.state == UsageState::Error {
-        let why = p
-            .error
-            .map_or_else(|| "unreadable /usage output".to_string(), |e| e.to_string());
-        eprintln!("warning: rotate: probe of {who} failed: {why}");
-        return Probed::failed();
-    }
-    if p.report.state == UsageState::Timeout {
-        eprintln!("warning: rotate: probe of {who} timed out");
-    }
-    Probed::from_report(&p.report)
 }
 
 /// The probe method, as `profile usage` resolves it. A bad variable falls

@@ -5053,35 +5053,254 @@ the run when the PR is merged outside the gate.
 
 ## Exit code 79 is terminal
 
-Exit `79` and `BLOCKED_TERMINAL` are final answers from a structural guard
-(#1327 / #1332), not infrastructure hiccups. Every child invocation is checked
-for them; when one appears the loop stops, surfaces the refusal, and exits `79`
-itself so a parent sees a policy refusal rather than a generic failure. It is
-**never** retried into — not at a deeper level, and never with a raised
-ceiling.
+Exit `79` is the final answer from a structural guard (#1327 / #1332), not an
+infrastructure hiccup. Every child the loop starts is checked for a refusal;
+when one is found the loop stops, surfaces it, and exits `79` itself so a
+parent sees a policy refusal rather than a generic failure. It is **never**
+retried into: not at a deeper level, and never with a raised ceiling.
 
-A log line that only quotes the refusal is not one. Agent output reaches a
-round log as `[HH:MM:SS] [amplihack:...]` lines, and crusty's review of PR #1520
-quoted `BLOCKED_TERMINAL orchestration_unavailable: depth 4 of max 3` in its
-verdict. `terminal_refusal` in `autodrive_loop.sh` drops those lines, then
-looks for the guard's own `BLOCKED_TERMINAL orchestration_unavailable` text;
-reading any `BLOCKED_TERMINAL` as a refusal ended the loop on a review that
-merely discussed one.
+### Not every failure is terminal (issue #1437)
 
-`terminal_refusal()` and the loop-health evidence collector both remove text
-that comes from inputs before their text checks (#1510). They cut the log at
-the runner's run summary header (`Recipe: <name>` then `Run ID:` or
-`Status:`), because the summary's `Steps:` block reprints each step's output,
-agent prose included, unprefixed at column 0. Then, with one ERE, they drop
-agent lines and the runner's `amplihack.recipe.log_pointer {...}` lines,
-which echo the run's `task_description`. A log_pointer `exit_code` of 79 is dropped with its
-line on purpose, because the round's own exit code is the structural signal.
-The collector's token check, like `terminal_refusal()`'s,
-requires the full `BLOCKED_TERMINAL orchestration_unavailable` marker. The
-round log is handed to it through `autodrive_round_tail.sh`, which drops the
-partial first line of the 20000-byte tail and keeps the summary header when
-a long summary would push it out of the window. See
-[Agent output lines are not refusals](loop-health-evaluator.md#agent-output-lines-are-not-refusals).
+A round log is a transcript, not a verdict. It holds every file the round's
+agents read and every refusal a *descendant* received and then handled inline,
+as the refusal's own text instructs ("complete this step inline and return
+your result"). Driving PR #1416, the merge-ready builder committed and pushed
+`9d521815`, then lost its Copilot session to `Execution failed: 400 The
+resource you requested was not found.` The nested recipe reported that
+correctly as exit `1`; the loop reported `exit 79 terminal policy refusal` and
+stopped the run permanently, because the transcript mentioned the guard.
+
+**Trust model.** Only two things decide whether a child was refused: its exit
+status, and the last failure-class marker the recipe runner wrote to its log.
+The marker is read only when the child **failed** (a non-zero integer exit
+status): a child that exited `0` is never terminal, whatever its log contains.
+Transcript text never decides, whatever it says and whatever its line prefix.
+
+#### What makes a child terminal
+
+`terminal_refusal <rc> <log>`, defined in
+[`autodrive_refusal.sh`](#autodrive_refusalsh), returns `0` (terminal) in
+exactly two cases, checked in this order:
+
+| Order | Condition | `TERMINAL_WHY` |
+| --- | --- | --- |
+| 1 | `<rc>` is the string `79`. Checked first, before the log is opened. | `exit 79` |
+| 2 | `<rc>` is a non-zero integer, and the **last** line of `<log>` that begins with `amplihack.recipe.failure_class ` has `"structural_refusal": true`. When `<rc>` is `0`, empty or not an integer the log is never opened. | `structural_refusal in failure_class marker` |
+
+Everything else is an ordinary failure. These logs do not stop the loop when
+the child exits `1`:
+
+```text
+[12:04:51] [amplihack:builder] the child printed BLOCKED_TERMINAL orchestration_unavailable: depth 4 of max 3
+BLOCKED_TERMINAL orchestration_unavailable: depth 4 of max 3
+the guard said "BLOCKED_TERMINAL orchestration_unavailable: depth 4 of max 3"
+amplihack.recipe.failure_class {"class":"work","structural_refusal":true}
+amplihack.recipe.failure_class {"class":"agent_api","structural_refusal":false}
+```
+
+The fourth line is a forged marker. The runner's own marker follows it, and
+the last marker wins. `<rc>` is compared as a string, so an empty or
+non-numeric `<rc>` is not `79`, never reaches shell arithmetic and never reads
+the marker.
+
+The recipe runner sets [`structural_refusal`](transient-failure-retry.md#the-structural_refusal-field)
+only when the failed step's terminating error header records exit `79`. For
+an in-process `type: recipe` step, such as `autodrive-merge-loop` inside
+`auto-drive-to-merge`, that is the header of the first failed step the
+runner lists for the sub-recipe
+([Sub-recipe steps](transient-failure-retry.md#sub-recipe-steps)).
+Captured guard phrases can describe a descendant refusal already handled
+inline; they never establish this step's terminating cause. This decision is
+retained before diagnostic evidence is truncated. The runner's stderr tail and run status
+never set it, and a run that produced no structured result always has
+`false`. The shell parser requires a JSON boolean: the string `"true"` does
+not set the refusal flag. The runner writes its marker when the run fails,
+prints its result table to stdout, and then writes the same marker again as
+its last line. The table shows each step's output, and a multi-line output
+can put any text at the start of a line, so the second copy makes the runner's own marker
+the last one. In a log that holds several markers (a nested run writes its
+own) the last one is therefore the outermost runner's. Exit-79 paths in the
+runner write no marker; condition 1 covers them. A run that succeeds writes no
+marker of its own either, so the last marker in a successful child's log is a
+nested run's, forwarded unchanged, or a forged one. That is why condition 2
+needs a non-zero exit status: when a descendant was refused and the parent
+handled the step inline and exited `0`, the round continues.
+
+#### The three call sites
+
+`autodrive_loop.sh` calls `terminal_refusal` after every child it starts:
+
+| Site | Log passed | Terminal | Ordinary failure (non-zero, not terminal) |
+| --- | --- | --- | --- |
+| `--before-round` step | `BEFORE_LOG` | `TERMINAL_POLICY_REFUSAL`, exit `79` | `BEFORE_ROUND_FAILED`, exit `1`, with no `INFO:` line; the summary is in the reason and the round does not run. A quoted refusal with exit `1` ends here, not with `79`. |
+| Round | `LOG` | `TERMINAL_POLICY_REFUSAL`, exit `79` | `INFO:` line; the round record is read as usual and `child=<summary>` joins the round's history line. |
+| Loop-health evaluator | `HEALTH_LOG` | `TERMINAL_POLICY_REFUSAL`, exit `79` | `INFO:` line; the verdict is read as usual, and an unreadable verdict is `STUCK`. |
+
+The other stops keep their places around this check. A round or evaluator
+that exited `75` stops as `ORPHANED` before it
+([How the loop treats exit 75](#how-the-loop-treats-exit-75)). A failure that is
+not a refusal but whose marker says `usage_limit` stops as `USAGE_LIMIT` right
+after it ([Usage limits are not STUCK](#usage-limits-are-not-stuck)); the
+before-round step then also checks the usage budget. The `INFO:` line and the
+`child=` summary are only for the failures left after those. In the crusty
+loop the evaluator is started by `amplihack orch helper
+autodrive-completion-dispatch` (#2336), which reports
+`TERMINAL_POLICY_REFUSAL` and exit `79` by the same two conditions, so the
+loop's check on `HEALTH_LOG` agrees with it.
+
+The refusal names the condition that fired, in place of a fixed "exit 79":
+
+```text
+ERROR: terminal policy refusal from round-2 (structural_refusal in failure_class marker) (#1327/#1332). Final: the guard is never retried into.
+```
+
+An ordinary failure is reported and left to `loop-health-evaluator`:
+
+```text
+INFO: round-1 child failed: rc=1 class=agent_api retryable=false signal=execution failed: 400; not a policy refusal, continuing
+```
+
+A failed evaluator run is reported the same way, and its verdict is then read
+as usual:
+
+```text
+INFO: loop-health-evaluator child failed: rc=1 class=unknown retryable=unknown; not a policy refusal, reading its verdict
+```
+
+The round's history line, which the evaluator reads, carries the same summary:
+
+```text
+round-1: crusty_verdict=CONCERNS rc=1 findings=2 child=rc=1 class=agent_api retryable=false signal=execution failed: 400
+```
+
+The loop's own exit status is `79` whichever condition fired, and the
+`loop_result` is `TERMINAL_POLICY_REFUSAL`.
+
+#### `autodrive_refusal.sh`
+
+`amplifier-bundle/tools/autodrive_refusal.sh` is sourced, never executed. It
+has mode `0644`, defines functions only, and does not change shell options.
+`autodrive_loop.sh` sources it from its own directory (`LOOP_HOME`) right after
+`autodrive_state.sh`, never from the tree under review, the working directory
+or `PATH`, so the pull request being driven cannot supply its own verdict. If
+the file is missing the loop refuses to run without the check:
+
+```text
+ERROR: autodrive_loop.sh: autodrive_refusal.sh is missing beside it (/home/me/.amplihack/amplifier-bundle/tools); a refusal could not be told from a failure
+```
+
+and exits `2`.
+
+| Function | Prints | Returns |
+| --- | --- | --- |
+| `classify_child <log>` | The last line of `<log>` that begins with `amplihack.recipe.failure_class `, or nothing. Also sets `CHILD_FAILURE_CLASS`, `CHILD_FAILURE_RETRYABLE`, `CHILD_FAILURE_SIGNAL` and `CHILD_STRUCTURAL_REFUSAL`, cleaned, in the calling shell. | Always `0`. |
+| `terminal_refusal <rc> <log>` | Nothing. Sets `TERMINAL_WHY`. | `0` when `<rc>` is `79`, or when it is a non-zero integer and the last marker says `structural_refusal: true`; `1` otherwise. |
+| `child_failure_summary <rc> <log>` | `rc=<n> class=<class\|unknown> retryable=<bool\|unknown>`, followed by ` signal=<signal>` when the marker has one. | Always `0`. |
+
+The marker line is found with `grep -a` on the literal prefix at the start of a
+line and `tail -n 1`; the log is never read whole into a variable. A missing or
+unreadable log means no marker. Fields are read with
+`"${AMPLIHACK_BIN:-amplihack}" orch helper extract-json --require-field` and
+`extract-field`, the same helpers as every
+[structured verdict](#structured-verdicts); if they fail, the fields are
+empty. No function reads the transcript's free text, and none uses `eval`.
+
+Every field is cleaned before it is used:
+
+| Field | Kept when | Otherwise |
+| --- | --- | --- |
+| `structural_refusal` | It is exactly `true` or `false`. Only `true` is terminal. | Empty, so not terminal. |
+| `class` | It matches `^[a-z_]{1,32}$`. | `unknown` |
+| `retryable` | It is exactly `true` or `false`. | `unknown` |
+| `signal` | Always, with bytes `0x00`–`0x1F` and `0x7F` removed and the rest cut to 120 bytes. | Empty. |
+
+So a hostile log cannot add a history row, write terminal escape sequences or
+break the escalation JSON. `escalate` also removes `"`, `\` and control
+characters from its reason, so its JSON line always parses.
+
+```bash
+. amplifier-bundle/tools/autodrive_refusal.sh
+printf '%s\n' \
+  'amplihack.recipe.failure_class {"class":"agent_api","signal":"execution failed: 400","retryable":false,"structural_refusal":false}' \
+  > /tmp/round-1.log
+if terminal_refusal 1 /tmp/round-1.log; then echo "terminal: $TERMINAL_WHY"; else echo "not terminal"; fi
+# not terminal
+child_failure_summary 1 /tmp/round-1.log
+# rc=1 class=agent_api retryable=false signal=execution failed: 400
+if terminal_refusal 79 /tmp/round-1.log; then echo "terminal: $TERMINAL_WHY"; else echo "not terminal"; fi
+# terminal: exit 79
+classify_child /tmp/round-1.log >/dev/null
+echo "$CHILD_FAILURE_CLASS $CHILD_FAILURE_RETRYABLE"
+# agent_api false
+```
+
+Call `classify_child` directly, as above. Inside `$( )` it runs in a subshell
+and the `CHILD_FAILURE_*` variables never reach the calling shell.
+
+#### Limits
+
+For the loop's own children (the `--before-round` step, the rounds and the
+loop-health evaluator), the cases below can stop a run that should have
+continued, but none can hide a refusal. Exit `79` is checked first, and a
+marker field can only push the decision toward stopping. None of those
+children reaches the sub-recipe case below: `autodrive-merge-round` runs its
+sub-recipe `autodrive-merge-evidence`, and that sub-recipe starts no `recipe
+run`.
+
+- **A forged marker stops the loop when the child dies before the runner
+  writes its own.** A line that begins `amplihack.recipe.failure_class ` with
+  `"structural_refusal": true`, printed by a step that is then killed, or that exits
+  through the runner's error path or another path that writes no final
+  marker, is the last marker in the log. The
+  loop stops and escalates to a human. Reading the marker from a dedicated
+  file that only the runner writes would close this gap (issue #2489).
+- **A marker that cannot be parsed is not terminal.** If the marker is
+  malformed, or the `amplihack` binary that reads its fields is missing or
+  broken, every field is empty and the child classifies as `unknown`, not
+  terminal. Exit `79` stays the authority for a real refusal.
+
+One layer up, a supervisor that runs `auto-drive-to-merge` (or
+`auto-drive-light`) as its child and calls `terminal_refusal` on it gets a
+narrower guarantee. That child exits `1`, not `79`, when one of its loops is
+refused: the loops are in-process `type: recipe` steps, and the runner reports
+the loop's `exit 79` inside its sub-recipe envelope. The runner decodes that
+envelope, so the marker has `"structural_refusal": true` and the supervisor
+stops. The decoder reads only the **first** failed step the sub-recipe lists,
+because later lines in the envelope can be that step's stderr. So:
+
+- **A refusal after a non-fatal failure in the same sub-recipe is not seen.**
+  If a sub-recipe's first failed step was non-fatal (`continue_on_error` or
+  `fatal: false`) and a later step exited `79`, the marker has
+  `"structural_refusal": false`, and the supervisor reports an ordinary
+  failure. No shipped auto-drive loop recipe has a non-fatal step before its
+  exit-79 step. If the failed step's evidence quotes
+  `BLOCKED_TERMINAL orchestration_unavailable`, the runner still does not
+  retry the run mechanically
+  ([Quoted guard text vetoes a retry](transient-failure-retry.md#quoted-guard-text-vetoes-a-retry)).
+  The runner reporting each step's exit code as a number would close this
+  (issue #2490).
+
+The loop-health evaluator uses the same helper against the current child's
+exit status and last marker. Quoted guards, textual exit-code references and
+markers in accumulated history cannot force its terminal-refusal path.
+
+Contract tests, run by CI: `tests/issue_1437_autodrive_refusal.sh` calls the
+helpers directly, `tests/issue_1437_autodrive_loop.sh` runs the loop end to
+end with the shipped collector, resolver and enforcement commands on the API
+recovery case (only the model assessment is supplied), and
+`crates/amplihack-cli/tests/issue_1437_final_marker.rs` checks that the runner's own marker is the last one in a log.
+
+Before #1437, `terminal_refusal()` in `autodrive_loop.sh` and the evidence
+collector read text as well (#1510): they cut the log at the runner's run
+summary header, dropped agent and `amplihack.recipe.log_pointer` lines, and
+then looked for `BLOCKED_TERMINAL orchestration_unavailable`. That pass is
+gone from both. Any text a round read or quoted could still land outside the
+filters, which is what #1437 was. `log_body` in `autodrive_escalate.sh`
+keeps the same cut and line filter for the usage-limit check only (see
+[How the loop recognises a usage limit](#how-the-loop-recognises-a-usage-limit)).
+The crusty loop's completion dispatch (`autodrive-completion-dispatch`,
+#2336) classifies the evaluator it runs by the same two signals. See
+[Round text never decides a refusal](loop-health-evaluator.md#round-text-never-decides-a-refusal).
 
 ## Orphaned rounds
 
@@ -5203,9 +5422,9 @@ is missing.
 
 1. `<rc>` is not `0`. A run that exits `0` is never a usage limit, whatever
    its log says.
-2. After the same cut and exclusions as `terminal_refusal()` (the runner's
-   run summary, agent output lines `[HH:MM:SS] [amplihack:...]` and the
-   runner's `amplihack.recipe.log_pointer {...}` lines are removed), a line
+2. After the cut and exclusions in `log_body` (the runner's run summary,
+   agent output lines `[HH:MM:SS] [amplihack:...]` and the runner's
+   `amplihack.recipe.log_pointer {...}` lines are removed), a line
    starts at column 0 with `amplihack.recipe.failure_class ` followed by a
    JSON object.
 3. That object's **top-level** `class` is `usage_limit`. With `jq` on
@@ -6503,6 +6722,7 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `amplifier-bundle/recipes/autodrive-merge-loop.yaml` | phase 3 | Loop driver + merge gate + bookkeeping. |
 | `amplifier-bundle/recipes/loop-health-evaluator.yaml` | terminator | Agentic loop-health verdict. |
 | `amplifier-bundle/tools/autodrive_loop.sh` | tool | The uncapped, agentically-terminated loop driver; writes `<loop>-records.tsv`; runs a `--before-round` step at its own depth. |
+| `amplifier-bundle/tools/autodrive_refusal.sh` | tool (sourced) | `terminal_refusal` and the child-failure summary: decides from the exit code and the runner's last failure-class marker whether a child the loop ran was a terminal refusal ([issue #1437](#not-every-failure-is-terminal-issue-1437)). Writes nothing. |
 | `amplifier-bundle/tools/autodrive_progress.sh` | tool | The [no-progress rule](#the-no-progress-rule): `record` appends a row to `<loop>-progress.tsv`; `check` compares the current round with the last row and exits `10` with `<loop>-stuck-reason.txt` written on no progress. Exits `2` on a usage error. |
 | `amplifier-bundle/tools/autodrive_budget.sh` | tool | The [usage budget](#budget-keys-and-defaults): `mark`, `add`, `totals`, `check` (exits `10` with `autodrive-budget-summary.md` written when a limit is reached) and `post` (the sanitised PR comment). All round-count comparisons live here. |
 | `amplifier-bundle/tools/autodrive_escalate.sh` | tool | `escalate`, its `usage_limit` and `budget` wordings and its [`held by:` lines](#what-held-the-round), `usage_limit_stop`, `stops_preflight` (the start-up check of the usage and progress files), `usage_add`, `progress_stop`, `budget_stop`, `post_stop` and `record_result`, which writes `<loop>-result.json`. Sourced by the loop driver. |
@@ -6554,6 +6774,8 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | Structural and wiring guards, brick budget, skill-invocation guard, state-directory sentence, `tests/gadugi/recipe-step-command.sh` compared with serde_yaml over every bundled recipe step, the PR-head resolver read-only guard, `autodrive_step_outputs_are_read_from_recipe_var_only` (the four [static checks](#the-static-check), with the read counts taken from this page), `autodrive_round_with_inherited_stale_tools_dir_uses_its_own` (#1607), and the contract shell suite run with inherited variables scrubbed, set to a conflicting decoy, and set to the round's own tools | `tests/integration/auto_drive_to_merge_test.rs` |
 | [The bundle guard](#the-bundle-guard) (#1561) | `crates/amplihack-cli/tests/issue_1561_step_outputs_prefer_recipe_var.rs` |
 | Where phases 2 and 3 run (issue #1528): resolver behaviour and refusals (including a local branch or worktree behind, ahead of or diverged from origin), loop `step-02` resolution and forwarding, round `step-04` commit blocks, a forced-add reproduction the guard refuses, and a commit from the pull request worktree that leaves the launch checkout's index clean | `tests/integration/autodrive_pr_worktree_tests.rs` |
+| The refusal helpers (issue #1437): `rc` compared as the string `79`, the marker never read when `rc` is `0`, empty or not an integer, transcript text never terminal, the anchored literal marker prefix, the last marker wins, cleaned `class`, `retryable` and `signal` values (including rejection of multiline classes), and a helper that is silent and leaves shell options alone when sourced | `tests/issue_1437_autodrive_refusal.sh` |
+| Terminal versus ordinary child failures, end to end (issue #1437): a quoted refusal with exit `1`, exit `79`, a `structural_refusal: true` marker, the before-round site (a quoted refusal with exit `1` gives `BEFORE_ROUND_FAILED` and exit `1`, not `79`), the evaluator site, a forged marker followed by the runner's own, exit `79` with a forged `false` marker, a signal with a newline, the last of several markers, a CLEAN round and an evaluator that exit `0` with a nested `structural_refusal: true` marker (neither is terminal), and exit `2` when `autodrive_refusal.sh` is missing | `tests/issue_1437_autodrive_loop.sh` |
 | [Merges outside the gate](#merges-outside-the-gate-are-refused-1551) (#1551): every merge form refused with exit `3` and the PR left open (T1); forged gates, a copied gate and the real gate run without `-p` refused (T2, T3); the real gate run as `/bin/bash -p` still merges (T3); pass-through of non-merge calls (T4); exit `127` cases (T5); `export -f gh`, `BASH_ENV`, a `PPID` mismatch, a non-digit depth and every non-canonical endpoint form, mixed-case `Pulls` and `Merge` included, refused (SEC); the step-01b directive and its fail-closed branches, the phase-1 `MERGED` check and the unreadable-state exit (T6); static checks (S). CI runs it in a Linux job. | `amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh` |
 | When the launcher applies the guard, idempotent `PATH` with the guard first, `no_merge` alone not applying it, the inherited marker, the fail-closed error for an unset, empty or relative `AMPLIHACK_HOME` and a missing or non-executable shim, and (Linux only) a phase-1 `autodrive-*` bash step whose `gh pr merge 1` gets exit `3` and `REFUSED` while the stub `gh` logs no merge, a login shell whose profile prepends another `gh` still resolving `gh` to the shim, the shipped `bash-env` sourcing a user `BASH_ENV` first; off Linux, a companion test shows the merge is refused | `crates/amplihack-cli/tests/issue_1551_merge_guard.rs` |
 | `guard_applies` truth table (`0` and `false` still apply it) and `locate_guard_dir` errors, a group- or other-writable shim, directory or gate file included; every `autodrive_*.sh` a gate file names outside a comment is itself a gate file (#2186) | `crates/amplihack-cli/src/commands/recipe/run/tests_merge_guard.rs` |
@@ -6578,6 +6800,8 @@ cargo test -p amplihack --test integration merge_ready_platform_contract::
 cargo test -p amplihack --test integration autodrive_pr_worktree::
 cargo test -p amplihack --test integration issue_1714_finalization_handoff::
 bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
+bash tests/issue_1437_autodrive_refusal.sh
+bash tests/issue_1437_autodrive_loop.sh
 bash amplifier-bundle/recipes/tests/test-issue-1543-pr-head-worktree.sh
 bash amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh
 cargo test -p amplihack-cli --test cli_integration issue_1551

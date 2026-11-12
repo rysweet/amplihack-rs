@@ -187,7 +187,8 @@ steps:
           printf '{"ci_status":"PENDING","ci_total":"0","ci_pending":"0","ci_failing":"0","head_sha":"%s","ci_signal":"just-pushed"}\n' "$HS"
           exit 0 ;;
       esac
-      JSON="$(gh pr checks "$PR" --json name,state,bucket 2>/dev/null)"
+      # #2190: gh stderr is not discarded; an empty stdout is still UNREADABLE.
+      JSON="$(gh pr checks "$PR" --json name,state,bucket)"
       TOTAL="$(printf '%s' "$JSON" | jq -r 'length' 2>/dev/null)"
       PENDING="$(printf '%s' "$JSON" | jq -r '[.[]|select(.bucket=="pending")]|length' 2>/dev/null)"
       FAILING="$(printf '%s' "$JSON" | jq -r '[.[]|select(.bucket=="fail" or .bucket=="cancel")]|length' 2>/dev/null)"

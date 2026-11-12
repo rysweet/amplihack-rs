@@ -66,6 +66,7 @@ fn transient_verdict() -> FailureVerdict {
         evidence: ISSUE_1267_STDOUT_TAIL.to_string(),
         failed_steps: vec!["step-12-run-precommit".to_string()],
         completed_steps: Vec::new(),
+        structural_refusal: false,
     }
 }
 
@@ -181,6 +182,7 @@ fn an_unknown_model_404_is_environmental_and_names_its_signal() {
         evidence: reported.to_string(),
         failed_steps: vec!["implement".to_string()],
         completed_steps: Vec::new(),
+        structural_refusal: false,
     };
     let reasoning = verdict.reasoning();
     assert!(
@@ -324,6 +326,7 @@ fn the_marker_line_starts_with_the_keys_the_shell_check_anchors_on() {
         evidence: "You've hit your weekly limit".to_string(),
         failed_steps: vec!["step-08-implement".to_string()],
         completed_steps: Vec::new(),
+        structural_refusal: false,
     };
     for action in ["retry", "terminal", "terminal_budget_exhausted"] {
         let line = marker_line(&verdict.to_json(3, action));
