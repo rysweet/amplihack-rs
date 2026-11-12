@@ -7,7 +7,7 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 
-use crate::commands::recipe::run_record::read_owned;
+use crate::commands::recipe::detached_record::read_owned;
 use crate::user_config::safe::display_path;
 
 /// Mode bits a manifest may not have: write access for group or others.

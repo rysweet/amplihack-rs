@@ -8,7 +8,7 @@
 //!
 //! The pipes are read on detached threads, so a process that keeps a pipe
 //! open never blocks the caller. Used by the detached recipe launch (the
-//! `git remote get-url` in `recipe::run_record`) and by `amplihack
+//! `git remote get-url` in `recipe::detached_record`) and by `amplihack
 //! workstreams status` (issue #1710).
 //!
 //! `amplihack profile usage` does not use it: its probes write a request

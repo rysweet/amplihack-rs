@@ -1,7 +1,7 @@
 //! Issue #1710 (D3): the durable `<session>.run.json` a detached run leaves
 //! in the log directory.
 //!
-//! Contract (`run_record`):
+//! Contract (`detached_record`):
 //! - `RunRecord { version, session, parent, started_at, recipe, issue_number,
 //!   pr_number, repo, cwd, outcome }` and `Outcome { exit_code, class,
 //!   finished_at }`, serialised with exactly those keys (no `run_id`).
@@ -23,7 +23,7 @@
 //! - `origin_repo(dir, timeout)` reads `origin` with a bounded git call.
 
 use super::run::{FAILURE_CLASS_MARKER_PREFIX, FailureClass};
-use super::run_record::{
+use super::detached_record::{
     Outcome, RunRecord, build, classify_tail, origin_repo, read, read_owned_by, read_tail,
     record_path, repo_slug, write_new, write_outcome,
 };

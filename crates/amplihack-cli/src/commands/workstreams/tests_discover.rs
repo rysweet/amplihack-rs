@@ -25,7 +25,7 @@ use super::discover::{
     Discovered, NOT_PRIVATE, TOO_MANY_ENTRIES, TRUNCATED, UNREADABLE, owned_by, scan, scan_capped,
     select,
 };
-use crate::commands::recipe::run_record::{RunRecord, build, record_path, write_new};
+use crate::commands::recipe::detached_record::{RunRecord, build, record_path, write_new};
 use chrono::{TimeZone, Utc};
 use serde_json::Map;
 use std::collections::BTreeSet;

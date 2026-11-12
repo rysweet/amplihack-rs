@@ -29,7 +29,7 @@ use super::render::{LoginsSection, PrCell, Snapshot, WorkRow, render};
 use super::sources::{LiveSessions, OriginSource, PrInfo, PrSource, UsageSource};
 use super::{ManifestPath, Sources, StatusInput, snapshot};
 use crate::commands::recipe::autodrive_paths::{CRUSTY_LATEST, state_key};
-use crate::commands::recipe::run_record::{
+use crate::commands::recipe::detached_record::{
     Outcome, RunRecord, build, record_path, write_new, write_outcome,
 };
 use chrono::{DateTime, Utc};

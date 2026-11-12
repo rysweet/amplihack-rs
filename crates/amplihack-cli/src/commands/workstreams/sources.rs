@@ -16,7 +16,7 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use serde::Deserialize;
 
-use crate::commands::recipe::run_record::{origin_url, repo_slug};
+use crate::commands::recipe::detached_record::{origin_url, repo_slug};
 use amplihack_utils::bounded_process::{self, Ended, Limits, run_helper};
 
 const TMUX_TIMEOUT: Duration = Duration::from_secs(3);

@@ -4,7 +4,7 @@
 //! reply.
 //!
 //! Runs are found through the `<session>.run.json` records `recipe run
-//! --detach` leaves (see `recipe/run_record.rs`) and filtered by the
+//! --detach` leaves (see `recipe/detached_record.rs`) and filtered by the
 //! caller's identity (`recipe/run_identity.rs`). PR state, live sessions,
 //! origins and login usage come through the traits in `sources.rs`, so
 //! [`snapshot`] runs in tests without tmux, gh, git or claude. Rendering is
@@ -51,7 +51,7 @@ use crate::commands::recipe::autodrive_paths::{
     state_key, state_root,
 };
 use crate::commands::recipe::run_identity::caller_identity_from_env;
-use crate::commands::recipe::run_record::{self, RunRecord};
+use crate::commands::recipe::detached_record::{self, RunRecord};
 use discover::Discovered;
 use manifest::ManifestRow;
 use render::{LoginsSection, PrCell, Snapshot, WorkRow};
@@ -404,7 +404,7 @@ fn default_label(record: Option<&RunRecord>, session: &str) -> String {
 
 /// The class from a run without a record: only a marker line counts.
 fn log_class(log: &Path) -> Option<String> {
-    run_record::classify_tail(&run_record::read_tail(log), None).map(str::to_string)
+    detached_record::classify_tail(&detached_record::read_tail(log), None).map(str::to_string)
 }
 
 fn epoch(rfc3339: &str) -> Option<i64> {

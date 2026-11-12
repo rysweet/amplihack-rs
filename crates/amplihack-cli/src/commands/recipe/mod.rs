@@ -16,6 +16,9 @@ pub(crate) mod autodrive_paths;
 /// Issue #1710: helper commands run with a time and output limit.
 /// Issue #1606: `recipe run --detach`.
 pub mod detach;
+/// Issue #1710: `<session>.run.json`, the durable record of a detached run.
+/// Not `run_record`, which is `recipe stop`'s process record (#2175).
+pub(crate) mod detached_record;
 pub mod list;
 mod parse;
 /// Issue #1606: the processes `recipe stop` signals.
@@ -25,8 +28,9 @@ mod resolve;
 pub mod run;
 /// Issue #1710: the caller identity a detached run records as its parent.
 pub(crate) mod run_identity;
-/// Issue #1710: `<session>.run.json`, the durable record of a detached run.
-pub(crate) mod run_record;
+/// Issue #2175: the record `recipe stop <run_id>` finds a run by.
+#[cfg(target_os = "linux")]
+mod run_record;
 pub mod show_validate;
 /// Issue #1606: `recipe stop`.
 pub mod stop;
@@ -240,4 +244,4 @@ mod tests_autodrive_paths;
 #[cfg(test)]
 mod tests_run_identity;
 #[cfg(test)]
-mod tests_run_record;
+mod tests_detached_record;

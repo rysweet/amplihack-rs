@@ -24,7 +24,7 @@
 //!    the run record too when the run did not start.
 //!
 //! The launcher also writes `<session>.run.json` (issue #1710, see
-//! `run_record.rs`): the launching session as the run's parent, and later
+//! `detached_record.rs`): the launching session as the run's parent, and later
 //! the outcome. The run gets `AMPLIHACK_WORKSTREAM_RUN_ID=<session>`, so a run it
 //! launches records it as that run's parent.
 //!
@@ -49,7 +49,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use super::run_identity::RUN_ID_ENV;
-use super::run_record;
+use super::detached_record;
 use crate::user_config::safe::{display_safe, read_bounded};
 
 /// Variables the pane gets from tmux itself, kept from the pane's own
@@ -232,17 +232,17 @@ fn record_launch(
 ) -> Option<PathBuf> {
     let run_dir = cwd.join(request.working_dir);
     let run_dir = run_dir.canonicalize().unwrap_or(run_dir);
-    let record = run_record::build(
+    let record = detached_record::build(
         session,
         parent,
         started_at,
         &recipe_label(request.recipe_path),
         context,
-        run_record::origin_repo(&run_dir, ORIGIN_TIMEOUT),
+        detached_record::origin_repo(&run_dir, ORIGIN_TIMEOUT),
         &run_dir,
     );
-    let path = run_record::record_path(log_dir, session);
-    match run_record::write_new(&path, &record) {
+    let path = detached_record::record_path(log_dir, session);
+    match detached_record::write_new(&path, &record) {
         Ok(()) => Some(path),
         Err(error) => {
             eprintln!(
@@ -594,19 +594,19 @@ fn record_outcome(log_path: &Path, exit_code: i32) {
     ) else {
         return;
     };
-    let path = run_record::record_path(dir, session);
+    let path = detached_record::record_path(dir, session);
     if fs::symlink_metadata(&path).is_err() {
         return;
     }
-    let tail = run_record::read_tail(log_path);
-    let outcome = run_record::Outcome {
+    let tail = detached_record::read_tail(log_path);
+    let outcome = detached_record::Outcome {
         exit_code,
-        class: run_record::classify_tail(&tail, Some(exit_code))
+        class: detached_record::classify_tail(&tail, Some(exit_code))
             .unwrap_or("error")
             .to_string(),
-        finished_at: run_record::rfc3339(chrono::Utc::now()),
+        finished_at: detached_record::rfc3339(chrono::Utc::now()),
     };
-    if let Err(error) = run_record::write_outcome(&path, outcome)
+    if let Err(error) = detached_record::write_outcome(&path, outcome)
         && let Ok(mut log) = OpenOptions::new()
             .append(true)
             .custom_flags(libc::O_NOFOLLOW)

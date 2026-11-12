@@ -8,7 +8,7 @@ use std::io::ErrorKind;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use crate::commands::recipe::run_record::{self, RunRecord, valid_session};
+use crate::commands::recipe::detached_record::{self, RunRecord, valid_session};
 
 /// Run files (records and logs) displayed from the log directory, newest run
 /// first.
@@ -150,7 +150,7 @@ pub(super) fn scan_selected_capped(
     sessions.sort_by(|(a, fa), (b, fb)| fb.newest.cmp(&fa.newest).then_with(|| a.cmp(b)));
     // Read records before pruning: a recent child may need an old parent
     // to connect it to the caller. The directory-entry bound also bounds
-    // this graph, and run_record::read bounds each record's bytes.
+    // this graph, and detached_record::read bounds each record's bytes.
     let candidates: Vec<Discovered> = sessions
         .iter()
         .map(|(session, files)| Discovered {
@@ -158,7 +158,7 @@ pub(super) fn scan_selected_capped(
             record: files
                 .record
                 .as_deref()
-                .and_then(run_record::read)
+                .and_then(detached_record::read)
                 .filter(|r| r.session == *session),
             log: files.log.clone(),
         })

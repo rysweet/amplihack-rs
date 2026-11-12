@@ -13,7 +13,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::run_record::{is_owned_dir, read_owned};
+use super::detached_record::{is_owned_dir, read_owned};
 
 /// Subdirectory of the state directory that holds every auto-drive key.
 pub(crate) const STATE_SUBDIR: &str = "auto-drive";

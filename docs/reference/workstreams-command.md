@@ -40,7 +40,7 @@ amplihack workstreams status [--all] [--no-logins] [--manifest <PATH>] [--logins
 The output is meant for people. It is not a machine interface: columns,
 wording and order may change. Scripts should read
 [`profile usage --json`](./profile-command.md#json-output) and the
-[run records](./recipe-command.md#run-records) instead.
+[run records](./recipe-command.md#detached-run-records) instead.
 
 ## Flags
 
@@ -188,7 +188,7 @@ capacity):
 The command reads the run records in
 [`recipe.log_dir`](./user-config.md#recipelog_dir) (default
 `~/.amplihack/recipe-logs`). Each detached run writes a
-[`<session>.run.json`](./recipe-command.md#run-records) when it starts and
+[`<session>.run.json`](./recipe-command.md#detached-run-records) when it starts and
 updates it when it ends. The record names the session that launched the run
 in its `parent` field.
 
@@ -346,7 +346,7 @@ PR titles are used only for this match. They are never printed.
 
 `▶` means the run's tmux session is live. `⏸` means it is not and the work is
 waiting; a merged row has no marker. The reason
-comes from the record's [outcome class](./recipe-command.md#run-records), or
+comes from the record's [outcome class](./recipe-command.md#detached-run-records), or
 from a marker line for a [run without a record](#runs-without-a-record):
 
 | Class | Reason shown |
