@@ -666,6 +666,27 @@ mod config_2007 {
         assert!(codex_credit_floor(&|k| cfg.get(k)).is_err());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_file_others_can_write_with_no_rotator_key_leaves_the_defaults() {
+        // Umask 002 makes a hand-made file 0664. With no `rotator.*` key in
+        // it there is nothing to distrust; rotation keeps its defaults.
+        let h = home_with("[sessions]\narchive_days = 7\n", 0o664);
+        let cfg = UserConfig::at(&h.home);
+        for key in [
+            "rotator.session_at",
+            "rotator.week_at",
+            "rotator.interval",
+            "rotator.codex_credit_floor",
+        ] {
+            assert_eq!(cfg.get(key), Ok(None), "{key}");
+        }
+        assert!(resolve_with(&flags(), None, &no_env(), &|k| cfg.get(k)).is_ok());
+        assert!(gate_with(&no_env(), &|k| cfg.get(k)).is_ok());
+        let floor = codex_credit_floor(&|k| cfg.get(k)).unwrap();
+        assert_eq!(floor.origin, Origin::Default);
+    }
+
     #[test]
     fn a_guarded_home_outside_temp_is_an_error_for_every_key() {
         let cfg = UserConfig::at(Path::new("/"));

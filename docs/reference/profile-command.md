@@ -2167,7 +2167,8 @@ the two can disagree. The rule:
    no row is marked.
 
 When `rotator.codex_credit_floor` cannot be read (a value out of range, a file that
-cannot be parsed, or a user file that group or others can write), no row is
+cannot be parsed, or a user file that group or others can write and that
+sets a `rotator.*` key), no row is
 marked and the line after the Codex rows says why, instead of choosing with
 a floor the operator did not set:
 

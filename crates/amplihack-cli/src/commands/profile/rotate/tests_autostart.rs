@@ -1123,12 +1123,18 @@ fn an_unsafe_user_file_fails_autostart_without_spawning_or_printing() {
 }
 
 #[test]
-fn an_unsafe_user_file_fails_autostart_even_with_no_rotator_key() {
+fn an_unsafe_user_file_with_no_rotator_key_still_autostarts_with_the_defaults() {
+    // A 0664 file is common under umask 002. When it sets no `rotator.*`
+    // key there is nothing to distrust, so rotation must not stop (#2457).
     let f = fx();
     user_config(&f.home, "[sessions]\narchive_days = 7\n", 0o660);
     let (o, _) = f.run();
-    assert_eq!(o, Outcome::Failed);
-    assert_eq!(f.spawned(), 0);
+    assert_eq!(o, Outcome::Started(FAKE_PID));
+    let seen = f.seen.lock().unwrap();
+    assert_eq!(
+        seen[0].0.week_at, 90,
+        "the default, not a value from the file"
+    );
 }
 
 #[test]

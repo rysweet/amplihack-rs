@@ -501,7 +501,11 @@ another user, or group or others can write it), `config set` and
 `config unset` cannot help, so the message gives a different fix. The reason
 says what is wrong with the file. Every `rotator.*` key then fails in the
 same way, including keys the file does not set, so the rotator never falls
-back to a default while the file is at fault:
+back to a default while the file is at fault. A file owned by another user
+or writable by group or others counts as at fault here only when it sets at
+least one `rotator.*` key; when it sets none, the rotator uses its defaults
+as if the file were absent. A file that cannot be read or parsed always
+counts, because nobody can tell which keys it sets:
 
 ```text
 error: invalid rotate setting rotator.week_at: ignored because the file is writable by group or others; fix the user config file first (`amplihack config list --show-origin` shows its path and the problem)

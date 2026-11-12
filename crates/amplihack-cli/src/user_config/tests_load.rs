@@ -465,7 +465,8 @@ fn a_group_writable_user_file_gives_the_safe_rs_reason_for_each_key() {
     assert!(p.whole_file, "the fault is the file's, not the key's");
     // The loader records the fault only against keys the file sets; an
     // unset key is `Ok(None)` here, and `UserConfig::at` fails it closed
-    // through `whole_file` (tests_settings::config_2007).
+    // through `whole_file` only because the file sets another `rotator.*`
+    // key (tests_settings::config_2007).
     assert_eq!(read[1], Ok(None));
 }
 

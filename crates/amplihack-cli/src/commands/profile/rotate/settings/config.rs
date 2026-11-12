@@ -151,8 +151,10 @@ pub fn user_file_cfg() -> impl Fn(&str) -> Result<Option<u64>, String> {
 
 /// The `rotator.*` keys of one user config file, read once. Each lookup
 /// fails closed: a file that cannot be read or parsed, a user file group or
-/// others can write, a value of the wrong type or out of range, or a HOME
-/// the test guard forbids gives `Err`, never the default.
+/// others can write that sets a `rotator.*` key, a value of the wrong type
+/// or out of range, or a HOME the test guard forbids gives `Err`, never the
+/// default. A group-writable file that sets no `rotator.*` key is ignored as
+/// usual and every key reads as unset.
 #[derive(Debug, Clone)]
 pub struct UserConfig {
     values: Vec<(&'static str, Result<Option<u64>, String>)>,
@@ -173,19 +175,18 @@ impl UserConfig {
     /// The user file under `home`.
     pub fn at(home: &Path) -> Self {
         let read = user_config::user_keys_detail(home, &CONFIG_KEYS);
-        // A fault with the whole file makes every key from it unusable,
+        // A fault with the whole file makes every `rotator.*` key unusable,
         // including keys the file does not set: fail closed, never default.
-        // The loader records an unsafe file only against keys it sets, so a
-        // file holding no `rotator.*` key is checked here directly.
+        // A file that cannot be read or parsed is such a fault for every
+        // key, since nobody can tell which keys it sets. A file group or
+        // others can write is recorded only against the keys it sets, so it
+        // fails the rotator only when it sets a `rotator.*` key; a file that
+        // sets none changes nothing here and the defaults apply (#2457).
         let whole_file = read
             .iter()
             .find_map(|r| match r {
                 Err(p) if p.whole_file => Some(p.reason.clone()),
                 _ => None,
-            })
-            .or_else(|| {
-                user_config::safe::insecure_reason(&user_config::files::user_file(home))
-                    .map(str::to_string)
             })
             .map(|why| format!("{why}{WHOLE_FILE_FIX}"));
         let values = CONFIG_KEYS
