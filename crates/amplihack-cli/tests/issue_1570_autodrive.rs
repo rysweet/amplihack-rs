@@ -13,7 +13,7 @@
 //!
 //! The loop is driven end to end with a stub `amplihack` first on `PATH` that
 //! records every argv, copies the task file each round names, and plays the
-//! evaluator: CONTINUE after round 1, STUCK after round 2. The loop therefore
+//! evaluator (through the merge-ready path): CONTINUE after round 1, STUCK after round 2. The loop therefore
 //! runs exactly two rounds and exits 1. Each stub round commits in the PR
 //! worktree, so the rounds make progress and the no-progress rule of #1743
 //! leaves the decision to the evaluator; a stub `gh` first on `PATH` keeps
@@ -191,10 +191,10 @@ fn drive(task: Option<&str>) -> Run {
     );
     let out = Command::new("bash")
         .arg(&script)
-        .args(["--loop-name", "crusty"])
-        .args(["--round-recipe", "autodrive-crusty-round"])
-        .args(["--clean-token", "CLEAN"])
-        .args(["--verdict-field", "crusty_verdict"])
+        .args(["--loop-name", "merge-ready"])
+        .args(["--round-recipe", "autodrive-merge-round"])
+        .args(["--clean-token", "MERGE_READY"])
+        .args(["--verdict-field", "merge_ready_verdict"])
         .arg("--repo")
         .arg(&repo)
         .arg("--state-dir")
@@ -240,11 +240,11 @@ fn drive(task: Option<&str>) -> Run {
 }
 
 /// Whether `arg` names the crusty round recipe. The loop hands `recipe run`
-/// the launch-side path (`.../recipes/autodrive-crusty-round.yaml`, #1528),
+/// the launch-side path (`.../recipes/autodrive-merge-round.yaml`, #1528),
 /// never the bare name.
 fn is_crusty_round(arg: Option<&String>) -> bool {
     arg.and_then(|a| Path::new(a).file_stem())
-        .is_some_and(|stem| stem == "autodrive-crusty-round")
+        .is_some_and(|stem| stem == "autodrive-merge-round")
 }
 
 fn round_calls(run: &Run) -> Vec<&Vec<String>> {
@@ -304,7 +304,9 @@ fn task_description_is_copied_to_a_private_state_file_and_removed_at_exit() {
         );
     }
     assert!(
-        !run.state_dir.join("crusty-task_description.txt").exists(),
+        !run.state_dir
+            .join("merge-ready-task_description.txt")
+            .exists(),
         "autodrive_loop.sh must remove its copy of the task when it exits"
     );
     assert!(!run.cwd.join("pwned").exists() && !run.cwd.join("pwned2").exists());
@@ -343,7 +345,11 @@ fn a_missing_or_empty_task_file_is_exit_2_and_runs_no_round() {
             round_calls(&run).is_empty(),
             "{label}: no round may run without a task"
         );
-        assert!(!run.state_dir.join("crusty-task_description.txt").exists());
+        assert!(
+            !run.state_dir
+                .join("merge-ready-task_description.txt")
+                .exists()
+        );
     }
 }
 
@@ -364,7 +370,7 @@ fn each_round_passes_the_task_by_file_and_never_in_argv() {
         "exactly two rounds expected; stderr:\n{}",
         run.stderr
     );
-    let expected = run.state_dir.join("crusty-task_description.txt");
+    let expected = run.state_dir.join("merge-ready-task_description.txt");
     for (i, argv) in rounds.iter().enumerate() {
         let path = task_file_arg(argv).unwrap_or_else(|| {
             panic!(

@@ -434,9 +434,11 @@ fn a_held_key_names_the_login_that_held_it() {
     );
 }
 
-/// `swap_check` needs the real `/proc` scan and the real gate.
+/// `swap_check` needs the liveness scan, over an empty synthetic process
+/// table (issue #2196), and the real gate.
 #[test]
 fn swap_check_moves_nothing_onto_a_key_with_a_mode_600_login() {
+    let _proc = crate::test_support::proc::fake_proc_scope();
     let _l = lock();
     let f = fx("enabled=on\n");
     let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);
@@ -547,6 +549,7 @@ fn a_session_on_an_unmarked_key_never_moves_onto_another_key() {
 /// `{}` login is no login on its own, so the session would be logged out.
 #[test]
 fn swap_check_never_swaps_a_marked_key_into_a_session() {
+    let _proc = crate::test_support::proc::fake_proc_scope();
     let _l = lock();
     let f = fx("enabled=on\noverflow=console\n");
     // A key the login check accepts, so only the swap rule can refuse.
@@ -727,6 +730,7 @@ fn a_recorded_reason_is_in_the_rotate_log() {
 
 #[test]
 fn swap_check_onto_credits_writes_the_reason_to_the_rotate_log() {
+    let _proc = crate::test_support::proc::fake_proc_scope();
     let _l = lock();
     let f = fx("enabled=on\noverflow=cred\n");
     let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);

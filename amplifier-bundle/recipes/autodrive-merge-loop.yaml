@@ -242,6 +242,7 @@ steps:
         --state-dir "$DIR" \
         --context "repo_path=$PR_WORKTREE" \
         --context "pr_number=${PR}" \
+        --context "plan_task_id=${RECIPE_VAR_plan_task_id:-}" \
         --context "pr_url=${PR_URL:-}" \
         --context "autodrive_qa_evidence=${DIR}/qa-evidence.json" \
         --context "autodrive_state_dir=${DIR}" \
@@ -257,7 +258,7 @@ steps:
     output: "merge_loop_result"
 
   # Issue #1979: every minor crusty finding in the follow-up set gets its
-  # follow-up issue before the gate runs; the gate checks followups.tsv again
+  # follow-up issue (idempotently verified after Crusty finalization) before the gate runs; the gate checks followups.tsv again
   # itself. The tool comes from the installed bundle only, like the gate.
   - id: "step-02b-file-followups"
     condition: "merge_loop_preflight.should_run == 'true'"
