@@ -459,3 +459,76 @@ fn copilot_and_codex_get_no_contract_and_need_no_path() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Issue #2361: the contract home is never a Git checkout
+// ---------------------------------------------------------------------------
+
+mod contract_home_choice {
+    use super::super::contract_file::contract_home_from;
+    use std::ffi::OsStr;
+    use std::path::PathBuf;
+
+    fn os(value: &str) -> Option<&OsStr> {
+        Some(OsStr::new(value))
+    }
+
+    #[test]
+    fn non_checkout_amplihack_home_is_used() {
+        assert_eq!(
+            contract_home_from(os("/srv/amplihack"), os("/home/alice"), false).unwrap(),
+            PathBuf::from("/srv/amplihack")
+        );
+    }
+
+    #[test]
+    fn checkout_amplihack_home_falls_through_to_home_dot_amplihack() {
+        assert_eq!(
+            contract_home_from(os("/srv/checkout"), os("/home/alice"), true).unwrap(),
+            PathBuf::from("/home/alice/.amplihack")
+        );
+    }
+
+    // The exact message is listed in the "Errors" table of
+    // docs/reference/agent-prompt-channels.md; change both together.
+    #[test]
+    fn checkout_amplihack_home_without_home_is_an_error() {
+        let err = contract_home_from(os("/srv/checkout"), None, true)
+            .expect_err("a checkout is never the contract home");
+        assert_eq!(
+            format!("{err:#}"),
+            "cannot locate the amplihack home: AMPLIHACK_HOME is a Git checkout, which never \
+             holds runtime state (#2361), and HOME is not set"
+        );
+        assert!(contract_home_from(os("/srv/checkout"), os(""), true).is_err());
+    }
+
+    #[test]
+    fn unset_or_empty_amplihack_home_uses_home_dot_amplihack() {
+        for amp in [None, os("")] {
+            assert_eq!(
+                contract_home_from(amp, os("/home/alice"), false).unwrap(),
+                PathBuf::from("/home/alice/.amplihack")
+            );
+        }
+    }
+
+    // Listed in the same "Errors" table.
+    #[test]
+    fn neither_value_is_an_error() {
+        let err = contract_home_from(None, None, false).expect_err("no home to choose");
+        assert_eq!(
+            format!("{err:#}"),
+            "cannot locate the amplihack home: neither AMPLIHACK_HOME nor HOME is set"
+        );
+    }
+
+    #[test]
+    fn relative_non_checkout_amplihack_home_is_still_accepted() {
+        // Unchanged in this PR; tightening it is in the follow-up issue.
+        assert_eq!(
+            contract_home_from(os("relative/amp"), os("/home/alice"), false).unwrap(),
+            PathBuf::from("relative/amp")
+        );
+    }
+}

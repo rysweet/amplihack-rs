@@ -3,7 +3,6 @@
 //! from that history. Neither runs a probe, starts a process or holds the
 //! rotate state lock.
 
-use super::identify::LiveId;
 use super::log::Sink;
 use super::observe::{Probes, Snap};
 use crate::commands::profile::auto_switch::kit::now;
@@ -24,10 +23,7 @@ mod tests;
 pub fn record(root: &Path, out: &mut Sink, first: &Snap, probes: &Probes, at: i64) {
     // Issue #2218: an excluded live login was not probed, so its synthetic
     // reading is never recorded.
-    let live = match &first.live {
-        LiveId::Known(n) if !first.live_excluded => Some(n),
-        _ => None,
-    };
+    let live = first.measured_live();
     let unmeasured = first.unmeasured_plan();
     let entry = usage_history::from_probes(at, live, probes, first.platform(), &unmeasured)
         .entry(usage_history::Writer::Rotate);

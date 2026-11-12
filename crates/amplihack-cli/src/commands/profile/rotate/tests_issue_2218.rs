@@ -859,3 +859,80 @@ mod failed_count {
         assert_eq!(next_failed(3, &p.reading), 0, "no failure is counted");
     }
 }
+
+/// Crusty round 6: the live freshness step (#2211, `fresh::live::step`)
+/// never re-reads an excluded live login, whatever its probe reads. The
+/// measurement normally gives an excluded live login `Probed::excluded()`
+/// (`Reading::Exhausted`), which the step does not re-read anyway; these
+/// tests hand the step a frozen cached `Measured` reading instead, so the
+/// exclude check in the step itself is what keeps `~/.claude` unread.
+mod live_freshness_step {
+    use super::*;
+    use crate::commands::profile::auto_switch::kit::{Liveness, State};
+    use crate::commands::profile::rotate::decide::Probed;
+    use crate::commands::profile::rotate::fresh::live::{FROZEN_CYCLES, step};
+    use crate::commands::profile::rotate::observe::{decide_measured, snapshot};
+    use crate::commands::profile::rotate::tests_issue_1870::rd;
+    use std::collections::BTreeSet;
+    use std::time::Duration;
+
+    const T: i64 = 1_793_000_000;
+
+    fn clock() -> i64 {
+        T
+    }
+
+    fn never_reread(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
+        panic!("the live freshness step re-read excluded live login {name}")
+    }
+
+    fn frozen() -> Probed {
+        let mut p = rd(60.0, 20.0, Some(T - 10));
+        p.passive = true;
+        p
+    }
+
+    fn run(excluded: bool) {
+        let e = env();
+        if excluded {
+            config::update(&e.root, ReadMode::Editable, |c| {
+                c.exclude.push(n("work"));
+                Ok(())
+            })
+            .unwrap();
+        }
+        let s = settings::resolve(&TuneFlags::default(), None, &|_| None).unwrap();
+        let mut c = Ctx::new(e.store.clone(), e.home.clone(), s);
+        c.scan = |_| Liveness::Known(BTreeSet::new());
+        c.now = clock;
+        c.reread_live = Some(never_reread);
+        let snap = snapshot(&c, &State::new(&e.root).unwrap()).unwrap();
+        assert_eq!(snap.live_excluded, excluded);
+        for cycle in 0..=FROZEN_CYCLES {
+            let m = decide_measured(&c, &snap, frozen(), Vec::new(), T).unwrap();
+            step(&mut c, &snap, m).unwrap();
+            if excluded {
+                // Nothing about the excluded login is kept or projected.
+                assert!(c.live_outlook.is_none(), "cycle {cycle}: no outlook");
+                assert!(
+                    c.live_series.last_known(&n("work"), T).is_none(),
+                    "cycle {cycle}: no series"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_excluded_live_login_is_never_re_read_when_frozen() {
+        run(true);
+    }
+
+    /// The same frozen reading for a live login that is not excluded is
+    /// re-read on cycle `FROZEN_CYCLES + 1`, so the test above would fail
+    /// without the exclude check.
+    #[test]
+    #[should_panic(expected = "re-read excluded live login work")]
+    fn the_same_frozen_reading_is_re_read_when_the_live_login_is_not_excluded() {
+        run(false);
+    }
+}

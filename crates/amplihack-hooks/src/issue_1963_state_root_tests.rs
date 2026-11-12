@@ -683,6 +683,42 @@ fn amplihack_home_with_parent_component_falls_back_to_home_dot_amplihack() {
     assert_unchanged(fx.project(), &before, "the metric write");
 }
 
+/// #2361: an `AMPLIHACK_HOME` that is a Git checkout (the `-w` checkout of a
+/// recipe run) is skipped; the state goes to `$HOME/.amplihack` and the
+/// checkout's index and working tree are unchanged.
+#[test]
+fn checkout_amplihack_home_falls_through_to_home_dot_amplihack() {
+    let base = scratch_base::scratch_base();
+    let checkout = tempfile::tempdir_in(&base).unwrap();
+    git(
+        checkout.path(),
+        &["-c", "init.defaultBranch=main", "init", "-q"],
+    );
+    let fx = Fixture::with_root(Root::HomeAndAmplihackHome(checkout.path().to_path_buf()));
+    let before = snapshot(checkout.path());
+
+    bash(Some("checkout-1"));
+
+    assert!(
+        fx.session("checkout-1")
+            .join("metrics/post_tool_use_metrics.jsonl")
+            .exists(),
+        "the metric must land under $HOME/.amplihack"
+    );
+    assert!(!checkout.path().join("runtime").exists());
+    assert_unchanged(checkout.path(), &before, "the metric write");
+    let status = git(
+        checkout.path(),
+        &[
+            "--no-optional-locks",
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+        ],
+    );
+    assert_eq!(status, "", "post-tool-use dirtied the checkout:\n{status}");
+}
+
 fn parent_component_path() -> PathBuf {
     scratch_base::scratch_base()
         .join("x")

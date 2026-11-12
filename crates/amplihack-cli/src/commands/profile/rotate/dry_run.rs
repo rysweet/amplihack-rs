@@ -116,6 +116,7 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         return Ok(CycleOutcome::Alerted);
     }
     // Tests stub the measurement as for a real cycle.
+    ctx.live_outlook = None;
     let m = match ctx.measure {
         Some(stub) => stub(ctx, &snap)?,
         None => measure_and_decide(ctx, &snap)?,
@@ -127,6 +128,7 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         &msg::cycle(name, &live_shown, &others_shown, snap.shown_platform()),
     );
     // Issue #1870: the same re-reads as a real cycle; no rotate state is written.
+    let m = fresh::live::step(ctx, &snap, m)?;
     let m = fresh::gate(ctx, &snap, m, Reread::Allowed)?;
     for line in &m.fresh_lines {
         out.emit(0, line);

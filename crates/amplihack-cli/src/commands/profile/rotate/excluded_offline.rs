@@ -140,6 +140,22 @@ pub fn status_live(
     }
 }
 
+/// Issue #2218 (S4): the excluded live login of `snap`, when local evidence
+/// that may be stale names it and [`may_write_back`] does not hold. The cycle
+/// neither moves it into that folder nor records it live, so a later cycle
+/// cannot take the record for proof.
+pub fn unproven_live<'a>(
+    ctx: &crate::commands::profile::rotate::cycle::Ctx,
+    snap: &'a crate::commands::profile::rotate::observe::Snap,
+) -> Option<&'a ProfileName> {
+    match &snap.live {
+        super::LiveId::Known(n) if snap.live_excluded => {
+            (!may_write_back(&ctx.store, &ctx.rs, &ctx.home, n)).then_some(n)
+        }
+        _ => None,
+    }
+}
+
 /// Whether moving the excluded live login `name` out may write it into
 /// `name`'s folder (S4): the ledger named it with no hand change suspected
 /// and `~/.claude.json` agrees with its record, or the login in `~/.claude`

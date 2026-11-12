@@ -103,3 +103,17 @@ pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
         live_excluded,
     })
 }
+
+impl Snap {
+    /// Issue #2218: the live login when a profile owns it and it is not in
+    /// the auto-switch `exclude` list (`live_excluded`, the
+    /// `config::excluded_from` rule this snapshot applied). Every reader
+    /// that decides on, records or re-reads the live login's usage takes its
+    /// name from here, so an excluded live login is never read again.
+    pub fn measured_live(&self) -> Option<&ProfileName> {
+        match &self.live {
+            LiveId::Known(n) if !self.live_excluded => Some(n),
+            _ => None,
+        }
+    }
+}
