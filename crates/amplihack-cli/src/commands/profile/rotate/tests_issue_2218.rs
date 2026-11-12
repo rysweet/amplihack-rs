@@ -883,7 +883,7 @@ mod live_freshness_step {
     }
 
     fn never_reread(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
-        panic!("the live freshness step re-read excluded live login {name}")
+        panic!("the live freshness step re-read live login {name}")
     }
 
     fn frozen() -> Probed {
@@ -931,7 +931,7 @@ mod live_freshness_step {
     /// re-read on cycle `FROZEN_CYCLES + 1`, so the test above would fail
     /// without the exclude check.
     #[test]
-    #[should_panic(expected = "re-read excluded live login work")]
+    #[should_panic(expected = "the live freshness step re-read live login work")]
     fn the_same_frozen_reading_is_re_read_when_the_live_login_is_not_excluded() {
         run(false);
     }
