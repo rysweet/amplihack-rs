@@ -34,6 +34,7 @@ It is deliberately **not** an iteration counter. See
 - [Outputs](#outputs)
 - [Using it from a recipe](#using-it-from-a-recipe)
 - [Exit code 79 is terminal](#exit-code-79-is-terminal)
+  - [Round text never decides a refusal](#round-text-never-decides-a-refusal)
 - [A usage limit is not a verdict](#a-usage-limit-is-not-a-verdict)
   - [Retry inside the step](#retry-inside-the-step)
 - [Fail-safe guarantees](#fail-safe-guarantees)
@@ -230,8 +231,8 @@ A shell assertion in the contract test enforces this.
 `loop_health` object. Two cases are settled before any source is tried. First,
 a [terminal refusal](#exit-code-79-is-terminal) gives `STUCK` with
 `verdict_source=terminal_policy_refusal`. That covers evidence showing exit
-`79` / `BLOCKED_TERMINAL`, and also evidence that is missing, unparseable or
-`null`, because `terminal_refusal` defaults to `true`. Second, empty output
+`79` or a failed child's final marker with `structural_refusal: true`, and also
+evidence that is missing, unparseable or `null`, because `terminal_refusal` defaults to `true`. Second, empty output
 gives `STUCK` with `verdict_source=missing_verdict`. Otherwise step-03 tries
 four sources in a fixed order. Each source runs only if every source before it
 found nothing.
@@ -604,7 +605,7 @@ caller that wants the numbers alone can invoke the collector directly. Its
 
 | Field | Signal |
 | ----- | ------ |
-| `terminal_refusal`, `terminal_reason` | A child returned exit `79` / `BLOCKED_TERMINAL`. Terminal — see below. |
+| `terminal_refusal`, `terminal_reason` | A child returned exit `79`, or failed with a final `structural_refusal: true` marker. Terminal — see below. |
 | `commits_since_baseline`, `diff_lines`, `diff_stat` | What the last round **actually** produced, from `git rev-list` / `git diff --numstat` against `loop_baseline_ref`. Zero and zero means no code moved, whatever the round's prose claims. A non-clean round that acted on its findings outside the diff (a PR-description edit, a thread reply) is still `CONTINUE`; see the `DONE` rule. |
 | `repeated_duration_count`, `repeated_duration_value` | How many steps reported the *same* duration. Identical durations repeating are a cap, not work. |
 | `repeated_output` | Whether the last round's output is textually a repeat of something already in the history (compared after normalising away digits, punctuation and whitespace). |
@@ -650,7 +651,7 @@ every forced `STUCK`, is attributable:
 | `evaluator` | The evaluator emitted a JSON object with `loop_verdict`. |
 | `evaluator_alt_key` | No `loop_verdict` object; the evaluator emitted a `verdict` object as its last non-blank line instead. |
 | `evaluator_prose_token` | No JSON verdict; one clear line-leading token was found in the prose. |
-| `terminal_policy_refusal` | The evidence showed exit `79` / `BLOCKED_TERMINAL`, or was missing or unparseable (`terminal_refusal` defaults to `true`); the evaluator was skipped. |
+| `terminal_policy_refusal` | The evidence showed exit `79` or a failed child's final `structural_refusal: true` marker, or was missing or unparseable (`terminal_refusal` defaults to `true`); the evaluator was skipped. |
 | `missing_verdict` | The evaluator produced no output. |
 | `unparseable_verdict` | Output existed but held no usable verdict, or held conflicting tokens. |
 
@@ -706,207 +707,91 @@ this brick is the pattern new loops should use.
 
 ## Exit code 79 is terminal
 
-Exit code `79` and `BLOCKED_TERMINAL` are final answers from a structural
-guard (#1327 / #1332). They are surfaced and the loop stops. They are **never**
-retried into, and the agentic step is skipped entirely on a terminal refusal
+Exit code `79` and a failed child's final `structural_refusal: true` marker
+are authoritative answers from a structural guard (#1327 / #1332). They are
+surfaced and the loop stops. They are **never** retried into, and the agentic step is skipped entirely on a terminal refusal
 (`condition: "loop_evidence.terminal_refusal == 'false'"`) — not even a model
 call is spent deciding whether to re-enter a sealed guard. A terminal refusal
 forces `STUCK` even if an evaluator verdict from an earlier round said
-`CONTINUE`. Only the guard's own output counts: an agent that quotes the token
-or the exit code is not refusing anything (see
-[Agent output lines are not refusals](#agent-output-lines-are-not-refusals)).
+`CONTINUE`. Only the exit status and the runner's final marker count: no
+round text, the guard's own phrase included, is a refusal (see
+[Round text never decides a refusal](#round-text-never-decides-a-refusal)).
 
 Historically, agents read a `79` refusal as an infrastructure fault and retried
 one level deeper with a raised ceiling. That is what #1327 sealed, and it is
 what this branch refuses to re-open.
 
-### Agent output lines are not refusals
+The opposite mistake, reading an ordinary failure as a refusal, is as costly
+(issue #1437). `autodrive_loop.sh` treats a child as refused only when its exit
+status is `79`, or when it failed and the last `amplihack.recipe.failure_class`
+marker in its log has `"structural_refusal": true`. A transcript that quotes
+`BLOCKED_TERMINAL orchestration_unavailable` does not stop the loop driver; the
+failure reaches this evaluator instead, with `child=rc=<n> class=<class> retryable=<bool>[ signal=<signal>]` on the
+round's `loop_history` line. See
+[auto-drive-to-merge](auto-drive-to-merge.md#not-every-failure-is-terminal-issue-1437).
+The collector sources the same `autodrive_refusal.sh` helper and applies it
+only to `loop_child_exit_code` and `loop_last_round_output`. A successful child,
+a missing/non-numeric status, quoted guard/exit text and markers in
+`loop_history` cannot set `terminal_refusal`. A marker must carry a JSON boolean
+`true`; the string `"true"` is ignored. The last anchored marker wins, so the
+runner's final marker overrides nested markers in the round output.
 
-A line that only quotes the refusal is not one. Agent output reaches the
-round log as `[HH:MM:SS] [amplihack:...]` lines, and a crusty review of
-PR #1586 that explained the stop rule ("the loop only stops for good on the
-policy-refusal exit code or BLOCKED_TERMINAL") once stopped the loop as a
-terminal policy refusal (#1510).
+`loop-evidence-collector.yaml` sets `infrastructure_fault=true` only for
+`transient_transport` and `environmental`, and the evaluator prompt names only
+those two. An `agent_api` round, an agent endpoint rejecting the request
+(`Execution failed: 400`, `session not found`), therefore arrives with
+`infrastructure_fault=false` and `agent_api` in `infrastructure_fault_class`.
+That is intended: it is judged as a round that made no progress, so one may be
+followed by a fresh round, but a run of them reads as `STUCK`. A 404 that
+carries an environmental marker (`API Error: 404`, `404 Not Found`,
+`not_found_error`, `model_not_found`) is `environmental`, not `agent_api`,
+because the classifier checks environmental markers first (see
+[transient-failure-retry](transient-failure-retry.md#classification)), so an
+unknown model still counts as an infrastructure fault.
 
-`step-01-collect-loop-evidence` therefore applies the same rule as
-`terminal_refusal()` in `amplifier-bundle/tools/autodrive_loop.sh`, all of
-it, so the two detectors agree on which logs are refusals:
+### Round text never decides a refusal
 
-1. Before either text detector runs, it removes text that comes from an input
-   rather than from the guard. The awk and the ERE are byte-identical in both
-   files:
-   - the runner's run summary, from its header to the end of the last
-     round's output (the awk). See
-     [The runner's run summary is not guard output](#the-runners-run-summary-is-not-guard-output);
-   - agent output lines, `[HH:MM:SS] [amplihack:...] ...` (the ERE);
-   - the runner's `amplihack.recipe.log_pointer {...}` bookkeeping lines
-     (`crates/amplihack-cli/src/commands/recipe/run/correlation.rs`), which
-     echo the run's `task_description` (the ERE). See
-     [Runner bookkeeping lines are not refusals](#runner-bookkeeping-lines-are-not-refusals).
-2. The token check requires the guard's full marker,
-   `BLOCKED_TERMINAL orchestration_unavailable`. The bare word
-   `BLOCKED_TERMINAL` is not a refusal.
+Round text, the guard's own phrase included, never sets `terminal_refusal`.
+Before #1437 the collector also read text: it cut the runner's run summary,
+dropped agent and `amplihack.recipe.log_pointer` lines, and then looked for
+`BLOCKED_TERMINAL orchestration_unavailable` and for `exit 79`-like phrases.
+Each filter closed one path by which quoted text stopped a loop (#1510; PR
+#1586; rounds 1 and 3 of PR #1632), and each left another open. The #1437
+incident was one of those: an agent handled a descendant's refusal inline,
+as the refusal tells it to, and later lost its API session, and the phrase
+in its transcript ended a run that had pushed its work.
 
-The first rule:
+The collector now applies `terminal_refusal` from
+`amplifier-bundle/tools/autodrive_refusal.sh`, the function `autodrive_loop.sh`
+uses for every child, to `loop_child_exit_code` and `loop_last_round_output`
+alone:
 
-```bash
-{ printf '%s\n' "$HIST"; printf '%s\n' "$LAST" | awk 'NR > 1 { if (prev ~ /^Recipe: / && $0 ~ /^(Run ID|Status): /) { cut = 1; exit } print prev } { prev = $0 } END { if (NR > 0 && !cut) print prev }'; } \
-  | grep -vF "$SELF" > "$WORK/terminal_input" || true
-grep -vE '^[[:space:]]*(\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] \[amplihack:|amplihack\.recipe\.log_pointer \{)' "$WORK/terminal_input" > "$WORK/terminal_blob" || true
-```
+| Input | `terminal_refusal` |
+| ----- | ------------------ |
+| `loop_child_exit_code` = `79`, with any text or none | `"true"` |
+| exit `1`, and the last line beginning `amplihack.recipe.failure_class ` has `"structural_refusal": true` | `"true"` |
+| exit `1`, `BLOCKED_TERMINAL orchestration_unavailable: …` on its own line at column 0, no marker | `"false"` |
+| exit `1`, an agent line or a run summary quoting the phrase or `exit 79` | `"false"` |
+| exit `1`, `child exited with status 79` | `"false"` |
+| exit `1`, a `log_pointer` line with `"exit_code":79` | `"false"` |
+| exit `1`, a `true` marker followed by a later `false` marker | `"false"` |
+| exit `1`, `"structural_refusal": "true"` (a string) | `"false"` |
+| exit `1`, an indented copy of a `true` marker | `"false"` |
+| exit `0`, or no exit code, with a `true` marker | `"false"` |
+| a `true` marker in `loop_history` only | `"false"` |
 
-Both the `BLOCKED_TERMINAL orchestration_unavailable` check and the
-`(exit|status|code)…79` check read `$WORK/terminal_blob`.
-
-The second rule is needed because the first cannot see every agent line. When
-an agent step fails, the recipe runner reprints the agent's stdout without the
-prefix, indented under `--- stdout (tail) ---`. The summary cut drops it when
-it is printed inside the run summary; the full-marker rule holds wherever it
-is printed. A review that names the token and then fails, for instance on a
-session limit, would otherwise stop the loop for the reason #1510 describes,
-while `autodrive_loop.sh` would not. The duration, still-running and failure-class checks
-keep reading the unfiltered `$WORK/blob`, so an agent line reporting
-`step took 10m 0s` still counts toward `repeated_duration_count`.
-
-| Round text | `terminal_refusal` | `terminal_reason` contains |
-| ---------- | ------------------ | -------------------------- |
-| `[10:13:17] [amplihack:claude:3] … or BLOCKED_TERMINAL (see terminal_refusal in autodrive_loop.sh)` | `"false"` | — |
-| `[10:13:18] [amplihack:claude:3] the guard returns exit 79 on refusal`, in `loop_last_round_output` or `loop_history` | `"false"` | — |
-| `    --- stdout (tail) ---` then `    the loop only stops on BLOCKED_TERMINAL` (runner failure tail, unprefixed) | `"false"` | — |
-| `child returned BLOCKED_TERMINAL at depth 4/3` (bare token, no marker) | `"false"` | — |
-| `BLOCKED_TERMINAL orchestration_unavailable: nested orchestration refused`, at column 0, after spaces, or after a tab | `"true"` | `BLOCKED_TERMINAL reported by a child` |
-| `child exited with status 79` (no prefix) | `"true"` | `exit code 79 present in round output` |
-| `loop_child_exit_code` = `79`, with any text or none | `"true"` | `child process exited 79` |
-| `[loop-health-evaluator] child process exited 79` | `"false"` | — ([self-poisoning](#the-brick-does-not-poison-itself)) |
-| `amplihack.recipe.log_pointer {…"task_description":"… BLOCKED_TERMINAL orchestration_unavailable … exit 79 …","exit_code":79…}`, at column 0 or indented | `"false"` | — |
-| the same log_pointer line, then `BLOCKED_TERMINAL orchestration_unavailable: …` on its own line | `"true"` | `BLOCKED_TERMINAL reported by a child` |
-| a real round log whose run summary reprints a review starting `CLEAN: echoed BLOCKED_TERMINAL orchestration_unavailable and exit 79 are ignored.` at column 0, and step-01 output echoing `resolved_concerns` id `exit-79-regex-reads-unprefixed-prose` | `"false"` | — |
-| the same log with `BLOCKED_TERMINAL orchestration_unavailable: …` on its own line before the summary | `"true"` | `BLOCKED_TERMINAL reported by a child` |
-| `Recipe: x` then `Run ID: 1` (the summary header), then `BLOCKED_TERMINAL orchestration_unavailable: …` | `"false"` | — |
-| `Recipe: x` not followed by `Run ID:`/`Status:` at column 0, then `BLOCKED_TERMINAL orchestration_unavailable: …` | `"true"` | `BLOCKED_TERMINAL reported by a child` |
-
-Rules that keep real refusals visible:
-
-- `loop_child_exit_code` = `79` is checked first and reads no text. It is the
-  guard's structural signal, and no filter can hide it.
-- The summary cut needs the exact header pair: `Recipe: ` at column 0 and,
-  on the very next line, `Run ID: ` or `Status: ` at column 0. An indented,
-  lower-case, split or unpaired `Recipe:` line cuts nothing. It is applied to
-  `loop_last_round_output` only; `loop_history` holds round records, never a
-  runner summary, and is not cut.
-- The line filter matches only those two exact line starts: no case folding, no
-  partial timestamps, no other tags, and no JSON other than a line that
-  begins with `amplihack.recipe.log_pointer {`. An unprefixed guard line is
-  always seen, and so is a guard line echoed inside any other JSON.
-- Every guard refusal in `crates/amplihack-cli/src/commands/recipe/run/execute.rs`
-  begins with `BLOCKED_TERMINAL orchestration_unavailable:`, so requiring the
-  full marker loses no real refusal. A false stop is not a safe direction: it
-  is the #1510 failure, and it ended the PR #1586 drive.
-- `|| true` is there for a log made only of agent lines. In that case
-  `grep -v` leaves nothing and exits with status 1. `|| true` keeps that
-  status 1 from counting as a failure, so `terminal_blob` is just empty and no
-  refusal is reported.
-
-### Runner bookkeeping lines are not refusals
-
-Round 1 of PR #1632 stopped as a terminal policy refusal although no guard
-had refused. The recipe runner writes two `amplihack.recipe.log_pointer`
-lines per run to stderr, an `early` and a `final` event, each a single-line
-JSON object after that prefix. Each carries the run's `task_description`.
-The task for #1510 names the full marker and "exit 79", so the runner's
-own bookkeeping put both into the round log, unprefixed, and both detectors
-read them as the guard.
-
-The shared ERE drops those lines, at column 0 or indented, before the text
-checks run. A `final` log_pointer line also carries the child's `exit_code`.
-When that is `79`, it is dropped with the rest of the line. **This is
-deliberate.** The exit code of the round itself is the structural signal:
-`$1` of `terminal_refusal()` in `autodrive_loop.sh`, and
-`loop_child_exit_code` here. Both are checked before any text is read, and
-no input can fake them. Text matching is only a fallback for a refusal whose
-exit code was lost, and a fallback that inputs can trip is worse than none.
-
-### The runner's run summary is not guard output
-
-Round 3 of PR #1632 found a third input-echo path, and this one is in every
-successful round log. After a run, `amplihack recipe run` prints a summary
-(`format_recipe_run_table` in
-`crates/amplihack-cli/src/commands/recipe/run/format.rs`):
-
-```text
-Recipe: autodrive-crusty-round
-Run ID: 5cc1a446-…
-Status: ✓ Success
-Log pointer: status=success … exit_code=0 …
-
-Steps:
-  ✓ step-01-round-context: completed
-    Output: {"head_sha":"…","pr":"1632","resolved_concerns":"exit-79-regex-reads-unprefixed-prose",…}
-  ✓ step-02-crusty-review: completed
-    Output: ℹ NODE_OPTIONS=--max-old-space-size=32768 (saved preference). …
-CLEAN: echoed BLOCKED_TERMINAL orchestration_unavailable and exit 79 are ignored.
-```
-
-Each step's `    Output: ` line carries the first 200 characters of that
-step's output. An agent step's output is multi-line, and its first line is
-usually the `ℹ NODE_OPTIONS` notice, so the agent's own prose follows **at
-column 0, with no prefix**. `step-01-round-context` echoes the ids of
-earlier concerns there too, and an id like
-`exit-79-regex-reads-unprefixed-prose` matches the exit-79 regex. The summary
-is the last thing in the log, so it is always inside the 20000-byte tail.
-A clean round whose review opened by summarising these detectors would stop
-as a terminal policy refusal.
-
-The summary is not filtered line by line. Both detectors cut the log at the
-summary header, a `Recipe: <name>` line followed by a `Run ID: ` or
-`Status: ` line, and read nothing after it. Whatever else the summary echoes,
-now or later, is cut with it. This loses no refusal:
-
-- the guard refuses before a run starts. A refused `amplihack recipe run`
-  prints its `BLOCKED_TERMINAL orchestration_unavailable:` line to stderr and
-  exits 79, with no summary at all;
-- the round recipes run their sub-recipes inside the runner, not through a
-  nested `amplihack recipe run`, so no guard refusal is reprinted in a step's
-  `Error:` or `Recent stderr:` lines;
-- a refusal an agent meets inside its own step reaches the log through the
-  agent's prefixed stream, which was never read (see below).
-
-`autodrive_round_tail.sh` keeps the header in view. If a summary is longer
-than the 20000-byte window, the window starts inside it and would lose the
-header. When the log has a summary header and the tail does not, the script
-prints the header's two lines first, so the collector cuts the whole tail,
-all of which is summary.
-
-Known limits, accepted rather than patched with heuristics:
-
-- A real guard refusal that reaches the log **only** through an agent's
-  prefixed stream, or only inside the run summary, is not seen by the text
-  check. The exit-code check still catches a refusal of the round itself, and
-  `autodrive_loop.sh` makes the same trade-off.
-- Agent prose at column 0 **before** the summary that forges the header pair
-  (`Recipe: x`, then `Status: …`) cuts the log early. That can only hide text,
-  never invent a refusal, and the only guard line that reaches the log
-  unprefixed before the summary belongs to a run that never started and so
-  exited 79.
-- The exit-79 regex still reads unprefixed text before the summary. Agent
-  prose that says "exit 79" and reaches the log there without a prefix (a
-  multi-line message's continuation lines) is still read as a refusal. The
-  full-marker rule closes this path for the token, not for the regex.
-  `loop_child_exit_code` = `79` remains the authoritative signal; the text
-  checks are a fallback for a refusal whose exit code was lost.
-- Outside the summary, runner bookkeeping lines are recognised by one key
-  only, `amplihack.recipe.log_pointer`. The input-echo class is handled by
-  region, not by shape, only from the summary header on. Before it, a new
-  runner line that echoes an input and names the full marker or `exit 79`
-  would still read as a refusal; it must be added to the shared ERE, in both
-  files, with a test. Today the log_pointer line is the only such line before
-  the summary.
-- `loop_last_round_output` is a byte tail of the round log. `autodrive_loop.sh`
-  builds it with `autodrive_round_tail.sh`, which drops the partial first line
-  when the log is longer than 20000 bytes, so a fragment that has lost its
-  `[HH:MM:SS]` prefix never reaches the detectors, and which keeps the summary
-  header as described above. A caller that builds `loop_last_round_output`
-  some other way must do the same.
+What this costs: a refusal whose exit code was lost and whose runner wrote no
+final marker is not seen. For the loop's own rounds neither happens in
+practice. A guard refuses before a run starts and `amplihack recipe run` exits
+79; a failed step that ended with exit 79 sets `structural_refusal` on the
+marker the runner writes last. For a `type: recipe` step that is the first
+failed step the runner lists for the sub-recipe; a refusal after a non-fatal
+failure in the same sub-recipe is not seen (see the
+[Limits](auto-drive-to-merge.md#limits) of the #1437 section).
+The duration, still-running and repetition checks still read the unfiltered
+history and last round output. `autodrive_round_tail.sh` still prints whole
+lines only, and the final marker, being the log's last line, is always inside
+its 20000-byte tail.
 
 ## A usage limit is not a verdict
 
@@ -1034,12 +919,11 @@ the same rule, so prompt and extractor agree.
 
 ### The brick does not poison itself
 
-Every line these bricks author is tagged `[loop-health-evaluator]`, and the
-collector drops tagged lines before running its terminal detectors. Without
-that, the brick's own reason string ("child process exited 79 …") re-matches
-its own exit-79 regex, so feeding one escalation report back into
-`loop_history` would make the loop permanently terminal on evidence it
-invented.
+The collector never uses `loop_history` to decide current termination, and
+never searches text for an exit code or guard phrase. Feeding a previous
+escalation report back into history therefore cannot manufacture another
+terminal refusal. Tagged `[loop-health-evaluator]` report lines are excluded
+from repetition and waiting measurements as well.
 
 Agent output is treated as untrusted **data** throughout, per
 [Structured Verdict & Intent Parsing](structured-verdict-parsing.md#security-agent-output-is-untrusted-data-never-code):
@@ -1062,7 +946,7 @@ Feeding the real run's evidence to `step-01-collect-loop-evidence`:
 ```json
 {
   "terminal_refusal": "true",
-  "terminal_reason": "exit code 79 present in round output",
+  "terminal_reason": "exit 79 [loop-health-evaluator]",
   "commits_since_baseline": 0,
   "diff_lines": 0,
   "repeated_duration_count": 7,
@@ -1092,7 +976,7 @@ and reports what is not converging instead of consuming the remaining budget.
 | Executable contract test (STUCK path, malformed-verdict path, exit-79 terminal path, the 2h47m worked example, no-cap and no-timeout guards, and a hand-written `check_rs` line, run through `resolve_verdict_and_source`, for every row of the [step-03 examples](#examples) — the test does not read the table, so a new row needs its own `check_rs` line — plus the round-trip guard, `LOOP_NAME` cleaning, prompt-marker and [contract-position](#where-the-prompt-states-the-contract) cases, and step-04's stdout being at most one `LOOP_HEALTH: ` line for `CONTINUE`, `DONE` and `STUCK`) | `amplifier-bundle/recipes/tests/test-issue-1337-loop-health-evaluator.sh` |
 | **End-to-end probe** — the real recipe files run through the real `recipe-runner-rs` with only step-02 stubbed as a bash step: `CONTINUE` → exit 0, `STUCK` → exit 1, verdict selection, exit-79 terminal, self-poisoning | same file, section 7 (skipped with a loud notice when `recipe-runner-rs` is not installed; set `RECIPE_RUNNER_RS_PATH` to force it) |
 | Structural + end-to-end wiring, including `evaluator_prompt_states_the_contract_first_and_last` and the [RECIPE_VAR-only read check](#reading-step-outputs-recipe_var-only) for `loop_evidence`, `loop_health` and `loop_health_assessment` | `tests/integration/issue_1337_loop_health_evaluator_test.rs` |
-| Collector terminal detectors ignore agent output lines: the real step-01 command run through `bash` in an isolated environment, one test per row of the [agent output table](#agent-output-lines-are-not-refusals), each checking both `terminal_refusal` and, where the table lists one, the `terminal_reason` substring, plus the unfiltered duration count and an agent line followed by a real guard line. Two tests guard the filter itself: `issue_1510_near_miss_prefixes_are_not_filtered` checks that a short timestamp, another tag or a different case is not dropped, and `issue_1510_filter_ere_matches_autodrive_loop_byte_for_byte` fails if the collector and `terminal_refusal()` in `autodrive_loop.sh` drift apart on either half of the rule (the agent-line ERE or the full marker). The round-tail tests run `amplifier-bundle/tools/autodrive_round_tail.sh` and check that a log cut inside an agent line yields only whole lines and no refusal, and that a summary longer than the window keeps its header. The run-summary tests feed a copy of a real successful round log (`tests/integration/fixtures/issue_1510_crusty_round_tail.txt`, with the review quoting the marker and "exit 79" and a `resolved_concerns` id containing `exit-79`) through both detectors and expect no refusal; they keep a guard line placed before the summary terminal, pin the header pair the cut needs, and `issue_1510_summary_cut_awk_is_shared_byte_for_byte` fails if the cut drifts between the collector, `terminal_refusal()` and `autodrive_round_tail.sh` | `tests/integration/issue_1510_collector_agent_prose_test.rs` |
+| Collector refusals come from the exit code and the runner's final marker only (#1510, #1437): the real step-01 command run through `bash` in an isolated environment, with `AMPLIHACK_HOME` and the built `amplihack` binary for the shared helper. Every #1510 case that quoted the guard (agent prose, an indented or failed-step tail, a bare token, `log_pointer` echoes, a real successful round log whose run summary quotes the marker and "exit 79", a byte tail cut inside an agent line) is still not terminal. Every case #1510 kept terminal on text (the guard's phrase at column 0, indented, after agent prose, after a `log_pointer` line, inside other JSON, before or after a summary header, in history; an unprefixed "exit status 79"; near-miss agent prefixes) is now not terminal with no exit code or exit `1`/`2`, and terminal with the runner's final `structural_refusal: true` marker after it. The marker cases check exit `0`, a missing or non-numeric exit code, an indented copy, the string `"true"`, a later `false` marker and history. `issue_1437_collector_and_loop_share_one_refusal_helper` fails if either reader stops sourcing `autodrive_refusal.sh` or matches the guard's text again. The round-tail tests check that only whole lines are printed and that a long summary keeps its header | `tests/integration/issue_1510_collector_agent_prose_test.rs` |
 | Usage limit on step-02, retried: a fake `claude` that prints the weekly-limit message on its first call and a valid verdict on its second, a fake rotator cycle written during the wait, run through a stub `recipe-runner-rs` under an isolated `HOME`. Checks exit `0`, the verdict once, two calls, the `start` and `end reason=rotator capacity` lines, and no `usage_limit` failure class | `crates/amplihack-cli/tests/issue_1801_evaluator_retry.rs` |
 | Usage limit on step-02, retried and expired, as seen by `autodrive_loop.sh`: `1801-evaluator-retry-verdict` records the verdict with no `STUCK`; `1801-evaluator-usage-limit` stops as `USAGE_LIMIT`; negative cases for a nested `class`, the marker with exit `0`, an indented or echoed marker, and wait lines alone | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 

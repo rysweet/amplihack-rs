@@ -420,6 +420,14 @@ turning the lost parent into evaluator `STUCK`.
 ### Exit code 79 is terminal
 
 Structural refusal (`79`, `BLOCKED_TERMINAL`) propagates without retry.
+Not every failure is terminal (issue #1437): a child of `autodrive_loop.sh`
+(the `--before-round` step, a round, or a loop-health evaluator run) is a
+refusal only when it exits `79`, or exits non-zero and the last
+`amplihack.recipe.failure_class` marker in its log has
+`"structural_refusal": true`. Quoted refusal text in a transcript decides
+nothing. `autodrive_refusal.sh`, sourced by the loop driver, applies these
+rules; any other failure is summarised as `rc=<n> class=<class>
+retryable=<bool>` and left to the loop-health evaluator.
 Rounds and re-reviews stay sequential at constant session depth. Recursion,
 width, and memory safeguards remain in force and are never raised to recover.
 

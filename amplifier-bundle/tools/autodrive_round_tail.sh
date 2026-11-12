@@ -2,21 +2,21 @@
 # autodrive_round_tail.sh <log-file> — print the last 20000 bytes of a round
 # log, for the loop-health evaluator's loop_last_round_output.
 #
-# A byte tail of a longer log starts inside a line. That fragment has lost its
-# `[HH:MM:SS] [amplihack:...]` prefix, so an agent line cut there would escape
-# the evidence collector's agent-line filter and could be read as a policy
-# refusal (#1510). When the log is longer than 20000 bytes, the partial first
-# line is dropped; every line printed is whole. A shorter log is printed as it
-# is. A missing log prints nothing.
+# A byte tail of a longer log starts inside a line. When the log is longer
+# than 20000 bytes, the partial first line is dropped; every line printed is
+# whole. A shorter log is printed as it is. A missing log prints nothing.
 #
-# The collector cuts the runner's run summary (`Recipe: <name>` followed by
-# `Run ID:` or `Status:`) before its refusal checks, because the summary
-# reprints agent output unprefixed (round 3 of PR #1632). A summary longer
-# than the window would lose that header and leave its body to be read as
-# guard output. So when the log has a summary header and the printed tail
-# does not, the header's two lines are printed first: the collector then cuts
-# the whole tail, all of which is summary. The awk that finds the header is
-# the one the detectors cut with.
+# The collector's refusal check (#1437, autodrive_refusal.sh) reads only the
+# LAST line that begins `amplihack.recipe.failure_class `. The runner writes
+# that line last, so it is always inside the tail, and whole lines keep a cut
+# fragment from beginning at column 0 like one. Text no longer decides a
+# refusal, so the agent-line filter and summary cut #1510 and PR #1632 needed
+# for it are gone from the collector.
+#
+# When the log has a run summary header (`Recipe: <name>` followed by
+# `Run ID:` or `Status:`) and the printed tail does not, the header's two
+# lines are still printed first, so a reader of the tail can tell the rest is
+# summary.
 #
 # Executed, never sourced. It reads; it writes nothing. Always exits 0.
 

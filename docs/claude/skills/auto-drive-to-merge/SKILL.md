@@ -100,6 +100,9 @@ Keep no-progress detection, usage accounting, resumable budgets, sequential
 constant-depth rounds, and recursion ceilings. Budget exhaustion,
 `USAGE_LIMIT`, `ORPHANED`, dependency failures, and terminal refusal are
 distinct from success. Exit `79` propagates without retry or raised ceilings.
+A child is a terminal refusal only when it exits `79`, or exits non-zero
+with `"structural_refusal": true` on its log's last failure-class marker
+(#1437, `autodrive_refusal.sh`); quoted refusal text never decides.
 
 ## Crusty completion
 
