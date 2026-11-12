@@ -76,7 +76,7 @@ flowchart TD
 
     F --> F1{every criterion re-verified<br/>in THIS run, bound to ONE sha?<br/>every minor finding has a follow-up issue?}
     F1 -->|no| STOP3[NOT_MERGED + evidence bundle]
-    F1 -->|yes| G[gh pr merge --squash --delete-branch<br/>--match-head-commit sha]
+    F1 -->|yes| G[gh pr merge --squash --delete-branch<br/>--match-head-commit sha<br/>--subject PR title --body-file -<br/>PR body up to the merge-ready report, on stdin]
     G --> H{platform confirms MERGED?}
     H -->|no| STOP3
     H -->|yes| I[MERGED]
@@ -272,6 +272,45 @@ finding has a filed follow-up issue. Everything is bound to **one** head SHA, an
 `--match-head-commit`, so GitHub refuses the merge if the head moved after the
 evidence was captured.
 
+The gate also decides the squash commit message rather than letting GitHub
+concatenate the branch's commits (#2056). From the same `gh pr view` read that
+captured the head SHA, it takes the PR title as the subject (`<title> (#N)`,
+control characters stripped) and the PR body, up to the merge-ready report, as
+the message body. Under auto-drive the body carries merge-ready's pre-merge
+report, which says the PR is open and can say `NOT_MERGE_READY`; nothing
+refreshes it after the last round. So the body is cut at the first line that
+starts with `<!-- merge-ready-report` (the marker the merge-ready template
+writes above its report) or `## Merge readiness`, ASCII case ignored, and the
+blank lines before that line go too. A body with neither line is used whole,
+and what is above the line lands as written, so it should say only what stays
+true after the merge. The evidence line records `report_cut=yes` or `no`. For a
+PR with a single commit this is a change of subject: GitHub's default
+(`COMMIT_OR_PR_TITLE`) would have used that commit's subject, and the gate uses
+the title.
+
+The body is piped to `gh` on standard input (`--body-file -`) from the gate's
+own memory and is never handed over as a file path, so nothing written to disk between the
+checks and the merge can change it. A copy goes to
+`<state-dir>/merge-message-<pr>-<sha12>.txt` as a record only. So a
+stale trailer, a `Fixes #N` line from a branch this one is stacked on, or any
+other text that lives only in an individual commit is not in the message the
+gate gives GitHub. A title or body that cannot be read is a blocker, in the
+same way an unreadable criterion is.
+
+The gate does not check what GitHub then commits, and
+[#2263](https://github.com/rysweet/amplihack-rs/issues/2263) is where that
+check is added. GitHub's default squash message adds a `Co-authored-by:` line
+for every commit author on the branch, which is how
+`Co-authored-by: Fixture <fixture.invalid>` reached software-factory's `main`.
+Landed commits in this repository show GitHub adding no such line to a body it
+was given, but no controlled probe has been run, and the tests, which use a
+stub `gh`, cannot see it (see
+[the co-author premise](https://github.com/rysweet/amplihack-rs/blob/main/docs/reference/auto-drive-to-merge.md#premise-github-adds-no-co-authored-by-lines-to-a-supplied-body-2263)).
+And an empty PR body is not a blocker: the gate sends an empty message body,
+and whether GitHub then commits an empty body or falls back to its
+concatenated default is not verified either (see
+[the empty-body limitation](https://github.com/rysweet/amplihack-rs/blob/main/docs/reference/auto-drive-to-merge.md#limitation-an-empty-pull-request-body-2263)).
+
 **CI green means every expected check exists at the head SHA and passed.**
 `autodrive_expected_checks.sh` builds the expected set from the base branch's
 required checks and every job of each active `pull_request` workflow at the
@@ -318,11 +357,38 @@ The parent check needs Linux `/proc` and a root-owned `/bin/bash`, so
 
 ## Exit code 79 is terminal
 
-Exit `79` (and `BLOCKED_TERMINAL`) is a final answer from a structural guard,
-not an infrastructure hiccup. It is surfaced, it stops the run, and it is
-**never** retried into — not at a deeper level, not with a raised ceiling. The
-loop driver propagates `79` as its own exit code so a parent sees the refusal
-rather than a generic failure.
+Exit `79` is a final answer from a structural guard, not an infrastructure
+hiccup. It is surfaced, it stops the run, and it is **never** retried into —
+not at a deeper level, not with a raised ceiling. The loop driver propagates
+`79` as its own exit code so a parent sees the refusal rather than a generic
+failure.
+
+Not every failure is terminal (issue #1437). A child the loop ran — the
+`--before-round` step, a round, or a loop-health evaluator run — is a refusal
+only when one of these holds:
+
+- its exit status is `79`;
+- it exited with a non-zero status and the last
+  `amplihack.recipe.failure_class` marker in its log has
+  `"structural_refusal": true`. A child that exited `0` is never a refusal,
+  whatever its log holds.
+
+The exit code and the runner's last marker decide; transcript text never does.
+A round log holds every file the round's agents read and every refusal a
+descendant already handled inline, so a quoted `BLOCKED_TERMINAL
+orchestration_unavailable` decides nothing. Any other non-zero exit is an
+ordinary failure, reported as `rc=<n> class=<class> retryable=<bool>`, with
+` signal=<signal>` appended when the marker has one (class `work`,
+`environmental`, `usage_limit`, `agent_api`, `transient_transport`,
+`indeterminate`, or `unknown` when the log has no marker). After a round or
+an evaluator run, `loop-health-evaluator` decides whether another round is
+worthwhile. Its evidence collector applies the same two rules to the
+round's exit code and output, and the crusty loop's completion dispatch
+applies them to the evaluator it starts, so a round that handled a
+descendant's refusal inline is judged on its work. A failed `--before-round` step still ends the loop
+with `BEFORE_ROUND_FAILED` and exit `1`, never `79`.
+`autodrive_refusal.sh`, sourced by the loop driver and the collector, applies
+these rules.
 
 ## Resumability
 
@@ -377,6 +443,7 @@ run to their natural end. A false timeout costs more than a slow run.
 | `amplifier-bundle/recipes/autodrive-merge-loop.yaml` | Phase 3 loop + merge gate. |
 | `amplifier-bundle/tools/autodrive_loop.sh` | Shared driver; Crusty next-action decisions pass through the Rust completion dispatcher. |
 | `amplifier-bundle/tools/autodrive_merge_gate.sh` | The evidence gate and the fixed merge argv. |
+| `amplifier-bundle/tools/autodrive_merge_message.sh` | Sourced by the gate: composes the squash subject and body, which the gate pipes to `gh` on stdin, and writes a record of the body (#2056). |
 | `amplifier-bundle/tools/autodrive_expected_checks.sh` | Read-only: builds the expected checks for one head SHA and decides `ci_status`. |
 | `amplifier-bundle/tools/autodrive_followups.sh` | Classifies minor-only rounds, files the follow-up issues and lists them on the plan task issue. |
 | `amplifier-bundle/tools/autodrive_followups_check.sh` | The `check` and `gate` commands: the merge gate's offline follow-up check. |

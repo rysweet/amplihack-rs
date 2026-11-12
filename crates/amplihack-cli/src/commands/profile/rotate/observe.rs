@@ -54,6 +54,10 @@ pub struct Snap {
     pub home_no_oauth: bool,
     /// Each candidate's account; step 6 compares the target's (#1721).
     pub candidate_accounts: Vec<(ProfileName, Option<Account>)>,
+    /// Issue #2218: the live login is a known profile in the auto-switch
+    /// `exclude` list. It is never probed or refreshed, nothing measured is
+    /// recorded under its name, and the cycle moves off it.
+    pub live_excluded: bool,
 }
 
 impl Snap {
@@ -226,6 +230,9 @@ pub fn measure_and_decide(ctx: &Ctx, snap: &Snap) -> Result<Measurement, Profile
     let measured_at = (ctx.now)();
     let platform = snap.platform();
     let live = match &snap.live {
+        // Issue #2218: before the API-key case, so an excluded API-key
+        // profile is moved off as well.
+        LiveId::Known(_) if snap.live_excluded => Live::Excluded,
         _ if snap.platform_live() => Live::Platform,
         LiveId::Known(n) => Live::Profile(n),
         _ => Live::Unowned,
@@ -295,10 +302,10 @@ pub(super) fn decide_measured(
     let swapped_at = ledger.as_ref().and_then(|l| l.swapped_at);
     let platform_block = ledger.as_ref().and_then(|l| l.platform_block.clone());
     let blocks = ledger.map(|l| l.overflow_blocked).unwrap_or_default();
-    let live_name = match &snap.live {
-        LiveId::Known(n) => Some(n),
-        _ => None,
-    };
+    // Issue #2218: an excluded live login is decided on as if no profile
+    // owned it, so neither the hold, damping nor the home key keeps it, and
+    // no synthetic reading of it is taken for a measured one.
+    let live_name = snap.measured_live();
     let overflow = snap.decision_overflow();
     let is_overflow = |n: &ProfileName| overflow.iter().any(|e| &e.name == n);
     let live_over = live_name.is_some_and(is_overflow);
@@ -319,14 +326,13 @@ pub(super) fn decide_measured(
         now: t,
     };
     let verdict = affinity::decide(snap, &input, &measured, &eligible, need);
-    // Issue #2211: this cycle's outlook, for this live plan login only. It
-    // is decided with the cycle's one `need`, worked out above on the
-    // reading as measured, so a projected or substituted figure never makes
-    // a confirmed organisation crossing, nor makes one sooner
-    // (`affinity::with_outlook`), and `live::with_outlook` takes from it
-    // only a threshold swap or the ALERT. The rules for
-    // leaving an overflow profile do not read the live session figure, so
-    // an outlook there changes nothing.
+    // Issue #2211: this cycle's outlook, for this live plan login only. It is
+    // decided with the cycle's one `need`, worked out above on the reading as
+    // measured, so a projected or substituted figure never makes a confirmed
+    // organisation crossing, nor makes one sooner (`affinity::with_outlook`),
+    // and `live::with_outlook` takes from it only a threshold swap or the
+    // ALERT. The rules for leaving an overflow profile do not read the live
+    // session figure, so an outlook there changes nothing.
     let outlook = ctx
         .live_outlook
         .as_ref()

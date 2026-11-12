@@ -8,6 +8,9 @@ mod correlation;
 pub(crate) mod execute;
 /// Issue #1267 — transient vs terminal classification of a failed run.
 mod failure_class;
+/// Issue #1437 — evidence gathering and the marker tables `failure_class` reads.
+mod failure_evidence;
+mod failure_markers;
 mod format;
 /// Issue #2096 — the record of index-writing git commands a run's steps ran.
 pub(crate) mod git_record;
@@ -28,6 +31,8 @@ mod retry;
 pub(crate) mod run_checkout;
 /// Issue #1606: SIGHUP/SIGINT/SIGTERM stop the whole recipe tree.
 pub(crate) mod stop_signal;
+/// Issue #1437 — a failed step's terminating exit status, from the runner's envelope.
+mod termination;
 
 pub use context_sources::resolve_context_args;
 /// Issue #1569: the auto-switch rerun supervisor uses the same classifier, so
@@ -351,6 +356,7 @@ fn run_recipe_with_options(
     if result.success {
         Ok(())
     } else {
+        failure_class::emit_final_failure_class_marker(&result);
         Err(exit_error(1))
     }
 }
@@ -484,6 +490,8 @@ mod tests_execute;
 #[cfg(test)]
 mod tests_failure_class;
 #[cfg(test)]
+mod tests_failure_class_1437;
+#[cfg(test)]
 mod tests_format;
 #[cfg(all(test, unix))]
 mod tests_git_record;
@@ -503,3 +511,7 @@ mod tests_root_sandbox;
 mod tests_teardown;
 #[cfg(test)]
 mod tests_terminal_record;
+#[cfg(test)]
+mod tests_termination;
+#[cfg(test)]
+mod tests_termination_contract;

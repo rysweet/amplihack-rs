@@ -2645,7 +2645,7 @@ every merge. So every writer makes its state private itself:
 | `autodrive_loop.sh` | Calls `autodrive_private_dir`, then writes its round copies, manifests and logs under `umask 077`. It runs the round recipe and the loop-health evaluator with the caller's umask, so files agents create in the repository are unaffected. |
 | `autodrive_mark_phase_done`, `autodrive_record_resolved` | Append to `phases.tsv` and `resolved-concerns.txt` under `umask 077`. |
 | Round steps that write records (`step-05-write-round-record` in both rounds, the findings files) | Write under `umask 077`, removing the old file first. |
-| `autodrive_merge_gate.sh` | Creates a missing state directory under `umask 077`, but never changes the mode of an existing one, since that is what it judges. |
+| `autodrive_merge_gate.sh` | Creates a missing state directory under `umask 077`, but never changes the mode of an existing one, since that is what it judges. Writes two files into it, neither of them deleted afterwards: the evidence bundle, under `umask 077` with the old path removed first; and the squash message record, under `umask 077` and `set -C` with the old path removed first, which nothing reads back ([The message record](#the-message-record)). |
 
 `autodrive_private_dir` fails with `ERROR: state-dir-not-private: <reason>`,
 touching nothing, when the directory is empty, a symlink, not a directory, not
@@ -3280,6 +3280,7 @@ merges, it re-verifies and records:
 | Crusty loop | `phases.tsv`, `crusty-latest.json`, `crusty-records.tsv` and its record, in `--state-dir` | no `--state-dir`; the directory or a file not private; no `crusty-loop` marker; `crusty_verdict` neither `CLEAN` nor `MINOR_ONLY`; `autodrive_crusty_final` failing (its token, or `crusty-other`); `HEAD_SHA` not in the clone; `autodrive_crusty_range` not `ok` (its token, or `crusty-range-other`) |
 | Follow-up issues (#1979) | `followups.jsonl`, `followups.tsv`, `followups.error`, `followups.parent` in `--state-dir`, checked by `autodrive_followups.sh gate` from the gate's own directory | `ERROR: followups-unfiled: <token>`: a finding in the set with no issue row, no recorded comment on the parent task issue, a recorded filing error, a malformed or unsafe file, or `MINOR_ONLY` with an empty set. A missing tool blocks whatever the verdict. See [The follow-up check in the merge gate](#the-follow-up-check-in-the-merge-gate). |
 | merge-ready verdict | round record from this run | not `MERGE_READY`, or captured against a different head SHA |
+| Squash message | `title` and `body`, from the same `gh pr view` read that captured the head SHA | a title that cannot be read (absent, `null`, empty, whitespace-only, or longer than 1024 characters); an absent `body` key, or a `jq` that fails reading the body; no private `--state-dir`; a message record that cannot be written. A body carrying the merge-ready report is not a blocker: the report is cut off ([The merge-ready report is left out](#the-merge-ready-report-is-left-out)). See [The squash commit message](#the-squash-commit-message-2056). |
 
 The review-thread query pages. `reviewThreads(first:100)` with no `pageInfo`
 follow-up silently truncates: a PR with 101 threads whose only unresolved one
@@ -3316,6 +3317,40 @@ disk **before** anything is merged, and the merge passes
 head moved after the evidence was captured. That closes the check-then-merge
 window without a cooperative lease.
 
+The merge itself is one fixed argv, built as a literal list and asserted
+before it runs:
+
+```bash
+printf '%s' "$MERGE_BODY" | gh pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA" --subject "$MERGE_SUBJECT" --body-file -
+```
+
+`gh` is the program the gate invokes, not a member of the array, so
+`MERGE_ARGV` holds the eleven elements after it, indexed 0 to 10:
+
+| 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `pr` | `merge` | `$PR` | `--squash` | `--delete-branch` | `--match-head-commit` | `$HEAD_SHA` | `--subject` | `$MERGE_SUBJECT` | `--body-file` | `-` |
+
+Element 10 is the literal `-`, which `gh` reads as standard input: the body is
+piped in from the gate's own memory and is never handed over as a path ([How
+the body reaches `gh`](#how-the-body-reaches-gh)).
+
+The self-check pins the element count and every literal by position, rather
+than comparing two arrays built from the same literals, which would be
+tautological however it were compared. It pins `pr` and `merge` to positions 0
+and 1 in particular: the `gh` shim and the pre-tool-use hook both classify on
+the program word plus the first non-flag positional, so a flag moved in front
+of the subcommand would make the subject the first non-flag token and the call
+would stop classifying as a merge. `--subject` takes the argument after it
+verbatim, so a PR title is never read as a flag. Take a pull request titled
+`--admin`, a flag this workflow never passes and which is prohibited
+everywhere in it: the title becomes the string at element 8, and `gh` acts on
+it as the subject rather than as an option. That is the property the
+fixed-argv design exists to guarantee, and the test asserts it positionally —
+element 8 equals the composed subject, and no *other* element equals that
+string — since the string does legitimately appear in the argv, as the
+subject itself.
+
 **An unreadable criterion is a failure, never a pass.** After the merge, the
 platform must confirm `MERGED`; a `gh` success the platform does not confirm is
 reported as `NOT_MERGED`.
@@ -3325,6 +3360,430 @@ list and the evidence bundle path, `79` terminal policy refusal. The `gh pr
 merge` status is captured on its own line rather than inside the `then` of an
 `if ! gh …`, where `$?` is the negation's status — always `0` — which would
 make the exit-79 branch dead code and report every failure as "exit 0".
+
+### The squash commit message (#2056)
+
+`main` squashes with `squash_merge_commit_message: COMMIT_MESSAGES`, so a
+merge that supplies no message gets every commit on the branch concatenated
+into one. That drags in each commit's trailers, a `Fixes #N` or `Task:` line
+written for a branch this one is stacked on, and anything else that was only
+ever true of a single commit. A wrong trailer on a commit that is already
+pushed cannot be corrected, because correcting it needs a force-push and this
+workflow does not rewrite pushed commits. So the gate supplies the message
+itself, from the pull request's title and its body up to the merge-ready
+report ([The merge-ready report is left out](#the-merge-ready-report-is-left-out)).
+That is the part this change controls. What GitHub then writes into the
+commit is not observed by anything in this change; see [the co-author
+premise](#premise-github-adds-no-co-authored-by-lines-to-a-supplied-body-2263)
+and [the empty-body limitation](#limitation-an-empty-pull-request-body-2263).
+
+The subject and the body come from the **same** `gh pr view` read that
+captured the head SHA. `title` and `body` are two more fields on the single
+`--json` list in section 0, not a second API call, so the message is bound to
+the state every other criterion was verified against.
+
+| Part | Source | Rule |
+| --- | --- | --- |
+| Subject | `.title` | `<title> (#N)`. This is GitHub's own convention. On this repository it is what the platform would have produced for a pull request with two or more commits, but **not** for one with a single commit: `squash_merge_commit_title` is `COMMIT_OR_PR_TITLE`, which uses that commit's subject when there is only one. #1934, titled "Make hook repair fixture portable on macOS", landed as "Make hook repair fixture portable and fail fast on broken mutations (#1934)", its single commit's subject. The gate always uses the title, so a one-commit pull request now lands under its title. A title that already ends with exactly ` (#N)` for this pull request is used unchanged, so the suffix is never doubled. Control characters are stripped first, by code point in the `jq` read: C0 (`U+0000`-`U+001F`), DEL (`U+007F`) and C1 (`U+0080`-`U+009F`). The subject cannot become multi-line, cannot forge a line in the evidence bundle, and cannot deliver ESC or a C1 introducer such as CSI (`U+009B`) to a terminal that reads the gate's output as UTF-8. A byte-level `tr -d '\000-\037\177'` would keep CSI, which UTF-8 encodes as `c2 9b`. |
+| Body | `.body`, up to the merge-ready report | Cut at the first line that starts with `<!-- merge-ready-report` or `## Merge readiness`; a body with neither line is used whole ([The merge-ready report is left out](#the-merge-ready-report-is-left-out)). Read with `jq -j` into the gate's variable `MERGE_BODY` and piped to `gh` on standard input, which `--body-file -` reads. `-j` is the point: `jq -r` appends a newline of its own, so a body already ending in one would gain a second and a body ending without one would gain a first. With `-j`, no trailing newline is added and none is removed; the capture appends an `x` inside `$(...)` and strips it afterwards, so command substitution does not remove one either. A NUL is stripped, since neither git nor a bash variable can carry one. Apart from the cut and NUL, nothing is changed. |
+
+Both are read with `jq`, not with the gate's `field()` helper. `field()`
+resolves to `extract-json --require-field`, which deliberately selects the
+*last* JSON object carrying the field
+([#1337/#1347](#--require-field-is-not-optional-here)). A pull request body is
+free text, and in this repository it routinely quotes recipe and evidence
+JSON, so it is exactly the input that helper should not be pointed at. `jq`
+parses the one object `gh` returned and nothing quoted inside it, and `jq` is
+already a hard requirement of the gate (section 5 reads `ci_status` with it,
+and `autodrive_expected_checks.sh` refuses to run without it), so the choice
+adds no dependency.
+
+The message is composed in section 5b, after the CI read, not in section 0.
+Section 5 no longer checks for `jq` itself: since #2186 the check is inside
+`autodrive_expected_checks.sh`, which reports `expected checks unreadable: jq
+is not installed`. So section 5b makes its own `command -v jq` check, before
+it reads the title. Without it, a host with no `jq` would also be told
+`pull request #N title is unreadable`, which sends the operator to the pull
+request instead of to the missing tool. With it, the 5b blocker reads `jq is
+not installed, so the title and body of pull request #N cannot be read for
+the squash message` (`MSG-no-jq-names-jq`).
+
+The gate reads no criterion out of the body. The one thing it looks for there
+is the line where the merge-ready report starts, and that decides only where
+the message ends. The body is a message, not a criterion.
+
+#### The merge-ready report is left out
+
+Under auto-drive the pull request body is not only a description someone
+wrote for history. merge-ready's step 7 writes its evidence report into it
+(`gh pr edit "$PR" --body-file pr-description.md`), before the merge, and its
+template ends with `Final action performed: <yes / no>`, `Final platform
+state: <… / open / …>` and a verdict. Nothing refreshes that report after the
+last merge-ready round. #2255 was merged at head `3b8db36f`; its body had last
+been edited at that same head and still read `Verdict: NOT_MERGE_READY`.
+Committed whole, every auto-drive squash commit would carry such a report and
+say for good that the pull request was still open. #2056 exists because text
+that was true for a moment lands in history and cannot be corrected, so the
+gate does not commit the report (crusty round 8 on #2262).
+
+`autodrive_merge_body` cuts the body at the **first** line that starts with
+either of these:
+
+- `<!-- merge-ready-report`, the marker line the merge-ready template writes
+  above its report. It is an HTML comment, so it does not show when the
+  description is rendered.
+- `## Merge readiness`, the template's own heading. Every report written
+  before the marker existed carries it, so a report without the marker is cut
+  too.
+
+ASCII case is ignored, and so is a CR ending the line, which a body edited in
+GitHub's web form has on every line. That line and everything after it are
+dropped. Then the blank lines just before it go (lines of spaces, tabs and CR
+only), and the CR ending the last line kept. A body with neither line is used
+whole, byte for byte. A cut is recorded as `report_cut=yes` on the evidence
+line, and an uncut body as `report_cut=no`.
+
+What the cut leaves, measured on 2026-11-12 on the bodies of merged auto-drive
+pull requests and of this one. None had the marker, since it is new; each was
+cut at its `## Merge readiness` heading:
+
+| Pull request | Body | Kept | Report lines left in what is kept (`Final action performed`, `Final platform state`, `- Verdict:`) |
+| --- | --- | --- | --- |
+| #2241 | 25,676 bytes | 15,273 bytes | none |
+| #2255 | 24,220 bytes | 20,816 bytes | none |
+| #2299 | 49,416 bytes | 38,006 bytes | none |
+| #2345 | 51,432 bytes | 1,945 bytes | none |
+| #2379 | 39,954 bytes | 27,284 bytes | none |
+| #2262 (open) | 19,322 bytes | 9,950 bytes | none |
+
+What the cut does not do:
+
+- **It does not parse Markdown.** A boundary line inside a fenced code block
+  cuts there too, so a description that quotes the template loses its tail.
+  The failure goes one way: text is left out, and the report is never added.
+  The marker or heading in the middle of a line, or indented by four spaces as
+  an indented code block, does not cut (`MSG-report-mention-not-cut`).
+- **It keeps what is above the boundary as written.** In this workflow that
+  part also collects text that is true only before the merge: round-by-round
+  review logs, head SHAs, and lines such as "The PR remains open" (#2345 has
+  one above its report). The merge-ready skill and its template now say that
+  such text goes below the marker. Nothing enforces it. That text lands on
+  `main`.
+- **It is a convention between two files.** A report written under some other
+  heading, with the marker dropped, is committed. The shell suite reads the
+  marker line out of the template, and `MSG-report-cut-at-marker` fails if the
+  helper does not cut at it. The Rust suite checks that the template's marker
+  and heading are the two the helper's code matches. Moving the report out of
+  the description into a pull request comment would end the convention. That
+  touches merge-ready's criterion 12 ("The PR/pull request description
+  contains concrete evidence") and the merge round's prompt, and it is
+  [#2477](https://github.com/rysweet/amplihack-rs/issues/2477).
+- **A body that is nothing but the report** leaves an empty body
+  (`MSG-report-only-body`), which is the
+  [empty-body limitation](#limitation-an-empty-pull-request-body-2263).
+
+#### How the body reaches `gh`
+
+The body goes to `gh` on standard input, from the gate's own memory:
+
+```bash
+printf '%s' "$MERGE_BODY" | gh "${MERGE_ARGV[@]}"    # element 10 is the literal `-`
+```
+
+It is never handed over as a path. An earlier version of this change wrote
+the body to a file in the state directory, passed that path as
+`--body-file`, and re-checked the file's SHA-256 at section 9. That bound
+nothing ([CWE-367](https://cwe.mitre.org/data/definitions/367.html), a
+time-of-check to time-of-use race), for two reasons. The digest was taken by
+re-reading the file after the write, so it described whatever the file held
+at that later moment. And `gh` opened the path only after the check had
+passed: the #1551 shim runs in between — a bash process that forks `realpath`
+and `stat` and reads `/proc` — and only then does the real `gh` start and open
+the file. A process running as this same user (#1517 D5) that watches the file
+can rewrite it in that gap. Mode and owner cannot stop that process, and no
+check made on a path can close a window that ends when another program opens
+it.
+
+Bytes in the gate's variable are not reachable that way. What remains is the
+gate's own memory, which a process running as this user can reach only by
+debugging the gate (`ptrace`, `/proc/<pid>/mem`) where the host allows it.
+That is true of every value the gate holds, the head SHA included, and it is
+not something a file-level check could close either.
+
+Three details keep the pipe from failing open:
+
+- The body is extracted into `MERGE_BODY` **before** the pipe, at section 5b,
+  and `jq`'s own exit status decides. The capture runs under `pipefail` and
+  appends its `x` only when the whole pipeline succeeded, so a `jq` that fails
+  part-way leaves `MERGE_BODY` empty and blocks the merge as an unreadable
+  body. `jq` is never piped straight into `gh`: there, a `jq` failure would
+  hand `gh` an empty body and the merge would go ahead.
+- The status the gate acts on is `gh`'s, `${PIPESTATUS[1]}`. Under `pipefail`,
+  `$?` is the rightmost non-zero status in the pipeline, so a `printf` that
+  failed after `gh` had merged would report a merge that happened as one that
+  failed.
+- The #1551 shim reads nothing from standard input on the `pr` path and ends
+  in `exec "$REAL_GH" "$@"`, so the body reaches the real `gh` unchanged, and
+  `gh` on the right of a pipe is still a direct child of the gate
+  (`T3-gate-stdin` in the #1551 suite).
+
+`gh` reads the whole of standard input before it calls the API (`-F,
+--body-file`: "use `-` to read from standard input", [`gh pr
+merge`](https://cli.github.com/manual/gh_pr_merge)), and sends it as the
+GraphQL `commitBody`.
+
+#### Where the derivation lives
+
+The derivation is `autodrive_merge_message.sh`, sourced by the gate from
+`GATE_HOME` and from nowhere a pull request could populate. It exists for the
+same reason `autodrive_followups_check.sh` does: the gate stands at the
+400-line brick budget, no tool is allowed to exceed that budget, and the new
+logic has to live in a second file. The precedent is the reason, not the
+arrangement — `autodrive_followups_check.sh` is sourced by
+`autodrive_followups.sh`, which the gate runs as a subprocess, whereas this
+file is sourced by the gate itself. The file defines functions and has no
+top-level side effect, so sourcing it twice is safe.
+
+The split follows responsibility, not only line count: composing the message —
+subject, SHA prefix and body alike — is the module's whole contract, and what
+stays in the gate is the decision and the pipe. `autodrive_merge_body` sets
+`MERGE_BODY` rather than printing, because a caller capturing printed output
+with `$(...)` would lose every trailing newline. `autodrive_merge_record` is
+the one function there with a side effect, writing the record to the path the
+gate hands it. Neither chooses a path or emits a blocker; the gate owns where
+state lives and what a refusal means. That is also why its `GATE_FILES` entry
+matters rather than being a formality: a helper the gate *sources* runs with
+the gate's own authority, and this one writes into the state directory the
+merge decision is read from. Sourcing adds no process boundary, so the `gh`
+shim still sees the gate itself as the parent of the merge it permits, and
+neither the shim nor the pre-tool-use hook changes
+([#1551](#merges-outside-the-gate-are-refused-1551)).
+
+The two failures are reported apart — `autodrive_merge_body` failing is an
+unreadable body, `autodrive_merge_record` failing is a record that was not
+written — because they send an operator to different places: the first is a
+platform read that came back malformed, the second is the filesystem under
+the state directory. The gate suppresses `jq`'s own diagnostic so that its
+blocker is the single operator-facing message. The body is read before
+anything is written, so a write failure is never reported as a read failure.
+
+#### What blocks
+
+| Condition | Outcome |
+| --- | --- |
+| `jq` not installed | blocker, naming `jq`: `jq is not installed, so the title and body of pull request #N cannot be read for the squash message` |
+| `jq` fails on the pull request metadata | blocker |
+| `.title` absent, or JSON `null` | blocker |
+| `.title` empty or whitespace-only | blocker: every pull request has a title, so an empty one means the read is wrong |
+| `.title` longer than 1024 characters once control characters are stripped, as `${#subject}` counts them | blocker: a sanity bound, well above GitHub's own 256-character title limit |
+| `.body` key absent from the object | blocker: a malformed read, not an empty body |
+| `.body` present but neither a string nor `null` | blocker |
+| `.body` longer than 65,536 bytes | blocker: GitHub's own limit on a pull request body, the same kind of sanity bound as the 1024 characters on the title |
+| `jq` exits non-zero while extracting the body, whatever it printed first | blocker: the body is unreadable |
+| `.body` JSON `null` | normalised to the empty string; not a blocker |
+| `.body` `""` | an empty body on standard input and an empty record; not a blocker |
+| `.body` with a line starting `<!-- merge-ready-report` or `## Merge readiness` | cut before that line, with the blank lines before it; `report_cut=yes`; not a blocker |
+| `.body` that is only the merge-ready report | an empty body on standard input; `report_cut=yes`; not a blocker |
+| no `--state-dir`, or a state directory that is not private to this user | blocker |
+| the first 12 characters of the head SHA are not lowercase hex | blocker |
+| the record cannot be written, or a path already there cannot be replaced | blocker: the message is written down before anything is merged |
+
+A criterion the gate cannot read never merges, and the message is held to the
+same rule: `pull request #N title is unreadable; a criterion we cannot read
+never merges`.
+
+Before the merge runs, section 9 checks the argv once more: the element count,
+every literal by position, element 10 equal to `-`, and a non-empty subject.
+On the code as written that refusal cannot fire — the argv is a literal and
+section 5b blocks every way the subject could be empty — so it is there for
+the edit that would break one of those, and its message names both classes:
+an argv that is not the fixed eleven-element list, and an empty subject. It no
+longer looks at any file, because nothing it could check about a file would
+still hold when `gh` read it.
+
+#### The message record
+
+The body is also written to `<state-dir>/merge-message-<pr>-<sha12>.txt`, as
+the record of what this run commits. It is **not** an input: the gate pipes
+the body to `gh` from `MERGE_BODY`, and neither the gate nor `gh` reads the
+file back, so a process that rewrites it changes what the record says and
+nothing that lands on the base branch. The commit GitHub creates is the
+authoritative record; this one exists so that what the gate would commit can
+be read off disk on a dry run and on a run that ends `NOT_MERGED`. It is no
+more tamper-evident than the evidence bundle beside it.
+
+It is still written carefully, because it is the pull request's text at a
+deterministic name. It takes the discipline the evidence bundle already uses —
+`umask 077` and an unconditional `rm -f` of the path first — and adds `set -C`,
+which the bundle does not use. The gate runs as the user whose files a planted
+symlink would point at, so following one would write a pull request body over
+an arbitrary file of theirs: the `rm -f` removes a symlink or a stale record
+from an earlier round, `set -C` (O_EXCL) refuses anything that appears at the
+path after it, and mode `0600` keeps the author's text private on a shared
+host. The name embeds the head SHA's first 12 characters, so a record left by
+an earlier round is never mistaken for this one's. `<pr>` is already validated
+as digits during argument parsing, before section 0, and the SHA fragment as
+lowercase hex, so the path cannot escape the state directory.
+
+The record is written only when `--state-dir` was given explicitly and
+`autodrive_private` accepts the directory. Without that the body would land in
+`${TMPDIR:-/tmp}` at a predictable path; that is where the evidence bundle
+goes, and it is not where a pull request body belongs. In practice this adds
+no new requirement, because the crusty criterion already blocks a gate run
+without a private `--state-dir`. It is checked again where the record is
+written so that the ordering is explicit rather than incidental.
+
+The record is written on the dry-run path and on runs that end `NOT_MERGED`
+too, and it is never deleted. Records accumulate in the state directory at
+mode `0600` inside a `0700` directory, one per pull request and head SHA.
+
+Standard input rather than `--body` keeps the body out of the argv and out of
+the environment, so it does not appear in `ps`, and it keeps the dry-run line
+and the argv self-check short and readable rather than dumping up to 65,536
+bytes to stderr. The body's content reaches neither stderr nor the evidence
+bundle. One evidence line records what was composed, quoting the subject so
+its extent is legible, counting the bytes that go to `gh`, and saying whether
+a merge-ready report was cut off:
+
+```
+squash_message merge_subject="docs: record main's required CI checks (#2198)" body_record=/…/merge-message-2198-23008e4d1f2c.txt body_bytes=1731 report_cut=no
+```
+
+That line is added before section 8 writes the bundle, so the text that would
+be committed is part of the pre-merge record on every path. The evidence
+bundle is the durable record, and it is where quoting earns its keep.
+
+The two places that echo the argv — the dry-run line and the pre-merge line
+at section 9 — keep the existing `${MERGE_ARGV[*]}` join and print the
+subject undelimited, like every other element. That join has never marked
+element boundaries: `$PR` and `$HEAD_SHA` run into their neighbours in the
+same way. It shows the argv, and changing it for the subject alone would make
+the printed line disagree with the array the self-check compares. What stops
+a subject from forging a line in either place is the control-character
+stripping, not quotation marks: a subject cannot contain a newline, so it
+cannot become a second line of output anywhere. Both lines then say that the
+body goes in on standard input and where its record is:
+
+```
+AUTO_DRIVE_MERGE: DRY_RUN — would run: gh pr merge 2198 --squash --delete-branch --match-head-commit 23008e4d… --subject docs: record main's required CI checks (#2198) --body-file - (body on stdin; a copy is in /…/merge-message-2198-23008e4d1f2c.txt)
+```
+
+#### Limitation: an empty pull request body (#2263)
+
+An empty pull request body gives `gh` an empty body on standard input,
+intended as an explicit empty commit body. If GitHub instead falls back to its
+default message for an empty `commitBody`, such a pull request would merge
+with the concatenated commit messages this change exists to avoid;
+`body_bytes=0` in the evidence is how that case is recognised afterwards, and
+#2263 is where it is settled. Every pull request this workflow builds has a
+body, so the case arises for one handed in through `pr_number`, and for a body
+that is nothing but the merge-ready report, which the cut leaves empty
+(`body_bytes=0 report_cut=yes`).
+
+#### Premise: GitHub adds no `Co-authored-by` lines to a supplied body (#2263)
+
+This change rests on a premise: when `gh pr merge` hands GitHub an explicit
+subject and body (GraphQL `commitHeadline` and `commitBody`), GitHub commits
+that text and adds no `Co-authored-by:` lines of its own for the branch's
+commit authors. If the premise is false, the gate keeps trailers written
+*inside* commit messages off `main`, but not the lines GitHub writes for
+commit *authors*. Landed commits in this repository support the premise. No
+controlled probe has been run, and nothing in this change checks it on a
+merge. #2263 is where the gate starts checking it.
+
+The second kind is what the merge owner asked about. software-factory #321
+merged with GitHub's default squash message, and one of its branch commits
+was authored by `Fixture <fixture.invalid>`, a test fixture's identity. No
+commit message carried a trailer for it; GitHub wrote the author into the
+default message, so `main` gained `Co-authored-by: Fixture <fixture.invalid>`.
+This repository's `main` shows the same: `489576dd6b32` (#2241) and `2951181459e2`
+(#2288) both end with `Co-authored-by: qa <qa@example.invalid>`. In #2288
+that author's only commit is a merge of `main` into the branch. GitHub leaves
+merge commits out of the concatenated message but still credits their
+authors.
+
+What GitHub's documentation says, read on 2026-11-12:
+
+- **For the premise.** The GraphQL reference describes `commitBody` as "Commit
+  body to use for the merge commit; if omitted, a default message will be
+  used." The read-only field `PullRequest.viewerMergeBodyText(mergeType:
+  SQUASH)` ("The merge body text for the viewer and method") returns the
+  default body, and the `Co-authored-by:` lines are part of that text. Read
+  for this pull request (#2262), it ends with three of them, one per commit
+  author other than the account that would merge. So the lines live in the
+  default body, which a supplied body replaces.
+- **For the premise, indirectly.** Kodiak, a merge bot, has an
+  `include_coauthors` option: "If a PR includes commits authored by other
+  users, add those users as coauthors to the pull request." It applies only
+  when Kodiak supplies the pull request body as the commit body, which
+  suggests a supplied body loses the co-authors unless the bot adds them back.
+- **Against it.** GitHub's changelog of 2019-12-19: "Now, we will
+  automatically credit every commit author in the pull request as a co-author
+  on the squash commit." It names no exception for a supplied message. The
+  REST reference describes `commit_message` as "Extra detail to append to
+  automatic commit message." `gh` uses the GraphQL mutation, not that REST
+  endpoint, but the two may share server-side behaviour.
+
+What landed commits on `main` show. This was read from `git log` and the
+pull requests' commit lists on 2026-11-12, without merging anything. Of the
+913 first-parent commits up to `489576dd6b32`, 39 are squash commits from
+branches with two or more non-merge commits whose body is not GitHub's
+`* `-prefixed concatenation. In 22 of them, a commit author other than the
+squash commit's own author appears nowhere in the message. Four were checked by hand.
+Their landed body is neither the concatenation nor the pull request's
+description, so it was supplied at merge:
+
+| Squash commit | Merged | Branch commits authored by | `Co-authored-by` for them |
+| --- | --- | --- | --- |
+| `cb915faf8553` (#1003) | 2026-07-25 | `amplihack-agent <agent@amplihack.local>`, all nine | none |
+| `034e92b9ad9c` (#1053) | 2026-07-26 | `Ubuntu <azureuser@deva….internal.cloudapp.net>`, both | none |
+| `ff3441a99d07` (#1100) | 2026-07-28 | `Ryan Sweet <ryan@simard.dev>`, all three non-merge commits | none |
+| `e080a9d80c79` (#650) | 2026-05-19 | `Copilot <223556219+Copilot@users.noreply.github.com>`, both | none |
+
+#1003 and #1053 are the merge owner's case in everything but name: identities
+that belong to no GitHub account authored every commit on the branch, and
+neither reached `main`. The control is `851b10566189` (#1117). It was merged
+with GitHub's default message on the same day as #1100, by the same account,
+from commits by the same `Ryan Sweet <ryan@simard.dev>`, and it ends
+`Co-authored-by: Ryan Sweet <ryan@simard.dev>`. So in July 2026 GitHub
+credited that author when it composed the message and did not when it was
+handed one.
+
+Two limits on that evidence. A commit does not record whether its body came
+through `gh pr merge` or through the web form with the text edited; either way
+GitHub was handed a body and added nothing to it. And these merges are months
+old; GitHub could change the behaviour without notice.
+
+What cannot check it: the contract suite. Its `gh` is a stub that records the
+argv and standard input and composes nothing, and the gate and
+`autodrive_merge_message.sh` read no commit author. So
+`MSG-fixture-author-no-coauthor` shows one property only. A head commit
+authored by `Fixture <fixture.invalid>` gets the same composed message as the
+same pull request with the head commit authored by `t`, and that message has
+no `Co-authored-by` line. It says nothing about what GitHub adds.
+
+Where it gets checked next:
+
+- **The landed commit, #2263.** #2263 adds the read of the landed commit
+  message to section 10, which tests this premise and the empty-body one on
+  every merge. Until then, check by hand the first merge the released gate
+  makes from a branch with a second commit author.
+- **A controlled probe, not run.** On a throwaway repository, make a branch
+  with two commits by two different authors, one of them `Fixture
+  <fixture.invalid>`. Run `gh pr merge --squash --subject s --body-file -`
+  with a known body on standard input, and read the landed message with `git
+  log -1 --format=%B`. The workflow that produced this change refuses `gh pr
+  merge` and the merge API outside the gate, so it could not run it. Whoever
+  runs it records the date and the result here.
+- **Not this pull request's own merge.** #2262 is merged by the gate
+  installed from `main` before this change, which supplies no message. Its
+  squash commit will carry GitHub's default, `Co-authored-by` lines included,
+  and says nothing about a supplied body.
+
+If the premise holds, GitHub drops the correct co-authors along with the
+wrong ones; #2269 tracks that. If it stops holding, this section and
+`SKILL.md` must say that fixture identities still reach `main` through their
+authorship.
 
 ## Expected checks at the head (#2186)
 
@@ -4218,35 +4677,254 @@ the run when the PR is merged outside the gate.
 
 ## Exit code 79 is terminal
 
-Exit `79` and `BLOCKED_TERMINAL` are final answers from a structural guard
-(#1327 / #1332), not infrastructure hiccups. Every child invocation is checked
-for them; when one appears the loop stops, surfaces the refusal, and exits `79`
-itself so a parent sees a policy refusal rather than a generic failure. It is
-**never** retried into — not at a deeper level, and never with a raised
-ceiling.
+Exit `79` is the final answer from a structural guard (#1327 / #1332), not an
+infrastructure hiccup. Every child the loop starts is checked for a refusal;
+when one is found the loop stops, surfaces it, and exits `79` itself so a
+parent sees a policy refusal rather than a generic failure. It is **never**
+retried into: not at a deeper level, and never with a raised ceiling.
 
-A log line that only quotes the refusal is not one. Agent output reaches a
-round log as `[HH:MM:SS] [amplihack:...]` lines, and crusty's review of PR #1520
-quoted `BLOCKED_TERMINAL orchestration_unavailable: depth 4 of max 3` in its
-verdict. `terminal_refusal` in `autodrive_loop.sh` drops those lines, then
-looks for the guard's own `BLOCKED_TERMINAL orchestration_unavailable` text;
-reading any `BLOCKED_TERMINAL` as a refusal ended the loop on a review that
-merely discussed one.
+### Not every failure is terminal (issue #1437)
 
-`terminal_refusal()` and the loop-health evidence collector both remove text
-that comes from inputs before their text checks (#1510). They cut the log at
-the runner's run summary header (`Recipe: <name>` then `Run ID:` or
-`Status:`), because the summary's `Steps:` block reprints each step's output,
-agent prose included, unprefixed at column 0. Then, with one ERE, they drop
-agent lines and the runner's `amplihack.recipe.log_pointer {...}` lines,
-which echo the run's `task_description`. A log_pointer `exit_code` of 79 is dropped with its
-line on purpose, because the round's own exit code is the structural signal.
-The collector's token check, like `terminal_refusal()`'s,
-requires the full `BLOCKED_TERMINAL orchestration_unavailable` marker. The
-round log is handed to it through `autodrive_round_tail.sh`, which drops the
-partial first line of the 20000-byte tail and keeps the summary header when
-a long summary would push it out of the window. See
-[Agent output lines are not refusals](loop-health-evaluator.md#agent-output-lines-are-not-refusals).
+A round log is a transcript, not a verdict. It holds every file the round's
+agents read and every refusal a *descendant* received and then handled inline,
+as the refusal's own text instructs ("complete this step inline and return
+your result"). Driving PR #1416, the merge-ready builder committed and pushed
+`9d521815`, then lost its Copilot session to `Execution failed: 400 The
+resource you requested was not found.` The nested recipe reported that
+correctly as exit `1`; the loop reported `exit 79 terminal policy refusal` and
+stopped the run permanently, because the transcript mentioned the guard.
+
+**Trust model.** Only two things decide whether a child was refused: its exit
+status, and the last failure-class marker the recipe runner wrote to its log.
+The marker is read only when the child **failed** (a non-zero integer exit
+status): a child that exited `0` is never terminal, whatever its log contains.
+Transcript text never decides, whatever it says and whatever its line prefix.
+
+#### What makes a child terminal
+
+`terminal_refusal <rc> <log>`, defined in
+[`autodrive_refusal.sh`](#autodrive_refusalsh), returns `0` (terminal) in
+exactly two cases, checked in this order:
+
+| Order | Condition | `TERMINAL_WHY` |
+| --- | --- | --- |
+| 1 | `<rc>` is the string `79`. Checked first, before the log is opened. | `exit 79` |
+| 2 | `<rc>` is a non-zero integer, and the **last** line of `<log>` that begins with `amplihack.recipe.failure_class ` has `"structural_refusal": true`. When `<rc>` is `0`, empty or not an integer the log is never opened. | `structural_refusal in failure_class marker` |
+
+Everything else is an ordinary failure. These logs do not stop the loop when
+the child exits `1`:
+
+```text
+[12:04:51] [amplihack:builder] the child printed BLOCKED_TERMINAL orchestration_unavailable: depth 4 of max 3
+BLOCKED_TERMINAL orchestration_unavailable: depth 4 of max 3
+the guard said "BLOCKED_TERMINAL orchestration_unavailable: depth 4 of max 3"
+amplihack.recipe.failure_class {"class":"work","structural_refusal":true}
+amplihack.recipe.failure_class {"class":"agent_api","structural_refusal":false}
+```
+
+The fourth line is a forged marker. The runner's own marker follows it, and
+the last marker wins. `<rc>` is compared as a string, so an empty or
+non-numeric `<rc>` is not `79`, never reaches shell arithmetic and never reads
+the marker.
+
+The recipe runner sets [`structural_refusal`](transient-failure-retry.md#the-structural_refusal-field)
+only when the failed step's terminating error header records exit `79`. For
+an in-process `type: recipe` step, such as `autodrive-merge-loop` inside
+`auto-drive-to-merge`, that is the header of the first failed step the
+runner lists for the sub-recipe
+([Sub-recipe steps](transient-failure-retry.md#sub-recipe-steps)).
+Captured guard phrases can describe a descendant refusal already handled
+inline; they never establish this step's terminating cause. This decision is
+retained before diagnostic evidence is truncated. The runner's stderr tail and run status
+never set it, and a run that produced no structured result always has
+`false`. The shell parser requires a JSON boolean: the string `"true"` does
+not set the refusal flag. The runner writes its marker when the run fails,
+prints its result table to stdout, and then writes the same marker again as
+its last line. The table shows each step's output, and a multi-line output
+can put any text at the start of a line, so the second copy makes the runner's own marker
+the last one. In a log that holds several markers (a nested run writes its
+own) the last one is therefore the outermost runner's. Exit-79 paths in the
+runner write no marker; condition 1 covers them. A run that succeeds writes no
+marker of its own either, so the last marker in a successful child's log is a
+nested run's, forwarded unchanged, or a forged one. That is why condition 2
+needs a non-zero exit status: when a descendant was refused and the parent
+handled the step inline and exited `0`, the round continues.
+
+#### The three call sites
+
+`autodrive_loop.sh` calls `terminal_refusal` after every child it starts:
+
+| Site | Log passed | Terminal | Ordinary failure (non-zero, not terminal) |
+| --- | --- | --- | --- |
+| `--before-round` step | `BEFORE_LOG` | `TERMINAL_POLICY_REFUSAL`, exit `79` | `BEFORE_ROUND_FAILED`, exit `1`, with no `INFO:` line; the summary is in the reason and the round does not run. A quoted refusal with exit `1` ends here, not with `79`. |
+| Round | `LOG` | `TERMINAL_POLICY_REFUSAL`, exit `79` | `INFO:` line; the round record is read as usual and `child=<summary>` joins the round's history line. |
+| Loop-health evaluator | `HEALTH_LOG` | `TERMINAL_POLICY_REFUSAL`, exit `79` | `INFO:` line; the verdict is read as usual, and an unreadable verdict is `STUCK`. |
+
+The other stops keep their places around this check. A round or evaluator
+that exited `75` stops as `ORPHANED` before it
+([How the loop treats exit 75](#how-the-loop-treats-exit-75)). A failure that is
+not a refusal but whose marker says `usage_limit` stops as `USAGE_LIMIT` right
+after it ([Usage limits are not STUCK](#usage-limits-are-not-stuck)); the
+before-round step then also checks the usage budget. The `INFO:` line and the
+`child=` summary are only for the failures left after those. In the crusty
+loop the evaluator is started by `amplihack orch helper
+autodrive-completion-dispatch` (#2336), which reports
+`TERMINAL_POLICY_REFUSAL` and exit `79` by the same two conditions, so the
+loop's check on `HEALTH_LOG` agrees with it.
+
+The refusal names the condition that fired, in place of a fixed "exit 79":
+
+```text
+ERROR: terminal policy refusal from round-2 (structural_refusal in failure_class marker) (#1327/#1332). Final: the guard is never retried into.
+```
+
+An ordinary failure is reported and left to `loop-health-evaluator`:
+
+```text
+INFO: round-1 child failed: rc=1 class=agent_api retryable=false signal=execution failed: 400; not a policy refusal, continuing
+```
+
+A failed evaluator run is reported the same way, and its verdict is then read
+as usual:
+
+```text
+INFO: loop-health-evaluator child failed: rc=1 class=unknown retryable=unknown; not a policy refusal, reading its verdict
+```
+
+The round's history line, which the evaluator reads, carries the same summary:
+
+```text
+round-1: crusty_verdict=CONCERNS rc=1 findings=2 child=rc=1 class=agent_api retryable=false signal=execution failed: 400
+```
+
+The loop's own exit status is `79` whichever condition fired, and the
+`loop_result` is `TERMINAL_POLICY_REFUSAL`.
+
+#### `autodrive_refusal.sh`
+
+`amplifier-bundle/tools/autodrive_refusal.sh` is sourced, never executed. It
+has mode `0644`, defines functions only, and does not change shell options.
+`autodrive_loop.sh` sources it from its own directory (`LOOP_HOME`) right after
+`autodrive_state.sh`, never from the tree under review, the working directory
+or `PATH`, so the pull request being driven cannot supply its own verdict. If
+the file is missing the loop refuses to run without the check:
+
+```text
+ERROR: autodrive_loop.sh: autodrive_refusal.sh is missing beside it (/home/me/.amplihack/amplifier-bundle/tools); a refusal could not be told from a failure
+```
+
+and exits `2`.
+
+| Function | Prints | Returns |
+| --- | --- | --- |
+| `classify_child <log>` | The last line of `<log>` that begins with `amplihack.recipe.failure_class `, or nothing. Also sets `CHILD_FAILURE_CLASS`, `CHILD_FAILURE_RETRYABLE`, `CHILD_FAILURE_SIGNAL` and `CHILD_STRUCTURAL_REFUSAL`, cleaned, in the calling shell. | Always `0`. |
+| `terminal_refusal <rc> <log>` | Nothing. Sets `TERMINAL_WHY`. | `0` when `<rc>` is `79`, or when it is a non-zero integer and the last marker says `structural_refusal: true`; `1` otherwise. |
+| `child_failure_summary <rc> <log>` | `rc=<n> class=<class\|unknown> retryable=<bool\|unknown>`, followed by ` signal=<signal>` when the marker has one. | Always `0`. |
+
+The marker line is found with `grep -a` on the literal prefix at the start of a
+line and `tail -n 1`; the log is never read whole into a variable. A missing or
+unreadable log means no marker. Fields are read with
+`"${AMPLIHACK_BIN:-amplihack}" orch helper extract-json --require-field` and
+`extract-field`, the same helpers as every
+[structured verdict](#structured-verdicts); if they fail, the fields are
+empty. No function reads the transcript's free text, and none uses `eval`.
+
+Every field is cleaned before it is used:
+
+| Field | Kept when | Otherwise |
+| --- | --- | --- |
+| `structural_refusal` | It is exactly `true` or `false`. Only `true` is terminal. | Empty, so not terminal. |
+| `class` | It matches `^[a-z_]{1,32}$`. | `unknown` |
+| `retryable` | It is exactly `true` or `false`. | `unknown` |
+| `signal` | Always, with bytes `0x00`–`0x1F` and `0x7F` removed and the rest cut to 120 bytes. | Empty. |
+
+So a hostile log cannot add a history row, write terminal escape sequences or
+break the escalation JSON. `escalate` also removes `"`, `\` and control
+characters from its reason, so its JSON line always parses.
+
+```bash
+. amplifier-bundle/tools/autodrive_refusal.sh
+printf '%s\n' \
+  'amplihack.recipe.failure_class {"class":"agent_api","signal":"execution failed: 400","retryable":false,"structural_refusal":false}' \
+  > /tmp/round-1.log
+if terminal_refusal 1 /tmp/round-1.log; then echo "terminal: $TERMINAL_WHY"; else echo "not terminal"; fi
+# not terminal
+child_failure_summary 1 /tmp/round-1.log
+# rc=1 class=agent_api retryable=false signal=execution failed: 400
+if terminal_refusal 79 /tmp/round-1.log; then echo "terminal: $TERMINAL_WHY"; else echo "not terminal"; fi
+# terminal: exit 79
+classify_child /tmp/round-1.log >/dev/null
+echo "$CHILD_FAILURE_CLASS $CHILD_FAILURE_RETRYABLE"
+# agent_api false
+```
+
+Call `classify_child` directly, as above. Inside `$( )` it runs in a subshell
+and the `CHILD_FAILURE_*` variables never reach the calling shell.
+
+#### Limits
+
+For the loop's own children (the `--before-round` step, the rounds and the
+loop-health evaluator), the cases below can stop a run that should have
+continued, but none can hide a refusal. Exit `79` is checked first, and a
+marker field can only push the decision toward stopping. None of those
+children reaches the sub-recipe case below: `autodrive-merge-round` runs its
+sub-recipe `autodrive-merge-evidence`, and that sub-recipe starts no `recipe
+run`.
+
+- **A forged marker stops the loop when the child dies before the runner
+  writes its own.** A line that begins `amplihack.recipe.failure_class ` with
+  `"structural_refusal": true`, printed by a step that is then killed, or that exits
+  through the runner's error path or another path that writes no final
+  marker, is the last marker in the log. The
+  loop stops and escalates to a human. Reading the marker from a dedicated
+  file that only the runner writes would close this gap (issue #2489).
+- **A marker that cannot be parsed is not terminal.** If the marker is
+  malformed, or the `amplihack` binary that reads its fields is missing or
+  broken, every field is empty and the child classifies as `unknown`, not
+  terminal. Exit `79` stays the authority for a real refusal.
+
+One layer up, a supervisor that runs `auto-drive-to-merge` (or
+`auto-drive-light`) as its child and calls `terminal_refusal` on it gets a
+narrower guarantee. That child exits `1`, not `79`, when one of its loops is
+refused: the loops are in-process `type: recipe` steps, and the runner reports
+the loop's `exit 79` inside its sub-recipe envelope. The runner decodes that
+envelope, so the marker has `"structural_refusal": true` and the supervisor
+stops. The decoder reads only the **first** failed step the sub-recipe lists,
+because later lines in the envelope can be that step's stderr. So:
+
+- **A refusal after a non-fatal failure in the same sub-recipe is not seen.**
+  If a sub-recipe's first failed step was non-fatal (`continue_on_error` or
+  `fatal: false`) and a later step exited `79`, the marker has
+  `"structural_refusal": false`, and the supervisor reports an ordinary
+  failure. No shipped auto-drive loop recipe has a non-fatal step before its
+  exit-79 step. If the failed step's evidence quotes
+  `BLOCKED_TERMINAL orchestration_unavailable`, the runner still does not
+  retry the run mechanically
+  ([Quoted guard text vetoes a retry](transient-failure-retry.md#quoted-guard-text-vetoes-a-retry)).
+  The runner reporting each step's exit code as a number would close this
+  (issue #2490).
+
+The loop-health evaluator uses the same helper against the current child's
+exit status and last marker. Quoted guards, textual exit-code references and
+markers in accumulated history cannot force its terminal-refusal path.
+
+Contract tests, run by CI: `tests/issue_1437_autodrive_refusal.sh` calls the
+helpers directly, `tests/issue_1437_autodrive_loop.sh` runs the loop end to
+end with the shipped collector, resolver and enforcement commands on the API
+recovery case (only the model assessment is supplied), and
+`crates/amplihack-cli/tests/issue_1437_final_marker.rs` checks that the runner's own marker is the last one in a log.
+
+Before #1437, `terminal_refusal()` in `autodrive_loop.sh` and the evidence
+collector read text as well (#1510): they cut the log at the runner's run
+summary header, dropped agent and `amplihack.recipe.log_pointer` lines, and
+then looked for `BLOCKED_TERMINAL orchestration_unavailable`. That pass is
+gone from both. Any text a round read or quoted could still land outside the
+filters, which is what #1437 was. `log_body` in `autodrive_escalate.sh`
+keeps the same cut and line filter for the usage-limit check only (see
+[How the loop recognises a usage limit](#how-the-loop-recognises-a-usage-limit)).
+The crusty loop's completion dispatch (`autodrive-completion-dispatch`,
+#2336) classifies the evaluator it runs by the same two signals. See
+[Round text never decides a refusal](loop-health-evaluator.md#round-text-never-decides-a-refusal).
 
 ## Orphaned rounds
 
@@ -4368,9 +5046,9 @@ is missing.
 
 1. `<rc>` is not `0`. A run that exits `0` is never a usage limit, whatever
    its log says.
-2. After the same cut and exclusions as `terminal_refusal()` (the runner's
-   run summary, agent output lines `[HH:MM:SS] [amplihack:...]` and the
-   runner's `amplihack.recipe.log_pointer {...}` lines are removed), a line
+2. After the cut and exclusions in `log_body` (the runner's run summary,
+   agent output lines `[HH:MM:SS] [amplihack:...]` and the runner's
+   `amplihack.recipe.log_pointer {...}` lines are removed), a line
    starts at column 0 with `amplihack.recipe.failure_class ` followed by a
    JSON object.
 3. That object's **top-level** `class` is `usage_limit`. With `jq` on
@@ -5671,6 +6349,7 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `amplifier-bundle/recipes/autodrive-merge-loop.yaml` | phase 3 | Loop driver + merge gate + bookkeeping. |
 | `amplifier-bundle/recipes/loop-health-evaluator.yaml` | terminator | Agentic loop-health verdict. |
 | `amplifier-bundle/tools/autodrive_loop.sh` | tool | The uncapped, agentically-terminated loop driver; writes `<loop>-records.tsv`; runs a `--before-round` step at its own depth. |
+| `amplifier-bundle/tools/autodrive_refusal.sh` | tool (sourced) | `terminal_refusal` and the child-failure summary: decides from the exit code and the runner's last failure-class marker whether a child the loop ran was a terminal refusal ([issue #1437](#not-every-failure-is-terminal-issue-1437)). Writes nothing. |
 | `amplifier-bundle/tools/autodrive_progress.sh` | tool | The [no-progress rule](#the-no-progress-rule): `record` appends a row to `<loop>-progress.tsv`; `check` compares the current round with the last row and exits `10` with `<loop>-stuck-reason.txt` written on no progress. Exits `2` on a usage error. |
 | `amplifier-bundle/tools/autodrive_budget.sh` | tool | The [usage budget](#budget-keys-and-defaults): `mark`, `add`, `totals`, `check` (exits `10` with `autodrive-budget-summary.md` written when a limit is reached) and `post` (the sanitised PR comment). All round-count comparisons live here. |
 | `amplifier-bundle/tools/autodrive_escalate.sh` | tool | `escalate`, its `usage_limit` and `budget` wordings and its [`held by:` lines](#what-held-the-round), `usage_limit_stop`, `stops_preflight` (the start-up check of the usage and progress files), `usage_add`, `progress_stop`, `budget_stop`, `post_stop` and `record_result`, which writes `<loop>-result.json`. Sourced by the loop driver. |
@@ -5680,9 +6359,10 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `amplifier-bundle/tools/autodrive_crusty_rereview.sh` | tool | The merge-ready loop's `--before-round` step: sends code commits made after the clean crusty round back to the crusty loop. |
 | `amplifier-bundle/tools/autodrive_pr_worktree.sh` | tool | Resolves the pull request's linked worktree for phases 2 and 3. Read-only apart from `git worktree add` and fast-forward-only fetches. Refuses a tip that is stale against origin. |
 | `amplifier-bundle/tools/autodrive_worktree_guard.sh` | tool | The #1528 checks: the loop preflight (launch-side recipes, review dir passes the three review-generation checks), each round's `step-00-review-dir-guard` (which also refuses a run-worktree gitlink in the review dir's index), `step-02b-review-dir-unchanged` (index stamp and check), the loop's stamp around each round and the evaluator, and the commit block's linked-worktree and head-branch check. Writes nothing. |
-| `amplifier-bundle/tools/autodrive_merge_gate.sh` | tool | Evidence gate and the fixed merge argv; runs as `/bin/bash -p`, the only process the merge guard trusts. Runs `autodrive_followups.sh check` from its own directory. |
+| `amplifier-bundle/tools/autodrive_merge_gate.sh` | tool | Evidence gate and the fixed merge argv; runs as `/bin/bash -p`, the only process the merge guard trusts. Runs `autodrive_followups.sh check` from its own directory. Composes the squash subject and pipes the body to `gh` on standard input (`--body-file -`), writing a record of it ([#2056](#the-squash-commit-message-2056)). |
 | `amplifier-bundle/tools/autodrive_expected_checks.sh` | tool | [#2186](#expected-checks-at-the-head-2186): read-only. Builds the expected check set for one head SHA and decides `ci_status`. Run, never sourced, by the merge gate and by merge-evidence step-03. A gate file, so the merge guard's mode check covers it. |
 | `amplifier-bundle/tools/autodrive_followups.sh` | tool | [#1979](#minor-findings-end-the-crusty-loop-1979): `classify` (derives `MINOR_ONLY` in crusty-round step-03), `collect` (builds the follow-up set from the round that ended the loop), `file` (one `gh issue create` per unfiled minor finding, then one comment on the plan task issue listing them), `resolve-task` (the task-id rule, #1982). |
+| `amplifier-bundle/tools/autodrive_merge_message.sh` | tool | Sourced only; no side effects. [#2056](#the-squash-commit-message-2056): reads `.title` and `.body` out of the gate's one `gh pr view` result with `jq`, composes the squash subject, sets `MERGE_BODY` to the body up to the merge-ready report for the gate to pipe to `gh`, and writes the record of that body into the private state directory. Every unreadable case, a failing `jq` included, is returned to the gate as a blocker. |
 | `amplifier-bundle/tools/autodrive_followups_check.sh` | tool | [#1979](#the-follow-up-check-in-the-merge-gate): `check` and `gate`, sourced by `autodrive_followups.sh`: the merge gate's offline follow-up check. |
 | `amplifier-bundle/tools/autodrive_finding_rules.sh` | tool | Sourced only; no side effects. The single definition of the security keyword lists, `cell()` and the minor-finding predicate, used by `autodrive_followups.sh`. |
 | `amplifier-bundle/tools/gh-merge-guard/gh` | tool | The `gh` shim that refuses a merge outside the gate ([#1551](#merges-outside-the-gate-are-refused-1551)). |
@@ -5720,6 +6400,8 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | Structural and wiring guards, brick budget, skill-invocation guard, state-directory sentence, `tests/gadugi/recipe-step-command.sh` compared with serde_yaml over every bundled recipe step, the PR-head resolver read-only guard, `autodrive_step_outputs_are_read_from_recipe_var_only` (the four [static checks](#the-static-check), with the read counts taken from this page), `autodrive_round_with_inherited_stale_tools_dir_uses_its_own` (#1607), and the contract shell suite run with inherited variables scrubbed, set to a conflicting decoy, and set to the round's own tools | `tests/integration/auto_drive_to_merge_test.rs` |
 | [The bundle guard](#the-bundle-guard) (#1561) | `crates/amplihack-cli/tests/issue_1561_step_outputs_prefer_recipe_var.rs` |
 | Where phases 2 and 3 run (issue #1528): resolver behaviour and refusals (including a local branch or worktree behind, ahead of or diverged from origin), loop `step-02` resolution and forwarding, round `step-04` commit blocks, a forced-add reproduction the guard refuses, and a commit from the pull request worktree that leaves the launch checkout's index clean | `tests/integration/autodrive_pr_worktree_tests.rs` |
+| The refusal helpers (issue #1437): `rc` compared as the string `79`, the marker never read when `rc` is `0`, empty or not an integer, transcript text never terminal, the anchored literal marker prefix, the last marker wins, cleaned `class`, `retryable` and `signal` values (including rejection of multiline classes), and a helper that is silent and leaves shell options alone when sourced | `tests/issue_1437_autodrive_refusal.sh` |
+| Terminal versus ordinary child failures, end to end (issue #1437): a quoted refusal with exit `1`, exit `79`, a `structural_refusal: true` marker, the before-round site (a quoted refusal with exit `1` gives `BEFORE_ROUND_FAILED` and exit `1`, not `79`), the evaluator site, a forged marker followed by the runner's own, exit `79` with a forged `false` marker, a signal with a newline, the last of several markers, a CLEAN round and an evaluator that exit `0` with a nested `structural_refusal: true` marker (neither is terminal), and exit `2` when `autodrive_refusal.sh` is missing | `tests/issue_1437_autodrive_loop.sh` |
 | [Merges outside the gate](#merges-outside-the-gate-are-refused-1551) (#1551): every merge form refused with exit `3` and the PR left open (T1); forged gates, a copied gate and the real gate run without `-p` refused (T2, T3); the real gate run as `/bin/bash -p` still merges (T3); pass-through of non-merge calls (T4); exit `127` cases (T5); `export -f gh`, `BASH_ENV`, a `PPID` mismatch, a non-digit depth and every non-canonical endpoint form, mixed-case `Pulls` and `Merge` included, refused (SEC); the step-01b directive and its fail-closed branches, the phase-1 `MERGED` check and the unreadable-state exit (T6); static checks (S). CI runs it in a Linux job. | `amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh` |
 | When the launcher applies the guard, idempotent `PATH` with the guard first, `no_merge` alone not applying it, the inherited marker, the fail-closed error for an unset, empty or relative `AMPLIHACK_HOME` and a missing or non-executable shim, and (Linux only) a phase-1 `autodrive-*` bash step whose `gh pr merge 1` gets exit `3` and `REFUSED` while the stub `gh` logs no merge, a login shell whose profile prepends another `gh` still resolving `gh` to the shim, the shipped `bash-env` sourcing a user `BASH_ENV` first; off Linux, a companion test shows the merge is refused | `crates/amplihack-cli/tests/issue_1551_merge_guard.rs` |
 | `guard_applies` truth table (`0` and `false` still apply it) and `locate_guard_dir` errors, a group- or other-writable shim, directory or gate file included; every `autodrive_*.sh` a gate file names outside a comment is itself a gate file (#2186) | `crates/amplihack-cli/src/commands/recipe/run/tests_merge_guard.rs` |
@@ -5730,6 +6412,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | [No-progress stop and usage budget](#no-progress-stop-and-usage-budget) (#1743): `STUCK` in code on an unchanged head and open items, no stop when either changed, when the CI signal changed or says `PENDING`, or when the round is clean, a leftover `<record>.light.json` beside the current or previous round's record exempting nothing, `BUDGET_EXHAUSTED` from each of the three limits at the pre-round, post-round and before-round check points, a relaunch with a higher limit resuming from the recorded round and one with the same limit starting no agent, the nested crusty loop counted once, `tokens` recorded as `unknown`, malformed limits and unknown keys exiting `2`, the symlink and `0600` cases, the sanitised PR comment through a stub `gh`, and the `-c` override reaching both loops. Fixture state directories, stub `amplihack`, `gh` and `git` on `PATH`, under `isolated(..)`; nothing under the real `HOME` is read or written | `crates/amplihack-cli/tests/issue_1743_autodrive_budget.rs` |
 | [Minor findings end the crusty loop](#minor-findings-end-the-crusty-loop-1979) (#1979): `classify` on all-minor, mixed, unknown-severity, missing-severity, empty and non-array input; security keywords in an id or summary kept as `CONCERNS`; severity history (a minor finding recurring as minor still `MINOR_ONLY`, a major one downgraded to minor kept as `CONCERNS`, unknown history read as major, no `.severity` file for unreadable input); crusty-loop step-03 refusing to file without `AMPLIHACK_HOME` even when `REPO_PATH` holds the tool; minor-only objective completion without evaluator dispatch; one `gh issue create` per finding naming the task id and finding id, with N rows in `followups.tsv`; a rerun making no call; `gh` exiting `1` (error recorded, gate prints `ERROR: followups-unfiled`, no merge) and `79` (passed through after one call); an unresolved task id; the task id taken from `Closes #N` in the PR body; two JSON arrays on stdin, or a `concerns` string holding a minor and a blocking array, kept as `CONCERNS`; a `jq` parse failure logged with its exit code; mentions, `#N` and `GH-N` references neutralised in the body and the title; a title with shell metacharacters reaching `gh` as one argument, with `&`, `|` and backticks kept as plain characters rather than HTML entities; an unparseable PR URL; a `CLEAN` drive filing nothing and passing the check; dry runs leaving the phase incomplete when required follow-ups are unrecorded; `gate` naming each filed issue in its evidence line and printing the error and blocker on a miss; `collect` reading only the terminal round; `check` refusing a symlinked or group-writable `followups.tsv`, a malformed row and `MINOR_ONLY` with no set; `autodrive_crusty_final` accepting `MINOR_ONLY`; and static checks that both `SKILL.md` copies match, the old loop-end wording is gone from the recipes, skill and reference, the 400-line budgets hold with no per-file exception, and `autodrive_followups.sh` sources the shared rules file while no light round tool exists. Stub `gh` on `PATH`, scratch under `$TMPDIR`, no network | `crates/amplihack-cli/tests/issue_1979_crusty_minor_followups.rs`, with `mod issue_1979_crusty_minor_followups;` in `crates/amplihack-cli/tests/main.rs` |
 | A minor-only round ending the loop, and a `[minor, major]` round continuing it, through the `run_loop` stub | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
+| [The squash commit message](#the-squash-commit-message-2056) (#2056): the eleven-element argv asserted exactly, element 10 the literal `-`, in the real gate and in the #1551 stand-in gate, which also merges with the body piped into `gh` (`T3-gate-stdin`) and shows the shim passing that body to the real `gh` byte for byte; the body `gh` receives — read by a stub that treats `--body-file` as the real `gh` does, stdin for `-` and the named path otherwise — equal to the pull request body byte for byte, for an ordinary body, an empty one, a JSON `null` one, one ending in a newline and one of exactly 65,536 bytes, with the record holding the same bytes; an unreadable title and an absent `body` key each ending `NOT_MERGED` with no `pr merge` line in the stub's log; a title of `--admin` — a flag this workflow never passes and which is prohibited in it — reaching `gh` at element 8 as the subject, asserted positionally, since the string is present in the argv and the claim is that no element *other* than 8 holds it; a title that already ends ` (#42)` not doubled; a dry run printing `--subject`, the composed subject, `--body-file -` and the record's path; a body quoting a complete platform-state JSON object, bare and inside a fenced block, changing no criterion the gate reads; and the two regression cases from the issue, a wrong `Co-Authored-By` trailer on a branch commit, and `Fixes #N` and `Task:` lines from a branch this one is stacked on, neither of which reaches the body `gh` receives. A third case, `MSG-fixture-author-no-coauthor`, which the Rust wrapper also requires by name, is an argv and stdin case with a different author on the fixture: the head commit is authored by `Fixture <fixture.invalid>` with a message that carries no trailer, and the composed message (the subject at argv element 8 and the body `gh` reads on stdin) is byte for byte the one composed for a control run whose head commit is authored by `t`, holds no `Co-authored-by` line, and does not name that identity. It first checks that the fixture commit really is authored that way and the control is not, so a fixture change cannot make it pass vacuously. It does not answer the merge owner's question from software-factory #321, where GitHub, composing its default message, turned a branch commit's author into `Co-authored-by: Fixture <fixture.invalid>`: the stub `gh` composes nothing, so whether GitHub adds such a line to a supplied body is outside what any case here can see ([the co-author premise](#premise-github-adds-no-co-authored-by-lines-to-a-supplied-body-2263), #2263). A host without `jq` is told so: the gate runs on a `PATH` with `jq` removed, and section 5b's blocker names `jq` rather than calling the title unreadable (`MSG-no-jq-names-jq`). The race has its own cases: the record rewritten by the stub `gh` itself as it starts — after every check the gate makes, the latest point any writer could win — with `gh` still receiving the composed body (`MSG-race-at-gh-start`), and a control in which the same stub, handed a path, commits the rewrite, so that case can fail (`MSG-race-control-path`); the record rewritten earlier, at the section 6b fetch, likewise changing nothing (`MSG-record-rewritten-before-merge`); and a `jq` that prints part of a body and then fails, which blocks the merge instead of handing `gh` a short body (`MSG-jq-failure-blocks`). The merge-ready report has five, each asserting the exact bytes `gh` receives on stdin and the `report_cut=` evidence: a report under the marker line read out of the template itself, cut at it (`MSG-report-cut-at-marker`); a report with no marker, cut at `## Merge readiness` with the blank lines before it (`MSG-report-cut-at-heading`); a CRLF body with a capitalised heading (`MSG-report-cut-crlf`); a control in which the marker and heading appear mid-line and indented and the body reaches `gh` whole (`MSG-report-mention-not-cut`); and a body that is only the report, which gives `gh` an empty body (`MSG-report-only-body`). The Rust wrapper requires the marker and heading cases by name | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh`, `amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh`, `tests/integration/auto_drive_to_merge_test.rs`. The Rust file also carries the structural assertions. Each is matched against code lines only, full-line comments removed, and `the_helper_checks_fail_when_only_the_comments_keep_the_contract` replays crusty's round-4 mutation on PR #2262 — `umask 077; set -C;` removed from the helper's code and `jq -j` changed to `jq -r`, the comments untouched — and requires those assertions to fail. They pin exactly one `gh pr view` in the gate carrying `headRefOid`, which is the pre-merge read, with `title` and `body` on that same `--json` list (the gate has a second `gh pr view` at section 10, the post-merge `state,mergedAt,mergeCommit` confirmation, so an assertion counting `gh pr view "$PR" --json` occurrences would be wrong — it must pin the `headRefOid` one); the pipe `printf '%s' "$MERGE_BODY" \| gh "${MERGE_ARGV[@]}"` with `PIPESTATUS[1]` as the merge status and no `--body-file "$…"` path; `autodrive_merge_message.sh` in `AUTODRIVE_TOOLS` and inside the brick budget; the merge-ready template's marker line and `## Merge readiness` heading being the two boundaries the helper's code matches; and both `SKILL.md` mirrors still byte-identical. They cannot see a race; the behavioural cases above are what cover it |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
 | [Criterion 6 without a required review](#criterion-6-reviews-and-approvals) (#2219): a fake `gh` returning each endpoint's post-`--jq` answer per scenario; a required count of `0` with no review rule, and an unprotected branch, still `MET` through `required-count`, including under `BLOCKED`, so a readable count decides before the merge state is consulted; a classic `0` beside a *failed* rulesets read staying `UNREADABLE`, so `REQ` is not widened; `BLOCKED` beside a code-owner, last-push or required-reviewer rule as `NOT_MET` with `review-rule`; `BLOCKED` with no rule named, and a `DRAFT` merge state, as `UNREADABLE` with `unreadable`; a failed `gh pr view`, a `reviewDecision` the tool does not know (even beside a readable count of 2), and an `UNKNOWN` merge state with the count unreadable, as `UNREADABLE` with `facts-unreadable`; an `UNKNOWN` merge state beside a *readable* count still decided by that count; `CLEAN`, `HAS_HOOKS` and `UNSTABLE`, and every agent-clearable blocker, winning over a named review rule; no reclassified case reaching `MET`; and `approval_blocker` carrying the id for each source, empty only on `MET`. No `jq`, no timers | `amplifier-bundle/recipes/tests/test-issue-2219-approval-no-review-required.sh` |
 | [Documentation-only pull requests](#documentation-only-pull-requests) (#2219): `autodrive_qa_docs_only` and `autodrive_gadugi_required` over synthetic git repositories, both sides of the predicate and both of the function that reads it: prose-only changes `true`, and `.markdown`, `.rst`, a `docs/` `.txt` and root `LICENSE`, `NOTICE`, `COPYING` with them; a `.txt` outside `docs/` and outside the root documentation names `false` (`tests/fixtures/expected.txt`, `src/templates/welcome.txt`, `fuzz/corpus/seed.txt`, `testdata/golden.txt`, `scripts/deploy.txt`), and the near-miss pin spellings `requirements-dev.txt`, `dev-requirements.txt`, `constraints-dev.txt`, `Makefile.txt` and `requirements/base.txt` `false` with them, while `README.txt`, `CHANGELOG.txt` and `CONTRIBUTING.txt` stay `true`, a `docs/` component qualifies a `.txt` at any depth and `notdocs/notes.txt` does not; a `.js`, `.json`, `.sh`, `.github/`, `.amplihack/`, `.claude/`, `.cursor/`, `AGENTS.md`, `CLAUDE.md`, `amplifier-bundle/` or `SKILL.md` path `false`; `requirements.txt`, `docs/requirements.txt`, `constraints.txt` and `CMakeLists.txt` `false`, the pin spellings under `docs/` (`docs/requirements-dev.txt`, `docs/dev-requirements.txt`, `docs/requirements/base.txt`, `docs/constraints-dev.txt`) `false` while ordinary prose under `docs/` stays `true`, with every `.txt` entry of `AUTODRIVE_ROOT_PROJECT_FILES` pinned against the predicate so the two lists cannot drift; `docs/.hidden.md` `true`, since a dot-file is not a dot-directory; `docs/conf.py` and `docs/release.js` `false`, so the `docs/` directory qualifies no extension; `README.MD` and `docs/build.SH` `false` on the byte-exact qualifier while `docs/Requirements.txt` is `false` on a case-insensitive disqualifier, the asymmetry in both directions; `vendor/LICENSE` `false`, since the licence names qualify at the root only; an empty diff `false`, and a read list holding nothing `false` on both bash 3.2 and bash 5; no base and a base that fails the branch rules `unknown`; a hostile path name that still ends `.md` measured as documentation and never executed; a Rust repository and an unresolved Node choice, so the reach is pinned too; `AUTODRIVE_QA_SCENARIO_DIR` keeping gadugi required over a `true` answer; and the qa evidence line carrying `docs_only` as its own field for all three values | `amplifier-bundle/recipes/tests/test-issue-2219-docs-only-scenarios.sh` |
@@ -5742,6 +6425,8 @@ cargo test -p amplihack --test integration merge_ready_platform_contract::
 cargo test -p amplihack --test integration autodrive_pr_worktree::
 cargo test -p amplihack --test integration issue_1714_finalization_handoff::
 bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
+bash tests/issue_1437_autodrive_refusal.sh
+bash tests/issue_1437_autodrive_loop.sh
 bash amplifier-bundle/recipes/tests/test-issue-1543-pr-head-worktree.sh
 bash amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh
 cargo test -p amplihack-cli --test cli_integration issue_1551

@@ -120,6 +120,7 @@ The runner creates one folder per run:
 │       ├── git-commands.jsonl    # index-writing git commands the run made (kept)
 │       ├── git-trace2/           # raw git events; deleted once summarised
 │       ├── recovery/             # private completions and required artifact copies
+│       ├── procs/                # one record per running attempt, for recipe stop (Linux)
 │       └── runtime/              # removed when the run ends
 │           ├── checkout/         # the run's detached worktree (git runs only)
 │           ├── tmp/              # TMPDIR, TMP and TEMP for every step

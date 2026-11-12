@@ -152,7 +152,7 @@ steps:
       # build finishing or by the status becoming unreadable — never by a
       # seconds-scale or single-digit-minute stopwatch, and never by a count.
       while :; do
-        JSON="$(gh pr checks "$PR" --json name,state,bucket 2>/dev/null)"
+        JSON="$(gh pr checks "$PR" --json name,state,bucket)"
         if [ -z "$JSON" ]; then
           echo "ERROR: CI status for #${PR} became unreadable while waiting. Unreadable is a FAILURE, not a pass." >&2
           printf '{"ci_status":"UNREADABLE","ci_total":"0","ci_pending":"","ci_failing":"","ci_signal":"unreadable"}\n'
