@@ -805,11 +805,25 @@ fn auto_switch_on_or_off_over_an_unparseable_config_is_refused_without_exclude()
     for args in [
         &["profile", "auto-switch", "on"][..],
         &["profile", "auto-switch", "off"][..],
+        &["profile", "auto-switch", "threshold", "50"][..],
     ] {
         let out = run(&f, &ep, args);
         assert!(!out.status.success(), "{args:?}: {}", describe(&out));
+        let stderr = text(&out.stderr);
         assert!(
-            text(&out.stderr).contains("exclude list is unknown"),
+            stderr.contains("exclude list is unknown"),
+            "{args:?}: {}",
+            describe(&out)
+        );
+        // The hint never advises removing the file: that drops the list
+        // and the rotator would probe and refresh the excluded logins.
+        assert!(
+            stderr.contains("hint: do not remove <root>/.auto-switch"),
+            "{args:?}: {}",
+            describe(&out)
+        );
+        assert!(
+            !stderr.contains("remove <root>/.auto-switch and run"),
             "{args:?}: {}",
             describe(&out)
         );
@@ -822,6 +836,21 @@ fn auto_switch_on_or_off_over_an_unparseable_config_is_refused_without_exclude()
         "{}",
         toggle_text(&f)
     );
+}
+
+#[test]
+fn auto_switch_off_over_an_unparseable_config_takes_the_list_and_stays_off() {
+    let (f, _ep) = fixture();
+    corrupt_config(&f);
+    f.ok(&["profile", "auto-switch", "off", "--exclude", "spare"]);
+    assert_eq!(
+        toggle_text(&f),
+        "enabled=off\nthreshold=90\nexclude=spare\n"
+    );
+    // `--exclude ''` names an empty list on purpose.
+    corrupt_config(&f);
+    f.ok(&["profile", "auto-switch", "off", "--exclude", ""]);
+    assert_eq!(toggle_text(&f), "enabled=off\nthreshold=90\nexclude=\n");
 }
 
 #[test]

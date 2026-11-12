@@ -46,6 +46,20 @@ fn config_and_invariant_hints_are_fixed() {
     );
 }
 
+/// Issue #2218: a corrupt file refused because removing it would drop its
+/// exclude list never carries the generic "remove the file" hint.
+#[test]
+fn exclude_at_risk_hint_never_advises_removing_the_file() {
+    let e = ProfileError::AutoSwitchExcludeAtRisk("x".into());
+    assert_eq!(e.to_string(), "auto-switch settings: x");
+    assert!(
+        e.hint().starts_with("do not remove <root>/.auto-switch"),
+        "{}",
+        e.hint()
+    );
+    assert!(!e.hint().contains("and run"), "{}", e.hint());
+}
+
 #[test]
 fn inherited_wrapper_keeps_the_lease_hint() {
     let e = ProfileError::Inherited {

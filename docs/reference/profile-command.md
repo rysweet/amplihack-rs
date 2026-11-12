@@ -31,7 +31,7 @@ amplihack profile login <name>
 amplihack profile run <name> -- <claude-args>...
 amplihack profile usage [--json | --summary-json | --table] [--utc] [--raw] [--spend] [--usable-session-pct <1-100>] [<name>...]
 amplihack profile auto-switch on [--threshold <1-100>] [--exclude <name,...>]
-amplihack profile auto-switch off
+amplihack profile auto-switch off [--exclude <name,...>]
 amplihack profile auto-switch status
 amplihack profile auto-switch threshold <1-100>
 amplihack profile auto-switch exclude [<name>...]
@@ -4352,7 +4352,7 @@ so a login moved while the switch was on stays protected after `off`.
 | Command | Behavior |
 |---------|----------|
 | `auto-switch on [--threshold N] [--exclude a,b]` | Writes `enabled=on`, plus the threshold and exclusions if given, and prints `auto-switch: on (threshold N%)`. If any profile's [status-line wrapper](#status-line-wrapper) is `missing` or `stale`, prints the `profiles without the wrapper` [note](#status-notes) to stderr. |
-| `auto-switch off` | Writes `enabled=off`. The threshold and exclusions are kept. Logins in running sessions are not moved; they return when each session ends. Like `auto-switch on`, appends a [`change:` line](#rotate-change-log) to the rotate log when `enabled` changes. |
+| `auto-switch off [--exclude a,b]` | Writes `enabled=off`. The threshold and exclusions are kept; `--exclude` replaces the exclusions, and is needed only when `.auto-switch` does not parse ([Unreadable exclude list](#unreadable-exclude-list)). Logins in running sessions are not moved; they return when each session ends. Like `auto-switch on`, appends a [`change:` line](#rotate-change-log) to the rotate log when `enabled` changes. |
 | `auto-switch status` | **Read-only.** Takes no lock, runs no recovery and changes nothing on disk. Prints the effective setting and where it comes from (`env`, `file`, `default` or `corrupt`), the threshold, the exclusions, whether in-session swaps are available, one row per profile (latest readings, where its login is, wrapper state), the hosted directories, an invariant line, and then any [notes](#status-notes). Prints profile names, percentages and times only. |
 | `auto-switch threshold N` | Sets the threshold, `1` to `100`. Keeps `enabled` and `exclude`. |
 | `auto-switch exclude [names…]` | Replaces the exclusion list. With no names, clears it. Each name must pass the [name rules](#name-rules); it does not have to exist (`status` lists names that do not). Keeps `enabled`, `threshold` and `overflow`. |
@@ -4503,9 +4503,9 @@ What each command writes depends on the current file:
 |------------------------|--------------|-----------------------------|
 | valid | rewrites it with the new `enabled` | rewrites it, keeping the other keys |
 | missing | creates it | creates it with `enabled=off`, defaults for the key not given |
-| corrupt regular file owned by you | replaces it; `threshold` starts from its default unless given. `exclude` keeps the file's list when it parses; when it does not parse, `on` and `off` are refused unless `on --exclude` names the list ([Unreadable exclude list](#unreadable-exclude-list)) | refused with `AutoSwitchConfig`; run `on` or `off` first |
+| corrupt regular file owned by you | replaces it; `threshold` starts from its default unless given. `exclude` keeps the file's list when it parses; when it does not parse, `on` and `off` are refused with `AutoSwitchExcludeAtRisk` unless `--exclude` names the list (`on --exclude …` or `off --exclude …`; see [Unreadable exclude list](#unreadable-exclude-list)) | refused with `AutoSwitchExcludeAtRisk`, naming the recovery: `on` or `off` first when it parses, `on --exclude …` or `off --exclude …` when it does not |
 | owned by another user | refused with `AutoSwitchConfig` | refused with `AutoSwitchConfig` |
-| owned by you, writable by group or others | replaced with mode `0600`, as for a corrupt file; its exclude list is kept | refused with `AutoSwitchConfig`; run `on` or `off` first |
+| owned by you, writable by group or others | replaced with mode `0600`, as for a corrupt file; its exclude list is kept | refused with `AutoSwitchExcludeAtRisk`; run `on` or `off` first |
 | symlink or not a regular file | refused with `AutoSwitchConfig` | refused with `AutoSwitchConfig` |
 
 A file is never written through a symlink, and a file owned by someone else
@@ -7209,15 +7209,20 @@ Rotation resumes from the first cycle that reads the file. To fix the file:
   `amplihack profile auto-switch on` or `off`. They rewrite it with mode
   `0600` and the defaults for every other setting, and keep its exclude
   list, so the logins it excluded stay excluded.
-- When it does not parse, its exclude list is unknown, and `on` and `off`
-  refuse it with `AutoSwitchConfig`:
+- When it does not parse, its exclude list is unknown, and `on`, `off`,
+  `threshold`, `exclude`, `overflow add` and `overflow remove` refuse it
+  with `AutoSwitchExcludeAtRisk`:
 
   ```
-  auto-switch config does not parse, so its exclude list is unknown; not changed. Run `amplihack profile auto-switch on --exclude NAME,...` naming the logins that must stay excluded (`--exclude ''` for none)
+  error: auto-switch settings: auto-switch config does not parse, so its exclude list is unknown; not changed. Run `amplihack profile auto-switch on --exclude NAME,...` or `off --exclude NAME,...` naming the logins that must stay excluded (`--exclude ''` for none)
+  hint: do not remove <root>/.auto-switch: that drops its exclude list, and the rotator would probe and refresh the logins it excluded; see "Unreadable exclude list" in docs/reference/profile-command.md
   ```
 
-  Run `amplihack profile auto-switch on --exclude NAME,...` with the logins
-  that must stay excluded. Writing an empty list by mistake would let the
+  Run `amplihack profile auto-switch on --exclude NAME,...` to turn
+  rotation on, or `amplihack profile auto-switch off --exclude NAME,...` to
+  leave it off, with the logins that must stay excluded (`--exclude ''`
+  names an empty list on purpose). Do not remove the file and run a bare
+  `on` or `off`: that writes an empty list just the same. Writing an empty list by mistake would let the
   next cycle probe and refresh those logins, which signs out the other hosts
   that share them.
 
@@ -10633,7 +10638,8 @@ failures use this format.
 | `InvalidSavedRoot`: `~/.amplihack/profile-root` is invalid (the message names the file and the [reason](#saved-root-file-format)), or `profile root <dir>` cannot write it safely | `fix or remove ~/.amplihack/profile-root, or run: amplihack profile root <absolute dir>` |
 | `Leased`: the profile's login is live in another profile's session | `` wait for that session to end, or run `amplihack profile auto-switch status` `` |
 | `HostsForeignAccount`: the profile's directory holds another account's login | `` wait for that session to end, or run `amplihack profile auto-switch status` `` |
-| `AutoSwitchConfig`: `.auto-switch` is a symlink or cannot be written, is corrupt when `threshold`, `exclude`, `overflow add` or `overflow remove` needs to keep its other keys, does not parse when `on` or `off` is run without `--exclude` (its exclude list is unknown; see [Unreadable exclude list](#unreadable-exclude-list)), the change would exceed 4096 bytes, or the [settings lock](#settings-file) stayed busy for 10 seconds (the message ends in `retry`; run the command again) | `` remove <root>/.auto-switch and run `amplihack profile auto-switch on` or `off` `` |
+| `AutoSwitchConfig`: `.auto-switch` is a symlink or cannot be written, is owned by another user, the change would exceed 4096 bytes, or the [settings lock](#settings-file) stayed busy for 10 seconds (the message ends in `retry`; run the command again) | `` remove <root>/.auto-switch and run `amplihack profile auto-switch on` or `off` `` |
+| `AutoSwitchExcludeAtRisk`: `.auto-switch` is a corrupt regular file of yours, and removing it would drop its exclude list. Either `on` or `off` is run without `--exclude` while it does not parse (its exclude list is unknown), or `threshold`, `exclude`, `overflow add` or `overflow remove` needs to keep its other keys. The message names the recovery: `on --exclude NAME,...` or `off --exclude NAME,...` when it does not parse, `on` or `off` when it does. See [Unreadable exclude list](#unreadable-exclude-list) | `` do not remove <root>/.auto-switch: that drops its exclude list, and the rotator would probe and refresh the logins it excluded; see "Unreadable exclude list" in docs/reference/profile-command.md `` |
 | `AutoSwitchUnsupported`: an `auto-switch` command on a platform without Unix file semantics | `auto-switch needs Linux or another Unix; leave it off` |
 | `AutoSwitchInvariant`: the state files are damaged or a login is not where the state says | `see the Recovery section of docs/howto/claude-profiles.md` |
 | `AutoSwitchInstall`: a profile's `settings.json` is a symlink, owned by someone else, not a JSON object, or cannot be written | `` fix or remove the reported file, then run `amplihack profile auto-switch repair` `` |

@@ -752,10 +752,21 @@ fn corrupt_settings_file_means_off_and_is_replaced_by_on() {
             .contains("switch: off (corrupt)")
     );
 
-    // `threshold` refuses a corrupt file; `on` replaces it.
+    // `threshold` refuses a corrupt file. So does a bare `on` while the file
+    // does not parse, since its exclude list is unknown (issue #2218);
+    // `on --exclude ''` names the list and replaces the file.
     let out = f.run_args(&["profile", "auto-switch", "threshold", "50"]);
     assert!(!out.status.success());
-    f.switch_on();
+    let out = f.run_args(&["profile", "auto-switch", "on"]);
+    assert!(!out.status.success());
+    assert!(
+        text(&out.stderr).contains("exclude list is unknown"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert_eq!(fs::read_to_string(&file).unwrap(), "x".repeat(5000));
+    let out = f.run_args(&["profile", "auto-switch", "on", "--exclude", ""]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
     assert_eq!(
         fs::read_to_string(&file).unwrap(),
         "enabled=on\nthreshold=90\nexclude=\n"

@@ -510,7 +510,12 @@ fn editable_update_refuses_a_corrupt_file_and_leaves_it() {
         Ok(())
     })
     .unwrap_err();
-    assert!(matches!(err, ProfileError::AutoSwitchConfig(_)), "{err:?}");
+    // Issue #2218: a corrupt file of yours is refused with the recovery that
+    // keeps its exclude list, not the generic "remove the file" error.
+    assert!(
+        matches!(err, ProfileError::AutoSwitchExcludeAtRisk(_)),
+        "{err:?}"
+    );
     assert!(!called, "the closure never sees a corrupt file");
     assert_eq!(file_text(root), "enabled=maybe\noverflow=cred\n");
 }
@@ -804,4 +809,55 @@ fn effective_applies_the_shared_exclude_list_to_a_corrupt_file() {
         names(&["spare", "work"]),
         "unparseable: every profile"
     );
+}
+
+/// Issue #2218: an edit that keeps the other keys refuses a corrupt file of
+/// yours with the recovery that keeps its exclude list, never with the
+/// generic "remove the file" hint.
+#[test]
+fn an_edit_over_a_corrupt_file_of_yours_names_the_recovery_that_keeps_the_list() {
+    let tmp = private_root();
+    let root = tmp.path();
+    let edit = |root: &std::path::Path| {
+        config::update(root, ReadMode::Editable, |c| {
+            c.threshold = 50;
+            Ok(())
+        })
+        .unwrap_err()
+    };
+    write_file(root, "enabled=maybe\nexclude=work\n");
+    let err = edit(root);
+    let ProfileError::AutoSwitchExcludeAtRisk(msg) = &err else {
+        panic!("{err:?}");
+    };
+    assert!(msg.contains("exclude list is unknown"), "{msg}");
+    assert!(msg.contains("off --exclude"), "{msg}");
+    assert!(err.hint().starts_with("do not remove"), "{}", err.hint());
+    assert_eq!(file_text(root), "enabled=maybe\nexclude=work\n");
+
+    write_file(root, "enabled=on\nthreshold=90\nexclude=work\n");
+    fs::set_permissions(root.join(".auto-switch"), fs::Permissions::from_mode(0o666)).unwrap();
+    let err = edit(root);
+    let ProfileError::AutoSwitchExcludeAtRisk(msg) = &err else {
+        panic!("{err:?}");
+    };
+    assert!(msg.contains("keep its exclude list"), "{msg}");
+}
+
+/// A symlinked `.auto-switch` is refused by `on` and `off` too, so it keeps
+/// the generic error and hint.
+#[test]
+fn an_edit_over_a_symlinked_file_keeps_the_generic_error() {
+    let tmp = private_root();
+    let root = tmp.path();
+    let target = root.join("elsewhere");
+    fs::write(&target, "enabled=maybe\n").unwrap();
+    std::os::unix::fs::symlink(&target, root.join(".auto-switch")).unwrap();
+    let err = config::update(root, ReadMode::Editable, |c| {
+        c.threshold = 50;
+        Ok(())
+    })
+    .unwrap_err();
+    assert!(matches!(err, ProfileError::AutoSwitchConfig(_)), "{err:?}");
+    assert!(!config::own_regular_file(root));
 }

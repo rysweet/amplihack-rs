@@ -374,8 +374,7 @@ pub fn update_within(
     let mut was = None;
     let (before, mut c) = match mode {
         ReadMode::Editable => {
-            let c = read_editable(root)
-                .map_err(|_| fail(format!("{FILE} is unreadable or invalid; not changed")))?;
+            let c = read_editable(root).map_err(|_| corrupt_refusal(root))?;
             (Some(c.clone()), c)
         }
         ReadMode::DefaultOnInvalid => match read(root) {
@@ -431,6 +430,43 @@ fn recovered(root: &Path) -> Config {
         exclude,
         ..Config::default()
     }
+}
+
+/// The refusal of an edit over a `.auto-switch` that does not parse
+/// (issue #2218): `on` and `off` without `--exclude`, and every edit that
+/// keeps the file's other keys.
+pub(crate) const EXCLUDE_UNKNOWN_REFUSAL: &str = "auto-switch config does not parse, so its \
+     exclude list is unknown; not changed. Run `amplihack profile auto-switch on --exclude \
+     NAME,...` or `off --exclude NAME,...` naming the logins that must stay excluded \
+     (`--exclude ''` for none)";
+
+/// Why an edit that keeps the file's other keys refuses a corrupt file
+/// (issue #2218). For a regular file of yours, `on` and `off` are the
+/// recovery that keeps its exclude list, so the refusal names them and never
+/// carries the generic `AutoSwitchConfig` hint, which says to remove the
+/// file. A symlink or someone else's file is refused by `on` and `off` too,
+/// so it keeps the generic error.
+fn corrupt_refusal(root: &Path) -> ProfileError {
+    if !own_regular_file(root) {
+        return ProfileError::AutoSwitchConfig(format!(
+            "{FILE} is unreadable or invalid; not changed"
+        ));
+    }
+    ProfileError::AutoSwitchExcludeAtRisk(if exclude_recoverable(root) {
+        format!(
+            "{FILE} is unsafe or invalid; not changed. Run `amplihack profile auto-switch on` \
+             or `off` first: they rewrite it and keep its exclude list"
+        )
+    } else {
+        EXCLUDE_UNKNOWN_REFUSAL.into()
+    })
+}
+
+/// Whether `.auto-switch` is a regular file (not a symlink) owned by the
+/// effective user: one `on` and `off` can replace.
+pub(crate) fn own_regular_file(root: &Path) -> bool {
+    std::fs::symlink_metadata(root.join(FILE))
+        .is_ok_and(|m| m.file_type().is_file() && amplihack_utils::secure_files::owned_by_euid(&m))
 }
 
 /// Issue #2218: whether `on` or `off` can rewrite the file without being
