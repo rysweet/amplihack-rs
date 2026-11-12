@@ -58,7 +58,7 @@ pub(super) fn view(
     floor: Result<u64, String>,
 ) -> CodexView {
     let (next, next_withheld) = match floor {
-        // At most 1 000 000, so exact as f64.
+        // At most 100 000 000, so exact as f64.
         Ok(f) => (next_choice(&rows, f as f64), None),
         Err(why) => (None, Some(why)),
     };

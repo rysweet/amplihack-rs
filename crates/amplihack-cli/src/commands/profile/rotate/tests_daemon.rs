@@ -285,13 +285,8 @@ const LEAK_SCAN: &str = include_str!("../../../../../../scripts/check-leaked-rot
 /// daemons leak; this test fails first.
 #[test]
 fn the_leak_scan_matches_the_argv_spawn_builds() {
-    let s = super::settings::resolve(
-        &super::TuneFlags::default(),
-        None,
-        &|_: &str| None,
-        &crate::commands::profile::rotate::settings::no_config,
-    )
-    .expect("default settings");
+    let s = super::settings::resolve(&super::TuneFlags::default(), None, &|_: &str| None)
+        .expect("default settings");
     let args = super::daemon::spawned_args(&s);
 
     // The argv is a real command line: it parses as `profile rotate watch

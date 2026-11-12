@@ -245,13 +245,7 @@ fn a_probe_is_passive_only_when_its_report_came_from_the_status_line() {
 // ---------------------------------------------------------------------------
 
 fn ctx(e: &Env, measure: super::super::cycle::MeasureFn) -> Ctx {
-    let s = settings::resolve(
-        &super::super::TuneFlags::default(),
-        None,
-        &|_| None,
-        &crate::commands::profile::rotate::settings::no_config,
-    )
-    .unwrap();
+    let s = settings::resolve(&super::super::TuneFlags::default(), None, &|_| None).unwrap();
     let mut c = Ctx::new(e.store.clone(), e.home.clone(), s);
     c.scan = |_| Liveness::Known(BTreeSet::new());
     c.measure = Some(measure);

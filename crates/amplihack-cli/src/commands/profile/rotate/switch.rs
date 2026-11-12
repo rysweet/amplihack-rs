@@ -97,7 +97,7 @@ pub fn switch_live(
 ) -> Result<Result<Switched, AfterSwapFailure>, ProfileError> {
     // Defaults only: a switch decides nothing, so no tuning applies, and
     // neither the variables nor the `rotator.*` config keys are read.
-    let s = settings::resolve(&TuneFlags::default(), None, &|_| None, &settings::no_config)?;
+    let s = settings::resolve(&TuneFlags::default(), None, &|_| None)?;
     // No re-read hook: the freshness gate (#1870) applies only to decisions.
     switch_in(Ctx::new(store.clone(), home.to_path_buf(), s), name)
 }

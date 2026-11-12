@@ -22,7 +22,7 @@
 
 use super::daemon::{DaemonState, current_state};
 use super::ledger::RotateState;
-use super::settings::{Cfg, Env, Settings, gate_from_env, gate_in_range, user_file_cfg};
+use super::settings::{Cfg, Env, Settings, gate_in_range, gate_with, user_file_cfg};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::overflow::Gate;
 use serde::{Deserialize, Serialize};
@@ -158,7 +158,7 @@ fn effective_with(
             Err(e) => closed(e.to_string()),
         },
         DaemonState::Unverifiable => closed("cannot verify the rotator on this host".into()),
-        DaemonState::Stopped | DaemonState::Stale => match gate_from_env(env, cfg) {
+        DaemonState::Stopped | DaemonState::Stale => match gate_with(env, cfg) {
             Ok(g) => (Some(g), GateSource::Environment),
             Err(e) => closed(e.to_string()),
         },

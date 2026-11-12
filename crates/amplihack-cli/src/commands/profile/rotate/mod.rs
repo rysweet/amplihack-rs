@@ -259,7 +259,7 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
         let home = settings::home_dir();
         match args.action {
             None => {
-                let s = settings::resolve(&args.tune, None, &env, &cfg)?;
+                let s = settings::resolve_with(&args.tune, None, &env, &cfg)?;
                 let mode = if args.dry_run {
                     cycle::Mode::DryRun
                 } else {
@@ -277,12 +277,12 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
                     let why = "--supervised applies to rotate watch only";
                     return Err(super::ProfileError::RotateRefused(why.into()).into());
                 }
-                let s = settings::resolve(&w.tune, w.interval.as_deref(), &env, &cfg)?;
+                let s = settings::resolve_with(&w.tune, w.interval.as_deref(), &env, &cfg)?;
                 daemon::start(store, &home?, &s)?;
             }
             Some(RotateAction::Watch(w)) => {
                 owner::check_flag(&w.supervised)?;
-                let s = settings::resolve(&w.tune, w.interval.as_deref(), &env, &cfg)?;
+                let s = settings::resolve_with(&w.tune, w.interval.as_deref(), &env, &cfg)?;
                 daemon::watch(store, home?, s, w.spawned, w.supervised.clone())?;
             }
             Some(RotateAction::Stop) => control::stop(store, home.as_deref().ok())?,

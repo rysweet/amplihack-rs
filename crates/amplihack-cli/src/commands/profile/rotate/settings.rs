@@ -218,7 +218,7 @@ pub fn config_spec(key: &str) -> Option<(u64, u64, u64)> {
 /// and `watch`; the one-shot form has none and gets the variable, the key or
 /// the default. `cfg` is the user file's `rotator.*` values
 /// ([`UserConfig`], or [`no_config`] for defaults only).
-pub fn resolve(
+pub fn resolve_with(
     tune: &TuneFlags,
     interval: Option<&str>,
     env: &Env<'_>,
@@ -247,13 +247,22 @@ pub fn resolve(
 /// `rotator.week_at` under the last two, for auto-switch when no rotator
 /// runs. Another `AMPLIHACK_ROTATE_*` variable or `rotator.*` key, valid or
 /// not, plays no part.
-pub fn gate_from_env(env: &Env<'_>, cfg: &Cfg<'_>) -> Result<Gate, ProfileError> {
+pub fn gate_with(env: &Env<'_>, cfg: &Cfg<'_>) -> Result<Gate, ProfileError> {
     Ok(Gate {
         wait: OVERFLOW_WAIT.resolve(None, env, cfg)?,
         unknown_reset: OVERFLOW_UNKNOWN_RESET.resolve(None, env, cfg)? == 1,
         session_at: SESSION_AT.pct(None, env, cfg)?,
         week_at: WEEK_AT.pct(None, env, cfg)?,
     })
+}
+
+/// Defaults only: no `rotator.*` keys. See [`resolve_with`].
+pub fn resolve(
+    tune: &TuneFlags,
+    interval: Option<&str>,
+    env: &Env<'_>,
+) -> Result<Settings, ProfileError> {
+    resolve_with(tune, interval, env, &no_config)
 }
 
 /// The thresholds with no flag given, each with its origin, for

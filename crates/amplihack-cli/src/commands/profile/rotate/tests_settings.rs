@@ -4,16 +4,13 @@
 //! Contract (tests are children of `rotate`, declared in `rotate/mod.rs`):
 //! - `TuneFlags { session_at, week_at, margin, upgrade_margin, hold }`, each
 //!   `Option<String>`, `Default`.
-//! - `settings::resolve(&TuneFlags, interval: Option<&str>, env: &Env,
-//!   cfg: &Cfg) -> Result<Settings, ProfileError>`, where `Env` is
-//!   `dyn Fn(&str) -> Option<OsString>` and `Cfg` (issue #2007) is
-//!   `dyn Fn(&str) -> Result<Option<u64>, String>`, the user file's
-//!   `rotator.*` value; `no_config` is a `Cfg` that sets nothing.
+//! - `settings::resolve(&TuneFlags, interval: Option<&str>, env: &dyn
+//!   Fn(&str) -> Option<OsString>) -> Result<Settings, ProfileError>`.
 //! - `Settings { session_at, week_at, margin, upgrade_margin: u8, hold,
 //!   interval: u64 }` and `Settings::to_args(with_interval) -> Vec<String>`.
 
 use super::TuneFlags;
-use super::settings::{Settings, no_config, resolve};
+use super::settings::{Settings, resolve};
 use crate::commands::profile::ProfileError;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -43,7 +40,7 @@ fn err(r: Result<Settings, ProfileError>) -> String {
 
 #[test]
 fn defaults_match_the_prototype() {
-    let s = resolve(&flags(), None, &no_env(), &no_config).unwrap();
+    let s = resolve(&flags(), None, &no_env()).unwrap();
     assert_eq!(
         (s.session_at, s.week_at, s.margin, s.upgrade_margin),
         (85, 90, 5, 30)
@@ -61,7 +58,7 @@ fn flag_beats_variable_beats_default() {
         ("AMPLIHACK_ROTATE_HOLD", "60"),
         ("AMPLIHACK_ROTATE_INTERVAL", "30"),
     ]);
-    let s = resolve(&flags(), None, &env, &no_config).unwrap();
+    let s = resolve(&flags(), None, &env).unwrap();
     assert_eq!(
         (
             s.session_at,
@@ -78,7 +75,7 @@ fn flag_beats_variable_beats_default() {
         hold: Some("0".into()),
         ..flags()
     };
-    let s = resolve(&f, Some("5"), &env, &no_config).unwrap();
+    let s = resolve(&f, Some("5"), &env).unwrap();
     assert_eq!(
         (s.session_at, s.week_at, s.hold, s.interval),
         (50, 80, 0, 5)
@@ -88,7 +85,7 @@ fn flag_beats_variable_beats_default() {
 #[test]
 fn an_empty_variable_counts_as_unset() {
     let env = env_of(&[("AMPLIHACK_ROTATE_MARGIN", "")]);
-    assert_eq!(resolve(&flags(), None, &env, &no_config).unwrap().margin, 5);
+    assert_eq!(resolve(&flags(), None, &env).unwrap().margin, 5);
 }
 
 #[test]
@@ -111,13 +108,10 @@ fn range_boundaries_are_inclusive() {
             f
         };
         for v in ok {
-            assert!(
-                resolve(&set(v), None, &no_env(), &no_config).is_ok(),
-                "--{field} {v}"
-            );
+            assert!(resolve(&set(v), None, &no_env()).is_ok(), "--{field} {v}");
         }
         for v in bad {
-            let e = err(resolve(&set(v), None, &no_env(), &no_config));
+            let e = err(resolve(&set(v), None, &no_env()));
             assert!(e.contains(&format!("--{field}")), "{e}");
         }
     }
@@ -125,18 +119,15 @@ fn range_boundaries_are_inclusive() {
 
 #[test]
 fn interval_is_one_to_a_day_and_hold_has_no_upper_bound() {
-    assert!(resolve(&flags(), Some("1"), &no_env(), &no_config).is_ok());
-    assert!(resolve(&flags(), Some("86400"), &no_env(), &no_config).is_ok());
-    assert!(err(resolve(&flags(), Some("0"), &no_env(), &no_config)).contains("--interval"));
-    assert!(err(resolve(&flags(), Some("86401"), &no_env(), &no_config)).contains("--interval"));
+    assert!(resolve(&flags(), Some("1"), &no_env()).is_ok());
+    assert!(resolve(&flags(), Some("86400"), &no_env()).is_ok());
+    assert!(err(resolve(&flags(), Some("0"), &no_env())).contains("--interval"));
+    assert!(err(resolve(&flags(), Some("86401"), &no_env())).contains("--interval"));
     let f = TuneFlags {
         hold: Some("31536000".into()),
         ..flags()
     };
-    assert_eq!(
-        resolve(&f, None, &no_env(), &no_config).unwrap().hold,
-        31_536_000
-    );
+    assert_eq!(resolve(&f, None, &no_env()).unwrap().hold, 31_536_000);
 }
 
 #[test]
@@ -156,7 +147,7 @@ fn only_unsigned_decimal_integers_are_accepted() {
             margin: Some(v.into()),
             ..flags()
         };
-        let e = err(resolve(&f, None, &no_env(), &no_config));
+        let e = err(resolve(&f, None, &no_env()));
         assert!(e.contains("--margin"), "{v:?}: {e}");
     }
 }
@@ -165,7 +156,7 @@ fn only_unsigned_decimal_integers_are_accepted() {
 fn a_bad_variable_is_named_and_its_value_escaped_and_cut() {
     let long = format!("\x1b[31m{}", "9".repeat(80));
     let env = env_of(&[("AMPLIHACK_ROTATE_HOLD", &long)]);
-    let e = err(resolve(&flags(), None, &env, &no_config));
+    let e = err(resolve(&flags(), None, &env));
     assert!(e.contains("AMPLIHACK_ROTATE_HOLD"), "{e}");
     assert!(!e.contains('\x1b'), "control characters escaped: {e:?}");
     assert!(
@@ -180,7 +171,7 @@ fn the_documented_message_shape() {
         session_at: Some("eighty".into()),
         ..flags()
     };
-    let e = err(resolve(&f, None, &no_env(), &no_config));
+    let e = err(resolve(&f, None, &no_env()));
     assert_eq!(
         e,
         "invalid rotate setting --session-at \"eighty\": expected a whole number from 1 to 100"
@@ -194,7 +185,7 @@ fn to_args_round_trips_through_resolve() {
         margin: Some("9".into()),
         ..flags()
     };
-    let s = resolve(&f, Some("42"), &env, &no_config).unwrap();
+    let s = resolve(&f, Some("42"), &env).unwrap();
     let args = s.to_args(true);
     assert!(!args.iter().any(|a| a == "--spawned"), "{args:?}");
 
@@ -214,7 +205,7 @@ fn to_args_round_trips_through_resolve() {
             other => panic!("unexpected flag {other}"),
         }
     }
-    let again = resolve(&back, interval.as_deref(), &no_env(), &no_config).unwrap();
+    let again = resolve(&back, interval.as_deref(), &no_env()).unwrap();
     assert_eq!(again, s);
     assert!(!s.to_args(false).iter().any(|a| a == "--interval"));
 }
@@ -224,9 +215,7 @@ fn to_args_round_trips_through_resolve() {
 #[test]
 fn overflow_wait_defaults_to_half_an_hour() {
     assert_eq!(
-        resolve(&flags(), None, &no_env(), &no_config)
-            .unwrap()
-            .overflow_wait,
+        resolve(&flags(), None, &no_env()).unwrap().overflow_wait,
         1800
     );
 }
@@ -234,28 +223,18 @@ fn overflow_wait_defaults_to_half_an_hour() {
 #[test]
 fn overflow_wait_flag_beats_variable_beats_default() {
     let env = env_of(&[("AMPLIHACK_ROTATE_OVERFLOW_WAIT", "60")]);
-    assert_eq!(
-        resolve(&flags(), None, &env, &no_config)
-            .unwrap()
-            .overflow_wait,
-        60
-    );
+    assert_eq!(resolve(&flags(), None, &env).unwrap().overflow_wait, 60);
     let f = TuneFlags {
         overflow_wait: Some("0".into()),
         ..flags()
     };
     assert_eq!(
-        resolve(&f, None, &env, &no_config).unwrap().overflow_wait,
+        resolve(&f, None, &env).unwrap().overflow_wait,
         0,
         "0 is allowed"
     );
     let empty = env_of(&[("AMPLIHACK_ROTATE_OVERFLOW_WAIT", "")]);
-    assert_eq!(
-        resolve(&flags(), None, &empty, &no_config)
-            .unwrap()
-            .overflow_wait,
-        1800
-    );
+    assert_eq!(resolve(&flags(), None, &empty).unwrap().overflow_wait, 1800);
 }
 
 #[test]
@@ -265,20 +244,20 @@ fn overflow_wait_is_zero_to_a_week_and_rejected_not_clamped() {
         ..flags()
     };
     assert_eq!(
-        resolve(&f("604800"), None, &no_env(), &no_config)
+        resolve(&f("604800"), None, &no_env())
             .unwrap()
             .overflow_wait,
         604_800
     );
-    let e = err(resolve(&f("604801"), None, &no_env(), &no_config));
+    let e = err(resolve(&f("604801"), None, &no_env()));
     assert!(e.contains("--overflow-wait"), "{e}");
     assert!(e.contains("0 to 604800"), "{e}");
     for bad in ["-1", "1.5", " 60", "1e3", "abc"] {
-        let e = err(resolve(&f(bad), None, &no_env(), &no_config));
+        let e = err(resolve(&f(bad), None, &no_env()));
         assert!(e.contains("--overflow-wait"), "{bad:?}: {e}");
     }
     let env = env_of(&[("AMPLIHACK_ROTATE_OVERFLOW_WAIT", "999999")]);
-    let e = err(resolve(&flags(), None, &env, &no_config));
+    let e = err(resolve(&flags(), None, &env));
     assert!(e.contains("AMPLIHACK_ROTATE_OVERFLOW_WAIT"), "{e}");
 }
 
@@ -288,9 +267,7 @@ fn to_args_passes_overflow_wait_to_the_background_process() {
         overflow_wait: Some("90".into()),
         ..flags()
     };
-    let args = resolve(&f, None, &no_env(), &no_config)
-        .unwrap()
-        .to_args(false);
+    let args = resolve(&f, None, &no_env()).unwrap().to_args(false);
     let i = args
         .iter()
         .position(|a| a == "--overflow-wait")
@@ -316,16 +293,11 @@ fn rotate_help_lists_overflow_wait() {
 fn overflow_wait_variable_must_be_a_whole_number_of_seconds() {
     for bad in ["-1", "1.5", "abc", "30m"] {
         let env = env_of(&[("AMPLIHACK_ROTATE_OVERFLOW_WAIT", bad)]);
-        let e = err(resolve(&flags(), None, &env, &no_config));
+        let e = err(resolve(&flags(), None, &env));
         assert!(e.contains("AMPLIHACK_ROTATE_OVERFLOW_WAIT"), "{bad:?}: {e}");
     }
     let env = env_of(&[("AMPLIHACK_ROTATE_OVERFLOW_WAIT", "0")]);
-    assert_eq!(
-        resolve(&flags(), None, &env, &no_config)
-            .unwrap()
-            .overflow_wait,
-        0
-    );
+    assert_eq!(resolve(&flags(), None, &env).unwrap().overflow_wait, 0);
 }
 
 // --- rotator.* config keys (issue #2007) -------------------------------------
@@ -346,7 +318,7 @@ fn overflow_wait_variable_must_be_a_whole_number_of_seconds() {
 
 mod config_2007 {
     use super::super::settings::{
-        Origin, UserConfig, codex_credit_floor, config_spec, gate_from_env, no_config, resolve,
+        Origin, UserConfig, codex_credit_floor, config_spec, gate_with, no_config, resolve_with,
         thresholds,
     };
     use super::{env_of, err, flags, no_env};
@@ -423,7 +395,7 @@ mod config_2007 {
         assert_eq!((w.value, w.origin), (90, Origin::Default));
         assert_eq!((i.value, i.origin), (600, Origin::Default));
         assert_eq!((c.value, c.origin), (3000, Origin::Default));
-        let r = resolve(&flags(), None, &no_env(), &no_config).unwrap();
+        let r = resolve_with(&flags(), None, &no_env(), &no_config).unwrap();
         assert_eq!((r.session_at, r.week_at, r.interval), (85, 90, 600));
     }
 
@@ -435,7 +407,7 @@ mod config_2007 {
             ("rotator.interval", 120),
             ("rotator.codex_credit_floor", 0),
         ]);
-        let s = resolve(&flags(), None, &no_env(), &cfg).unwrap();
+        let s = resolve_with(&flags(), None, &no_env(), &cfg).unwrap();
         assert_eq!((s.session_at, s.week_at, s.interval), (70, 80, 120));
         // The other settings have no key and keep their defaults.
         assert_eq!((s.margin, s.upgrade_margin, s.hold), (5, 30, 3600));
@@ -451,10 +423,12 @@ mod config_2007 {
     fn session_at_70_in_config_reaches_both_settings_and_the_gate() {
         let cfg = cfg_of(&[("rotator.session_at", 70)]);
         assert_eq!(
-            resolve(&flags(), None, &no_env(), &cfg).unwrap().session_at,
+            resolve_with(&flags(), None, &no_env(), &cfg)
+                .unwrap()
+                .session_at,
             70
         );
-        assert_eq!(gate_from_env(&no_env(), &cfg).unwrap().session_at, 70);
+        assert_eq!(gate_with(&no_env(), &cfg).unwrap().session_at, 70);
     }
 
     #[test]
@@ -464,21 +438,24 @@ mod config_2007 {
             ("AMPLIHACK_ROTATE_SESSION_AT", "60"),
             ("AMPLIHACK_ROTATE_INTERVAL", "300"),
         ]);
-        let s = resolve(&flags(), None, &env, &cfg).unwrap();
+        let s = resolve_with(&flags(), None, &env, &cfg).unwrap();
         assert_eq!((s.session_at, s.interval), (60, 300));
         let t = thresholds(&env, &cfg);
         let sa = t.session_at.unwrap();
         let iv = t.interval.unwrap();
         assert_eq!((sa.value, sa.origin), (60, Origin::Env));
         assert_eq!((iv.value, iv.origin), (300, Origin::Env));
-        assert_eq!(gate_from_env(&env, &cfg).unwrap().session_at, 60);
+        assert_eq!(gate_with(&env, &cfg).unwrap().session_at, 60);
     }
 
     #[test]
     fn an_empty_variable_falls_through_to_config() {
         let cfg = cfg_of(&[("rotator.session_at", 70)]);
         let env = env_of(&[("AMPLIHACK_ROTATE_SESSION_AT", "")]);
-        assert_eq!(resolve(&flags(), None, &env, &cfg).unwrap().session_at, 70);
+        assert_eq!(
+            resolve_with(&flags(), None, &env, &cfg).unwrap().session_at,
+            70
+        );
     }
 
     #[test]
@@ -492,7 +469,7 @@ mod config_2007 {
             session_at: Some("50".into()),
             ..flags()
         };
-        let s = resolve(&f, Some("30"), &env, &cfg).unwrap();
+        let s = resolve_with(&f, Some("30"), &env, &cfg).unwrap();
         assert_eq!((s.session_at, s.interval), (50, 30));
     }
 
@@ -504,7 +481,10 @@ mod config_2007 {
             session_at: Some("50".into()),
             ..flags()
         };
-        assert_eq!(resolve(&f, None, &no_env(), &cfg).unwrap().session_at, 50);
+        assert_eq!(
+            resolve_with(&f, None, &no_env(), &cfg).unwrap().session_at,
+            50
+        );
     }
 
     #[test]
@@ -524,7 +504,7 @@ mod config_2007 {
     fn a_bad_config_value_stops_resolve_and_names_the_key_and_the_fix() {
         for key in ["rotator.session_at", "rotator.week_at", "rotator.interval"] {
             let cfg = cfg_bad(key, "must be an integer from 1 to 100");
-            let e = err(resolve(&flags(), None, &no_env(), &cfg));
+            let e = err(resolve_with(&flags(), None, &no_env(), &cfg));
             assert_eq!(e, fix_msg(key, "must be an integer from 1 to 100"), "{key}");
         }
     }
@@ -539,7 +519,12 @@ mod config_2007 {
             ("rotator.interval", 0),
             ("rotator.interval", 86_401),
         ] {
-            let e = err(resolve(&flags(), None, &no_env(), &cfg_of(&[(key, v)])));
+            let e = err(resolve_with(
+                &flags(),
+                None,
+                &no_env(),
+                &cfg_of(&[(key, v)]),
+            ));
             assert!(e.contains(key), "{key}={v}: {e}");
             assert!(e.contains("config set"), "{key}={v}: {e}");
         }
@@ -553,19 +538,19 @@ mod config_2007 {
     fn a_bad_config_value_closes_the_gate() {
         for key in ["rotator.session_at", "rotator.week_at"] {
             let cfg = cfg_bad(key, "must be an integer from 1 to 100");
-            let e = gate_from_env(&no_env(), &cfg).unwrap_err();
+            let e = gate_with(&no_env(), &cfg).unwrap_err();
             assert!(e.to_string().contains(key), "{e}");
         }
         // The gate does not use the interval, so its key cannot close it.
         let cfg = cfg_bad("rotator.interval", "must be an integer from 1 to 86400");
-        assert!(gate_from_env(&no_env(), &cfg).is_ok());
+        assert!(gate_with(&no_env(), &cfg).is_ok());
     }
 
     #[test]
     fn a_bad_variable_is_an_error_even_with_good_config() {
         let cfg = cfg_of(&[("rotator.session_at", 70)]);
         let env = env_of(&[("AMPLIHACK_ROTATE_SESSION_AT", "abc")]);
-        let e = err(resolve(&flags(), None, &env, &cfg));
+        let e = err(resolve_with(&flags(), None, &env, &cfg));
         assert!(e.contains("AMPLIHACK_ROTATE_SESSION_AT"), "{e}");
         assert!(thresholds(&env, &cfg).session_at.is_err());
     }
@@ -574,7 +559,10 @@ mod config_2007 {
     fn a_good_variable_shadows_a_bad_config_value() {
         let cfg = cfg_bad("rotator.interval", "must be an integer from 1 to 86400");
         let env = env_of(&[("AMPLIHACK_ROTATE_INTERVAL", "300")]);
-        assert_eq!(resolve(&flags(), None, &env, &cfg).unwrap().interval, 300);
+        assert_eq!(
+            resolve_with(&flags(), None, &env, &cfg).unwrap().interval,
+            300
+        );
     }
 
     #[test]
@@ -603,7 +591,7 @@ mod config_2007 {
             )
         );
         // The rotator itself has no use for the floor.
-        assert!(resolve(&flags(), None, &no_env(), &cfg).is_ok());
+        assert!(resolve_with(&flags(), None, &no_env(), &cfg).is_ok());
     }
 
     // --- The real user file -------------------------------------------------
@@ -637,7 +625,7 @@ mod config_2007 {
         let cfg = UserConfig::at(&h.home);
         assert_eq!(cfg.get("rotator.interval"), Ok(Some(900)));
         assert_eq!(cfg.get("rotator.session_at"), Ok(None));
-        let s = resolve(&flags(), None, &no_env(), &|k| cfg.get(k)).unwrap();
+        let s = resolve_with(&flags(), None, &no_env(), &|k| cfg.get(k)).unwrap();
         assert_eq!((s.session_at, s.interval), (85, 900));
         assert_eq!(codex_credit_floor(&|k| cfg.get(k)).unwrap().value, 0);
     }
@@ -647,7 +635,7 @@ mod config_2007 {
         let h = home_with("[rotator]\nsession_at = 101\n", 0o600);
         let cfg = UserConfig::at(&h.home);
         assert!(cfg.get("rotator.session_at").is_err());
-        let e = err(resolve(&flags(), None, &no_env(), &|k| cfg.get(k)));
+        let e = err(resolve_with(&flags(), None, &no_env(), &|k| cfg.get(k)));
         assert!(
             e.starts_with("invalid rotate setting rotator.session_at: "),
             "{e}"
@@ -664,7 +652,7 @@ mod config_2007 {
         let h = home_with("[rotator]\nweek_at = \"80\"\n", 0o600);
         let cfg = UserConfig::at(&h.home);
         assert!(cfg.get("rotator.week_at").is_err());
-        assert!(resolve(&flags(), None, &no_env(), &|k| cfg.get(k)).is_err());
+        assert!(resolve_with(&flags(), None, &no_env(), &|k| cfg.get(k)).is_err());
     }
 
     #[cfg(unix)]
@@ -672,9 +660,9 @@ mod config_2007 {
     fn a_file_others_can_write_fails_closed_in_resolve_and_the_gate() {
         let h = home_with("[rotator]\nsession_at = 70\n", 0o664);
         let cfg = UserConfig::at(&h.home);
-        let e = resolve(&flags(), None, &no_env(), &|k| cfg.get(k)).unwrap_err();
+        let e = resolve_with(&flags(), None, &no_env(), &|k| cfg.get(k)).unwrap_err();
         assert!(matches!(e, ProfileError::RotateConfig(_)), "{e:?}");
-        assert!(gate_from_env(&no_env(), &|k| cfg.get(k)).is_err());
+        assert!(gate_with(&no_env(), &|k| cfg.get(k)).is_err());
         assert!(codex_credit_floor(&|k| cfg.get(k)).is_err());
     }
 
@@ -705,7 +693,7 @@ mod config_2007 {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().canonicalize().unwrap();
         let cfg = UserConfig::at(&home);
-        let s = resolve(&flags(), None, &no_env(), &|k| cfg.get(k)).unwrap();
+        let s = resolve_with(&flags(), None, &no_env(), &|k| cfg.get(k)).unwrap();
         assert_eq!((s.session_at, s.week_at, s.interval), (85, 90, 600));
         assert_eq!(codex_credit_floor(&|k| cfg.get(k)).unwrap().value, 3000);
     }
@@ -714,7 +702,7 @@ mod config_2007 {
     fn to_args_still_passes_every_value_as_a_flag() {
         // The background rotator reads no config: the parent resolves it.
         let cfg = cfg_of(&[("rotator.session_at", 70), ("rotator.interval", 120)]);
-        let args = resolve(&flags(), None, &no_env(), &cfg)
+        let args = resolve_with(&flags(), None, &no_env(), &cfg)
             .unwrap()
             .to_args(true);
         let after = |flag: &str| {
@@ -778,9 +766,9 @@ mod config_2007 {
         let floor = t.codex_credit_floor.unwrap_err().to_string();
         assert_eq!(floor, whole_file_msg("rotator.codex_credit_floor", why));
         // The commands that act fail closed with the same hint.
-        let e = err(resolve(&flags(), None, &no_env(), &|k| cfg.get(k)));
+        let e = err(resolve_with(&flags(), None, &no_env(), &|k| cfg.get(k)));
         assert_whole_file(&e, &h.home);
-        let g = gate_from_env(&no_env(), &|k| cfg.get(k))
+        let g = gate_with(&no_env(), &|k| cfg.get(k))
             .unwrap_err()
             .to_string();
         assert_whole_file(&g, &h.home);
@@ -803,7 +791,7 @@ mod config_2007 {
             );
             assert!(!raw.is_empty(), "{key}");
         }
-        let e = err(resolve(&flags(), None, &no_env(), &|k| cfg.get(k)));
+        let e = err(resolve_with(&flags(), None, &no_env(), &|k| cfg.get(k)));
         assert_whole_file(&e, &h.home);
         let floor = codex_credit_floor(&|k| cfg.get(k)).unwrap_err().to_string();
         assert!(
@@ -857,7 +845,7 @@ mod config_2007 {
         assert_eq!(cfg.get("rotator.week_at"), Ok(None));
         assert_eq!(cfg.get("rotator.session_at"), Ok(None));
         assert_eq!(cfg.get("rotator.codex_credit_floor"), Ok(None));
-        let s = resolve(&flags(), None, &no_env(), &|k| cfg.get(k)).unwrap();
+        let s = resolve_with(&flags(), None, &no_env(), &|k| cfg.get(k)).unwrap();
         assert_eq!((s.session_at, s.week_at), (85, 90));
         let floor = codex_credit_floor(&|k| cfg.get(k)).unwrap();
         assert_eq!((floor.value, floor.origin), (3000, Origin::Default));

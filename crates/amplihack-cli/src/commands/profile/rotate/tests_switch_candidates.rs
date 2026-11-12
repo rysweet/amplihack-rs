@@ -301,13 +301,7 @@ fn a_profile_with_no_recorded_skip_is_a_candidate() {
 /// The whole switch with `/proc` unscannable: `Liveness::Unsupported`, what
 /// `scan_system` returns on macOS and every other non-Linux system.
 fn switch_without_liveness(e: &Env, name: &str) -> Switched {
-    let s = settings::resolve(
-        &TuneFlags::default(),
-        None,
-        &|_| None,
-        &crate::commands::profile::rotate::settings::no_config,
-    )
-    .unwrap();
+    let s = settings::resolve(&TuneFlags::default(), None, &|_| None).unwrap();
     let mut ctx = Ctx::new(e.store.clone(), e.home.clone(), s);
     ctx.scan = |_| Liveness::Unsupported;
     match switch_in(ctx, &n(name)) {

@@ -1,6 +1,9 @@
 //! The user file's side of the rotate settings (issue #2007): the
 //! `rotator.*` keys read once from `~/.amplihack/config.toml`, failing
 //! closed, and the Codex credit floor, which is a key only.
+//!
+//! Each key's range is set twice, in the config schema and in the rotator's
+//! `Spec`; the test over `config_spec` keeps the two equal.
 
 use crate::commands::profile::ProfileError;
 use crate::user_config::schema::{ValueKind, kind_requirement};

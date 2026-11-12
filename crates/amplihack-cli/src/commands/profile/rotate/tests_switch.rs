@@ -627,13 +627,7 @@ fn release_refuses_a_non_empty_directory_at_the_pin_path() {
 #[test]
 fn a_pin_change_invalidates_the_cycle_snapshot() {
     let e = env();
-    let s = settings::resolve(
-        &super::TuneFlags::default(),
-        None,
-        &|_| None,
-        &crate::commands::profile::rotate::settings::no_config,
-    )
-    .unwrap();
+    let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
     let ctx = Ctx::new(e.store.clone(), e.home.clone(), s);
     let state = State::new(&e.root).unwrap();
     let before = snapshot(&ctx, &state).unwrap();

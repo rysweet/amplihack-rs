@@ -64,13 +64,7 @@ fn fixture() -> Env {
 }
 
 fn context(e: &Env) -> Ctx {
-    let settings = settings::resolve(
-        &super::TuneFlags::default(),
-        None,
-        &|_| None,
-        &crate::commands::profile::rotate::settings::no_config,
-    )
-    .unwrap();
+    let settings = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
     let mut ctx = Ctx::new(e.store.clone(), e.home.clone(), settings);
     ctx.scan = |_| Liveness::Known(Default::default());
     ctx.identity = read_fake;

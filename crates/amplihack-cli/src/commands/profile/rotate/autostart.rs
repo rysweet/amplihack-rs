@@ -316,7 +316,7 @@ pub fn run(root: &Path, docker_flag: bool, d: Deps<'_>) -> Outcome {
         return o;
     }
     let user = settings::UserConfig::at(d.home); // `rotator.*` keys, failing closed (#2007)
-    let s = match settings::resolve(&Default::default(), None, d.env, &|k| user.get(k)) {
+    let s = match settings::resolve_with(&Default::default(), None, d.env, &|k| user.get(k)) {
         Ok(s) => s,
         Err(e) => return failed(&rs, &e),
     };

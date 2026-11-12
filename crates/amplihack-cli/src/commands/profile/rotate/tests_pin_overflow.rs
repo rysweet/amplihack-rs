@@ -60,13 +60,7 @@ fn switch_to(e: &Env, name: &str) {
 }
 
 fn ctx(e: &Env, measure: super::cycle::MeasureFn, probe: super::held::HeldProbeFn) -> Ctx {
-    let s = settings::resolve(
-        &super::TuneFlags::default(),
-        None,
-        &|_| None,
-        &crate::commands::profile::rotate::settings::no_config,
-    )
-    .unwrap();
+    let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
     let mut c = Ctx::new(e.store.clone(), e.home.clone(), s);
     c.measure = Some(measure);
     c.probe_held = Some(probe);

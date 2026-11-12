@@ -51,13 +51,7 @@ fn count(haystack: &str, needle: &str) -> usize {
 }
 
 fn watch_ctx(e: &Env) -> Ctx {
-    let s = settings::resolve(
-        &super::TuneFlags::default(),
-        None,
-        &|_| None,
-        &crate::commands::profile::rotate::settings::no_config,
-    )
-    .unwrap();
+    let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
     Ctx::new(e.store.clone(), e.home.clone(), s)
 }
 

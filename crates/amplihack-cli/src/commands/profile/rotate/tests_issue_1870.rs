@@ -421,13 +421,7 @@ fn spare_full(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
 #[test]
 fn only_production_call_sites_wire_the_direct_reread() {
     let e = env();
-    let s = super::settings::resolve(
-        &super::TuneFlags::default(),
-        None,
-        &|_| None,
-        &crate::commands::profile::rotate::settings::no_config,
-    )
-    .unwrap();
+    let s = super::settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
     let c = Ctx::new(e.store.clone(), e.home.clone(), s);
     assert!(
         c.reread.is_none(),

@@ -753,17 +753,18 @@ the exact rules.
 
 ## Change the thresholds
 
-| Flag | Variable | Default | Meaning |
-|------|----------|---------|---------|
-| `--session-at N` | `AMPLIHACK_ROTATE_SESSION_AT` | `85` | Swap when the live session use reaches N%. |
-| `--week-at N` | `AMPLIHACK_ROTATE_WEEK_AT` | `90` | Swap when the live weekly use reaches N%. |
-| `--margin N` | `AMPLIHACK_ROTATE_MARGIN` | `5` | A threshold swap needs a target with at least N more points of headroom. |
-| `--upgrade-margin N` | `AMPLIHACK_ROTATE_UPGRADE_MARGIN` | `30` | Swap without reaching a threshold when a target has at least N more points of headroom. |
-| `--hold SECS` | `AMPLIHACK_ROTATE_HOLD` | `3600` | No upgrade swap for this long after any swap. `0` turns the hold off. |
-| `--overflow-wait SECS` | `AMPLIHACK_ROTATE_OVERFLOW_WAIT` | `1800` | Use an [overflow profile](#use-usage-credits-when-every-plan-login-is-exhausted) only when the next plan reset is further away than this. |
-| `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | Time between cycles, for `start` and `watch` only. |
+| Flag | Variable | Key | Default | Meaning |
+|------|----------|-----|---------|---------|
+| `--session-at N` | `AMPLIHACK_ROTATE_SESSION_AT` | `rotator.session_at` | `85` | Swap when the live session use reaches N%. |
+| `--week-at N` | `AMPLIHACK_ROTATE_WEEK_AT` | `rotator.week_at` | `90` | Swap when the live weekly use reaches N%. |
+| `--margin N` | `AMPLIHACK_ROTATE_MARGIN` | — | `5` | A threshold swap needs a target with at least N more points of headroom. |
+| `--upgrade-margin N` | `AMPLIHACK_ROTATE_UPGRADE_MARGIN` | — | `30` | Swap without reaching a threshold when a target has at least N more points of headroom. |
+| `--hold SECS` | `AMPLIHACK_ROTATE_HOLD` | — | `3600` | No upgrade swap for this long after any swap. `0` turns the hold off. |
+| `--overflow-wait SECS` | `AMPLIHACK_ROTATE_OVERFLOW_WAIT` | — | `1800` | Use an [overflow profile](#use-usage-credits-when-every-plan-login-is-exhausted) only when the next plan reset is further away than this. |
+| `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `rotator.interval` | `600` | Time between cycles, for `start` and `watch` only. |
 
-A flag beats the variable, and the variable beats the default. For example, to
+A flag beats the variable, the variable beats a `rotator.*` config key (for
+the keys that have one), and the key beats the default. For example, to
 rotate earlier and check every five minutes:
 
 ```bash
