@@ -37,12 +37,16 @@ Agents observe and assess facts under trusted merge-ready policy.
   modes, links, traversal and special files; bound reads; validate and hash
   opened bytes; publish new snapshots atomically without replacement.
 - `outcome`: keep readiness, requested action, observed state and stop reason
-  separate. Both accepted round and evaluator completion are necessary. Merge
+  separate. Merge-ready completion needs both an accepted `MERGE_READY`
+  round and evaluator `DONE`. Crusty completion is not reduced here; it is
+  decided by `orch/autodrive_completion/` (an evidence-valid `CLEAN` or
+  `MINOR_ONLY` completes without an evaluator call). Merge
   success additionally requires authorized expected-head protection and
   platform confirmation; queue admission or exit zero is insufficient.
 - `review`: verify the established post-review allowlist against local Git.
-- `completion`: seal accepted round bytes only after the existing loop engine
-  observes both completion signals; reject receipts from an older invocation.
+- `completion`: seal accepted round bytes only after the merge-ready loop
+  observes an accepted `MERGE_READY` round and evaluator `DONE`; reject
+  receipts from an older invocation.
 - `followups`: validate private MINOR_ONLY issue mappings for reporting.
 - `report`: replay the same complete reduction boundary as `helper reduce`,
   including the pre-action accepted snapshot, local Git/review coverage, artifact

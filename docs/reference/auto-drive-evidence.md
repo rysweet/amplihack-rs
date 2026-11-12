@@ -40,13 +40,13 @@ a separate quality audit, with **no minimum round count**. For **standalone
 SEEK → VALIDATE → FIX cycles, continued until clean. The template's cycle
 1–3 rows describe that standalone audit. In auto-drive, replace those rows
 with actual accepted crusty-round evidence, including reviewed head, verdict,
-evaluator `DONE`, and required follow-ups; do not claim unperformed cycles.
+accepted completion dispatch, and required follow-ups; do not claim unperformed cycles.
 
 | ID | Criterion | Supporting evidence |
 | --- | --- | --- |
 | 1 | QA | Selected suite, source and directory, validated and executed scenarios where required, commands and results, tested head, and log references. Follow [QA selection](auto-drive-qa.md). Scenario files alone are insufficient. |
 | 2 | Documentation | Changed external surfaces, corresponding documentation updates and discoverable links, or a supported explanation of why no update is needed. |
-| 3 | Audit convergence | Auto-drive substitutes accepted completed crusty convergence: `CLEAN` or permitted `MINOR_ONLY`, required follow-ups, reviewed-head binding, and loop-health `DONE`. No minimum round count applies. Standalone `/merge-ready` retains its separate audit of at least three SEEK → VALIDATE → FIX cycles, continued until clean. |
+| 3 | Audit convergence | Auto-drive substitutes accepted completed crusty convergence: `CLEAN` or permitted `MINOR_ONLY`, required follow-ups, reviewed-head binding, and accepted completion dispatch (no evaluator call for a completed objective; see [Crusty completion](autodrive-crusty-completion.md)). No minimum round count applies. Standalone `/merge-ready` retains its separate audit of at least three SEEK → VALIDATE → FIX cycles, continued until clean. |
 | 4 | Checks/build validation | Complete current-head check rollup, required checks, conclusions and policy interpretation. Pending, failing, cancelled, stale, unavailable, or zero reported checks do not pass. |
 | 5 | Metadata | Read-back PR title, description, source and target, draft/reviewable state, and other required metadata. |
 | 6 | Reviews/approvals | Current decision and approval/policy observations under the interpretation below; no outstanding requested changes. |
@@ -77,7 +77,7 @@ API client, gate executable, or serialized command protocol.
 | Failed attempt/recovery | Operation attempted, redacted cause and result, alternative chosen, observations recovered, completeness limits, and remaining blockers. |
 | Readiness assessment | All 13 criterion records, accepted evidence references, reviewed and verified heads, readiness verdict, and blockers. |
 | Finalization | Captured requested action, refreshed observations, expected head, request outcome, subsequent platform observations, and any ambiguous response or workflow violation. |
-| Completion/report | Accepted round and evaluator outcomes, readiness, action, final platform state, stop reason, failures/recovery, follow-ups, and consumed budget. |
+| Completion/report | Accepted round outcomes, completion dispatch or evaluator outcome, readiness, action, final platform state, stop reason, failures/recovery, follow-ups, and consumed budget. |
 
 The closed value sets distinguish these meanings:
 

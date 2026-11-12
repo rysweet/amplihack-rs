@@ -137,14 +137,17 @@ steps:
         bash "$FU" resolve-task --task-id "$ISS" 2>/dev/null || true
       fi
     output: "light_task_id"
+
+  # Build, steps 3 to 9: only for a new change.
+  # The quick/ branch starts from origin/HEAD, the base light-open-pr targets; inherited targets and
+  # base_branch are cleared, strict_delivery is not (docs/reference/workflow-delivery-inputs.md).
   - id: "light-worktree"
     type: "recipe"
     condition: "not pr_number and not existing_branch"
     recipe: "workflow-worktree"
-    context:
-      branch_prefix: "quick"
-      existing_branch: ""
-      pr_number: ""
+    context: { branch_prefix: "quick", existing_branch: "", pr_number: "", base_branch: "", forbidden_base_branches: "" }
+
+  # Before the agent: check the branch and identity, pin the base, snapshot git config.
   - id: "light-base-pin"
     type: "bash"
     condition: "not pr_number and not existing_branch"

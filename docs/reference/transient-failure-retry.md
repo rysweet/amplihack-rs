@@ -34,7 +34,7 @@ unit-tested in isolation
 | Class                 | Examples                                                                                  | Retried by code? |
 | --------------------- | ----------------------------------------------------------------------------------------- | ---------------- |
 | `transient_transport` | `API Error: 529`, 503, 502, 500, 429, `overloaded_error`, `rate_limit_error`, `ECONNRESET`, `socket hang up`, `request timed out` | **Yes**, bounded |
-| `usage_limit`         | `usage limit`, `weekly limit`, `spend limit`; see [Usage-limit markers](#usage-limit-markers) | No               |
+| `usage_limit`         | `session limit`, `5-hour limit`, `usage limit`, `weekly limit`, `spend limit`; see [Usage-limit markers](#usage-limit-markers) | No               |
 | `environmental`       | 401/403, `invalid x-api-key`, `command not found`, `no space left on device`                | No               |
 | `work`                | `test result: FAILED`, `assertion failed`, `panicked at`, `error[E0308]`, `merge conflict`, a `BLOCKED_TERMINAL` policy refusal | No               |
 | `indeterminate`       | nothing in the evidence identifies the failure                                              | No               |
@@ -55,9 +55,11 @@ failed (exit 1)`; the 529 was in the captured stdout, which is why both are read
 
 ### Usage-limit markers
 
-The markers are `session limit`, `usage limit`, `usage_limit_reached`,
-`quota exceeded`, `monthly limit`, `weekly limit`, `spend limit` and
-`credit balance is too low`. They are Claude Code's, and are kept in one
+The markers are `session limit`, `5-hour limit`, `usage limit`,
+`usage_limit_reached`, `quota exceeded`, `monthly limit`, `weekly limit`,
+`hit your opus limit`, `hit your sonnet limit`, `hit your fable limit` and
+`spend limit`. Matching
+ignores case. They are Claude Code's, and are kept in one
 table per harness in `limit_patterns.rs`, together with the patterns that
 read the reset time. The classifier, the auto-switch supervisor and the
 usage-limit wait all read that table; no other source file holds a Claude
@@ -75,6 +77,30 @@ its table there.
   or the wait was turned off. See the
   [usage-limit wait](./profile-command.md#usage-limit-wait).
 
+- **`5-hour limit` is the session window's newer name (#2230).** Claude Code
+  now reports the session window this way:
+
+  ```text
+  You've hit your 5-hour limit · resets 8:20pm (America/Los_Angeles)
+  ```
+
+  The classifier files it as `usage_limit` with signal `5-hour limit`, whether
+  the line is in the step's stderr, is the last non-empty line of its stdout,
+  or both. Its reset hint is `8:20pm (America/Los_Angeles)`. The curly
+  apostrophe form (`You’ve`) reads the same way.
+- **Per-model limits match only their stopping form.** `hit your opus limit`,
+  `hit your sonnet limit` and `hit your fable limit` cover messages such as
+  `You've hit your Opus limit · resets 8:20pm (America/Los_Angeles)`, which
+  reports signal `hit your opus limit`. These are usage caps with a stated
+  reset, so the run waits for the reset or switches login, as for a session
+  limit. The names come from Claude Code 2.1.322, which maps its limit
+  windows `seven_day_opus`, `seven_day_sonnet` and
+  `seven_day_overage_included` to "Opus limit", "Sonnet limit" and "Fable
+  limit". A bare `opus limit` is not a marker: Claude Code also prints those
+  names in notices that do not stop work, such as
+  `Fable limit reached · continuing on <model> …` or a model fallback such as
+  `Opus limit reached · now using Sonnet`. Those stay `indeterminate`, so
+  auto-drive does not stop as USAGE_LIMIT on them.
 - **Why `spend limit` is listed.** `monthly limit` alone does not match Claude
   Code's `monthly spend limit` message, so both are markers (#1546).
 - **Reset hint.** The reset time the message states is quoted in the verdict:
@@ -108,8 +134,14 @@ its table there.
 - **A bare `rate limit` is not a marker**, so a provider rate limit is never
   filed as `usage_limit`. `rate limit exceeded`, `rate_limit_error`, a plain
   `API Error: 429` and `429 Too Many Requests` stay `transient_transport`.
-- **`credit balance is too low`** is also on the marker list, but the
-  environmental check runs first, so that message classifies `environmental`.
+- **`fast limit`, `hourly limit` and a bare `hit your limit` are not
+  markers.** Fast mode falls back to normal mode when its limit is reached and
+  does not block the account. `hourly limit` is left out for the same reason as
+  `daily limit`. `hit your limit` on its own is common in model prose and tool
+  output, so it would file unrelated failures as `usage_limit`; the harness's
+  own messages always name the limit.
+- **`credit balance is too low` is not a usage-limit marker.** It is an
+  environmental marker, so that message classifies `environmental`.
 
 ## Retry bounds
 

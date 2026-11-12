@@ -27,6 +27,7 @@ use crate::commands::profile::rotate;
 use crate::commands::profile::rotate::ledger::{RotateState, active_blocks};
 use crate::commands::profile::store::ProfileStore;
 use std::collections::BTreeSet;
+use std::path::Path;
 
 /// How far ahead of the wait's clock a reading may be stamped.
 const FUTURE_MARGIN: i64 = 60;
@@ -69,7 +70,21 @@ pub(crate) fn profile_check(store: &ProfileStore, own: &str) -> bool {
 /// inherited profile, or the profile live in `$HOME/.claude`. With none, the
 /// login in `$HOME/.claude` is unknown and two accounts must be eligible.
 pub(crate) fn could_take_over(store: Option<&ProfileStore>, own: Option<&str>) -> bool {
-    store.is_some_and(|s| another_login(s, own).unwrap_or(false))
+    could_take_over_at(
+        store,
+        own,
+        crate::commands::profile::usage_cmd::home_dir().as_deref(),
+    )
+}
+
+/// [`could_take_over`] with the home directory given (`None`: nothing
+/// outside the store is read), so a test never reads the real `$HOME`.
+pub(super) fn could_take_over_at(
+    store: Option<&ProfileStore>,
+    own: Option<&str>,
+    home: Option<&Path>,
+) -> bool {
+    store.is_some_and(|s| another_login(s, own, home).unwrap_or(false))
 }
 
 /// A stored profile on another account than `own` that the selection could
@@ -81,7 +96,7 @@ pub(crate) fn could_take_over(store: Option<&ProfileStore>, own: Option<&str>) -
 /// starts for a login the probe could not choose. `None` on any read error.
 ///
 /// [`OverflowPool::could_select`]: super::candidate::OverflowPool::could_select
-fn another_login(store: &ProfileStore, own: Option<&str>) -> Option<bool> {
+fn another_login(store: &ProfileStore, own: Option<&str>, home: Option<&Path>) -> Option<bool> {
     let cfg = match config::read(store.root()) {
         FileState::Valid(c) => c,
         FileState::Missing => Config::default(),
@@ -90,7 +105,7 @@ fn another_login(store: &ProfileStore, own: Option<&str>) -> Option<bool> {
             return None;
         }
     };
-    let overflow = OverflowInputs::load(store.root(), &cfg, fsx::now());
+    let overflow = OverflowInputs::load_at(store.root(), &cfg, fsx::now(), home);
     another_login_with(store, own, &cfg, &overflow)
 }
 
@@ -166,14 +181,13 @@ pub(crate) fn capacity_candidate(
                 .is_some_and(|r| is_fresh(r.observed_at, start, now))
         })
         .collect();
-    let account = ledger.account_in(inherited.as_str());
     nested_candidate(
         state,
         &ledger,
         &profiles,
         &readings,
         &eff.config,
-        account,
+        inherited.as_str(),
         &stale,
     )
     .filter(|p| p.profile != *inherited)

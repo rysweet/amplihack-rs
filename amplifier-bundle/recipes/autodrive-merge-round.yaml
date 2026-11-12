@@ -40,11 +40,33 @@ context:
   autodrive_invocation_file: ""
   autodrive_authorization: ""
 steps:
+  # The tools this round runs, found ONCE: the first amplifier-bundle/tools under AMPLIHACK_HOME, REPO_PATH, ~/.copilot or
+  # ~/.amplihack holding them all; later steps read autodrive_tools_dir. A missing install fails here by name (#1517).
+  # No git toplevel: an inherited GIT_WORK_TREE could point it at a planted tree (#2033).
   - id: "step-00-tools-dir"
     type: "bash"
     command: |
-      test -d "$AMPLIHACK_HOME/amplifier-bundle/tools" || exit 1
-      printf '%s' "$AMPLIHACK_HOME/amplifier-bundle/tools"
+      set -uo pipefail
+      cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
+      SEARCHED=""
+      NEED="autodrive_merge_ready_files.sh autodrive_platform_facts.sh autodrive_round_evidence.sh"
+      NEED="${NEED} autodrive_state.sh autodrive_trust.sh git-identity.sh git-repo-env.sh"
+      for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
+        [ -n "$c" ] || continue
+        D="$c/amplifier-bundle/tools"; SEARCHED="${SEARCHED}${SEARCHED:+, }${D}"; OK="true"
+        for t in $NEED; do [ -f "$D/$t" ] || OK="false"; done
+        [ "$OK" = "true" ] && D="$(cd -- "$D" 2>/dev/null && pwd -P)" && [ -n "$D" ] || continue
+        # The path reaches step-04's prompt in a double-quoted shell word: no quote,
+        # backslash, $, backtick, template brace or control byte (x keeps a newline).
+        case "$D" in *[\"\\\$\`]* | *'{{'* | *'}}'*) echo "WARNING: skipping an auto-drive tools path with a quote, backslash, \$, backtick or template brace" >&2; continue ;; esac
+        [ "$(printf '%s' "$D" | LC_ALL=C tr -d '\040-\176\200-\377'; printf x)" = "x" ] \
+          || { echo "WARNING: skipping an auto-drive tools path that holds a control byte" >&2; continue; }
+        echo "INFO: auto-drive tools from ${D}" >&2
+        printf '%s\n' "$D"
+        exit 0
+      done
+      echo "ERROR: autodrive-tools-not-found: no amplifier-bundle/tools holds all of ${NEED} (searched ${SEARCHED:-no root})" >&2
+      exit 1
     output: "autodrive_tools_dir"
   - id: "step-00-review-dir-guard"
     type: "bash"
@@ -78,6 +100,8 @@ steps:
       autodrive_round_label: "{{autodrive_round_label}}"
       no_merge: "{{no_merge}}"
       autodrive_dry_run: "{{autodrive_dry_run}}"
+      autodrive_tools_dir: "{{autodrive_tools_dir}}"
+  # D5: hash qa-evidence.json before any agent runs; step-03 re-hashes, step-05 records.
   - id: "step-00d-qa-evidence-hash"
     type: "bash"
     parse_json: true
@@ -262,7 +286,7 @@ steps:
         answer any requested changes; the approval itself needs a person.
       - **Merge conflicts, unresolved review threads (outdated ones too),
         missing docs or evidence**: resolve, answer and resolve, or write them.
-      - **Running tests or hooks**: export `GIT_TERMINAL_PROMPT=0`, close stdin, and use the runtime's noninteractive execution. Wait for natural completion under the existing timeout policy. Adapt unavailable commands without bypassing hooks.
+      - **Running tests or hooks**: every shell call is a new process that inherits this agent's environment, so an inherited `GIT_DIR`, `GIT_WORK_TREE` or `GIT_INDEX_FILE` would point the tests' git commands at another repository (issue #2033). Start every shell call that runs tests, hooks, `cargo`, `npm` or `pytest` with `[ ! -L "{{autodrive_tools_dir}}/git-repo-env.sh" ] && . "{{autodrive_tools_dir}}/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env || { echo "STOP: cannot load git-repo-env.sh (#2033)" >&2; exit 1; }` and run the command in that same call. Then export `GIT_TERMINAL_PROMPT=0`, close stdin, and use the runtime's noninteractive execution. Wait for natural completion under the existing timeout policy. Adapt unavailable commands without bypassing hooks.
 
       Do not create, edit, move, rename, delete or archive any file in the
       auto-drive state directory (the directory holding crusty-round-*.json,
@@ -274,7 +298,7 @@ steps:
       so nothing is staged or committed outside the PR's linked worktree on its head branch (#1528).
       ```bash
       cd "{{repo_path}}" || { echo "STOP: cannot enter the PR worktree (#1528)" >&2; exit 1; }
-      unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GH_REPO
+      unset GH_REPO; [ ! -L "{{autodrive_tools_dir}}/git-repo-env.sh" ] && . "{{autodrive_tools_dir}}/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env || { echo "STOP: cannot load git-repo-env.sh from the tools directory (#2033)" >&2; exit 1; }
       bash "{{autodrive_launch_tools}}/autodrive_worktree_guard.sh" commit-dir {{pr_number}} || { echo "STOP: not the PR's linked worktree on its head branch; never stage or commit in the main checkout or another checkout (#1528)" >&2; exit 1; }
       # Commit as the workflow's identity (issue #1394), sourced in THIS block from step-00-tools-dir's git-identity.sh.
       . "{{autodrive_tools_dir}}/git-identity.sh" || { echo "ERROR: git identity helper not found; stop rather than commit under a guessed identity" >&2; exit 2; }

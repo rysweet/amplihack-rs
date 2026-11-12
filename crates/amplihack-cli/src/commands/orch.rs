@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use crate::commands::multitask;
 
 pub(crate) mod autodrive;
+mod autodrive_completion;
 mod named_branch;
 mod select_workflow;
 mod workflow_log_inventory;
@@ -59,6 +60,17 @@ pub enum OrchHelperCommands {
         #[command(subcommand)]
         operation: autodrive::helper::Operations,
     },
+    /// Prepare driver-owned identity and completion dispatch context.
+    AutodriveCompletionPrepare(autodrive_completion::Prepare),
+    /// Seal the round evidence before the next-action agent runs.
+    AutodriveCompletionSeal {
+        #[arg(long)]
+        private_state: PathBuf,
+    },
+    /// Atomically write the agent's typed next action.
+    AutodriveCompletionWrite(autodrive_completion::Write),
+    /// Validate the decision and complete or launch the convergence evaluator.
+    AutodriveCompletionDispatch(autodrive_completion::Dispatch),
     /// Read stdin, print the first complete JSON object found in it.
     ///
     /// Mirrors `orch_helper.extract_json`. Tries, in order: ```json blocks,
@@ -507,6 +519,14 @@ fn read_bounded_stdin() -> String {
 pub fn run(command: OrchHelperCommands) -> Result<()> {
     match command {
         OrchHelperCommands::Autodrive { operation } => autodrive::helper::run(operation),
+        OrchHelperCommands::AutodriveCompletionPrepare(args) => autodrive_completion::prepare(args),
+        OrchHelperCommands::AutodriveCompletionSeal { private_state } => {
+            autodrive_completion::seal(private_state)
+        }
+        OrchHelperCommands::AutodriveCompletionWrite(args) => autodrive_completion::write(args),
+        OrchHelperCommands::AutodriveCompletionDispatch(args) => {
+            autodrive_completion::dispatch(args)
+        }
         OrchHelperCommands::ExtractJson { require_field } => {
             let input = read_stdin()?;
             let found = match require_field.as_deref() {
@@ -981,6 +1001,11 @@ pub fn is_known_type(label: &str) -> bool {
         label,
         "Q&A" | "Operations" | "Investigation" | "Development"
     )
+}
+
+#[cfg(test)]
+pub(crate) fn autodrive_health_verdict(log: &str) -> &'static str {
+    autodrive_completion::health_verdict(log)
 }
 
 #[cfg(test)]

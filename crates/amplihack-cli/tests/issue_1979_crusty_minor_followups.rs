@@ -1618,9 +1618,32 @@ fn crusty_final(d: &Drive) -> Output {
 
 #[test]
 fn crusty_final_accepts_a_minor_only_terminal_record() {
+    if skip() {
+        return;
+    }
     let d = Drive::new();
-    private_file(&d.p("phases.tsv"), "crusty-loop\t2026-11-05T00:00:00Z\n");
     d.loop_writes_round(1, "MINOR_ONLY", 2);
+    d.minor(1, &three()[..2]);
+    // Completion authority comes from actual successful finalization, never
+    // a hand-written marker with missing follow-up obligations (#2336). The
+    // crusty loop's step-03 is an agent step on this branch (#2329), so the
+    // shared finalizer it and the re-review call is run directly.
+    let task = d.tmp.path().join("task.txt");
+    private_file(&task, "Implement the thing");
+    let finalize = tools_dir().join("autodrive_crusty_finalize.sh");
+    let recorded = d.bash(
+        None,
+        &[
+            finalize.as_os_str(),
+            d.state.as_os_str(),
+            OsStr::new(PR),
+            OsStr::new("1979"),
+            task.as_os_str(),
+        ],
+        &[],
+        "",
+    );
+    assert_eq!(recorded.status.code(), Some(0), "{}", show(&recorded));
     let o = crusty_final(&d);
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     assert_eq!(stdout(&o).trim(), "a".repeat(40));
@@ -1823,6 +1846,7 @@ fn round_step06_records_minor_only() {
     let script = step_command(ROUND, "step-06-write-round-record");
     let rec = d.record(1);
     let ctx = json!({"pr": "7", "head_sha": "a".repeat(40)}).to_string();
+    let tools = tools_dir();
     let env: Vec<(&str, &OsStr)> = vec![
         (
             "RECIPE_VAR_crusty_verdict",
@@ -1833,6 +1857,7 @@ fn round_step06_records_minor_only() {
         ("RECIPE_VAR_crusty_round_context", OsStr::new(&ctx)),
         ("AUTODRIVE_ROUND_RECORD", rec.as_os_str()),
         ("AUTODRIVE_ROUND_LABEL", OsStr::new("round-1")),
+        ("AUTODRIVE_LAUNCH_TOOLS", tools.as_os_str()),
     ];
     let o = d.bash(Some(&script), &[], &env, "");
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
@@ -1941,6 +1966,10 @@ fn every_touched_recipe_and_tool_stays_within_400_lines() {
         "amplifier-bundle/tools/autodrive_followups.sh",
         "amplifier-bundle/tools/autodrive_finding_rules.sh",
         "amplifier-bundle/tools/autodrive_loop.sh",
+        "amplifier-bundle/tools/autodrive_loop_record.sh",
+        "amplifier-bundle/tools/autodrive_crusty_record.sh",
+        "amplifier-bundle/tools/autodrive_crusty_finalize.sh",
+        "amplifier-bundle/tools/autodrive_completion_context.sh",
         "amplifier-bundle/tools/autodrive_crusty_rereview.sh",
         "amplifier-bundle/tools/autodrive_state.sh",
         "amplifier-bundle/tools/autodrive_round_evidence.sh",
@@ -2002,7 +2031,10 @@ fn zero_concerns_wording_is_gone() {
 
 #[test]
 fn verdict_allow_lists_admit_minor_only() {
-    let s06 = step_command(ROUND, "step-06-write-round-record");
+    let s06 = read("amplifier-bundle/tools/autodrive_crusty_record.sh");
+    assert!(
+        step_command(ROUND, "step-06-write-round-record").contains("autodrive_crusty_record.sh")
+    );
     assert!(
         s06.contains("CLEAN|MINOR_ONLY|CONCERNS"),
         "step-06 allow-list"
@@ -2095,14 +2127,15 @@ fn only_the_crusty_loops_pass_the_second_clean_token() {
         !ml.contains("--also-clean-token"),
         "the merge-ready loop passes no second token"
     );
-    let rr_collect = rr.find(" collect").expect("re-review runs collect");
-    let rr_done = rr
+    assert!(rr.contains("bash \"$HERE/autodrive_crusty_finalize.sh\""));
+    let finalizer = read("amplifier-bundle/tools/autodrive_crusty_finalize.sh");
+    let collect = finalizer.find(" collect").unwrap();
+    let file = finalizer.find(" file").unwrap();
+    let check = finalizer.find(" check").unwrap();
+    let done = finalizer
         .rfind("autodrive_record_crusty_loop_done")
-        .expect("records done");
-    assert!(
-        rr_collect < rr_done,
-        "collect runs before the loop is recorded done"
-    );
+        .unwrap();
+    assert!(collect < file && file < check && check < done);
 }
 
 #[test]

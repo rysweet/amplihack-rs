@@ -30,6 +30,7 @@ alternatives within the existing loop-health and budget rules.
 - [Authorization](#authorization)
 - [PR head and worktree resolution](#pr-head-and-worktree-resolution)
 - [Crusty review](#crusty-review)
+- [Crusty completion decision contract](autodrive-crusty-completion.md)
 - [Readiness and finalization](#readiness-and-finalization)
 - [Loop health and budgets](#loop-health-and-budgets)
 - [Resumability](#resumability)
@@ -47,7 +48,8 @@ The shell gate, process-identity shim and hook restriction are retired. The bund
 ### How the merge round applies merge-ready
 
 Inside auto-drive, criterion 3 substitutes accepted crusty convergence
-(`CLEAN` or permitted `MINOR_ONLY`, with follow-ups, plus evaluator `DONE`)
+(an evidence-valid `CLEAN` or permitted `MINOR_ONLY` accepted by the
+completion dispatcher, with required follow-ups filed or verified)
 for the separate quality audit. There is **no minimum round count**.
 Standalone `/merge-ready` still requires at least three SEEK → VALIDATE → FIX
 cycles, continuing until clean. The description template's three cycle rows
@@ -60,7 +62,7 @@ cycles. See [all criterion interpretations](auto-drive-evidence.md#authority-and
 | Responsibility | Completion outcome |
 | --- | --- |
 | Prepare or build | Establish PR identity, platform state, head, base, and linked worktree. Run `default-workflow` with `no_merge=true` when a build is needed. End with an open PR. |
-| Crusty review and repair | Repair concerns, commit and push, and re-review until an accepted `CLEAN` or `MINOR_ONLY` record and loop-health `DONE` agree. Bind review to the reviewed head. |
+| Crusty review and repair | Repair concerns, commit and push, and re-review until an evidence-valid `CLEAN` or `MINOR_ONLY` round completes the review objective; the Rust dispatcher accepts completion without a loop-health evaluator call. Unresolved concerns go to loop-health evaluation. Bind review to the reviewed head. |
 | Collect and assess evidence | Apply the trusted merge-ready skill and description template. Collect concrete evidence for all 13 criteria; repair blockers and repeat until readiness and loop-health `DONE` agree. |
 | Authorized finalization | Refresh mutable facts, validate evidence, and carry out only the captured action. With merging disabled, observe and report the open PR. For a merge, protect the expected head and observe platform confirmation. |
 | Report | Reduce accepted records into readiness, requested action, observed platform state, blockers, failures and recovery, and stop reason. |
@@ -212,6 +214,19 @@ Re-reviews carry the same obligations. Failure to file, resolve the task, or
 record the parent comment blocks readiness. Dry-run suppresses creation and
 reports missing obligations; `no_merge=true` alone permits follow-up work.
 
+After each round record is written, an agent step
+(`autodrive-crusty-round.yaml` `step-07-select-next-action`) selects
+`complete` or `evaluate`. Rust validates the decision, the child status
+and the current review evidence before dispatch. Primary reviews and
+merge-ready rereviews use the same path. Completion state lives in
+`autodrive_completion_state`, separate from `autodrive_state_dir`. See
+the [Crusty completion contract](autodrive-crusty-completion.md).
+
+Ending iteration does not finish the phase: required follow-ups are
+filed or verified and receipts validated before the completion marker is
+written. A filing failure, or a dry run with unrecorded required
+follow-ups, leaves the phase incomplete.
+
 #### Cell sanitising
 
 Finding identifiers are exact stable tokens. The shared finding rules remove control characters from display cells and escape HTML or table delimiters. Summaries are data; they cannot create new records or change a finding's identifier or severity. Follow-up mappings retain the finding ID, observed issue number, plan task and PR identity. The final structured report includes those mappings separately from readiness evidence.
@@ -267,15 +282,22 @@ the agent chooses.
 
 ## Loop health and budgets
 
-The existing convergence engine remains in place. Each round ends with
-`loop-health-evaluator`: `CONTINUE`, `DONE`, or `STUCK`.
+The existing convergence engine remains in place for unresolved work.
+Completed crusty objectives exit before evaluation. Unresolved crusty
+reviews and every merge-ready round end with `loop-health-evaluator`:
+`CONTINUE`, `DONE`, or `STUCK`.
 
 ### Advancing needs two independent signals
 
-Completion requires both an accepted round verdict (`CLEAN` or derived
-`MINOR_ONLY` for crusty; `MERGE_READY` for readiness) and evaluator `DONE`.
-Inconsistent `DONE` triggers recovery within budget. Measured failures
-override a permissive assessment.
+Crusty completion needs the agent's `complete` decision and independent
+Rust validation of that decision, successful child status and current
+review evidence. It preserves the actual verdict (`MINOR_ONLY` is not
+rewritten to `CLEAN`) and round accounting. An evaluator `DONE` cannot
+complete an unresolved crusty review.
+
+Merge-ready completion needs both a machine-checked `MERGE_READY` round
+and evaluator `DONE`. Inconsistent `DONE` triggers recovery within
+budget. Measured failures override a permissive assessment.
 
 ### Reading the loop-health line
 
@@ -293,6 +315,7 @@ Missing or unreadable evaluator output is never success. See
 For a non-clean round, unchanged head, sorted open-item set, and CI signal,
 with CI no longer pending, produces `STUCK`. Budget exhaustion is separate,
 checked before starting more work. Budgets limit cost, not convergence.
+A completed crusty objective is exempt; it does not reach these checks.
 
 ### Budget keys and defaults
 
@@ -408,6 +431,16 @@ instructions. Rust helpers validate and snapshot records, manage state, check
 local Git relationships, and reduce outcomes. They do not contact hosting
 services, judge semantic readiness, or merge.
 
+Before any `git` or `gh` call, the merge-round and
+merge-evidence steps clear the `GIT_*` repository selectors and the
+outer run's `AMPLIHACK_*` names listed in
+[`git-repo-env.sh`](git-repo-env-helper.md) (#2033). The merge round
+finds its tools under `$AMPLIHACK_HOME`, `$REPO_PATH`, `~/.copilot`,
+then `~/.amplihack`, and never searches the git toplevel, which an
+inherited `GIT_WORK_TREE` could redirect. Merge-round QA evidence
+records the cleared names, never values, in `git_env_cleared` and
+`run_env_cleared`.
+
 The implementation retires the shell gate and its enforcement dependencies.
 The execution path does not require `/proc` process identity,
 `autodrive_merge_gate.sh`, gate-resolved `gh`, a shim on `PATH`,
@@ -445,3 +478,5 @@ runtime compatibility.
 - [Auto-drive-light](auto-drive-light.md)
 - [Merge-ready authority](../../amplifier-bundle/skills/merge-ready/SKILL.md)
 - [Framework source selection](framework-source-selection.md)
+- [Crusty completion contract](autodrive-crusty-completion.md)
+- [Git repository environment helper](git-repo-env-helper.md)

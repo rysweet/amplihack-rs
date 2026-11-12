@@ -787,7 +787,7 @@ expect pick-config-invalid "gadugi required, broken qa.toml, no scenarios" qa_st
 echo "== #1763 fallback: a missing or symlinked scope file blocks =="
 for mode in missing symlink; do
     T="$WORK/tools-$mode"; mkdir -p "$T"
-    for t in autodrive_qa_evidence.sh autodrive_state.sh autodrive_trust.sh autodrive_unmerged.sh; do
+    for t in autodrive_qa_evidence.sh autodrive_state.sh autodrive_trust.sh autodrive_unmerged.sh git-repo-env.sh; do
         [ -f "$TOOLS/$t" ] && cp "$TOOLS/$t" "$T/"
     done
     [ "$mode" = symlink ] && [ -f "$SCOPE" ] && ln -s "$SCOPE" "$T/autodrive_qa_scope.sh"
@@ -804,7 +804,7 @@ done
 # The scope file is there but the sources file is not: detection works, yet
 # qa.toml cannot be read, so the evidence blocks rather than ignore it.
 T="$WORK/tools-nosources"; mkdir -p "$T"
-for t in autodrive_qa_evidence.sh autodrive_state.sh autodrive_trust.sh autodrive_unmerged.sh autodrive_qa_scope.sh; do
+for t in autodrive_qa_evidence.sh autodrive_state.sh autodrive_trust.sh autodrive_unmerged.sh autodrive_qa_scope.sh git-repo-env.sh; do
     cp "$TOOLS/$t" "$T/"
 done
 repo Cargo.toml src/lib.rs; base; change src/lib.rs

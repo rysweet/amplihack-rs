@@ -96,8 +96,20 @@ the final step, so an unexpected earlier merge is a workflow violation.
 `LoopCompletion` has `accepted_round_verdict` (`READY` or `NOT_READY`),
 `evaluator_verdict` (`DONE`, `CONTINUE`, `STUCK`), and `stop_reason`:
 `completed`, `blockers`, `no_progress`, `budget_exhausted`, `usage_limit`,
-`orphaned`, `dependency_failure`, `terminal_refusal`. Both READY and DONE
-are required to complete. The local reducer also requires this invocation's fresh loop receipt, written by the convergence engine after both signals agree and bound to the accepted round bytes. Agents must not write receipts. Old markers are not this invocation's completion.
+`orphaned`, `dependency_failure`, `terminal_refusal`.
+
+`LoopCompletion` describes the merge-ready loop. It completes only with
+`READY` and `DONE`. The local reducer also requires this invocation's
+fresh loop receipt, which the merge-ready loop writes after an accepted
+`MERGE_READY` round and evaluator `DONE`, bound to the accepted round
+bytes. Agents must not write receipts. Old markers are not this
+invocation's completion.
+
+The crusty phase is not a `LoopCompletion`. An evidence-valid `CLEAN` or
+`MINOR_ONLY` round completes it without an evaluator call
+(`source=objective-completion`, `loop_result=DONE`), once each required
+follow-up is filed or verified. See
+`docs/reference/autodrive-crusty-completion.md`.
 
 The final agent returns exactly:
 `{"candidate": CandidateRecord, "finalization": FinalizationObservation,

@@ -118,6 +118,7 @@ steps:
         --state-dir "$DIR" \
         --context "repo_path=$PR_WORKTREE" \
         --context "pr_number=${PR}" \
+        --context "plan_task_id=${RECIPE_VAR_plan_task_id:-}" \
         --context "pr_url=${PR_URL:-}" \
         --context "no_merge=${RECIPE_VAR_no_merge:-true}" \
         --context "autodrive_dry_run=${RECIPE_VAR_autodrive_dry_run:-false}" \

@@ -631,6 +631,7 @@ fn crusty_round_has_no_light_branch_in_any_step() {
             "step-04-address-concerns",
             "step-05-verify-concerns-addressed",
             "step-06-write-round-record",
+            "step-07-select-next-action",
         ]
     );
     let step = |id: &str| {
@@ -672,8 +673,8 @@ fn crusty_round_has_no_light_branch_in_any_step() {
     );
     assert_eq!(
         round["context"].as_mapping().unwrap().len(),
-        12,
-        "shared authorization and dry-run context reach the crusty round"
+        13,
+        "completion state, shared authorization and dry-run context reach the crusty round"
     );
 }
 

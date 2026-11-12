@@ -467,6 +467,51 @@ Focused tests:
 cargo test -p amplihack-cli issue_1955
 ```
 
+### Testing the walk-ups
+
+The current-directory and executable walk-ups in `commands/install/clone.rs`
+read the filesystem through a private view, `FsView`, with three operations
+that match the production checks one for one:
+
+| Operation | Used for | Production behaviour (`RealFs`) |
+|---|---|---|
+| `exists(path)` | `.git`, as a directory or a worktree's `.git` file | `Path::exists` |
+| `is_dir(path)` | `amplifier-bundle`, `.claude` | `Path::is_dir` |
+| `regular_file_head(path, limit)` | `Cargo.toml` | `symlink_metadata().is_file()`, then open, then read at most `limit` (64 KiB) bytes (SEC-11). Anything that is not a regular file gives `None`. |
+
+`is_repository_root`, `has_bundle` and `looks_like_amplihack_source_in`,
+each taking the view and a directory, run the existing checks, in the
+existing order, against any view. Production passes `RealFs`, so install
+behaviour is unchanged: the #1275 bound, the #341 ordering and the
+`NotAmplihackSource` and `OutsideStartingRepository` notes are the same.
+
+The walk-up unit tests build a `Layout` instead: a map from path to `Dir`,
+`File(bytes)` or `Other` (for example a FIFO). A `Layout` implies no parent
+directories, so a test lists every entry it needs. These tests create no
+directories and do not depend on what lies above `TMPDIR`; a stray `.git`
+in `/tmp` cannot change their result. The one exception is
+`regular_file_head_stops_at_the_limit`, which tests `RealFs` and so writes a
+real file in a scratch directory; it reads only that file and walks up
+nothing.
+
+| Test | Checks |
+|---|---|
+| `walk_up_finds_the_checkout_that_contains_the_current_directory` | The checkout above the current directory is found (#341). |
+| `a_bundle_in_an_ancestor_outside_the_repository_is_refused_and_reported` | The walk stops at the repository root and reports `OutsideStartingRepository` (#1275). |
+| `without_an_enclosing_repository_only_the_starting_directory_is_considered` | With no `.git` marker, only the starting directory is a candidate. |
+| `a_directory_that_merely_carries_a_bundle_is_not_an_install_source` | A bundle alone is refused; a workspace `Cargo.toml` is accepted; an `Other` entry named `Cargo.toml` is refused. |
+| `a_git_file_marks_a_worktree_root` | A `.git` file marks a worktree root, not only a `.git` directory. |
+| `the_executable_walk_up_stays_inside_its_own_checkout` | The executable walk-up is bounded by its own checkout. |
+| `the_current_checkout_outranks_the_compile_time_workspace` | The #341 ordering, through `resolve_with_fs`. |
+| `the_walk_scope_ends_at_the_first_repository_marker` | The walk-up scope runs from the starting directory to the first repository marker; with no marker it is the starting directory alone. |
+| `the_source_check_is_asked_only_of_a_directory_with_a_bundle` | The walk is lazy (SR-7): the `.claude` and `Cargo.toml` checks run only where a bundle is, and an accepted walk asks nothing above its repository. |
+| `regular_file_head_stops_at_the_limit` | `RealFs` reads no more than `limit` bytes. |
+
+The predicate tests cover each marker: a `.git` file or directory, a
+bundle directory (only a directory counts), a `Cargo.toml` with and without
+the workspace marker, an `Other` named `Cargo.toml`, and a `.claude`
+directory.
+
 ## See also
 
 - [Repair a stale framework bundle](../howto/repair-stale-framework-bundle.md) -

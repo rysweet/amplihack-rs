@@ -44,11 +44,11 @@ context:
   quick_change_push_repaired: ""
 
 steps:
-  # Step 1: a new quick/ branch from workflow-worktree; inherited targets are cleared.
+  # Step 1: a new quick/ branch from origin/HEAD, the base quick-change-create-pr targets; inherited targets and base_branch are cleared, strict_delivery is not (docs/reference/workflow-delivery-inputs.md).
   - id: "quick-change-worktree"
     type: "recipe"
     recipe: "workflow-worktree"
-    context: { branch_prefix: "quick", existing_branch: "", pr_number: "" }
+    context: { branch_prefix: "quick", existing_branch: "", pr_number: "", base_branch: "", forbidden_base_branches: "" }
 
   # Step 2: before the agent: check the branch and identity, pin the base, snapshot git config (S2-S4).
   - id: "quick-change-record-base"
