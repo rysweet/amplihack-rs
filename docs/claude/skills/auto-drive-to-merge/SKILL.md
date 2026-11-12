@@ -162,8 +162,9 @@ relaunch the drive with the same PR and state directory. Completed phases
 retain their existing resumability rules; a refusal never completes a review
 phase or writes a successful loop result.
 
-See the [preflight reference](../../../docs/reference/auto-drive-to-merge.md#a-worktree-that-is-not-at-the-pr-head)
-for ordering, publication and helper contracts.
+See "A worktree that is not at the PR head" in
+`docs/reference/auto-drive-to-merge.md` for ordering, publication and helper
+contracts.
 
 ## Why there is no iteration cap
 
