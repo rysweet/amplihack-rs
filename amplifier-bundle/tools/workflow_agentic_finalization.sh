@@ -4,6 +4,15 @@ set -euo pipefail
 export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
 
 mode="${1:-}"
+# collect [--base BRANCH]: BRANCH is the run's base_branch, the base step-16
+# gave the pull request. The evidence's diff is taken against origin/BRANCH;
+# empty keeps origin/HEAD (docs/reference/workflow-delivery-inputs.md).
+FINALIZATION_BASE_BRANCH=""
+if [ "$mode" = collect ] && [ "${2:-}" = "--base" ]; then FINALIZATION_BASE_BRANCH="${3:-}"; fi
+if [ -n "$FINALIZATION_BASE_BRANCH" ] && ! git check-ref-format --branch "$FINALIZATION_BASE_BRANCH" >/dev/null 2>&1; then
+  printf 'ERROR: workflow_agentic_finalization.sh: --base %q is not a valid branch name\n' "$FINALIZATION_BASE_BRANCH" >&2
+  exit 2
+fi
 
 # run_finalization_cleanup (issue #808)
 # Deterministic, fail-soft finalization cleanup invoked before evidence

@@ -2,16 +2,10 @@
 //!
 //! Recipe runs set `TMPDIR` inside `~/.amplihack`, which holds a real
 //! framework install (`amplifier-bundle/` and `.claude/`). A test that builds
-//! its fixture under such a `TMPDIR` is then exposed in one of four ways, each
+//! its fixture under such a `TMPDIR` is then exposed in one of three ways, each
 //! of which failed in the PR #1971 QA run (`cargo test --workspace --locked
 //! --no-fail-fast`, `TMPDIR=~/.amplihack/work/runs/<id>/runtime/tmp`):
 //!
-//! - `install::clone` `walk_up`: the walk-up itself stops at the repository
-//!   containing the start directory, or at the start directory when there is
-//!   none (`walk_up_scope`, issue #1275). The `OutsideStartingRepository`
-//!   note does not: it scans every ancestor above that boundary for
-//!   `amplifier-bundle/`, so it names `~/.amplihack`, and a test asserting
-//!   the exact notes fails.
 //! - `env_builder` `find_bundle_root`: an unbounded ancestor scan for
 //!   `amplifier-bundle/`, so `AMPLIHACK_HOME` resolves to `~/.amplihack`
 //!   instead of the value the test set up.
@@ -28,9 +22,10 @@
 //! and panics, naming the reason for each, when none qualifies: a silent
 //! fallback would bring back the misleading failure it exists to prevent.
 //!
-//! A stray repository marker above the base (`/tmp/.git`, issue #1937) is a
-//! different fault with its own guard in `install::clone`'s tests, and is not
-//! checked here.
+//! `install::clone`'s walk-up is not a reason for this rule any more: its
+//! tests run the walk over a synthetic layout and read no real directory
+//! (issue #2196), so neither a framework install nor a stray repository
+//! marker above the base (`/tmp/.git`, issue #1937) can change them.
 //!
 //! This file uses only `std`. `amplihack-cli`'s `test_support`, the
 //! `cli_integration` target, `amplihack-hooks`' `user_prompt` tests and

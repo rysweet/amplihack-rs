@@ -42,6 +42,7 @@ pub enum Changed {
     /// A swap's target is still a candidate, but its trusted account
     /// is not the one it had when it was measured.
     TargetIdentity,
+    Affinity,
 }
 
 impl Changed {
@@ -54,6 +55,7 @@ impl Changed {
             Self::Overflow => "overflow".into(),
             Self::Target(why) => format!("target eligibility: {}", target_reason(*why)),
             Self::TargetIdentity => "target identity".into(),
+            Self::Affinity => "organisation affinity".into(),
         }
     }
 
@@ -109,7 +111,7 @@ fn still_eligible(first: &Snap, fresh: &Snap, name: &ProfileName) -> bool {
         found.and_then(|(_, a)| a.clone())
     };
     let same = match (of(first), of(fresh)) {
-        (Some(a), Some(b)) => a.same(&b),
+        (Some(a), Some(b)) => a.same(&b) && a.org() == b.org(),
         (None, None) => true,
         _ => false,
     };
@@ -118,7 +120,7 @@ fn still_eligible(first: &Snap, fresh: &Snap, name: &ProfileName) -> bool {
 
 fn same_account(a: Option<&Account>, b: Option<&Account>) -> bool {
     match (a, b) {
-        (Some(a), Some(b)) => a.same(b),
+        (Some(a), Some(b)) => a.same(b) && a.org() == b.org(),
         (None, None) => true,
         _ => false,
     }
@@ -252,6 +254,25 @@ pub fn check(
     if reread {
         (ctx.pause)(ctx);
         (fresh, why) = compare(ctx, state, first, &m.decision)?;
+    }
+    // Re-evaluate the permitted pool under the execution lock. A newly
+    // available same-organisation alternative can invalidate a crossing;
+    // existing measurements are reused, without probing under the lock.
+    if why.is_empty()
+        && matches!(m.decision, Decision::Swap { .. })
+        && let Some((probe, probes)) = &m.probed
+    {
+        let probes = probes
+            .iter()
+            .filter(|(n, _)| fresh.candidates.contains(n))
+            .cloned()
+            .collect();
+        let counted = std::mem::replace(&mut ctx.failed_live, failed_before);
+        let refreshed = decide_measured(ctx, &fresh, probe.clone(), probes, m.measured_at);
+        ctx.failed_live = counted;
+        if refreshed?.decision != m.decision {
+            why.push(Changed::Affinity);
+        }
     }
     let verdict = reconsider(ctx, first, fresh, why, m, failed_before)?;
     Ok(Checked { reread, verdict })
