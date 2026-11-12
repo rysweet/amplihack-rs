@@ -1681,6 +1681,25 @@ When GitHub refuses the GraphQL rollup behind `gh pr checks`
 reports `UNREADABLE` and QA does not run. There is no REST fallback in this
 step; #2333 is not fixed here.
 
+When step-01 published a new head this round (`merge_sync` `decision` is
+`merged` or `conflict-resolved`), step-03b does not read its checks at all.
+GitHub creates workflow runs some time after a push, so a read seconds later
+would see zero checks (`NO_CHECKS`), a refused rollup (`UNREADABLE`) or only
+some workflows (`MISSING`), none of which describes the build. The step
+reports `PENDING` with `ci_signal` `just-pushed` and zero counts instead, and
+the next round reads the checks:
+
+```json
+{"ci_status":"PENDING","ci_total":"0","ci_pending":"0","ci_failing":"0","head_sha":"219fee3daf8960880adf143c504c453f309f91a4","ci_signal":"just-pushed"}
+```
+
+Both merge-round prompts treat that record as the `ci-pending` wait. A head
+pushed by an earlier round's builder can still read `NO_CHECKS`, `MISSING`
+or `UNREADABLE`; the assessor reports that as `ci-not-observed`, and the
+builder is told never to push, amend or add an empty commit to start CI, and
+to change a workflow only where it has read that the PR's own diff stops CI
+running.
+
 The step ends with one JSON object, every value a string:
 
 ```json
@@ -1717,7 +1736,8 @@ works in this order:
    the evidence to another repository's head;
 3. passes `RECIPE_VAR_ci_evidence` through
    `amplihack orch helper extract-json --require-field ci_status`, which takes
-   the JSON object with a `ci_status` field out of the agent's output, and
+   the JSON object with a `ci_status` field out of step-03b's output (a bash
+   step that prints one JSON line; no agent writes `ci_evidence`), and
    sends that object on standard input to
    `amplihack orch helper ci-evidence-ready --head "$HEAD_SHA"`. The evidence
    reaches the helper in no other way, never as an argument or through the
@@ -1839,7 +1859,7 @@ shown to be followed.
 | Each row of the check table above, an upper-case head, and a lower-case `green` | Unit tests in `ci_evidence.rs` |
 | A clean pull request whose CI is in progress, then green, reaches `PASS` with no base push: `merge_sync` with `decision` `no-update` gives `base` `main`; `PENDING` evidence gives `BLOCKED`/`ci-not-ready` and no `cargo` call; `GREEN` evidence gives `PASS` and a `cargo test --locked` call; no `push` or `merge` is run and `HEAD` is unchanged | `clean_pr_ci_in_progress_then_green_reaches_merge_ready_without_base_push` in `tests/integration/issue_2342_evidence/workflow.rs`, with recording `cargo` and `git` stubs |
 | An empty `HEAD_SHA` blocks QA; input over 64 KiB is refused by the built binary | the same file |
-| Step-01 names `no-update`, the conflict rule and the required-update rule; step-03b is the only writer of `ci_evidence`, is bash, uses `gh pr checks`, and no step runs `gh run watch` or `gh run view`; the recipe has no `sleep`, `backoff`, `retry` or `interval`; one agent step (step-01); step-02 sets `AUTODRIVE_REQUIRE_CI=true`; step-00, step-01, step-03b, step-02 is the file order; both merge-round prompts treat `ci-pending` as a wait for the next round | `ci_is_read_once_by_one_bash_step_with_no_wait`, `step_order_is_guard_then_sync_then_ci_read_then_qa` and `pending_ci_is_a_wait_for_the_next_round_not_builder_work` in the same file, and the `NO-SLEEP`, `CI-READ-ONCE`, `CI-ONE-WRITER`, `CI-READ-BASH` and `EVID-ONE-AGENT` checks in `test-auto-drive-to-merge.sh` |
+| Step-01 names `no-update`, the conflict rule and the required-update rule; step-03b is the only writer of `ci_evidence`, is bash, uses `gh pr checks`, and no step runs `gh run watch` or `gh run view`; the recipe has no `sleep`, `backoff`, `retry` or `interval`; one agent step (step-01); step-02 sets `AUTODRIVE_REQUIRE_CI=true`; step-00, step-01, step-03b, step-02 is the file order; both merge-round prompts treat `ci-pending`, `just-pushed` included, as a wait for the next round, and tell the builder never to push to start CI for `ci-not-observed` (`NO_CHECKS`, `MISSING`, `UNREADABLE`); step-03b after a step-01 `merged` or `conflict-resolved` reports `PENDING`/`just-pushed` without reading checks, and passes only the validated head to the expected-checks tool | `ci_is_read_once_by_one_bash_step_with_no_wait`, `step_order_is_guard_then_sync_then_ci_read_then_qa` `pending_ci_is_a_wait_for_the_next_round_not_builder_work` and `ci_read_after_a_step_01_push_is_pending_without_reading_checks` in the same file, and the `NO-SLEEP`, `CI-READ-ONCE`, `CI-ONE-WRITER`, `CI-READ-BASH` and `EVID-ONE-AGENT` checks in `test-auto-drive-to-merge.sh` |
 | Pending evidence runs no suite, green evidence runs it, and no push is made | the shell acceptance case in `test-auto-drive-to-merge.sh` |
 | Step-01 has no bash step that runs `git merge` or `git push` unconditionally, and its prompt contains the clean-PR no-update rule, the unreadable-rules fallback, the loading line above and the `git-repo-env-unavailable` fallback; step-00 stops on a missing or symlinked helper and passes on a working one; step-03b names no push, merge, rerun, cancel, watch, `--method` or `sleep`; step-02 contains `AUTODRIVE_REQUIRE_CI=true` after main's #2033 prelude | `base_sync_prompt_clears_git_env_before_any_git_write`, `git_env_guard_fails_closed_before_the_step_01_agent`, `ci_read_step_is_read_only` and `qa_step_requires_ci_after_the_2033_prelude` in `workflow.rs` |
 | `AUTODRIVE_REQUIRE_CI` unset or set to `1`, `yes` or `TRUE` gives no `ci-not-ready`; only `true` turns the gate on | `only_exact_true_turns_the_ci_gate_on` in `workflow.rs` |

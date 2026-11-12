@@ -173,6 +173,20 @@ steps:
       HB="$(gh pr view "$PR" --json headRefOid,baseRefName --jq '.headRefOid + " " + .baseRefName' 2>/dev/null)" || HB=""
       H="${HB%% *}"; B="${HB#* }"
       HS="$(printf '%s' "$H" | grep -xE '[0-9a-fA-F]{40}|[0-9a-fA-F]{64}' || printf '')"
+      # A head step-01 published this round has no check suites yet: GitHub
+      # creates workflow runs some time after the push, so a read now gives
+      # zero checks (NO_CHECKS), a refused rollup (UNREADABLE) or a partial set
+      # (MISSING), none of which says anything about the build. Such a head is
+      # PENDING with signal just-pushed, and its checks are not read: the next
+      # round reads them. No wait here, and nothing for a builder to fix.
+      SYNC_DECISION="$(printf '%s' "${RECIPE_VAR_merge_sync:-}" | amplihack orch helper extract-json --require-field decision 2>/dev/null \
+        | amplihack orch helper extract-field --field decision --default '' 2>/dev/null)" || SYNC_DECISION=""
+      case "$SYNC_DECISION" in
+        merged|conflict-resolved)
+          echo "INFO: step-01 published ${HS:-an unknown head} this round (${SYNC_DECISION}); its CI has not been created yet, so it is PENDING until the next round reads it (#2342)" >&2
+          printf '{"ci_status":"PENDING","ci_total":"0","ci_pending":"0","ci_failing":"0","head_sha":"%s","ci_signal":"just-pushed"}\n' "$HS"
+          exit 0 ;;
+      esac
       JSON="$(gh pr checks "$PR" --json name,state,bucket 2>/dev/null)"
       TOTAL="$(printf '%s' "$JSON" | jq -r 'length' 2>/dev/null)"
       PENDING="$(printf '%s' "$JSON" | jq -r '[.[]|select(.bucket=="pending")]|length' 2>/dev/null)"
@@ -196,8 +210,9 @@ steps:
       if [ "$STATUS" = "GREEN" ]; then
         ECS=""; EC_RC=1
         if [ -n "${AMPLIHACK_HOME:-}" ] && [ -f "${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_expected_checks.sh" ] \
-           && [ -n "$H" ] && [ -n "$B" ] && [ "$H" != "$HB" ]; then
-          EC_OUT="$(/bin/bash -p "${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_expected_checks.sh" "$H" "$B" 2>/dev/null)"; EC_RC=$?
+           && [ -n "$HS" ] && [ -n "$B" ] && [ "$H" != "$HB" ]; then
+          # Only the head checked as a full object ID above is passed on.
+          EC_OUT="$(/bin/bash -p "${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_expected_checks.sh" "$HS" "$B" 2>/dev/null)"; EC_RC=$?
           EC_LAST="$(printf '%s\n' "$EC_OUT" | tail -n1)"
           ECS="$(printf '%s' "$EC_LAST" | jq -r '.ci_status // empty' 2>/dev/null)"
         fi

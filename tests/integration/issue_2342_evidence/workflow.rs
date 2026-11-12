@@ -498,8 +498,25 @@ fn pending_ci_is_a_wait_for_the_next_round_not_builder_work() {
         "There is nothing to fix",
         "make no change, no commit and no push",
         "do not wait",
+        "`ci_signal` `just-pushed` is this case",
+        "**`ci-not-observed`** (`ci_status` `NO_CHECKS`, `MISSING` or `UNREADABLE`)",
+        "Never push, amend or add an empty or \"trigger CI\" commit to start CI",
     ] {
         assert!(builder.contains(needed), "step-04 must contain {needed:?}");
+    }
+    // Crusty round 3 on #2344: a head pushed moments ago has no checks yet.
+    // The assessor must class just-pushed as the wait, and must not leave
+    // NO_CHECKS / MISSING / UNREADABLE without a rule.
+    for needed in [
+        "That includes `ci_signal` `just-pushed`",
+        "`ci_status` `NO_CHECKS`, `MISSING` or `UNREADABLE` means CI was not observed at this head",
+        "report the blocker `ci-not-observed`",
+        "never a reason to push",
+    ] {
+        assert!(
+            assess.contains(needed),
+            "assessment must contain {needed:?}"
+        );
     }
 }
 
@@ -1411,6 +1428,61 @@ fn ci_read_reports_pending_before_failing() {
             .contains("still pending"),
         "{}",
         diagnostic(&qa_out)
+    );
+}
+
+/// Crusty round 3 on #2344: step-03b runs seconds after step-01, and a head
+/// step-01 has just pushed has no check suites yet, so reading it would give
+/// NO_CHECKS, UNREADABLE or MISSING. After a `merged` or `conflict-resolved`
+/// sync the step reports PENDING / just-pushed without reading the checks;
+/// after `no-update` it reads them as before.
+#[test]
+fn ci_read_after_a_step_01_push_is_pending_without_reading_checks() {
+    let f = Fixture::new();
+    let tools = super::super::workspace_root().join("amplifier-bundle/tools");
+    // What the real `gh pr checks` gives for a head GitHub has not started.
+    let none_yet = "[]";
+    for decision in ["merged", "conflict-resolved"] {
+        // The agent's output, prose and all, as step-01 hands it on.
+        let sync = format!(
+            "Merged origin/main and pushed.\n{{\"base\":\"main\",\"synced\":\"true\",\"conflict\":\"false\",\"head_sha\":\"{}\",\"decision\":\"{decision}\"}}",
+            f.head
+        );
+        let (out, log) = ci_read(&f, none_yet, &tools, &[("RECIPE_VAR_merge_sync", sync)]);
+        assert!(out.status.success(), "{}\n{log}", diagnostic(&out));
+        let record = ci_record(&out);
+        assert_eq!(record["ci_status"], "PENDING", "{decision}: {}", diagnostic(&out));
+        assert_eq!(record["ci_signal"], "just-pushed", "{decision}");
+        assert_eq!(record["head_sha"], f.head.as_str(), "{decision}");
+        assert!(
+            !log.contains("args=pr checks"),
+            "{decision}: the checks of a just-pushed head must not be read: {log}"
+        );
+        // The QA gate blocks it as a wait, without running repository code.
+        let (qa_out, evidence) = f.qa(&f.repo, &record.to_string(), &[]);
+        f.assert_blocked_without_running_code(&qa_out, &evidence);
+    }
+
+    // A no-update sync leaves the published head and its CI alone, so the
+    // checks are read, and zero checks is still NO_CHECKS, not a pass.
+    let (out, log) = ci_read(
+        &f,
+        none_yet,
+        &tools,
+        &[("RECIPE_VAR_merge_sync", f.no_update_sync().to_string())],
+    );
+    assert!(out.status.success(), "{}\n{log}", diagnostic(&out));
+    assert_eq!(ci_record(&out)["ci_status"], "NO_CHECKS", "{}", diagnostic(&out));
+    assert!(log.contains("args=pr checks"), "{log}");
+
+    // Only the head validated as a full object ID reaches the gate tool.
+    let recipe = recipe_yaml(RECIPE);
+    let command = field(output_step(&recipe, "ci_evidence"), "command");
+    assert!(
+        command.contains("autodrive_expected_checks.sh\" \"$HS\" \"$B\"")
+            && command.contains("[ -n \"$HS\" ]")
+            && !command.contains("autodrive_expected_checks.sh\" \"$H\""),
+        "step-03b must pass the validated head ($HS) to the expected-checks tool"
     );
 }
 

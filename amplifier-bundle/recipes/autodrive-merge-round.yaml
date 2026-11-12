@@ -227,7 +227,7 @@ steps:
         saying whether a review is missing); `approval-facts-unreadable` belongs to `UNREADABLE`, and means the
         measurement itself failed this round. Neither is a person's job: the next round reads the approval again.
       - **Criterion 8:** GitHub applies protection and rulesets to `merge_state`; `CLEAN`, `HAS_HOOKS` or `UNSTABLE` means none blocks the merge. A 404 from the protection API is a token without admin rights, not a blocker.
-      - **Freshness and CI waiting (#2342):** CI on the current head is read once per round, before QA, and never waited on inside the round; `ci_status` `PENDING` (QA `BLOCKED` with `qa_reason` `ci-not-ready`) is a wait for the next round, never a failed criterion or work for a builder: report it as the blocker `ci-pending` and nothing else for CI. CI, QA, worktree and published heads must agree; a moved head is collected
+      - **Freshness and CI waiting (#2342):** CI on the current head is read once per round, before QA, and never waited on inside the round; `ci_status` `PENDING` (QA `BLOCKED` with `qa_reason` `ci-not-ready`) is a wait for the next round, never a failed criterion or work for a builder: report it as the blocker `ci-pending` and nothing else for CI. That includes `ci_signal` `just-pushed`: step-01 published that head this round, GitHub has not created its runs yet, and its checks were deliberately not read. `ci_status` `NO_CHECKS`, `MISSING` or `UNREADABLE` means CI was not observed at this head, often because its runs were not created yet after a push: report the blocker `ci-not-observed` with `ci_signal` as its evidence. It is a failed criterion, but never a reason to push. CI, QA, worktree and published heads must agree; a moved head is collected
         again next round (never overwrite the QA record). Never push because the base moved: synced=false with decision no-update is correct; with policy_status unreadable only a verified conflict justifies an update.
 
       Every other criterion applies exactly as SKILL.md states it. Work every criterion against this PR and update
@@ -323,8 +323,8 @@ steps:
         delete or weaken a failing scenario to reach a pass. If
         `gadugi_scenario_dir` is absolute or outside this repository, write
         nothing there; report `gadugi-scenario-dir-outside-repo`.
-      - **`ci-pending`** (`ci_status` `PENDING`, `qa_reason` `ci-not-ready`): CI on this head is still running. There is nothing to fix:
-        make no change, no commit and no push, do not rerun, cancel or watch a run, and do not wait; the next round reads CI again (#2342).
+      - **`ci-pending`** (`ci_status` `PENDING`, `qa_reason` `ci-not-ready`): CI on this head is still running. There is nothing to fix: make no change, no commit and no push, do not rerun, cancel or watch a run, and do not wait; the next round reads CI again (#2342). `ci_signal` `just-pushed` is this case: step-01 pushed the head this round and its runs do not exist yet.
+      - **`ci-not-observed`** (`ci_status` `NO_CHECKS`, `MISSING` or `UNREADABLE`): no check, or not every expected check, was seen at this head; after a push that is the normal state until GitHub creates the runs. Never push, amend or add an empty or "trigger CI" commit to start CI, and do not rerun, cancel or watch a run: a new head restarts every run (#2342). Make a change only when you have read that a workflow definition in this PR's diff stops CI running for it, and say which file and line; otherwise keep the blocker and the next round reads CI again.
       - **`qa-unresolved`**, **`qa-config-invalid`**: operator action, not a code fix: set AUTODRIVE_QA_COMMAND or fix/add .amplihack/qa.toml; keep the blocker.
       - **`gadugi-test-missing`**: only a person can install `gadugi-test`. Do
         not install, stub or work around it; keep this blocker in your report.
