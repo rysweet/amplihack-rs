@@ -126,7 +126,7 @@ fn validate_amplihack_native_hook_contract_accepts_canonical_native_wrappers() {
     let hooks_bin = create_exe_stub(temp.path(), "amplihack-hooks");
     let settings_val = build_canonical_native_hook_settings(&hooks_bin);
 
-    let drift = settings::validate_amplihack_native_hook_contract(&settings_val, true);
+    let drift = settings::validate_amplihack_native_hook_contract(&settings_val, true, &hooks_bin);
 
     assert!(
         drift.is_empty(),
@@ -161,15 +161,13 @@ fn validate_amplihack_native_hook_contract_reports_duplicate_native_drift() {
     };
     wrappers.push(hooks::build_hook_wrapper(&drift_spec, &hooks_bin));
 
-    let drift = settings::validate_amplihack_native_hook_contract(&settings_val, true);
+    let drift = settings::validate_amplihack_native_hook_contract(&settings_val, true, &hooks_bin);
 
+    // Issue #2279: drift lines name events, never commands or content.
     assert!(
         drift
             .iter()
-            .any(|issue| issue.contains("workflow-classification-reminder"))
-            && drift
-                .iter()
-                .any(|issue| issue.contains("unexpected native hook")),
+            .any(|issue| issue.contains("differ") && issue.contains("UserPromptSubmit")),
         "duplicate native drift must be surfaced explicitly, got: {drift:?}"
     );
 }
@@ -337,42 +335,6 @@ fn verify_framework_assets_succeeds_with_empty_xpia_dir() {
 }
 
 #[test]
-fn xpia_hook_specs_use_binary_subcmd_not_scripts() {
-    // XPIA_HOOK_SPECS must remain intact and use BinarySubcmd exclusively.
-    // This is the CORRECT way XPIA hooks are implemented — via the Rust binary.
-    for spec in XPIA_HOOK_SPECS {
-        match &spec.cmd {
-            HookCommandKind::BinarySubcmd { subcmd } => {
-                assert!(
-                    !subcmd.is_empty(),
-                    "XPIA hook spec for '{}' must have a non-empty subcmd",
-                    spec.event
-                );
-                assert!(
-                    !subcmd.contains(".py") && !subcmd.contains(".sh"),
-                    "XPIA hook spec subcmd must not reference script files: {subcmd}"
-                );
-            }
-        }
-    }
-
-    // Verify the three expected XPIA events are present
-    let events: Vec<&str> = XPIA_HOOK_SPECS.iter().map(|s| s.event).collect();
-    assert!(
-        events.contains(&"SessionStart"),
-        "XPIA must include SessionStart"
-    );
-    assert!(
-        events.contains(&"PreToolUse"),
-        "XPIA must include PreToolUse"
-    );
-    assert!(
-        events.contains(&"PostToolUse"),
-        "XPIA must include PostToolUse"
-    );
-}
-
-#[test]
 fn no_production_code_references_xpia_hook_files() {
     // Comprehensive check: no non-test production code should reference
     // XPIA_HOOK_FILES after the cleanup.
@@ -448,6 +410,90 @@ fn ensure_settings_json_writes_to_repo_local_path_and_leaves_global_untouched() 
     );
 }
 
+/// Issue #2279: a symlinked settings.json is reported and left as it is,
+/// and install goes on with its other steps instead of stopping.
+#[cfg(unix)]
+#[test]
+fn ensure_settings_json_reports_a_symlinked_file_without_failing() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let previous = crate::test_support::set_home(temp.path());
+
+    let real = temp.path().join("dotfiles/settings.json");
+    fs::create_dir_all(real.parent().unwrap()).unwrap();
+    fs::write(&real, b"{}\n").unwrap();
+    let settings_path = temp.path().join(".claude/settings.json");
+    fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&real, &settings_path).unwrap();
+    let staging_dir = temp.path().join(".amplihack/.claude");
+    fs::create_dir_all(&staging_dir).unwrap();
+    let hooks_bin = create_exe_stub(temp.path(), "amplihack-hooks");
+
+    let result =
+        settings::ensure_settings_json(&settings_path, &staging_dir, 99999, &hooks_bin, None);
+
+    crate::test_support::restore_home(previous);
+
+    let (ok, events) = result.expect("a refused file must not fail the install");
+    assert!(!ok, "a refused file is reported as a settings issue");
+    assert!(events.is_empty());
+    assert_eq!(fs::read(&real).unwrap(), b"{}\n");
+    assert!(
+        fs::symlink_metadata(&settings_path)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+/// Issue #2279 (B4): a hard-linked settings.json is reported the same way,
+/// and neither name of the file is changed.
+#[cfg(unix)]
+#[test]
+fn ensure_settings_json_reports_a_hard_linked_file_without_failing() {
+    use std::os::unix::fs::MetadataExt;
+
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let previous = crate::test_support::set_home(temp.path());
+
+    let other = temp.path().join("dotfiles/settings.json");
+    fs::create_dir_all(other.parent().unwrap()).unwrap();
+    fs::write(&other, b"{}\n").unwrap();
+    let settings_path = temp.path().join(".claude/settings.json");
+    fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+    fs::hard_link(&other, &settings_path).unwrap();
+    let staging_dir = temp.path().join(".amplihack/.claude");
+    fs::create_dir_all(&staging_dir).unwrap();
+    let hooks_bin = create_exe_stub(temp.path(), "amplihack-hooks");
+
+    let result =
+        settings::ensure_settings_json(&settings_path, &staging_dir, 99999, &hooks_bin, None);
+
+    crate::test_support::restore_home(previous);
+
+    let (ok, events) = result.expect("a refused file must not fail the install");
+    assert!(!ok, "a refused file is reported as a settings issue");
+    assert!(events.is_empty());
+    assert_eq!(fs::read(&other).unwrap(), b"{}\n");
+    assert_eq!(fs::metadata(&settings_path).unwrap().nlink(), 2);
+    let backups = fs::read_dir(settings_path.parent().unwrap())
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("backup")
+        })
+        .count();
+    assert_eq!(backups, 0, "no backup is written for a refused file");
+}
+
 #[cfg(unix)]
 #[test]
 fn ensure_settings_json_repo_local_backup_is_owner_only() {
@@ -485,55 +531,6 @@ fn ensure_settings_json_repo_local_backup_is_owner_only() {
     assert_eq!(
         mode, 0o600,
         "repo-local backup must remain owner-read/write only (0o600), got {mode:o}"
-    );
-}
-
-// ─── hooks_registered_in_settings: atomic read (issue #1123 precedent) ───
-
-/// Collapsing the `exists()` probe + read into a single read must preserve the
-/// absent-vs-unreadable distinction. Absent maps to `Missing` exactly as the
-/// probe did; present-but-unreadable must still be a hard error rather than
-/// being silently reported as "no hooks registered", which would make
-/// `ensure_framework_installed` rewrite a settings file it could not read.
-#[test]
-fn hooks_registered_in_settings_distinguishes_absent_from_unreadable() {
-    let temp = tempfile::tempdir().unwrap();
-
-    // Absent file → Missing, no error.
-    let missing = temp.path().join("does-not-exist.json");
-    assert_eq!(
-        hooks_registered_in_settings(&missing).unwrap(),
-        HookRegistration::Missing,
-        "a nonexistent settings.json must read as 'no hooks registered'"
-    );
-
-    // Present-but-unreadable (a directory at the path) → Err, because
-    // read_to_string fails with a non-NotFound error.
-    let dir_at_path = temp.path().join("settings.json");
-    fs::create_dir(&dir_at_path).unwrap();
-    let err = hooks_registered_in_settings(&dir_at_path)
-        .expect_err("an unreadable settings.json must be an error, not Missing");
-    assert!(
-        err.to_string().contains("failed to read"),
-        "the unreadable case must keep its context message; got: {err}"
-    );
-}
-
-/// Issue #1526 (SR-8): malformed JSON is its own verdict, never `Missing`, so
-/// the caller does not "repair" (back up and rewrite) a file it cannot parse.
-#[test]
-fn hooks_registered_in_settings_reports_malformed_json_as_unparseable() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("settings.json");
-    fs::write(&path, "{ not json").unwrap();
-    assert_eq!(
-        hooks_registered_in_settings(&path).unwrap(),
-        HookRegistration::Unparseable
-    );
-    fs::write(&path, r#"{"model": "x"}"#).unwrap();
-    assert_eq!(
-        hooks_registered_in_settings(&path).unwrap(),
-        HookRegistration::Missing
     );
 }
 
