@@ -177,7 +177,7 @@ steps:
       merge-ready-round-*.json and phases.tsv).
       ## Files you need (#2222)
       The auto-drive state directory is `{{autodrive_record_directory}}`. The PR worktree is `{{repo_path}}` and the main checkout is `{{review_dir}}`. Outside them you need only, by absolute path: this round's record (written at the end of the round; it may not exist yet) `{{autodrive_round_record}}`, the merge-ready criteria `{{merge_ready_files.skill_md}}` and the auto-drive-to-merge skill folder `{{merge_ready_files.auto_drive_skill_dir}}`. The state directory, round record and skill resource paths are required; if any is empty, stop and report the missing input by name. If a named file is missing, report it by name and do not search for it. The deterministic writer owns the round record. Its path grants no permission to create, repair or replace it, or discover an alternative.
-      Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `du`) from /, ~, /d0 or any directory outside the PR worktree and the main checkout named above. Every path you need is given here.
+      Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `du`) from /, ~ or any directory outside the PR worktree and the main checkout named above. Every path you need is given here.
       Write scratch files only under `$TMPDIR` (`mktemp -d "${TMPDIR:-/tmp}/autodrive.XXXXXX"`), never loose in /tmp, and remove them by their literal path before the step ends.
 
       ## Where you are (#1528)
@@ -350,7 +350,7 @@ steps:
       reset, force-push, or edit refs.
       ## Files you need (#2222)
       The auto-drive state directory is `{{autodrive_record_directory}}`. The PR worktree is `{{repo_path}}` and the main checkout is `{{review_dir}}`. Outside them you need only, by absolute path: this round's record (written at the end of the round; it may not exist yet) `{{autodrive_round_record}}`, the merge-ready criteria `{{merge_ready_files.skill_md}}` and the auto-drive-to-merge skill folder `{{merge_ready_files.auto_drive_skill_dir}}`. The state directory, round record and skill resource paths are required; if any is empty, stop and report the missing input by name. If a named file is missing, report it by name and do not search for it. The deterministic writer owns the round record. Its path grants no permission to create, repair or replace it, or discover an alternative.
-      Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `du`) from /, ~, /d0 or any directory outside the PR worktree and the main checkout named above. Every path you need is given here.
+      Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `du`) from /, ~ or any directory outside the PR worktree and the main checkout named above. Every path you need is given here.
       Write scratch files only under `$TMPDIR` (`mktemp -d "${TMPDIR:-/tmp}/autodrive.XXXXXX"`), never loose in /tmp, and remove them by their literal path before the step ends.
 
       Commit normally so the repository's hooks run, then push. Run the block below as

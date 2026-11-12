@@ -223,7 +223,7 @@ steps:
       No state-file discovery is required.
 
       The PR worktree is `{{worktree_setup.worktree_path}}` and the main checkout is `{{light_prereqs.main_checkout}}`.
-      Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `du`) from /, ~, /d0 or any directory outside the PR worktree and the main checkout named above. Every path you need is given here.
+      Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `du`) from /, ~ or any directory outside the PR worktree and the main checkout named above. Every path you need is given here.
 
       If a named file is missing, report it by name and do not search for it.
 

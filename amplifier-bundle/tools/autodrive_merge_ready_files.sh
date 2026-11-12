@@ -20,6 +20,16 @@
 # directory, ../auto-drive-to-merge, so the prompts can give its absolute path
 # (issue #2222).
 #
+# Requirement: any root that ships skills/merge-ready must also ship
+# skills/auto-drive-to-merge beside it. That includes candidates 2 and 3, the
+# repository under review: a consumer repository that ships only merge-ready
+# makes the merge round stop with auto-drive-skill-dir-not-found. Before #2222
+# such a round ran. A missing sibling is a hard stop, not "try the next
+# candidate", for the same reason as a missing template: the criteria and the
+# skill the prompts point at are never taken from two installs. To fix it,
+# ship both skills in the repository, or remove its merge-ready copy so the
+# install's pair is used.
+#
 #   stdout  one line of JSON: skill_dir, skill_md, template, skill_md_sha,
 #           auto_drive_skill_dir
 #   exit 1  ERROR: merge-ready-template-not-found / merge-ready-skill-files-not-found /

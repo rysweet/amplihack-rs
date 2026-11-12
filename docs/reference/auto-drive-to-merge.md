@@ -1519,9 +1519,21 @@ directory lacks `pr-description-template.md`, and with
 or no resolver is found. The sibling folder is checked after the template, and
 fails the step with `ERROR: auto-drive-skill-dir-not-found: <path>` when it is
 missing, or `ERROR: auto-drive-skill-dir-unusable: <path>` when its path holds
-a character the prompts cannot carry (#2222). An install that has
-`merge-ready` without a sibling `auto-drive-to-merge` therefore fails the
-merge round by name. Paths holding `"`, `\`, a control byte, `{{` or `}}`
+a character the prompts cannot carry (#2222).
+
+**Requirement: ship `merge-ready` and `auto-drive-to-merge` together.** A
+root that has `skills/merge-ready` without a sibling `skills/auto-drive-to-merge`
+fails the merge round by name, and the resolver does not try the next
+candidate. This applies to the repository under review as well (candidates
+`$REPO_PATH/amplifier-bundle/skills` and its git toplevel). A consumer
+repository that ships only `merge-ready` got a working merge round before
+#2222; it now stops with `auto-drive-skill-dir-not-found`. This is a
+deliberate change, by the same rule as the template: the criteria and the
+skill folder the prompts point at always come from one install. To fix it,
+ship both skills in the repository, or remove its `merge-ready` copy so the
+install's pair is used.
+
+Paths holding `"`, `\`, a control byte, `{{` or `}}`
 are skipped. A `SKILL.md` from the branch that differs from `origin/HEAD`
 gives `WARNING: merge-ready criteria come from the branch under review`; such
 criteria are advisory, since the gate measures criteria 1 and 3 itself. The
@@ -2366,7 +2378,11 @@ launcher's tools path is unset or empty, with
 `ERROR: crusty-skill-path-not-found: <path>` when either skill is missing, and
 with `ERROR: crusty-skill-path-unusable: <path>` when a path holds `"`, `\`, a
 control byte, `{{` or `}}`. There is no fallback. A path echoed in an error
-before it is checked has its control bytes removed (#2222). `step-06-write-round-record` writes
+before it is checked has its control bytes removed (#2222). Step-01 also adds
+`resolved_fence`: a run of `~` one longer than the longest run of `~` anywhere
+in the resolved findings, and at least four. Step-02 wraps the findings,
+copied byte for byte, in that fence. No line of the findings can therefore
+close it, and the findings stay data. `step-06-write-round-record` writes
 `crusty_verdict`, `concern_count`, `commits_this_round`, `head_sha` (post-fix,
 else reviewed), `reviewed_head_sha`, `round_label`, `test_signal` and
 `ci_signal`, or fails with `ERROR: crusty-head-sha-unavailable`. `autodrive_loop.sh` then copies the
@@ -2701,7 +2717,7 @@ even when the caller's `repo_path` names a linked worktree. It returns
 
 Every prompt contains this exact sentence on its own line:
 
-> Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `du`) from /, ~, /d0 or any directory outside the PR worktree and the main checkout named above. Every path you need is given here.
+> Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `du`) from /, ~ or any directory outside the PR worktree and the main checkout named above. Every path you need is given here.
 
 Each also carries separate guidance:
 

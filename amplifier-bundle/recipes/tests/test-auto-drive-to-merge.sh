@@ -3263,6 +3263,15 @@ if [ -f "${RESOLVER}" ]; then
   rs_run AMPLIHACK_HOME="${RS}/ah"
   rs_expect_error "RESOLVER-auto-drive-skill-dir-not-found" "ERROR: auto-drive-skill-dir-not-found:" \
     "a merge-ready folder without a sibling auto-drive-to-merge fails; another root is not used (#2222)"
+  # The documented requirement: a repository under review (candidates 2 and 3)
+  # that ships merge-ready must ship auto-drive-to-merge too. With only
+  # merge-ready it stops by name even though the install's pair exists.
+  rs_tree
+  mk_skill "${RS}/repo/amplifier-bundle/skills/merge-ready" no-auto-drive
+  mk_skill "${RS}/home/.amplihack/amplifier-bundle/skills/merge-ready"
+  rs_run REPO_PATH="${RS}/repo"
+  rs_expect_error "RESOLVER-repo-merge-ready-needs-sibling" "ERROR: auto-drive-skill-dir-not-found: $(cd "${RS}/repo/amplifier-bundle/skills/merge-ready" && pwd -P)/../auto-drive-to-merge/SKILL.md" \
+    "a repository shipping only merge-ready stops the merge round by name; the install's pair is not used (#2222)"
 
   # Issue #2222 (S1): an auto-drive-to-merge SKILL.md from the branch under
   # review that differs from the base gives a WARNING and still exits 0.

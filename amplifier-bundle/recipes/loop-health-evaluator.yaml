@@ -112,7 +112,7 @@ steps:
       merge-ready-round-*.json, phases.tsv); everything you need is in this prompt. If something you expect is absent, report it by name.
       No state-file discovery is required.
       The PR worktree is `{{loop_repo_path}}` and the main checkout is `{{loop_agent_working_dir}}`.
-      Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `du`) from /, ~, /d0 or any directory outside the PR worktree and the main checkout named above. Every path you need is given here.
+      Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `du`) from /, ~ or any directory outside the PR worktree and the main checkout named above. Every path you need is given here.
       If a named file is missing, report it by name and do not search for it.
       Write scratch files only under `$TMPDIR` (`mktemp -d "${TMPDIR:-/tmp}/autodrive.XXXXXX"`), never loose in /tmp, and remove them by
       their literal path before the step ends.
