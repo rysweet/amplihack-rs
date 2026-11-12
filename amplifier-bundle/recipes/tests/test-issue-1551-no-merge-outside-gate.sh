@@ -110,7 +110,9 @@ printf '%s\n' "$*" >> "${GH_LOG:?}"
 [ -f "${GH_STATE:?}" ] || printf 'OPEN' > "${GH_STATE}"
 lc="$(printf '%s' "$*" | tr '[:upper:]' '[:lower:]')"
 case "${1:-} ${2:-}" in
-  "pr merge") printf 'MERGED' > "${GH_STATE}"; echo "stub: merged"; exit "${STUB_MERGE_RC:-0}" ;;
+  "pr merge")
+    [ "${STUB_READ_STDIN:-}" = "1" ] && cat > "${GH_LOG}.stdin"
+    printf 'MERGED' > "${GH_STATE}"; echo "stub: merged"; exit "${STUB_MERGE_RC:-0}" ;;
   "pr view")
     [ "${STUB_MODE:-}" = "unreadable" ] && exit 1
     case " $* " in *" --jq .url "*) printf 'https://github.com/o/r/pull/%s\n' "${3:-0}"; exit 0 ;; esac
@@ -427,9 +429,18 @@ cat > "${BUNDLE_TOOLS}/autodrive_merge_gate.sh" <<'GATE'
 # Stand-in for autodrive_merge_gate.sh: merges the way the real gate does,
 # with work after the merge so bash cannot exec gh in place of itself.
 set -uo pipefail
-MERGE_ARGV=(pr merge 38 --squash --delete-branch --match-head-commit "${GATE_SHA}")
+# #2056: the real gate's argv now carries the squash message too. The guard
+# classifies on the program word and the FIRST NON-FLAG POSITIONAL, so `pr`
+# and `merge` staying at positions 0 and 1 is what keeps this a merge in the
+# shim's eyes; the stand-in carries the new flags so that an edit which moved
+# a flag ahead of the subcommand would fail here rather than silently
+# reclassify every merge as not-a-merge and permit it from anywhere. The real
+# gate pipes the body into gh's stdin (`--body-file -`), which is the `stdin`
+# mode: gh on the RIGHT of a pipe, still a direct child of the gate.
+MERGE_ARGV=(pr merge 38 --squash --delete-branch --match-head-commit "${GATE_SHA}" --subject "stand-in subject (#38)" --body-file -)
 case "${GATE_MODE:-direct}" in
   direct) gh "${MERGE_ARGV[@]}"; rc=$? ;;
+  stdin)  printf '%s' 'stand-in body' | gh "${MERGE_ARGV[@]}"; rc=${PIPESTATUS[1]} ;;
   subst)  out="$(gh "${MERGE_ARGV[@]}")"; rc=$?; printf '%s\n' "$out" ;;
   pipe)   gh "${MERGE_ARGV[@]}" | cat; rc=${PIPESTATUS[0]} ;;
   child)  "${BASH}" "${GATE_CHILD}"; rc=$? ;;
@@ -440,7 +451,7 @@ exit "$rc"
 GATE
 TRUSTED_GATE="${BUNDLE_TOOLS}/autodrive_merge_gate.sh"
 BUNDLE_PATH="${BUNDLE_TOOLS}/gh-merge-guard:${STUB}:${TOOLBIN}"
-MERGE_LINE="pr merge 38 --squash --delete-branch --match-head-commit ${SHA}"
+MERGE_LINE="pr merge 38 --squash --delete-branch --match-head-commit ${SHA} --subject stand-in subject (#38) --body-file -"
 
 # allowed <id> <mode>: the trusted gate, run the way merge-loop step-03 runs
 # it (`<root bash> -p <physical gate path>`, G6), merges and the stub logs the
@@ -462,6 +473,18 @@ ALLOWED_ENV=()
 allowed T3-gate-direct direct
 allowed T3-gate-subst subst
 allowed T3-gate-pipe pipe
+# The real gate's shape since #2056 crusty round 4: the body piped INTO gh.
+# The shim reads nothing from stdin on the `pr` path and ends in `exec`, so the
+# body reaches the real gh unchanged, and the merge is still the gate's own.
+ALLOWED_ENV=("STUB_READ_STDIN=1")
+rm -f "${GH_LOG}.stdin"
+allowed T3-gate-stdin stdin
+ALLOWED_ENV=()
+if [ "$(cat "${GH_LOG}.stdin" 2>/dev/null)" = "stand-in body" ]; then
+  pass "T3-gate-stdin-body" "the body the gate pipes in reaches the real gh through the shim, byte for byte"
+else
+  fail "T3-gate-stdin-body" "the real gh read '$(head -c 80 "${GH_LOG}.stdin" 2>/dev/null)' on stdin, want 'stand-in body'"
+fi
 # Extra trailing arguments after the gate path are the gate's own arguments.
 reset_stub
 RUN_ENV=("GATE_SHA=${SHA}" "GATE_MODE=direct")
