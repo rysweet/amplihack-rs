@@ -94,6 +94,8 @@ qrcode = { version = "0.14", default-features = false, optional = true }
 errno = "0.3"
 
 [dev-dependencies]
+# Parse inline and out-of-line lib tests for the host-process regression guard.
+syn = { version = "2", features = ["full", "visit"] }
 tracing-subscriber = { workspace = true }
 tempfile = { workspace = true }
 anyhow = { workspace = true }

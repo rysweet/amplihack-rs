@@ -178,6 +178,7 @@ dependencies = [
  "serde_yaml",
  "sha2",
  "signal-hook",
+ "syn",
  "tar",
  "tempfile",
  "thiserror 2.0.18",
