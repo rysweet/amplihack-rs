@@ -7,8 +7,8 @@
 # after that head and allows only base merges and description or evidence
 # changes; anything else goes back to crusty. Criterion 1 is met by the qa
 # evidence, which an agent step running as the same user could edit after it
-# was measured; autodrive_qa_trusted accepts it only through the hash chain
-# that starts at the loop's merge-ready-records.tsv manifest.
+# was measured; the merge-ready agent reads it as evidence for its write-up,
+# and nothing here accepts it as a merge condition (#2575).
 # autodrive_gadugi_required says whether criterion 1 needs gadugi-test in a
 # repository at all; it follows qa-team's repo-type table. The QA target and
 # command sources (autodrive_qa_target and friends, #1763) live in
@@ -261,46 +261,6 @@ autodrive_qa_evidence_sha() {
   h="$(autodrive_blob_hash "$(dirname -- "$f")" < "$f")"
   autodrive_is_sha "$h" || { printf '\n'; return 1; }
   printf '%s\n' "$h"
-}
-
-# autodrive_qa_trusted <state_dir> <record_copy> <qa_copy> <head_sha> -> `ok`
-# or the token of the first check that failed:
-#
-#   qa-manifest-missing   merge-ready-records.tsv absent, a symlink, or its last
-#                         row malformed (file name ^merge-ready-[A-Za-z0-9._-]+\.json$)
-#   qa-record-modified    record_copy's hash differs from the manifest hash, or it
-#                         is not one line starting with {"merge_ready_verdict":",
-#                         or it lacks one 40- or 64-hex qa_evidence_sha
-#   qa-evidence-modified  qa_copy's hash differs from qa_evidence_sha
-#   qa-evidence-stale     qa_copy's one head_sha is not <head_sha>
-#
-# record_copy and qa_copy are the caller's private copies; they are hashed and
-# parsed as given and the originals are never re-read, so what the caller
-# reads afterwards is what was verified. The manifest is read once.
-autodrive_qa_trusted() {
-  local -x LC_ALL=C
-  local dir="${1:-}" rec="${2:-}" qa="${3:-}" head="${4:-}" row="" want="" qsha="" qhead=""
-  row="$(autodrive_manifest_row "$dir" merge-ready)" || { printf 'qa-manifest-missing\n'; return 1; }
-  want="${row#* }"
-  if [ -z "$rec" ] || [ ! -f "$rec" ] \
-     || [ "$(autodrive_blob_hash "$dir" < "$rec")" != "$want" ] \
-     || [ "$(awk 'END { print NR }' "$rec")" != "1" ] \
-     || ! grep -q '^{"merge_ready_verdict":"' "$rec" \
-     || [ "$(grep -o '"qa_evidence_sha":' "$rec" | wc -l | tr -d ' ')" != "1" ]; then
-    printf 'qa-record-modified\n'; return 1
-  fi
-  qsha="$(sed -n 's/.*"qa_evidence_sha":"\([^"]*\)".*/\1/p' "$rec")"
-  autodrive_is_sha "$qsha" || { printf 'qa-record-modified\n'; return 1; }
-  if [ -z "$qa" ] || [ ! -f "$qa" ] || [ "$(autodrive_blob_hash "$dir" < "$qa")" != "$qsha" ]; then
-    printf 'qa-evidence-modified\n'; return 1
-  fi
-  if [ "$(grep -o '"head_sha":' "$qa" | wc -l | tr -d ' ')" = "1" ]; then
-    qhead="$(sed -n 's/.*"head_sha":"\([^"]*\)".*/\1/p' "$qa")"
-  fi
-  if ! autodrive_is_sha "$head" || [ "$qhead" != "$head" ]; then
-    printf 'qa-evidence-stale\n'; return 1
-  fi
-  printf 'ok\n'
 }
 
 # --- per-scenario results (D6) ---------------------------------------------

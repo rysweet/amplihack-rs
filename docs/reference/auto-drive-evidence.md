@@ -1,7 +1,7 @@
 ---
 title: Auto-drive Evidence and Outcomes
-description: evidence validity, merge-ready interpretations, and separate readiness, action, and platform outcomes.
-last_updated: 2026-11-11
+description: merge-ready criteria and interpretations, the PR write-up, and the outcomes an auto-drive run reports.
+last_updated: 2026-11-13
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -9,16 +9,18 @@ doc_type: reference
 
 # Auto-drive Evidence and Outcomes
 
-This reference describes the implemented record contract. Controlled tests exercise validation and outcome reduction; they do not demonstrate live agent recovery or cross-platform execution.
-
-Auto-drive agents collect observations and assess readiness. Rust helpers
-validate records, preserve accepted snapshots, and reduce outcomes. Neither
-a successful command nor a list of criterion names establishes readiness.
+Auto-drive agents collect observations, assess readiness and write the
+assessment up in the PR for people. Nothing parses that write-up: the drive
+reads only a one-word outcome, and a merge depends only on the captured
+authorization, the assessed head and GitHub (#2575). Neither a successful
+command nor a list of criterion names establishes readiness. Controlled tests
+exercise the outcome word, the loop endings and the merge tool; they do not
+demonstrate live agent recovery or cross-platform execution.
 
 ## Contents
 
 - [Authority and criteria](#authority-and-criteria)
-- [Record contract](#record-contract)
+- [The write-up](#the-write-up)
 - [Validity and storage](#validity-and-storage)
 - [Crusty review evidence](#crusty-review-evidence)
 - [Approval and protection interpretation](#approval-and-protection-interpretation)
@@ -31,15 +33,15 @@ a successful command nor a list of criterion names establishes readiness.
 The trusted [merge-ready skill](../../amplifier-bundle/skills/merge-ready/SKILL.md)
 and its [description template](../../amplifier-bundle/skills/merge-ready/pr-description-template.md)
 define the criteria. This reference preserves those definitions with
-auto-drive's repository-type and crusty interpretations. The runner selects a private launch bundle for recipes, skills, templates, evaluator and helpers. The retired shell gate is replaced by agent finalization with deterministic local record validation.
+auto-drive's repository-type and crusty interpretations. The runner selects a private launch bundle for recipes, skills, templates, evaluator and helpers. The retired shell gate and the retired parsed readiness record are replaced by an agentic assessment and GitHub's own merge conditions.
 
 
 For **auto-drive criterion 3**, accepted crusty convergence substitutes for
 a separate quality audit, with **no minimum round count**. For **standalone
 `/merge-ready`**, the separate quality audit still requires at least three
 SEEK → VALIDATE → FIX cycles, continued until clean. The template's cycle
-1–3 rows describe that standalone audit. In auto-drive, replace those rows
-with actual accepted crusty-round evidence, including reviewed head, verdict,
+1–3 rows describe that standalone audit. In auto-drive, the write-up replaces
+those rows with actual accepted crusty-round evidence, including reviewed head, verdict,
 accepted completion dispatch, and required follow-ups; do not claim unperformed cycles.
 
 | ID | Criterion | Supporting evidence |
@@ -63,60 +65,45 @@ criterion. It cannot excuse missing tooling, access, approvals, policy, or
 evidence. The documentation-only exception narrows scenario obligations in
 criterion 1; suite tests and all other criteria still apply.
 
-## Record contract
+## The write-up
 
-Versioned records describe outcomes and observations, independently of the
-command or interface used. The logical contract below does not prescribe an
-API client, gate executable, or serialized command protocol.
+Each merge-ready round posts one PR comment. It names the PR and the full
+head SHA assessed, gives the observations and sources for each of the 13
+criteria, names every blocker, and ends with one sentence stating the outcome:
+ready; not ready, with the blockers named; or hand-off, when only a person can
+clear the blocker. The bundled
+[evidence contract](../../amplifier-bundle/skills/auto-drive-to-merge/evidence-contract.md)
+gives the agent's guidance.
 
-| Record | Required information |
-| --- | --- |
-| Invocation | Schema version, fresh run identity, captured action, strictly parsed `no_merge` and dry-run restrictions, trusted bundle/policy provenance. Only the runner grants authorization. |
-| PR identity | Platform and host, target and source repository identities, PR number and URL, branches, verified head SHA, relevant base revision and merge base, linked worktree and observed platform state. |
-| Criterion evidence | Run and round identity, criterion identity, verification status, concrete observations, evidence references, PR/head/base binding, policy provenance, blockers, and any permitted non-applicability explanation. |
-| Failed attempt/recovery | Operation attempted, redacted cause and result, alternative chosen, observations recovered, completeness limits, and remaining blockers. |
-| Readiness assessment | All 13 criterion records, accepted evidence references, reviewed and verified heads, readiness verdict, and blockers. |
-| Finalization | Captured requested action, refreshed observations, expected head, request outcome, subsequent platform observations, and any ambiguous response or workflow violation. |
-| Completion/report | Accepted round outcomes, completion dispatch or evaluator outcome, readiness, action, final platform state, stop reason, failures/recovery, follow-ups, and consumed budget. |
+The write-up is for people. Its shape does not affect the drive: unknown
+keys, a notice printed before a JSON block, `null` fields or plain prose all
+lead to the same next step. A reader agent turns the stated outcome into one
+of `ready`, `not-ready` or `hand-off`; any other answer counts as `not-ready`.
+See [outcome word](autodrive-merge-ready-round.md#outcome-word).
 
-The closed value sets distinguish these meanings:
-
-| Dimension | Values |
-| --- | --- |
-| Requested action | Verify readiness; merge. |
-| Criterion verification | Verified; failed; pending; unreadable; not applicable with a permitted explanation. |
-| Readiness | Merge-ready; not merge-ready; incomplete. |
-| Action outcome | Not requested; pending; refused; failed; unconfirmed; merged; already merged; workflow violation. |
-| Observed PR state | Open; closed without merge; merged; unknown. |
-| Stop reason | Completed; blockers; no progress; budget exhausted; usage limit; orphaned; dependency failure; terminal refusal. |
-
-Unknown observations remain unknown. A command failure and its recovery are
-recorded even if later observations establish readiness.
-
-Statuses and outcomes use closed enums. Unknown schema versions, duplicate
-fields, unsupported statuses, missing/duplicate criteria, and contradictory
-claims are rejected. Missing or unparseable verdicts never default to success.
+Unknown observations stay unknown, and a criterion that cannot be established
+is a blocker. A command failure and its recovery are reported in the write-up
+even if later observations establish readiness.
 
 ## Validity and storage
 
-Evidence is accepted only for the selected PR, run/round, head, relevant base,
-and trusted policy. Missing, unreadable, stale, altered, mismatched,
-unsupported, or contradictory records cannot establish readiness. Matching
-the head alone does not refresh approvals, conversations, checks, or policy.
+An assessment applies only to the selected PR and the head it names. The
+round captures that head before the assessment starts and writes it to the
+`.head` round file, so a commit made during or after the assessment is never
+recorded as assessed. A merge
+happens only at the head the ready round assessed: the merge step compares it
+with the PR worktree's head and passes it to `--match-head-commit`, so a later
+push refuses the merge. Matching the head alone does not refresh approvals,
+conversations or policy; GitHub enforces those when it accepts the merge.
 
 Private directories are created with mode `0700` and files with `0600`.
-Storage validates ownership and permissions, rejects traversal, symlinks and
-special files, bounds input sizes, and atomically snapshots the same opened
-bytes that it validates and hashes. Evidence references stay within designated
-storage; a record cannot cause arbitrary secret files or URLs to be read.
-Collection limits and incomplete pagination produce incomplete evidence,
-never silently truncated success.
-
-Candidate staging is separate from accepted snapshots and loop-completion
-records. Historical entries are validated, rejected, or quarantined; permission
-repair and hashes alone cannot establish provenance. PR comments cannot seed
-accepted state. Same-user snapshots provide workflow integrity, not an OS
-security boundary.
+Round files are written to a temporary file in the same directory and moved
+into place, never through an existing path; round labels are checked and `.`
+and `..` are refused. Write-ups are cut at 256 KiB and never passed on a
+command line. Collection limits and incomplete pagination produce an
+incomplete assessment, never silently truncated success. PR comments,
+including earlier write-ups, cannot grant authority. Same-user state provides
+workflow integrity, not an OS security boundary.
 
 Local Git observations reject inherited directory, index, object-store,
 replacement-ref, and graft overrides. Arguments are passed as data, with
@@ -220,33 +207,36 @@ Observe state before retrying ambiguous requests and after performing actions.
 
 ## Result contract
 
-Readiness, requested action, request result, platform state, and stop reason
-are separate. Human-readable and structured reports derive from accepted
-records, not a final sentence of agent prose.
+Requested action, loop result, merge result and stop reason are separate.
+The structured report takes the merge result and loop result only from
+tool-written JSON; the finalization agent's statement is kept verbatim as the
+summary and decides nothing. The report's fields are listed in
+[run report](autodrive-merge-ready-round.md#run-report).
 
 | Situation | Reported meaning |
 | --- | --- |
-| All criteria valid; merging disabled; PR observed open | Merge-ready, no merge requested, open. |
-| Missing, stale, contradictory, or failed evidence | Not merge-ready or incomplete, with criterion blockers. |
-| Required checks/approvals still pending | Pending work, not completed readiness. |
-| Authorized request explicitly refused | Refused action with cause and observed state; not merged. |
-| Request accepted or queued; merge not confirmed | Pending or unconfirmed action; not merged. |
-| Platform confirms merge after authorized finalization | `merged`, with confirmation evidence. |
-| Platform confirms PR was merged at entry | Already merged; this invocation did not perform the action. |
-| PR merges unexpectedly before finalization | Observed merged state plus workflow violation; not successful authorized completion. |
-| Budget, usage limit, orphan, dependency failure, or terminal refusal | Distinct incomplete stop reason; never substituted with success or generic `STUCK`. |
+| Ready round and evaluator `DONE`; merging disabled | Merge `not-authorised`, stop reason `completed`; PR stays open. |
+| Not ready; next round repairs the named blockers | No report yet; the loop continues. |
+| Required checks failing or pending at finalization | Merge `checks-not-green`, no merge request; PR handed off. |
+| Head moved after assessment, or GitHub refuses the merge | Merge `refused`; PR handed off. |
+| GitHub reads back `MERGED` after the request | Merge `merged`, stop reason `completed`. |
+| PR was merged at entry | Already merged; this invocation did not perform the action. |
+| Hand-off round, evaluator `STUCK`, no progress, budget exhausted, unreadable loop result | Stop reason `handoff`, `no_progress`, `budget_exhausted` or `unreadable`; PR drafted with a comment naming the blocker. |
+| Usage limit, orphan or terminal refusal | Distinct stop reason; never substituted with success, hand-off or generic `STUCK`. |
 
-A `no_merge=true` or dry-run result records zero merge requests. Readiness
-does not imply merging. Command success, queue admission, evaluator `DONE`,
-and an old completion marker do not establish platform confirmation.
+A `no_merge=true` or dry-run result makes zero merge requests. Readiness
+does not imply merging. Command success and evaluator `DONE` do not establish
+platform confirmation; only GitHub's read-back of `MERGED` does.
 
 ## Validation coverage
 
 Record coverage in PR descriptions or CI logs, separately for:
 
-- Controlled tests: merge success/refusal, GraphQL refusal, missing tools,
-  ambiguous responses, complete alternatives, unavailable alternatives,
-  incomplete pagination, required-tool failure, and moved heads.
+- Controlled tests: write-ups of any shape (unknown keys, a notice before the
+  JSON, `null` fields) still continue or merge; unclear outcome words lead to
+  another round; merge success; refusal on a moved head or failing checks;
+  fallback when no checks are required; exit `79` and usage-limit pass-through;
+  merge refused without captured authorization.
 - Actual agent execution against isolated fixtures: demonstrate that an
   agent adapts, or reports why recovery cannot satisfy a requirement.
 - Live verify-only execution: after invocation-wide authorization is implemented
@@ -259,8 +249,7 @@ Record coverage in PR descriptions or CI logs, separately for:
 
 Stubs demonstrate controlled behavior, not live agent recovery or execution
 on an unavailable host/runtime. Tests assert no merge requests under
-`no_merge=true` or dry-run, and that interface switching cannot bypass failed
-criteria or missing evidence. Loop-health and crusty contract regressions
+`no_merge=true` or dry-run, and that no agent output can cause a merge. Loop-health and crusty contract regressions
 remain required.
 
 See [workflow configuration](auto-drive-to-merge.md) and

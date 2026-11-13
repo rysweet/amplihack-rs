@@ -1,194 +1,253 @@
-//! Runner-side result authority is independent of child-authored summaries.
+//! The run report (`autodrive_outcome`, schema version 2, #2575).
+//!
+//! The report never fails and never panics: a badly shaped agent output can
+//! not fail it. `merge` and `stop_reason` come only from JSON written by the
+//! auto-drive tools (`finalize_merge` from the finalize merge step,
+//! `merge_loop_result` from the merge loop step, which reads the loop driver's
+//! own result file). `summary` is the finalisation agent's statement,
+//! verbatim and cut on a character boundary at `MAX_RECORD_BYTES`. Nothing in
+//! the agent's prose decides a field. Notes name what could not be read,
+//! never the contents of what was read.
+//! docs/reference/autodrive-merge-ready-round.md#run-report.
 use super::{
     authorization::InvocationAuthorization,
-    helper::{Envelope, validate_reduction},
-    records::*,
-    state::EvidenceStore,
+    identity::{Binding, MAX_RECORD_BYTES, validate_binding},
 };
 use anyhow::{Context, Result, ensure};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
-/// Re-validate the final structured observations with the captured invocation.
-/// Child command/recipe success is not a readiness or merge claim.
+/// Merge results the finalize merge step writes. Anything else is unreadable.
+const MERGE_RESULTS: [&str; 7] = [
+    "merged",
+    "not-authorised",
+    "authorization-unreadable",
+    "checks-not-green",
+    "refused",
+    "not-open",
+    "message-unavailable",
+];
+
 pub(crate) fn report(
     auth: &InvocationAuthorization,
-    context: &serde_json::Map<String, Value>,
+    context: &Map<String, Value>,
     expected_pr: Option<&str>,
-    working_dir: &std::path::Path,
 ) -> Value {
-    match already_merged(auth, context, expected_pr).and_then(|entry| match entry {
-        Some(outcome) => Ok(outcome),
-        None => accepted_outcome(auth, context, expected_pr, working_dir),
-    }) {
-        Ok(outcome) => {
-            serde_json::to_value(outcome).expect("serializable typed auto-drive outcome")
-        }
-        Err(error) => {
-            let mut stop_reason = "dependency_failure";
-            let failure_cause = format!("{error:#}");
-            let mut blockers = vec![format!(
-                "accepted finalization evidence unavailable: {failure_cause}"
-            )];
-            for key in ["crusty_loop_result", "merge_loop_result"] {
-                if let Some(value) = context.get(key) {
-                    let parsed = match value {
-                        Value::String(text) if text.is_empty() => continue,
-                        Value::String(text) => match serde_json::from_str::<Value>(text) {
-                            Ok(value) => value,
-                            Err(error) => {
-                                blockers.push(format!("unreadable {key}: {error}"));
-                                continue;
-                            }
-                        },
-                        value => value.clone(),
-                    };
-                    if let Some(result) = parsed.get("loop_result").and_then(Value::as_str) {
-                        stop_reason = match result {
-                            "BUDGET_EXHAUSTED" => "budget_exhausted",
-                            "USAGE_LIMIT" => "usage_limit",
-                            "ORPHANED" => "orphaned",
-                            "TERMINAL_POLICY_REFUSAL" => "terminal_refusal",
-                            "STUCK" => "no_progress",
-                            _ => stop_reason,
-                        };
-                    }
-                }
-            }
-            json!({"schema_version":1,"run_id":auth.run_id(),"readiness":"incomplete","action":"not_requested","platform_state":"unknown","stop_reason":stop_reason,"blockers":blockers,"failure_cause":failure_cause})
-        }
-    }
-}
-fn accepted_outcome(
-    auth: &InvocationAuthorization,
-    context: &serde_json::Map<String, Value>,
-    expected_pr: Option<&str>,
-    working_dir: &std::path::Path,
-) -> Result<Outcome> {
-    let raw = context
-        .get("finalization_observations")
-        .context("no finalization observations")?;
-    // Deserialize raw strings directly: duplicate fields must remain visible to serde.
-    let envelope: Envelope = match raw {
-        Value::String(text) => {
-            ensure!(
-                text.len() <= super::validation::MAX_RECORD_BYTES,
-                "finalization exceeds size limit"
-            );
-            serde_json::from_str(text)?
-        }
-        value => serde_json::from_value(value.clone())?,
+    let mut notes: Vec<&'static str> = Vec::new();
+    let (summary, truncated) = summary(context.get("autodrive_finalization"));
+    let requested_action = if auth.allows_merge() {
+        "merge"
+    } else {
+        "verify_readiness"
     };
-    if let Some(pr) = expected_pr.filter(|p| !p.is_empty()) {
-        ensure!(
-            pr.parse::<u64>()? == envelope.candidate.binding.pr_number,
-            "finalization changed the explicitly selected PR"
-        );
-    }
-    // The reducer's output carries pointers, never authority by itself. Replay
-    // its complete checks and compare the private outcome from successful
-    // reduction before reporting any readiness or action.
-    // #2329: evidence is opened only from the directory the runner assigned
-    // and bound. A directory named by the child is compared lexically and
-    // never joined onto the working directory or resolved.
-    let directory = auth
-        .state_dir()
-        .context("no runner-assigned state directory is bound to this invocation")?;
-    let preparation = context.get("build_result").map(context_value).transpose()?;
-    require_assigned_state_dir(
-        "autodrive_state_dir",
-        context.get("autodrive_state_dir"),
-        directory,
-    )?;
-    require_assigned_state_dir(
-        "build_result.state_dir",
-        preparation.as_ref().and_then(|v| v.get("state_dir")),
-        directory,
-    )?;
-    let store = EvidenceStore::create(directory)?;
-    let receipt = context
-        .get("autodrive_finalization")
-        .filter(|v| !matches!(v, Value::String(s) if s.is_empty()))
-        .map(context_value)
-        .transpose()?;
-    let assessment = context
-        .get("accepted_readiness")
-        .map(context_value)
-        .transpose()?;
-    let accepted_path = assessment
-        .as_ref()
-        .and_then(|v| v["accepted"].as_str())
-        .or_else(|| {
-            receipt
-                .as_ref()
-                .and_then(|v| v["accepted_snapshot"].as_str())
-        })
-        .context("deterministic reduction has no accepted snapshot")?;
-    let repo = receipt
-        .as_ref()
-        .and_then(|v| v["repo"].as_str())
-        .or_else(|| preparation.as_ref().and_then(|v| v["repo"].as_str()))
-        .or_else(|| context.get("repo_path").and_then(Value::as_str))
-        .context("deterministic reduction has no local worktree")?;
-    let outcome = validate_reduction(
-        auth,
-        &store,
-        directory,
-        &working_dir.join(repo),
-        std::path::Path::new(accepted_path),
-        &envelope,
-    )?;
-    // Validate first even when the child reducer failed: retain its concrete
-    // rejection (for example a missing QA artifact), not just absent output.
-    let receipt = receipt.context("successful deterministic reduction missing")?;
-    let path = receipt["outcome_snapshot"]
-        .as_str()
-        .context("successful deterministic reduction has no outcome snapshot")?;
-    let path = std::path::Path::new(path);
-    ensure!(
-        path.parent()
-            .context("outcome snapshot has no parent")?
-            .canonicalize()?
-            == directory.canonicalize()?,
-        "outcome snapshot lies outside state"
-    );
-    let stored: Outcome = serde_json::from_slice(
-        &store.read_private(
-            path.file_name()
-                .and_then(|s| s.to_str())
-                .context("invalid outcome snapshot name")?,
-        )?,
-    )?;
-    ensure!(
-        stored == outcome,
-        "reported outcome differs from deterministic reduction"
-    );
-    Ok(outcome)
-}
+    let mut out = Map::new();
+    out.insert("schema_version".into(), json!(2));
+    out.insert("run_id".into(), json!(auth.run_id()));
+    out.insert("requested_action".into(), json!(requested_action));
 
-fn context_value(raw: &Value) -> Result<Value> {
-    match raw {
-        Value::String(text) => {
-            ensure!(
-                text.len() <= super::validation::MAX_RECORD_BYTES,
-                "reduction receipt exceeds size limit"
+    match already_merged(auth, context, expected_pr) {
+        Ok(Some(pr)) => {
+            out.insert(
+                "merge".into(),
+                json!({"result": "already-merged", "pr": pr}),
             );
-            Ok(serde_json::from_str(text)?)
+            out.insert("loop_result".into(), Value::Null);
+            out.insert("stop_reason".into(), json!("completed"));
+            return finish(out, summary, truncated, &notes);
         }
-        value => Ok(value.clone()),
+        Ok(None) => {}
+        Err(_) => notes.push("build_result: already-merged preparation was refused"),
+    }
+
+    let state_dir_ok = state_dir_matches(auth, context);
+    if !state_dir_ok {
+        notes.push("autodrive_state_dir: differs from the runner-assigned state directory");
+    }
+
+    let (loop_result, crusty) = match loop_result(context.get("merge_loop_result")) {
+        Some(result) => (Some(result), false),
+        None => (loop_result(context.get("crusty_loop_result")), true),
+    };
+    let merge = if state_dir_ok {
+        merge_result(context.get("finalize_merge"), expected_pr)
+    } else {
+        None
+    };
+    let merge_name = merge
+        .as_ref()
+        .and_then(|m| m.get("result"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+
+    let stop_reason = match loop_result.as_deref() {
+        Some("TERMINAL_REFUSAL" | "TERMINAL_POLICY_REFUSAL") => "terminal_refusal",
+        Some("DONE") if crusty => {
+            notes.push("merge_loop_result: missing or unreadable");
+            "unreadable"
+        }
+        Some("DONE") => match merge_name.as_deref() {
+            Some("merged" | "not-authorised") => "completed",
+            Some(_) => "handoff",
+            None => {
+                notes.push("finalize_merge: missing or unreadable");
+                "unreadable"
+            }
+        },
+        Some("STUCK") if crusty => "stuck",
+        Some("HANDOFF" | "STUCK") => "handoff",
+        Some("NO_PROGRESS") => "no_progress",
+        Some("BUDGET_EXHAUSTED") => "budget_exhausted",
+        Some("USAGE_LIMIT") => "usage_limit",
+        Some("ORPHANED") => "orphaned",
+        _ => {
+            if loop_result.is_none() {
+                notes.push("merge_loop_result: missing or unreadable");
+            }
+            "unreadable"
+        }
+    };
+    out.insert("merge".into(), merge.map_or(Value::Null, Value::Object));
+    out.insert(
+        "loop_result".into(),
+        loop_result.map_or(Value::Null, Value::String),
+    );
+    out.insert("stop_reason".into(), json!(stop_reason));
+    finish(out, summary, truncated, &notes)
+}
+
+fn finish(mut out: Map<String, Value>, summary: String, truncated: bool, notes: &[&str]) -> Value {
+    out.insert("summary".into(), Value::String(summary));
+    if truncated {
+        out.insert("summary_truncated".into(), json!(true));
+    }
+    if !notes.is_empty() {
+        out.insert("note".into(), json!(notes.join("; ")));
+    }
+    Value::Object(out)
+}
+
+/// The finalisation statement verbatim, cut on a character boundary.
+fn summary(raw: Option<&Value>) -> (String, bool) {
+    let text = match raw {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(s)) => s.clone(),
+        Some(other) => other.to_string(),
+    };
+    if text.len() <= MAX_RECORD_BYTES {
+        return (text, false);
+    }
+    let mut end = MAX_RECORD_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (text[..end].to_owned(), true)
+}
+
+/// One JSON object from a tool-written context value: the value itself when
+/// the runner already parsed it, else the last line that parses as an object.
+fn tool_object(raw: Option<&Value>) -> Option<Map<String, Value>> {
+    match raw? {
+        Value::Object(map) => Some(map.clone()),
+        Value::String(text) if text.len() <= MAX_RECORD_BYTES => {
+            text.lines()
+                .rev()
+                .find_map(|line| match serde_json::from_str::<Value>(line.trim()) {
+                    Ok(Value::Object(map)) => Some(map),
+                    _ => None,
+                })
+        }
+        _ => None,
     }
 }
 
+/// `loop_result` from a loop line: an upper-case token, or nothing.
+fn loop_result(raw: Option<&Value>) -> Option<String> {
+    let map = tool_object(raw)?;
+    let token = map.get("loop_result")?.as_str()?;
+    (!token.is_empty()
+        && token.len() <= 64
+        && token.bytes().all(|b| b.is_ascii_uppercase() || b == b'_'))
+    .then(|| token.to_owned())
+}
+
+/// The finalize merge step's JSON, reduced to its documented fields.
+fn merge_result(raw: Option<&Value>, expected_pr: Option<&str>) -> Option<Map<String, Value>> {
+    let map = tool_object(raw)?;
+    let result = map.get("result")?.as_str()?;
+    if !MERGE_RESULTS.contains(&result) {
+        return None;
+    }
+    let pr = map.get("pr").and_then(Value::as_u64);
+    if let (Some(expected), Some(pr)) = (expected_pr.filter(|p| !p.is_empty()), pr)
+        && expected.parse::<u64>().ok() != Some(pr)
+    {
+        return None;
+    }
+    let mut out = Map::new();
+    out.insert("result".into(), json!(result));
+    if let Some(pr) = pr {
+        out.insert("pr".into(), json!(pr));
+    }
+    if let Some(head) = map
+        .get("expected_head")
+        .and_then(Value::as_str)
+        .filter(|h| [40, 64].contains(&h.len()) && h.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        out.insert("expected_head".into(), json!(head));
+    }
+    if let Some(handoff) = map
+        .get("handoff")
+        .and_then(Value::as_str)
+        .filter(|h| matches!(*h, "true" | "false"))
+    {
+        out.insert("handoff".into(), json!(handoff));
+    }
+    Some(out)
+}
+
+/// #2329: a state directory the child reports must equal the runner-assigned
+/// one by `Path` equality, with no join, canonicalisation or symlink
+/// resolution. Absent or empty counts as absent; checked only when the runner
+/// bound a directory to this invocation.
+fn state_dir_matches(auth: &InvocationAuthorization, context: &Map<String, Value>) -> bool {
+    let Some(assigned) = auth.state_dir() else {
+        return true;
+    };
+    let preparation = tool_object(context.get("build_result"));
+    [
+        context.get("autodrive_state_dir"),
+        preparation.as_ref().and_then(|p| p.get("state_dir")),
+    ]
+    .into_iter()
+    .all(|reported| require_assigned_state_dir(reported, assigned))
+}
+
+fn require_assigned_state_dir(reported: Option<&Value>, assigned: &std::path::Path) -> bool {
+    match reported {
+        None => true,
+        Some(Value::String(text)) => text.is_empty() || std::path::Path::new(text) == assigned,
+        Some(_) => false,
+    }
+}
+
+/// A PR already merged at entry, confirmed by the build preflight and bound to
+/// this invocation. Returns the PR number.
 fn already_merged(
     auth: &InvocationAuthorization,
-    context: &serde_json::Map<String, Value>,
+    context: &Map<String, Value>,
     expected_pr: Option<&str>,
-) -> Result<Option<Outcome>> {
+) -> Result<Option<u64>> {
     let Some(raw) = context.get("build_result") else {
         return Ok(None);
     };
     let value: Value = match raw {
         Value::String(s) if s.is_empty() => return Ok(None),
-        Value::String(s) => serde_json::from_str(s).context("unreadable run-entry preparation")?,
+        Value::String(s) => {
+            ensure!(
+                s.len() <= MAX_RECORD_BYTES,
+                "run-entry preparation exceeds size limit"
+            );
+            serde_json::from_str(s).context("unreadable run-entry preparation")?
+        }
         value => value.clone(),
     };
     if value["merged_before_run"] != true {
@@ -203,7 +262,7 @@ fn already_merged(
     );
     let binding: Binding = serde_json::from_value(value["binding"].clone())
         .context("already-merged PR identity missing")?;
-    super::validation::validate_binding(&binding)?;
+    validate_binding(&binding)?;
     auth.validate_selection(&binding)?;
     ensure!(
         binding.run_id == auth.run_id()
@@ -218,38 +277,5 @@ fn already_merged(
             "already-merged preparation changed the explicitly selected PR"
         );
     }
-    Ok(Some(Outcome {
-        schema_version: 1,
-        binding,
-        readiness: Readiness::Incomplete,
-        action: Action::AlreadyMerged,
-        platform_state: PlatformState::Merged,
-        stop_reason: StopReason::Completed,
-        blockers: Vec::new(),
-        attempts: serde_json::from_value(
-            value.get("attempts").cloned().unwrap_or_else(|| json!([])),
-        )
-        .context("invalid preparation attempts")?,
-        failure_cause: None,
-    }))
-}
-
-/// #2329 (V2): a state directory reported by the child must equal the
-/// runner-assigned one by `Path` equality: no join, canonicalisation or
-/// symlink resolution. An absent value or an empty string counts as absent;
-/// any other JSON type is a mismatch. The message names only the runner's own
-/// path, escaped, never the child's value.
-fn require_assigned_state_dir(
-    key: &str,
-    reported: Option<&Value>,
-    assigned: &std::path::Path,
-) -> Result<()> {
-    match reported {
-        None => Ok(()),
-        Some(Value::String(text)) if text.is_empty() => Ok(()),
-        Some(Value::String(text)) if std::path::Path::new(text) == assigned => Ok(()),
-        Some(_) => {
-            anyhow::bail!("{key} differs from the runner-assigned state directory {assigned:?}")
-        }
-    }
+    Ok(Some(binding.pr_number))
 }

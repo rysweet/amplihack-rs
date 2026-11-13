@@ -267,7 +267,7 @@ emitted by an agent step as a `parse_json` field and read by an engine
 | D2      | `smart-classify-route.yaml`                     | `tree_id`, `depth`    | `session-tree register --json` → `extract-field`                      |
 | E       | `loop-health-evaluator.yaml`                     | `loop_verdict`        | `extract-json --require-field loop_verdict \| extract-field --field loop_verdict --default STUCK \| normalise-loop-verdict`; then the `verdict` key and a line-leading prose token as [fallbacks](loop-health-evaluator.md#how-step-03-resolves-the-verdict) |
 | F1      | `autodrive-crusty-round.yaml`                    | `crusty_verdict`      | `extract-json --require-field crusty_verdict \| extract-field --field crusty_verdict --default CONCERNS` |
-| F2      | `autodrive-merge-round.yaml`                     | `merge_ready_verdict` | `extract-json --require-field merge_ready_verdict \| extract-field --field merge_ready_verdict --default NOT_MERGE_READY` |
+| F2      | `autodrive-merge-round.yaml`                     | `merge_ready_word`    | Not extracted. A reader agent states the outcome in one word; `autodrive_round_word` maps it, and anything unclear becomes `NOT_MERGE_READY`. See [outcome word](autodrive-merge-ready-round.md#outcome-word). |
 
 ### A1 — TDD work-verifier gate (`verdict`)
 
@@ -389,6 +389,9 @@ agent-prose scraping, and are left unchanged:
   5xx / transient failures.
 - Token-redaction `sed` and slug-building `tr`.
 - The exact `grep -qF` orchestration sentinel.
+- The merge-ready write-up (#2575). It is a PR comment for people; no
+  extractor, schema or condition reads it. The drive reads only the reader
+  agent's one-word outcome.
 
 ## Related references
 

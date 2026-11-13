@@ -1,26 +1,15 @@
-//! Private, bounded evidence snapshots. Historical completion markers grant no authority.
-use super::{authorization::InvocationAuthorization, records::*, validation::*};
+//! Private, bounded state files. Historical completion markers grant no authority.
+use super::identity::MAX_RECORD_BYTES;
 use anyhow::{Context, Result, ensure};
 use std::{
     fs::{self, File},
-    io::{Read, Write},
-    path::{Component, Path, PathBuf},
+    io::Read,
+    path::{Component, Path},
 };
 
 pub struct EvidenceStore {
-    root: PathBuf,
     directory: File,
 }
-pub struct AcceptedSnapshot {
-    path: PathBuf,
-    pub record: AcceptedRecord,
-}
-impl AcceptedSnapshot {
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
 impl EvidenceStore {
     pub fn create(root: &Path) -> Result<Self> {
         let root = if root.is_absolute() {
@@ -56,56 +45,7 @@ impl EvidenceStore {
         let root = root.canonicalize()?;
         let directory = open_directory(&root)?;
         private(&directory.metadata()?, true)?;
-        Ok(Self { root, directory })
-    }
-    pub fn accept_candidate(
-        &self,
-        name: &str,
-        auth: &InvocationAuthorization,
-        expected: &Binding,
-    ) -> Result<AcceptedSnapshot> {
-        let bytes = self.read_private(name)?;
-        let record: CandidateRecord =
-            serde_json::from_slice(&bytes).context("invalid candidate evidence JSON")?;
-        let record = validate_candidate(auth, expected, &record)?;
-        self.snapshot_references(record.record())?;
-        let path = self.snapshot(&bytes)?;
-        Ok(AcceptedSnapshot { path, record })
-    }
-    /// Snapshot every referenced artifact from the same opened bytes that were hashed.
-    pub fn snapshot_references(&self, record: &CandidateRecord) -> Result<Vec<PathBuf>> {
-        use sha2::{Digest, Sha256};
-        let mut paths = Vec::new();
-        let mut seen = std::collections::BTreeMap::new();
-        let mut total = 0usize;
-        for e in record.criteria.iter().flat_map(|c| &c.evidence) {
-            if let Some(reference) = &e.reference {
-                if let Some(digest) = seen.insert(&reference.file, &reference.sha256) {
-                    ensure!(
-                        digest == &reference.sha256,
-                        "contradictory artifact digests"
-                    );
-                    continue;
-                }
-                let bytes = self
-                    .read_private(&reference.file)
-                    .with_context(|| format!("unreadable evidence artifact {}", reference.file))?;
-                ensure!(
-                    format!("{:x}", Sha256::digest(&bytes)) == reference.sha256,
-                    "missing, stale, or altered evidence artifact {}",
-                    reference.file
-                );
-                total = total
-                    .checked_add(bytes.len())
-                    .context("artifact size overflow")?;
-                ensure!(
-                    total <= MAX_RECORD_BYTES * 16,
-                    "artifact evidence exceeds aggregate collection limit"
-                );
-                paths.push(self.snapshot(&bytes)?);
-            }
-        }
-        Ok(paths)
+        Ok(Self { directory })
     }
     pub fn read_private(&self, name: &str) -> Result<Vec<u8>> {
         let file = self.open(name, false)?;
@@ -123,26 +63,13 @@ impl EvidenceStore {
         );
         Ok(bytes)
     }
+    #[cfg(test)]
     pub fn write_new(&self, name: &str, bytes: &[u8]) -> Result<()> {
         ensure!(bytes.len() <= MAX_RECORD_BYTES, "record exceeds size limit");
         let mut file = self.open(name, true)?;
-        file.write_all(bytes)?;
+        std::io::Write::write_all(&mut file, bytes)?;
         file.sync_all()?;
         Ok(())
-    }
-    pub fn snapshot(&self, bytes: &[u8]) -> Result<PathBuf> {
-        ensure!(
-            bytes.len() <= MAX_RECORD_BYTES,
-            "snapshot exceeds size limit"
-        );
-        let id = uuid::Uuid::new_v4();
-        let staging = format!(".pending-{id}");
-        let name = format!("accepted-{id}.json");
-        let mut file = self.open(&staging, true)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        self.publish(&staging, &name)?;
-        Ok(self.root.join(name))
     }
     fn open(&self, name: &str, create: bool) -> Result<File> {
         ensure!(
@@ -179,29 +106,6 @@ impl EvidenceStore {
         #[cfg(not(unix))]
         {
             let _ = create;
-            anyhow::bail!("private auto-drive evidence requires Unix file ownership support")
-        }
-    }
-    fn publish(&self, staging: &str, name: &str) -> Result<()> {
-        #[cfg(unix)]
-        {
-            use std::os::fd::AsRawFd;
-            let from = std::ffi::CString::new(staging)?;
-            let to = std::ffi::CString::new(name)?;
-            let fd = self.directory.as_raw_fd();
-            // linkat publishes complete bytes atomically and never replaces an existing snapshot.
-            if unsafe { libc::linkat(fd, from.as_ptr(), fd, to.as_ptr(), 0) } != 0 {
-                return Err(std::io::Error::last_os_error()).context("publish evidence snapshot");
-            }
-            if unsafe { libc::unlinkat(fd, from.as_ptr(), 0) } != 0 {
-                return Err(std::io::Error::last_os_error())
-                    .context("remove snapshot staging entry");
-            }
-            Ok(())
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = (staging, name);
             anyhow::bail!("private auto-drive evidence requires Unix file ownership support")
         }
     }

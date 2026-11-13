@@ -57,7 +57,7 @@ AUTODRIVE_EXIT_POLICY_REFUSAL=79
 LOOP_NAME=""; ROUND_RECIPE=""; CLEAN_TOKEN=""; ALSO_CLEAN=""; VERDICT_FIELD=""
 REPO="."; REVIEW_DIR=""; STATE_DIR=""; TASK_FILE_IN=""; ROUND_CTX=(); BEFORE_ROUND=""; CTX_REFUSED=""; BUDGET_CTX=(); BEFORE_CTX=(); AD_PR=""; INVOCATION_FILE=""
 
-# shellcheck disable=SC2034 # AD_PR is read by the sourced autodrive_escalate.sh
+# shellcheck disable=SC2034 # AD_PR is read by the sourced autodrive_escalate.sh; INVOCATION_FILE is accepted for older callers and no longer read (#2575)
 while [ $# -gt 0 ]; do
   case "$1" in
     --invocation) INVOCATION_FILE="${2:-}"; shift 2 ;;
@@ -237,6 +237,8 @@ while :; do
 
   COMPLETION_CTX=()
   unset AUTODRIVE_COMPLETION_STATE
+  # #2575: the merge-ready round reads the previous round's write-up (none in round one) from a private file, never argv.
+  PRIOR_CTX=(); [ "$LOOP_NAME" != merge-ready ] || { merge_ready_prior "${PRIOR_FROM:-}" || exit 2; PRIOR_CTX=(--context-from-file "prior_writeup=${STATE_DIR}/merge-ready-prior_writeup.txt"); }
   if [ "$LOOP_NAME" = crusty ]; then
     . "${LOOP_HOME}/autodrive_completion_context.sh" || exit 2
   fi
@@ -248,7 +250,7 @@ while :; do
       -c "autodrive_round_record=${RECORD}" \
       -c "autodrive_round_label=${ROUND_LABEL}" \
       -c "autodrive_resolved_concerns_file=${STATE_DIR}/resolved-concerns.txt" \
-      ${COMPLETION_CTX[@]+"${COMPLETION_CTX[@]}"} "${ROUND_CTX[@]}" -c "review_dir=${REVIEW_REAL}" -c "autodrive_launch_tools=${LOOP_HOME}" ) >"$LOG" 2>&1
+      ${COMPLETION_CTX[@]+"${COMPLETION_CTX[@]}"} ${PRIOR_CTX[@]+"${PRIOR_CTX[@]}"} "${ROUND_CTX[@]}" -c "review_dir=${REVIEW_REAL}" -c "autodrive_launch_tools=${LOOP_HOME}" ) >"$LOG" 2>&1
   ROUND_RC=$?; usage_add round "$T0"
   tail -n 200 "$LOG" >&2 || true; orphan_stop "$ROUND_RC" "round ${ROUND_LABEL}" # exit 75 (#1976)
 
@@ -267,10 +269,15 @@ while :; do
 
   # Preserve the round and its manifest before accepting any next action.
   . "${LOOP_HOME}/autodrive_loop_record.sh" || exit 1
+  # #2575: a hand-off is recorded before the evaluator runs; the merge loop recipe drafts the PR.
+  if [ "$LOOP_NAME" = merge-ready ]; then PRIOR_FROM="${STATE_DIR}/merge-ready-latest.writeup"
+    [ "$ROUND_VERDICT" != HANDOFF ] || { escalate "HANDOFF" "the merge-ready assessment of ${ROUND_LABEL} handed the PR off; the blocker is named in merge-ready-latest.writeup"; exit 1; }; fi
   # #1743, decided in code before the evaluator: no progress, then the budget. RF: 1 clean, 2 failed (rc!=0 or no verdict; the evaluator judges faults), 0 otherwise.
+  # #2575: the merge-ready round file holds only the verdict, so CI_SIGNAL and findings read empty
+  # for it. The no-progress rule therefore does not apply to merge-ready; the budget stop bounds it.
   HEAD_NOW="$(git -C "$REPO" rev-parse HEAD || printf '')"; CI_SIGNAL="$(field "$RAW" ci_signal "")"
   RF=0; [ "$ROUND_CLEAN" = "true" ] && RF=1 || { [ "$ROUND_RC" -eq 0 ] && [ "$ROUND_VERDICT" != "MISSING" ]; } || RF=2
-  [ "$RF" != 0 ] || progress_stop "$HEAD_NOW" "$CI_SIGNAL"
+  [ "$RF" != 0 ] || [ "$LOOP_NAME" = merge-ready ] || progress_stop "$HEAD_NOW" "$CI_SIGNAL"
   bash "${LOOP_HOME}/autodrive_progress.sh" record "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$HEAD_NOW" "$RF" "${RECORD}.findings" "$CI_SIGNAL"
   [ "$ROUND_CLEAN" = "true" ] || budget_stop post
   TEST_SIGNAL="$(field "$RAW" test_signal "")"
@@ -371,7 +378,6 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(print
         echo "AUTO_DRIVE_LOOP: DONE — loop '${LOOP_NAME}' converged at ${ROUND_LABEL} with ${VERDICT_FIELD}=${ROUND_VERDICT}." >&2
         record_result "$(printf '{"loop":"%s","loop_result":"DONE","round_label":"%s","round_verdict":"%s"}' \
           "$LOOP_NAME" "$ROUND_LABEL" "$ROUND_VERDICT")"
-        if [ "$LOOP_NAME" = merge-ready ] && [ -n "$INVOCATION_FILE" ]; then "$AMPLIHACK_BIN" orch helper autodrive complete-loop --invocation "$INVOCATION_FILE" --directory "$STATE_DIR" --round "$ROUND_LABEL" || exit 1; fi
         exit 0
       fi
       # #1597: re-review once; a missing record, or a repeat that moved nothing, is STUCK.

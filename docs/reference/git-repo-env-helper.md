@@ -168,7 +168,7 @@ helper from.
 does not load the helper. Its only loader, `autodrive_qa_evidence.sh`, has
 cleared both lists before it sources the file.
 
-Steps that run no repository command are unchanged: `step-00-merge-ready-files`,
+Steps that run no repository command are unchanged:
 the steps of `auto-drive-to-merge.yaml`, `autodrive-prerequisites`,
 `autodrive-check-unmerged`, and the `type: recipe` delegations (the delegated
 recipe's own steps do the clearing).

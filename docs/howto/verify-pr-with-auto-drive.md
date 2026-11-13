@@ -1,7 +1,7 @@
 ---
 title: Verify a PR with Auto-drive Without Merging
 description: verify-only usage after invocation-wide authorization is implemented and tested.
-last_updated: 2026-11-11
+last_updated: 2026-11-13
 review_schedule: quarterly
 owner: workflow-team
 doc_type: howto
@@ -44,14 +44,18 @@ amplihack recipe run auto-drive-to-merge \
 ```
 
 Auto-drive reuses the branch's open PR, resolves its linked worktree, runs
-crusty review and repair, and applies all merge-ready criteria. Its final
-report identifies the PR, verified head, criterion evidence, requested action,
-observed platform state, and blockers.
+crusty review and repair, and applies all merge-ready criteria. Each
+merge-ready round posts its write-up as a PR comment naming the head SHA it
+assessed. The final report (`autodrive_outcome`) gives the requested action
+`verify_readiness`, the loop result, the merge result and the stop reason,
+with the finalization statement as its summary.
 
-Expected successful outcome: merge-ready, no merge requested, PR observed
-open. If evidence or approval is missing, expect the named blocker or
-incomplete stop reason instead. `no_merge=true` never permits a merge,
-including after re-review or light-to-full escalation.
+Expected successful outcome: loop result `DONE`, merge result
+`not-authorised`, stop reason `completed`, PR still open and not a draft. If
+a blocker cannot be cleared within the run, expect a hand-off instead: the PR
+becomes a draft with a comment naming the blocker and head SHA.
+`no_merge=true` never permits a merge, including after re-review or
+light-to-full escalation.
 
 For explicit selection, supply the actual PR number through `-c pr_number`;
 it takes precedence over branch discovery. Do not name a different branch.
@@ -67,15 +71,18 @@ amplihack recipe run auto-drive-to-merge \
   -c autodrive_dry_run=true
 ```
 
-Expected behavior: zero merge requests and no follow-up issue creation.
-If minor findings need follow-ups that do not already exist, readiness remains
-blocked and the report lists those obligations. Dry-run does not waive them.
+Expected behavior: zero merge requests, no follow-up issue creation, and no
+PR comment or draft change; the write-up and any hand-off are printed in the
+step output instead. If minor findings need follow-ups that do not already
+exist, readiness remains blocked and the write-up names those obligations.
+Dry-run does not waive them.
 
 ## Resume incomplete work
 
-Correct the reported cause and rerun with `no_merge=true`
-again. The full-composer default is `false`; omitting the restriction
-on a new invocation permits merging once ready. Historical authorization does
+Correct the blocker named in the hand-off comment, mark the PR ready for
+review again if it was drafted, and rerun with `no_merge=true` again. The
+full-composer default is `false`; omitting the restriction on a new
+invocation permits merging once ready. Historical authorization does
 not carry over, including through `recipe run --fresh` or a durable recovery
 resume.
 
@@ -93,8 +100,8 @@ amplihack recipe run auto-drive-to-merge \
   -c autodrive_budget_loop_rounds=20
 ```
 
-Expected behavior: reuse validated progress for the same PR, retain consumed
-usage, and start additional work only if every applicable budget permits it.
+Expected behavior: retain consumed usage, and start additional work only if
+every applicable budget permits it.
 A relative path, or one containing `..` or a control character, stops the run
 at once with `autodrive_state_dir must be an absolute path`. See
 [state directory](../reference/auto-drive-to-merge.md#state-directory).
@@ -109,12 +116,14 @@ reviewer; policy bypasses and hook skipping are prohibited.
 
 ## Inspect readiness and publish evidence
 
-Check that all 13 criteria have concrete, current evidence, the PR description
-was read back, and the final platform observation says open. Distinguish
+Read the last merge-ready comment on the PR. Check that it names the head SHA
+you expect, that all 13 criteria have concrete, current evidence, and that
+its closing sentence says ready. The PR should still be open. Distinguish
 controlled tests, actual agent recovery, live verify-only execution, and
 unavailable OS/runtime coverage in the PR description. Verify-only execution
 does not demonstrate a real merge.
 
 See [workflow options](../reference/auto-drive-to-merge.md),
+[merge-ready round, merge and hand-off](../reference/autodrive-merge-ready-round.md),
 [evidence and outcomes](../reference/auto-drive-evidence.md), and
 [QA configuration](../reference/auto-drive-qa.md).

@@ -19,11 +19,20 @@ VERDICT_SAFE="$(printf '%s' "$ROUND_VERDICT" | LC_ALL=C tr -cd 'A-Za-z0-9_')"; [
 EVAL_VERDICT="$VERDICT_SAFE"; [ "$ROUND_CLEAN" != "true" ] || EVAL_VERDICT="$TOKEN_SAFE"
 FINDINGS=""
 [ -f "${RECORD}.findings" ] && FINDINGS="$(cat "${RECORD}.findings")"
+# #2575: the merge-ready round's write-up and assessed head, for the next
+# round's prior_writeup, finalisation's expected head and the hand-off.
+if [ "$LOOP_NAME" = merge-ready ]; then
+  # A round that wrote no write-up or head leaves none: no earlier assessment
+  # reaches the next round or the hand-off, and finalisation refuses with no head.
+  rm -f -- "${STATE_DIR}/merge-ready-latest.writeup" "${STATE_DIR}/merge-ready-latest.head"
+  copy_private "${RECORD%.json}.writeup" "${STATE_DIR}/merge-ready-latest.writeup"
+  copy_private "${RECORD%.json}.head" "${STATE_DIR}/merge-ready-latest.head"
+fi
 # Stable path to the latest round record, so a later gate binds evidence to the round that made it.
 copy_private "$RECORD" "${STATE_DIR}/${LOOP_NAME}-latest.json"
 copy_private "${RECORD}.findings" "${STATE_DIR}/${LOOP_NAME}-latest.json.findings"
 # #1517: <loop>-records.tsv gets one row per round THIS loop wrote (label, record, git blob hash)
-# before any later agent runs. autodrive_crusty_final and autodrive_qa_trusted trust a record only
+# before any later agent runs. autodrive_crusty_final trusts a record only
 # when the last row names it and the hash matches (git from the state dir, GIT_DIR/GIT_WORK_TREE
 # unset, as autodrive_blob_hash). A failed check: WARNING, no row.
 if [ -f "$RECORD" ]; then

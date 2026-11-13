@@ -51,7 +51,8 @@ orphan_stop() {
 # operator cannot see which criterion held the pull request up. Two sources:
 #
 #   the round record's held_by field  one condition line per disagreeing
-#       measurement, written by autodrive_round_evidence.sh round-record.
+#       measurement, when a round record carries one. The merge-ready round
+#       file holds only merge_ready_verdict since #2575, so it prints none.
 #   ${RECORD}.findings                one `reported <id>` line per blocker
 #       the round reported.
 #
@@ -132,6 +133,16 @@ record_result() {
   rm -f -- "$t"; echo "WARNING: could not write ${LOOP_NAME}-result.json in the state dir." >&2
 }
 
+# merge_ready_prior <latest writeup>: writes the merge-ready round's
+# prior_writeup file (#2575): the previous round's write-up, or empty in the
+# first round of a run. Private temporary file, then mv -f, never through a link.
+merge_ready_prior() {
+  local t
+  t="$(umask 077; mktemp "${STATE_DIR}/.prior_writeup.XXXXXX")" || return 1
+  if [ -n "${1:-}" ] && [ -f "$1" ] && [ ! -L "$1" ]; then cat -- "$1" > "$t" || { rm -f -- "$t"; return 1; }; fi
+  mv -f -- "$t" "${STATE_DIR}/merge-ready-prior_writeup.txt" || { rm -f -- "$t"; return 1; }
+}
+
 # wait_ledger <phase>: the path, cleared, a child's usage-limit waits are written
 # to, through AMPLIHACK_USAGE_WAIT_LEDGER (profile-command.md#usage-limit-wait).
 wait_ledger() {
@@ -172,7 +183,9 @@ progress_stop() {
   # Record the stopped round too, so a resumed run's summary names it.
   bash "${LOOP_HOME}/autodrive_progress.sh" record "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$1" 0 "${RECORD}.findings" "${2:-}"
   post_stop "${STATE_DIR}/${LOOP_NAME}-stuck-reason.txt"
-  escalate "STUCK" "$why"
+  # #2575: the merge-ready loop names this stop NO_PROGRESS, so the hand-off
+  # knows the stop comment is already posted; crusty keeps STUCK.
+  if [ "$LOOP_NAME" = merge-ready ]; then escalate "NO_PROGRESS" "$why"; else escalate "STUCK" "$why"; fi
   exit 1
 }
 

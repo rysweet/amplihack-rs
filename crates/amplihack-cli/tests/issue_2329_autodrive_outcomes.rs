@@ -76,7 +76,9 @@ fn merge_restrictions_reach_shared_loops_and_light_escalation() {
 }
 
 #[test]
-fn finalization_is_an_agent_responsibility_with_structured_outcome() {
+fn finalization_states_its_outcome_in_prose_and_merges_only_from_a_bash_step() {
+    // #2575: the agents observe and state the outcome in plain words; nothing
+    // parses their text. The only merge request is the `merge` bash step.
     let doc = recipe("autodrive-finalize");
     assert_eq!(
         doc["context"]["no_merge"].as_str(),
@@ -86,12 +88,16 @@ fn finalization_is_an_agent_responsibility_with_structured_outcome() {
     assert!(
         steps(&doc).iter().any(|step| {
             step["type"].as_str() == Some("agent")
-                && step["prompt"]
-                    .as_str()
-                    .is_some_and(|prompt| !prompt.trim().is_empty())
-                && step["parse_json"].as_bool() == Some(true)
+                && step["output"].as_str() == Some("autodrive_finalization")
+                && step["parse_json"].as_bool() != Some(true)
         }),
-        "an agent must observe and report the final state"
+        "an agent must state the final outcome, unparsed"
+    );
+    assert!(
+        steps(&doc).iter().any(|step| {
+            step["id"].as_str() == Some("merge") && step["type"].as_str() == Some("bash")
+        }),
+        "the merge is requested by a bash step under captured authorization"
     );
     let mut pending = vec!["auto-drive-to-merge".to_string()];
     let mut seen = BTreeSet::new();

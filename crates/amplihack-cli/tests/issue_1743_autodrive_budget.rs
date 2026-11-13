@@ -9,8 +9,9 @@
 //! - After a round that is not clean, and before the evaluator, the driver
 //!   compares the PR head SHA and the normalised open items with the last row
 //!   of `<loop>-progress.tsv`. When the previous row is not clean and both
-//!   match, the loop stops as `STUCK` (decided in code), exit 1, and the
-//!   evaluator does not run for that round.
+//!   match, the loop stops as `STUCK` (`NO_PROGRESS` for the merge-ready
+//!   loop since #2575, so its hand-off knows the stop comment is posted),
+//!   decided in code, exit 1, and the evaluator does not run for that round.
 //! - Three limits (`autodrive_budget_loop_rounds`, `_total_rounds`,
 //!   `_wall_seconds`), cumulative across runs on the same state directory,
 //!   stop the loop as `BUDGET_EXHAUSTED`, exit 1. Clean rounds are never
@@ -516,7 +517,7 @@ fn changed_open_items_count_as_progress_and_the_next_repeat_stops() {
     fx.plan(&["CONCERNS|0|0|0|a", "CONCERNS|0|0|0|b"]);
     let o = fx.run("merge-ready", &[]);
     let r = result(&o);
-    assert_eq!(r["loop_result"], "STUCK", "{}", show(&o));
+    assert_eq!(r["loop_result"], "NO_PROGRESS", "{}", show(&o));
     assert_eq!(r["round_label"], "round-3");
     assert!(
         r["reason"].as_str().unwrap().ends_with("since round-2: b"),

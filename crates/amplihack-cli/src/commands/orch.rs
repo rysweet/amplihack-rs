@@ -33,6 +33,11 @@ mod workflow_log_inventory;
 #[path = "orch/autodrive/tests.rs"]
 mod autodrive_contract_tests;
 
+// TDD contracts for #2575: the tolerant schema-version-2 run report.
+#[cfg(test)]
+#[path = "orch/autodrive/report_v2_tests.rs"]
+mod autodrive_report_v2_tests;
+
 #[derive(Subcommand, Debug)]
 pub enum OrchCommands {
     /// Helper utilities used by smart-orchestrator (formerly orch_helper.py).

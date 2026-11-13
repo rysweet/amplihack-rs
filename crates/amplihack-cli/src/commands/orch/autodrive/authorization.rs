@@ -74,7 +74,7 @@ impl InvocationAuthorization {
             state_dir: None,
         })
     }
-    pub(crate) fn validate_selection(&self, binding: &super::records::Binding) -> Result<()> {
+    pub(crate) fn validate_selection(&self, binding: &super::identity::Binding) -> Result<()> {
         anyhow::ensure!(
             self.selected_pr.is_none_or(|n| n == binding.pr_number),
             "evidence changed explicitly selected PR"

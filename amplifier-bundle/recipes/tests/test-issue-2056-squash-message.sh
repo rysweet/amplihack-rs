@@ -2,11 +2,11 @@
 # test-issue-2056-squash-message.sh — the squash commit message an authorized
 # auto-drive merge supplies (issue #2056, PR #2262).
 #
-# #2329 retired the shell merge gate that first carried this message; the
-# merge is now requested by autodrive-finalize's `finalize-observed-action`
-# agent step, which sources amplifier-bundle/tools/autodrive_merge_message.sh.
-# This suite keeps #2262's coverage of what that helper composes and pins the
-# prompt contract that makes the agent use it:
+# #2329 retired the shell merge gate that first carried this message; since
+# #2575 the merge is requested by autodrive-finalize's `merge` bash step
+# through amplifier-bundle/tools/autodrive_merge.sh, which sources
+# amplifier-bundle/tools/autodrive_merge_message.sh. This suite keeps #2262's
+# coverage of what that helper composes and checks that the merge tool uses it:
 #
 #   1. Subject: `<title> (#N)`, control characters removed by code point,
 #      suffix never doubled, bad titles refused.
@@ -15,7 +15,7 @@
 #   3. No jq: both readers refuse rather than compose an empty message.
 #   4. The record: private, never follows a symlink, never reused.
 #   5. The merge-ready template's marker is the helper's cut line.
-#   6. The finalize prompt: the helper from the launch bundle, an explicit
+#   6. The merge tool: the helper from the launch bundle, an explicit
 #      subject, the body on stdin, never the platform's default message.
 #
 # No network, no gh, no agent runtime.
@@ -26,6 +26,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd "${HERE}/../../.." && pwd -P)"
 HELPER="${REPO_ROOT}/amplifier-bundle/tools/autodrive_merge_message.sh"
 FINALIZE="${REPO_ROOT}/amplifier-bundle/recipes/autodrive-finalize.yaml"
+MERGE_TOOL="${REPO_ROOT}/amplifier-bundle/tools/autodrive_merge.sh"
 TEMPLATE="${REPO_ROOT}/amplifier-bundle/skills/merge-ready/pr-description-template.md"
 
 command -v jq >/dev/null 2>&1 || { echo "HARNESS-ERROR: jq is required" >&2; exit 2; }
@@ -145,25 +146,23 @@ if [ -n "$MARKER_LINE" ]; then
     "$(pv t "Desc.${NL}${NL}$(sed -n '/^<!-- merge-ready-report/,$p' "$TEMPLATE")")" "Desc." yes
 else fail MSG-template-marker "pr-description-template.md has no <!-- merge-ready-report marker line"; fi
 
-# ── 6. The finalize prompt uses the helper ───────────────────────────────────
-FP="$(awk '
-  /^  - id: "finalize-observed-action"/ { s=1; next }
-  s && /^  - id: / { exit }
-  s && /^    prompt: \|/ { p=1; next }
-  s && p { if ($0 ~ /^    [a-zA-Z_]+:/) exit; print }' "$FINALIZE" | tr '\n' ' ')"
+# ── 6. The merge tool uses the helper (#2575) ────────────────────────────────
+FP="$(grep -v '^[[:space:]]*#' "$MERGE_TOOL" 2>/dev/null | tr '\n' ' ')"
 for clause in \
-  "never the platform default that concatenates every commit's message and trailers (issue #2056)" \
-  'source the trusted launch-bundle helper by its absolute path, never a copy from the PR'"'"'s tree and never a path relative to this step'"'"'s working directory' \
-  'case "${AMPLIHACK_HOME:-}" in /*) ;; *) echo "STOP: AMPLIHACK_HOME is not the absolute launch-bundle home (#2056)" >&2; exit 1 ;; esac;' \
-  'MM="$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_message.sh"; [ -f "$MM" ] && [ ! -L "$MM" ] && . "$MM" ||' \
-  'autodrive_merge_subject <json> <number>' \
-  'autodrive_merge_body <json>' \
-  'treat a non-zero return from either as a blocker' \
-  '--match-head-commit <verified-head> --subject "$subject" --body-file -' \
+  'case "${AMPLIHACK_HOME:-}" in' \
+  'mm="${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_merge_message.sh"' \
+  'if [ ! -f "$mm" ] || [ -L "$mm" ]; then' \
+  'autodrive_merge_subject "$json" "$pr"' \
+  '! autodrive_merge_body "$json"' \
+  '--match-head-commit "$sha" --subject "$subject" --body-file -' \
   "printf '%s' \"\$MERGE_BODY\" | gh pr merge"; do
-  case "$FP" in *"$clause"*) pass MSG-finalize-prompt "finalize-observed-action says: ${clause:0:70}" ;;
-    *) fail MSG-finalize-prompt "finalize-observed-action lacks: $clause" ;; esac
+  case "$FP" in *"$clause"*) pass MSG-finalize-prompt "autodrive_merge.sh says: ${clause:0:70}" ;;
+    *) fail MSG-finalize-prompt "autodrive_merge.sh lacks: $clause" ;; esac
 done
+case "$(grep -v '^[[:space:]]*#' "$FINALIZE" 2>/dev/null)" in
+  *'amplifier-bundle/tools/autodrive_merge.sh'*) pass MSG-finalize-prompt "the finalize merge step sources autodrive_merge.sh" ;;
+  *) fail MSG-finalize-prompt "the finalize merge step does not source autodrive_merge.sh" ;;
+esac
 
 echo
 echo "Summary: ${PASS_COUNT} passed, ${FAIL_COUNT} failed"
