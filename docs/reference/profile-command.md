@@ -11630,7 +11630,7 @@ A record is written in five cases only:
 
 | When | What is recorded |
 |------|------------------|
-| [`profile login <name>`](#login-check) is accepted | The account in the profile's new `.claude.json`. A later accepted login overwrites it. Nothing is recorded when that file has no account (for example a macOS Keychain login with no `oauthAccount` block). |
+| [`profile login <name>`](#login-check) is accepted | The account in the profile's new `.claude.json`. A later accepted login overwrites it. This includes a macOS Keychain login, which writes only the `oauthAccount` block. Nothing is recorded when that file has no account, or when the login did not finish. |
 | A [swap](#rotate-swap) adopts the login in `~/.claude` as `default-original[-N]` | The trusted outgoing account, only after a complete ownership check establishes the new profile may own it. A session block cannot supply identity; unreadable claims prevent adoption. |
 | A [swap](#rotate-swap) completes from a profile that has no record | The trusted outgoing account, only when existing ledger/provenance and compatibility checks establish ownership and a complete trusted scan finds no other profile claiming it. Session JSON cannot backfill missing evidence. Existing restrictions after hand-change recovery still apply. |
 | A rotate cycle [seeds](#seeding-a-record) a live profile with no record | The account from one fresh trusted reading, only with full ledger ownership and no other claim. |
@@ -11718,28 +11718,41 @@ error: profile '<name>' is the rotator's live profile; its login is ~/.claude. N
 hint: log in with plain 'claude', or stop the rotator first.
 ```
 
-1. **Before Claude starts.** If `<root>/<name>/.credentials.json` exists, it
-   is renamed into a new directory
-   `<root>/.rejected-logins/.pending-<name>-<time>/`, and the profile's
-   current `oauthAccount` block is written there as `oauthAccount.json`.
-   The path is printed first:
+1. **Before Claude starts.** amplihack creates a new directory
+   `<root>/.rejected-logins/.pending-<name>-<time>/` and writes the
+   profile's current `oauthAccount` block there as `oauthAccount.json`.
+   It then removes the `oauthAccount` key from `<root>/<name>/.claude.json`,
+   keeping the file's mode and its other keys, so that any `oauthAccount`
+   present after Claude exits was written by this login. If
+   `<root>/<name>/.credentials.json` exists, it is then renamed into the
+   `.pending-…` directory, and only then is its path printed:
    `note: holding the previous login of profile '<name>' in <path> while you log in`.
+   With no `.credentials.json` to hold, as on macOS, this note is not
+   printed, although the `.pending-…` directory still holds the block.
    A previous login that is a symlink, has more than one link or is not
-   private stops the command here, before Claude starts, with nothing moved.
+   private stops the command here, before Claude starts, with nothing moved
+   and `.claude.json` unchanged. If the key cannot be removed, nothing is
+   moved and the `.pending-…` directory is removed. If the login cannot be
+   moved after the key was removed, the block is put back first; if that
+   also fails, the `.pending-…` directory is kept, because its
+   `oauthAccount.json` is then the only copy of the block, and the error
+   names it.
 2. **Claude runs.** amplihack ignores SIGINT while it waits, so Ctrl-C ends
    Claude and the restore in step 3 still runs. No lock is held.
 3. **After Claude exits.** amplihack takes the state lock again and checks
    leases again; if the profile is now leased or hosting another account,
    or the rotator made it the live profile while Claude ran (the rotator
    takes no lease), it stops, moves nothing, and prints where each login
-   is. If cleanup fails after Claude itself failed, the message starts with
+   is and, whenever a block was saved, the `.pending-…` directory that holds
+   it (see [While Claude runs](#while-claude-runs)). If cleanup fails after Claude itself failed, the message starts with
    `claude exited with an error first: ` and Claude's error. Otherwise:
 
 | Outcome | What happens | Exit |
 |---------|--------------|------|
 | Claude exited non-zero | Any new `.credentials.json` goes to `<name>-<time>/`. The previous login and `oauthAccount` are restored. No duplicate check. | Claude's status |
-| Claude exited 0, no new `.credentials.json`, a previous login was held | The login did not finish. The previous login and `oauthAccount` are restored: `Claude exited without writing a login file; the previous login of profile '<name>' was restored`. | 1 |
-| Claude exited 0, no `.credentials.json` before or after | The macOS Keychain case. `oauthAccount` is left as Claude wrote it, even for a duplicate: restoring the old block would make `.claude.json` disagree with the login in the Keychain. If `.claude.json` names a duplicate account, the refusal is printed but there is no file to move. If it is not a duplicate and `.claude.json` names an account, that account becomes the [recorded account](#recorded-account). | 0, or 1 for a duplicate |
+| Claude exited 0, no new `.credentials.json`, no new account in `.claude.json` | The login did not finish. The previous login, if one was held, and the earlier `oauthAccount` block are restored. With a held login: `Claude exited without writing a login file; the previous login of profile '<name>' was restored`. Without one, nothing is recorded. | 1 with a held login, otherwise 0 |
+| Claude exited 0, no new `.credentials.json`, a new account in `.claude.json`, a previous login was held | The macOS Keychain case: Claude keeps the login in the Keychain and writes only `oauthAccount`. The new account is checked for duplicates. If it is not a duplicate, the login is accepted: the previous login moves to `<name>-<time>-replaced/` as for a file login, and the account becomes the [recorded account](#recorded-account). If it is a duplicate, the previous login and `oauthAccount` are restored; see [Keychain refusal](#keychain-refusal). If the check cannot run, the previous login and `oauthAccount` are restored, with `could not check profile '<name>' for duplicate logins: <reason>; its oauthAccount was restored`. | 0, or 1 for a duplicate or a failed check |
+| Claude exited 0, no `.credentials.json` before or after, a new account in `.claude.json` | The macOS Keychain case with no previous login file. `oauthAccount` is left as Claude wrote it, even for a duplicate: restoring the old block would make `.claude.json` disagree with the login in the Keychain. For a duplicate the refusal is printed, but there is no file to move. Otherwise the account becomes the [recorded account](#recorded-account). | 0, or 1 for a duplicate |
 | New login is not a private regular file | Nothing is moved and its mode is not changed. The error reports the mode and says the login may be exposed; the previous login stays in the `.pending-…` directory, and the hint prints that path. | 1 |
 | New login duplicates another login | Refused; see below. | 1 |
 | The profiles cannot be listed, or the auto-switch state cannot be opened | The check fails closed: the new login is set aside and the previous one restored as for a refusal, with `could not check profile '<name>' for duplicate logins: <reason>`. | 1 |
@@ -11771,6 +11784,48 @@ hint: sign out of claude.ai in your browser (or use a private/incognito window),
 
 `<holder>` is `profile '<other>'`, `~/.claude (rotator live profile '<live>')`
 when the live profile is known, or `~/.claude`.
+
+#### Keychain refusal
+
+When Claude wrote no login file but the new `oauthAccount` duplicates
+another login, there is no new file to move aside. The held login is
+renamed back, `oauthAccount` is set back to the saved block, the empty
+`.pending-…` directory is removed, and nothing is recorded:
+
+```
+error: profile '<name>' is signed in to the same account and organization as <holder>; Claude wrote no login file, and '<name>' is back to its previous login
+hint: sign out of claude.ai in your browser (or use a private/incognito window), then run 'amplihack profile login <name>' again.
+```
+
+The refused login stays in the Keychain, which amplihack never reads or
+changes, until you sign out of it.
+
+#### What counts as a new account
+
+After Claude exits, `.claude.json` is read with the same bounded reader
+used everywhere else: no symlinks, a size limit, a JSON object only. A new
+account is an `oauthAccount` block from which an
+[account identity](#account-identity) can be read. An empty, malformed or
+unsafe block is not a new account, so it never causes a working login file
+to be replaced without a duplicate check. A block identical to the one
+before the login is a new account too: signing in again to the same
+account is accepted.
+
+#### While Claude runs
+
+Because the key is removed in step 1, the profile has no `oauthAccount`
+while Claude runs. During that time, a duplicate check by another
+`profile login` and the account fallback used when there is no rotator
+ledger do not see an account for this profile. The [lease](#leases) covers
+this window, and the rotator decides from its ledgers.
+
+If the profile is leased, hosts another account or was made the rotator's
+live profile when Claude exits, amplihack writes nothing to `.claude.json`
+and moves nothing, so the key stays removed. The earlier block is in
+`.pending-<name>-<time>/oauthAccount.json`. The message names the
+`.pending-…` directory whenever a block was saved there, including when
+the profile had no `.credentials.json`, so on macOS this message is the
+only place the path is printed.
 
 If a step fails part-way, amplihack stops and prints the path of every
 login it has moved. It never copies or deletes one.
