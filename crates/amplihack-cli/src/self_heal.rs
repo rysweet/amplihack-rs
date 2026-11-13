@@ -524,6 +524,17 @@ fn args_should_skip(args: &[OsString]) -> bool {
     if matches!(positionals.as_slice(), ["orch", "helper", ..]) {
         return true;
     }
+    // Workflow pipe primitives must not install assets or contaminate stdout.
+    if matches!(
+        positionals.as_slice(),
+        [
+            "workflow",
+            "issue-keyword" | "compose-readiness-description",
+            ..
+        ]
+    ) {
+        return true;
+    }
     // `profile statusline` is the status-line wrapper Claude Code runs after
     // every turn (issue #1569). Its stdout is the status line and it must stay
     // fast and silent, so it never triggers auto-install.

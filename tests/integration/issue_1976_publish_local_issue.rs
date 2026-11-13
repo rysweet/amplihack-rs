@@ -206,7 +206,7 @@ impl Fx {
     fn publish(&self, label: &str, issue_number: &str) -> Run {
         let logs = self.root.join(format!("logs-{label}"));
         fs::create_dir_all(&logs).unwrap();
-        let old_path = std::env::var("PATH").unwrap_or_default();
+        let old_path = crate::amplihack_path::path_with_amplihack_bin();
         let mut cmd = Command::new("bash");
         cmd.arg(tool("workflow_publish_pr.sh"))
             .current_dir(&self.repo)

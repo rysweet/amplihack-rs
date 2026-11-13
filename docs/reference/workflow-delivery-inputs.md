@@ -1,14 +1,25 @@
+---
+title: Workflow Delivery Inputs Reference
+description: Base branch, strict delivery and configurable issue references for workflow publication.
+last_updated: 2026-11-13
+review_schedule: quarterly
+owner: workflow-team
+doc_type: reference
+---
+
 # Workflow Delivery Inputs Reference
 
 > [Home](../index.md) > Reference > Workflow Delivery Inputs
 
-`default-workflow` takes two optional sets of inputs that decide where a run
-delivers its work. `base_branch` names the branch a pull request targets.
+`default-workflow` takes optional inputs that control delivery and issue
+references. `base_branch` names the branch a pull request targets.
 `strict_delivery` is for a caller that has already assigned the issue and the
 branch, for example a dispatcher that hands queued work to many runs. The two
 are independent: setting a base does not change how the issue is chosen.
-They apply where `default-workflow` runs; [Where the inputs apply](#where-the-inputs-apply)
-lists the paths that do not use them.
+The `pr_issue_link` input selects the generated issue keyword
+while retaining the discovered issue. [Where the inputs apply](#where-the-inputs-apply) lists the
+delivery paths; [issue keyword propagation](#issue-keyword-propagation) lists
+the recipe boundaries for `pr_issue_link`.
 
 ## Contents
 
@@ -17,6 +28,8 @@ lists the paths that do not use them.
 - [`forbidden_base_branches`](#forbidden_base_branches)
 - [`strict_delivery`](#strict_delivery)
 - [How the issue is referenced](#how-the-issue-is-referenced)
+- [`pr_issue_link`](#pr_issue_link)
+- [Published references and description edits](#published-references-and-description-edits)
 - [What strict delivery does not do](#what-strict-delivery-does-not-do)
 - [How the inputs reach each phase](#how-the-inputs-reach-each-phase)
 - [Where the inputs apply](#where-the-inputs-apply)
@@ -35,6 +48,7 @@ lists the paths that do not use them.
 | `repository` | `""` | Strict delivery: the `owner/repo` on github.com that owns `issue_number`. |
 | `pr_repository` | `""` | Strict delivery: the `owner/repo` that receives the pull request. Must be this checkout's `origin`. |
 | `closing_reference` | `""` | Strict delivery: how the pull request names the issue, `#N` or `owner/repo#N` (see [below](#how-the-issue-is-referenced)). |
+| `pr_issue_link` | `"auto"` | Generated GitHub issue keyword: exactly `auto`, `refs` or `closes`. Applies independently of strict delivery. |
 
 `issue_number`, `create_issue` and `existing_branch` keep their existing
 meaning. Strict delivery requires them as described below. `repository`,
@@ -161,9 +175,10 @@ is not implemented: step-03 fails instead of opening a pull request that
 closes an issue nobody wants done. A caller that wants a closed issue worked
 on reopens it first.
 
-The closing keyword is still chosen from the diff (#1361): `Closes` when the
-change earns it, `Refs` otherwise. Strict delivery changes how the issue is
-named, not whether the pull request may close it.
+The keyword follows the caller mode and existing diff classification (#1361).
+Strict delivery determines the issue's identity. The
+[`pr_issue_link`](#pr_issue_link) policy determines whether an eligible
+change uses a closing keyword.
 
 The issue claim check (#1361) asks whether a pull request in this repository
 claims issue N of this repository. For an issue in another repository that is
@@ -190,6 +205,148 @@ The reference is therefore:
 Repository names compare case-insensitively, as on GitHub. `closing_reference`
 must equal this reference exactly. Step-03 and step-16 fail when it does not.
 
+`closing_reference` contains the reference alone, without `Refs` or `Closes`.
+Its name does not require a closing keyword: `pr_issue_link=refs`
+preserves the same reference with `Refs`.
+
+## `pr_issue_link`
+
+`-c pr_issue_link=refs` keeps generated references non-closing, for example
+when several PRs contribute to one issue. The values are exactly `auto`,
+`refs` and `closes`; omitting the input selects `auto`.
+
+| Existing change classification | Omitted / `auto` | `refs` | `closes` |
+| --- | --- | --- | --- |
+| Substantive | `Closes #N` | `Refs #N` | `Closes #N` |
+| Planning-only | `Refs #N` | `Refs #N` | `Refs #N` |
+| Generated-only | `Refs #N` | `Refs #N` | `Refs #N` |
+| Empty | `Refs #N` | `Refs #N` | `Refs #N` |
+| Classification unavailable or failed | `Refs #N` | `Refs #N` | `Refs #N` |
+
+The table assumes discovery found an issue. The mode changes only its
+keyword. It preserves discovery, path classification and reference identity,
+including `owner/repo#N` for another repository. When discovery finds no
+issue, the workflow adds no issue reference. Azure DevOps retains its existing
+work-item behaviour, including `AB#N` commit references.
+
+Substantive means at least one changed path is substantive under the existing
+classifier. Planning documents and generated files alone never earn a
+closing keyword, even with `closes`. Ordinary documentation can be
+substantive; a documentation-only change is not automatically planning-only.
+
+### Commit and PR classification
+
+Step-15 classifies staged paths for generated commit messages. Step-16
+classifies the complete PR diff against its base for the description. Both
+apply the same mode-aware policy to their respective classification results.
+An empty set of changed paths produces `Refs` if an issue is known; it does not
+cause an otherwise empty commit or PR to be created.
+
+A missing or failing classifier, or a failed keyword selector, falls back to
+`Refs` in every mode. A classifier that exits unsuccessfully cannot establish
+eligibility even if it prints `Closes`. An explicit `closes` therefore never
+turns an unclassified change into a closing reference.
+
+The shared `amplihack workflow issue-keyword` selector returns
+exactly `Refs` or `Closes`. Its mode defaults to `auto`; its optional
+classification accepts the successful classifier verdict `Refs` or `Closes`. An omitted
+classification means unavailable and returns `Refs`. Adapters retain the
+classifier's exit status and accept only a successful selector result that
+matches one of those two keywords.
+
+If rich PR body construction fails after classification, the minimal
+body reuses the selected keyword and reference. For example, a substantive
+change with `auto` retains `Closes #N`; with `refs`, it retains `Refs #N`.
+
+### Issue keyword propagation
+
+Each recipe declares `pr_issue_link: "auto"` and explicitly forwards the
+caller's value along this path:
+
+| Boundary | Value passed |
+| --- | --- |
+| `auto-drive-to-merge` → `autodrive-build` | Caller-selected `pr_issue_link` |
+| `autodrive-build` → `default-workflow` | Same value |
+| `default-workflow` → `workflow-publish` | Same value |
+| `workflow-publish` → `workflow_publish_pr.sh` | `RECIPE_VAR_pr_issue_link` |
+
+The `default-workflow` bookkeeping includes the key. Direct
+invocations use the same default. Publishing reads
+`RECIPE_VAR_pr_issue_link`; an inherited bare `pr_issue_link` alias cannot
+override it. A new invocation with the input omitted uses `auto` rather than
+a stale inherited value.
+
+### Keep the issue open after publication
+
+This invocation builds work for issue #2550 with a non-closing reference:
+
+```bash
+amplihack recipe run auto-drive-to-merge --detach \
+  -c task_description="Implement rysweet/amplihack-rs#2550" \
+  -c pr_issue_link=refs \
+  -c no_merge=true
+```
+
+With this policy, a substantive change's generated commit and PR
+description contain `Refs #2550`. `no_merge=true` leaves the PR open for review;
+`pr_issue_link=refs` preserves the non-closing reference if the PR is later merged. Omitting
+`pr_issue_link`, or supplying `auto` or `closes`, produces `Closes #2550` for
+that substantive change. Planning-only changes produce `Refs #2550` in every
+mode.
+
+## Published references and description edits
+
+Under this contract, the published keyword and reference identity are
+authoritative. Finalisation, merge-ready and later description edits preserve
+them without reclassifying the diff or adding a closing reference. Running with a different mode against
+an existing PR does not rewrite its published reference.
+
+Merge-ready accepts a published `Refs #N` or `Refs owner/repo#N` as issue-link
+evidence even when GitHub's `closingIssuesReferences` is empty. Separate
+project requirements for linked issues or work items still apply.
+
+Readiness editing fetches the current description and composes an update with
+`amplihack workflow compose-readiness-description` before submitting it. The
+command reads the current description and replacement report as
+required JSON string fields `description` and `report` on standard input and buffers the composed body
+before writing it to standard output. The composer preserves the description
+verbatim before the established
+`<!-- merge-ready-report` marker or legacy `## Merge readiness` heading and
+replaces the report below that boundary. When no report exists, it appends
+one below the description. Conflicting boundaries are rejected.
+
+Use the executable [fetch-compose-edit example](../../amplifier-bundle/skills/merge-ready/SKILL.md#fetch-compose-edit),
+with trusted `PR` and private `REPORT_FILE` inputs. It validates the fetched
+body, JSON-encodes both fields using `jq`, composes through Rust, and submits
+only successful output through `gh pr edit --body-file`. It then reads the
+body back and compares it. Description and report text remain data.
+
+New report content cannot introduce closing references: `close`, `closes`,
+`closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves` and `resolved`, in any
+case, with bare, cross-repository or issue-URL references are rejected,
+including Markdown formatting and multiple references. Validation checks the
+original report, link labels and resolved issue destinations. Inline links and
+full, collapsed and shortcut reference links cannot hide a closing keyword.
+Reference definitions in the preserved description also resolve new report
+links; an earlier definition takes priority over a duplicate in the report.
+Ordinary prose such as "fixes pagination" and issue evidence without a closing
+keyword remain valid. The composer uses a CommonMark parser to resolve links
+while retaining labels and reference definitions. Validation applies to the new
+report; existing published `Closes` or `Refs` text is preserved.
+Formatting removal does not expose an ordinary link's hidden destination as a
+closing keyword.
+Malformed input or validation failure produces no composed body. JSON diagnostics
+include only the error category, line and column, never supplied values or report
+excerpts. A failed fetch, parse or composition leaves the platform description
+untouched; an edit is submitted only after successful composition and then read
+back.
+
+The squash body comes from the published description above the report
+boundary, retaining `Refs #N` verbatim. Readiness material is removed, and
+individual commit messages and their issue trailers are not concatenated.
+No separate squash-message option is needed. See the
+[squash commit message reference](auto-drive-to-merge.md#the-squash-commit-message-2056).
+
 ## What strict delivery does not do
 
 - It adds no text to any agent prompt. The guarantees come from the steps
@@ -211,8 +368,9 @@ in the result is exported to bash steps as `RECIPE_VAR_<key>`, whether or not
 the sub-recipe declares it.
 
 A recipe declaration does not filter what a parent passes. Each recipe that
-reads one of these inputs still declares it, with an empty or `"false"`
-default, for two reasons:
+reads an existing delivery input still declares it, with an empty or `"false"`
+default. The `pr_issue_link` declarations default to
+`"auto"`. Declarations serve two purposes:
 
 - the default applies when the recipe runs on its own, with no parent;
 - a nested `amplihack recipe run` in a separate process inherits the parent
@@ -315,7 +473,16 @@ absent `--base` keeps their discovery; a set one is never replaced:
 
 ## Tests
 
+The issue-link integration tests require the repository-pinned recipe runner
+installed by `scripts/install-pinned-recipe-runner.sh`. They use private homes,
+local repositories, recording hooks and fake hosting commands; no credentials
+or live hosting service are needed. The runner tests retain the production
+context declarations and nested mappings through all four recipes.
+
 ```bash
+cargo test -p amplihack-cli --lib commands::workflow::
+cargo test -p amplihack --test integration workflow_issue_link::
+cargo test -p amplihack --test integration workflow_readiness_description::
 cargo test -p amplihack --test integration issue_1881_local_default_tracking::strict_delivery
 cargo test -p amplihack --test integration workflow_publish_pr_metadata::recovery
 cargo test -p amplihack --test integration workflow_delivery_inputs
@@ -326,3 +493,4 @@ cargo test -p amplihack --test integration workflow_delivery_inputs
 - [Tracking Issue Selection Reference](workflow-tracking-issue-selection.md) - how step-03 chooses the issue when `strict_delivery` is off
 - [Issue Deduplication Reference](issue-dedup.md) - the issue claim check
 - [Workflow GitHub Repo Identity](workflow-github-repo-identity.md) - the `origin` parser publication uses
+- [Auto Drive To Merge Reference](auto-drive-to-merge.md) - caller configuration, finalisation and squash messages

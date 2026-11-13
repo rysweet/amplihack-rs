@@ -1048,14 +1048,18 @@ if ! $HAS_ISSUE_LINK; then
     ISSUE_LINK="No linked issue."
   fi
 else
-  if [ -f "$ISSUE_REFERENCE_HELPER" ]; then
-    ISSUE_KEYWORD="$(printf '%s\n' "$CHANGED_FILES_ALL" | bash "$ISSUE_REFERENCE_HELPER" --keyword)" || {
-      echo 'WARNING: optional issue reference derivation failed; using Refs' >&2
-      ISSUE_KEYWORD="Refs"
-    }
+  ISSUE_KEYWORD="Refs"
+  if [ -f "$ISSUE_REFERENCE_HELPER" ] && CLASSIFICATION="$(printf '%s\n' "$CHANGED_FILES_ALL" | bash "$ISSUE_REFERENCE_HELPER" --keyword)"; then
+    if SELECTED="$(amplihack workflow issue-keyword --mode "${RECIPE_VAR_pr_issue_link:-auto}" --classification "$CLASSIFICATION")"; then
+      case "$SELECTED" in
+        Refs|Closes) ISSUE_KEYWORD="$SELECTED" ;;
+        *) echo 'WARNING: invalid issue keyword; using Refs' >&2 ;;
+      esac
+    else
+      echo 'WARNING: issue keyword selection failed; using Refs' >&2
+    fi
   else
-    echo "WARNING: workflow_issue_reference.sh not found at ${ISSUE_REFERENCE_HELPER} — using the non-closing 'Refs' keyword (#1361)" >&2
-    ISSUE_KEYWORD="Refs"
+    echo "WARNING: issue classification unavailable at ${ISSUE_REFERENCE_HELPER}; using Refs" >&2
   fi
   ISSUE_LINK="${ISSUE_KEYWORD:-Refs} ${ISSUE_TAG}"
 fi
@@ -1072,7 +1076,7 @@ done
 PR_BODY=$(printf '## Summary\n%s\n\n## Issue\n%s\n\n## Changed files\n%s\n\n## Diff stat\n```text\n%s\n```\n\n## Behavior\n%s\n\n## Validation\n%s\n\n## Risk\n%s\n\n## Checklist\n- [x] Branch has %s commit(s) ahead of %s\n- [ ] Code review completed\n- [ ] Philosophy check passed\n\n---\n*This PR was created as a draft for review before merging.*\n' "$PR_SUMMARY" "$ISSUE_LINK" "$CHANGED_FILES_BODY" "$DIFF_STAT_BODY" "$BEHAVIOR_BODY" "$VALIDATION_BODY" "$RISK_BODY" "$COMMITS_AHEAD" "$BASE_BRANCH") || {
   echo 'WARNING: optional rich PR body construction failed; using a minimal summary' >&2
   PR_BODY="$(printf '## Summary\nBranch changes prepared for review.\n\n')"
-  if $HAS_ISSUE_LINK; then PR_BODY="${PR_BODY}"$'\n\n'"Refs ${ISSUE_TAG}"; else PR_BODY="${PR_BODY}"$'\n\n'"No linked issue."; fi
+  PR_BODY="${PR_BODY}"$'\n\n'"${ISSUE_LINK}"
 }
 
 PUBLISH_STATE="FOLLOWUP_CREATED"

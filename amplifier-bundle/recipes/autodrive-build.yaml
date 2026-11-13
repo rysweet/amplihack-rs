@@ -14,6 +14,7 @@ recursion:
 context:
   task_description: ""
   requirements: ""
+  pr_issue_link: "auto"
   repo_path: "."
   branch_prefix: "feat"
   existing_branch: ""
@@ -62,6 +63,7 @@ steps:
     type: "recipe"
     recipe: "default-workflow"
     context:
+      pr_issue_link: "{{pr_issue_link}}"
       task_description: "{{no_merge_directive.task_description}}"
       requirements: "{{no_merge_directive.requirements}}"
       repo_path: "{{repo_path}}"

@@ -329,7 +329,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Recipe Commit Hook Repair](reference/recipe-commit-hook-repair.md) - How checkpoint and publish steps hand a rejected git `pre-commit` or `pre-push` hook to a fixing agent, retry under loop-health evaluation, and refuse changes to hook configuration
 - [Recipe Check Exit Status](reference/recipe-check-exit-status.md) - How test, hook and CI check steps report the real exit status, keep stderr in the step log, and route failures to fix or diagnosis steps (issue #2190)
 - [Structured Verdict & Intent Parsing Reference](reference/structured-verdict-parsing.md) - `normalise-verdict` helper, `session-tree register --json`, and the `verdict`/`no_merge`/`goal_status`/`status` fields that replace brittle agent-prose scraping
-- [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - Planned responsibilities, invocation-wide authorization, gate retirement, and target compatibility matrix
+- [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - Responsibilities, issue keyword selection, invocation-wide authorisation, gate retirement, and target compatibility matrix
 - [Auto-drive Evidence and Outcomes](reference/auto-drive-evidence.md) - Planned evidence contract for all 13 criteria and auto-drive's crusty convergence substitution
 - [Auto-drive State Permissions](reference/auto-drive-state-permissions.md) - State folders 0700 and files 0600 under any umask; when the evidence check repairs an entry this user owns (slug folders directly under the auto-drive state root), when it refuses, and the `INFO`/`WARNING` repair log line (#2546)
 - [Auto-drive QA Selection](reference/auto-drive-qa.md) - QA selection requirements for the planned evidence workflow
@@ -386,7 +386,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [PR-Ownership Lease Reference](reference/pr-ownership-lease.md) - `PrLease`, `LeaseStore`, `Clock`, `LeaseError`, on-disk format, configuration, and the behavior contract locked by `pr_lease_behavior.rs`
 - [Step 03 Host-Aware Tracking Idempotency](reference/recipe-step-03-idempotency.md) - GitHub issue, Azure Boards work-item, and local tracking reuse/create behavior
 - [Tracking Issue Selection Reference](reference/workflow-tracking-issue-selection.md) - How step 03 honours `issue_number` on GitHub, reuses only open issues referenced in the task text (#1595), defaults to local tracking unless `create_issue=true`, reuses exact-title matches, and bounds rate-limit retries with jittered backoff (#1881)
-- [Workflow Delivery Inputs Reference](reference/workflow-delivery-inputs.md) - `base_branch` (the pull request's base everywhere it is used) and the opt-in `strict_delivery` contract for a caller that has already assigned the issue and the branch
+- [Workflow Delivery Inputs Reference](reference/workflow-delivery-inputs.md) - Base branch selection, strict delivery, and `pr_issue_link` modes with published reference preservation
 - [Workflow Issue Extraction Reference](reference/workflow-issue-extraction.md) - Three-tier issue-number resolution (direct URL → PR closing-refs → `#N` verify) in step 03b
 - [Multi-Provider Workflow Reference](reference/multi-provider-workflow.md) - Provider-neutral helper routing for GitHub, Azure DevOps, local, and unsupported repositories
 - [How to Use the Workflow with Azure DevOps](howto/use-workflow-with-azure-devops.md) - Run default-workflow against an AzDO repository

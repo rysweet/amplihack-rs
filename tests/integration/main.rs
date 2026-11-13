@@ -530,3 +530,11 @@ mod issue_1771_precommit_symlinked_caches;
 // recipe-runner-rs with agent steps stubbed, all under isolated(..).
 #[path = "issue_1966_consensus_criticality.rs"]
 mod issue_1966_consensus_criticality;
+
+// Issue #2550: isolated mode propagation, publication and published-reference preservation.
+#[path = "workflow_issue_link.rs"]
+mod workflow_issue_link;
+#[path = "workflow_issue_link_fixture.rs"]
+mod workflow_issue_link_fixture;
+#[path = "workflow_readiness_description.rs"]
+mod workflow_readiness_description;

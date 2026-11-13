@@ -17,7 +17,9 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::time::Duration;
 
+mod issue_keyword;
 mod provider_detection;
+mod readiness_description;
 
 use provider_detection::detect_provider_from_repo;
 
@@ -26,6 +28,10 @@ const PROVIDER_DIAGNOSTIC_CHARS: usize = 600;
 
 #[derive(Subcommand, Debug)]
 pub enum WorkflowCommands {
+    /// Select the issue keyword from the caller mode and successful classification.
+    IssueKeyword(issue_keyword::IssueKeywordArgs),
+    /// Read description/report JSON from stdin and emit a safely composed body.
+    ComposeReadinessDescription,
     /// Detect provider context for the current repository.
     DetectProvider(DetectProviderArgs),
     /// Provider-neutral change request operations.
@@ -169,6 +175,11 @@ impl From<CapabilityArg> for ProviderCapabilityState {
 
 pub fn dispatch(command: WorkflowCommands) -> Result<()> {
     match command {
+        WorkflowCommands::IssueKeyword(args) => {
+            issue_keyword::run(args);
+            Ok(())
+        }
+        WorkflowCommands::ComposeReadinessDescription => readiness_description::run(),
         WorkflowCommands::DetectProvider(args) => run_detect_provider(args),
         WorkflowCommands::ChangeRequest { command } => match command {
             ChangeRequestCommands::Publish(args) => run_publish_change_request(args),
@@ -1071,3 +1082,11 @@ mod tests {
         );
     }
 }
+
+// Issue #2550: pure policy and composition contracts.
+#[cfg(test)]
+#[path = "workflow/issue_keyword_tests.rs"]
+mod issue_keyword_tests;
+#[cfg(test)]
+#[path = "workflow/readiness_description_tests.rs"]
+mod readiness_description_tests;

@@ -17,7 +17,7 @@ inputs:
     description: "Absolute path to the repository root. Provided by parent recipe context."
 
 # #1561/#1684/#1968: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
-context: { base_branch: "", forbidden_base_branches: "", strict_delivery: "false", repository: "", pr_repository: "", closing_reference: "", worktree_setup: "", allow_no_op: false, terminal_success: "false", terminal_state: "", terminal_reason: "", publish_status: "", should_finalize: "true", should_run_ci_wait: "true", should_merge: "true", repo_path: "", version_bump: "", local_testing_gate: "", precommit_results: "", task_description: "" }
+context: { pr_issue_link: "auto", base_branch: "", forbidden_base_branches: "", strict_delivery: "false", repository: "", pr_repository: "", closing_reference: "", worktree_setup: "", allow_no_op: false, terminal_success: "false", terminal_state: "", terminal_reason: "", publish_status: "", should_finalize: "true", should_run_ci_wait: "true", should_merge: "true", repo_path: "", version_bump: "", local_testing_gate: "", precommit_results: "", task_description: "" }
 
 steps:
   - id: "publish-terminal-state"
@@ -204,7 +204,11 @@ steps:
       # under-linking costs a manual close, over-linking closes a live bug silently.
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
       CLOSE_KW="Refs"; IR=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_issue_reference.sh" ] && { IR="$c/amplifier-bundle/tools/workflow_issue_reference.sh"; break; }; done
-      if [ -n "$IR" ]; then CLOSE_KW="$(git diff --cached --name-only | bash "$IR" --keyword)" || CLOSE_KW="Refs"; else echo "WARNING: workflow_issue_reference.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack) — using the non-closing 'Refs' keyword (#1361)" >&2; fi
+      if [ -n "$IR" ] && CLASSIFICATION="$(git diff --cached --name-only | bash "$IR" --keyword)"; then
+        if SELECTED="$(amplihack workflow issue-keyword --mode "${RECIPE_VAR_pr_issue_link:-auto}" --classification "$CLASSIFICATION")"; then
+          case "$SELECTED" in Refs|Closes) CLOSE_KW="$SELECTED" ;; *) echo 'WARNING: invalid issue keyword; using Refs' >&2 ;; esac
+        else echo 'WARNING: issue keyword selection failed; using Refs' >&2; fi
+      else echo 'WARNING: issue classification unavailable; using Refs' >&2; fi
       case "$HOST_TYPE" in
         github) ISSUE_REF="${CLOSE_KW} ${ISSUE_TAG}"; ISSUE_IMPL="issue ${ISSUE_TAG}" ;;
         azdo)   ISSUE_REF="AB#${ISSUE_NUMBER}"; ISSUE_IMPL="AB#${ISSUE_NUMBER}" ;;

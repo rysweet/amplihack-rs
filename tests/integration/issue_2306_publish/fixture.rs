@@ -132,7 +132,11 @@ exec "$REAL_TOOL" "$@"
             .env_clear()
             .env(
                 "PATH",
-                format!("{}:{}", self.bin.display(), std::env::var("PATH").unwrap()),
+                format!(
+                    "{}:{}",
+                    self.bin.display(),
+                    crate::amplihack_path::path_with_amplihack_bin()
+                ),
             )
             .env("HOME", self.tmp.path().join("home"))
             .env("TMPDIR", self.tmp.path().join("private"))
