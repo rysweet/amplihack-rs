@@ -26,7 +26,7 @@ fn recorder() -> &'static Path {
         let bin = isolated_amplihack::shared_temp_home().join("qa-arg-recorder");
         let out = isolated_amplihack::isolated("rustc")
             .arg("--edition=2021")
-            .arg(workspace().join("tests/integration/fixtures/autodrive_qa_arg_recorder.rs"))
+            .arg(workspace().join("tests/fixtures/autodrive_qa_arg_recorder.rs"))
             .arg("-o")
             .arg(&bin)
             .output()

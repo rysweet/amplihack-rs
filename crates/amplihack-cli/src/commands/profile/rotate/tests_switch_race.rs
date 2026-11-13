@@ -10,16 +10,26 @@
 
 use super::cycle::{Ctx, CycleOutcome, MeasureFn, Mode, run_cycle};
 use super::decide::{Decision, Reading, Reason};
-use super::ledger::{LastCycle, SWITCHED};
+use super::ledger::LastCycle;
+#[cfg(target_os = "linux")]
+use super::ledger::SWITCHED;
+#[cfg(target_os = "linux")]
 use super::log::msg;
 use super::observe::Measurement;
-use super::pin::{self, PinState};
+use super::pin;
+#[cfg(target_os = "linux")]
+use super::pin::PinState;
 use super::settings;
+#[cfg(target_os = "linux")]
 use super::switch::{Switched, switch_live};
-use super::tests_swap::{Env, env, ino_at, json, n};
+#[cfg(target_os = "linux")]
+use super::tests_swap::ino_at;
+use super::tests_swap::{Env, env, json, n};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::now;
+#[cfg(target_os = "linux")]
 use amplihack_utils::rotator_status::parse_cycle;
+#[cfg(target_os = "linux")]
 use std::fs;
 
 fn watch_ctx(e: &Env, measure: MeasureFn) -> Ctx {
@@ -58,6 +68,7 @@ fn decided(measured_at: i64) -> Measurement {
 }
 
 /// While the cycle measures: the person runs `profile switch spare`.
+#[cfg(target_os = "linux")]
 fn a_switch(ctx: &Ctx) {
     match switch_live(&ctx.store, &ctx.home, &n("spare")) {
         Ok(Ok(Switched::Moved { .. })) => {}

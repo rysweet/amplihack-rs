@@ -1140,8 +1140,10 @@ pub fn keep_set(releases: &Path, links: &[PathBuf], previous: &[PathBuf]) -> Vec
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InUse {
     /// The scan completed: each used candidate with the pids using it.
+    #[cfg(any(target_os = "linux", test))]
     Known(BTreeMap<PathBuf, Vec<u32>>),
     /// A same-user process could not be inspected; nothing may be removed.
+    #[cfg(any(target_os = "linux", test))]
     Unknown,
     /// No process scan on this platform; nothing may be removed.
     #[cfg_attr(target_os = "linux", allow(dead_code))]
@@ -1196,6 +1198,7 @@ pub fn in_use_paths(candidates: &[PathBuf]) -> InUse {
 /// started (at boot with lingering on) would be kept for good.
 ///
 /// When the start time cannot be read, the result is [`InUse::Unknown`].
+#[cfg(target_os = "linux")]
 pub fn scan_pids(candidates: &[PathBuf], pids: &[u32]) -> InUse {
     #[cfg(target_os = "linux")]
     {
@@ -1641,16 +1644,21 @@ pub fn cleanup_unused_with(
         return Ok(report);
     }
 
-    let used = match scan(&candidates) {
-        InUse::Known(map) => map,
+    let used: Option<BTreeMap<PathBuf, Vec<u32>>> = match scan(&candidates) {
+        #[cfg(any(target_os = "linux", test))]
+        InUse::Known(map) => Some(map),
+        #[cfg(any(target_os = "linux", test))]
         InUse::Unknown => {
             report.unknown = true;
-            return Ok(report);
+            None
         }
         InUse::Unsupported => {
             report.unsupported = true;
-            return Ok(report);
+            None
         }
+    };
+    let Some(used) = used else {
+        return Ok(report);
     };
     for candidate in candidates {
         if let Some(pids) = used.get(&candidate) {

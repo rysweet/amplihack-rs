@@ -21,6 +21,7 @@ pub(super) mod tests_fixture_identity;
 mod tests_gate_record;
 #[path = "tests_identity_limits.rs"]
 mod tests_identity_limits;
+#[cfg(target_os = "linux")]
 #[path = "tests_issue_1886_collide.rs"]
 mod tests_issue_1886_collide;
 #[path = "tests_issue_1947.rs"]

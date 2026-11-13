@@ -28,6 +28,7 @@ pub(super) const NO_PERSIST: &str = "--no-session-persistence";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ProbeSandbox {
     /// The absolute path of a `bwrap` that ran the check successfully.
+    #[cfg(any(target_os = "linux", test))]
     Bwrap(PathBuf),
     Unavailable(Unavailable),
 }
@@ -38,6 +39,7 @@ pub(super) enum Unavailable {
     /// No `bwrap` on `PATH`, or not Linux.
     NotFound,
     /// `bwrap` failed to start or its check exited non-zero.
+    #[cfg(any(target_os = "linux", test))]
     Refused,
     /// Unit tests: the host's `bwrap` is never run, and nothing is noted.
     /// Only `detected()` under `cfg(test)` gives it.
@@ -49,6 +51,7 @@ pub(super) enum Unavailable {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Fallback {
     NotFound,
+    #[cfg(any(target_os = "linux", test))]
     Refused,
     ProjectsUnresolved,
 }
@@ -58,6 +61,7 @@ impl Fallback {
     pub(super) fn reason(self) -> &'static str {
         match self {
             Self::NotFound => "bwrap not found",
+            #[cfg(any(target_os = "linux", test))]
             Self::Refused => "bwrap refused",
             Self::ProjectsUnresolved => "projects folder not resolved",
         }
@@ -162,15 +166,16 @@ pub(super) fn wrap(
     sandbox: &ProbeSandbox,
     home: &Path,
 ) -> (Command, Option<Fallback>) {
-    let bwrap = match sandbox {
-        ProbeSandbox::Bwrap(b) => b,
-        ProbeSandbox::Unavailable(Unavailable::Test) => return (cmd, None),
-        ProbeSandbox::Unavailable(Unavailable::NotFound) => {
-            return (cmd, Some(Fallback::NotFound));
-        }
-        ProbeSandbox::Unavailable(Unavailable::Refused) => {
-            return (cmd, Some(Fallback::Refused));
-        }
+    let (bwrap, fallback): (Option<&PathBuf>, Option<Fallback>) = match sandbox {
+        #[cfg(any(target_os = "linux", test))]
+        ProbeSandbox::Bwrap(b) => (Some(b), None),
+        ProbeSandbox::Unavailable(Unavailable::Test) => (None, None),
+        ProbeSandbox::Unavailable(Unavailable::NotFound) => (None, Some(Fallback::NotFound)),
+        #[cfg(any(target_os = "linux", test))]
+        ProbeSandbox::Unavailable(Unavailable::Refused) => (None, Some(Fallback::Refused)),
+    };
+    let Some(bwrap) = bwrap else {
+        return (cmd, fallback);
     };
     let Some(hidden) = hidden_folder(&cmd, home) else {
         return (cmd, Some(Fallback::ProjectsUnresolved));

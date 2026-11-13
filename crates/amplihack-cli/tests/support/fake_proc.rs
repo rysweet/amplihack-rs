@@ -39,8 +39,8 @@ pub const FAKE_PID_BASE: u32 = 4_194_305;
 // and `fake_proc.rs` must not name `isolated_amplihack` so the lib tests can
 // include it too (issue #2196).
 #[allow(dead_code, clippy::duplicate_mod)]
-mod proc_tree_seed;
-pub use proc_tree_seed::{SELF_ENVIRON, seed_proc_tree};
+pub(crate) mod proc_tree_seed;
+pub use proc_tree_seed::seed_proc_tree;
 
 fn private_dir(path: &Path) {
     DirBuilder::new()

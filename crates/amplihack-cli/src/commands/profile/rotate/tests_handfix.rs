@@ -25,44 +25,80 @@
 
 use super::backup::{BackupRefusal, fresh_backup, rejected_dir};
 use super::control::status_alerts;
+#[cfg(target_os = "linux")]
 use super::decide::{Decision, Measured, Reading, decide};
+#[cfg(target_os = "linux")]
 use super::hand_fields::HandSuspect;
-use super::handfix::{Env as Seam, Step, preview, step_with};
+use super::handfix::Env as Seam;
+#[cfg(target_os = "linux")]
+use super::handfix::{Step, preview, step_with};
+#[cfg(target_os = "linux")]
 use super::handfix_msg as msg;
+#[cfg(target_os = "linux")]
 use super::identify::Account;
-use super::identify::{CandidateInput, LiveId, candidates, live};
-use super::ledger::{Phase, RotateJournal, RotateLedger, RotateState};
+#[cfg(target_os = "linux")]
+use super::identify::{CandidateInput, candidates};
+#[cfg(target_os = "linux")]
+use super::identify::{LiveId, live};
+use super::ledger::RotateLedger;
+#[cfg(target_os = "linux")]
+use super::ledger::RotateState;
+#[cfg(target_os = "linux")]
+use super::ledger::{Phase, RotateJournal};
+#[cfg(target_os = "linux")]
 use super::log::{Sink, open_or_warn};
+#[cfg(target_os = "linux")]
 use super::settings::Settings;
+#[cfg(target_os = "linux")]
 use super::swap::{Source, swap};
+#[cfg(target_os = "linux")]
 use super::tests_issue_1886::server;
-use super::tests_swap::{ino_at, login, n, private};
+#[cfg(target_os = "linux")]
+use super::tests_swap::login;
+use super::tests_swap::n;
+#[cfg(target_os = "linux")]
+use super::tests_swap::{ino_at, private};
+#[cfg(target_os = "linux")]
 use crate::commands::profile::auto_switch::euid;
 use crate::commands::profile::auto_switch::kit::{Ledger, Liveness};
+#[cfg(target_os = "linux")]
 use crate::commands::profile::store::ProfileStore;
+#[cfg(target_os = "linux")]
 use crate::commands::profile::usage_direct::reason;
+#[cfg(target_os = "linux")]
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
+#[cfg(target_os = "linux")]
+use std::collections::HashMap;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
 
 /// 2026-10-27T03:17:05Z, the first hand-change ALERT in the #1693 log.
 pub(super) const T: i64 = 1_793_071_025;
 const STAMP: &str = "20261027T031705Z";
+#[cfg(target_os = "linux")]
 pub(super) const L: &str = "ryan-ryansweet";
 pub(super) const M: &str = "ryan-mistt-org";
+#[cfg(target_os = "linux")]
 pub(super) const C: &str = "rssourcelabs";
+#[cfg(target_os = "linux")]
 pub(super) const CREDS: &str = ".credentials.json";
 /// The rotation interval the step is given (the default `--interval`).
+#[cfg(target_os = "linux")]
 pub(super) const GAP: i64 = 600;
 
+#[cfg(target_os = "linux")]
 type Answer = Result<Account, &'static str>;
 
+#[cfg(target_os = "linux")]
 pub(super) fn acct(uuid: &str, email: &str) -> String {
     serde_json::json!({"oauthAccount": {"accountUuid": uuid, "emailAddress": email}}).to_string()
 }
 
+#[cfg(target_os = "linux")]
 fn email_only(email: &str) -> String {
     serde_json::json!({"oauthAccount": {"emailAddress": email}}).to_string()
 }
@@ -82,6 +118,7 @@ pub(super) fn seam() -> Seam<'static> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn settings() -> Settings {
     Settings {
         session_at: 85,
@@ -98,16 +135,20 @@ fn settings() -> Settings {
 // --- Fake credential readings -------------------------------------------------
 
 /// The account the server reports for each login: one per account.
+#[cfg(target_os = "linux")]
 pub(super) fn a_l() -> Account {
     server("u-lima")
 }
+#[cfg(target_os = "linux")]
 pub(super) fn a_m() -> Account {
     server("u-mike")
 }
+#[cfg(target_os = "linux")]
 pub(super) fn a_c() -> Account {
     server("u-charlie")
 }
 
+#[cfg(target_os = "linux")]
 thread_local! {
     /// This test's readings, by canonical directory. Each test runs on its
     /// own thread, so tests never see each other's.
@@ -116,11 +157,13 @@ thread_local! {
 
 /// The fake identity reader (`Ctx::identity` in cycle tests): what the
 /// fixture says the login in `p` answers; no file, otherwise.
+#[cfg(target_os = "linux")]
 pub(super) fn by_path(p: &Path) -> Answer {
     let p = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
     READINGS.with(|r| r.borrow().get(&p).cloned().unwrap_or(Err(reason::NO_FILE)))
 }
 
+#[cfg(target_os = "linux")]
 pub(super) struct Fx {
     _tmp: tempfile::TempDir,
     pub(super) base: PathBuf,
@@ -145,16 +188,19 @@ fn dir700(p: &Path) {
 
 /// The #1693 state with L's own login kept. `m_own`: M has its own copy;
 /// `capacity`: C exists with a login.
+#[cfg(target_os = "linux")]
 pub(super) fn fx(m_own: bool, capacity: bool) -> Fx {
     fx_at("home", true, m_own, capacity)
 }
 
 /// As [`fx`], but L has no login of its own: its only login is the one the
 /// `/login` replaced (the only-login rule refuses a move).
+#[cfg(target_os = "linux")]
 pub(super) fn fx_no_l(m_own: bool, capacity: bool) -> Fx {
     fx_at("home", false, m_own, capacity)
 }
 
+#[cfg(target_os = "linux")]
 fn fx_at(home_rel: &str, l_own: bool, m_own: bool, capacity: bool) -> Fx {
     let tmp = tempfile::tempdir().unwrap();
     fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -230,11 +276,13 @@ fn fx_at(home_rel: &str, l_own: bool, m_own: bool, capacity: bool) -> Fx {
 /// holds no token, and `login_kind` (which recovery uses to choose whom to
 /// read) must be able to read its keys. The fake reader decides what it
 /// answers.
+#[cfg(target_os = "linux")]
 fn oauth_login(p: &Path) -> u64 {
     private(p, r#"{"claudeAiOauth":{}}"#);
     ino_at(p).unwrap()
 }
 
+#[cfg(target_os = "linux")]
 impl Fx {
     /// Sets what the login at `place` (`~/.claude` or a profile) answers.
     pub(super) fn answer(&self, place: &str, a: Answer) {
@@ -389,18 +437,21 @@ impl Fx {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn refused_head(reason: &str) -> String {
     format!(
         "ALERT: the account in ~/.claude is not the one the ledger names (live={L}); profile {M} holds the same account and has its own login; recovery refused: {reason}; no swap"
     )
 }
 
+#[cfg(target_os = "linux")]
 pub(super) fn lost_l() -> String {
     format!(
         "ALERT: profile {L} has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login {L}"
     )
 }
 
+#[cfg(target_os = "linux")]
 pub(super) fn moved_line(to: &Path) -> String {
     format!(
         "recovered: ~/.claude and {M} held the same account; kept ~/.claude, moved {M}'s copy to {}; recorded {M} as live",
@@ -408,6 +459,7 @@ pub(super) fn moved_line(to: &Path) -> String {
     )
 }
 
+#[cfg(target_os = "linux")]
 fn count(lines: &[String], want: &str) -> usize {
     lines.iter().filter(|l| *l == want).count()
 }
@@ -618,6 +670,7 @@ fn the_only_login_fix_sets_ms_copy_aside() {
 
 // --- Refusals: a confirmed suspicion, a check fails ------------------------------
 
+#[cfg(target_os = "linux")]
 fn refused(f: &Fx, s: &Seam<'_>, reason: &str, fix: &str) {
     f.suspected();
     assert_eq!(f.step(s, T), Step::Guided);
@@ -631,6 +684,7 @@ fn refused(f: &Fx, s: &Seam<'_>, reason: &str, fix: &str) {
     f.assert_nothing_moved();
 }
 
+#[cfg(target_os = "linux")]
 fn by_hand(f: &Fx) -> String {
     let dir = f.manual();
     format!(
@@ -1070,6 +1124,7 @@ fn status_cleans_control_characters_again() {
 // --- Dry run -----------------------------------------------------------------
 
 /// Every path under `dir` with its inode, size, mode and mtime.
+#[cfg(target_os = "linux")]
 fn tree(dir: &Path, out: &mut Vec<(PathBuf, u64, u64, u32, i64)>) {
     for e in fs::read_dir(dir).unwrap() {
         let p = e.unwrap().path();
@@ -1087,6 +1142,7 @@ fn tree(dir: &Path, out: &mut Vec<(PathBuf, u64, u64, u32, i64)>) {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn snapshot(f: &Fx) -> Vec<(PathBuf, u64, u64, u32, i64)> {
     let mut v = Vec::new();
     tree(&f.base, &mut v);

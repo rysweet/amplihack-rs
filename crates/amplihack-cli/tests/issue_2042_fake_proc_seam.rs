@@ -10,7 +10,8 @@
 #![cfg(target_os = "linux")]
 
 use crate::isolated_amplihack::{PROC_ROOT_ENV, shared_empty_proc_root};
-use crate::support::fake_proc::{FAKE_PID_BASE, FakeProc, SELF_ENVIRON};
+use crate::support::fake_proc::proc_tree_seed::SELF_ENVIRON;
+use crate::support::fake_proc::{FAKE_PID_BASE, FakeProc};
 use crate::support::profile_rotate::*;
 use crate::support::wait::output_within;
 use std::ffi::OsStr;

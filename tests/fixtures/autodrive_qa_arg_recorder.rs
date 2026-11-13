@@ -1,4 +1,4 @@
-//! Standalone Rust fixture, compiled by the issue #2441 integration harness.
+//! Standalone Rust fixture, compiled explicitly by the issue #2441 integration harness.
 //! NUL-separated fields preserve argument boundaries without shell serialisation.
 use std::io::Read;
 
