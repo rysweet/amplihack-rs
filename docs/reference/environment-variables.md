@@ -829,8 +829,10 @@ cause, for example:
 
 ```text
 amplihack: no pull request operator guidance for this run: cannot resolve pr_number: the origin remote of repo_path is not a github.com repository
-``` For example, in a round of an
-auto-drive for pull request 2535:
+```
+
+For example, in a round of an auto-drive for pull request 2535, the value
+is:
 
 ```text
 /home/alice/.amplihack/work/runs/8c0e2a54-1f7d-4c56-9a39-2d1b6f0c7e15/guidance:/home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_2535/guidance
@@ -841,7 +843,14 @@ no guidance and the prompt is unchanged. The launcher reads at most 16
 folders. It skips, with a warning naming it, a folder whose path is not
 absolute, whose last part is not `guidance`, or which (or whose parent) is a
 symbolic link, is owned by another user, or can be written by its group or
-by others.
+by others. Across all folders it uses the newest entries, up to 256 entries
+and 256 KiB of text.
+
+These checks start at the state folder and do not cover the folders above
+it. `AMPLIHACK_STATE_DIR` must not sit under a folder that other users can
+write to. The check that refuses phrases telling an agent to start an
+orchestration matches a fixed list of exact phrases; it only screens out
+such phrases added by accident and is not a security control.
 
 `--detach`, `$(amplihack agent-binary --shell)` and the test isolation
 helpers remove the variable, so a new top-level run never reads another

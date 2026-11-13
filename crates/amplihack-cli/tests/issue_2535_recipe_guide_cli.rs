@@ -161,7 +161,7 @@ fn append_by_run_folder_writes_one_private_entry_and_one_log_line() {
 fn caller_names_the_enclosing_run_when_one_is_set_and_valid() {
     let f = GuideFixture::new();
     let run = f.make_run(RUN_FOLDER, CORRELATION);
-    let mut c = f.amplihack(&["recipe", "guide", RUN_FOLDER, "inside a run"]);
+    let mut c = f.amplihack(&["recipe", "guide", "--from-step", RUN_FOLDER, "inside a run"]);
     c.env("AMPLIHACK_RECIPE_RUN_ID", "abc-123");
     let o = f.run_with_stdin(c, None);
     assert!(o.status.success(), "{}", show(&o));
@@ -170,16 +170,44 @@ fn caller_names_the_enclosing_run_when_one_is_set_and_valid() {
     let caller = body.lines().nth(1).unwrap();
     assert!(caller.ends_with(" run=abc-123"), "{caller}");
 
-    // An id that fails validation is left out, never written raw.
-    let mut c = f.amplihack(&["recipe", "guide", RUN_FOLDER, "second"]);
+    // An id that fails validation is never written raw, but the entry is
+    // still marked as written inside a run.
+    let mut c = f.amplihack(&["recipe", "guide", "--from-step", RUN_FOLDER, "second"]);
     c.env("AMPLIHACK_RECIPE_RUN_ID", "../x\ncaller: root");
     let o = f.run_with_stdin(c, None);
     assert!(o.status.success(), "{}", show(&o));
     let (path, _, _) = parse_appended(&o);
     let body = fs::read_to_string(path).unwrap();
     assert!(!body.contains("caller: root"), "{body}");
-    assert!(!body.lines().nth(1).unwrap().contains("run="), "{body}");
+    assert!(
+        body.lines().nth(1).unwrap().ends_with(" run=invalid"),
+        "{body}"
+    );
     assert_eq!(f.entries(&run.join("guidance")).len(), 2);
+}
+
+#[test]
+fn inside_a_run_without_from_step_is_refused_with_exit_2_and_writes_nothing() {
+    let f = GuideFixture::new();
+    let run = f.make_run(RUN_FOLDER, CORRELATION);
+    for target in [RUN_FOLDER, PR_URL] {
+        let mut c = f.amplihack(&["recipe", "guide", target, "misled step text"]);
+        c.env("AMPLIHACK_RECIPE_RUN_ID", "abc-123");
+        let o = f.run_with_stdin(c, None);
+        assert_eq!(o.status.code(), Some(2), "{target}: {}", show(&o));
+        let line = one_line_error(&o);
+        assert!(
+            line.starts_with("recipe guide: refusing to add guidance from inside a recipe run"),
+            "{line}"
+        );
+        assert!(line.contains("--from-step"), "{line}");
+        assert!(!line.contains("misled step text"), "{line}");
+    }
+    assert!(!run.join("guidance").exists(), "nothing written to the run");
+    assert!(
+        !f.state.join("auto-drive").exists(),
+        "no per-PR folder created"
+    );
 }
 
 #[test]

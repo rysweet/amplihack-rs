@@ -23,8 +23,12 @@ pub(crate) struct PrRef {
     pub number: u64,
 }
 
+/// GitHub owner names: letters, digits and `-`, plus `_`, which Enterprise
+/// Managed User accounts use (`name_shortcode`).
 fn valid_owner(s: &str) -> bool {
-    (1..=MAX_OWNER).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    (1..=MAX_OWNER).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
 
 fn valid_repo(s: &str) -> bool {

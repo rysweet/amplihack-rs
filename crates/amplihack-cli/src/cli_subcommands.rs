@@ -615,6 +615,11 @@ pub enum RecipeCommands {
         /// The instruction; omit it or pass `-` to read it from stdin
         #[arg(allow_hyphen_values = true, value_parser = clap::value_parser!(std::ffi::OsString))]
         text: Option<std::ffi::OsString>,
+        /// Allow the command inside a recipe run (`AMPLIHACK_RECIPE_RUN_ID`
+        /// set). The entry is then shown to later steps as coming from an
+        /// agent step in this run, not from the operator.
+        #[arg(long = "from-step")]
+        from_step: bool,
     },
     /// Stop a recipe run and its whole process tree: a tmux session started
     /// by `recipe run --detach`, or a run id from its log pointer

@@ -13,7 +13,10 @@
 //! The recipe runner is a fake that calls the real launcher, so the path
 //! under test is `recipe run` → runner → `amplihack claude|codex` → agent.
 //! Entries are appended by the runner itself between its two steps, which
-//! is "while the recipe is running" without any timer or wait.
+//! is "while the recipe is running" without any timer or wait. They stand in
+//! for an operator outside the run, so they call `recipe guide` with
+//! `AMPLIHACK_RECIPE_RUN_ID` unset (inside a run it is refused without
+//! `--from-step`).
 
 #![cfg(unix)]
 
@@ -36,7 +39,7 @@ case "$GUIDE_BY" in
   corr_id) target="$AMPLIHACK_RECIPE_RUN_ID" ;;
   *) target="$AMPLIHACK_RUN_ID" ;;
 esac
-"$AMP_BIN" recipe guide "$target" "$GUIDE_TEXT" \
+( unset AMPLIHACK_RECIPE_RUN_ID; "$AMP_BIN" recipe guide "$target" "$GUIDE_TEXT" ) \
   > "$RECORD_DIR/guide.out" 2> "$RECORD_DIR/guide.err" || exit 12
 STEP=a.2 "$AMP_BIN" claude --subprocess-safe -- -p "step two prompt" \
   > "$RECORD_DIR/out.a.2" 2> "$RECORD_DIR/err.a.2" || exit 13
@@ -47,7 +50,8 @@ const TWO_CODEX_STEPS: &str = r#"
 printf 'codex step one prompt\n' | STEP=c.1 "$AMP_BIN" codex -- exec \
   --output-last-message "$RECORD_DIR/last.c.1" - \
   > "$RECORD_DIR/out.c.1" 2> "$RECORD_DIR/err.c.1" || exit 21
-"$AMP_BIN" recipe guide "$AMPLIHACK_RECIPE_RUN_ID" "$GUIDE_TEXT" \
+target="$AMPLIHACK_RECIPE_RUN_ID"
+( unset AMPLIHACK_RECIPE_RUN_ID; "$AMP_BIN" recipe guide "$target" "$GUIDE_TEXT" ) \
   > "$RECORD_DIR/guide.out" 2> "$RECORD_DIR/guide.err" || exit 22
 printf 'codex step two prompt\n' | STEP=c.2 "$AMP_BIN" codex -- exec \
   --output-last-message "$RECORD_DIR/last.c.2" - \

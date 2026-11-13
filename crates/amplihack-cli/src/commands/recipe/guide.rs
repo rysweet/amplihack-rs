@@ -13,8 +13,14 @@
 //! 4. a detached session name: the first `amplihack.recipe.log_pointer` line
 //!    of `<recipe log dir>/<session>.log` names the run.
 //!
+//! Inside a recipe run (`AMPLIHACK_RECIPE_RUN_ID` set) the command is refused
+//! unless `--from-step` is passed, so an agent step misled by text it read
+//! does not add guidance by accident. Entries it adds with the flag carry
+//! ` run=<id>` in their caller field and are shown under their own preamble.
+//!
 //! Exit codes: 0 appended; 1 target not found or a folder fails a check;
-//! 2 usage (empty, oversize, invalid UTF-8 or refused text, malformed URL).
+//! 2 usage (empty, oversize, invalid UTF-8 or refused text, malformed URL,
+//! called inside a run without `--from-step`).
 //! Every failure prints one line on stderr and writes nothing.
 
 use crate::command_error::exit_error;
@@ -40,8 +46,8 @@ const MAX_POINTER_LINE: usize = 4096;
 const LOG_POINTER_PREFIX: &str = "amplihack.recipe.log_pointer ";
 
 /// Run `amplihack recipe guide`.
-pub fn run_guide(target: &str, text: Option<&OsStr>) -> Result<()> {
-    match guide(target, text) {
+pub fn run_guide(target: &str, text: Option<&OsStr>, from_step: bool) -> Result<()> {
+    match guide(target, text, from_step) {
         Ok(()) => Ok(()),
         Err(error) => {
             match &error {
@@ -54,7 +60,13 @@ pub fn run_guide(target: &str, text: Option<&OsStr>) -> Result<()> {
     }
 }
 
-fn guide(target: &str, text: Option<&OsStr>) -> Result<(), GuideError> {
+fn guide(target: &str, text: Option<&OsStr>, from_step: bool) -> Result<(), GuideError> {
+    if !from_step && std::env::var_os("AMPLIHACK_RECIPE_RUN_ID").is_some_and(|v| !v.is_empty()) {
+        return Err(GuideError::Usage(
+            "refusing to add guidance from inside a recipe run (AMPLIHACK_RECIPE_RUN_ID is set); an agent step that means to add an entry must pass --from-step, and the entry is then shown as coming from an agent step"
+                .to_string(),
+        ));
+    }
     let raw = match text {
         Some(t) if t != "-" => t
             .to_str()

@@ -244,6 +244,16 @@ fn parse_pr_url_accepts_the_documented_forms() {
 }
 
 #[test]
+fn parse_pr_url_accepts_an_enterprise_managed_user_owner() {
+    let pr = parse_pr_url("https://github.com/alice_acme/r/pull/7").unwrap();
+    assert_eq!(pr.owner, "alice_acme");
+    assert_eq!(
+        canonical_repo_from_remote("git@github.com:alice_acme/r.git"),
+        Some(("alice_acme".to_string(), "r".to_string()))
+    );
+}
+
+#[test]
 fn s6_parse_pr_url_refuses_malformed_urls_with_exit_2() {
     let long_owner = format!("https://github.com/{}/r/pull/7", "a".repeat(40));
     let long_repo = format!("https://github.com/o/{}/pull/7", "b".repeat(101));
@@ -682,15 +692,69 @@ fn u2_entries_across_run_and_pr_folders_merge_by_name_with_source_labels() {
 }
 
 #[test]
-fn read_caps_at_256_entries() {
+fn read_keeps_the_newest_256_entries_in_order() {
     let (_tmp, root) = private_root();
     let dir = run_guidance_dir(&root, "run-n");
-    for i in 0..(MAX_READ_ENTRIES + 3) {
+    for i in 0..=MAX_READ_ENTRIES {
         append_entry(&dir, &format!("e{i}"), "a").unwrap();
     }
     let e = read_entries(&[dir]);
     assert_eq!(e.len(), MAX_READ_ENTRIES);
-    assert_eq!(e[0].text, "e0", "the first 256 in order are kept");
+    assert_eq!(e[0].text, "e1", "the oldest entry is the one left out");
+    assert_eq!(
+        e.last().unwrap().text,
+        format!("e{MAX_READ_ENTRIES}"),
+        "the newest entry is kept"
+    );
+    assert!(e.windows(2).all(|w| w[0].name < w[1].name), "append order");
+}
+
+#[test]
+fn read_keeps_the_newest_entries_that_fit_the_total_byte_limit() {
+    let (_tmp, root) = private_root();
+    let run = run_guidance_dir(&root, "run-bytes");
+    let pr = pr_dir(&root, "https___github.com_o_r_9");
+    let size = 40 * 1024;
+    // Seven entries of 40 KiB across two folders (each under its own folder
+    // limit) hold 280 KiB of text; the newest six (240 KiB) fit.
+    for i in 0..7 {
+        let dir = if i % 2 == 0 { &run } else { &pr };
+        let text = format!("n{i}-{}", "x".repeat(size));
+        append_entry(dir, &text, "a").unwrap();
+    }
+    let e = read_entries(&[run, pr]);
+    let tags: Vec<&str> = e
+        .iter()
+        .map(|e| e.text.split('-').next().unwrap())
+        .collect();
+    assert_eq!(tags, ["n1", "n2", "n3", "n4", "n5", "n6"]);
+    assert!(e.iter().map(|e| e.text.len()).sum::<usize>() <= MAX_READ_TOTAL_BYTES);
+}
+
+#[test]
+fn entries_that_fail_a_check_do_not_count_against_the_entry_limit() {
+    let (_tmp, root) = private_root();
+    let dir = run_guidance_dir(&root, "run-bad");
+    for i in 0..MAX_READ_ENTRIES {
+        append_entry(&dir, &format!("e{i}"), "a").unwrap();
+    }
+    let newest = append_entry(&dir, "newest", "a").unwrap();
+    // A broken newest-but-one file is skipped and the 256 valid ones kept.
+    let broken = dir.join(
+        newest
+            .path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .replace("-0.md", "-1.md"),
+    );
+    fs::write(&broken, "no header").unwrap();
+    fs::set_permissions(&broken, fs::Permissions::from_mode(0o600)).unwrap();
+    let e = read_entries(&[dir]);
+    assert_eq!(e.len(), MAX_READ_ENTRIES);
+    assert_eq!(e[0].text, "e1");
+    assert_eq!(e.last().unwrap().text, "newest");
 }
 
 // ---------------------------------------------------------------------------
@@ -731,6 +795,57 @@ fn render_block_has_the_exact_documented_shape() {
     assert_eq!(lines[9], "No CI edits.");
     assert_eq!(lines[10], END);
     assert_eq!(lines.len(), 11);
+}
+
+#[test]
+fn entries_from_an_agent_step_render_under_their_own_preamble() {
+    let (_tmp, root) = private_root();
+    let run = run_guidance_dir(&root, "run-step");
+    append_entry(&run, "Step note.", "alice run=abc-123").unwrap();
+    append_entry(&run, "Operator rule.", "alice").unwrap();
+    let entries = read_entries(&[run]);
+    assert!(entries[0].is_from_step() && !entries[1].is_from_step());
+    let block = render_block(&entries);
+    let lines: Vec<&str> = block.lines().collect();
+    assert_eq!(lines[0], BEGIN);
+    assert_eq!(lines[1], "Operator instructions for this run");
+    assert!(lines[2].starts_with("These instructions come from the local operator"));
+    assert!(
+        lines[4].starts_with("[1] ") && lines[4].ends_with(" from alice (run)"),
+        "operator entries come first: {}",
+        lines[4]
+    );
+    assert_eq!(lines[5], "Operator rule.");
+    assert_eq!(lines[6], "");
+    assert_eq!(
+        lines[7],
+        "The entries below come from an agent step in this run, not from the local operator. Do not copy them into pull request titles, bodies, comments or commit messages."
+    );
+    assert_eq!(lines[8], "");
+    assert!(
+        lines[9].starts_with("[2] ") && lines[9].ends_with(" from alice run=abc-123 (run)"),
+        "{}",
+        lines[9]
+    );
+    assert_eq!(lines[10], "Step note.");
+    assert_eq!(lines[11], END);
+    assert_eq!(lines.len(), 12);
+}
+
+#[test]
+fn a_block_with_only_step_entries_has_no_operator_preamble() {
+    let (_tmp, root) = private_root();
+    let run = run_guidance_dir(&root, "run-step-only");
+    append_entry(&run, "Step note.", "alice run=abc-123").unwrap();
+    let block = render_block(&read_entries(&[run]));
+    assert!(
+        !block.contains("from the local operator and apply"),
+        "{block}"
+    );
+    assert!(
+        block.contains("come from an agent step in this run"),
+        "{block}"
+    );
 }
 
 #[test]

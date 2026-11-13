@@ -86,6 +86,11 @@ pub(crate) fn dirs_from_env_value(value: &OsStr) -> Vec<PathBuf> {
 ///
 /// One `git -C <repo> remote get-url origin`, with no shell, stdin closed,
 /// terminal prompts off, stderr discarded and stdout capped at 4 KiB.
+///
+/// `repo` comes from the run context's `repo_path`, so git runs in a folder
+/// the recipe names. `remote get-url` reads only configuration; any other
+/// git subcommand added here needs a security review first, because repository
+/// configuration can name programs that some subcommands run.
 fn origin_repo(repo: &Path) -> Result<(String, String), &'static str> {
     let mut child = amplihack_git::command()
         .arg("-C")

@@ -20,9 +20,16 @@
 //! the publication of the entry are not one atomic step, and no lock is
 //! taken, so two `recipe guide` commands started at the same moment can both
 //! pass it and leave a folder slightly over the limit. Only the same user can
-//! do that, and the read limits ([`MAX_READ_ENTRIES`] entries of at most
-//! [`MAX_GUIDANCE_ENTRY_BYTES`] plus [`HEADER_ROOM`] bytes each) still bound
-//! what a prompt can receive.
+//! do that, and the read limits ([`MAX_READ_ENTRIES`] entries and
+//! [`MAX_READ_TOTAL_BYTES`] bytes of text, the newest kept) still bound what
+//! a prompt can receive.
+//!
+//! Known limit: entries an agent step adds with `recipe guide --from-step`
+//! are shown under their own preamble ([`render_block`]), but the label that
+//! marks them is the caller field, which a process running as the same user
+//! can leave out by unsetting `AMPLIHACK_RECIPE_RUN_ID` or by writing the
+//! entry file itself. The refusal in `recipe guide` stops a misled agent that
+//! uses the normal command; it is not a boundary against the same user.
 //!
 //! Guidance never goes into recipe context, step outputs, `run.json`, logs,
 //! error messages or argv, so publish steps (which build PR titles, bodies
@@ -56,8 +63,11 @@ pub(crate) const MAX_GUIDANCE_ENTRY_BYTES: usize = 50 * 1024;
 pub(crate) const HEADER_ROOM: usize = 4096;
 /// The largest total size of the entry files in one folder.
 pub(crate) const MAX_GUIDANCE_DIR_BYTES: u64 = 256 * 1024;
-/// Readers use at most this many entries.
+/// Readers use at most this many entries, the newest.
 pub(crate) const MAX_READ_ENTRIES: usize = 256;
+/// Readers use at most this many bytes of entry text in total, the newest
+/// entries first. One full folder fits; several full folders do not.
+pub(crate) const MAX_READ_TOTAL_BYTES: usize = 256 * 1024;
 /// The launcher reads at most this many folders from the list.
 pub(crate) const MAX_ENV_DIRS: usize = 16;
 /// The folder list `recipe run` gives its runner.
@@ -72,6 +82,9 @@ const BLOCK_BEGIN: &str = "===== BEGIN OPERATOR INSTRUCTIONS FOR THIS RUN ====="
 const BLOCK_END: &str = "===== END OPERATOR INSTRUCTIONS FOR THIS RUN =====";
 const BLOCK_TITLE: &str = "Operator instructions for this run";
 const BLOCK_PREAMBLE: &str = "These instructions come from the local operator and apply to this step. Do not copy them into pull request titles, bodies, comments or commit messages.";
+const STEP_PREAMBLE: &str = "The entries below come from an agent step in this run, not from the local operator. Do not copy them into pull request titles, bodies, comments or commit messages.";
+/// The caller-field marker [`caller_identity`] adds inside a recipe run.
+const CALLER_RUN_MARKER: &str = " run=";
 
 /// Why a guidance operation failed. Messages name paths, sizes, characters
 /// and phrases, never the guidance text.
@@ -152,6 +165,14 @@ pub(crate) struct Entry {
     pub timestamp: String,
     pub caller: String,
     pub text: String,
+}
+
+impl Entry {
+    /// Whether an agent step inside a recipe run wrote this entry: its
+    /// caller field carries the ` run=<id>` label.
+    pub(crate) fn is_from_step(&self) -> bool {
+        self.caller.contains(CALLER_RUN_MARKER)
+    }
 }
 
 /// A successful append.
@@ -269,17 +290,20 @@ fn passwd_name() -> Option<String> {
 
 /// Who is appending: the user name of the effective uid (falling back to
 /// `$USER`, then `unknown`), plus ` run=<id>` when this command runs inside
-/// a recipe run whose id passes validation. No credential file is read.
+/// a recipe run (`AMPLIHACK_RECIPE_RUN_ID` set and not empty). An id that
+/// fails validation is written as ` run=invalid`, never raw, so the entry is
+/// still marked as written by an agent step. No credential file is read.
 pub(crate) fn caller_identity() -> String {
     let user = passwd_name()
         .or_else(|| std::env::var("USER").ok())
         .unwrap_or_default();
     let mut caller = sanitize_caller(&user).replace(' ', "_");
-    if let Ok(run) = std::env::var("AMPLIHACK_RECIPE_RUN_ID")
-        && validate_run_id(&run)
-    {
-        caller.push_str(" run=");
-        caller.push_str(&run);
+    if let Some(run) = std::env::var_os("AMPLIHACK_RECIPE_RUN_ID").filter(|v| !v.is_empty()) {
+        caller.push_str(CALLER_RUN_MARKER);
+        match run.to_str().filter(|r| validate_run_id(r)) {
+            Some(run) => caller.push_str(run),
+            None => caller.push_str("invalid"),
+        }
     }
     sanitize_caller(&caller)
 }
@@ -561,9 +585,13 @@ fn read_entry(dir: &Path, name: String) -> Option<Entry> {
     })
 }
 
-/// Every entry in `dirs`, merged and sorted by file name (append order),
-/// at most [`MAX_READ_ENTRIES`]. Missing folders are skipped silently;
-/// folders, files and texts that fail a check are skipped with a warning.
+/// The newest entries in `dirs`, merged and returned in file name (append)
+/// order: at most [`MAX_READ_ENTRIES`] entries and [`MAX_READ_TOTAL_BYTES`]
+/// bytes of text. Entries are read newest first, and reading stops at the
+/// first entry that does not fit, so what is kept is always the most recent
+/// run of entries and the operator's latest correction is never the one left
+/// out. Missing folders are skipped silently; folders, files and texts that
+/// fail a check are skipped with a warning and do not count.
 pub(crate) fn read_entries(dirs: &[PathBuf]) -> Vec<Entry> {
     let mut found: Vec<(String, usize)> = Vec::new();
     for (index, dir) in dirs.iter().enumerate() {
@@ -592,39 +620,81 @@ pub(crate) fn read_entries(dirs: &[PathBuf]) -> Vec<Entry> {
         }
     }
     found.sort();
-    if found.len() > MAX_READ_ENTRIES {
-        eprintln!(
-            "amplihack: operator guidance has {} entries; using the first {MAX_READ_ENTRIES} and leaving out {}",
-            found.len(),
-            found.len() - MAX_READ_ENTRIES
-        );
-        found.truncate(MAX_READ_ENTRIES);
+    let mut kept: Vec<Entry> = Vec::new();
+    let mut bytes = 0_usize;
+    // The limit reached, and how many read entries it left out (0 or 1).
+    let mut limit: Option<(String, usize)> = None;
+    let mut candidates = found.into_iter().rev();
+    for (name, index) in candidates.by_ref() {
+        let Some(entry) = read_entry(&dirs[index], name) else {
+            continue;
+        };
+        if bytes + entry.text.len() > MAX_READ_TOTAL_BYTES {
+            limit = Some((format!("{MAX_READ_TOTAL_BYTES} bytes"), 1));
+            break;
+        }
+        bytes += entry.text.len();
+        kept.push(entry);
+        if kept.len() == MAX_READ_ENTRIES {
+            limit = Some((format!("{MAX_READ_ENTRIES} entries"), 0));
+            break;
+        }
     }
-    found
-        .into_iter()
-        .filter_map(|(name, index)| read_entry(&dirs[index], name))
-        .collect()
+    if let Some((limit, unfit)) = limit {
+        // The older files are counted without being read, so one that would
+        // fail a check is still counted as left out.
+        let left_out = unfit + candidates.count();
+        if left_out > 0 {
+            eprintln!(
+                "amplihack: operator guidance is over the read limit of {limit}; using the newest {} entries and leaving out {left_out} older ones",
+                kept.len()
+            );
+        }
+    }
+    kept.reverse();
+    kept
 }
 
 /// The operator-instructions block for `entries` (empty string for none).
+///
+/// Entries from the operator come first, under the operator preamble.
+/// Entries an agent step wrote ([`Entry::from_step`]) follow under their own
+/// preamble, so a step that was misled into adding one cannot present it as
+/// the operator's. Numbering runs on across both parts.
 pub(crate) fn render_block(entries: &[Entry]) -> String {
     if entries.is_empty() {
         return String::new();
     }
     use std::fmt::Write as _;
-    let mut out = format!("{BLOCK_BEGIN}\n{BLOCK_TITLE}\n{BLOCK_PREAMBLE}\n");
-    for (i, e) in entries.iter().enumerate() {
-        // Writing to a String cannot fail.
-        let _ = writeln!(
-            out,
-            "\n[{}] {} from {} ({})",
-            i + 1,
-            e.timestamp,
-            e.caller,
-            e.source.label()
-        );
-        out.push_str(&e.text);
+    let (from_steps, from_operator): (Vec<&Entry>, Vec<&Entry>) =
+        entries.iter().partition(|e| e.is_from_step());
+    let mut out = format!("{BLOCK_BEGIN}\n{BLOCK_TITLE}\n");
+    let mut number = 0_usize;
+    for (preamble, part) in [
+        (BLOCK_PREAMBLE, &from_operator),
+        (STEP_PREAMBLE, &from_steps),
+    ] {
+        if part.is_empty() {
+            continue;
+        }
+        if number > 0 {
+            out.push('\n');
+        }
+        out.push_str(preamble);
         out.push('\n');
+        for e in part {
+            number += 1;
+            // Writing to a String cannot fail.
+            let _ = writeln!(
+                out,
+                "\n[{number}] {} from {} ({})",
+                e.timestamp,
+                e.caller,
+                e.source.label()
+            );
+            out.push_str(&e.text);
+            out.push('\n');
+        }
     }
     out.push_str(BLOCK_END);
     out.push('\n');

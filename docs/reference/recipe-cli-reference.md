@@ -240,13 +240,14 @@ that starts after the instruction is added receives it at the end of its
 prompt.
 
 ```bash
-amplihack recipe guide <TARGET> [TEXT | -]
+amplihack recipe guide [--from-step] <TARGET> [TEXT | -]
 ```
 
 | Argument | Description |
 | --- | --- |
 | `<TARGET>` | The run to guide: a run ID, a detached session name, or a GitHub pull request URL for an auto-drive. See [Targets](#targets). |
 | `TEXT` | The instruction. Omit it, or pass `-`, to read the instruction from stdin. |
+| `--from-step` | Allow the command inside a recipe run. Without it, the command exits 2 when `AMPLIHACK_RECIPE_RUN_ID` is set. See [Guidance from an agent step](#guidance-from-an-agent-step). |
 
 Use this when you see a run going the wrong way and want to correct it
 without stopping it. The instruction is stored on disk. Nothing is sent to a
@@ -338,7 +339,10 @@ stored. The text is refused, with exit 2 and nothing written, when it:
   [What the agent receives](#what-the-agent-receives));
 - contains a phrase that tells an agent to start a new orchestration. These
   are the phrases that the issue #1333 guard keeps out of files every agent
-  loads. The message names the phrase so that you can reword the text.
+  loads. The message names the phrase so that you can reword the text. The
+  check matches a fixed list of exact phrases, so it only stops such a
+  phrase from being added by accident; it is not a security control, and
+  reworded text passes it.
 
 Error messages name the reason, a size or the refused phrase. They never
 repeat the text.
@@ -398,8 +402,8 @@ current value.
 
 `caller` is the user name of the account that ran the command, taken from
 the system's user database, then `$USER`, then `unknown`. ` run=<id>` is
-added when the command runs inside a recipe run whose ID passes the run ID
-check. Line breaks and unsafe characters are removed
+added when the command runs inside a recipe run (with `--from-step`); an ID
+that fails the run ID check is written as ` run=invalid`. Line breaks and unsafe characters are removed
 from this field, and it is cut to 256 bytes. No credential or token file is
 read.
 
@@ -422,7 +426,28 @@ folder on the path to it that it checks, that:
   `002`, a state folder created by hand can fail this check; remove the group
   write bit with `chmod g-w <folder>`.
 
-The command never changes the permissions of an existing folder.
+The command never changes the permissions of an existing folder. The checks
+start at the state folder (or the work root's `runs/` folder) and do not
+cover the folders above it, so do not set `AMPLIHACK_STATE_DIR` to a path
+under a folder that other users can write to, such as `/tmp`.
+
+### Guidance from an agent step
+
+Inside a recipe run, where `AMPLIHACK_RECIPE_RUN_ID` is set, the command is
+refused with exit 2 unless `--from-step` is passed. An agent step that read
+text from an issue, a pull request comment or a file can be misled into
+running `recipe guide` on its own run or pull request, and an entry in a pull
+request folder outlasts the run.
+
+An entry added with `--from-step` has ` run=<id>` in its `caller` field.
+Later steps receive it after the operator's entries, under its own preamble
+(see [What the agent receives](#what-the-agent-receives)), not under the
+sentence that says the instructions come from the local operator.
+
+This is a safeguard against a misled agent using the normal command, not a
+boundary. A process running as the same user can unset
+`AMPLIHACK_RECIPE_RUN_ID`, or write an entry file directly, and its entry
+then looks like the operator's.
 
 **Cleanup.** Run guidance is removed with its run folder, for example by
 [`amplihack cleanup`](../howto/clean-up-after-recipe-runs.md). Pull request
@@ -467,7 +492,16 @@ Do not change the CI workflow files in this pull request.
 ```
 
 `(run)` marks an entry from a run folder and `(pr)` an entry from a pull
-request folder. When there are no entries, the prompt is not changed by a
+request folder. Entries whose `caller` field has ` run=<id>` (see
+[Guidance from an agent step](#guidance-from-an-agent-step)) come after the
+operator's entries, numbered on from them, after one blank line and this
+line in place of the operator sentence:
+
+```text
+The entries below come from an agent step in this run, not from the local operator. Do not copy them into pull request titles, bodies, comments or commit messages.
+```
+
+When every entry is from an agent step, the operator sentence is left out. When there are no entries, the prompt is not changed by a
 single byte. The block is added whole or not at all.
 
 The launcher prints one line to stderr for each step that receives guidance:
@@ -497,8 +531,11 @@ whose names match the entry pattern are read; temporary files are ignored.
 An entry that is larger than 55,296 bytes (the text limit plus 4 KiB for the
 header), is a symbolic link, is not a regular file, is owned by another user,
 can be written by its group or by others, or is not valid UTF-8 is skipped
-with a warning that names it. The first 256 entries in order are used; if
-there are more, a warning says how many were left out.
+with a warning that names it. The newest entries are used, up to 256
+entries and 262,144 bytes (256 KiB) of text in total; they are read newest
+first and reading stops at the first entry that does not fit. If entries are
+left out, a warning names the limit and how many older entries were left
+out. Entries skipped by a check do not count against either limit.
 
 **Never published.** Guidance is added only to the prompt text given to the
 agent CLI. It is never written to the recipe context, step outputs,
@@ -566,6 +603,7 @@ guidance appended: /home/alice/.amplihack/work/runs/8c0e2a54-1f7d-4c56-9a39-2d1b
 | `2` | Oversize text | `guidance entry is 61440 bytes; the limit is 51200 bytes` |
 | `2` | Invalid UTF-8, a refused character, a delimiter line or a refused phrase | `recipe guide: guidance text contains a control character (U+001B)` |
 | `2` | Malformed pull request URL | `recipe guide: not a GitHub pull request URL: port is not allowed` |
+| `2` | Run inside a recipe run without `--from-step` | `recipe guide: refusing to add guidance from inside a recipe run (AMPLIHACK_RECIPE_RUN_ID is set); an agent step that means to add an entry must pass --from-step, and the entry is then shown as coming from an agent step` |
 
 Every failure prints one line and writes nothing.
 
@@ -738,7 +776,7 @@ See [Environment Variables](./environment-variables.md) for full details.
 | Code | Meaning |
 | --- | --- |
 | `0` | Command succeeded |
-| `2` | `recipe guide` only: usage error, such as empty, oversize or refused text, or a malformed pull request URL. See [Output and exit codes](#output-and-exit-codes). |
+| `2` | `recipe guide` only: usage error, such as empty, oversize or refused text, a malformed pull request URL, or a call inside a recipe run without `--from-step`. See [Output and exit codes](#output-and-exit-codes). |
 | `1` | Command failed, validation failed, recipe execution failed, runner missing, arguments were malformed, or a [removed context key](#removed-context-keys) was passed |
 | `75` | Nested run stopped because its parent `amplihack recipe run` exited. See [Nested runs and orphan stops](#nested-runs-and-orphan-stops). |
 | `128+n` | Run stopped by signal `n`, for example `130` for `SIGINT` and `143` for `SIGTERM` |
