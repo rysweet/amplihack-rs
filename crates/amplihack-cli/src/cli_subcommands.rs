@@ -605,6 +605,17 @@ pub enum RecipeCommands {
         #[command(flatten)]
         governor: crate::commands::governor::GovernorArgs,
     },
+    /// Add an instruction that every later agent step of a recipe run
+    /// receives after its own prompt
+    Guide {
+        /// Run folder name, correlation id, detached session name, or the
+        /// pull request URL of an auto-drive
+        /// (https://github.com/<owner>/<repo>/pull/<n>)
+        target: String,
+        /// The instruction; omit it or pass `-` to read it from stdin
+        #[arg(allow_hyphen_values = true, value_parser = clap::value_parser!(std::ffi::OsString))]
+        text: Option<std::ffi::OsString>,
+    },
     /// Stop a recipe run and its whole process tree: a tmux session started
     /// by `recipe run --detach`, or a run id from its log pointer
     Stop {

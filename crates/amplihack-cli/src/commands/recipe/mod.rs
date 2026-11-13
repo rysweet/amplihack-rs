@@ -13,6 +13,8 @@ use std::process::Command;
 
 /// Issue #1606: `recipe run --detach`.
 pub mod detach;
+/// Issue #2535: `recipe guide`, operator guidance for a run's later agent steps.
+pub mod guide;
 pub mod list;
 mod parse;
 /// Issue #1606: the processes `recipe stop` signals.

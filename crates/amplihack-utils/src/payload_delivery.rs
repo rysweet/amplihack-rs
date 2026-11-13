@@ -28,7 +28,7 @@ pub struct StdinWriter {
 
 /// Starts a thread that writes `payload` to `stdin` and then closes it.
 pub fn spawn_stdin_writer(stdin: ChildStdin, payload: Vec<u8>) -> StdinWriter {
-    spawn_writer(stdin, payload, None)
+    spawn_writer(stdin, payload, None, Vec::new())
 }
 
 /// Starts a thread that writes `payload` to `stdin`, then copies `follow`
@@ -44,13 +44,31 @@ pub fn spawn_stdin_forwarder(
     payload: Vec<u8>,
     follow: Box<dyn io::Read + Send>,
 ) -> StdinWriter {
-    spawn_writer(stdin, payload, Some(follow))
+    spawn_writer(stdin, payload, Some(follow), Vec::new())
+}
+
+/// Starts a thread that writes `head`, copies `follow` until it reaches end
+/// of file, writes `tail`, and then closes `stdin`.
+///
+/// Used when the caller's own stdin is the prompt and text must follow it
+/// (issue #2535: operator guidance after a Codex `exec … -` prompt). Like
+/// [`spawn_stdin_forwarder`], nothing of `follow` is buffered beyond the
+/// copy and nothing is timed; a `BrokenPipe` is not an error and errors
+/// never include payload bytes.
+pub fn spawn_stdin_forwarder_with_trailer(
+    stdin: ChildStdin,
+    head: Vec<u8>,
+    follow: Box<dyn io::Read + Send>,
+    tail: Vec<u8>,
+) -> StdinWriter {
+    spawn_writer(stdin, head, Some(follow), tail)
 }
 
 fn spawn_writer(
     stdin: ChildStdin,
     payload: Vec<u8>,
     follow: Option<Box<dyn io::Read + Send>>,
+    tail: Vec<u8>,
 ) -> StdinWriter {
     let handle = std::thread::spawn(move || {
         let mut stdin = stdin;
@@ -60,6 +78,7 @@ fn spawn_writer(
                 Some(mut source) => io::copy(&mut source, &mut stdin).map(drop),
                 None => Ok(()),
             })
+            .and_then(|()| stdin.write_all(&tail))
             .and_then(|()| stdin.flush());
         // Dropping `stdin` closes the pipe, which gives the child EOF.
         drop(stdin);
@@ -232,5 +251,82 @@ mod tests {
         let kept = truncate_tail_with_marker(&long, 100);
         assert!(kept.starts_with(TRUNCATION_MARKER));
         assert_eq!(kept.len(), 100);
+    }
+
+    // Issue #2535: the Codex `exec … -` form gets operator guidance after the
+    // caller's stdin closes. `spawn_stdin_forwarder_with_trailer` writes the
+    // head, copies `follow` to end of file, then writes the trailer.
+
+    fn cat_child() -> std::process::Child {
+        std::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("start cat")
+    }
+
+    #[test]
+    fn issue_2535_trailer_follows_head_and_caller_stdin() {
+        let mut child = cat_child();
+        let stdin = child.stdin.take().unwrap();
+        let writer = spawn_stdin_forwarder_with_trailer(
+            stdin,
+            b"HEAD|".to_vec(),
+            Box::new(io::Cursor::new(b"FOLLOW|".to_vec())),
+            b"TAIL".to_vec(),
+        );
+        writer.finish().expect("write succeeds");
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(String::from_utf8(out.stdout).unwrap(), "HEAD|FOLLOW|TAIL");
+    }
+
+    #[test]
+    fn issue_2535_empty_head_and_follow_give_the_trailer_only() {
+        let mut child = cat_child();
+        let stdin = child.stdin.take().unwrap();
+        let writer = spawn_stdin_forwarder_with_trailer(
+            stdin,
+            Vec::new(),
+            Box::new(io::empty()),
+            b"TRAILER ONLY".to_vec(),
+        );
+        writer.finish().expect("write succeeds");
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(String::from_utf8(out.stdout).unwrap(), "TRAILER ONLY");
+    }
+
+    #[test]
+    fn issue_2535_empty_trailer_matches_the_plain_forwarder() {
+        let mut child = cat_child();
+        let stdin = child.stdin.take().unwrap();
+        let writer = spawn_stdin_forwarder_with_trailer(
+            stdin,
+            b"prompt\n".to_vec(),
+            Box::new(io::Cursor::new(b"piped\n".to_vec())),
+            Vec::new(),
+        );
+        writer.finish().unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(out.stdout, b"prompt\npiped\n");
+    }
+
+    #[test]
+    fn issue_2535_trailer_broken_pipe_is_not_an_error_and_names_no_payload() {
+        // The child exits without reading: the trailer write hits EPIPE.
+        let mut child = std::process::Command::new("true")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        child.wait().unwrap();
+        let big = vec![b'x'; 1 << 20];
+        let writer =
+            spawn_stdin_forwarder_with_trailer(stdin, Vec::new(), Box::new(io::empty()), big);
+        // BrokenPipe means the child stopped reading; its exit status decides.
+        if let Err(e) = writer.finish() {
+            assert!(!e.to_string().contains("xxxx"), "payload bytes in error");
+            panic!("a broken pipe must not be an error: {e}");
+        }
     }
 }

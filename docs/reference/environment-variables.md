@@ -30,6 +30,7 @@ Several of these variables have a persistent equivalent in the [user config file
   - [AMPLIHACK_RECIPE_SNIPPET_LINES](#amplihack_recipe_snippet_lines)
   - [AMPLIHACK_RECIPE_SNIPPET_BYTES](#amplihack_recipe_snippet_bytes)
   - [AMPLIHACK_RECIPE_LOG_JSONL](#amplihack_recipe_log_jsonl)
+  - [AMPLIHACK_RUN_GUIDANCE_DIRS](#amplihack_run_guidance_dirs)
   - [AMPLIHACK_RECIPE_TRANSIENT_MAX_ATTEMPTS](#amplihack_recipe_transient_max_attempts)
   - [AMPLIHACK_RECIPE_TRANSIENT_BUDGET_SECS](#amplihack_recipe_transient_budget_secs)
   - [NONINTERACTIVE](#noninteractive)
@@ -108,7 +109,8 @@ caller's environment, so they need no hand-off.
 `$(amplihack agent-binary --shell)` prints an inline `env` prefix that removes
 every session marker and sets both variables (#1525). It also removes
 `AMPLIHACK_PARENT_RECIPE_PID`, `AMPLIHACK_PARENT_RECIPE_STARTTIME` and
-`AMPLIHACK_AUTODRIVE_STATE_DIR` (#1976): a tmux server first started from a
+`AMPLIHACK_AUTODRIVE_STATE_DIR` (#1976), and `AMPLIHACK_RUN_GUIDANCE_DIRS`
+(#2535): a tmux server first started from a
 recipe step keeps the step's values, and a run in a later session would watch
 a parent that has gone and stop at once with exit `75`. It belongs inside the
 double-quoted tmux command; in single quotes it expands in the new session and
@@ -789,6 +791,48 @@ jq 'select(.type == "heartbeat")' /tmp/default-workflow.jsonl
 ```
 
 Equivalent config key: `recipe.log_jsonl` in `~/.amplihack/config`.
+
+---
+
+### AMPLIHACK_RUN_GUIDANCE_DIRS
+
+**Type:** OS path list (`:`-separated on Linux and macOS)
+**Set by:** `amplihack recipe run`, on its runner child only
+**Read by:** the agent-step launcher (`amplihack claude`, `launch`,
+`RustyClawd`, `copilot` and `codex` when started by a recipe step)
+
+The guidance folders whose entries are added to the end of each agent step's
+prompt, as written by
+[`amplihack recipe guide`](./recipe-cli-reference.md#amplihack-recipe-guide).
+`recipe run` builds the list from:
+
+1. the value it inherited, so a nested `recipe run` also reads the outer
+   run's guidance;
+2. its own `<work root>/runs/<run folder name>/guidance`;
+3. the pull request's auto-drive guidance folder, when the run's context has
+   `pr_url`, or a numeric `pr_number` with a `repo_path` whose `origin`
+   remote is on `github.com`.
+
+Duplicates are removed and the order is kept. For example, in a round of an
+auto-drive for pull request 2535:
+
+```text
+/home/alice/.amplihack/work/runs/8c0e2a54-1f7d-4c56-9a39-2d1b6f0c7e15/guidance:/home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_2535/guidance
+```
+
+When the variable is unset, as in an interactive launch, the launcher reads
+no guidance and the prompt is unchanged. The launcher reads at most 16
+folders. It skips, with a warning naming it, a folder whose path is not
+absolute, whose last part is not `guidance`, or which (or whose parent) is a
+symbolic link, is owned by another user, or can be written by its group or
+by others. A value that cannot be read as a path list is treated as unset,
+with a warning.
+
+`--detach`, `$(amplihack agent-binary --shell)` and the test isolation
+helpers remove the variable, so a new top-level run never reads another
+run's guidance.
+
+Do not set this variable by hand. To add guidance, use `amplihack recipe guide`.
 
 ---
 

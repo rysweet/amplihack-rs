@@ -119,6 +119,33 @@ fn copilot_prompt_flag(arg: &str) -> Option<(&'static str, Option<&str>)> {
     None
 }
 
+/// Whether [`rewrite_copilot_passthrough`] writes a `-p`/`--prompt` file for
+/// `args`, the only Copilot form that receives operator guidance (#2535).
+pub(crate) fn copilot_has_prompt_text(args: &[String]) -> bool {
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        if arg == "--" {
+            return false;
+        }
+        let Some((flag, inline)) = copilot_prompt_flag(arg) else {
+            i += 1;
+            continue;
+        };
+        let (text, consumed) = match inline {
+            Some(text) => (Some(text), 1),
+            None => (args.get(i + 1).map(String::as_str), 2),
+        };
+        if matches!(flag, "-p" | "--prompt")
+            && text.is_some_and(|t| !t.starts_with(FILE_REFERENCE_PREFIX))
+        {
+            return true;
+        }
+        i += consumed;
+    }
+    false
+}
+
 /// Rewrite `amplihack copilot` passthrough arguments; see the module docs.
 ///
 /// `grant_dir` adds `--add-dir <per-session directory>` when a pointer file
@@ -135,10 +162,16 @@ fn copilot_prompt_flag(arg: &str) -> Option<(&'static str, Option<&str>)> {
 ///   could not open the file and no user is there to approve the read;
 /// - the same prompt flag was given twice;
 /// - a private file could not be written, or its path holds a newline.
+///
+/// `prompt_suffix` (issue #2535) is the operator-instructions block. It is
+/// added after one blank line to `-p`/`--prompt` text only, before the
+/// private file is written; `-i` text and a caller's own pointer sentence
+/// never receive it, and it never reaches argv.
 pub(crate) fn rewrite_copilot_passthrough(
     args: &[String],
     grant_dir: bool,
     path_access: bool,
+    prompt_suffix: Option<&str>,
 ) -> Result<Rewritten> {
     let mut out: Vec<String> = Vec::with_capacity(args.len() + 2);
     let mut dir: Option<TempDir> = None;
@@ -182,6 +215,14 @@ pub(crate) fn rewrite_copilot_passthrough(
                 "copilot-prompt.md"
             } else {
                 "copilot-interactive.md"
+            };
+            let with_suffix;
+            let text = match prompt_suffix {
+                Some(block) if prompt_mode => {
+                    with_suffix = crate::run_guidance::append_block(text, block);
+                    with_suffix.as_str()
+                }
+                _ => text,
             };
             let path = write_private_file(&mut dir, name, flag, text)?;
             let path_text = path.to_string_lossy();

@@ -797,6 +797,15 @@ pub(super) fn execute_recipe_via_rust_fresh(
     // closure invoked once per attempt rather than hoisted state. The runtime
     // dir is deliberately NOT rebuilt: a retry of a transient transport fault
     // should reuse the same artifact/tmp scratch space it was already given.
+    // Issue #2535: the guidance folders this run's agent steps read, computed
+    // once: the inherited list, this run's folder and the per-PR folder.
+    let guidance_dirs = crate::run_guidance::env::runner_env_value(
+        std::env::var_os(crate::run_guidance::GUIDANCE_DIRS_ENV).as_ref(),
+        workspace.borrow().run_dir(),
+        context,
+        working_dir,
+        &crate::run_guidance::pr_key::state_root().unwrap_or_default(),
+    );
     let build_command = |run_id: &str| -> Result<Command> {
         // Issue #1567: no `env_clear` here, so a pinned AMPLIHACK_CLAUDE_PROFILE
         // (and AMPLIHACK_CLAUDE_PROFILE_ROOT) reaches the runner. The runner's
@@ -930,6 +939,9 @@ pub(super) fn execute_recipe_via_rust_fresh(
         command.env(MAX_DEPTH_ENV, guard.max_depth.to_string());
         command.env("AMPLIHACK_RECIPE_RUN_ID", run_id);
         command.envs(workspace.borrow().env());
+        if let Some(dirs) = &guidance_dirs {
+            command.env(crate::run_guidance::GUIDANCE_DIRS_ENV, dirs);
+        }
         if dry_run {
             command.env("AMPLIHACK_RUN_ID", run_id);
         }

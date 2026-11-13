@@ -28,7 +28,15 @@ amplihack recipe validate <file> --strict # Warnings as errors
 amplihack recipe show <recipe>            # Full details
 amplihack recipe show <recipe> --format json
 amplihack recipe show <recipe> --steps-only
+
+# Add an instruction to a running recipe run
+amplihack recipe guide <run-id | session | pr-url> "text"
+amplihack recipe guide <run-id | session | pr-url> - < note.md
 ```
+
+| Command | Purpose |
+|---|---|
+| `amplihack recipe guide <target> [text\|-]` | Append an operator instruction that every later agent step of the run receives. See [amplihack recipe guide](recipe-cli-reference.md#amplihack-recipe-guide). |
 
 ## Common Recipes
 
@@ -222,6 +230,7 @@ amplihack recipe run default-workflow \
 ## Related Documentation
 
 - [recipe Command](recipe-command.md) — full command reference
+- [Recipe CLI Reference: recipe guide](recipe-cli-reference.md#amplihack-recipe-guide) — add instructions to a running run
 - [Recipe Execution Flow](../concepts/recipe-execution-flow.md) — how recipes execute
 - [Recipe Resilience](../concepts/recipe-resilience.md) — error handling in recipes
 - [Recipe CLI Examples](../howto/recipe-cli-examples.md) — real-world usage examples

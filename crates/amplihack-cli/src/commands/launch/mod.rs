@@ -40,6 +40,8 @@ mod tests_issue_2030_contract;
 mod tests_issue_2279_launch_settings;
 #[cfg(test)]
 mod tests_issue_2361;
+#[cfg(all(test, unix))]
+mod tests_issue_2535_guidance;
 #[cfg(test)]
 mod tests_launch;
 #[cfg(test)]
@@ -364,6 +366,11 @@ fn run_launch_core(
     // argv. After the Docker hand-off: the amplihack inside the container
     // rewrites its own. `rewritten` owns the per-session files; it lives
     // until this function returns, after the child has been waited on.
+    //
+    // Issue #2535: the run's operator guidance is read once, here, as the
+    // step starts; nothing waits for or watches it. The block goes after
+    // the step's own prompt, in full or not at all.
+    let guidance = crate::run_guidance::GuidanceForLaunch::load();
     let rewritten = match agent_binary_for_tool(tool) {
         Some(AgentBinary::Claude) => passthrough_rewrite::rewrite_claude_passthrough(&extra_args)?,
         Some(AgentBinary::Codex) => codex_copilot_rewrite::rewrite_codex_passthrough(&extra_args)?,
@@ -373,8 +380,23 @@ fn run_launch_core(
             &extra_args,
             !proxy_enabled,
             copilot_has_path_access(&extra_args, subprocess_safe),
+            guidance.block(),
         )?,
         _ => passthrough_rewrite::Rewritten::unchanged(extra_args.clone()),
+    };
+    let guidance_route = guidance_route(tool, &guidance, &rewritten, &extra_args);
+    if guidance_route == GuidanceRoute::Undeliverable {
+        eprintln!(
+            "amplihack: operator guidance not added: this {tool} launch has no prompt it can follow (Codex takes it only with `exec … -`, Claude and Copilot only with -p)"
+        );
+    }
+    let codex_trailer = guidance_route == GuidanceRoute::CodexTrailer;
+    // "\n\n" and the block, written after a prompt that arrives on stdin.
+    let guidance_tail = match guidance_route {
+        GuidanceRoute::Prompt | GuidanceRoute::CodexTrailer => {
+            guidance.trailer().unwrap_or_default()
+        }
+        GuidanceRoute::None | GuidanceRoute::Undeliverable => Vec::new(),
     };
     let extra_args = rewritten.args.clone();
     let opt_out = std::env::var(system_prompt_append::OPT_OUT_ENV).ok();
@@ -587,8 +609,11 @@ fn run_launch_core(
         // Issue #2030, step 6: a rewritten `-p <text>` reaches the child on a
         // piped stdin. Without a payload the child inherits amplihack's stdin.
         // Input piped to amplihack itself is passed on after the prompt.
-        let forward_caller_stdin = rewritten.stdin_payload.is_some() && caller_stdin_has_input();
-        if rewritten.stdin_payload.is_some() {
+        // Issue #2535: Codex `exec … -` reads its prompt from the caller's
+        // stdin, so that is always forwarded, with the guidance after it.
+        let forward_caller_stdin =
+            (rewritten.stdin_payload.is_some() && caller_stdin_has_input()) || codex_trailer;
+        if rewritten.stdin_payload.is_some() || codex_trailer {
             cmd.stdin(std::process::Stdio::piped());
         }
         let routed_copilot = proxy_config.is_some()
@@ -643,21 +668,44 @@ fn run_launch_core(
         };
 
         let stdin_writer = match (rewritten.stdin_payload.as_ref(), child.take_stdin()) {
-            (Some(payload), Some(stdin)) if forward_caller_stdin => {
-                Some(amplihack_utils::payload_delivery::spawn_stdin_forwarder(
+            (Some(payload), Some(stdin)) if forward_caller_stdin => Some(
+                amplihack_utils::payload_delivery::spawn_stdin_forwarder_with_trailer(
                     stdin,
                     prompt_then_piped_input_header(payload),
                     Box::new(std::io::stdin()),
-                ))
-            }
+                    guidance_tail.clone(),
+                ),
+            ),
             (Some(payload), Some(stdin)) => {
+                let bytes = match guidance_route {
+                    GuidanceRoute::Prompt => guidance.append_to(payload),
+                    _ => payload.clone(),
+                };
                 Some(amplihack_utils::payload_delivery::spawn_stdin_writer(
                     stdin,
-                    payload.clone().into_bytes(),
+                    bytes.into_bytes(),
                 ))
             }
+            (None, Some(stdin)) if codex_trailer => Some(
+                amplihack_utils::payload_delivery::spawn_stdin_forwarder_with_trailer(
+                    stdin,
+                    Vec::new(),
+                    Box::new(std::io::stdin()),
+                    guidance_tail.clone(),
+                ),
+            ),
             _ => None,
         };
+        // Issue #2535: the agent has started with the block; say so once
+        // (counts only) and record it in each guidance.log it came from.
+        if matches!(
+            guidance_route,
+            GuidanceRoute::Prompt | GuidanceRoute::CodexTrailer
+        ) {
+            eprintln!("{}", guidance.notice());
+            guidance
+                .record_injection(&std::env::var("AMPLIHACK_RECIPE_RUN_ID").unwrap_or_default());
+        }
 
         // Wait for child or signal
         let exit_code = wait_for_child_or_signal(&mut child, &shutdown);
@@ -1081,6 +1129,46 @@ fn validate_launch_prompt_delivery(tool: &str) -> Result<()> {
         )
     })?;
     Ok(())
+}
+
+/// Issue #2535: where this launch puts the run's operator guidance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuidanceRoute {
+    /// No guidance for this run.
+    None,
+    /// After the `-p` prompt: on stdin (Claude) or in the prompt file
+    /// (Copilot).
+    Prompt,
+    /// After the caller's stdin, for Codex `exec … -` (C4).
+    CodexTrailer,
+    /// There is guidance, but this launch form has no prompt to follow.
+    Undeliverable,
+}
+
+fn guidance_route(
+    tool: &str,
+    guidance: &crate::run_guidance::GuidanceForLaunch,
+    rewritten: &passthrough_rewrite::Rewritten,
+    original_args: &[String],
+) -> GuidanceRoute {
+    if guidance.block().is_none() {
+        return GuidanceRoute::None;
+    }
+    match agent_binary_for_tool(tool) {
+        Some(AgentBinary::Claude) if rewritten.stdin_payload.is_some() => GuidanceRoute::Prompt,
+        Some(AgentBinary::Copilot)
+            if codex_copilot_rewrite::copilot_has_prompt_text(original_args) =>
+        {
+            GuidanceRoute::Prompt
+        }
+        Some(AgentBinary::Codex)
+            if rewritten.stdin_payload.is_none()
+                && crate::run_guidance::codex_trailer_applies(original_args) =>
+        {
+            GuidanceRoute::CodexTrailer
+        }
+        _ => GuidanceRoute::Undeliverable,
+    }
 }
 
 fn agent_binary_for_tool(tool: &str) -> Option<AgentBinary> {
