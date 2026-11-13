@@ -404,11 +404,60 @@ test, a lock that gives up. Such a test:
    step started is gone (see [Recipe runner tests](#recipe-runner-tests)).
 4. Never asserts an upper bound on elapsed time. A timeout that fires late
    on a busy host is correct behaviour.
+5. Puts nothing but the work under test on that timeout. The short timeout
+   is one-sided only for the thing that must lose: a fake that sleeps 30 s
+   cannot beat a 2 s deadline however busy the host gets, because load only
+   makes a sleep longer. Anything else the same run must get an answer for
+   has to beat the same 2 s, and that is a race the host decides.
 
 `tests_execute.rs` and `tests_teardown.rs` used to assert that the runner
 returned within 25 s or 8 s; those assertions are gone. Review remaining
 elapsed bounds individually. For a fake that hangs, see
 [Bound a timeout without measuring speed](./keep-tests-from-changing-path-and-home.md#bound-a-timeout-without-measuring-speed).
+
+### Keep the rest of the run off the short deadline
+
+`issue_1797_capacity_summary::a_timed_out_profile_is_unknown_never_zero_or_one_hundred`
+proves that a profile whose probe passes the deadline is `unknown`, never 0%
+and never 100%. It set `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS=2` for the whole
+run, so all three of the fixture's profiles raced it: the assertion that
+exactly one profile is unknown, and that the weekly headroom is the other
+two's, failed on a loaded host when a fast profile's `sh` probe also passed
+2 s (point 5 above).
+
+The fix gives the profiles that must succeed an answer that takes no child
+process and no socket, so only the slow one is left on the clock:
+
+```rust
+let f = Fixture::new();
+f.passive(&[("work", 90, 40), ("spare", 10, 20)]);
+fs::write(f.canned.join(format!("{}.slow", email("extra"))), "").unwrap();
+let out = usage_ok(
+    &f,
+    &[],
+    &[
+        ("AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS", "300"),
+        ("AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS", "2"),
+    ],
+);
+for p in ["work", "spare"] {
+    assert_eq!(f.usage_probes(p), 0);
+}
+assert_eq!(f.usage_probes("extra"), 1);
+```
+
+`Fixture::passive` writes fresh status-line readings into auto-switch's
+`usage.json`, the first step of the probe order (issue #1844), so `work` and
+`spare` are answered from one file read. The probe counts are part of the
+test: they prove there is no child of theirs left to race. `extra` has no
+reading, falls through to `claude`, and its 30 s sleep loses to the 2 s
+deadline on any host. `Fixture::cmd` sets
+`AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS=0`, so a test that wants
+passive readings has to set that variable back above 0 itself.
+
+This is the general shape. When a test needs one step to pass a short
+deadline, take every other step of the same run off that deadline instead of
+hoping each one beats it.
 
 ## Inject a clock
 

@@ -279,6 +279,42 @@ impl Fixture {
         );
     }
 
+    /// Issue #1844: plants a fresh passive (status-line) reading for each
+    /// `(profile, session, week)` in auto-switch's `usage.json`, replacing
+    /// whatever that file held.
+    ///
+    /// Issue #2019: a profile with a fresh reading is answered from this
+    /// file alone. `profile usage` starts no child and opens no socket for
+    /// it, so its row cannot lose a race against the per-probe deadline,
+    /// and a test that needs one probe to pass the deadline can leave the
+    /// rest of the table off the clock. The readings are observed at the
+    /// moment this is called and both windows reset hours away, so waiting
+    /// longer only makes them more clearly fresh.
+    ///
+    /// The commands also need `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS`
+    /// above 0: [`Self::cmd`] turns passive readings off by default.
+    pub fn passive(&self, readings: &[(&str, u32, u32)]) {
+        let now = chrono::Utc::now().timestamp();
+        let accounts: serde_json::Map<String, serde_json::Value> = readings
+            .iter()
+            .map(|(p, session, week)| {
+                (
+                    (*p).to_string(),
+                    serde_json::json!({
+                        "five_hour": {"used_percentage": session, "resets_at": now + 3 * 3600},
+                        "seven_day": {"used_percentage": week, "resets_at": now + 3 * 86_400},
+                        "observed_at": now,
+                        "source": "statusline",
+                    }),
+                )
+            })
+            .collect();
+        private_file(
+            &self.root.join(".auto-switch.d/usage.json"),
+            &serde_json::json!({"version": 1, "accounts": accounts}).to_string(),
+        );
+    }
+
     /// Issue #1962: what the fake usage endpoint answers for `p`, with both
     /// windows resetting in 3 hours. A dry run reads only this, never `claude`.
     pub fn usage_direct(&self, p: &str, session: u32, week: u32) {

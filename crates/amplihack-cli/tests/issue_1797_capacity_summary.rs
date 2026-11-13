@@ -213,17 +213,42 @@ fn json_has_no_summary_and_summary_json_holds_the_same_array() {
     assert!(s["runway_hours"].is_null());
 }
 
+/// Issue #2019: only `extra` is probed here. `work` and `spare` are
+/// answered from fresh passive readings, which take no child process and
+/// no socket, so neither of them races the 2 s deadline this test sets:
+/// the one thing left on the clock is `extra`'s 30 s sleep against that
+/// deadline, and a busy host can only make a sleep longer. The deadline is
+/// the trigger, and the assertions are on the outcome, as
+/// `docs/howto/keep-tests-passing-under-host-load.md` ("Test that a timeout
+/// fires") requires.
 #[test]
 fn a_timed_out_profile_is_unknown_never_zero_or_one_hundred() {
     let f = Fixture::new();
+    f.passive(&[("work", 90, 40), ("spare", 10, 20)]);
     fs::write(f.canned.join(format!("{}.slow", email("extra"))), "").unwrap();
-    let out = usage_ok(&f, &[], &[("AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS", "2")]);
+    let out = usage_ok(
+        &f,
+        &[],
+        &[
+            ("AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS", "300"),
+            ("AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS", "2"),
+        ],
+    );
     // work 60 + spare 80 of 200; extra is out of every figure.
     assert!(
         out.contains("\nweekly headroom      1.40 login-weeks of 2 (70%)\n"),
         "{out}"
     );
     assert!(out.contains("\nunknown              1 profile ("), "{out}");
+    // The passive rows kept their two profiles off the clock entirely.
+    for p in ["work", "spare"] {
+        assert_eq!(
+            f.usage_probes(p),
+            0,
+            "{p} was read passively and must start no probe:\n{out}"
+        );
+    }
+    assert_eq!(f.usage_probes("extra"), 1, "{out}");
 }
 
 #[test]
