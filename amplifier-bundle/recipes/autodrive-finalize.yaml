@@ -45,7 +45,7 @@ steps:
     type: "bash"
     parse_json: true
     command: |
-      printf '%s' "${RECIPE_VAR_finalization_candidate:-}" | "${AMPLIHACK_BIN:-amplihack}" orch helper autodrive assess --invocation "$RECIPE_VAR_autodrive_invocation_file" --directory "$AUTODRIVE_STATE_DIR" --repo "$REPO_PATH"
+      printf '%s' "${RECIPE_VAR_finalization_candidate:-}" | "${AMPLIHACK_BIN:-amplihack}" orch helper autodrive assess --invocation "$RECIPE_VAR_autodrive_invocation_file" --directory "${RECIPE_VAR_autodrive_state_dir:-}" --repo "${RECIPE_VAR_repo_path:-.}"
     output: "accepted_readiness"
   - id: "finalize-observed-action"
     output: "finalization_observations"
@@ -68,7 +68,7 @@ steps:
     parse_json: true
     command: |
       ACCEPTED="$(printf '%s' "$RECIPE_VAR_accepted_readiness" | amplihack orch helper extract-field --field accepted)" || exit 1
-      printf '%s' "${RECIPE_VAR_finalization_observations:-}" | "${AMPLIHACK_BIN:-amplihack}" orch helper autodrive reduce --invocation "$RECIPE_VAR_autodrive_invocation_file" --directory "$AUTODRIVE_STATE_DIR" --repo "$REPO_PATH" --accepted "$ACCEPTED"
+      printf '%s' "${RECIPE_VAR_finalization_observations:-}" | "${AMPLIHACK_BIN:-amplihack}" orch helper autodrive reduce --invocation "$RECIPE_VAR_autodrive_invocation_file" --directory "${RECIPE_VAR_autodrive_state_dir:-}" --repo "${RECIPE_VAR_repo_path:-.}" --accepted "$ACCEPTED"
     output: "autodrive_finalization"
 output:
   format: "json"
