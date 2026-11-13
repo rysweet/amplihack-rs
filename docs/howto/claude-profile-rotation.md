@@ -1541,8 +1541,8 @@ versions and credential-free evidence. Unverified timed-wait behavior remains
 an explicit host-verification requirement; macOS checks and isolated Rust
 regressions do not satisfy it. Linux `/proc`, pidfd, inotify and FIFO-dependent
 checks run in CI; list exact locally omitted checks in the PR and hand host
-verification to candide. Do not include credentials, raw hook payloads,
-prompts, transcripts or environment dumps.
+verification to a Linux host with the rotator installed. Do not include
+credentials, raw hook payloads, prompts, transcripts or environment dumps.
 
 ### See what it did
 
