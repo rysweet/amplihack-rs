@@ -222,7 +222,7 @@ steps:
     type: "bash"
     parse_json: true
     command: |
-      printf '%s' "${RECIPE_VAR_merge_ready_review:-}" | "${AMPLIHACK_BIN:-amplihack}" orch helper autodrive round --invocation "$RECIPE_VAR_autodrive_invocation_file" --directory "$AUTODRIVE_STATE_DIR" --repo "$REPO_PATH" --record "$AUTODRIVE_ROUND_RECORD"
+      printf '%s' "${RECIPE_VAR_merge_ready_review:-}" | "${AMPLIHACK_BIN:-amplihack}" orch helper autodrive round --invocation "$RECIPE_VAR_autodrive_invocation_file" --directory "${RECIPE_VAR_autodrive_state_dir:-}" --repo "${RECIPE_VAR_repo_path:-.}" --record "${RECIPE_VAR_autodrive_round_record:-}"
     output: "merge_ready_verdict"
   - id: "step-04-address-blockers"
     condition: "merge_ready_verdict.merge_ready_verdict == 'NOT_MERGE_READY'"
