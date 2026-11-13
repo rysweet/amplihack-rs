@@ -68,6 +68,11 @@ for arg in "$@"; do
   fi
   prev=$arg
 done
+if [ -n "$CODEX_CLOSE_STDIN" ]; then
+  # Stops reading at once: closes stdin and exits without reaching EOF.
+  exec 0<&-
+  exit 0
+fi
 cat > "$RECORD_DIR/prompt.$step"
 exit 0
 "#;
@@ -399,6 +404,14 @@ impl GuideFixture {
         self.run_with_stdin(self.amplihack(&full), stdin)
     }
 
+    /// `amplihack recipe guide <args…> -` with `text` on stdin: the form an
+    /// operator uses.
+    pub fn guide_text(&self, args: &[&str], text: &str) -> Output {
+        let mut full = args.to_vec();
+        full.push("-");
+        self.guide(&full, Some(text.as_bytes()))
+    }
+
     pub fn runs(&self) -> PathBuf {
         self.work.join("runs")
     }
@@ -546,22 +559,43 @@ impl GuideFixture {
     }
 }
 
-/// The one stdout line of a successful `recipe guide`:
-/// `guidance appended: <path> (<n> bytes, run|pr)`. Returns (path, n, source).
+/// The second stdout line `recipe guide` prints for a pull request target
+/// (PR #2567 M1), for the guidance folder `dir`.
+pub fn pr_where_line(dir: &Path) -> String {
+    format!(
+        "written to {}; read by runs that started with this pull request in their context. For a run that created this pull request, address the run by its run ID instead.",
+        dir.display()
+    )
+}
+
+/// The stdout of a successful `recipe guide`: the line
+/// `guidance appended: <path> (<n> bytes, run|pr)`, and for `pr` exactly one
+/// more line, [`pr_where_line`] for the entry's folder. Returns
+/// (path, n, source).
 pub fn parse_appended(o: &Output) -> (PathBuf, usize, String) {
     let out = stdout(o);
     let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines.len(), 1, "exactly one stdout line: {}", show(o));
+    assert!(!lines.is_empty(), "no stdout line: {}", show(o));
     let re =
         regex::Regex::new(r"^guidance appended: (/.+\.md) \((\d+) bytes, (run|pr)\)$").unwrap();
     let caps = re
         .captures(lines[0])
         .unwrap_or_else(|| panic!("stdout line does not match the contract: {}", show(o)));
-    (
-        PathBuf::from(&caps[1]),
-        caps[2].parse().unwrap(),
-        caps[3].to_string(),
-    )
+    let path = PathBuf::from(&caps[1]);
+    let source = caps[3].to_string();
+    match source.as_str() {
+        "run" => assert_eq!(lines.len(), 1, "exactly one stdout line: {}", show(o)),
+        _ => {
+            assert_eq!(lines.len(), 2, "exactly two stdout lines: {}", show(o));
+            assert_eq!(
+                lines[1],
+                pr_where_line(path.parent().unwrap()),
+                "{}",
+                show(o)
+            );
+        }
+    }
+    (path, caps[2].parse().unwrap(), source)
 }
 
 /// A failure prints exactly one line on stderr.

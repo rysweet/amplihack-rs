@@ -38,12 +38,12 @@
 pub(crate) mod env;
 pub(crate) mod fs_safety;
 pub(crate) mod pr_key;
-pub(crate) mod routing_markers;
+#[cfg(test)]
+mod routing_markers;
 #[cfg(test)]
 mod tests;
 
 use crate::commands::recipe::run_id::validate_run_id;
-use routing_markers::ROUTING_MARKERS;
 use std::fmt;
 use std::fs;
 use std::io::{ErrorKind, Write};
@@ -81,20 +81,22 @@ const MAX_CALLER_BYTES: usize = 256;
 const BLOCK_BEGIN: &str = "===== BEGIN OPERATOR INSTRUCTIONS FOR THIS RUN =====";
 const BLOCK_END: &str = "===== END OPERATOR INSTRUCTIONS FOR THIS RUN =====";
 const BLOCK_TITLE: &str = "Operator instructions for this run";
-const BLOCK_PREAMBLE: &str = "These instructions come from the local operator and apply to this step. Do not copy them into pull request titles, bodies, comments or commit messages.";
-const STEP_PREAMBLE: &str = "The entries below come from an agent step in this run, not from the local operator. Do not copy them into pull request titles, bodies, comments or commit messages.";
+const BLOCK_PREAMBLE: &str = "These instructions come from the local operator and apply to this step. Do not copy them into recipe context, task descriptions, command-line arguments, pull request titles, bodies, comments or commit messages.";
+const STEP_PREAMBLE: &str = "The entries below come from an agent step in this run, not from the local operator. Do not copy them into recipe context, task descriptions, command-line arguments, pull request titles, bodies, comments or commit messages.";
 /// The caller-field marker [`caller_identity`] adds inside a recipe run.
 const CALLER_RUN_MARKER: &str = " run=";
 
-/// Why a guidance operation failed. Messages name paths, sizes, characters
-/// and phrases, never the guidance text.
+/// Why a guidance operation failed. Messages name paths, sizes and
+/// characters, never the guidance text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum GuideError {
     /// Bad input: empty or unacceptable text, a malformed URL (exit 2).
     Usage(String),
     /// The text is over [`MAX_GUIDANCE_ENTRY_BYTES`] (exit 2). Its message
-    /// is the documented one, with no prefix.
-    Oversize(usize),
+    /// is the documented one, with no prefix. `exact` is false when the read
+    /// stopped past the limit without learning the full size (a pipe or a
+    /// device given to `--file`); the message then says "more than".
+    Oversize { size: u64, exact: bool },
     /// The target names no run, session or PR (exit 1).
     NotFound(String),
     /// A folder or file fails the trust rule, or the folder is full (exit 1).
@@ -107,7 +109,7 @@ impl GuideError {
     /// The process exit code for this error.
     pub(crate) fn exit_code(&self) -> i32 {
         match self {
-            Self::Usage(_) | Self::Oversize(_) => 2,
+            Self::Usage(_) | Self::Oversize { .. } => 2,
             Self::NotFound(_) | Self::Unsafe(_) | Self::Io(_) => 1,
         }
     }
@@ -116,9 +118,13 @@ impl GuideError {
 impl fmt::Display for GuideError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Oversize(n) => write!(
+            Self::Oversize { size, exact: true } => write!(
                 f,
-                "guidance entry is {n} bytes; the limit is {MAX_GUIDANCE_ENTRY_BYTES} bytes"
+                "guidance entry is {size} bytes; the limit is {MAX_GUIDANCE_ENTRY_BYTES} bytes"
+            ),
+            Self::Oversize { exact: false, .. } => write!(
+                f,
+                "guidance entry is more than {MAX_GUIDANCE_ENTRY_BYTES} bytes; the limit is {MAX_GUIDANCE_ENTRY_BYTES} bytes"
             ),
             Self::Usage(m) | Self::NotFound(m) | Self::Unsafe(m) | Self::Io(m) => f.write_str(m),
         }
@@ -193,19 +199,25 @@ fn is_block_delimiter(line: &str) -> bool {
 /// Checks operator text and returns the text to store: trimmed, non-empty,
 /// at most [`MAX_GUIDANCE_ENTRY_BYTES`], free of control characters other
 /// than tab, newline and a carriage return that ends a line (CRLF), of
-/// bidirectional and zero-width characters, of block delimiter lines and of every routing phrase.
+/// bidirectional and zero-width characters, and of block delimiter lines.
+///
+/// Wording is not filtered: the provenance preambles of [`render_block`],
+/// not a phrase list, tell an agent where the text came from (PR #2567 B2).
 ///
 /// # Errors
 ///
 /// [`GuideError::Oversize`] or [`GuideError::Usage`] (exit 2). The message
-/// names the size, the character or the phrase, never the text.
+/// names the size or the character, never the text.
 pub(crate) fn check_text(raw: &str) -> Result<String, GuideError> {
     let text = raw.trim();
     if text.is_empty() {
         return Err(GuideError::Usage("guidance text is empty".to_string()));
     }
     if text.len() > MAX_GUIDANCE_ENTRY_BYTES {
-        return Err(GuideError::Oversize(text.len()));
+        return Err(GuideError::Oversize {
+            size: text.len() as u64,
+            exact: true,
+        });
     }
     if let Some(c) = text.chars().find(|c| {
         !matches!(c, '\t' | '\n' | '\r') && crate::commands::agent::validate::unsafe_char(*c)
@@ -228,15 +240,6 @@ pub(crate) fn check_text(raw: &str) -> Result<String, GuideError> {
             "guidance text contains a line equal to an operator-instructions block delimiter"
                 .to_string(),
         ));
-    }
-    let lower = text.to_lowercase();
-    if let Some((marker, _)) = ROUTING_MARKERS
-        .iter()
-        .find(|(marker, _)| lower.contains(&marker.to_lowercase()))
-    {
-        return Err(GuideError::Usage(format!(
-            "guidance text contains '{marker}', a phrase that tells an agent to start an orchestration; reword it"
-        )));
     }
     Ok(text.to_string())
 }

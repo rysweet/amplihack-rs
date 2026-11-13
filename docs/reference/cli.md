@@ -67,7 +67,7 @@ The version string comes from the `__version__` attribute in `amplihack/__init__
 | `plugin`     | Install, uninstall, and list amplihack plugins.                                             |
 | `memory`     | Manage the amplihack memory backend.                                                        |
 | `new`        | Generate a new goal-seeking agent.                                                          |
-| `recipe`     | Run, list, validate, inspect and stop workflow recipes. `recipe guide <run-id \| session \| pr-url> [text\|-]` adds an operator instruction that every later agent step of a running run receives; see [amplihack recipe guide](./recipe-cli-reference.md#amplihack-recipe-guide). |
+| `recipe`     | Run, list, validate, inspect and stop workflow recipes. `recipe guide <run-id \| session \| pr-url> [-] [--file <path>]` adds an operator instruction, read from stdin or a file, that every later agent step of a running run receives; see [amplihack recipe guide](./recipe-cli-reference.md#amplihack-recipe-guide). |
 | `mode`       | Claude installation mode commands.                                                          |
 | `fleet`      | Manage coding agents across VMs.                                                            |
 | `agent`      | Register long-lived Claude sessions and resume them from their saved conversation after a terminal loss. `amplihack claude --supervise NAME` registers a session as it starts. |

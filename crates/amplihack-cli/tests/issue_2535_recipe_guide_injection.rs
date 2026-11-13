@@ -39,7 +39,7 @@ case "$GUIDE_BY" in
   corr_id) target="$AMPLIHACK_RECIPE_RUN_ID" ;;
   *) target="$AMPLIHACK_RUN_ID" ;;
 esac
-( unset AMPLIHACK_RECIPE_RUN_ID; "$AMP_BIN" recipe guide "$target" "$GUIDE_TEXT" ) \
+( unset AMPLIHACK_RECIPE_RUN_ID; printf '%s' "$GUIDE_TEXT" | "$AMP_BIN" recipe guide "$target" - ) \
   > "$RECORD_DIR/guide.out" 2> "$RECORD_DIR/guide.err" || exit 12
 STEP=a.2 "$AMP_BIN" claude --subprocess-safe -- -p "step two prompt" \
   > "$RECORD_DIR/out.a.2" 2> "$RECORD_DIR/err.a.2" || exit 13
@@ -51,7 +51,7 @@ printf 'codex step one prompt\n' | STEP=c.1 "$AMP_BIN" codex -- exec \
   --output-last-message "$RECORD_DIR/last.c.1" - \
   > "$RECORD_DIR/out.c.1" 2> "$RECORD_DIR/err.c.1" || exit 21
 target="$AMPLIHACK_RECIPE_RUN_ID"
-( unset AMPLIHACK_RECIPE_RUN_ID; "$AMP_BIN" recipe guide "$target" "$GUIDE_TEXT" ) \
+( unset AMPLIHACK_RECIPE_RUN_ID; printf '%s' "$GUIDE_TEXT" | "$AMP_BIN" recipe guide "$target" - ) \
   > "$RECORD_DIR/guide.out" 2> "$RECORD_DIR/guide.err" || exit 22
 printf 'codex step two prompt\n' | STEP=c.2 "$AMP_BIN" codex -- exec \
   --output-last-message "$RECORD_DIR/last.c.2" - \
@@ -217,6 +217,70 @@ fn a_entry_appended_mid_run_reaches_the_next_codex_exec_step_as_a_trailer() {
     let argv = f.record("codexargv.c.2");
     assert_eq!(argv.lines().last(), Some("-"));
     assert!(!argv.contains(MARKER) && !argv.contains("OPERATOR"));
+
+    // PR #2567 M2: the trailer reached Codex, so the injection is recorded
+    // exactly once, and the notice is printed once.
+    let guidance = run_folder(&f, "run").join("guidance");
+    let injected: Vec<_> = f
+        .log(&guidance)
+        .into_iter()
+        .filter(|l| l["event"] == "guidance_injected")
+        .collect();
+    assert_eq!(injected.len(), 1, "{injected:?}");
+    assert_eq!(injected[0]["entries"], 1);
+    assert_eq!(
+        f.record("err.c.2")
+            .matches("operator guidance added to this step's prompt")
+            .count(),
+        1
+    );
+}
+
+// PR #2567 M2: a Codex child that stops reading before the trailer was
+// written never received the guidance, so nothing is recorded. The test holds
+// amplihack's stdin open, so the forwarder is still waiting on it when the
+// child exits and the trailer is never written; no timer is involved.
+#[test]
+fn codex_child_that_closes_stdin_early_records_no_injection() {
+    let f = GuideFixture::new();
+    let run = f.make_run("r-early", "c-early");
+    assert!(f.guide_text(&["r-early"], MARKER).status.success());
+    let guidance = run.join("guidance");
+    let last = f.root.join("last-message");
+
+    let mut c = f.amplihack(&[
+        "codex",
+        "--",
+        "exec",
+        "--output-last-message",
+        last.to_str().unwrap(),
+        "-",
+    ]);
+    c.env("STEP", "early")
+        .env("AMPLIHACK_AGENT_BINARY", "codex")
+        .env("CODEX_CLOSE_STDIN", "1")
+        .env("AMPLIHACK_RUN_GUIDANCE_DIRS", &guidance)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = c.spawn().expect("start amplihack");
+    // Kept open until amplihack has exited.
+    let held_stdin = child.stdin.take().unwrap();
+    let o = child.wait_with_output().unwrap();
+    drop(held_stdin);
+
+    assert!(o.status.success(), "{}", show(&o));
+    assert!(
+        !stderr(&o).contains("operator guidance added"),
+        "no notice for undelivered guidance:\n{}",
+        show(&o)
+    );
+    let events: Vec<String> = f
+        .log(&guidance)
+        .iter()
+        .map(|l| l["event"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(events, ["guidance_appended"], "no guidance_injected record");
 }
 
 // ---------------------------------------------------------------------------
@@ -234,7 +298,7 @@ fn b_per_pr_entry_survives_a_relaunch_and_the_run_folders_differ() {
     assert_eq!(f.record("prompt.first.1"), "drive step prompt");
 
     // The operator adds guidance by PR URL between the two drives.
-    let g = f.guide(&[PR_URL, MARKER], None);
+    let g = f.guide_text(&[PR_URL], MARKER);
     assert!(g.status.success(), "{}", show(&g));
     let (entry, _, source) = parse_appended(&g);
     assert_eq!(source, "pr");
@@ -289,7 +353,7 @@ fn b_pr_number_with_an_ssh_origin_reads_the_same_per_pr_folder() {
     git(&["init", "-q"]);
     git(&["remote", "add", "origin", "git@github.com:o/r.git"]);
 
-    let g = f.guide(&[PR_URL, MARKER], None);
+    let g = f.guide_text(&[PR_URL], MARKER);
     assert!(g.status.success(), "{}", show(&g));
 
     let repo_ctx = format!("repo_path={}", repo.display());
@@ -329,14 +393,14 @@ fn s2_unsafe_or_misnamed_listed_folders_are_skipped_with_a_warning() {
     let f = GuideFixture::new();
     // A real entry in a folder that is then made group-writable.
     let run = f.make_run("r-unsafe", "c-unsafe");
-    let g = f.guide(&["r-unsafe", MARKER], None);
+    let g = f.guide_text(&["r-unsafe"], MARKER);
     assert!(g.status.success(), "{}", show(&g));
     let guidance = run.join("guidance");
     fs::set_permissions(&guidance, fs::Permissions::from_mode(0o770)).unwrap();
 
     // A private folder holding a real entry but not named `guidance`.
     let other = f.make_run("r-other", "c-other");
-    assert!(f.guide(&["r-other", MARKER], None).status.success());
+    assert!(f.guide_text(&["r-other"], MARKER).status.success());
     let renamed = other.join("notes");
     fs::rename(other.join("guidance"), &renamed).unwrap();
 
@@ -362,7 +426,7 @@ fn s2_unsafe_or_misnamed_listed_folders_are_skipped_with_a_warning() {
 fn codex_forms_other_than_exec_dash_get_no_guidance_and_one_note() {
     let f = GuideFixture::new();
     let run = f.make_run("r-codex", "c-codex");
-    assert!(f.guide(&["r-codex", MARKER], None).status.success());
+    assert!(f.guide_text(&["r-codex"], MARKER).status.success());
     let guidance = run.join("guidance");
     let last = f.root.join("last-message");
     let last = last.to_str().unwrap();

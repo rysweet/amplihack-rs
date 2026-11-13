@@ -40,7 +40,7 @@ PATH="$PUBLISH_TOOLS:$PATH" git commit -F "$RECORD_DIR/commit-msg.txt" >&2 || ex
 #[test]
 fn d_guidance_reaches_the_agent_prompt_but_no_published_text() {
     let f = GuideFixture::new();
-    let g = f.guide(&[PR_URL, MARKER], None);
+    let g = f.guide_text(&[PR_URL], MARKER);
     assert!(g.status.success(), "{}", show(&g));
 
     let ctx = format!("pr_url={PR_URL}");

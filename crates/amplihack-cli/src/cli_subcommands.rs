@@ -612,9 +612,14 @@ pub enum RecipeCommands {
         /// pull request URL of an auto-drive
         /// (https://github.com/<owner>/<repo>/pull/<n>)
         target: String,
-        /// The instruction; omit it or pass `-` to read it from stdin
-        #[arg(allow_hyphen_values = true, value_parser = clap::value_parser!(std::ffi::OsString))]
-        text: Option<std::ffi::OsString>,
+        /// `-` reads the instruction from stdin, as does giving nothing.
+        /// Any other value here is refused: instruction text is never
+        /// accepted on the command line (PR #2567, issue #2582).
+        #[arg(hide = true, num_args = 0.., value_parser = clap::value_parser!(std::ffi::OsString))]
+        text: Vec<std::ffi::OsString>,
+        /// Read the instruction from this file instead of stdin
+        #[arg(long = "file", value_name = "PATH")]
+        file: Option<std::path::PathBuf>,
         /// Allow the command inside a recipe run (`AMPLIHACK_RECIPE_RUN_ID`
         /// set). The entry is then shown to later steps as coming from an
         /// agent step in this run, not from the operator.

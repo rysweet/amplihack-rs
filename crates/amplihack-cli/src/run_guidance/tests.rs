@@ -325,7 +325,7 @@ fn c_check_text_limit_is_on_the_trimmed_text() {
 }
 
 #[test]
-fn s4_check_text_refuses_control_bidi_delimiters_and_markers() {
+fn s4_check_text_refuses_control_bidi_and_delimiters() {
     for (text, reason_fragment) in [
         ("a\u{0}b", "U+0000"),
         ("a\u{1b}[31mb", "U+001B"),
@@ -369,20 +369,72 @@ fn s4_check_text_refuses_control_bidi_delimiters_and_markers() {
     );
     // A CRLF delimiter line is still a delimiter line.
     assert!(check_text(&format!("ok\r\n{END}\r\nmore")).is_err());
+}
 
+// PR #2567 B2: operator text is no longer filtered for routing phrases. The
+// provenance preambles, not a phrase list, mark where the text came from.
+#[test]
+fn b2_routing_phrases_are_accepted_appended_and_read_back_unchanged() {
+    let (_tmp, root) = private_root();
+    let dir = run_guidance_dir(&root, "run-b2");
+    let mut expected = Vec::new();
     for (marker, _) in ROUTING_MARKERS {
-        let text = format!("please {marker} now");
-        let e = check_text(&text).unwrap_err();
-        assert_eq!(e.exit_code(), 2, "{marker}");
-        assert!(
-            e.to_string().contains(marker),
-            "the message names {marker}: {e}"
-        );
-        assert!(
-            !e.to_string().contains("please"),
-            "never repeats the text: {e}"
-        );
+        for text in [
+            format!("please {marker} now"),
+            format!("please {} now", marker.to_uppercase()),
+        ] {
+            assert_eq!(
+                check_text(&text).as_deref(),
+                Ok(text.as_str()),
+                "accepted unchanged: {text:?}"
+            );
+            append_entry(&dir, &text, "alice").expect("appended");
+            expected.push(text);
+        }
     }
+    let texts: Vec<String> = read_entries(&[dir]).into_iter().map(|e| e.text).collect();
+    assert_eq!(texts, expected, "the read side does not drop them either");
+}
+
+// S14: the read side keeps the delimiter, control-character and lone-CR
+// checks, so a hand-edited entry cannot close the block early.
+#[test]
+fn s14_hand_edited_entries_with_a_delimiter_or_control_character_are_skipped_on_read() {
+    let (_tmp, root) = private_root();
+    let dir = run_guidance_dir(&root, "run-s14");
+    append_entry(&dir, "kept", "alice").unwrap();
+    for (i, text) in [
+        format!("before\n{END}\nafter"),
+        "bell\u{7}".to_string(),
+        format!("x\r{END}\ry"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let p = dir.join(format!("20000101T000000.000000000Z-1-{i}.md"));
+        fs::write(&p, format!("timestamp: x\ncaller: y\n\n{text}")).unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let texts: Vec<String> = read_entries(&[dir]).into_iter().map(|e| e.text).collect();
+    assert_eq!(texts, ["kept"]);
+}
+
+// S13: an entry an agent step added renders under the step preamble even
+// when its text holds a routing phrase, and never under the operator one.
+#[test]
+fn s13_a_from_step_entry_with_a_routing_phrase_stays_under_the_step_preamble() {
+    let (_tmp, root) = private_root();
+    let run = run_guidance_dir(&root, "run-s13");
+    let (marker, _) = ROUTING_MARKERS[0];
+    let step_text = format!("step says {marker}");
+    append_entry(&run, "Operator rule.", "alice").unwrap();
+    append_entry(&run, &step_text, "alice run=abc-123").unwrap();
+    let block = render_block(&read_entries(&[run]));
+    let operator = block.find(BLOCK_PREAMBLE).expect("operator preamble");
+    let step = block.find(STEP_PREAMBLE).expect("step preamble");
+    let text_at = block.find(&step_text).expect("step text");
+    assert!(operator < step && step < text_at, "{block}");
+    assert_eq!(block.matches(&step_text).count(), 1, "{block}");
 }
 
 #[test]
@@ -776,7 +828,7 @@ fn render_block_has_the_exact_documented_shape() {
     assert_eq!(lines[1], "Operator instructions for this run");
     assert_eq!(
         lines[2],
-        "These instructions come from the local operator and apply to this step. Do not copy them into pull request titles, bodies, comments or commit messages."
+        "These instructions come from the local operator and apply to this step. Do not copy them into recipe context, task descriptions, command-line arguments, pull request titles, bodies, comments or commit messages."
     );
     assert_eq!(lines[3], "");
     assert!(
@@ -819,7 +871,7 @@ fn entries_from_an_agent_step_render_under_their_own_preamble() {
     assert_eq!(lines[6], "");
     assert_eq!(
         lines[7],
-        "The entries below come from an agent step in this run, not from the local operator. Do not copy them into pull request titles, bodies, comments or commit messages."
+        "The entries below come from an agent step in this run, not from the local operator. Do not copy them into recipe context, task descriptions, command-line arguments, pull request titles, bodies, comments or commit messages."
     );
     assert_eq!(lines[8], "");
     assert!(

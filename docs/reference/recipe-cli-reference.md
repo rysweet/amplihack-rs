@@ -240,13 +240,14 @@ that starts after the instruction is added receives it at the end of its
 prompt.
 
 ```bash
-amplihack recipe guide [--from-step] <TARGET> [TEXT | -]
+amplihack recipe guide <TARGET> [-] [--file <PATH>] [--from-step]
 ```
 
 | Argument | Description |
 | --- | --- |
 | `<TARGET>` | The run to guide: a run ID, a detached session name, or a GitHub pull request URL for an auto-drive. See [Targets](#targets). |
-| `TEXT` | The instruction. Omit it, or pass `-`, to read the instruction from stdin. |
+| `-` | Read the instruction from stdin. This is also what happens when neither `-` nor `--file` is given. |
+| `--file <PATH>` | Read the instruction from this file instead of stdin. Cannot be combined with `-`. |
 | `--from-step` | Allow the command inside a recipe run. Without it, the command exits 2 when `AMPLIHACK_RECIPE_RUN_ID` is set. See [Guidance from an agent step](#guidance-from-an-agent-step). |
 
 Use this when you see a run going the wrong way and want to correct it
@@ -304,15 +305,10 @@ before you relaunch a drive.
 
 ### Giving the text
 
-Pass short text as one argument:
+The instruction is never given on the command line, where it would appear in
+`ps` output and shell history. Give it on stdin or in a file.
 
-```bash
-amplihack recipe guide 8c0e2a54-1f7d-4c56-9a39-2d1b6f0c7e15 \
-  "Run only the tests in crates/amplihack-cli; the workspace tests are not needed for this change."
-```
-
-Pass longer text, or anything you do not want in `ps` output or your shell
-history, on stdin:
+On stdin, with a quoted heredoc so that the shell expands nothing in it:
 
 ```bash
 amplihack recipe guide amp-smart-orchestrator-myapp-20261112-091200 - <<'EOF'
@@ -322,8 +318,50 @@ current value.
 EOF
 ```
 
-If no text is given and stdin is a terminal, the command exits 2 with a usage
-message instead of waiting for input.
+From a file:
+
+```bash
+amplihack recipe guide 8c0e2a54-1f7d-4c56-9a39-2d1b6f0c7e15 --file ~/notes/tests-only.md
+```
+
+From a script, with the text in a variable:
+
+```bash
+printf '%s' "$GUIDE_TEXT" | amplihack recipe guide "$target" -
+```
+
+Any other argument after `<TARGET>` is refused with exit 2 before anything
+else is checked, and nothing is written, not even the pull request folder for
+a URL target:
+
+```text
+recipe guide: instruction text is not accepted on the command line; pipe it on stdin (or pass -) or use --file <path>
+```
+
+The message never repeats the refused argument. An argument that starts with
+`-`, other than `-` itself, is read as an unknown option and gets the argument
+parser's own error instead; it also exits 2 and writes nothing.
+
+The rules for the two sources:
+
+- Give one source only. `-` together with `--file` exits 2 with
+  `recipe guide: give the text on stdin (-) or with --file <path>, not both`.
+- When `--file` is given, stdin is not read. `--file -` names a file called
+  `-`; it does not mean stdin.
+- The file is opened once and read with your own permissions. A symbolic link
+  is followed. A file that is missing or cannot be read exits 1 with a message
+  that names the path and the system error, never the contents.
+- Both sources have the same size limit and the same checks.
+- Oversize text on stdin is read to the end so that the error can give its
+  exact size; nothing past the limit is kept. Do not pipe an endless source
+  such as `/dev/zero` into the command.
+- A `--file` read stops one byte past the limit. For a regular file the error
+  gives the file's exact size. For a path that is not a regular file, such as
+  a named pipe or `/dev/zero`, the error says only that the text is more than
+  the limit, so the command never reads without end.
+- If `--file` is not given and stdin is a terminal, the command exits 2 with a
+  usage message instead of waiting for input. This also applies when `-` is
+  given.
 
 Leading and trailing white space is removed before the text is checked and
 stored. The text is refused, with exit 2 and nothing written, when it:
@@ -336,15 +374,12 @@ stored. The text is refused, with exit 2 and nothing written, when it:
   accepted; a carriage return on its own is refused);
 - contains a bidirectional-override or zero-width character;
 - has a line equal to one of the block delimiters (see
-  [What the agent receives](#what-the-agent-receives));
-- contains a phrase that tells an agent to start a new orchestration. These
-  are the phrases that the issue #1333 guard keeps out of files every agent
-  loads. The message names the phrase so that you can reword the text. The
-  check matches a fixed list of exact phrases, so it only stops such a
-  phrase from being added by accident; it is not a security control, and
-  reworded text passes it.
+  [What the agent receives](#what-the-agent-receives)).
 
-Error messages name the reason, a size or the refused phrase. They never
+The wording of the text is not checked. An instruction may name any command
+or recipe, for example `recipe run smart-orchestrator`.
+
+Error messages name the reason, a path, a size or a character. They never
 repeat the text.
 
 ### Where guidance is stored
@@ -479,7 +514,7 @@ prompt, after one blank line:
 
 ===== BEGIN OPERATOR INSTRUCTIONS FOR THIS RUN =====
 Operator instructions for this run
-These instructions come from the local operator and apply to this step. Do not copy them into pull request titles, bodies, comments or commit messages.
+These instructions come from the local operator and apply to this step. Do not copy them into recipe context, task descriptions, command-line arguments, pull request titles, bodies, comments or commit messages.
 
 [1] 2026-11-12T09:14:05.120458911Z from alice (run)
 Keep the public API of the retry module unchanged.
@@ -498,7 +533,7 @@ operator's entries, numbered on from them, after one blank line and this
 line in place of the operator sentence:
 
 ```text
-The entries below come from an agent step in this run, not from the local operator. Do not copy them into pull request titles, bodies, comments or commit messages.
+The entries below come from an agent step in this run, not from the local operator. Do not copy them into recipe context, task descriptions, command-line arguments, pull request titles, bodies, comments or commit messages.
 ```
 
 When every entry is from an agent step, the operator sentence is left out. When there are no entries, the prompt is not changed by a
@@ -521,7 +556,7 @@ guidance.
 | --- | --- |
 | Claude Code, `launch`, RustyClawd | End of the prompt sent on stdin, after the `-p` text |
 | GitHub Copilot CLI | End of the `-p` prompt, before it is written to the private prompt file. An interactive `-i` launch receives no guidance. |
-| Codex | Only for `codex exec … -`, where the prompt is read from stdin and `-` is the last argument: after the caller's stdin closes, the block is written. Other Codex forms receive no guidance and the launcher prints one note to stderr. |
+| Codex | Only for `codex exec … -`, where the prompt is read from stdin and `-` is the last argument: after the caller's stdin closes, the block is written. The stderr line above and the `guidance_injected` record are written after Codex exits, and only if the block was written and flushed to Codex's stdin in full. If Codex closed its stdin first, neither is written. Other Codex forms receive no guidance and the launcher prints one note to stderr. |
 
 **What the launcher skips.** A listed folder is skipped, with a warning that
 names it, when the path is not absolute, its last part is not `guidance`, or
@@ -562,8 +597,11 @@ An append writes:
 {"event":"guidance_appended","ts":"2026-11-12T09:14:05.120458911Z","caller":"alice","bytes":141,"entry":"20261112T091405.120458911Z-48211-0.md"}
 ```
 
-An agent step that received guidance writes, once its agent process has
-started, to the log of each folder it read:
+An agent step that received guidance writes to the log of each folder it
+read. For most agent CLIs this happens once the agent process has started.
+For Codex it happens after Codex exits, and only when the block was written
+to Codex's stdin in full; see [Agent CLIs](#what-the-agent-receives). A
+successful write means the pipe accepted the bytes, not that Codex read them.
 
 ```json
 {"event":"guidance_injected","ts":"2026-11-12T09:20:11.554013873Z","step_run_id":"5b9d0f6e-77a2-4f0b-b1c4-0e3a9d2c6f81","entries":2,"bytes":231}
@@ -583,11 +621,24 @@ separate folder that the gate does not check.
 
 ### Output and exit codes
 
-On success the command prints one line to stdout:
+On success for a run ID or session name, the command prints one line to
+stdout:
 
 ```text
 guidance appended: /home/alice/.amplihack/work/runs/8c0e2a54-1f7d-4c56-9a39-2d1b6f0c7e15/guidance/20261112T091405.120458911Z-48211-0.md (141 bytes, run)
 ```
+
+For a pull request URL it prints a second line, which names the pull
+request's guidance folder and says which runs read it:
+
+```text
+guidance appended: /home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_2535/guidance/20261112T100241.007311204Z-49102-0.md (58 bytes, pr)
+written to /home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_2535/guidance; read by runs that started with this pull request in their context. For a run that created this pull request, address the run by its run ID instead.
+```
+
+The command does not check whether any run reads the folder. A drive that
+opened the pull request during its build step was started without it and
+does not read this folder; see [Known limits](#known-limits).
 
 | Code | Meaning | Example message on stderr |
 | --- | --- | --- |
@@ -598,10 +649,14 @@ guidance appended: /home/alice/.amplihack/work/runs/8c0e2a54-1f7d-4c56-9a39-2d1b
 | `1` | The session's log has no pointer line | `recipe guide: /home/alice/.amplihack/recipe-logs/nightly-fix.log has no amplihack.recipe.log_pointer line` |
 | `1` | A folder failed the safety checks | `recipe guide: refusing /home/alice/.amplihack/work/runs/8c0e…/guidance: it is owned by uid 0, not uid 1000` |
 | `1` | The folder already holds 256 KiB of guidance | `recipe guide: guidance folder /home/alice/.amplihack/work/runs/8c0e…/guidance would hold 307285 bytes of entries; the limit is 262144` |
-| `2` | No text and stdin is a terminal | `recipe guide: no text given and stdin is a terminal; pass TEXT or pipe the text on stdin` |
+| `1` | The `--file` path cannot be opened or read | `recipe guide: cannot read /home/alice/notes/tests-only.md: No such file or directory (os error 2)` |
+| `2` | Text given as an argument after `<TARGET>` | `recipe guide: instruction text is not accepted on the command line; pipe it on stdin (or pass -) or use --file <path>` |
+| `2` | Both `-` and `--file` given | `recipe guide: give the text on stdin (-) or with --file <path>, not both` |
+| `2` | No `--file` and stdin is a terminal | `recipe guide: no text given and stdin is a terminal; pipe the text on stdin (or pass -) or use --file <path>` |
 | `2` | Empty text | `recipe guide: guidance text is empty` |
-| `2` | Oversize text | `guidance entry is 61440 bytes; the limit is 51200 bytes` |
-| `2` | Invalid UTF-8, a refused character, a delimiter line or a refused phrase | `recipe guide: guidance text contains a control character (U+001B)` |
+| `2` | Oversize text on stdin, or in a regular `--file` file | `guidance entry is 61440 bytes; the limit is 51200 bytes` |
+| `2` | Oversize text from a `--file` path that is not a regular file | `guidance entry is more than 51200 bytes; the limit is 51200 bytes` |
+| `2` | Invalid UTF-8, a refused character or a delimiter line | `recipe guide: guidance text contains a control character (U+001B)` |
 | `2` | Malformed pull request URL | `recipe guide: not a GitHub pull request URL: port is not allowed` |
 | `2` | Run inside a recipe run without `--from-step` | `recipe guide: refusing to add guidance from inside a recipe run (AMPLIHACK_RECIPE_RUN_ID is set); an agent step that means to add an entry must pass --from-step, and the entry is then shown as coming from an agent step` |
 
@@ -613,7 +668,9 @@ Every failure prints one line and writes nothing.
   pull request URL reaches every drive or round started with that pull
   request in its context, including relaunches. A drive still in its first
   build step was started without a pull request, so it does not read that
-  folder. Use the drive's run ID or session name instead.
+  folder, even after it opens the pull request. The command prints a second
+  line saying so (see [Output and exit codes](#output-and-exit-codes)). Use
+  the drive's run ID or session name instead.
 - **Large Claude prompts.** When a prompt is too large for one argument, the
   launcher passes a short preview with `-p` and the rest in a system prompt
   file. The block follows the preview on stdin; the system prompt file is not
@@ -621,10 +678,10 @@ Every failure prints one line and writes nothing.
 - **No removal.** Entries cannot be edited or deleted through the command.
 - **Who can add guidance.** Any process running as your user can add
   guidance to your runs. There is no other check.
-- **Where the text goes.** Text given as an argument appears in `ps` output
-  and shell history; use stdin for anything sensitive. Guidance is sent to
-  the model provider and is kept in the agent CLI's transcripts. Do not put
-  secrets in it.
+- **Where the text goes.** The command takes the text only from stdin or a
+  file, so it does not appear in `ps` output or shell history. Guidance is
+  sent to the model provider and is kept in the agent CLI's transcripts. Do
+  not put secrets in it.
 
 ### Worked example: correcting a detached run
 
@@ -659,10 +716,16 @@ For an auto-drive, give the pull request URL so that a relaunch of the drive
 keeps the instruction:
 
 ```console
-$ amplihack recipe guide https://github.com/rysweet/amplihack-rs/pull/2535 \
-    "Do not change the CI workflow files in this pull request."
+$ amplihack recipe guide https://github.com/rysweet/amplihack-rs/pull/2535 - <<'EOF'
+Do not change the CI workflow files in this pull request.
+EOF
 guidance appended: /home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_2535/guidance/20261112T100241.007311204Z-49102-0.md (58 bytes, pr)
+written to /home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_2535/guidance; read by runs that started with this pull request in their context. For a run that created this pull request, address the run by its run ID instead.
 ```
+
+If the drive opened this pull request itself and is still running, also give
+the instruction to the drive's run ID or session name, as in the first
+example; the drive's current run does not read the pull request folder.
 
 ## amplihack recipe validate
 
@@ -776,7 +839,7 @@ See [Environment Variables](./environment-variables.md) for full details.
 | Code | Meaning |
 | --- | --- |
 | `0` | Command succeeded |
-| `2` | `recipe guide` only: usage error, such as empty, oversize or refused text, a malformed pull request URL, or a call inside a recipe run without `--from-step`. See [Output and exit codes](#output-and-exit-codes). |
+| `2` | `recipe guide` only: usage error, such as text given on the command line, both `-` and `--file`, empty, oversize or refused text, a malformed pull request URL, or a call inside a recipe run without `--from-step`. See [Output and exit codes](#output-and-exit-codes). |
 | `1` | Command failed, validation failed, recipe execution failed, runner missing, arguments were malformed, or a [removed context key](#removed-context-keys) was passed |
 | `75` | Nested run stopped because its parent `amplihack recipe run` exited. See [Nested runs and orphan stops](#nested-runs-and-orphan-stops). |
 | `128+n` | Run stopped by signal `n`, for example `130` for `SIGINT` and `143` for `SIGTERM` |

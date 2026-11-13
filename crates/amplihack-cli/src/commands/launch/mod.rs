@@ -699,16 +699,26 @@ fn run_launch_core(
             ),
             _ => None,
         };
-        // Issue #2535: the agent has started with the block; say so once
-        // (counts only) and record it in each guidance.log it came from.
-        if guidance_injected {
-            eprintln!("{}", guidance.notice());
-            guidance
-                .record_injection(&std::env::var("AMPLIHACK_RECIPE_RUN_ID").unwrap_or_default());
+        // Issue #2535: the agent has started with the block in its prompt;
+        // say so once (counts only) and record it in each guidance.log it
+        // came from. The Codex trailer goes after the caller's stdin, so it
+        // is only recorded below, once it is known to have been written.
+        if guidance_injected && !codex_trailer {
+            report_guidance_injection(&guidance);
         }
 
         // Wait for child or signal
         let exit_code = wait_for_child_or_signal(&mut child, &shutdown);
+        // PR #2567 M2: the writer sets its flag before it closes the child's
+        // stdin, and the child exits only after that EOF, so the flag is
+        // final here. It is read before the writer is joined or detached.
+        let trailer_delivered = codex_trailer
+            && stdin_writer
+                .as_ref()
+                .is_some_and(|writer| writer.delivered());
+        if trailer_delivered {
+            report_guidance_injection(&guidance);
+        }
         let written = match stdin_writer {
             // The child has exited. A forwarder still blocked on a caller
             // pipe that never closes has no reader left; it is detached.
@@ -1129,6 +1139,13 @@ fn validate_launch_prompt_delivery(tool: &str) -> Result<()> {
         )
     })?;
     Ok(())
+}
+
+/// Issue #2535: prints the counts-only notice that guidance reached the
+/// agent and records `guidance_injected` in each guidance.log it came from.
+fn report_guidance_injection(guidance: &crate::run_guidance::GuidanceForLaunch) {
+    eprintln!("{}", guidance.notice());
+    guidance.record_injection(&std::env::var("AMPLIHACK_RECIPE_RUN_ID").unwrap_or_default());
 }
 
 /// Issue #2535: where this launch puts the run's operator guidance.

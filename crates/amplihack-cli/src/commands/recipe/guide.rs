@@ -1,8 +1,13 @@
-//! Issue #2535: `amplihack recipe guide <TARGET> [TEXT|-]`.
+//! Issue #2535: `amplihack recipe guide <TARGET> [-] [--file <PATH>] [--from-step]`.
 //!
 //! Appends one operator instruction to a recipe run's guidance. Every later
 //! agent step of that run receives all entries, in order, after its own
 //! prompt (see [`crate::run_guidance`]).
+//!
+//! The text is read from stdin (no argument, or `-`) or from `--file <PATH>`,
+//! never from the command line (PR #2567, issue #2582): argv is visible to
+//! other processes and is copied into logs. Any other positional value is
+//! refused before anything else is checked, read or written.
 //!
 //! The target is resolved in this order; the first match wins:
 //!
@@ -18,9 +23,11 @@
 //! does not add guidance by accident. Entries it adds with the flag carry
 //! ` run=<id>` in their caller field and are shown under their own preamble.
 //!
-//! Exit codes: 0 appended; 1 target not found or a folder fails a check;
-//! 2 usage (empty, oversize, invalid UTF-8 or refused text, malformed URL,
-//! called inside a run without `--from-step`).
+//! Exit codes: 0 appended; 1 target not found, a folder fails a check, or
+//! the `--file` file cannot be read; 2 usage (text on the command line, `-`
+//! together with `--file`, a terminal on stdin, empty, oversize or invalid
+//! UTF-8 text, a delimiter or control character, malformed URL, called
+//! inside a run without `--from-step`).
 //! Every failure prints one line on stderr and writes nothing.
 
 use crate::command_error::exit_error;
@@ -33,7 +40,7 @@ use crate::run_guidance::{
     append_entry, caller_identity, check_text,
 };
 use anyhow::Result;
-use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::fs;
 use std::io::{ErrorKind, Read};
 use std::os::unix::fs::OpenOptionsExt;
@@ -44,15 +51,30 @@ const MAX_SESSION_LOG_SCAN: u64 = 64 * 1024;
 /// The longest pointer line accepted.
 const MAX_POINTER_LINE: usize = 4096;
 const LOG_POINTER_PREFIX: &str = "amplihack.recipe.log_pointer ";
+/// The most raw bytes read from stdin or a file: room for surrounding white
+/// space, which is trimmed before the entry limit applies.
+const READ_CAP: u64 = (MAX_GUIDANCE_ENTRY_BYTES + HEADER_ROOM) as u64;
+
+/// The refusal for text on the command line. It never includes the value.
+const POSITIONAL_REFUSAL: &str = "instruction text is not accepted on the command line; pipe it on stdin (or pass -) or use --file <path>";
+/// The refusal for `-` together with `--file`.
+const BOTH_SOURCES: &str = "give the text on stdin (-) or with --file <path>, not both";
+/// The refusal for a terminal on stdin with no `--file`.
+const TERMINAL_STDIN: &str = "no text given and stdin is a terminal; pipe the text on stdin (or pass -) or use --file <path>";
 
 /// Run `amplihack recipe guide`.
-pub fn run_guide(target: &str, text: Option<&OsStr>, from_step: bool) -> Result<()> {
-    match guide(target, text, from_step) {
+pub fn run_guide(
+    target: &str,
+    positional: &[OsString],
+    file: Option<&Path>,
+    from_step: bool,
+) -> Result<()> {
+    match guide(target, positional, file, from_step) {
         Ok(()) => Ok(()),
         Err(error) => {
             match &error {
                 // The documented limit message stands alone.
-                GuideError::Oversize(_) => eprintln!("{error}"),
+                GuideError::Oversize { .. } => eprintln!("{error}"),
                 _ => eprintln!("recipe guide: {error}"),
             }
             Err(exit_error(error.exit_code()))
@@ -60,19 +82,31 @@ pub fn run_guide(target: &str, text: Option<&OsStr>, from_step: bool) -> Result<
     }
 }
 
-fn guide(target: &str, text: Option<&OsStr>, from_step: bool) -> Result<(), GuideError> {
+fn guide(
+    target: &str,
+    positional: &[OsString],
+    file: Option<&Path>,
+    from_step: bool,
+) -> Result<(), GuideError> {
+    // A pure argv check, first: a refused call reads and writes nothing,
+    // including the per-PR folder `resolve_target` would create.
+    let dash = match positional {
+        [] => false,
+        [only] if only == "-" => true,
+        _ => return Err(GuideError::Usage(POSITIONAL_REFUSAL.to_string())),
+    };
+    if dash && file.is_some() {
+        return Err(GuideError::Usage(BOTH_SOURCES.to_string()));
+    }
     if !from_step && std::env::var_os("AMPLIHACK_RECIPE_RUN_ID").is_some_and(|v| !v.is_empty()) {
         return Err(GuideError::Usage(
             "refusing to add guidance from inside a recipe run (AMPLIHACK_RECIPE_RUN_ID is set); an agent step that means to add an entry must pass --from-step, and the entry is then shown as coming from an agent step"
                 .to_string(),
         ));
     }
-    let raw = match text {
-        Some(t) if t != "-" => t
-            .to_str()
-            .ok_or_else(|| GuideError::Usage("guidance text is not valid UTF-8".to_string()))?
-            .to_string(),
-        _ => read_stdin()?,
+    let raw = match file {
+        Some(path) => read_file(path)?,
+        None => read_stdin()?,
     };
     let text = check_text(&raw)?;
     let (dir, source) = resolve_target(target)?;
@@ -83,38 +117,85 @@ fn guide(target: &str, text: Option<&OsStr>, from_step: bool) -> Result<(), Guid
         appended.bytes,
         source.label()
     );
+    if source == Source::Pr {
+        // PR #2567 M1: a PR folder is read only by runs that were started
+        // with this pull request in their context; a drive that has not yet
+        // created its pull request never reads it.
+        println!(
+            "written to {}; read by runs that started with this pull request in their context. For a run that created this pull request, address the run by its run ID instead.",
+            dir.display()
+        );
+    }
     if let Some(error) = appended.log_error {
         eprintln!("recipe guide: warning: the entry was added but guidance.log was not: {error}");
     }
     Ok(())
 }
 
-/// The text on stdin, refusing a terminal and anything far over the limit.
-fn read_stdin() -> Result<String, GuideError> {
-    // SAFETY: isatty has no preconditions.
-    if unsafe { libc::isatty(libc::STDIN_FILENO) } == 1 {
-        return Err(GuideError::Usage(
-            "no text given and stdin is a terminal; pass TEXT or pipe the text on stdin"
-                .to_string(),
-        ));
-    }
-    // Room for surrounding white space, which is trimmed before the limit
-    // applies.
-    let cap = (MAX_GUIDANCE_ENTRY_BYTES + HEADER_ROOM) as u64;
-    let mut stdin = std::io::stdin().lock();
+/// How [`read_bounded`] reports input over [`READ_CAP`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Overflow {
+    /// Read the rest without keeping it and report the exact size (stdin).
+    Drain,
+    /// Report this size, taken from the open handle of a regular file.
+    Size(u64),
+    /// Stop one byte past the cap and report "more than" (a FIFO or device).
+    Stop,
+}
+
+/// Reads at most [`READ_CAP`] + 1 bytes of `src` and returns them as text,
+/// untrimmed. `what` names the source in I/O errors; no error ever holds any
+/// of the bytes read.
+fn read_bounded<R: Read>(
+    src: &mut R,
+    what: &str,
+    overflow: Overflow,
+) -> Result<String, GuideError> {
+    let io_error = |e: std::io::Error| GuideError::Io(format!("cannot read {what}: {e}"));
     let mut buf = Vec::new();
-    (&mut stdin)
-        .take(cap + 1)
+    (&mut *src)
+        .take(READ_CAP + 1)
         .read_to_end(&mut buf)
-        .map_err(|e| GuideError::Io(format!("cannot read stdin: {e}")))?;
-    if buf.len() as u64 > cap {
-        // Count the rest without keeping it, so the message gives the size.
-        let rest = std::io::copy(&mut stdin, &mut std::io::sink())
-            .map_err(|e| GuideError::Io(format!("cannot read stdin: {e}")))?;
-        return Err(GuideError::Oversize(buf.len() + rest as usize));
+        .map_err(io_error)?;
+    if buf.len() as u64 > READ_CAP {
+        let (size, exact) = match overflow {
+            Overflow::Drain => {
+                let rest = std::io::copy(src, &mut std::io::sink()).map_err(io_error)?;
+                (buf.len() as u64 + rest, true)
+            }
+            Overflow::Size(size) => (size, true),
+            Overflow::Stop => (buf.len() as u64, false),
+        };
+        return Err(GuideError::Oversize { size, exact });
     }
     String::from_utf8(buf)
         .map_err(|_| GuideError::Usage("guidance text is not valid UTF-8".to_string()))
+}
+
+/// The text on stdin, refusing a terminal.
+fn read_stdin() -> Result<String, GuideError> {
+    // SAFETY: isatty has no preconditions.
+    if unsafe { libc::isatty(libc::STDIN_FILENO) } == 1 {
+        return Err(GuideError::Usage(TERMINAL_STDIN.to_string()));
+    }
+    read_bounded(&mut std::io::stdin().lock(), "stdin", Overflow::Drain)
+}
+
+/// The text in `path`, opened once and read only through that handle. A
+/// symbolic link is followed with the caller's own permissions.
+fn read_file(path: &Path) -> Result<String, GuideError> {
+    let what = path.display().to_string();
+    let mut file =
+        fs::File::open(path).map_err(|e| GuideError::Io(format!("cannot read {what}: {e}")))?;
+    let meta = file
+        .metadata()
+        .map_err(|e| GuideError::Io(format!("cannot read {what}: {e}")))?;
+    let overflow = if meta.is_file() {
+        Overflow::Size(meta.len())
+    } else {
+        Overflow::Stop
+    };
+    read_bounded(&mut file, &what, overflow)
 }
 
 /// The guidance folder `target` names, and its kind.
@@ -264,4 +345,100 @@ fn session_run_id(log: &Path) -> Result<Option<String>, GuideError> {
         )));
     }
     Ok(Some(run_id.to_string()))
+}
+
+// PR #2567 B1 and S7: one bounded read for stdin and `--file`. Contract for
+// the private helper:
+//
+// - `enum Overflow { Drain, Size(u64), Stop }` says how oversize input is
+//   reported: `Drain` reads the rest to count it (stdin), `Size(n)` reports
+//   the size of a regular file taken from its open handle, and `Stop` stops
+//   one byte past the cap and reports "more than" (a FIFO or device);
+// - `read_bounded<R: Read>(src: &mut R, what: &str, overflow: Overflow)
+//   -> Result<String, GuideError>` reads at most cap + 1 bytes
+//   (`MAX_GUIDANCE_ENTRY_BYTES + HEADER_ROOM`), returns the text untrimmed,
+//   and never echoes any of it in an error.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+
+    const CAP: usize = MAX_GUIDANCE_ENTRY_BYTES + HEADER_ROOM;
+
+    #[test]
+    fn text_within_the_cap_is_returned_untrimmed() {
+        let mut src = io::Cursor::new(b"  keep the API\n".to_vec());
+        assert_eq!(
+            read_bounded(&mut src, "stdin", Overflow::Drain).unwrap(),
+            "  keep the API\n"
+        );
+        let exact = "x".repeat(CAP);
+        let mut src = io::Cursor::new(exact.clone().into_bytes());
+        assert_eq!(
+            read_bounded(&mut src, "stdin", Overflow::Stop).unwrap(),
+            exact
+        );
+    }
+
+    #[test]
+    fn stop_mode_ends_an_endless_source_with_the_at_least_message() {
+        // io::repeat never ends: only a read that stops at cap + 1 returns.
+        let e = read_bounded(&mut io::repeat(b'z'), "/dev/zero", Overflow::Stop).unwrap_err();
+        assert_eq!(e.exit_code(), 2);
+        assert_eq!(
+            e.to_string(),
+            "guidance entry is more than 51200 bytes; the limit is 51200 bytes"
+        );
+    }
+
+    #[test]
+    fn drain_mode_reports_the_exact_size_of_oversize_stdin() {
+        let mut src = io::Cursor::new(vec![b'z'; MAX_GUIDANCE_ENTRY_BYTES * 2]);
+        let e = read_bounded(&mut src, "stdin", Overflow::Drain).unwrap_err();
+        assert_eq!(e.exit_code(), 2);
+        assert_eq!(
+            e.to_string(),
+            "guidance entry is 102400 bytes; the limit is 51200 bytes"
+        );
+    }
+
+    #[test]
+    fn size_mode_reports_the_size_it_was_given_without_reading_the_rest() {
+        let mut src = io::Cursor::new(vec![b'z'; CAP + 10]);
+        let e = read_bounded(&mut src, "notes.md", Overflow::Size(204_800)).unwrap_err();
+        assert_eq!(e.exit_code(), 2);
+        assert_eq!(
+            e.to_string(),
+            "guidance entry is 204800 bytes; the limit is 51200 bytes"
+        );
+        assert_eq!(
+            src.position(),
+            (CAP + 1) as u64,
+            "nothing past cap + 1 is read"
+        );
+    }
+
+    #[test]
+    fn invalid_utf8_is_a_fixed_message_that_never_echoes_the_text() {
+        let mut src = io::Cursor::new([b"MARKER-2567-utf8 ".as_slice(), b"\xff\xfe"].concat());
+        let e = read_bounded(&mut src, "notes.md", Overflow::Stop).unwrap_err();
+        assert_eq!(e.exit_code(), 2);
+        assert_eq!(e.to_string(), "guidance text is not valid UTF-8");
+    }
+
+    #[test]
+    fn a_read_error_is_exit_1_and_names_the_source() {
+        struct Failing;
+        impl io::Read for Failing {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::from(io::ErrorKind::PermissionDenied))
+            }
+        }
+        let e = read_bounded(&mut Failing, "/srv/notes.md", Overflow::Stop).unwrap_err();
+        assert_eq!(e.exit_code(), 1);
+        assert!(
+            e.to_string().starts_with("cannot read /srv/notes.md: "),
+            "{e}"
+        );
+    }
 }

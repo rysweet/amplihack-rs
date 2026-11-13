@@ -787,8 +787,9 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
         RecipeCommands::Guide {
             target,
             text,
+            file,
             from_step,
-        } => recipe::guide::run_guide(&target, text.as_deref(), from_step),
+        } => recipe::guide::run_guide(&target, &text, file.as_deref(), from_step),
         RecipeCommands::Stop { target } => recipe::stop::run_stop(&target),
         RecipeCommands::DetachedChild { log, spec } => {
             let code = recipe::detach::run_detached_child(&spec, &log)?;

@@ -1,10 +1,10 @@
 //! Phrases that turn a reader into an orchestrator (issues #1333, #1336).
 //!
-//! One list, used in two places: the #1333 guard test keeps these phrases out
-//! of files every agent loads, and `recipe guide` (issue #2535) refuses
-//! operator text that holds one, so an operator-instructions block never tells
-//! a leaf step to start another orchestration. The guard test includes this
-//! file with `#[path]`; do not add a second copy.
+//! Test-only. The #1333 guard test keeps these phrases out of files every
+//! agent loads, and the `run_guidance` tests check that the generated
+//! operator-instructions preambles hold none of them. Operator text itself is
+//! not filtered (PR #2567). The guard test includes this file with `#[path]`;
+//! do not add a second copy.
 
 /// Instruction text that turns a reader into an orchestrator. Any of these in a
 /// file that every agent loads is a re-entry hazard, whatever the intent.

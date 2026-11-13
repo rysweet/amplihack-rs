@@ -452,14 +452,15 @@ when nothing matches.
 ### recipe guide
 
 ```
-amplihack recipe guide <TARGET> [TEXT | -]
+amplihack recipe guide <TARGET> [-] [--file <PATH>] [--from-step]
 ```
 
 Adds an instruction to a running recipe run. `<TARGET>` is a run ID, a
 detached session name, or a GitHub pull request URL for an auto-drive. The
-instruction is stored as one private file in the run's `guidance/` folder,
-and every agent step that starts afterwards receives it at the end of its
-prompt. See [amplihack recipe guide](./recipe-cli-reference.md#amplihack-recipe-guide)
+instruction is read from stdin, or from `--file <PATH>`; text given on the
+command line is refused with exit 2. It is stored as one private file in the
+run's `guidance/` folder, and every agent step that starts afterwards
+receives it at the end of its prompt. See [amplihack recipe guide](./recipe-cli-reference.md#amplihack-recipe-guide)
 for targets, storage, limits and exit codes.
 
 ### Run records

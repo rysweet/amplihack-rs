@@ -848,9 +848,7 @@ and 256 KiB of text.
 
 These checks start at the state folder and do not cover the folders above
 it. `AMPLIHACK_STATE_DIR` must not sit under a folder that other users can
-write to. The check that refuses phrases telling an agent to start an
-orchestration matches a fixed list of exact phrases; it only screens out
-such phrases added by accident and is not a security control.
+write to.
 
 `--detach`, `$(amplihack agent-binary --shell)` and the test isolation
 helpers remove the variable, so a new top-level run never reads another
