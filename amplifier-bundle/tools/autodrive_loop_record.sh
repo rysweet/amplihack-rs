@@ -18,7 +18,8 @@ VERDICT_SAFE="$(printf '%s' "$ROUND_VERDICT" | LC_ALL=C tr -cd 'A-Za-z0-9_')"; [
 # clean tokens; Crusty dispatch uses the original verdict and completion decision.
 EVAL_VERDICT="$VERDICT_SAFE"; [ "$ROUND_CLEAN" != "true" ] || EVAL_VERDICT="$TOKEN_SAFE"
 FINDINGS=""
-[ -f "${RECORD}.findings" ] && FINDINGS="$(cat "${RECORD}.findings")"
+# A non-newline sentinel preserves trailing newlines through command substitution (#2222).
+if [ -f "${RECORD}.findings" ]; then FINDINGS="$(cat -- "${RECORD}.findings" && printf x)" || { echo "ERROR: cannot read ${RECORD}.findings" >&2; exit 2; }; FINDINGS="${FINDINGS%x}"; fi
 # Stable path to the latest round record, so a later gate binds evidence to the round that made it.
 copy_private "$RECORD" "${STATE_DIR}/${LOOP_NAME}-latest.json"
 copy_private "${RECORD}.findings" "${STATE_DIR}/${LOOP_NAME}-latest.json.findings"

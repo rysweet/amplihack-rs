@@ -37,20 +37,17 @@ tags: ["loop", "convergence", "evaluation", "verdict", "agentic", "issue-1337"]
 # so every step-output read below uses that name alone (#1561); a bare name
 # would be inherited from whatever launched the runner, never this run's output.
 #
-# No step here declares a timeout: per issue #439 the recipe runner owns the
-# ceiling, so no step has a seconds-scale or single-digit-minute bound.
+# No step here declares a timeout: per issue #439 the recipe runner owns the ceiling, so no step has a seconds-scale or single-digit-minute bound.
 
 recursion:
   max_depth: 6
   max_total_steps: 20
 
 context:
-  # Identity / reporting only. `loop_round_label` is a LABEL in the escalation
-  # report: never compared against a limit, and nothing here branches on it.
+  # Identity / reporting only. `loop_round_label` is a LABEL in the escalation report: never compared against a limit, and nothing here branches on it.
   loop_name: "unnamed-loop"
   loop_round_label: ""
-  # Accumulated structured verdicts from every round so far (concatenated JSON
-  # records, newest last) and the raw output of the round just finished.
+  # Accumulated structured verdicts from every round so far (concatenated JSON records, newest last) and the raw output of the round just finished.
   loop_history: ""
   loop_last_round_output: ""
   # Machine-checkable progress evidence.
@@ -111,8 +108,14 @@ steps:
 
       Do not create, edit, move, rename, delete or archive any file in the
       auto-drive state directory (the directory holding crusty-round-*.json,
-      merge-ready-round-*.json and phases.tsv).
-
+      merge-ready-round-*.json and phases.tsv). You need none of the auto-drive state files (crusty-round-*.json,
+      merge-ready-round-*.json, phases.tsv); everything you need is in this prompt. If something you expect is absent, report it by name.
+      No state-file discovery is required.
+      The PR worktree is `{{loop_repo_path}}` and the main checkout is `{{loop_agent_working_dir}}`.
+      Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `du`) from /, ~ or any directory outside the PR worktree and the main checkout named above. Every path you need is given here.
+      If a named file is missing, report it by name and do not search for it.
+      Write scratch files only under `$TMPDIR` (`mktemp -d "${TMPDIR:-/tmp}/autodrive.XXXXXX"`), never loose in /tmp, and remove them by
+      their literal path before the step ends.
       ## Measured evidence (computed, not summarised)
 
       ```json
@@ -221,8 +224,7 @@ steps:
       set -uo pipefail
       RAW="${RECIPE_VAR_loop_health_assessment:-}"
       EV="${RECIPE_VAR_loop_evidence:-}"
-      # Caller and evidence text reaches the JSON and the messages only after
-      # jsafe: quotes, backslashes and control bytes are deleted, never escaped.
+      # Caller and evidence text reaches the JSON and the messages only after jsafe: quotes, backslashes and control bytes are deleted, never escaped.
       jsafe() { LC_ALL=C tr -d '"\\[:cntrl:]'; }
       NAME="$(printf '%s' "${LOOP_NAME:-}" | jsafe)"; NAME="${NAME:-unnamed-loop}"
       LABEL="$(printf '%s' "${LOOP_ROUND_LABEL:-?}" | jsafe)"
@@ -319,8 +321,7 @@ steps:
              VERDICT="STUCK"; SOURCE="unparseable_verdict" ;;
         esac
       fi
-      # Re-serialise not_converging twice: only compact array text survives a
-      # round trip unchanged, so a value splicing in a second key becomes [].
+      # Re-serialise not_converging twice: only compact array text survives a round trip unchanged, so a value splicing in a second key becomes [].
       nc_rt() {
         printf '{"nc":%s}' "$1" \
           | amplihack orch helper extract-json \
@@ -359,8 +360,7 @@ steps:
       SOURCE=$(printf '%s' "$HEALTH_JSON" \
         | amplihack orch helper extract-field --field verdict_source --default unknown | jsafe)
 
-      # CONTINUE/DONE print exactly ONE stdout line, the marker autodrive_loop.sh
-      # reads (#1512). STUCK reports on stderr only.
+      # CONTINUE/DONE print exactly ONE stdout line, the marker autodrive_loop.sh reads (#1512). STUCK reports on stderr only.
       case "$VERDICT" in
         CONTINUE)
           echo "LOOP_HEALTH: CONTINUE — another round of '${NAME}' is judged worth spending."

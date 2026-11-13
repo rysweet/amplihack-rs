@@ -31,6 +31,7 @@ Crusty review completion follows the [Crusty completion contract](autodrive-crus
 - [Eligibility rules](#eligibility-rules)
 - [Escalation to auto-drive-to-merge](#escalation-to-auto-drive-to-merge)
 - [Minor findings and follow-up issues](#minor-findings-and-follow-up-issues)
+- [Agent paths and state access](#agent-paths-and-state-access)
 - [State and reporting](#state-and-reporting)
 
 ## Configuration
@@ -142,6 +143,25 @@ Normalize issue references to `#N` without leading zeros. The light
 
 Follow-up creation or parent-comment failure blocks readiness. Dry-run creates
 no follow-ups and reports missing obligations. Escalation does not change them.
+
+## Agent paths and state access
+
+Each agent step (`light-implement`, `light-qa`, `light-open-pr`,
+`light-resolve-pr` and `light-check-unmerged`) says that it needs none of the
+auto-drive state files (`crusty-round-*.json`, `merge-ready-round-*.json`,
+`phases.tsv`) and that no state-file discovery is required (#2222). It names
+the PR worktree and the main checkout by absolute path: from
+`worktree_setup.worktree_path` and `light_prereqs.main_checkout`, or from
+`build_result` for `light-check-unmerged`. `light-resolve-pr` names the main
+checkout and resolves the PR worktree itself. `light-prereqs` resolves the
+main checkout with `autodrive_worktree_guard.sh review-dir`, so it is correct
+even when the caller's `repo_path` is a linked worktree.
+
+Each prompt also carries the exact
+[shared search restriction](auto-drive-to-merge.md#agent-prompt-paths-2222)
+on its own line, the instruction to report a missing file by name without
+searching, and the `$TMPDIR` scratch rule. This is prompt guidance, not a
+filesystem sandbox.
 
 ## State and reporting
 

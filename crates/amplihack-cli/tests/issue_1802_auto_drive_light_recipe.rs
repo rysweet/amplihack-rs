@@ -624,6 +624,7 @@ fn crusty_round_has_no_light_branch_in_any_step() {
         ids,
         [
             "step-00-review-dir-guard",
+            "step-00b-round-paths",
             "step-01-round-context",
             "step-02-crusty-review",
             "step-02b-review-dir-unchanged",
@@ -671,10 +672,19 @@ fn crusty_round_has_no_light_branch_in_any_step() {
         !s6.contains("SUFFIX"),
         "#1982: the record has no light suffix"
     );
+    // #2222 adds a driver-owned state directory for every round. The
+    // shared round must still have no context specific to the light lane.
+    let context = round["context"].as_mapping().unwrap();
+    assert!(
+        context
+            .keys()
+            .all(|key| !key.as_str().unwrap().contains("light")),
+        "autodrive-crusty-round must not gain light-specific context"
+    );
     assert_eq!(
-        round["context"].as_mapping().unwrap().len(),
-        13,
-        "completion state, shared authorization and dry-run context reach the crusty round"
+        context.len(),
+        14,
+        "completion state, shared authorization and dry-run context (#2336, #2340) and the #2222 state directory reach the crusty round"
     );
 }
 

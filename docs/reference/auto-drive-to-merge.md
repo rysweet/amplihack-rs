@@ -34,6 +34,7 @@ alternatives within the existing loop-health and budget rules.
 - [Readiness and finalization](#readiness-and-finalization)
 - [Loop health and budgets](#loop-health-and-budgets)
 - [Resumability](#resumability)
+  - [Agent prompt paths (#2222)](#agent-prompt-paths-2222)
 - [Trusted execution and portability](#trusted-execution-and-portability)
 - [Target compatibility matrix](#target-compatibility-matrix)
 
@@ -489,6 +490,79 @@ shared across drives only when each drive passes the same explicit absolute
 `autodrive_state_dir`. Records stay bound to the `run_id` that produced them,
 so a shared directory cannot replay an earlier run's finalisation
 observations or completion receipt into a merge-ready result.
+
+### Agent prompt paths (#2222)
+
+Every agent step in `autodrive-crusty-round.yaml`, `autodrive-merge-round.yaml`,
+`loop-health-evaluator.yaml` and `auto-drive-light.yaml` names, by absolute
+path, the files it needs, or says that it needs no auto-drive state files.
+Each agent sees only its own prompt, so each prompt carries its own block.
+Every one also carries this sentence as an exact line:
+
+> Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `du`) from /, ~ or any directory outside the PR worktree and the main checkout named above. Every path you need is given here.
+
+and the instructions to report a missing named file by name without
+searching for it, and to write scratch files only under `$TMPDIR`
+(`mktemp -d "${TMPDIR:-/tmp}/autodrive.XXXXXX"`), removing them by their
+literal path. These are prompt instructions, not a filesystem sandbox.
+
+| Recipe | Agent step | What the prompt names |
+| --- | --- | --- |
+| crusty round | `step-01-round-context` | State directory, both checkouts, the resolved-concerns file (may be absent) |
+| crusty round | `step-02-crusty-review`, `step-04-address-concerns` | State directory, both checkouts, round record (may not exist yet), resolved-concerns file, `merge-ready/SKILL.md`, the `auto-drive-to-merge` skill folder |
+| crusty round | `step-07-select-next-action` | State directory, both checkouts, round record and its `.findings`, `.minor` and `.severity` sidecars, completion state |
+| merge round | `step-01-platform-facts` | State directory and both checkouts; it needs no file in either |
+| merge round | `step-01b-crusty-evidence` | State directory, both checkouts, the trusted `autodrive_round_evidence.sh` that reads the crusty records there |
+| merge round | `step-02-merge-ready-assessment`, `step-04-address-blockers` | State directory, both checkouts, round record, `merge-ready/SKILL.md`, the `auto-drive-to-merge` skill folder; the assessment also gets the template |
+| loop-health evaluator | `step-02-evaluate-loop-health` | Both checkouts; no state files and no discovery |
+| auto-drive-light | `light-implement`, `light-qa`, `light-open-pr`, `light-resolve-pr`, `light-check-unmerged` | Both checkouts (for `light-resolve-pr`, the main checkout and the worktree it resolves); no state files and no discovery |
+
+**Skill paths.** The crusty round's deterministic `step-00b-round-paths`
+resolves `merge-ready/SKILL.md` and the `auto-drive-to-merge` folder from the
+launcher's install (`{{autodrive_launch_tools}}/../skills`) with `pwd -P`,
+never from the checkout, and publishes them as `crusty_round_paths`. It fails
+with `crusty-skill-path-not-found` (launch tools empty or a skill missing) or
+`crusty-skill-path-unusable` (a path holding `"`, `\`, a control byte, `{{` or
+`}}`). The merge round's `autodrive_merge_ready_files.sh` adds
+`auto_drive_skill_dir`, the `auto-drive-to-merge` folder beside the chosen
+`merge-ready` folder under the runner-pinned `AMPLIHACK_HOME`; it fails with
+`auto-drive-skill-dir-not-found` or `auto-drive-skill-dir-unusable`, and no
+other directory is used.
+
+**Earlier findings.** Step-01 is an agent since #2340 and verifies the PR
+head. The resolved concerns the step-02 prompt shows come from
+`crusty_round_paths.resolved_concerns`, which `step-00b-round-paths` reads
+from the resolved-concerns file byte for byte with `jq --rawfile`, not from
+the agent's copy. They sit inside a `~` fence one longer than the longest
+`~` run in them (at least four), so no line of the findings closes the fence.
+When `jq` fails the step exits `1` with
+`crusty-context-serialization-failed`, publishes nothing and does not echo
+the findings.
+
+**Which directory is the state directory.** There is one owner. The runner
+binds `autodrive_state_dir` ([state directory](#state-directory)); the loop
+preflight takes that path as `state_dir` and passes it to
+`autodrive_loop.sh --state-dir`. The driver validates it with
+`autodrive_private_dir`, so a symlinked state directory is still refused, and
+only then resolves it with `cd -- … && pwd -P` (after `unset CDPATH`). It
+passes the result to each round as `autodrive_record_directory`, together with
+`autodrive_round_record` and `autodrive_resolved_concerns_file` derived from
+it. `autodrive_record_directory` is a label for the prompts: the driver does
+not choose, create or move the directory, and the runner's lexical
+`autodrive_state_dir` binding and the reducer's check are unchanged. The
+resolved path names the same directory; it differs in spelling only when a
+parent of the bound path is a symlink. The driver passes these keys, and
+`repo_path`, after the caller's `--context` values, so a caller cannot replace
+them; `review_dir`, `autodrive_launch_tools` and `autodrive_completion_state`
+are refused at parse time.
+
+`crates/amplihack-cli/tests/issue_2222_prompt_paths.rs` renders every agent
+prompt with the pinned production `RecipeContext::render`, finds the agent
+steps from the YAML so a new one without coverage fails, runs the real
+`step-00b-round-paths`, resolver and driver as subprocesses, and checks the
+paths, the exact restriction line, the fence and the caller-context rules.
+`tests/gadugi/run-autodrive-merge-ready-files-scenario.sh` covers the
+resolver's `auto_drive_skill_dir` and its missing-sibling stop.
 
 ## Trusted execution and portability
 

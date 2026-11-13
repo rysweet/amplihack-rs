@@ -41,11 +41,15 @@ fail=0
 pass() { echo "PASS: $1 — $2"; }
 fl() { echo "FAIL: $1 — $2"; fail=1; }
 
-install_skill() { # install_skill <root> [no-template]
+install_skill() { # install_skill <root> [no-template|no-auto-drive]: also the sibling auto-drive-to-merge/SKILL.md (#2222)
   local d="$1/amplifier-bundle/skills/merge-ready"
   mkdir -p "$d"
   printf -- '---\nname: merge-ready\ndisable-model-invocation: true\n---\n# merge-ready\n' > "$d/SKILL.md"
   [ "${2:-}" = "no-template" ] || printf '# PR description template\n' > "$d/pr-description-template.md"
+  if [ "${2:-}" != "no-auto-drive" ]; then
+    mkdir -p "$1/amplifier-bundle/skills/auto-drive-to-merge"
+    printf -- '---\nname: auto-drive-to-merge\n---\n' > "$1/amplifier-bundle/skills/auto-drive-to-merge/SKILL.md"
+  fi
 }
 
 # 1. The resolver finds SKILL.md and its template in one install.
@@ -55,8 +59,10 @@ OUT="$(cd "$WORK/plain" && env -i HOME="$WORK/home" PATH="$SYS_PATH" AMPLIHACK_H
 WANT="$WORK/ah/amplifier-bundle/skills/merge-ready"
 if [ "$RC" -eq 0 ] && [ "$(printf '%s' "$OUT" | jq -r .skill_md)" = "$WANT/SKILL.md" ] \
    && [ "$(printf '%s' "$OUT" | jq -r .template)" = "$WANT/pr-description-template.md" ] \
-   && [ "$(printf '%s' "$OUT" | jq -r .skill_md_sha)" = "$(git hash-object --no-filters "$WANT/SKILL.md")" ]; then
-  pass merge_ready_files_resolved "the skill's SKILL.md and template are found in one install, with the SKILL.md hash"
+   && [ "$(printf '%s' "$OUT" | jq -r .skill_md_sha)" = "$(git hash-object --no-filters "$WANT/SKILL.md")" ] \
+   && [ "$(printf '%s' "$OUT" | jq -r .auto_drive_skill_dir)" = "$WORK/ah/amplifier-bundle/skills/auto-drive-to-merge" ] \
+   && printf '%s' "$OUT" | jq -e 'keys == ["auto_drive_skill_dir","skill_dir","skill_md","skill_md_sha","template"]' >/dev/null; then
+  pass merge_ready_files_resolved "the skill's SKILL.md, template and sibling auto-drive-to-merge folder are found in one install, with the SKILL.md hash"
 else
   fl merge_ready_files_resolved "rc=$RC out=$OUT err=$(tr '\n' ' ' < "$WORK/err1")"
 fi
@@ -71,6 +77,19 @@ if [ "$RC" -ne 0 ] && [ -z "$OUT" ] && grep -qF 'ERROR: merge-ready-template-not
   pass merge_ready_template_never_mixed "a SKILL.md without its template fails by name instead of mixing installs"
 else
   fl merge_ready_template_never_mixed "rc=$RC out=$OUT err=$(tr '\n' ' ' < "$WORK/err2")"
+fi
+
+# 2b. Issue #2222: the auto-drive-to-merge folder is the sibling of the chosen
+#     merge-ready folder and nothing else. Without it the resolver stops by
+#     name, even though another install has the pair.
+install_skill "$WORK/ah3" no-auto-drive
+OUT="$(cd "$WORK/plain" && env -i HOME="$WORK/home" PATH="$SYS_PATH" AMPLIHACK_HOME="$WORK/ah3" REPO_PATH="$WORK/plain" \
+  bash "$RESOLVER" 2>"$WORK/err2b")"; RC=$?
+if [ "$RC" -ne 0 ] && [ -z "$OUT" ] \
+   && grep -qF "ERROR: auto-drive-skill-dir-not-found: $WORK/ah3/amplifier-bundle/skills/merge-ready/../auto-drive-to-merge/SKILL.md" "$WORK/err2b"; then
+  pass auto_drive_skill_sibling_required "a merge-ready install without a sibling auto-drive-to-merge fails by name; no other install is used (#2222)"
+else
+  fl auto_drive_skill_sibling_required "rc=$RC out=$OUT err=$(tr '\n' ' ' < "$WORK/err2b")"
 fi
 
 # 3. No install at all fails by name, listing what was searched.

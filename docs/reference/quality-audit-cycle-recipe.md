@@ -125,9 +125,14 @@ votes from it. Raw output preserved at:
 
 The raw artifact is written to
 `${output_dir}/cycle_${cycle_number}/validator_vN_raw.txt`. The cycle directory
-is created with mode `700` and the artifact file with mode `600`; if
-`${output_dir}` is not writable the step falls back to `/tmp` (also `600`) and
-the warning still names the fallback path. Artifact paths are built only from
+is created with mode `700` and the artifact file with mode `600`. The default
+`output_dir` is `./eval_results/quality_audit`, and an explicit `output_dir`
+always wins. Only when the caller sets `output_dir` to an empty string does the
+step fall back to `${TMPDIR:-/tmp}/cycle_${cycle_number}`. If the cycle
+directory cannot be created, the artifact is written beside the raw validator
+output instead (also `600`). If the copy itself fails, the warning names the
+original raw validator file, which is kept as it is; its mode is not changed.
+The warning always names the path where the raw output can be found. Artifact paths are built only from
 trusted context variables (`output_dir`, `cycle_number`) and the fixed labels
 `v1`/`v2`/`v3` — never from validator content — so a validator cannot influence
 where its raw output is written.
