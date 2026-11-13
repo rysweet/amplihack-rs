@@ -13,18 +13,24 @@
 //! the temp dir only; no test reads, prints or asserts on their contents,
 //! runs `claude` or touches a real home.
 
-use super::cycle::{Ctx, CycleOutcome, MeasureFn, Mode, run_cycle};
+use super::cycle::{Ctx, MeasureFn};
+#[cfg(target_os = "linux")]
+use super::cycle::{CycleOutcome, Mode, run_cycle};
 use super::decide::{Decision, Probed, Reading, Windows};
+#[cfg(target_os = "linux")]
 use super::log::msg;
 use super::observe::{Measurement, Snap, decide_measured, snapshot};
 use super::settings;
-use super::tests_swap::{CREDS, Env, env, ino_at, login, n, private};
+#[cfg(target_os = "linux")]
+use super::tests_swap::ino_at;
+use super::tests_swap::{CREDS, Env, env, login, n, private};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Liveness, State, now};
 use crate::commands::profile::name::ProfileName;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
+#[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 // --- Fixture ---------------------------------------------------------------
@@ -123,6 +129,7 @@ pub(super) fn assert_candidate(snap: &Snap, name: &str) {
 /// `work` is spent; `spare` has room; `third` is spent and then parked by
 /// auto-switch while the cycle measures. Nothing about `work` or `spare`
 /// changed.
+#[cfg(target_os = "linux")]
 fn park_third_while_measuring(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     assert_candidate(snap, "spare");
     assert_candidate(snap, "third");
@@ -154,8 +161,10 @@ fn issue_1721_an_unrelated_profile_parked_during_measurement_does_not_stop_the_s
 
 // --- Test 1b: a session starts in an unrelated profile ----------------------
 
+#[cfg(target_os = "linux")]
 static THIRD_SESSION_1B: AtomicBool = AtomicBool::new(false);
 
+#[cfg(target_os = "linux")]
 fn scan_1b(_: &Path) -> Liveness {
     let mut live = BTreeSet::new();
     if THIRD_SESSION_1B.load(Ordering::SeqCst) {
@@ -164,6 +173,7 @@ fn scan_1b(_: &Path) -> Liveness {
     Liveness::Known(live)
 }
 
+#[cfg(target_os = "linux")]
 fn session_in_third_while_measuring(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     assert_candidate(snap, "third");
     let at = now();

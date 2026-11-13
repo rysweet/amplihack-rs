@@ -140,6 +140,7 @@ mod tests_verify_cmd;
 use anyhow::Result;
 /// For `amplihack sessions` (issue #1746): the live check and profile root.
 #[cfg(unix)]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) use auto_switch::claude_config_dirs;
 /// File helpers shared with the usage-limit wait (#1618).
 #[cfg(unix)]

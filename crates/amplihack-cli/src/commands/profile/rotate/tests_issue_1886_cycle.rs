@@ -20,24 +20,35 @@
 //! process variable or touches the real home.
 
 use super::cred_identity::read_with;
-use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
+#[cfg(target_os = "linux")]
+use super::cycle::Ctx;
+#[cfg(target_os = "linux")]
+use super::cycle::{CycleOutcome, Mode, run_cycle};
+#[cfg(target_os = "linux")]
 use super::decide::{Decision, Reading};
 use super::hand_fields::{HandSuspect, SWAP_GRACE};
 use super::handfix::{Env as Seam, Step, preview, step_with};
 use super::handfix_msg as msg;
 use super::handfix_plan::{Input, Plan, plan};
 use super::identify::Account;
+#[cfg(target_os = "linux")]
 use super::identify::LiveId;
 use super::ledger::{RotateLedger, RotateState};
-use super::log::{Sink, msg as log_msg, open_or_warn};
+#[cfg(target_os = "linux")]
+use super::log::msg as log_msg;
+use super::log::{Sink, open_or_warn};
+#[cfg(target_os = "linux")]
 use super::observe::{Measurement, Snap};
+#[cfg(target_os = "linux")]
 use super::settings;
 use super::tests_handfix::seam;
 use super::tests_issue_1886::{
     K, L, M, creds_doc, endpoints, fake_by_token, fake_token, profile_body, server,
 };
 use super::tests_swap::{ino_at, n, private};
+#[cfg(target_os = "linux")]
 use crate::commands::profile::ProfileError;
+#[cfg(target_os = "linux")]
 use crate::commands::profile::auto_switch::kit::{Liveness, now};
 use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::tests_fake_http::Reply;
@@ -1002,15 +1013,18 @@ thread_local! {
     static READINGS: RefCell<HashMap<PathBuf, Answer>> = RefCell::default();
 }
 
+#[cfg(target_os = "linux")]
 fn by_path(p: &Path) -> Answer {
     let p = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
     READINGS.with(|r| r.borrow().get(&p).cloned().unwrap_or(Err(reason::NO_FILE)))
 }
 
+#[cfg(target_os = "linux")]
 fn set_reading(p: PathBuf, a: Answer) {
     READINGS.with(|r| r.borrow_mut().insert(p, a));
 }
 
+#[cfg(target_os = "linux")]
 fn ctx(f: &Fx, measure: super::cycle::MeasureFn) -> Ctx {
     let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
     let mut ctx = Ctx::new(f.store.clone(), f.home.clone(), s);
@@ -1020,10 +1034,12 @@ fn ctx(f: &Fx, measure: super::cycle::MeasureFn) -> Ctx {
     ctx
 }
 
+#[cfg(target_os = "linux")]
 fn never(_: &Ctx, _: &Snap) -> Result<Measurement, ProfileError> {
     panic!("this cycle must end before measuring")
 }
 
+#[cfg(target_os = "linux")]
 fn stay_on_h(_: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     assert_eq!(snap.live, LiveId::Known(n(H)), "the ledger's live profile");
     Ok(Measurement {

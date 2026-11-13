@@ -22,6 +22,7 @@ mod tests_gate_record;
 #[path = "tests_identity_limits.rs"]
 mod tests_identity_limits;
 #[path = "tests_issue_1886_collide.rs"]
+#[cfg(target_os = "linux")]
 mod tests_issue_1886_collide;
 #[path = "tests_issue_1947.rs"]
 mod tests_issue_1947;

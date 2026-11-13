@@ -14,9 +14,12 @@
 //! the whole filesystem, read and write, with the same user id: this is
 //! not containment and not a security boundary.
 
+#[cfg(any(target_os = "linux", test))]
 use std::ffi::OsStr;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(target_os = "linux", test))]
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,6 +31,7 @@ pub(super) const NO_PERSIST: &str = "--no-session-persistence";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ProbeSandbox {
     /// The absolute path of a `bwrap` that ran the check successfully.
+    #[cfg(any(target_os = "linux", test))]
     Bwrap(PathBuf),
     Unavailable(Unavailable),
 }
@@ -38,6 +42,7 @@ pub(super) enum Unavailable {
     /// No `bwrap` on `PATH`, or not Linux.
     NotFound,
     /// `bwrap` failed to start or its check exited non-zero.
+    #[cfg(any(target_os = "linux", test))]
     Refused,
     /// Unit tests: the host's `bwrap` is never run, and nothing is noted.
     /// Only `detected()` under `cfg(test)` gives it.
@@ -49,7 +54,9 @@ pub(super) enum Unavailable {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Fallback {
     NotFound,
+    #[cfg(any(target_os = "linux", test))]
     Refused,
+    #[cfg(any(target_os = "linux", test))]
     ProjectsUnresolved,
 }
 
@@ -58,7 +65,9 @@ impl Fallback {
     pub(super) fn reason(self) -> &'static str {
         match self {
             Self::NotFound => "bwrap not found",
+            #[cfg(any(target_os = "linux", test))]
             Self::Refused => "bwrap refused",
+            #[cfg(any(target_os = "linux", test))]
             Self::ProjectsUnresolved => "projects folder not resolved",
         }
     }
@@ -157,6 +166,7 @@ fn find_on_path(path: Option<&OsStr>) -> Option<PathBuf> {
 /// `projects` folder. Returns `cmd` unchanged, with the reason, when it
 /// cannot. Pure: creates nothing and never changes this process's
 /// environment.
+#[cfg(any(target_os = "linux", test))]
 pub(super) fn wrap(
     cmd: Command,
     sandbox: &ProbeSandbox,
@@ -205,6 +215,7 @@ pub(super) fn wrap(
 /// The config dir the probe's `claude` will use: `CLAUDE_CONFIG_DIR` as set
 /// on `cmd`; `<home>/.claude` if `cmd` removes it; else this process's
 /// value, or `<home>/.claude`.
+#[cfg(any(target_os = "linux", test))]
 fn config_dir(cmd: &Command, home: &Path) -> PathBuf {
     let on_cmd = cmd
         .get_envs()
@@ -223,6 +234,7 @@ fn config_dir(cmd: &Command, home: &Path) -> PathBuf {
 /// `<config>/projects` with every link resolved, when it is an existing
 /// absolute directory other than `/` or any folder containing `home` or the
 /// config dir (hiding those would hide the credentials, not just the logs).
+#[cfg(any(target_os = "linux", test))]
 fn hidden_folder(cmd: &Command, home: &Path) -> Option<PathBuf> {
     let config = config_dir(cmd, home);
     if !config.is_absolute() {
@@ -234,4 +246,18 @@ fn hidden_folder(cmd: &Command, home: &Path) -> Option<PathBuf> {
     let inside = |p: &Path| std::fs::canonicalize(p).is_ok_and(|c| c.starts_with(&canon));
     let refused = !canon.is_dir() || canon == Path::new("/") || inside(home) || inside(&config);
     (!refused).then_some(canon)
+}
+
+/// Other platforms cannot use bubblewrap; keep the command as supplied.
+#[cfg(not(any(target_os = "linux", test)))]
+pub(super) fn wrap(
+    cmd: Command,
+    sandbox: &ProbeSandbox,
+    _home: &Path,
+) -> (Command, Option<Fallback>) {
+    let fallback = match sandbox {
+        ProbeSandbox::Unavailable(Unavailable::Test) => None,
+        ProbeSandbox::Unavailable(Unavailable::NotFound) => Some(Fallback::NotFound),
+    };
+    (cmd, fallback)
 }

@@ -1088,9 +1088,14 @@ fn credential_named_files_at_any_depth_stay_in_the_backup() {
     f.legacy("A", "projects/.credentials.json", b"SECRET-1");
     f.legacy("A", "projects/-w/.credentials.json.bak", b"SECRET-2");
     f.legacy("A", "projects/-w/deep/.claude.json", b"SECRET-3");
+    #[cfg(not(target_os = "macos"))]
     let raw = OsStr::from_bytes(b".credentials\xff\xfe");
-    let non_utf8 = f.dir("A").join("projects/-w").join(raw);
-    fs::write(&non_utf8, b"SECRET-4").unwrap();
+    // APFS rejects invalid UTF-8 names; still exercise a non-ASCII credential
+    // filename there without dropping any migration or backup assertions.
+    #[cfg(target_os = "macos")]
+    let raw = OsStr::new(".credentials-備份");
+    let credential = f.dir("A").join("projects/-w").join(raw);
+    fs::write(&credential, b"SECRET-4").unwrap();
 
     let r = f.ensure("A", Mode::Migrate);
 

@@ -148,19 +148,21 @@ mod tests_autostart;
 mod tests_daemon;
 #[cfg(all(test, unix))]
 mod tests_handfix;
-#[cfg(all(test, unix))]
+// These cycle suites already gate every test on Linux; their fixtures belong
+// under the same gate. Mixed-platform suites below keep their portable tests.
+#[cfg(all(test, target_os = "linux"))]
 mod tests_handfix_cycle;
-#[cfg(all(test, unix))]
+#[cfg(all(test, target_os = "linux"))]
 mod tests_handfix_overflow;
-#[cfg(all(test, unix))]
+#[cfg(all(test, target_os = "linux"))]
 mod tests_home_unreadable;
 #[cfg(all(test, unix))]
 mod tests_identify;
 #[cfg(all(test, unix))]
 mod tests_issue_1804;
-#[cfg(all(test, unix))]
+#[cfg(all(test, target_os = "linux"))]
 mod tests_issue_1804_cycle;
-#[cfg(all(test, unix))]
+#[cfg(all(test, target_os = "linux"))]
 mod tests_issue_1845_cycle;
 #[cfg(all(test, unix))]
 mod tests_issue_1845_swap;
@@ -186,7 +188,7 @@ mod tests_pin;
 mod tests_pin_overflow;
 #[cfg(all(test, unix))]
 mod tests_recover;
-#[cfg(all(test, unix))]
+#[cfg(all(test, target_os = "linux"))]
 mod tests_revalidate;
 #[cfg(all(test, unix))]
 mod tests_revalidate_cause;
