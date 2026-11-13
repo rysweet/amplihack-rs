@@ -1,7 +1,7 @@
 ---
 title: Auto-drive QA Selection
 description: QA command precedence, repository detection, scenario obligations, and evidence for the workflow.
-last_updated: 2026-11-11
+last_updated: 2026-11-13
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -25,6 +25,7 @@ recovered; selecting a different client cannot waive required tests.
 - [Source precedence](#source-precedence)
 - [Operator environment](#operator-environment)
 - [Repository configuration](#repository-configuration)
+  - [Declaring how criterion 1 is met](#declaring-how-criterion-1-is-met)
 - [CI selection](#ci-selection)
 - [Manifest detection and scope](#manifest-detection-and-scope)
 - [Scenario requirements](#scenario-requirements)
@@ -91,7 +92,8 @@ The configuration contract is deliberately narrow:
   no backslashes; no tables, inline comments, duplicate or unknown keys.
 - Bytes are tabs, line feeds, or printable ASCII. No carriage returns or NULs.
 - `command` is required and non-empty after word splitting. `dir` defaults
-  to `.`.
+  to `.`. `multi_area` and `scenarios_ci_job` are optional; see
+  [Declaring how criterion 1 is met](#declaring-how-criterion-1-is-met).
 - Commands use only letters, digits, spaces, and `._/-=+:,@%`. Shell
   substitutions, redirections, quoting, pipelines, and wildcards are rejected.
 - Directories are relative, use only `A-Za-z0-9._/-`, do not start with
@@ -103,9 +105,73 @@ The configuration contract is deliberately narrow:
 Commands are executed as arguments, never passed through `eval` or implicit
 shell source. Invalid configuration reports `qa-config-invalid` with a cause
 such as `symlink`, `not-regular`, `too-large`, `syntax`, `unknown-key`,
-`duplicate-key`, `missing-command`, `unsafe-command`, `unsafe-dir`,
-`dir-not-found`, `changed-in-pr`, `paths-empty`, or `paths-unknown`.
+`duplicate-key`, `declaration-conflict`, `unknown-value`, `missing-command`,
+`unsafe-command`, `unsafe-dir`, `dir-not-found`, `changed-in-pr`,
+`paths-empty`, or `paths-unknown`.
 Do not expose the rejected file contents in diagnostics.
+
+### Declaring how criterion 1 is met
+
+Where detection requires gadugi scenarios (a Node project, or unresolved
+candidates of which any is Node), the merge-base `.amplihack/qa.toml` can
+declare how criterion 1 is met instead (#2458). A file gives at most one
+declaration; both keys together are `declaration-conflict`.
+
+| Key | Value | `qa_criterion1_declaration` | Criterion 1 is met when |
+| --- | --- | --- | --- |
+| `multi_area` | `command` only; anything else is `unknown-value` | `multi-area-command` | The declared `command` exits `0`. No gadugi scenario is searched for or run. |
+| `scenarios_ci_job` | A check-run name: 1 to 128 bytes of `A-Za-z0-9`, space and `._/()+:,@%-`, no leading `-` | `ci-job:<name>` | The declared `command` exits `0`, **and** the head has a check-run with exactly that name and every check-run of that name passed. |
+
+A repository with `web/package.json` and `infra/pyproject.toml` and no root
+manifest has unresolved candidates, one of them Node. Its scenarios are JSON
+and TypeScript files run by its own test suite, not gadugi YAML, so it
+declares:
+
+```toml
+# .amplihack/qa.toml
+command = "npm test"
+multi_area = "command"
+```
+
+With that file at the merge base, a PR that changes `web/` and `infra/` runs
+`npm test` once, runs no `gadugi-test`, and records:
+
+```console
+$ jq -r '.qa_status, .gadugi_status, .qa_criterion1_declaration' "$EVIDENCE"
+PASS
+NOT_REQUIRED
+multi-area-command
+```
+
+With `command = "npm test"` alone at the merge base (no `multi_area` line),
+the same PR records `qa_status` `FAIL`, `qa_reason` `no-scenarios`,
+`gadugi_status` `NO_SCENARIOS` and `qa_criterion1_declaration` `none`.
+
+**Read from the merge base only.** The declaration is read from the same
+merge-base blob as `command`, never from the PR head or the working tree. A
+PR that changes `.amplihack/qa.toml` is refused with `changed-in-pr`, so a PR
+cannot declare the rule it is judged by. A new declaration first applies to
+the PR after the one that adds it.
+
+**Fails closed.** The declaration is `none`, and gadugi stays required
+wherever detection requires it, when `AUTODRIVE_QA_SCENARIO_DIR`,
+`AUTODRIVE_QA_COMMAND` or `AUTODRIVE_QA_COMMANDS` is set (even to empty);
+qa.toml is absent or invalid; the merge base is unknown or a git read fails;
+or, for `scenarios_ci_job` only, the PR changes anything under `.github/`
+(`qa_summary` names `ci-job-workflow-changed`). Where gadugi is not required
+anyway, such as a Rust or Python project or a
+[documentation-only change](#documentation-only-changes), the evidence also
+records `none`.
+
+**The declared job is an expected check.** For `ci-job:<name>`, the merge
+evidence step passes `<name>` as the third argument to
+[`autodrive_expected_checks.sh`](autodrive-expected-checks.md#declared-scenarios-job),
+taking it from the measured QA evidence record, never from an agent's
+summary. Only `GREEN` meets criterion 1.
+
+The declaration is an input to the merge round's judgement, not a waiver an
+agent can write: the merge-round agent uses `qa_criterion1_declaration` from
+the evidence and never adds or edits a qa.toml declaration.
 
 ## CI selection
 
@@ -175,9 +241,9 @@ blocks until an authorized configuration supplies the required suite.
 | --- | --- | --- |
 | Rust CLI | `cargo test --workspace --locked --no-fail-fast` | Not required under qa-team's Rust substitution. Record parity scenarios from the selected project's `tests/parity/scenarios/`. |
 | Python | `pytest` | Not required under qa-team's Python substitution. |
-| Node | `npm test` | Required unless the documentation-only exception applies. |
+| Node | `npm test` | Required unless the documentation-only exception applies or the merge base [declares how criterion 1 is met](#declaring-how-criterion-1-is-met). |
 | Unknown | No detected command | A declared suite is required. |
-| Unresolved candidates | No detected command | Required if any candidate is Node; suite selection remains blocked without an override. |
+| Unresolved candidates | No detected command | Required if any candidate is Node, unless the merge base [declares how criterion 1 is met](#declaring-how-criterion-1-is-met); suite selection remains blocked without a declared or override command. |
 | Any, explicit scenario directory | Selected suite still runs | Required, including documentation-only changes. |
 | Unknown merge base | Cannot establish trusted selection | Keep gadugi required; unknown scope cannot grant an exemption. |
 
@@ -214,8 +280,9 @@ keeps scenarios required.
 ## Evidence
 
 Record selected source, type, command, directory, base, head, changed scope,
-scenario requirement and reason, scenario list, validation/execution results,
-suite exit statuses, concrete log references, blockers, and recovery attempts.
+scenario requirement and reason, `qa_criterion1_declaration`, scenario list,
+validation/execution results, suite exit statuses, concrete log references,
+blockers, and recovery attempts.
 A configured suite does not change independently detected scenario obligations.
 
 Finalization reassesses applicability at the verified head. Evidence marked

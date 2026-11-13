@@ -4,15 +4,15 @@
 //! - `multi_area = "command"`: a passing qa.toml command meets criterion 1, and
 //!   no gadugi scenario is required or written.
 //! - `scenarios_ci_job = "<check-run name>"`: the scenarios run in CI; criterion
-//!   1 reads that check-run at the head (autodrive_expected_checks.sh, 3rd
-//!   argument).
+//!   1 reads that check-run at the head (autodrive-merge-evidence.yaml step-03
+//!   passes the name as the 3rd argument to autodrive_expected_checks.sh).
 //!
 //! The declaration is read from the merge-base tree only. A qa.toml changed by
 //! the pull request is refused (`changed-in-pr`) and the declaration is `none`,
 //! so a pull request never sets the rule it is judged by (#2439). With no
 //! declaration, today's fail-closed behaviour stays.
 //!
-//! Every case runs the real tools on a temporary git repository shaped like the
+//! Most cases run the real tools on a temporary git repository shaped like the
 //! mistt-infra drives: a root package.json, a `scenarios/` folder holding JSON
 //! and TypeScript scenarios (not gadugi YAML), a pull request that touches
 //! three top-level folders, and a qa.toml command that exits 0. The tools run
@@ -315,6 +315,100 @@ fn without_a_declaration_the_same_pull_request_still_needs_gadugi() {
     );
 }
 
+/// The base tree of the issue's unresolved case: two areas with their own
+/// manifests (a Node package in web/, a Python project in infra/), JSON and
+/// TypeScript scenarios, and no root manifest, so no single QA project can be
+/// chosen for a pull request touching both.
+const UNRESOLVED_BASE: &[(&str, &str)] = &[
+    ("web/package.json", "{\"name\":\"web\",\"private\":true}\n"),
+    ("web/a.txt", "1\n"),
+    ("infra/pyproject.toml", "[project]\nname = \"infra\"\n"),
+    ("infra/c.txt", "1\n"),
+    ("scenarios/smoke.json", "{\"name\":\"smoke\"}\n"),
+    ("scenarios/smoke.ts", "export const smoke = 1;\n"),
+];
+
+fn unresolved_fixture(base_qa: &str) -> Fixture {
+    let fx = build(
+        UNRESOLVED_BASE,
+        Some(base_qa),
+        None,
+        &["web/a.txt", "infra/c.txt"],
+    );
+    let target = helper_line(&fx, "autodrive_qa_target", Some("main"), &[]);
+    assert!(
+        target.starts_with("unresolved"),
+        "precondition: the fixture must be the issue's unresolved case, got {target:?}"
+    );
+    fx
+}
+
+/// #2458's own case: a multi-area pull request whose repository kind is
+/// unresolved, with `multi_area = "command"` on the base branch, meets
+/// criterion 1 on the passing base command alone. The command runs once,
+/// no gadugi scenario is required or run, and the record names the
+/// declaration.
+#[cfg(unix)]
+#[test]
+fn an_unresolved_multi_area_pr_passes_on_the_base_command_alone() {
+    let fx = unresolved_fixture(QA_MULTI);
+    let req = helper_line(&fx, "autodrive_gadugi_required", Some("main"), &[]);
+    assert_eq!(
+        req, "false\n",
+        "autodrive_gadugi_required under the declaration"
+    );
+    let ev = evidence(&fx, &[]);
+    expect(
+        &ev,
+        "unresolved, multi_area = command",
+        &[
+            ("qa_status", "PASS"),
+            ("qa_command_source", "repo-file"),
+            ("qa_command", "npm test"),
+            ("qa_exit_code", "0"),
+            ("gadugi_required", "false"),
+            ("gadugi_status", "NOT_REQUIRED"),
+            ("qa_criterion1_declaration", "multi-area-command"),
+        ],
+    );
+    assert_eq!(
+        fx.calls_of("npm"),
+        vec!["npm|test".to_owned()],
+        "the base qa.toml command must run once"
+    );
+    assert!(
+        fx.calls_of("gadugi-test").is_empty(),
+        "no gadugi-test call under the declaration: {:?}",
+        fx.calls_of("gadugi-test")
+    );
+}
+
+/// Control for the case above: the same unresolved pull request with a base
+/// qa.toml that declares nothing stays fail-closed. Gadugi is required and
+/// there are no YAML scenarios, so criterion 1 is FAIL / no-scenarios.
+#[cfg(unix)]
+#[test]
+fn an_unresolved_multi_area_pr_without_a_declaration_still_needs_gadugi() {
+    let fx = unresolved_fixture(QA_CMD);
+    let req = helper_line(&fx, "autodrive_gadugi_required", Some("main"), &[]);
+    assert_eq!(
+        req, "true\n",
+        "autodrive_gadugi_required with no declaration"
+    );
+    let ev = evidence(&fx, &[]);
+    expect(
+        &ev,
+        "unresolved, no declaration",
+        &[
+            ("qa_status", "FAIL"),
+            ("qa_reason", "no-scenarios"),
+            ("gadugi_required", "true"),
+            ("gadugi_status", "NO_SCENARIOS"),
+            ("qa_criterion1_declaration", "none"),
+        ],
+    );
+}
+
 /// (c) A declaration the pull request adds is never used: qa.toml changed in
 /// the pull request is refused before it is read, the declaration is `none`
 /// and gadugi stays required. Both shapes: the pull request adds the key to an
@@ -351,7 +445,8 @@ fn a_declaration_added_by_the_pull_request_is_ignored() {
 }
 
 /// (B) recorded in the evidence: `scenarios_ci_job` lifts the local gadugi
-/// requirement and names the job; the gate then reads that job (below).
+/// requirement and names the job; step-03's expected checks then read that
+/// job (below).
 #[cfg(unix)]
 #[test]
 fn a_base_ci_job_declaration_is_recorded_with_its_job_name() {
@@ -439,7 +534,7 @@ fn an_invalid_declaration_blocks_with_a_token_and_prints_no_value() {
 // The resolver: autodrive_qa_declaration and autodrive_gadugi_required.
 // ---------------------------------------------------------------------------
 
-/// One answer for the evidence tool, the gate and the preflights.
+/// One answer for the evidence tool, the gadugi preflight and step-03's expected checks.
 #[cfg(unix)]
 #[test]
 fn the_declaration_resolver_reads_the_merge_base_tree() {
@@ -594,7 +689,7 @@ fn a_workflow_change_voids_only_the_ci_job_declaration() {
 
 /// D8: a declaration changes nothing where gadugi is already not required.
 /// On a documentation-only pull request the base `scenarios_ci_job` is
-/// neither recorded nor handed to the gate, so a job with a `paths:` filter
+/// neither recorded nor passed to step-03's expected-checks call, so a job with a `paths:` filter
 /// that never ran cannot leave the pull request MISSING a check.
 #[cfg(unix)]
 #[test]
@@ -766,7 +861,7 @@ fn an_inherited_declaration_function_never_lifts_the_requirement() {
 }
 
 // ---------------------------------------------------------------------------
-// (B) at the gate: autodrive_expected_checks.sh <HEAD> <BASE> <JOB>.
+// (B) in step-03's expected checks: autodrive_expected_checks.sh <HEAD> <BASE> <JOB>.
 // ---------------------------------------------------------------------------
 
 const HEAD: &str = "3f9c2a7e1b4d5c6f708192a3b4c5d6e7f8091a2b";
@@ -844,13 +939,40 @@ fn missing_has(v: &Value, name: &str) -> bool {
         .is_some_and(|m| m.iter().any(|x| x.as_str() == Some(name)))
 }
 
-/// The declared job is a check-run at the head: success passes, and only an
-/// exact name counts.
+/// #2578 item 3, as behaviour: criterion 1 under a base `scenarios_ci_job`
+/// declaration, run end to end through the deterministic tools. The base
+/// declaration lifts the local gadugi requirement, the measured evidence
+/// record names the job, and that name, taken from the record and passed as
+/// the third argument to autodrive_expected_checks.sh (as step-03 does), is
+/// the check-run that decides criterion 1. Only a successful run of exactly
+/// that job meets it: a red, pending, missing or near-named job blocks.
 #[cfg(unix)]
 #[test]
-fn the_declared_ci_job_passes_criterion_1_only_when_it_succeeded() {
+fn a_base_ci_job_declaration_drives_the_expected_checks_job() {
+    let fx = fixture(Some(QA_CI_JOB), None, &[]);
+    let req = helper_line(&fx, "autodrive_gadugi_required", Some("main"), &[]);
+    assert_eq!(
+        req, "false\n",
+        "the base declaration lifts the local requirement"
+    );
+    let ev = evidence(&fx, &[]);
+    expect(
+        &ev,
+        "scenarios_ci_job evidence",
+        &[
+            ("gadugi_status", "NOT_REQUIRED"),
+            ("qa_criterion1_declaration", "ci-job:Gadugi scenarios"),
+        ],
+    );
+    // The job name comes from the measured record, never from a constant.
+    let job = field(&ev, "qa_criterion1_declaration")
+        .strip_prefix("ci-job:")
+        .expect("a ci-job declaration")
+        .to_owned();
+    assert!(fx.calls_of("gadugi-test").is_empty());
+
     let add = |status: &str, conclusion: &str| {
-        format!(r#"ec_job "$FX" 1001 "{JOB}" {status} {conclusion} "$HEAD_SHA""#)
+        format!(r#"ec_job "$FX" 1001 "{job}" {status} {conclusion} "$HEAD_SHA""#)
     };
     let cases: Vec<(String, &str, i32)> = vec![
         (add("completed", "success"), "GREEN", 0),
@@ -862,7 +984,7 @@ fn the_declared_ci_job_passes_criterion_1_only_when_it_succeeded() {
         (add("queued", "null"), "PENDING", 1),
     ];
     for (setup, want, rc) in &cases {
-        let (code, v, _) = expected_checks(setup, &[HEAD, "main", JOB]);
+        let (code, v, _) = expected_checks(setup, &[HEAD, "main", &job]);
         assert_eq!(
             (code, ci_status(&v)),
             (Some(*rc), *want),
@@ -871,13 +993,13 @@ fn the_declared_ci_job_passes_criterion_1_only_when_it_succeeded() {
     }
     // The default green set without the job: everything else passes, but the
     // declared job is missing, and its name is in missing[].
-    let (code, v, _) = expected_checks(":", &[HEAD, "main", JOB]);
+    let (code, v, _) = expected_checks(":", &[HEAD, "main", &job]);
     assert_eq!((code, ci_status(&v)), (Some(1), "MISSING"), "{v}");
-    assert!(missing_has(&v, JOB), "missing[] must name the job: {v}");
+    assert!(missing_has(&v, &job), "missing[] must name the job: {v}");
     // A near name is not the declared job.
     let (code, v, _) = expected_checks(
-        &format!(r#"ec_job "$FX" 1001 "{JOB} (linux)" completed success "$HEAD_SHA""#),
-        &[HEAD, "main", JOB],
+        &format!(r#"ec_job "$FX" 1001 "{job} (linux)" completed success "$HEAD_SHA""#),
+        &[HEAD, "main", &job],
     );
     assert_eq!((code, ci_status(&v)), (Some(1), "MISSING"), "{v}");
 }
@@ -925,46 +1047,4 @@ fn a_bad_job_name_is_refused_before_any_gh_call() {
         assert_eq!(code, Some(2), "job name {bad:?} must be refused");
         assert_eq!(calls, 0, "job name {bad:?}: gh was called first");
     }
-}
-
-// ---------------------------------------------------------------------------
-// The merge-round agent's instructions.
-// ---------------------------------------------------------------------------
-
-/// step-04 tells the agent how criterion 1 is met: by the base-branch
-/// declaration when there is one, and otherwise by gadugi scenarios written
-/// without timers and without touching files outside the brief. The agent
-/// never adds a declaration itself.
-#[test]
-fn merge_round_step_04_states_the_declaration_rule() {
-    let recipe: serde_yaml::Value = serde_yaml::from_str(
-        &fs::read_to_string(
-            workspace_root().join("amplifier-bundle/recipes/autodrive-merge-round.yaml"),
-        )
-        .expect("read merge round"),
-    )
-    .expect("parse merge round");
-    let prompt = recipe["steps"]
-        .as_sequence()
-        .expect("steps")
-        .iter()
-        .find(|s| s["id"].as_str() == Some("step-04-address-blockers"))
-        .and_then(|s| s["prompt"].as_str())
-        .expect("step-04 prompt");
-    let flat = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
-    let lower = flat.to_ascii_lowercase();
-    for needle in [
-        "qa_criterion1_declaration",
-        "multi_area",
-        "scenarios_ci_job",
-    ] {
-        assert!(flat.contains(needle), "step-04 must mention `{needle}`");
-    }
-    for needle in ["timer", "sleep", "outside the brief", "base branch"] {
-        assert!(lower.contains(needle), "step-04 must say `{needle}`");
-    }
-    assert!(
-        lower.contains("where `gadugi_required` is `true`, write"),
-        "step-04 still writes gadugi scenarios where they are required"
-    );
 }

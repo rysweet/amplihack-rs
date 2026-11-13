@@ -329,7 +329,7 @@ autodrive_scenario_results() {
 # #1517): only Node runs gadugi-agentic-test; Rust CLI substitutes `cargo
 # test`, Python (even beside package.json, #1516) `pytest`. Every step that
 # asks whether gadugi-test is needed (auto-drive's first step, merge round
-# step-00, the evidence tool, the merge gate) asks the functions below only.
+# step-00, the evidence tool) asks the functions below only.
 
 # The QA target lives in autodrive_qa_scope.sh, then the qa.toml reader in
 # autodrive_qa_sources.sh, each loaded only from the physical directory of this
@@ -376,7 +376,7 @@ autodrive_repo_type() {
 # (autodrive_qa_docs_only, a measurement, not an agent's reading of the diff).
 # #2458: where detection says true, a declaration other than `none` from the
 # base branch's qa.toml (autodrive_qa_declaration) says how criterion 1 is met
-# instead. The merge round and the merge gate read these same functions.
+# instead. The merge round reads these same functions.
 #
 # Precedence, all fail-closed: the scenario directory and a missing scope
 # helper first (true); then docs-only (false); then detection; then the
