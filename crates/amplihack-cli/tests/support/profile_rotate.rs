@@ -287,9 +287,15 @@ impl Fixture {
     /// file alone. `profile usage` starts no child and opens no socket for
     /// it, so its row cannot lose a race against the per-probe deadline,
     /// and a test that needs one probe to pass the deadline can leave the
-    /// rest of the table off the clock. The readings are observed at the
-    /// moment this is called and both windows reset hours away, so waiting
-    /// longer only makes them more clearly fresh.
+    /// rest of the table off the clock.
+    ///
+    /// A reading is stamped `observed_at` now and is accepted only while it
+    /// is no older than the passive age limit (300 s by default, up to 3600
+    /// through `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS`): waiting makes
+    /// a reading older, not fresher, and brings its reset times nearer. Call
+    /// this immediately before the command that must read it, not at fixture
+    /// construction, so no setup in between can spend the limit. The reset
+    /// times are hours out and are not what expires.
     ///
     /// The commands also need `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS`
     /// above 0: [`Self::cmd`] turns passive readings off by default.

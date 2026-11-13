@@ -443,21 +443,37 @@ let out = usage_ok(
 for p in ["work", "spare"] {
     assert_eq!(f.usage_probes(p), 0);
 }
-assert_eq!(f.usage_probes("extra"), 1);
+assert!(row(&out, "extra").contains("no reading (timeout)"));
 ```
 
 `Fixture::passive` writes fresh status-line readings into auto-switch's
 `usage.json`, the first step of the probe order (issue #1844), so `work` and
-`spare` are answered from one file read. The probe counts are part of the
-test: they prove there is no child of theirs left to race. `extra` has no
-reading, falls through to `claude`, and its 30 s sleep loses to the 2 s
-deadline on any host. `Fixture::cmd` sets
+`spare` are answered from one file read. Their probe counts are part of the
+test: they prove there is no child of theirs left to race, and a probe that
+never starts leaves no record, so a slower host only makes those two more
+certainly 0. `extra` has no reading, falls through to `claude`, and its 30 s
+sleep loses to the 2 s deadline on any host. `Fixture::cmd` sets
 `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS=0`, so a test that wants
-passive readings has to set that variable back above 0 itself.
+passive readings has to set that variable back above 0 itself, and a planted
+reading expires 300 s after it is written, so plant it immediately before the
+command rather than during fixture setup.
+
+Note which side each assertion reads. The two `== 0` counts are evidence
+that a child was never started, which is evidence a slow host can only
+strengthen. The matching count for `extra` would be evidence that one *was*
+started, and that is the opposite kind of claim: the stub writes its record
+only after it has spawned, read the config and redirected, all inside the
+window the deadline is cutting, so `== 1` and `>= 1` alike fail on the very
+host the fix was written for. Read that side from the parent instead. `no
+reading (timeout)` is `profile usage`'s own account of having started a probe
+and reached the deadline with no answer; it separates `extra` from a profile
+that was never probed, and load only makes it surer.
 
 This is the general shape. When a test needs one step to pass a short
 deadline, take every other step of the same run off that deadline instead of
-hoping each one beats it.
+hoping each one beats it, and read the remaining step's outcome from the
+party that holds the deadline, never from something the losing party has to
+do quickly in order to be observed.
 
 ## Inject a clock
 

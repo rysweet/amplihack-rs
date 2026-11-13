@@ -135,6 +135,15 @@ fn seed_history(f: &Fixture, body: &str, mode: u32) {
     fs::set_permissions(history(f), fs::Permissions::from_mode(mode)).unwrap();
 }
 
+/// The table row for profile `p`: the line whose first field is its name.
+/// The live profile's label is `<name> (live)`, so the name is still the
+/// first field.
+fn row<'a>(out: &'a str, p: &str) -> &'a str {
+    out.lines()
+        .find(|l| l.split_whitespace().next() == Some(p))
+        .unwrap_or_else(|| panic!("no row for {p}:\n{out}"))
+}
+
 fn summary_lines(stdout: &str) -> Vec<&str> {
     let (_, block) = stdout
         .split_once("\n\nweekly headroom")
@@ -221,6 +230,12 @@ fn json_has_no_summary_and_summary_json_holds_the_same_array() {
 /// the trigger, and the assertions are on the outcome, as
 /// `docs/howto/keep-tests-passing-under-host-load.md` ("Test that a timeout
 /// fires") requires.
+///
+/// Every assertion below is therefore one a slower host can only make
+/// surer: the two passive profiles start no probe, and `extra`'s row is
+/// the parent's own `timeout`. Nothing here counts `extra`'s record file,
+/// which its stub writes only once it has spawned, inside the window the
+/// deadline is cutting.
 #[test]
 fn a_timed_out_profile_is_unknown_never_zero_or_one_hundred() {
     let f = Fixture::new();
@@ -240,7 +255,9 @@ fn a_timed_out_profile_is_unknown_never_zero_or_one_hundred() {
         "{out}"
     );
     assert!(out.contains("\nunknown              1 profile ("), "{out}");
-    // The passive rows kept their two profiles off the clock entirely.
+    // The passive rows kept their two profiles off the clock entirely. A
+    // probe that never starts leaves no record, so a slower host only makes
+    // these two more certainly 0.
     for p in ["work", "spare"] {
         assert_eq!(
             f.usage_probes(p),
@@ -248,7 +265,26 @@ fn a_timed_out_profile_is_unknown_never_zero_or_one_hundred() {
             "{p} was read passively and must start no probe:\n{out}"
         );
     }
-    assert_eq!(f.usage_probes("extra"), 1, "{out}");
+    // That `extra` was probed is read from its row rather than from the
+    // stub's record file. `no reading (timeout)` is the parent's own
+    // account of having started a probe and reached the deadline without an
+    // answer, and it distinguishes `extra` from a profile that was never
+    // probed at all, which is what the record file was here to rule out.
+    // The record (`usage_probes("extra")`) is written by the child only
+    // after it spawns, finds its e-mail address and redirects, all inside
+    // the same 2 s window, so any assertion on that count, exactly one or
+    // at least one alike, would reinstate the race this test exists to
+    // remove.
+    assert!(
+        row(&out, "extra").contains("no reading (timeout)"),
+        "extra is the row the deadline cut:\n{out}"
+    );
+    for p in ["work", "spare"] {
+        assert!(
+            !row(&out, p).contains("no reading"),
+            "{p} was answered passively:\n{out}"
+        );
+    }
 }
 
 #[test]
