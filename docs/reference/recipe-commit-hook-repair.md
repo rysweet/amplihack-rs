@@ -891,7 +891,7 @@ cargo test --locked -p amplihack --test integration issue_1671_hook_rejection_re
 ## Related references
 
 - [Recipe Push Failure Recovery](./recipe-push-failure-recovery.md): what
-  happens after step-15, step-18c or step-20b still fails; an agent judges
+  happens after step-15 or step-18c still fails; an agent judges
   whether the change or the environment caused it, and a gate checks the push
 - [Loop-Health Evaluator Reference](./loop-health-evaluator.md): the
   `CONTINUE`/`DONE`/`STUCK` contract the loop relies on

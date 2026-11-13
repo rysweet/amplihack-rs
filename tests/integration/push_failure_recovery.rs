@@ -2,8 +2,8 @@
 //! recovery instead of ending the run on an environment fault.
 //!
 //! Each case builds a small recipe from the real step definitions in
-//! `workflow-publish.yaml`, `workflow-pr-review.yaml` and
-//! `workflow-finalize.yaml`, taken by id, and runs it with the real
+//! `workflow-publish.yaml` and `workflow-pr-review.yaml`, taken by id, and
+//! runs it with the real
 //! `recipe-runner-rs`. The recovery call step resolves the real
 //! `push-failure-recovery` sub-recipe from the bundle at `AMPLIHACK_HOME`
 //! (this checkout).
@@ -19,7 +19,10 @@
 //! - a fake `AMPLIHACK_LAUNCHER_BINARY` that stands in for the recovery
 //!   agent. It refuses to run outside the TempDir, makes the clean-environment
 //!   push (`env -u` for each `RECIPE_VAR_*`/`WORKFLOW_*` name) and prints the
-//!   agent JSON. Its behaviour is chosen by the `agent-mode` file;
+//!   agent JSON. Its behaviour is chosen by the `agent-mode` file. Agent
+//!   steps get only the inherited environment, not the recipe's context, so
+//!   a case reads the snapshot from the runner's JSON context instead;
+//! - step-20b is not covered here: #2570's general recovery owns it.
 //! - a fake `amplihack` on `PATH` for `hygiene artifact-guard` and the
 //!   hook-repair `recipe run` call (it answers without making a fix).
 //!
@@ -121,7 +124,13 @@ enum Upstream {
     Diverged,
     /// `origin/feat/x` already equals HEAD.
     AtHead,
+    /// `refs/heads/feat/x` does not exist on the remote: a first push. Only
+    /// the remote's ref is deleted; the worktree keeps its tracking ref.
+    Absent,
 }
+
+/// A token-shaped placeholder. It must never appear unredacted in a record.
+const FIXTURE_TOKEN: &str = "ghp_TESTTOKEN0000";
 
 struct Fixture {
     temp: tempfile::TempDir,
@@ -315,6 +324,9 @@ impl Fixture {
                 );
                 self.git(&self.wt(), &["fetch", "-q", "origin"]);
             }
+            Upstream::Absent => {
+                self.git(&remote, &["update-ref", "-d", "refs/heads/feat/x"]);
+            }
             Upstream::Ahead | Upstream::OtherBranch => {}
         }
         // Installed last, so the fixture's own pushes above are accepted.
@@ -374,7 +386,13 @@ esac
     /// - `commit-push`: disobeys the prompt, commits a new file and pushes it,
     ///   then claims `ENVIRONMENT`;
     /// - `none`: no push, `NONE`;
-    /// - `none-noworktree`: no worktree to work in, `NONE`.
+    /// - `none-noworktree`: no worktree to work in, `NONE`;
+    /// - `force`: disobeys the prompt, force-pushes HEAD over the remote
+    ///   branch and claims `ENVIRONMENT`, with a token-shaped explanation;
+    /// - `env-untracked`: leaves an untracked file in the worktree, then the
+    ///   clean push, `ENVIRONMENT`;
+    /// - `repoint`: points `origin` at a decoy bare repository of its own,
+    ///   pushes there and claims `ENVIRONMENT`.
     fn write_fake_launcher(&self) {
         let path = self.p("bin/fake-launcher");
         fs::write(
@@ -400,13 +418,14 @@ done
 n=$(ls "$T/prompts" | wc -l)
 printf '%s' "$prompt" > "$T/prompts/$n.txt"
 step=""
-for s in step-15-commit-push step-18c-push-feedback-changes step-20b-push-cleanup; do
+for s in step-15-commit-push step-18c-push-feedback-changes; do
   case "$prompt" in *"$s"*) step="$s"; break ;; esac
 done
 case "$prompt" in *CHANGE*) ;; *) step="" ;; esac
 case "$prompt" in *ENVIRONMENT*) ;; *) step="" ;; esac
 if [ -z "$step" ]; then echo "fake agent: unexpected prompt" >&2; exit 98; fi
 printf '%s\n' "$step" >> "$T/agent-calls.log"
+explanation="fixture agent"
 mode=$(cat "$T/agent-mode")
 names=$(compgen -e | LC_ALL=C grep -E '^(RECIPE_VAR_|WORKFLOW_)' | LC_ALL=C sort | paste -sd' ' -)
 unset_args=(); for v in $names; do unset_args+=(-u "$v"); done
@@ -435,18 +454,32 @@ case "$mode" in
     git add agent-edit.txt && git -c user.email=a@example.invalid -c user.name=A -c commit.gpgsign=false commit -q --no-verify -m untested
     if push_clean; then push_result=pushed; else push_result=failed; fi
     cause=ENVIRONMENT; evidence_last="committed and pushed"; actions=$(jq -nc --arg a "$action" '[$a]') ;;
+  force)
+    if env "${{unset_args[@]}}" git push --force origin "HEAD:refs/heads/$BR" > "$T/agent-push.log" 2>&1; then push_result=pushed; else push_result=failed; fi
+    cause=ENVIRONMENT; evidence_last="pushed over the remote branch"; actions=$(jq -nc --arg a "$action" '[$a]')
+    explanation="pushed via https://u:{token}@example.invalid/x with token {token}" ;;
+  env-untracked)
+    printf 'agent note\n' > agent-note.txt
+    if push_clean; then push_result=pushed; else push_result=failed; fi
+    cause=ENVIRONMENT; evidence_last="left a note"; actions=$(jq -nc --arg a "$action" '[$a]') ;;
+  repoint)
+    git clone -q --bare "$T/remote.git" "$T/decoy.git" > /dev/null 2>&1
+    git remote set-url origin "$T/decoy.git"
+    if push_clean; then push_result=pushed; else push_result=failed; fi
+    cause=ENVIRONMENT; evidence_last="pushed to a remote of its choosing"; actions=$(jq -nc --arg a "$action" '[$a]') ;;
   claim-env) cause=ENVIRONMENT; evidence_last="claimed without a push" ;;
   none|none-noworktree) cause=NONE; evidence_last="nothing needed pushing" ;;
   *) echo "fake agent: unknown mode $mode" >&2; exit 95 ;;
 esac
 jq -nc --arg failed "$step: push rejected" --arg cause "$cause" --arg branch "$branch" \
   --arg names "inherited: $names" --arg last "$evidence_last" \
-  --argjson actions "$actions" --arg pr "$push_result" \
-  '{{failed:$failed, cause:$cause, branch:$branch, evidence:[$names, $last], actions:$actions, push_result:$pr, explanation:"fixture agent"}}'
+  --argjson actions "$actions" --arg pr "$push_result" --arg explanation "$explanation" \
+  '{{failed:$failed, cause:$cause, branch:$branch, evidence:[$names, $last], actions:$actions, push_result:$pr, explanation:$explanation}}'
 "#,
                 root = shell_quote(&self.root()),
                 wt = shell_quote(&self.wt().display().to_string()),
                 br = shell_quote(BRANCH),
+                token = FIXTURE_TOKEN,
             ),
         )
         .unwrap();
@@ -560,13 +593,20 @@ jq -nc --arg failed "$step: push rejected" --arg cause "$cause" --arg branch "$b
         self.write_recipe("fixture-pr-review", "workflow-pr-review", steps, worktree)
     }
 
-    fn finalize_recipe(&self, worktree: &Path) -> PathBuf {
-        let finalize = recipe_yaml("workflow-finalize");
-        let steps = vec![
-            step_by_id(&finalize, "step-20b-push-cleanup"),
-            step_by_id(&finalize, "step-20b-push-recovery"),
-        ];
-        self.write_recipe("fixture-finalize", "workflow-finalize", steps, worktree)
+    /// The fixture remote's ref as `git ls-remote` reports it.
+    fn ls_remote(&self, branch: &str) -> String {
+        let out = self.git(
+            &self.p("tmp"),
+            &[
+                "ls-remote",
+                &self.remote().display().to_string(),
+                &format!("refs/heads/{branch}"),
+            ],
+        );
+        out.split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_string()
     }
 
     /// Run `recipe` with the inherited variables a parent recipe step would
@@ -697,6 +737,42 @@ fn assert_recovered(run: &Run, key: &str, reason: &str, head: &str) {
     );
 }
 
+/// The last recovery call's snapshot, taken before its agent ran, from the
+/// runner's JSON context.
+fn snapshot(run: &Run) -> Json {
+    let snap = run.ctx("push_recovery_snapshot");
+    assert!(
+        snap.is_object(),
+        "no push_recovery_snapshot in the context; {}",
+        run.debug()
+    );
+    snap
+}
+
+/// A top-level field of a gate record, as a string.
+fn rec_top(run: &Run, key: &str, field: &str) -> String {
+    let rec = run.ctx(key);
+    rec[field]
+        .as_str()
+        .unwrap_or_else(|| panic!("{key}.{field} is missing; {}", run.debug()))
+        .to_string()
+}
+
+/// The stderr lines on which the gate printed its recovery record.
+fn recovery_record_lines(run: &Run) -> String {
+    let lines: Vec<&str> = run
+        .stderr
+        .lines()
+        .filter(|l| l.contains("push-failure-recovery: recovery record: "))
+        .collect();
+    assert!(
+        !lines.is_empty(),
+        "no `push-failure-recovery: recovery record:` line on stderr; {}",
+        run.debug()
+    );
+    lines.join("\n")
+}
+
 // --- step-15 -------------------------------------------------------------------
 
 /// The positive case the issue asks for: the push fails only because an
@@ -758,6 +834,16 @@ fn step15_environment_fault_is_recovered_and_recorded() {
         "step-16 must run on the gate's commit_result; {}",
         run.debug()
     );
+
+    // B2: the remote branch as it was before the agent ran, from a fetch.
+    assert_eq!(rec_top(&run, "commit_result", "remote_before"), base_ref);
+    assert_eq!(
+        rec_top(&run, "commit_result", "remote_before_source"),
+        "fetched"
+    );
+    let snap = snapshot(&run);
+    assert_eq!(snap["remote_before"], base_ref.as_str(), "snapshot: {snap}");
+    assert_eq!(snap["remote_before_source"], "fetched", "snapshot: {snap}");
     before.assert_held(&f, &run);
 }
 
@@ -777,6 +863,13 @@ fn step15_change_fault_ends_the_run_and_says_so() {
     assert!(
         run.all_text().contains("cause is in the change"),
         "{}",
+        run.debug()
+    );
+    // Minor 2: the gate leaves its recovery record on stderr when it fails.
+    let record = recovery_record_lines(&run);
+    assert!(
+        record.contains("\"explanation\"") && record.contains("\"evidence\""),
+        "stderr must hold the recovery record with explanation and evidence; {}",
         run.debug()
     );
     assert_eq!(
@@ -990,6 +1083,157 @@ fn step15_protected_local_branch_is_refused_even_if_the_agent_pushes() {
     before.assert_held(&f, &run);
 }
 
+/// B2: the remote branch has someone else's commit, and the agent
+/// force-pushes HEAD over it. The remote now equals HEAD, so every other check
+/// passes; the gate's ancestry check against the snapshot's remote_before
+/// fails the run, names both commits and gives the restore command. The
+/// agent's token-shaped explanation reaches the record only in redacted form.
+#[test]
+fn step15_force_push_over_another_commit_fails_closed() {
+    let _ = runner_or_skip!();
+    let f = Fixture::new(Upstream::Diverged);
+    f.set_agent_mode("force");
+    let before = Untouched::capture(&f);
+    let overwritten = f.remote_ref(BRANCH);
+    let run = f.run(&f.publish_recipe("fixture-publish"), &[], &[]);
+    let head = f.head();
+
+    assert_ne!(overwritten, head);
+    assert_eq!(
+        f.agent_calls(),
+        vec!["step-15-commit-push"],
+        "{}",
+        run.debug()
+    );
+    assert_failed_with(&run, "remote-history-rewritten");
+    assert_eq!(
+        run.status("step-15-push-recovery"),
+        "failed",
+        "{}",
+        run.debug()
+    );
+    let text = run.all_text();
+    assert!(
+        text.contains(&overwritten) && text.contains(&head),
+        "the failure must name the overwritten commit and HEAD; {}",
+        run.debug()
+    );
+    assert!(
+        text.contains(&format!("{overwritten}:refs/heads/{BRANCH}")),
+        "the failure must give the restore refspec; {}",
+        run.debug()
+    );
+    assert_eq!(
+        f.ls_remote(BRANCH),
+        head,
+        "the gate detects the force-push; it does not undo it"
+    );
+    assert_ne!(run.status("step-16-create-draft-pr"), "completed");
+
+    // S11: the record shows the explanation redacted, never the token.
+    let record = recovery_record_lines(&run);
+    assert!(
+        !record.contains(FIXTURE_TOKEN) && record.contains("***"),
+        "the stderr record must hold the explanation only in redacted form: {record}"
+    );
+    before.assert_held(&f, &run);
+}
+
+/// D3: a first push. The remote has no feat/x, so the snapshot records
+/// remote_before "absent" (ls-remote exit code 2), the ancestry check has
+/// nothing to compare, and the clean push is recovered.
+#[test]
+fn step15_first_push_with_absent_remote_is_recovered() {
+    let _ = runner_or_skip!();
+    let f = Fixture::new(Upstream::Absent);
+    let before = Untouched::capture(&f);
+    assert!(
+        f.ls_remote(BRANCH).is_empty(),
+        "fixture: feat/x must be absent"
+    );
+    let run = f.run(&f.publish_recipe("fixture-publish"), &[], &[]);
+
+    assert_eq!(run.code, 0, "{}", run.debug());
+    assert_eq!(run.status("step-15-commit-push"), "failed");
+    let head = f.head();
+    assert_recovered(&run, "commit_result", "recovered-environment", &head);
+    assert_eq!(
+        f.remote_ref(BRANCH),
+        head,
+        "origin must be at HEAD afterwards"
+    );
+    let snap = snapshot(&run);
+    assert_eq!(snap["remote_before"], "absent", "snapshot: {snap}");
+    assert_eq!(snap["remote_before_source"], "absent", "snapshot: {snap}");
+    assert_eq!(rec_top(&run, "commit_result", "remote_before"), "absent");
+    before.assert_held(&f, &run);
+}
+
+/// Minor 1: an untracked file the agent leaves behind is recorded, not a
+/// failure. The snapshot's status ignores untracked files; the record lists
+/// the new path in new_untracked.
+#[test]
+fn step15_untracked_file_left_by_agent_is_recovered_and_recorded() {
+    let _ = runner_or_skip!();
+    let f = Fixture::new(Upstream::Ahead);
+    f.set_agent_mode("env-untracked");
+    let before = Untouched::capture(&f);
+    let run = f.run(&f.publish_recipe("fixture-publish"), &[], &[]);
+
+    assert_eq!(run.code, 0, "{}", run.debug());
+    let head = f.head();
+    assert_recovered(&run, "commit_result", "recovered-environment", &head);
+    assert_eq!(f.remote_ref(BRANCH), head);
+    assert_eq!(
+        run.ctx("commit_result")["new_untracked"],
+        serde_json::json!(["agent-note.txt"]),
+        "{}",
+        run.debug()
+    );
+    let snap = snapshot(&run);
+    assert_eq!(snap["untracked"], serde_json::json!([]), "snapshot: {snap}");
+    assert!(
+        snap["untracked_truncated"] == "false" || snap["untracked_truncated"] == false,
+        "snapshot.untracked_truncated: {snap}"
+    );
+    assert_eq!(
+        run.status("step-16-create-draft-pr"),
+        "completed",
+        "{}",
+        run.debug()
+    );
+    before.assert_held(&f, &run);
+}
+
+/// S8: an agent that points origin at a remote of its own and pushes there
+/// would pass every remote check against that remote. The gate compares the
+/// origin URL hashes with the snapshot and refuses; the real remote does not
+/// move.
+#[test]
+fn step15_agent_repointing_origin_is_refused() {
+    let _ = runner_or_skip!();
+    let f = Fixture::new(Upstream::Ahead);
+    f.set_agent_mode("repoint");
+    let before = Untouched::capture(&f);
+    let base_ref = f.remote_ref(BRANCH);
+    let run = f.run(&f.publish_recipe("fixture-publish"), &[], &[]);
+
+    assert_eq!(
+        f.agent_calls(),
+        vec!["step-15-commit-push"],
+        "{}",
+        run.debug()
+    );
+    assert_failed_with(&run, "push-unverified");
+    assert_eq!(
+        f.remote_ref(BRANCH),
+        base_ref,
+        "the real remote must not move"
+    );
+    assert_ne!(run.status("step-16-create-draft-pr"), "completed");
+    before.assert_held(&f, &run);
+}
+
 // --- step-18c ------------------------------------------------------------------
 
 /// step-18c has no intended skip: with its worktree gone, the run ends even
@@ -1042,6 +1286,8 @@ fn step18c_environment_fault_is_recovered() {
     assert_eq!(f.remote_ref(BRANCH), f.head());
     let head = f.head();
     assert_recovered(&run, "push_recovery_result", "recovered-environment", &head);
+    let snap = snapshot(&run);
+    assert_eq!(snap["remote_before_source"], "fetched", "snapshot: {snap}");
     before.assert_held(&f, &run);
 }
 
@@ -1071,45 +1317,6 @@ fn step18c_stale_recovery_keys_do_not_reach_the_call() {
         run.debug()
     );
     assert_failed_with(&run, "cause-in-change");
-    assert_eq!(f.remote_ref(BRANCH), base_ref);
-    before.assert_held(&f, &run);
-}
-
-// --- step-20b ------------------------------------------------------------------
-
-#[test]
-fn step20b_environment_fault_is_recovered() {
-    let _ = runner_or_skip!();
-    let f = Fixture::new(Upstream::Ahead);
-    let before = Untouched::capture(&f);
-    let run = f.run(&f.finalize_recipe(&f.wt()), &[], &[]);
-
-    assert_eq!(run.code, 0, "{}", run.debug());
-    assert_eq!(run.status("step-20b-push-cleanup"), "failed");
-    assert_eq!(f.agent_calls(), vec!["step-20b-push-cleanup"]);
-    assert_eq!(f.remote_ref(BRANCH), f.head());
-    let head = f.head();
-    assert_recovered(&run, "push_recovery_result", "recovered-environment", &head);
-    before.assert_held(&f, &run);
-}
-
-/// step-20b's intended skip (no worktree) exits 0 without "Cleanup
-/// Complete", so recovery runs; NONE with no worktree off the commit_result
-/// path is a success with pushed "false" and reason no-worktree.
-#[test]
-fn step20b_intended_skip_gives_no_worktree_and_the_run_goes_on() {
-    let _ = runner_or_skip!();
-    let f = Fixture::new(Upstream::Ahead);
-    f.set_agent_mode("none-noworktree");
-    let before = Untouched::capture(&f);
-    let base_ref = f.remote_ref(BRANCH);
-    let run = f.run(&f.finalize_recipe(&f.p("gone")), &[], &[]);
-
-    assert_eq!(run.code, 0, "{}", run.debug());
-    assert_eq!(run.status("step-20b-push-cleanup"), "completed");
-    let rec = run.ctx("push_recovery_result");
-    assert_eq!(rec["pushed"], "false", "{}", run.debug());
-    assert_eq!(rec["reason"], "no-worktree");
     assert_eq!(f.remote_ref(BRANCH), base_ref);
     before.assert_held(&f, &run);
 }

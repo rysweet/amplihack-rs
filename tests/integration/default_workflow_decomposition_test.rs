@@ -296,7 +296,6 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-20c-quality-audit",
     "step-20a-artifact-guard",
     "step-20b-push-cleanup",
-    "step-20b-push-recovery",
     "step-21-pr-ready",
     "step-22-ensure-mergeable",
     // Issue #1268: evidence + judgement between the scoped-PR signal and the

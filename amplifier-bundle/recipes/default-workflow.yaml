@@ -208,4 +208,3 @@ steps:
     recovery: {"replay": "never"}
     type: "recipe"
     recipe: "workflow-finalize"
-    context: { cleanup_push_result: "" }
