@@ -12,7 +12,9 @@ pub struct EvidenceStore {
     root: PathBuf,
     directory: File,
     /// Whether entries in this store may be repaired (#2546), decided once
-    /// from the root by `repairable_root`.
+    /// by `repairable_root`: the root was created by this call's own mkdir,
+    /// or its canonical path lies directly under the auto-drive state root.
+    /// The folder's name never matters.
     repair: Repair,
 }
 pub struct AcceptedSnapshot {
