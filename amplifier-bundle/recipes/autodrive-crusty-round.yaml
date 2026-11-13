@@ -312,6 +312,9 @@ steps:
       Assess whether this Crusty review objective is complete BEFORE asking
       for convergence evaluation (SR-103). Read the round record at
       {{autodrive_round_record}} and its .findings, .minor and .severity sidecars.
+      The PR head is the record's head_sha. Compare reviewed_head_sha only with
+      that field; this step runs in the base checkout, so never use
+      git rev-parse HEAD in the working directory as the PR head.
       Choose one action:
       - complete: verdict CLEAN or MINOR_ONLY and reviewed_head_sha equals
         head_sha. Repeated completed reviews in history do not mean

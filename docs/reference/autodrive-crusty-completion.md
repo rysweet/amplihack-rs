@@ -45,6 +45,11 @@ After the round record is written, an agent reads the record and its
 | `CLEAN` or `MINOR_ONLY`, but `reviewed_head_sha` differs from `head_sha` | `evaluate`, with the head mismatch as the reason | The new head is not reviewed yet, so `complete` is not allowed. Dispatch currently refuses this decision too, so the round stops with a dispatch error. It fails closed and grants no merge authority; changing dispatch is a follow-up under #2472. |
 | Invalid evidence: missing or unreadable record, no verdict, or a failed or refused round (rc not 0, exit `79`) | `evaluate`, with the fault as the reason | Never `complete`. Dispatch keeps its own failure handling: exits `79` and `75` return before the decision is read, a missing or unreadable record fails dispatch validation, and a record with no verdict goes to the evaluator as `MISSING`. |
 
+The PR head is the round record's `head_sha`. The agent compares
+`reviewed_head_sha` only with that field. Step-07 runs in the base checkout,
+so `git rev-parse HEAD` in its working directory gives the base branch, not
+the PR head, and must never be used for this comparison.
+
 `CONCERNS` always means `evaluate`, whatever the head SHAs or sidecars say.
 After a round with commits, `reviewed_head_sha` differing from `head_sha` is
 expected and is not invalid evidence; it only means the new head has not been
