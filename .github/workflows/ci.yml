@@ -418,6 +418,13 @@ jobs:
         shell: bash
         run: bash tests/gadugi/test-merge-validations-scenario-contract.sh
 
+      # Issues #2536, #2561: CI runs the scenario's driver directly, not gadugi-test.
+      - name: Gadugi — merge-ready files resolver scenario (issues #2536, #2561)
+        shell: bash
+        run: |
+          command -v jq >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq jq; }
+          bash tests/gadugi/run-autodrive-merge-ready-files-scenario.sh
+
       - name: Recipes — foreign-worktree branch deconfliction (concurrency)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-foreign-worktree-deconflict.sh
