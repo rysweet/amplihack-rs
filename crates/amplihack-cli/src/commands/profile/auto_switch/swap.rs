@@ -705,7 +705,7 @@ pub fn guard_held(
     if !state.exists() {
         return Ok(None);
     }
-    let lock = if matches!(action, Action::Launch { .. }) {
+    let lock = if matches!(action, Action::Launch { .. } | Action::Remove) {
         state.launch_lock()?
     } else {
         state.lock()?
@@ -740,6 +740,11 @@ pub fn check_lease(
     }
     if action == Action::Remove && fsx::exists(&state.parked_dir(n).join(CREDS)) {
         return Err(invariant(format!("profile {n:?} has a parked login")));
+    }
+    if action == Action::Remove && liveness::scan_system(&state.root).is_live(name) {
+        return Err(invariant(format!(
+            "profile {n:?} is in use by a running session"
+        )));
     }
     Ok(())
 }

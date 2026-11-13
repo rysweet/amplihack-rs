@@ -280,6 +280,10 @@ impl ProfileStore {
         if !yes {
             return Err(ProfileError::ConfirmationRequired);
         }
+        // State protection precedes filesystem mutation and lasts through
+        // deletion and pointer changes. All callers share the launch protocol.
+        let _hold =
+            super::auto_switch::guard_mutation(self, name, super::auto_switch::Action::Remove)?;
         let dir = self.resolve(name)?;
         // Validate the pointer before deleting anything. Treating a corrupt
         // pointer as "not the default" could delete its target and leave stale

@@ -64,6 +64,239 @@ fn assert_refused(f: &Fixture, out: &Output) {
 }
 
 #[test]
+fn authentication_overrides_refuse_direct_supervised_and_reconstructed_fallbacks() {
+    for key in [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
+        "ANTHROPIC_CUSTOM_HEADERS",
+        "AMPLIHACK_LITELLM_ENDPOINT",
+        "AMPLIHACK_LITELLM_API_KEY",
+        "AMPLIHACK_LITELLM_MODEL",
+        "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+    ] {
+        for mode in ["direct", "supervised", "reentry"] {
+            let f = leased();
+            let mut cmd = match mode {
+                "supervised" => supervised(&f, "claude"),
+                "reentry" => {
+                    let (path, _) = capture_context(&f, "claude");
+                    reentry(&f, "claude", &path)
+                }
+                _ => f.launch("claude"),
+            };
+            let before = f.identity_requests().len();
+            let out = f.run(cmd.env(key, "override-secret"));
+            assert_refused(&f, &out);
+            assert_eq!(f.identity_requests().len(), before, "{key} {mode}");
+            assert!(!String::from_utf8_lossy(&out.stderr).contains("override-secret"));
+        }
+    }
+}
+
+#[test]
+fn settings_cannot_substitute_fallback_authentication_or_billing_routes() {
+    for location in ["profile", "workspace", "home", "cli", "inline"] {
+        for supervise in [false, true] {
+            let f = leased();
+            let config = json!({"apiKeyHelper":"printf override-secret"});
+            let path = match location {
+                "profile" => f.dir("Z").join("settings.json"),
+                "workspace" => f.work.join(".claude/settings.local.json"),
+                "home" => f.home.join(".claude/settings.json"),
+                _ => f.home.join("custom-settings.json"),
+            };
+            private(&path, config.to_string());
+            let mut cmd = if supervise {
+                supervised(&f, "claude")
+            } else {
+                f.launch("claude")
+            };
+            if location == "cli" || location == "inline" {
+                cmd.arg("--settings").arg(if location == "inline" {
+                    config.to_string()
+                } else {
+                    path.to_str().unwrap().to_string()
+                });
+            }
+            let out = f.run(&mut cmd);
+            assert_refused(&f, &out);
+            assert!(!String::from_utf8_lossy(&out.stderr).contains("override-secret"));
+        }
+    }
+}
+
+#[test]
+fn incompatible_oauth_namespace_sends_zero_identity_requests_on_every_platform() {
+    for supervise in [false, true] {
+        let f = leased();
+        let mut cmd = if supervise {
+            supervised(&f, "claude")
+        } else {
+            f.launch("claude")
+        };
+        for namespace in [
+            "https://namespace.example.invalid",
+            "http://namespace.example.invalid",
+        ] {
+            cmd.env("CLAUDE_CODE_CUSTOM_OAUTH_URL", namespace);
+            if namespace.starts_with("http:") {
+                // Equal raw values cannot authorise a client destination
+                // that rejected the non-loopback HTTP endpoint.
+                cmd.env("AMPLIHACK_PROFILE_USAGE_API_BASE", namespace);
+            }
+            let out = f.run(&mut cmd);
+            assert_refused(&f, &out);
+            assert!(f.identity_requests().is_empty());
+        }
+    }
+}
+
+#[test]
+fn settings_environment_and_stored_api_keys_cannot_override_profile_owned_oauth() {
+    for supervise in [false, true] {
+        for location in ["profile-key", "home-key", "settings-env"] {
+            let f = leased();
+            let path = match location {
+                "profile-key" => f.dir("Z").join(".claude.json"),
+                "home-key" => f.home.join(".claude.json"),
+                _ => f.dir("Z").join("settings.json"),
+            };
+            let mut config: Value = fs::read(&path)
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or(json!({}));
+            if location == "settings-env" {
+                config["env"] = json!({"ANTHROPIC_AUTH_TOKEN":"override-secret"});
+            } else {
+                config["primaryApiKey"] = json!("override-secret");
+            }
+            private(&path, config.to_string());
+            let out = f.run(&mut if supervise {
+                supervised(&f, "claude")
+            } else {
+                f.launch("claude")
+            });
+            assert_refused(&f, &out);
+            assert!(f.identity_requests().is_empty());
+            assert!(!String::from_utf8_lossy(&out.stderr).contains("override-secret"));
+        }
+    }
+}
+
+#[test]
+fn compatible_custom_namespace_uses_the_identity_clients_actual_endpoint() {
+    let f = leased();
+    let mut cmd = f.launch("claude");
+    let base = cmd
+        .get_envs()
+        .find(|(key, _)| *key == "AMPLIHACK_PROFILE_USAGE_API_BASE")
+        .unwrap()
+        .1
+        .unwrap()
+        .to_owned();
+    let out = f.run(cmd.env("CLAUDE_CODE_CUSTOM_OAUTH_URL", base));
+    f.assert_selected(&out, "Z");
+    assert!(f.identity_requests().iter().any(|p| p == "Z"));
+}
+
+#[test]
+fn ordinary_children_preserve_parent_root_presence_and_fallback_children_pin_saved_root() {
+    for fallback in [false, true] {
+        for parent in ["absent", "empty", "root"] {
+            for supervise in [false, true] {
+                let f = Fixture::new();
+                if fallback {
+                    f.seed_hosted_lease();
+                }
+                private(
+                    &f.home.join(".amplihack/profile-root"),
+                    format!("{}\n", f.root.display()),
+                );
+                let mut cmd = if supervise {
+                    supervised(&f, "claude")
+                } else {
+                    f.launch("claude")
+                };
+                if parent == "absent" {
+                    cmd.env_remove("AMPLIHACK_CLAUDE_PROFILE_ROOT");
+                } else if parent == "empty" {
+                    cmd.env("AMPLIHACK_CLAUDE_PROFILE_ROOT", "");
+                }
+                let out = f.run(&mut cmd);
+                let selected = if fallback { "Z" } else { "X" };
+                assert!(out.status.success(), "{out:?}");
+                assert_eq!(f.attempts(), [selected]);
+                let observed =
+                    fs::read_to_string(f.records.join(format!("env.{selected}"))).unwrap();
+                assert_eq!(
+                    observed.lines().nth(2).unwrap_or(""),
+                    if parent == "root" || fallback {
+                        f.root.to_str().unwrap()
+                    } else {
+                        ""
+                    }
+                );
+                assert_eq!(
+                    fs::read_to_string(f.records.join(format!("root-present.{selected}"))).unwrap(),
+                    if parent != "absent" || fallback {
+                        "set\n"
+                    } else {
+                        "\n"
+                    }
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn real_profile_removal_cannot_replace_a_destination_at_the_final_spawn_barrier() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::net::UnixListener;
+    for supervise in [false, true] {
+        let f = leased();
+        let path = f.temp.path().join("launch.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let mut cmd = if supervise {
+            supervised(&f, "claude")
+        } else {
+            f.launch("claude")
+        };
+        let child = cmd
+            .env("AMPLIHACK_TEST_LAUNCH_BARRIER", &path)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let (mut barrier, _) = listener.accept().unwrap();
+        let mut event = String::new();
+        BufReader::new(barrier.try_clone().unwrap())
+            .read_line(&mut event)
+            .unwrap();
+        assert_eq!(event, "validated\n");
+        let inode = fs::metadata(f.dir("Z")).unwrap().ino();
+        let removed = f.run(&mut f.cmd(&["profile", "remove", "Z", "--yes"]));
+        assert!(
+            !removed.status.success(),
+            "mutation crossed the launch hold"
+        );
+        assert!(String::from_utf8_lossy(&removed.stderr).contains("protection unavailable"));
+        assert_eq!(fs::metadata(f.dir("Z")).unwrap().ino(), inode);
+        assert!(f.attempts().is_empty(), "barrier must precede spawn");
+        barrier.write_all(b"x").unwrap();
+        let out = child.wait_with_output().unwrap();
+        f.assert_selected(&out, "Z");
+        f.assert_child_login("Z", &f.dir("Z"));
+    }
+}
+
+#[test]
 fn fallback_child_exit_37_and_ordered_arguments_survive_both_entry_points() {
     for entry in ["claude", "launch"] {
         let f = leased();

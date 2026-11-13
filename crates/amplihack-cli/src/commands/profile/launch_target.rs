@@ -10,6 +10,21 @@ pub(super) const JOIN_ENV: &str = "AMPLIHACK_CLAUDE_PROFILE_JOIN";
 
 pub(crate) const CONTEXT_ENV: &str = "AMPLIHACK_CLAUDE_LAUNCH_CONTEXT";
 
+pub(crate) struct SpawnBarrier {
+    #[cfg(all(unix, debug_assertions))]
+    socket: Option<std::os::unix::net::UnixStream>,
+}
+impl SpawnBarrier {
+    pub(crate) fn released(&mut self) -> std::io::Result<()> {
+        #[cfg(all(unix, debug_assertions))]
+        if let Some(socket) = &mut self.socket {
+            use std::io::Write;
+            socket.write_all(b"spawned\n")?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SelectionOrigin {
@@ -215,7 +230,7 @@ impl LaunchTarget {
     }
 
     /// Applied after all builders: an ambient directory cannot replace this
-    /// destination, and descendants retain the same identity and root.
+    /// destination. Only pinned fallback descendants receive an explicit root.
     pub(crate) fn apply(&self, cmd: &mut Command) {
         if let Self::Profile(t) = self {
             // Attempts restore their own context after this application;
@@ -230,9 +245,9 @@ impl LaunchTarget {
                 cmd.env_remove(JOIN_ENV);
             }
             cmd.env("CLAUDE_CONFIG_DIR", &t.directory)
-                .env(super::PROFILE_ENV, &t.profile)
-                .env(super::ROOT_ENV, &t.root);
+                .env(super::PROFILE_ENV, &t.profile);
             if self.is_pinned() {
+                cmd.env(super::ROOT_ENV, &t.root);
                 // Claude's secure-storage override must agree with this login.
                 cmd.env("CLAUDE_SECURESTORAGE_CONFIG_DIR", &t.directory);
                 // Environment builders must not choose another credential
@@ -252,6 +267,38 @@ impl LaunchTarget {
     /// Owned protection lasts through environment application and child creation.
     pub(crate) fn prepare_launch(&self) -> Result<Option<auto_switch::LaunchHold>, ProfileError> {
         self.prepare().map_err(|error| self.contextualise(error))
+    }
+
+    /// Check the final environment and settings after every command builder.
+    /// Supervisors reconstruct intent and pass this boundary afresh as well.
+    pub(crate) fn validate_child(&self, cmd: &Command) -> Result<(), ProfileError> {
+        if self.is_pinned() {
+            super::launch_auth::validate(self.dir().expect("named target"), Some(cmd))
+                .map_err(|reason| self.contextualise(invalid(reason)))?;
+        }
+        Ok(())
+    }
+
+    /// Debug-only event seam at the protected, final pre-spawn boundary.
+    /// The fixture owns the socket and explicitly releases the hand-off.
+    pub(crate) fn spawn_barrier(&self) -> std::io::Result<SpawnBarrier> {
+        #[cfg(all(unix, debug_assertions))]
+        if self.is_pinned()
+            && let Some(path) = std::env::var_os("AMPLIHACK_TEST_LAUNCH_BARRIER")
+        {
+            use std::io::{Read, Write};
+            let mut socket = std::os::unix::net::UnixStream::connect(path)?;
+            socket.write_all(b"validated\n")?;
+            let mut release = [0];
+            socket.read_exact(&mut release)?;
+            return Ok(SpawnBarrier {
+                socket: Some(socket),
+            });
+        }
+        Ok(SpawnBarrier {
+            #[cfg(all(unix, debug_assertions))]
+            socket: None,
+        })
     }
 
     fn contextualise(&self, error: ProfileError) -> ProfileError {
@@ -325,10 +372,7 @@ impl LaunchTarget {
             .map_err(|error| self.handoff_error(error))
     }
 
-    pub(in crate::commands::profile) fn handoff_error(
-        &self,
-        error: anyhow::Error,
-    ) -> anyhow::Error {
+    pub(crate) fn handoff_error(&self, error: anyhow::Error) -> anyhow::Error {
         super::with_hint(
             self.contextualise(invalid(format!("private launch hand-off failed: {error}"))),
         )
@@ -415,7 +459,8 @@ impl LaunchTarget {
         let store = ProfileStore::from_env()?;
         if std::env::var_os(super::PROFILE_ENV).as_deref() != Some(std::ffi::OsStr::new(&t.profile))
             || std::env::var_os("CLAUDE_CONFIG_DIR").as_deref() != Some(t.directory.as_os_str())
-            || std::env::var_os(super::ROOT_ENV).as_deref() != Some(t.root.as_os_str())
+            || (t.policy_source.is_some()
+                && std::env::var_os(super::ROOT_ENV).as_deref() != Some(t.root.as_os_str()))
             || store.root().canonicalize()? != t.root
             || store.verify_profile_dir(&name)? != t.directory
         {

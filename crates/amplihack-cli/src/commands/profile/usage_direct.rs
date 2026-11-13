@@ -171,6 +171,15 @@ impl Endpoints {
         url
     }
 
+    /// Compare against the validated destination, including resolution of
+    /// refused endpoint overrides to their default. Never compare raw env.
+    pub(super) fn matches_oauth_namespace(&self, namespace: &OsStr) -> bool {
+        self.usable
+            && namespace
+                .to_str()
+                .is_some_and(|s| s.trim_end_matches('/') == self.api)
+    }
+
     pub(super) fn token_url(&self) -> &str {
         &self.token
     }

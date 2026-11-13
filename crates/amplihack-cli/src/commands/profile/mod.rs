@@ -21,6 +21,7 @@ pub(in crate::commands::profile) mod expected;
 pub(crate) mod governor_view;
 #[cfg(unix)]
 mod kind;
+mod launch_auth;
 mod launch_target;
 pub(crate) use launch_target::LaunchTarget;
 use launch_target::{JoinPolicy, SelectionOrigin};
@@ -677,9 +678,6 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
         }
         ProfileCommands::Remove { name, yes } => {
             let name = ProfileName::parse(&name)?;
-            if yes {
-                auto_switch::guard(&store, &name, auto_switch::Action::Remove)?;
-            }
             store.remove(&name, yes)?;
             println!("removed profile {name}");
         }

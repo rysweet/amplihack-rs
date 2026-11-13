@@ -56,18 +56,13 @@ pub(in crate::commands::profile) fn launch_bound(
     dir: &Path,
     platform: bool,
 ) -> Result<LaunchBound, &'static str> {
-    #[cfg(target_os = "macos")]
     if let Some(custom) = std::env::var_os("CLAUDE_CODE_CUSTOM_OAUTH_URL").filter(|v| !v.is_empty())
     {
         // A separate OAuth namespace must not send its credentials to the
         // default identity server. Reuse the explicitly configured, guarded
         // transport only when it names that same namespace.
-        let configured = std::env::var("AMPLIHACK_PROFILE_USAGE_API_BASE").ok();
-        if custom.to_str().is_none_or(|url| {
-            configured
-                .as_deref()
-                .is_none_or(|base| base.trim_end_matches('/') != url.trim_end_matches('/'))
-        }) {
+        let (endpoint, _) = crate::commands::profile::usage_direct::Endpoints::from_env();
+        if !endpoint.matches_oauth_namespace(&custom) {
             return Err(super::UNAVAILABLE);
         }
     }

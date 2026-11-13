@@ -4134,7 +4134,7 @@ Only a tier-3 selection whose directory hosts another login under an active
 lease can use the [default-profile lease fallback](#default-profile-lease-fallback).
 Explicit and inherited selections retain their existing behaviour.
 
-When a profile resolves, three variables are set on the child `Command` only
+When a profile resolves, its name and directory are set on the child `Command` only
 (never `set_var`), and only for Claude-compatible binaries. This applies to
 every command that starts Claude with a profile: `amplihack claude`,
 `amplihack launch`, `amplihack profile run` and `amplihack profile login`.
@@ -4143,7 +4143,7 @@ every command that starts Claude with a profile: `amplihack claude`,
 |----------|-------|
 | `CLAUDE_CONFIG_DIR` | `<root>/<name>`, overriding any ambient value |
 | `AMPLIHACK_CLAUDE_PROFILE` | `<name>` |
-| `AMPLIHACK_CLAUDE_PROFILE_ROOT` | The resolved `<root>` for a named `claude`, `launch` or `profile run` destination. Descendants keep this root even if the saved root changes. A launch with no named destination keeps the inherited environment. |
+| `AMPLIHACK_CLAUDE_PROFILE_ROOT` | Ordinary named launches preserve the inherited value, including absence or an empty value. A fallback exports its resolved `<root>` so descendants and supervised attempts keep that destination even if the saved root changes. |
 
 For a [default-profile lease fallback](#default-profile-lease-fallback), the
 child receives the selected profile's name, directory and root, including an
@@ -4257,7 +4257,7 @@ Ownership and group/other mode-bit checks are available on Unix. On other
 platforms, profile launches still require a real, contained directory, but
 the operating system does not expose the same checks through this command.
 
-The profile selects a configuration directory; it does not change Claude's
+An ordinary profile launch selects a configuration directory; it does not change Claude's
 authentication environment. Claude Code documents separate directories for
 claude.ai logins and API-key accounts, but two Claude Console sign-ins without
 API keys are not isolated because their credentials live outside the
@@ -4266,6 +4266,11 @@ billing instead of a subscription login. See the official
 [multiple-account](https://code.claude.com/docs/en/authentication#log-in-with-multiple-accounts)
 and [environment variable](https://code.claude.com/docs/en/env-vars)
 documentation.
+
+The [lease fallback](#default-profile-lease-fallback) additionally refuses
+authentication and billing-route substitutions that cannot be bound to the
+validated login. Ordinary explicit and inherited launches retain the above
+environment behaviour.
 
 `profile run` applies the same check as `launch --profile`: if Docker is
 active (including `AMPLIHACK_USE_DOCKER`), it fails with the unsupported-mode
@@ -5002,10 +5007,11 @@ Keychain storage. Supervisor files carry intent only; each process creating
 a Claude child authenticates the login afresh. Final policy validation uses
 the full relevant candidate pool.
 
-Linux protection-to-session-discovery validation is **pending**. Holding
-protection through child creation does not by itself demonstrate coverage
-until session discovery can observe the new child; that boundary requires
-Linux execution evidence before it can be described as validated.
+The Linux acceptance regression launches an actual fallback child, releases
+state and refresh protection, then uses normal `/proc` discovery to register
+that child's PID. Removal must then refuse the live directory through normal
+session detection. Socket events order these steps; no synthetic process
+table is used for that regression.
 
 After [lease recovery](#session-end-and-recovery), `amplihack claude` and
 `amplihack launch` choose an alternative when all of these hold:
@@ -5058,6 +5064,38 @@ checked again under launch protection for continuity with the authenticated logi
 Tokens, credential contents, token hashes and sensitive continuity evidence
 are absent from diagnostics and supervisor files. Keychain payloads are
 compared in memory during local continuity checks and are never exported.
+
+**Effective authentication.** Before identity requests and again against the
+final child command, fallback refuses non-empty `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, token/key descriptor
+overrides, custom authentication headers, API routing overrides, alternate
+cloud providers and LiteLLM gateway configuration. User, profile, project,
+local, managed and CLI settings are checked for authentication helpers and
+environment substitutions. Unsupported substitutions produce a fixed,
+credential-free refusal; they are never silently cleared. An external
+API-key login without a profile-owned authenticated OAuth identity cannot
+qualify as a fallback. Ordinary named launches keep their existing behaviour.
+
+On Linux and macOS, a non-empty `CLAUDE_CODE_CUSTOM_OAUTH_URL` must match the
+identity client's validated API base before any credential-bearing request.
+Comparison uses the resolved endpoint, including rejection of unsafe endpoint
+overrides, rather than trusting the raw environment variable. A compatible
+custom namespace remains supported. Each supervised launching process repeats
+authentication and the final effective-configuration check; context format
+`2` contains restricted intent, with no credentials or authentication proof.
+
+**Directory continuity.** The state lock is acquired before the credential
+refresh lock and retained through shared-directory preparation, private
+context creation, final command validation and child creation. Removal takes
+the same state protection before deleting the directory and holds it through
+default-pointer updates. A concurrent removal refuses while launch protection
+is held; on Linux, normal process discovery protects the directory afterwards.
+On platforms where liveness is unavailable, removal with auto-switch state
+fails closed. Profile creation cannot overwrite an existing directory, and
+rotator and login filesystem changes already participate in state protection.
+These are cooperative interlocks for amplihack commands. Arbitrary replacement
+by an external process running as the same user is outside this contract;
+path checks and cooperative locks do not prevent such replacement.
 
 **Configuration.** Fallback uses the selected profile root and existing
 [auto-switch exclusions](#auto-switch-commands),

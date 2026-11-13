@@ -669,9 +669,16 @@ fn run_launch_core(
         let launch_context = target.child_context()?;
         target.apply(&mut cmd);
         launch_context.apply(&mut cmd);
+        target
+            .validate_child(&cmd)
+            .map_err(crate::commands::profile::with_hint)?;
+        let mut spawn_barrier = target
+            .spawn_barrier()
+            .map_err(|error| target.handoff_error(error.into()))?;
         target.report();
         let spawned = ManagedChild::spawn(cmd);
         drop(launch_hold);
+        spawn_barrier.released()?;
         let mut child = match spawned {
             Ok(child) => child,
             Err(err) => {

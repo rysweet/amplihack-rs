@@ -161,7 +161,9 @@ fn overflow_requires_exhausted_plan_logins_and_an_open_unblocked_gate() {
             &f.root.join(".auto-switch"),
             "enabled=on\nthreshold=90\noverflow=Z\n",
         );
-        f.seed_usage(&[("X", plan, plan), ("Y", plan, plan), ("Z", 0.0, 0.0)]);
+        // Exercise the five-hour reset gate. Exhausting the weekly window
+        // as well would make the earliest usable reset a day away.
+        f.seed_usage(&[("X", plan, 10.0), ("Y", plan, 10.0), ("Z", 0.0, 0.0)]);
         if blocked {
             fs::create_dir_all(f.state().join("rotate")).unwrap();
             fs::set_permissions(f.state().join("rotate"), fs::Permissions::from_mode(0o700))
@@ -318,7 +320,7 @@ fn usage_limit_supervision_pins_the_selected_fallback_destination() {
                 .expect("supervised attempt must carry a pinned context"),
         )
         .unwrap();
-        assert_eq!(context["format_version"], 1);
+        assert_eq!(context["format_version"], 2);
         assert_eq!(context["profile"], "Z");
         assert_eq!(context["directory"], f.dir("Z").to_str().unwrap());
         assert_eq!(context["root"], f.root.to_str().unwrap());
@@ -360,4 +362,122 @@ fn supervised_retry_receives_its_own_validated_profile_and_directory() {
             );
         }
     }
+}
+
+#[test]
+fn actual_fallback_child_is_discovered_and_protects_its_directory_after_launch_unlocks() {
+    use fs4::fs_std::FileExt;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::fd::AsRawFd;
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::os::unix::process::CommandExt;
+    use std::process::{Child, Command, Stdio};
+
+    struct Running(Child);
+    impl Drop for Running {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    fn notify(cmd: &mut Command, socket: &UnixStream) {
+        let fd = socket.as_raw_fd();
+        // SAFETY: descriptor operations are async-signal-safe; socket remains
+        // alive until spawn consumes the closure.
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::dup2(fd, 9) < 0 || libc::fcntl(9, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    let f = Fixture::new();
+    f.seed_hosted_lease();
+    // A real host keeps X's lease alive when the launch scans real /proc.
+    let (host_event, host_notify) = UnixStream::pair().unwrap();
+    let mut host = Command::new("/bin/sh");
+    host.args(["-c", "printf 'host\n' >&9; read release <&9"])
+        .env_clear()
+        .env("CLAUDE_CONFIG_DIR", f.dir("X"));
+    notify(&mut host, &host_notify);
+    let _host = Running(host.spawn().unwrap());
+    drop(host_notify);
+    let mut event = String::new();
+    let mut host_event = BufReader::new(host_event);
+    host_event.read_line(&mut event).unwrap();
+    assert_eq!(event, "host\n");
+
+    let barrier_path = f.temp.path().join("spawn.sock");
+    let listener = UnixListener::bind(&barrier_path).unwrap();
+    let (events, child_notify) = UnixStream::pair().unwrap();
+    let mut cmd = f.launch("claude");
+    cmd.env_remove(crate::isolated_amplihack::PROC_ROOT_ENV)
+        .env("DISCOVERY_CONTRACT", "1")
+        .env("AMPLIHACK_TEST_LAUNCH_BARRIER", &barrier_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    notify(&mut cmd, &child_notify);
+    let mut launcher = Running(cmd.spawn().unwrap());
+    drop(child_notify);
+    let (barrier, _) = listener.accept().unwrap();
+    let mut barrier = BufReader::new(barrier);
+    event.clear();
+    barrier.read_line(&mut event).unwrap();
+    assert_eq!(event, "validated\n");
+    barrier.get_mut().write_all(b"x").unwrap();
+    event.clear();
+    barrier.read_line(&mut event).unwrap();
+    assert_eq!(event, "spawned\n", "launch hold must be released first");
+    let mut events = BufReader::new(events);
+    event.clear();
+    events.read_line(&mut event).unwrap();
+    let pid: u32 = event.trim().parse().unwrap();
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(f.state().join("lock"))
+        .unwrap();
+    assert!(lock.try_lock_exclusive().unwrap(), "launch hold leaked");
+    FileExt::unlock(&lock).unwrap();
+    assert!(!f.dir("Z").join(".oauth_refresh.lock").exists());
+
+    // Normal agent discovery, with no injected process table or manual
+    // profile argument, must identify the actual fallback child.
+    let discovered = f.run(
+        f.cmd(&[
+            "agent",
+            "register",
+            "fallback-child",
+            "--pid",
+            &pid.to_string(),
+            "--session",
+            "isolated",
+            "--window",
+            "fallback",
+            "--conversation",
+            "fixture-session",
+        ])
+        .env_remove(crate::isolated_amplihack::PROC_ROOT_ENV),
+    );
+    assert!(discovered.status.success(), "{discovered:?}");
+    let registry: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.home.join(".amplihack/agents/registry.json")).unwrap())
+            .unwrap();
+    assert_eq!(registry["agents"]["fallback-child"]["claude_pid"], pid);
+    // Removal now relies on normal /proc liveness, rather than launch locks.
+    let removed = f.run(
+        f.cmd(&["profile", "remove", "Z", "--yes"])
+            .env_remove(crate::isolated_amplihack::PROC_ROOT_ENV),
+    );
+    assert!(!removed.status.success());
+    assert!(
+        String::from_utf8_lossy(&removed.stderr).contains("running session"),
+        "{removed:?}"
+    );
+    assert!(f.dir("Z").exists());
+    events.get_mut().write_all(b"release\n").unwrap();
+    assert!(launcher.0.wait().unwrap().success());
+    f.assert_child_login("Z", &f.dir("Z"));
 }

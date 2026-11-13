@@ -26,19 +26,14 @@
 mod isolated_amplihack;
 mod support;
 
-#[cfg(unix)]
 #[path = "issue_1696_fixture.rs"]
 mod issue_1696_fixture;
-#[cfg(unix)]
 #[path = "issue_1696_launch_fallback.rs"]
 mod issue_1696_launch_fallback;
-#[cfg(unix)]
 #[path = "issue_1696_launch_fallback_contract.rs"]
 mod issue_1696_launch_fallback_contract;
-#[cfg(target_os = "linux")]
 #[path = "issue_1696_launch_fallback_linux.rs"]
 mod issue_1696_launch_fallback_linux;
-#[cfg(unix)]
 #[path = "issue_1696_launch_fallback_signals.rs"]
 mod issue_1696_launch_fallback_signals;
 

@@ -289,6 +289,16 @@ pub fn guard_launch(
     name: &ProfileName,
     join: bool,
 ) -> Result<LaunchHold, ProfileError> {
+    guard_mutation(store, name, Action::Launch { join })
+}
+
+/// Shared state protection for a complete operation, including its filesystem
+/// changes. Acquisition order is state, then refresh; never the reverse.
+pub(super) fn guard_mutation(
+    store: &ProfileStore,
+    name: &ProfileName,
+    action: Action,
+) -> Result<LaunchHold, ProfileError> {
     #[cfg(unix)]
     {
         if !store.root().join(".auto-switch.d").exists() {
@@ -298,7 +308,7 @@ pub fn guard_launch(
             });
         }
         let state = state::State::new(store.root())?;
-        let lock = swap::guard_held(&state, name, Action::Launch { join })?;
+        let lock = swap::guard_held(&state, name, action)?;
         Ok(LaunchHold {
             _lock: lock,
             _refresh: None,
@@ -306,7 +316,7 @@ pub fn guard_launch(
     }
     #[cfg(not(unix))]
     {
-        let _ = (store, name, join);
+        let _ = (store, name, action);
         Ok(LaunchHold {})
     }
 }

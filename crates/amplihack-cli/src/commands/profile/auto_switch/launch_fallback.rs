@@ -203,9 +203,15 @@ fn authenticate(
     };
     let kinds = kind::Ctx::load(store, None);
     let platform = kinds.kind(store, name) == kind::Kind::Platform;
+    super::super::launch_auth::validate(&store.verify_profile_dir(name)?, None).map_err(invalid)?;
     let bound =
         rotate::login_identity::launch_bound(&reader, &store.verify_profile_dir(name)?, platform)
             .map_err(invalid)?;
+    if bound.account().is_none() {
+        return Err(invalid(
+            "fallback requires an authenticated profile-owned OAuth login; external API-key storage cannot establish that identity",
+        ));
+    }
     if !bound.current()
         || bound
             .account()

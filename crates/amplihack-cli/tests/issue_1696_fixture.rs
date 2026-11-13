@@ -176,6 +176,7 @@ printf '%s\n' "$p" >> "$RECORD_DIR/attempts"
   printf '%s\n' "$AMPLIHACK_CLAUDE_PROFILE"
   printf '%s\n' "$AMPLIHACK_CLAUDE_PROFILE_ROOT"
 } > "$RECORD_DIR/env.$p"
+printf '%s\n' "${AMPLIHACK_CLAUDE_PROFILE_ROOT+set}" > "$RECORD_DIR/root-present.$p"
 printf '%s\n' "$AMPLIHACK_CLAUDE_PROFILE_JOIN" > "$RECORD_DIR/join.$p"
 printf '%s\000' "$@" > "$RECORD_DIR/args.$p"
 if [ -n "$AMPLIHACK_CLAUDE_LAUNCH_CONTEXT" ]; then
@@ -185,6 +186,11 @@ if [ -f "$CLAUDE_CONFIG_DIR/.credentials.json" ]; then
   /usr/bin/cksum < "$CLAUDE_CONFIG_DIR/.credentials.json" > "$RECORD_DIR/credential.$p"
 fi
 if [ -n "$RECORD_STDIN" ]; then cat > "$RECORD_DIR/stdin.$p"; fi
+if [ -n "$DISCOVERY_CONTRACT" ]; then
+  printf '%s\n' "$$" >&9
+  IFS= read -r release <&9
+  exit 0
+fi
 if [ -n "$SIGNAL_CONTRACT" ]; then
   trap 'printf "stopped\n" >&9; echo "Claude AI usage limit reached" >&2; exit 37' INT TERM HUP
   printf 'ready\n' >&9
