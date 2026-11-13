@@ -28,6 +28,8 @@ mod support;
 
 #[path = "issue_2329_autodrive_outcomes.rs"]
 mod issue_2329_autodrive_outcomes;
+#[path = "issue_2556_autodrive_evidence.rs"]
+mod issue_2556_autodrive_evidence;
 
 #[path = "issue_1753_expired_live.rs"]
 mod issue_1753_expired_live;

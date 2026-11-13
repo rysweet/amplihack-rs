@@ -185,3 +185,92 @@ pub fn validate_binding(b: &Binding) -> Result<()> {
     );
     Ok(())
 }
+
+/// #2556: a string the writer could not observe. The reader turns `null` and
+/// a missing key into `""`; the writer contract spells the same thing
+/// `"unknown"`.
+pub fn is_unknown(value: &str) -> bool {
+    value.trim().is_empty() || value == "unknown"
+}
+
+/// #2556: name every unknown value in the null-tolerant string fields as an
+/// `unknown-field:<path>` blocker, sorted and de-duplicated. Paths use array
+/// positions; a criterion is named by its id only when that id is one of
+/// [`CRITERIA`], so no record text reaches a blocker. A succeeded attempt has
+/// no cause to report, so its empty cause is not a blocker.
+pub fn unknown_fields(record: &CandidateRecord) -> Vec<String> {
+    let mut found = BTreeSet::new();
+    let mut check = |path: String, value: &str| {
+        if is_unknown(value) {
+            found.insert(format!("unknown-field:{path}"));
+        }
+    };
+    binding_unknowns(&mut check, "binding", &record.binding);
+    check("reviewed_head_sha".into(), &record.reviewed_head_sha);
+    check("verified_head_sha".into(), &record.verified_head_sha);
+    if let Some(range) = &record.review_range {
+        check(
+            "review_range.reviewed_head_sha".into(),
+            &range.reviewed_head_sha,
+        );
+        check(
+            "review_range.verified_head_sha".into(),
+            &range.verified_head_sha,
+        );
+        check("review_range.base_sha".into(), &range.base_sha);
+        check("review_range.observation".into(), &range.observation);
+    }
+    for (i, attempt) in record.attempts.iter().enumerate() {
+        check(format!("attempts[{i}].operation"), &attempt.operation);
+        if attempt.outcome != AttemptOutcome::Succeeded {
+            check(format!("attempts[{i}].cause"), &attempt.cause);
+        }
+        if let Some(recovery) = &attempt.recovery {
+            check(
+                format!("attempts[{i}].recovery.interface"),
+                &recovery.interface,
+            );
+            check(
+                format!("attempts[{i}].recovery.evidence"),
+                &recovery.evidence,
+            );
+        }
+    }
+    for (i, criterion) in record.criteria.iter().enumerate() {
+        let label = if CRITERIA.contains(&criterion.id.as_str()) {
+            criterion.id.clone()
+        } else {
+            i.to_string()
+        };
+        let prefix = format!("criteria[{label}]");
+        binding_unknowns(&mut check, &format!("{prefix}.binding"), &criterion.binding);
+        for (j, evidence) in criterion.evidence.iter().enumerate() {
+            check(format!("{prefix}.evidence[{j}].source"), &evidence.source);
+            check(
+                format!("{prefix}.evidence[{j}].observation"),
+                &evidence.observation,
+            );
+        }
+    }
+    found.into_iter().collect()
+}
+
+fn binding_unknowns(check: &mut impl FnMut(String, &str), prefix: &str, b: &Binding) {
+    for (name, value) in [
+        ("run_id", &b.run_id),
+        ("round_id", &b.round_id),
+        ("platform", &b.platform),
+        ("host", &b.host),
+        ("repository", &b.repository),
+        ("source_repository", &b.source_repository),
+        ("pr_url", &b.pr_url),
+        ("head_branch", &b.head_branch),
+        ("base_branch", &b.base_branch),
+        ("head_sha", &b.head_sha),
+        ("base_sha", &b.base_sha),
+        ("merge_base_sha", &b.merge_base_sha),
+        ("policy_provenance", &b.policy_provenance),
+    ] {
+        check(format!("{prefix}.{name}"), value);
+    }
+}

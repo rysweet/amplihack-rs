@@ -1,7 +1,7 @@
 ---
 title: Auto-drive Crusty Completion Contract
 description: Completion-first dispatch, decision integrity, and follow-up finalization for Crusty reviews.
-last_updated: 2026-11-11
+last_updated: 2026-11-12
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -23,14 +23,59 @@ loop's own evaluator and completion policy are unchanged.
 
 ## Contents
 
+- [Crusty loop preflight](#crusty-loop-preflight)
 - [Next-action judgment](#next-action-judgment)
 - [Rust helper operations](#rust-helper-operations)
 - [Decision format](#decision-format)
 - [Dispatch validation](#dispatch-validation)
 - [Results and accounting](#results-and-accounting)
 - [Follow-up finalization](#follow-up-finalization)
+- [Readiness assessment outcomes](#readiness-assessment-outcomes)
 - [Behavior examples](#behavior-examples)
 - [Configuration and failures](#configuration-and-failures)
+
+## Crusty loop preflight
+
+Step `step-01-crusty-loop-preflight` in `autodrive-crusty-loop.yaml` decides
+whether the Crusty loop runs. `should_run` is the string `"true"` or
+`"false"`. Steps `step-02-crusty-loop` and `step-03-record-crusty-phase` run
+only when it is `"true"`. An open PR with a verified worktree at the PR head,
+valid private state and no complete Crusty round at that head always runs the
+loop.
+
+`should_run` is `"false"` only in these cases, each with named blockers:
+
+| `skip_reason` | Observation |
+| --- | --- |
+| `merged` | The PR is merged. |
+| `closed` | The PR is closed without merging. |
+| `complete-at-head` | An evidence-valid `CLEAN` or `MINOR_ONLY` round already exists at the current PR head. |
+| `no-access` | The PR cannot be read, or cannot be identified unambiguously, through any configured authenticated interface. |
+| `no-worktree` | No linked worktree for the PR head branch can be found or verified. |
+| `no-state` | The private state directory cannot be created, or existing state is unsafe. `state_dir` is then `""`. |
+| `worktree-diverged` | The worktree and the PR head have diverged and cannot be reconciled without losing commits. |
+
+`skip_reason` is `""` if and only if `should_run` is `"true"`. It is
+informational: the step conditions compare only `should_run`.
+
+The preflight agent decides whether a round is complete at the head, using
+the rule from #2345: a `CLEAN` round, or a `MINOR_ONLY` round whose follow-up
+obligations are met. No Rust function makes that judgement. An existing open
+PR whose round at the current head is incomplete, missing or recorded at an
+older head is not `complete-at-head`, so step-02 and step-03 run.
+
+The worktree position relative to the PR head affects the result as follows:
+
+- A worktree behind the PR head is repaired with `git fetch` and
+  `git merge --ff-only`, then checked again with
+  `amplihack orch helper autodrive worktree`. The loop then runs.
+- A worktree that has diverged is reported as `worktree-diverged` and the
+  loop does not run. Reset, force and branch switches are not used.
+- A worktree ahead of the PR head is treated as the head under review, and a
+  review receipt for that local head does not count as merge readiness at a
+  different remote PR head: `completion::verify` rejects a receipt bound to
+  another head
+  (`receipt_for_a_local_ahead_head_is_not_readiness_at_another_pr_head`).
 
 ## Next-action judgment
 
@@ -172,6 +217,95 @@ available for recovery without duplicate issues. Later merge-loop filing
 remains idempotent, and finalization refuses to report readiness while a
 required follow-up is unrecorded.
 
+## Readiness assessment outcomes
+
+`amplihack orch helper autodrive assess` and `round` read the agent's
+`CandidateRecord`. A parse fault, an unknown value in a tolerant string field
+or stale evidence is reported as a recoverable, named blocker with exit 0 and
+never produces readiness. The record rules are in the skill's
+`evidence-contract.md`.
+
+Faults found by `validate_candidate` after these checks remain hard errors
+and exit non-zero, for example a criterion that is incomplete and has no
+cause. Making those recoverable is tracked separately in #2539.
+
+| Fault | Blocker |
+| --- | --- |
+| `null`, missing or `"unknown"` value in a tolerant string field | `unknown-field:<path>`, for example `unknown-field:attempts[0].cause` |
+| Any other parse failure, such as a bad enum value or an unknown key | `evidence-parse-error:<class> at line <n> column <n>` |
+| Evidence head differs from the worktree `HEAD` | `stale-evidence-head` |
+| Evidence base differs from the current base | `stale-evidence-base` |
+| Evidence merge-base differs from the current merge-base | `stale-evidence-merge-base` |
+| The worktree `HEAD` cannot be read, for example in a repository with no commits | `current-head-unreadable` |
+
+The field at line 1 column 26 in the failure reported in #2556 is
+`attempts[0].cause`: in `{"attempts":[{"cause":null` the `null` token ends at
+column 26. The writer rule in `evidence-contract.md` and in the refresh,
+remeasure and merge-round prompts is `"cause":"none"` for an attempt that
+succeeded and `"unknown"` for any value that could not be observed. The
+reader treats `null`, a missing key and `"unknown"` the same way, so a writer
+that breaks the rule produces a blocker, not a parse failure that ends the
+round. No output ever contains serde's message text, such as
+`invalid type: null, expected a string`.
+
+Unknown-field and parse blockers come first, followed by drift or
+`current-head-unreadable` blockers.
+
+The merge-base is compared only when the head and base match. Once the head
+or base has drifted, the merge-base check is skipped and only the drift
+blockers are reported. When the worktree `HEAD` cannot be read, no
+comparison is made: the only drift blocker is `current-head-unreadable`, and
+both `current_head` and `current_base` are printed as `""`.
+
+Integrity faults stay hard errors and exit non-zero, because refreshing the
+evidence cannot fix them: oversize input, an invalid binding, an invalid
+branch name, a head branch that does not match, grafts, and every Git
+failure other than reading `HEAD`.
+
+For any of these faults, `assess` prints the following, writes no snapshot
+and changes nothing in the state directory:
+
+```json
+{"status":"refresh_required","accepted":null,"readiness":"incomplete","refresh_required":true,"evidence_head":"<40 or 64 hex, or empty>","current_head":"<40 or 64 hex, or empty>","current_base":"<40 or 64 hex, or empty>","blockers":["stale-evidence-head"]}
+```
+
+Each SHA field holds 40 or 64 hexadecimal characters, or `""` when the value
+does not have that form.
+
+An accepted candidate prints the existing result with `"status":"accepted"`
+and `"refresh_required":false` added.
+
+For the same faults, `round` writes a round record with
+`merge_ready_verdict` `NOT_MERGE_READY`, `test_signal` `BLOCKED`,
+`ci_signal` `UNVERIFIED`, `accepted_evidence` null and the `blockers`
+array, and writes the blockers one per line to `<record>.findings`. The
+loop's progress check reads that file, so a writer fault that repeats at the
+same head stops the loop as no progress with the blocker named.
+Authorisation, the state directory, a record path whose parent is not the
+state directory and an existing record path remain hard errors, checked
+before anything is written.
+
+`autodrive-finalize.yaml` measures stale evidence again once:
+
+1. `accept-refreshed-readiness` assesses the refreshed candidate.
+2. When its `status` is `refresh_required`, `remeasure-readiness` builds a
+   new `CandidateRecord` at the current head, base and merge-base, and
+   `accept-remeasured-readiness` assesses it through the full pipeline. The
+   second result replaces `accepted_readiness`.
+3. `finalize-observed-action` and `reduce-observed-outcome` run only when
+   `status` is `accepted`.
+4. Otherwise `report-unaccepted-readiness` reports
+   `{"outcome":{"readiness":"incomplete","blockers":[...]},"accepted_snapshot":null}`.
+
+There is no further loop and no timer. A remeasured candidate gains no trust
+from the first assessment. `validate_reduction` still requires the evidence
+head to equal the worktree head, so a merge is never reduced against a head
+that moved after acceptance; an unreadable worktree `HEAD` also fails
+reduction. Evidence measured at a newer head still needs a Crusty
+review covering that head: `review::verify` reports `crusty-review-required`
+for substantive commits after `reviewed_head_sha`, and `completion::verify`
+rejects a receipt bound to another head.
+
 ## Behavior examples
 
 | Input and evidence | Observable result |
@@ -183,6 +317,14 @@ required follow-up is unrecorded.
 | Major findings recur with no measured progress | Existing no-progress detection or evaluator judgment stops as `STUCK`. |
 | Unresolved `CONCERNS`, evaluator says `DONE` | No phase advancement; require re-review and retain inconsistent-`DONE` safeguards. |
 | Completion decision from another run, altered sidecar, changed reviewed head, or failed child | Reject completion; no phase marker. |
+| Open PR, worktree behind the PR head, no complete round at that head | Preflight fast-forwards the worktree; `should_run="true"`, `skip_reason=""`; the Crusty loop runs. |
+| Open PR, worktree diverged from the PR head | `should_run="false"`, `skip_reason="worktree-diverged"`; the worktree is left unchanged. |
+| Merge-ready verdict with `"cause":null` in an attempt that did not succeed | `round` exits 0 with `NOT_MERGE_READY` and `unknown-field:attempts[0].cause`. |
+| Merge-ready verdict with the `cause` key removed from an attempt that did not succeed | `assess` exits 0 with `status=refresh_required` and `unknown-field:attempts[0].cause`. |
+| Refreshed candidate bound to commit A while the worktree is at commit B | `assess` exits 0 with `status=refresh_required`, `stale-evidence-head` and `current_head` B; finalize remeasures once. The candidate re-bound to B is `accepted` with `binding.head_sha` B, and only then does `finalize-observed-action` run. |
+| Remeasured candidate still refused | `report-unaccepted-readiness` records `readiness: incomplete` with the blockers and exits 0; recovery takes over. |
+| Repository with no commits, where the binding names the unborn current branch | `assess` exits 0 with `status=refresh_required`, `current_head` and `current_base` `""`, and `current-head-unreadable`. |
+| Candidate whose binding names another head branch | Hard error, non-zero exit; no refresh is attempted. |
 
 ## Configuration and failures
 

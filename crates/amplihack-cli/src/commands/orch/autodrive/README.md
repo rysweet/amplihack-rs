@@ -33,6 +33,16 @@ Agents observe and assess facts under trusted merge-ready policy.
   recovery, finalization and completion records. Exactly 13 criteria, current
   head/base/run binding, concrete observations and no contradictions establish
   structural readiness. Semantic correctness remains the agent's obligation.
+  `null_as_unknown` reads a `null` or missing value in the listed string
+  fields (every `Binding` field, `Attempt.cause` and `.operation`,
+  `reviewed_head_sha`, `verified_head_sha`, every `ReviewRange` field,
+  `Evidence.source` and `.observation`, `Recovery.interface` and `.evidence`,
+  and the `FinalizationObservation` strings) as `""`. Every other field stays
+  strict, `deny_unknown_fields` stays on every type, and serialisation is
+  unchanged. `validation::unknown_fields` reports each empty or `"unknown"`
+  value as a sorted `unknown-field:<path>` blocker. Paths use array positions
+  and only a criterion id found in the fixed criteria list. An empty cause on
+  a succeeded attempt is not reported.
 - `state`: create private directories and files, reject unsafe historical
   modes, links, traversal and special files; bound reads; validate and hash
   opened bytes; publish new snapshots atomically without replacement.
@@ -61,6 +71,52 @@ Agents observe and assess facts under trusted merge-ready policy.
 - `helper`: optional local CLI operations under `amplihack orch helper
   autodrive`. Required record validation in the recipe uses these local
   operations; platform access and recovery have no prescribed interface.
+  `assess` and `round` read stdin (at most 4 MiB) only after authorisation
+  and the state directory are established and, for `round`, the record's
+  parent is confirmed to be the state directory. They then run parse,
+  `unknown_fields`, `binding_drift` and the integrity checks in that order.
+  `binding_drift` is the public wrapper over the private `drift()`, which
+  also returns `current_head` and `current_base`. It validates the binding
+  and both branch names, and checks that the head branch matches the
+  worktree branch, before any Git command reads `HEAD`; it returns
+  `stale-evidence-head`, `stale-evidence-base` or
+  `stale-evidence-merge-base`; the merge-base is compared only when the head
+  and base match. If `git rev-parse --verify HEAD` fails (for example in a
+  repository with no commits), the read adds the fixed blocker
+  `current-head-unreadable`, sets `current_head` to `"unknown"` and
+  `current_base` to `""`, and returns before any comparison; this applies on
+  the parse-error, unknown-field and drift paths alike, and the Git error
+  goes only to `tracing::debug!`. An invalid binding, an invalid branch
+  name, a branch mismatch, grafts and every Git failure other than reading
+  `HEAD` remain hard errors, as do `validate_candidate` errors (for example
+  an incomplete criterion with no cause; see #2539). A parse, unknown-field,
+  unreadable-head or drift fault is not a hard error:
+  - `assess` prints `{"status":"refresh_required","accepted":null,
+    "readiness":"incomplete","refresh_required":true,"evidence_head",
+    "current_head","current_base","blockers"}` and exits 0. It writes no
+    snapshot, reads no follow-ups and leaves `--directory` unchanged. Success
+    adds `"status":"accepted"` and `"refresh_required":false`.
+  - `round` writes a `NOT_MERGE_READY` record (`test_signal` `BLOCKED`,
+    `ci_signal` `UNVERIFIED`, `accepted_evidence` null) with its blockers,
+    writes the same blockers one per line to `<record>.findings`, prints the
+    record and exits 0. Every round record has the same keys, including
+    `blockers`, and `blocker_count` equals their number.
+  Blocker text is built from fixed names, positions and serde's error class,
+  line and column, never from record values. Each blocker is at most 256
+  bytes with no control characters. Echoed SHAs must be 40 or 64 hexadecimal
+  characters and `round_label` must match `[A-Za-z0-9._-]{1,128}`; otherwise
+  they are written as `""`; this applies to `evidence_head`, `current_head`
+  and `current_base`, so on the unreadable-head path both `current_head` and
+  `current_base` are printed as `""`. In a repository with no commits the
+  branch check still passes when the binding names the unborn current
+  branch, so the result is `current-head-unreadable`, not a branch-mismatch
+  hard error.
+  `local_binding` keeps its three strict messages, also rejects any other
+  drift blocker (including `current-head-unreadable`), and
+  `validate_reduction` still calls it, so stale evidence or an unreadable
+  worktree `HEAD` never passes reduction. The strict check
+  runs after the merge action, so a merge is never reduced against a head
+  that has moved since acceptance.
 
 The full serialized agent contract is in the bundled skill's
 `evidence-contract.md`. `tests.rs` exercises authorization, stale/mismatched

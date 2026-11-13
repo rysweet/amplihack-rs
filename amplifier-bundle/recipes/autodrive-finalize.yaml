@@ -36,6 +36,7 @@ steps:
     prompt: |
       Read the trusted merge-ready SKILL.md and pr-description-template.md from the launch bundle, plus auto-drive-to-merge/evidence-contract.md. Verify every authoritative criterion using current concrete observations, not criterion names or a historical marker. Re-read the accepted readiness round and evaluator result {{merge_loop_result}}; both accepted round MERGE_READY and evaluator DONE are required. Observe PR #{{pr_number}} at entry. Refresh mutable checks, approvals, protection, conversations, conflicts, draft, branches/head/base and policy. Verify local linked worktree {{repo_path}} and head binding; return substantive changes to crusty, never waive review. Read back description evidence.
       Construct only a CandidateRecord using the trusted record contract. Bind it to the captured invocation {{autodrive_authorization}} and actual full identity. This final refreshed candidate must retain concrete evidence and failure/recovery attempts for every criterion.
+      No string field is ever null: a succeeded attempt has "cause":"none", and a value you cannot observe is written as "unknown", which blocks readiness (#2556).
 
       Perform no merge in this step. Return only the complete CandidateRecord. Observe the actual PR and retain concrete causes on incomplete work.
 
@@ -47,7 +48,40 @@ steps:
     command: |
       printf '%s' "${RECIPE_VAR_finalization_candidate:-}" | "${AMPLIHACK_BIN:-amplihack}" orch helper autodrive assess --invocation "$RECIPE_VAR_autodrive_invocation_file" --directory "$AUTODRIVE_STATE_DIR" --repo "$REPO_PATH"
     output: "accepted_readiness"
+  # #2556: stale or unknown evidence is a refresh outcome (exit 0), not a
+  # failure. Measure once more at the current worktree HEAD, base and
+  # merge-base, then assess that candidate through the complete pipeline. There
+  # is exactly one remeasurement; a second refusal is reported as incomplete.
+  - id: "remeasure-readiness"
+    condition: "accepted_readiness.status == 'refresh_required'"
+    output: "finalization_candidate"
+    type: "agent"
+    agent: "amplihack:core:builder"
+    parse_json: false
+    prompt: |
+      The refreshed readiness candidate was not accepted: {{accepted_readiness}}. Its blockers name what to measure again. A `stale-evidence-head`, `stale-evidence-base` or `stale-evidence-merge-base` blocker means the evidence was bound to another head, base or merge-base than local linked worktree {{repo_path}} now has; an `unknown-field:<path>` blocker names a value that was null, missing or "unknown"; an `evidence-parse-error:` blocker means the record did not match the contract.
+      Read the trusted merge-ready SKILL.md and pr-description-template.md from the launch bundle, plus auto-drive-to-merge/evidence-contract.md. Observe PR #{{pr_number}} again and bind a new CandidateRecord to the current worktree HEAD, the fetched base and their merge-base, using the same contract and captured invocation {{autodrive_authorization}} as the refresh step. Verify every criterion with current concrete observations at that head. Substantive commits after the Crusty reviewed head need a new Crusty review: report them as blockers with readiness incomplete, never waive review and never copy the old reviewed head forward as current.
+      No string field is ever null: a succeeded attempt has "cause":"none", and a value you cannot observe is written as "unknown", which blocks readiness (#2556).
+      Perform no merge in this step. Return only the complete CandidateRecord. Emit raw JSON only: the local Rust parser must reject duplicate fields before any generic JSON conversion.
+    working_dir: "{{review_dir}}"
+  - id: "accept-remeasured-readiness"
+    condition: "accepted_readiness.status == 'refresh_required'"
+    type: "bash"
+    parse_json: true
+    command: |
+      printf '%s' "${RECIPE_VAR_finalization_candidate:-}" | "${AMPLIHACK_BIN:-amplihack}" orch helper autodrive assess --invocation "$RECIPE_VAR_autodrive_invocation_file" --directory "$AUTODRIVE_STATE_DIR" --repo "$REPO_PATH"
+    output: "accepted_readiness"
+  - id: "report-unaccepted-readiness"
+    condition: "accepted_readiness.status != 'accepted'"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -euo pipefail
+      # Blockers reach jq on stdin as data; the shell never runs them as code.
+      printf '%s' "${RECIPE_VAR_accepted_readiness:-}" | jq -c '{outcome:{readiness:"incomplete",blockers:(if (.blockers|type)=="array" then .blockers else ["readiness-not-accepted"] end)},accepted_snapshot:null}'
+    output: "autodrive_finalization"
   - id: "finalize-observed-action"
+    condition: "accepted_readiness.status == 'accepted'"
     output: "finalization_observations"
     type: "agent"
     agent: "amplihack:core:builder"
@@ -64,6 +98,7 @@ steps:
       Current entry observation: {{finalization_entry}}. Run-entry preparation: {{build_result}}. Emit raw JSON only: the local Rust parser must reject duplicate fields before any generic JSON conversion.
     working_dir: "{{review_dir}}"
   - id: "reduce-observed-outcome"
+    condition: "accepted_readiness.status == 'accepted'"
     type: "bash"
     parse_json: true
     command: |
