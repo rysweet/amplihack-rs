@@ -119,8 +119,7 @@ steps:
   - id: "execute-single-round-1-development"
     recovery: {"replay": "reuse"}
     type: "recipe"
-    # force_single_workstream may be Bool(true) from CLI --set; the evaluator
-    # coerces Bool/String (fix #3069 in recipe-runner-rs).
+    # force_single_workstream may be Bool(true) from CLI --set; the evaluator coerces Bool/String (fix #3069 in recipe-runner-rs).
     condition: |
       'Development' in task_type and selected_workflow != 'quick-change' and ((workstream_count == 1 or workstream_count == '1' or workstream_count == '') or force_single_workstream == 'true')
     recipe: "default-workflow"
@@ -144,6 +143,7 @@ steps:
       'Development' in task_type and selected_workflow == 'quick-change' and ((workstream_count == 1 or workstream_count == '1' or workstream_count == '') or force_single_workstream == 'true')
     recipe: "quick-change"
     context:
+      base_branch: "{{base_branch}}"
       worktree_setup: "{{worktree_setup}}"
       allow_no_op: "{{allow_no_op}}"
       skip_pre_agent_validation: "{{skip_pre_agent_validation}}"

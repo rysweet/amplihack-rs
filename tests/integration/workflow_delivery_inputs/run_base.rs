@@ -323,11 +323,13 @@ const DECLARES_BASE_BRANCH: &[&str] = &[
 ];
 
 /// Sub-recipes that lead to default-workflow; a call to any of them passes
-/// the caller's base_branch on.
+/// the caller's base_branch on. quick-change hands over to default-workflow
+/// (#2520), so smart-execute-routing's round-1 call to it passes the value on.
 const LEADS_TO_DEFAULT_WORKFLOW: &[&str] = &[
     "default-workflow",
     "autodrive-build",
     "auto-drive-to-merge",
+    "quick-change",
     "smart-classify-route",
     "smart-execute-routing",
 ];
@@ -388,6 +390,7 @@ fn every_caller_passes_base_branch_to_default_workflow() {
         ("smart-orchestrator", "smart-classify-route", 1),
         ("smart-orchestrator", "smart-execute-routing", 1),
         ("smart-execute-routing", "default-workflow", 3),
+        ("smart-execute-routing", "quick-change", 1),
         ("quality-loop", "default-workflow", 1),
         ("oxidizer-workflow", "default-workflow", 13),
     ] {

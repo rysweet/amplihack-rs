@@ -323,7 +323,8 @@ and `auto-drive-light` clear `base_branch` and `forbidden_base_branches`, and
 Every bundled recipe on a path to `default-workflow` declares
 `base_branch: ""` and passes `base_branch: "{{base_branch}}"` in the
 `context:` of each call to `default-workflow`, `autodrive-build`,
-`auto-drive-to-merge`, `smart-classify-route` or `smart-execute-routing`:
+`auto-drive-to-merge`, `quick-change`, `smart-classify-route` or
+`smart-execute-routing`:
 
 | Recipe | Calls that pass `base_branch` |
 | ------ | ----------------------------- |
@@ -333,7 +334,7 @@ Every bundled recipe on a path to `default-workflow` declares
 | `quick-change` | `quick-change-handover`, the call to `default-workflow` |
 | `smart-orchestrator` | the calls to `smart-classify-route` and `smart-execute-routing` |
 | `smart-classify-route` | none; it declares the key only |
-| `smart-execute-routing` | all three calls to `default-workflow` |
+| `smart-execute-routing` | all three calls to `default-workflow`, and `execute-single-round-1-quick-change`, the call to `quick-change` |
 | `quality-loop` | its call to `default-workflow` |
 | `oxidizer-workflow` | all thirteen calls to `default-workflow` |
 
