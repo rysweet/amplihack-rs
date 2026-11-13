@@ -8,16 +8,24 @@
 //!   Whatever is left of that tree after the grace period gets SIGKILL, then
 //!   the session is killed, which closes any other pane (a `tail -f` you
 //!   split off) the way tmux always does, without a signal from here.
-//! - A run id (the `run_id` of an `amplihack.recipe.log_pointer` line): every
-//!   process started with `AMPLIHACK_RECIPE_RUN_ID=<run_id>` is found in
-//!   `/proc`, and the same SIGTERM, grace, SIGKILL is applied to them, their
-//!   descendants and their process groups. Linux only.
+//! - A run id (the `run_id` of an `amplihack.recipe.log_pointer` line,
+//!   issue #2175): `stop` reads the run's record (see `run_record.rs`) under
+//!   the work root it resolves, and signals only the two processes it names
+//!   and the runner's group, re-checking each start time before every
+//!   signal. It never opens `/proc` as a folder or reads another process's
+//!   `environ`, refuses to stop a run it descends from (its own, or an
+//!   outer run when it runs under a nested `recipe run`: it walks its own
+//!   parent chain, see `inside_run`), and never signals its own pid or its
+//!   parent's. A missing, untrusted or stale record is
+//!   "not found" and nothing is signalled; a lookup that fails to read gives
+//!   the reason under that message. Signal order and accepted limits are in
+//!   `docs/reference/recipe-command.md`. Linux only.
 //!
-//! The tree is found once, before any signal: by parent links and process
-//! groups, so a descendant that started its own session is still in it. Each
-//! process is recorded with its start time and is signalled only while that
-//! still matches, so a pid the kernel has reused is never hit. This process
-//! and its ancestors are never signalled.
+//! For a session, the tree is found once, before any signal: by parent
+//! links and process groups, so a descendant that started its own session is
+//! still in it. Each process is recorded with its start time and is signalled
+//! only while that still matches, so a pid the kernel has reused is never
+//! hit. This process and its ancestors are never signalled.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::{Command, Stdio};
@@ -104,17 +112,104 @@ fn stop_session(session: &str) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn stop_run_id(run_id: &str) -> Result<()> {
-    use super::process_tree::{snapshot, with_env};
-    let procs = snapshot();
-    let roots = with_env(&procs, "AMPLIHACK_RECIPE_RUN_ID", run_id);
-    let tree = snapshot_tree(&roots);
+    use super::run_record::{find, validate_run_id};
+    use crate::commands::cleanup::work_root::resolve_from_env;
+    let not_found =
+        || anyhow::anyhow!("recipe stop: no tmux session or running recipe run named {run_id:?}");
+    let inside = || anyhow::anyhow!("recipe stop: refusing to stop run {run_id:?} from inside it");
+    if !validate_run_id(run_id) {
+        bail!("recipe stop: invalid run id {run_id:?}");
+    }
+    if std::env::var("AMPLIHACK_RECIPE_RUN_ID").is_ok_and(|own| own == run_id) {
+        return Err(inside());
+    }
+    // A work root that cannot be resolved holds no record: "not found",
+    // with the reason underneath.
+    let work_root = resolve_from_env().map_err(|error| {
+        error
+            .context("cannot resolve the work root")
+            .context(not_found().to_string())
+    })?;
+    // A lookup that could not read the work root also refuses: "not found",
+    // with the reason underneath.
+    let record = find(&work_root.path, run_id)
+        .map_err(|error| error.context(not_found().to_string()))?
+        .ok_or_else(not_found)?;
+    let tree = live_targets(&record);
     if tree.is_empty() {
-        bail!("recipe stop: no tmux session or running recipe run named {run_id}");
+        return Err(not_found());
+    }
+    let group = (record.runner.pgid, record.runner.start_ticks);
+    if inside_group(group.0) || inside_run(&record) {
+        return Err(inside());
     }
     terminate(&tree);
-    let killed = sweep(&tree, STOP_GRACE);
+    signal_group_if_leader(group, libc::SIGTERM);
+    // The group gets SIGKILL before its leader, while the leader can still
+    // match its recorded start time. Only the two recorded pids are waited
+    // on: once the runner has exited, the group gets no SIGKILL from here,
+    // and members that ignored SIGTERM are left to `recipe run`'s own
+    // teardown (`snapshot_group` in `run/execute.rs`), which got SIGTERM
+    // above.
+    let survivors = wait_for_exit(&tree, STOP_GRACE);
+    signal_group_if_leader(group, libc::SIGKILL);
+    kill_survivors(&tree, &survivors);
+    let killed = survivors.len();
     report(&format!("run {run_id}"), tree.len(), killed);
     Ok(())
+}
+
+/// The processes `record` names whose start time still matches (issue
+/// #2175): never this process or its parent. Reads only those pids' `stat`.
+#[cfg(target_os = "linux")]
+pub(super) fn live_targets(record: &super::run_record::Record) -> Tree {
+    // SAFETY: getpid and getppid have no preconditions and cannot fail.
+    let protected = unsafe { [libc::getpid(), libc::getppid()] };
+    [
+        (record.recipe_run.pid, record.recipe_run.start_ticks),
+        (record.runner.pid, record.runner.start_ticks),
+    ]
+    .into_iter()
+    .filter(|(pid, start)| !protected.contains(pid) && same_process(*pid, *start))
+    .collect()
+}
+
+/// This process's session or process group is `pgid`: it was started from
+/// inside that run, so stopping the group would stop it too.
+#[cfg(target_os = "linux")]
+fn inside_group(pgid: i32) -> bool {
+    // SAFETY: getsid(0) and getpgid(0) only query this process.
+    let (sid, pg) = unsafe { (libc::getsid(0), libc::getpgid(0)) };
+    sid == pgid || pg == pgid
+}
+
+/// This process descends from the run `record` names: one of its ancestors
+/// (or itself) is the recorded `recipe run` or runner with the recorded start
+/// time, or is in the runner's process group. This is what catches a step of
+/// a nested `recipe run` asked to stop an outer run: the nested run has its
+/// own `AMPLIHACK_RECIPE_RUN_ID` and its runner its own session, but the
+/// outer runner is still on its parent chain. Reads only this process's own
+/// ancestry (see `process_tree::own_ancestry`).
+#[cfg(target_os = "linux")]
+pub(super) fn inside_run(record: &super::run_record::Record) -> bool {
+    let recorded = [
+        (record.recipe_run.pid, record.recipe_run.start_ticks),
+        (record.runner.pid, record.runner.start_ticks),
+    ];
+    super::process_tree::own_ancestry()
+        .iter()
+        .any(|p| recorded.contains(&(p.pid, p.start)) || p.pgid == record.runner.pgid)
+}
+
+/// Signals the process group `group.0` only while its leader is still the
+/// process recorded with start time `group.1`, so a reused group id is
+/// never hit.
+#[cfg(target_os = "linux")]
+fn signal_group_if_leader(group: (i32, u64), signal: libc::c_int) {
+    let (pgid, start) = group;
+    if same_process(pgid, start) {
+        signal_group(pgid, signal);
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -183,6 +278,14 @@ pub(crate) fn terminate(tree: &Tree) {
 /// Wait up to `grace` for every process in `tree` to exit, then SIGKILL the
 /// ones still running. Returns how many had to be killed.
 pub(crate) fn sweep(tree: &Tree, grace: Duration) -> usize {
+    let survivors = wait_for_exit(tree, grace);
+    kill_survivors(tree, &survivors);
+    survivors.len()
+}
+
+/// Wait up to `grace` for every process in `tree` to exit. Returns the pids
+/// still running.
+fn wait_for_exit(tree: &Tree, grace: Duration) -> Vec<i32> {
     let alive = || {
         tree.iter()
             .filter(|(pid, start)| same_process(**pid, **start))
@@ -193,11 +296,19 @@ pub(crate) fn sweep(tree: &Tree, grace: Duration) -> usize {
     while started.elapsed() < grace && !alive().is_empty() {
         thread::sleep(POLL);
     }
-    let survivors = alive();
-    for pid in &survivors {
-        signal_pid(*pid, libc::SIGKILL);
+    alive()
+}
+
+/// SIGKILL each of `survivors` that is still the process `tree` recorded.
+fn kill_survivors(tree: &Tree, survivors: &[i32]) {
+    for pid in survivors {
+        if tree
+            .get(pid)
+            .is_some_and(|start| same_process(*pid, *start))
+        {
+            signal_pid(*pid, libc::SIGKILL);
+        }
     }
-    survivors.len()
 }
 
 /// `pid` is alive, not a zombie, and still the process recorded with `start`.

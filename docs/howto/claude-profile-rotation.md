@@ -992,12 +992,17 @@ one `ALERT` and stays, as before.
 A probe that timed out or could not run shows as `<name>:failed` in the
 cycle line, never as a percentage, and writes
 `warning: rotate: probe of <name> timed out` (or `failed: <reason>`) to
-`rotate.err`. Its usage is unknown: the rotator does not choose it, does not
-count or record it as exhausted, and probes it again on the next cycle.
-While a plan profile's usage is unknown this way, the rotator does not move
-onto
+`rotate.err`. A profile with no login to use is the one exception: it shows
+as `<name>:failed` but writes no warning line, to stderr or to `rotate.err`;
+see [Logins with no token](../reference/profile-command.md#logins-with-no-token).
+The rotator does not choose a failed profile, does not count or record it as
+exhausted, and probes it again on the next cycle.
+A probe that timed out or could not run leaves that plan login's usage
+unknown, so while it lasts the rotator does not move onto
 [usage credits](#use-usage-credits-when-every-plan-login-is-exhausted); see
 [When a plan login cannot be measured](#when-a-plan-login-cannot-be-measured).
+A profile with no login is not unknown: it is read as `not_logged_in`, as
+when `claude` reported it, so it does not stop the move onto usage credits.
 A login that reached a limit shows the figures its probe read, with the
 window that ran out never below `100%`, so `work:s=100%,w=62%` is a login at
 its session limit with 38% of its week left. A login at its weekly limit
@@ -1966,6 +1971,12 @@ with no overflow profile, and probes again on the next cycle:
 A plan probe that timed out or could not run never moves work onto
 credits. If the probes keep timing out, see
 [When the host is heavily loaded](#when-the-host-is-heavily-loaded).
+
+A plan profile with no login to use (no token, no refresh token, or on
+Linux no credentials file) is not in this group. Its login is known to be
+absent, so it shows as `<name>:failed` but does not hold the move onto
+credits; see
+[Logins with no token](../reference/profile-command.md#logins-with-no-token).
 
 A plan profile whose directory fails the ownership and mode check (it is a
 symlink, is not yours, or is open to group or other users) is skipped

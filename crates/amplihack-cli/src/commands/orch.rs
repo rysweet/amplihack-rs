@@ -21,10 +21,17 @@ use std::path::PathBuf;
 
 use crate::commands::multitask;
 
+pub(crate) mod autodrive;
 mod autodrive_completion;
 mod named_branch;
 mod select_workflow;
 mod workflow_log_inventory;
+
+// TDD contracts for #2329. The implementation supplies `mod autodrive`;
+// keeping these registered makes missing implementation a visible red test.
+#[cfg(test)]
+#[path = "orch/autodrive/tests.rs"]
+mod autodrive_contract_tests;
 
 #[derive(Subcommand, Debug)]
 pub enum OrchCommands {
@@ -48,6 +55,11 @@ pub enum OrchCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum OrchHelperCommands {
+    /// Portable auto-drive record, state, and local Git operations.
+    Autodrive {
+        #[command(subcommand)]
+        operation: autodrive::helper::Operations,
+    },
     /// Prepare driver-owned identity and completion dispatch context.
     AutodriveCompletionPrepare(autodrive_completion::Prepare),
     /// Seal the round evidence before the next-action agent runs.
@@ -141,6 +153,9 @@ pub enum OrchHelperCommands {
         /// Value to print if the field is absent.
         #[arg(long, default_value = "")]
         default: String,
+        /// Accept only a JSON boolean; other types use `--default`.
+        #[arg(long)]
+        require_boolean: bool,
     },
 
     /// Reclassify a task type using deterministic dev-signal heuristics (#269).
@@ -506,6 +521,7 @@ fn read_bounded_stdin() -> String {
 /// CLI entry point for `amplihack orch helper <subcommand>`.
 pub fn run(command: OrchHelperCommands) -> Result<()> {
     match command {
+        OrchHelperCommands::Autodrive { operation } => autodrive::helper::run(operation),
         OrchHelperCommands::AutodriveCompletionPrepare(args) => autodrive_completion::prepare(args),
         OrchHelperCommands::AutodriveCompletionSeal { private_state } => {
             autodrive_completion::seal(private_state)
@@ -599,9 +615,18 @@ pub fn run(command: OrchHelperCommands) -> Result<()> {
             std::io::Write::flush(&mut std::io::stdout()).context("failed to flush stdout")?;
             Ok(())
         }
-        OrchHelperCommands::ExtractField { field, default } => {
+        OrchHelperCommands::ExtractField {
+            field,
+            default,
+            require_boolean,
+        } => {
             let input = read_stdin()?;
-            let out = extract_field(&input, &field).unwrap_or(default);
+            let out = if require_boolean {
+                extract_boolean_field(&input, &field)
+            } else {
+                extract_field(&input, &field)
+            }
+            .unwrap_or(default);
             println!("{out}");
             Ok(())
         }
@@ -770,6 +795,12 @@ pub fn extract_field(json: &str, field: &str) -> Option<String> {
         serde_json::Value::Number(n) => n.to_string(),
         other => serde_json::to_string(other).unwrap_or_default(),
     })
+}
+
+/// Extract a top-level JSON boolean without coercing strings or numbers.
+fn extract_boolean_field(json: &str, field: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(json.trim()).ok()?;
+    Some(value.as_object()?.get(field)?.as_bool()?.to_string())
 }
 
 /// Count workstreams in a decomposition JSON blob. Returns at least 1, even
@@ -1836,6 +1867,26 @@ mod tests {
     }
 
     // --- extract_field --------------------------------------------------------
+
+    #[test]
+    fn boolean_field_rejects_coercion_and_accepts_both_boolean_values() {
+        for (raw, expected) in [("true", "true"), ("false", "false")] {
+            assert_eq!(
+                extract_boolean_field(&format!(r#"{{"flag":{raw}}}"#), "flag"),
+                Some(expected.to_string())
+            );
+        }
+        for raw in [r#""true""#, r#""false""#, "1", "0", "null", "[]", "{}"] {
+            assert_eq!(
+                extract_boolean_field(&format!(r#"{{"flag":{raw}}}"#), "flag"),
+                None,
+                "{raw} is not a JSON boolean"
+            );
+        }
+        for input in ["{}", "not json", r#"{"nested":{"flag":true}}"#] {
+            assert_eq!(extract_boolean_field(input, "flag"), None);
+        }
+    }
 
     #[test]
     fn extract_field_returns_string_without_quotes() {

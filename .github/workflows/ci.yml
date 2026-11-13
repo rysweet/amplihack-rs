@@ -220,6 +220,12 @@ jobs:
       - name: Install docs — every documented path installs a real binary (issue #1412)
         shell: bash
         run: bash tests/issue_1412_install_docs_name_a_real_package.sh
+      - name: Auto-drive — the refusal helpers read only exit 79 and the runner's marker (issue #1437)
+        shell: bash
+        run: bash tests/issue_1437_autodrive_refusal.sh
+      - name: Auto-drive — an agent/API failure is not a policy refusal (issue #1437)
+        shell: bash
+        run: bash tests/issue_1437_autodrive_loop.sh
       - name: Recipes — every committing recipe prepares its identity (issue #1394)
         shell: bash
         run: bash tests/recipe_commit_identity_static_test.sh
@@ -372,9 +378,12 @@ jobs:
       - name: Recipes — auto-drive QA clears inherited GIT_* and run identity (issue #2033)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-2033-qa-git-env.sh
-      - name: Recipes — #1551 no merge outside gate
+      - name: Recipes — #2329 agentic finalization and authorization
         shell: bash
-        run: bash amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh
+        run: bash amplifier-bundle/recipes/tests/test-issue-2329-agentic-finalization.sh
+      - name: Auto-drive finalize — squash message is the PR description, not the commits (issue #2056)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-2056-squash-message.sh
       - name: Recipes — #2186 every expected check exists and passed at the head
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-2186-expected-checks.sh

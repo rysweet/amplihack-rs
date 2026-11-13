@@ -1095,13 +1095,22 @@ const STEP_12_SCHEMA: [&str; 2] = [
 fn part_d_recipe_prompts_say_how_to_run_long_commands() {
     for (recipe, id) in LONG_COMMAND_STEPS {
         let prompt = step_prompt(recipe, id);
-        for needle in [
-            "GIT_TERMINAL_PROMPT=0",
-            "setsid -w timeout --kill-after=",
-            "timeout --foreground",
-            "</dev/null",
-            "SIGTTIN",
-        ] {
+        let required = if recipe == "autodrive-merge-round" {
+            vec![
+                "GIT_TERMINAL_PROMPT=0",
+                "noninteractive execution",
+                "natural completion",
+            ]
+        } else {
+            vec![
+                "GIT_TERMINAL_PROMPT=0",
+                "setsid -w timeout --kill-after=",
+                "timeout --foreground",
+                "</dev/null",
+                "SIGTTIN",
+            ]
+        };
+        for needle in required {
             assert!(
                 prompt.contains(needle),
                 "{recipe}.yaml step `{id}` must tell the agent about `{needle}`"
