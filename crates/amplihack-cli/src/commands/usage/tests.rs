@@ -251,6 +251,9 @@ mod context_and_response_counts {
         assert!(c["tokens_per_observed_attempt"].is_null(), "{c}");
         assert!(c["input_tokens"].is_null(), "{c}");
         assert!(c["observed_attempts"].is_null(), "{c}");
+        // Nothing was observed, so no input field was absent either.
+        assert_eq!(c["unknown_reasons"], json!(["no_usage_observed"]));
+        assert_eq!(c["attempt_basis"], "unknown");
         assert_eq!(only["identifier_backed_response_count"], 0);
         assert!(only["total"].is_null());
         // The same as a session whose log holds no records at all.
@@ -323,12 +326,201 @@ mod context_and_response_counts {
         )
         .unwrap();
         assert!(has(&r, "cache_write_counter_unreported"));
+        // Each transition equals its record's `last_token_usage`; the
+        // repeated start file is a replay and is not checked at all.
+        assert!(!has(&r, "unconfirmed_cumulative_transition"));
         let v = public(&r);
         let c = context(&v, 0);
         assert_eq!(c["input_tokens"], 180);
         assert_eq!(c["observed_attempts"], 2);
         assert_eq!(c["tokens_per_observed_attempt"], 90.0);
         assert_eq!(c["unknown_reasons"], json!([]));
+    }
+
+    #[test]
+    fn a_missing_cumulative_prefix_leaves_cumulative_only_attempts_unknown() {
+        // The resume file alone: its total of 180 covers the start file's
+        // request too, while its `last_token_usage` reports 80.
+        let r = collect(
+            &manifest(json!([session(
+                "codex-session",
+                "codex",
+                json!(["codex-resume.jsonl"])
+            )])),
+            &fixture_dir(),
+        )
+        .unwrap();
+        assert!(has(&r, "unconfirmed_cumulative_transition"));
+        assert!(!r.sessions[0].complete);
+        let v = public(&r);
+        let c = context(&v, 0);
+        assert_eq!(c["input_tokens"], 180, "the input is retained");
+        assert!(c["observed_attempts"].is_null(), "{c}");
+        assert!(c["tokens_per_observed_attempt"].is_null(), "{c}");
+        assert_eq!(c["attempt_basis"], "unknown");
+        assert_eq!(c["unknown_reasons"], json!(["unknown_attempts_for_input"]));
+        // Token totals keep the whole cumulative high-water mark.
+        assert_eq!(r.total.unwrap().input + r.total.unwrap().cache_read, 180);
+    }
+
+    /// A Codex CLI `token_count` record: `[input, cached, output, reasoning]`.
+    fn token_count(total: [u64; 4], last: Option<[u64; 4]>, second: u32) -> Value {
+        let usage = |[input, read, output, reasoning]: [u64; 4]| {
+            json!({"input_tokens":input,"cached_input_tokens":read,
+                "cache_write_input_tokens":0,"output_tokens":output,
+                "reasoning_output_tokens":reasoning})
+        };
+        let mut info = json!({"total_token_usage": usage(total)});
+        if let Some(last) = last {
+            info["last_token_usage"] = usage(last);
+        }
+        json!({"type":"event_msg","timestamp":format!("2026-01-01T00:00:{second:02}Z"),
+            "payload":{"type":"token_count","info":info}})
+    }
+
+    #[test]
+    fn a_gap_between_resume_files_leaves_cumulative_only_attempts_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = |name: &str, record: Value| {
+            write(
+                dir.path(),
+                name,
+                &[
+                    json!({"type":"session_meta","payload":{"id":"s"}}),
+                    json!({"type":"turn_context","payload":{"model":"m"}}),
+                    record,
+                ],
+            )
+        };
+        file(
+            "start",
+            token_count([100, 20, 30, 10], Some([100, 20, 30, 10]), 1),
+        );
+        file(
+            "middle",
+            token_count([180, 50, 50, 15], Some([80, 30, 20, 5]), 2),
+        );
+        file(
+            "end",
+            token_count([250, 60, 60, 20], Some([70, 10, 10, 5]), 3),
+        );
+        let run = |files: Value| {
+            collect(&manifest(json!([session("s", "codex", files)])), dir.path()).unwrap()
+        };
+
+        let all = run(json!(["start", "middle", "end"]));
+        assert!(all.complete, "{:?}", all.diagnostics);
+        let v = public(&all);
+        let c = context(&v, 0);
+        assert_eq!(c["input_tokens"], 250);
+        assert_eq!(c["observed_attempts"], 3);
+        assert_eq!(c["tokens_per_observed_attempt"], 250.0 / 3.0);
+        assert_eq!(c["attempt_basis"], "cumulative_only_transitions");
+
+        // Without the middle file the last transition covers two requests.
+        let gap = run(json!(["start", "end"]));
+        assert!(!gap.complete);
+        assert!(has(&gap, "unconfirmed_cumulative_transition"));
+        assert_eq!(gap.total, all.total, "token totals are unaffected");
+        let v = public(&gap);
+        let c = context(&v, 0);
+        assert_eq!(c["input_tokens"], 250);
+        assert!(c["observed_attempts"].is_null(), "{c}");
+        unknown(c, "unknown_attempts_for_input");
+        assert_eq!(c["attempt_basis"], "unknown");
+    }
+
+    #[test]
+    fn unusable_last_usage_cannot_confirm_a_cumulative_transition() {
+        for last in [json!({}), json!("80")] {
+            let mut record = token_count([180, 50, 50, 15], None, 1);
+            record["payload"]["info"]["last_token_usage"] = last.clone();
+            let r = report(
+                "codex",
+                &[json!({"type":"session_meta","payload":{"id":"s"}}), record],
+            );
+            assert!(has(&r, "missing_or_invalid_token_field"), "{last}");
+            assert!(has(&r, "unconfirmed_cumulative_transition"), "{last}");
+            let v = public(&r);
+            let c = context(&v, 0);
+            assert!(c["observed_attempts"].is_null(), "{last}: {c}");
+            unknown(c, "unknown_attempts_for_input");
+        }
+    }
+
+    #[test]
+    fn without_last_usage_a_cumulative_transition_counts_as_one_attempt() {
+        // The documented limit: with no `last_token_usage` there is nothing
+        // to check a transition against, so a missing prefix is not detected.
+        let r = report(
+            "codex",
+            &[
+                json!({"type":"session_meta","payload":{"id":"s"}}),
+                json!({"type":"turn_context","payload":{"model":"m"}}),
+                token_count([180, 50, 50, 15], None, 1),
+            ],
+        );
+        assert!(!has(&r, "unconfirmed_cumulative_transition"));
+        let v = public(&r);
+        let c = context(&v, 0);
+        assert_eq!(c["observed_attempts"], 1);
+        assert_eq!(c["tokens_per_observed_attempt"], 180.0);
+        assert_eq!(c["unknown_reasons"], json!([]));
+    }
+
+    #[test]
+    fn a_session_without_attributed_usage_reports_no_usage_observed() {
+        // An empty log, and a log whose only response belongs to a native
+        // session that is not in the manifest.
+        for rows in [
+            vec![],
+            vec![native_usage("claude", "elsewhere", "m", usage(json!(100)))],
+        ] {
+            let r = report("claude", &rows);
+            assert!(has(&r, "no_usage_observed"));
+            let v = public(&r);
+            let c = context(&v, 0);
+            assert!(c["input_tokens"].is_null(), "{c}");
+            assert!(c["observed_attempts"].is_null(), "{c}");
+            assert_eq!(c["unknown_reasons"], json!(["no_usage_observed"]));
+        }
+    }
+
+    #[test]
+    fn claude_subagent_records_count_in_the_parent_direct_context() {
+        // Claude Code subagent transcripts carry the parent's `sessionId`
+        // with `isSidechain: true`. Ownership follows `sessionId`, so their
+        // requests are the parent's direct requests wherever they are listed.
+        let dir = tempfile::tempdir().unwrap();
+        let mut sub = native_usage("claude", "s", "msg_sub", usage(json!(10)));
+        sub["isSidechain"] = json!(true);
+        sub["agentId"] = json!("a1");
+        write(
+            dir.path(),
+            "main",
+            &[native_usage("claude", "s", "msg_main", usage(json!(100)))],
+        );
+        write(dir.path(), "agent", &[sub]);
+        let mut child = session("agent-entry", "claude", json!(["agent"]));
+        child["parent"] = json!("s");
+        for sessions in [
+            json!([session("s", "claude", json!(["main", "agent"]))]),
+            json!([session("s", "claude", json!(["main"])), child]),
+        ] {
+            let v = public(&collect(&manifest(sessions), dir.path()).unwrap());
+            let c = context(&v, 0);
+            assert_eq!(c["input_tokens"], 130 + 40);
+            assert_eq!(c["observed_attempts"], 2);
+            assert_eq!(c["tokens_per_observed_attempt"], 85.0);
+            assert_eq!(v["sessions"][0]["identifier_backed_response_count"], 2);
+            if let Some(entry) = v["sessions"].get(1) {
+                assert!(entry["direct"].is_null(), "{entry}");
+                assert_eq!(
+                    entry["context_per_request"]["unknown_reasons"],
+                    json!(["no_usage_observed"])
+                );
+            }
+        }
     }
 
     #[test]

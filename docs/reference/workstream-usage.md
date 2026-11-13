@@ -86,7 +86,13 @@ or certify accounting completeness.
 
 - Claude messages deduplicate globally by provider message ID, merging streamed
   usage by component maxima. Copied history uses its native `sessionId` to retain
-  the original owner. Cache creation totals include 5-minute/1-hour partitions;
+  the original owner. Claude Code subagent transcripts
+  (`<session>/subagents/agent-*.jsonl`) mark their records `isSidechain: true`
+  but carry the parent's `sessionId`, so their usage is direct usage of the
+  parent session wherever the file is listed; list them in the parent's entry.
+  A child entry holding only such a file owns nothing. A separate `claude`
+  process has its own `sessionId` and is a child in its own right. Cache
+  creation totals include 5-minute/1-hour partitions;
   the partitions are displayed without adding them again. An unpartitioned
   remainder has unknown duration. Claude reasoning remains inside output when
   the native record does not expose a separate count.
@@ -117,7 +123,9 @@ or certify accounting completeness.
   resume files. Per-native-session high-water deltas are taken before subtracting
   cache-read/cache-write and reasoning subsets, and before assigning a delta to
   its model. Model changes do not reset the baseline. Repeated total snapshots
-  and `last_token_usage` alongside cumulative snapshots add nothing. Standalone
+  and `last_token_usage` alongside cumulative snapshots add nothing; the latter
+  only confirms whether a transition is one request (see context per request).
+  Standalone
   last-only usage needs a stable request/response ID; otherwise known fields
   remain non-additive unresolved evidence. Counter regressions remain incomplete
   lower bounds; no reset epoch is guessed. Delayed cache/reasoning subsets across
@@ -134,8 +142,10 @@ or certify accounting completeness.
   cumulative counters are scoped to native session identity. Copied histories
   that erase original IDs cannot be reliably reconstructed.
 - `observed_attempts` means unique provider responses/messages where available,
-  or positive cumulative-only Codex transitions. Cumulative remainders have unknown
-  attempts; zero observed attempts is not zero actual provider calls. Exact provider invocation counts,
+  or positive cumulative-only Codex transitions. A transition that its record's
+  `last_token_usage` does not confirm still counts here as one transition, while
+  the session is diagnosed incomplete and its context attempts are unknown.
+  Cumulative remainders have unknown attempts; zero observed attempts is not zero actual provider calls. Exact provider invocation counts,
   including unlogged failed calls, are unknown. Models and token buckets remain
   separate in JSON; `reasoning_in_output` makes Claude's unsplit reasoning explicit. Timestamp bounds cover observed usage, not wall-clock work.
 - Unknown models are retained, and API list-price estimates and price references
@@ -174,7 +184,12 @@ Context is direct session input divided by compatible observed attempts, in
 request, not a measurement of context-window occupancy. Claude input adds disjoint
 new, cache-read and cache-write buckets after response deduplication. Codex input
 already includes cache subsets and is counted once. Output, reasoning, duration
-partitions and inclusive child totals are excluded.
+partitions and inclusive child totals are excluded. Claude Code subagent
+requests are not excluded: they share the parent's `sessionId` (see the
+counting contract), so once their transcripts are listed they count as direct
+requests of the parent, and the parent's estimate mixes the subagents' own,
+usually smaller, contexts with the main thread's. `isSidechain` is not used to
+separate them.
 
 Operands and the ratio are nullable; an explicit observed zero input remains
 numeric with a compatible positive denominator. A zero or unknown denominator
@@ -183,6 +198,10 @@ invalidate the ratio while known token lower bounds remain in the usage fields.
 Unknown reasons are sorted and unique:
 
 - `zero_observed_attempts`: known denominator is zero.
+- `no_usage_observed`: no usage record was attributed to the session, as with
+  an empty log, a log of client-generated records only, or records whose
+  native session is not in the manifest. Input and attempts are null. No field
+  was absent, so this is not `missing_input_fields`.
 - `missing_input_fields`: a required input bucket is absent. Claude requires
   `input_tokens`, `cache_read_input_tokens` and `cache_creation_input_tokens`.
   Codex requires `input_tokens` and `cached_input_tokens`; Codex CLI
@@ -190,7 +209,9 @@ Unknown reasons are sorted and unique:
   counts as zero, and a present value is validated and joins the subset check.
 - `invalid_input_fields`: an input bucket is not an unsigned integer.
 - `overlapping_input_subsets`: cache subsets cannot be disjoint within input.
-- `unknown_attempts_for_input`: retained input has no corresponding known attempts.
+- `unknown_attempts_for_input`: retained input has no corresponding known
+  attempts, as for a cumulative remainder beside identified responses or an
+  unconfirmed cumulative-only transition.
 - `unidentified_response_input`: a response-level usage record has no stable
   response identity, so its input can be neither deduplicated nor counted;
   `input_tokens` and `observed_attempts` are both null rather than a partial sum.
@@ -201,11 +222,27 @@ Unknown reasons are sorted and unique:
 - `arithmetic_overflow`: exact input or attempt accumulation exceeds `u64`.
 
 The attempt basis is `identifier_backed_responses`, `cumulative_only_transitions`,
-`unknown`, or `incompatible`. Corroborating cumulative snapshots add no attempts;
-a missing cumulative prefix retains input with unknown attempts. Cumulative-only
-positive high-water transitions can supply a compatible denominator. Replayed
-snapshots add nothing. Missing, malformed and incompatible observations are never
-silently dropped from context validity.
+`unknown`, or `incompatible`. Corroborating cumulative snapshots add no attempts.
+Beside identified responses, a missing cumulative prefix is the unknown
+remainder described in the counting contract: its input is retained with
+unknown attempts.
+
+Without identified responses, each positive high-water transition of a native
+session can supply one attempt. Codex CLI `event_msg/token_count` records carry
+`last_token_usage`, the request that moved `total_token_usage`, and a
+transition counts as one attempt only when its delta equals that value. When
+the start of the thread is missing, or a resume file between two listed files
+is missing, the first transition after the gap covers several requests, so its
+delta is larger than the record's last usage. Whenever the two differ, the
+input is retained, attempts are unknown with `unknown_attempts_for_input`, and
+the session is diagnosed
+`unconfirmed_cumulative_transition` and incomplete. A present
+`last_token_usage` without usable counters cannot confirm a transition either.
+`thread_token_usage` snapshots and records without `last_token_usage` carry no
+such evidence: each positive transition counts as one attempt, and a missing
+prefix there is not detected. Replayed snapshots add nothing. Missing,
+malformed and incompatible observations are never silently dropped from
+context validity.
 
 Provider labels are validated, preserving spelling for unsupported providers.
 Only exact `claude` and `codex` select adapters. An unsupported provider retains

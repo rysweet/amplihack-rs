@@ -14,7 +14,22 @@ pub(super) enum Event {
         tokens: Option<Tokens>,
         cumulative: bool,
         input: InputEvidence,
+        last: LastUsage,
     },
+}
+
+/// What a cumulative record says about the request that moved its total.
+#[derive(Clone, Debug)]
+pub(super) enum LastUsage {
+    /// No `last_token_usage` beside the total. Responses, last-only records
+    /// and `thread_token_usage` snapshots have none, so a positive high-water
+    /// transition cannot be checked and is taken as one request.
+    Unreported,
+    /// Codex `token_count` reports the request behind each total. `None` means
+    /// the field is present without a usable counter, so the transition
+    /// cannot be confirmed as one request. Boxed so that every usage event
+    /// does not grow by a second set of counters.
+    Reported(Option<Box<Tokens>>),
 }
 
 pub(super) struct Parsed {
@@ -115,6 +130,7 @@ fn claude(v: &Value, p: &mut Parsed) {
         tokens,
         cumulative: false,
         input: input_evidence(&Provider::Claude, u),
+        last: LastUsage::Unreported,
     });
 }
 
@@ -217,6 +233,7 @@ fn codex(v: &Value, p: &mut Parsed) {
                 tokens,
                 cumulative: false,
                 input: input_evidence(&Provider::Codex, &payload["usage"]),
+                last: LastUsage::Unreported,
             });
         }
         if payload["thread_token_usage"].is_object() {
@@ -227,6 +244,7 @@ fn codex(v: &Value, p: &mut Parsed) {
                 tokens: codex_tokens(&payload["thread_token_usage"], &mut p.diagnostics),
                 cumulative: true,
                 input: input_evidence(&Provider::Codex, &payload["thread_token_usage"]),
+                last: LastUsage::Unreported,
             });
         }
         return;
@@ -239,16 +257,24 @@ fn codex(v: &Value, p: &mut Parsed) {
         return;
     }
     let total = &info["total_token_usage"];
+    let last_usage = &info["last_token_usage"];
     let cumulative = total.is_object();
-    let u = if cumulative {
-        total
-    } else {
-        &info["last_token_usage"]
-    };
+    let u = if cumulative { total } else { last_usage };
     if !u.is_object() {
         p.diagnostics.push("missing_usage");
         return;
     }
+    // Beside a total, `last_token_usage` is the request that moved it. The
+    // aggregator compares it with the high-water delta, so a missing prefix
+    // or a gap between files is not counted as a single request.
+    let last = if !cumulative || last_usage.is_null() {
+        LastUsage::Unreported
+    } else if last_usage.is_object() {
+        LastUsage::Reported(codex_tokens(last_usage, &mut p.diagnostics).map(Box::new))
+    } else {
+        p.diagnostics.push("missing_or_invalid_token_field");
+        LastUsage::Reported(None)
+    };
     p.event = Some(Event::Usage {
         key: label(&payload["response_id"])
             .or_else(|| label(&payload["request_id"]))
@@ -258,6 +284,7 @@ fn codex(v: &Value, p: &mut Parsed) {
         tokens: codex_tokens(u, &mut p.diagnostics),
         cumulative,
         input: input_evidence(&Provider::Codex, u),
+        last,
     });
 }
 

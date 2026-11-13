@@ -1,6 +1,6 @@
 //! Global response identity wins; cumulative-only history fills an explicitly unknown remainder.
 use super::{
-    adapters::Event,
+    adapters::{Event, LastUsage},
     assemble,
     collect::{Observation, diagnostic},
     models::*,
@@ -26,6 +26,8 @@ struct Snapshots {
     highwater: Tokens,
     fallback: ModelMap,
     ambiguous_subsets: bool,
+    /// A positive transition differed from its record's `last_token_usage`.
+    unconfirmed_transition: bool,
     input: InputEvidence,
 }
 
@@ -99,6 +101,7 @@ pub(super) fn aggregate(
             tokens,
             cumulative,
             input,
+            last: last_usage,
         } = o.event
         else {
             continue;
@@ -290,6 +293,11 @@ pub(super) fn aggregate(
                 state.input.reasons.insert("incompatible_attempt_basis");
             }
             let delta = difference(tokens, state.highwater);
+            // A transition is one request only when the record's own
+            // `last_token_usage` equals it. A missing prefix or a gap between
+            // files folds several requests into one transition.
+            state.unconfirmed_transition |= delta.total() > 0
+                && matches!(&last_usage, LastUsage::Reported(l) if l.as_deref() != Some(&delta));
             state.ambiguous_subsets |= invalid_subsets(delta);
             state.highwater.max(tokens);
             let attempts = u64::from(delta.total() > 0);
@@ -360,7 +368,25 @@ pub(super) fn aggregate(
     }
     for ((provider, group), s) in snapshots {
         let bucket = &mut buckets[s.owner.unwrap_or(m.sessions.len())];
-        if let Some(identified) = identified_totals.get(&(provider.clone(), group)) {
+        let identified = identified_totals.get(&(provider.clone(), group));
+        // Without identified responses the transitions are the only attempt
+        // evidence. An unconfirmed one keeps its input and tokens, but the
+        // number of requests behind it is unknown. Beside identified responses
+        // a missing prefix is the unknown remainder handled below.
+        if identified.is_none() && s.unconfirmed_transition {
+            diagnostic(
+                &mut ds,
+                Some(s.source),
+                None,
+                None,
+                "unconfirmed_cumulative_transition",
+            );
+            incomplete_owner(&mut ds, s.owner);
+            if let Some(owner) = s.owner {
+                contexts[owner].reasons.insert("unknown_attempts_for_input");
+            }
+        }
+        if let Some(identified) = identified {
             let remainder = difference(s.highwater, *identified);
             if let Some(owner) = s.owner {
                 contexts[owner]
@@ -436,7 +462,8 @@ pub(super) fn aggregate(
                 let attempts = s
                     .fallback
                     .values()
-                    .try_fold(0u64, |n, u| n.checked_add(u.observed_attempts));
+                    .try_fold(0u64, |n, u| n.checked_add(u.observed_attempts))
+                    .filter(|_| !s.unconfirmed_transition);
                 contexts[owner].add(
                     &provider,
                     Some(s.highwater),
@@ -585,8 +612,11 @@ impl ContextState {
         if self.basis == "unknown" {
             self.input = None;
             self.attempts = None;
+            // Every path that reaches this state with an observation also
+            // names a reason. With none, no usage record was attributed to
+            // the session: nothing was observed, and no field was absent.
             if self.reasons.is_empty() {
-                self.reasons.insert("missing_input_fields");
+                self.reasons.insert("no_usage_observed");
             }
         }
         if self.attempts == Some(0) {
