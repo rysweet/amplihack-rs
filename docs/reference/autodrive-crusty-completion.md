@@ -49,9 +49,9 @@ After the round record is written, an agent reads the record and its
 After a round with commits, `reviewed_head_sha` differing from `head_sha` is
 expected and is not invalid evidence; it only means the new head has not been
 reviewed. The `.minor` sidecar is required only for `MINOR_ONLY`. Dispatch
-checks the sidecars itself: `CLEAN` and `MINOR_ONLY` need an empty
-`.findings` sidecar, and `MINOR_ONLY` also needs a non-empty `.minor` and a
-`.severity` sidecar.
+checks the sidecars itself: every round needs a `.findings` sidecar, `CLEAN`
+and `MINOR_ONLY` need it empty, and `MINOR_ONLY` also needs a non-empty
+`.minor` and a `.severity` sidecar.
 
 The agent always runs the Rust writer and records a decision. It stops
 without a decision only when the writer itself fails. It writes the reason in
