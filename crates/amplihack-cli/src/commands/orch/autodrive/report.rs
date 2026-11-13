@@ -64,6 +64,43 @@ fn accepted_outcome(
     expected_pr: Option<&str>,
     working_dir: &std::path::Path,
 ) -> Result<Outcome> {
+    if let Some(raw) = context
+        .get("autodrive_finalization")
+        .filter(|v| !matches!(v, Value::String(s) if s.is_empty()))
+    {
+        let receipt = context_value(raw)?;
+        if receipt.get("completion_snapshot").is_some()
+            && receipt["outcome"]["action"] == "handed_off"
+        {
+            let directory = auth
+                .state_dir()
+                .context("no runner-assigned handoff state")?;
+            require_assigned_state_dir(
+                "autodrive_state_dir",
+                context.get("autodrive_state_dir"),
+                directory,
+            )?;
+            let build = context.get("build_result").map(context_value).transpose()?;
+            require_assigned_state_dir(
+                "build_result.state_dir",
+                build.as_ref().and_then(|v| v.get("state_dir")),
+                directory,
+            )?;
+            let store = EvidenceStore::create(directory)?;
+            let repo = receipt["repo"]
+                .as_str()
+                .context("handoff has no worktree")?;
+            let outcome =
+                super::handoff::validate_report(auth, &store, &receipt, &working_dir.join(repo))?;
+            if let Some(pr) = expected_pr.filter(|p| !p.is_empty()) {
+                ensure!(
+                    pr.parse::<u64>()? == outcome.binding.pr_number,
+                    "handoff changed selected PR"
+                );
+            }
+            return Ok(outcome);
+        }
+    }
     let raw = context
         .get("finalization_observations")
         .context("no finalization observations")?;
@@ -204,6 +241,12 @@ fn already_merged(
     let binding: Binding = serde_json::from_value(value["binding"].clone())
         .context("already-merged PR identity missing")?;
     super::validation::validate_binding(&binding)?;
+    let directory = auth
+        .state_dir()
+        .context("already-merged completion requires resolved drive policy")?;
+    let store = EvidenceStore::create(directory)?;
+    let policy = super::policy::load(auth, &store, &binding)?;
+    super::policy::require(auth, &store, &policy, super::policy::DriveMode::Merge)?;
     auth.validate_selection(&binding)?;
     ensure!(
         binding.run_id == auth.run_id()

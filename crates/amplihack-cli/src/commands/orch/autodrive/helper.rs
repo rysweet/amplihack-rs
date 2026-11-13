@@ -6,9 +6,45 @@ use anyhow::{Context, Result, ensure};
 use clap::Subcommand;
 use std::path::PathBuf;
 
-/// Local, portable operations. None invokes hosting APIs or performs a merge.
+/// Drive evidence and hosting operations. None performs or schedules a merge.
 #[derive(Debug, Subcommand)]
 pub enum Operations {
+    /// Validate durable policy and production readiness before merge dispatch.
+    AuthoriseMerge {
+        #[arg(long)]
+        invocation: PathBuf,
+        #[arg(long)]
+        directory: PathBuf,
+        #[arg(long)]
+        repo: PathBuf,
+        #[arg(long)]
+        accepted: PathBuf,
+    },
+    /// Resolve drive policy against the authenticated target base (stdin Binding).
+    ResolvePolicy {
+        #[arg(long)]
+        invocation: PathBuf,
+        #[arg(long)]
+        directory: PathBuf,
+    },
+    /// Convert and confirm an open, ready PR under private handoff policy (stdin Binding).
+    PrepareHandoff {
+        #[arg(long)]
+        invocation: PathBuf,
+        #[arg(long)]
+        directory: PathBuf,
+    },
+    /// Replay readiness and complete a steward handoff without any merge capability.
+    CompleteHandoff {
+        #[arg(long)]
+        invocation: PathBuf,
+        #[arg(long)]
+        directory: PathBuf,
+        #[arg(long)]
+        repo: PathBuf,
+        #[arg(long)]
+        accepted: PathBuf,
+    },
     /// Seal the loop's accepted round plus evaluator DONE for this invocation.
     CompleteLoop {
         #[arg(long)]
@@ -92,6 +128,74 @@ pub enum Operations {
 }
 pub fn run(op: Operations) -> Result<()> {
     match op {
+        Operations::AuthoriseMerge {
+            invocation,
+            directory,
+            repo,
+            accepted,
+        } => {
+            let auth = InvocationAuthorization::read_private(&invocation)?;
+            let store = EvidenceStore::create(&directory)?;
+            let candidate: CandidateRecord = serde_json::from_slice(&store.read_path(&accepted)?)?;
+            let mut host = super::hosting::Github::new(&candidate.binding)?;
+            println!(
+                "{}",
+                authorise_merge(&auth, &store, &repo, &accepted, &mut host)?
+            );
+        }
+        Operations::ResolvePolicy {
+            invocation,
+            directory,
+        } => {
+            let auth = InvocationAuthorization::read_private(&invocation)?;
+            let store = EvidenceStore::create(&directory)?;
+            let binding: Binding =
+                serde_json::from_slice(&stdin_bytes()?).context("invalid policy PR binding")?;
+            let mut hosting = super::hosting::Github::new(&binding)?;
+            let policy = super::policy::resolve(&auth, &store, &binding, &mut hosting)?;
+            let mut result = serde_json::to_value(&policy)?;
+            result["action"] = if !auth.allows_drive() {
+                "verify_readiness"
+            } else {
+                match policy.mode {
+                    super::policy::DriveMode::Merge => "merge",
+                    super::policy::DriveMode::Handoff => "handoff",
+                }
+            }
+            .into();
+            println!("{result}");
+        }
+        Operations::PrepareHandoff {
+            invocation,
+            directory,
+        } => {
+            let auth = InvocationAuthorization::read_private(&invocation)?;
+            let store = EvidenceStore::create(&directory)?;
+            let binding: Binding = serde_json::from_slice(&stdin_bytes()?)
+                .context("invalid preparation PR binding")?;
+            let policy = super::policy::load(&auth, &store, &binding)?;
+            let mut hosting = super::hosting::Github::new(&binding)?;
+            println!(
+                "{}",
+                super::handoff::prepare(&auth, &store, &policy, &mut hosting)?
+            );
+        }
+        Operations::CompleteHandoff {
+            invocation,
+            directory,
+            repo,
+            accepted,
+        } => {
+            let auth = InvocationAuthorization::read_private(&invocation)?;
+            let store = EvidenceStore::create(&directory)?;
+            let candidate: CandidateRecord = serde_json::from_slice(&store.read_path(&accepted)?)?;
+            let policy = super::policy::load(&auth, &store, &candidate.binding)?;
+            let mut hosting = super::hosting::Github::new(&candidate.binding)?;
+            println!(
+                "{}",
+                super::handoff::complete(&auth, &store, &policy, &repo, &accepted, &mut hosting)?
+            );
+        }
         Operations::CompleteLoop {
             invocation,
             directory,
@@ -132,33 +236,12 @@ pub fn run(op: Operations) -> Result<()> {
         } => {
             let auth = InvocationAuthorization::read_private(&invocation)?;
             let store = EvidenceStore::create(&directory)?;
-            ensure!(
-                record
-                    .parent()
-                    .context("round record has no parent")?
-                    .canonicalize()?
-                    == directory.canonicalize()?,
-                "round record is outside state"
-            );
             let candidate: CandidateRecord =
                 serde_json::from_slice(&stdin_bytes()?).context("invalid agent round evidence")?;
-            local_binding(&repo, &candidate.binding)?;
-            super::review::verify(&repo, &candidate)?;
-            let accepted = validate_candidate(&auth, &candidate.binding, &candidate)?;
-            store.snapshot_references(accepted.record())?;
-            let evidence = store.snapshot(&serde_json::to_vec(accepted.record())?)?;
-            let ready = accepted.record().readiness == Readiness::MergeReady;
-            let result = serde_json::json!({"merge_ready_verdict":if ready {"MERGE_READY"} else {"NOT_MERGE_READY"}, "blocker_count":candidate.blockers.len(), "head_sha":candidate.binding.head_sha, "round_label":candidate.binding.round_id, "accepted_evidence":evidence, "test_signal":if ready {"PASS"} else {"BLOCKED"}, "ci_signal":if ready {"GREEN"} else {"UNVERIFIED"}});
-            let mut findings = String::new();
-            for c in &candidate.criteria {
-                if !c.blockers.is_empty() {
-                    findings.push_str(&c.id);
-                    findings.push('\n');
-                }
-            }
-            write_new_private(&record.with_extension("json.findings"), findings.as_bytes())?;
-            write_new_private(&record, &serde_json::to_vec(&result)?)?;
-            println!("{result}");
+            println!(
+                "{}",
+                accept_round(&auth, &store, &repo, &record, &candidate)?
+            );
         }
         Operations::Reduce {
             accepted: accepted_path,
@@ -264,6 +347,73 @@ pub fn run(op: Operations) -> Result<()> {
     Ok(())
 }
 
+/// Accept one readiness round under the parent loop's private invocation.
+pub(crate) fn accept_round(
+    auth: &InvocationAuthorization,
+    store: &EvidenceStore,
+    repo: &std::path::Path,
+    record: &std::path::Path,
+    candidate: &CandidateRecord,
+) -> Result<serde_json::Value> {
+    store.require_bound(auth)?;
+    ensure!(
+        record
+            .parent()
+            .context("round record has no parent")?
+            .canonicalize()?
+            == store.root(),
+        "round record is outside state"
+    );
+    local_binding(repo, &candidate.binding)?;
+    super::review::verify(repo, candidate)?;
+    let accepted = validate_candidate(auth, &candidate.binding, candidate)?;
+    store.snapshot_references(accepted.record())?;
+    let evidence = store.snapshot(&serde_json::to_vec(accepted.record())?)?;
+    let ready = accepted.record().readiness == Readiness::MergeReady;
+    let result = serde_json::json!({"merge_ready_verdict":if ready {"MERGE_READY"} else {"NOT_MERGE_READY"}, "blocker_count":candidate.blockers.len(), "head_sha":candidate.binding.head_sha, "round_label":candidate.binding.round_id, "accepted_evidence":evidence, "test_signal":if ready {"PASS"} else {"BLOCKED"}, "ci_signal":if ready {"GREEN"} else {"UNVERIFIED"}});
+    let mut findings = String::new();
+    for criterion in &candidate.criteria {
+        if !criterion.blockers.is_empty() {
+            findings.push_str(&criterion.id);
+            findings.push('\n');
+        }
+    }
+    write_new_private(&record.with_extension("json.findings"), findings.as_bytes())?;
+    write_new_private(record, &serde_json::to_vec(&result)?)?;
+    Ok(result)
+}
+
+/// Validate the merge dispatch boundary using controlled or authenticated hosting.
+pub(crate) fn authorise_merge(
+    auth: &InvocationAuthorization,
+    store: &EvidenceStore,
+    repo: &std::path::Path,
+    accepted: &std::path::Path,
+    host: &mut impl super::hosting::PolicyHosting,
+) -> Result<serde_json::Value> {
+    let candidate: CandidateRecord = serde_json::from_slice(&store.read_path(accepted)?)?;
+    let policy = super::policy::load(auth, store, &candidate.binding)?;
+    super::policy::require(auth, store, &policy, super::policy::DriveMode::Merge)?;
+    local_binding(repo, &candidate.binding)?;
+    super::review::verify(repo, &candidate)?;
+    validate_candidate(auth, &candidate.binding, &candidate)?;
+    ensure!(
+        candidate.readiness == Readiness::MergeReady,
+        "merge-readiness-incomplete"
+    );
+    store.snapshot_references(&candidate)?;
+    super::completion::verify(auth, store.root(), &candidate)?;
+    let observed = host.observe_pr(&candidate.binding)?;
+    ensure!(
+        super::policy::same_binding(&observed.binding, &candidate.binding)
+            && observed.state == PlatformState::Open
+            && !observed.draft
+            && host.base_tip(&candidate.binding)? == candidate.binding.base_sha,
+        "merge-platform-changed: refresh readiness before dispatch"
+    );
+    Ok(serde_json::json!({"authorised":true,"binding":candidate.binding}))
+}
+
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Envelope {
@@ -328,7 +478,7 @@ fn stdin_bytes() -> Result<Vec<u8>> {
     );
     Ok(bytes)
 }
-fn local_binding(repo: &std::path::Path, b: &Binding) -> Result<()> {
+pub(crate) fn local_binding(repo: &std::path::Path, b: &Binding) -> Result<()> {
     validate_binding(b)?;
     ensure!(
         trusted::git(repo, &["rev-parse", "--verify", "HEAD"])? == b.head_sha,

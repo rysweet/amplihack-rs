@@ -764,6 +764,12 @@ pub(super) fn execute_recipe_via_rust_fresh(
         let state_dir =
             assign_autodrive_state_dir(explicit_inputs, &workspace.borrow(), &launch.home)?;
         auth.bind_state_dir(state_dir.clone());
+        // Helpers read the same state-bound authority used by runner reporting.
+        std::fs::write(
+            launch.home.join("invocation.json"),
+            serde_json::to_vec(auth)?,
+        )?;
+        invocation_context.insert("merge".into(), auth.mode_input().into());
         invocation_context.insert("no_merge".into(), auth.no_merge().to_string());
         invocation_context.insert("autodrive_dry_run".into(), auth.dry_run().to_string());
         invocation_context.insert(

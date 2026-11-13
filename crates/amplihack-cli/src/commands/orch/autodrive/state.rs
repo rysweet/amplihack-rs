@@ -22,6 +22,62 @@ impl AcceptedSnapshot {
 }
 
 impl EvidenceStore {
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+    pub(crate) fn require_bound(&self, auth: &InvocationAuthorization) -> Result<()> {
+        ensure!(
+            auth.state_dir()
+                .context("drive state is not bound")?
+                .canonicalize()?
+                == self.root,
+            "drive state differs from runner assignment"
+        );
+        Ok(())
+    }
+    pub(crate) fn read_optional(&self, name: &str) -> Result<Option<Vec<u8>>> {
+        match self.read_private(name) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(e)
+                if e.downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
+    pub(crate) fn read_path(&self, path: &Path) -> Result<Vec<u8>> {
+        ensure!(
+            path.parent()
+                .context("snapshot has no parent")?
+                .canonicalize()?
+                == self.root,
+            "snapshot lies outside private state"
+        );
+        self.read_private(
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .context("invalid snapshot name")?,
+        )
+    }
+    pub(crate) fn handoff_lock(&self) -> Result<File> {
+        use fs2::FileExt;
+        let mut options = fs::OpenOptions::new();
+        options.create(true).truncate(false).read(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        let lock = options.open(self.root.join("handoff.lock"))?;
+        private(&lock.metadata()?, false)?;
+        lock.try_lock_exclusive()
+            .context("handoff-lock-busy: overlapping completion refused")?;
+        Ok(lock)
+    }
     pub fn create(root: &Path) -> Result<Self> {
         let root = if root.is_absolute() {
             root.to_owned()
@@ -124,11 +180,13 @@ impl EvidenceStore {
         Ok(bytes)
     }
     pub fn write_new(&self, name: &str, bytes: &[u8]) -> Result<()> {
+        validate_name(name)?;
         ensure!(bytes.len() <= MAX_RECORD_BYTES, "record exceeds size limit");
-        let mut file = self.open(name, true)?;
+        let staging = format!(".pending-{}", uuid::Uuid::new_v4());
+        let mut file = self.open(&staging, true)?;
         file.write_all(bytes)?;
         file.sync_all()?;
-        Ok(())
+        self.publish(&staging, name)
     }
     pub fn snapshot(&self, bytes: &[u8]) -> Result<PathBuf> {
         ensure!(
@@ -145,16 +203,7 @@ impl EvidenceStore {
         Ok(self.root.join(name))
     }
     fn open(&self, name: &str, create: bool) -> Result<File> {
-        ensure!(
-            !name.is_empty()
-                && !name.chars().any(char::is_control)
-                && Path::new(name).components().count() == 1
-                && matches!(
-                    Path::new(name).components().next(),
-                    Some(Component::Normal(_))
-                ),
-            "evidence must be a direct child of private state"
-        );
+        validate_name(name)?;
         #[cfg(unix)]
         {
             use std::os::fd::{AsRawFd, FromRawFd};
@@ -197,6 +246,7 @@ impl EvidenceStore {
                 return Err(std::io::Error::last_os_error())
                     .context("remove snapshot staging entry");
             }
+            self.directory.sync_all()?;
             Ok(())
         }
         #[cfg(not(unix))]
@@ -205,6 +255,19 @@ impl EvidenceStore {
             anyhow::bail!("private auto-drive evidence requires Unix file ownership support")
         }
     }
+}
+fn validate_name(name: &str) -> Result<()> {
+    ensure!(
+        !name.is_empty()
+            && !name.chars().any(char::is_control)
+            && Path::new(name).components().count() == 1
+            && matches!(
+                Path::new(name).components().next(),
+                Some(Component::Normal(_))
+            ),
+        "evidence must be a direct child of private state"
+    );
+    Ok(())
 }
 fn open_directory(path: &Path) -> Result<File> {
     let mut options = fs::OpenOptions::new();

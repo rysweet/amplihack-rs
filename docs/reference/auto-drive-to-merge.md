@@ -1,7 +1,7 @@
 ---
 title: Auto Drive To Merge Reference
-description: responsibilities, authorization, recovery, completion outcomes, and target compatibility for auto-drive-to-merge.
-last_updated: 2026-11-11
+description: Drive modes, authoritative repository policy, readiness and steward handoff.
+last_updated: 2026-11-12
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -13,8 +13,7 @@ The recipes use agent responsibilities, runner-captured authorization and portab
 
 `auto-drive-to-merge` builds a pull request, reviews and repairs it with
 `crusty-old-engineer`, verifies all merge-ready criteria, and merges when
-authorized. With `no_merge=true`, it leaves the PR open and reports readiness
-only when every required criterion has valid evidence.
+authorised. With `merge=handoff`, it leaves an open, non-draft PR with one steward comment after every readiness criterion passes.
 
 The target is the same recipe on Linux and macOS with Claude, Codex, and Copilot;
 this is not yet verified compatibility. See the [target matrix](#target-compatibility-matrix).
@@ -28,10 +27,12 @@ alternatives within the existing loop-health and budget rules.
 - [Responsibilities](#responsibilities)
 - [Configuration](#configuration)
 - [Authorization](#authorization)
+- [Drive mode and repository policy](#drive-mode-and-repository-policy)
 - [PR head and worktree resolution](#pr-head-and-worktree-resolution)
 - [Crusty review](#crusty-review)
 - [Crusty completion decision contract](autodrive-crusty-completion.md)
 - [Readiness and finalization](#readiness-and-finalization)
+- [Handoff completion](#planned-handoff-completion)
 - [Loop health and budgets](#loop-health-and-budgets)
 - [Resumability](#resumability)
 - [Trusted execution and portability](#trusted-execution-and-portability)
@@ -39,7 +40,7 @@ alternatives within the existing loop-health and budget rules.
 
 ## Current behavior and authority
 
-The executable [composer](../../amplifier-bundle/recipes/auto-drive-to-merge.yaml) defaults outer `no_merge` to `false`. Its build always passes `no_merge=true` to default-workflow. The runner captures the intended action before children execute, pins a private launch copy, and propagates literal restrictions through shared loops and light escalation. Passing `no_merge=true` prevents an authorized merge throughout that invocation; dry-run additionally suppresses follow-up issue creation.
+The full composer resolves `merge=merge|handoff` from explicit input, then the committed target-base configuration, then `merge`. `no_merge` controls only the build phase and retains its name for compatibility. The build leaves its PR open for the outer drive. Use `merge=handoff` to leave it ready for its steward. Dry-run suppresses merging and follow-up creation and cannot complete a handoff.
 
 <a id="merges-outside-the-gate-are-refused-1551"></a>
 
@@ -99,7 +100,8 @@ commands and expected outcomes.
 | `existing_branch` | empty | Source branch; must match the selected PR when supplied. |
 | `branch_prefix` | `feat` | Branch prefix for a new build. |
 | `plan_task_id` | empty | Follow-up task: issue `N` or `#N`, or 1–64 characters from `A-Za-z0-9._:/-`. Otherwise resolve `Closes #N`, `Fixes #N`, or `Resolves #N` from the PR body, then task description. |
-| `no_merge` | `false` in the full composer | Prevent merging throughout the invocation when `true`. Build always receives `true`, independently of this outer value. |
+| `merge` | empty | Preserve committed target-base policy; otherwise default to `merge`. Explicit non-empty `merge` or `handoff` overrides repository mode. |
+| `no_merge` | `false` in the full composer | Build-phase compatibility setting only. The build always leaves its PR open for the outer drive. Use `merge=handoff` to prevent outer-drive merging. |
 | `autodrive_dry_run` | `false` | Prevent merging and follow-up issue creation. Still assesses readiness and reports missing obligations. |
 | `autodrive_state_dir` | runner-assigned | Private state for this run's records, budgets and receipts. Omitted: the runner assigns a directory inside the run's durable folder. Supplied: must be non-empty, absolute and free of `..` components. See [state directory](#state-directory). |
 
@@ -111,17 +113,17 @@ not agent-selected recipe context. Budget keys are listed below.
 
 ## Authorization
 
-The runner strictly parses `no_merge` and `autodrive_dry_run` before child
-execution. Accepted values are `true` and `false`; malformed values fail
+The runner strictly parses `merge`, `no_merge` and `autodrive_dry_run` before child
+execution. Boolean values accept `true` and `false`; malformed values fail
 before work starts. It captures the intended action in fresh runner-owned
 invocation state outside child-mutable context and agent candidate records.
 
 | Invocation | Merge permission |
 | --- | --- |
-| Full composer with omitted `no_merge` | Permitted after valid readiness evidence and final refresh; outer default is `false`. |
-| Any invocation with `no_merge=true` | No merge request, including during finalization or escalation. |
+| Full composer resolving `merge=merge` | Permitted after readiness, policy and expected-head validation. |
+| Full composer with `merge=handoff` | No merge or scheduling request; complete readiness and steward handoff. |
 | Any invocation with `autodrive_dry_run=true` | No merge request or follow-up issue creation, even with `no_merge=false`. |
-| Direct merge-loop or finalization invocation | Disabled without explicit fresh invocation authorization. |
+| Direct merge-loop or finalization invocation | Restricted even with explicit mode; start the full composer for a drive action. |
 | Resume, `recipe run --fresh`, or durable recovery | Fresh authorization from this invocation's explicit inputs; stored or recovered context cannot grant permission. |
 
 Child context overwrite, candidate output, inherited environment, PR comments,
@@ -143,7 +145,7 @@ writes these keys itself, replacing any stored, recovered or defaulted value:
 
 | Runner-owned key | Value |
 | --- | --- |
-| `no_merge` | Captured restriction for this invocation. |
+| `no_merge` | Captured build-phase setting for this invocation. |
 | `autodrive_dry_run` | Captured restriction for this invocation. |
 | `autodrive_authorization` | Serialised authority for this `run_id`, including the bound state directory. |
 | `autodrive_invocation_file` | Private copy of the captured invocation. |
@@ -163,9 +165,89 @@ explicit invocation inputs or accepted records.
 
 ### `NO_MERGE` override
 
-The compatibility `NO_MERGE` override may only restrict merging. It cannot
-grant permission or cancel `no_merge=true` or dry-run. Final authorization
-comes from the captured invocation, never a child's environment.
+The compatibility `NO_MERGE` environment alias follows the build-phase
+`no_merge` setting. It does not select or restrict the outer drive action.
+Use `merge=handoff` to prevent outer-drive merging. Final authorisation comes
+from the captured invocation and resolved policy, never a child's environment.
+
+<a id="drive-mode-and-repository-policy"></a>
+
+## Drive mode and repository policy
+
+The Rust policy resolver reads the authenticated target repository's immutable base tree. Recipe defaults leave `merge` empty so they preserve repository policy.
+
+The mode is resolved in this order:
+
+1. A non-empty explicit `-c merge=...` from the current invocation.
+2. The top-level `merge` key in `.amplihack/auto-drive.toml` committed on the
+   selected PR's target base branch.
+3. `merge`.
+
+Surrounding whitespace is trimmed. Only lower-case `merge` and `handoff` are
+valid. An omitted, empty or whitespace-only explicit input leaves selection to
+the repository. A present repository key must be a string containing one of
+the two valid modes after trimming; an empty string is invalid.
+
+```bash
+amplihack recipe run auto-drive-to-merge -c repo_path=. -c merge=handoff
+```
+
+Result after readiness: an open, non-draft PR with a confirmed
+steward comment and a durable `handed_off` outcome; no merge or scheduling
+request. To select the existing protected merge path explicitly:
+
+```bash
+amplihack recipe run auto-drive-to-merge -c repo_path=. -c merge=merge
+```
+
+Result after readiness and platform confirmation: `merged`.
+Neither command bypasses reviews, checks or branch protections.
+
+A repository whose steward merges PRs sets this in
+`.amplihack/auto-drive.toml` on its target base branch:
+
+```toml
+merge = "handoff"
+```
+
+Changing it to `merge = "merge"` restores repository-default merging. An
+explicit valid mode overrides this key; `-c merge=` preserves it.
+`merge_method` remains an independent setting for the merge path.
+
+### Configuration authority and errors
+
+The drive authenticates the target repository and pins the base branch's tip
+commit, then reads the configuration from that immutable committed tree.
+For a fork PR, the target repository supplies policy. PR-branch, worktree,
+local and global configuration cannot substitute for it. Unverified remote
+tracking references are not authoritative.
+
+A proven missing file or missing key selects the default. Malformed TOML,
+an invalid or wrongly typed mode, an unsuitable entry such as a symlink,
+or failure to establish or read the authoritative tree blocks completion
+with a concrete error. A valid explicit mode skips repository configuration
+reads, so an overridden malformed file does not block mode selection. Normal
+PR and base identity validation still applies.
+
+The private resolved-policy record binds the invocation, target repository,
+PR, base branch and commit, selected mode and its source. A changed base
+requires policy resolution again and fresh dependent evidence; a changed
+head invalidates readiness tied to its predecessor.
+
+### Invocation authority
+
+The runner captures optional typed mode selection before defaults or recovery.
+It rewrites `merge` from that fresh selection, or leaves it empty pending
+policy resolution. Direct and light entrypoints remain restricted, including
+through escalation. Dry-run cannot merge or complete handoff. Missing, stale
+or incompatible private policy grants no completion authority.
+
+`no_merge` is a build-only compatibility setting. `merge_method` remains
+separate. Resolve policy after PR selection and before already-merged handling.
+Only an eligible merge invocation may report already merged; handoff rejects
+closed or merged PRs. A changed base requires policy resolution and fresh
+dependent evidence; a changed head invalidates earlier readiness.
+
 
 ## PR head and worktree resolution
 
@@ -269,6 +351,45 @@ after requests, and before retrying ambiguous responses: a timeout may follow
 a successful server action. Command success and queue admission do not prove
 a merge. With merging disabled, readiness can be complete while the PR stays
 open. See the [result contract](auto-drive-evidence.md#result-contract).
+
+<a id="planned-handoff-completion"></a>
+
+### Handoff preparation and completion
+
+The production Rust helpers implement preparation and completion through authenticated hosting access.
+
+`prepare-handoff` requires validated handoff policy. It rejects closed or
+merged PRs and enabled auto-merge. If the PR is a draft, it marks it ready
+and reads back its identity and open, non-draft state before readiness can
+complete. Preparation neither accepts readiness nor posts a steward comment.
+
+Handoff runs the normal build, reviews, repairs, checks and production
+readiness evaluation. `complete-handoff` replays accepted criterion evidence,
+artifact and review coverage validation, the accepted `MERGE_READY` round
+and evaluator `DONE` receipt for this invocation. Under a non-blocking lock
+in the bound state directory, it confirms the current PR, head and base,
+open non-draft status and disabled auto-merge.
+
+Only after readiness succeeds does it reconcile or post this exact comment:
+
+> This pull request is ready for its steward.
+
+No named steward is required. The comment contains no workflow details,
+host paths or readiness evidence. Existing merge-ready description evidence
+remains required; handoff-specific evidence stays in private drive state
+and is not appended to the PR body.
+
+Completion confirms the comment and PR state again, then durably publishes
+immutable handoff evidence and its matching outcome. Successful reporting
+requires `handed_off`, PR identity, validated head/base, readiness evidence
+and confirmed comment identity. Neither a comment nor helper exit success
+alone establishes completion. Handoff never merges, schedules a merge,
+enables auto-merge or falls through to the merge path after failure.
+
+Failure to mark or confirm readiness, reconcile or post the comment, acquire
+the lock, or persist completion remains visible and incomplete. A failed
+readiness verdict cannot produce a comment claiming readiness. See
+[handoff evidence and recovery](auto-drive-evidence.md#handoff-records-and-reconciliation).
 
 ### The squash commit message (#2056)
 
@@ -396,7 +517,7 @@ exhausted run, the original task and the explicit merge restriction:
 amplihack recipe run auto-drive-to-merge \
   -c task_description="<the original task>" \
   -c autodrive_state_dir="$HOME/.amplihack/state/auto-drive/pr-2340" \
-  -c no_merge=true \
+  -c merge=handoff \
   -c autodrive_budget_loop_rounds=20
 ```
 

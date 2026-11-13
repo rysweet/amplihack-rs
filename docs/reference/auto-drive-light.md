@@ -1,7 +1,7 @@
 ---
 title: Auto-Drive-Light Recipe
 description: small-change eligibility, authorization, escalation, and shared readiness outcomes.
-last_updated: 2026-11-11
+last_updated: 2026-11-12
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -9,7 +9,7 @@ doc_type: reference
 
 # Auto-Drive-Light Recipe
 
-Light mode shares the runner-captured authorization, evidence snapshots and agentic finalization of full auto-drive. Its default is `no_merge=true`, preserved through escalation. Controlled tests verify propagation; actual OS/runtime execution remains unverified.
+Light mode shares the runner-captured authorization, evidence snapshots and agentic finalization of full auto-drive. Its captured entrypoint permits readiness verification only, preserved through escalation. `no_merge` controls the build phase. Controlled tests verify propagation; actual OS/runtime execution remains unverified.
 
 `auto-drive-light` builds a small change in one agent session and reuses
 auto-drive's crusty review, evidence collection, readiness, and authorized
@@ -32,6 +32,7 @@ Crusty review completion follows the [Crusty completion contract](autodrive-crus
 - [Escalation to auto-drive-to-merge](#escalation-to-auto-drive-to-merge)
 - [Minor findings and follow-up issues](#minor-findings-and-follow-up-issues)
 - [State and reporting](#state-and-reporting)
+- [Shared handoff policy](#planned-shared-handoff-policy)
 
 ## Configuration
 
@@ -56,7 +57,7 @@ recipe name when the change is eligible.
 | `light_max_recipe_contract` | `0` | Recipe context-key-set-change limit. |
 | `autodrive_state_dir` | runner-assigned | Same [state directory](auto-drive-to-merge.md#state-directory) contract as full auto-drive. |
 | `autodrive_dry_run` | `false` | Suppress merging and follow-up creation, including after escalation. |
-| `no_merge` | `true` | Prevent merging throughout the invocation. Build always prohibits merging; explicit `false` allows finalization only after readiness. |
+| `no_merge` | `true` | Build-phase compatibility setting. The light entrypoint separately restricts drive actions. |
 
 Each limit matches `^[0-9]{1,6}$` and is interpreted in base 10.
 Invalid limits stop before work; there is no force-light override.
@@ -65,10 +66,7 @@ context. A child's `no_merge=false` cannot grant permission.
 
 ### The no_merge value
 
-`no_merge=true` applies to the entire light run and its escalation, not only
-the build. The full composer's outer default of `false` cannot relax a light
-caller's captured restriction. Dry-run remains a separate restriction and
-suppresses follow-up creation even when merging would otherwise be allowed.
+`no_merge` controls only the build phase. The captured light entrypoint restriction survives escalation to the full composer; child defaults and explicit mode cannot grant a drive action. Dry-run also suppresses follow-up creation.
 
 ## Responsibilities
 
@@ -161,3 +159,9 @@ See [full auto-drive](auto-drive-to-merge.md),
 [Crusty completion](autodrive-crusty-completion.md),
 [QA selection](auto-drive-qa.md), and
 [recipe comparison](../recipes/README.md#choosing-between-quick-change-auto-drive-light-and-auto-drive-to-merge).
+
+<a id="planned-shared-handoff-policy"></a>
+
+## Shared handoff policy
+
+Light and direct entrypoints cannot gain drive action authority through child context, `merge=handoff` or escalation. Start the full composer explicitly to complete a handoff. Its mode is resolved from non-empty explicit `merge`, committed target-base configuration, then `merge`. `no_merge` is build-only. See [drive policy](auto-drive-to-merge.md#drive-mode-and-repository-policy).

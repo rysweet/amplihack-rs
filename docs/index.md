@@ -328,10 +328,10 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Recipe Commit Hook Repair](reference/recipe-commit-hook-repair.md) - How checkpoint and publish steps hand a rejected git `pre-commit` or `pre-push` hook to a fixing agent, retry under loop-health evaluation, and refuse changes to hook configuration
 - [Recipe Check Exit Status](reference/recipe-check-exit-status.md) - How test, hook and CI check steps report the real exit status, keep stderr in the step log, and route failures to fix or diagnosis steps (issue #2190)
 - [Structured Verdict & Intent Parsing Reference](reference/structured-verdict-parsing.md) - `normalise-verdict` helper, `session-tree register --json`, and the `verdict`/`no_merge`/`goal_status`/`status` fields that replace brittle agent-prose scraping
-- [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - Planned responsibilities, invocation-wide authorization, gate retirement, and target compatibility matrix
-- [Auto-drive Evidence and Outcomes](reference/auto-drive-evidence.md) - Planned evidence contract for all 13 criteria and auto-drive's crusty convergence substitution
+- [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - Current authorization and recovery; drive modes and committed target-base policy
+- [Auto-drive Evidence and Outcomes](reference/auto-drive-evidence.md) - Readiness records, private base policy, comment reconciliation and durable handoff outcomes
 - [Auto-drive QA Selection](reference/auto-drive-qa.md) - QA selection requirements for the planned evidence workflow
-- [Verify a PR Without Merging](howto/verify-pr-with-auto-drive.md) - Planned guide; current no_merge=true does not protect final merging
+- [Verify a PR Without Merging](howto/verify-pr-with-auto-drive.md) - Explicit merge=handoff, repository defaults and safe recovery
 - [Loop-Health Evaluator Reference](reference/loop-health-evaluator.md) - the reusable `CONTINUE`/`DONE`/`STUCK` agentic loop-health contract, `normalise-loop-verdict`, and why the loop terminator is absence of progress rather than an iteration cap
 - [Crusty Completion Contract](reference/autodrive-crusty-completion.md) - Completion-first dispatch for CLEAN and MINOR_ONLY, decision integrity, and follow-up recording before phase completion
 - [Expected Checks at the Head](reference/autodrive-expected-checks.md) - `autodrive_expected_checks.sh`: CI green means every expected check (required checks and every pull_request workflow job) exists at the head SHA and passed; MISSING, PENDING, RED and UNREADABLE block, and the limits of the expected set (#2186)

@@ -1,7 +1,7 @@
 ---
 title: Auto-drive Evidence and Outcomes
 description: evidence validity, merge-ready interpretations, and separate readiness, action, and platform outcomes.
-last_updated: 2026-11-11
+last_updated: 2026-11-12
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -19,6 +19,7 @@ a successful command nor a list of criterion names establishes readiness.
 
 - [Authority and criteria](#authority-and-criteria)
 - [Record contract](#record-contract)
+- [Handoff records and reconciliation](#handoff-records-and-reconciliation)
 - [Validity and storage](#validity-and-storage)
 - [Crusty review evidence](#crusty-review-evidence)
 - [Approval and protection interpretation](#approval-and-protection-interpretation)
@@ -71,7 +72,7 @@ API client, gate executable, or serialized command protocol.
 
 | Record | Required information |
 | --- | --- |
-| Invocation | Schema version, fresh run identity, captured action, strictly parsed `no_merge` and dry-run restrictions, trusted bundle/policy provenance. Only the runner grants authorization. |
+| Invocation | Schema version, fresh run identity, optional typed mode selection, captured entrypoint and dry-run restrictions, build-only `no_merge` and trusted bundle provenance. Only the runner captures authority; durable base policy resolves the drive action. |
 | PR identity | Platform and host, target and source repository identities, PR number and URL, branches, verified head SHA, relevant base revision and merge base, linked worktree and observed platform state. |
 | Criterion evidence | Run and round identity, criterion identity, verification status, concrete observations, evidence references, PR/head/base binding, policy provenance, blockers, and any permitted non-applicability explanation. |
 | Failed attempt/recovery | Operation attempted, redacted cause and result, alternative chosen, observations recovered, completeness limits, and remaining blockers. |
@@ -86,7 +87,7 @@ The closed value sets distinguish these meanings:
 | Requested action | Verify readiness; merge. |
 | Criterion verification | Verified; failed; pending; unreadable; not applicable with a permitted explanation. |
 | Readiness | Merge-ready; not merge-ready; incomplete. |
-| Action outcome | Not requested; pending; refused; failed; unconfirmed; merged; already merged; workflow violation. |
+| Action outcome | Handed off; not requested; pending; refused; failed; unconfirmed; merged; already merged; workflow violation. |
 | Observed PR state | Open; closed without merge; merged; unknown. |
 | Stop reason | Completed; blockers; no progress; budget exhausted; usage limit; orphaned; dependency failure; terminal refusal. |
 
@@ -96,6 +97,90 @@ recorded even if later observations establish readiness.
 Statuses and outcomes use closed enums. Unknown schema versions, duplicate
 fields, unsupported statuses, missing/duplicate criteria, and contradictory
 claims are rejected. Missing or unparseable verdicts never default to success.
+
+<a id="handoff-records-and-reconciliation"></a>
+
+## Handoff records and reconciliation
+
+The invocation captures typed optional mode before defaults or recovery. Durable policy binds the invocation, target PR, head/base, source and committed configuration digest. All 13 criteria remain required. Handoff also requires an open, non-draft PR with auto-merge disabled. Read the change description back; keep readiness evidence in private state. `no_merge` controls only the build. See [policy precedence](auto-drive-to-merge.md#drive-mode-and-repository-policy).
+
+Handoff helpers use the same private `EvidenceStore` as readiness and
+reporting. See the [Rust module contracts](../../crates/amplihack-cli/src/commands/orch/autodrive/README.md)
+for component responsibilities. The additional records distinguish partial
+external actions from successful completion:
+
+| Record | Required information |
+| --- | --- |
+| Preparation observation | Validated handoff policy reference, invocation and PR binding, observed head/base, open/non-draft status, disabled auto-merge, any draft-to-ready attempt and confirmed read-back. Preparation is not a readiness verdict. |
+| Action attempt | Operation, confirmed absence/success or uncertain external effect, redacted cause, and subsequent observations. Failed observation storage must preserve the original operation's diagnostic too. |
+| Comment receipt | Bound repository and PR, authenticated author identity, exact fixed body, platform comment identity, reconciliation source and confirmed read-back. |
+| Completion evidence | Policy and preparation references, accepted candidate and artifact references, review coverage, current readiness and loop receipt, final PR observations and confirmed comment receipt. |
+| Successful outcome | Durable `handed_off` referencing matching immutable completion evidence for this invocation, PR, validated head and base. |
+
+`prepare-handoff` validates policy, rejects closed/merged PRs and enabled
+auto-merge, marks a draft ready if needed and confirms the resulting state.
+It neither posts a comment nor accepts readiness. Production readiness must
+then succeed for the current head, including an accepted `MERGE_READY`
+round and evaluator `DONE` receipt.
+
+`complete-handoff` takes a non-blocking lock in the bound state directory.
+Lock contention fails visibly without waiting. It replays candidate, artifact,
+review coverage and loop-receipt validation and confirms the current PR,
+head/base, open non-draft status and disabled auto-merge before reconciling
+the steward comment. Neither helper accepts a caller-supplied successful
+verdict, mode, comment body or outcome. The hosting interface for handoff has
+no merge or scheduling capability.
+
+The comment body is exactly:
+
+> This pull request is ready for its steward.
+
+Reconciliation verifies a stored receipt against the authenticated platform.
+Without a verified receipt, it enumerates every relevant comment page and
+matches the exact body and authenticated author on the bound PR. One match
+is reused. No matches after complete enumeration permits one creation.
+Multiple matches, unreadable comments or incomplete pagination block
+completion; another author's identical words do not supply a receipt.
+After reconciliation, the helper confirms both the comment and PR state
+again before publishing completion.
+
+A lost creation response or failed persistence can leave a public comment
+without a successful outcome. Such attempts remain uncertain or failed;
+resumption requires fresh readiness and reconciliation before any new
+creation. A previous comment never proves readiness. The lock coordinates
+attempts sharing this state directory; it cannot prevent independent drives
+with unrelated state directories from acting on the same PR.
+
+Completion evidence and its matching outcome must both be durably published.
+A crash between publications is incomplete. Missing policy or completion
+records in older state never imply authority. Both helper reduction and the
+runner's report independently validate the same bound policy, readiness and
+completion records; neither trusts recipe context or a helper's success text.
+Merge or scheduling actions contradict handoff and preclude success.
+
+A changed head requires fresh readiness; a changed base also requires policy
+resolution and fresh dependent evidence. Observations describe confirmed
+platform state at completion, without guaranteeing against later changes.
+Failed readiness cannot post a readiness claim, and completion failures never
+fall through to merging. These records remain private: do not append handoff
+evidence, host paths or workflow details to the comment or PR body.
+
+### Behavioural acceptance
+
+Production-path tests must exercise real policy, preparation, readiness,
+reconciliation, persistence, reduction and CLI dispatch with controlled Rust
+hosting dependencies. Success must establish fresh readiness, an open
+non-draft PR, exactly one confirmed steward comment, durable `handed_off`
+and zero merge or scheduling calls. Cover explicit/default merge and handoff,
+authoritative base and fork policy, precedence over PR/worktree settings,
+malformed configuration, failed readiness, completion failures, uncertain
+writes, pagination, lock contention, moved heads/bases, recovery and forged
+bindings. Dry runs and text-only checks cannot establish behavioural acceptance.
+
+Isolate homes, profiles, repositories and state; use readiness signals or
+events rather than timers, polling or timed retries. Record local, CI, live
+handoff and each OS/runtime result separately in PR descriptions or CI logs.
+The isolated Rust contracts execute production actions through controlled hosting dependencies. This does not establish live agent or OS/runtime compatibility.
 
 ## Validity and storage
 
@@ -236,7 +321,7 @@ records, not a final sentence of agent prose.
 | PR merges unexpectedly before finalization | Observed merged state plus workflow violation; not successful authorized completion. |
 | Budget, usage limit, orphan, dependency failure, or terminal refusal | Distinct incomplete stop reason; never substituted with success or generic `STUCK`. |
 
-A `no_merge=true` or dry-run result records zero merge requests. Readiness
+A handoff or dry-run result records zero merge requests. Readiness
 does not imply merging. Command success, queue admission, evaluator `DONE`,
 and an old completion marker do not establish platform confirmation.
 
@@ -250,7 +335,7 @@ Record coverage in PR descriptions or CI logs, separately for:
 - Actual agent execution against isolated fixtures: demonstrate that an
   agent adapts, or reports why recovery cannot satisfy a requirement.
 - Live verify-only execution: after invocation-wide authorization is implemented
-  and tested, readiness work against an open PR with `no_merge=true`, without
+  and tested, readiness work against an open PR with `merge=handoff`, without
   a real merge. The current build-phase flag is insufficient protection.
 - Compatibility: the [six-cell target matrix](auto-drive-to-merge.md#target-compatibility-matrix)
   for unchanged YAML across Linux/macOS and Claude/Codex/Copilot. Record actual
@@ -259,7 +344,7 @@ Record coverage in PR descriptions or CI logs, separately for:
 
 Stubs demonstrate controlled behavior, not live agent recovery or execution
 on an unavailable host/runtime. Tests assert no merge requests under
-`no_merge=true` or dry-run, and that interface switching cannot bypass failed
+`merge=handoff` or dry-run, and that interface switching cannot bypass failed
 criteria or missing evidence. Loop-health and crusty contract regressions
 remain required.
 

@@ -1,7 +1,13 @@
+---
+title: Auto-drive Records and Handoff Contracts
+description: Invocation authority, base policy, readiness evidence and durable steward handoff.
+last_updated: 2026-11-12
+doc_type: reference
+---
+
 # Portable auto-drive records
 
-This module implements local workflow safeguards for issue #2329. It never
-contacts a hosting service, decides semantic readiness, or performs a merge.
+This module implements workflow safeguards for issues #2329 and #2555. Policy and handoff use authenticated hosting access. Agents assess semantic readiness; the handoff interface has no merge or scheduling operation.
 Agents observe and assess facts under trusted merge-ready policy.
 
 - `authorization`: strictly capture explicit invocation inputs before expanding
@@ -76,3 +82,117 @@ authority; descriptor-driven resume itself is not exercised. Neither suite estab
 
 Private state and prompts are not an OS security boundary against a process
 holding the same user's credentials. Repository protections remain required.
+
+## Policy and handoff
+
+The production Rust modules and helpers below implement mode resolution, preparation, completion and independent reporting. See the [drive contract](../../../../../../docs/reference/auto-drive-to-merge.md#drive-mode-and-repository-policy) and [evidence contract](../../../../../../docs/reference/auto-drive-evidence.md#handoff-records-and-reconciliation).
+
+### Module responsibilities
+
+
+| Module | Contract |
+| --- | --- |
+| `authorization` | Capture optional typed `DriveMode` before defaults or recovery. Trim explicit input; empty means unspecified, otherwise accept only `merge` or `handoff`. Preserve invocation identity, state binding, direct/light-entrypoint and dry-run restrictions. Build-only `no_merge` does not select a drive action. |
+| `policy` | Resolve explicit mode, authoritative committed target-base configuration, then default `merge`. Bind policy to invocation, repository, PR, branch, pinned commit and provenance. Invalid or unavailable applicable configuration blocks completion. A valid explicit mode skips configuration reads. |
+| `hosting` | Provide authenticated `PolicyHosting` and `HandoffHosting` capabilities. Read target-base configuration from an immutable committed tree; observe PR identity and auto-merge. Handoff has no merge or scheduling capability. Use typed arguments and bounded reads; reject unsuitable entries. |
+| `trusted` | Pin launch recipes, skills, templates, helpers and evaluator independently of the PR. Preserve captured authority through shared loops, re-review and light escalation. |
+| `records` / `validation` | Validate closed record schemas, all 13 criteria, current PR/head/base/run bindings, artifacts and concrete observations. Semantic readiness remains governed by trusted criteria. Missing policy in old records never implies authority. |
+| `state` | Use the existing private `EvidenceStore`: `0700` directories and `0600` files, safe ownership, no traversal, symlinks or special files, bounded opened-byte validation and immutable durable publication. Separate staging, accepted evidence, partial attempts and successful completion. |
+| `handoff` | Prepare an open non-draft PR, replay production readiness, reconcile the fixed steward comment and durably publish handoff. Use a non-blocking state-directory lock and confirm platform state before and after comment reconciliation. |
+| `review` | Verify the established post-review allowlist against local Git. Substantive changes require re-review; unreadable ranges block. |
+| `completion` | Seal accepted readiness bytes only after an accepted `MERGE_READY` round and evaluator `DONE`; reject older-invocation receipts. |
+| `followups` | Validate private `MINOR_ONLY` issue mappings for reporting. |
+| `outcome` | Separate readiness, requested action, action outcome, observed PR state and stop reason. `RequestedAction::Handoff` completes as `handed_off` only with matching durable policy and completion evidence. Preserve protected merge behaviour for merge mode. |
+| `report` | Independently replay the same accepted-record reduction boundary. Require matching private evidence and outcome; recipe context, helper success and agent prose cannot prove completion. |
+| `helper` | Expose operations under `amplihack orch helper autodrive`, including policy resolution, `prepare-handoff` and `complete-handoff`. Handoff helpers accept no caller-supplied mode, verdict, comment body or successful outcome. |
+
+### Policy authority
+
+The first authenticated PR selection is immutable within an invocation,
+including when discovery supplied it. Head or base changes require fresh
+policy and readiness; another host, repository or PR requires a new invocation.
+
+Nested readiness rounds capture their own restricted invocation. The outer
+loop passes its private invocation file separately as
+`autodrive_readiness_invocation_file`: round evidence uses that parent's
+run identity and launch provenance, and `helper round` validates it against
+the same private invocation before publication. This binds the accepted
+round and outer loop receipt without granting the leaf a drive action.
+
+Resolve mode after PR selection and before already-merged handling. Only an
+eligible merge invocation can use the already-merged shortcut; handoff
+rejects closed or merged PRs. The target repository's pinned base tree supplies
+`.amplihack/auto-drive.toml`, including for fork PRs. PR-branch, worktree,
+local/global configuration and unverified remote references are not substitutes.
+
+A proven missing file or key selects default `merge`. Malformed applicable
+TOML, invalid or wrongly typed values, unsuitable entries or failed authoritative
+reads block completion. `merge_method` remains separate. Changed bases require
+policy resolution and fresh dependent evidence; changed heads invalidate
+readiness tied to earlier heads.
+
+### Handoff action contract
+
+`prepare-handoff` requires validated handoff policy, rejects enabled auto-merge
+and closed/merged PRs, marks drafts ready where necessary, then confirms
+identity and open non-draft status. It persists observations without accepting
+readiness or posting a comment.
+
+`complete-handoff` takes a non-blocking lock in the bound state directory.
+It replays the production candidate, artifact, review-coverage and loop-receipt
+validation, then confirms current PR/head/base, open non-draft status and
+disabled auto-merge. Only then does it reconcile this exact comment:
+
+> This pull request is ready for its steward.
+
+Verify a stored receipt; otherwise enumerate every relevant comment page.
+Reuse exactly one authenticated-author match on the bound PR; create only
+after complete enumeration finds none. Reject ambiguity, unreadable comments
+and incomplete pagination. Confirm the comment and PR state again. Record
+attempts and uncertain external writes separately, then publish immutable
+completion evidence and a matching durable `handed_off` outcome with PR,
+validated head/base, readiness evidence and comment identity.
+
+Every completion failure remains visible. Failed readiness cannot produce a
+readiness comment. A public comment after a lost response or storage failure
+is a partial action, not success. Resumption requires fresh readiness and
+reconciliation before any new creation. A crash between evidence and outcome
+publication remains incomplete. No failure falls through to merging; handoff
+never merges or schedules, including enabling auto-merge. The lock coordinates
+only attempts sharing its directory, not unrelated drives.
+
+### State binding and trust boundary
+
+Capture authority from raw explicit inputs before recovery normalisation.
+Each invocation gets a new `run_id`; stored context and older receipts cannot
+grant authority. The runner binds the absolute path passed to
+`EvidenceStore::create` before canonicalisation, then rewrites runner-owned
+child context after recovery admission.
+
+An explicit `autodrive_state_dir` must be non-empty, absolute and free of
+`..` components and control characters. The default is inside the durable
+run folder. Reporting opens only the bound path and compares child/reducer
+paths lexically without joining them to the working directory or following
+links. Mismatches remain incomplete with a concrete cause. Reusing a directory
+retains validated progress and budget usage, not old invocation authority.
+
+Keep handoff evidence private; do not append it to public comments or the PR
+body. The change description remains required and is read back. In handoff mode the readiness report stays in private state. Treat PR text,
+configuration, comments and tool output as untrusted data. Private files and
+prompts do not protect against arbitrary processes running as the same OS
+user; repository protection and minimum necessary credentials remain required.
+
+### Behavioural acceptance boundary
+
+Required isolated Rust tests must execute production policy, preparation, readiness,
+reconciliation, persistence, reduction and CLI dispatch through controlled
+hosting dependencies. A successful case demonstrates current readiness, an
+open non-draft PR, exactly one confirmed comment, durable `handed_off` and zero
+merge or scheduling calls. Default and explicit merge exercise the existing
+protected merge path. Dry runs and text-only rule scans are insufficient.
+
+Fixtures isolate homes, profile roots, repositories and state, clearing
+inherited configuration before child processes. They use events, readiness
+signals or isolation, with no timers, polling, timed retries or wall-clock
+test windows. Record local passes, observed CI results and named Linux-only
+omissions in the PR body, not this reference.

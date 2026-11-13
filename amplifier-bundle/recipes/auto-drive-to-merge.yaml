@@ -23,8 +23,11 @@ context:
   pr_url: ""
   plan_task_id: ""
   autodrive_state_dir: ""
+  autodrive_invocation_file: ""
+  autodrive_authorization: ""
   autodrive_dry_run: "false"
   no_merge: "false"
+  merge: ""
   autodrive_pr_input: ""
   autodrive_budget_loop_rounds: "12"
   autodrive_budget_total_rounds: "20"
@@ -64,6 +67,21 @@ steps:
       autodrive_state_dir: "{{autodrive_state_dir}}"
       no_merge: "{{no_merge}}"
       autodrive_dry_run: "{{autodrive_dry_run}}"
+  - id: "resolve-drive-policy"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -euo pipefail
+      printf '%s' "$RECIPE_VAR_build_result" | amplihack orch helper extract-field --field binding | amplihack orch helper autodrive resolve-policy --invocation "$RECIPE_VAR_autodrive_invocation_file" --directory "$AUTODRIVE_STATE_DIR"
+    output: "drive_policy"
+  - id: "prepare-drive-handoff"
+    condition: "drive_policy.action == 'handoff'"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -euo pipefail
+      printf '%s' "$RECIPE_VAR_drive_policy" | amplihack orch helper extract-field --field binding | amplihack orch helper autodrive prepare-handoff --invocation "$RECIPE_VAR_autodrive_invocation_file" --directory "$AUTODRIVE_STATE_DIR"
+    output: "handoff_preparation"
   - id: "autodrive-crusty-loop"
     type: "recipe"
     recipe: "autodrive-crusty-loop"
@@ -81,6 +99,7 @@ steps:
       autodrive_budget_total_rounds: "{{autodrive_budget_total_rounds}}"
       autodrive_budget_wall_seconds: "{{autodrive_budget_wall_seconds}}"
       no_merge: "{{no_merge}}"
+      merge: "{{merge}}"
     condition: "build_result.merged_before_run != 'true'"
   - id: "autodrive-check-unmerged"
     type: "agent"
@@ -109,6 +128,7 @@ steps:
       autodrive_budget_total_rounds: "{{autodrive_budget_total_rounds}}"
       autodrive_budget_wall_seconds: "{{autodrive_budget_wall_seconds}}"
       no_merge: "{{no_merge}}"
+      merge: "{{merge}}"
       build_result: "{{build_result}}"
     condition: "build_result.merged_before_run != 'true'"
   - id: "autodrive-report"

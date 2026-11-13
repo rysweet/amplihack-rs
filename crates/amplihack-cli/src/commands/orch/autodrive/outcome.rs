@@ -9,6 +9,12 @@ pub fn reduce_outcome(
     done: &LoopCompletion,
 ) -> Result<Outcome> {
     let r = accepted.record();
+    let directory = auth
+        .state_dir()
+        .ok_or_else(|| anyhow::anyhow!("drive-policy-missing: no bound private state"))?;
+    let store = super::state::EvidenceStore::create(directory)?;
+    let mode = super::policy::load(auth, &store, &r.binding)?.mode;
+    let allows_merge = auth.allows_merge() && mode == super::policy::DriveMode::Merge;
     ensure!(
         r.binding == f.binding && f.binding.run_id == auth.run_id(),
         "finalization identity mismatch"
@@ -53,9 +59,10 @@ pub fn reduce_outcome(
         && f.platform_state_at_entry != PlatformState::Merged)
         || (f.merge_requests == 0 && f.request_outcome != RequestOutcome::NotRequested)
         || (f.merge_requests > 0 && f.request_outcome == RequestOutcome::NotRequested)
-        || (f.requested_action == RequestedAction::Merge && !auth.allows_merge())
+        || (f.requested_action == RequestedAction::Merge && !allows_merge)
+        || f.requested_action == RequestedAction::Handoff
         || (attempted
-            && (!auth.allows_merge()
+            && (!allows_merge
                 || f.requested_action != RequestedAction::Merge
                 || r.readiness != Readiness::MergeReady
                 || !fresh
@@ -65,6 +72,7 @@ pub fn reduce_outcome(
     out.action = if violation {
         Action::WorkflowViolation
     } else if f.platform_state == PlatformState::Merged
+        && allows_merge
         && f.platform_state_at_entry == PlatformState::Merged
         && !attempted
         && !f.confirmation_evidence.trim().is_empty()
@@ -96,7 +104,7 @@ pub fn reduce_outcome(
         );
     }
     let complete_action = matches!(out.action, Action::Merged | Action::AlreadyMerged)
-        || (!auth.allows_merge()
+        || (!auth.allows_drive()
             && out.action == Action::NotRequested
             && f.platform_state == PlatformState::Open);
     if out.stop_reason == StopReason::Completed

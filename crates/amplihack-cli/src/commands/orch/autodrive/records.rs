@@ -33,6 +33,7 @@ enumeration!(PlatformState {
 });
 enumeration!(RequestedAction {
     VerifyReadiness,
+    Handoff,
     Merge
 });
 enumeration!(RequestOutcome {
@@ -45,6 +46,7 @@ enumeration!(RequestOutcome {
 });
 enumeration!(Action {
     NotRequested,
+    HandedOff,
     Merged,
     AlreadyMerged,
     WorkflowViolation,
