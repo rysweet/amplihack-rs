@@ -358,7 +358,10 @@ The rules for the two sources:
 - A `--file` read stops one byte past the limit. For a regular file the error
   gives the file's exact size. For a path that is not a regular file, such as
   a named pipe or `/dev/zero`, the error says only that the text is more than
-  the limit, so the command never reads without end.
+  the limit, so the command never reads without end. The same wording is used
+  for a regular file whose recorded size is at or below the limit although
+  more was read, such as a file under `/proc` or one that grew during the
+  read.
 - If `--file` is not given and stdin is a terminal, the command exits 2 with a
   usage message instead of waiting for input. This also applies when `-` is
   given.
@@ -655,7 +658,7 @@ does not read this folder; see [Known limits](#known-limits).
 | `2` | No `--file` and stdin is a terminal | `recipe guide: no text given and stdin is a terminal; pipe the text on stdin (or pass -) or use --file <path>` |
 | `2` | Empty text | `recipe guide: guidance text is empty` |
 | `2` | Oversize text on stdin, or in a regular `--file` file | `guidance entry is 61440 bytes; the limit is 51200 bytes` |
-| `2` | Oversize text from a `--file` path that is not a regular file | `guidance entry is more than 51200 bytes; the limit is 51200 bytes` |
+| `2` | Oversize text from a `--file` path that is not a regular file, or a regular file whose recorded size is wrong | `guidance entry is more than 51200 bytes; the limit is 51200 bytes` |
 | `2` | Invalid UTF-8, a refused character or a delimiter line | `recipe guide: guidance text contains a control character (U+001B)` |
 | `2` | Malformed pull request URL | `recipe guide: not a GitHub pull request URL: port is not allowed` |
 | `2` | Run inside a recipe run without `--from-step` | `recipe guide: refusing to add guidance from inside a recipe run (AMPLIHACK_RECIPE_RUN_ID is set); an agent step that means to add an entry must pass --from-step, and the entry is then shown as coming from an agent step` |

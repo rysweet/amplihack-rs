@@ -137,7 +137,8 @@ fn guide(
 enum Overflow {
     /// Read the rest without keeping it and report the exact size (stdin).
     Drain,
-    /// Report this size, taken from the open handle of a regular file.
+    /// Report this size, taken from the open handle of a regular file. A size
+    /// at or below the cap cannot be right and is reported as "more than".
     Size(u64),
     /// Stop one byte past the cap and report "more than" (a FIFO or device).
     Stop,
@@ -163,8 +164,10 @@ fn read_bounded<R: Read>(
                 let rest = std::io::copy(src, &mut std::io::sink()).map_err(io_error)?;
                 (buf.len() as u64 + rest, true)
             }
-            Overflow::Size(size) => (size, true),
-            Overflow::Stop => (buf.len() as u64, false),
+            // More than READ_CAP bytes were read, so a smaller size is wrong
+            // (procfs, sysfs, or a file that grew during the read).
+            Overflow::Size(size) if size > READ_CAP => (size, true),
+            Overflow::Size(_) | Overflow::Stop => (buf.len() as u64, false),
         };
         return Err(GuideError::Oversize { size, exact });
     }
@@ -185,11 +188,9 @@ fn read_stdin() -> Result<String, GuideError> {
 /// symbolic link is followed with the caller's own permissions.
 fn read_file(path: &Path) -> Result<String, GuideError> {
     let what = path.display().to_string();
-    let mut file =
-        fs::File::open(path).map_err(|e| GuideError::Io(format!("cannot read {what}: {e}")))?;
-    let meta = file
-        .metadata()
-        .map_err(|e| GuideError::Io(format!("cannot read {what}: {e}")))?;
+    let io_error = |e: std::io::Error| GuideError::Io(format!("cannot read {what}: {e}"));
+    let mut file = fs::File::open(path).map_err(io_error)?;
+    let meta = file.metadata().map_err(io_error)?;
     let overflow = if meta.is_file() {
         Overflow::Size(meta.len())
     } else {
@@ -347,17 +348,6 @@ fn session_run_id(log: &Path) -> Result<Option<String>, GuideError> {
     Ok(Some(run_id.to_string()))
 }
 
-// PR #2567 B1 and S7: one bounded read for stdin and `--file`. Contract for
-// the private helper:
-//
-// - `enum Overflow { Drain, Size(u64), Stop }` says how oversize input is
-//   reported: `Drain` reads the rest to count it (stdin), `Size(n)` reports
-//   the size of a regular file taken from its open handle, and `Stop` stops
-//   one byte past the cap and reports "more than" (a FIFO or device);
-// - `read_bounded<R: Read>(src: &mut R, what: &str, overflow: Overflow)
-//   -> Result<String, GuideError>` reads at most cap + 1 bytes
-//   (`MAX_GUIDANCE_ENTRY_BYTES + HEADER_ROOM`), returns the text untrimmed,
-//   and never echoes any of it in an error.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,6 +405,17 @@ mod tests {
             src.position(),
             (CAP + 1) as u64,
             "nothing past cap + 1 is read"
+        );
+    }
+
+    #[test]
+    fn size_mode_with_a_size_below_the_cap_reports_more_than() {
+        let mut src = io::Cursor::new(vec![b'z'; CAP + 10]);
+        let e = read_bounded(&mut src, "notes.md", Overflow::Size(0)).unwrap_err();
+        assert_eq!(e.exit_code(), 2);
+        assert_eq!(
+            e.to_string(),
+            "guidance entry is more than 51200 bytes; the limit is 51200 bytes"
         );
     }
 

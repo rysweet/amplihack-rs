@@ -477,7 +477,7 @@ pub(crate) fn append_entry(
     let entry = path
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or_default()
+        .expect("publish returns a path with a UTF-8 file name")
         .to_string();
     let record = serde_json::json!({
         "event": "guidance_appended",

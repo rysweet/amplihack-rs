@@ -370,18 +370,8 @@ mod tests {
         }
     }
 
-    // PR #2567 M2: `StdinWriter::delivered()` is true only once the tail and
-    // the flush both returned `Ok` from the writer, and the flag is set
-    // before stdin is dropped. A broken pipe is still mapped to `Ok` by
-    // `map_result`, but it never sets the flag. Contract for the private
-    // helpers:
-    //
-    // - `write_all_parts<W: Write>(out: &mut W, head: &[u8],
-    //   follow: Option<&mut dyn io::Read>, tail: &[u8], delivered: &AtomicBool)
-    //   -> io::Result<()>` writes head, copies follow, writes tail, flushes,
-    //   and then stores `true` (Release);
-    // - `map_result(io::Result<()>) -> io::Result<()>` maps `BrokenPipe` and
-    //   `ConnectionReset` to `Ok` and re-wraps any other error.
+    // PR #2567 M2: `delivered()` is set only after the tail and the flush
+    // return `Ok`; a broken pipe maps to `Ok` but never sets it.
 
     /// Accepts `room` bytes, then fails every write with `kind`; flushing
     /// fails with `flush_kind` when set.
