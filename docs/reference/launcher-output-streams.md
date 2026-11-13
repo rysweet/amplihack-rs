@@ -1,8 +1,9 @@
 # Launcher Output Streams Reference
 
-When amplihack launches an agent, standard output carries only the agent's own
-output. The launcher's own notices, such as the `NODE_OPTIONS` line, install
-progress and the Docker activation message, go to standard error.
+When amplihack launches an agent, the launcher writes its own notices, such as
+the `NODE_OPTIONS` line, install progress and the Docker activation message, to
+standard error, so that standard output holds the agent's output. Two cases
+still add other text to stdout; see [Known exceptions](#known-exceptions).
 
 This contract matters most for recipe agent steps. The recipe runner captures
 the stdout of `amplihack claude --dangerously-skip-permissions -p <prompt>` as
@@ -16,6 +17,7 @@ issues #2575 and #2556.
 - [Example](#example)
 - [Notices that go to stderr](#notices-that-go-to-stderr)
 - [Output that stays on stdout](#output-that-stays-on-stdout)
+- [Known exceptions](#known-exceptions)
 - [Reading the notices](#reading-the-notices)
 - [Behaviour test](#behaviour-test)
 - [Adding a new notice](#adding-a-new-notice)
@@ -79,8 +81,10 @@ All of these are written with `eprintln!`. Files are under
 Model-passing and update-check-skip notices were already written to stderr or
 through `tracing`, and are unchanged.
 
-The blarify banner ends with a flush of stderr. The indexer itself still runs
-with its stdout and stderr set to `Stdio::null()`.
+The blarify banner ends with a flush of stderr. When indexing runs in the
+background, the indexer child process has its stdout and stderr set to
+`Stdio::null()`. Synchronous indexing does not; see
+[Known exceptions](#known-exceptions).
 
 ## Output that stays on stdout
 
@@ -92,6 +96,20 @@ These are output the user asked for, or are not on the launch path:
 | `amplihack --version` | Requested output. |
 | `amplihack install`, `update`, `doctor` result lines | Requested output. Their progress lines from `bootstrap.rs` now go to stderr. |
 | `query_code` | Requested output. |
+
+## Known exceptions
+
+These paths can still write to stdout during a launch, and are outside the
+scope of issue #2585:
+
+| Path | What reaches stdout |
+| ---- | ------------------- |
+| Synchronous code indexing (`AMPLIHACK_ENABLE_BLARIFY=1` with `AMPLIHACK_BLARIFY_MODE=sync`) | The indexer runs in the launcher's own process. `run_index_code` prints the import counts as JSON, and `run_index_scip` prints its indexing summary. Both are in `crates/amplihack-memory/src/cli_memory/`. |
+| Automatic tool installation | The `npm install -g` and `uv tool install` child processes inherit the launcher's stdout, so their output reaches it when the launcher has to install a tool. |
+
+A recipe step that needs a clean result should leave `AMPLIHACK_BLARIFY_MODE`
+unset or set it to `background` or `skip`, and should run with the agent
+already installed or with `AMPLIHACK_SKIP_AUTO_INSTALL` set.
 
 ## Reading the notices
 
