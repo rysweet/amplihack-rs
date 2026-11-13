@@ -44,6 +44,7 @@ steps:
       WT=""; [ -z "$WT_TOOL" ] || WT="$(bash "$WT_TOOL" push-failure-recovery-snapshot)" || WT=""
       unlinked() { jq -nc '{linked: "false"}'; exit 0; }
       [ -n "$WT" ] && cd -P -- "$WT" 2>/dev/null || unlinked
+      git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "push-failure-recovery: [skip] not a git repo at $(pwd -P); snapshot records no linked worktree" >&2; unlinked; }
       gd="$(git rev-parse --absolute-git-dir 2>/dev/null)" || unlinked
       cd_="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || unlinked
       [ "$gd" != "$cd_" ] && [ "$(git rev-parse --show-toplevel 2>/dev/null)" = "$(pwd -P)" ] || unlinked
@@ -203,12 +204,12 @@ steps:
       # Rule 4: a linked task worktree.
       WT=""; [ -z "$WT_TOOL" ] || WT="$(bash "$WT_TOOL" push-failure-recovery)" || WT=""
       LINKED=false
-      if [ -n "$WT" ] && cd -P -- "$WT" 2>/dev/null; then { gd=$(git rev-parse --absolute-git-dir) && cd_=$(git rev-parse --path-format=absolute --git-common-dir) && [ "$gd" != "$cd_" ] && [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ] && LINKED=true; } 2>/dev/null || true; fi
+      if [ -n "$WT" ] && cd -P -- "$WT" 2>/dev/null && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then { gd=$(git rev-parse --absolute-git-dir) && cd_=$(git rev-parse --path-format=absolute --git-common-dir) && [ "$gd" != "$cd_" ] && [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ] && LINKED=true; } 2>/dev/null || true; fi
       if [ "$LINKED" != true ]; then
         [ "$(snap linked)" = false ] || fail worktree-changed "$STEP: the linked worktree in the snapshot is gone"
         # Only step-20b has an intended skip with no worktree; every other step ends here.
         if [ "$CAUSE" = NONE ] && [ "$KEY" = cleanup_push_result ]; then emit false "" "" no-worktree; exit 0; fi
-        fail not-linked-worktree "$STEP: no linked task worktree from worktree_setup.worktree_path; nothing can be verified"
+        fail not-linked-worktree "$STEP: no linked task worktree from worktree_setup.worktree_path; nothing can be verified; the gate requires a git repo, so either \`git init\` or rerun from a checkout"
       fi
       [ "$(snap linked)" = true ] && [ "$(snap path)" = "$(pwd -P)" ] || fail worktree-changed "$STEP: the worktree is not the one in the snapshot"
       # Rule 5: the gate works out the branch itself.
