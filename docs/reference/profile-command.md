@@ -11727,8 +11727,9 @@ hint: log in with plain 'claude', or stop the rotator first.
    `<root>/<name>/.credentials.json` exists, it is then renamed into the
    `.pending-…` directory, and only then is its path printed:
    `note: holding the previous login of profile '<name>' in <path> while you log in`.
-   With no `.credentials.json` to hold, as on macOS, this note is not
-   printed, although the `.pending-…` directory still holds the block.
+   With no `.credentials.json` to hold, as on macOS, the note names the
+   block instead:
+   `note: holding the previous oauthAccount block of profile '<name>' in <path> while you log in`.
    A previous login that is a symlink, has more than one link or is not
    private stops the command here, before Claude starts, with nothing moved
    and `.claude.json` unchanged. If the key cannot be removed, nothing is
@@ -11793,7 +11794,7 @@ renamed back, `oauthAccount` is set back to the saved block, the empty
 `.pending-…` directory is removed, and nothing is recorded:
 
 ```
-error: profile '<name>' is signed in to the same account and organization as <holder>; Claude wrote no login file, and '<name>' is back to its previous login
+error: profile '<name>' is signed in to the same account and organization as <holder>; Claude wrote no login file. The previous login file and oauthAccount of '<name>' were put back, but the macOS Keychain may still hold the refused account, and Claude may use it until '<name>' is logged in again
 hint: sign out of claude.ai in your browser (or use a private/incognito window), then run 'amplihack profile login <name>' again.
 ```
 

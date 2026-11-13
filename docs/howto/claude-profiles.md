@@ -1322,7 +1322,7 @@ mv -n ~/.amplihack/claude-profiles/.rejected-logins/.pending-rssourcelabs-202610
     its `oauthAccount` block are put back and `login` exits 1:
 
     ```
-    error: profile 'work' is signed in to the same account and organization as profile 'personal'; Claude wrote no login file, and 'work' is back to its previous login
+    error: profile 'work' is signed in to the same account and organization as profile 'personal'; Claude wrote no login file. The previous login file and oauthAccount of 'work' were put back, but the macOS Keychain may still hold the refused account, and Claude may use it until 'work' is logged in again
     ```
 
   - a duplicate, with no previous login file: the refusal is printed and

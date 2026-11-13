@@ -1249,10 +1249,10 @@ fn only_login_check_and_swap_expect_write_records() {
 /// `.claude.json` and an unrelated key it changes, but no login file.
 fn keychain_writes(e: &Env, p: &str, account: serde_json::Value) {
     let path = e.dir(p).join(".claude.json");
-    let mut v = fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
+    let text = fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("test setup: cannot read {}: {err}", path.display()));
+    let mut v: serde_json::Value = serde_json::from_str(&text)
+        .unwrap_or_else(|err| panic!("test setup: {} is not JSON: {err}", path.display()));
     v["oauthAccount"] = account;
     v["projects"] = serde_json::json!({"/tmp/x": {"allowedTools": []}});
     private(&path, &v.to_string());
@@ -1332,7 +1332,14 @@ fn a_keychain_login_after_a_previous_file_that_duplicates_is_refused_and_restore
         .unwrap_err()
         .to_string();
     assert!(err.contains("profile 'other'"), "{err}");
-    assert!(err.contains("back to its previous login"), "{err}");
+    assert!(
+        err.contains("previous login file and oauthAccount of 'work' were put back"),
+        "{err}"
+    );
+    assert!(
+        err.contains("the macOS Keychain may still hold the refused account"),
+        "S-14: the profile is not claimed to be fully restored: {err}"
+    );
     assert!(err.contains(&refusal_hint("work")), "{err}");
     assert!(
         !err.contains("was moved to"),
@@ -1465,5 +1472,61 @@ fn a_keychain_profile_swapped_in_while_claude_runs_names_the_saved_block() {
     assert_eq!(ino(&e.dir("fresh").join(CREDS)), None);
     assert!(e.entries().iter().all(|x| !x.starts_with("fresh-")));
     assert_eq!(recorded(&e, "fresh"), None);
+    assert_no_secrets(&err);
+}
+
+#[test]
+fn a_login_file_without_an_oauth_account_leaves_none_and_keeps_the_saved_block() {
+    // Claude writes a login file but no `oauthAccount`: the login is
+    // accepted, the profile ends with no `oauthAccount` and nothing is
+    // recorded, and the earlier block goes to `-replaced/` with the
+    // previous login (the place the note names).
+    let e = env();
+    let before = e.oauth("work");
+    let mut new_ino = 0;
+    e.check("work", || {
+        new_ino = login(&e.dir("work").join(CREDS));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(ino(&e.dir("work").join(CREDS)), Some(new_ino));
+    assert_eq!(e.oauth("work"), None, "no oauthAccount after the login");
+    assert_eq!(
+        read_json(&e.dir("work").join(".claude.json"))["numStartups"],
+        1,
+        "other keys are kept"
+    );
+    let replaced = e.entry("work-", "-replaced");
+    assert_eq!(ino(&replaced.join(CREDS)), Some(e.work_ino));
+    assert_eq!(Some(read_json(&replaced.join("oauthAccount.json"))), before);
+    assert!(no_pending(&e), "{:?}", e.entries());
+    assert_eq!(recorded(&e, "work"), None);
+}
+
+#[test]
+fn a_keychain_duplicate_check_that_cannot_list_the_profiles_restores_and_refuses() {
+    // Fail closed on the Keychain path: mode 0300 stops the listing of the
+    // root but not the renames inside it.
+    if super::auto_switch::euid() == 0 {
+        return;
+    }
+    let e = env();
+    let before = e.oauth("work");
+    let result = e.check("work", || {
+        keychain_login(&e, "work", "user-SENTINEL-other", "org-SENTINEL-1");
+        fs::set_permissions(e.store.root(), fs::Permissions::from_mode(0o300)).unwrap();
+        Ok(())
+    });
+    fs::set_permissions(e.store.root(), fs::Permissions::from_mode(0o700)).unwrap();
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("could not check profile 'work' for duplicate logins"),
+        "{err}"
+    );
+    assert!(err.contains("its oauthAccount was restored"), "{err}");
+    assert_eq!(ino(&e.dir("work").join(CREDS)), Some(e.work_ino));
+    assert_eq!(e.oauth("work"), before);
+    assert!(e.entries().is_empty(), "{:?}", e.entries());
+    assert_eq!(recorded(&e, "work"), None);
     assert_no_secrets(&err);
 }

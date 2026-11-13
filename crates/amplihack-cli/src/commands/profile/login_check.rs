@@ -247,6 +247,13 @@ fn hold(root: &Path, dir: PathBuf, name: &str, ts: String) -> Result<Held> {
             "check permissions on the profile directory",
         ));
     }
+    if block.is_some() && !present {
+        eprintln!(
+            "note: holding the previous oauthAccount block of profile '{name}' in {} while \
+             you log in",
+            show(&pending)
+        );
+    }
     if present {
         eprintln!(
             "note: holding the previous login of profile '{name}' in {} while you log in",
@@ -356,7 +363,9 @@ fn no_login_file(
     let n = name.as_str();
     // Phase A removed the key, so an account named now is the new login. An
     // empty, malformed or unsafe block is no login and never replaces a
-    // working login file.
+    // working login file. Without a held login file, `restore` still puts
+    // the earlier block back over such a block: a block that names no
+    // account is not accepted as Claude's, so the last known account is kept.
     if Account::of_dir(&held.dir).is_none() {
         restore(held, n, None)?;
         if held.held {
@@ -381,7 +390,9 @@ fn no_login_file(
             Err(fail(
                 format!(
                     "profile '{n}' is signed in to the same account and organization as {}; \
-                     Claude wrote no login file, and '{n}' is back to its previous login",
+                     Claude wrote no login file. The previous login file and oauthAccount of \
+                     '{n}' were put back, but the macOS Keychain may still hold the refused \
+                     account, and Claude may use it until '{n}' is logged in again",
                     duplicates::holder_label(&h)
                 ),
                 refusal_hint(n),
