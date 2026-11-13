@@ -141,8 +141,9 @@ steps:
       fi
       exit "$RC"
       STEP_RECOVERY_BODY
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-02-merge-ready-loop
       exec amplihack orch helper step-recovery run --step-id step-02-merge-ready-loop --essential --stop-on-handoff \
-        --dir "${RECIPE_VAR_step_recovery_dir:-}" \
+        --dir "$RECIPE_VAR_step_recovery_dir" \
         --goal "Run the merge-ready loop to a merge-ready verdict for PR ${RECIPE_VAR_pr_number:-unknown}" \
         -- bash -c "$STEP_BODY" step-02-merge-ready-loop
     output: "merge_loop_result"
@@ -190,9 +191,10 @@ steps:
         -c "no_merge=${RECIPE_VAR_no_merge:-true}" -c "autodrive_dry_run=${RECIPE_VAR_autodrive_dry_run:-false}" \
         -c "build_result=${RECIPE_VAR_build_result:-}"
       STEP_RECOVERY_BODY
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || { echo "ERROR: step-03-finalize failed and this run has no step_recovery_dir" >&2; exit 1; }
       exec amplihack orch helper step-recovery run --already-failed --essential \
         --step-id step-03-finalize \
-        --dir "${RECIPE_VAR_step_recovery_dir:-}" \
+        --dir "$RECIPE_VAR_step_recovery_dir" \
         --goal "Finalize PR ${RECIPE_VAR_pr_number:-unknown}: record readiness and perform only the authorized action" \
         -- bash -c "$STEP_BODY" step-03-finalize
     output: "autodrive_finalization"

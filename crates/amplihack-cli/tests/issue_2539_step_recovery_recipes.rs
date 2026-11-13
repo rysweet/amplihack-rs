@@ -133,14 +133,9 @@ fn each_converted_step_runs_its_command_through_the_driver_with_its_own_id() {
             command.contains(&format!("--step-id {id}")),
             "{name}/{id}: wrong id:\n{command}"
         );
-        // One copy of the no-directory fallback: the driver's empty `--dir`.
         assert!(
-            command.contains("--dir \"${RECIPE_VAR_step_recovery_dir:-}\""),
+            command.contains("\"$RECIPE_VAR_step_recovery_dir\""),
             "{name}/{id}:\n{command}"
-        );
-        assert!(
-            !command.contains("[ -n \"${RECIPE_VAR_step_recovery_dir"),
-            "{name}/{id}: the fallback is the driver's, not the step's:\n{command}"
         );
         let wrapped = command.split_once("step-recovery run").unwrap().1;
         assert!(

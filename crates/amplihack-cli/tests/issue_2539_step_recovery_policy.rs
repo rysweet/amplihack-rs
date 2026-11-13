@@ -218,38 +218,3 @@ fn a_failed_alternative_is_recovered_under_its_own_id_without_alternatives() {
     );
     assert_eq!(f.evidence(2)["alternatives"], json!([]));
 }
-
-/// Review B7: the no-directory fallback lives in the driver, not in each
-/// recipe step. An empty `--dir` runs the command in the driver's place, with
-/// its own output and exit status; a step that already failed exits 1.
-#[test]
-fn an_empty_dir_runs_the_command_unwrapped_and_reaches_no_agent() {
-    let f = Fixture::new();
-    let run = |extra: &[&str]| {
-        f.amplihack()
-            .args(["orch", "helper", "step-recovery", "run", "--step-id", "s1"])
-            .args(["--dir", "", "--goal", "g"])
-            .args(extra)
-            .args([
-                "--",
-                "sh",
-                "-c",
-                "echo plain-out; echo plain-err >&2; exit 3",
-            ])
-            .output()
-            .unwrap()
-    };
-    let o = run(&[]);
-    assert_eq!(o.status.code(), Some(3), "{}", show(&o));
-    assert_eq!(text(&o.stdout), "plain-out\n");
-    assert!(text(&o.stderr).contains("plain-err"), "{}", show(&o));
-    let o = run(&["--already-failed", "--essential"]);
-    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
-    assert!(
-        text(&o.stderr).contains("s1 failed and this run has no step_recovery_dir"),
-        "{}",
-        show(&o)
-    );
-    assert!(f.agent_calls().is_empty());
-    assert!(f.dir_entries().is_empty(), "{:?}", f.dir_entries());
-}

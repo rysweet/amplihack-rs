@@ -17,10 +17,8 @@ pub const UNAVAILABLE: &str = "runner does not expose failed sub-recipe status";
 pub struct RunArgs {
     #[arg(long)]
     pub step_id: String,
-    /// The recovery directory. Empty: the run has none, and the command
-    /// runs in place of the driver, as the step did before #2539.
-    #[arg(long, value_parser = clap::builder::OsStringValueParser::new())]
-    pub dir: std::ffi::OsString,
+    #[arg(long)]
+    pub dir: PathBuf,
     #[arg(long)]
     pub goal: String,
     /// Default handoff owner: `^[A-Za-z0-9._@/-]{1,128}$`.
@@ -86,11 +84,7 @@ pub fn check_recovery_dir(dir: &Path) -> Result<()> {
 /// Checks the arguments and runs the loop. Returns the exit code.
 pub fn run(args: RunArgs) -> Result<i32> {
     validate_caller_step_id(&args.step_id)?;
-    if args.dir.is_empty() {
-        return exec::without_recovery(&args.step_id, args.already_failed, &args.command);
-    }
-    let dir = PathBuf::from(args.dir);
-    check_recovery_dir(&dir)?;
+    check_recovery_dir(&args.dir)?;
     let default_owner = match args.owner.as_deref().map(str::trim) {
         Some(owner) if !owner.is_empty() => {
             validate_owner(owner)?;
@@ -100,7 +94,7 @@ pub fn run(args: RunArgs) -> Result<i32> {
     };
     let alternatives = recover::parse_alternatives(&args.alternatives)?;
     let settings = Run {
-        dir,
+        dir: args.dir,
         goal: args.goal,
         default_owner,
         essential: args.essential || args.guard,

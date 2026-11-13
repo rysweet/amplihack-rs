@@ -104,15 +104,18 @@ from `{{…}}`:
       IFS= read -r -d '' STEP_BODY <<'STEP_RECOVERY_BODY' || :
       ...the step's original commands, unchanged...
       STEP_RECOVERY_BODY
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-21-pr-ready
       exec amplihack orch helper step-recovery run --step-id step-21-pr-ready --essential --stop-on-handoff \
-        --dir "${RECIPE_VAR_step_recovery_dir:-}" \
+        --dir "$RECIPE_VAR_step_recovery_dir" \
         --goal "Mark PR ${RECIPE_VAR_pr_number:-unknown} ready for review" \
         -- bash -c "$STEP_BODY" step-21-pr-ready
 ```
 
-With an empty `--dir` (no recovery directory) the driver runs the command in
-its own place, so the step behaves as it did before #2539. The fallback is in
-the driver, not in each step.
+Without a recovery directory the body runs in bash as before #2539. That
+fallback stays in each step, not in the driver, so a step with recovery off
+needs no `amplihack` binary on `PATH`, exactly as before. A recovery step
+after a sub-recipe instead prints an error and exits 1, since there is
+nothing to run.
 
 A sub-recipe or agent step gets `continue_on_error: true` and an `output:`
 key, and a bash step after it with `condition: "not <output>"` recovers it:
@@ -152,7 +155,7 @@ steps run unwrapped.
 ### `run`
 
 ```
-run --step-id <id> --dir <dir|""> --goal <text> [--owner <v>]
+run --step-id <id> --dir <dir> --goal <text> [--owner <v>]
     [--alternative <name>=<command>]... [--essential] [--stop-on-handoff]
     [--no-repair] [--guard] [--already-failed] [--recipe-dir <dir>] -- <command>...
 ```
@@ -160,7 +163,7 @@ run --step-id <id> --dir <dir|""> --goal <text> [--owner <v>]
 | Flag | Meaning |
 |---|---|
 | `--step-id` | `^[A-Za-z0-9._-]{1,128}$`; `.`, `..`, `:` and `__alt__` are refused |
-| `--dir` | Absolute recovery directory. Empty: run the command unwrapped (with `--already-failed`, print an error and exit 1) |
+| `--dir` | Absolute recovery directory; a relative path is refused |
 | `--owner` | Default handoff owner, `^[A-Za-z0-9._@/-]{1,128}$` |
 | `--alternative` | Named alternative, repeatable; name `^[A-Za-z0-9_-]{1,64}$`; command split on whitespace, no shell |
 | `--essential` | `continue_recorded` not offered |

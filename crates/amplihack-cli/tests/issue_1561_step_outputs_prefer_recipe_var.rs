@@ -520,33 +520,12 @@ fn jq_on_path() -> bool {
 }
 
 /// Run `script` with bash under an environment holding only PATH and `env`.
-/// A directory holding only `amplihack`, the binary under test. A step
-/// wrapped for step recovery (#2539) runs its body through
-/// `amplihack orch helper step-recovery run`, also with no recovery
-/// directory, so the binary on `PATH` must be this build, not an install.
-fn amplihack_dir() -> &'static Path {
-    static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
-    DIR.get_or_init(|| {
-        let dir = tempfile::tempdir().unwrap();
-        let bin = crate::support::amplihack_bin::amplihack_bin();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(bin, dir.path().join("amplihack")).unwrap();
-        #[cfg(not(unix))]
-        std::fs::copy(bin, dir.path().join("amplihack")).unwrap();
-        dir
-    })
-    .path()
-}
-
 fn bash_clean(script: &str, env: &[(&str, &str)], cwd: &Path) -> Output {
     let mut cmd = Command::new("bash");
     cmd.arg("-c")
         .arg(script)
         .env_clear()
-        .env(
-            "PATH",
-            format!("{}:{}", amplihack_dir().display(), path_env()),
-        )
+        .env("PATH", path_env())
         .current_dir(cwd);
     for (k, v) in env {
         cmd.env(k, v);

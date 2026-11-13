@@ -141,8 +141,9 @@ steps:
       fi
       exit "$RC"
       STEP_RECOVERY_BODY
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-02-crusty-loop
       exec amplihack orch helper step-recovery run --step-id step-02-crusty-loop --essential --stop-on-handoff \
-        --dir "${RECIPE_VAR_step_recovery_dir:-}" \
+        --dir "$RECIPE_VAR_step_recovery_dir" \
         --goal "Run the crusty review loop to a clean review for PR ${RECIPE_VAR_pr_number:-unknown}" \
         -- bash -c "$STEP_BODY" step-02-crusty-loop
     output: "crusty_loop_result"
@@ -178,9 +179,10 @@ steps:
       autodrive_phase_done "$DIR" crusty-loop || { echo "ERROR: the crusty-loop phase is not recorded in $DIR" >&2; exit 1; }
       echo '{"recorded":true,"source":"step-recovery"}'
       STEP_RECOVERY_BODY
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-03-record-crusty-phase
       exec amplihack orch helper step-recovery run --essential \
         --step-id step-03-record-crusty-phase \
-        --dir "${RECIPE_VAR_step_recovery_dir:-}" \
+        --dir "$RECIPE_VAR_step_recovery_dir" \
         --goal "Record the finished crusty phase of PR ${RECIPE_VAR_pr_number:-unknown}, with one follow-up issue per minor finding" \
         -- bash -c "$STEP_BODY" step-03-record-crusty-phase
     output: "crusty_phase_record"

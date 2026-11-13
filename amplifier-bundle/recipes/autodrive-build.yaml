@@ -107,9 +107,10 @@ steps:
         -c "existing_branch=${BRANCH}" -c "step_recovery_dir=${RECIPE_VAR_step_recovery_dir:-}" \
         -c no_merge=true -c should_merge=false -c finalization_handoff=true
       STEP_RECOVERY_BODY
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || { echo "ERROR: step-02-default-workflow failed and this run has no step_recovery_dir" >&2; exit 1; }
       exec amplihack orch helper step-recovery run --already-failed --essential \
         --step-id step-02-default-workflow \
-        --dir "${RECIPE_VAR_step_recovery_dir:-}" \
+        --dir "$RECIPE_VAR_step_recovery_dir" \
         --goal "Build and publish a PR for the run's task and leave it open. A retry continues on the branch the first attempt created, so it reuses that branch's PR." \
         -- bash -c "$STEP_BODY" step-02-default-workflow
     output: "build_recovery"
