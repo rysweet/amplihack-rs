@@ -45,7 +45,15 @@ fn run_refuses_an_unsafe_directory_a_relative_dir_and_bad_step_ids() {
     fs::set_permissions(&f.dir, fs::Permissions::from_mode(0o700)).unwrap();
 
     let long = "x".repeat(129);
-    for bad in ["step:alt:x", "..", ".", "", "has space", long.as_str()] {
+    for bad in [
+        "step:alt:x",
+        "x__alt__y",
+        "..",
+        ".",
+        "",
+        "has space",
+        long.as_str(),
+    ] {
         let o = f.run(bad, &[], &[tool]);
         assert_eq!(o.status.code(), Some(2), "step id {bad:?}:\n{}", show(&o));
     }
@@ -62,8 +70,6 @@ fn run_refuses_an_unsafe_directory_a_relative_dir_and_bad_step_ids() {
             "relative/dir",
             "--goal",
             "g",
-            "--state-file",
-            "x",
             "--",
             tool,
         ])
@@ -164,7 +170,7 @@ fn init_ignores_a_relative_xdg_state_home() {
 }
 
 #[test]
-fn init_with_dir_checks_the_directory_and_prints_it() {
+fn init_with_dir_checks_the_directory_and_prints_it_or_disables_recovery() {
     let f = Fixture::new();
     let o = f
         .amplihack()
@@ -184,7 +190,18 @@ fn init_with_dir_checks_the_directory_and_prints_it() {
         .arg(&open)
         .output()
         .unwrap();
-    assert_eq!(o.status.code(), Some(2), "{}", show(&o));
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "init never stops the run:\n{}",
+        show(&o)
+    );
+    assert_eq!(text(&o.stdout), "\n", "an empty value disables recovery");
+    assert!(
+        text(&o.stderr).contains("[step-recovery] WARNING: recovery disabled:"),
+        "{}",
+        show(&o)
+    );
     assert_eq!(
         fs::metadata(&open).unwrap().permissions().mode() & 0o777,
         0o750,

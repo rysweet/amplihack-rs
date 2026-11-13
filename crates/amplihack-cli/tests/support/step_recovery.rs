@@ -59,7 +59,6 @@ pub struct Fixture {
     pub work: PathBuf,
     /// The private recovery directory (0700) most tests pass as `--dir`.
     pub dir: PathBuf,
-    pub state_file: PathBuf,
 }
 
 pub fn private_dir(path: &Path) {
@@ -80,7 +79,6 @@ impl Fixture {
             agent: root.join("agent"),
             work: root.join("work"),
             dir: root.join("state").join("recovery"),
-            state_file: root.join("state").join("run-state.json"),
             root,
             tmp,
         };
@@ -89,7 +87,6 @@ impl Fixture {
         }
         private_dir(&f.root.join("state"));
         private_dir(&f.dir);
-        fs::write(&f.state_file, r#"{"phase":"merge","round":3}"#).unwrap();
         write_executable(&f.tools.join("recipe-runner-rs"), STUB_RUNNER, 0o755);
         let git = amplihack_git::command_in(&f.work)
             .args(["init", "-q"])
@@ -176,7 +173,7 @@ impl Fixture {
         cmd
     }
 
-    /// `step-recovery run` with the fixture's dir, goal and state file, the
+    /// `step-recovery run` with the fixture's dir and goal, the
     /// bundle's recipes as `--recipe-dir`, `extra` flags, then `-- command`.
     pub fn run_cmd(&self, step_id: &str, extra: &[&str], command: &[&str]) -> Command {
         let mut cmd = self.amplihack();
@@ -191,8 +188,6 @@ impl Fixture {
         .arg("--dir")
         .arg(&self.dir)
         .args(["--goal", "Merge the fixture pull request"])
-        .arg("--state-file")
-        .arg(&self.state_file)
         .arg("--recipe-dir")
         .arg(bundle_recipes())
         .args(extra)

@@ -5,8 +5,10 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-use super::driver::absolute_dir;
-use super::record::{self, Choice, Failure, Record, Source, check_text, validate_caller_step_id};
+use super::driver::check_recovery_dir;
+use super::record::{
+    self, Choice, Failure, Record, Source, check_text, validate_caller_step_id, validate_owner,
+};
 use super::{SCHEMA_VERSION, STEP_RECOVERY_HANDOFF_EXIT, signature};
 
 #[derive(clap::Args, Debug)]
@@ -70,7 +72,7 @@ fn make_private_dir(_: &Path) -> Result<()> {
     anyhow::bail!("step recovery requires Unix")
 }
 
-pub fn init(args: InitArgs) -> Result<i32> {
+fn init_dir(args: InitArgs) -> Result<PathBuf> {
     let dir = match args.dir {
         Some(dir) => dir,
         None => {
@@ -83,19 +85,29 @@ pub fn init(args: InitArgs) -> Result<i32> {
             dir
         }
     };
-    absolute_dir(&dir)?;
-    println!("{}", dir.display());
+    check_recovery_dir(&dir)?;
+    Ok(dir)
+}
+
+/// Prints the checked directory. On any error it warns on stderr, prints an
+/// empty line and exits 0: recovery is off for the run, the wrapped steps
+/// run unwrapped and fail exactly as they did before recovery existed.
+pub fn init(args: InitArgs) -> Result<i32> {
+    match init_dir(args) {
+        Ok(dir) => println!("{}", dir.display()),
+        Err(e) => {
+            eprintln!("[step-recovery] WARNING: recovery disabled: {e:#}");
+            println!();
+        }
+    }
     Ok(0)
 }
 
 pub fn record(args: RecordArgs) -> Result<i32> {
     validate_caller_step_id(&args.step_id)?;
-    absolute_dir(&args.dir)?;
-    for (name, value) in [
-        ("--reason", &args.reason),
-        ("--owner", &args.owner),
-        ("--needs", &args.needs),
-    ] {
+    check_recovery_dir(&args.dir)?;
+    validate_owner(&args.owner)?;
+    for (name, value) in [("--reason", &args.reason), ("--needs", &args.needs)] {
         check_text(name, value)?;
     }
     let record = Record {
@@ -126,7 +138,7 @@ pub fn record(args: RecordArgs) -> Result<i32> {
 /// Exit 0 with no handoff, 81 when any record is a handoff. Never prints
 /// `output_excerpt`.
 pub fn report(args: ReportArgs) -> Result<i32> {
-    absolute_dir(&args.dir)?;
+    check_recovery_dir(&args.dir)?;
     let mut handoffs = Vec::new();
     for (path, records) in record::read_all(&args.dir)? {
         for r in records.into_iter().filter(|r| r.choice == Choice::Handoff) {

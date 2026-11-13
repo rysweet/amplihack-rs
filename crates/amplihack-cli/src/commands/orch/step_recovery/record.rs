@@ -10,11 +10,10 @@ use std::path::{Path, PathBuf};
 
 use super::SCHEMA_VERSION;
 use super::secure_fs;
+pub use super::text::{TEXT_LIMIT, check_text, is_unsafe_char, validate_owner};
 
 /// Largest record file `report` and `run` will read.
 pub const RECORD_FILE_LIMIT: usize = 4 * 1024 * 1024;
-/// Longest text field (reason, repair, needs, owner).
-pub const TEXT_LIMIT: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -88,19 +87,6 @@ pub struct Record {
     pub recorded_at: String,
 }
 
-/// Checks a text field: 1..=1024 bytes and no control characters.
-pub fn check_text(name: &str, value: &str) -> Result<()> {
-    ensure!(
-        (1..=TEXT_LIMIT).contains(&value.len()),
-        "{name} must be 1-{TEXT_LIMIT} bytes"
-    );
-    ensure!(
-        !value.chars().any(char::is_control),
-        "{name} must not contain control characters"
-    );
-    Ok(())
-}
-
 impl Record {
     /// The field invariants documented in the reference page.
     pub fn check(&self) -> Result<()> {
@@ -153,8 +139,8 @@ impl Record {
         ensure!(
             !f.output_excerpt
                 .chars()
-                .any(|c| c.is_control() && c != '\n' && c != '\t'),
-            "output_excerpt must not contain control characters"
+                .any(|c| is_unsafe_char(c) && c != '\n' && c != '\t'),
+            "output_excerpt must not contain control or bidi characters"
         );
         ensure!(self.recorded_at.ends_with('Z'), "recorded_at must be UTC");
         Ok(())
@@ -165,13 +151,18 @@ fn is_id_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')
 }
 
-/// A caller's `--step-id`: `^[A-Za-z0-9._-]{1,128}$`, not `.` or `..`.
+/// A caller's `--step-id`: `^[A-Za-z0-9._-]{1,128}$`, not `.` or `..`, and
+/// without `__alt__`, which only the driver's alternative ids map to.
 pub fn validate_caller_step_id(id: &str) -> Result<()> {
     ensure!(
         (1..=128).contains(&id.len()) && id.bytes().all(is_id_char),
         "step id must match ^[A-Za-z0-9._-]{{1,128}}$: {id:?}"
     );
     ensure!(id != "." && id != "..", "step id must not be . or ..");
+    ensure!(
+        !id.contains("__alt__"),
+        "step id must not contain __alt__: {id:?}"
+    );
     Ok(())
 }
 
@@ -211,10 +202,16 @@ pub fn now_utc() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
-/// Parses every line of a record file; any invalid line is an error.
+/// Parses every line of a record file; any invalid line, or a record whose
+/// step id does not map to this file's name, is an error.
 pub fn parse_lines(path: &Path, bytes: &[u8]) -> Result<Vec<Record>> {
     let text =
         std::str::from_utf8(bytes).with_context(|| format!("{} is not UTF-8", path.display()))?;
+    let stem = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_suffix(".jsonl"))
+        .with_context(|| format!("{} is not a .jsonl record file", path.display()))?;
     let mut records = Vec::new();
     for (n, line) in text.lines().enumerate() {
         let record: Record = serde_json::from_str(line)
@@ -222,6 +219,13 @@ pub fn parse_lines(path: &Path, bytes: &[u8]) -> Result<Vec<Record>> {
         record
             .check()
             .with_context(|| format!("{} line {}: invalid record", path.display(), n + 1))?;
+        ensure!(
+            sanitise_step_id(&record.step_id) == stem,
+            "{} line {}: step id {:?} does not belong in this file",
+            path.display(),
+            n + 1,
+            record.step_id
+        );
         records.push(record);
     }
     Ok(records)
@@ -230,10 +234,14 @@ pub fn parse_lines(path: &Path, bytes: &[u8]) -> Result<Vec<Record>> {
 /// Records of one step, oldest first. A missing file has none.
 pub fn read_step(dir: &Path, step_id: &str) -> Result<Vec<Record>> {
     let path = record_path(dir, step_id);
-    match secure_fs::read_optional(&path, RECORD_FILE_LIMIT)? {
-        Some(bytes) => parse_lines(&path, &bytes),
-        None => Ok(Vec::new()),
-    }
+    let records = match secure_fs::read_optional(&path, RECORD_FILE_LIMIT)? {
+        Some(bytes) => parse_lines(&path, &bytes)?,
+        None => Vec::new(),
+    };
+    Ok(records
+        .into_iter()
+        .filter(|r| r.step_id == step_id)
+        .collect())
 }
 
 /// Every record file in the directory, by file name, each with its records.

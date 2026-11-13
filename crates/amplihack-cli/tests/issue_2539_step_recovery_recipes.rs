@@ -143,8 +143,56 @@ fn each_converted_step_runs_its_command_through_the_driver_with_its_own_id() {
             "{name}/{id}: values come from $RECIPE_VAR_*, never {{{{…}}}}"
         );
     }
-    let essential = step_command("workflow-finalize", "validate-agentic-finalization");
-    assert!(essential.contains("--essential"), "{essential}");
+    // A handoff on a guard, or before an outward action, stops the recipe there.
+    for (name, id, flag) in [
+        (
+            "workflow-finalize",
+            "validate-agentic-finalization",
+            "--guard",
+        ),
+        (
+            "autodrive-crusty-round",
+            "step-00-review-dir-guard",
+            "--guard",
+        ),
+        (
+            "autodrive-crusty-round",
+            "step-02b-review-dir-unchanged",
+            "--guard",
+        ),
+        (
+            "autodrive-merge-round",
+            "step-00-review-dir-guard",
+            "--guard",
+        ),
+        (
+            "autodrive-merge-round",
+            "step-02b-review-dir-unchanged",
+            "--guard",
+        ),
+        (
+            "autodrive-merge-round",
+            "step-00-merge-ready-files",
+            "--essential --stop-on-handoff",
+        ),
+        (
+            "workflow-finalize",
+            "step-20b-push-cleanup",
+            "--essential --stop-on-handoff",
+        ),
+        (
+            "workflow-finalize",
+            "step-21-pr-ready",
+            "--essential --stop-on-handoff",
+        ),
+    ] {
+        let command = step_command(name, id);
+        assert!(
+            command.contains(flag),
+            "{name}/{id} needs {flag}:\n{command}"
+        );
+        assert!(!command.contains("--state-file"), "{name}/{id}");
+    }
     for (name, step_id, id) in CONVERTED.iter().filter(|(_, s, i)| s != i) {
         let original = step(name, id);
         assert_eq!(

@@ -366,6 +366,8 @@ mod issue_2539_step_recovery_recipes;
 mod issue_2539_step_recovery_recurrence;
 #[path = "issue_2539_step_recovery_report.rs"]
 mod issue_2539_step_recovery_report;
+#[path = "issue_2539_step_recovery_stop.rs"]
+mod issue_2539_step_recovery_stop;
 #[path = "issue_2539_step_recovery_validation.rs"]
 mod issue_2539_step_recovery_validation;
 #[path = "issue_439_no_per_step_timeout.rs"]

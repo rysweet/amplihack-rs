@@ -26,6 +26,7 @@ mod autodrive_completion;
 mod named_branch;
 mod select_workflow;
 mod step_recovery;
+pub(crate) use step_recovery::STEP_RECOVERY_HANDOFF_EXIT;
 mod workflow_log_inventory;
 
 // TDD contracts for #2329. The implementation supplies `mod autodrive`;

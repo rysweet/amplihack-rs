@@ -223,7 +223,7 @@ steps:
       fi
       echo "=== Cleanup Complete ==="
       STEP_RECOVERY_BODY
-      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-20b-push-cleanup; exec amplihack orch helper step-recovery run --step-id step-20b-push-cleanup --dir "$RECIPE_VAR_step_recovery_dir" --goal "Commit and push the final cleanup of the workflow branch for PR ${RECIPE_VAR_pr_number:-unknown}" --state-file /dev/null -- bash -c "$STEP_BODY" step-20b-push-cleanup
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-20b-push-cleanup; exec amplihack orch helper step-recovery run --step-id step-20b-push-cleanup --essential --stop-on-handoff --dir "$RECIPE_VAR_step_recovery_dir" --goal "Commit and push the final cleanup of the workflow branch for PR ${RECIPE_VAR_pr_number:-unknown}" -- bash -c "$STEP_BODY" step-20b-push-cleanup
     output: "cleanup_push_result"
   - id: "step-21-pr-ready"
     type: "bash"
@@ -242,7 +242,7 @@ steps:
       [ -f "$READY_HELPER" ] || { echo "ERROR: workflow PR-ready helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $READY_HELPER; cwd=$(pwd)" >&2; exit 1; }
       bash "$READY_HELPER" --base "${RECIPE_VAR_base_branch:-}"
       STEP_RECOVERY_BODY
-      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-21-pr-ready; exec amplihack orch helper step-recovery run --step-id step-21-pr-ready --dir "$RECIPE_VAR_step_recovery_dir" --goal "Mark PR ${RECIPE_VAR_pr_number:-unknown} ready for review" --state-file /dev/null -- bash -c "$STEP_BODY" step-21-pr-ready
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-21-pr-ready; exec amplihack orch helper step-recovery run --step-id step-21-pr-ready --essential --stop-on-handoff --dir "$RECIPE_VAR_step_recovery_dir" --goal "Mark PR ${RECIPE_VAR_pr_number:-unknown} ready for review" -- bash -c "$STEP_BODY" step-21-pr-ready
     output: "pr_ready_result"
   - id: "step-22-ensure-mergeable"
     agent: "amplihack:ci-diagnostic-workflow"
@@ -375,11 +375,11 @@ steps:
       FINALIZER_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="$(pwd)/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $FINALIZER_HELPER; cwd=$(pwd)" >&2; exit 2; }
       bash "$FINALIZER_HELPER" validate
       STEP_RECOVERY_BODY
-      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" validate-agentic-finalization; exec amplihack orch helper step-recovery run --step-id validate-agentic-finalization --essential --dir "$RECIPE_VAR_step_recovery_dir" --goal "Validate the finalization evidence of the workflow for PR ${RECIPE_VAR_pr_number:-unknown}" --state-file /dev/null -- bash -c "$STEP_BODY" validate-agentic-finalization
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" validate-agentic-finalization; exec amplihack orch helper step-recovery run --step-id validate-agentic-finalization --guard --dir "$RECIPE_VAR_step_recovery_dir" --goal "Validate the finalization evidence of the workflow for PR ${RECIPE_VAR_pr_number:-unknown}" -- bash -c "$STEP_BODY" validate-agentic-finalization
     output: "workflow_result"
   - id: "step-recovery-report"  # #2539: a recorded handoff ends the run here with exit 81
     type: "bash"
-    command: exec amplihack orch helper step-recovery report --dir "$RECIPE_VAR_step_recovery_dir"
+    command: '[ -z "${RECIPE_VAR_step_recovery_dir:-}" ] || exec amplihack orch helper step-recovery report --dir "$RECIPE_VAR_step_recovery_dir"'
   - id: "workflow-complete"
     type: "bash"
     parse_json: true

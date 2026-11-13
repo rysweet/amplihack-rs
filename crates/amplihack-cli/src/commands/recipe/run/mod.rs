@@ -355,7 +355,7 @@ fn run_recipe_with_options(
         Ok(())
     } else {
         failure_class::emit_final_failure_class_marker(&result);
-        Err(exit_error(1))
+        Err(exit_error(termination::failed_run_exit_code(&result)))
     }
 }
 

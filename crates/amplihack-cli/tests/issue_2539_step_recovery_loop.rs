@@ -70,11 +70,13 @@ c="$(git -C "$wd" -c user.name=t -c user.email=t@t commit-tree "$t" -p HEAD -m "
 git -C "$wd" update-ref HEAD "$c"
 printf '{"merge_ready_verdict":"CONCERNS","head_sha":"%s","reviewed_head_sha":"%s","round_label":"%s"}\n' "$c" "$c" "$label" > "$record"
 printf 'item-%s\n' "$label" > "$record.findings"
-if grep -qx "$label" "$S/handoff-rounds" 2>/dev/null; then
+if grep -qx "$label" "$S/handoff-rounds" "$S/stop-rounds" 2>/dev/null; then
   "$REAL_AMPLIHACK" orch helper step-recovery record --dir "$srd" --step-id step-00-merge-ready-files \
     --reason "merge-ready files refused twice with the same error" --owner run-requester \
     --needs "check the merge-ready files in the state dir" || exit 2
 fi
+# A --guard or --stop-on-handoff step ends its round with the handoff exit.
+grep -qx "$label" "$S/stop-rounds" 2>/dev/null && { echo "round stopped at the handoff"; exit 81; }
 if grep -qx "$label" "$S/corrupt-rounds" 2>/dev/null; then
   printf '{not json\n' > "$srd/step-00-merge-ready-files.jsonl"; chmod 600 "$srd/step-00-merge-ready-files.jsonl"
 fi
@@ -108,6 +110,11 @@ fn git(dir: &std::path::Path, args: &[&str]) -> String {
 impl Loop {
     fn new() -> Option<Self> {
         if !jq_available() {
+            let required = std::env::var_os("AMPLIHACK_2539_REQUIRE_RECIPE_RUNNER").is_some();
+            assert!(
+                !required,
+                "jq is not installed; the stub orch helper needs it"
+            );
             eprintln!("SKIP: jq is not installed; the stub orch helper needs it");
             return None;
         }
@@ -248,6 +255,17 @@ fn a_handoff_in_the_first_round_stops_before_any_evaluator() {
     fs::write(l.stub.join("handoff-rounds"), "round-1\n").unwrap();
     let o = l.run();
     assert_eq!(o.status.code(), Some(HANDOFF_EXIT), "{}", show(&o));
+    assert_eq!(l.lines("round-calls").len(), 1);
+    assert!(l.lines("evaluator-calls").is_empty());
+}
+
+#[test]
+fn a_round_that_ended_with_81_at_its_guard_stops_the_loop_through_recovery_stop() {
+    let Some(l) = Loop::new() else { return };
+    fs::write(l.stub.join("stop-rounds"), "round-1\n").unwrap();
+    let o = l.run();
+    assert_eq!(o.status.code(), Some(HANDOFF_EXIT), "{}", show(&o));
+    assert_eq!(loop_result(&o)["loop_result"], "STEP_RECOVERY_HANDOFF");
     assert_eq!(l.lines("round-calls").len(), 1);
     assert!(l.lines("evaluator-calls").is_empty());
 }

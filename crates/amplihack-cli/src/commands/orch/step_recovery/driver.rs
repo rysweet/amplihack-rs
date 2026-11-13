@@ -7,8 +7,7 @@ use std::path::{Path, PathBuf};
 
 use super::exec::{self, Failed, Ran, Status};
 use super::record::{
-    self, Choice, Failure, Record, Source, check_text, validate_alternative_name,
-    validate_caller_step_id,
+    self, Choice, Failure, Record, Source, validate_caller_step_id, validate_owner,
 };
 use super::{RUN_REQUESTER, SCHEMA_VERSION, STEP_RECOVERY_HANDOFF_EXIT, evidence, recover};
 
@@ -22,9 +21,7 @@ pub struct RunArgs {
     pub dir: PathBuf,
     #[arg(long)]
     pub goal: String,
-    #[arg(long)]
-    pub state_file: PathBuf,
-    /// Default handoff owner: a role or a value from the run context.
+    /// Default handoff owner: `^[A-Za-z0-9._@/-]{1,128}$`.
     #[arg(long)]
     pub owner: Option<String>,
     /// `<name>=<command>`; the command is split on whitespace, no shell.
@@ -33,6 +30,13 @@ pub struct RunArgs {
     /// The step must not be skipped: `continue_recorded` is not offered.
     #[arg(long)]
     pub essential: bool,
+    /// A recorded handoff exits 81, so the recipe stops at this step.
+    #[arg(long)]
+    pub stop_on_handoff: bool,
+    /// The step checks something: only `handoff` and declared alternatives
+    /// are offered. Implies `--essential` and `--stop-on-handoff`.
+    #[arg(long)]
+    pub guard: bool,
     /// Skip the first run and go straight to recovery.
     #[arg(long)]
     pub already_failed: bool,
@@ -55,23 +59,14 @@ pub struct Attempt {
 pub struct Run {
     pub dir: PathBuf,
     pub goal: String,
-    pub state_file: PathBuf,
     pub default_owner: String,
     pub essential: bool,
+    pub guard: bool,
+    pub stop_on_handoff: bool,
     pub recipe_dir: Option<PathBuf>,
 }
 
-fn parse_alternative(spec: &str) -> Result<(String, Vec<String>)> {
-    let (name, command) = spec
-        .split_once('=')
-        .with_context(|| format!("--alternative must be <name>=<command>: {spec:?}"))?;
-    validate_alternative_name(name)?;
-    let argv: Vec<String> = command.split_whitespace().map(str::to_string).collect();
-    ensure!(!argv.is_empty(), "--alternative {name} has no command");
-    Ok((name.to_string(), argv))
-}
-
-pub fn absolute_dir(dir: &Path) -> Result<()> {
+pub fn check_recovery_dir(dir: &Path) -> Result<()> {
     ensure!(
         dir.is_absolute(),
         "the recovery directory must be an absolute path: {}",
@@ -84,31 +79,22 @@ pub fn absolute_dir(dir: &Path) -> Result<()> {
 /// Checks the arguments and runs the loop. Returns the exit code.
 pub fn run(args: RunArgs) -> Result<i32> {
     validate_caller_step_id(&args.step_id)?;
-    absolute_dir(&args.dir)?;
+    check_recovery_dir(&args.dir)?;
     let default_owner = match args.owner.as_deref().map(str::trim) {
         Some(owner) if !owner.is_empty() => {
-            check_text("--owner", owner)?;
+            validate_owner(owner)?;
             owner.to_string()
         }
         _ => RUN_REQUESTER.to_string(),
     };
-    let mut alternatives = Vec::new();
-    for spec in &args.alternatives {
-        let (name, argv) = parse_alternative(spec)?;
-        ensure!(
-            !alternatives
-                .iter()
-                .any(|(n, _): &(String, Vec<String>)| *n == name),
-            "--alternative {name} is declared twice"
-        );
-        alternatives.push((name, argv));
-    }
+    let alternatives = recover::parse_alternatives(&args.alternatives)?;
     let settings = Run {
         dir: args.dir,
         goal: args.goal,
-        state_file: args.state_file,
         default_owner,
-        essential: args.essential,
+        essential: args.essential || args.guard,
+        guard: args.guard,
+        stop_on_handoff: args.stop_on_handoff || args.guard,
         recipe_dir: args.recipe_dir,
     };
     let mut attempt = Attempt {
@@ -123,7 +109,7 @@ pub fn run(args: RunArgs) -> Result<i32> {
     loop {
         let failed = match pending.take() {
             Some(failed) => failed,
-            None => match exec::execute(&settings.dir, &attempt.command)? {
+            None => match exec::execute(&settings.dir, &attempt.step_id, &attempt.command)? {
                 Ran::Success(spool) => {
                     exec::pass_through(spool)?;
                     return Ok(0);
@@ -189,9 +175,17 @@ pub fn run(args: RunArgs) -> Result<i32> {
                     alternatives: Vec::new(),
                 };
             }
-            Choice::ContinueRecorded | Choice::Handoff => {
-                print_outcome(&record, &path)?;
+            Choice::ContinueRecorded => {
+                print_outcome(&record, &path);
                 return Ok(0);
+            }
+            Choice::Handoff => {
+                print_outcome(&record, &path);
+                return Ok(if settings.stop_on_handoff {
+                    STEP_RECOVERY_HANDOFF_EXIT
+                } else {
+                    0
+                });
             }
         }
     }
@@ -251,7 +245,7 @@ fn policy(run: &Run, attempt: &Attempt, failure: Failure, reason: &str, needs: &
 /// JSON object into an object, and `'step_recovery' in <output>` then never
 /// matches. With the text line the output stays a string, so later steps'
 /// documented `condition:` works.
-pub fn print_outcome(record: &Record, path: &Path) -> Result<()> {
+pub fn print_outcome(record: &Record, path: &Path) {
     println!(
         "step-recovery: {} recorded for {}",
         record.choice.as_str(),
@@ -278,5 +272,4 @@ pub fn print_outcome(record: &Record, path: &Path) -> Result<()> {
         record.reason,
         path.display()
     );
-    Ok(())
 }

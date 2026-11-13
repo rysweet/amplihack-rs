@@ -6,7 +6,7 @@
 
 use serde::Deserialize;
 
-use super::record::{Choice, Record, TEXT_LIMIT, check_text};
+use super::record::{Choice, Record, TEXT_LIMIT, check_text, is_unsafe_char};
 
 /// The fields an agent may send.
 #[derive(Debug, Deserialize)]
@@ -53,13 +53,16 @@ pub struct Context<'a> {
     pub signature: &'a str,
 }
 
-/// Finds the last `{"step_recovery":…}` object in the agent's text.
+/// The `{"step_recovery":…}` object on the final non-empty line of the
+/// agent's text. An object on any earlier line (a quote of the evidence, or
+/// a line the failed command planted) is never the reply.
 pub fn find_reply(text: &str) -> Option<serde_json::Value> {
-    crate::commands::orch::extract_json_with_field(text, "step_recovery")
+    let last = text.lines().rev().find(|l| !l.trim().is_empty())?;
+    crate::commands::orch::extract_json_with_field(last, "step_recovery")
         .map(|v| v["step_recovery"].clone())
 }
 
-fn refuse(check: impl Into<String>, agent_reason: Option<String>) -> Refusal {
+pub(super) fn refuse(check: impl Into<String>, agent_reason: Option<String>) -> Refusal {
     Refusal {
         check: check.into(),
         agent_reason,
@@ -187,22 +190,18 @@ pub fn clip(text: &str) -> String {
 }
 
 /// The reason of a validator handoff: the failed check, then the agent's
-/// own reason with control characters removed, cut to 1024 bytes.
+/// own reason, with control characters removed, cut to 1024 bytes.
 pub fn refusal_reason(refusal: &Refusal) -> String {
     let mut text = format!("validator: {}", refusal.check);
-    if let Some(agent) = &refusal.agent_reason {
-        let cleaned: String = agent
-            .chars()
-            .map(|c| if c.is_control() { ' ' } else { c })
-            .collect();
-        if !cleaned.trim().is_empty() {
-            text.push_str("; agent reason: ");
-            text.push_str(cleaned.trim());
-        }
+    if let Some(agent) = refusal.agent_reason.as_deref().map(str::trim)
+        && !agent.is_empty()
+    {
+        text.push_str("; agent reason: ");
+        text.push_str(agent);
     }
     let cleaned: String = text
         .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
+        .map(|c| if is_unsafe_char(c) { ' ' } else { c })
         .collect();
     clip(&cleaned)
 }

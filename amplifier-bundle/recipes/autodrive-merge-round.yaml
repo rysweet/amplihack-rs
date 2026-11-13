@@ -81,10 +81,9 @@ steps:
       bash "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_worktree_guard.sh" round-guard || { echo "STOP: review-dir guard refused or not found under AUTODRIVE_LAUNCH_TOOLS (#1528) [autodrive-merge-round/step-00]" >&2; exit 1; }
       STEP_RECOVERY_BODY
       [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-00-review-dir-guard
-      exec amplihack orch helper step-recovery run --step-id step-00-review-dir-guard --essential \
+      exec amplihack orch helper step-recovery run --step-id step-00-review-dir-guard --guard \
         --dir "$RECIPE_VAR_step_recovery_dir" \
         --goal "Check the review directory before merge-ready round ${RECIPE_VAR_autodrive_round_label:-round} of PR ${RECIPE_VAR_pr_number:-unknown}" \
-        --state-file /dev/null \
         -- bash -c "$STEP_BODY" step-00-review-dir-guard
     output: "review_index"
   - id: "step-00-merge-ready-files"
@@ -107,10 +106,9 @@ steps:
       printf '%s\n' "$OUT"
       STEP_RECOVERY_BODY
       [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-00-merge-ready-files
-      exec amplihack orch helper step-recovery run --step-id step-00-merge-ready-files --essential \
+      exec amplihack orch helper step-recovery run --step-id step-00-merge-ready-files --essential --stop-on-handoff \
         --dir "$RECIPE_VAR_step_recovery_dir" \
         --goal "Resolve the merge-ready skill files for round ${RECIPE_VAR_autodrive_round_label:-round} of PR ${RECIPE_VAR_pr_number:-unknown}" \
-        --state-file /dev/null \
         -- bash -c "$STEP_BODY" step-00-merge-ready-files
     output: "merge_ready_files"
   - id: "merge-evidence"
@@ -247,10 +245,9 @@ steps:
       bash "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_worktree_guard.sh" round-index-check "${REVIEW_DIR:-}" "${RECIPE_VAR_review_index:-}" step-02-merge-ready-assessment || exit 1
       STEP_RECOVERY_BODY
       [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-02b-review-dir-unchanged
-      exec amplihack orch helper step-recovery run --step-id step-02b-review-dir-unchanged --essential \
+      exec amplihack orch helper step-recovery run --step-id step-02b-review-dir-unchanged --guard \
         --dir "$RECIPE_VAR_step_recovery_dir" \
         --goal "Confirm the merge-ready assessment left the review directory unchanged in round ${RECIPE_VAR_autodrive_round_label:-round} of PR ${RECIPE_VAR_pr_number:-unknown}" \
-        --state-file /dev/null \
         -- bash -c "$STEP_BODY" step-02b-review-dir-unchanged
   - id: "step-03-extract-merge-ready-verdict"
     type: "bash"

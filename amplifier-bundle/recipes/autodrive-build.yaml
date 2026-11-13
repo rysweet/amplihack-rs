@@ -97,8 +97,7 @@ steps:
       exec amplihack orch helper step-recovery run --already-failed --essential \
         --step-id step-02-default-workflow \
         --dir "$RECIPE_VAR_step_recovery_dir" \
-        --goal "Build and publish a PR for the run's task and leave it open" \
-        --state-file /dev/null \
+        --goal "Build and publish a PR for the run's task and leave it open. A retry must reuse the branch and PR the first attempt created, if any: check git branch --show-current in the worktree and the open PRs for it." \
         -- bash -c "$STEP_BODY" step-02-default-workflow
     output: "build_recovery"
   - id: "step-03-resolve-pr"

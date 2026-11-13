@@ -72,11 +72,10 @@ fn a_refused_bundle_copy_ends_in_a_recorded_agent_handoff() {
             .as_str()
             .is_some_and(|s| !s.is_empty())
     );
+    assert_eq!(evidence["guard"], false);
     assert!(
-        evidence["state_excerpt"]
-            .as_str()
-            .unwrap()
-            .contains("\"round\":3")
+        evidence.get("state_excerpt").is_none(),
+        "--state-file was removed"
     );
 
     let report = f.report();

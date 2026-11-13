@@ -145,7 +145,6 @@ steps:
       exec amplihack orch helper step-recovery run --step-id step-02-crusty-loop \
         --dir "$RECIPE_VAR_step_recovery_dir" \
         --goal "Run the crusty review loop to a clean review for PR ${RECIPE_VAR_pr_number:-unknown}" \
-        --state-file /dev/null \
         -- bash -c "$STEP_BODY" step-02-crusty-loop
     output: "crusty_loop_result"
   - id: "step-03-record-crusty-phase"
@@ -183,7 +182,6 @@ steps:
         --step-id step-03-record-crusty-phase \
         --dir "$RECIPE_VAR_step_recovery_dir" \
         --goal "Record the finished crusty phase of PR ${RECIPE_VAR_pr_number:-unknown}, with one follow-up issue per minor finding" \
-        --state-file /dev/null \
         -- bash -c "$STEP_BODY" step-03-record-crusty-phase
     output: "crusty_phase_record"
 output:

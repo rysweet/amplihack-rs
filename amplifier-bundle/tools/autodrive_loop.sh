@@ -264,8 +264,7 @@ while :; do
     echo "INFO: ${ROUND_LABEL} child failed: ${ROUND_CHILD}; not a policy refusal, continuing" >&2
   fi
   check_review_dir "${ROUND_LABEL}${BEFORE_ROUND:+ or its before-round step}"
-  recovery_stop # #2539: a handoff recorded in this round ends the loop here
-
+  recovery_stop # #2539: a handoff recorded in this round ends the loop here (also when the round exited 81)
 
   # Preserve the round and its manifest before accepting any next action.
   . "${LOOP_HOME}/autodrive_loop_record.sh" || exit 1

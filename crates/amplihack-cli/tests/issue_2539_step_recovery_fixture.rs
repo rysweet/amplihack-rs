@@ -57,7 +57,7 @@ steps:
     command: |
       amplihack orch helper step-recovery run --step-id step-01-wrapped \
         --dir "$RECIPE_VAR_step_recovery_dir" --goal "fixture goal" \
-        --state-file "$RECIPE_VAR_tool_dir/state.json" --recipe-dir "$RECIPE_VAR_fixture_dir" \
+        --recipe-dir "$RECIPE_VAR_fixture_dir" \
         -- "$RECIPE_VAR_tool_dir/find-top"
     output: wrapped_result
   - id: step-02-sub
@@ -71,7 +71,7 @@ steps:
     command: |
       amplihack orch helper step-recovery run --already-failed --essential --step-id step-02-sub \
         --dir "$RECIPE_VAR_step_recovery_dir" --goal "fixture goal" \
-        --state-file "$RECIPE_VAR_tool_dir/state.json" --recipe-dir "$RECIPE_VAR_fixture_dir" \
+        --recipe-dir "$RECIPE_VAR_fixture_dir" \
         -- "$RECIPE_VAR_tool_dir/child-again"
     output: child_recovery
   - id: step-03-use
@@ -83,7 +83,7 @@ steps:
     command: amplihack orch helper step-recovery report --dir "$RECIPE_VAR_step_recovery_dir"
 "#;
 
-fn real_runner() -> Option<PathBuf> {
+pub(crate) fn real_runner() -> Option<PathBuf> {
     if let Some(explicit) = std::env::var_os("RECIPE_RUNNER_QA_BINARY") {
         return Some(PathBuf::from(explicit));
     }
@@ -122,7 +122,6 @@ fn run_fixture(second_reply: serde_json::Value) -> Option<(Fixture, Output)> {
         f.tools.join("amplihack"),
     )
     .unwrap();
-    fs::write(f.tools.join("state.json"), "{}").unwrap();
     let top = f.tool("find-top", "#!/bin/bash\nset -u\necho \"top is $TOP\"\n");
     f.tool("child-again", "#!/bin/sh\necho child-ok\n");
     let line = |v: serde_json::Value| json!({ "step_recovery": v }).to_string();

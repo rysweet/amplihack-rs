@@ -145,7 +145,6 @@ steps:
       exec amplihack orch helper step-recovery run --step-id step-02-merge-ready-loop \
         --dir "$RECIPE_VAR_step_recovery_dir" \
         --goal "Run the merge-ready loop to a merge-ready verdict for PR ${RECIPE_VAR_pr_number:-unknown}" \
-        --state-file /dev/null \
         -- bash -c "$STEP_BODY" step-02-merge-ready-loop
     output: "merge_loop_result"
   - id: "step-02b-file-followups"
@@ -194,7 +193,6 @@ steps:
         --step-id step-03-finalize \
         --dir "$RECIPE_VAR_step_recovery_dir" \
         --goal "Finalize PR ${RECIPE_VAR_pr_number:-unknown}: record readiness and perform only the authorized action" \
-        --state-file /dev/null \
         -- bash -c "$STEP_BODY" step-03-finalize
     output: "autodrive_finalization"
 output:

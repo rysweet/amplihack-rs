@@ -15,9 +15,12 @@ mod record;
 mod recover;
 mod report;
 mod signature;
+mod text;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_review;
 
 use super::autodrive_completion::secure_fs;
 use clap::Subcommand;

@@ -159,7 +159,7 @@ fn continue_recorded_is_refused_for_an_essential_step() {
 }
 
 #[test]
-fn the_last_step_recovery_object_in_the_reply_wins() {
+fn only_the_final_line_of_the_reply_counts() {
     let f = Fixture::new();
     let tool = failing(&f);
     let quoted = body(
@@ -173,6 +173,12 @@ fn the_last_step_recovery_object_in_the_reply_wins() {
     let o = f.run("step-02-merge-ready-loop", &[], &[&tool]);
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     assert_eq!(outcome(&o)["choice"], "continue_recorded");
+    // A reply followed by more text is not the final line: no reply at all.
+    let record = validator_handoff(&format!("{real}\nThat is my decision."), &[]);
+    assert!(
+        record["reason"].as_str().unwrap().contains("check 1"),
+        "{record}"
+    );
 }
 
 #[test]
