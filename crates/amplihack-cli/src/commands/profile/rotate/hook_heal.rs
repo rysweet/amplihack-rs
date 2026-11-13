@@ -106,7 +106,7 @@ fn heal_one(path: &Path, target: &HookTarget) -> bool {
 /// network). The live profile comes from the rotator's own detection, never from the
 /// ledger or the environment. A stamp that cannot be read counts as newer.
 pub(super) fn after_cycle(outcome: CycleOutcome, ctx: &Ctx) {
-    let newer_stamp = !crate::commands::install::binary_is_current();
+    let newer_stamp = !crate::commands::install::may_publish_implicitly();
     if !applies(outcome, ctx.read_only, newer_stamp) {
         return;
     }

@@ -28,8 +28,8 @@
 //!
 //! Per the project's Zero-BS philosophy, install failures **propagate**
 //! and are surfaced loudly by the binary entrypoint. There is no silent
-//! fallback after a failed installation — the user gets a clear error and a
-//! non-zero exit. An executable-origin refusal is separate: it reports why
+//! fallback after a failed installation: the user gets a clear error and a
+//! non-zero exit. An executable-origin refusal is separate; it reports why
 //! automatic installation is unavailable, then continues command dispatch.
 //!
 //! The one exception is issue #1955 D1: when only the release tag fetch failed
@@ -335,11 +335,17 @@ where
     // current stamp must still repair). So it cannot be reordered away.
     // Instead it is memoised on a stat fingerprint of the bundle inputs:
     // ~58 KB of recipe YAML is parsed only when the bundle actually changed.
-    let eligible = crate::commands::install::release_layout::executable_allows_implicit_install();
-    let installed_bundle_issue = if env_bypass_set() || !eligible {
-        installed_bundle_compatibility_issue_uncached()
-    } else {
+    // The opt-out is checked first and the origin assessment is skipped under
+    // it, so an opted-out execution emits neither the refusal line nor the
+    // `debug` cause record: the caller asked for silence, not a diagnosis.
+    // Both verdicts lead to the same uncached, write-nothing compatibility
+    // path, so the short circuit changes no behaviour beyond what is logged.
+    let eligible = !env_bypass_set()
+        && crate::commands::install::release_layout::executable_allows_implicit_install();
+    let installed_bundle_issue = if eligible {
         installed_bundle_compatibility_issue_cached()
+    } else {
+        installed_bundle_compatibility_issue_uncached()
     }
     .context("checking installed framework bundle compatibility")?;
 

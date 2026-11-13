@@ -547,6 +547,87 @@ mod issue_2496 {
         }
     }
 
+    /// `docs/features/self-heal-asset-restage.md` promises that one run under
+    /// `RUST_LOG=amplihack_cli=debug` reports which check refused, that the
+    /// refusal line itself names only the rule, and that the opt-out
+    /// suppresses both because eligibility is never assessed.
+    #[test]
+    fn the_refusal_cause_is_reported_only_under_rust_log_debug() {
+        isolated_case(
+            "the_refusal_cause_is_reported_only_under_rust_log_debug",
+            None,
+            || {
+                const CAUSE: &str = "executable-outside-installed-release";
+                let fixture = Fixture::new();
+                let before = snapshot(&fixture.host.home);
+
+                let run = |extra: &[(&str, &str)]| {
+                    let mut command = fixture.checkout();
+                    command.args(["recipe", "list"]);
+                    for (key, value) in extra {
+                        command.env(key, value);
+                    }
+                    let output = command.output().unwrap();
+                    let combined = format!(
+                        "{}{}",
+                        String::from_utf8_lossy(&output.stdout),
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    (output, combined)
+                };
+
+                // Default verbosity: the rule, not the particular check.
+                let (output, quiet) = run(&[]);
+                assert!(
+                    quiet.contains("prevents automatic installation"),
+                    "{}",
+                    text(&output)
+                );
+                assert!(
+                    !quiet.contains(CAUSE),
+                    "the specific cause belongs at debug level: {}",
+                    text(&output)
+                );
+
+                // The documented diagnostic command.
+                let (output, verbose) = run(&[("RUST_LOG", "amplihack_cli=debug")]);
+                let causes: Vec<_> = verbose
+                    .lines()
+                    .filter(|line| line.contains(CAUSE))
+                    .collect();
+                assert_eq!(
+                    causes.len(),
+                    1,
+                    "one cause record per run: {}",
+                    text(&output)
+                );
+                assert!(
+                    !causes[0].chars().any(char::is_control),
+                    "the cause must be sanitised: {causes:?}"
+                );
+
+                // The opt-out short-circuits before the assessment, so it
+                // reports the bypass diagnostic rather than an origin cause.
+                let (output, opted_out) = run(&[
+                    ("RUST_LOG", "amplihack_cli=debug"),
+                    ("AMPLIHACK_SKIP_AUTO_INSTALL", "1"),
+                ]);
+                assert!(
+                    !opted_out.contains(CAUSE),
+                    "an opted-out run assesses nothing: {}",
+                    text(&output)
+                );
+                assert!(
+                    !opted_out.contains("prevents automatic installation"),
+                    "an opted-out run reports no origin refusal: {}",
+                    text(&output)
+                );
+
+                assert_preserved(&fixture.host.home, &before, &output);
+            },
+        );
+    }
+
     /// Compile a std-only Rust executable, rather than a shell shim that
     /// could accidentally delegate to a host npm, uv or network downloader.
     fn acquisition_native(root: &Path) -> PathBuf {
@@ -583,7 +664,20 @@ mod issue_2496 {
             "{}",
             text(output)
         );
-        assert!(!stderr.contains("Installation failed:"), "{}", text(output));
+    }
+
+    /// Where the startup actually reached client acquisition and failed, the
+    /// reason is stated positively. The previous form asserted the absence of
+    /// the caller's own `Installation failed:` context, which coupled this
+    /// guard to an unrelated error contract; the tripwire assertions already
+    /// carry the claim that no installer ran.
+    fn assert_acquisition_refused(output: &Output) {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("refused because of executable origin"),
+            "{}",
+            text(output)
+        );
     }
 
     #[test]
@@ -607,6 +701,7 @@ mod issue_2496 {
                         text(&output)
                     );
                     assert_origin_refusal(&output);
+                    assert_acquisition_refused(&output);
                     assert!(
                         !fixture.host.path("installer-ran").exists(),
                         "{}",

@@ -391,7 +391,7 @@ pub(crate) fn newer_install_stamp() -> Result<Option<String>> {
 /// Whether this executable may publish installation assets implicitly. Origin
 /// and the opt-out apply independently of the install stamp; an unreadable
 /// stamp also refuses publication. Used by launch, profile seeding and the rotator.
-pub(crate) fn binary_is_current() -> bool {
+pub(crate) fn may_publish_implicitly() -> bool {
     !crate::self_heal::env_bypass_set()
         && release_layout::executable_allows_implicit_install()
         && matches!(newer_install_stamp(), Ok(None))

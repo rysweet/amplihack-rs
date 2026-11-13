@@ -251,6 +251,8 @@ AMPLIHACK_HOME=/opt/amplihack amplihack claude --print-env 2>&1 | grep AMPLIHACK
 
 **Install source:** `amplihack install` also tries `AMPLIHACK_HOME` as its first framework source. Plain `install` refuses it when its version differs from the binary's. The post-update install of `amplihack update` uses a same-version tree without network access, and fetches the release tag only when the version differs. Install always stages into `$HOME/.amplihack`, so this variable never moves the install. See [Framework source selection](./framework-source-selection.md).
 
+**No installation authority:** `AMPLIHACK_HOME` selects a framework source. It does not make the running executable eligible for implicit installation, and it cannot redirect the trusted releases tree: eligibility is derived from `HOME` alone, so that no process can declare itself an installed release by pointing this variable at a directory it controls. See [Executable eligibility](../features/self-heal-asset-restage.md#executable-eligibility).
+
 **Python parity:** Corresponds to `AMPLIHACK_HOME` propagation in the Python launcher.
 
 ---

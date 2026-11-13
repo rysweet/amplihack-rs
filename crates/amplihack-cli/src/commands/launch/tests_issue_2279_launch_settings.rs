@@ -6,7 +6,7 @@
 //! API this file pins (in `launch::hook_settings` unless noted):
 //! - `LAUNCH_FILE = "runtime/launch-hooks-settings.json"` (relative to AMPLIHACK_HOME)
 //! - `enum Inject { Path(PathBuf), NotPrivate, Skip(&'static str) }`
-//! - `struct Inputs<'a> { binary_name, extra_args, proxy, newer_stamp,
+//! - `struct Inputs<'a> { binary_name, extra_args, proxy, publication_refused,
 //!    target: Option<&HookTarget>, amplihack_home: &Path }`
 //! - `prepare_with(&Inputs) -> Inject` (pure apart from the file write);
 //!   production `prepare(binary_name, extra_args)` fills `Inputs` from the
@@ -49,7 +49,7 @@ fn inputs<'a>(home: &'a Path, extra: &'a [String], t: &'a HookTarget) -> Inputs<
         binary_name: "claude",
         extra_args: extra,
         proxy: false,
-        newer_stamp: false,
+        publication_refused: false,
         target: Some(t),
         amplihack_home: home,
     }
@@ -161,7 +161,7 @@ fn a_newer_install_stamp_is_skipped_as_an_older_binary() {
     let t = target();
     let extra = args(&[]);
     let mut i = inputs(home.path(), &extra, &t);
-    i.newer_stamp = true;
+    i.publication_refused = true;
     let Inject::Skip(reason) = prepare_with(&i) else {
         panic!("expected Skip");
     };

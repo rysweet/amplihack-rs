@@ -43,7 +43,7 @@ pub(super) struct Inputs<'a> {
     /// `--setting-sources ""` and keeps its own behaviour.
     pub proxy: bool,
     /// Implicit publication is refused by origin, opt-out or version checks.
-    pub newer_stamp: bool,
+    pub publication_refused: bool,
     pub target: Option<&'a HookTarget>,
     pub amplihack_home: &'a Path,
 }
@@ -69,8 +69,8 @@ pub(super) fn prepare(binary_name: &str, extra_args: &[String]) -> Inject {
     }
     let proxy = amplihack_utils::litellm_proxy::proxy_requested();
     // Origin, the opt-out and the version stamp all govern publication.
-    let newer_stamp = !crate::commands::install::binary_is_current();
-    let target = if newer_stamp || proxy || user_passed_settings(extra_args) {
+    let publication_refused = !crate::commands::install::may_publish_implicitly();
+    let target = if publication_refused || proxy || user_passed_settings(extra_args) {
         None
     } else {
         hook_target()
@@ -79,7 +79,7 @@ pub(super) fn prepare(binary_name: &str, extra_args: &[String]) -> Inject {
         binary_name,
         extra_args,
         proxy,
-        newer_stamp,
+        publication_refused,
         target: target.as_ref(),
         amplihack_home: &amplihack_home,
     })
@@ -102,7 +102,7 @@ pub(super) fn prepare_with(i: &Inputs<'_>) -> Inject {
         );
         return Inject::Skip("user passed --settings");
     }
-    if i.newer_stamp {
+    if i.publication_refused {
         return Inject::Skip("executable is not eligible for implicit hook publication");
     }
     let Some(target) = i.target else {

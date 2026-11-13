@@ -23,6 +23,8 @@ command or Git hook from switching the host's release beneath running sessions.
 - [Executable eligibility](#executable-eligibility)
 - [Startup and launch behaviour](#startup-and-launch-behaviour)
 - [Refused automatic repair](#refused-automatic-repair)
+- [Diagnosing a refusal](#diagnosing-a-refusal)
+- [Scope and known limits](#scope-and-known-limits)
 - [Never an implicit downgrade](#never-an-implicit-downgrade-1526)
 - [Skip rules](#skip-rules)
 - [Automatic installation opt-out](#bypass-amplihack_skip_auto_install)
@@ -106,6 +108,11 @@ that its executable location prevents automatic installation. Printed paths
 are sanitised. Startup self-heal and launch bootstrap share diagnostic
 suppression so the same refusal is reported at most once per process.
 
+A non-empty `AMPLIHACK_SKIP_AUTO_INSTALL` takes precedence. It stops the same
+installation paths and reports its own diagnostic, so an opted-out execution
+prints no origin refusal even when the executable is ineligible. See
+[Diagnosing a refusal](#diagnosing-a-refusal).
+
 Refusal occurs before source acquisition or installation-state mutation:
 
 | State | Behaviour on refusal |
@@ -154,6 +161,82 @@ The separate `issue_1954_first_install_restager` and
 `/proc` and are excluded on macOS. A macOS run cannot establish their
 first-update restager and live-run preservation guarantees; report them as
 unavailable, even when the portable origin and startup regressions pass.
+
+## Diagnosing a refusal
+
+The refusal line names the executable and the rule, not the particular check
+that failed. The specific cause is recorded at `debug` level, so a single run
+under `RUST_LOG` reports it:
+
+```sh
+RUST_LOG=amplihack_cli=debug amplihack recipe list
+```
+
+The cause line names the failing check and the path it was applied to. That
+path is sanitised in the same way as the refusal line. Log output is coloured
+only when stderr is a terminal, so a redirected or piped capture is plain text
+and carries no escape sequences. A broader filter such as `RUST_LOG=debug`
+enables unrelated targets whose output carries no such guarantee, so keep the
+filter narrow, and read what you captured before attaching it to an issue.
+
+Two cases report nothing here:
+
+- `doctor`, `install`, `update` and the other commands in
+  [Skip rules](#skip-rules) do not run startup self-heal. Use a command that
+  does; `recipe list` above is one.
+- A non-empty `AMPLIHACK_SKIP_AUTO_INSTALL` suppresses implicit installation
+  before eligibility is assessed, so neither the refusal line nor the cause is
+  emitted. Unset it for the diagnostic run. Such an execution reports the
+  [bypass diagnostic](#bypass-diagnostic) instead.
+
+Each cause the `debug` line can report, and what to do about it:
+
+| Reported check | Cause | Remedy |
+| --- | --- | --- |
+| `executable-outside-installed-release` | The executable is a checkout or Cargo build, for example `target/debug/amplihack`. A symlinked release directory or `bin` also lands here, because the executable then resolves outside the trusted tree | Expected for a checkout. Run `amplihack install` explicitly, or launch the installed `~/.local/bin/amplihack`. Replace a symlinked release directory or `bin` with the real directory |
+| `directory-is-a-symlink` | `~/.amplihack` or `~/.amplihack/releases` is a symlink rather than a real directory | Replace the link with the real directory. A redirected releases tree is never trusted |
+| `directory-writable-by-group-or-others` | `~/.amplihack`, `~/.amplihack/releases`, the release directory or its `bin` is writable by group or others | `chmod 700 ~/.amplihack ~/.amplihack/releases`, then `chmod 700` the release directory and its `bin` |
+| `directory-not-owned-by-this-user`, `executable-not-owned-by-this-user` | One of those directories, or the executable itself, is owned by another user, typically after a `sudo` install | Reinstall as the account that owns `$HOME`, or restore ownership with `chown` |
+| `directory-missing-or-unreadable` | `~/.amplihack` or `~/.amplihack/releases` is absent or cannot be read | Run `amplihack install` to create the installation |
+| `release-incomplete` | The release has no `.complete` marker, or the marker is a symlink | The release is partial. Run `amplihack install` to stage a complete one |
+| `release-retired` | The executable sits under `releases/.retired/` | The release has been superseded. Launch `~/.local/bin/amplihack` instead |
+| `executable-not-in-release-bin` | The executable resolves inside a release but outside its `bin` | Reinstall. A link inside `bin` that escapes its release is refused |
+| `executable-not-a-regular-file` | The path is a directory, device or socket rather than a regular file | Reinstall |
+| `executable-writable-by-group-or-others` | The executable itself is writable by group or others | `chmod 755` the file, or reinstall to restore the installed modes |
+| `home-directory-unresolved`, `executable-path-unknown`, `executable-path-unresolved` | `HOME` is unset, or the executable's own path cannot be obtained or resolved | Set `HOME`, or install and launch from `~/.local/bin/amplihack` |
+| `unsupported-platform` | The platform has no Unix ownership and mode semantics, so confinement cannot be assessed | Install and update explicitly. See [Scope and known limits](#scope-and-known-limits) |
+
+These names are a published vocabulary, not free text, so they are safe to
+quote in an issue.
+
+In every one of these cases `amplihack install` remains available, subject to
+its own source validation, so the host can still be repaired deliberately.
+
+## Scope and known limits
+
+This is an integrity control against a same-user process publishing itself to
+the host without being asked. It crosses no privilege boundary, performs no
+signature or content attestation, and is not an anti-tamper measure. A user who
+can write `~/.amplihack` can install whatever they like through the explicit
+command, which is the intended way to do it.
+
+Two limits follow from that scope:
+
+- **Hard links.** A checkout binary hard-linked into a release `bin` is
+  indistinguishable from the installed file by any path-based check, and is
+  accepted. Creating that link already requires write access to the release,
+  so it is deliberate action rather than the accident this guard addresses.
+- **Time of check.** The eligibility checks and the subsequent write are not
+  atomic. The window is same-user only, and the private-directory checks run
+  again when the install writes.
+
+On platforms without Unix ownership and permission semantics, the ownership
+and mode checks cannot be made. Implicit installation is refused outright
+there, rather than proceeding on the path, confinement and completeness
+checks alone, and explicit `amplihack install` is the only route.
+
+The verdict is recomputed at each boundary rather than cached, so a tree that
+changes mid-run cannot carry an earlier decision forward.
 
 ## Never an implicit downgrade (#1526)
 

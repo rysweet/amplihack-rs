@@ -27,7 +27,7 @@ Intelligent guidance system that prevents common mistakes and ensures work compl
 
 ## Self-Heal
 
-- [Self-heal framework assets](self-heal-asset-restage.md) — automatic repair for eligible installed executables, checkout safeguards and installation opt-out behaviour.
+- [Self-heal framework assets](self-heal-asset-restage.md): automatic repair for eligible installed executables, checkout safeguards and installation opt-out behaviour.
 
 ## Update Check
 

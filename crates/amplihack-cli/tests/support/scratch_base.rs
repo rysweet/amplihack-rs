@@ -27,12 +27,20 @@
 //! (issue #2196), so neither a framework install nor a stray repository
 //! marker above the base (`/tmp/.git`, issue #1937) can change them.
 //!
+//! The choice is made once per test process and then reused, because fixtures
+//! point `TMPDIR` at a directory they own. A later caller that read `TMPDIR`
+//! again would put its fixture inside that private tree and lose it the moment
+//! the owning test's `TempDir` dropped, taking an unrelated test with it. The
+//! rule is about where fixtures may live, which cannot change mid-process;
+//! code under test still reads whatever `TMPDIR` a fixture sets.
+//!
 //! This file uses only `std`. `amplihack-cli`'s `test_support`, the
 //! `cli_integration` target, `amplihack-hooks`' `user_prompt` tests and
 //! `amplihack-types`' `paths` tests include it with `#[path]`, so there is one
 //! copy of the rule.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 /// Directories whose presence in an ancestor makes some framework lookup
 /// resolve there. See the module documentation for which lookup uses which.
@@ -62,9 +70,16 @@ pub fn scratch_base_rejection(base: &Path, home: Option<&Path>) -> Option<String
 }
 
 /// The first of `TMPDIR`, `/var/tmp` and `/tmp` that no framework lookup can
-/// see past (module documentation). Panics, naming each candidate's fault,
-/// when none qualifies.
+/// see past (module documentation). Decided on the first call and reused for
+/// the life of the process, so a fixture that repoints `TMPDIR` at a tree it
+/// owns cannot send a concurrent test's fixtures into it. Panics, naming each
+/// candidate's fault, when none qualifies.
 pub fn scratch_base() -> PathBuf {
+    static CHOSEN: OnceLock<PathBuf> = OnceLock::new();
+    CHOSEN.get_or_init(choose_scratch_base).clone()
+}
+
+fn choose_scratch_base() -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let candidates = [
         std::env::temp_dir(),

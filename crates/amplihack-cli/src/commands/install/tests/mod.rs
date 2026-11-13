@@ -43,6 +43,7 @@ mod issue_1955_support;
 mod issue_1955_tag_fetch;
 #[cfg(unix)]
 mod issue_2279_launch_repair;
+mod issue_2496_publication_gate;
 mod issue_527_tests;
 mod issue_911_durable_hooks_path;
 #[cfg(unix)]
@@ -323,7 +324,7 @@ mod issue_2496 {
         let _env = isolate(temp.path());
         version_stamp::write_installed_version(crate::VERSION).unwrap();
         assert!(
-            !binary_is_current(),
+            !may_publish_implicitly(),
             "version equality alone must not authorise implicit hook and provider writers"
         );
     }

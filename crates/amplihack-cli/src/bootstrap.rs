@@ -54,7 +54,7 @@ fn prepare_selected_launcher(tool: &str) -> Result<()> {
 
     // A checkout may use existing assets, but must not publish hooks,
     // provider configuration or a replacement runner while launching.
-    if !install::binary_is_current() {
+    if !install::may_publish_implicitly() {
         return Ok(());
     }
 
@@ -78,7 +78,7 @@ fn prepare_selected_launcher(tool: &str) -> Result<()> {
             // older than the install would write its older hook wrappers over
             // the newer install's, and the user's config.json is never
             // rewritten from here, only filled in when amplihack is absent.
-            if install::binary_is_current() {
+            if install::may_publish_implicitly() {
                 copilot_setup::ensure_copilot_home_staged(
                     copilot_setup::UserConfig::for_implicit_install(),
                 )?;
@@ -460,7 +460,8 @@ pub fn ensure_tool_available(tool: &str, override_origin: OverrideOrigin) -> Res
                         "{original}\nAutomatic Codex installation is disabled. Repair with npm install -g @openai/codex."
                     );
                 }
-                install_tool(tool)?;
+                install_tool(tool)
+                    .map_err(|error| anyhow!("{original}\nInstallation failed: {error:#}"))?;
             } else {
                 install_tool(tool)?;
             }
@@ -606,7 +607,9 @@ fn log_rejected_candidates(tool: &str, resolution: &Resolution) {
 
 /// Map a tool name to the npm package used for installation and upgrades.
 ///
-/// Installation and upgrade decisions share this mapping.
+/// This is the single source of truth: both `install_tool` and
+/// `maybe_upgrade_tool` read through here so they can never disagree on
+/// which package backs a given tool.
 pub(crate) fn npm_package_for_install(tool: &str) -> Option<&'static str> {
     match tool {
         "claude" => Some("@anthropic-ai/claude-code"),
