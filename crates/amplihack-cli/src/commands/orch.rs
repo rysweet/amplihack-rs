@@ -21,10 +21,17 @@ use std::path::PathBuf;
 
 use crate::commands::multitask;
 
+pub(crate) mod autodrive;
 mod autodrive_completion;
 mod named_branch;
 mod select_workflow;
 mod workflow_log_inventory;
+
+// TDD contracts for #2329. The implementation supplies `mod autodrive`;
+// keeping these registered makes missing implementation a visible red test.
+#[cfg(test)]
+#[path = "orch/autodrive/tests.rs"]
+mod autodrive_contract_tests;
 
 #[derive(Subcommand, Debug)]
 pub enum OrchCommands {
@@ -48,9 +55,15 @@ pub enum OrchCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum OrchHelperCommands {
-    /// Select an allowed merge method for the merge gate (#1888). Prints one
-    /// JSON object: the selection, or `{"error": reason}` with a non-zero exit
-    /// (79 when gh refuses by policy), so the gate can record the reason.
+    /// Portable auto-drive record, state, and local Git operations.
+    Autodrive {
+        #[command(subcommand)]
+        operation: autodrive::helper::Operations,
+    },
+    /// Select an allowed merge method for the finalisation step (#1888).
+    /// Prints one JSON object: the selection, or `{"error": reason}` with a
+    /// non-zero exit (79 when gh refuses by policy), so the step can record
+    /// the reason as a blocker.
     SelectMergeMethod {
         /// The pull request URL `gh pr view` reported; it names the repository.
         #[arg(long)]
@@ -537,6 +550,7 @@ fn read_bounded_stdin() -> String {
 /// CLI entry point for `amplihack orch helper <subcommand>`.
 pub fn run(command: OrchHelperCommands) -> Result<()> {
     match command {
+        OrchHelperCommands::Autodrive { operation } => autodrive::helper::run(operation),
         OrchHelperCommands::SelectMergeMethod {
             pr_url,
             repo_root,

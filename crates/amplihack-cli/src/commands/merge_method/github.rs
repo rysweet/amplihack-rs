@@ -228,7 +228,7 @@ pub(super) fn branch_rules(repository: &Repository, base_ref: &str) -> Result<Br
 ///   `allowed_merge_methods`, when present and not null, is an array of
 ///   strings. Absent or null, the rule does not limit the method, as for a
 ///   ruleset created before GitHub added the parameter. A string other than
-///   merge, squash or rebase is ignored: it can only name a method this gate
+///   merge, squash or rebase is ignored: it can only name a method auto-drive
 ///   never uses, so ignoring it never allows a method the rule does not list.
 ///
 /// Errors are fixed phrases, so no response text reaches the evidence.

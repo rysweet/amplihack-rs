@@ -24,7 +24,7 @@ fn is_sha(value: &str) -> bool {
 
 /// git in `root` with no inherited repository selection (`amplihack_git`,
 /// #1278), replace refs, grafts or prompts: the environment
-/// `autodrive_trust_git` gives the gate's own reads.
+/// `autodrive_trust_git` gives auto-drive's own trusted reads.
 fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let output = amplihack_git::command_in(root)
         .env_remove("GIT_REPLACE_REF_BASE")

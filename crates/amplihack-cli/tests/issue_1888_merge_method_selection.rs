@@ -151,8 +151,8 @@ exit 91
         let base = commit(on_base, "base moves on");
         git(&repo, &["checkout", "-q", "-b", "pr", &m0]);
         let head = commit(on_head, "pull request");
-        // What the gate's fetch leaves behind; the shell qa.toml reader
-        // finds the merge base through it.
+        // What a fetch of the base branch leaves behind; the shell qa.toml
+        // reader finds the merge base through it.
         git(&repo, &["update-ref", "refs/remotes/origin/main", &base]);
         Self {
             tmp,
@@ -1127,6 +1127,7 @@ fn recipes_declare_empty_context_and_forward_it_at_nested_boundaries() {
         "auto-drive-to-merge",
         "auto-drive-light",
         "autodrive-merge-loop",
+        "autodrive-finalize",
     ] {
         let text = fs::read_to_string(root.join(format!("{name}.yaml"))).unwrap();
         let recipe: serde_yaml::Value = serde_yaml::from_str(&text).unwrap();
@@ -1142,7 +1143,7 @@ fn recipes_declare_empty_context_and_forward_it_at_nested_boundaries() {
         for step in recipe["steps"].as_sequence().unwrap() {
             if matches!(
                 step["recipe"].as_str(),
-                Some("auto-drive-to-merge" | "autodrive-merge-loop")
+                Some("auto-drive-to-merge" | "autodrive-merge-loop" | "autodrive-finalize")
             ) {
                 assert_eq!(
                     step["context"]["merge_method"].as_str(),
@@ -1151,20 +1152,63 @@ fn recipes_declare_empty_context_and_forward_it_at_nested_boundaries() {
                 );
             }
         }
-        if name == "autodrive-merge-loop" {
-            let gate = recipe["steps"]
-                .as_sequence()
-                .unwrap()
-                .iter()
-                .find(|s| s["id"].as_str() == Some("step-03-merge-gate"))
-                .unwrap();
-            assert!(
-                gate["command"]
-                    .as_str()
-                    .unwrap()
-                    .contains("--merge-method \"${RECIPE_VAR_merge_method:-}\""),
-                "merge loop must forward context to the trusted gate"
-            );
-        }
+    }
+}
+
+/// #1888 after #2329: the merge is requested by the `finalize-observed-action`
+/// agent step, so the merge argv is no longer fixed by position in a shell
+/// gate. What can still be promised is that the selector is the only place
+/// the method is decided: the prompt hands the context to
+/// `autodrive_merge_method`, takes the arguments from `autodrive_merge_argv`,
+/// and names no merge-method flag of its own anywhere in the recipe.
+#[test]
+fn finalize_takes_the_method_from_the_selector_and_names_no_method_itself() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../amplifier-bundle/recipes/autodrive-finalize.yaml");
+    let text = fs::read_to_string(&path).unwrap();
+    let recipe: serde_yaml::Value = serde_yaml::from_str(&text).unwrap();
+    let prompt = recipe["steps"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"].as_str() == Some("finalize-observed-action"))
+        .and_then(|s| s["prompt"].as_str())
+        .expect("finalize-observed-action prompt");
+    for needle in [
+        "MS=\"$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_method.sh\"; [ -f \"$MS\" ] && [ ! -L \"$MS\" ] && . \"$MS\" ||",
+        "autodrive_merge_method <pr-url> <repo-root> <base-branch> <base-sha> <verified-head> '{{merge_method}}'",
+        "amplihack orch helper select-merge-method",
+        "A non-zero return is a blocker: request no merge, set failure_cause to \"$MERGE_METHOD_ERROR\"",
+        "outcome refused when the return is 79",
+        "never choose, substitute or fall back to another method yourself",
+        "autodrive_merge_argv <number> <verified-head> \"$subject\"",
+        "printf '%s' \"$MERGE_BODY\" | gh pr merge \"${MERGE_ARGV[@]}\"",
+        "never write a merge-method flag yourself",
+        "sends the method and message chosen above",
+    ] {
+        assert!(
+            prompt.contains(needle),
+            "finalize-observed-action must say `{needle}` (#1888)"
+        );
+    }
+    // Nowhere in the recipe, comments included, does a method flag appear:
+    // `--squash` was the hard-coded method #1888 was opened for, and #2340
+    // brought it back as prompt text.
+    for flag in ["--squash", "--rebase"] {
+        assert!(
+            !text.contains(flag),
+            "autodrive-finalize.yaml names `{flag}`; the method must come only from \
+             select-merge-method through MERGE_ARGV (#1888)"
+        );
+    }
+    // `--merge` is a flag unless it begins a longer option such as
+    // `--merge-method`.
+    for (index, _) in text.match_indices("--merge") {
+        let rest = &text[index + "--merge".len()..];
+        assert!(
+            rest.starts_with('-'),
+            "autodrive-finalize.yaml names `--merge` as a flag; the method must come only \
+             from select-merge-method through MERGE_ARGV (#1888)"
+        );
     }
 }

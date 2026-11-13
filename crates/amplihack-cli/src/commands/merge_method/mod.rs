@@ -1,4 +1,8 @@
-//! Fail-closed merge-method policy for the trusted auto-drive merge gate (#1888).
+//! Fail-closed merge-method policy for an authorized auto-drive merge (#1888).
+//!
+//! The caller is `autodrive-finalize`'s `finalize-observed-action` step,
+//! through the launch-bundle helper `autodrive_merge_method.sh`. It is the
+//! only place the merge method is decided.
 //!
 //! The method comes from the first source present, in this order:
 //!
@@ -6,11 +10,11 @@
 //!    then not read, as `AUTODRIVE_QA_COMMAND` stops `.amplihack/qa.toml`
 //!    from being read.
 //! 2. `repository`: `.amplihack/auto-drive.toml` committed at the base branch
-//!    tip the gate fetched. The merge method is the policy of the branch that
-//!    accepts the history, so it is read from that branch as it stands when
-//!    the gate merges, not from the commit the pull request branched from. A
-//!    pull request whose changes (merge base to head) touch the file is
-//!    refused. The working tree is never read.
+//!    tip the accepted readiness record binds. The merge method is the policy
+//!    of the branch that accepts the history, so it is read from that branch
+//!    as it stands at merge time, not from the commit the pull request
+//!    branched from. A pull request whose changes (merge base to head) touch
+//!    the file is refused. The working tree is never read.
 //! 3. `default`: the first of squash, merge and rebase that is allowed.
 //!
 //! A method is allowed when the repository settings (`allow_*`) allow it AND
@@ -18,9 +22,9 @@
 //! `allowed_merge_methods` lists it AND, for `merge`, no active ruleset
 //! `required_linear_history` rule is on the base branch (GitHub then accepts
 //! only squash or rebase). A method that is not allowed is never used, and no
-//! source falls back to another. The repository whose settings
-//! and rules are read is the one the pull request URL names: the gate already
-//! read that URL from `gh pr view`.
+//! source falls back to another. The repository whose settings and rules are
+//! read is the one the pull request URL names, as the accepted readiness
+//! record binds it.
 //! Contract: docs/reference/auto-drive-to-merge.md, "Choosing the merge method".
 //!
 //! `repo_file` reads the repository file; `github` reads the pull request
@@ -140,7 +144,7 @@ struct Allowed<'a> {
     base_ref: &'a str,
 }
 
-/// What the gate records. `config_commit` is the base branch tip the
+/// What the selector reports. `config_commit` is the base branch tip the
 /// repository file was read at, or `None` when an explicit method meant it
 /// was not read.
 #[derive(Debug, Serialize)]
@@ -152,7 +156,7 @@ pub struct MergeSelection {
     rationale: String,
 }
 
-/// What the gate passes in.
+/// What the finalisation step passes in.
 pub struct SelectionRequest<'a> {
     /// The pull request's `url`, as `gh pr view` reported it.
     pub pr_url: &'a str,
@@ -161,7 +165,7 @@ pub struct SelectionRequest<'a> {
     /// The pull request's base branch name (`baseRefName`); its rulesets are
     /// read whatever the source.
     pub base_ref: &'a str,
-    /// The base branch tip, fetched by the gate (`autodrive_base_sha`).
+    /// The base branch tip the accepted readiness record binds.
     pub base: &'a str,
     /// The pull request head (`headRefOid`).
     pub head: &'a str,
