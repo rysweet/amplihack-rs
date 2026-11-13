@@ -78,6 +78,16 @@ fn authentication_overrides_refuse_direct_supervised_and_reconstructed_fallbacks
         "AMPLIHACK_LITELLM_API_KEY",
         "AMPLIHACK_LITELLM_MODEL",
         "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+        "ANTHROPIC_PROFILE",
+        "ANTHROPIC_CONFIG_DIR",
+        "ANTHROPIC_FEDERATION_RULE_ID",
+        "ANTHROPIC_ORGANIZATION_ID",
+        "ANTHROPIC_IDENTITY_TOKEN_FILE",
+        "ANTHROPIC_IDENTITY_TOKEN",
+        "ANTHROPIC_WORKSPACE_ID",
+        "ANTHROPIC_SERVICE_ACCOUNT_ID",
+        "ANTHROPIC_SCOPE",
+        "CLAUDE_CODE_FEDERATION_CACHE_DIR",
     ] {
         for mode in ["direct", "supervised", "reentry"] {
             let f = leased();
@@ -127,6 +137,297 @@ fn settings_cannot_substitute_fallback_authentication_or_billing_routes() {
             assert_refused(&f, &out);
             assert!(!String::from_utf8_lossy(&out.stderr).contains("override-secret"));
         }
+    }
+}
+
+#[test]
+fn managed_dropins_alone_cannot_substitute_fallback_authentication() {
+    for entry in ["claude", "launch"] {
+        for mode in ["direct", "supervised", "reentry"] {
+            for config in [
+                json!({"env":{"ANTHROPIC_AUTH_TOKEN":"override-secret",
+                    "ANTHROPIC_BASE_URL":"https://gateway.example.invalid"}}),
+                json!({"apiKeyHelper":"printf override-secret"}),
+                json!({"policyHelper":"/nonexistent/override-secret"}),
+                json!({"policyHelpers":{"default":{"path":"/nonexistent/override-secret"}}}),
+                json!({"env":{"ANTHROPIC_PROFILE":"override-secret"}}),
+                json!({"env":{"ANTHROPIC_CONFIG_DIR":"/nonexistent/override-secret"}}),
+                json!({"env":{"ANTHROPIC_FEDERATION_RULE_ID":"override-secret",
+                    "ANTHROPIC_ORGANIZATION_ID":"override-secret"}}),
+                json!({"env":{"HOME":"/nonexistent/override-secret"}}),
+            ] {
+                let f = leased();
+                let mut cmd = match mode {
+                    "supervised" => supervised(&f, entry),
+                    "reentry" => {
+                        let (path, _) = capture_context(&f, entry);
+                        reentry(&f, entry, &path)
+                    }
+                    _ => f.launch(entry),
+                };
+                let root = f.temp.path().join("managed");
+                assert!(!root.join("managed-settings.json").exists());
+                private(&root.join("managed-settings.d/10-safe.json"), "{}");
+                private(
+                    &root.join("managed-settings.d/20-auth.json"),
+                    config.to_string(),
+                );
+                let before = f.identity_requests().len();
+                let out = f.run(&mut cmd);
+                assert_refused(&f, &out);
+                assert_eq!(f.identity_requests().len(), before, "{entry} {mode}");
+                assert!(!String::from_utf8_lossy(&out.stderr).contains("override-secret"));
+            }
+        }
+    }
+}
+
+#[test]
+fn benign_managed_dropins_allow_fallback_and_ignore_inapplicable_files() {
+    for entry in ["claude", "launch"] {
+        let f = leased();
+        let root = f.temp.path().join("managed/managed-settings.d");
+        private(
+            &root.join("10-safe.json"),
+            r#"{"permissions":{"deny":["Bash(rm *)"]}}"#,
+        );
+        private(
+            &root.join("20-safe.json"),
+            r#"{"env":{"DISABLE_TELEMETRY":"1"}}"#,
+        );
+        private(
+            &root.join("30-safe.json"),
+            r#"{"forceLoginMethod":"claudeai"}"#,
+        );
+        private(&root.join(".hidden.json"), "invalid ignored JSON");
+        private(&root.join("notes.txt"), "invalid ignored JSON");
+        let out = f.run(&mut f.launch(entry));
+        f.assert_selected(&out, "Z");
+    }
+}
+
+#[test]
+fn managed_policy_changes_after_identity_validation_refuse_the_final_child() {
+    for entry in ["claude", "launch"] {
+        for mode in ["direct", "supervised", "reentry"] {
+            for source in [
+                "new-dropin",
+                "changed-dropin",
+                "native-policy",
+                "remote-cache",
+            ] {
+                let f = leased();
+                let mut cmd = match mode {
+                    "supervised" => supervised(&f, entry),
+                    "reentry" => {
+                        let (path, _) = capture_context(&f, entry);
+                        reentry(&f, entry, &path)
+                    }
+                    _ => f.launch(entry),
+                };
+                let root = f.temp.path().join("managed");
+                let path = match source {
+                    "native-policy" => f
+                        .temp
+                        .path()
+                        .join("managed-preferences/com.anthropic.claudecode.plist"),
+                    "remote-cache" => f.dir("Z").join("remote-settings.json"),
+                    _ => root.join("managed-settings.d/20-auth.json"),
+                };
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                if source == "changed-dropin" {
+                    private(&path, r#"{"permissions":{"deny":["Bash(rm *)"]}}"#);
+                }
+                let payload = f.home.join("new-policy.json");
+                private(
+                    &payload,
+                    r#"{"env":{"ANTHROPIC_AUTH_TOKEN":"override-secret"}}"#,
+                );
+                let mutation = f.home.join("policy-change.sh");
+                private(
+                    &mutation,
+                    "cp \"$POLICY_PAYLOAD\" \"$POLICY_DESTINATION\"\n",
+                );
+                let before = f.identity_requests().len();
+                let out = f.run(
+                    cmd.env("MUTATE_AT_DISCOVERY", mutation)
+                        .env("POLICY_PAYLOAD", payload)
+                        .env("POLICY_DESTINATION", &path),
+                );
+                assert!(
+                    f.records.join("invalidated").exists(),
+                    "{entry} {mode} {source}: {out:?}"
+                );
+                assert!(
+                    f.identity_requests().len() > before,
+                    "must authenticate before mutation"
+                );
+                assert!(!root.join("managed-settings.json").exists());
+                assert_refused(&f, &out);
+                for bytes in [&out.stdout, &out.stderr] {
+                    assert!(!String::from_utf8_lossy(bytes).contains("override-secret"));
+                }
+                // Supervisors may already have written intent before their
+                // child revalidates; policy values must never enter it.
+                for context in [
+                    f.home.join("runtime/reentry.json"),
+                    f.records.join("context.Z"),
+                ] {
+                    if let Ok(bytes) = fs::read(context) {
+                        assert!(!String::from_utf8_lossy(&bytes).contains("override-secret"));
+                    }
+                }
+                assert!(
+                    fs::read_to_string(path)
+                        .unwrap()
+                        .contains("override-secret")
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn unsafe_or_uninspectable_managed_sources_refuse_before_authentication() {
+    use std::os::unix::fs::symlink;
+    for source in [
+        "directory-link",
+        "file-link",
+        "fifo",
+        "malformed",
+        "non-object",
+        "oversized",
+        "too-many",
+        "unreadable",
+        "unreadable-directory",
+        "aggregate-size",
+    ] {
+        let f = leased();
+        let root = f.temp.path().join("managed/managed-settings.d");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("20-auth.json");
+        match source {
+            "directory-link" => {
+                fs::remove_dir(&root).unwrap();
+                let target = f.temp.path().join("policy-target");
+                fs::create_dir(&target).unwrap();
+                symlink(target, &root).unwrap();
+            }
+            "file-link" => {
+                let target = f.temp.path().join("policy-target.json");
+                private(&target, "{}");
+                symlink(target, &path).unwrap();
+            }
+            "fifo" => {
+                use std::os::unix::ffi::OsStrExt;
+                let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+                // SAFETY: path is terminated and fixture-owned.
+                assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+            }
+            "oversized" => private(&path, vec![b' '; 1024 * 1024 + 1]),
+            "too-many" => {
+                for index in 0..130 {
+                    private(&root.join(format!("{index}.json")), "{}");
+                }
+            }
+            "aggregate-size" => {
+                let value = json!({"padding": "a".repeat(1024 * 1024 - 32)}).to_string();
+                for index in 0..9 {
+                    private(&root.join(format!("{index}.json")), &value);
+                }
+            }
+            "unreadable" | "unreadable-directory" => {
+                use std::os::unix::fs::PermissionsExt;
+                // Root bypasses file permissions; the other cases still run.
+                if unsafe { libc::geteuid() } == 0 {
+                    continue;
+                }
+                private(&path, "{}");
+                let target = if source == "unreadable-directory" {
+                    &root
+                } else {
+                    &path
+                };
+                fs::set_permissions(target, fs::Permissions::from_mode(0o0)).unwrap();
+            }
+            "non-object" => private(&path, "[]"),
+            _ => private(&path, "invalid JSON"),
+        }
+        let out = f.run(&mut f.launch("claude"));
+        assert_refused(&f, &out);
+        assert!(f.identity_requests().is_empty(), "{source}");
+        if source == "unreadable-directory" {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+}
+
+#[test]
+fn unbound_native_managed_and_console_sources_refuse_before_authentication() {
+    for source in [
+        "device",
+        "user",
+        "remote",
+        "console-active",
+        "console-default",
+        "xdg-active",
+        "xdg-default",
+    ] {
+        let f = leased();
+        let path = match source {
+            "device" => f
+                .temp
+                .path()
+                .join("managed-preferences/com.anthropic.claudecode.plist"),
+            "user" => f
+                .temp
+                .path()
+                .join("managed-preferences/fixture-user/com.anthropic.claudecode.plist"),
+            "console-active" => f.home.join(".config/anthropic/active_config"),
+            "console-default" => f.home.join(".config/anthropic/configs/default.json"),
+            "xdg-active" => f.home.join("other-config/anthropic/active_config"),
+            "xdg-default" => f.home.join("other-config/anthropic/configs/default.json"),
+            _ => f.dir("Z").join("remote-settings.json"),
+        };
+        // Native plists and remote cache envelopes are deliberately not
+        // parsed, executed, deleted or rewritten by fallback validation.
+        private(&path, "native-or-remote-policy-sentinel");
+        let mut cmd = f.launch("claude");
+        if source.starts_with("xdg-") {
+            cmd.env("XDG_CONFIG_HOME", f.home.join("other-config"));
+        }
+        let out = f.run(&mut cmd);
+        assert_refused(&f, &out);
+        assert!(f.identity_requests().is_empty());
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "native-or-remote-policy-sentinel"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn inherited_windows_policy_on_wsl_is_conservatively_refused() {
+    for source in ["kernel", "distribution", "interop"] {
+        let f = leased();
+        let mut cmd = f.launch("claude");
+        match source {
+            "kernel" => private(
+                &f.temp.path().join("kernel-release"),
+                "6.6.0-microsoft-standard-WSL2",
+            ),
+            "distribution" => {
+                cmd.env("WSL_DISTRO_NAME", "fixture-distribution");
+            }
+            _ => {
+                cmd.env("WSL_INTEROP", "/fixture/interop");
+            }
+        }
+        let out = f.run(&mut cmd);
+        assert_refused(&f, &out);
+        assert!(f.identity_requests().is_empty());
     }
 }
 

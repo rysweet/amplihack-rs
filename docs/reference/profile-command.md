@@ -4143,7 +4143,7 @@ every command that starts Claude with a profile: `amplihack claude`,
 |----------|-------|
 | `CLAUDE_CONFIG_DIR` | `<root>/<name>`, overriding any ambient value |
 | `AMPLIHACK_CLAUDE_PROFILE` | `<name>` |
-| `AMPLIHACK_CLAUDE_PROFILE_ROOT` | Ordinary named launches preserve the inherited value, including absence or an empty value. A fallback exports its resolved `<root>` so descendants and supervised attempts keep that destination even if the saved root changes. |
+| `AMPLIHACK_CLAUDE_PROFILE_ROOT` | Ordinary named launches keep an absent or empty inherited root as-is, and pass a resolved root when the inherited value is non-empty. A fallback exports its resolved `<root>` so descendants and supervised attempts keep that destination even if the saved root changes. |
 
 For a [default-profile lease fallback](#default-profile-lease-fallback), the
 child receives the selected profile's name, directory and root, including an
@@ -5069,9 +5069,31 @@ compared in memory during local continuity checks and are never exported.
 final child command, fallback refuses non-empty `ANTHROPIC_API_KEY`,
 `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, token/key descriptor
 overrides, custom authentication headers, API routing overrides, alternate
-cloud providers and LiteLLM gateway configuration. User, profile, project,
-local, managed and CLI settings are checked for authentication helpers and
-environment substitutions. Unsupported substitutions produce a fixed,
+cloud providers and LiteLLM gateway configuration. Console profile and
+federation credential selectors also refuse, as do implicit Console profiles
+in `~/.config/anthropic/active_config` or `configs/default.json` (also checked
+under a non-empty inherited `XDG_CONFIG_HOME/anthropic`).
+User, profile, project and local settings are checked before identity requests;
+CLI settings are also checked against the final command. The system
+`managed-settings.json` and every visible `managed-settings.d/*.json` drop-in
+are checked for authentication helpers and environment substitutions at both
+boundaries, including when the main managed file is absent.
+Drop-ins use bounded directory enumeration and
+descriptor-relative, bounded no-follow reads; unreadable, linked, malformed,
+non-regular or oversized sources refuse. Policy helpers, native macOS managed
+preferences (device or per-user), WSL's inherited Windows policy, and an existing profile `remote-settings.json`
+cache conservatively refuse because their effective output cannot be bound
+by this local validator. Administrator policy is never modified. The native
+preference check also refuses another user's deployment for this domain.
+The supported boundary is local startup configuration for standalone Linux
+and macOS CLI launches: `/etc/claude-code` on Linux, and
+`/Library/Application Support/ClaudeCode` plus device and per-user
+`com.anthropic.claudecode.plist` files under `/Library/Managed Preferences`
+on macOS. Other operating systems refuse fallback; Windows registry policy
+is not inspected. Policy fetched or changed later by Claude is outside this
+boundary; these checks do not establish complete remote-policy coverage. See
+[managed delivery mechanisms](https://code.claude.com/docs/en/managed-settings).
+Unsupported substitutions produce a fixed,
 credential-free refusal; they are never silently cleared. An external
 API-key login without a profile-owned authenticated OAuth identity cannot
 qualify as a fallback. Ordinary named launches keep their existing behaviour.

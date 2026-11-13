@@ -463,8 +463,7 @@ child process only.
 
 A lease on the default directory does not prevent a new launch when another
 named profile is usable. The launch authenticates that login and protects
-its destination through Claude child creation. Linux validation of the
-transition from launch protection to session discovery remains pending.
+its destination through Claude child creation.
 See the [fallback safeguards](../reference/profile-command.md#default-profile-lease-fallback).
 
 From a shell without `--profile` or an inherited `AMPLIHACK_CLAUDE_PROFILE`,
@@ -555,9 +554,11 @@ the same profile: recipe agent steps, `multitask` workstreams, and any
 started with `amplihack claude`, `amplihack launch`, `amplihack profile run`
 and `amplihack profile login`. The launch passes the name to
 its children in `AMPLIHACK_CLAUDE_PROFILE`, and nested launches use it ahead
-of the pointer. Named `claude`, `launch` and `profile run` destinations also
-pass their resolved root in `AMPLIHACK_CLAUDE_PROFILE_ROOT`, so descendants
-keep that destination even if the saved root changes.
+of the pointer. Lease-fallback destinations also pass their resolved root in
+`AMPLIHACK_CLAUDE_PROFILE_ROOT`, so descendants keep that destination even if
+the saved root changes. Ordinary named launches pass a resolved root only when
+the parent inherited a non-empty root. They keep an absent or empty root as-is,
+so descendants may reread the saved root.
 
 ```bash
 amplihack profile switch personal
