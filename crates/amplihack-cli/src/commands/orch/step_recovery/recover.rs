@@ -9,9 +9,7 @@ use super::decision::{self, Context, Decision, Refusal, refuse};
 use super::driver::{Attempt, Run};
 use super::evidence::Evidence;
 use super::invoke::{self, ACTIVE_ENV};
-use super::record::{
-    self, Choice, Failure, Record, Source, record_path, validate_alternative_name,
-};
+use super::record::{self, Choice, Failure, Record, Source, validate_alternative_name};
 use super::{RUN_REQUESTER, SCHEMA_VERSION, secure_fs};
 
 /// Parses `--alternative <name>=<command>` flags: each command is split on
@@ -34,19 +32,39 @@ pub fn parse_alternatives(specs: &[String]) -> Result<Vec<(String, Vec<String>)>
     Ok(alternatives)
 }
 
-/// Length and SHA-256 of a record file, or `None` when it does not exist.
-fn fingerprint(path: &Path) -> Result<Option<(usize, Vec<u8>)>> {
-    Ok(secure_fs::read_optional(path, record::RECORD_FILE_LIMIT)?
-        .map(|bytes| (bytes.len(), Sha256::digest(&bytes).to_vec())))
+/// Length and SHA-256 of every file in the recovery directory, by name.
+/// Dot files are transient (`.spool-*`, `.decision-*`) and are left out.
+/// The recovery agent runs as the same user, so the whole directory is
+/// compared before and after it runs: no earlier record may change or go.
+fn snapshot(dir: &Path) -> Result<Vec<(String, usize, Vec<u8>)>> {
+    secure_fs::check_dir(dir)?;
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).with_context(|| format!("cannot list {}", dir.display()))? {
+        let name = entry?.file_name();
+        let name = name
+            .to_str()
+            .with_context(|| format!("non UTF-8 file name in {}", dir.display()))?
+            .to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        let bytes = secure_fs::read(&dir.join(&name), record::RECORD_FILE_LIMIT)
+            .with_context(|| format!("unsafe or unreadable file {name} in {}", dir.display()))?;
+        out.push((name, bytes.len(), Sha256::digest(&bytes).to_vec()));
+    }
+    out.sort();
+    Ok(out)
 }
 
 /// The choices on offer for this failure. A guard step checks something,
 /// so it may only report: no repair, and never a skip (`guard` implies
-/// `essential`).
+/// `essential`). A `no_repair` step publishes the worktree, so it is never
+/// retried after a repair that no review has seen.
 pub fn allowed_choices(
     has_alternatives: bool,
     essential: bool,
     guard: bool,
+    no_repair: bool,
     recurrence: bool,
 ) -> Vec<Choice> {
     Choice::ALL
@@ -54,7 +72,7 @@ pub fn allowed_choices(
         .filter(|c| match c {
             Choice::AlternativeStep => has_alternatives,
             Choice::ContinueRecorded => !essential && !guard,
-            Choice::RetryAfterRepair => !recurrence && !guard,
+            Choice::RetryAfterRepair => !recurrence && !guard && !no_repair,
             Choice::Handoff => true,
         })
         .collect()
@@ -70,7 +88,7 @@ pub fn is_recurrence(prior: &[Record], signature: &str) -> bool {
 }
 
 /// An earlier handoff anywhere in the run, as `(step id, record file)`.
-fn earlier_handoff(dir: &Path) -> Result<Option<(String, PathBuf)>> {
+pub fn earlier_handoff(dir: &Path) -> Result<Option<(String, PathBuf)>> {
     for (path, records) in record::read_all(dir)? {
         if let Some(r) = records.iter().find(|r| r.choice == Choice::Handoff) {
             return Ok(Some((r.step_id.clone(), path)));
@@ -88,7 +106,13 @@ pub fn recover(run: &Run, attempt: &Attempt, failure: Failure) -> Result<(Record
         .iter()
         .map(|(n, _)| n.clone())
         .collect();
-    let allowed = allowed_choices(!names.is_empty(), run.essential, run.guard, recurrence);
+    let allowed = allowed_choices(
+        !names.is_empty(),
+        run.essential,
+        run.guard,
+        run.no_repair,
+        recurrence,
+    );
     let trusted = vec![RUN_REQUESTER.to_string(), run.default_owner.clone()];
     let handed_off = earlier_handoff(&run.dir)?;
 
@@ -120,19 +144,18 @@ pub fn recover(run: &Run, attempt: &Attempt, failure: Failure) -> Result<(Record
             guard: run.guard,
         }
         .write(&run.dir)?;
-        let records = record_path(&run.dir, &attempt.step_id);
-        let before = fingerprint(&records)?;
+        let before = snapshot(&run.dir)?;
         let text = invoke::run_agent(&file, run.recipe_dir.as_deref());
-        let after = fingerprint(&records)?;
+        let after = snapshot(&run.dir);
         match text {
             Err(e) => Err(refuse(
                 format!("check 1: the recovery agent could not run ({e:#})"),
                 None,
             )),
-            Ok(_) if before != after => Err(refuse(
+            Ok(_) if after.as_ref().ok() != Some(&before) => Err(refuse(
                 format!(
-                    "the step's record file {} changed while the recovery agent ran",
-                    records.display()
+                    "the recovery directory {} changed while the recovery agent ran",
+                    run.dir.display()
                 ),
                 None,
             )),

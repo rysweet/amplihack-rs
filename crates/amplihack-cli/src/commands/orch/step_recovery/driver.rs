@@ -33,6 +33,10 @@ pub struct RunArgs {
     /// A recorded handoff exits 81, so the recipe stops at this step.
     #[arg(long)]
     pub stop_on_handoff: bool,
+    /// `retry_after_repair` is not offered: the step publishes what is in
+    /// the worktree, so a repair would go out without review.
+    #[arg(long)]
+    pub no_repair: bool,
     /// The step checks something: only `handoff` and declared alternatives
     /// are offered. Implies `--essential` and `--stop-on-handoff`.
     #[arg(long)]
@@ -63,6 +67,7 @@ pub struct Run {
     pub essential: bool,
     pub guard: bool,
     pub stop_on_handoff: bool,
+    pub no_repair: bool,
     pub recipe_dir: Option<PathBuf>,
 }
 
@@ -95,6 +100,7 @@ pub fn run(args: RunArgs) -> Result<i32> {
         essential: args.essential || args.guard,
         guard: args.guard,
         stop_on_handoff: args.stop_on_handoff || args.guard,
+        no_repair: args.no_repair || args.guard,
         recipe_dir: args.recipe_dir,
     };
     let mut attempt = Attempt {
@@ -129,7 +135,10 @@ pub fn run(args: RunArgs) -> Result<i32> {
                 )?;
                 return Ok(79);
             }
-            Status::Exit(code) if code == STEP_RECOVERY_HANDOFF_EXIT => {
+            Status::Exit(code)
+                if code == STEP_RECOVERY_HANDOFF_EXIT
+                    && recover::earlier_handoff(&settings.dir)?.is_some() =>
+            {
                 eprintln!(
                     "[step-recovery] {} ended in a recorded handoff (exit {code}); passing it on",
                     attempt.step_id

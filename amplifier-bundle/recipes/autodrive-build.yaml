@@ -84,20 +84,28 @@ steps:
       IFS= read -r -d '' STEP_BODY <<'STEP_RECOVERY_BODY' || :
       set -uo pipefail
       cd "${RECIPE_VAR_repo_path:-.}" || { echo "ERROR: cannot cd to repo_path" >&2; exit 1; }
+      # The first attempt left its branch in build-branch.txt (workflow-worktree
+      # step-04), so a retry continues that branch and its PR, never a new one.
+      BRANCH="${RECIPE_VAR_existing_branch:-}"
+      if [ -z "$BRANCH" ] && [ -f "${RECIPE_VAR_step_recovery_dir:-}/build-branch.txt" ]; then
+        IFS= read -r BRANCH < "$RECIPE_VAR_step_recovery_dir/build-branch.txt" || :
+        git check-ref-format --branch "$BRANCH" >/dev/null 2>&1 || { echo "ERROR: build-branch.txt holds no valid branch name" >&2; exit 1; }
+        echo "INFO: retrying on the first attempt's branch '$BRANCH' (#2539)." >&2
+      fi
       d() { printf '%s' "${RECIPE_VAR_no_merge_directive:-}" | amplihack orch helper extract-json --require-field "$1" \
               | amplihack orch helper extract-field --field "$1" --default "$2"; }
       exec amplihack recipe run default-workflow \
         -c "task_description=$(d task_description "${RECIPE_VAR_task_description:-}")" \
         -c "requirements=$(d requirements "${RECIPE_VAR_requirements:-}")" \
         -c "repo_path=${RECIPE_VAR_repo_path:-.}" -c "branch_prefix=${RECIPE_VAR_branch_prefix:-feat}" \
-        -c "existing_branch=${RECIPE_VAR_existing_branch:-}" -c "step_recovery_dir=${RECIPE_VAR_step_recovery_dir:-}" \
+        -c "existing_branch=${BRANCH}" -c "step_recovery_dir=${RECIPE_VAR_step_recovery_dir:-}" \
         -c no_merge=true -c should_merge=false -c finalization_handoff=true
       STEP_RECOVERY_BODY
       [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || { echo "ERROR: step-02-default-workflow failed and this run has no step_recovery_dir" >&2; exit 1; }
       exec amplihack orch helper step-recovery run --already-failed --essential \
         --step-id step-02-default-workflow \
         --dir "$RECIPE_VAR_step_recovery_dir" \
-        --goal "Build and publish a PR for the run's task and leave it open. A retry must reuse the branch and PR the first attempt created, if any: check the worktree's current branch and the open PRs for it." \
+        --goal "Build and publish a PR for the run's task and leave it open. A retry continues on the branch the first attempt created, so it reuses that branch's PR." \
         -- bash -c "$STEP_BODY" step-02-default-workflow
     output: "build_recovery"
   - id: "step-03-resolve-pr"

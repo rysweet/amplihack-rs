@@ -196,7 +196,7 @@ budget_stop() {
   exit 1
 }
 
-# recovery_stop: after each round, read the run's step-recovery records
+# recovery_stop: before the first round and after each, read the run's step-recovery records
 # (#2539, docs/reference/step-failure-recovery.md). A recorded handoff ends
 # the loop with the report's own exit status (STEP_RECOVERY_HANDOFF_EXIT),
 # before the evaluator or another round meets the same failure. Invalid or
@@ -206,8 +206,8 @@ recovery_stop() {
   local out rc
   out="$("$AMPLIHACK_BIN" orch helper step-recovery report --dir "$AD_RECOVERY_DIR")"; rc=$?
   [ "$rc" -eq 0 ] && return 0
-  if [ "$rc" -ne 2 ] && printf '%s' "$out" | grep -q '"step_recovery_handoffs":\[{'; then
-    escalate "STEP_RECOVERY_HANDOFF" "${ROUND_LABEL:-?} left a recorded handoff; the owner must act before the run goes on: ${out}"
+  if [ "$rc" -eq 81 ]; then # STEP_RECOVERY_HANDOFF_EXIT: report found a handoff
+    escalate "STEP_RECOVERY_HANDOFF" "the run holds a recorded handoff (checked ${ROUND_LABEL:+after }${ROUND_LABEL:-before the first round}); the owner must act before the run goes on: ${out}"
     exit "$rc"
   fi
   escalate "INVALID_RECOVERY_RECORDS" "the step-recovery records in ${AD_RECOVERY_DIR} are invalid or unsafe (report exit ${rc}); nothing runs on unread records"

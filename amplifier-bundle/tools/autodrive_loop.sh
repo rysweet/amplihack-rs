@@ -191,6 +191,7 @@ if [ "$EARLIER_ROUNDS" != "0" ]; then
 fi
 ROUND="$EARLIER_ROUNDS"
 ROUND_LABEL=""
+recovery_stop # #2539: a handoff recorded before this loop (an earlier phase) starts no round
 HISTORY=""
 PREV_FINDINGS=""
 PREV_TEST=""

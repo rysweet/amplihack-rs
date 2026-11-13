@@ -37,6 +37,18 @@ static RULES: LazyLock<Vec<(regex::Regex, &'static str)>> = LazyLock::new(|| {
         ),
         (r"\bsk-[A-Za-z0-9_-]{20,}", REDACTED),
         (r"\bAKIA[0-9A-Z]{16}\b", REDACTED),
+        (
+            r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\z)",
+            REDACTED,
+        ),
+        (
+            r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
+            REDACTED,
+        ),
+        (r"\bxox[abposr]-[A-Za-z0-9-]{10,}", REDACTED),
+        (r"\bAIza[0-9A-Za-z_-]{35}", REDACTED),
+        (r"(?i)(\bAccountKey=)[^;\s\x22']+", "${1}[REDACTED]"),
+        (r"(?i)([?&;]sig=)[^&\s\x22']+", "${1}[REDACTED]"),
         (r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@]+@", "${1}[REDACTED]@"),
     ]
     .into_iter()
@@ -45,7 +57,9 @@ static RULES: LazyLock<Vec<(regex::Regex, &'static str)>> = LazyLock::new(|| {
 });
 
 /// Removes GitHub tokens, Anthropic and OpenAI keys, AWS access key ids,
-/// authorization values, secret `key=value` pairs and URL user info.
+/// PEM private keys, JWTs, Slack tokens, Google API keys, Azure account
+/// keys and SAS signatures, authorization values, secret `key=value` pairs
+/// and URL user info.
 pub fn redact(text: &str) -> String {
     let mut out = text.to_string();
     for (re, with) in RULES.iter() {

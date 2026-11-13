@@ -223,7 +223,7 @@ steps:
       fi
       echo "=== Cleanup Complete ==="
       STEP_RECOVERY_BODY
-      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-20b-push-cleanup; exec amplihack orch helper step-recovery run --step-id step-20b-push-cleanup --essential --stop-on-handoff --dir "$RECIPE_VAR_step_recovery_dir" --goal "Commit and push the final cleanup of the workflow branch for PR ${RECIPE_VAR_pr_number:-unknown}" -- bash -c "$STEP_BODY" step-20b-push-cleanup
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-20b-push-cleanup; exec amplihack orch helper step-recovery run --step-id step-20b-push-cleanup --essential --stop-on-handoff --no-repair --dir "$RECIPE_VAR_step_recovery_dir" --goal "Commit and push the final cleanup of the workflow branch for PR ${RECIPE_VAR_pr_number:-unknown}" -- bash -c "$STEP_BODY" step-20b-push-cleanup
     output: "cleanup_push_result"
   - id: "step-21-pr-ready"
     type: "bash"

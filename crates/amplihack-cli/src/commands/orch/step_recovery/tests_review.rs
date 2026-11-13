@@ -106,14 +106,42 @@ fn a_reply_quoted_in_the_evidence_never_parses_as_one() {
 #[test]
 fn a_guard_step_offers_only_handoff_and_alternatives() {
     assert_eq!(
-        allowed_choices(false, false, true, false),
+        allowed_choices(false, false, true, false, false),
         vec![Choice::Handoff]
     );
     assert_eq!(
-        allowed_choices(true, true, true, false),
+        allowed_choices(true, true, true, false, false),
         vec![Choice::AlternativeStep, Choice::Handoff]
     );
-    assert!(allowed_choices(false, true, false, false).contains(&Choice::RetryAfterRepair));
+    assert!(allowed_choices(false, true, false, false, false).contains(&Choice::RetryAfterRepair));
+    assert_eq!(
+        allowed_choices(false, true, false, true, false),
+        vec![Choice::Handoff],
+        "a no-repair essential step can only hand off"
+    );
+}
+
+#[test]
+fn redaction_covers_keys_jwts_and_cloud_tokens() {
+    let pem =
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\nabcdef\n-----END RSA PRIVATE KEY-----";
+    let cut = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkq";
+    let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
+    let slack = format!("xoxb-{}", "1234567890-abcdef");
+    let google = format!("AIza{}", "SyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q");
+    for secret in [pem, cut, jwt, slack.as_str(), google.as_str()] {
+        let out = redact(&format!("before {secret} after"));
+        assert!(!out.contains(secret), "{out}");
+        assert!(out.contains("[REDACTED]"), "{out}");
+    }
+    let azure = redact(
+        "DefaultEndpointsProtocol=https;AccountName=a;AccountKey=c2VjcmV0a2V5;EndpointSuffix=x",
+    );
+    assert!(!azure.contains("c2VjcmV0a2V5"), "{azure}");
+    assert!(azure.contains("EndpointSuffix=x"), "{azure}");
+    let sas = redact("https://a.blob.core.windows.net/c?sv=2022&sig=abc%2Bdef%3D&se=1");
+    assert!(!sas.contains("abc%2Bdef"), "{sas}");
+    assert!(sas.contains("&se=1"), "{sas}");
 }
 
 #[test]

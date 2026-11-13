@@ -58,6 +58,21 @@ fn exit_79_is_a_policy_handoff_and_79_is_passed_on_without_an_agent() {
 #[test]
 fn exit_81_from_a_nested_run_is_passed_on_with_no_new_record_and_no_agent() {
     let f = Fixture::new();
+    // The nested run recorded its handoff in the shared directory first.
+    let o = f
+        .amplihack()
+        .args(["orch", "helper", "step-recovery", "record", "--dir"])
+        .arg(&f.dir)
+        .args([
+            "--step-id",
+            "step-21-pr-ready",
+            "--reason",
+            "nested handoff",
+        ])
+        .args(["--owner", "run-requester", "--needs", "mark the PR ready"])
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     let tool = f.tool("nested-run", "#!/bin/sh\nexit 81\n");
     let o = f.run("step-02-default-workflow", &[], &[tool.to_str().unwrap()]);
     assert_eq!(o.status.code(), Some(81), "{}", show(&o));
@@ -66,9 +81,31 @@ fn exit_81_from_a_nested_run_is_passed_on_with_no_new_record_and_no_agent() {
     assert!(
         !written
             .iter()
-            .any(|n| n.ends_with(".jsonl") || n.starts_with("evidence-")),
+            .any(|n| n.starts_with("evidence-") || n == "step-02-default-workflow.jsonl"),
         "no record and no evidence: {written:?}"
     );
+}
+
+#[test]
+fn exit_81_with_no_handoff_record_is_an_ordinary_failure() {
+    let f = Fixture::new();
+    let tool = f.tool("fake-handoff", "#!/bin/sh\nexit 81\n");
+    f.choose(
+        1,
+        json!({"choice": "handoff", "reason": "exit 81 with no record",
+        "owner": "run-requester", "needs": "check the step"}),
+    );
+    let o = f.run(
+        "step-02-default-workflow",
+        &["--stop-on-handoff"],
+        &[tool.to_str().unwrap()],
+    );
+    assert_eq!(o.status.code(), Some(81), "{}", show(&o));
+    assert_eq!(f.agent_calls().len(), 1, "the failure went to recovery");
+    let records = f.records("step-02-default-workflow");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["failure"]["exit_code"], 81);
+    assert_eq!(records[0]["source"], "agent");
 }
 
 #[test]

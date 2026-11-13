@@ -51,7 +51,7 @@ repair, and that is decided from the records, not by counting.
 step command ──exit 0──▶ output passed through unchanged, no record
      │
      ├─exit 79 or signal──▶ policy handoff record, exit code passed on (no agent)
-     ├─exit 81─────────────▶ nested run already handed off: passed on (no agent)
+     ├─exit 81, handoff on record─▶ nested run already handed off: passed on (no agent)
      │
      ├─a handoff is already recorded in this run──▶ validator handoff (no agent)
      │
@@ -98,21 +98,22 @@ output is not lost when a retry later succeeds.
 | Recipe | Step | Form | Notes |
 |---|---|---|---|
 | `autodrive-build.yaml` | `step-02-default-workflow` | sub-recipe | Recovered by the following bash step `step-02r-default-workflow-recovery`, with `--essential` |
-| `autodrive-crusty-loop.yaml` | `step-02-crusty-loop` | bash | |
+| `autodrive-crusty-loop.yaml` | `step-02-crusty-loop` | bash | `--essential --stop-on-handoff`: the crusty loop is never skipped, and a handoff ends the drive here |
 | `autodrive-crusty-loop.yaml` | `step-03-record-crusty-phase` | agent | Recovered by `step-03r-record-crusty-phase-recovery`, with `--essential`; a retry re-runs the check that the crusty phase is recorded |
 | `autodrive-crusty-round.yaml` | `step-00-review-dir-guard` | bash | `--guard` |
 | `autodrive-crusty-round.yaml` | `step-02b-review-dir-unchanged` | bash | `--guard` (the `round-index-check`) |
 | `autodrive-merge-round.yaml` | `step-00-review-dir-guard` | bash | `--guard` |
 | `autodrive-merge-round.yaml` | `step-00-merge-ready-files` | bash | `--essential --stop-on-handoff`: a handoff never reaches the `parse_json` consumers as a file list |
 | `autodrive-merge-round.yaml` | `step-02b-review-dir-unchanged` | bash | `--guard` (the `round-index-check`) |
-| `autodrive-merge-loop.yaml` | `step-02-merge-ready-loop` | bash | |
+| `autodrive-merge-loop.yaml` | `step-02-merge-ready-loop` | bash | `--essential --stop-on-handoff` |
 | `autodrive-merge-loop.yaml` | `step-03-finalize` | sub-recipe | Recovered by `step-03r-finalize-recovery`, with `--essential`; a retry runs `autodrive-finalize` again |
-| `workflow-finalize.yaml` | `step-20b-push-cleanup` | bash | `--essential --stop-on-handoff` |
+| `workflow-finalize.yaml` | `step-20b-push-cleanup` | bash | `--essential --stop-on-handoff --no-repair`: the step commits and pushes the worktree, so a repair would be published without review; a failure here can only hand off |
 | `workflow-finalize.yaml` | `step-21-pr-ready` | bash | `--essential --stop-on-handoff`; no alternative: the ready mutation has no REST fallback. A handoff never reaches `step-22-ensure-mergeable` |
 | `workflow-finalize.yaml` | `validate-agentic-finalization` | bash | `--guard` |
 | `workflow-finalize.yaml` | `step-recovery-report` | report | Runs after `validate-agentic-finalization` and before `workflow-complete`; exits 81 on a handoff |
 | `auto-drive-to-merge.yaml` | `autodrive-report` | report | Exits 81 on a handoff |
-| `autodrive_loop.sh` | after each round | report | Stops the loop with exit 81 when the round left a handoff |
+| `workflow-worktree.yaml` | `step-04-setup-worktree` | bash | Under an auto-drive, also writes the build's branch to `build-branch.txt` in the recovery directory, for a retried build |
+| `autodrive_loop.sh` | before the first round and after each round | report | Stops the loop with exit 81 when the run holds a handoff |
 
 `workflow-finalize.yaml` also gains a first step, `step-recovery-init`, which
 creates the recovery directory when the caller did not pass one. Because
@@ -131,9 +132,9 @@ The review-directory guards and `validate-agentic-finalization` run with
 `--guard`: a step that checks something may only report, so the agent can
 neither skip it nor repair what it checks, and a handoff ends the round or
 the run at that step, before any agent work after it (#1528). The merge-ready
-file resolver and the two finalize steps before outward actions run with
-`--essential --stop-on-handoff`. The other converted steps exit 0 on a
-handoff; only `autodrive-build` `step-03-resolve-pr` is then gated by a
+file resolver, both loop steps and the two finalize steps before outward
+actions run with `--essential --stop-on-handoff`. The other converted steps
+exit 0 on a handoff; only `autodrive-build` `step-03-resolve-pr` is then gated by a
 `condition:`, and the loop or report step ends the run.
 
 If `step-recovery-init` fails (for example a `HOME` path that holds a
@@ -288,10 +289,14 @@ stores its result as `build_recovery`; `build_result` stays the output of
 
 The example is shortened. The bundle's step-02r uses the here-document form
 above, and takes the task and requirements from `step-01b`'s output, with the
-no-merge directive, as step-02 does. Its goal also tells the agent that a
-retry must reuse the branch and PR the first attempt created, if any (check
-`git branch --show-current` in the worktree and the open PRs for it), because
-step-02r passes the same `existing_branch` as step-02.
+no-merge directive, as step-02 does. A retry must continue
+the branch and PR the first attempt created. The first attempt's
+`workflow-worktree` writes its branch to `build-branch.txt` in the recovery
+directory (`step-04-setup-worktree`), and when the drive was given no
+`existing_branch`, step-02r passes that branch as `existing_branch`. Without
+it, `workflow_worktree_deconflict.sh` would give the retry a new branch, and
+so a second PR. The agent cannot change the command, so the choice of branch
+is not left to it.
 
 With `--already-failed`, the first failure is not run; the driver goes
 straight to recovery. Its record sets `exit_code` to `null` and
@@ -356,7 +361,7 @@ not cleaned up yet.
 ```
 step-recovery run --step-id <id> --dir <recovery_dir> --goal <text>
                   [--owner <value>] [--alternative <name>=<command>]...
-                  [--essential] [--stop-on-handoff] [--guard]
+                  [--essential] [--stop-on-handoff] [--no-repair] [--guard]
                   [--already-failed] [--recipe-dir <dir>]
                   -- <command> [args...]
 ```
@@ -370,7 +375,8 @@ step-recovery run --step-id <id> --dir <recovery_dir> --goal <text>
 | `--alternative` | A named alternative command. Repeatable. Names match `^[A-Za-z0-9_-]{1,64}$`. |
 | `--essential` | The step must not be skipped: `continue_recorded` is removed from the allowed choices. |
 | `--stop-on-handoff` | A recorded handoff exits 81 instead of 0, so the recipe stops at this step. `continue_recorded` and a successful retry still exit 0. |
-| `--guard` | The step checks something and may only report: only `handoff` and declared alternatives are offered, and the evidence has `guard: true`. Implies `--essential` and `--stop-on-handoff`. |
+| `--no-repair` | `retry_after_repair` is removed from the allowed choices. For a step that publishes the worktree, whose retry would otherwise push a repair no review has seen. |
+| `--guard` | The step checks something and may only report: only `handoff` and declared alternatives are offered, and the evidence has `guard: true`. Implies `--essential`, `--stop-on-handoff` and `--no-repair`. |
 | `--already-failed` | Skip the first run and go straight to recovery (sub-recipe and agent steps). |
 | `--recipe-dir` | Run `<dir>/step-failure-recovery.yaml` by path instead of the bundle's. A recipe's own directory is searched first, so its sub-recipes also come from `<dir>`. Used by tests and fixture recipes. |
 
@@ -538,8 +544,11 @@ agent's choice:
 - The recovery directory already holds a handoff record from any step. The
   run is already handed off, so no agent is started; the new record's reason
   names the step and record file of the earlier handoff.
-- The step's record file changed while the agent ran. The driver takes its
-  length and SHA-256 before starting the agent and compares them after.
+- The recovery directory changed while the agent ran. The driver takes the
+  name, length and SHA-256 of every file in it (dot files, which are
+  transient spool and temporary files, excepted) before starting the agent
+  and compares them after. A removed, added or altered file of any step
+  gives a validator handoff.
 
 ## Failure signature
 
@@ -683,8 +692,10 @@ and reason `terminal policy refusal (exit 79)`, then exits 79.
 
 Exit 81 means a nested run, such as the `default-workflow` started by
 `step-02r-default-workflow-recovery`, already ended in a handoff that is in
-the run's records. The driver writes no new record, starts no agent and exits
-81.
+the run's records. When the recovery directory holds a handoff record, the
+driver writes no new record, starts no agent and exits 81. When it holds
+none, the 81 did not come from a recorded handoff, and the driver treats it
+as an ordinary failure and starts recovery.
 
 A command killed by a signal (for example SIGTERM when the run is cancelled)
 gets a `policy` handoff record and the driver exits `128+n` (143 for
@@ -703,7 +714,11 @@ There is one directory per top-level run, shared by everything that run
 starts. It is not kept in auto-drive's per-PR state directory, because a
 later drive of the same PR would then inherit the earlier drive's handoffs
 and refuse to start any agent. A new drive starts with an empty directory;
-the old one stays as audit material.
+the old one stays as audit material. Nothing removes recovery directories
+or limits how long they are kept: every auto-drive and every standalone
+`workflow-finalize` run leaves one under
+`$XDG_STATE_HOME/amplihack/step-recovery` (or `$HOME/.local/state/…`).
+Remove old ones by hand; a retention rule is a follow-up.
 
 The directory is mode `0700`. Record, evidence and spool files are mode
 `0600`.
@@ -721,8 +736,13 @@ The directory is mode `0700`. Record, evidence and spool files are mode
   `Authorization:`/`Bearer` values, any key whose name contains `token`,
   `password`, `passwd`, `secret`, `api_key`/`api-key`/`apikey` or
   `access_key` (so `GITHUB_TOKEN=`, `AWS_SECRET_ACCESS_KEY=`, JSON
-  `"token": "…"` and `x-api-key:` are all covered), and user info in URLs. Environment and `RECIPE_VAR_*`
-  values are never written.
+  `"token": "…"` and `x-api-key:` are all covered), PEM private keys
+  (including a key cut off by the excerpt), JWTs, Slack `xox?-` tokens,
+  Google `AIza` API keys, Azure `AccountKey=` values, SAS `sig=` values,
+  and user info in URLs. Environment and `RECIPE_VAR_*` values are never
+  written.
+- Only records and evidence are redacted. The full standard output of a
+  failed attempt still goes to the step log, as it did before step recovery.
 - The report and the outcome line never print `output_excerpt`. Text
   fields reject control and bidi characters, which blocks terminal escape
   injection and reordered text.
@@ -732,12 +752,16 @@ The directory is mode `0700`. Record, evidence and spool files are mode
 - Evidence files are audit material. Do not attach them to pull requests as
   they are; they hold redacted but still raw command output.
 - **Same-user limit.** The agent runs as the same user as the driver. It is
-  told not to write under the recovery directory, and the driver detects a
-  change to the current step's record file, but it could still delete or
-  alter another step's file. A deleted file is not detected by the report:
-  the tamper check covers only the current step's file, so an agent could
-  delete another step's handoff record. Same-user isolation is out of scope;
-  fingerprinting every `*.jsonl` in the directory is a follow-up.
+  told not to write under the recovery directory, and the driver compares
+  every file in the directory before and after the agent runs, so a changed
+  or deleted record of any step becomes a validator handoff. The agent can
+  still change files outside the directory, such as the worktree: the limits
+  in the recovery prompt are instructions, not enforcement. For that reason
+  `step-20b-push-cleanup`, which commits and pushes the worktree, runs with
+  `--no-repair`, so no unreviewed repair is ever pushed by its retry.
+- **Exit status.** Failures at `step-20b-push-cleanup`, `step-21-pr-ready`
+  and `validate-agentic-finalization` now end the run with exit 81 (a
+  recorded handoff) instead of 1.
 
 ## Runner gaps
 

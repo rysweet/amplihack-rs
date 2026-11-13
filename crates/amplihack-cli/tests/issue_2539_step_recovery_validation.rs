@@ -246,6 +246,73 @@ fn a_record_file_changed_while_the_agent_ran_becomes_a_validator_handoff() {
 }
 
 #[test]
+fn another_steps_record_removed_while_the_agent_ran_becomes_a_validator_handoff() {
+    let f = Fixture::new();
+    let tool = failing(&f);
+    // An earlier step's record. (An earlier handoff would start no agent.)
+    f.choose(
+        1,
+        json!({"choice": "continue_recorded", "reason": "earlier skip"}),
+    );
+    let o = f.run("step-02-crusty-loop", &[], &[&tool]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    // The next agent deletes that record, then asks to skip as well.
+    let other = f.dir.join("step-02-crusty-loop.jsonl");
+    f.repair(2, &format!("#!/bin/sh\nrm -f '{}'\n", other.display()));
+    f.choose(
+        2,
+        json!({"choice": "continue_recorded", "reason": "nothing to see"}),
+    );
+    let o = f.run("step-03-finalize", &[], &[&tool]);
+    let line = outcome(&o);
+    assert_eq!(
+        (line["choice"].as_str(), line["source"].as_str()),
+        (Some("handoff"), Some("validator")),
+        "{}",
+        show(&o)
+    );
+    assert!(
+        line["reason"]
+            .as_str()
+            .unwrap()
+            .contains("changed while the recovery agent ran"),
+        "{line}"
+    );
+    assert_eq!(f.report().status.code(), Some(81));
+}
+
+#[test]
+fn a_no_repair_step_is_never_offered_a_repair() {
+    let f = Fixture::new();
+    let tool = failing(&f);
+    f.choose(
+        1,
+        json!({"choice": "retry_after_repair", "reason": "edit and push",
+        "repair": "edited a file"}),
+    );
+    let o = f.run(
+        "step-20b-push-cleanup",
+        &["--essential", "--stop-on-handoff", "--no-repair"],
+        &[&tool],
+    );
+    assert_eq!(o.status.code(), Some(81), "{}", show(&o));
+    assert!(
+        !f.evidence(1)["allowed_choices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "retry_after_repair"),
+        "{}",
+        f.evidence(1)
+    );
+    let record = &f.records("step-20b-push-cleanup")[0];
+    assert_eq!(
+        (record["choice"].as_str(), record["source"].as_str()),
+        (Some("handoff"), Some("validator"))
+    );
+}
+
+#[test]
 fn secrets_in_the_failed_output_never_reach_records_evidence_or_output() {
     let f = Fixture::new();
     let secrets = [
