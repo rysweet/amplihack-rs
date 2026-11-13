@@ -525,7 +525,10 @@ steps:
             fail_terminal_state "FAILED_INVALID_INPUT" "stale PR metadata: headRefOid '$pr_head_oid' does not match local HEAD '$local_head'"
           fi
         fi
-        if [ "$pr_cross_repo" != "false" ] || [ "$pr_head_owner/$pr_head_repo" != "$repo_owner/$repo_name" ] || [ "$pr_base_identity" != "$repo_owner/$repo_name" ]; then
+        if [ "$pr_cross_repo" != "false" ]; then
+          fail_terminal_state "FAILED_INVALID_INPUT" "ambiguous PR metadata: isCrossRepository is not exactly false, so PR '$pr_url_result' is not a same-repository PR"
+        fi
+        if [ "$pr_head_owner/$pr_head_repo" != "$repo_owner/$repo_name" ] || [ "$pr_base_identity" != "$repo_owner/$repo_name" ]; then
           fail_terminal_state "FAILED_INVALID_INPUT" "ambiguous PR metadata: PR repo '$pr_head_owner/$pr_head_repo' -> '$pr_base_identity' does not match current repo '$repo_owner/$repo_name'"
         fi
 

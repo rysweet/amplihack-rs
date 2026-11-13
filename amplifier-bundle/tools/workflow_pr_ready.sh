@@ -139,7 +139,11 @@ validate_pr_identity_before_mutation() {
     echo "ERROR: refusing to mutate PR '$pr_url'; headRefOid '$pr_head_oid' does not match local HEAD '$local_head'" >&2
     return 1
   fi
-  if [ "$pr_cross_repo" != "false" ] || [ "$pr_head_owner/$pr_head_repo" != "$repo_identity" ]; then
+  if [ "$pr_cross_repo" != "false" ]; then
+    echo "ERROR: refusing to mutate PR '$pr_url'; isCrossRepository is not exactly false, so the PR is not a same-repository PR" >&2
+    return 1
+  fi
+  if [ "$pr_head_owner/$pr_head_repo" != "$repo_identity" ]; then
     echo "ERROR: refusing to mutate PR '$pr_url'; PR head repo '$pr_head_owner/$pr_head_repo' does not match current repo '$repo_identity'" >&2
     return 1
   fi
