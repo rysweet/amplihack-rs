@@ -1400,6 +1400,91 @@ fn step18c_detached_head_is_refused_even_if_the_agent_pushes() {
     before.assert_held(&f, &run);
 }
 
+/// A bundle without worktree_setup_path.sh is named as such: the gate fails
+/// with `push-unverified`, not with a missing worktree.
+#[test]
+fn step18c_missing_worktree_helper_is_named_not_reported_as_no_worktree() {
+    let _ = runner_or_skip!();
+    let f = Fixture::new(Upstream::Ahead);
+    f.set_agent_mode("none-noworktree");
+    let tools = f.p("bundle/amplifier-bundle/tools");
+    fs::create_dir_all(&tools).unwrap();
+    for entry in fs::read_dir(repo_root().join("amplifier-bundle/tools")).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        if entry.file_type().unwrap().is_file() && name != "worktree_setup_path.sh" {
+            fs::copy(entry.path(), tools.join(&name)).unwrap();
+        }
+    }
+    // The runner finds the sub-recipe through AMPLIHACK_HOME as well.
+    let recipes = f.p("bundle/amplifier-bundle/recipes");
+    fs::create_dir_all(&recipes).unwrap();
+    fs::copy(
+        repo_root().join("amplifier-bundle/recipes/push-failure-recovery.yaml"),
+        recipes.join("push-failure-recovery.yaml"),
+    )
+    .unwrap();
+    let before = Untouched::capture(&f);
+    let base_ref = f.remote_ref(BRANCH);
+    let bundle = f.p("bundle").display().to_string();
+    let run = f.run(
+        &f.pr_review_recipe(&f.wt()),
+        &[],
+        &[("AMPLIHACK_HOME", bundle.as_str())],
+    );
+
+    assert_failed_with(&run, "push-unverified");
+    assert!(
+        run.all_text()
+            .contains("worktree_setup_path.sh not found in the bundle"),
+        "the failure must name the missing helper; {}",
+        run.debug()
+    );
+    assert!(
+        !run.all_text()
+            .contains("push-failure-recovery: not-linked-worktree"),
+        "a missing helper is not a missing worktree; {}",
+        run.debug()
+    );
+    assert_eq!(f.remote_ref(BRANCH), base_ref);
+    before.assert_held(&f, &run);
+}
+
+/// Without an upstream the gate's #978 check (rule 10) does not run. A remote
+/// branch that had diverged before the agent ran, and that the agent left
+/// alone, is a divergence, not a rewritten history: the gate must not say the
+/// history was rewritten or print a restore command.
+#[test]
+fn step18c_diverged_remote_without_upstream_is_not_called_a_rewrite() {
+    let _ = runner_or_skip!();
+    let f = Fixture::new(Upstream::Diverged);
+    f.git(&f.wt(), &["branch", "-q", "--unset-upstream"]);
+    f.set_agent_mode("change");
+    let before = Untouched::capture(&f);
+    let remote_before = f.ls_remote(BRANCH);
+    let run = f.run(&f.pr_review_recipe(&f.wt()), &[], &[]);
+
+    assert_eq!(
+        f.agent_calls(),
+        vec!["step-18c-push-feedback-changes"],
+        "{}",
+        run.debug()
+    );
+    assert_failed_with(&run, "diverged-upstream");
+    let text = run.all_text();
+    assert!(
+        !text.contains("remote-history-rewritten") && !text.contains("To restore"),
+        "an untouched diverged remote must not be reported as rewritten; {}",
+        run.debug()
+    );
+    assert_eq!(
+        f.ls_remote(BRANCH),
+        remote_before,
+        "the remote is untouched"
+    );
+    before.assert_held(&f, &run);
+}
+
 #[test]
 fn step18c_environment_fault_is_recovered() {
     let _ = runner_or_skip!();

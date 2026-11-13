@@ -443,8 +443,9 @@ reason shown:
 4. **Worktree** (`not-linked-worktree`, `worktree-changed`). Resolves the
    task worktree from `worktree_setup` with `worktree_setup_path.sh`. The
    directory must be a linked worktree: `git rev-parse --git-dir` differs from
-   `--git-common-dir`. Helper errors are shown, not hidden. If none is found,
-   the gate fails with `not-linked-worktree`, whatever the cause. A worktree
+   `--git-common-dir`. Helper errors are shown, not hidden. If the helper
+   itself is not in the bundle, the gate fails with `push-unverified`. If no
+   worktree is found, the gate fails with `not-linked-worktree`. A worktree
    found by only one of the snapshot and the gate, or at a different path,
    fails with `worktree-changed`.
 5. **Branch** (`branch-mismatch`). The gate works out the branch itself:
@@ -507,7 +508,11 @@ reason shown:
     `git merge-base --is-ancestor <remote_before> HEAD`:
     - exit 0: the push, if any, was a fast-forward; continue;
     - exit 1: `remote_before` is not in HEAD's history, so the remote branch
-      held a commit that HEAD does not contain. Fail with
+      held a commit that HEAD does not contain. The gate then reads the
+      branch on origin with `git ls-remote`. If origin still holds
+      `remote_before`, nothing was rewritten: the branch had diverged before
+      the agent ran, which rule 10 misses when no upstream is set, and the
+      gate fails with `diverged-upstream`. Otherwise it fails with
       `remote-history-rewritten`. The message names both commits and gives
       the restore command (see
       [Restoring a rewritten remote branch](#restoring-a-rewritten-remote-branch));
@@ -568,10 +573,10 @@ it unchanged. Otherwise the message ends with
 | `unsafe-ref` | 1 | none | rules 8 and 8b: bad name, detached HEAD, protected local branch |
 | `worktree-changed` | 1 | none | rules 4, 8b, 9: the worktree differs from the snapshot |
 | `uncommitted-changes` | 1 | none | rule 9: tracked changes left, so the step's commit failed |
-| `diverged-upstream` | 1 | none | rule 10 |
+| `diverged-upstream` | 1 | none | rule 10, or rule 10b when no upstream is set and origin still holds `remote_before` |
 | `remote-history-rewritten` | 1 | none | rule 10b: the remote branch's earlier commit is not an ancestor of HEAD |
 | `cause-in-change` | 1 | none | `CHANGE` |
-| `push-unverified` | 1 | none | the snapshot is missing or malformed, the origin URLs changed (rule 9b), the ancestry check could not run (rule 10b), or the ref check failed or could not run |
+| `push-unverified` | 1 | none | the snapshot is missing or malformed, `worktree_setup_path.sh` is not in the bundle (rule 4), the origin URLs changed (rule 9b), the ancestry check could not run (rule 10b), or the ref check failed or could not run |
 | `invalid-gate-output` | 1 | none | the write-back step found no verified gate record (`commit_result` path only) |
 
 ## The stderr recovery record
@@ -863,6 +868,8 @@ Cases:
 |---|---|
 | positive (step-15) | the script fails, recovery runs, the remote ref equals HEAD, `commit_result.pushed == "true"`, the record shows `cause=ENVIRONMENT`, names `RECIPE_VAR_issue_number` and lists the clean push |
 | negative (`CHANGE`) | the hook always fails and the fake agent returns `CHANGE`; the run exits non-zero with `cause-in-change`, stderr contains `recovery record`, `explanation` and `evidence`, and the remote does not move |
+| missing helper (`step18c_missing_worktree_helper_is_named_not_reported_as_no_worktree`) | a bundle copy without `worktree_setup_path.sh`: the run exits non-zero with `push-unverified` naming the helper, never `not-linked-worktree` |
+| diverged remote without an upstream (`step18c_diverged_remote_without_upstream_is_not_called_a_rewrite`) | `Diverged` fixture with the upstream unset, `change` agent mode: step-18c's push is rejected and the agent leaves the remote alone; the run exits non-zero with `diverged-upstream`, never `remote-history-rewritten` or a restore command, and the remote is unchanged |
 | force-push (`step15_force_push_over_another_commit_fails_closed`) | `Diverged` fixture, `force` agent mode: the agent force-pushes HEAD over the remote's commit and returns `ENVIRONMENT` with a token-shaped `explanation`; the run exits non-zero, the step is failed, the output contains `remote-history-rewritten` and both commits, `git ls-remote` on `remote.git` shows HEAD, and the token appears only in redacted form |
 | absent remote (`step15_first_push_with_absent_remote_is_recovered`) | `Absent` fixture: the run is recovered, the snapshot records `remote_before` and `remote_before_source` as `absent`, and origin equals HEAD |
 | untracked file (`step15_untracked_file_left_by_agent_is_recovered_and_recorded`) | `env-untracked` agent mode leaves a new untracked file; the run is recovered, `new_untracked_count` is 1 and the path is not named in the record |

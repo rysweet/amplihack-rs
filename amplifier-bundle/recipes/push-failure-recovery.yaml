@@ -263,6 +263,8 @@ steps:
       find_tool() { local d; for d in "${TOOL_DIRS[@]}"; do [ -f "$d/$1" ] && { printf '%s' "$d/$1"; return 0; }; done; return 1; }
       WT_TOOL="$(find_tool worktree_setup_path.sh)" || WT_TOOL=""; VERIFY="$(find_tool verify_pushed_ref.sh)" || VERIFY=""
       # Rule 4: a linked task worktree. No step has an intended skip without one.
+      # A missing helper is named as such, not reported as a missing worktree.
+      [ -n "$WT_TOOL" ] || fail push-unverified "$STEP: worktree_setup_path.sh not found in the bundle; the worktree cannot be checked"
       WT=""; [ -z "$WT_TOOL" ] || WT="$(bash "$WT_TOOL" push-failure-recovery)" || WT=""
       LINKED=false
       if [ -n "$WT" ] && cd -P -- "$WT" 2>/dev/null && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then { gd=$(git rev-parse --absolute-git-dir) && cd_=$(git rev-parse --path-format=absolute --git-common-dir) && [ "$gd" != "$cd_" ] && [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ] && LINKED=true; } 2>/dev/null || true; fi
@@ -328,6 +330,10 @@ steps:
         case "$ANC_RC" in
           0) ;;
           1)
+            # Without an upstream rule 10 does not run, so a branch that had diverged before the agent ran reaches here.
+            # If origin still holds $RB, nothing was rewritten: report the divergence, not a rewrite.
+            NOW="$(GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git ls-remote origin -- "refs/heads/$BRANCH" 2>/dev/null | cut -f1)" || NOW=""
+            [ "$NOW" != "$RB" ] || fail diverged-upstream "$STEP ($CAUSE): origin/$BRANCH is still $RB, which HEAD $HEAD_SHA does not contain; the branch had diverged before the agent ran (#978)"
             MSG="$STEP ($CAUSE): origin/$BRANCH was $RB before the agent ran (remote_before_source $RBS), which is not an ancestor of HEAD $HEAD_SHA; the remote history was rewritten and the gate undid nothing."
             # Git allows $, ;, ` and | in branch names, so each word is shell-quoted. The command is printed only
             # whole: if redaction would change it or fail()'s 1000-byte cut would reach it, the commits are named instead.
