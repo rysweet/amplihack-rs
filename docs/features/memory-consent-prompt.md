@@ -28,6 +28,8 @@ Your answer is saved as `node.heap_consent` in `~/.amplihack/config.toml`, and l
 ℹ NODE_OPTIONS=--max-old-space-size=32768 (saved preference). To change: amplihack config set node.heap_consent <true|false>
 ```
 
+This notice and the `Memory: ... GB RAM detected` line go to stderr, so stdout of `amplihack claude -p ...` carries only the agent's output. See [Launcher Output Streams](../reference/launcher-output-streams.md).
+
 To pin the limit instead of computing it from RAM, set `node.max_old_space_mb` (8192 to 32768):
 
 ```bash

@@ -30,6 +30,8 @@ mod support;
 mod issue_2329_autodrive_outcomes;
 #[path = "issue_2545_autodrive_repo_context.rs"]
 mod issue_2545_autodrive_repo_context;
+#[path = "issue_2585_launch_notices_stderr.rs"]
+mod issue_2585_launch_notices_stderr;
 
 #[path = "issue_1753_expired_live.rs"]
 mod issue_1753_expired_live;

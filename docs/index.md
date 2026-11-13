@@ -226,6 +226,7 @@ Understand the philosophy and architecture behind amplihack.
 - [Large Payload Delivery to Child Processes](concepts/large-payload-delivery.md) - Why large prompts, recipe context and GitHub bodies stay out of argv and environment values (`E2BIG`, `MAX_ARG_STRLEN`)
 - [Why Prompt Text Stays Out of argv](concepts/prompt-text-out-of-argv.md) - Why no contract, prompt or brief text appears in an agent's `/proc/<pid>/cmdline` (#2030)
 - [Agent Prompt Channels Reference](reference/agent-prompt-channels.md) - Per-launch-path channels, the contract file, the Claude Code 2.1.319 version gate, the `amplihack claude` passthrough rewrite and errors
+- [Launcher Output Streams Reference](reference/launcher-output-streams.md) - Launcher notices go to stderr, so stdout of `amplihack <agent> -p` is only the agent's output (#2585)
 - [Check Agent Processes for Prompt Text](howto/check-agent-argv-for-prompt-text.md) - Run the `/proc` check and fix version-gate failures
 - [Large Payload Delivery Reference](reference/large-payload-delivery.md) - `file-reference` mode, sync and async stdin writers, runner value spill, UTF-8 truncation, reasoner bounds, `--prompt-file`, and `workflow_body_file.sh`
 - [`amplihack-turn` Turn Driver Reference](reference/amplihack-turn-api.md) - Agent-generic turn model: `AgentSession` / `Channel` / `NextPrompt`, the `run_session_loop` driver (run-to-completion, no wall-clock cap), and the relocated `SerialTurnDriver` / `CopilotTurnRunner` / `build_turn_argv` / `ToolAllowlist` primitives
