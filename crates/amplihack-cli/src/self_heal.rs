@@ -12,9 +12,11 @@
 //!
 //! This module closes the gap by version-stamping every successful install
 //! into `~/.amplihack/.installed-version` and comparing the stamp against
-//! [`crate::VERSION`] on every startup. If the stamp is missing or stale,
-//! the install procedure is invoked automatically and the user sees a
-//! one-line notice on stderr.
+//! [`crate::VERSION`] on startup. A missing or stale stamp requests repair
+//! only from an executable in a complete installed release, without the
+//! automatic-install opt-out. A checkout cannot install itself, regardless
+//! of version ordering (#2496). Its assessment is read-only and a refused
+//! repair leaves dispatch free to use available assets.
 //!
 //! ## Never an implicit downgrade (#1526)
 //!
@@ -26,8 +28,9 @@
 //!
 //! Per the project's Zero-BS philosophy, install failures **propagate**
 //! and are surfaced loudly by the binary entrypoint. There is no silent
-//! fallback to "continue with stale assets" — the user gets a clear error
-//! and a non-zero exit.
+//! fallback after a failed installation — the user gets a clear error and a
+//! non-zero exit. An executable-origin refusal is separate: it reports why
+//! automatic installation is unavailable, then continues command dispatch.
 //!
 //! The one exception is issue #1955 D1: when only the release tag fetch failed
 //! and the installed bundle passes the compatibility check, the command runs
@@ -47,7 +50,7 @@ use crate::commands::install::paths::{home_dir, sanitize_path, sanitize_text};
 use crate::commands::install::tag_fetch::SourceFetchFailed;
 use crate::commands::install::version_stamp::{self, VersionRelation};
 
-/// Env var that fully disables the auto-restage check.
+/// Env var that disables automatic repair; assessment remains read-only.
 ///
 /// Useful for CI, integration tests, and any context where install
 /// side effects are unwanted. Any non-empty value disables.
@@ -92,6 +95,26 @@ const SKIP_FLAGS: &[&str] = &["--help", "-h", "--version", "-V"];
 /// Issue #1526: set once this process has emitted the implicit-downgrade
 /// warning, so the launch bootstrap does not print it a second time.
 static DOWNGRADE_WARNED: AtomicBool = AtomicBool::new(false);
+static ORIGIN_WARNED: AtomicBool = AtomicBool::new(false);
+
+/// Shared by startup self-heal and launch bootstrap: refusal never prevents
+/// dispatch when the command can use the assets already available.
+pub(crate) fn warn_implicit_origin_once<W: Write>(notice: &mut W) {
+    if env_bypass_set() || ORIGIN_WARNED.swap(true, AtomicOrdering::Relaxed) {
+        return;
+    }
+    let executable = std::env::current_exe()
+        .map(|path| sanitize_path(&path))
+        .unwrap_or_else(|_| "<unknown>".into());
+    if let Err(error) = writeln!(
+        notice,
+        "amplihack: executable location {executable} prevents automatic installation; \
+         only a complete installed release under ~/.amplihack/releases may repair assets \
+         automatically. Run `amplihack install` explicitly from a valid release source."
+    ) {
+        tracing::debug!(%error, "could not emit executable-origin refusal");
+    }
+}
 
 /// Public entrypoint, called from `bins/amplihack/src/main.rs` immediately
 /// after the update-notice check and before `commands::dispatch`.
@@ -243,6 +266,7 @@ pub(crate) fn warn_implicit_downgrade_once<W: Write>(notice: &mut W, installed: 
 #[cfg(test)]
 pub(crate) fn set_downgrade_warned(warned: bool) {
     DOWNGRADE_WARNED.store(warned, AtomicOrdering::Relaxed);
+    ORIGIN_WARNED.store(warned, AtomicOrdering::Relaxed);
 }
 
 /// The install lock (issues #502 R5 and #1954), shared with `amplihack
@@ -311,8 +335,13 @@ where
     // current stamp must still repair). So it cannot be reordered away.
     // Instead it is memoised on a stat fingerprint of the bundle inputs:
     // ~58 KB of recipe YAML is parsed only when the bundle actually changed.
-    let installed_bundle_issue = installed_bundle_compatibility_issue_cached()
-        .context("checking installed framework bundle compatibility")?;
+    let eligible = crate::commands::install::release_layout::executable_allows_implicit_install();
+    let installed_bundle_issue = if env_bypass_set() || !eligible {
+        installed_bundle_compatibility_issue_uncached()
+    } else {
+        installed_bundle_compatibility_issue_cached()
+    }
+    .context("checking installed framework bundle compatibility")?;
 
     if env_bypass_set() {
         if !stamp_match || installed_bundle_issue.is_some() {
@@ -331,6 +360,11 @@ where
 
     if stamp_match && installed_bundle_issue.is_none() {
         tracing::debug!("self_heal: stamp matches binary version {expected}");
+        return Ok(());
+    }
+
+    if !eligible {
+        warn_implicit_origin_once(notice);
         return Ok(());
     }
 
@@ -474,7 +508,7 @@ fn installed_bundle_compatibility_issue_uncached() -> Result<Option<String>> {
 }
 
 /// True when `AMPLIHACK_SKIP_AUTO_INSTALL` is set to any non-empty value.
-fn env_bypass_set() -> bool {
+pub(crate) fn env_bypass_set() -> bool {
     std::env::var_os(SKIP_ENV)
         .map(|v| !v.is_empty())
         .unwrap_or(false)
@@ -554,7 +588,6 @@ mod tests {
     use std::cell::Cell;
     use std::fs;
     use std::path::Path;
-    use tempfile::TempDir;
 
     /// Save/restore guard for `HOME` and `AMPLIHACK_SKIP_AUTO_INSTALL`.
     /// Uses the crate-wide [`crate::test_support::env_lock`] so that this
@@ -564,6 +597,7 @@ mod tests {
         prior_home: Option<OsString>,
         prior_skip: Option<OsString>,
         _lock: std::sync::MutexGuard<'static, ()>,
+        _origin: crate::commands::install::release_layout::TestEligibility,
     }
 
     impl EnvGuard {
@@ -586,6 +620,7 @@ mod tests {
                 prior_home,
                 prior_skip,
                 _lock: lock,
+                _origin: crate::commands::install::release_layout::TestEligibility::installed(),
             }
         }
     }
@@ -697,7 +732,7 @@ steps:
 
     #[test]
     fn stamp_mismatch_triggers_install() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), None);
         version_stamp::write_installed_version("0.8.55").unwrap();
 
@@ -728,7 +763,7 @@ steps:
 
     #[test]
     fn stamp_match_skips_install() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), None);
         version_stamp::write_installed_version(crate::VERSION).unwrap();
         write_compatible_installed_bundle(tmp.path());
@@ -754,7 +789,7 @@ steps:
     fn warm_launch_with_matching_stamp_parses_no_recipe_yaml() {
         use crate::commands::install::bundle_compat::read_counter;
 
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), None);
         version_stamp::write_installed_version(crate::VERSION).unwrap();
         write_compatible_installed_bundle(tmp.path());
@@ -796,7 +831,7 @@ steps:
     /// The cache must never mask a bundle that went stale after being cached.
     #[test]
     fn cached_healthy_bundle_that_goes_stale_still_triggers_repair() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), None);
         version_stamp::write_installed_version(crate::VERSION).unwrap();
         write_compatible_installed_bundle(tmp.path());
@@ -838,7 +873,7 @@ steps:
     /// real bundle status, cached or not.
     #[test]
     fn bypass_diagnostic_reports_real_bundle_status_through_the_cache() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         // Prime the cache on a stale bundle with a *current* stamp.
         {
             let _g = EnvGuard::new(tmp.path(), None);
@@ -881,7 +916,7 @@ steps:
 
     #[test]
     fn stamp_match_with_stale_installed_smart_orchestrator_triggers_repair() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), None);
         version_stamp::write_installed_version(crate::VERSION).unwrap();
         write_stale_installed_smart_orchestrator(tmp.path());
@@ -909,7 +944,7 @@ steps:
 
     #[test]
     fn missing_stamp_triggers_install() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), None);
         // Note: no stamp file exists.
 
@@ -929,7 +964,7 @@ steps:
 
     #[test]
     fn env_bypass_skips_install_even_with_mismatch() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), Some("1"));
         version_stamp::write_installed_version("0.0.0").unwrap();
 
@@ -960,7 +995,7 @@ steps:
 
     #[test]
     fn empty_bypass_value_does_not_bypass() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), Some(""));
         // No stamp -> install should run despite bypass var being present-but-empty.
 
@@ -978,7 +1013,7 @@ steps:
 
     #[test]
     fn install_subcommand_skips_to_avoid_recursion() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), None);
         // No stamp -> would normally trigger; subcommand must skip anyway.
 
@@ -1000,7 +1035,7 @@ steps:
     /// terminal.
     #[test]
     fn agent_binary_subcommand_skips() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), None);
         let calls = Cell::new(0u32);
         let mut buf = Vec::new();
@@ -1019,7 +1054,7 @@ steps:
     /// run under a fresh HOME would add processes and break its timing.
     #[test]
     fn wait_subcommand_skips() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), None);
         let calls = Cell::new(0u32);
         let mut buf = Vec::new();
@@ -1039,7 +1074,7 @@ steps:
     /// assets.
     #[test]
     fn agent_subcommand_skips() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), None);
         let calls = Cell::new(0u32);
         let mut buf = Vec::new();
@@ -1055,7 +1090,7 @@ steps:
 
     #[test]
     fn usage_commands_skip_startup_self_heal() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), None);
         for subcommand in ["report", "publish"] {
             let calls = Cell::new(0u32);
@@ -1074,7 +1109,7 @@ steps:
 
     #[test]
     fn update_subcommand_skips() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), None);
         let calls = Cell::new(0u32);
         let mut buf = Vec::new();
@@ -1089,7 +1124,7 @@ steps:
 
     #[test]
     fn hygiene_artifact_guard_skips_startup_self_heal() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), None);
 
         let calls = Cell::new(0u32);
@@ -1118,7 +1153,7 @@ steps:
 
     #[test]
     fn other_hygiene_commands_still_use_startup_self_heal() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), None);
 
         let calls = Cell::new(0u32);
@@ -1150,7 +1185,7 @@ steps:
             "reclassify-task-type",
             "workflow-log-inventory",
         ] {
-            let tmp = TempDir::new().unwrap();
+            let tmp = crate::test_support::tempdir_outside_framework_roots();
             let _g = EnvGuard::new(tmp.path(), None);
 
             let calls = Cell::new(0u32);
@@ -1174,7 +1209,7 @@ steps:
     fn profile_statusline_skips_startup_self_heal() {
         // Issue #1569: Claude Code runs the wrapper after every turn and
         // shows its stdout as the status line.
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), None);
         let calls = Cell::new(0u32);
         let mut buf = Vec::new();
@@ -1200,7 +1235,7 @@ steps:
     fn profile_statusline_without_args_skips_startup_self_heal() {
         // Issue #1745: the command in `~/.claude/settings.json` has no
         // `--root` or `--owner`.
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), None);
         let calls = Cell::new(0u32);
         let mut buf = Vec::new();
@@ -1216,7 +1251,7 @@ steps:
 
     #[test]
     fn help_flag_skips() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), None);
         let calls = Cell::new(0u32);
         let mut buf = Vec::new();
@@ -1231,7 +1266,7 @@ steps:
 
     #[test]
     fn version_flag_skips() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), None);
         let calls = Cell::new(0u32);
         let mut buf = Vec::new();
@@ -1246,7 +1281,7 @@ steps:
 
     #[test]
     fn no_args_skips() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), None);
         let calls = Cell::new(0u32);
         let mut buf = Vec::new();
@@ -1261,7 +1296,7 @@ steps:
 
     #[test]
     fn install_failure_propagates_and_stamp_not_written() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), None);
         // No stamp -> would trigger install.
 
@@ -1292,7 +1327,7 @@ steps:
     /// values pass the semver regex first.
     #[test]
     fn bypass_with_mismatch_emits_diagnostic() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), Some("1"));
         version_stamp::write_installed_version("0.0.1").unwrap();
 
@@ -1331,7 +1366,7 @@ steps:
     /// (no skew = nothing interesting to report).
     #[test]
     fn bypass_with_match_emits_no_diagnostic() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), Some("1"));
         version_stamp::write_installed_version(crate::VERSION).unwrap();
         write_compatible_installed_bundle(tmp.path());
@@ -1400,17 +1435,14 @@ steps:
         assert!(buf.is_empty(), "no notice when HOME unset");
     }
 
-    /// R5: concurrent installs must serialize via the advisory file
-    /// lock on `~/.amplihack/.install.lock`. Two threads that both
-    /// trigger a re-stage must NOT execute the installer body
-    /// concurrently — their critical sections must not temporally
-    /// overlap.
+    /// Concurrent requests meet at a barrier, then assert exclusive installer
+    /// entry without a timer or a wall-clock observation window.
     #[test]
     fn concurrent_installs_serialize() {
-        use std::sync::{Arc, Mutex};
-        use std::time::{Duration, Instant};
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::{Arc, Barrier};
 
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         // Hold the env_lock for the whole test so the two threads share
         // a stable HOME. EnvGuard takes the same lock; we set HOME
         // manually to avoid double-locking.
@@ -1425,22 +1457,27 @@ steps:
             std::env::remove_var(SKIP_ENV);
         }
 
-        // Capture (start, end) of each installer critical section.
-        let timings: Arc<Mutex<Vec<(Instant, Instant)>>> = Arc::new(Mutex::new(Vec::new()));
+        let ready = Arc::new(Barrier::new(2));
+        let active = Arc::new(AtomicBool::new(false));
+        let calls = Arc::new(AtomicUsize::new(0));
 
         let spawn = || {
-            let timings = Arc::clone(&timings);
+            let ready = Arc::clone(&ready);
+            let active = Arc::clone(&active);
+            let calls = Arc::clone(&calls);
             std::thread::spawn(move || {
+                let _origin =
+                    crate::commands::install::release_layout::TestEligibility::installed();
+                ready.wait();
                 let mut buf = Vec::new();
                 ensure_assets_match_binary_version_with(
                     &args(&["amplihack", "launch"]),
                     &mut buf,
                     move || {
-                        let start = Instant::now();
-                        std::thread::sleep(Duration::from_millis(50));
-                        let end = Instant::now();
-                        timings.lock().unwrap().push((start, end));
+                        assert!(!active.swap(true, AtomicOrdering::SeqCst));
+                        calls.fetch_add(1, AtomicOrdering::SeqCst);
                         version_stamp::write_installed_version(crate::VERSION)?;
+                        active.store(false, AtomicOrdering::SeqCst);
                         Ok(())
                     },
                 )
@@ -1469,27 +1506,7 @@ steps:
         r1.expect("thread 1 ok");
         r2.expect("thread 2 ok");
 
-        let runs = timings.lock().unwrap();
-        // Either:
-        //  - both threads ran the installer and their critical sections
-        //    are disjoint (lock serialized them), OR
-        //  - the second thread, after taking the lock, re-read the stamp
-        //    and saw a match, so only one installer call happened.
-        // Both outcomes prove the lock is doing its job.
-        match runs.len() {
-            1 => { /* second waiter saw the match after first finished; ok */ }
-            2 => {
-                let (a_start, a_end) = runs[0];
-                let (b_start, b_end) = runs[1];
-                let overlap = a_start < b_end && b_start < a_end;
-                assert!(
-                    !overlap,
-                    "installer critical sections must not overlap: \
-                     a=[{a_start:?},{a_end:?}] b=[{b_start:?},{b_end:?}]"
-                );
-            }
-            n => panic!("unexpected installer run count: {n}"),
-        }
+        assert!((1..=2).contains(&calls.load(AtomicOrdering::SeqCst)));
     }
 
     // ----- Issue #1526: never an implicit downgrade -----
@@ -1624,7 +1641,7 @@ amplihack: warning: not re-staging framework assets — this amplihack is older 
 
         let running = semver::Version::parse(crate::VERSION).expect("crate::VERSION is semver");
         let newer = format!("{}.0.0", running.major + 1);
-        let tmp = TempDir::new().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let _g = EnvGuard::new(tmp.path(), None);
         write_compatible_installed_bundle(tmp.path());
         version_stamp::write_installed_version(&newer).unwrap();

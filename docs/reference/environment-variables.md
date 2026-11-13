@@ -1426,14 +1426,17 @@ See: [Installer downgrade guard](recipe-runner-validation.md#installer-downgrade
 ### AMPLIHACK_SKIP_AUTO_INSTALL
 
 **Type:** flag
-**Values:** any non-empty value (suppresses self-heal) — absence or empty string means the check runs
+**Values:** any non-empty value suppresses implicit installation; absence or an empty string leaves the eligibility and version guards active
 **Used by:** `self_heal::ensure_assets_match_binary_version` (via `env_bypass_set`)
 
-Suppresses the startup-time **self-heal check** that runs before every
-`amplihack` command dispatch. With the bypass active, `amplihack` does **not**
-compare `crate::VERSION` to `~/.amplihack/.installed-version` and does **not**
-auto-run install when the stamp is missing or stale. Explicit `amplihack install`
-invocations are unaffected.
+Suppresses implicit installation during startup self-heal and launch bootstrap.
+Self-heal still compares `crate::VERSION` with
+`~/.amplihack/.installed-version` and assesses installed-bundle compatibility
+using uncached, read-only checks. It does not create or refresh the compatibility
+cache, acquire an installation lock, fetch sources, stage assets, deploy
+binaries or reconcile hooks and providers. Explicit `amplihack install` and
+`amplihack update` invocations are unaffected. See
+[Self-heal framework assets](../features/self-heal-asset-restage.md).
 
 **When to set it:**
 
@@ -1446,7 +1449,7 @@ invocations are unaffected.
   `~/.amplihack` layout deterministically.
 
 ```sh
-# CI: stage once, then run many commands without per-launch self-heal
+# CI: stage once, then run many commands without automatic installation
 amplihack install
 export AMPLIHACK_SKIP_AUTO_INSTALL=1
 amplihack claude --print 'run tests'
@@ -1455,7 +1458,8 @@ amplihack copilot --print 'run tests'
 
 **Truthiness:** any non-empty value triggers the bypass (`1`, `true`,
 `yes`, `please-skip`, etc.). An empty string (`AMPLIHACK_SKIP_AUTO_INSTALL=""`)
-is treated as **unset** and the check still runs.
+is treated as **unset**; implicit installation still requires an eligible
+installed-release executable and must pass the version and source checks.
 
 **Diagnostic on skip-with-mismatch:** when the bypass is active *and* the
 stamp does not match `crate::VERSION` or the installed bundle is incompatible,
@@ -1474,10 +1478,11 @@ A matching stamp with a compatible bundle produces no output.
 **Work it skips:** under the bypass, self-heal starts no `git` or `curl`
 process, makes no release tag fetch, takes no install lock and writes no
 `~/.amplihack/.tag-fetch-failed` marker. It still runs the bundle
-compatibility check, which may write `~/.amplihack/.bundle-compat-cache.json`.
+compatibility check without caching; it does not create or refresh
+`~/.amplihack/.bundle-compat-cache.json`. Launch bootstrap also skips command,
+hook and provider installation or reconciliation under the opt-out.
 The npm update check is controlled separately, by `--skip-update-check` and
-`AMPLIHACK_NONINTERACTIVE`. The full list, and the integration
-test that pins it, are in
+`AMPLIHACK_NONINTERACTIVE`. The full list is in
 [Self-Heal: What the bypass skips](../features/self-heal-asset-restage.md#what-the-bypass-skips).
 
 **What it does not do:**
@@ -1487,8 +1492,15 @@ test that pins it, are in
 - Does not propagate into child tool processes (`claude`, `copilot`, etc.) —
   inherited only because it is a normal env var, not because `amplihack`
   re-exports it.
-- Does not change exit codes, stdout output, or any other behaviour besides
-  the self-heal decision.
+- Does not supply missing assets. Commands requiring unavailable assets may
+  still fail through their normal validation.
+
+**Checkout protection:** `scripts/git-hook-cargo.sh` unconditionally exports
+`AMPLIHACK_SKIP_AUTO_INSTALL=1` to its children. Ordinary Rust subprocess
+fixtures also default to the opt-out and use disposable homes. Independently
+of this variable, executables outside a validated installed release cannot
+perform implicit installation. `AMPLIHACK_HOME` cannot grant that eligibility.
+See [Executable eligibility](../features/self-heal-asset-restage.md#executable-eligibility).
 
 See: [Self-Heal: Auto-Restage Framework Assets](../features/self-heal-asset-restage.md).
 

@@ -1096,7 +1096,7 @@ fn default_seed_hooks() -> Option<Result<HookTarget, String>> {
 /// [`super::settings_refresh::hook_path_refusal`] refuses it (#1699).
 fn production_seed_hooks(root: &Path) -> Result<HookTarget, String> {
     if !crate::commands::install::binary_is_current() {
-        return Err("older binary than the install stamp".into());
+        return Err("executable is not eligible for implicit hook publication".into());
     }
     let target = hook_target().ok_or_else(|| "no usable amplihack-hooks binary".to_string())?;
     match super::settings_refresh::hook_path_refusal_here(&target.bin, root) {

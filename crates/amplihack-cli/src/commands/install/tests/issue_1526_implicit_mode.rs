@@ -86,8 +86,8 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let home_dir = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
+        let home_dir = crate::test_support::tempdir_outside_framework_roots();
+        let outside = crate::test_support::tempdir_outside_framework_roots();
         let home = home_dir.path().to_path_buf();
         let stub_bin = outside.path().join("stub_bin");
         create_exe_stub(&stub_bin, "python3");
@@ -96,7 +96,7 @@ impl Fixture {
         let repo = outside.path().join("local-repo");
         create_source_repo(&repo);
 
-        let mut env = IsolatedHome::new(&home);
+        let mut env = IsolatedHome::installed(&home);
         env.set("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
         env.set("RECIPE_RUNNER_RS_PATH", &runner_stub);
         env.set("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", "1");

@@ -21,6 +21,9 @@
 //!   detached `profile rotate watch --spawned` daemon that outlives the test.
 //!   The guard above is the stop that still holds when a test clears the
 //!   environment and sets only the guard again.
+//! - `AMPLIHACK_SKIP_AUTO_INSTALL=1` (issue #2496), so ordinary checkout
+//!   subprocesses cannot repair installation assets. Origin regressions remove
+//!   it deliberately after supplying their own disposable home and configuration.
 //! - no `AMPLIHACK_CLAUDE_PROFILE_ROOT` (issue #1699), so an install under the
 //!   temp `HOME` cannot refresh the developer's real profiles. `env_clear()`
 //!   already drops it; the explicit removal holds if the kept list changes.
@@ -194,6 +197,7 @@ pub fn isolated(bin: impl AsRef<OsStr>) -> Command {
     }
     command
         .env("HOME", shared_temp_home())
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .env(HOME_GUARD_ENV, "1")
         .env(ROTATE_AUTOSTART_ENV, "0");
     reapply_proc_root(&mut command);

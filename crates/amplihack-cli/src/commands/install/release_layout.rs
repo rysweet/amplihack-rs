@@ -155,6 +155,79 @@ pub fn is_complete_release_path(releases: &Path, path: &Path) -> bool {
     })
 }
 
+/// Only an executable in a complete installed release may repair the host
+/// implicitly. This assessment is read-only and deliberately ignores source
+/// selection overrides such as `AMPLIHACK_HOME`.
+pub(crate) fn executable_allows_implicit_install() -> bool {
+    #[cfg(test)]
+    if let Some(eligible) = TEST_ELIGIBILITY.with(std::cell::Cell::get) {
+        return eligible;
+    }
+    let Ok(home) = super::paths::home_dir() else {
+        return false;
+    };
+    let Ok(executable) = std::env::current_exe() else {
+        return false;
+    };
+    installed_executable(&home, &executable).is_some()
+}
+
+// Unit tests of installation behaviour can supply eligibility without moving
+// their running harness. Process-level origin regressions use current_exe().
+#[cfg(test)]
+thread_local! {
+    static TEST_ELIGIBILITY: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) struct TestEligibility(Option<bool>);
+
+#[cfg(test)]
+impl TestEligibility {
+    pub(crate) fn installed() -> Self {
+        Self(TEST_ELIGIBILITY.replace(Some(true)))
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestEligibility {
+    fn drop(&mut self) {
+        TEST_ELIGIBILITY.set(self.0);
+    }
+}
+
+fn installed_executable(home: &Path, executable: &Path) -> Option<()> {
+    let install = home.join(".amplihack");
+    let releases = releases_dir(&install);
+    // Canonical confinement alone would accept redirected installation roots.
+    for dir in [&install, &releases] {
+        check_private_dir(dir, &fs::symlink_metadata(dir).ok()?).ok()?;
+    }
+    let root = release_root_of(&releases, executable)?;
+    check_private_dir(&root, &fs::symlink_metadata(&root).ok()?).ok()?;
+    if !is_complete_release_path(&releases, executable) {
+        return None;
+    }
+    let canonical = fs::canonicalize(executable).ok()?;
+    let bin = root.join("bin");
+    check_private_dir(&bin, &fs::symlink_metadata(&bin).ok()?).ok()?;
+    let metadata = fs::symlink_metadata(&canonical).ok()?;
+    if canonical.parent()? != fs::canonicalize(bin).ok()?
+        || !metadata.is_file()
+        || !owned_by_euid(&metadata)
+    {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o022 != 0 {
+            return None;
+        }
+    }
+    Some(())
+}
+
 /// For a published link at `link` (`<amp>/amplifier-bundle` or similar): the
 /// canonical directory it names, when that is a real directory inside a
 /// complete release under `<link's parent>/releases`. `None` otherwise,
@@ -1822,5 +1895,84 @@ pub fn report_cleanup(report: &CleanupReport) {
             "amplihack: warning: could not remove unused {}: {reason}",
             path.display()
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod origin_tests {
+    use super::*;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    fn release(home: &Path, name: &str) -> PathBuf {
+        let root = home.join(".amplihack/releases").join(name);
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::write(root.join(COMPLETE_MARKER), b"complete\n").unwrap();
+        let exe = root.join("bin/amplihack");
+        fs::write(&exe, b"private fixture executable\n").unwrap();
+        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        exe
+    }
+
+    #[test]
+    fn canonical_installed_origin_accepts_published_links_but_refuses_escapes() {
+        let temp = crate::test_support::tempdir_outside_framework_roots();
+        let home = temp.path();
+        let executable = release(home, "fixture");
+        let link = home.join("published");
+        symlink(&executable, &link).unwrap();
+        assert!(installed_executable(home, &executable).is_some());
+        assert!(installed_executable(home, &link).is_some());
+
+        let outside = home.join("checkout");
+        fs::write(&outside, b"checkout\n").unwrap();
+        fs::remove_file(&executable).unwrap();
+        symlink(&outside, &executable).unwrap();
+        assert!(installed_executable(home, &executable).is_none());
+        assert!(installed_executable(home, &home.join("missing")).is_none());
+        assert_eq!(fs::read(&outside).unwrap(), b"checkout\n");
+    }
+
+    #[test]
+    fn installed_origin_requires_complete_private_non_retired_release() {
+        for case in [
+            "incomplete",
+            "marker-link",
+            "retired",
+            "writable",
+            "writable-binary",
+            "redirected",
+        ] {
+            let temp = crate::test_support::tempdir_outside_framework_roots();
+            let home = temp.path();
+            let executable = release(
+                home,
+                if case == "retired" {
+                    ".retired/old"
+                } else {
+                    "current"
+                },
+            );
+            let root = executable.parent().unwrap().parent().unwrap();
+            match case {
+                "incomplete" => fs::remove_file(root.join(COMPLETE_MARKER)).unwrap(),
+                "marker-link" => {
+                    fs::remove_file(root.join(COMPLETE_MARKER)).unwrap();
+                    symlink(&executable, root.join(COMPLETE_MARKER)).unwrap();
+                }
+                "writable" => fs::set_permissions(root, fs::Permissions::from_mode(0o777)).unwrap(),
+                "writable-binary" => {
+                    fs::set_permissions(&executable, fs::Permissions::from_mode(0o777)).unwrap();
+                }
+                "redirected" => {
+                    let releases = home.join(".amplihack/releases");
+                    let outside = home.join("checkout-releases");
+                    fs::rename(&releases, &outside).unwrap();
+                    symlink(&outside, &releases).unwrap();
+                }
+                "retired" => {}
+                _ => unreachable!(),
+            }
+            assert!(installed_executable(home, &executable).is_none(), "{case}");
+        }
     }
 }

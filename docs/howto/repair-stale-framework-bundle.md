@@ -13,8 +13,11 @@ Use this guide when `amplihack --version` shows a current release but
 `amplihack recipe run smart-orchestrator` fails with old recipe behavior,
 especially Python/importlib errors or `orch_helper.py`-style failures.
 
-Current installs validate and repair this automatically. A successful
-`amplihack install` or post-update install replaces stale
+Startup self-heal can validate and repair this automatically when the running
+executable belongs to a complete, non-retired installed release,
+`AMPLIHACK_SKIP_AUTO_INSTALL` is unset or empty, and repair would not downgrade
+the installed framework. Checkout and Cargo builds require explicit repair.
+A successful `amplihack install` or post-update install replaces stale
 `smart-orchestrator.yaml` assets with the canonical composable recipe and its
 four companion recipes.
 
@@ -32,8 +35,9 @@ recipe while `.installed-version` still matched the binary. Startup self-heal
 trusted the version stamp alone, and recipe resolution could prefer
 `AMPLIHACK_HOME/amplifier-bundle/recipes` before a fresh compatible fallback.
 Current builds validate the installed top-level bundle even when the version
-stamp matches, refresh incompatible assets, and refuse stale smart-orchestrator
-resolution when no compatible fallback exists.
+stamp matches, refresh incompatible assets when automatic repair is permitted,
+and refuse stale smart-orchestrator resolution when no compatible fallback
+exists.
 
 ## Symptoms
 
@@ -146,7 +150,9 @@ copy, such as a build, a `git checkout`, or a second `amplihack install` running
 at the same time. Wait for those to finish and run the install again.
 
 Binaries and `~/.amplihack/.claude` may already be new at this point. Self-heal
-retries at the next launch.
+can retry on a later launch if the executable is eligible, the opt-out is unset
+or empty, and the downgrade guard permits repair. Run `amplihack install` to
+retry explicitly.
 
 ## Repair after update
 
@@ -174,21 +180,29 @@ repair.
 
 ## Automatic startup repair
 
-Current binaries also check the installed bundle during normal startup. The
-no-op condition is now:
+For commands that run startup self-heal, a matching version stamp alone does
+not establish that assets are usable. The satisfied-installation condition is:
 
 ```text
 .installed-version matches the binary AND ~/.amplihack/amplifier-bundle is compatible
 ```
 
-If either side fails, self-heal re-runs the install path and emits the normal
-`framework assets re-staged` notice. If it can't fetch the release tag and the
-installed bundle is compatible, it prints a warning and runs your command with
-the installed bundle, and the next launch retries. See
-[Self-heal failure modes](../features/self-heal-asset-restage.md#failure-mode).
-Setting `AMPLIHACK_SKIP_AUTO_INSTALL`
-still skips repair, but the diagnostic includes the incompatible bundle status
-instead of silently trusting stale assets.
+If either side fails, automatic repair requires an executable within a complete,
+non-retired installed release, an unset or empty `AMPLIHACK_SKIP_AUTO_INSTALL`,
+and a running version that is not older than the installed stamp. Only a
+successful repair emits the `framework assets re-staged` notice.
+
+Checkout and Cargo builds refuse automatic repair before fetching sources or
+changing installation state. With the opt-out set, self-heal assesses the stamp
+and bundle using uncached, read-only checks and reports any mismatch. Neither
+case refreshes the compatibility cache or acquires an installation lock.
+Explicit `amplihack install` remains available in both cases.
+
+If permitted repair can't fetch the release tag and the installed bundle is
+compatible, self-heal prints a warning and runs your command with that bundle.
+The stamp remains unchanged; a later eligible launch can retry, subject to the
+fetch backoff. See [Self-heal framework assets](../features/self-heal-asset-restage.md)
+for command exclusions, eligibility and failure modes.
 
 ## Repair from a local checkout
 

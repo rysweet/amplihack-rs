@@ -217,6 +217,7 @@ impl Host {
     /// through a script, besides `HOME`.
     pub(crate) fn install_env(&self) -> Vec<(&'static str, std::ffi::OsString)> {
         vec![
+            ("AMPLIHACK_SKIP_AUTO_INSTALL", "1".into()),
             ("AMPLIHACK_HOME", self.tree.clone().into_os_string()),
             (
                 "PATH",
@@ -239,7 +240,15 @@ impl Host {
     }
 
     pub(crate) fn amplihack(&self, args: &[&str]) -> Command {
-        let mut command = crate::isolated_amplihack::isolated(amplihack_bin());
+        // The concurrency regression deliberately exercises implicit repair.
+        // Use the release installed by this fixture, never the checkout binary.
+        let self_heal = args.first() == Some(&"recipe");
+        let executable = if self_heal {
+            fs::canonicalize(self.home.join(".local/bin/amplihack")).unwrap()
+        } else {
+            amplihack_bin()
+        };
+        let mut command = crate::isolated_amplihack::isolated(executable);
         command
             .args(args)
             .current_dir(self.temp.path())
@@ -248,6 +257,9 @@ impl Host {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if self_heal {
+            command.env_remove("AMPLIHACK_SKIP_AUTO_INSTALL");
+        }
         command
     }
 
@@ -287,6 +299,7 @@ impl Host {
             .arg(&ready)
             .arg(&go)
             .env_clear()
+            .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
             .env("HOME", &self.home)
             .env("TMPDIR", self.temp.path())
             .env("PATH", format!("{}:/usr/bin:/bin", self.stubs.display()))

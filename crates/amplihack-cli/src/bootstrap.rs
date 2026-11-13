@@ -52,6 +52,12 @@ fn prepare_selected_launcher(tool: &str) -> Result<()> {
     check_required_tools()?;
     install::ensure_framework_installed()?;
 
+    // A checkout may use existing assets, but must not publish hooks,
+    // provider configuration or a replacement runner while launching.
+    if !install::binary_is_current() {
+        return Ok(());
+    }
+
     // Best-effort: reconcile the managed recipe runner with the bundled pin.
     // Can be disabled via
     // AMPLIHACK_NO_FRESHNESS_CHECK=1 or the standard non-interactive guards.
@@ -72,7 +78,7 @@ fn prepare_selected_launcher(tool: &str) -> Result<()> {
             // older than the install would write its older hook wrappers over
             // the newer install's, and the user's config.json is never
             // rewritten from here, only filled in when amplihack is absent.
-            if install::newer_install_stamp()?.is_none() {
+            if install::binary_is_current() {
                 copilot_setup::ensure_copilot_home_staged(
                     copilot_setup::UserConfig::for_implicit_install(),
                 )?;

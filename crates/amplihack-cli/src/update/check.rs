@@ -138,6 +138,11 @@ pub fn run_update(skip_install: bool) -> Result<()> {
 }
 
 fn maybe_print_update_notice() -> Result<StartupUpdateOutcome> {
+    if crate::self_heal::env_bypass_set()
+        || !crate::commands::install::release_layout::executable_allows_implicit_install()
+    {
+        return Ok(StartupUpdateOutcome::Continue);
+    }
     // NOTE: AMPLIHACK_NO_UPDATE_CHECK is intentionally NOT re-checked here.
     // The sole caller (`maybe_print_update_notice_from_args`) only invokes
     // this function when `classify_skip_reason` returned `None`, which
@@ -165,6 +170,11 @@ fn maybe_print_update_notice() -> Result<StartupUpdateOutcome> {
 }
 
 fn maybe_prompt_for_startup_update(latest: &str) -> Result<StartupUpdateOutcome> {
+    if crate::self_heal::env_bypass_set()
+        || !crate::commands::install::release_layout::executable_allows_implicit_install()
+    {
+        return Ok(StartupUpdateOutcome::Continue);
+    }
     print_update_notice(latest);
     let response = read_user_input_with_timeout(
         "Update now? [y/N] (5s timeout): ",
@@ -427,5 +437,45 @@ fn paths_equal(left: &Path, right: &Path) -> bool {
     match (left.canonicalize(), right.canonicalize()) {
         (Ok(left), Ok(right)) => left == right,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod issue_2496 {
+    use super::*;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn checkout_startup_update_refuses_before_writing_update_state() {
+        let temp = crate::test_support::tempdir_outside_framework_roots();
+        let home = temp.path();
+        crate::test_support::with_env(
+            &[
+                ("HOME", Some(home.as_os_str())),
+                ("TMPDIR", Some(home.parent().unwrap().as_os_str())),
+                ("AMPLIHACK_HOME", Some(home.as_os_str())),
+                ("AMPLIHACK_SKIP_AUTO_INSTALL", None),
+                ("AMPLIHACK_TEST_HOME_GUARD", Some(OsStr::new("1"))),
+                // The existing fake-release seam avoids all network access.
+                // A same-version response also avoids stdin or prompt waits.
+                (
+                    "AMPLIHACK_TEST_FAKE_LATEST_VERSION",
+                    Some(OsStr::new(crate::VERSION)),
+                ),
+            ],
+            || {
+                // Drive the actual startup action after skip classification;
+                // non-TTY test stdin must not conceal an origin-check gap.
+                assert_eq!(
+                    maybe_print_update_notice().unwrap(),
+                    StartupUpdateOutcome::Continue
+                );
+                assert_eq!(
+                    fs::read_dir(home).unwrap().count(),
+                    0,
+                    "a checkout must refuse before creating the update cache or acquiring releases"
+                );
+            },
+        );
     }
 }

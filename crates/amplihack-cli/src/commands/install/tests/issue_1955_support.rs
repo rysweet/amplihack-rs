@@ -140,7 +140,7 @@ impl InstallEnv {
         let runner_stub = create_exe_stub(&stub_bin, "recipe-runner-rs");
         write_script(&stub_bin.join("git"), "#!/bin/sh\nexit 1\n");
 
-        let mut env = IsolatedHome::new(&home);
+        let mut env = IsolatedHome::installed(&home);
         env.set("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
         env.set("RECIPE_RUNNER_RS_PATH", &runner_stub);
         env.set("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", "1");

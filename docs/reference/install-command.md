@@ -29,6 +29,13 @@ The installed `~/.amplihack/amplifier-bundle` is not reused by
 `--force-refresh`, and stale smart-orchestrator assets are rejected before they
 can become active. See [Framework bundle compatibility](./framework-bundle-compatibility.md).
 
+The executable-origin restriction applies to implicit installation. Explicit
+`install` and `update`, including post-update `install --force-refresh`, retain
+their existing valid-source requirements and work with the automatic-install
+opt-out set. A checkout cannot acquire the same authority through startup
+self-heal or launch bootstrap, even when its version is newer. See
+[Executable eligibility](../features/self-heal-asset-restage.md#executable-eligibility).
+
 You can invoke the same command through the npm wrapper package when desired:
 
 ```sh
@@ -141,7 +148,7 @@ These variables are read during install. All are optional; the installer works w
 |----------|--------|
 | `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` | Override the path used for `amplihack-hooks`. Useful in tests and CI. If set but the path does not exist, resolution falls through to Step 2. See [Binary Resolution](./binary-resolution.md). |
 | `AMPLIHACK_HOME` | The first [framework source](./framework-source-selection.md) tried. It doesn't change where install stages, which is always `$HOME/.amplihack`: a different version is refused by plain `install`. |
-| `AMPLIHACK_SKIP_AUTO_INSTALL` | When set to any non-empty value, suppresses the startup-time [self-heal check](../features/self-heal-asset-restage.md) that would otherwise re-run install when `~/.amplihack/.installed-version` is missing or stale. Has no effect on an explicit `amplihack install` invocation. |
+| `AMPLIHACK_SKIP_AUTO_INSTALL` | Any non-empty value suppresses [implicit installation](../features/self-heal-asset-restage.md#what-the-bypass-skips), including self-heal and launch reconciliation. Compatibility assessment is read-only and uncached. Has no effect on explicit `install` or `update`. |
 | `AMPLIHACK_NO_RUST_BOOTSTRAP` | When set to a non-empty value other than `0`, install never installs rustup or `build-essential` automatically; a missing cargo or C linker fails phase 9b with manual instructions. |
 | `AMPLIHACK_SKIP_MMDC` | When set to any non-empty value, skips the best-effort [Mermaid CLI provisioning](../features/mermaid-cli-best-effort-install.md) step (no `mmdc`/`npm` probe, no `npm install -g @mermaid-js/mermaid-cli`). The install proceeds normally; this optional step never gates a successful install. |
 
@@ -154,7 +161,10 @@ line, `binaries: <version|unknown>`
 ([details](../features/self-heal-asset-restage.md#stamp-file)). This stamp is read on every subsequent launch
 by the [self-heal check](../features/self-heal-asset-restage.md): if the
 stamp is missing, unparseable or older than `crate::VERSION`, an implicit
-re-stage runs before the requested command dispatches. A stamp newer than the
+re-stage runs before the requested command dispatches only if the executable
+is an eligible installed release and the opt-out is inactive. Otherwise repair
+is skipped without changing installation state; commands with usable assets
+continue. A stamp newer than the
 running binary is never re-staged over; a warning is printed instead
 ([details](../features/self-heal-asset-restage.md#never-an-implicit-downgrade-1526)).
 Manual installs and
@@ -296,8 +306,8 @@ The `force_refresh` parameter controls framework source resolution:
 |--------|-----------------|-----------|
 | `amplihack install` (command dispatcher) | `false` | Standalone install prefers compatible same-version local sources and refuses a mismatched `AMPLIHACK_HOME` or checkout |
 | `amplihack update` (post-update closure) | `true` | Stages the bundle of the release just installed |
-| Self-heal (startup version-stamp check) | `false` | Re-runs install when the version stamp is stale, skipping mismatched sources rather than refusing; it benefits from install compatibility validation but does not perform a separate startup compatibility scan |
-| `ensure_framework_installed()` (bootstrap) | `false` | Bootstrap prefers compatible same-version local sources and skips mismatched ones |
+| Self-heal (startup version-stamp and compatibility check) | `false` | Re-runs install only for an eligible installed executable without the opt-out; skips mismatched sources rather than refusing. Ineligible and opted-out executions assess compatibility without caching or installation writes |
+| `ensure_framework_installed()` (bootstrap) | `false` | Bootstrap applies executable eligibility and the opt-out before installation or reconciliation; permitted repair prefers compatible same-version local sources and skips mismatched ones |
 
 ### `validate_framework_bundle_compatibility(root: &Path) -> Result<()>`
 

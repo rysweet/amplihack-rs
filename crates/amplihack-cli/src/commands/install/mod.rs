@@ -161,6 +161,7 @@ fn run_install_with_fetcher(
     binary: &framework_source::BinaryIdentity,
     fetcher: &dyn tag_fetch::TagFetcher,
 ) -> Result<()> {
+    require_implicit_install_origin(mode)?;
     let local = local
         .map(|local_path| -> Result<PathBuf> {
             // Validate and canonicalize the --local path
@@ -387,11 +388,27 @@ pub(crate) fn newer_install_stamp() -> Result<Option<String>> {
         }))
 }
 
-/// Issue #2279: whether this binary may write hooks implicitly, that is, it
-/// is not older than the install stamp. An unreadable stamp counts as newer,
-/// so the answer is `false`. Used by launch, profile seeding and the rotator.
+/// Whether this executable may publish installation assets implicitly. Origin
+/// and the opt-out apply independently of the install stamp; an unreadable
+/// stamp also refuses publication. Used by launch, profile seeding and the rotator.
 pub(crate) fn binary_is_current() -> bool {
-    matches!(newer_install_stamp(), Ok(None))
+    !crate::self_heal::env_bypass_set()
+        && release_layout::executable_allows_implicit_install()
+        && matches!(newer_install_stamp(), Ok(None))
+}
+
+fn require_implicit_install_origin(mode: InstallMode) -> Result<()> {
+    if mode == InstallMode::Implicit {
+        if crate::self_heal::env_bypass_set() {
+            bail!("AMPLIHACK_SKIP_AUTO_INSTALL prevents automatic installation");
+        }
+        if !release_layout::executable_allows_implicit_install() {
+            bail!(
+                "executable location prevents automatic installation; run `amplihack install` explicitly from a valid release source"
+            );
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn ensure_framework_installed() -> Result<()> {
@@ -425,6 +442,17 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
     } else {
         Vec::new()
     };
+    if crate::self_heal::env_bypass_set() || !release_layout::executable_allows_implicit_install() {
+        // Assess without fetching a source, creating a lock or reconciling any
+        // installation assets. Dispatch still validates assets it actually needs.
+        if framework_restage_needed(staging_exists, &missing)
+            || !claude_commands::claude_commands_dir()?.is_dir()
+            || launch_repair::settings_hooks_need_repair()?
+        {
+            crate::self_heal::warn_implicit_origin_once(notice);
+        }
+        return Ok(());
+    }
     // Issue #254: framework assets are now bundled in the amplihack-rs source
     // tree.  The legacy upstream freshness check is removed;
     // framework updates are delivered via amplihack-rs binary updates instead.
@@ -545,6 +573,7 @@ fn local_install_scoped(
     reconcile_codex: bool,
     mode: InstallMode,
 ) -> Result<()> {
+    require_implicit_install_origin(mode)?;
     // Issue #1954 D6: every install holds the install lock for its whole
     // run, so an explicit install, the post-update install and a self-heal
     // never stage or switch at the same time. Re-entrant on this thread, so

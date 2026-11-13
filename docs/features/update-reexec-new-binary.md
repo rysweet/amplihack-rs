@@ -307,15 +307,21 @@ No new crate dependencies introduced.
 ### Self-heal asset re-stage
 
 The [self-heal](self-heal-asset-restage.md) mechanism acts as a safety net.
-If the post-update subprocess install fails for any reason, the next
-`amplihack` launch will detect the version-stamp mismatch and re-run install
-automatically. The self-heal path calls `run_install` **in-process** (not
-via subprocess), which is correct because there is no binary replacement in
-flight — the running binary IS the new binary by that point.
+If the post-update subprocess install fails, a later launch can retry through
+self-heal when its command runs the startup check. Self-heal assesses both the
+version stamp and installed-bundle compatibility, including when the stamp
+matches. Automatic retry requires the running executable to belong to a
+complete, non-retired installed release, `AMPLIHACK_SKIP_AUTO_INSTALL` to be
+unset or empty, and the downgrade guard to permit repair. Checkout and Cargo
+builds cannot retry automatically. Ineligible or opted-out executions use
+uncached, read-only assessment without changing installation state.
 
-Self-heal does not perform a separate startup-time framework compatibility
-scan. When it re-runs install, that install run uses the same source and staged
-bundle compatibility validation as an explicit `amplihack install`.
+The self-heal path calls `run_install` **in-process**, because no binary
+replacement is in flight. That install uses the same source and staged-bundle
+compatibility validation as an explicit `amplihack install`. Run
+`amplihack install` to retry explicitly; explicit install and update remain
+available regardless of the automatic-installation opt-out or executable origin,
+subject to their existing source validation and publication safeguards.
 
 The post-update install subprocess still passes `--force-refresh`, so update
 continues to bypass installed-bundle reuse and validate the release source and

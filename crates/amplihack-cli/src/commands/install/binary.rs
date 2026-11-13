@@ -107,8 +107,10 @@ fn may_deploy(mode: InstallMode, stamp: Option<&str>, src: &Path, dst: &Path) ->
     // Cheapest first. symlink_metadata: a dangling symlink still occupies
     // `dst`. A source that already is the destination is a no-op copy.
     mode == InstallMode::Explicit
-        || implicit_deploy_allowed(dst.symlink_metadata().is_ok(), crate::VERSION, stamp)
-        || same_file(src, dst)
+        || (!crate::self_heal::env_bypass_set()
+            && release_layout::executable_allows_implicit_install()
+            && (implicit_deploy_allowed(dst.symlink_metadata().is_ok(), crate::VERSION, stamp)
+                || same_file(src, dst)))
 }
 
 fn same_file(a: &Path, b: &Path) -> bool {
@@ -176,6 +178,7 @@ pub(super) fn deploy_binaries(
     mode: InstallMode,
     stamp: Option<&str>,
 ) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+    super::require_implicit_install_origin(mode)?;
     let mut txn = new_release_txn()?;
     let deployed = deploy_binaries_into(&mut txn, mode, stamp)?;
     commit_release(txn)?;
@@ -230,6 +233,7 @@ pub(super) fn deploy_binaries_into(
     mode: InstallMode,
     stamp: Option<&str>,
 ) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+    super::require_implicit_install_origin(mode)?;
     let local_bin = super::paths::preferred_user_bin_dir()?;
     fs::create_dir_all(&local_bin)
         .with_context(|| format!("failed to create {}", local_bin.display()))?;
