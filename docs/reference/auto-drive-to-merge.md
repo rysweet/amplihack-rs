@@ -2359,7 +2359,7 @@ names. Step-04's block clears all 12 repository-selecting `GIT_*` names through
 [`git-repo-env.sh`](git-repo-env-helper.md); giving step-05 the same wider list
 is a separate follow-up. It never reads `REPO_PATH` and never falls back to the
 folder it started in. An empty `repo_path`, a `pr_number` that is not all
-digits, a folder it cannot enter, or a folder that is not the PR's linked
+digits, a folder it cannot enter or that is not a git repository, or a folder that is not the PR's linked
 worktree on its head branch stops the round with exit 1 and a
 `STOP: step-05 … (#2519, #1528)` line on stderr naming `repo_path` and the
 folder the step started in. When `repo_path` is `/work/clone`, the step started

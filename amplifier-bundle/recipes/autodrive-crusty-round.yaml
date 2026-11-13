@@ -334,6 +334,7 @@ steps:
       GUARD="/${TOOLS#/}/autodrive_worktree_guard.sh"
       cd -- "$RP" 2>/dev/null || die "cannot enter repo_path $RP $ELSE"
       unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GH_REPO
+      git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "requires a git repo at repo_path $RP; git init or clone it and rerun from a checkout $ELSE"
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
       bash "$GUARD" commit-dir "$PR" || die "repo_path $RP is not PR #${PR}'s linked worktree on its head branch $ELSE"
       BASE="$(printf '%s' "${RECIPE_VAR_crusty_round_context:-}" \
