@@ -28,6 +28,7 @@ head commit it recorded. This is issue #2096.
 - [Failure behavior](#failure-behavior)
 - [Platform support](#platform-support)
 - [Tests](#tests)
+  - [Review commands in the loop test double](#review-commands-in-the-loop-test-double)
 - [Limits](#limits)
 
 ## What the run copies
@@ -336,7 +337,7 @@ platform, and the crate builds on macOS.
 
 ## Tests
 
-The tests run the real CLI against temporary repositories, with temporary
+The cargo tests run the real CLI against temporary repositories, with temporary
 `HOME`, `AMPLIHACK_HOME`, profile root and `TMPDIR`. They never read or write
 the real `~/.claude`, `~/.amplihack` or profile root. Concurrency uses socket
 handshakes and observer acknowledgements; there are no sleeps, timers or
@@ -351,12 +352,51 @@ isolation test cannot pass on empty data.
 | `crates/amplihack-cli/tests/issue_2096_real_hooks.rs` | Pre-commit and push hooks run in the execution checkout. |
 | `crates/amplihack-git/tests/issue_2096_git_policy.rs` | Git environment and configuration policy. |
 | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` | Review generation checks, `REVIEW_DIR_CHANGED` and `REVIEW_DIR_UNSTAMPED`. |
+| `tests/issue_1437_autodrive_loop.sh` | The #1437 loop contract with review generations in place; the default case (`NOT_READY`, then `MERGE_READY`, ending `DONE`) also checks that `review-release` runs exactly once. |
 
 ```bash
-cargo test -p amplihack-cli --test main issue_2096
+cargo test -p amplihack-cli --test cli_integration issue_2096
 cargo test -p amplihack-git --test issue_2096_git_policy
 bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
+bash tests/issue_1437_autodrive_loop.sh
 ```
+
+### Review commands in the loop test double
+
+`tests/issue_1437_autodrive_loop.sh` runs `autodrive_loop.sh` against the
+`amplihack` test double `tests/issue_1437_amplihack_stub.sh`, not the real
+CLI. The Lint & Format job has no built binary, and the test's fixture
+repository has no origin or PR head for a real `review-allocate` to clone.
+The double accepts exactly these five commands, with exactly these argument
+counts:
+
+| Command | Prints | Exit |
+| --- | --- | --- |
+| `internal review-allocate REPO STATE` | `REPO` | 0 |
+| `internal review-next REPO CHECKOUT` | `CHECKOUT` | 0 |
+| `internal review-launch CHECKOUT` | `CHECKOUT` | 0 |
+| `internal review-head CHECKOUT` | the `HEAD` SHA of `CHECKOUT`, read with `git rev-parse --verify HEAD` | git's status |
+| `internal review-release CHECKOUT` | nothing | 0 |
+
+Each call appends one line to `$STUB_STATE/review-calls`, so the existing
+counts in `$STUB_STATE/calls` are unchanged. `review-release` also increments
+`$STUB_STATE/review-release` and deletes nothing. Any other `internal`
+command, or a wrong argument count, falls through to `unhandled` and exit 3.
+
+Two switches let the test drive the loop's failure paths.
+`STUB_REVIEW_ALLOCATE_RC` makes `review-allocate` exit with that status and
+print nothing. `STUB_REVIEW_RELEASE_RC` makes `review-release` exit with that
+status without counting a release. The test checks that a failed allocation
+stops the loop before any round, and that a failed release turns a `DONE`
+run into exit 1.
+
+`review-allocate` returns the fixture's PR worktree, never the main checkout,
+so the [#1528 guard](auto-drive-to-merge.md#review-generations) still stamps
+and checks a real Git worktree. `autodrive_loop.sh` stays fail-closed: a
+failing review command still stops the loop with exit 1.
+
+The double cannot detect faults in real review isolation. The
+`issue_2096_*` cargo tests above cover that.
 
 ## Limits
 

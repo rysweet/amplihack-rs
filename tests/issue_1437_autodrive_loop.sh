@@ -12,6 +12,11 @@
 # failure_class marker with "structural_refusal":true. Nothing else is terminal.
 # The helpers alone are tests/issue_1437_autodrive_refusal.sh.
 #
+# Issue #2096: each loop run owns a private review checkout (internal
+# review-allocate / -next / -launch / -head, released once by the EXIT trap).
+# Section 0 checks the stub's stand-ins for those commands; 0b and 0c check
+# that the loop releases exactly once and stays fail-closed when they fail.
+#
 # The loop runs as the merge-ready loop. Under `--loop-name crusty` the
 # evaluator site is not a `recipe run`: `autodrive-completion-dispatch` (#2336)
 # starts the evaluator itself and classifies its exit with the same two
@@ -88,6 +93,64 @@ json_lines() { # every stdout line is one JSON object (SR-6)
   local line
   while IFS= read -r line; do printf '%s' "$line" | jq -e 'type == "object"' >/dev/null 2>&1 || return 1; done <<<"$OUT"
 }
+# #2096: the loop owns a review checkout (internal review-*); the stub logs
+# each call to $STUB_STATE/review-calls and counts releases in review-release.
+releases() { local n; n="$(cat "${CASE}/stub/review-release" 2>/dev/null)" || true; printf '%s' "${n:-0}"; }
+review_calls() { local n; n="$(grep -c "^$1\( \|$\)" "${CASE}/stub/review-calls" 2>/dev/null)" || true; printf '%s' "${n:-0}"; }
+
+# --- 0. the test double's internal review-* contract (#2096) ------------------
+# The stand-ins accept exactly the five commands the loop calls, with exact
+# argument counts. Anything else is unhandled (exit 3): no catch-all success.
+SC="${WORK}/stub-contract"; mkdir -p "$SC"
+sc() { STUB_STATE="$SC" "${WORK}/bin/amplihack" internal "$@"; }
+sc_rc() { local rc=0; sc "$@" >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"; }
+ok STUB-ALLOCATE "review-allocate REPO STATE prints REPO" test "$(sc review-allocate "$WT" "${SC}/state" 2>/dev/null)" = "$WT"
+ok STUB-ALLOCATE-NOT-MAIN "review-allocate never returns the shared main checkout" test "$(sc review-allocate "$WT" "${SC}/state" 2>/dev/null)" != "$MAIN"
+ok STUB-NEXT "review-next REPO CHECKOUT prints CHECKOUT" test "$(sc review-next "$WT" "$WT" 2>/dev/null)" = "$WT"
+ok STUB-LAUNCH "review-launch CHECKOUT prints CHECKOUT" test "$(sc review-launch "$WT" 2>/dev/null)" = "$WT"
+ok STUB-HEAD "review-head CHECKOUT prints its HEAD SHA" \
+  test "$(sc review-head "$WT" 2>/dev/null)" = "$(git -C "$WT" rev-parse --verify HEAD)"
+ok STUB-HEAD-FAILS "review-head on a non-repository passes git's failure through" \
+  test "$(sc_rc review-head "${WORK}/no-such-checkout")" -ne 0
+ok STUB-RELEASE-SILENT "review-release CHECKOUT prints nothing and exits 0" \
+  bash -c 'out="$("$@" 2>&1)" && test -z "$out"' _ env STUB_STATE="$SC" "${WORK}/bin/amplihack" internal review-release "$WT"
+ok STUB-RELEASE-COUNTS "review-release increments the release count: $(cat "${SC}/review-release" 2>/dev/null)" \
+  test "$(cat "${SC}/review-release" 2>/dev/null)" = 1
+ok STUB-LOGS "every review-* call is logged to review-calls" \
+  test "$(grep -c '^review-' "${SC}/review-calls" 2>/dev/null || echo 0)" -ge 6
+ok STUB-UNKNOWN-INTERNAL "an unknown internal subcommand is unhandled (3)" test "$(sc_rc review-everything "$WT")" -eq 3
+ok STUB-ALLOCATE-ARGC "review-allocate with one argument is unhandled (3)" test "$(sc_rc review-allocate "$WT")" -eq 3
+ok STUB-NEXT-ARGC "review-next with three arguments is unhandled (3)" test "$(sc_rc review-next "$WT" "$WT" extra)" -eq 3
+ok STUB-RELEASE-ARGC "review-release with no argument is unhandled (3)" test "$(sc_rc review-release)" -eq 3
+ok STUB-ALLOCATE-KNOB "STUB_REVIEW_ALLOCATE_RC makes review-allocate fail" \
+  test "$(STUB_REVIEW_ALLOCATE_RC=1 sc_rc review-allocate "$WT" "${SC}/state")" -eq 1
+ok STUB-RELEASE-KNOB "STUB_REVIEW_RELEASE_RC makes review-release fail" \
+  test "$(STUB_REVIEW_RELEASE_RC=1 sc_rc review-release "$WT")" -eq 1
+
+# --- 0b. the default drive: NOT_READY, then MERGE_READY, ends DONE (#2096) ----
+run default
+ok DEFAULT-DONE "rc=${RC}: the default drive must reach DONE: out=${OUT} err=$(tail -n 3 "${CASE}/err")" \
+  bash -c 'test "$1" -eq 0 && printf "%s" "$2" | grep -qF "\"loop_result\":\"DONE\""' _ "$RC" "$OUT"
+ok DEFAULT-ROUNDS "two rounds run: rounds=$(calls autodrive-merge-round)" test "$(calls autodrive-merge-round)" -eq 2
+ok DEFAULT-ALLOCATES-ONCE "one review checkout per loop run: $(review_calls review-allocate)" test "$(review_calls review-allocate)" -eq 1
+ok DEFAULT-NEXT-PER-ROUND "review-next, -launch and -head run once per round" \
+  test "$(review_calls review-next):$(review_calls review-launch):$(review_calls review-head)" = "2:2:2"
+ok DEFAULT-RELEASE-ONCE "the EXIT trap releases the review checkout exactly once (0 = leak, 2 = double release): $(releases)" \
+  test "$(releases)" = 1
+ok DEFAULT-LAUNCH-NOT-MAIN "no round launches from the shared main checkout" \
+  bash -c '! grep -qxF "review-launch $1" "$2"' _ "$MAIN" "${CASE}/stub/review-calls"
+
+# --- 0c. review checkout failures stay fail-closed (#2096) --------------------
+stub STUB_REVIEW_ALLOCATE_RC=1
+run allocate-fails
+ok ALLOCATE-FAILS-RC "rc=${RC}: a failed review-allocate must stop the loop non-zero" test "$RC" -ne 0
+ok ALLOCATE-FAILS-NO-ROUND "no round runs without an owned review checkout" test "$(calls autodrive-merge-round)" -eq 0
+ok ALLOCATE-FAILS-NO-RELEASE "nothing is released that was never allocated" test "$(releases)" = 0
+ok ALLOCATE-FAILS-NOT-DONE "it must not claim DONE" lacks "$OUT" '"loop_result":"DONE"'
+stub STUB_REVIEW_RELEASE_RC=1
+run release-fails
+ok RELEASE-FAILS-RC "rc=${RC}: a failed review-release turns a DONE run into exit 1" test "$RC" -eq 1
+ok RELEASE-FAILS-ATTEMPTED "the release was attempted once" test "$(review_calls review-release)" -eq 1
 
 MARK='amplihack.recipe.failure_class '
 marker() { # marker <class> <structural> [signal]
@@ -134,6 +197,7 @@ ok RC79 "rc=${RC}: exit 79 must stop the loop with 79" test "$RC" -eq 79
 ok RC79-ESCALATES "a refusal is escalated by name" has "$OUT" '"loop_result":"TERMINAL_POLICY_REFUSAL"'
 ok RC79-WHY "the reason must say exit 79: ${OUT}" has "$OUT" 'exit 79'
 ok RC79-NO-RETRY "no further round and no evaluator call" test "$(calls autodrive-merge-round):$(calls loop-health-evaluator)" = "1:0"
+ok RC79-RELEASES "a refusal exit still releases the review checkout once (#2096): $(releases)" test "$(releases)" = 1
 
 # --- 3. rc=1 with structural_refusal:true is terminal ------------------------------
 stub STUB_RC_1=1 "STUB_OUT_1=  ✗ step-04: failed

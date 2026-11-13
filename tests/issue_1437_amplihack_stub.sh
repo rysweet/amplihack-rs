@@ -24,6 +24,19 @@
 #                 writes $STUB_RECORD_n to the autodrive_round_record file
 #                 (default NOT_READY for n=1, MERGE_READY after), prints $STUB_OUT_n
 #                 and exits $STUB_RC_n (default 0).
+#   internal review-*   (#2096) the loop owns a private review checkout. POSIX
+#                 stand-ins with exact argument counts, each call logged as
+#                 one line to $STUB_STATE/review-calls:
+#     review-allocate REPO STATE   prints REPO; exits $STUB_REVIEW_ALLOCATE_RC
+#                                  (default 0, nothing printed when non-zero).
+#     review-next REPO CHECKOUT    prints CHECKOUT.
+#     review-launch CHECKOUT       prints CHECKOUT.
+#     review-head CHECKOUT         prints `git rev-parse --verify HEAD` there;
+#                                  git's exit status is passed through.
+#     review-release CHECKOUT      prints nothing; exits $STUB_REVIEW_RELEASE_RC
+#                                  (default 0) and, on success, increments
+#                                  $STUB_STATE/review-release.
+#                 Any other internal command or argument count is unhandled.
 set -u
 STATE="${STUB_STATE:?STUB_STATE is not set}"
 
@@ -145,6 +158,28 @@ if [ "${1:-} ${2:-}" = "recipe run" ]; then
   [ -n "$RECORD" ] && { knob STUB_RECORD_ "$n" "$d" > "$RECORD"; : > "${RECORD}.findings"; }
   printf '%s\n' "$(knob STUB_OUT_ "$n" "round ran")"
   exit "$(knob STUB_RC_ "$n" 0)"
+fi
+
+if [ "${1:-}" = internal ]; then
+  case "${2:-}:$#" in
+    review-allocate:4|review-next:4|review-launch:3|review-head:3|review-release:3)
+      printf '%s\n' "${*:2}" >> "${STATE}/review-calls"
+      case "$2" in
+        review-allocate)
+          rc="${STUB_REVIEW_ALLOCATE_RC:-0}"
+          [ "$rc" = 0 ] || exit "$rc"
+          printf '%s\n' "$3"
+          exit 0 ;;
+        review-next) printf '%s\n' "$4"; exit 0 ;;
+        review-launch) printf '%s\n' "$3"; exit 0 ;;
+        review-head) exec git -C "$3" rev-parse --verify HEAD ;;
+        review-release)
+          rc="${STUB_REVIEW_RELEASE_RC:-0}"
+          [ "$rc" = 0 ] || exit "$rc"
+          count review-release >/dev/null
+          exit 0 ;;
+      esac ;;
+  esac
 fi
 
 echo "issue_1437_amplihack_stub: unhandled: $*" >&2
