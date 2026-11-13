@@ -109,6 +109,8 @@ steps:
         RUN="false"; WHY="PR #${PR} is already merged; merged work is never redone"
       elif [ -z "$PR" ]; then
         RUN="false"; WHY="no pull request could be resolved; there is nothing to drive to merge"
+      elif ! autodrive_phase_done "$DIR" crusty-loop && grep -q '"loop_result":"WAITING"' "$DIR/crusty-result.json" 2>/dev/null; then
+        RUN="false"; WHY="crusty-waiting: the crusty loop is WAITING (#2472); resume the drive after its wait_target"
       fi
       # #1543: whenever this loop was handed a PR number (the operator's, or
       # the build phase's on a fresh build, where default-workflow builds in
@@ -274,6 +276,9 @@ steps:
       case "$DIR" in
         ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-merge-loop/step-02b]" >&2; exit 1 ;;
       esac
+      # #2472: only a DONE loop files follow-ups; WAITING (exit 0 too) is resumable, never DONE.
+      LR="$(printf '%s' "${RECIPE_VAR_merge_loop_result:-}" | amplihack orch helper extract-json --require-field loop_result | amplihack orch helper extract-field --field loop_result --default '')"
+      [ -z "$LR" ] || [ "$LR" = "DONE" ] || { echo "INFO: the merge-ready loop ended ${LR}, not DONE; no follow-up issue is filed." >&2; exit 0; }
       # A dry run writes nothing to GitHub: no follow-up issue is filed, and
       # the gate reports each unfiled minor finding as followup-missing.
       if [ "${AUTODRIVE_DRY_RUN:-false}" = "true" ]; then
@@ -318,6 +323,9 @@ steps:
       case "$DIR" in
         ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-merge-loop/step-03]" >&2; exit 1 ;;
       esac
+      # #2472: the gate runs only after a DONE loop. An exit code of 0 alone (WAITING) never merges.
+      LR="$(printf '%s' "${RECIPE_VAR_merge_loop_result:-}" | amplihack orch helper extract-json --require-field loop_result | amplihack orch helper extract-field --field loop_result --default '')"
+      [ -z "$LR" ] || [ "$LR" = "DONE" ] || { echo "INFO: the merge-ready loop ended ${LR}, not DONE; the merge gate does not run." >&2; printf '{"merge_result":"NOT_MERGED","pr":"%s","reason":"loop-%s"}\n' "$PR" "$(printf '%s' "$LR" | tr -cd 'A-Z_')"; exit 0; }
       ARGS=(--pr "$PR" --repo "${REPO_PATH:-.}" --state-dir "$DIR" \
             --round-record "${DIR}/merge-ready-latest.json" \
             --qa-evidence "${DIR}/qa-evidence.json")

@@ -420,11 +420,14 @@ fn no_short_timeouts_anywhere() {
             }
         }
     }
-    // The only wait in the workflow is the CI poll, and its interval is 60s.
+    // #2333/#2472: CI is read once; pending CI is a recorded wait, so the
+    // evidence recipe has no poll and no sleep at all.
     let evidence = recipe_text("autodrive-merge-evidence");
     assert!(
-        evidence.contains("sleep 60"),
-        "the CI wait must poll on a 60-second interval"
+        !evidence
+            .lines()
+            .any(|l| !l.trim_start().starts_with('#') && l.contains("sleep ")),
+        "the CI read must not poll or sleep"
     );
     for path in control_path_files() {
         let text = read(&path);

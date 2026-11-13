@@ -301,12 +301,16 @@ steps:
       if [ "$CRUSTY" = "USAGE_LIMIT" ]; then
         echo "AUTO_DRIVE_TO_MERGE: the crusty loop stopped on a usage limit; run again when a login has capacity." >&2
       fi
-      # #1743: a STUCK or BUDGET_EXHAUSTED loop is never merged or success.
+      # #1743: a STUCK or BUDGET_EXHAUSTED loop is never merged or success; WAITING exits 0.
       STOPPED=""
       for P in "crusty:${CRUSTY}" "merge-ready:${MLOOP}"; do
         case "${P#*:}" in
           STUCK) F="${P%%:*}-result.json" ;;
           BUDGET_EXHAUSTED) F="autodrive-budget-summary.md" ;;
+          WAITING) # #2472: resumable, not a failure and never MERGED.
+            WT="$(g "$( [ "${P%%:*}" = crusty ] && printf '%s' "$CR" || printf '%s' "$ML")" wait_target '' | LC_ALL=C tr -cd 'A-Za-z0-9@._-')"
+            echo "AUTO_DRIVE_TO_MERGE: the ${P%%:*} loop is WAITING; resume after ${WT:-its wait target}." >&2
+            OUTCOME="WAITING"; continue ;;
           *) continue ;;
         esac
         echo "AUTO_DRIVE_TO_MERGE: the ${P%%:*} loop stopped as ${P#*:}; see ${F} in the state directory." >&2

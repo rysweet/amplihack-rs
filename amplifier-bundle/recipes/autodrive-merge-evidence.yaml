@@ -4,7 +4,7 @@ description: |
   merge-ready loop: bring the branch up to date with its base, run the
   repository's own tests and, where qa-team's repo-type table requires
   gadugi, validate and run the `qa-team` scenarios with gadugi-test, and wait
-  for CI on the current head to reach a terminal state.
+  read CI on the current head once (pending is a wait, #2472).
 
   Everything here is MEASURED. No step in this brick forms an opinion, and
   nothing it reports is a model's impression. Unreadable is never reported as
@@ -15,10 +15,9 @@ author: "Amplihack Team"
 tags: ["auto-drive", "merge-ready", "qa-team", "ci", "evidence"]
 
 # NO-TIMEOUT POLICY (issue #439): no step declares `timeout` or
-# `timeout_seconds`. The CI wait below polls on a 60-second interval and stops
-# when CI reaches a terminal state or becomes unreadable — it is bounded by the
-# build finishing, not by a seconds-scale or single-digit-minute stopwatch. A
-# test suite is likewise never cut off mid-run.
+# `timeout_seconds`. CI is read once (#2333): pending CI is recorded as a wait
+# and the loop ends WAITING, so nothing polls or sleeps. A test suite is never
+# cut off mid-run.
 # PROHIBITIONS: a hook-skipping commit flag and a branch-protection bypass are
 # NEVER used anywhere in this workflow. See
 # docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
@@ -61,13 +60,21 @@ steps:
         printf '{"base":"","synced":"false","conflict":"unknown","head_sha":"","git_observed":"false"}\n'
         exit 0
       fi
-      BASE="$(gh pr view "${PR_NUMBER:-}" --json baseRefName --jq .baseRefName 2>/dev/null || printf '')"
-      [ -n "$BASE" ] || BASE="main"
-      SYNCED="false"; CONFLICT="false"
-      if git fetch origin "$BASE" >/dev/null 2>&1; then
-        BEHIND="$(git rev-list --count "HEAD..origin/${BASE}" 2>/dev/null || printf 0)"
+      # #2333: the base comes from GraphQL, then REST; never a guessed `main`. An
+      # unavailable base merges nothing and says so (merge_sync.reason base-unavailable).
+      BASE="$(gh pr view "${PR_NUMBER:-}" --json baseRefName --jq .baseRefName 2>/dev/null \
+        || amplihack orch helper autodrive-gh-read pr "${PR_NUMBER:-}" 2>/dev/null | jq -r '.base_ref // empty' 2>/dev/null)"
+      case "$BASE" in -*|/*|*/|*..*|*//*|*[!A-Za-z0-9._/-]*) BASE="" ;; esac
+      if [ -z "$BASE" ]; then
+        echo "WARNING: the PR's base branch is unavailable on every read path; nothing is merged this round, and the next round reads it again." >&2
+        printf '{"base":"","synced":"false","conflict":"unknown","head_sha":"%s","git_observed":"true","reason":"base-unavailable"}\n' "$(git rev-parse HEAD 2>/dev/null || printf '')"
+        exit 0
+      fi
+      SYNCED="false"; CONFLICT="false"; RECOMPUTE=""
+      if git fetch origin "refs/heads/${BASE}:refs/remotes/origin/${BASE}" >/dev/null 2>&1; then
+        BEHIND="$(git rev-list --count "HEAD..refs/remotes/origin/${BASE}" 2>/dev/null || printf 0)"
         if [ "${BEHIND:-0}" != "0" ]; then
-          if git merge --no-edit "origin/${BASE}" >/dev/null 2>&1; then
+          if git merge --no-edit "refs/remotes/origin/${BASE}" >/dev/null 2>&1; then
             SYNCED="true"
             git push >/dev/null 2>&1 || echo "WARNING: merged origin/${BASE} but the push failed; CI will still be reading the old head." >&2
           else
@@ -79,8 +86,24 @@ steps:
       else
         echo "WARNING: could not fetch origin/${BASE}; up-to-date state is unknown and will be reported as unverified." >&2
       fi
-      printf '{"base":"%s","synced":"%s","conflict":"%s","head_sha":"%s","git_observed":"true"}\n' \
-        "$BASE" "$SYNCED" "$CONFLICT" "$(git rev-parse HEAD 2>/dev/null || printf '')"
+      # R7 (#2472): GitHub left the merge state UNKNOWN at this head last round and
+      # still does, so the branch is brought up to date with its base once, which
+      # makes GitHub compute it again: the merge above when behind, else
+      # update-branch with the expected head SHA. Never retried, never a merge of the PR.
+      PREV="${AMPLIHACK_AUTODRIVE_STATE_DIR:-}/merge-ready-latest.json"; HEAD_NOW="$(git rev-parse HEAD 2>/dev/null || printf '')"
+      if [ "$CONFLICT" = "false" ] && [ -n "${AMPLIHACK_AUTODRIVE_STATE_DIR:-}" ] && [ -f "$PREV" ] && [ ! -L "$PREV" ] \
+         && [ "$(jq -r '.merge_state // ""' "$PREV" 2>/dev/null)" = "UNKNOWN" ]; then
+        if [ "$SYNCED" = "true" ]; then
+          RECOMPUTE="$(jq -cn --arg s "$HEAD_NOW" '{action:"merge-push",result:"ok",pushed_sha:$s}')"
+        elif [ "$(jq -r '.head_sha // ""' "$PREV" 2>/dev/null)" = "$HEAD_NOW" ] \
+             && amplihack orch helper autodrive-gh-read pr "${PR_NUMBER:-}" 2>/dev/null | jq -e --arg h "$HEAD_NOW" '.merge_state == "UNKNOWN" and .head_sha == $h' >/dev/null 2>&1; then
+          RECOMPUTE="$(amplihack orch helper autodrive-gh-update-branch "${PR_NUMBER:-}" --expected-head-sha "$HEAD_NOW" 2>/dev/null \
+            | jq -c '{action, result, rate_limited: (.rate_limited == true), reset_epoch: (.reset_epoch // null)}' 2>/dev/null)"
+        fi
+        [ -z "$RECOMPUTE" ] || echo "INFO: merge state UNKNOWN at ${HEAD_NOW} two rounds running; recompute: ${RECOMPUTE}" >&2
+      fi
+      printf '{"base":"%s","synced":"%s","conflict":"%s","head_sha":"%s","git_observed":"true"%s}\n' \
+        "$BASE" "$SYNCED" "$CONFLICT" "$(git rev-parse HEAD 2>/dev/null || printf '')" "${RECOMPUTE:+,\"recompute\":${RECOMPUTE}}"
     output: "merge_sync"
 
   # Criterion 1 is measured by amplifier-bundle/tools/autodrive_qa_evidence.sh:
@@ -148,26 +171,26 @@ steps:
         printf '{"ci_status":"UNREADABLE","ci_total":"0","ci_pending":"","ci_failing":"","ci_signal":"unreadable"}\n'
         exit 0
       fi
-      # Poll until CI reaches a terminal state. The loop is bounded by the
-      # build finishing or by the status becoming unreadable — never by a
-      # seconds-scale or single-digit-minute stopwatch, and never by a count.
-      while :; do
-        JSON="$(gh pr checks "$PR" --json name,state,bucket)"
-        if [ -z "$JSON" ]; then
-          echo "ERROR: CI status for #${PR} became unreadable while waiting. Unreadable is a FAILURE, not a pass." >&2
-          printf '{"ci_status":"UNREADABLE","ci_total":"0","ci_pending":"","ci_failing":"","ci_signal":"unreadable"}\n'
-          exit 0
-        fi
-        TOTAL="$(printf '%s' "$JSON" | jq -r 'length' 2>/dev/null)"
-        PENDING="$(printf '%s' "$JSON" | jq -r '[.[]|select(.bucket=="pending")]|length' 2>/dev/null)"
-        FAILING="$(printf '%s' "$JSON" | jq -r '[.[]|select(.bucket=="fail" or .bucket=="cancel")]|length' 2>/dev/null)"
-        [ -n "${PENDING:-}" ] || PENDING="unreadable"
-        if [ "$PENDING" = "0" ] || [ "$PENDING" = "unreadable" ]; then break; fi
-        echo "INFO: waiting on CI for #${PR}: ${PENDING}/${TOTAL} pending, ${FAILING} failing." >&2
-        sleep 60
-      done
+      # #2333/#2472: CI is read ONCE, through GraphQL then REST (autodrive-gh-read
+      # checks). Pending or queued checks at the head end the step as PENDING, a
+      # wait the loop ends WAITING on (ci@<sha>) and a later drive resumes after.
+      # Nothing here sleeps or polls.
+      JSON="$(gh pr checks "$PR" --json name,state,bucket 2>/dev/null)"
+      [ -n "$JSON" ] || JSON="$(amplihack orch helper autodrive-gh-read checks "$PR" 2>/dev/null | jq -c '.checks // empty' 2>/dev/null)"
+      if [ -z "$JSON" ]; then
+        echo "ERROR: CI status for #${PR} is unavailable on every read path. Unreadable is never a pass; the round waits on the read." >&2
+        printf '{"ci_status":"UNREADABLE","ci_total":"0","ci_pending":"","ci_failing":"","ci_signal":"unreadable"}\n'
+        exit 0
+      fi
+      TOTAL="$(printf '%s' "$JSON" | jq -r 'length' 2>/dev/null)"
+      PENDING="$(printf '%s' "$JSON" | jq -r '[.[]|select(.bucket=="pending")]|length' 2>/dev/null)"
+      FAILING="$(printf '%s' "$JSON" | jq -r '[.[]|select(.bucket=="fail" or .bucket=="cancel")]|length' 2>/dev/null)"
+      [ -n "${PENDING:-}" ] || PENDING="unreadable"
       if [ "$PENDING" = "unreadable" ]; then
         STATUS="UNREADABLE"
+      elif [ "$PENDING" != "0" ]; then
+        STATUS="PENDING"
+        echo "INFO: CI for #${PR} is still running: ${PENDING}/${TOTAL} pending, ${FAILING} failing; recorded as a wait." >&2
       elif [ "${TOTAL:-0}" = "0" ]; then
         STATUS="NO_CHECKS"
         echo "ERROR: #${PR} reports zero CI checks. Zero checks is not a green build." >&2
@@ -182,7 +205,8 @@ steps:
       # verdict of autodrive_expected_checks.sh, run read-only and only from
       # AMPLIHACK_HOME (never from a path the PR fills). No new wait.
       if [ "$STATUS" = "GREEN" ]; then
-        HB="$(gh pr view "$PR" --json headRefOid,baseRefName --jq '.headRefOid + " " + .baseRefName' 2>/dev/null)" || HB=""
+        HB="$(gh pr view "$PR" --json headRefOid,baseRefName --jq '.headRefOid + " " + .baseRefName' 2>/dev/null \
+          || amplihack orch helper autodrive-gh-read pr "$PR" 2>/dev/null | jq -r '.head_sha + " " + .base_ref' 2>/dev/null)" || HB=""
         H="${HB%% *}"; B="${HB#* }"; ECS=""; EC_RC=1
         if [ -n "${AMPLIHACK_HOME:-}" ] && [ -f "${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_expected_checks.sh" ] \
            && [ -n "$H" ] && [ -n "$B" ] && [ "$H" != "$HB" ]; then

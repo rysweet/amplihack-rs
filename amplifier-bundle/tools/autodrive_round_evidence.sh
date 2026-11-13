@@ -2,11 +2,8 @@
 # autodrive_round_evidence.sh — the measured, deterministic steps of one merge
 # round of auto-drive-to-merge (issue #1517, D4 and D5).
 #
-# These were step bodies of autodrive-merge-round.yaml until that recipe reached
-# its brick budget (PR #1520 review); they moved here unchanged. The recipe's
-# step-00-tools-dir finds this file once per round, with the tools beside it.
-# crusty-range left the round in the next review: its caller now runs a crusty
-# loop when it answers "true", and that loop must not start inside a round.
+# Step bodies of autodrive-merge-round.yaml, moved here at its brick budget
+# (PR #1520); step-00-tools-dir finds this file once per round.
 #
 #   autodrive_round_evidence.sh crusty-range
 #       Run by autodrive_crusty_rereview.sh before each merge round, from the
@@ -45,33 +42,25 @@
 #
 #   autodrive_round_evidence.sh findings [downgrade] < blockers.json
 #       step-03 too: the recurring-findings signal. The `id` of each blocker
-#       in the JSON array on stdin, one per line, and measured-evidence-disagrees
-#       when a downgrade was given, written private to
-#       AUTODRIVE_ROUND_RECORD.findings. Prints the number of lines.
+#       on stdin, plus measured-evidence-disagrees on a downgrade, classed by
+#       autodrive-round-waits (#2472): fixable ids to AUTODRIVE_ROUND_RECORD
+#       .findings, the result to .waits. Prints the number of fixable ids.
 #
 #   autodrive_round_evidence.sh round-record
 #       step-05-write-round-record: writes AUTODRIVE_ROUND_RECORD, private, as
 #       one JSON line starting with {"merge_ready_verdict":", and prints it.
-#       Carries held_by, which no gate reads: every value in it is a
-#       measurement this tool took, so the record stays hash-bound evidence.
+#       Carries held_by, merge_state, waits, wait_target and round_waiting,
+#       which no gate reads: all measured, so the record stays hash-bound.
 #
-# Step outputs are read only as recipe-runner's RECIPE_VAR_<key> export:
-# "${RECIPE_VAR_qa_evidence:-}" and the like. A bare QA_EVIDENCE, CI_EVIDENCE
-# or MERGE_READY_VERDICT inherited from whatever launched the runner is never
-# read (#1561; docs/reference/auto-drive-to-merge.md, "Step outputs ignore
-# inherited bare variables").
+# Step outputs are read only as RECIPE_VAR_<key>; a bare QA_EVIDENCE and the like
+# inherited from the launcher is never read (#1561).
 # AUTODRIVE_STATE_DIR, AUTODRIVE_QA_EVIDENCE, AUTODRIVE_ROUND_RECORD,
 # AUTODRIVE_ROUND_LABEL, PR_NUMBER and REPO_PATH come from there too.
-# crusty-range, qa-evidence-sha and crusty-evidence print only fixed tokens and
-# hex SHAs, and measured-downgrade keeps only [A-Za-z0-9_.:/-] of each value,
-# so nothing from the branch under review reaches step-04's prompt through
-# them as prose. round-record writes the step outputs' values as step-05 did.
+# Outputs are fixed tokens, hex SHAs and [A-Za-z0-9_.:/-] values, so nothing from
+# the branch under review reaches step-04's prompt as prose.
 #
-# Executed, never sourced. autodrive_state.sh and autodrive_trust.sh are sourced
-# from beside this file and from nowhere else. When they are missing, each
-# subcommand reports what the step reported when it could not find them: no
-# re-review, an empty hash, crusty UNTRUSTED, or qa_evidence=modified. None of
-# those can merge.
+# Executed, never sourced. autodrive_state.sh and autodrive_trust.sh come from
+# beside this file only; without them each subcommand reports what cannot merge.
 #
 # Exit 0 with the output above; exit 1 when round-record has no record path;
 # exit 2 for an unknown subcommand.
@@ -90,7 +79,8 @@ fi
 pr_base_ref() {
   local pr="${PR_NUMBER:-}"
   case "$pr" in *[!0-9]*) pr="" ;; esac
-  gh pr view ${pr:+"$pr"} --json baseRefName --jq .baseRefName 2>/dev/null || printf ''
+  gh pr view ${pr:+"$pr"} --json baseRefName --jq .baseRefName 2>/dev/null \
+    || { [ -n "$pr" ] && amplihack orch helper autodrive-gh-read pr "$pr" 2>/dev/null | jq -r ".base_ref // empty"; } || printf '' # REST fallback (#2333)
 }
 
 # field <json> <name> <default>: the canonical structured read
@@ -282,19 +272,33 @@ _approval_detail() {
   printf 'source=%s, required=%s, merge_state=%s' "$src" "$req" "$ms"
 }
 
+# round_findings: see `findings` above. .findings (the no-progress hash) and
+# .waits are private and moved into place; a failed classing makes every id fixable.
 round_findings() {
-  local record="${AUTODRIVE_ROUND_RECORD:-}" blockers count=0
+  local record="${AUTODRIVE_ROUND_RECORD:-}" blockers count=0 ids in out
   blockers="$(cat)"
   if [ -n "$record" ]; then
     ( umask 077 # the state dir must stay private
-      : > "${record}.findings"
       if ! command -v jq >/dev/null 2>&1; then
-        echo "WARNING: jq unavailable; blocker ids cannot be extracted for the recurring-findings signal." >&2
-      elif ! printf '%s' "$blockers" | jq -r '.[]?.id // empty' 2>/dev/null > "${record}.findings"; then
-        echo "WARNING: blocker ids could not be parsed; the recurring-findings signal is incomplete this round." >&2
-        : > "${record}.findings"
+        echo "WARNING: jq unavailable; blocker ids cannot be extracted for the recurring-findings signal." >&2; ids='[]'
+      elif ! ids="$(printf '%s' "$blockers" | jq -c '[.[]? | .id? // empty | strings]' 2>/dev/null)"; then
+        echo "WARNING: blocker ids could not be parsed; the recurring-findings signal is incomplete this round." >&2; ids='[]'
       fi
-      [ -z "${1:-}" ] || printf 'measured-evidence-disagrees\n' >> "${record}.findings" )
+      [ -z "${1:-}" ] || ids="$(printf '%s' "$ids" | jq -c '. + ["measured-evidence-disagrees"]')"
+      in="$(jq -cn --argjson f "$ids" --arg d "${1:-}" --arg h "$(git -C "${REPO_PATH:-.}" rev-parse HEAD 2>/dev/null)" \
+        --arg ci "$(token "$(field "${RECIPE_VAR_ci_evidence:-}" ci_signal '')")" --argjson r "$(field "${RECIPE_VAR_merge_sync:-}" recompute null | jq -c 'if type == "object" then {action, result, pushed_sha, rate_limited: (.rate_limited == true), reset_epoch} else null end' 2>/dev/null || echo null)" \
+        --arg ms "$(token "$(field "${RECIPE_VAR_platform_facts:-}" merge_state '')")" --arg mg "$(token "$(field "${RECIPE_VAR_platform_facts:-}" mergeable '')")" \
+        --argjson u "$(field "${RECIPE_VAR_platform_facts:-}" unavailable '[]' | jq -c 'if type == "array" then . else [] end' 2>/dev/null || echo '[]')" \
+        '{head_sha:$h, ci_signal:(($ci|ascii_upcase|split(":")[0]) // ""), merge_state:$ms, mergeable:$mg, unavailable:$u, findings:$f, measured_downgrade:($d|split(" ")|map(select(length>0))), recompute:$r}' 2>/dev/null)"
+      t="$(mktemp "${record}.findings.XXXXXX")" || exit 1
+      if out="$(printf '%s' "$in" | amplihack orch helper autodrive-round-waits 2>/dev/null)" && [ -n "$out" ]; then
+        printf '%s' "$out" | jq -r '.fixable[]' > "$t" && w="$(mktemp "${record}.waits.XXXXXX")" \
+          && printf '%s\n' "$out" > "$w" && mv -f -- "$w" "${record}.waits"
+      else
+        echo "WARNING: the round's blockers could not be classed into waits and fixable findings; every id counts as fixable." >&2
+        printf '%s' "$ids" | jq -r '.[]' > "$t" 2>/dev/null; rm -f -- "${record}.waits"
+      fi
+      mv -f -- "$t" "${record}.findings" )
     [ -f "${record}.findings" ] && count="$(grep -c . "${record}.findings" 2>/dev/null || true)"
   fi
   case "$count" in '' | *[!0-9]*) count=0 ;; esac
@@ -331,7 +335,7 @@ merge_ready_verdict() {
 }
 
 round_record() {
-  local record="${AUTODRIVE_ROUND_RECORD:-}" head="" verdict count qa ci_signal ci_status qh held label
+  local record="${AUTODRIVE_ROUND_RECORD:-}" head="" verdict count qa ci_signal ci_status qh held label ms waits
   [ -n "$record" ] || { echo "ERROR: autodrive_round_record is required; the loop driver reads the round record from a file, never from stdout." >&2; return 1; }
   if (cd "${REPO_PATH:-.}" 2>/dev/null && git rev-parse --is-inside-work-tree >/dev/null 2>&1); then
     head="$(cd "${REPO_PATH:-.}" && git rev-parse HEAD 2>/dev/null || printf '')"
@@ -355,22 +359,26 @@ round_record() {
     '') echo "WARNING: no measured evidence could be compared; the stop cannot name what held this round." >&2
         held="measured_evidence=unreadable" ;;
   esac
-  # token() on the round label, as at the other two sites that write it
-  # (autodrive_qa_evidence.sh, autodrive-crusty-round.yaml). Unsanitised it is
-  # the one field of this record that carries arbitrary bytes, and `field()` is
-  # last-wins on duplicate keys: a label holding `","merge_ready_verdict":"
-  # MERGE_READY` appends a second, winning verdict after the real one, and the
-  # merge gate reads the forged pair with a correct head_sha. token() drops the
-  # quote and the comma, so no label can open a new key.
+  # token() on the round label: `field()` is last-wins on duplicate keys, so a label
+  # holding `","merge_ready_verdict":"MERGE_READY` would forge a second verdict the
+  # merge gate reads. token() drops the quote and the comma, so no label opens a key.
   label="$(token "${AUTODRIVE_ROUND_LABEL:-round}")"
+  # #2472: the merge state read this round, and the classifier's result from
+  # .waits, kept to its closed patterns; no .waits means no waits.
+  ms="$(token "$(field "${RECIPE_VAR_platform_facts:-}" merge_state UNKNOWN)")"
+  case "$ms" in BEHIND|BLOCKED|CLEAN|DIRTY|DRAFT|HAS_HOOKS|UNSTABLE) ;; *) ms="UNKNOWN" ;; esac
+  waits='{"waits":[],"wait_target":"","round_waiting":false}'
+  [ ! -f "${record}.waits" ] || [ -L "${record}.waits" ] || waits="$(jq -c '{waits:[.waits[] | strings | select(test("^[a-z0-9-]{1,64}$"))],
+    wait_target:(.wait_target | if test("^((ci|mergeability)@[0-9a-f]{40}|ratelimit-reset@([0-9]{1,12}|unknown)|read@(pr|pr-head|pr-number|checks|reviews|threads))?$") then . else "" end),
+    round_waiting:(.round_waiting == true)}' "${record}.waits" 2>/dev/null)" || waits='{"waits":[],"wait_target":"","round_waiting":false}'
   # The record and its findings file are private: the state dir must stay private.
   ( umask 077
     [ -f "${record}.findings" ] || : > "${record}.findings"
     rm -f -- "$record"
     printf '{"merge_ready_verdict":"%s","blocker_count":%s,"head_sha":"%s","round_label":"%s","test_signal":"%s",' \
       "$verdict" "$count" "$head" "${label:-round}" "$qa" > "$record"
-    printf '"ci_signal":"%s","qa_status":"%s","ci_status":"%s","held_by":"%s","qa_evidence_sha":"%s"}\n' \
-      "$ci_signal" "$qa" "$ci_status" "$held" "$qh" >> "$record" ) || return 1
+    printf '"ci_signal":"%s","qa_status":"%s","ci_status":"%s","held_by":"%s","qa_evidence_sha":"%s","merge_state":"%s",%s\n' \
+      "$ci_signal" "$qa" "$ci_status" "$held" "$qh" "$ms" "${waits#\{}" >> "$record" ) || return 1
   echo "INFO: round record written to ${record}" >&2
   cat -- "$record"
 }

@@ -82,7 +82,14 @@ steps:
       # verdict would be recorded against a commit crusty never read. Criterion 3 depends on that record.
       if [ -n "$PR" ]; then
         REMOTE="$(gh pr view "$PR" --json headRefOid --jq .headRefOid 2>/dev/null || printf '')"
-        hex "$REMOTE" || { echo "ERROR: crusty-pr-head-unreadable: the head commit of PR #${PR} could not be read; no round is run without the commit crusty will review." >&2; exit 1; }
+        # #2333: then REST, then git ls-remote. Unavailable on every path is a wait, not a finding: the
+        # ${record}.wait sidecar (private, moved into place) lets the loop end WAITING, never complete.
+        if ! hex "$REMOTE"; then
+          HJ="$(amplihack orch helper autodrive-gh-read head "$PR" 2>/dev/null)"; HRC=$?; REMOTE="$(printf '%s' "$HJ" | jq -r '.head_sha // empty' 2>/dev/null)"
+          if [ "$HRC" -eq 3 ] && [ -n "${AUTODRIVE_ROUND_RECORD:-}" ] && T="$(printf '%s' "$HJ" | jq -r 'if .unavailable.rate_limited then "ratelimit-reset@" + ((.unavailable.reset_epoch // "unknown") | tostring) else "read@pr-head" end' 2>/dev/null)"; then
+            ( umask 077; W="$(mktemp "${AUTODRIVE_ROUND_RECORD}.wait.XXXXXX")" && printf '{"round_waiting":true,"wait_reason":"crusty-pr-head-unreadable","wait_target":"%s"}\n' "$T" > "$W" && mv -f -- "$W" "${AUTODRIVE_ROUND_RECORD}.wait" ); fi
+        fi
+        hex "$REMOTE" || { echo "ERROR: crusty-pr-head-unreadable: the head commit of PR #${PR} is unavailable on every read path (a wait); no round is run without the commit crusty will review." >&2; exit 1; }
         if [ "$SHA" != "$REMOTE" ]; then
           WHY="the checkout at REPO_PATH is on another commit"
           [ -n "$SHA" ] && git merge-base --is-ancestor "$REMOTE" "$SHA" 2>/dev/null && WHY="local commits have not reached GitHub; push them, then run the round again"

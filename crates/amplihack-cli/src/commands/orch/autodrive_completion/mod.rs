@@ -30,6 +30,10 @@ pub struct Prepare {
     /// Declared evaluator data, copied into trusted state before the child.
     #[arg(long = "context-from-file")]
     context_files: Vec<String>,
+    /// The PR number, so the dispatch reads this PR's head (#2333). Older
+    /// state files have none; the dispatch then resolves it from the branch.
+    #[arg(long, value_parser = parse_pr)]
+    pr: Option<u64>,
 }
 
 #[derive(Args, Debug)]
@@ -48,6 +52,14 @@ pub struct Dispatch {
     private_state: PathBuf,
     #[arg(long, allow_hyphen_values = true)]
     child_exit_code: i32,
+}
+
+/// Dispatch exit code: the PR head is unavailable on every path, so the
+/// round is WAITING (#2333). Not 75, which is ORPHANED.
+pub const EXIT_WAITING: i32 = 76;
+
+fn parse_pr(s: &str) -> Result<u64, String> {
+    super::autodrive_gh::valid_pr(s).ok_or_else(|| "the PR number must be 1-9999999999".to_string())
 }
 
 pub fn prepare(args: Prepare) -> Result<()> {

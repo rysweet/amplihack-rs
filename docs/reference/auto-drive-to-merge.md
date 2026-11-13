@@ -2,7 +2,7 @@
 title: Auto Drive To Merge Reference
 description: Auto-drive phases, review completion, follow-up recording and merge evidence.
 doc_type: reference
-last_updated: 2026-11-11
+last_updated: 2026-11-12
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -45,6 +45,7 @@ PR to this recipe when the change exceeds its eligibility rules.
 - [Merges outside the gate are refused (#1551)](#merges-outside-the-gate-are-refused-1551)
 - [Exit code 79 is terminal](#exit-code-79-is-terminal)
 - [Orphaned rounds](#orphaned-rounds)
+- [Waits are not STUCK (#2333, #2472)](#waits-are-not-stuck-2333-2472)
 - [Usage limits are not STUCK](#usage-limits-are-not-stuck)
 - [No-progress stop and usage budget](#no-progress-stop-and-usage-budget)
 - [Recursion context propagation](#recursion-context-propagation)
@@ -802,7 +803,8 @@ budget](#no-progress-stop-and-usage-budget)):
 
 | Condition | Result |
 | --- | --- |
-| Previous round not clean, same non-empty head SHA, same open items, same `ci_signal` with no `PENDING` | `STUCK` (decided in code), exit `1`. The evaluator does not run. |
+| Every blocker this round is a wait (`round_waiting: true`) | `WAITING`, exit `0`. Checked first; the evaluator does not run. See [Waits are not STUCK](#waits-are-not-stuck-2333-2472). |
+| Previous round not clean, same non-empty head SHA, same fixable findings, same `ci_signal` | `STUCK` (decided in code), exit `1`. The evaluator does not run. Waits are left out of the comparison. |
 | A budget limit is reached | `BUDGET_EXHAUSTED`, exit `1`. The evaluator does not run. |
 
 A non-clean `DONE` usually means the findings were addressed without a new
@@ -2787,8 +2789,10 @@ autodrive step, so it is outside the checked output set and adds no row;
 `autodrive-build.yaml` only declares it `""` in `context:`. The #1979 inputs
 `plan_task_id` and `task_description` are recipe context, not step outputs, so
 they add no row; `autodrive-merge-loop.yaml` step-02b's read of
-`merge_loop_preflight` does. The extracted `autodrive_crusty_record.sh` contains five reads previously in
-step-06. There are 31 in all in the recipes:
+`merge_loop_preflight` does, and #2472 adds step-02b's and step-03's reads of
+`merge_loop_result`, so neither runs after a loop that is not `DONE`. The extracted
+`autodrive_crusty_record.sh` contains five reads previously in step-06.
+There are 33 in all in the recipes:
 
 | Recipe | Step-output reads |
 | --- | --- |
@@ -2796,7 +2800,7 @@ step-06. There are 31 in all in the recipes:
 | `autodrive-build.yaml` | 1 |
 | `autodrive-crusty-loop.yaml` | 7 |
 | `autodrive-crusty-round.yaml` | 3 |
-| `autodrive-merge-loop.yaml` | 7 |
+| `autodrive-merge-loop.yaml` | 9 |
 | `autodrive-merge-round.yaml` | 8 |
 
 ### Step outputs ignore inherited bare variables
@@ -5012,6 +5016,42 @@ cleared, so it may describe an earlier stop rather than the current round. A
 reader and clearing on resume are tracked in
 [#2093](https://github.com/rysweet/amplihack-rs/issues/2093).
 
+## Waits are not STUCK (#2333, #2472)
+
+A round can be blocked by something no commit can fix: CI still running at
+the head, a GitHub read refused by a rate limit, or a merge state GitHub has
+not computed yet (`UNKNOWN`). These are **waits**. Before #2333 they reached
+the no-progress check and the evaluator as unchanged findings, and the drive
+stopped as `STUCK`.
+
+- Every PR read goes through `amplihack orch helper autodrive-gh-read`, which
+  falls back from GraphQL to REST, and to `git ls-remote` for the head. A read
+  that fails on every path is reported as unavailable, never as a finding:
+  "head unavailable" is a wait, "head differs" is still a refusal.
+- `autodrive_round_evidence.sh` classes each round's blockers in code into
+  waits and fixable findings, and records `waits`, `wait_target` and
+  `round_waiting` in the round record. Only fixable findings go into the
+  `.findings` file the no-progress check hashes.
+- A round with waits and no fixable findings ends the loop with
+  `loop_result` `WAITING`, exit `0`, before the no-progress check and before
+  the evaluator. A mixed round counts toward `STUCK` on its fixable findings
+  only.
+- `WAITING` is resumable. The run ends with status `WAITING` (not `DONE`, not
+  a failure), never merges, and the report names the event to resume after:
+  `ci@<sha>`, `ratelimit-reset@<epoch>`, `mergeability@<sha>` or `read@<what>`.
+  Nothing sleeps or polls; re-run the drive after that event.
+- The loop exits `0` on `WAITING` as on `DONE`, so `autodrive-merge-loop.yaml`
+  step-02 reads `loop_result`, never the exit code. Follow-up filing
+  (step-02b) and the merge gate (step-03) run only on `DONE`.
+- A merge state that stays `UNKNOWN` at the same head for two rounds makes
+  merge-evidence step-01 bring the branch up to date (merge-and-push, or
+  GitHub's `update-branch` with `expected_head_sha`) so GitHub recomputes it.
+- The completion dispatch returns `WAITING` with exit `76` when the PR head
+  cannot be read, instead of `INVALID_DECISION`.
+
+Full reference, including the REST mapping, exit codes, the wait classes and
+the `WAITING` record: [Auto-drive GitHub Reads and Waits](autodrive-github-reads.md).
+
 ## Usage limits are not STUCK
 
 A Claude usage limit is not a judgement about progress. When the
@@ -5784,7 +5824,7 @@ resolved concern is reopened.
 | Store | Path | Role |
 | --- | --- | --- |
 | Local | `${AMPLIHACK_STATE_DIR:-~/.amplihack/state}/auto-drive/<key>/` | Phase completions, resolved concern ids, round records, manifests, evidence bundles. Written only by the host that ran them. |
-| Platform | `gh pr view --json state,mergedAt` | The **authority** on whether the PR is merged. |
+| Platform | `amplihack orch helper autodrive-gh-read pr` (GraphQL, then REST) | The **authority** on whether the PR is merged. Unavailable on both paths reads as `UNKNOWN`. |
 
 `<key>` is the launch repository's `origin` URL plus the run's pull request
 number, made filesystem-safe (`autodrive_state_key`). A run started with
@@ -6484,6 +6524,7 @@ tests here run and pass without #1347.
 - [Auto-Drive-Light Recipe](auto-drive-light.md): the smaller recipe for small
   changes, which escalates to this one.
 - [Crusty Completion Contract](autodrive-crusty-completion.md) — completion-first dispatch, decision validation and follow-up finalization.
+- [Auto-drive GitHub Reads and Waits](autodrive-github-reads.md) — GraphQL→REST read fallback, unavailable reads as waits, and the resumable `WAITING` result (#2333, #2472).
 - [Loop-Health Evaluator](loop-health-evaluator.md) — convergence judgment for
   unresolved Crusty reviews and the merge-ready loop. Completed Crusty
   objectives bypass evaluation.

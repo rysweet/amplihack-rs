@@ -22,6 +22,8 @@ use std::path::PathBuf;
 use crate::commands::multitask;
 
 mod autodrive_completion;
+mod autodrive_gh;
+mod autodrive_waits;
 mod named_branch;
 mod select_workflow;
 mod workflow_log_inventory;
@@ -59,6 +61,14 @@ pub enum OrchHelperCommands {
     AutodriveCompletionWrite(autodrive_completion::Write),
     /// Validate the decision and complete or launch the convergence evaluator.
     AutodriveCompletionDispatch(autodrive_completion::Dispatch),
+    /// Read PR facts through GraphQL, then REST, then (head only) git ls-remote
+    /// (issue #2333). One JSON line; exit 3 when every path is unavailable.
+    AutodriveGhRead(autodrive_gh::ReadArgs),
+    /// Ask GitHub to update a PR branch with its base, once, with the expected
+    /// head SHA, so it recomputes an UNKNOWN merge state (#2472). Never merges.
+    AutodriveGhUpdateBranch(autodrive_gh::UpdateBranchArgs),
+    /// Split a round's blockers (JSON on stdin) into waits and fixable findings.
+    AutodriveRoundWaits,
     /// Read stdin, print the first complete JSON object found in it.
     ///
     /// Mirrors `orch_helper.extract_json`. Tries, in order: ```json blocks,
@@ -517,6 +527,9 @@ pub fn run(command: OrchHelperCommands) -> Result<()> {
         OrchHelperCommands::AutodriveCompletionDispatch(args) => {
             autodrive_completion::dispatch(args)
         }
+        OrchHelperCommands::AutodriveGhRead(args) => autodrive_gh::read_cli(args),
+        OrchHelperCommands::AutodriveGhUpdateBranch(args) => autodrive_gh::update_branch_cli(args),
+        OrchHelperCommands::AutodriveRoundWaits => autodrive_waits::cli(),
         OrchHelperCommands::ExtractJson { require_field } => {
             let input = read_stdin()?;
             let found = match require_field.as_deref() {

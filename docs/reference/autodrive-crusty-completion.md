@@ -1,7 +1,7 @@
 ---
 title: Auto-drive Crusty Completion Contract
 description: Completion-first dispatch, decision integrity, and follow-up finalization for Crusty reviews.
-last_updated: 2026-11-11
+last_updated: 2026-11-12
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -27,6 +27,7 @@ loop's own evaluator and completion policy are unchanged.
 - [Rust helper operations](#rust-helper-operations)
 - [Decision format](#decision-format)
 - [Dispatch validation](#dispatch-validation)
+- [Head check outcomes](#head-check-outcomes)
 - [Results and accounting](#results-and-accounting)
 - [Follow-up finalization](#follow-up-finalization)
 - [Behavior examples](#behavior-examples)
@@ -62,7 +63,7 @@ driver interfaces; operators use the existing auto-drive recipe invocation.
 
 | Operation | Responsibility |
 | --- | --- |
-| Prepare | Create a fresh unpredictable run identity, a unique per-round decision output path, and driver-owned identity, evidence snapshots and evaluator launch context. |
+| Prepare | Accept `--pr <n>` (the PR number, `1`–`9999999999`) and store it in the private state as `pr`. Create a fresh unpredictable run identity, a unique per-round decision output path, and driver-owned identity, evidence snapshots and evaluator launch context. |
 | Seal | The record-writing bash step captures fresh evidence before the next-action agent runs. Direct clients preparing existing records seal during prepare. |
 | Write | Accept typed `complete` or `evaluate` and a bounded reason; compute the designated record's hash and atomically create the decision. |
 | Dispatch | Independently validate the decision and evidence; return objective completion or launch the trusted evaluator with typed process arguments. |
@@ -121,6 +122,44 @@ Private directories and files normally use modes `0700` and `0600`.
 Hashes check integrity against trusted state; they do not authenticate the
 agent. Instructions and same-user permissions do not isolate the decision
 step from arbitrary code running as that user.
+
+## Head check outcomes
+
+Dispatch compares the reviewed head with the PR's current head. The PR number
+comes from the private state's `pr` field, which `autodrive_completion_context.sh`
+passes to Prepare as `--pr` when `AD_PR` is a valid number. State files
+written before this field existed have no `pr`; dispatch then looks up the
+open PR for the branch through `pulls?head={owner}:{branch}&state=open`. A
+`pr` of `0` counts as absent.
+
+The head is read with the [GitHub read cascade](autodrive-github-reads.md#the-read-cascade):
+GraphQL, then REST, then `git ls-remote origin refs/pull/{n}/head`. The check
+has three outcomes, matched explicitly in `dispatch.rs`:
+
+| Outcome | When | Result |
+| --- | --- | --- |
+| `head-matches` | A source answered with the reviewed head SHA. | Dispatch continues. |
+| `head-differs` | A source answered with another SHA. | Refused: `current PR head differs from reviewed evidence`. A real finding; fails closed as before. |
+| `head-unavailable` | Every source failed, or the PR number could not be resolved (`pr-number-unresolved`). | `complete` becomes `WAITING`, exit `76`. |
+
+The record, manifest and sidecar checks run **before** the head read. An
+invalid record is still refused as `INVALID_DECISION` when the head is also
+unavailable, so a rate limit cannot turn a bad record into a wait.
+
+A `head-unavailable` dispatch prints one JSON line and exits `76`:
+
+```json
+{"source":"head-check","loop_result":"WAITING","evaluator_invoked":false,"wait_reason":"head-unavailable","wait_target":"ratelimit-reset@1794528000"}
+```
+
+`wait_target` is `ratelimit-reset@<epoch>` or `ratelimit-reset@unknown` when a
+rate limit refused the read, otherwise `read@pr-head`. On `WAITING` dispatch
+creates no `.dispatched` receipt, does not run the evaluator and does not
+write the sealed record, so the same decision can be dispatched again when the
+drive resumes. `autodrive_loop.sh` maps exit `76` to `record_result WAITING`
+and exits `0`; it never maps it to `INVALID_DECISION`. A child process that
+exits `76` is not passed through as `WAITING`. `head-unavailable` never grants
+completion. See [The WAITING result](autodrive-github-reads.md#the-waiting-result).
 
 ## Results and accounting
 
@@ -182,6 +221,8 @@ remains idempotent and the merge gate still checks follow-up evidence.
 | Major findings recur with no measured progress | Existing no-progress detection or evaluator judgment stops as `STUCK`. |
 | Unresolved `CONCERNS`, evaluator says `DONE` | No phase advancement; require re-review and retain inconsistent-`DONE` safeguards. |
 | Completion decision from another run, altered sidecar, changed reviewed head, or failed child | Reject completion; no phase marker. |
+| Valid `CLEAN`, GraphQL head read refused by a secondary rate limit, REST head matches | `head-matches`; objective completion as usual. |
+| Valid `CLEAN`, every head read fails | `loop_result=WAITING`, `wait_reason=head-unavailable`, exit `76`; not `INVALID_DECISION`, no receipt. |
 
 ## Configuration and failures
 

@@ -390,6 +390,23 @@ with `BEFORE_ROUND_FAILED` and exit `1`, never `79`.
 `autodrive_refusal.sh`, sourced by the loop driver and the collector, applies
 these rules.
 
+## Waits end a run as WAITING
+
+CI pending or queued at the head, a GitHub read refused or rate-limited, and
+a merge state of `UNKNOWN` are waits, not lack of progress. GitHub reads fall
+back from GraphQL to REST (and `git ls-remote` for the head), so a GraphQL
+secondary limit alone does not stop a drive. A read that fails on every path
+is "unavailable", which is a wait; "head differs" is still a refusal.
+
+A round whose only blockers are waits ends the run with `loop_result`
+`WAITING`: resumable, not a failure, not `DONE`, and it never merges. The
+report names what to wait for (`ci@<sha>`, `ratelimit-reset@<epoch>`,
+`mergeability@<sha>` or `read@<what>`). Nothing sleeps or polls; run the
+drive again after that event and it continues from the last round. Only
+fixable findings count toward `STUCK`.
+
+See the [GitHub reads and waits reference](../../../docs/reference/autodrive-github-reads.md).
+
 ## Resumability
 
 A run that dies partway is re-runnable. Nothing merged is redone and no

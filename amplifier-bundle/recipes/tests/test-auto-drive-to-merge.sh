@@ -5982,11 +5982,10 @@ if ! grep -qE '^[[:space:]]*(timeout|timeout_seconds|default_step_timeout):' \
 else
   fail "NO-SHORT-TIMEOUT" "a step timeout is declared in an auto-drive recipe"
 fi
-if grep -qE 'sleep 60' "${RECIPES}/autodrive-merge-evidence.yaml" \
-   && ! grep -qE 'sleep [1-9]$|sleep [1-5]?[0-9]$' "${RECIPES}/autodrive-merge-evidence.yaml"; then
-  pass "NO-SHORT-POLL" "CI polling uses a 60-second interval, not a seconds-scale stopwatch"
+if ! grep -vE '^[[:space:]]*#' "${RECIPES}/autodrive-merge-evidence.yaml" | grep -qE 'sleep '; then
+  pass "NO-SHORT-POLL" "CI is read once; pending CI is a wait, never a poll or a sleep (#2333)"
 else
-  fail "NO-SHORT-POLL" "CI polling interval is not the documented 60 seconds"
+  fail "NO-SHORT-POLL" "the merge evidence recipe still sleeps or polls"
 fi
 
 # ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@
 #       round_label, head_sha, clean (1 clean, 0 not clean, 2 failed: the
 #       round exited non-zero or left no readable verdict), open items joined by ',' (cut for
 #       display), ci_signal, sha256 of the full sorted open-item set
-#   check <state> <loop> <label> <sha> <findings> [<ci_signal>]
+#   check <state> <loop> <label> <sha> <findings> [<ci_signal>] [<round_waiting>]
 #       compares the current round (not clean) with the last row. Exits 10,
 #       prints the reason and writes <state>/<loop>-stuck-reason.txt only when
 #       the last row is 0 (not clean and not failed), both SHAs are non-empty and equal, the open
@@ -26,13 +26,13 @@ set -uo pipefail
 umask 077
 export LC_ALL=C
 
-usage() { echo "ERROR: autodrive_progress.sh: ${1:-usage}. Usage: record <state> <loop> <label> <sha> <clean> <findings> [<ci_signal>] | check <state> <loop> <label> <sha> <findings> [<ci_signal>] | last <state> <loop>" >&2; exit 2; }
+usage() { echo "ERROR: autodrive_progress.sh: ${1:-usage}. Usage: record <state> <loop> <label> <sha> <clean> <findings> [<ci_signal>] | check <state> <loop> <label> <sha> <findings> [<ci_signal>] [<round_waiting>] | last <state> <loop>" >&2; exit 2; }
 
 CMD="${1:-}"
 [ $# -gt 0 ] && shift
 case "$CMD" in
   record) [ $# -eq 6 ] || [ $# -eq 7 ] || usage "record takes 6 or 7 arguments" ;;
-  check) [ $# -eq 5 ] || [ $# -eq 6 ] || usage "check takes 5 or 6 arguments" ;;
+  check) [ $# -ge 5 ] && [ $# -le 7 ] || usage "check takes 5 to 7 arguments" ;;
   last) [ $# -eq 2 ] || usage "last takes 2 arguments" ;;
   *) usage "unknown command '${CMD}'" ;;
 esac
@@ -114,6 +114,9 @@ esac
 # check
 LABEL="$(safe_label "$3")"; SHA="$(safe_sha "$4")"
 no_sha_warning
+# A round the record calls waiting (waits only, no fixable finding) is never
+# a stop (#2472): this covers QUEUED, UNREADABLE and UNKNOWN as well as PENDING.
+[ "${7:-}" != "true" ] || exit 0
 ROW="$(last_row)" || exit 0
 P_LABEL="$(printf '%s' "$ROW" | cut -f1)"; P_SHA="$(printf '%s' "$ROW" | cut -f2)"
 P_CLEAN="$(printf '%s' "$ROW" | cut -f3)"; P_ITEMS="$(printf '%s' "$ROW" | cut -f4)"

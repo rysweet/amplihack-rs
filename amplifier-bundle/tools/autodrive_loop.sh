@@ -26,7 +26,7 @@
 # same AMPLIHACK_SESSION_DEPTH — so a long loop never walks toward that
 # ceiling and the ceiling is never raised to accommodate one.
 #
-#   Exit 0  — the loop converged (DONE) and the round itself verified clean.
+#   Exit 0  — the loop converged (DONE) and the round itself verified clean, or WAITING (#2472).
 #   Exit 1  — evaluator STUCK (or unreadable), a missing round record under
 #             DONE, a repeated DONE over an unchanged non-clean round (#1597),
 #             a child that failed on a usage limit (USAGE_LIMIT, #1801), or a
@@ -205,7 +205,7 @@ while :; do
   # ROUND is a LABEL for reports. Nothing below compares it to a limit.
   ROUND=$((ROUND + 1))
   ROUND_LABEL="round-${ROUND}"
-  RECORD="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}.json"
+  RECORD="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}.json"; rm -f -- "${RECORD}.wait" # an old step-01 sidecar never stops this round (#2333)
   LOG="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}.log"
   BASELINE="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || printf '')"
   stamp_review_dir
@@ -271,6 +271,8 @@ while :; do
   # #1743, decided in code before the evaluator: no progress, then the budget. RF: 1 clean, 2 failed (rc!=0 or no verdict; the evaluator judges faults), 0 otherwise.
   HEAD_NOW="$(git -C "$REPO" rev-parse HEAD || printf '')"; CI_SIGNAL="$(field "$RAW" ci_signal "")"
   RF=0; [ "$ROUND_CLEAN" = "true" ] && RF=1 || { [ "$ROUND_RC" -eq 0 ] && [ "$ROUND_VERDICT" != "MISSING" ]; } || RF=2
+  [ "$RF" = 1 ] || wait_stop # #2472: a round whose only blockers are waits ends WAITING, before any no-progress count
+  ROUND_WAITS="$(field "$RAW" waits "[]" | LC_ALL=C tr -cd 'A-Za-z0-9_.:,"[]-')"; ROUND_WAIT_ONLY="$(field "$RAW" round_waiting false)"; [ "$ROUND_WAIT_ONLY" = true ] || ROUND_WAIT_ONLY=false
   [ "$RF" != 0 ] || progress_stop "$HEAD_NOW" "$CI_SIGNAL"
   bash "${LOOP_HOME}/autodrive_progress.sh" record "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$HEAD_NOW" "$RF" "${RECORD}.findings" "$CI_SIGNAL"
   [ "$ROUND_CLEAN" = "true" ] || budget_stop post
@@ -287,6 +289,8 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(print
       --private-state "$AUTODRIVE_COMPLETION_STATE" --child-exit-code "$ROUND_RC")"
     HEALTH_RC=$?
     INVOKED="$(field "$DISPATCH" evaluator_invoked '')"
+    # #2333: the PR head was unavailable on every path: WAITING, resumable; 76 is never re-exited.
+    dispatch_wait_stop "$HEALTH_RC" "$INVOKED" "$DISPATCH"
     if [ "$INVOKED" = false ] && [ "$HEALTH_RC" -eq 0 ]; then
       check_review_dir objective-completion
       record_result "$DISPATCH"
@@ -316,6 +320,7 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(print
       -c "loop_test_signal_previous=${PREV_TEST}" \
       -c "loop_ci_signal=${CI_SIGNAL}" \
       -c "loop_ci_signal_previous=${PREV_CI}" \
+      -c "loop_round_waits=${ROUND_WAITS}" -c "loop_round_wait_only=${ROUND_WAIT_ONLY}" \
       -c "loop_clean_token=${TOKEN_SAFE}" -c "loop_round_verdict=${EVAL_VERDICT}" ) \
       >"$HEALTH_LOG" 2>&1
   HEALTH_RC=$?; usage_add evaluator "$T0"
