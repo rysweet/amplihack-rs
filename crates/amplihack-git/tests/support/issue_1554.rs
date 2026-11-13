@@ -135,6 +135,7 @@ impl Repo {
             &root,
             &["push", "--quiet", "--set-upstream", "origin", "main"],
         );
+        git(&root, &["checkout", "--quiet", "-b", "feat/task"]);
         Self { temp, root, remote }
     }
 

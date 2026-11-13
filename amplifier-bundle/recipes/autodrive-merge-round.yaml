@@ -364,19 +364,19 @@ steps:
       . "{{autodrive_tools_dir}}/git-identity.sh" || { echo "ERROR: git identity helper not found; stop rather than commit under a guessed identity" >&2; exit 2; }
       amplihack_prepare_git_commit_identity || { echo "ERROR: git identity helper not found; stop rather than commit under a guessed identity" >&2; exit 2; }
 
-      amplihack hygiene artifact-guard --repo . --mode pre-commit || { echo "STOP: artifact guard refused before staging (#1528)" >&2; exit 1; }
-      amplihack hygiene artifact-guard --repo . --mode pre-commit || { echo "STOP: artifact guard refused after staging; fix the cause, never bypass (#1528)" >&2; exit 1; }
+      amplihack hygiene artifact-guard --repo . --mode pre-commit || { echo "STOP: artifact guard refused before checkpointing; fix the cause, never bypass (#1528)" >&2; exit 1; }
       amplihack hygiene workflow checkpoint --repo . -m "clear merge-ready blockers: <what changed>" || { echo "STOP: the commit failed; fix what the hook reports, never bypass it (#1528)" >&2; exit 1; }
       amplihack hygiene workflow publish --repo . || { echo "STOP: the push failed (#1528)" >&2; exit 1; }
       ```
 
-      If the artifact guard objects, before or after staging, remove the
-      artifact rather than silencing it. Stage only through the block: never
+      The artifact guard runs before checkpointing; if it refuses, fix the
+      cause rather than silencing it. Stage only through the block: never
       stage ignored files or anything under `worktrees/` (staging one records a
       gitlink to another checkout, #1528); never force a path past `.gitignore`
-      or a guard refusal. If a hook fails, fix the cause. Never reach for a flag
-      that skips hooks, nor for a branch-protection bypass at merge time. Both
-      are prohibited here without exception.
+      or a guard refusal. Checkpoint validates its private index after the
+      hooks run. If a hook fails, fix the cause. Never reach for a flag that
+      skips hooks, nor for a branch-protection bypass at merge time. Both are
+      prohibited here without exception.
     output: "merge_ready_fixes"
   # The round record (verdict, head_sha, qa/CI signals, qa_evidence_sha; #1517 D5): round-record.
   - id: "step-05-write-round-record"

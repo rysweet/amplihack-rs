@@ -592,6 +592,12 @@ fn dispatch_hygiene(command: HygieneCommands) -> Result<()> {
                         amplihack_git::workspace_validation::Workspace::open(&args.repo)?
                             .require_workflow()?;
                     }
+                    "candidate-tree" => {
+                        println!(
+                            "{}",
+                            amplihack_git::checkpoint_transaction::candidate_tree(&args.repo)?
+                        );
+                    }
                     "checkpoint" | "stage" => {
                         amplihack_git::checkpoint_transaction::checkpoint_into(
                             &args.repo,

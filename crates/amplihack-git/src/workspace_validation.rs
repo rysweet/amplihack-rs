@@ -79,3 +79,9 @@ pub(crate) fn bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
 pub(crate) fn run(root: &Path, args: &[&str]) -> Result<String> {
     String::from_utf8(bytes(root, args)?).context("Git returned an unsupported non-UTF-8 name")
 }
+
+/// Discover checkout identity from an invocation directory, preserving linked worktrees.
+pub fn checkout_root(invocation: &Path) -> Result<PathBuf> {
+    let top = run(invocation, &["rev-parse", "--show-toplevel"])?;
+    Ok(Workspace::open(Path::new(top.trim()))?.root)
+}

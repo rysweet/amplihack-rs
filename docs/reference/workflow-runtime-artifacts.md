@@ -258,3 +258,17 @@ exclusions, existing content, idempotence and registration failure before writes
 Publication and runner acceptance have separate requirements in the
 [checkpoint reference](workflow-checkpoint-publication.md#regression-and-runner-acceptance).
 This contract describes required behaviour, not a record of executed checks.
+
+## Pinned session storage
+
+CLI and launcher session trackers hold a validated runtime directory descriptor.
+Logs, advisory locks, compaction temporary files and atomic replacements all use
+operations relative to that descriptor; readers use the same boundary. Replacing
+a prepared parent with a symlink cannot redirect later writes into a checkout.
+Unsafe traversal and unsupported platforms return an explicit error. Removed
+storage may fail safely rather than being recreated through an untrusted path.
+
+Launch resolves checkout identity from the invocation directory while retaining
+that directory as the agent working directory. Nested-directory launches use the
+same checkout-specific runtime location as root launches. Linked checkouts retain
+their separate identity and clone-shared state remains shared.

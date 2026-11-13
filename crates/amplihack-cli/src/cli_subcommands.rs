@@ -74,7 +74,7 @@ pub enum HygieneCommands {
 
 #[derive(Args, Debug, Clone)]
 pub struct WorkflowArgs {
-    #[arg(value_parser = ["prepare", "validate-workspace", "checkpoint", "stage", "publish", "complete-publication", "validate-index"])]
+    #[arg(value_parser = ["prepare", "validate-workspace", "checkpoint", "stage", "publish", "complete-publication", "validate-index", "candidate-tree"])]
     pub action: String,
     #[arg(long, default_value = ".")]
     pub repo: PathBuf,

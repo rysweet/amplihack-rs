@@ -2,10 +2,13 @@
 
 use crate::nesting::NestingResult;
 use crate::session_log;
+use amplihack_git::runtime_directory::RuntimeDirectory;
 use anyhow::{Context, Result};
 use fs4::fs_std::FileExt;
 use serde::Serialize;
-use std::fs::{self, File, OpenOptions};
+#[cfg(test)]
+use std::fs;
+use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -18,31 +21,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// would be a lock on the inode that is about to be discarded. Appends are
 /// cheap enough that the extra `open`/`flock` pair is not measurable next to
 /// the JSON encoding they guard.
-const LOCK_FILE_SUFFIX: &str = ".lock";
-
-/// Exclusive advisory lock over the session log, released on drop.
 struct LogLock {
     file: File,
 }
-
 impl LogLock {
-    fn acquire(log_path: &Path) -> Result<Self> {
-        let mut name = log_path.as_os_str().to_os_string();
-        name.push(LOCK_FILE_SUFFIX);
-        let lock_path = PathBuf::from(name);
-        let mut options = OpenOptions::new();
-        options.create(true).read(true).write(true).truncate(false);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-        }
-        let file = options
-            .open(&lock_path)
-            .with_context(|| format!("failed to open {}", lock_path.display()))?;
-        restrict_permissions(&file)?;
-        FileExt::lock_exclusive(&file)
-            .with_context(|| format!("failed to lock {}", lock_path.display()))?;
+    fn acquire(directory: &RuntimeDirectory) -> Result<Self> {
+        let file = directory.lock_file("sessions.jsonl.lock")?;
+        FileExt::lock_exclusive(&file).context("failed to lock session log")?;
         Ok(Self { file })
     }
 }
@@ -79,6 +64,7 @@ struct SessionEndEntry<'a> {
 #[derive(Debug, Clone)]
 pub struct SessionTracker {
     log_path: PathBuf,
+    directory: RuntimeDirectory,
 }
 
 impl SessionTracker {
@@ -86,6 +72,7 @@ impl SessionTracker {
         let state = amplihack_git::launcher_state::prepare(project_root)?;
         Ok(Self {
             log_path: state.directory.join("sessions.jsonl"),
+            directory: RuntimeDirectory::open(&state.directory)?,
         })
     }
 
@@ -136,28 +123,8 @@ impl SessionTracker {
 
     fn append_line<T: Serialize>(&self, entry: &T) -> Result<()> {
         let line = serde_json::to_string(entry).context("failed to encode session entry")?;
-        // Issue #97: tolerate missing parent dir — the cosmetic ENOENT at
-        // shutdown was because `create(true)` does not create intermediate
-        // directories. Ensure the runtime dir exists before opening.
-        if let Some(parent) = self.log_path.parent() {
-            fs::create_dir_all(parent).context("cannot prepare session log parent")?;
-        }
-        // Issue #1272: the append and the retention check share one advisory
-        // lock. Without it a concurrent launch could open the log, have
-        // compaction rename a new inode into place underneath it, and then
-        // write its record into the orphaned old inode — losing an entry.
-        let _lock = LogLock::acquire(&self.log_path)?;
-        let mut options = OpenOptions::new();
-        options.create(true).append(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-        }
-        let mut file = options
-            .open(&self.log_path)
-            .with_context(|| format!("failed to open {}", self.log_path.display()))?;
-        restrict_permissions(&file)?;
+        let _lock = LogLock::acquire(&self.directory)?;
+        let mut file = self.directory.append("sessions.jsonl")?;
         file.write_all(line.as_bytes())
             .with_context(|| format!("failed to write {}", self.log_path.display()))?;
         file.write_all(b"\n")
@@ -166,7 +133,7 @@ impl SessionTracker {
         // Bound the log so the launch-path reader's cost cannot grow without
         // limit. A compaction failure must not fail the session it is only
         // tidying up after, so it is reported and swallowed here.
-        if let Err(err) = session_log::compact_if_needed(&self.log_path) {
+        if let Err(err) = session_log::compact_in_directory(&self.directory) {
             tracing::warn!(
                 "session log compaction failed for {}: {err:#}",
                 self.log_path.display()
@@ -194,50 +161,54 @@ fn generate_session_id() -> String {
     )
 }
 
-#[cfg(unix)]
-fn restrict_permissions(file: &File) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    file.set_permissions(fs::Permissions::from_mode(0o600))
-        .context("cannot make session log or lock private")
-}
-
-#[cfg(not(unix))]
-fn restrict_permissions(_file: &File) -> Result<()> {
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::Value;
 
     fn fixture_tracker(root: &Path) -> SessionTracker {
-        let directory = root.join("external-runtime");
+        let directory = root.canonicalize().unwrap().join("external-runtime");
         fs::create_dir(&directory).unwrap();
         SessionTracker {
             log_path: directory.join("sessions.jsonl"),
+            directory: RuntimeDirectory::open(&directory).unwrap(),
         }
     }
 
+    #[cfg(unix)]
     #[test]
-    fn append_line_creates_missing_runtime_dir() {
-        // Issue #97: session tracker must auto-create the parent runtime
-        // directory. Previously `OpenOptions::create(true)` only created the
-        // file, not intermediate dirs, so ending a session before any prior
-        // write produced a cosmetic ENOENT on shutdown that surfaced as
-        // "Status: ✗ Failed" in recipe-runner consumers.
+    fn substituted_runtime_parent_cannot_redirect_log_or_lock() {
         let temp = tempfile::tempdir_in("/var/tmp").unwrap();
         let tracker = fixture_tracker(temp.path());
-        // Simulate the race: runtime dir removed between tracker construction
-        // and append (e.g. by a sibling cleanup hook).
+        let checkout = temp.path().join("checkout");
+        fs::create_dir(&checkout).unwrap();
+        let runtime = tracker.log_path.parent().unwrap();
+        let pinned = runtime.with_extension("pinned");
+        let history = format!(
+            "{}\n",
+            serde_json::json!({"session_id":"finished", "status":"completed", "end_time":0})
+        )
+        .repeat(30_000);
+        fs::write(runtime.join("sessions.jsonl"), history).unwrap();
+        fs::rename(runtime, &pinned).unwrap();
+        std::os::unix::fs::symlink(&checkout, runtime).unwrap();
+        let result = tracker.complete_session("substitution-control");
+        assert!(!checkout.join("sessions.jsonl").exists());
+        assert!(!checkout.join("sessions.jsonl.lock").exists());
+        if result.is_ok() {
+            assert!(pinned.join("sessions.jsonl").exists());
+        }
+        // Readers must continue through the held descriptor as well.
+    }
+
+    #[test]
+    fn append_after_directory_removal_fails_safely() {
+        let temp = tempfile::tempdir_in("/var/tmp").unwrap();
+        let tracker = fixture_tracker(temp.path());
         let runtime = tracker.log_path.parent().unwrap().to_path_buf();
-        assert!(runtime.exists());
-        std::fs::remove_dir_all(&runtime).unwrap();
+        fs::remove_dir(&runtime).unwrap();
+        assert!(tracker.complete_session("removed-directory").is_err());
         assert!(!runtime.exists());
-        tracker
-            .complete_session("no-prior-session")
-            .expect("complete_session must tolerate missing runtime dir");
-        assert!(runtime.join("sessions.jsonl").exists());
     }
 
     #[test]

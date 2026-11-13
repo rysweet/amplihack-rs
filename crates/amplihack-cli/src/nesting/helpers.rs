@@ -77,11 +77,12 @@ impl SessionLogEntry {
 }
 
 pub(super) fn detect_from_sessions_log(current_dir: &Path) -> Option<NestingResult> {
-    let log_path = amplihack_git::launcher_state::resolve(current_dir)
+    let checkout = amplihack_git::workspace_validation::checkout_root(current_dir).ok()?;
+    let state = amplihack_git::launcher_state::resolve(&checkout).ok()?;
+    let content = amplihack_git::runtime_directory::RuntimeDirectory::open(&state.directory)
         .ok()?
-        .directory
-        .join("sessions.jsonl");
-    let content = std::fs::read_to_string(log_path).ok()?;
+        .read("sessions.jsonl")
+        .ok()?;
     if content.trim().is_empty() {
         return None;
     }
@@ -133,7 +134,9 @@ pub(super) fn resolve_path(path: &Path) -> PathBuf {
 }
 
 pub(super) fn session_file_path() -> Option<PathBuf> {
-    let state = amplihack_git::launcher_state::resolve(&env::current_dir().ok()?).ok()?;
+    let root =
+        amplihack_git::workspace_validation::checkout_root(&env::current_dir().ok()?).ok()?;
+    let state = amplihack_git::launcher_state::resolve(&root).ok()?;
     // Preserve the legacy claim's global sharing within the external base;
     // checkout-specific session collections continue to use sessions.jsonl.
     Some(state.directory.parent()?.parent()?.join(SESSION_FILE_NAME))

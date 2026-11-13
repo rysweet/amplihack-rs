@@ -30,11 +30,16 @@
 //! into an inode that is about to be replaced.
 
 use std::collections::HashSet;
+#[cfg(test)]
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::io::Read;
+#[cfg(test)]
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
+#[cfg(test)]
+use anyhow::Context;
+use anyhow::Result;
 use serde::Deserialize;
 
 /// Compact once the log grows past this size.
@@ -48,9 +53,6 @@ pub(crate) const RETAIN_TAIL_BYTES: usize = 256 * 1024;
 /// these records cannot affect nesting detection; the grace period exists
 /// only so a post-mortem can still see a crashed session.
 pub(crate) const DEAD_SESSION_GRACE_SECS: f64 = 24.0 * 3600.0;
-
-/// Tempfile used for the atomic rewrite.
-const COMPACT_TMP_SUFFIX: &str = ".compact.tmp";
 
 /// The subset of a session record that retention decisions depend on.
 #[derive(Debug, Default, Deserialize)]
@@ -167,16 +169,11 @@ fn now_secs_f64() -> f64 {
         .unwrap_or(0.0)
 }
 
-fn tmp_path(log_path: &Path) -> PathBuf {
-    let mut name = log_path.as_os_str().to_os_string();
-    name.push(COMPACT_TMP_SUFFIX);
-    PathBuf::from(name)
-}
-
 /// Compact `log_path` if it has grown past [`MAX_LOG_BYTES`].
 ///
 /// Returns `Ok(None)` when the log was already within budget. The caller is
 /// expected to hold the log's advisory lock.
+#[cfg(test)]
 pub(crate) fn compact_if_needed(log_path: &Path) -> Result<Option<CompactionReport>> {
     let Ok(metadata) = fs::metadata(log_path) else {
         return Ok(None);
@@ -187,9 +184,35 @@ pub(crate) fn compact_if_needed(log_path: &Path) -> Result<Option<CompactionRepo
     compact(log_path, &crate::nesting::process_is_alive)
 }
 
+#[cfg(test)]
 fn compact(log_path: &Path, is_alive: &dyn Fn(u32) -> bool) -> Result<Option<CompactionReport>> {
-    let content = fs::read_to_string(log_path)
-        .with_context(|| format!("failed to read {} for compaction", log_path.display()))?;
+    let directory = amplihack_git::runtime_directory::RuntimeDirectory::open(
+        &log_path
+            .parent()
+            .context("session log has no parent")?
+            .canonicalize()?,
+    )?;
+    compact_content(&directory, directory.read("sessions.jsonl")?, is_alive)
+}
+
+/// Compact via the same held directory used for the append and lock.
+pub(crate) fn compact_in_directory(
+    directory: &amplihack_git::runtime_directory::RuntimeDirectory,
+) -> Result<Option<CompactionReport>> {
+    let mut file = directory.reader("sessions.jsonl")?;
+    if file.metadata()?.len() <= MAX_LOG_BYTES {
+        return Ok(None);
+    }
+    let mut content = String::new();
+    file.read_to_string(&mut content)?;
+    compact_content(directory, content, &crate::nesting::process_is_alive)
+}
+
+fn compact_content(
+    directory: &amplihack_git::runtime_directory::RuntimeDirectory,
+    content: String,
+    is_alive: &dyn Fn(u32) -> bool,
+) -> Result<Option<CompactionReport>> {
     let lines: Vec<&str> = content
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -218,16 +241,7 @@ fn compact(log_path: &Path, is_alive: &dyn Fn(u32) -> bool) -> Result<Option<Com
         out.push('\n');
     }
 
-    let tmp = tmp_path(log_path);
-    fs::write(&tmp, out.as_bytes())
-        .with_context(|| format!("failed to write {}", tmp.display()))?;
-    restrict_permissions(&tmp);
-    fs::rename(&tmp, log_path).with_context(|| {
-        format!(
-            "failed to replace {} with compacted log",
-            log_path.display()
-        )
-    })?;
+    directory.replace("sessions.jsonl", out.as_bytes())?;
 
     tracing::info!(
         "sessions.jsonl compacted: dropped {} ended-session lines ({} bytes); kept {} lines",
@@ -237,15 +251,6 @@ fn compact(log_path: &Path, is_alive: &dyn Fn(u32) -> bool) -> Result<Option<Com
     );
     Ok(Some(report))
 }
-
-#[cfg(unix)]
-fn restrict_permissions(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
-}
-
-#[cfg(not(unix))]
-fn restrict_permissions(_path: &Path) {}
 
 #[cfg(test)]
 mod tests {
@@ -440,10 +445,11 @@ mod tests {
 
         compact(&path, &never_alive).unwrap().expect("must compact");
 
-        assert!(
-            !tmp_path(&path).exists(),
-            "the compaction tempfile must be renamed away, not left behind"
-        );
+        let files: Vec<_> = fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(files, [std::ffi::OsString::from("sessions.jsonl")]);
         // Every surviving line must still be valid JSON.
         for line in fs::read_to_string(&path).unwrap().lines() {
             serde_json::from_str::<Value>(line).expect("compacted log must stay valid JSONL");

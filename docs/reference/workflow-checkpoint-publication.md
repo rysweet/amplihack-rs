@@ -63,6 +63,7 @@ Checkpoint messages use `--message` or `-m`.
 | `validate-workspace --repo .` | Check workspace identity and workflow prerequisites without initialising Git. |
 | `prepare --repo .` | Register common-Git exclusions before checkout-local runtime writes. |
 | `stage --repo .` | Stage only candidates covered by validated task authority. |
+| `candidate-tree --repo .` | Print an authorised repair-candidate tree ID using a disposable private index. |
 | `checkpoint --repo . --message "workflow source checkpoint"` | Commit authorised candidates through normal hooks while preserving protected entries. |
 | `complete-publication --repo . --message "workflow source checkpoint"` | Prepare, checkpoint and publish with one structured result. |
 | `publish --repo .` | Validate and push every explicit update to its actual destination. |
@@ -114,7 +115,7 @@ it does not change generic runner semantics.
 | Validate | Confirm checkout and task binding, exact candidates and supported index state. |
 | Protect | Lock and snapshot the real index; identify pre-existing user-staged work. |
 | Prepare | Stage authorised candidates into a trusted private index based on `HEAD`. |
-| Commit | Run normal hooks and validate the resulting index before commit creation. |
+| Commit | Run normal commit and index-change hooks; freeze and validate the tree against transaction-owned authority, then create that exact commit object and advance the branch with normal reference hooks. |
 | Reconcile | Apply committed candidate entries to a copy of the original index, verify protected entries and install it atomically. |
 
 Protected entries retain their staged bytes, object IDs, modes, stages, flags,
@@ -128,10 +129,22 @@ overrides, then supply trusted values explicitly. The transaction selects its
 private index deliberately; inherited `GIT_INDEX_FILE` is not private-index
 authority. Credential handling and normal hooks remain available.
 
+The original validated scope remains in transaction-owned memory. `scope.json`
+is an inspection copy and cannot grant authority after a hook edits it.
 Validation runs after relevant hook mutations and before commit creation.
 Hook-added unauthorised paths cannot enter the commit. If that boundary cannot
 be established, the automatic commit is refused. Unexpected `HEAD` changes are
-also errors; the index lock alone does not protect branch refs.
+also errors; the index lock alone does not protect branch refs. Commit creation
+uses the validated tree object, never a later read of the private index. The
+reference update compares the expected old commit and checks that reference
+hooks have not changed the frozen private index. Commit-message hooks, configured
+message cleanup and signing, reference callbacks and post-commit notifications
+remain active. A post-commit hook cannot change the already selected tree.
+
+Repair snapshots use `candidate-tree` with a disposable private index. Retry and
+push-fix checkpoints receive the same authorised candidates without first staging
+them in the real index. The separate `stage` operation still stages explicitly;
+it is not checkpoint preparation.
 
 If commit creation succeeds but reconciliation fails, the original real index
 is preserved. The result includes the commit ID and a failing reconciliation
@@ -159,8 +172,13 @@ a separate publication result with status `78`.
 ## Destination and outgoing history
 
 Publication resolves actual push URLs, which can differ from fetch URLs, and
-freezes every proposed object ID and destination ref. All destinations and refs
-are validated before any push. Implicit tag following is disabled.
+freezes every proposed object ID and destination ref. The default destination
+is `refs/heads/<current-task-branch>`, independent of an inherited base upstream.
+Explicit push refspecs retain the same outgoing-history checks. Task publication
+refuses `main`, `master`, the configured default branch and the destination's
+advertised default branch. It updates upstream tracking only after successful
+publication. All destinations and refs are validated before any push. Implicit
+tag following is disabled.
 
 The basis is the destination's own complete successful advertisement, obtained
 from pre-push input or one `ls-remote` for that destination. Local tracking refs
@@ -221,6 +239,8 @@ recovered with hook bypasses or force-pushes.
 A publication step with `parse_json: true` emits one versioned JSON object on
 stdout. Diagnostics and hook output go to stderr. Preparation and checkpoint
 output must not concatenate extra documents into the publication result.
+Asset bootstrap is skipped centrally for `hygiene workflow` operations, which
+work directly on the checkout and do not require installed framework assets.
 
 The result contract uses version `1` and includes these fields:
 
@@ -291,6 +311,35 @@ The authorised sequence is prerequisite merges, runner correction, release,
 authorised pin adoption, then the original **25 native template-based removal
 controls**. Materialised-directory diagnostics and reconstructed controls cannot
 replace native acceptance. This documentation grants no runner change authority.
+
+New review regressions cover fresh worktree creation with inherited base tracking,
+hook edits to both scope and index, approved hook formatting, runtime parent
+symlink substitution for both trackers, nested launches, repair checkpoints with
+protected staged work, and publication from a fresh profile without the bootstrap
+opt-out. These are new evidence, not recovered historical acceptance controls.
+
+New macOS follow-up evidence (2026-11-12), separate from the missing historical
+packet and runner-held acceptance:
+
+| Check | Result |
+| --- | --- |
+| `cargo test --locked -p amplihack-git --no-fail-fast` | 31 passed. |
+| CLI integration filter `issue_1554` | 79 passed; one runner-held diagnostic ignored. The 24 runtime and three launch controls also passed after the runtime creation fix. |
+| Launcher library | 276 passed; seven tracker controls also rerun after the runtime creation fix. |
+| CLI `session_tracker::` and `session_log::` | Six passed in each group, including concurrent append/compaction and parent substitution. |
+| Utility routing readers and launcher context | 45 and six passed, respectively. |
+| Workflow bootstrap exclusion | One passed with no installer calls or output. |
+| Library Clippy for Git, utilities and launcher (`-D warnings`) | Passed. |
+| `pre-commit run --all-files` | File checks, artifact guard, recipe budget, Git subprocess checks and formatting passed; Clippy failed in unmodified macOS code. |
+
+The Clippy failures include an unused `RESUME_MSG` import in
+`bins/amplihack-hooks/tests/limit_resume_binary.rs` and existing unused/dead code
+in CLI profile, governor and parent-watch modules. An exploratory CLI library
+`session_` filter also reported failures in the unmodified
+`switch_uses_injected_login_identity_instead_of_the_session_account` and
+`a_dead_holder_does_not_hold_capacity_forever` tests. Its tracker contention
+failure was corrected and the focused tracker/compaction groups passed afterward.
+These remaining repository check failures do not establish merge readiness.
 
 All fixtures isolate profiles before lookup and never use real user profile
 roots. Launch acceptance unsets `HOME` and `XDG_CONFIG_HOME`, verifies unchanged

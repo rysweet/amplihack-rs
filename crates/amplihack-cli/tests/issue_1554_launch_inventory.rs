@@ -68,6 +68,7 @@ esac
             let before = r.inventory(&r.work);
             let out = r
                 .command(r.bin.join("amplihack"))
+                .env("AMPLIHACK_CLAUDE_BINARY_PATH", r.bin.join("claude"))
                 .env_remove("HOME")
                 .env_remove("XDG_CONFIG_HOME")
                 .env("AMPLIHACK_RUNTIME_DIR", r.root.join("external-runtime"))
@@ -150,6 +151,56 @@ fn clone_shared_power_steering_and_checkout_specific_context_keep_their_contract
             ] {
                 assert!(!path.starts_with(&r.main) && !path.starts_with(&r.work));
             }
+        },
+    );
+}
+
+#[test]
+fn root_and_nested_launches_keep_cwd_and_share_checkout_runtime_identity() {
+    sandbox(
+        module_path!(),
+        "root_and_nested_launches_keep_cwd_and_share_checkout_runtime_identity",
+        || {
+            let r = Repo::new();
+            let cwd_record = r.root.join("agent-cwd");
+            executable(
+                r.bin.join("claude"),
+                "#!/bin/sh\ncase \"$1\" in --version) echo '2.1.319 (Claude Code)';; *) pwd -P > \"$AGENT_CWD\"; echo 'fake agent reached';; esac\n",
+            );
+            for cwd in [&r.work, &r.work.join("src")] {
+                let out = r
+                    .command(r.bin.join("amplihack"))
+                    .current_dir(cwd)
+                    .env("AMPLIHACK_CLAUDE_BINARY_PATH", r.bin.join("claude"))
+                    .env("AGENT_CWD", &cwd_record)
+                    .args(["claude", "--subprocess-safe", "--", "-p", "fixture task"])
+                    .output()
+                    .unwrap();
+                success(&out);
+                assert!(String::from_utf8_lossy(&out.stdout).contains("fake agent reached"));
+                assert_eq!(
+                    fs::read_to_string(&cwd_record).unwrap().trim(),
+                    cwd.to_str().unwrap()
+                );
+            }
+            child_set_var("AMPLIHACK_RUNTIME_DIR", r.root.join("external-runtime"));
+            let state = amplihack_git::launcher_state::resolve(&r.work).unwrap();
+            let log = fs::read_to_string(state.directory.join("sessions.jsonl")).unwrap();
+            assert_eq!(
+                log.lines()
+                    .filter(|line| line.contains("\"status\":\"active\""))
+                    .count(),
+                2
+            );
+            assert!(amplihack_utils::launcher_context::read_launcher_context(&r.work).is_some());
+            let nested =
+                amplihack_git::workspace_validation::checkout_root(&r.work.join("src")).unwrap();
+            assert_eq!(
+                amplihack_git::launcher_state::resolve(&nested)
+                    .unwrap()
+                    .directory,
+                state.directory
+            );
         },
     );
 }

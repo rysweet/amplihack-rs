@@ -8,6 +8,7 @@ pub struct History {
     pub directory: tempfile::TempDir,
     pub advertised: BTreeSet<String>,
     pub refs: BTreeMap<String, String>,
+    pub default_branch: Option<String>,
 }
 impl History {
     pub fn obtain(source: &Path, destination: &str, proposed: &[String]) -> Result<Self> {
@@ -20,11 +21,19 @@ impl History {
         require_literal_destination(source, destination)?;
         // This is the sole advertisement for this destination and push attempt.
         let transport = transport_config(source)?;
-        let advertisement = source_run(source, &["ls-remote", destination])
+        let advertisement = source_run(source, &["ls-remote", "--symref", destination])
             .context("destination advertisement failed; publication stopped")?;
         let mut tips = BTreeSet::new();
         let mut refs = BTreeMap::new();
+        let mut default_branch = None;
         for line in advertisement.lines() {
+            if let Some(reference) = line
+                .strip_prefix("ref: ")
+                .and_then(|line| line.strip_suffix("\tHEAD"))
+            {
+                default_branch = Some(reference.to_owned());
+                continue;
+            }
             let (oid, reference) = line
                 .split_once('\t')
                 .context("invalid destination advertisement")?;
@@ -108,6 +117,7 @@ impl History {
             directory,
             advertised,
             refs,
+            default_branch,
         })
     }
 }

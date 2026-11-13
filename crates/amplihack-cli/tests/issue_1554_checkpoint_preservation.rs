@@ -530,7 +530,7 @@ fn normal_post_index_change_hooks_are_preserved_inside_the_commit() {
         || {
             let r = Repo::new();
             let marker = r.root.join("post-index-hook-ran");
-            r.hook("post-index-change", "#!/bin/sh\ncase \"$(ps -p \"$PPID\" -o command=)\" in *' commit '*) printf 'post-index\\n' >> \"$HOOK_MARKER\" ;; esac\n");
+            r.hook("post-index-change", "#!/bin/sh\n[ -n \"${HOOK_MARKER:-}\" ] || exit 0\nprintf 'post-index\\n' >> \"$HOOK_MARKER\"\n");
             write(r.work.join("src/allowed.rs"), "normal Git control\n");
             r.git(&r.work, &["add", "--", "src/allowed.rs"]);
             let control = r
@@ -594,6 +594,154 @@ fn nested_reference_transactions_preserve_the_normal_hooks_input() {
                 "nested reference callbacks changed the normal hook's input"
             );
             assert_eq!(r.git(&r.work, &["show", ":user.txt"]), protected);
+        },
+    );
+}
+
+#[test]
+fn hook_cannot_expand_authority_by_editing_scope_and_private_index() {
+    crate::issue_1554_fixture::sandbox(
+        module_path!(),
+        "hook_cannot_expand_authority_by_editing_scope_and_private_index",
+        || {
+            let r = Repo::new();
+            r.protect_user_blob();
+            let before = r.staged();
+            let index = amplihack_git::workspace_validation::Workspace::open(&r.work)
+                .unwrap()
+                .git_dir()
+                .join("index");
+            let index_before = fs::read(&index).unwrap();
+            let head = r.oid(&r.work, "HEAD");
+            write(r.work.join("src/new.rs"), "approved source\n");
+            r.hook(
+                "pre-commit",
+                r#"#!/bin/sh
+set -eu
+scope="$(dirname "$GIT_INDEX_FILE")/scope.json"
+sed 's/"paths":\[/"paths":["unrelated.txt",/' "$scope" > "$scope.new"
+mv "$scope.new" "$scope"
+printf 'unauthorised\n' > unrelated.txt
+git add -- unrelated.txt
+"#,
+            );
+            let out = checkpoint(&r).output().unwrap();
+            assert!(!out.status.success(), "{}", describe(&out));
+            assert_eq!(r.oid(&r.work, "HEAD"), head);
+            assert_eq!(r.staged(), before);
+            assert_eq!(fs::read(index).unwrap(), index_before);
+            assert!(String::from_utf8_lossy(&out.stderr).contains("unrelated.txt"));
+        },
+    );
+}
+
+#[test]
+fn approved_hook_modification_is_committed_with_normal_message_hooks() {
+    crate::issue_1554_fixture::sandbox(
+        module_path!(),
+        "approved_hook_modification_is_committed_with_normal_message_hooks",
+        || {
+            let r = Repo::new();
+            r.protect_user_blob();
+            let before = r.staged_patch();
+            write(r.work.join("src/new.rs"), "before formatter\n");
+            r.hook(
+                "pre-commit",
+                "#!/bin/sh\nprintf 'formatted source\\n' > src/new.rs\ngit add -- src/new.rs\n",
+            );
+            r.hook(
+                "commit-msg",
+                "#!/bin/sh\nprintf '\\nnormal message hook\\n' >> \"$1\"\n",
+            );
+            success(&checkpoint(&r).output().unwrap());
+            assert_eq!(
+                r.git(&r.work, &["show", "HEAD:src/new.rs"]),
+                b"formatted source\n"
+            );
+            assert!(
+                String::from_utf8(r.git(&r.work, &["log", "-1", "--format=%B"]))
+                    .unwrap()
+                    .contains("normal message hook")
+            );
+            assert_eq!(r.staged_patch(), before);
+        },
+    );
+}
+
+#[test]
+fn repair_retries_and_push_fix_checkpoints_preserve_unrelated_staged_work() {
+    crate::issue_1554_fixture::sandbox(
+        module_path!(),
+        "repair_retries_and_push_fix_checkpoints_preserve_unrelated_staged_work",
+        || {
+            for (push, protect) in [(false, true), (true, true), (false, false)] {
+                let r = Repo::new();
+                if push {
+                    r.commit_file(&r.work, "src/new.rs", "FORMAT_ME\n");
+                } else {
+                    write(r.work.join("src/new.rs"), "FORMAT_ME\n");
+                }
+                if protect {
+                    r.protect_user_blob();
+                }
+                let before = r.staged_patch();
+                let head = r.oid(&r.work, "HEAD");
+                let repaired = r.root.join("repair-reached");
+                let original = fs::read_link(r.bin.join("amplihack")).unwrap();
+                fs::remove_file(r.bin.join("amplihack")).unwrap();
+                crate::issue_1554_fixture::executable(
+                    r.bin.join("amplihack"),
+                    r#"#!/bin/sh
+if [ "$1 $2" = 'recipe show' ]; then exit 0; fi
+if [ "$1 $2" = 'recipe run' ]; then
+  printf 'fixed by repair\n' > src/new.rs
+  printf 'repair reached\n' >> "$REPAIR_MARKER"
+  echo '{"hook_repair":"fixed"}'
+  exit 0
+fi
+exec "$REAL_AMPLIHACK" "$@"
+"#,
+                );
+                let hook = if push { "pre-push" } else { "pre-commit" };
+                r.hook(hook, &format!("#!/bin/sh\nif grep -q FORMAT_ME src/new.rs; then echo '{hook}: formatter rejected source' >&2; exit 1; fi\n"));
+                let mut command = r.shell(r#"set -euo pipefail
+. "$REPAIR_HELPER"
+if [ "$REPAIR_OPERATION" = push ]; then
+  hook_repair_run push review-regression --fix-message "fix repaired source" -- amplihack hygiene workflow publish --repo .
+else
+  hook_repair_run commit review-regression -- amplihack hygiene workflow checkpoint --repo . -m 'repair checkpoint'
+fi
+"#);
+                command.env("REPAIR_HELPER", source_root().join("amplifier-bundle/tools/workflow_hook_repair.sh"))
+                .env("REPAIR_OPERATION", if push { "push" } else { "commit" })
+                .env("RECIPE_VAR_final_requirements", serde_json::json!({"version":1,"task":"repair-fixture","permitted_source_paths":["src/new.rs"]}).to_string())
+                .env("RECIPE_VAR_design_spec", serde_json::json!({"version":1,"task":"repair-fixture","files_to_change":["src/new.rs"]}).to_string())
+                .env("RECIPE_VAR_ops_modified_files", "[\"src/new.rs\"]");
+                let out = command
+                    .env("REAL_AMPLIHACK", &original)
+                    .env("AMPLIHACK_BIN", r.bin.join("amplihack"))
+                    .env("REPAIR_MARKER", &repaired)
+                    .output()
+                    .unwrap();
+                success(&out);
+                assert!(
+                    repaired.exists(),
+                    "repair agent was not reached: {}",
+                    describe(&out)
+                );
+                assert_ne!(r.oid(&r.work, "HEAD"), head);
+                assert_eq!(
+                    r.git(&r.work, &["show", "HEAD:src/new.rs"]),
+                    b"fixed by repair\n"
+                );
+                assert_eq!(r.staged_patch(), before);
+                if push {
+                    assert_eq!(
+                        r.oid(&r.remote, "refs/heads/feat/1554"),
+                        r.oid(&r.work, "HEAD")
+                    );
+                }
+            }
         },
     );
 }

@@ -486,15 +486,17 @@ fn run_launch_core(
     let execution_dir = resolve_checkout_repo(checkout_repo.as_deref())?
         .or(Some(current_dir.clone()))
         .unwrap_or_else(|| PathBuf::from("."));
-    amplihack_git::runtime_preparation::prepare(&execution_dir)?;
-    amplihack_git::launcher_state::resolve(&execution_dir)?;
+    // Keep the agent's cwd while binding runtime state to this checkout root.
+    let checkout_root = amplihack_git::workspace_validation::checkout_root(&execution_dir)?;
+    amplihack_git::runtime_preparation::prepare(&checkout_root)?;
+    amplihack_git::launcher_state::resolve(&checkout_root)?;
     let contract_file = if inject_contract {
         let home = match system_prompt_append::contract_home() {
-            Ok(home) => amplihack_git::launcher_state::validate_external(&execution_dir, &home)?,
+            Ok(home) => amplihack_git::launcher_state::validate_external(&checkout_root, &home)?,
             Err(error) => {
                 if std::env::var_os("AMPLIHACK_RUNTIME_DIR").is_some_and(|value| !value.is_empty())
                 {
-                    amplihack_git::launcher_state::prepare(&execution_dir)?.directory
+                    amplihack_git::launcher_state::prepare(&checkout_root)?.directory
                 } else {
                     return Err(error);
                 }
@@ -513,11 +515,11 @@ fn run_launch_core(
 
     let node_options = resolve_launch_node_options(subprocess_safe)?;
     if !subprocess_safe {
-        maybe_prompt_re_enable_power_steering(&execution_dir)?;
+        maybe_prompt_re_enable_power_steering(&checkout_root)?;
     }
-    persist_launcher_context(tool, Some(&execution_dir), &extra_args)?;
+    persist_launcher_context(tool, Some(&checkout_root), &extra_args)?;
     let launch_dir = execution_dir.clone();
-    let tracker = SessionTracker::new(&launch_dir)?;
+    let tracker = SessionTracker::new(&checkout_root)?;
     let tracker_args = render_session_argv(
         tool,
         resume,
@@ -544,7 +546,7 @@ fn run_launch_core(
             .with_launched_agent_binary(tool)
             .with_amplihack_home() // WS3: AMPLIHACK_HOME
             .with_asset_resolver(); // Rust-native bundle asset resolver
-        env_builder = env_builder.with_project_graph_db(&execution_dir)?;
+        env_builder = env_builder.with_project_graph_db(&checkout_root)?;
         let env_builder = augment_claude_launch_env(env_builder, tool, Some(binary.path.as_path()))
             .set_if(is_noninteractive(), "AMPLIHACK_NONINTERACTIVE", "1")
             .set_if(no_reflection, "AMPLIHACK_SKIP_REFLECTION", "1"); // WS2: propagate flags
@@ -557,7 +559,7 @@ fn run_launch_core(
                 .as_deref(),
         )?;
 
-        maybe_run_blarify_indexing_prompt(tool, is_noninteractive(), Some(&execution_dir))?;
+        maybe_run_blarify_indexing_prompt(tool, is_noninteractive(), Some(&checkout_root))?;
 
         // Register before the final executable check so revalidation, command
         // construction, credential projection, and spawn remain adjacent.

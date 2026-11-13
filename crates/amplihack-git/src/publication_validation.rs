@@ -220,12 +220,8 @@ pub fn publish_into(root: &Path, result: &mut WorkflowResult) -> Result<()> {
             })
             .collect::<Result<_>>()?
     } else if configured.status.code() == Some(1) {
-        let target = optional(
-            root,
-            &["config", "--get", &format!("branch.{branch}.merge")],
-        )?
-        .unwrap_or_else(|| format!("refs/heads/{branch}"));
-        vec![format!("refs/heads/{branch}:{target}")]
+        // The inherited upstream describes the base, never publication authority.
+        vec![format!("refs/heads/{branch}:refs/heads/{branch}")]
     } else {
         bail!("cannot read configured publication updates");
     };
@@ -247,6 +243,12 @@ pub fn publish_into(root: &Path, result: &mut WorkflowResult) -> Result<()> {
         }
         run(root, &["check-ref-format", source])?;
         run(root, &["check-ref-format", destination])?;
+        if matches!(destination, "refs/heads/main" | "refs/heads/master")
+            || optional(root, &["config", "--get", "init.defaultBranch"])?
+                .is_some_and(|name| destination == format!("refs/heads/{name}"))
+        {
+            bail!("task publication refuses a protected/default branch destination: {destination}");
+        }
         if !target_refs.insert(destination.to_owned()) {
             bail!("duplicate publication destination ref");
         }
@@ -273,6 +275,13 @@ pub fn publish_into(root: &Path, result: &mut WorkflowResult) -> Result<()> {
         let url = crate::isolated_history::resolve_destination(root, url)?;
         crate::isolated_history::require_literal_destination(root, &url)?;
         let history = History::obtain(root, &url, &tips)?;
+        if history
+            .default_branch
+            .as_ref()
+            .is_some_and(|reference| target_refs.contains(reference))
+        {
+            bail!("task publication refuses the destination default branch");
+        }
         for (tip, reference) in &updates {
             validate(&history, &scope, std::slice::from_ref(tip)).map_err(|error| {
                 let diagnostic = format!("destination {} ref {reference}: {error:#}", redact(&url));
@@ -422,6 +431,17 @@ pub fn publish_into(root: &Path, result: &mut WorkflowResult) -> Result<()> {
                 update.outcome = "pushed".to_owned();
             }
         }
+    }
+    // Tracking changes only after every transport has succeeded.
+    if updates.len() == 1 && source_refs[0] == format!("refs/heads/{branch}") {
+        run(
+            root,
+            &["config", &format!("branch.{branch}.remote"), &remote],
+        )?;
+        run(
+            root,
+            &["config", &format!("branch.{branch}.merge"), &updates[0].1],
+        )?;
     }
     result.pushed = true;
     result.push_reason = if result

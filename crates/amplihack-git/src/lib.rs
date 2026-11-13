@@ -52,6 +52,7 @@ pub mod checkpoint_transaction;
 pub mod isolated_history;
 pub mod launcher_state;
 pub mod publication_validation;
+pub mod runtime_directory;
 pub mod runtime_preparation;
 pub mod task_scope;
 pub mod workspace_validation;

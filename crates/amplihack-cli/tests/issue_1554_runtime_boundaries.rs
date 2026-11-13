@@ -420,6 +420,7 @@ fn real_launch_with_a_local_agent_preserves_the_source_manifest() {
             );
             let out = r
                 .command(r.bin.join("amplihack"))
+                .env("AMPLIHACK_CLAUDE_BINARY_PATH", r.bin.join("claude"))
                 .args([
                     "claude",
                     "--subprocess-safe",

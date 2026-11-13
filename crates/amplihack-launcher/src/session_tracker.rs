@@ -5,8 +5,10 @@
 //! - Session lifecycle (start → complete/crash)
 //! - Unique session IDs
 
+use amplihack_git::runtime_directory::RuntimeDirectory;
 use serde::{Deserialize, Serialize};
-use std::fs::{self, OpenOptions};
+#[cfg(test)]
+use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -34,6 +36,7 @@ pub const STATUS_CRASHED: &str = "crashed";
 /// Manage session lifecycle in the checkout's external runtime directory.
 pub struct SessionTracker {
     runtime_log: PathBuf,
+    directory: RuntimeDirectory,
 }
 
 impl SessionTracker {
@@ -42,16 +45,11 @@ impl SessionTracker {
         let runtime_log = amplihack_git::launcher_state::prepare(base_dir)?
             .directory
             .join("sessions.jsonl");
-        let tracker = Self { runtime_log };
-        tracker.ensure_runtime_dir()?;
-        Ok(tracker)
-    }
-
-    fn ensure_runtime_dir(&self) -> anyhow::Result<()> {
-        if let Some(parent) = self.runtime_log.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        Ok(())
+        let directory = RuntimeDirectory::open(runtime_log.parent().unwrap())?;
+        Ok(Self {
+            runtime_log,
+            directory,
+        })
     }
 
     /// Register a new session, returning its unique ID.
@@ -92,7 +90,6 @@ impl SessionTracker {
     }
 
     fn end_session(&self, session_id: &str, status: &str) -> anyhow::Result<()> {
-        self.ensure_runtime_dir()?;
         let entry = serde_json::json!({
             "session_id": session_id,
             "status": status,
@@ -102,48 +99,30 @@ impl SessionTracker {
     }
 
     fn append_entry(&self, entry: &SessionEntry) -> anyhow::Result<()> {
-        self.ensure_runtime_dir()?;
         self.write_log(&serde_json::to_string(entry)?)
     }
 
     fn write_log(&self, line: &str) -> anyhow::Result<()> {
-        let mut lock_options = OpenOptions::new();
-        lock_options
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true);
-        let mut log_options = OpenOptions::new();
-        log_options.create(true).append(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            lock_options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-            log_options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-        }
-        let lock = lock_options.open(self.runtime_log.with_extension("jsonl.lock"))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            lock.set_permissions(fs::Permissions::from_mode(0o600))?;
-        }
+        let lock = self.directory.lock_file("sessions.jsonl.lock")?;
         fs2::FileExt::lock_exclusive(&lock)?;
-        let mut file = log_options.open(&self.runtime_log)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(fs::Permissions::from_mode(0o600))?;
-        }
+        let mut file = self.directory.append("sessions.jsonl")?;
         writeln!(file, "{line}")?;
         Ok(())
     }
 
     /// Read all entries from the log file.
     pub fn read_entries(&self) -> anyhow::Result<Vec<SessionEntry>> {
-        if !self.runtime_log.exists() {
-            return Ok(vec![]);
-        }
-        let content = fs::read_to_string(&self.runtime_log)?;
+        let content = match self.directory.read("sessions.jsonl") {
+            Ok(content) => content,
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                return Ok(vec![]);
+            }
+            Err(error) => return Err(error),
+        };
         let mut entries = Vec::new();
         for line in content.lines() {
             let line = line.trim();
@@ -186,9 +165,32 @@ mod tests {
     fn setup_tracker() -> (tempfile::TempDir, SessionTracker) {
         let dir = tempfile::tempdir_in("/var/tmp").unwrap();
         let tracker = SessionTracker {
-            runtime_log: dir.path().join("sessions.jsonl"),
+            runtime_log: dir.path().canonicalize().unwrap().join("sessions.jsonl"),
+            directory: RuntimeDirectory::open(&dir.path().canonicalize().unwrap()).unwrap(),
         };
         (dir, tracker)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn substituted_runtime_parent_cannot_redirect_log_or_lock() {
+        let (_temp, tracker) = setup_tracker();
+        let temp = tempfile::tempdir_in("/var/tmp").unwrap();
+        let checkout = temp.path().join("checkout");
+        fs::create_dir(&checkout).unwrap();
+        let runtime = tracker.runtime_log.parent().unwrap();
+        let pinned = runtime.with_extension("pinned");
+        fs::rename(runtime, &pinned).unwrap();
+        std::os::unix::fs::symlink(&checkout, runtime).unwrap();
+        let result = tracker.complete_session("substitution-control");
+        assert!(!checkout.join("sessions.jsonl").exists());
+        assert!(!checkout.join("sessions.jsonl.lock").exists());
+        if result.is_ok() {
+            assert!(pinned.join("sessions.jsonl").exists());
+        }
+        // Readers must continue through the held descriptor as well.
+        assert!(tracker.read_entries().is_ok());
+        fs::remove_dir_all(pinned).unwrap();
     }
 
     #[test]

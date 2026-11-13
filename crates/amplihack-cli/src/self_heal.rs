@@ -510,7 +510,10 @@ fn args_should_skip(args: &[OsString]) -> bool {
         .filter(|arg| !arg.starts_with('-'))
         .collect();
 
-    if matches!(positionals.as_slice(), ["hygiene", "artifact-guard", ..]) {
+    if matches!(
+        positionals.as_slice(),
+        ["hygiene", "artifact-guard" | "workflow", ..]
+    ) {
         return true;
     }
     // `orch helper <sub>` commands are pure stdin->stdout text-transform
@@ -1117,6 +1120,29 @@ steps:
     }
 
     #[test]
+    fn workflow_operations_skip_asset_bootstrap() {
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+        for operation in [
+            "publish",
+            "complete-publication",
+            "checkpoint",
+            "candidate-tree",
+        ] {
+            let calls = Cell::new(0u32);
+            let mut output = Vec::new();
+            ensure_assets_match_binary_version_with(
+                &args(&["amplihack", "hygiene", "workflow", operation]),
+                &mut output,
+                counting_installer(&calls, crate::VERSION),
+            )
+            .unwrap();
+            assert_eq!(calls.get(), 0);
+            assert!(output.is_empty());
+        }
+    }
+
+    #[test]
     fn other_hygiene_commands_still_use_startup_self_heal() {
         let tmp = TempDir::new().unwrap();
         let _g = EnvGuard::new(tmp.path(), None);
@@ -1133,7 +1159,7 @@ steps:
         assert_eq!(
             calls.get(),
             1,
-            "only hygiene artifact-guard should bypass startup self-heal"
+            "hygiene cleanup still needs startup self-heal"
         );
     }
 

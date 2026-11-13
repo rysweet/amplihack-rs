@@ -59,7 +59,12 @@ impl NestingDetector {
 
         // Fallback: Check legacy session file
         if let Some(session_path) = session_file_path()
-            && let Ok(content) = std::fs::read_to_string(&session_path)
+            && let Some(content) = session_path
+                .parent()
+                .and_then(|parent| {
+                    amplihack_git::runtime_directory::RuntimeDirectory::open(parent).ok()
+                })
+                .and_then(|directory| directory.read("session.json").ok())
             && let Ok(session) = serde_json::from_str::<SessionFile>(&content)
         {
             if is_process_alive(session.pid) {
@@ -89,13 +94,10 @@ impl NestingDetector {
 
     /// Write a session file to claim the current session.
     pub fn claim_session(session_id: &str) -> anyhow::Result<()> {
-        amplihack_git::launcher_state::prepare(&env::current_dir()?)?;
+        let root = amplihack_git::workspace_validation::checkout_root(&env::current_dir()?)?;
+        amplihack_git::launcher_state::prepare(&root)?;
         let session_path = session_file_path()
             .ok_or_else(|| anyhow::anyhow!("could not resolve external session claim"))?;
-
-        if let Some(parent) = session_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
 
         let session = SessionFile {
             session_id: session_id.to_string(),
@@ -107,23 +109,29 @@ impl NestingDetector {
         };
 
         let content = serde_json::to_string_pretty(&session)?;
-        use std::io::Write;
-        let mut temporary = tempfile::NamedTempFile::new_in(
+        let directory = amplihack_git::runtime_directory::RuntimeDirectory::open(
             session_path
                 .parent()
                 .ok_or_else(|| anyhow::anyhow!("session claim has no parent"))?,
         )?;
-        temporary.write_all(content.as_bytes())?;
-        temporary.as_file().sync_all()?;
-        temporary.persist(&session_path)?;
+        directory.replace("session.json", content.as_bytes())?;
         Ok(())
     }
 
     /// Remove the session file (on clean exit).
     pub fn release_session() {
         if let Some(session_path) = session_file_path()
-            && let Err(error) = std::fs::remove_file(&session_path)
-            && error.kind() != std::io::ErrorKind::NotFound
+            && let Err(error) = (|| -> anyhow::Result<()> {
+                amplihack_git::runtime_directory::RuntimeDirectory::open(
+                    session_path
+                        .parent()
+                        .ok_or_else(|| anyhow::anyhow!("session claim has no parent"))?,
+                )?
+                .remove("session.json")
+            })()
+            && !error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
         {
             tracing::warn!(path = %session_path.display(), "cannot release external session claim: {error}");
         }

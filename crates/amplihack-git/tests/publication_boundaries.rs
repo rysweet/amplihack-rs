@@ -88,6 +88,7 @@ impl Repo {
             &["remote", "add", "origin", remote.to_str().unwrap()],
         );
         git(&root, &["push", "--quiet", "-u", "origin", "HEAD"]);
+        git(&root, &["checkout", "--quiet", "-b", "feat/task"]);
         Self {
             _temp: temp,
             root,
@@ -132,7 +133,7 @@ fn advertised_siblings_and_remote_merges_are_valid_but_resolution_changes_are_no
                 git(&repo.root, &["checkout", "--quiet", "-b", "imported"]);
                 let imported = repo.commit("unrelated.txt", "advertised\n");
                 git(&repo.root, &["push", "--quiet", "origin", "HEAD"]);
-                git(&repo.root, &["checkout", "--quiet", "main"]);
+                git(&repo.root, &["checkout", "--quiet", "feat/task"]);
                 repo.commit("new.txt", "authorised\n");
                 git(&repo.root, &["merge", "--no-ff", "--no-commit", &imported]);
                 if bad_resolution {
@@ -146,7 +147,7 @@ fn advertised_siblings_and_remote_merges_are_valid_but_resolution_changes_are_no
                 } else {
                     result.unwrap();
                     assert_eq!(
-                        git(&repo.remote, &["rev-parse", "main"]),
+                        git(&repo.remote, &["rev-parse", "feat/task"]),
                         git(&repo.root, &["rev-parse", "HEAD"])
                     );
                 }

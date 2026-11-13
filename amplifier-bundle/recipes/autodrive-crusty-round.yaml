@@ -299,17 +299,17 @@ steps:
       done
       amplihack_prepare_git_commit_identity || { echo "ERROR: git identity helper not found; stop rather than commit under a guessed identity" >&2; exit 2; }
 
-      amplihack hygiene artifact-guard --repo . --mode pre-commit || { echo "STOP: artifact guard refused before staging (#1528)" >&2; exit 1; }
-      amplihack hygiene artifact-guard --repo . --mode pre-commit || { echo "STOP: artifact guard refused after staging; fix the cause, never bypass (#1528)" >&2; exit 1; }
+      amplihack hygiene artifact-guard --repo . --mode pre-commit || { echo "STOP: artifact guard refused before checkpointing; fix the cause, never bypass (#1528)" >&2; exit 1; }
       amplihack hygiene workflow checkpoint --repo . -m "address crusty review: <what changed>" || { echo "STOP: the commit failed; fix what the hook reports, never bypass it (#1528)" >&2; exit 1; }
       amplihack hygiene workflow publish --repo . || { echo "STOP: the push failed (#1528)" >&2; exit 1; }
       ```
 
-      The artifact guard runs before and after staging; if it objects, remove
-      the artifact rather than silencing it. Stage only through the block:
-      never stage ignored files or anything under `worktrees/` (other
-      checkouts; staging one records a gitlink to another checkout, #1528), and
-      never force a path past `.gitignore` or past a guard refusal.
+      The artifact guard runs before checkpointing; if it refuses, fix the
+      cause rather than silencing it. Stage only through the block: never stage
+      ignored files or anything under `worktrees/` (other checkouts; staging
+      one records a gitlink to another checkout, #1528), and never force a path
+      past `.gitignore` or a guard refusal. Checkpoint validates its private
+      index after the hooks run.
 
       The hooks are the point. If a hook fails, **fix what it is complaining
       about**. Never reach for a flag that skips them — the pre-tool-use hook

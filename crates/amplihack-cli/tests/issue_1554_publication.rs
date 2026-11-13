@@ -585,3 +585,57 @@ fn a_later_destination_failure_reports_partial_completion_truthfully() {
         },
     );
 }
+
+#[test]
+fn fresh_worktree_publishes_task_ref_and_emits_only_json_without_bootstrap() {
+    crate::issue_1554_fixture::sandbox(
+        module_path!(),
+        "fresh_worktree_publishes_task_ref_and_emits_only_json_without_bootstrap",
+        || {
+            let r = Repo::new();
+            let base = r.oid(&r.remote, "refs/heads/main");
+            let setup = r
+                .step_command("workflow-worktree", "step-04-setup-worktree")
+                .env("RECIPE_VAR_branch_name", "")
+                .env("RECIPE_VAR_pr_number", "")
+                .env("RECIPE_VAR_new_branch_name", "feat/fresh-publication")
+                .env("RECIPE_VAR_base_branch", "main")
+                .output()
+                .unwrap();
+            success(&setup);
+            let setup: serde_json::Value = serde_json::from_slice(&setup.stdout).unwrap();
+            let work = std::path::Path::new(setup["worktree_path"].as_str().unwrap());
+            let branch = setup["branch_name"].as_str().unwrap();
+            assert_eq!(
+                r.git(
+                    work,
+                    &["config", "--get", &format!("branch.{branch}.merge")]
+                ),
+                b"refs/heads/main\n"
+            );
+            let tip = r.commit_file(work, "src/new.rs", "fresh task source\n");
+            let out = r.command(r.bin.join("amplihack"))
+            .current_dir(work)
+            .args(["hygiene", "workflow", "publish", "--repo", "."])
+            .env("RECIPE_VAR_final_requirements", serde_json::json!({"version":1,"task":"fresh","permitted_source_paths":["src/new.rs"]}).to_string())
+            .env("RECIPE_VAR_design_spec", serde_json::json!({"version":1,"task":"fresh","files_to_change":["src/new.rs"]}).to_string())
+            .env_remove("AMPLIHACK_SKIP_AUTO_INSTALL")
+            .env("AMPLIHACK_HOME", r.root.join("fresh-profile"))
+            .output().unwrap();
+            success(&out);
+            let result: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(result["pushed"], true);
+            let reference = format!("refs/heads/{branch}");
+            assert_eq!(result["updates"][0]["reference"], reference);
+            assert_eq!(r.oid(&r.remote, &reference), tip);
+            assert_eq!(r.oid(&r.remote, "refs/heads/main"), base);
+            assert_eq!(
+                r.git(
+                    work,
+                    &["config", "--get", &format!("branch.{branch}.merge")]
+                ),
+                format!("{reference}\n").as_bytes()
+            );
+        },
+    );
+}

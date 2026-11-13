@@ -20,34 +20,10 @@ use thiserror::Error;
 /// Errors that can occur during worktree resolution.
 #[derive(Debug, Error)]
 pub enum WorktreeError {
-    /// `AMPLIHACK_RUNTIME_DIR` points outside allowed roots.
-    #[error(
-        "AMPLIHACK_RUNTIME_DIR={raw:?} resolves to {resolved}, \
-         which is outside allowed roots ({home} or /tmp). \
-         Set AMPLIHACK_RUNTIME_DIR to a path within your home directory or /tmp."
-    )]
-    InvalidRuntimeDir {
-        /// The raw value of the environment variable.
-        raw: String,
-        /// The resolved (canonicalized) value.
-        resolved: String,
-        /// The user's home directory.
-        home: String,
-    },
-
     /// I/O error creating the runtime directory.
     #[error("failed to create runtime directory {path}: {source}")]
     CreateDir {
         /// The target directory path.
-        path: String,
-        /// The underlying I/O error.
-        source: std::io::Error,
-    },
-
-    /// Permission setting failed.
-    #[error("failed to set permissions on {path}: {source}")]
-    SetPermissions {
-        /// The target path.
         path: String,
         /// The underlying I/O error.
         source: std::io::Error,

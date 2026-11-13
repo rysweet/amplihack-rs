@@ -4,7 +4,10 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+#[cfg(test)]
 use std::fs;
+use std::io::Read;
+#[cfg(test)]
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -66,46 +69,10 @@ pub fn write_launcher_context(
     };
     let body =
         serde_json::to_string_pretty(&serde_json::json!({"context": context, "schema_version": 1, "checkout": state.checkout, "common": state.common})).context("failed to encode launcher context")?;
-    replace_file(&context_path, |file| file.write_all(body.as_bytes()))
+    amplihack_git::runtime_directory::RuntimeDirectory::open(&state.directory)?
+        .replace("launcher_context.json", body.as_bytes())
         .with_context(|| format!("failed to write {}", context_path.display()))?;
     Ok(context_path)
-}
-
-/// Replace `path` with what `write` puts in a new file, so that `path` holds
-/// either its old contents or the complete new ones, never a part.
-///
-/// The temporary file is created in `path`'s own directory, because
-/// `rename(2)` is atomic only within one file system. If `write`, the flush or
-/// the rename fails, the temporary file is removed and `path` is untouched.
-///
-/// The file is owner read and write only, because it records the command line
-/// and environment a session was started with. On Unix `tempfile` asks for
-/// that when it creates the file: it passes mode 0600 to `open(2)`, so the
-/// file is never readable by anyone else, and `rename(2)` keeps the mode.
-/// There is deliberately no `chmod` after that. It would repeat what `open`
-/// already did, and on a file system that refuses `chmod` (vfat mounted
-/// without `quiet`, some FUSE mounts) it fails, which would stop
-/// `amplihack claude` and `amplihack copilot` from starting. Before the
-/// atomic replacement such a failure was only a warning (crusty review of
-/// #1490).
-fn replace_file(
-    path: &Path,
-    write: impl FnOnce(&mut fs::File) -> io::Result<()>,
-) -> io::Result<()> {
-    let dir = path.parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("{} has no parent directory", path.display()),
-        )
-    })?;
-    let mut temp = tempfile::Builder::new()
-        .prefix(".launcher_context.")
-        .suffix(".tmp")
-        .tempfile_in(dir)?;
-    write(temp.as_file_mut())?;
-    temp.as_file().sync_all()?;
-    temp.persist(path).map_err(|error| error.error)?;
-    Ok(())
 }
 
 pub fn read_launcher_context(project_root: &Path) -> Option<LauncherContext> {
@@ -122,22 +89,14 @@ pub fn read_launcher_context(project_root: &Path) -> Option<LauncherContext> {
 /// Validate identity before each reader applies its own field diagnostics.
 pub(crate) fn read_bound_document(project_root: &Path) -> Option<serde_json::Value> {
     let state = amplihack_git::launcher_state::resolve(project_root).ok()?;
-    let path = state.directory.join("launcher_context.json");
-    let metadata = fs::symlink_metadata(&path).ok()?;
-    if !metadata.is_file() || metadata.len() > 64 * 1024 {
+    let directory =
+        amplihack_git::runtime_directory::RuntimeDirectory::open(&state.directory).ok()?;
+    let mut file = directory.reader("launcher_context.json").ok()?;
+    if file.metadata().ok()?.len() > 64 * 1024 {
         return None;
     }
-    let raw = match fs::read_to_string(&path) {
-        Ok(raw) => raw,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(error) => {
-            tracing::warn!(
-                path = %path.display(),
-                "failed reading launcher context: {error}"
-            );
-            return None;
-        }
-    };
+    let mut raw = String::new();
+    file.read_to_string(&mut raw).ok()?;
     let envelope: serde_json::Value = serde_json::from_str(&raw).ok()?;
     if envelope["schema_version"] != 1
         || envelope["checkout"].as_str() != state.checkout.to_str()
@@ -277,13 +236,20 @@ mod tests {
         let before = fs::read(&path).unwrap();
 
         // Half a body, then the failure a full disk gives.
-        let error = replace_file(&path, |file| {
-            file.write_all(b"{\"launcher\":")?;
-            Err(io::Error::new(io::ErrorKind::StorageFull, "no space left"))
-        })
-        .unwrap_err();
+        let directory =
+            amplihack_git::runtime_directory::RuntimeDirectory::open(path.parent().unwrap())
+                .unwrap();
+        let error = directory
+            .replace_with("launcher_context.json", |file| {
+                file.write_all(b"{\"launcher\":")?;
+                Err(io::Error::new(io::ErrorKind::StorageFull, "no space left"))
+            })
+            .unwrap_err();
 
-        assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().kind(),
+            io::ErrorKind::StorageFull
+        );
         assert_eq!(fs::read(&path).unwrap(), before, "the old file was touched");
         let restored = read_launcher_context(dir.path()).unwrap();
         assert_eq!(restored.launcher, LauncherKind::Claude);
@@ -295,8 +261,7 @@ mod tests {
     }
 
     /// The replacement is owner-only from creation. The mode comes from the
-    /// `open(2)` that creates the temporary file, not from a `chmod` that can
-    /// fail on its own; see [`replace_file`].
+    /// descriptor-relative creation of the temporary file.
     #[cfg(unix)]
     #[test]
     fn a_written_context_is_readable_by_its_owner_only() {

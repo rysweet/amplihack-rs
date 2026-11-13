@@ -1015,7 +1015,16 @@ fn read_launcher_field(path: &Path, anchor: &Path) -> ContextRead {
         );
         return ContextRead::Unusable("is a link to a file outside its directory".to_string());
     }
-    let metadata = match fs::metadata(&canonical) {
+    // Reopen neither the canonical filename nor its parent after validation.
+    // Component-wise no-follow traversal rejects substituted runtime parents.
+    let file = path
+        .parent()
+        .and_then(|parent| amplihack_git::runtime_directory::RuntimeDirectory::open(parent).ok())
+        .and_then(|directory| directory.reader("launcher_context.json").ok());
+    let Some(mut file) = file else {
+        return ContextRead::Unusable("could not be read safely (unsafe runtime path)".into());
+    };
+    let metadata = match file.metadata() {
         Ok(metadata) => metadata,
         Err(error) => return ContextRead::Unusable(format!("could not be read ({error})")),
     };
@@ -1025,10 +1034,10 @@ fn read_launcher_field(path: &Path, anchor: &Path) -> ContextRead {
             LAUNCHER_CONTEXT_MAX_BYTES / 1024
         ));
     }
-    let body = match fs::read_to_string(&canonical) {
-        Ok(body) => body,
-        Err(error) => return ContextRead::Unusable(format!("could not be read ({error})")),
-    };
+    let mut body = String::new();
+    if let Err(error) = std::io::Read::read_to_string(&mut file, &mut body) {
+        return ContextRead::Unusable(format!("could not be read ({error})"));
+    }
     if body.trim().is_empty() {
         return ContextRead::Unusable("is empty".to_string());
     }
@@ -1524,8 +1533,9 @@ mod tests {
 
     fn read_raw(body: &str) -> ContextRead {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_raw_context(dir.path(), body);
-        read_launcher_field(&path, dir.path())
+        let root = dir.path().canonicalize().unwrap();
+        let path = write_raw_context(&root, body);
+        read_launcher_field(&path, &root)
     }
 
     #[test]

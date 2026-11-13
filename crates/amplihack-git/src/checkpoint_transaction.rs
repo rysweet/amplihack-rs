@@ -150,30 +150,7 @@ pub fn checkpoint_into(
             bail!("prohibited pre-existing staged entry: {path}; index preserved");
         }
     }
-    let mut candidates = names(bytes(
-        root,
-        &["diff", "--no-renames", "--name-only", "-z", "HEAD"],
-    )?)?;
-    candidates.extend(names(bytes(
-        root,
-        &["ls-files", "--others", "--exclude-standard", "-z"],
-    )?)?);
-    candidates.retain(|p| scope.permits(p));
-    // Candidate inventories can restrict the selection but never grant authority.
-    if let Some(raw) = std::env::var_os("RECIPE_VAR_ops_modified_files") {
-        let raw = raw
-            .into_string()
-            .map_err(|_| PolicyRefusal("unsupported candidate encoding".to_owned()))?;
-        let selected: Vec<String> =
-            serde_json::from_str(&raw).context("invalid candidate filename array")?;
-        for path in &selected {
-            if !crate::task_scope::valid_path(path) {
-                bail!("invalid candidate filename: {path:?}");
-            }
-            scope.require(path)?;
-        }
-        candidates.retain(|path| selected.contains(path));
-    }
+    let candidates = candidates(root, &scope)?;
     for candidate in &candidates {
         if protected.iter().any(|p| {
             p == candidate
@@ -222,138 +199,77 @@ pub fn checkpoint_into(
     let selected = scope.select(candidates.clone())?;
     let authority = scratch.path().join("scope.json");
     fs::write(&authority, serde_json::to_vec(&selected)?)?;
-    validate_index(root, &private, &authority)?;
-    // Prove preservation before running a commit, using the exact proposed tree.
+    // scope.json is an inspection aid only. The transaction retains selected
+    // authority in memory throughout all hooks and validates the immutable tree.
+    let message_path = scratch.path().join("COMMIT_EDITMSG");
+    fs::write(&message_path, format!("{message}\n"))?;
+    run_hook(root, &private, "pre-commit", &[])?;
+    run_hook(
+        root,
+        &private,
+        "prepare-commit-msg",
+        &[message_path.as_os_str(), "message".as_ref()],
+    )?;
+    run_hook(root, &private, "commit-msg", &[message_path.as_os_str()])?;
+    // A normal commit also notifies index-change observers. Keep those hooks
+    // before freezing the tree, so their mutations receive the same validation.
+    run_hook(
+        root,
+        &private,
+        "post-index-change",
+        &["0".as_ref(), "0".as_ref()],
+    )?;
     let tree = String::from_utf8(git_index(root, &private, &["write-tree"])?)?
         .trim()
         .to_owned();
+    validate_tree(root, &tree, &original_head, &selected)?;
     let reconciled = scratch.path().join("reconciled");
     fs::write(&reconciled, &original_index)?;
     reconcile(root, &reconciled, &tree, &candidates)?;
     preserve_metadata(root, &reconciled, &candidates, &metadata)?;
-    // Wrap all normal hooks; each runs with the private index. Validation after
-    // every index-mutating commit hook closes the final commit-msg boundary.
-    let hooks = scratch.path().join("hooks");
-    fs::create_dir(&hooks)?;
-    let original_hooks = PathBuf::from(
-        run(
-            root,
-            &["rev-parse", "--path-format=absolute", "--git-path", "hooks"],
-        )?
-        .trim(),
-    );
-    match fs::read_dir(&original_hooks) {
-        Ok(entries) => {
-            for entry in entries {
-                let entry = entry.context("cannot inspect normal Git hooks")?;
-                let destination = hooks.join(entry.file_name());
-                #[cfg(unix)]
-                std::os::unix::fs::symlink(entry.path(), &destination)?;
-                #[cfg(not(unix))]
-                {
-                    if entry.file_type()?.is_dir() {
-                        bail!("hook subdirectories are unsupported on this platform");
-                    }
-                    fs::copy(entry.path(), &destination)?;
-                }
-            }
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error).context("cannot preserve normal Git hooks"),
-    }
-    let executable = std::env::current_exe()?;
-    let commit_record = scratch.path().join("committed-oid");
-    for name in [
-        "pre-commit",
-        "prepare-commit-msg",
-        "commit-msg",
-        "post-commit",
-        "reference-transaction",
-    ] {
-        let original = PathBuf::from(
-            run(
-                root,
-                &[
-                    "rev-parse",
-                    "--path-format=absolute",
-                    "--git-path",
-                    &format!("hooks/{name}"),
-                ],
-            )?
-            .trim(),
-        );
-        let wrapper = hooks.join(name);
-        // Replace this entry rather than writing through a copied hook symlink.
-        match fs::remove_file(&wrapper) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error).context("cannot install checkpoint hook wrapper"),
-        }
-        let mut script = format!(
-            "#!/bin/sh\nif [ -x {} ]; then {} \"$@\" || exit $?; fi\n",
-            quote(&original),
-            quote(&original)
-        );
-        if ["pre-commit", "prepare-commit-msg", "commit-msg"].contains(&name) {
-            script.push_str(&format!(
-                "{} hygiene workflow validate-index --repo {} --index {} --authority {}\n",
-                quote(&executable),
-                quote(root),
-                quote(&private),
-                quote(&authority)
-            ));
-        }
-        if name == "reference-transaction" {
-            let input = scratch.path().join("reference-input.XXXXXX");
-            script = format!(
-                "#!/bin/sh\ncheckpoint_reference_input=$(mktemp {input}) || exit $?\ntrap 'rm -f -- \"$checkpoint_reference_input\"' 0\ncat > \"$checkpoint_reference_input\" || exit $?\nwhile read -r old new reference; do\n  if [ \"$reference\" = {head_ref} ] || [ \"$reference\" = HEAD ]; then\n    if [ \"$1\" = prepared ]; then\n      [ \"$old\" = {head} ] || {{ echo 'checkpoint HEAD changed concurrently' >&2; exit 1; }}\n    elif [ \"$1\" = committed ]; then\n      printf '%s\\n' \"$new\" > {record} || exit $?\n    fi\n  fi\ndone < \"$checkpoint_reference_input\"\nif [ -x {original} ]; then {original} \"$@\" < \"$checkpoint_reference_input\" || exit $?; fi\n",
-                input = quote(&input),
-                original = quote(&original),
-                head_ref = quote(Path::new(&head_ref)),
-                head = quote(Path::new(&original_head)),
-                record = quote(&commit_record),
-            );
-            // Other normal hooks (including post-index-change and the
-            // repository's reference hook) can run after commit-msg. Recheck
-            // at the prepared reference boundary before HEAD can advance.
-            script.push_str(&format!(
-                "if [ \"$1\" = prepared ]; then {} hygiene workflow validate-index --repo {} --index {} --authority {} || exit $?; fi\n",
-                quote(&executable), quote(root), quote(&private), quote(&authority)
-            ));
-        }
-        fs::write(&wrapper, script)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(wrapper, fs::Permissions::from_mode(0o700))?;
-        }
-    }
-    if run(root, &["rev-parse", "HEAD"])?.trim() != original_head
+    if run(root, &["symbolic-ref", "--quiet", "HEAD"])?.trim() != head_ref
+        || run(root, &["rev-parse", "HEAD"])?.trim() != original_head
         || fs::read(&index)? != original_index
     {
         bail!("HEAD or real index changed before checkpoint; original staged work preserved");
     }
-    let out = crate::command_in(root)
-        .env("GIT_INDEX_FILE", &private)
-        .arg("-c")
-        .arg(format!("core.hooksPath={}", hooks.display()))
-        .args(["commit", "-m", message])
-        .output()?;
-    eprint!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    if !out.status.success() {
-        bail!(
-            "checkpoint commit refused; original index preserved: {}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
+    // Commit only the validated object. No hook or index access can change this
+    // tree between validation and selection by commit-tree.
+    let message = cleaned_message(root, &message_path)?;
+    if message.trim().is_empty() {
+        bail!("empty checkpoint commit message");
     }
-    let commit = fs::read_to_string(&commit_record).context("commit succeeded but its reference-transaction record is unavailable; original index preserved")?.trim().to_owned();
+    fs::write(&message_path, &message)?;
+    let mut command = crate::command_in(root);
+    command.args(["commit-tree", &tree, "-p", &original_head]);
+    let signing = crate::command_in(root)
+        .args(["config", "--bool", "--get", "commit.gpgsign"])
+        .output()?;
+    if signing.status.success() && signing.stdout == b"true\n" {
+        command.arg("-S");
+    } else if !signing.status.success() && signing.status.code() != Some(1) {
+        bail!("cannot read commit signing policy");
+    }
+    let output = command.arg("-F").arg(&message_path).output()?;
+    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    if !output.status.success() {
+        bail!("checkpoint commit creation failed; original index preserved");
+    }
+    let commit = String::from_utf8(output.stdout)?.trim().to_owned();
+    // update-ref keeps normal reference hooks, uses an expected-old-value CAS,
+    // and never selects a tree from hook-controlled index state.
+    advance_checkpoint(
+        root,
+        &private,
+        scratch.path(),
+        &tree,
+        &head_ref,
+        (&original_head, &commit),
+        &message,
+    )?;
     result.committed = true;
     result.commit_id = Some(commit.clone());
+    run_hook(root, &private, "post-commit", &[])?;
     let reconciliation = (|| -> Result<()> {
         if run(root, &["rev-parse", &format!("{commit}^")])?.trim() != original_head
             || run(root, &["rev-parse", "HEAD"])?.trim() != commit
@@ -509,8 +425,193 @@ fn reconcile(root: &Path, index: &Path, tree: &str, candidates: &BTreeSet<String
     Ok(())
 }
 
+fn candidates(root: &Path, scope: &TaskScope) -> Result<BTreeSet<String>> {
+    let mut candidates = names(bytes(
+        root,
+        &["diff", "--no-renames", "--name-only", "-z", "HEAD"],
+    )?)?;
+    candidates.extend(names(bytes(
+        root,
+        &["ls-files", "--others", "--exclude-standard", "-z"],
+    )?)?);
+    candidates.retain(|p| scope.permits(p));
+    // Candidate inventories can restrict the selection but never grant authority.
+    if let Some(raw) = std::env::var_os("RECIPE_VAR_ops_modified_files") {
+        let raw = raw
+            .into_string()
+            .map_err(|_| PolicyRefusal("unsupported candidate encoding".to_owned()))?;
+        let selected: Vec<String> =
+            serde_json::from_str(&raw).context("invalid candidate filename array")?;
+        for path in &selected {
+            if !crate::task_scope::valid_path(path) {
+                bail!("invalid candidate filename: {path:?}");
+            }
+            scope.require(path)?;
+        }
+        candidates.retain(|path| selected.contains(path));
+    }
+    Ok(candidates)
+}
+
+/// Snapshot authorised repair candidates without changing the real index.
+/// This is evidence for repair refusal checks; it grants no commit authority.
+pub fn candidate_tree(root: &Path) -> Result<String> {
+    let workspace = Workspace::open(root)?;
+    let scope = TaskScope::from_recipe(&workspace)?;
+    scope.check_workspace(&workspace)?;
+    let candidates = candidates(root, &scope)?;
+    let scratch = tempfile::Builder::new()
+        .prefix("checkpoint-")
+        .tempdir_in(workspace.git_dir())?;
+    let index = scratch.path().join("index");
+    fs::copy(workspace.git_dir().join("index"), &index)?;
+    if !candidates.is_empty() {
+        let mut args = vec!["--literal-pathspecs", "add", "--"];
+        args.extend(candidates.iter().map(String::as_str));
+        git_index(root, &index, &args)?;
+    }
+    Ok(
+        String::from_utf8(git_index(root, &index, &["write-tree"])?)?
+            .trim()
+            .to_owned(),
+    )
+}
+
 fn quote(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+}
+
+fn advance_checkpoint(
+    root: &Path,
+    index: &Path,
+    scratch: &Path,
+    tree: &str,
+    head_ref: &str,
+    commits: (&str, &str),
+    message: &str,
+) -> Result<()> {
+    let (old, new) = commits;
+    let hooks = scratch.join("reference-hooks");
+    fs::create_dir(&hooks)?;
+    let original = PathBuf::from(
+        run(
+            root,
+            &[
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-path",
+                "hooks/reference-transaction",
+            ],
+        )?
+        .trim(),
+    );
+    let input = scratch.join("reference-input.XXXXXX");
+    let script = format!(
+        "#!/bin/sh\ninput=$(mktemp {input}) || exit $?\ntrap 'rm -f -- \"$input\"' 0\ncat > \"$input\" || exit $?\nif [ -x {original} ]; then {original} \"$@\" < \"$input\" || exit $?; fi\nif [ \"$1\" = prepared ] && grep -F -- {reference} \"$input\" >/dev/null; then\n  actual=$(git -c core.hooksPath= write-tree) || exit $?\n  [ \"$actual\" = '{tree}' ] || {{ echo 'reference hook changed frozen checkpoint index' >&2; exit 1; }}\nfi\n",
+        input = quote(&input),
+        original = quote(&original),
+        reference = quote(Path::new(&format!(" {head_ref}"))),
+    );
+    let wrapper = hooks.join("reference-transaction");
+    fs::write(&wrapper, script)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700))?;
+    }
+    let output = crate::command_in(root)
+        .env("GIT_INDEX_FILE", index)
+        .arg("-c")
+        .arg(format!("core.hooksPath={}", hooks.display()))
+        .args([
+            "update-ref",
+            "-m",
+            &format!("commit: {}", message.lines().next().unwrap_or_default()),
+            "HEAD",
+            new,
+            old,
+        ])
+        .output()?;
+    eprint!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if !output.status.success() {
+        bail!("checkpoint reference update refused; original index preserved");
+    }
+    Ok(())
+}
+
+fn run_hook(root: &Path, index: &Path, name: &str, args: &[&std::ffi::OsStr]) -> Result<()> {
+    let output = crate::command_in(root)
+        .env("GIT_INDEX_FILE", index)
+        .env("GIT_EDITOR", ":")
+        .args(["hook", "run", "--ignore-missing", name, "--"])
+        .args(args)
+        .output()?;
+    eprint!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if !output.status.success() && !matches!(name, "post-commit" | "post-index-change") {
+        bail!("checkpoint {name} hook refused; original index preserved");
+    }
+    Ok(())
+}
+
+fn cleaned_message(root: &Path, path: &Path) -> Result<String> {
+    use std::process::Stdio;
+    let cleanup = crate::command_in(root)
+        .args(["config", "--get", "commit.cleanup"])
+        .output()?;
+    if !cleanup.status.success() && cleanup.status.code() != Some(1) {
+        bail!("cannot read commit cleanup policy");
+    }
+    let mode = String::from_utf8(cleanup.stdout)?;
+    match mode.trim() {
+        "verbatim" => Ok(fs::read_to_string(path)?),
+        "" | "default" | "whitespace" | "strip" | "scissors" => {
+            let mut command = crate::command_in(root);
+            command.arg("stripspace");
+            if mode.trim() == "strip" {
+                command.arg("--strip-comments");
+            }
+            let output = command.stdin(Stdio::from(fs::File::open(path)?)).output()?;
+            if !output.status.success() {
+                bail!("cannot clean checkpoint message");
+            }
+            Ok(String::from_utf8(output.stdout)?)
+        }
+        _ => bail!("unsupported checkpoint message cleanup policy"),
+    }
+}
+
+/// Validate the frozen tree, rather than re-reading hook-controlled authority
+/// or an index that a later hook could mutate.
+fn validate_tree(root: &Path, tree: &str, parent: &str, scope: &TaskScope) -> Result<()> {
+    for path in names(bytes(root, &["ls-tree", "-r", "--name-only", "-z", tree])?)? {
+        if amplihack_types::paths::owned_runtime::prohibited(&path) {
+            bail!("prohibited runtime path in checkpoint tree: {path}");
+        }
+    }
+    for path in names(bytes(
+        root,
+        &[
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            "--name-only",
+            "-z",
+            parent,
+            tree,
+        ],
+    )?)? {
+        scope.require(&path)?;
+    }
+    Ok(())
 }
 
 /// An explicitly selected, regular private index belonging to this checkout.

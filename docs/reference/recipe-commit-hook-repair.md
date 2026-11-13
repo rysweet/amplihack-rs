@@ -9,7 +9,7 @@ owner: workflow-team
 
 When a git `pre-commit`, `commit-msg` or `pre-push` hook rejects a commit or
 push made by a recipe-owned step, the step no longer ends the run. The hook's
-output goes to a fixing agent, the step re-stages and retries the same git
+output goes to a fixing agent, the step snapshots authorised candidates and retries the same git
 operation, and the [loop-health evaluator](./loop-health-evaluator.md) decides
 after each failed retry whether the loop is still making progress
 (issue #1671).
@@ -22,6 +22,18 @@ change, or moves HEAD, the branch's refs or the stash, ends the step.
 This page concerns **git hooks**. It has nothing to do with Claude Code hooks
 (`settings.json` `hooks`), which are described in
 [Hook Specifications](./hook-specifications.md).
+
+## Current checkpoint staging contract
+
+The [checkpoint/publication boundary](workflow-checkpoint-publication.md) governs
+current task recipes. Repair never stages its candidates into the real index.
+It snapshots authorised candidates using `hygiene workflow candidate-tree` before
+and after a repair round, checks that private diff, then passes the candidates to
+the existing checkpoint transaction. This applies both to commit retries and to
+new fix commits after a rejected push. Unrelated pre-existing staged work stays
+protected. `stage_workflow_changes` remains a separately supported explicit stage
+operation; the historical staging examples below do not describe checkpoint
+preparation and must not be used before a private-index checkpoint.
 
 ## Contents
 

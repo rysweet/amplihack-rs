@@ -7,8 +7,8 @@
 #
 # Runs <cmd> in the current shell. When it fails because a pre-commit,
 # commit-msg or pre-push hook rejected it, the hook's redacted output goes to
-# a fixing agent (hook-rejection-repair.yaml), the agent's changes are staged
-# and the same operation is retried. After every failed retry the
+# a fixing agent (hook-rejection-repair.yaml), the agent's authorised candidates
+# reach its private-index checkpoint and the same operation is retried. After every failed retry the
 # loop-health evaluator decides whether another round is worth running. There
 # is no iteration cap: ROUND is a label, as in autodrive_loop.sh (#1337).
 #
@@ -117,8 +117,14 @@ hook_repair_is_rejection() {
   LC_ALL=C awk 'NF { last = $0 } END { exit !(last ~ /^fatal:/) }' "$out" 2>/dev/null && return 1
   case "$op" in
     commit)
-      git diff --cached --quiet 2>/dev/null && return 1
+      # A private-index checkpoint deliberately leaves the real index clean.
+      # Its explicit failing hook diagnostic identifies the rejection; legacy
+      # git commit callers still require staged work.
+      if git diff --cached --quiet 2>/dev/null; then
+        grep -Eq 'checkpoint (pre-commit|prepare-commit-msg|commit-msg) hook refused' "$out" || return 1
+      fi
       [ -x "${hooks}/pre-commit" ] && [ -f "${hooks}/pre-commit" ] && return 0
+      [ -x "${hooks}/prepare-commit-msg" ] && [ -f "${hooks}/prepare-commit-msg" ] && return 0
       [ -x "${hooks}/commit-msg" ] && [ -f "${hooks}/commit-msg" ] && return 0
       return 1
       ;;
@@ -296,7 +302,7 @@ hook_repair_snapshot() {
     printf 'git-config-worktree\t%s\n' "$(git config --worktree --list 2>&1 | cksum)"
     # Filtered so unrelated global changes, such as a credential helper set by
     # another session, do not refuse. --show-origin puts a tab before each key.
-    # The grep finding nothing is fine: the snapshot's status is sort's.
+    # The grep finding nothing is fine: the snapshot status is the sort status.
     printf 'git-config-hooks\t%s\n' "$(git config --show-origin --list 2>&1 \
       | LC_ALL=C grep -iE $'\t''(core\.hookspath|core\.fsmonitor|hook\.|include\.path|includeif\..*\.path|push\.)' | cksum)"
     printf 'HEAD\t%s\n' "$(git rev-parse -q --verify HEAD 2>/dev/null || echo none)"
@@ -310,7 +316,7 @@ hook_repair_snapshot() {
       git rev-parse -q --verify '@{upstream}' 2>/dev/null || true
       git rev-parse -q --verify '@{push}' 2>/dev/null || true; } | cksum)"
     # The stash is shared by every worktree. Only entries whose first parent
-    # is this worktree's HEAD at the start of the round are recorded, so a
+    # is the HEAD of this worktree at the start of the round are recorded, so a
     # stash made in another worktree during the round does not refuse it.
     printf 'git-stash\t%s\n' "$( { git stash list --format='%H %P' 2>/dev/null || true; } \
       | LC_ALL=C awk -v b="$2" 'b != "" && $2 == b { print $1 }' | cksum)"
@@ -678,7 +684,9 @@ hook_repair_run() {
       echo "ERROR: hook_repair_run: the refusal snapshot ${before} could not be taken; not retried." >&2
       status="stuck"; reasoning="refusal snapshot could not be taken"; break
     fi
-    tree_before="$(git write-tree 2>/dev/null || true)"
+    if ! tree_before="$("$bin" hygiene workflow candidate-tree --repo "$wt")"; then
+      status="stuck"; reasoning="cannot snapshot authorised repair candidates"; break
+    fi
     evidence="${hr}/round-${round}.evidence"
     hook_repair_evidence "$evidence" "$op" "$step" "$rc" "$ids" "$out" \
       || echo "WARNING: hook_repair_run: the evidence file ${evidence} may be incomplete." >&2
@@ -701,14 +709,10 @@ hook_repair_run() {
       echo "ERROR: hook_repair_run: the fixing agent returned the exit-${HOOK_REPAIR_EXIT_TERMINAL} terminal policy refusal; not retried (#1327)." >&2
       status="terminal"; break
     fi
-    if ! stage_workflow_changes; then
-      status="stuck"; reasoning="staging the agent's changes failed"; break
-    fi
-    # The step ran the guard before the first attempt; the agent's round adds
-    # files after it, so what is now staged is checked again before a retry.
+    # Checkpoint owns staging in its private index. Repair must not transfer
+    # candidates into the protected real index before the retry or fix commit.
     if ! "$bin" hygiene artifact-guard --repo "$wt" --mode pre-publish >&2; then
-      echo "ERROR: hook_repair_run: Artifact Guard blocked the files staged after repair round ${round}; not retried." >&2
-      status="stuck"; reasoning="artifact guard blocked the agent's changes"; break
+      status="stuck"; reasoning="artifact guard blocked the repair workspace"; break
     fi
     if ! hook_repair_snapshot "$wt" "$baseline" >"$after" || [ ! -s "$after" ]; then
       echo "ERROR: hook_repair_run: the refusal snapshot ${after} could not be taken; not retried." >&2
@@ -718,7 +722,9 @@ hook_repair_run() {
       echo "ERROR: hook_repair_run: ${refusal}; the agent may not change hook or lint configuration, HEAD, refs or the stash. Not retried." >&2
       status="refused"; reasoning="$refusal"; verdict=""; break
     fi
-    tree_after="$(git write-tree 2>/dev/null || true)"
+    if ! tree_after="$("$bin" hygiene workflow candidate-tree --repo "$wt")"; then
+      status="stuck"; reasoning="cannot snapshot repaired candidates"; break
+    fi
     if refusal="$(hook_repair_diff_check "$wt" "$tree_before" "$tree_after")"; then
       echo "ERROR: hook_repair_run: ${refusal}; the agent may not suppress a scanner or linter, or untrack a file. Not retried." >&2
       status="refused"; reasoning="$refusal"; verdict=""; break
@@ -731,7 +737,7 @@ hook_repair_run() {
     fi
 
     # Push: the agent's fix becomes a new commit, never an amend (D7).
-    if [ "$op" = "push" ] && ! git diff --cached --quiet 2>/dev/null; then
+    if [ "$op" = "push" ] && [ "$tree_before" != "$tree_after" ]; then
       if hook_repair_push_commit "$step" "${fix_message//\{hook_ids\}/"$ids"}"; then inner_rc=0; else inner_rc=$?; fi
       inner_rounds=$((inner_rounds + HOOK_REPAIR_ROUNDS))
       HOOK_REPAIR_ROUNDS=$((round + inner_rounds)); HOOK_REPAIR_HOOK_IDS="$ids"
@@ -767,7 +773,7 @@ hook_repair_run() {
       "$round" "$out_hash" "$changed" "$agent_status" "${diffstat:-no diff}" >>"${hr}/history"
 
     # A round that changed nothing at all is a fact, not a judgement: the agent
-    # says the cause is not in the code, the staged tree is the same and the
+    # says the cause is not in the code, the candidate tree is the same and the
     # hook said the same thing again. This is not an iteration cap (#1337).
     if [ "$agent_status" = "not_fixable_in_code" ] && [ "$changed" = "no" ] \
       && [ -n "$tree_before" ] && [ "$tree_before" = "$tree_after" ]; then

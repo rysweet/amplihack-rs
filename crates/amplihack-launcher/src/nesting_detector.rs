@@ -80,17 +80,17 @@ impl NestingDetector {
         let runtime_log = if let Some(path) = &self.runtime_log {
             path
         } else {
-            resolved = amplihack_git::launcher_state::resolve(cwd)
-                .ok()?
-                .directory
-                .join("sessions.jsonl");
+            resolved = amplihack_git::launcher_state::resolve(
+                &amplihack_git::workspace_validation::checkout_root(cwd).ok()?,
+            )
+            .ok()?
+            .directory
+            .join("sessions.jsonl");
             &resolved
         };
-        if !runtime_log.exists() {
-            return None;
-        }
-
-        let content = fs::read_to_string(runtime_log).ok()?;
+        let directory =
+            amplihack_git::runtime_directory::RuntimeDirectory::open(runtime_log.parent()?).ok()?;
+        let content = directory.read(runtime_log.file_name()?.to_str()?).ok()?;
         if content.trim().is_empty() {
             return None;
         }

@@ -19,7 +19,10 @@ fn relative_push_destinations_are_resolved_from_the_source_checkout() {
             let tip = repo.commit("source.txt", "authorised source\n");
             publication_validation::publish(&repo.root)
                 .expect("a relative local remote is a valid push destination");
-            assert_eq!(text(&repo.remote, &["rev-parse", "refs/heads/main"]), tip);
+            assert_eq!(
+                text(&repo.remote, &["rev-parse", "refs/heads/feat/task"]),
+                tip
+            );
         },
     );
 }
@@ -73,7 +76,7 @@ fn a_policy_failure_at_any_destination_prevents_all_pushes() {
             );
             // Only destination one advertises the unauthorised local commit.
             repo.commit("protected.txt", "advertised at first destination only\n");
-            git(&repo.root, &["push", "--quiet", "origin", "main"]);
+            git(&repo.root, &["push", "--quiet", "origin", "HEAD:main"]);
             let first_before = text(&repo.remote, &["rev-parse", "refs/heads/main"]);
             repo.commit("source.txt", "authorised task source\n");
             for destination in [&repo.remote, &second] {
@@ -138,7 +141,7 @@ fn chained_push_rewrites_cannot_subtract_history_from_the_wrong_destination() {
             );
             git(
                 &repo.root,
-                &["push", "--quiet", advertised.to_str().unwrap(), "main"],
+                &["push", "--quiet", advertised.to_str().unwrap(), "HEAD:main"],
             );
             let advertised_tip = text(&advertised, &["rev-parse", "refs/heads/main"]);
             repo.commit("source.txt", "authorised source\n");
@@ -218,6 +221,50 @@ fn empty_push_configuration_cannot_fall_back_to_unvalidated_default_staging() {
                 text(&repo.remote, &["rev-parse", "refs/heads/main"]),
                 before
             );
+        },
+    );
+}
+
+#[test]
+fn explicit_default_branch_destination_is_refused_without_changing_tracking() {
+    isolated(
+        "explicit_default_branch_destination_is_refused_without_changing_tracking",
+        || {
+            let repo = Repo::new();
+            source_authority(&["source.txt"]);
+            let before = text(&repo.remote, &["rev-parse", "refs/heads/main"]);
+            git(&repo.root, &["config", "branch.feat/task.remote", "origin"]);
+            git(
+                &repo.root,
+                &["config", "branch.feat/task.merge", "refs/heads/main"],
+            );
+            repo.commit("source.txt", "task source\n");
+            for destination in ["main", "master", "release"] {
+                git(
+                    &repo.root,
+                    &[
+                        "config",
+                        "remote.origin.push",
+                        &format!("refs/heads/feat/task:refs/heads/{destination}"),
+                    ],
+                );
+                if destination == "release" {
+                    git(&repo.remote, &["update-ref", "refs/heads/release", &before]);
+                    git(
+                        &repo.remote,
+                        &["symbolic-ref", "HEAD", "refs/heads/release"],
+                    );
+                }
+                assert!(publication_validation::publish(&repo.root).is_err());
+                assert_eq!(
+                    text(&repo.remote, &["rev-parse", "refs/heads/main"]),
+                    before
+                );
+                assert_eq!(
+                    text(&repo.root, &["config", "branch.feat/task.merge"]),
+                    "refs/heads/main"
+                );
+            }
         },
     );
 }
