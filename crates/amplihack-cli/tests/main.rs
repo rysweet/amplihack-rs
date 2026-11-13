@@ -436,3 +436,5 @@ mod issue_2279_doctor;
 
 #[path = "issue_2297_codex_installation.rs"]
 mod issue_2297_codex_installation;
+#[path = "issue_2552_build_preflight_decision.rs"]
+mod issue_2552_build_preflight_decision;
