@@ -46,8 +46,10 @@ On success the script exits 0 and prints one line of JSON on stdout:
 {"skill_dir":"/home/ci/.amplihack/amplifier-bundle/skills/merge-ready","skill_md":"/home/ci/.amplihack/amplifier-bundle/skills/merge-ready/SKILL.md","template":"/home/ci/.amplihack/amplifier-bundle/skills/merge-ready/pr-description-template.md","skill_md_sha":"3b18e512dba79e4c8300dd08aeb37f8e728b8dad"}
 ```
 
-`skill_md_sha` is `git hash-object --no-filters` of `SKILL.md`, which is 40
-hexadecimal characters. On failure the script exits 1, writes the error to
+`skill_md_sha` is `git hash-object --no-filters` of `SKILL.md`: 40
+hexadecimal characters when hashing succeeds. If `git hash-object` fails, the
+script still exits 0, prints `unhashed` in the `INFO` line and emits
+`"skill_md_sha":""`. On failure the script exits 1, writes the error to
 stderr and leaves stdout empty, because step-00 parses stdout as JSON.
 
 ## Messages on stderr
@@ -71,10 +73,12 @@ Two messages strip control bytes with `LC_ALL=C tr -d '\000-\037\177'`: the
 skipped-candidate warning and the not-found error. Both can print a candidate
 path that the script has not yet checked. The `INFO` line, the
 template-not-found error and the branch warning print the chosen directory
-without that filter. This is safe because the script has already skipped any
-candidate whose path holds a control byte, quote, backslash or template brace,
-so a crafted `AMPLIHACK_HOME` cannot add log lines or GitHub workflow commands
-such as `::error::` through any message.
+without that filter. They print it only after `unsafe_path` has rejected any
+candidate whose path holds a control byte, quote, backslash or template brace.
+While that order holds, and while the not-found error keeps its filter, a
+crafted `AMPLIHACK_HOME` cannot add log lines or GitHub workflow commands such
+as `::error::` through any message. A change that prints a path before
+`unsafe_path` runs must filter that path.
 
 ## Where the criteria come from
 
@@ -90,52 +94,30 @@ printed.
 
 ## Test coverage
 
-| Test | Where it runs | What it checks |
+| Coverage | Where it runs | What it checks |
 | --- | --- | --- |
-| `merge_ready_files_resolver_runs_under_set_u_in_a_git_repository` in [`auto_drive_to_merge_test.rs`](../../tests/integration/auto_drive_to_merge_test.rs) | `cargo test` | The resolver exits 0 under `set -u`, prints valid JSON and a 40-character hash. `TOP` is the repository root: with `refs/remotes/origin/main` set to `HEAD` and an uncommitted change to `SKILL.md`, the install inside the repository prints the branch warning and the install outside it does not. |
-| `merge_ready_files_resolver_is_read_only_and_set_u_safe` in the same file | `cargo test` | The script writes nothing and keeps the fixed `merge-ready-skill-files-not-found: searched` prefix. |
-| [`run-autodrive-merge-ready-files-scenario.sh`](../../tests/gadugi/run-autodrive-merge-ready-files-scenario.sh) | CI, `check` job | The shipped resolver and the shipped step-00 bash, run as black boxes. See below. |
+| Resolver tests in [`auto_drive_to_merge_test.rs`](../../tests/integration/auto_drive_to_merge_test.rs) (search for `merge_ready_files`) | `cargo test` | The resolver exits 0 under `set -u` and prints valid JSON. The branch warning appears for an install inside the repository and not for one outside it, so an empty `TOP` fails. The script stays read-only. The not-found message strips control bytes from a crafted `AMPLIHACK_HOME`. |
+| [`run-autodrive-merge-ready-files-scenario.sh`](../../tests/gadugi/run-autodrive-merge-ready-files-scenario.sh) | CI, `check` job | The shipped resolver and the shipped step-00 bash, run as black boxes. |
 
 [`test-auto-drive-to-merge.sh`](../../amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh)
 checks only that the resolver is present in the tools directory. It no longer
 runs resolver cases (#2340), and it no longer sets an unused `RESOLVER`
-variable (#2561). The two tests above cover that path.
+variable (#2561).
 
 ### The CI scenario step
 
 The `check` job in [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)
-runs the scenario directly after the merge-validations scenario step:
+runs the scenario script directly, straight after the merge-validations
+scenario step; search the file for `merge-ready files resolver scenario`. The
+scenario needs only `bash`, `git` and `jq`, so it runs in `check` rather than
+`install-smoke`. It builds its installs in a temporary directory, which it
+removes on exit, and runs each case under `env -i` with a temporary `HOME`.
 
-```yaml
-# Issues #2536, #2561: CI runs the scenario's driver directly, not gadugi-test.
-- name: Gadugi — merge-ready files resolver scenario (issues #2536, #2561)
-  shell: bash
-  run: |
-    command -v jq >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq jq; }
-    bash tests/gadugi/run-autodrive-merge-ready-files-scenario.sh
-```
-
-The scenario needs only `bash`, `git` and `jq`, so it runs in `check` rather
-than `install-smoke`. It builds its installs in a `mktemp -d` directory, which
-it removes on exit, and runs each case under `env -i` with a temporary
-`HOME`. The step's exit status decides the result. A passing run prints seven
-`PASS:` lines, no `FAIL:` line, and ends with `ALL_CASES_PASSED`:
-
-```text
-PASS: merge_ready_files_resolved — ...
-PASS: merge_ready_template_never_mixed — ...
-PASS: merge_ready_missing_install_named — ...
-PASS: merge_round_reads_skill_files — ...
-PASS: merge_round_step00_resolves — ...
-PASS: merge_round_step00_leaves_tool_recovery_to_agent — ...
-PASS: merge_round_step00_rust_needs_no_gadugi — ...
-merge-ready read from its files; gadugi-test checked before the build where criterion 1 needs it
-ALL_CASES_PASSED
-```
-
-A failing case prints a `FAIL:` line, and the run ends with `SCENARIO_FAILED`
-and exit 1, which fails the job. If a case fails, fix the shipped resolver or
-recipe, not the scenario.
+The step's exit status decides the result. A passing run prints one `PASS:`
+line per case and ends with `ALL_CASES_PASSED`. A failing case prints a
+`FAIL:` line, and the run ends with `SCENARIO_FAILED` and exit 1, which fails
+the job. If a case fails, fix the shipped resolver or recipe, not the
+scenario. The case names are in the scenario script.
 
 Do not run `tests/gadugi/*` on a shared factory host. Read the result of the
 CI step instead.

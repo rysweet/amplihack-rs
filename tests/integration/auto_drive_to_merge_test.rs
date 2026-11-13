@@ -2218,6 +2218,39 @@ fn merge_ready_files_resolver_runs_under_set_u_in_a_git_repository() {
     }
 }
 
+/// #2561: the not-found message prints the searched paths, which come from
+/// `AMPLIHACK_HOME` and have not been checked by `unsafe_path`. It must strip
+/// control bytes, so a crafted path cannot start a new log line such as a
+/// GitHub `::error::` workflow command.
+#[test]
+fn merge_ready_files_not_found_message_strips_control_bytes() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = fs::canonicalize(tmp.path()).expect("canonical tempdir");
+    let crafted = root.join("x\n::error::injected");
+    let out = Command::new("bash")
+        .arg("-u")
+        .arg(tool_path("autodrive_merge_ready_files.sh"))
+        .current_dir(&root)
+        .env("AMPLIHACK_HOME", &crafted)
+        .env("REPO_PATH", &root)
+        .env_remove("BASH_ENV")
+        .output()
+        .expect("run the resolver");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "not found must exit 1: {out:?}");
+    assert!(out.stdout.is_empty(), "stdout must stay empty: {out:?}");
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(lines.len(), 1, "exactly one stderr line:\n{stderr}");
+    assert!(
+        lines[0].starts_with("ERROR: merge-ready-skill-files-not-found: searched "),
+        "unexpected message:\n{stderr}"
+    );
+    assert!(
+        lines.iter().all(|l| !l.starts_with("::")),
+        "no stderr line may start a workflow command:\n{stderr}"
+    );
+}
+
 #[test]
 fn merge_loop_passes_the_state_dir_to_rounds() {
     let text = recipe_text("autodrive-merge-loop");

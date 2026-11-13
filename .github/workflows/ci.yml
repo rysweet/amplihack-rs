@@ -419,6 +419,7 @@ jobs:
         run: bash tests/gadugi/test-merge-validations-scenario-contract.sh
 
       # Issues #2536, #2561: CI runs the scenario's driver directly, not gadugi-test.
+      # Case 1 would have caught #2536 before release.
       - name: Gadugi — merge-ready files resolver scenario (issues #2536, #2561)
         shell: bash
         run: |
