@@ -794,9 +794,10 @@ pub(super) fn execute_recipe_via_rust_fresh(
     // Issue #2582: when the runner reports `context_file_v1`, the context goes
     // to it in a 0600 file under the run's private runtime folder and argv
     // holds only `--context-file <path>`; otherwise today's `--set` path runs.
-    // Declared after `workspace`, so the file is removed before the runtime
-    // folder, after the last runner child has been reaped. Written once and
-    // reused by every retry.
+    // The file is removed before the runtime folder on every path, after the
+    // last runner child has been reaped: by the explicit `drop` before
+    // `finish_workspace` on a normal exit, and by declaration order (after
+    // `workspace`) on an early return. Written once and reused by every retry.
     let transport = super::context_transport::ContextTransport::choose(
         &runner_report,
         workspace.borrow().runtime_dir(),
@@ -1195,6 +1196,7 @@ pub(super) fn execute_recipe_via_rust_fresh(
             admission.finish(outcome)?;
         }
     }
+    drop(transport);
     finish_workspace(workspace.into_inner(), &final_result, dry_run);
     final_result
 }

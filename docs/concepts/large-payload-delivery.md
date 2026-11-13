@@ -177,7 +177,9 @@ runner then exports it to each step's environment. Both hops hit
 `--context-file <json>` and `--context-from-file key=path` read the values from
 files, so only the path appears in argv. `amplihack` then hands the merged
 context to the runner as `--set` arguments, the only context input the runner
-has. Each pair must fit in one argument; see [Known limits](#known-limits).
+has unless it reports `context_file_v1`; see
+[Recipe context transport](../reference/recipe-context-transport.md).
+Each pair must fit in one argument; see [Known limits](#known-limits).
 
 Inside a run, the recipe runner pinned in `claude-plugin/recipe-runner.rev`
 (`4d5187e`) gives a bash step every context value as `RECIPE_VAR_<key>` at any size,

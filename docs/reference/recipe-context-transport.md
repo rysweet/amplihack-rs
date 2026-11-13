@@ -83,7 +83,9 @@ currently pinned runner (see [What the runner still puts on argv](#what-the-runn
 ```
 
 `<runtime_dir>` is the run's private runtime folder,
-`runs/<run id>/runtime` under the work root. The file is never placed in:
+`runs/<run id>/runtime` under the work root, or `r/<id prefix>` (the first
+12 hex digits of the run id) when `<that>/tmp` would be longer than 80 bytes (`runtime_dir_for` in
+`cleanup/run_dir.rs`). The file is never placed in:
 
 - `<runtime_dir>/tmp/`, which is exported to every step as `TMPDIR`;
 - the run's log folder;
@@ -92,7 +94,7 @@ currently pinned runner (see [What the runner still puts on argv](#what-the-runn
 ### Creation
 
 - `context/` is created with a non-recursive create at mode 0700, then set to
-  0700 explicitly so the umask cannot widen it.
+  0700 explicitly, so the mode is exactly 0700 whatever the umask.
 - If anything named `context` already exists in the runtime folder, a folder
   or a symbolic link, the run fails. An existing entry is never reused or
   followed.
@@ -177,7 +179,8 @@ is left for the environment mirror.
 The file is owned by a guard created when the transport is chosen.
 
 - The guard is dropped after the last runner child has been reaped and before
-  the runtime folder guard, so the file is gone before the folder is removed.
+  the runtime folder is removed: explicitly on a normal exit, and by
+  declaration order on an early return.
 - On drop it removes `context.json`, then the empty `context/` folder. It never
   removes recursively, and it ignores errors.
 - The runtime folder guard (or the legacy temporary folder) also removes the
