@@ -114,6 +114,13 @@ stops execution. A per-leaf Boolean `create_issue=true` acquires tracking before
 launch only when no valid issue is already present. Unknown placeholders are
 errors; supported absence values are normalised before any numeric use.
 
+Tracking calls use the authenticated GitHub CLI with prompts disabled and a
+60-second timeout. Failed or uncertain creation is never retried automatically:
+the saved acquisition reference is reconciled on resume. Exactly one issue must
+carry that reference; missing, duplicate or incomplete search results stop
+execution and require reconciliation on GitHub before resuming. Service errors
+report the exit status and recovery reference without exposing raw service output.
+
 Dry-run validates the whole plan and shows resolved routes without preparing
 workspaces or contacting tracking services. Runtime state and logs use the same
 private temporary root across launch, inspection, resumption and cleanup.

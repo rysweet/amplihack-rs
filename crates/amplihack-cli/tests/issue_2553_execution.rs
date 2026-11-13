@@ -381,6 +381,7 @@ fn failed_tracking_acquisition_prevents_the_affected_leaf_from_executing() {
     );
     assert!(fixture.actions("execute").is_empty());
     assert!(fixture.state_dir().is_dir(), "retain recovery information");
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("fixture-secret-token"));
 }
 
 #[test]
@@ -409,6 +410,134 @@ fn uncertain_acquisition_is_reconciled_on_resume_without_duplicate_creation() {
     assert_eq!(creates, 1);
     assert_eq!(fixture.state("uncertain")["issue"], 711);
     assert_eq!(fixture.actions("completed").len(), 1);
+}
+
+#[test]
+fn malformed_saved_tracking_reference_is_rejected_before_any_service_call() {
+    let fixture = Fixture::new();
+    let mut leaf = operations("unsafe-reference");
+    leaf["create_issue"] = json!(true);
+    let config = fixture.config(json!([leaf]));
+    let first = fixture
+        .command("driver")
+        .arg(&config)
+        .env("ISSUE_2553_TRACKING_MODE", "uncertain")
+        .output()
+        .unwrap();
+    assert!(!first.status.success());
+    let saved = fixture.state("unsafe-reference");
+    let mut tampered = saved.clone();
+    tampered["tracking_reference"] = json!("fixture-secret-token in:body repo:other/project");
+    let path = fixture.state_dir().join("ws-unsafe-reference.json");
+    fs::write(&path, serde_json::to_vec(&tampered).unwrap()).unwrap();
+    let rejected = fixture.command("driver").arg(&config).output().unwrap();
+    assert!(!rejected.status.success());
+    assert!(!String::from_utf8_lossy(&rejected.stderr).contains("fixture-secret-token"));
+    assert!(fixture.actions("execute").is_empty());
+    assert_eq!(fixture.actions("gh").len(), 1);
+    assert_eq!(
+        fixture.state("unsafe-reference")["tracking_reference"],
+        tampered["tracking_reference"]
+    );
+    fs::write(path, serde_json::to_vec(&saved).unwrap()).unwrap();
+    succeeded(&fixture.command("driver").arg(config).output().unwrap());
+    assert_eq!(fixture.actions("gh").len(), 2);
+    assert_eq!(fixture.state("unsafe-reference")["issue"], 711);
+}
+
+#[test]
+fn malformed_creation_acknowledgements_preserve_intent_and_reconcile_without_recreating() {
+    for mode in ["zero", "absent", "untrusted"] {
+        let fixture = Fixture::new();
+        let mut leaf = operations("invalid-ack");
+        leaf["create_issue"] = json!(true);
+        let config = fixture.config(json!([leaf]));
+        let first = fixture
+            .command("driver")
+            .arg(&config)
+            .env("ISSUE_2553_TRACKING_MODE", mode)
+            .output()
+            .unwrap();
+        assert!(!first.status.success(), "mode: {mode}");
+        assert!(!String::from_utf8_lossy(&first.stderr).contains("fixture-secret-token"));
+        assert!(fixture.actions("execute").is_empty());
+        let saved = fixture.state("invalid-ack");
+        assert!(saved["issue"].is_null());
+        assert!(!saved["tracking_reference"].as_str().unwrap().is_empty());
+        succeeded(&fixture.command("driver").arg(config).output().unwrap());
+        assert_eq!(fixture.state("invalid-ack")["issue"], 711);
+        assert_eq!(fixture.actions("gh").len(), 2, "one create and one lookup");
+    }
+}
+
+#[test]
+fn reconciliation_filters_search_results_by_exact_reference() {
+    let fixture = Fixture::new();
+    let mut leaf = operations("fuzzy-search");
+    leaf["create_issue"] = json!(true);
+    let config = fixture.config(json!([leaf]));
+    let first = fixture
+        .command("driver")
+        .arg(&config)
+        .env("ISSUE_2553_TRACKING_MODE", "uncertain")
+        .output()
+        .unwrap();
+    assert!(!first.status.success());
+    succeeded(
+        &fixture
+            .command("driver")
+            .arg(config)
+            .env("ISSUE_2553_TRACKING_MODE", "fuzzy")
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(fixture.state("fuzzy-search")["issue"], 711);
+    assert_eq!(fixture.actions("gh").len(), 2);
+    assert_eq!(fixture.actions("completed").len(), 1);
+}
+
+#[test]
+fn unresolved_reconciliation_blocks_execution_and_preserves_recovery_information() {
+    for mode in [
+        "duplicate",
+        "empty",
+        "saturated",
+        "wrong-reference",
+        "invalid-number",
+        "malformed",
+        "invalid-json-type",
+        "failure",
+    ] {
+        let fixture = Fixture::new();
+        let mut leaf = operations("unresolved");
+        leaf["create_issue"] = json!(true);
+        let config = fixture.config(json!([leaf]));
+        let first = fixture
+            .command("driver")
+            .arg(&config)
+            .env("ISSUE_2553_TRACKING_MODE", "uncertain")
+            .output()
+            .unwrap();
+        assert!(!first.status.success());
+        let saved = fixture.state("unresolved");
+        let retry = fixture
+            .command("driver")
+            .arg(&config)
+            .env("ISSUE_2553_TRACKING_MODE", mode)
+            .output()
+            .unwrap();
+        assert!(!retry.status.success(), "mode: {mode}");
+        assert!(!String::from_utf8_lossy(&retry.stderr).contains("fixture-secret-token"));
+        assert!(fixture.actions("execute").is_empty());
+        assert_eq!(fixture.actions("gh").len(), 2);
+        assert_eq!(
+            fixture.state("unresolved")["tracking_reference"],
+            saved["tracking_reference"]
+        );
+        succeeded(&fixture.command("driver").arg(config).output().unwrap());
+        assert_eq!(fixture.state("unresolved")["issue"], 711);
+        assert_eq!(fixture.actions("gh").len(), 3, "one create and two lookups");
+    }
 }
 
 #[test]

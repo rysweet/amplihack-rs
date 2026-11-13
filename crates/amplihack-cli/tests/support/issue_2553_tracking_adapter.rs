@@ -10,7 +10,7 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         let record = root.join("created-issue.json");
         anyhow::ensure!(!record.exists(), "duplicate tracking acquisition");
         if mode == "failure" {
-            anyhow::bail!("fixture tracking service refused acquisition");
+            anyhow::bail!("fixture tracking service refused acquisition: fixture-secret-token");
         }
         let body = args
             .windows(2)
@@ -21,6 +21,21 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         fs::write(record, serde_json::to_vec(&issue)?)?;
         if mode == "uncertain" {
             anyhow::bail!("fixture lost acknowledgement after creating issue");
+        }
+        match mode.as_str() {
+            "zero" => {
+                println!("0");
+                return Ok(());
+            }
+            "absent" => {
+                println!("TBD");
+                return Ok(());
+            }
+            "untrusted" => {
+                println!("https://fixture-secret-token.example/issues/711");
+                return Ok(());
+            }
+            _ => (),
         }
         if args.iter().any(|arg| arg == "--json") {
             println!("{issue}");
@@ -33,14 +48,28 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             .map(|bytes| serde_json::from_slice(&bytes))
             .transpose()?
             .unwrap_or(Value::Null);
-        println!(
-            "{}",
-            if issue.is_null() {
-                json!([])
-            } else {
-                json!([issue])
+        let candidates = match mode.as_str() {
+            "fuzzy" => json!([{"number": 712, "body": "approximate match"}, issue]),
+            "duplicate" => json!([issue.clone(), issue]),
+            "empty" => json!([]),
+            "saturated" => {
+                let mut candidates = vec![issue];
+                candidates
+                    .extend((0..99).map(|_| json!({"number": 712, "body": "approximate match"})));
+                json!(candidates)
             }
-        );
+            "wrong-reference" => json!([{"number": 712, "body": "approximate match"}]),
+            "invalid-number" => json!([{"number": 0, "body": issue["body"]}]),
+            "malformed" => {
+                println!("not JSON");
+                return Ok(());
+            }
+            "invalid-json-type" => json!("fixture-secret-token"),
+            "failure" => anyhow::bail!("fixture-secret-token"),
+            _ if issue.is_null() => json!([]),
+            _ => json!([issue]),
+        };
+        println!("{candidates}");
     } else if args.starts_with(&["pr".into(), "view".into()]) {
         println!("MERGED");
     } else {
