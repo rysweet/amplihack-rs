@@ -477,17 +477,20 @@ reason shown:
    (`uncommitted-changes`). This runs before rule 11, so `NONE` and
    `ENVIRONMENT` cannot skip it.
 
-   The gate also lists the untracked paths again, in the same form as the
-   snapshot, and records the paths that are new as `new_untracked`:
+   The gate also lists the untracked paths again and records how many are
+   new as `new_untracked_count`:
 
    ```bash
-   LC_ALL=C comm -13 <(snapshot paths) <(current paths)
+   LC_ALL=C comm -13 <(snapshot paths) <(current paths) | wc -l
    ```
 
-   `new_untracked` is information only. A new untracked file, such as a log
-   left by a pre-push hook, never fails the gate. When the snapshot's
-   `untracked_truncated` is `"true"`, `new_untracked` can also list paths that
-   existed before but fell outside the cap.
+   Only the count is recorded. The agent chooses the file names, and the
+   record reaches later prompts as `commit_result`, so the names are left
+   out. The count is information only: a new untracked file, such as a log
+   left by a pre-push hook, never fails the gate. The record copies the
+   snapshot's `untracked_truncated`; when it is `"true"`, paths that existed
+   before but fell outside the snapshot's cap are counted as new, so the
+   count is an upper bound.
 9b. **Remote URL** (`push-unverified`). The SHA-256 of
    `git remote get-url origin` and of `git remote get-url --push origin` must
    equal the snapshot's `origin_url_sha256` and `origin_pushurl_sha256`. An
@@ -544,6 +547,13 @@ A rule 10b failure looks like this:
 push-failure-recovery: remote-history-rewritten: step-15-commit-push (ENVIRONMENT): origin/feat/issue-2471-fix-amplihack-rs-issue was 9f2b6d4e8a0c2e4f6a8b0c2d4e6f8a0b2c4d6e8f before the agent ran (remote_before_source fetched), which is not an ancestor of HEAD 3c1e9a0b5d7f2e4a6c8b0d1f3e5a7c9b1d3f5e7a; the remote history was rewritten and the gate undid nothing. To restore: git push --force-with-lease=refs/heads/feat/issue-2471-fix-amplihack-rs-issue:3c1e9a0b5d7f2e4a6c8b0d1f3e5a7c9b1d3f5e7a origin 9f2b6d4e8a0c2e4f6a8b0c2d4e6f8a0b2c4d6e8f:refs/heads/feat/issue-2471-fix-amplihack-rs-issue
 ```
 
+Each word of the restore command is quoted with `printf '%q'`, because git
+allows `$`, `;`, `` ` `` and `|` in branch names. A branch named
+`feat/a;b` appears as `refs/heads/feat/a\;b`. The command is printed only
+when it fits whole inside the 1,000-byte message limit and redaction leaves
+it unchanged. Otherwise the message ends with
+`To restore, push <remote_before> to the branch above with --force-with-lease expecting <HEAD>; the command is too long to print whole.`
+
 ### Gate reasons
 
 | Reason | Exit | `pushed` | When |
@@ -589,7 +599,8 @@ push-failure-recovery: recovery record: {"failed":"step-15-commit-push: pre-push
 
 The gate prints a record only when it exits 0. It builds the record with
 `jq -n --arg/--argjson`. Its own checks supply `sha`, `branch`, `reason`,
-`remote_before`, `remote_before_source` and `new_untracked`. The agent's
+`remote_before`, `remote_before_source`, `new_untracked_count` and
+`untracked_truncated`. The agent's
 object goes, untrusted, under `recovery`:
 
 ```json
@@ -601,7 +612,8 @@ object goes, untrusted, under `recovery`:
   "recovery_attempted": "true",
   "remote_before": "9f2b6d4e8a0c2e4f6a8b0c2d4e6f8a0b2c4d6e8f",
   "remote_before_source": "fetched",
-  "new_untracked": ["prepush.log"],
+  "new_untracked_count": 1,
+  "untracked_truncated": "false",
   "recovery": {
     "failed": "step-15-commit-push: pre-push hook rejected the push",
     "cause": "ENVIRONMENT",
@@ -619,7 +631,8 @@ object goes, untrusted, under `recovery`:
 | `recovery_attempted` | always `"true"`; the write-back step requires it |
 | `remote_before` | the snapshot's value: the remote branch's commit before the agent ran, or `absent` |
 | `remote_before_source` | `fetched`, `tracking-ref` or `absent`; shows how exact the fast-forward check was |
-| `new_untracked` | untracked paths present after the agent ran but not before, capped like the snapshot at 200 paths and 16 KiB; information only |
+| `new_untracked_count` | a number: how many untracked paths are present after the agent ran but not before; information only. The paths are not recorded |
+| `untracked_truncated` | the snapshot's flag; when `"true"`, `new_untracked_count` is an upper bound |
 | `recovery` | the agent's object, defanged, redacted and cut |
 
 Before the agent's strings go into the record or into `SAFE`, the gate:
@@ -742,14 +755,15 @@ budget; the next step added to either of them needs a split.
 - The gate never takes the branch from the agent. It works out the branch
   itself, and refuses an upstream on any other branch, so recovery cannot get
   round step-15's #1762 refusal.
-- The gate finds its helpers outside the task worktree, so the branch under
-  test cannot replace them.
+- The gate finds its helpers outside the task worktree, so the files on the
+  branch under test cannot replace them. This does not cover the agent; see
+  [Residual risks](#residual-risks).
 - The gate never reports `pushed: "true"` without checking the remote ref
   against HEAD itself, and without checking that the remote branch's earlier
   commit is an ancestor of HEAD.
 - The gate compares the worktree and the `origin` URLs only with its own
   snapshot, taken before the agent ran. The agent's `evidence`, and the
-  snapshot's `untracked` and the record's `new_untracked`, are
+  snapshot's `untracked` and the record's `new_untracked_count`, are
   information only; no rule branches on them.
 - The snapshot's fetch and `ls-remote`, and the gate's fetch, run with
   `GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never`, so they cannot wait
@@ -778,6 +792,11 @@ budget; the next step added to either of them needs a split.
 
 ## Residual risks
 
+- The agent runs as the same user as the gate. Before the gate runs, it can
+  change the repository's git config (for example a filter driver that
+  `git status` runs, or `core.sshCommand`) or overwrite the bundle helpers
+  outside the worktree. This gives the agent no power it did not already
+  have, but the gate's checks assume neither was changed.
 - The gate runs after the agent. A rogue agent's push cannot be undone by the
   gate, so server-side branch protection is still the defence for protected
   branches.
@@ -846,7 +865,9 @@ Cases:
 | negative (`CHANGE`) | the hook always fails and the fake agent returns `CHANGE`; the run exits non-zero with `cause-in-change`, stderr contains `recovery record`, `explanation` and `evidence`, and the remote does not move |
 | force-push (`step15_force_push_over_another_commit_fails_closed`) | `Diverged` fixture, `force` agent mode: the agent force-pushes HEAD over the remote's commit and returns `ENVIRONMENT` with a token-shaped `explanation`; the run exits non-zero, the step is failed, the output contains `remote-history-rewritten` and both commits, `git ls-remote` on `remote.git` shows HEAD, and the token appears only in redacted form |
 | absent remote (`step15_first_push_with_absent_remote_is_recovered`) | `Absent` fixture: the run is recovered, the snapshot records `remote_before` and `remote_before_source` as `absent`, and origin equals HEAD |
-| untracked file (`step15_untracked_file_left_by_agent_is_recovered_and_recorded`) | `env-untracked` agent mode leaves a new untracked file; the run is recovered and the path is in `new_untracked` |
+| untracked file (`step15_untracked_file_left_by_agent_is_recovered_and_recorded`) | `env-untracked` agent mode leaves a new untracked file; the run is recovered, `new_untracked_count` is 1 and the path is not named in the record |
+| untracked past the cap (`step15_untracked_count_past_snapshot_cap_is_flagged`) | 250 untracked files exist before the snapshot and the agent adds one; the snapshot lists 200 with `untracked_truncated: "true"`, and the record has `new_untracked_count: 51` and the same flag |
+| quoted restore command (`step15_restore_command_quotes_branch_with_shell_metacharacters`) | branch ``feat/x;$(touch>pwned)`touch>pwned`\|a&b>pwned`` with the `force` agent: bash reads the printed restore command back as the five intended words and creates no file |
 | upstream on another branch | the worktree's upstream is `origin/feat/other`, so step-15 refuses (#1762); a misbehaving fake agent pushes `HEAD:refs/heads/feat/x` and returns `ENVIRONMENT`; the run exits non-zero with `upstream-mismatch` and step-16 does not run |
 | diverged upstream | the remote branch has a commit HEAD lacks, so step-15 refuses (#978); the fake agent returns `ENVIRONMENT` without pushing; the run exits non-zero with `diverged-upstream` |
 | `NONE` on step-15 | the remote ref already equals HEAD; `commit_result.pushed == "true"` with reason `already-at-head`, and step-16 runs |

@@ -135,6 +135,8 @@ const FIXTURE_TOKEN: &str = "ghp_TESTTOKEN0000";
 struct Fixture {
     temp: tempfile::TempDir,
     runner: PathBuf,
+    /// The run's branch: `BRANCH` unless a case needs another name.
+    branch: String,
 }
 
 struct Run {
@@ -186,9 +188,17 @@ impl Run {
 
 impl Fixture {
     fn new(upstream: Upstream) -> Self {
+        Self::with_branch(upstream, BRANCH)
+    }
+
+    fn with_branch(upstream: Upstream, branch: &str) -> Self {
         let runner = runner().expect("caller checked the runner");
         let temp = tempfile::tempdir().expect("tempdir");
-        let f = Fixture { temp, runner };
+        let f = Fixture {
+            temp,
+            runner,
+            branch: branch.to_string(),
+        };
         for d in [
             "home",
             "tmp",
@@ -278,21 +288,24 @@ impl Fixture {
         self.git(&src, &["add", "README.md"]);
         self.git(&src, &["commit", "-q", "-m", "base"]);
         self.git(&src, &["push", "-q", "origin", "main"]);
-        self.git(&src, &["push", "-q", "origin", "main:refs/heads/feat/x"]);
+        let br = self.branch.as_str();
+        let remote_ref = format!("refs/heads/{br}");
+        let tracking = format!("origin/{br}");
+        self.git(
+            &src,
+            &["push", "-q", "origin", &format!("main:{remote_ref}")],
+        );
         self.git(
             &src,
             &["push", "-q", "origin", "main:refs/heads/feat/other"],
         );
         self.git(&src, &["fetch", "-q", "origin"]);
         let wt = self.wt().display().to_string();
-        self.git(
-            &src,
-            &["worktree", "add", "-q", "-b", BRANCH, &wt, "origin/feat/x"],
-        );
+        self.git(&src, &["worktree", "add", "-q", "-b", br, &wt, &tracking]);
         let up = if upstream == Upstream::OtherBranch {
             "origin/feat/other"
         } else {
-            "origin/feat/x"
+            tracking.as_str()
         };
         self.git(&self.wt(), &["branch", "-q", "--set-upstream-to", up]);
         fs::write(self.wt().join("change.txt"), "the run's change\n").unwrap();
@@ -311,21 +324,21 @@ impl Fixture {
                         &other.display().to_string(),
                     ],
                 );
-                self.git(&other, &["switch", "-q", "feat/x"]);
+                self.git(&other, &["switch", "-q", br]);
                 fs::write(other.join("other.txt"), "someone else\n").unwrap();
                 self.git(&other, &["add", "other.txt"]);
                 self.git(&other, &["commit", "-q", "-m", "someone else"]);
-                self.git(&other, &["push", "-q", "origin", "feat/x"]);
+                self.git(&other, &["push", "-q", "origin", br]);
             }
             Upstream::AtHead => {
                 self.git(
                     &self.wt(),
-                    &["push", "-q", "origin", "HEAD:refs/heads/feat/x"],
+                    &["push", "-q", "origin", &format!("HEAD:{remote_ref}")],
                 );
                 self.git(&self.wt(), &["fetch", "-q", "origin"]);
             }
             Upstream::Absent => {
-                self.git(&remote, &["update-ref", "-d", "refs/heads/feat/x"]);
+                self.git(&remote, &["update-ref", "-d", &remote_ref]);
             }
             Upstream::Ahead | Upstream::OtherBranch => {}
         }
@@ -478,7 +491,7 @@ jq -nc --arg failed "$step: push rejected" --arg cause "$cause" --arg branch "$b
 "#,
                 root = shell_quote(&self.root()),
                 wt = shell_quote(&self.wt().display().to_string()),
-                br = shell_quote(BRANCH),
+                br = shell_quote(&self.branch),
                 token = FIXTURE_TOKEN,
             ),
         )
@@ -524,7 +537,7 @@ jq -nc --arg failed "$step: push rejected" --arg cause "$cause" --arg branch "$b
     fn worktree_setup(&self, path: &Path) -> Yaml {
         let mut m = Mapping::new();
         m.insert("worktree_path".into(), path.display().to_string().into());
-        m.insert("branch_name".into(), BRANCH.into());
+        m.insert("branch_name".into(), self.branch.as_str().into());
         m.insert("base_ref".into(), "origin/main".into());
         m.insert("created".into(), true.into());
         Yaml::Mapping(m)
@@ -580,6 +593,34 @@ jq -nc --arg failed "$step: push rejected" --arg cause "$cause" --arg branch "$b
             name,
             "workflow-publish",
             vec![step15, recovery, stub16],
+            &self.wt(),
+        )
+    }
+
+    /// step-15's recovery after a stand-in for step-15 that leaves `n`
+    /// untracked files in the worktree and fails, so the snapshot sees them.
+    /// The real step-15 runs `git add -A`, which would commit them.
+    fn untracked_before_recovery_recipe(&self, n: usize) -> PathBuf {
+        let publish = recipe_yaml("workflow-publish");
+        let recovery = step_by_id(&publish, "step-15-push-recovery");
+        let script = format!(
+            r#"cd {wt}
+for i in $(seq 1 {n}); do printf 'x\n' > "pre-$(printf '%04d' "$i").txt"; done
+echo 'fixture: push rejected' >&2
+exit 1
+"#,
+            wt = shell_quote(&self.wt().display().to_string()),
+        );
+        let mut m = Mapping::new();
+        m.insert("id".into(), "step-15-commit-push".into());
+        m.insert("type".into(), "bash".into());
+        m.insert("continue_on_error".into(), true.into());
+        m.insert("command".into(), script.into());
+        let stand_in = Yaml::Mapping(m);
+        self.write_recipe(
+            "fixture-untracked",
+            "workflow-publish",
+            vec![stand_in, recovery],
             &self.wt(),
         )
     }
@@ -1139,6 +1180,91 @@ fn step15_force_push_over_another_commit_fails_closed() {
     before.assert_held(&f, &run);
 }
 
+/// S-B: the snapshot's untracked list stops at 200 paths. Paths past the cap
+/// count as new, so the count is an upper bound, and the record says the list
+/// was cut.
+#[test]
+fn step15_untracked_count_past_snapshot_cap_is_flagged() {
+    let _ = runner_or_skip!();
+    let f = Fixture::new(Upstream::Ahead);
+    f.set_agent_mode("env-untracked");
+    let run = f.run(&f.untracked_before_recovery_recipe(250), &[], &[]);
+
+    assert_eq!(run.code, 0, "{}", run.debug());
+    let head = f.head();
+    assert_recovered(&run, "commit_result", "recovered-environment", &head);
+    let snap = snapshot(&run);
+    assert_eq!(
+        snap["untracked"].as_array().map(Vec::len),
+        Some(200),
+        "snapshot: {snap}"
+    );
+    assert_eq!(snap["untracked_truncated"], "true", "snapshot: {snap}");
+    let rec = run.ctx("commit_result");
+    assert_eq!(rec["untracked_truncated"], "true", "{}", run.debug());
+    // 50 paths past the cap plus the agent's note.
+    assert_eq!(rec["new_untracked_count"], 51, "{}", run.debug());
+}
+
+/// S-A: git allows shell metacharacters in branch names, so the restore
+/// command the gate prints quotes each word. Read back by bash, it gives the
+/// intended arguments and runs nothing.
+#[test]
+fn step15_restore_command_quotes_branch_with_shell_metacharacters() {
+    let _ = runner_or_skip!();
+    let branch = "feat/x;$(touch>pwned)`touch>pwned`|a&b>pwned";
+    let f = Fixture::with_branch(Upstream::Diverged, branch);
+    f.set_agent_mode("force");
+    let overwritten = f.remote_ref(branch);
+    let run = f.run(&f.publish_recipe("fixture-publish"), &[], &[]);
+    let head = f.head();
+
+    assert_failed_with(&run, "remote-history-rewritten");
+    let text = run.all_text();
+    let line = text
+        .lines()
+        .find(|l| l.contains("remote-history-rewritten") && l.contains("To restore: "))
+        .unwrap_or_else(|| panic!("no restore command; {}", run.debug()));
+    let cmd = line.split("To restore: ").nth(1).unwrap().trim_end();
+    let scratch = f.p("tmp/parse");
+    fs::create_dir_all(&scratch).unwrap();
+    let out = Command::new("bash")
+        .current_dir(&scratch)
+        .args(["-c", r#"eval "set -- $1"; printf '%s\0' "$@""#, "_", cmd])
+        .output()
+        .expect("bash");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let words: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .split('\0')
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        words,
+        vec![
+            "git".to_string(),
+            "push".to_string(),
+            format!("--force-with-lease=refs/heads/{branch}:{head}"),
+            "origin".to_string(),
+            format!("{overwritten}:refs/heads/{branch}"),
+        ],
+        "restore command: {cmd}"
+    );
+    assert!(
+        fs::read_dir(&scratch).unwrap().next().is_none(),
+        "reading the restore command must run nothing"
+    );
+    assert_eq!(
+        f.ls_remote(branch),
+        head,
+        "the gate does not undo the force-push"
+    );
+}
+
 /// D3: a first push. The remote has no feat/x, so the snapshot records
 /// remote_before "absent" (ls-remote exit code 2), the ancestry check has
 /// nothing to compare, and the clean push is recovered.
@@ -1170,8 +1296,8 @@ fn step15_first_push_with_absent_remote_is_recovered() {
 }
 
 /// Minor 1: an untracked file the agent leaves behind is recorded, not a
-/// failure. The snapshot's status ignores untracked files; the record lists
-/// the new path in new_untracked.
+/// failure. The snapshot's status ignores untracked files; the record counts
+/// the new path in new_untracked_count and never names it.
 #[test]
 fn step15_untracked_file_left_by_agent_is_recovered_and_recorded() {
     let _ = runner_or_skip!();
@@ -1184,11 +1310,12 @@ fn step15_untracked_file_left_by_agent_is_recovered_and_recorded() {
     let head = f.head();
     assert_recovered(&run, "commit_result", "recovered-environment", &head);
     assert_eq!(f.remote_ref(BRANCH), head);
-    assert_eq!(
-        run.ctx("commit_result")["new_untracked"],
-        serde_json::json!(["agent-note.txt"]),
-        "{}",
-        run.debug()
+    let rec = run.ctx("commit_result");
+    assert_eq!(rec["new_untracked_count"], 1, "{}", run.debug());
+    assert_eq!(rec["untracked_truncated"], "false", "{}", run.debug());
+    assert!(
+        rec.get("new_untracked").is_none() && !rec.to_string().contains("agent-note.txt"),
+        "the record must not name the agent's files: {rec}"
     );
     let snap = snapshot(&run);
     assert_eq!(snap["untracked"], serde_json::json!([]), "snapshot: {snap}");

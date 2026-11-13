@@ -21,7 +21,7 @@ tags: ["git", "push", "recovery", "issue-2471"]
 # tracked status, local branch, the remote branch's commit, the origin URL
 # hashes), written before the agent runs. The gate compares the worktree and
 # the remote with it. The agent's `evidence`, the snapshot's `untracked` and
-# the record's `new_untracked` are information only: no rule branches on them.
+# the record's `new_untracked_count` are information only: no rule branches on them.
 # The failed step's own `reason` is not available here: the runner keeps no
 # output from a step that exits non-zero, and step-15 exits non-zero on every
 # path that leads to this recovery.
@@ -253,9 +253,9 @@ steps:
           and (.untracked_truncated | IN("true", "false"))))' >/dev/null 2>&1 \
         || fail push-unverified "$STEP: the worktree snapshot taken before the agent ran is missing or malformed"
       snap() { printf '%s' "$SNAP" | jq -r ".$1"; }
-      RB="$(snap remote_before)"; RBS="$(snap remote_before_source)"; NEW_UNTRACKED='[]'
-      emit() { jq -nc --arg pushed "$1" --arg sha "$2" --arg branch "$3" --arg reason "$4" --arg rb "$RB" --arg rbs "$RBS" --argjson nu "$NEW_UNTRACKED" --argjson recovery "$SAFE" \
-        '{pushed: $pushed, sha: $sha, branch: $branch, reason: $reason, recovery_attempted: "true", remote_before: $rb, remote_before_source: $rbs, new_untracked: $nu, recovery: $recovery}'; }
+      RB="$(snap remote_before)"; RBS="$(snap remote_before_source)"; NEW_UNTRACKED=0
+      emit() { jq -nc --arg pushed "$1" --arg sha "$2" --arg branch "$3" --arg reason "$4" --arg rb "$RB" --arg rbs "$RBS" --argjson nu "$NEW_UNTRACKED" --arg ut "$(snap untracked_truncated)" --argjson recovery "$SAFE" \
+        '{pushed: $pushed, sha: $sha, branch: $branch, reason: $reason, recovery_attempted: "true", remote_before: $rb, remote_before_source: $rbs, new_untracked_count: $nu, untracked_truncated: $ut, recovery: $recovery}'; }
       # Rule 3: helpers from the bundle, never from the task worktree (a branch under test must not replace the check).
       # TOOL_DIRS and find_tool must match the copy in the push_recovery_snapshot step.
       TOOL_DIRS=(); [ -z "${WORKFLOW_RUNTIME_ARTIFACT_HELPER:-}" ] || TOOL_DIRS+=("${WORKFLOW_RUNTIME_ARTIFACT_HELPER%/*}")
@@ -281,7 +281,7 @@ steps:
       [ -z "$UP" ] || [ "${UP#origin/}" = "$BRANCH" ] || fail upstream-mismatch "$STEP: upstream '$UP' is not origin/$BRANCH; refusing as the push step does (#1762)"
       # Rule 7: protected names, normalised.
       norm() { local n="$1"; n="${n#refs/heads/}"; n="${n#origin/}"; printf '%s' "$n"; }
-      read -r -a FORBID <<< "$(printf '%s' "${RECIPE_VAR_forbidden_base_branches:-}" | tr ',\n\t' '   ')" || true
+      read -r -a FORBID <<< "$(printf '%s' "${RECIPE_VAR_forbidden_base_branches:-}" | tr ',\n\t' '   ')"
       PROTECTED=(main master "${RECIPE_VAR_base_branch:-}" "${FORBID[@]}")
       is_protected() { local p; for p in "${PROTECTED[@]}"; do [ -n "$p" ] && [ "$(norm "$1")" = "$(norm "$p")" ] && return 0; done; return 1; }
       ! is_protected "$BRANCH" || fail protected-branch "$STEP: '$BRANCH' is a protected branch"
@@ -301,16 +301,12 @@ steps:
       STATUS_NOW="$(git -c core.fsmonitor=false status --porcelain --untracked-files=no)" || fail push-unverified "$STEP: git status failed"
       [ "$STATUS_NOW" = "$(snap status)" ] || fail worktree-changed "$STEP: git status changed while the agent ran"
       { [ "$(snap tracked_dirty)" = false ] && [ -z "$STATUS_NOW" ]; } || fail uncommitted-changes "$STEP: tracked changes were not committed"
-      # Untracked paths that appeared while the agent ran: recorded for information only, never a failure.
-      # Capped as the snapshot caps them (200 paths, 16 KiB), so commit_result stays small in the environment.
-      NEW_UNTRACKED="$(LC_ALL=C comm -13 <(printf '%s' "$SNAP" | jq -r '.untracked[]' | LC_ALL=C sort) <(git ls-files --others --exclude-standard | LC_ALL=C sort) \
-        | jq -R -s -c '
-          split("\n") | map(select(length > 0))
-          | reduce .[] as $p ({paths: [], bytes: 0, truncated: false};
-              if .truncated then .
-              elif (.paths | length) >= 200 or (.bytes + ($p | utf8bytelength) + 1) > 16384 then .truncated = true
-              else .paths += [$p] | .bytes += ($p | utf8bytelength) + 1 end)
-          | .paths')" || fail push-unverified "$STEP: cannot list untracked paths"
+      # Untracked paths that appeared while the agent ran: counted for information only, never a failure.
+      # Only the count is recorded: the names are the agent's to choose, and commit_result reaches later prompts.
+      # When the snapshot's list was cut (untracked_truncated), paths past the cap count as new, so the count is an upper bound.
+      NEW_UNTRACKED="$(LC_ALL=C comm -13 <(printf '%s' "$SNAP" | jq -r '.untracked[]' | LC_ALL=C sort) <(git ls-files --others --exclude-standard | LC_ALL=C sort) | wc -l)" \
+        || fail push-unverified "$STEP: cannot list untracked paths"
+      NEW_UNTRACKED="${NEW_UNTRACKED//[[:space:]]/}"
       # Rule 9b: origin is the remote the snapshot recorded, so every remote check below reads the real one.
       # url_hash must stay byte-identical to the copy in the push_recovery_snapshot step.
       url_hash() { local u; u="$(git remote get-url "$@" origin 2>/dev/null)" || u=""; printf '%s' "$u" | sha256sum | cut -d' ' -f1; }
@@ -331,7 +327,17 @@ steps:
         ANC_RC=0; git merge-base --is-ancestor "$RB" "$HEAD_SHA" >/dev/null 2>&1 || ANC_RC=$?
         case "$ANC_RC" in
           0) ;;
-          1) fail remote-history-rewritten "$STEP ($CAUSE): origin/$BRANCH was $RB before the agent ran (remote_before_source $RBS), which is not an ancestor of HEAD $HEAD_SHA; the remote history was rewritten and the gate undid nothing. To restore: git push --force-with-lease=refs/heads/$BRANCH:$HEAD_SHA origin $RB:refs/heads/$BRANCH" ;;
+          1)
+            MSG="$STEP ($CAUSE): origin/$BRANCH was $RB before the agent ran (remote_before_source $RBS), which is not an ancestor of HEAD $HEAD_SHA; the remote history was rewritten and the gate undid nothing."
+            # Git allows $, ;, ` and | in branch names, so each word is shell-quoted. The command is printed only
+            # whole: if redaction would change it or fail()'s 1000-byte cut would reach it, the commits are named instead.
+            RESTORE="git push --force-with-lease=$(printf '%q' "refs/heads/$BRANCH:$HEAD_SHA") origin $(printf '%q' "$RB:refs/heads/$BRANCH")"
+            if [ "$(printf '%s' "$RESTORE" | redact)" = "$RESTORE" ] && [ "$(printf '%s To restore: %s' "$MSG" "$RESTORE" | wc -c)" -le 1000 ]; then
+              MSG="$MSG To restore: $RESTORE"
+            else
+              MSG="$MSG To restore, push $RB to the branch above with --force-with-lease expecting $HEAD_SHA; the command is too long to print whole."
+            fi
+            fail remote-history-rewritten "$MSG" ;;
           *) fail push-unverified "$STEP ($CAUSE): cannot check that $RB, origin/$BRANCH before the agent ran, is an ancestor of HEAD $HEAD_SHA (git merge-base exit $ANC_RC)" ;;
         esac
       fi
