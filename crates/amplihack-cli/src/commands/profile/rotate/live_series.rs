@@ -9,8 +9,9 @@
 //! times, and many sessions write the same cache. [`contradicts`] says when
 //! a cached figure cannot be current next to the last accepted point. The
 //! series also keeps the frozen count on the measured figures and the mark
-//! that a re-read found the cache behind. It holds a profile name, times and
-//! percentages only. See "Live reading series" in
+//! that a re-read found the cache behind. It holds a profile name, times,
+//! percentages and verified account identity for continuity, never credentials.
+//! See "Live reading series" in
 //! docs/reference/profile-command.md.
 
 use super::super::super::decide::{Probed, Reading};

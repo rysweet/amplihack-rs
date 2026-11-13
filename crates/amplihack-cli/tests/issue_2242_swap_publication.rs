@@ -24,9 +24,14 @@ fn recovery_between_placement_and_publication_publishes_original_event_once() {
         assert_eq!(event["from_login"], "work");
         assert_eq!(event["live_login"], "spare");
         assert_eq!(event["reading"]["session"], 5);
+        // Recovery is followed by a newly measured cycle, which can stay.
+        // The durable swap event must retain its original identity regardless.
+        assert_eq!(value(&f.state().join("ledger.json"))["live"], "spare");
+        let _ = f.rotate();
         assert_eq!(
-            value(&f.state().join("ledger.json"))["last_cycle"]["outcome"],
-            "swapped"
+            value(&f.state().join("swap.json")),
+            event,
+            "exactly one event at {point}"
         );
         assert!(!f.state().join("journal.json").exists());
     }

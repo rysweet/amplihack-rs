@@ -5830,12 +5830,16 @@ the file in the same way as any other swap.
 A cycle retains one set of measurements and a separate set of attempted
 profiles. After a safe refusal it considers remaining eligible candidates
 through the existing decision pipeline. Marking a profile as attempted
-does not remove its evidence from organisation-affinity or overflow
-decisions. A refusal must not manufacture permission to cross organisations
-or spend credits.
+does not remove its observations from conservative overflow decisions.
+Organisation affinity uses only remaining eligible movement candidates.
+A refusal must not manufacture permission to cross organisations or spend
+credits.
 
 Each candidate is attempted at most once. Each attempt revalidates usage
-freshness, identity, eligibility and custody. Fallback adds no probes,
+freshness, identity, eligibility and custody. Attempted candidates are removed
+from movement eligibility before organisation affinity pools are formed, while
+their observations remain available to the conservative overflow rules.
+Attempts last for this cycle only. Fallback adds no probes,
 history samples, failed-live increments or retry loops; it reuses the
 measurements already obtained by the cycle, including existing freshness
 checks. A retained reading that has become stale cannot authorise movement.
@@ -8025,9 +8029,26 @@ automatic-publication context. Automatic recovery publishes the same swap
 event once; a recovered manual call does not become an automatic event.
 
 The identity reader uses the logins for bounded identity requests; movement
-uses only the exchange and rename, never copy-and-delete. Each parent
-directory is synced after each rename. At every point each
-login is in exactly one place, and `~/.claude` always has a login.
+uses only the exchange and rename, never copy-and-delete. Secure traversal
+opens directory handles without following application-controlled symlinks,
+checks ownership and permissions, and retains those handles for every
+exchange and no-replace rename, including duplicate parking and recovery.
+Replacing a parent path cannot redirect a credential into the replacement.
+A final binding check withholds completion if a directory was substituted.
+New journals retain live and target directory identities so recovery can
+reconstruct the same bindings after restart; a mismatch retains the journal
+and refuses movement. A version 2 journal missing these bindings remains
+retained for repair; legacy version 1 journals keep their existing recovery
+checks.
+
+One custody barrier synchronises every affected credential directory through
+its verified handle before receipts, successful metadata changes or success
+publication. A failed sync retains the journal even when movement completed.
+Recovery checks actual placement and retries this barrier even when both
+credentials are already at their destinations; it never repeats an exchange
+just to retry synchronisation. Publication retains the original event identity
+and sequence across retries. At every point each login is in exactly one
+place, and `~/.claude` always has a login.
 
 If the exchange fails with `EXDEV`, `EINVAL` or `ENOSYS`, the refusal is
 `RotateRefused` (`atomic exchange is not supported here`). When placement
@@ -8124,7 +8145,10 @@ and future use. Automatic selection requires fresh trusted verification,
 valid origin provenance and all ordinary policy checks. The origin's
 exclusions, leases, active-session protections, organisation affinity,
 spending limits and freshness requirements remain effective. Missing or
-inconsistent provenance prevents selection. Discovery grants no eligibility.
+inconsistent provenance prevents selection. Explicit switching uses the same
+origin-aware spending guard before moving or pinning: an active block on
+either the recovery profile or its validated origin refuses the switch.
+Recovery names alone establish no ancestry. Discovery grants no eligibility.
 There is no new public API or configuration flag for reserving custody.
 
 A recovery name does not grant new credit-spending consent. The rotator
@@ -8356,7 +8380,12 @@ the [direct read](#token-refresh) refreshes a profile's login, under
 
 Normal assessment resolves effective custody from the rotate ledger and
 lease view, preserving exclusions and protections for loaned or hosted
-logins. If the rotate ledger is unreadable, the existing refresh exception
+logins. An isolated stored-profile directory verification failure reports
+`profile <name>: authentication assessment skipped: unsafe profile directory:
+<reason>`, excludes that profile, and continues with safe profiles. Its existing
+needs-login episode is preserved: unavailable evidence cannot establish repair.
+Shared-root, journal and custody failures still stop at their existing boundary.
+If the rotate ledger is unreadable, the existing refresh exception
 covers `~/.claude` alone before the unreadable-ledger stop; profile folders
 are not assessed using unknown ownership. These still refuse the refresh:
 

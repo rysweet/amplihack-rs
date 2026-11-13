@@ -1,6 +1,6 @@
 //! Each command is a fresh process with temporary credential and state roots.
 #![cfg(unix)]
-use crate::support::profile_2242::{Fixture, Reply, private, value};
+use crate::support::profile_2242::{Fixture, Reply, inode, private, value};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
@@ -378,4 +378,37 @@ fn interrupted_entry_alert_delivery_replays_once_using_the_persisted_episode() {
         assert_eq!(entry_alerts(&f, "spare"), 1, "keyed replay at {point}");
         assert_eq!(episode(&f, "spare")["first_seen"], first);
     }
+}
+
+#[test]
+fn unsafe_profile_assessment_is_isolated_and_preserves_its_existing_episode() {
+    let f = Fixture::new();
+    let spare = inode(&f.slot("spare"));
+    let outgoing = inode(&f.live());
+    let unsafe_login = inode(&f.slot("extra"));
+    let entry = serde_json::json!({"first_seen":1_790_000_000_i64,
+        "alert_id":"00000000-0000-4000-8000-000000000042", "alerted":true,
+        "evidence":{"dir":f.root.join("extra"),"directory":[0,0,0,0],"file":null}});
+    private(
+        &f.state().join("login-state.json"),
+        serde_json::json!({"version":1,"profiles":{"extra":entry}})
+            .to_string()
+            .as_bytes(),
+    );
+    fs::set_permissions(f.root.join("extra"), fs::Permissions::from_mode(0o755)).unwrap();
+    let output = f.rotate();
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{diagnostic}");
+    assert!(
+        diagnostic
+            .contains("profile extra: authentication assessment skipped: unsafe profile directory"),
+        "{diagnostic}"
+    );
+    assert_eq!(inode(&f.live()), spare, "{}", f.log());
+    assert_eq!(inode(&f.slot("work")), outgoing);
+    assert_eq!(inode(&f.slot("extra")), unsafe_login);
+    assert_eq!(
+        value(&f.state().join("login-state.json"))["profiles"]["extra"],
+        entry
+    );
 }

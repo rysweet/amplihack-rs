@@ -1153,14 +1153,9 @@ impl RowReader {
         }
         #[cfg(unix)]
         {
-            let dir = if live {
-                self.home.as_ref().map(|h| h.join(".claude"))
-            } else {
-                Some(self.store.root().join(name.as_str()))
-            };
-            if dir.as_ref().is_some_and(|d| {
-                super::rotate::login_state::suppressed(self.store.root(), name, d).unwrap_or(true)
-            }) {
+            if (!live || self.home.is_some())
+                && super::rotate::login_state::suppressed(self.store.root(), name).unwrap_or(true)
+            {
                 return Probe::direct_error("needs-login");
             }
         }

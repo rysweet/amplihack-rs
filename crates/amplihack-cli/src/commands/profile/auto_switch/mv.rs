@@ -78,6 +78,7 @@ pub fn move_login(src: &Path, dst: &Path, show: &dyn Fn(&Path) -> String) -> Res
 /// throughout. Both must pass [`fsx::movable_login`]. Only Linux has the
 /// call; anywhere else, and on a filesystem that refuses it, the result is
 /// `Unsupported` and nothing has moved. There is no copy fallback.
+#[cfg(test)]
 pub fn exchange_logins(a: &Path, b: &Path) -> Result<(), MoveError> {
     if !fsx::movable_login(a) || !fsx::movable_login(b) {
         return Err(MoveError::Other(
@@ -102,7 +103,7 @@ pub fn exchange_logins(a: &Path, b: &Path) -> Result<(), MoveError> {
     sync_parents(a, b).map_err(|e| MoveError::Other(format!("sync after exchange: {e}")))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(test, target_os = "linux"))]
 fn exchange(a: &Path, b: &Path) -> std::io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
     let cstr = |p: &Path| {
@@ -128,7 +129,7 @@ fn exchange(a: &Path, b: &Path) -> std::io::Result<()> {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(test, not(target_os = "linux")))]
 fn exchange(_a: &Path, _b: &Path) -> std::io::Result<()> {
     Err(std::io::Error::from_raw_os_error(libc::ENOSYS))
 }

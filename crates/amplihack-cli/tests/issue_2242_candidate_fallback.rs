@@ -37,7 +37,8 @@ fn different_account_conflict_uses_the_later_candidate_and_retains_every_origina
     assert_eq!(
         inode(&f.live()),
         extra,
-        "a later candidate must actually become live"
+        "a later candidate must actually become live: {}",
+        f.log()
     );
     assert_eq!(inode(&f.slot("work")), conflict);
     assert_eq!(inode(&f.slot("spare")), spare);
@@ -46,14 +47,26 @@ fn different_account_conflict_uses_the_later_candidate_and_retains_every_origina
     // recovery directory name or treating hidden, unreachable storage as success.
     let usage = f.run(&["profile", "usage", "--json"]);
     let rows: serde_json::Value = serde_json::from_slice(&usage.stdout).unwrap();
-    assert!(
-        rows.as_array().unwrap().iter().any(|row| {
-            row["account"].as_str() == Some("work@example.com")
-                && row["profile"]
-                    .as_str()
-                    .is_some_and(|name| !["work", "spare", "extra"].contains(&name))
-        }),
-        "outgoing account is discoverable under its recovery profile through profile usage"
+    let recovery = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| {
+            row["profile"]
+                .as_str()
+                .is_some_and(|name| name.starts_with("recovered-"))
+        })
+        .expect("outgoing recovery profile is discoverable through profile usage");
+    let name = recovery["profile"].as_str().unwrap();
+    assert_eq!(
+        recovery["account"], name,
+        "usage account is a profile label"
+    );
+    assert_eq!(recovery["state"], "ok");
+    assert_eq!(recovery["session"]["used_percentage"], 90.0);
+    assert_eq!(
+        value(&f.root.join(name).join(".claude.json"))["oauthAccount"]["accountUuid"],
+        "uuid-work"
     );
     fn find(root: &std::path::Path, wanted: u64, found: &mut Vec<std::path::PathBuf>) {
         for entry in fs::read_dir(root).unwrap() {

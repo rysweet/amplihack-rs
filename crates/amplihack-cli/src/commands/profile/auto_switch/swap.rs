@@ -530,12 +530,8 @@ pub fn swap_check(
             Ok(None)
         );
         origin_allowed
-            && !crate::commands::profile::rotate::login_state::suppressed(
-                &state.root,
-                c,
-                &state.root.join(n),
-            )
-            .unwrap_or(true)
+            && !crate::commands::profile::rotate::login_state::suppressed(&state.root, c)
+                .unwrap_or(true)
             && !overflow.not_plan.contains(c)
             && ledger.leased_to(n).is_none()
             && fsx::movable_login(&slot(state, &ledger, owner.as_str(), n))

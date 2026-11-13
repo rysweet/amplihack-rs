@@ -125,3 +125,5 @@ mod projection;
 mod publication;
 #[path = "tests_issue_2242_recovery.rs"]
 mod recovery;
+#[path = "tests_issue_2242_review.rs"]
+mod review;

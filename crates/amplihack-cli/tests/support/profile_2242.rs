@@ -187,6 +187,19 @@ impl Fixture {
                     .as_bytes(),
             );
         }
+        // Occupied outgoing slots require a recorded live owner. Without this
+        // provenance the real CLI correctly treats the live login as adoption.
+        fs::create_dir_all(f.state()).unwrap();
+        fs::set_permissions(f.state(), fs::Permissions::from_mode(0o700)).unwrap();
+        private(
+            &f.state().join("ledger.json"),
+            json!({"version":1,
+                "live":"work", "account":"uuid-work",
+                "login_identity":{"accountUuid":"uuid-work","emailAddress":"work@example.com"}
+            })
+            .to_string()
+            .as_bytes(),
+        );
         f
     }
 

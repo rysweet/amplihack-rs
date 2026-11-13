@@ -22,9 +22,9 @@ use super::swap_expect::{relabel, settle};
 pub(super) use super::swap_finish::{finish, remove_unused_adoption};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
-    CLAUDE_JSON, CREDS, MoveError, REFRESH_LOCK, abort_point, check_root_private, exchange_logins,
-    exists, movable_login, move_login, read_claude_json, release_refresh_lock_at,
-    take_refresh_lock_at, write_private_atomic,
+    CLAUDE_JSON, CREDS, MoveError, REFRESH_LOCK, abort_point, check_root_private, exists,
+    movable_login, read_claude_json, release_refresh_lock_at, take_refresh_lock_at,
+    write_private_atomic,
 };
 use crate::commands::profile::kind::{self, Kind};
 use crate::commands::profile::name::ProfileName;

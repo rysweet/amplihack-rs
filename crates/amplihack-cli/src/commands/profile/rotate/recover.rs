@@ -6,12 +6,10 @@ use super::identify::{LoginKind, login_kind};
 use super::ledger::{Phase, RotateJournal, RotateState};
 use super::login_identity::{Reader, UNAVAILABLE};
 use super::swap::Source;
-use super::swap::{
-    LOGINS_MISPLACED, describe, drop_locks, finish, ino_at, remove_unused_adoption, show,
-};
+use super::swap::{LOGINS_MISPLACED, drop_locks, finish, ino_at, remove_unused_adoption};
 use super::swap_authorize::authorize;
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{CREDS, move_login};
+use crate::commands::profile::auto_switch::kit::CREDS;
 use crate::commands::profile::kind::{self, Kind};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
@@ -96,6 +94,14 @@ pub(super) fn recover_at(
             "an earlier swap stopped half way".into(),
         ));
     }
+    if j.version == 2
+        && j.movement_directories.is_none()
+        && (j.phase != Phase::Checking || j.parking.is_some() || j.outgoing.is_some())
+    {
+        return Ok(RecoverOutcome::Inconsistent(
+            "credential directory bindings are missing; journal retained for repair".into(),
+        ));
+    }
     // Another HOME (sudo, cron) changes nothing: the run with the journal's
     // HOME recovers it.
     if home.to_str() != Some(j.home.as_str()) {
@@ -106,6 +112,16 @@ pub(super) fn recover_at(
     // Names were checked when the journal was loaded.
     let (from, to) = (ProfileName::parse(&j.from)?, ProfileName::parse(&j.to)?);
     super::swap::check_home(home)?;
+    let live_dir = super::verified_dirs::Directory::open(
+        &home.join(".claude"),
+        j.movement_directories.map(|d| d[0]),
+    )
+    .map_err(super::verified_dirs::incomplete)?;
+    let target_dir = super::verified_dirs::Directory::open(
+        &store.root().join(to.as_str()),
+        j.movement_directories.map(|d| d[1]),
+    )
+    .map_err(super::verified_dirs::incomplete)?;
     let pre_exchange = ino_at(&home.join(".claude").join(CREDS)) == Some(j.live_ino)
         && store
             .verify_profile_dir(&to)
@@ -325,15 +341,27 @@ pub(super) fn recover_at(
     {
         return Err(super::swap_authorize::refused(UNAVAILABLE));
     }
+    let destination = store.root().join(
+        j.outgoing
+            .as_ref()
+            .map_or(j.from.as_str(), |c| c.destination.as_str()),
+    );
+    let saved_dir = super::verified_dirs::Directory::open(
+        &destination,
+        j.outgoing
+            .as_ref()
+            .map_or(j.from_directory, |c| c.directory()),
+    )
+    .map_err(super::verified_dirs::incomplete)?;
     if outgoing == &to_dir
-        && let Err(e) = move_login(&t, &s, &show)
+        && let Err(e) = target_dir.move_to(&saved_dir, j.live_ino)
     {
-        let why = format!(
-            "the outgoing login could not be moved to its profile: {}",
-            describe(e)
-        );
+        let why = format!("the outgoing login could not be moved to its profile: {e}");
         return freeze(store, rs, home, j, &why);
     }
+    // Presence is not durability. Always synchronize all movement directories,
+    // even when an earlier attempt already established the final placement.
+    super::verified_dirs::durable(&[&live_dir, &target_dir, &saved_dir])?;
     if let Some(c) = &j.outgoing {
         c.commit(store, rs)?;
         c.record_account(

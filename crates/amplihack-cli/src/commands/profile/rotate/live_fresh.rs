@@ -45,9 +45,9 @@
 //! context, which `decide_measured` reads. They reach the decision rule's
 //! threshold row only ([`with_outlook`]): the plan-room swap and the overflow
 //! rules always run on the reading as measured. The ledger, the history and
-//! the log lines keep the reading as measured. `Point`, [`Series`] and
-//! [`Outlook`] hold a profile name, times and percentages only: never a
-//! token, an account id, an email or a path. Nothing here is persisted.
+//! the log lines keep the reading as measured. `Point` and [`Outlook`] hold
+//! profile names, times and percentages. [`Series`] also retains verified
+//! account identity for continuity, never credentials. Nothing here is persisted.
 //! See "Rotate live reading freshness" in docs/reference/profile-command.md.
 
 use super::super::cycle::Ctx;

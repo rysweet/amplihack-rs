@@ -206,6 +206,7 @@ impl Env {
             outgoing: None,
             outgoing_lock_ino: None,
             from_directory: None,
+            movement_directories: None,
             identity: Some(super::login_identity::SwapIdentity::new(
                 Some(
                     &super::identify::Account::from_block(&acct("u-work", "work@example.com"))

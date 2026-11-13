@@ -68,7 +68,8 @@ pub(in super::super) fn decide(
         .iter()
         .zip(eligible)
         .map(|(m, &ok)| {
-            let eligible = ok && (paid_allowed || !is_overflow(&m.name));
+            let eligible =
+                ok && !attempted.contains(&m.name) && (paid_allowed || !is_overflow(&m.name));
             // Whether the authoritative selector, offered only this target,
             // picks it. Plan-room fallback has its own pool.
             let permitted = [m.name.clone()];
@@ -89,11 +90,7 @@ pub(in super::super) fn decide(
         .collect();
     let pools = pools(snap.source_org(), need, &candidates);
     let names = |indices: &[usize]| -> Vec<ProfileName> {
-        indices
-            .iter()
-            .map(|&i| measured[i].name.clone())
-            .filter(|n| !attempted.contains(n))
-            .collect()
+        indices.iter().map(|&i| measured[i].name.clone()).collect()
     };
     let (allowed, plan_room) = (names(&pools.allowed), names(&pools.plan_room));
     let mut verdict = decide_restricted(input, Some((&allowed, &plan_room)));

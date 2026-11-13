@@ -33,30 +33,9 @@ pub(in crate::commands::profile::rotate) fn decide_available(
     let ledger = ctx.rs.load_ledger()?;
     let t = (ctx.now)();
     let blocked = |n: &ProfileName| {
-        let origin = super::super::custody::origin(&ctx.store, n).ok().flatten();
-        let unmarked_origin = origin.as_ref().is_some_and(|origin| {
-            snap.overflow
-                .iter()
-                .find(|entry| &entry.name == origin)
-                .is_some_and(|original| {
-                    !snap
-                        .overflow
-                        .iter()
-                        .any(|entry| &entry.name == n && entry.tier == original.tier)
-                })
-        });
-        unmarked_origin
+        super::super::spending::refusal(&ctx.store, snap, ledger.as_ref(), n, t).is_some()
             || ledger.as_ref().is_some_and(|l| {
-                l.overflow_blocked
-                    .get(n.as_str())
-                    .is_some_and(|b| t < b.until)
-                    || origin.as_ref().is_some_and(|o| {
-                        l.overflow_blocked
-                            .get(o.as_str())
-                            .is_some_and(|b| t < b.until)
-                    })
-                    || (snap.platform() == Some(n)
-                        && l.platform_block.as_ref().is_some_and(|b| t < b.until))
+                snap.platform() == Some(n) && l.platform_block.as_ref().is_some_and(|b| t < b.until)
             })
     };
     let on_overflow =

@@ -147,7 +147,7 @@ pub fn candidates(
             } else {
                 Skip::Refused
             })
-        } else if super::login_state::suppressed(store.root(), &name, dir.as_ref().unwrap())? {
+        } else if super::login_state::suppressed(store.root(), &name)? {
             Some(Skip::NeedsLogin)
         } else if let Some(s) = login_skip(dir.as_deref(), resolved) {
             Some(s)

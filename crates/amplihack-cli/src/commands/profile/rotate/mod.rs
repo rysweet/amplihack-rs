@@ -115,6 +115,8 @@ mod settings;
 #[cfg(unix)]
 mod spend_blocks;
 #[cfg(unix)]
+mod spending;
+#[cfg(unix)]
 mod swap;
 #[cfg(unix)]
 mod swap_authorize;
@@ -130,14 +132,14 @@ mod swap_finish;
 mod swap_record;
 #[cfg(unix)]
 mod switch;
-#[cfg(all(test, unix))]
-pub(super) use swap::DOCUMENTED as DOCUMENTED_REFUSALS;
-
+#[cfg(unix)]
+mod verified_dirs;
 pub use super::rotate_args::{RotateAction, RotateArgs, TuneFlags};
 pub use candidates::login_unusable;
 pub use overflow_msg::{CheckNote, alert_key_held_session, per_token_off_key, per_token_reason};
 pub use overflow_record::append_to_log;
-
+#[cfg(all(test, unix))]
+pub(super) use swap::DOCUMENTED as DOCUMENTED_REFUSALS;
 #[cfg(all(test, unix))]
 mod tests;
 #[cfg(all(test, unix))]
@@ -206,27 +208,23 @@ mod tests_switch_candidates;
 mod tests_switch_hold;
 #[cfg(all(test, unix))]
 mod tests_switch_race;
-use super::{name::ProfileName, root_config::RootSource, store::ProfileStore};
-
 #[cfg(unix)]
 pub(super) use self::{autostart::autostart_line, identify::excluded_offline::*};
 #[cfg(unix)]
 pub(super) use self::{identify::is_live, observe::Probes, platform_block::platform_live_line};
-#[cfg(unix)]
-pub(crate) use {autostart::autostart_on_launch, older_readers::warn_foreign_rotator};
-#[cfg(unix)]
-pub(super) use {control::clear_overflow_block, control::overflow_blocks, log::timestamp};
-
+use super::{name::ProfileName, root_config::RootSource, store::ProfileStore};
 #[cfg(all(test, unix))]
 pub(super) use gate_record::effective_at as overflow_gate_at;
 #[cfg(unix)]
 pub(super) use gate_record::{GateSource, effective as overflow_gate, line as overflow_gate_line};
-
+#[cfg(unix)]
+pub(crate) use {autostart::autostart_on_launch, older_readers::warn_foreign_rotator};
+#[cfg(unix)]
+pub(super) use {control::clear_overflow_block, control::overflow_blocks, log::timestamp};
 /// Warn when another binary's rotator ignores the switch hold (#1691).
 #[cfg(unix)]
 const FOREIGN_IGNORES_HOLD: &str = "runs another amplihack binary and ignores the switch \
     hold; restart it: amplihack profile rotate stop && amplihack profile rotate start";
-
 /// Switch-hold warning, comparing the running rotator with this executable.
 #[cfg(unix)]
 fn foreign_note_for(

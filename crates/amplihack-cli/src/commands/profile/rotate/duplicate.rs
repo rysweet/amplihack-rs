@@ -1,11 +1,11 @@
 //! Server-verified duplicate custody and move-only, journalled parking (#2242).
 use super::ledger::{RotateJournal, RotateState};
 use super::login_identity::{Bound, Identity, Reader, Stamp, UNAVAILABLE};
-use super::swap::{Source, describe, take_lock};
+use super::swap::{Source, take_lock};
 use super::swap_authorize::{check_record, refused};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
-    CREDS, abort_point, check_root_private, exists, fsync_dir, move_login, write_private_atomic,
+    CREDS, abort_point, check_root_private, exists, fsync_dir, write_private_atomic,
 };
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
@@ -234,6 +234,17 @@ impl Parking {
         {
             return Err(fail());
         }
+        // Keep the lexical root in the traversal: ProfileStore's verified path
+        // is canonical and would otherwise hide a symlink in an ancestor.
+        let origin_path = rs
+            .dir
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(fail)?
+            .join(&self.origin);
+        let source =
+            super::verified_dirs::Directory::open(&origin_path, Some(self.origin_directory))?;
+        let destination = super::verified_dirs::Directory::open(&parked, Some(self.directory))?;
         let (src, dst) = (origin.join(CREDS), parked.join(CREDS));
         if may_move && exists(&dst) && exists(&src) {
             return Err(fail());
@@ -245,16 +256,13 @@ impl Parking {
             {
                 return Err(fail());
             }
-            move_login(&src, &dst, &super::swap::show).map_err(|e| {
-                ProfileError::RotateInconsistent(format!("duplicate parking: {}", describe(e)))
-            })?;
+            source.move_to(&destination, self.duplicate.inode())?;
             abort_point("duplicate-moved");
         }
         if !self.duplicate.moved(&parked) {
             return Err(fail());
         }
-        fsync_dir(origin)?;
-        fsync_dir(&parked)?;
+        super::verified_dirs::durable(&[&source, &destination])?;
         let bytes = serde_json::to_vec_pretty(self).map_err(|_| fail())?;
         let receipt = parked.join("receipt.json");
         match rs.read(&receipt, "duplicate receipt")? {

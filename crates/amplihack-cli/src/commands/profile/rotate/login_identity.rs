@@ -139,6 +139,9 @@ fn stamp(dir: &Path) -> Result<Stamp, &'static str> {
 }
 
 impl Stamp {
+    pub(super) fn inode(&self) -> u64 {
+        self.file.ino
+    }
     pub(super) fn current(&self, dir: &Path) -> bool {
         stamp(dir).is_ok_and(|s| s == *self)
     }

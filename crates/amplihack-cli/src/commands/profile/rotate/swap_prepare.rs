@@ -41,6 +41,7 @@ pub(super) fn begin(
         completion: None,
         outgoing: None,
         outgoing_lock_ino: None,
+        movement_directories: None,
         from_directory: match from {
             Source::Profile(name) => {
                 let m = fs::symlink_metadata(store.verify_profile_dir(name)?)?;

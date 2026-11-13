@@ -65,6 +65,9 @@ pub struct RotateJournal {
     pub outgoing_lock_ino: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_directory: Option<(u64, u64)>,
+    /// Retained live and target directory identities, reconstructed on restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub movement_directories: Option<[(u64, u64); 2]>,
 }
 
 impl RotateJournal {

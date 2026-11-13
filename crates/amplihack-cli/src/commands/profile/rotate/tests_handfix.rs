@@ -818,6 +818,7 @@ fn a_pending_journal_means_no_read_and_no_move() {
         outgoing: None,
         outgoing_lock_ino: None,
         from_directory: None,
+        movement_directories: None,
     })
     .unwrap();
     assert_eq!(f.step(&seam(), T), Step::Clear);

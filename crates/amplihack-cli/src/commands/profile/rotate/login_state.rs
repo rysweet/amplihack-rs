@@ -143,9 +143,7 @@ fn deliver(rs: &RotateState, id: &str, line: &str) -> Result<(), ProfileError> {
 pub(in crate::commands::profile) fn suppressed(
     root: &Path,
     name: &ProfileName,
-    dir: &Path,
 ) -> Result<bool, ProfileError> {
-    let _ = dir;
     Ok(load(&RotateState::new(root))?
         .profiles
         .contains_key(name.as_str()))
@@ -234,7 +232,16 @@ pub(super) fn assess_with(
         let dir = if live.as_ref() == Some(&name) {
             home.join(".claude")
         } else {
-            store.verify_profile_dir(&name)?
+            match store.verify_profile_dir(&name) {
+                Ok(dir) => dir,
+                Err(error) => {
+                    eprintln!(
+                        "profile {name}: authentication assessment skipped: unsafe profile directory: {error}"
+                    );
+                    // Unavailable evidence cannot repair or clear a login episode.
+                    continue;
+                }
+            }
         };
         let before = match evidence(&dir) {
             Ok(evidence) => evidence,

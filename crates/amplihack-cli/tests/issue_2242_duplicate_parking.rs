@@ -12,7 +12,7 @@ fn verified_duplicate_does_not_prevent_a_same_cycle_real_exchange() {
     let before = f.requests("work").len();
     let o = f.rotate();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    assert_eq!(inode(&f.live()), spare);
+    assert_eq!(inode(&f.live()), spare, "{}", f.log());
     assert_eq!(inode(&f.slot("work")), live);
     assert!(
         f.requests("work").len() >= before + 2,
@@ -36,7 +36,8 @@ fn every_parking_interruption_keeps_custody_explained_and_recovers_to_one_swap()
         assert_eq!(
             o.status.code(),
             Some(86),
-            "interruption point {point} was not reached"
+            "interruption point {point} was not reached: {}",
+            f.log()
         );
         assert!(
             f.state().join("journal.json").exists(),

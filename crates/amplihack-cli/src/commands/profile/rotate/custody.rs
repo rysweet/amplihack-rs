@@ -61,6 +61,9 @@ impl Custody {
         }
         Ok(dir)
     }
+    pub(super) fn directory(&self) -> Option<(u64, u64)> {
+        self.directory
+    }
     pub(super) fn permits(
         &self,
         store: &ProfileStore,

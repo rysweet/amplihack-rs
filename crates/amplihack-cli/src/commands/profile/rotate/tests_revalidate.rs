@@ -242,6 +242,7 @@ fn journal_appears(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> 
             outgoing: None,
             outgoing_lock_ino: None,
             from_directory: None,
+            movement_directories: None,
         })
         .unwrap();
     decide_measured(ctx, snap, spent(), probes, at)

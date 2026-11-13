@@ -79,6 +79,7 @@ fn journal() -> RotateJournal {
         outgoing: None,
         outgoing_lock_ino: None,
         from_directory: None,
+        movement_directories: None,
     }
 }
 

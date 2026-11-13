@@ -455,3 +455,47 @@ fn version_two_recovery_reconsiders_a_previously_inconsistent_placement() {
     assert_eq!(json(&e.rs.dir.join("swap.json"))["seq"], 1);
     assert!(!e.rs.journal.exists());
 }
+
+#[test]
+fn alternate_custody_cannot_commit_receipts_or_success_before_directory_sync() {
+    use super::super::super::{recover, verified_dirs};
+    let e = fixture();
+    let occupied = conflict(&e);
+    let extra = ino_at(&e.slot("extra"));
+    let mut c = context(&e);
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            verified_dirs::FAIL_SYNC.with(|f| f.set(false));
+        }
+    }
+    let _reset = Reset;
+    verified_dirs::FAIL_SYNC.with(|f| f.set(true));
+    let _ = drive(&e, &mut c);
+    let journal = json(&e.rs.journal);
+    let saved = e
+        .root
+        .join(journal["outgoing"]["destination"].as_str().unwrap());
+    assert_eq!(ino_at(&e.live()), extra);
+    assert_eq!(ino_at(&saved.join(".credentials.json")), Some(e.l));
+    assert_eq!(ino_at(&e.slot("work")), Some(occupied));
+    for _ in 0..2 {
+        assert!(!saved.join(".rotate-custody.json").exists());
+        assert!(!e.rs.dir.join("swap.json").exists());
+        assert!(e.rs.journal.exists());
+        c.identity_budget.reset();
+        assert!(recover::recover_at(&e.store, &e.rs, &e.home, c.identity_reader(), c.now).is_err());
+    }
+    verified_dirs::FAIL_SYNC.with(|f| f.set(false));
+    c.identity_budget.reset();
+    assert!(matches!(
+        recover::recover_at(&e.store, &e.rs, &e.home, c.identity_reader(), c.now).unwrap(),
+        recover::RecoverOutcome::RolledForward { .. }
+    ));
+    assert_eq!(ino_at(&e.live()), extra);
+    assert_eq!(ino_at(&saved.join(".credentials.json")), Some(e.l));
+    assert_eq!(ino_at(&e.slot("work")), Some(occupied));
+    assert!(saved.join(".rotate-custody.json").exists());
+    assert_eq!(json(&e.rs.dir.join("swap.json"))["seq"], 1);
+    assert!(!e.rs.journal.exists());
+}

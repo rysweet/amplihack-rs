@@ -6,13 +6,7 @@
 
 use super::decide::Reading;
 use super::ledger::RotateState;
-#[cfg(test)]
-use super::log::Sink;
 use crate::commands::profile::ProfileError;
-#[cfg(test)]
-use crate::commands::profile::auto_switch::kit::now;
-#[cfg(test)]
-use crate::commands::profile::name::ProfileName;
 use amplihack_utils::rotator_status::swap_record::{SWAP_FILE, SwapReading, SwapRecord};
 use serde::{Deserialize, Serialize};
 
@@ -178,101 +172,8 @@ pub(super) fn complete(
     rs.delete_journal()
 }
 
-/// The log line prefix for a record written with `seq` 1 because the
-/// previous one could not be used.
-#[cfg(test)]
-const RESTART: &str = "swap record seq restarts at 1";
-
 /// A percentage as stored: rounded up and clamped to `0..=255`. The caller
 /// has checked it is finite.
 fn percent(p: f64) -> u8 {
     p.ceil().clamp(0.0, 255.0) as u8
-}
-
-/// Writes the record for a swap from `from` to `to` at `t`, whose target
-/// reading `reading` was measured from `measured_at`. `Ok(false)`, writing
-/// nothing, when the reading is not `Reading::Measured` or a figure is not
-/// finite (S8: a NaN must never read as 0% used). `seq` is the previous
-/// record's plus one, or 1 when there is none or it cannot be read; a
-/// previous record that exists but cannot be read or parsed is one line on
-/// `out`. The write is private (0600) and atomic.
-#[cfg(test)]
-pub(super) fn record_swap(
-    rs: &RotateState,
-    out: &mut Sink,
-    from: &ProfileName,
-    to: &ProfileName,
-    reading: &Reading,
-    measured_at: i64,
-    t: i64,
-) -> Result<bool, ProfileError> {
-    record_with_affinity(
-        rs,
-        out,
-        from,
-        to,
-        reading,
-        measured_at,
-        t,
-        None,
-        None,
-        false,
-    )
-}
-
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-fn record_with_affinity(
-    rs: &RotateState,
-    out: &mut Sink,
-    from: &ProfileName,
-    to: &ProfileName,
-    reading: &Reading,
-    measured_at: i64,
-    t: i64,
-    from_org: Option<&str>,
-    to_org: Option<&str>,
-    explicit: bool,
-) -> Result<bool, ProfileError> {
-    let Reading::Measured { session, week } = *reading else {
-        return Ok(false);
-    };
-    let from_org = from_org.filter(|id| amplihack_utils::organisation_affinity::valid_id(id));
-    let to_org = to_org.filter(|id| amplihack_utils::organisation_affinity::valid_id(id));
-    if !session.is_finite() || !week.is_finite() {
-        return Ok(false);
-    }
-    let previous = match rs.read(&rs.dir.join(SWAP_FILE), "swap record") {
-        Ok(None) => None,
-        Ok(Some(raw)) => match serde_json::from_slice::<SwapRecord>(&raw) {
-            Ok(p) => Some(p),
-            Err(_) => {
-                out.emit(now(), &format!("{RESTART}: previous unparsable"));
-                None
-            }
-        },
-        Err(e) => {
-            out.emit(now(), &format!("{RESTART}: previous unreadable ({e})"));
-            None
-        }
-    };
-    let record = SwapRecord {
-        from_org: from_org.map(str::to_owned),
-        to_org: to_org.map(str::to_owned),
-        affinity: explicit
-            .then(|| amplihack_utils::organisation_affinity::Affinity::between(from_org, to_org)),
-        seq: previous.map_or(1, |p| p.seq.saturating_add(1)),
-        live_login: to.as_str().to_string(),
-        from_login: from.as_str().to_string(),
-        swapped_at: t,
-        reading: SwapReading {
-            session: percent(session),
-            week: percent(week),
-            measured_at,
-        },
-    };
-    let bytes = serde_json::to_vec(&record)
-        .map_err(|e| ProfileError::Io(std::io::Error::other(e.to_string())))?;
-    rs.write(SWAP_FILE, &bytes)?;
-    Ok(true)
 }

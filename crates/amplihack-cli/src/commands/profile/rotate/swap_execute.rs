@@ -23,6 +23,9 @@ pub(in crate::commands::profile::rotate) fn swap_operation_custody(
     let to_dir = store
         .verify_profile_dir(to)
         .map_err(|_| refused(format!("profile {to} failed the directory check")))?;
+    let live_dir = super::super::verified_dirs::Directory::open(&dot, None)?;
+    let target_dir =
+        super::super::verified_dirs::Directory::open(&store.root().join(to.as_str()), None)?;
     let (l, t) = (dot.join(CREDS), to_dir.join(CREDS));
     if !movable_login(&l) || !movable_login(&t) {
         return Err(refused(LOGIN_NOT_MOVABLE));
@@ -101,6 +104,8 @@ pub(in crate::commands::profile::rotate) fn swap_operation_custody(
     crate::commands::profile::rotate::swap_authorize::check_snapshot(&first, basis, to)?;
     // Persist owned locks before final identity requests can block or terminate.
     let mut j = prepare::begin(store, rs, home, &from, to, now, &l, &t)?;
+    j.movement_directories = Some([live_dir.id(), target_dir.id()]);
+    rs.save_journal(&j)?;
     let checked = authorize(
         store,
         rs,
@@ -241,38 +246,29 @@ pub(in crate::commands::profile::rotate) fn swap_operation_custody(
         abort_point("outgoing-intent");
     }
 
-    if let Err(e) = exchange_logins(&t, &l) {
-        // Only a target that still holds its own login was not exchanged.
-        // A failed sync after the exchange still exchanged the logins: go
-        // on as journalled, or they would be filed under the wrong profiles
-        // with no journal to say so.
-        match ino_at(&t) {
-            Some(ino) if ino == target_ino => {
-                return Err(abandon(store, rs, home, &mut j, refused(describe(e))));
-            }
-            // Cannot tell: the journal stays at J0 for recovery to settle.
-            None => {
-                return Err(ProfileError::RotateInconsistent(format!(
-                    "the target login could not be checked after the exchange failed: {}",
-                    describe(e)
-                )));
-            }
-            Some(_) => {}
-        }
-        eprintln!("warning: {}; the swap goes on", describe(e));
-    }
+    crate::commands::profile::rotate::custody::destination(store, &j)?;
+    let destination = store.root().join(
+        j.outgoing
+            .as_ref()
+            .map_or(j.from.as_str(), |c| c.destination.as_str()),
+    );
+    let saved_dir = super::super::verified_dirs::Directory::open(
+        &destination,
+        j.outgoing
+            .as_ref()
+            .map_or(j.from_directory, |c| c.directory()),
+    )?;
+    // An error after the syscall can mean movement occurred. Preserve J0;
+    // recovery inspects placement and never blindly repeats an exchange.
+    target_dir.exchange(&live_dir, target_ino, live_ino)?;
+    super::super::verified_dirs::durable(&[&live_dir, &target_dir, &saved_dir])?;
     step(rs, &mut j, Phase::S1)?;
-    let s = crate::commands::profile::rotate::custody::destination(store, &j)?.join(CREDS);
-    if let Err(e) = move_login(&t, &s, &show) {
-        // `~/.claude` already holds the incoming login, as after a finished
-        // swap, so Claude may refresh it again. The journal stays at S1 and
-        // the next recovery retries the move.
-        drop_locks(store, rs, home, &mut j)?;
+    if let Err(e) = target_dir.move_to(&saved_dir, live_ino) {
         return Err(ProfileError::RotateInconsistent(format!(
-            "the outgoing login could not be moved from {to} to {from}: {}",
-            describe(e)
+            "the outgoing login could not be moved from {to} to {from}; journal retained: {e}"
         )));
     }
+    super::super::verified_dirs::durable(&[&live_dir, &target_dir, &saved_dir])?;
     if let Some(c) = &j.outgoing {
         abort_point("outgoing-moved");
         c.commit(store, rs)?;
