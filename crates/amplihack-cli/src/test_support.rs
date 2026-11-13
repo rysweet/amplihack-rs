@@ -2,7 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-#[path = "../tests/fixtures/issue_2496_release_support.rs"]
+#[path = "test_fixtures/issue_2496_release_support.rs"]
 pub(crate) mod release_fixture;
 
 /// Single global lock for all environment-mutating tests.
@@ -461,6 +461,9 @@ impl Drop for ClearedGraphDbEnv {
 #[path = "../tests/support/exec_stub.rs"]
 #[allow(dead_code)]
 mod exec_stub;
+
+#[cfg(unix)]
+pub(crate) use exec_stub::copy_executable;
 
 /// Writes an executable stub at `path` (mode 0755) through a short-lived
 /// `sh`, so no fork of this process can inherit a write descriptor to it and

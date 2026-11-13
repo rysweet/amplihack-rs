@@ -195,12 +195,12 @@ Each cause the `debug` line can report, and what to do about it:
 | `executable-not-a-regular-file` | The path is a directory, device or socket rather than a regular file | Reinstall |
 | `executable-writable-by-group-or-others` | The executable itself is writable by group or others | `chmod 755` the file, or reinstall to restore the installed modes |
 | `home-directory-unresolved`, `executable-path-unknown`, `executable-path-unresolved` | `HOME` is unset, or the executable's own path cannot be obtained or resolved | Set `HOME`, or install and launch from `~/.local/bin/amplihack` |
-| `unsupported-platform` | The platform has no Unix ownership and mode semantics, so confinement cannot be assessed | Install and update explicitly. See [Scope and known limits](#scope-and-known-limits) |
+| `unsupported-platform` | The platform has no Unix ownership and mode semantics, so confinement cannot be assessed | Use a supported Linux/macOS x86_64/aarch64 host; on Windows, use WSL. Explicit installation cannot obtain an unsupported platform's release archive |
 
 These names are a published vocabulary, not free text, so they are safe to
 quote in an issue.
 
-In every one of these cases `amplihack install` remains available, subject to
+On supported release targets, `amplihack install` remains available, subject to
 its own source validation, so the host can still be repaired deliberately.
 
 ## Scope and known limits
@@ -222,10 +222,14 @@ Two limits follow from that scope:
   atomic. The window is same-user only, and the private-directory checks run
   again when the install writes.
 
-On platforms without Unix ownership and permission semantics, the ownership
-and mode checks cannot be made. Implicit installation is refused outright
-there, rather than proceeding on the path, confinement and completeness
-checks alone, and explicit `amplihack install` is the only route.
+Published release archives and the release resolver support Linux and macOS
+on x86_64 and aarch64 only. On Windows, use WSL and its Linux release target.
+Platforms without Unix ownership and permission semantics refuse implicit
+installation. Explicit installation also cannot obtain a release archive for
+an unsupported target. The npm wrapper may build a CLI from source, but that
+source-built CLI does not authorize release publication: installation still
+requires eligible installed release executables or the matching published
+platform archive.
 
 The verdict is recomputed at each boundary rather than cached, so a tree that
 changes mid-run cannot carry an earlier decision forward.

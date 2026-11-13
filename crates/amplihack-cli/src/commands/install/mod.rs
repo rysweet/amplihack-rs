@@ -734,7 +734,10 @@ fn local_install_resolved(
         return Ok(());
     }
     retire_bundle_leftovers(&claude_dir)?;
-    let switched = binary::commit_release(release)?;
+    let local_bin = hooks_bin
+        .parent()
+        .context("hooks executable has no parent")?;
+    let switched = binary::commit_release(release, local_bin)?;
     for switch in &switched.switched {
         println!(
             "  ✅ {} -> {}",

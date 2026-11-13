@@ -143,7 +143,11 @@ fn text(output: &Output) -> String {
 fn native_release(host: &Host) -> PathBuf {
     let source = host.path("release-native.rs");
     let native = host.path("release-native");
-    fs::write(&source, include_str!("fixtures/issue_2496_release.rs")).unwrap();
+    fs::write(
+        &source,
+        include_str!("../src/test_fixtures/issue_2496_release.rs"),
+    )
+    .unwrap();
     let compiler =
         Path::new(env!("CARGO")).with_file_name(if cfg!(windows) { "rustc.exe" } else { "rustc" });
     let build = std::process::Command::new(compiler)
@@ -667,7 +671,11 @@ mod issue_2496 {
     fn acquisition_native(root: &Path) -> PathBuf {
         let source = root.join("client.rs");
         let binary = root.join("client");
-        fs::write(&source, include_str!("fixtures/issue_2496_client.rs")).unwrap();
+        fs::write(
+            &source,
+            include_str!("../src/test_fixtures/issue_2496_client.rs"),
+        )
+        .unwrap();
         let output = Command::new("rustc")
             .arg("--edition=2024")
             .arg(&source)
@@ -837,7 +845,7 @@ mod issue_2496 {
                     fs::write(cache.join("sentinel"), b"preserve npm cache").unwrap();
                     let eligible = fixture.release.join("bin/eligible-amplihack");
                     let mut command = if suppress {
-                        fs::hard_link(amplihack_bin(), &eligible).unwrap();
+                        crate::support::exec_stub::copy_executable(&amplihack_bin(), &eligible);
                         let mut command = fixture.startup_from(&eligible, provider);
                         command.env("AMPLIHACK_SKIP_AUTO_INSTALL", "1");
                         command
@@ -878,7 +886,7 @@ mod issue_2496 {
                 let native = acquisition_native(fixture.host.temp.path());
                 fixture.acquisition_tools(&native);
                 let executable = fixture.release.join("bin/eligible-amplihack");
-                fs::hard_link(amplihack_bin(), &executable).unwrap();
+                crate::support::exec_stub::copy_executable(&amplihack_bin(), &executable);
                 // Same argv/environment as checkout startup, from an eligible
                 // executable instead. Codex resolution precedes asset repair.
                 let output = fixture.startup_from(&executable, "codex").output().unwrap();
@@ -922,7 +930,7 @@ mod issue_2496 {
             || {
                 let fixture = Fixture::new();
                 let executable = fixture.release.join("bin/eligible-amplihack");
-                fs::hard_link(amplihack_bin(), &executable).unwrap();
+                crate::support::exec_stub::copy_executable(&amplihack_bin(), &executable);
                 let published = fixture.host.path("eligible-link");
                 symlink(&executable, &published).unwrap();
                 let before = snapshot(fixture.host.temp.path());
@@ -1032,7 +1040,7 @@ mod issue_2496 {
                     if case == "escaped-executable" {
                         symlink(amplihack_bin(), &fake).unwrap();
                     } else {
-                        fs::hard_link(amplihack_bin(), &fake).unwrap();
+                        crate::support::exec_stub::copy_executable(&amplihack_bin(), &fake);
                     }
                     let candidate = fake.parent().unwrap().parent().unwrap();
                     copy_tree(
@@ -1077,7 +1085,7 @@ mod issue_2496 {
                 if let Some(home) = std::env::var_os(CHILD) {
                     let home = PathBuf::from(home);
                     assert_eq!(std::env::var_os("HOME"), Some(home.as_os_str().to_owned()));
-                    // Removing this private hard link cannot remove or change the
+                    // Removing this private copy cannot remove or change the
                     // original harness. Canonical provenance is now unavailable.
                     let executable = std::env::current_exe().unwrap();
                     assert!(executable.starts_with(&home));
@@ -1093,7 +1101,10 @@ mod issue_2496 {
                 }
                 let fixture = Fixture::new();
                 let executable = fixture.release.join("bin/unlinked-test-child");
-                fs::hard_link(std::env::current_exe().unwrap(), &executable).unwrap();
+                crate::support::exec_stub::copy_executable(
+                    &std::env::current_exe().unwrap(),
+                    &executable,
+                );
                 let output = fixture.command(&executable)
             .args([
                 "--exact",
@@ -1139,7 +1150,7 @@ mod issue_2496 {
                 )
                 .unwrap();
                 let executable = release.join("bin/amplihack");
-                fs::hard_link(amplihack_bin(), &executable).unwrap();
+                crate::support::exec_stub::copy_executable(&amplihack_bin(), &executable);
                 fs::copy(
                     native_release(&fixture.host),
                     release.join("bin/amplihack-hooks"),
@@ -1202,13 +1213,22 @@ mod issue_2496 {
                 )
                 .unwrap();
                 let old_release = snapshot(&fixture.release);
+                // A profile write failure must be visible without turning a
+                // completed release publication into a failed installation.
+                let profile = fixture.host.home.join(".bashrc");
+                fs::create_dir(&profile).unwrap();
                 let mut command = fixture.checkout();
                 command
                     .args(["install", "--force-refresh"])
+                    .env("SHELL", "/bin/bash")
                     .env("RELEASE_FIXTURE_VERSION", amplihack_cli::VERSION);
                 let output = command.output().unwrap();
 
                 assert!(output.status.success(), "{}", text(&output));
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert!(stderr.contains("release installed successfully, but shell PATH configuration could not be saved"), "{}", text(&output));
+                assert!(stderr.contains("manually"), "{}", text(&output));
+                assert!(profile.is_dir(), "profile obstacle must be preserved");
                 let bundle =
                     fs::canonicalize(fixture.host.home.join(".amplihack/amplifier-bundle"))
                         .unwrap();

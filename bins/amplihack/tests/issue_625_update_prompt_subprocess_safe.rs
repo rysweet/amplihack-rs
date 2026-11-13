@@ -432,7 +432,7 @@ mod pty {
     /// binary with the synthetic-release env var set and all skip-signal env
     /// vars cleared, so the only thing that decides whether the prompt fires
     /// is whether stdin is a TTY (rexpect provides a PTY).
-    fn build_pty_command() -> String {
+    fn build_pty_command(home: &std::path::Path) -> String {
         let bin = require_bin_or_panic();
         let bin = bin.to_string_lossy().to_string();
         // env -i with a curated allowlist: PATH (for any subprocess) + HOME
@@ -440,10 +440,8 @@ mod pty {
         // We do NOT preserve CI / AMPLIHACK_* — those are the very signals
         // we're testing the absence of.
         //
-        // We use `into_path()` to leak the tempdir for the duration of the
-        // PTY session so the child can read/write it without a TOCTOU race
-        // on cleanup. The OS reaps it at process exit.
-        let home = tempfile::tempdir().expect("tempdir").keep();
+        let bin =
+            crate::isolated_amplihack::installed_release_binary(std::path::Path::new(&bin), home);
         let path = std::env::var("PATH").unwrap_or_default();
         format!(
             "/usr/bin/env -i \
@@ -454,13 +452,14 @@ mod pty {
             path = path,
             home = home.display(),
             fake = FAKE_LATEST_VERSION,
-            bin = bin,
+            bin = bin.display(),
         )
     }
 
     #[test]
     fn interactive_tty_prints_prompt_and_honors_5s_timeout() {
-        let cmd = build_pty_command();
+        let home = tempfile::tempdir().expect("tempdir");
+        let cmd = build_pty_command(home.path());
         let started = Instant::now();
         // 7-second hard budget: 5s prompt timeout + 2s clap+process shutdown.
         let mut session: PtySession =

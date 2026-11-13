@@ -45,7 +45,7 @@
 
 use crate::support::amplihack_bin::amplihack_bin;
 use crate::support::events::{SCRIPT_PREAMBLE, await_line, mkfifo, open_ready, release};
-use crate::support::exec_stub::write_executable;
+use crate::support::exec_stub::{copy_executable, write_executable};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
@@ -184,6 +184,15 @@ impl Host {
             tree,
             work,
         };
+        // Supply native release executables independently of the checkout's
+        // framework assets. These live-run tests must never download releases
+        // or rely on a published archive matching the workspace version.
+        let binary = amplihack_bin();
+        let installed = crate::isolated_amplihack::installed_release_binary(&binary, &host.home);
+        copy_executable(
+            &binary.with_file_name("amplihack-hooks"),
+            &installed.with_file_name("amplihack-hooks"),
+        );
         host.assert_contained();
         host
     }
@@ -357,7 +366,7 @@ pass() {
   test "$ISSUE_1954_PROBE" = ok
   cat "$bundle/recipes/smart-orchestrator.yaml" > /dev/null
   "$HOME/.local/bin/amplihack" --version > /dev/null
-  "$HOME/.local/bin/amplihack-hooks" > /dev/null
+  "$HOME/.local/bin/amplihack-hooks" --version > /dev/null
 }
 for i in 1 2 3; do pass; done
 echo "ready $$ $(pwd -P)" >&9

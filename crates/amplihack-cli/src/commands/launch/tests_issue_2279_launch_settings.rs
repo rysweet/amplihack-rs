@@ -175,7 +175,7 @@ fn issue_2496_checkout_cannot_publish_launch_hook_settings() {
     let install = home.path().join(".amplihack");
     fs::create_dir(&install).unwrap();
     let hooks = home.path().join("amplihack-hooks");
-    fs::hard_link(std::env::current_exe().unwrap(), &hooks).unwrap();
+    crate::test_support::copy_executable(&std::env::current_exe().unwrap(), &hooks);
     crate::test_support::with_env(
         &[
             ("HOME", Some(home.path().as_os_str())),

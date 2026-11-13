@@ -98,7 +98,7 @@ fn explicit_update_switches_to_downloaded_bytes_and_invokes_the_new_executable()
         // Run the real updater from an eligible private release. Its
         // current-executable target selection cannot reach the checkout.
         let harness = fixture.old.join("bin/update-test-child");
-        fs::hard_link(std::env::current_exe().unwrap(), &harness).unwrap();
+        crate::test_support::copy_executable(&std::env::current_exe().unwrap(), &harness);
         let mut child = Command::new(&harness);
         child.env_clear().args([
                 "--exact",

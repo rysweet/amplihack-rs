@@ -75,10 +75,14 @@ to the Rust CLI, the install phases below are unchanged.
 
 See [Install Completeness Verification](./install-completeness.md) for the hard-fail contract that prevents partial framework staging from being reported as a successful install. See [Framework bundle compatibility](./framework-bundle-compatibility.md) for the smart-orchestrator compatibility contract that prevents stale recipe bundles from being accepted.
 
-Published release archives currently cover Linux and macOS on `x64`/`arm64`.
-On Windows, or any other platform without a published release target, the npm
-wrapper needs the packaged Rust workspace plus a local Rust toolchain so it can
-fall back to a source build.
+Published release archives and the release resolver support Linux and macOS
+on x86_64 and aarch64 only (`x64`/`arm64` in npm). On Windows, use WSL and
+its Linux release target. Explicit installation cannot obtain a release archive
+for an unsupported target. The npm wrapper may fall back to building a CLI
+from the packaged Rust workspace with a local Rust toolchain, but that
+source-built CLI does not authorize release publication. Installation still
+requires eligible installed release executables or the matching published
+platform archive; compiling the CLI does not satisfy that requirement.
 
 ### Options
 

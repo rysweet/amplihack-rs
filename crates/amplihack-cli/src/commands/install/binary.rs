@@ -277,7 +277,10 @@ pub(super) fn is_deployed_binary(path: &Path, bin_dir: &Path) -> bool {
 
 /// Commits `txn` and turns a failed link switch into an error naming the
 /// link. Nothing is rolled back: every link still names a complete release.
-pub(super) fn commit_release(txn: ReleaseTxn) -> Result<release_layout::SwitchReport> {
+pub(super) fn commit_release(
+    txn: ReleaseTxn,
+    local_bin: &Path,
+) -> Result<release_layout::SwitchReport> {
     let root = txn.root().to_path_buf();
     let report = txn.commit()?;
     if let Some((link, reason)) = &report.failed {
@@ -289,7 +292,7 @@ pub(super) fn commit_release(txn: ReleaseTxn) -> Result<release_layout::SwitchRe
             link.display()
         );
     }
-    persist_shell_path();
+    persist_shell_path(local_bin);
     Ok(report)
 }
 
@@ -313,7 +316,12 @@ pub(super) fn deploy_binaries(
     if !super::implicit_install_authorized(mode)? {
         return Ok((Vec::new(), Vec::new()));
     }
-    commit_release(txn)?;
+    let local_bin = deployed
+        .0
+        .first()
+        .and_then(|p| p.parent())
+        .context("release has no executable destination")?;
+    commit_release(txn, local_bin)?;
     print_path_conflict_advisory();
     Ok(deployed)
 }
@@ -404,10 +412,7 @@ pub(super) fn deploy_binaries_into(
     Ok((deployed, kept))
 }
 
-fn persist_shell_path() {
-    let Ok(local_bin) = super::paths::preferred_user_bin_dir() else {
-        return;
-    };
+fn persist_shell_path(local_bin: &Path) {
     // PATH advisory + auto-persist. Always ensure the managed profile block is
     // present so future shells prefer the user-level Rust binary, even when the
     // current PATH already mentions ~/.local/bin later.
@@ -421,6 +426,12 @@ fn persist_shell_path() {
     }
     if let Err(e) = super::paths::ensure_local_bin_on_shell_path() {
         tracing::warn!("failed to auto-persist PATH: {e}");
+        eprintln!(
+            "amplihack: release installed successfully, but shell PATH configuration could not be saved: {}. \
+             Add {} to PATH in your shell profile manually.",
+            super::paths::sanitize_text(&format!("{e:#}")),
+            super::paths::sanitize_path(local_bin),
+        );
     }
 }
 

@@ -64,12 +64,12 @@ impl Fixture {
     }
 
     /// `amplihack <args>` under a cleared environment plus `extra`.
-    fn command(&self, args: &[&str], extra: &[(&str, &str)]) -> Command {
+    fn command(&self, binary: &Path, args: &[&str], extra: &[(&str, &str)]) -> Command {
         let path = std::env::join_paths(std::iter::once(self.dir.path().join("bin")).chain(
             std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
         ))
         .expect("join PATH");
-        let mut command = crate::isolated_amplihack::isolated(env!("CARGO_BIN_EXE_amplihack"));
+        let mut command = crate::isolated_amplihack::isolated(binary);
         command
             .env_clear()
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
@@ -96,7 +96,11 @@ impl Fixture {
         let mut env = vec![("AMPLIHACK_NO_UPDATE_CHECK", "1")];
         env.extend_from_slice(extra);
         let mut session = spawn_command(
-            self.command(&["copilot", "--docker"], &env),
+            self.command(
+                Path::new(env!("CARGO_BIN_EXE_amplihack")),
+                &["copilot", "--docker"],
+                &env,
+            ),
             Some(TIMEOUT_MS),
         )
         .expect("spawn amplihack copilot at a pty");
@@ -148,17 +152,23 @@ fn amplihack_noninteractive_still_makes_the_launch_subprocess_safe() {
 #[test]
 fn agent_binary_does_not_skip_the_startup_update_check() {
     let fx = Fixture::new();
-    let mut session = spawn_command(
-        fx.command(
-            &["copilot", "--help"],
-            &[
-                ("AMPLIHACK_AGENT_BINARY", "copilot"),
-                ("AMPLIHACK_TEST_FAKE_LATEST_VERSION", "99.99.99"),
-            ],
-        ),
-        Some(TIMEOUT_MS),
-    )
-    .expect("spawn amplihack copilot --help at a pty");
+    let installed = crate::isolated_amplihack::installed_release_binary(
+        Path::new(env!("CARGO_BIN_EXE_amplihack")),
+        &fx.dir.path().join("home"),
+    );
+    let mut command = fx.command(
+        &installed,
+        &["copilot", "--help"],
+        &[
+            ("AMPLIHACK_AGENT_BINARY", "copilot"),
+            ("AMPLIHACK_TEST_FAKE_LATEST_VERSION", "99.99.99"),
+        ],
+    );
+    // This case intentionally enables the startup action from an eligible
+    // installed release, while the launch-only cases retain their opt-out.
+    command.env_remove("AMPLIHACK_SKIP_AUTO_INSTALL");
+    let mut session =
+        spawn_command(command, Some(TIMEOUT_MS)).expect("spawn amplihack copilot --help at a pty");
     let before = session
         .exp_string("Update now?")
         .expect("the update prompt must be offered at a terminal");

@@ -60,6 +60,23 @@ const KEPT_VARS: &[&str] = &[
 /// The variable the user-config loader checks.
 pub const HOME_GUARD_ENV: &str = "AMPLIHACK_TEST_HOME_GUARD";
 
+/// A disposable installed executable for tests that deliberately exercise
+/// implicit repair or startup updates. The caller owns and retains `home`.
+pub fn installed_release_binary(binary: &Path, home: &Path) -> PathBuf {
+    let release = home.join(".amplihack/releases/client-fixture");
+    std::fs::create_dir_all(release.join("bin")).unwrap();
+    let executable = release.join("bin/amplihack");
+    let status = Command::new("/bin/cp")
+        .arg("--")
+        .arg(binary)
+        .arg(&executable)
+        .status()
+        .expect("copy the disposable installed executable");
+    assert!(status.success(), "copying {} failed", binary.display());
+    std::fs::write(release.join(".complete"), b"").unwrap();
+    executable
+}
+
 /// The variable that turns the rotator's launch autostart off.
 pub const ROTATE_AUTOSTART_ENV: &str = "AMPLIHACK_ROTATE_AUTOSTART";
 

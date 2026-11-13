@@ -187,11 +187,21 @@ esac"#
     }
 
     pub fn run(&self, args: &[&str]) -> Output {
-        let mut command = crate::isolated_amplihack::isolated(env!("CARGO_BIN_EXE_amplihack"));
+        let binary = Path::new(env!("CARGO_BIN_EXE_amplihack"));
+        let installed = crate::isolated_amplihack::installed_release_binary(binary, &self.home);
+        // Startup repair needs a complete release source, including the native
+        // hooks executable, independently of the framework checkout and PATH.
+        let hooks = binary.with_file_name("amplihack-hooks");
+        assert!(
+            hooks.is_file(),
+            "build --bin amplihack-hooks before this suite"
+        );
+        fs::copy(hooks, installed.with_file_name("amplihack-hooks")).unwrap();
+        let mut command = crate::isolated_amplihack::isolated(installed);
         command
             .env_clear()
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
-            .env("TMPDIR", std::env::temp_dir())
+            .env("TMPDIR", self._root.path())
             .args(args)
             .current_dir(&self.source)
             .env("HOME", &self.home)
@@ -223,7 +233,6 @@ esac"#
             ("COPILOT_HOME", ".copilot"),
             ("COPILOT_CONFIG_DIR", ".copilot"),
             ("GH_CONFIG_DIR", ".config/gh"),
-            ("TMPDIR", "tmp"),
         ] {
             command.env(key, self.home.join(name));
         }
