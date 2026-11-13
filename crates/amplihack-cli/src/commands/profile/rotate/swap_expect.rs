@@ -8,11 +8,11 @@
 //! there, so the next swap back into that profile names the right account.
 
 use super::identify::Account;
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 use super::ledger::RotateState;
 use super::swap::Source;
 use crate::commands::profile::ProfileError;
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 use crate::commands::profile::auto_switch::kit::State;
 use crate::commands::profile::auto_switch::kit::{
     CLAUDE_JSON, exists, read_claude_json, write_atomic_keep_mode,
@@ -20,7 +20,7 @@ use crate::commands::profile::auto_switch::kit::{
 use crate::commands::profile::expected;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 use std::path::Path;
 
 /// The refusal reason, followed by the outgoing profile's name.
@@ -57,7 +57,7 @@ pub fn is_account_mismatch(e: &ProfileError) -> bool {
 }
 
 /// [`guard`] without the printing: `note` gets the warning, if any.
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(super) fn decide(
     store: &ProfileStore,
     rs: &RotateState,

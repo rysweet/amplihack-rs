@@ -13,6 +13,8 @@
 //! cycle confirms it (issue #1886). Here M is marked overflow. The stubs
 //! replace only probing; the decision is the real one ([`decide_measured`]).
 
+#![cfg(target_os = "linux")]
+
 use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
 use super::decide::{Probed, Reading, Windows};
 use super::identify::LiveId;

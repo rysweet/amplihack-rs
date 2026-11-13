@@ -86,8 +86,11 @@ pub fn move_check(
 ) -> Option<(String, Fix)> {
     if env.liveness.is_live(m) {
         return Some(match env.liveness {
+            #[cfg(any(test, target_os = "linux"))]
             Liveness::Known(_) => (format!("a claude session is running on {m}"), Fix::Close),
-            Liveness::Everything | Liveness::Unsupported => (UNSEEN.into(), Fix::CloseThenMove),
+            #[cfg(any(test, target_os = "linux"))]
+            Liveness::Everything => (UNSEEN.into(), Fix::CloseThenMove),
+            Liveness::Unsupported => (UNSEEN.into(), Fix::CloseThenMove),
         });
     }
     let Ok(dir) = store.verify_profile_dir(m) else {

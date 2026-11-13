@@ -1,7 +1,9 @@
 //! Trusted snapshot acquisition, separated from measurement and decisions.
 use super::{CandidateInput, Ctx, LiveId, LoginKind, Skip, Snap, identify, kind, pin};
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{CREDS, Liveness, State};
+#[cfg(any(test, target_os = "linux"))]
+use crate::commands::profile::auto_switch::kit::Liveness;
+use crate::commands::profile::auto_switch::kit::{CREDS, State};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{PLATFORM_TIER, tiers_detail};
 
@@ -29,7 +31,10 @@ pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
     }
     let (live, proto) = identify::live_with(&ctx.store, &ctx.rs, &ctx.home, trusted_live.as_ref())?;
     let liveness = (ctx.scan)(root);
+    #[cfg(any(test, target_os = "linux"))]
     let sees_sessions = matches!(liveness, Liveness::Known(_));
+    #[cfg(not(any(test, target_os = "linux")))]
+    let sees_sessions = false;
     let live_name = match &live {
         LiveId::Known(n) => Some(n.clone()),
         _ => None,

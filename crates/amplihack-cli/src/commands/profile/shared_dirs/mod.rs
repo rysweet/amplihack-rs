@@ -33,6 +33,7 @@ const UNSUPPORTED: &str =
 /// Why a real directory was not merged on this call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Deferred {
+    #[cfg(any(test, target_os = "linux"))]
     LiveSession,
     /// Linux only: the `/proc` scan failed, so no session was seen either way.
     LivenessCheckFailed,
@@ -127,6 +128,7 @@ impl Report {
     fn defer(&mut self, name: &'static str, why: Deferred) {
         self.deferred.push((name, why));
         self.note(match why {
+            #[cfg(any(test, target_os = "linux"))]
             Deferred::LiveSession => format!("{name}: migration deferred: live session"),
             Deferred::LivenessCheckFailed => format!(
                 "{name}: migration deferred: could not check for running sessions (retried next launch)"
@@ -259,7 +261,9 @@ pub(super) fn mode_from_liveness(
 ) -> Mode {
     use super::auto_switch::kit::Liveness;
     match live {
+        #[cfg(any(test, target_os = "linux"))]
         Liveness::Known(set) if !set.contains(name.as_str()) => Mode::Migrate,
+        #[cfg(any(test, target_os = "linux"))]
         Liveness::Known(_) | Liveness::Everything => Mode::LinkOnly(Deferred::LiveSession),
         // On Linux `Unsupported` means the /proc scan failed: retried next call.
         Liveness::Unsupported if cfg!(target_os = "linux") => {

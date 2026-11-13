@@ -40,7 +40,8 @@ pub const FAKE_PID_BASE: u32 = 4_194_305;
 // include it too (issue #2196).
 #[allow(dead_code, clippy::duplicate_mod)]
 mod proc_tree_seed;
-pub use proc_tree_seed::{SELF_ENVIRON, seed_proc_tree};
+pub use proc_tree_seed::seed_proc_tree;
+pub const SELF_ENVIRON: &[u8] = proc_tree_seed::SELF_ENVIRON;
 
 fn private_dir(path: &Path) {
     DirBuilder::new()

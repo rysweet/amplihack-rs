@@ -22,15 +22,20 @@
 //!   pin and the default pointer together under the rotate lock;
 //!   `Released { pin, default }` says which were there.
 
+#[cfg(target_os = "linux")]
 use super::Released;
 use super::cycle::Ctx;
 use super::ledger::{Phase, RotateLedger};
 use super::observe::snapshot;
-use super::pin::{self, Gate, PinState};
+#[cfg(target_os = "linux")]
+use super::pin::Gate;
+use super::pin::{self, PinState};
 use super::settings;
 use super::swap::{DOCUMENTED, Source, swap};
 use super::switch::{Switched, release, switch_live};
-use super::tests_swap::{CREDS, Env, LOCK, NOW, env, hold_state_lock, ino_at, json, login, n};
+#[cfg(target_os = "linux")]
+use super::tests_swap::json;
+use super::tests_swap::{CREDS, Env, LOCK, NOW, env, hold_state_lock, ino_at, login, n};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::State;
 use crate::commands::profile::name::ProfileName;

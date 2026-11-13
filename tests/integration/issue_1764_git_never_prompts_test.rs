@@ -44,14 +44,24 @@
 //! pidfd reports the exit and scans again until none is left.
 
 use std::ffi::OsStr;
-use std::fs::{self, File};
+use std::fs;
+#[cfg(target_os = "linux")]
+use std::fs::File;
+#[cfg(target_os = "linux")]
 use std::io::{Read, Write};
+#[cfg(target_os = "linux")]
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
+#[cfg(target_os = "linux")]
+use std::process::{Child, Stdio};
+#[cfg(target_os = "linux")]
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_os = "linux")]
 use std::thread::JoinHandle;
+#[cfg(target_os = "linux")]
 use std::time::Duration;
 
 use serde_yaml::Value;
@@ -61,6 +71,7 @@ use crate::isolated_amplihack::{NO_GIT_PROMPT_ENV, isolated};
 
 /// Proxy settings that would send git's request somewhere other than the
 /// loopback server.
+#[cfg(target_os = "linux")]
 const PROXY_VARS: [&str; 6] = [
     "http_proxy",
     "HTTP_PROXY",
@@ -87,18 +98,21 @@ const WEAKENING: [&str; 6] = [
 /// `WWW-Authenticate: Basic`, so git asks for a credential. It reads at most
 /// 8 KiB of each request, waits at most 5 s for it, and never prints it, so
 /// nothing git sends reaches the test output.
+#[cfg(target_os = "linux")]
 struct AlwaysUnauthorised {
     port: u16,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
+#[cfg(target_os = "linux")]
 const UNAUTHORISED: &[u8] = b"HTTP/1.1 401 Unauthorized\r\n\
 WWW-Authenticate: Basic realm=\"issue-1764\"\r\n\
 Content-Length: 0\r\n\
 Connection: close\r\n\
 \r\n";
 
+#[cfg(target_os = "linux")]
 impl AlwaysUnauthorised {
     fn start() -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind 127.0.0.1:0");
@@ -144,6 +158,7 @@ impl AlwaysUnauthorised {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for AlwaysUnauthorised {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
@@ -618,6 +633,7 @@ enum Outcome {
 /// stored credential: no global or system config, so no credential helper; a
 /// `HOME` with no `.netrc`; no repository discovery above `home`. Git's
 /// messages are kept in English so the assertions can read them.
+#[cfg(target_os = "linux")]
 fn sealed_from_credentials<'a>(command: &'a mut Command, home: &Path) -> &'a mut Command {
     command
         .current_dir(home)
@@ -634,6 +650,7 @@ fn sealed_from_credentials<'a>(command: &'a mut Command, home: &Path) -> &'a mut
 /// Fail if a process whose command line contains `marker` is still running.
 /// Called once a case's [`Owned`] guard has dropped, which waited for every
 /// marker process to exit, so one check suffices.
+#[cfg(target_os = "linux")]
 fn assert_nothing_left_behind(marker: &str) {
     let left = processes_mentioning(marker);
     assert!(
@@ -646,6 +663,7 @@ fn assert_nothing_left_behind(marker: &str) {
 /// `"<pid> <command line>"`. Panics without `/proc`: its callers run only on
 /// Linux, and an empty answer would let `assert_nothing_left_behind` pass
 /// without checking anything.
+#[cfg(target_os = "linux")]
 fn processes_mentioning(marker: &str) -> Vec<String> {
     fs::read_dir("/proc")
         .expect("read /proc: part (c) runs only on Linux")
@@ -664,6 +682,7 @@ fn processes_mentioning(marker: &str) -> Vec<String> {
         .collect()
 }
 
+#[cfg(target_os = "linux")]
 fn on_path(tool: &str) -> bool {
     std::env::var_os("PATH")
         .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(tool).is_file()))

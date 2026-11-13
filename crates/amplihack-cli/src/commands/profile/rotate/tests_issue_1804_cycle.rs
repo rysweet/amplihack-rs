@@ -23,6 +23,8 @@
 //! - A move onto a credit profile writes the same `per-token` line with the
 //!   credit tier and `probe ok, no spend limit`, and runs no login check.
 
+#![cfg(target_os = "linux")]
+
 use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
 use super::decide::{Probed, Reading, Win, Windows};
 use super::identify::LiveId;

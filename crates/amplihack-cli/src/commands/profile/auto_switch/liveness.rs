@@ -3,20 +3,29 @@
 //! other than this one and not a zombie, has `CLAUDE_CONFIG_DIR` resolving to
 //! it. Any doubt counts as live.
 
+#[cfg(any(test, target_os = "linux"))]
 use super::fsx;
 use crate::commands::profile::name::ProfileName;
+#[cfg(any(test, target_os = "linux"))]
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(test, target_os = "linux"))]
+use std::path::PathBuf;
 
+#[cfg(any(test, target_os = "linux"))]
 const MAX_ENVIRON: u64 = 16 * 1024 * 1024;
+#[cfg(any(test, target_os = "linux"))]
 const MAX_SMALL: u64 = 64 * 1024;
+#[cfg(any(test, target_os = "linux"))]
 const KEY: &[u8] = b"CLAUDE_CONFIG_DIR=";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Liveness {
     /// Profile names with a live process.
+    #[cfg(any(test, target_os = "linux"))]
     Known(BTreeSet<String>),
     /// A Claude-like process's environment could not be read.
+    #[cfg(any(test, target_os = "linux"))]
     Everything,
     /// `/proc` cannot be used here.
     Unsupported,
@@ -24,9 +33,14 @@ pub enum Liveness {
 
 impl Liveness {
     pub fn is_live(&self, name: &ProfileName) -> bool {
+        #[cfg(not(any(test, target_os = "linux")))]
+        let _ = name;
         match self {
+            #[cfg(any(test, target_os = "linux"))]
             Self::Known(set) => set.contains(name.as_str()),
-            Self::Everything | Self::Unsupported => true,
+            #[cfg(any(test, target_os = "linux"))]
+            Self::Everything => true,
+            Self::Unsupported => true,
         }
     }
 
@@ -61,6 +75,7 @@ pub fn scan_system(root: &Path) -> Liveness {
 }
 
 /// `root` must be canonical.
+#[cfg(any(test, target_os = "linux"))]
 pub fn scan(proc_root: &Path, root: &Path, self_pid: u32, uid: u32) -> Liveness {
     if !matches!(
         fsx::read_bounded_nofollow(&proc_root.join("self/environ"), MAX_ENVIRON),
@@ -116,6 +131,7 @@ pub fn scan(proc_root: &Path, root: &Path, self_pid: u32, uid: u32) -> Liveness 
 /// `proc_root`, or a Claude-like process whose environment or working
 /// directory cannot be read, is an error. Other unreadable processes (such
 /// as a non-dumpable `ssh-agent`) and processes that exited are skipped.
+#[cfg(any(test, target_os = "linux"))]
 pub(crate) fn claude_config_dirs(
     proc_root: &Path,
     self_pid: u32,
@@ -164,6 +180,7 @@ pub(crate) fn claude_config_dirs(
 }
 
 /// `(state letter, real uid)` from `/proc/<pid>/status`.
+#[cfg(any(test, target_os = "linux"))]
 fn status(dir: &Path) -> Option<(char, u32)> {
     let (raw, _) = fsx::read_bounded_nofollow(&dir.join("status"), MAX_SMALL).ok()??;
     let text = String::from_utf8_lossy(&raw);
@@ -179,6 +196,7 @@ fn status(dir: &Path) -> Option<(char, u32)> {
     Some((state?, uid?))
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn looks_like_claude(dir: &Path) -> bool {
     match fsx::read_bounded_nofollow(&dir.join("cmdline"), MAX_SMALL) {
         Ok(Some((raw, _))) => {
@@ -191,6 +209,7 @@ fn looks_like_claude(dir: &Path) -> bool {
 
 /// The profile name `value` points at, if it is a directory under `root`.
 /// A path that cannot be resolved falls back to its last component.
+#[cfg(any(test, target_os = "linux"))]
 fn resolve(dir: &Path, value: &[u8], root: &Path) -> Option<String> {
     use std::os::unix::ffi::OsStrExt;
     let path = Path::new(std::ffi::OsStr::from_bytes(value));

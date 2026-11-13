@@ -1088,7 +1088,11 @@ fn credential_named_files_at_any_depth_stay_in_the_backup() {
     f.legacy("A", "projects/.credentials.json", b"SECRET-1");
     f.legacy("A", "projects/-w/.credentials.json.bak", b"SECRET-2");
     f.legacy("A", "projects/-w/deep/.claude.json", b"SECRET-3");
+    #[cfg(not(target_os = "macos"))]
     let raw = OsStr::from_bytes(b".credentials\xff\xfe");
+    // macOS rejects non-UTF-8 filenames; keep a non-ASCII credential suffix there.
+    #[cfg(target_os = "macos")]
+    let raw = OsStr::new(".credentials-é");
     let non_utf8 = f.dir("A").join("projects/-w").join(raw);
     fs::write(&non_utf8, b"SECRET-4").unwrap();
 

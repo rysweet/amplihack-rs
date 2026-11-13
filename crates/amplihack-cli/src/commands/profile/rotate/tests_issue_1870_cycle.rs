@@ -16,16 +16,21 @@
 use super::cycle::{Ctx, CycleOutcome, MeasureFn, Mode, run_cycle};
 use super::decide::{Decision, Probed, Reason};
 use super::fresh::RereadFn;
+#[cfg(target_os = "linux")]
 use super::log::msg;
 use super::observe::{Measurement, Snap, decide_measured};
 use super::tests_issue_1870::{exh, rd};
 use super::tests_revalidate_cause::{add_stored, ctx_with, log_of, probes_for, spent};
 use super::tests_swap::{Env, env, ino_at, n};
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{Liveness, now};
+#[cfg(target_os = "linux")]
+use crate::commands::profile::auto_switch::kit::Liveness;
+use crate::commands::profile::auto_switch::kit::now;
 use crate::commands::profile::name::ProfileName;
+#[cfg(target_os = "linux")]
 use std::collections::BTreeSet;
 use std::fs;
+#[cfg(target_os = "linux")]
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
@@ -555,8 +560,10 @@ fn i_a_cycle_makes_at_most_three_rereads_and_each_name_once() {
 
 // --- SR-3: revalidation under the lock never reads -------------------------------
 
+#[cfg(target_os = "linux")]
 static SPARE_BUSY: AtomicBool = AtomicBool::new(false);
 
+#[cfg(target_os = "linux")]
 fn scan_busy(_: &Path) -> Liveness {
     let mut live = BTreeSet::new();
     if SPARE_BUSY.load(Ordering::SeqCst) {
@@ -565,12 +572,14 @@ fn scan_busy(_: &Path) -> Liveness {
     Liveness::Known(live)
 }
 
+#[cfg(target_os = "linux")]
 fn never(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
     panic!("SR-3: {name} was read while the lock was held")
 }
 
 /// `spare`, read now, is chosen; it then gets a session, so revalidation
 /// reconsiders. The next best, `spare2`, has only an old passive reading.
+#[cfg(target_os = "linux")]
 fn measure_sr3(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let probes = probes_for(

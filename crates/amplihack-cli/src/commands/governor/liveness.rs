@@ -6,12 +6,15 @@
 use super::model::{QueueEntry, Slot};
 
 /// The longest `/proc/<pid>/stat` read.
+#[cfg(any(test, target_os = "linux"))]
 const MAX_STAT: usize = 4096;
 /// Field 22 (start time) is the 20th field after the closing `)`.
+#[cfg(any(test, target_os = "linux"))]
 const START_TIME_INDEX: usize = 19;
 
 /// Field 22 of `/proc/<pid>/stat`, counted after the last `)` because the
 /// command name may hold spaces and parentheses.
+#[cfg(any(test, target_os = "linux"))]
 pub fn parse_stat_start_time(stat: &str) -> Option<u64> {
     if stat.len() > MAX_STAT {
         return None;
@@ -39,6 +42,7 @@ pub fn start_time(_pid: u32) -> Option<u64> {
 }
 
 /// Field 4 (parent PID) of `/proc/<pid>/stat`, counted after the last `)`.
+#[cfg(target_os = "linux")]
 pub fn parse_stat_ppid(stat: &str) -> Option<u32> {
     if stat.len() > MAX_STAT {
         return None;
@@ -48,6 +52,7 @@ pub fn parse_stat_ppid(stat: &str) -> Option<u32> {
 }
 
 /// The longest parent chain walked.
+#[cfg(target_os = "linux")]
 const MAX_HOPS: usize = 64;
 
 /// Whether `pid` is this process or one of its ancestors. A marker that
