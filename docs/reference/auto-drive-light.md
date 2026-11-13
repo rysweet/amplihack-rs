@@ -100,7 +100,11 @@ steps. Before it measures anything, `light-eligibility` stops with
 `escalation.json` is reused, so a cached `light` decision cannot bypass it.
 The stop is a hard failure (exit status 1), not an escalation, so a fork PR is
 never handed to `auto-drive-to-merge`. The `light-resolve-pr` prompt also tells
-the agent to refuse a cross-repository PR outright. The rule is shared with other readers; see
+the agent to refuse a cross-repository PR outright. The check trusts the
+agent's report: a wrong `false` would let the light drive build and test fork
+code, though not change the PR (see
+[Remaining risk](same-repository-pr-rule.md#remaining-risk) and #2615). The
+rule is shared with other readers; see
 [Same-Repository PR Rule](same-repository-pr-rule.md).
 
 ### Measurement

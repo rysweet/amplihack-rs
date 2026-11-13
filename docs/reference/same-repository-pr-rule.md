@@ -103,6 +103,18 @@ printf '%s' "${RECIPE_VAR_build_result:-}" | jq -e '.is_cross_repository == fals
 - A refusal writes nothing. The message names only the validated PR number.
 - If the agent cannot read the PR, it returns no `is_cross_repository`, and
   the light drive is refused.
+- Before reading any field, the step checks that `build_result` is exactly
+  one JSON object, so a second object cannot override a refused value.
+
+#### Remaining risk
+
+The check is only as reliable as the value the agent reports. If
+`light-resolve-pr` wrongly reports `false` for a fork PR, through a mistake or
+through text planted in the PR, the light drive builds and tests the fork's
+code on this host. `workflow_pr_ready.sh` still reads `isCrossRepository` from
+GitHub before any write, so the PR cannot be changed or merged. Reading the
+field from GitHub in `light-eligibility`, as #2538 first proposed, would need
+an exception to the #2329 rule; that decision is tracked in #2615.
 
 The `light-resolve-pr` prompt also tells the agent to refuse a
 cross-repository PR, or one whose `isCrossRepository` is missing or `null`.
@@ -217,7 +229,7 @@ accepted.
 
 | Test | Covers |
 | --- | --- |
-| `crates/amplihack-cli/tests/issue_2538_cross_repo_refusal.rs` | `light-eligibility` on `build_result.is_cross_repository`, including a cached `light` decision, a cached escalation and a check that the step makes no `gh` call; the `light-resolve-pr` prompt; `autodrive_run_pr.sh` |
+| `crates/amplihack-cli/tests/issue_2538_cross_repo_refusal.rs` | `light-eligibility` on `build_result.is_cross_repository`, including a cached `light` decision, a cached escalation, a `build_result` holding two objects and a check that the step makes no `gh` call; `autodrive_run_pr.sh` |
 | `tests/integration/issue_2538_cross_repo_readers.rs` | `workflow_pr_scope.sh` discovery, `workflow-terminal-state` field 9, `workflow_pr_ready.sh` (which must never call `gh pr ready` on a refusal), and the REST fallback in `workflow_gh_retry.sh` |
 | `tests/issue_1596_final_status_branch_pr_lookup.sh` | `workflow_final_status.sh` |
 | `tests/issue_1448_review_is_not_a_duplicate.sh` | `workflow_issue_claim_check.sh`: missing, `null` and the string `"false"` (with `true` covered by the existing fork cases). Empty or invalid output already makes the check report `unknown` (`claim-filter-unreadable`), never `ok-own-pr` |

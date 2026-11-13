@@ -51,12 +51,12 @@ fn jq_available() -> bool {
         .unwrap_or(false)
 }
 
-fn skip() -> bool {
-    if !jq_available() {
-        eprintln!("skip: `jq` not available on PATH");
-        return true;
-    }
-    false
+/// The readers under test are jq programs, so a host without jq cannot pass.
+fn require_jq() {
+    assert!(
+        jq_available(),
+        "`jq` must be on PATH to run the #2538 reader tests"
+    );
 }
 
 fn write_exec(path: &Path, body: &str) {
@@ -300,9 +300,7 @@ fn scoped_number(o: &Output) -> Option<i64> {
 
 #[test]
 fn pr_scope_discovery_refuses_every_value_but_exact_false() {
-    if skip() {
-        return;
-    }
+    require_jq();
     let head = "1111111111111111111111111111111111111111";
     let pr = pr_object(head, "OPEN", true);
     for (label, case) in refused_cases() {
@@ -317,9 +315,7 @@ fn pr_scope_discovery_refuses_every_value_but_exact_false() {
 
 #[test]
 fn pr_scope_discovery_accepts_exact_false() {
-    if skip() {
-        return;
-    }
+    require_jq();
     let head = "1111111111111111111111111111111111111111";
     let (o, sb) = scope(&json!([pr_object(head, "OPEN", true)]).to_string(), head);
     assert!(o.status.success(), "{}", show(&o));
@@ -393,9 +389,7 @@ fn terminal_with_case(case: &Case) -> (Output, JsonValue) {
 
 #[test]
 fn terminal_state_refuses_every_value_but_exact_false() {
-    if skip() {
-        return;
-    }
+    require_jq();
     // A merged PR is terminal success only when it is this repository's PR.
     for (label, case) in refused_cases() {
         let (o, j) = terminal_with_case(&case);
@@ -415,9 +409,7 @@ fn terminal_state_refuses_every_value_but_exact_false() {
 
 #[test]
 fn terminal_state_accepts_exact_false() {
-    if skip() {
-        return;
-    }
+    require_jq();
     let (o, j) = terminal_with_case(&Case::Set(json!(false)));
     assert!(o.status.success(), "{}", show(&o));
     assert_eq!(j["terminal_success"], "true", "{}", show(&o));
@@ -453,9 +445,7 @@ fn ready_mutated(sb: &Sandbox) -> bool {
 
 #[test]
 fn pr_ready_refuses_every_value_but_exact_false() {
-    if skip() {
-        return;
-    }
+    require_jq();
     for (label, case) in refused_cases() {
         let (o, sb) = ready(&case);
         assert!(
@@ -474,9 +464,7 @@ fn pr_ready_refuses_every_value_but_exact_false() {
 
 #[test]
 fn pr_ready_accepts_exact_false() {
-    if skip() {
-        return;
-    }
+    require_jq();
     let (o, sb) = ready(&Case::Set(json!(false)));
     assert!(o.status.success(), "{}\ngh log:\n{}", show(&o), sb.gh_log());
     assert!(
@@ -532,9 +520,7 @@ fn rest_cross_repo(pr: &JsonValue) -> (JsonValue, JsonValue) {
 
 #[test]
 fn rest_fallback_never_claims_same_repository_without_both_names() {
-    if skip() {
-        return;
-    }
+    require_jq();
     let owner = json!({"login": "owner"});
     let cases = [
         (
@@ -566,9 +552,7 @@ fn rest_fallback_never_claims_same_repository_without_both_names() {
 
 #[test]
 fn rest_fallback_reports_false_for_equal_names() {
-    if skip() {
-        return;
-    }
+    require_jq();
     let pr = rest_pr(
         json!({"full_name": "owner/repo", "name": "repo", "owner": {"login": "owner"}}),
         json!({"full_name": "owner/repo"}),

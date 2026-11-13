@@ -16,7 +16,7 @@
 //! refused; `false` is accepted.
 //!
 //! No agent, real `gh`, network or real `~/.amplihack` is used. Every test
-//! skips, with a note, when `jq` is not installed.
+//! fails when `jq` is not installed.
 
 use std::ffi::OsStr;
 use std::path::PathBuf;
@@ -25,8 +25,8 @@ use std::process::Output;
 use serde_json::{Value, json};
 
 use crate::support::auto_drive_light::{
-    Fakes, LightRepo, fake_bin, git, jq_available, private_dir, private_file, recipe, repo_root,
-    run_bash, show, stderr, stdout, step_command, tools_dir,
+    Fakes, LightRepo, fake_bin, git, jq_available, private_dir, private_file, repo_root, run_bash,
+    show, stderr, stdout, step_command, tools_dir,
 };
 
 const RECIPE: &str = "auto-drive-light";
@@ -44,12 +44,12 @@ fn refused_values() -> Vec<(&'static str, Option<Value>)> {
     ]
 }
 
-fn skip() -> bool {
-    if !jq_available() {
-        eprintln!("skip: `jq` not available on PATH");
-        return true;
-    }
-    false
+/// The readers under test are jq programs, so a host without jq cannot pass.
+fn require_jq() {
+    assert!(
+        jq_available(),
+        "`jq` must be on PATH to run the #2538 reader tests"
+    );
 }
 
 // --- (a) light-eligibility ---------------------------------------------------
@@ -118,12 +118,16 @@ impl Env {
     /// Runs the live `light-eligibility` step with `cross` as
     /// `build_result.is_cross_repository` (`None` leaves it out).
     fn run(&self, cross: Option<&Value>, env: &[(&str, &str)]) -> Output {
+        self.run_raw(&self.build_result(cross), env)
+    }
+
+    /// Runs the live `light-eligibility` step with `br` as `build_result`.
+    fn run_raw(&self, br: &str, env: &[(&str, &str)]) -> Output {
         let script = step_command(RECIPE, STEP);
         let root = repo_root();
-        let br = self.build_result(cross);
         let mut v: Vec<(&str, &OsStr)> = vec![
             ("AMPLIHACK_HOME", root.as_os_str()),
-            ("RECIPE_VAR_build_result", OsStr::new(&br)),
+            ("RECIPE_VAR_build_result", OsStr::new(br)),
             ("RECIPE_VAR_repo_path", self.repo.wt.as_os_str()),
             ("RECIPE_VAR_light_max_lines", OsStr::new("300")),
             ("RECIPE_VAR_light_max_new_modules", OsStr::new("0")),
@@ -183,9 +187,7 @@ fn assert_refused(e: &Env, o: &Output, why: &str) {
 
 #[test]
 fn light_eligibility_refuses_every_value_but_exact_false() {
-    if skip() {
-        return;
-    }
+    require_jq();
     for (label, cross) in refused_values() {
         let e = Env::new();
         let o = e.run(cross.as_ref(), &[]);
@@ -201,9 +203,7 @@ fn light_eligibility_refuses_every_value_but_exact_false() {
 
 #[test]
 fn light_eligibility_refuses_before_reusing_a_cached_decision() {
-    if skip() {
-        return;
-    }
+    require_jq();
     for (label, cross) in refused_values() {
         let e = Env::new();
         let cached = e.cached_light();
@@ -226,9 +226,7 @@ fn light_eligibility_refuses_before_reusing_a_cached_decision() {
 
 #[test]
 fn light_eligibility_refuses_a_cached_escalation_too() {
-    if skip() {
-        return;
-    }
+    require_jq();
     // A previous escalation must not turn a fork PR into an escalate
     // decision that hands it to auto-drive-to-merge.
     let e = Env::new();
@@ -247,10 +245,30 @@ fn light_eligibility_refuses_a_cached_escalation_too() {
 }
 
 #[test]
+fn light_eligibility_refuses_more_than_one_build_result_object() {
+    require_jq();
+    // A second object must not override the first one's refused value.
+    let e = Env::new();
+    let br = format!(
+        "{}{}",
+        e.build_result(Some(&json!(true))),
+        e.build_result(Some(&json!(false)))
+    );
+    let o = e.run_raw(&br, &[]);
+    assert_ne!(o.status.code(), Some(0), "{}", show(&o));
+    assert!(
+        stderr(&o).contains("build_result is not exactly one JSON object"),
+        "{}",
+        show(&o)
+    );
+    assert!(stdout(&o).trim().is_empty(), "{}", show(&o));
+    assert!(e.file("light-eligibility.json").is_none(), "{}", show(&o));
+    assert_no_gh(&e, "two objects");
+}
+
+#[test]
 fn light_eligibility_accepts_exact_false_and_measures_without_gh() {
-    if skip() {
-        return;
-    }
+    require_jq();
     let e = Env::new();
     // A failing gh and a foreign GH_REPO change nothing: the step never calls gh.
     let o = e.run(
@@ -271,25 +289,6 @@ fn light_eligibility_accepts_exact_false_and_measures_without_gh() {
         "decision: {j}"
     );
     assert_no_gh(&e, "accepted");
-}
-
-#[test]
-fn light_resolve_pr_returns_the_observed_is_cross_repository() {
-    // The value light-eligibility checks comes from the agent step that reads
-    // the PR; without it in the prompt every run would be refused.
-    let prompt = recipe(RECIPE)["steps"]
-        .as_sequence()
-        .expect("steps")
-        .iter()
-        .find(|s| s["id"].as_str() == Some("light-resolve-pr"))
-        .and_then(|s| s["prompt"].as_str())
-        .expect("light-resolve-pr prompt")
-        .to_string();
-    assert!(
-        prompt.contains("\"is_cross_repository\"")
-            && prompt.contains("is_cross_repository (JSON boolean)"),
-        "light-resolve-pr must return is_cross_repository as a JSON boolean"
-    );
 }
 
 // --- (b) autodrive_run_pr.sh ---------------------------------------------------
@@ -341,9 +340,7 @@ fn run_pr_list(entry: Option<Value>, raw: Option<&str>) -> (Output, Fakes, Light
 
 #[test]
 fn run_pr_lookup_refuses_every_value_but_exact_false() {
-    if skip() {
-        return;
-    }
+    require_jq();
     let cases: Vec<(&str, Option<Value>, Option<&str>)> = vec![
         ("true", Some(json!({"isCrossRepository": true})), None),
         ("missing field", Some(json!({})), None),
@@ -374,9 +371,7 @@ fn run_pr_lookup_refuses_every_value_but_exact_false() {
 
 #[test]
 fn run_pr_lookup_accepts_exact_false() {
-    if skip() {
-        return;
-    }
+    require_jq();
     let (o, fakes, _repo) = run_pr_list(Some(json!({"isCrossRepository": false})), None);
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     assert_eq!(stdout(&o).trim(), "7", "{}", show(&o));

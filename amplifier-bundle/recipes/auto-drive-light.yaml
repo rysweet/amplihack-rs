@@ -336,6 +336,9 @@ steps:
       for ((i = 1; i < ${#LIM[@]}; i += 2)); do
         [[ "${LIM[$i]}" =~ ^[0-9]{1,6}$ ]] || die "${LIM[$((i - 1))]} must match ^[0-9]{1,6}$" 2
       done
+      # Exactly one JSON object, so a later object cannot override a field checked below.
+      printf '%s' "${RECIPE_VAR_build_result:-}" | jq -se 'length == 1 and (.[0] | type == "object")' >/dev/null 2>&1 \
+        || die "build_result is not exactly one JSON object"
       b() { printf '%s' "${RECIPE_VAR_build_result:-}" | jq -r --arg k "$1" '.[$k] // "" | tostring' 2>/dev/null; }
       PR="$(b pr)"; HEAD_SHA="$(b head_sha)"; BASE_SHA="$(b base_sha)"; DIR="$(b state_dir)"
       [[ "$PR" =~ ^[0-9]{1,10}$ ]] && [[ "$HEAD_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] && [[ "$BASE_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
