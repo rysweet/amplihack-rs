@@ -90,12 +90,9 @@ fn guide(
 ) -> Result<(), GuideError> {
     // A pure argv check, first: a refused call reads and writes nothing,
     // including the per-PR folder `resolve_target` would create.
-    let dash = match positional {
-        [] => false,
-        [only] if only == "-" => true,
-        _ => return Err(GuideError::Usage(POSITIONAL_REFUSAL.to_string())),
-    };
-    if dash && file.is_some() {
+    let (dash, file_after_dash, from_step_after_dash) = split_positional(positional)?;
+    let from_step = from_step || from_step_after_dash;
+    if dash && (file.is_some() || file_after_dash) {
         return Err(GuideError::Usage(BOTH_SOURCES.to_string()));
     }
     if !from_step && std::env::var_os("AMPLIHACK_RECIPE_RUN_ID").is_some_and(|v| !v.is_empty()) {
@@ -146,6 +143,39 @@ enum Overflow {
     Size(u64),
     /// Stop one byte past the cap and report "more than" (a FIFO or device).
     Stop,
+}
+
+/// Checks the hidden positional values. The only one accepted is a lone `-`.
+///
+/// The positional allows leading hyphens, so text such as `--force` gets
+/// [`POSITIONAL_REFUSAL`] rather than clap's error, which would repeat it.
+/// clap then also gives this argument the options that follow its first
+/// value, so `--from-step` and `--file` after `-` are read here. Returns
+/// whether `-` was given, whether `--file` followed it, and whether
+/// `--from-step` followed it.
+fn split_positional(positional: &[OsString]) -> Result<(bool, bool, bool), GuideError> {
+    let refuse = || GuideError::Usage(POSITIONAL_REFUSAL.to_string());
+    let Some((first, rest)) = positional.split_first() else {
+        return Ok((false, false, false));
+    };
+    if first != "-" {
+        return Err(refuse());
+    }
+    let (mut file, mut from_step) = (false, false);
+    let mut rest = rest.iter();
+    while let Some(arg) = rest.next() {
+        if arg == "--from-step" {
+            from_step = true;
+        } else if arg == "--file" {
+            rest.next().ok_or_else(refuse)?;
+            file = true;
+        } else if arg.to_str().is_some_and(|a| a.starts_with("--file=")) {
+            file = true;
+        } else {
+            return Err(refuse());
+        }
+    }
+    Ok((true, file, from_step))
 }
 
 /// Reads at most [`READ_CAP`] + 1 bytes of `src` and returns them as text,

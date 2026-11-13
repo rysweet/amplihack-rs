@@ -614,8 +614,10 @@ pub enum RecipeCommands {
         target: String,
         /// `-` reads the instruction from stdin, as does giving nothing.
         /// Any other value here is refused: instruction text is never
-        /// accepted on the command line (PR #2567, issue #2582).
-        #[arg(hide = true, num_args = 0.., value_parser = clap::value_parser!(std::ffi::OsString))]
+        /// accepted on the command line (PR #2567, issue #2582). Leading
+        /// hyphens are allowed so `--text` gets that refusal, not clap's
+        /// error; `guide.rs` reads `--from-step` and `--file` after `-`.
+        #[arg(hide = true, num_args = 0.., allow_hyphen_values = true, value_parser = clap::value_parser!(std::ffi::OsString))]
         text: Vec<std::ffi::OsString>,
         /// Read the instruction from this file instead of stdin
         #[arg(long = "file", value_name = "PATH")]

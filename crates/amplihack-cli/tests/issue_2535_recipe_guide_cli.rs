@@ -625,17 +625,49 @@ fn b1_the_refusal_comes_before_the_inside_a_run_check() {
 
 #[test]
 fn b1_text_starting_with_a_dash_is_refused_and_nothing_is_written() {
-    // clap reports an unknown option itself (S4, follow-up issue); the
-    // command still exits 2 and writes nothing.
+    // Text that starts with a hyphen gets the same refusal as other text,
+    // not clap's "unexpected argument" message, which would repeat its
+    // first word (PR #2567 review, finding 1 / S3).
     let f = GuideFixture::new();
     f.make_run(RUN_FOLDER, CORRELATION);
+    let secret = "SECRET-2582";
+    let long = format!("--{secret}");
     for target in [RUN_FOLDER, PR_URL] {
-        let o = f.guide(&[target, "--force", "the", "push"], Some(b"valid"));
-        assert_eq!(o.status.code(), Some(2), "{target}: {}", show(&o));
-        assert!(stdout(&o).is_empty());
+        for args in [
+            vec![target, "--force", "the", "push"],
+            vec![target, long.as_str()],
+            vec![target, "-x", secret],
+            vec![target, "-", "-x", secret],
+            vec![target, "--from-step", "-x", secret],
+        ] {
+            let o = f.guide(&args, Some(b"valid stdin text"));
+            assert_eq!(o.status.code(), Some(2), "{args:?}: {}", show(&o));
+            assert_eq!(one_line_error(&o), REFUSAL, "{args:?}");
+            assert!(stdout(&o).is_empty(), "{args:?}: {}", show(&o));
+            assert!(!stderr(&o).contains(secret), "never echoed: {args:?}");
+            assert!(!stderr(&o).contains("force"), "never echoed: {args:?}");
+        }
     }
     assert_nothing_written(&f);
     assert!(!f.state.join("auto-drive").exists());
+}
+
+#[test]
+fn b1_options_after_the_target_are_still_options() {
+    let f = GuideFixture::new();
+    let run = f.make_run(RUN_FOLDER, CORRELATION);
+    let note = f.root.join("note.txt");
+    fs::write(&note, "file note").unwrap();
+    let note = note.to_str().unwrap();
+    let o = f.guide(&[RUN_FOLDER, "--file", note], None);
+    assert!(o.status.success(), "--file after target: {}", show(&o));
+    let o = f.guide(&[RUN_FOLDER, "-", "--file", note], None);
+    assert_eq!(o.status.code(), Some(2), "{}", show(&o));
+    assert_eq!(
+        one_line_error(&o),
+        "recipe guide: give the text on stdin (-) or with --file <path>, not both"
+    );
+    assert_eq!(f.entries(&run.join("guidance")).len(), 1);
 }
 
 #[test]
