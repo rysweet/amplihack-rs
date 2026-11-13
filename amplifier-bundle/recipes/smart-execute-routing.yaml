@@ -65,9 +65,8 @@ steps:
 
       Perform the operation, report what was done. End with "STATUS: COMPLETE".
     output: "round_1_result"
-  # Detect if Operations modified tracked files (fix #227).
-  # When files were changed, downstream review/cleanup/summarize steps
-  # must still run so changes get reviewed and committed properly.
+  # Detect if Operations modified tracked files (fix #227); if so, downstream
+  # review/cleanup/summarize steps must still run so changes get committed.
   - id: "ops-file-change-check"
     recovery: {"replay": "reuse"}
     type: "bash"
@@ -113,10 +112,8 @@ steps:
   # Phase 2c: Single dev/investigation workstream -- round 1
   # Development classification routes to `default-workflow`, or to `quick-change` for a small change in a single workstream or when `-c workflow=quick-change` forces it; any recipe value the model gives a workstream is coerced to `default-workflow`.
   # Hybrid decompositions route each workstream by its own normalized classification.
-  # NOTE: workstream_count may be stored as a Number (int) by the Rust
-  # recipe runner's parse_context_value (which auto-detects "1" → Number).
-  # Conditions compare against both int (1) and string ('1') to avoid
-  # calling .strip() on non-string types (fix #3606, supersedes #3570).
+  # NOTE: the runner's parse_context_value may store workstream_count as a Number,
+  # so conditions compare against both 1 and '1' (fix #3606, supersedes #3570).
   # If workstream_count is empty (step failed), we default to single workstream.
   # ─────────────────────────────────────────────────────────────────────────
   - id: "execute-single-round-1-development"
@@ -127,10 +124,9 @@ steps:
     condition: |
       'Development' in task_type and selected_workflow != 'quick-change' and ((workstream_count == 1 or workstream_count == '1' or workstream_count == '') or force_single_workstream == 'true')
     recipe: "default-workflow"
-    # Issue #425: explicitly forward worktree_setup and allow_no_op so the
-    # recipe-runner threads them across the smart-execute-routing ->
-    # default-workflow -> workflow-tdd boundary. task_description and
-    # repo_path continue to flow via automatic merging in _execute_sub_recipe().
+    # Issue #425: forward worktree_setup and allow_no_op across the
+    # smart-execute-routing -> default-workflow -> workflow-tdd boundary;
+    # task_description and repo_path flow via merging in _execute_sub_recipe().
     context:
       base_branch: "{{base_branch}}"
       worktree_setup: "{{worktree_setup}}"
