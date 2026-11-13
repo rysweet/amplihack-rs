@@ -490,6 +490,15 @@ case "$(step_body "$EVIDENCE_YAML" step-02-qa-team-scenarios)" in
         record_pass "merge-evidence step-02 has the exact #2033 STOP line" ;;
     *) record_fail "merge-evidence step-02 has the exact #2033 STOP line" "not found in step-02" ;;
 esac
+# #2342: the CI read, the QA gate and the blocked QA path are bash steps that
+# run gh or git, so each stops with exit 1 when the helper cannot be loaded.
+for sid in step-03b-expected-checks step-02a-ci-gate step-02b-qa-blocked-on-ci; do
+    case "$(step_body "$EVIDENCE_YAML" "$sid")" in
+        *'type: "bash"'*'STOP: cannot load git-repo-env.sh from the tools directory (#2033)" >&2; exit 1; }'*)
+            record_pass "merge-evidence $sid has the exact #2033 STOP line" ;;
+        *) record_fail "merge-evidence $sid has the exact #2033 STOP line" "not found in $sid" ;;
+    esac
+done
 # Step-01 is an agent step (#2342) that may merge and push, so bash step-00
 # runs the loading line first and stops the recipe (exit 1) when it fails,
 # before the agent starts. The agent's own shells are other processes, so its

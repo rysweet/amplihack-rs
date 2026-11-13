@@ -154,8 +154,12 @@ recipe run, as amplihack-rs's do, must not join or write into the outer one.
 | --- | --- | --- | --- |
 | [`scripts/git-hook-cargo.sh`](../../scripts/git-hook-cargo.sh) (amplihack-rs `pre-commit` and `pre-push`) | yes | no | First thing after `set -euo pipefail`. |
 | [`autodrive_qa_evidence.sh`](../../amplifier-bundle/tools/autodrive_qa_evidence.sh) | yes | yes | Straight after its helper directory `H` is found, before `cd "$REPO_PATH"`, the scan subshell and `git rev-parse HEAD`. |
-| `autodrive-merge-evidence.yaml` `step-01-sync-with-base` | yes | yes | Before its first `git` command. Its `git push` runs the target repository's pre-push hook and tests. |
-| `autodrive-merge-evidence.yaml` `step-02-qa-team-scenarios` | yes | yes | Before `git rev-parse` and before it runs `autodrive_qa_evidence.sh`. |
+| `autodrive-merge-evidence.yaml` `step-00-git-env-guard` | yes | yes | First, by bash, so the recipe stops before the step-01 agent starts when the helper cannot be loaded. |
+| `autodrive-merge-evidence.yaml` `step-01-sync-with-base` | yes | yes | By instruction, at the start of every shell call that runs `git` or `gh`. A push, made only for a verified conflict or a required base update (#2342), runs the target repository's pre-push hook and tests. |
+| `autodrive-merge-evidence.yaml` `step-03b-expected-checks` | yes | yes | Before its first `gh` call, after `unset GH_REPO`: `gh` without `-R` finds the repository through git. |
+| `autodrive-merge-evidence.yaml` `step-02a-ci-gate` | yes | yes | Before `git rev-parse HEAD`, so the CI check is bound to the worktree's own head. |
+| `autodrive-merge-evidence.yaml` `step-02-qa-team-scenarios` | yes | yes | By instruction, in the first line of the agent's prompt, at the start of every shell call that runs `git`, `gh` or tests (#2329). |
+| `autodrive-merge-evidence.yaml` `step-02b-qa-blocked-on-ci` | yes | yes | Before `git rev-parse` and before it runs `autodrive_qa_evidence.sh`. |
 | `autodrive-merge-round.yaml` `step-04` (fix and commit) | yes | yes | Twice, because each of the agent's shell calls is a new process that inherits the agent's environment. The "Running tests or hooks" instruction tells the agent to start every shell call that runs tests, hooks, `cargo`, `npm` or `pytest` with the helper line, so the tests it runs while fixing blockers see no inherited `GIT_*`. The bash block that commits and pushes loads it again; there it replaces the old partial `unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE`, and `unset GH_REPO` stays. The prompt is advice to an agent, not a shell wrapper: a test command the agent runs without the line is not covered. |
 
 `autodrive-merge-round.yaml` `step-00-tools-dir` lists `git-repo-env.sh` in
@@ -174,9 +178,8 @@ the steps of `auto-drive-to-merge.yaml`, `autodrive-prerequisites`,
 recipe's own steps do the clearing).
 
 `autodrive_trust_git` in `autodrive_trust.sh` does not source the helper.
-`autodrive_trust.sh` is one of the merge guard's `GATE_FILES`, and every file
-the merge gate sources gets the guard's mode check, so loading another helper
-there would widen that trusted set. It holds the one recorded copy instead:
+`autodrive_trust.sh` is one of the pinned trusted auto-drive files, so
+loading another helper there would widen that trusted set. It holds the one recorded copy instead:
 `AUTODRIVE_TRUST_GIT_UNSET_VARS` is the helper's 12 names, in the helper's
 order, followed by `GIT_REPLACE_REF_BASE`, and `autodrive_trust_git` removes
 each of them with `env -u` before git runs. The
@@ -195,14 +198,15 @@ be set at that point, and a planted worktree could then supply the file.
 - **`autodrive-merge-round.yaml` step-04** uses `{{autodrive_tools_dir}}`,
   which step-00 already checked. The load is in the bash block of the step's
   agent prompt, so the agent runs it.
-- **`autodrive-merge-evidence.yaml` steps 01 and 02** use the same tools
-  directory: merge-round passes `autodrive_tools_dir` into the sub-recipe,
-  so the helper is looked up once per round, in step-00. When
-  merge-evidence runs on its own, that value is empty and the steps use
-  `$AMPLIHACK_HOME/amplifier-bundle/tools`. The load line is the same as
-  step-04's. Step-02 finds `autodrive_qa_evidence.sh` by searching
-  `$AMPLIHACK_HOME`, `$REPO_PATH`, `~/.copilot` and `~/.amplihack`. It no
-  longer searches the directory from `git rev-parse --show-toplevel` (`$TOP`).
+- **`autodrive-merge-evidence.yaml`** steps use the same tools directory:
+  merge-round passes `autodrive_tools_dir` into the sub-recipe, so the helper
+  is looked up once per round, in step-00. When merge-evidence runs on its
+  own, that value is empty and the bash steps use
+  `$AMPLIHACK_HOME/amplifier-bundle/tools`; step-01's agent uses
+  `autodrive_launch_tools`. The load line is the same as step-04's. Step-02b
+  finds `autodrive_qa_evidence.sh` by searching `$AMPLIHACK_HOME`,
+  `$REPO_PATH`, `~/.copilot` and `~/.amplihack`. It does not search the
+  directory from `git rev-parse --show-toplevel` (`$TOP`).
 
 Every loader refuses a helper that is missing or is a symbolic link, and
 stops with a non-zero exit:
@@ -212,7 +216,8 @@ stops with a non-zero exit:
 | `git-hook-cargo.sh` | `ERROR: git-repo-env.sh missing or a symlink at <path>; refusing to run tests with inherited GIT_* (#2033)` | 1 |
 | `autodrive_qa_evidence.sh` | `ERROR: autodrive-qa-helpers-not-found: autodrive_state.sh, autodrive_trust.sh or git-repo-env.sh is missing` | 1, and no evidence file is written |
 | merge-evidence step-01 (agent step) | none: it makes no git write and returns `decision: no-update` with a reason beginning `git-repo-env-unavailable` | none; the step has no exit of its own |
-| merge-evidence step-02 | `STOP: cannot load git-repo-env.sh from the tools directory (#2033)` | 1 |
+| merge-evidence step-00, step-03b, step-02a and step-02b (bash) | `STOP: cannot load git-repo-env.sh from the tools directory (#2033)` | 1 |
+| merge-evidence step-02 (agent step) | the same message | 1, from the agent's shell call; the step itself has no exit of its own |
 | merge-round step-04 | the same message | 1, from the agent's bash block; the step itself has no exit of its own |
 
 The tests check these exact strings, so the code and this table cannot drift
@@ -225,7 +230,7 @@ two `STOP` lines and step-01's no-write rule, and the [end-to-end test](#the-end
 `qa-evidence.json` has two fields at the end of its one JSON line. Both are
 strings and pass through the same `san` and `ascii` filters as the other
 fields. Programs that read the evidence look fields up by key, so existing
-readers (`autodrive_merge_gate.sh`, `autodrive_round_evidence.sh`) are
+readers (`autodrive_round_evidence.sh` and the Rust evidence reducer) are
 unaffected.
 
 | Field | Value |
@@ -283,9 +288,10 @@ a refusal message changes. It checks:
    It also runs the hook with the helper missing and with the helper replaced
    by a symbolic link, and checks for the exact `ERROR: git-repo-env.sh missing
    or a symlink` message in [the refusal table](#finding-the-helper) and exit 1.
-   It checks that `autodrive-merge-evidence.yaml` step-02 and
-   `autodrive-merge-round.yaml` step-04 contain the exact `STOP: cannot
-   load git-repo-env.sh from the tools directory (#2033)` line. Step-01 of
+   It checks that `autodrive-merge-evidence.yaml` step-00, step-02,
+   step-02a, step-02b and step-03b and `autodrive-merge-round.yaml` step-04
+   contain the exact `STOP: cannot load git-repo-env.sh from the tools
+   directory (#2033)` line. Step-01 of
    `autodrive-merge-evidence.yaml` is an agent step with no exit status, so
    the check reads its prompt instead: it must contain the loading line, the
    rule that no git write happens when that line fails, and the

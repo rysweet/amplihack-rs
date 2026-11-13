@@ -94,7 +94,9 @@ MERGE_PREFLIGHT="$(body_of autodrive-merge-loop step-01-merge-loop-preflight)"
 MERGE_LOOP="$(body_of autodrive-merge-loop step-02-merge-ready-loop)"
 CRUSTY_PREFLIGHT="$(body_of autodrive-crusty-loop step-01-crusty-loop-preflight)"
 CRUSTY_LOOP="$(body_of autodrive-crusty-loop step-02-crusty-loop)"
-QA_STEP="$(body_of autodrive-merge-evidence step-02-qa-team-scenarios)"
+# #2342: step-02 is the CI-gated QA agent (#2329); its bash counterpart, step-02b,
+# runs the same QA tool with the CI gate on.
+QA_STEP="$(body_of autodrive-merge-evidence step-02b-qa-blocked-on-ci)"
 REPORT="$(body_of auto-drive-to-merge autodrive-report)"
 
 PASS_COUNT=0

@@ -4,7 +4,7 @@
 #
 # Subject: amplifier-bundle/tools/autodrive_expected_checks.sh, run as
 #   /bin/bash -p autodrive_expected_checks.sh <HEAD_SHA> <BASE_REF>
-# plus its two callers: merge gate section 5 and merge-evidence step-03b.
+# plus its caller merge-evidence step-03b (#2342; #2329 retired the shell gate).
 #
 # Every `gh` call goes to a fake on PATH that serves fixture files
 # (expected-checks-fixtures.sh). No network, no sleep, no wall-clock window.
@@ -23,8 +23,8 @@
 #   8. Job matching rules 1-4, the best match, expression-only names;
 #      8b. block-scalar and multi-line job names (real cpython/tokio shapes).
 #   9. Security: S1 spoof, S2 paths and run ids, name injection, jq version.
-#  10. Callers: gate section 5 (static), merge-evidence step-03b (run), light
-#      drive, platform facts comment, docs.
+#  10. Callers: merge-evidence step-03b (run; #2329 retired the shell gate),
+#      light drive, platform facts comment, docs.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -32,7 +32,6 @@ REPO_ROOT="$(cd "${HERE}/../../.." && pwd -P)"
 TOOLS="${REPO_ROOT}/amplifier-bundle/tools"
 RECIPES="${REPO_ROOT}/amplifier-bundle/recipes"
 HELPER="${TOOLS}/autodrive_expected_checks.sh"
-GATE="${TOOLS}/autodrive_merge_gate.sh"
 # shellcheck source=expected-checks-fixtures.sh
 . "${HERE}/expected-checks-fixtures.sh"
 
@@ -141,8 +140,6 @@ check "EC-unset-f" "the helper drops gh/git/jq functions with builtin unset -f" 
   grep -qE '^[[:space:]]*builtin unset -f gh git jq' "${HELPER}"
 check "EC-budget" "the helper is at most 400 lines" \
   test "$(wc -l < "${HELPER}" 2>/dev/null || echo 9999)" -le 400
-check "EC-gate-budget" "the gate stays at most 400 lines" \
-  test "$(wc -l < "${GATE}")" -le 400
 # Every recipe this change grows keeps the shared brick budget (crusty round 5,
 # item 1: autodrive-merge-round.yaml reached 403 lines and turned CI red).
 for y in autodrive-merge-round autodrive-merge-evidence; do
@@ -1490,26 +1487,9 @@ check "EC-exported-fn" "an exported gh function cannot answer for the helper" \
 # ---------------------------------------------------------------------------
 # 10. Callers.
 # ---------------------------------------------------------------------------
-# Gate section 5 (static; the gate's runtime cases are in
-# test-auto-drive-to-merge.sh section 5).
-S5="$(awk '/^# --- 5\./{f=1} /^# --- 6\./{f=0} f' "${GATE}")"
-check "EC-gate-runs-helper" "gate section 5 runs the helper from GATE_HOME" \
-  bash -c 'printf "%s" "$1" | grep -qF "\${GATE_HOME}/autodrive_expected_checks.sh"' _ "$S5"
-check "EC-gate-passes-base" "gate section 5 passes HEAD_SHA and the baseRefName it read" \
-  bash -c 'printf "%s" "$1" | grep -qE "autodrive_expected_checks\.sh\"? +\"\\\$HEAD_SHA\" +\"\\\$[A-Z_]+\""' _ "$S5"
-check "EC-gate-no-pr-checks" "gate section 5 no longer decides CI from gh pr checks" \
-  bash -c '! printf "%s" "$1" | grep -vE "^[[:space:]]*#" | grep -qF "gh pr checks"' _ "$S5"
-check "EC-gate-tail-n1" "gate section 5 reads ci_status from the last line only" \
-  bash -c 'printf "%s" "$1" | grep -qE "tail -n ?1"' _ "$S5"
-check "EC-gate-unreadable-fallback" "gate section 5 carries the fallback blocker text" \
-  bash -c 'printf "%s" "$1" | grep -qF "expected checks unreadable: the reader gave no verdict or no blocker"' _ "$S5"
-check "EC-gate-maps-lines" "gate section 5 maps evidence: lines to note and blocker: lines to block" \
-  bash -c 'printf "%s" "$1" | grep -qF "evidence:" && printf "%s" "$1" | grep -qF "blocker:" && printf "%s" "$1" | grep -qE "(^|[^a-z])note " && printf "%s" "$1" | grep -qE "(^|[^a-z])block "' _ "$S5"
-check "EC-gate-base-read" "the gate reads baseRefName in its own pr view" \
-  grep -qE 'gh pr view "\$PR" --json [a-zA-Z,]*baseRefName' "${GATE}"
-check "EC-gate-argv-kept" "the gate's merge argv keeps --match-head-commit" grep -qF -- '--match-head-commit' "${GATE}"
-
-# Merge-evidence step-03b, the only CI read of a round and the only writer of ci_evidence (#2342); run with the fake gh.
+# Merge-evidence step-03b, the only CI read of a round and the only writer of
+# ci_evidence (#2342), is a bash step, so it is run here with the fake gh
+# rather than checked as prompt text. #2329's step-03 agent prompt is gone.
 extract_step_command() {
   awk -v step="$2" '
     index($0, "id: \"" step "\"") { instep=1 }
@@ -1585,6 +1565,32 @@ FX="$(new_fx)"
 run_s3 "$FX" GH_HEAD='$(touch '"${WORK}"'/pwned3)'
 check "EC-AC8b-bad-head" "a hostile head value is not executed and does not pass" \
   bash -c '[ ! -e "$1" ] && [ "$2" != GREEN ]' _ "${WORK}/pwned3" "$S3_STATUS"
+# Step-03b passes the expected-checks tool only a head it has checked as a full
+# object ID ($HS). EC-AC8b-bad-head cannot show that, because the real tool also
+# refuses a bad argument. Here AMPLIHACK_HOME holds a stub that records every
+# run and always says GREEN, so a step that passed an unchecked head on would
+# report GREEN. Crusty round 4 on #2344.
+SH_HOME="${WORK}/stub-ec-home"; SH_RAN="${WORK}/stub-ec-ran"
+mkdir -p "${SH_HOME}/amplifier-bundle/tools"
+printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> %q\nprintf "%%s\\n" %q\n' "${SH_RAN}" \
+  '{"ci_status":"GREEN","missing":[],"blockers":0}' > "${SH_HOME}/amplifier-bundle/tools/autodrive_expected_checks.sh"
+chmod +x "${SH_HOME}/amplifier-bundle/tools/autodrive_expected_checks.sh"
+rm -f "${SH_RAN}"
+run_s3 "$(new_fx)" AMPLIHACK_HOME="${SH_HOME}"
+if [ "$S3_STATUS" = GREEN ] && [ "$(cat "${SH_RAN}" 2>/dev/null)" = "${HEAD} main" ]; then
+  pass "EC-AC8b-stub-control" "with a full head the stub tool runs once, on that head and base"
+else fail "EC-AC8b-stub-control" "the stub did not run on the full head: ran=$(cat "${SH_RAN}" 2>/dev/null)"; s3_explain; fi
+for SH_HEAD in "${HEAD:0:7}" "${HEAD:0:39}" "${HEAD}0" "${HEAD:0:39}g"; do
+  rm -f "${SH_RAN}"
+  run_s3 "$(new_fx)" AMPLIHACK_HOME="${SH_HOME}" GH_HEAD="${SH_HEAD}"
+  S3_HEADOUT="$(printf '%s' "$S3_OUT" | jq -r .head_sha 2>/dev/null)"
+  if [ "$S3_STATUS" = UNREADABLE ] && [ "$S3_SIGNAL" = expected-checks-unreadable ] \
+     && [ ! -e "${SH_RAN}" ] && [ -z "${S3_HEADOUT}" ]; then
+    pass "EC-AC8b-unchecked-head-${#SH_HEAD}" "a ${#SH_HEAD}-character head is UNREADABLE and never reaches the expected-checks tool"
+  else
+    fail "EC-AC8b-unchecked-head-${#SH_HEAD}" "head '${SH_HEAD}': status=${S3_STATUS} head_sha=${S3_HEADOUT} ran=$(cat "${SH_RAN}" 2>/dev/null)"; s3_explain
+  fi
+done
 FX="$(new_fx)"
 run_s3 "$FX" GH_PR_CHECKS='[{"name":"Test","state":"FAILURE","bucket":"fail"}]'
 check "EC-AC8-red-unchanged" "a RED rollup stays RED (the helper only lowers GREEN)" test "$S3_STATUS" = RED
@@ -1592,8 +1598,6 @@ check "EC-AC8-red-unchanged" "a RED rollup stays RED (the helper only lowers GRE
 # The light drive's merge loop runs the same gate (D17).
 check "EC-D17-light-uses-merge-loop" "auto-drive-light runs autodrive-merge-loop" \
   grep -qE 'recipe: "autodrive-merge-loop"' "${RECIPES}/auto-drive-light.yaml"
-check "EC-D17-merge-loop-runs-gate" "autodrive-merge-loop runs the gate from AMPLIHACK_HOME" \
-  grep -qF 'GATE="${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_merge_gate.sh"' "${RECIPES}/autodrive-merge-loop.yaml"
 # Platform facts: CHECKS is advisory (D18).
 check "EC-D18-advisory" "autodrive_platform_facts.sh says CHECKS is advisory and the helper decides" \
   bash -c 'grep -iE "^[[:space:]]*#.*advisory" "$1" | grep -qF "autodrive_expected_checks"' _ "${TOOLS}/autodrive_platform_facts.sh"
