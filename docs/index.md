@@ -330,7 +330,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Structured Verdict & Intent Parsing Reference](reference/structured-verdict-parsing.md) - `normalise-verdict` helper, `session-tree register --json`, and the `verdict`/`no_merge`/`goal_status`/`status` fields that replace brittle agent-prose scraping
 - [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - Planned responsibilities, invocation-wide authorization, gate retirement, and target compatibility matrix
 - [Auto-drive Evidence and Outcomes](reference/auto-drive-evidence.md) - Planned evidence contract for all 13 criteria and auto-drive's crusty convergence substitution
-- [Auto-drive State Permissions](reference/auto-drive-state-permissions.md) - State folders 0700 and files 0600 under any umask; when the evidence check repairs an entry this user owns, when it refuses, and the `INFO` repair log line (#2546)
+- [Auto-drive State Permissions](reference/auto-drive-state-permissions.md) - State folders 0700 and files 0600 under any umask; when the evidence check repairs an entry this user owns (slug folders directly under the auto-drive state root), when it refuses, and the `INFO`/`WARNING` repair log line (#2546)
 - [Auto-drive QA Selection](reference/auto-drive-qa.md) - QA selection requirements for the planned evidence workflow
 - [Verify a PR Without Merging](howto/verify-pr-with-auto-drive.md) - Planned guide; current no_merge=true does not protect final merging
 - [Loop-Health Evaluator Reference](reference/loop-health-evaluator.md) - the reusable `CONTINUE`/`DONE`/`STUCK` agentic loop-health contract, `normalise-loop-verdict`, and why the loop terminator is absence of progress rather than an iteration cap

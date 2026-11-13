@@ -22,9 +22,13 @@ Agents observe and assess facts under trusted merge-ready policy.
   non-empty, absolute, free of `..` components and free of control
   characters; otherwise capture fails with
   `autodrive_state_dir must be an absolute path`. It must also be `0700`
-  unless it is named `autodrive-state`: only the runner's own
-  `autodrive-state` folder has its group and other bits removed
-  automatically (#2546, see `docs/reference/auto-drive-state-permissions.md`). Without one, the runner uses
+  unless it sits directly under the auto-drive state root
+  (`${AMPLIHACK_STATE_DIR:-${HOME:-/tmp}/.amplihack/state}/auto-drive`, the
+  root `autodrive_state.sh` uses) and that root is private and owned by this
+  user: only such slug folders, or a folder `EvidenceStore::create` has just
+  created, have their group and other bits removed automatically. The
+  folder's name plays no part (#2546, see
+  `docs/reference/auto-drive-state-permissions.md`). Without one, the runner uses
   `<durable run folder>/autodrive-state`, or `autodrive-state` in the launch
   bundle for dry runs. The bound path is the absolute path passed to
   `EvidenceStore::create`, before canonicalisation. Round history and budgets

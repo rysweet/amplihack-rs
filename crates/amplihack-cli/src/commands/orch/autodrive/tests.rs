@@ -723,11 +723,18 @@ fn state_rejects_special_files_and_untrusted_existing_directory_modes() {
         0o777
     );
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o775)).unwrap();
-    // #2546: our own `autodrive-state` folder with group bits is repaired.
-    EvidenceStore::create(&root).unwrap();
+    // #2546 B1: the folder's name allows no repair. This `autodrive-state`
+    // folder is not directly under the auto-drive state root, so an existing
+    // 0775 folder is refused and left as it was. Repair under the root is
+    // covered by issue_2546_state_folder_0775_is_repaired_and_logged.
+    let error = match EvidenceStore::create(&root) {
+        Ok(_) => panic!("a 0775 autodrive-state folder outside the state root was accepted"),
+        Err(error) => error,
+    };
+    assert!(format!("{error:#}").contains(OUTSIDE_2546), "{error:#}");
     assert_eq!(
         std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
-        0o700
+        0o775
     );
 }
 
@@ -1572,10 +1579,23 @@ fn crusty_objective_completion_without_merge_ready_receipt_stays_incomplete() {
 //
 // The umask is per process and sibling tests create files concurrently, so the
 // umask tests run alone in a child of the test binary. The parent test process
-// never changes its umask.
+// never changes its umask or its environment.
+//
+// B1 (PR #2579): repair is allowed by location, not by the folder's name. A
+// state folder is repairable when it sits directly under the auto-drive state
+// root, `${AMPLIHACK_STATE_DIR:-${HOME:-/tmp}/.amplihack/state}/auto-drive`,
+// the root autodrive_state.sh uses. Every test that expects a repair therefore
+// runs in a child whose HOME, AMPLIHACK_HOME and AMPLIHACK_STATE_DIR point at
+// a temporary folder (`isolated_2546`), so no test touches the real
+// ~/.amplihack or ~/.claude.
 
 #[cfg(unix)]
 const UMASK_2546_CHILD: &str = "AMPLIHACK_ISSUE_2546_UMASK_CHILD";
+
+/// The temporary folder that holds the child's HOME, AMPLIHACK_HOME and
+/// AMPLIHACK_STATE_DIR (set by the parent, read by the child).
+#[cfg(unix)]
+const ISO_2546: &str = "AMPLIHACK_ISSUE_2546_ISO";
 
 /// The log line the evidence check writes for each repaired entry.
 #[cfg(unix)]
@@ -1584,9 +1604,38 @@ const REPAIR_2546: &str = "removed group and other access";
 /// The refusal for an entry with extra bits outside the state tree (row 7).
 const OUTSIDE_2546: &str = "evidence outside the auto-drive state tree has group or other access";
 
-/// Runs `body` in a child test process under `mask`, and returns its stderr.
+/// The repository URL and PR number the real-layout tests use, and the slug
+/// autodrive_state_key makes from them.
 #[cfg(unix)]
-fn under_umask_2546(test: &str, mask: libc::mode_t, body: impl FnOnce()) -> Option<String> {
+const ORIGIN_2546: &str = "https://github.com/example/widgets.git";
+#[cfg(unix)]
+const PR_2546: &str = "2579";
+#[cfg(unix)]
+const SLUG_2546: &str = "https___github.com_example_widgets_2579";
+
+#[cfg(unix)]
+fn tools_2546() -> std::path::PathBuf {
+    std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../amplifier-bundle/tools"
+    ))
+    .canonicalize()
+    .unwrap()
+}
+
+/// Runs `body` in a child test process under `mask`, and returns its stderr.
+///
+/// `env` is applied to the child only: `Some` sets a variable, `None` removes
+/// it. Every `GIT_*` variable the parent has (pre-commit and pre-push hooks
+/// set GIT_DIR and GIT_INDEX_FILE) and AMPLIHACK_BIN are removed, and
+/// GIT_CONFIG_NOSYSTEM=1 is set, so git in the child sees only its own repo.
+#[cfg(unix)]
+fn under_umask_2546(
+    test: &str,
+    mask: libc::mode_t,
+    env: &[(&str, Option<std::ffi::OsString>)],
+    body: impl FnOnce(),
+) -> Option<String> {
     if std::env::var_os(UMASK_2546_CHILD).is_some() {
         // SAFETY: umask has no failure mode, and this child runs only this test.
         let old = unsafe { libc::umask(mask) };
@@ -1595,11 +1644,25 @@ fn under_umask_2546(test: &str, mask: libc::mode_t, body: impl FnOnce()) -> Opti
         return None;
     }
     let name = format!("commands::orch::autodrive_contract_tests::{test}");
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
         .args(["--exact", &name, "--test-threads=1", "--nocapture"])
-        .env(UMASK_2546_CHILD, "1")
-        .output()
-        .unwrap();
+        .env(UMASK_2546_CHILD, "1");
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(&key);
+        }
+    }
+    command
+        .env_remove("AMPLIHACK_BIN")
+        .env("GIT_CONFIG_NOSYSTEM", "1");
+    for (key, value) in env {
+        match value {
+            Some(value) => command.env(key, value),
+            None => command.env_remove(key),
+        };
+    }
+    let output = command.output().unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(
@@ -1611,6 +1674,165 @@ fn under_umask_2546(test: &str, mask: libc::mode_t, body: impl FnOnce()) -> Opti
         "re-running {name} ran no test:\n{stdout}"
     );
     Some(stderr)
+}
+
+/// The isolated folders of one child (`isolated_2546`).
+#[cfg(unix)]
+struct Iso2546 {
+    base: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+impl Iso2546 {
+    fn home(&self) -> std::path::PathBuf {
+        self.base.join("home")
+    }
+    fn state(&self) -> std::path::PathBuf {
+        self.base.join("state")
+    }
+    /// The auto-drive state root for this child's environment.
+    fn root(&self) -> std::path::PathBuf {
+        self.state().join("auto-drive")
+    }
+    /// Makes the state root at 0700 (if missing) and a folder `name` directly
+    /// under it at `mode`, by hand, so that no `created_now` applies.
+    fn slug(&self, name: &str, mode: u32) -> std::path::PathBuf {
+        let root = self.root();
+        if !root.exists() {
+            make_2546(&root, None, 0o700);
+        }
+        let slug = root.join(name);
+        make_2546(&slug, None, mode);
+        slug
+    }
+}
+
+/// Runs `body` in a child under `mask` with HOME, AMPLIHACK_HOME and
+/// AMPLIHACK_STATE_DIR set to folders (0700) in a new temporary folder.
+/// `overrides` then changes or removes any of them for this child. Before
+/// `body` runs, the child checks that every absolute value of the three
+/// variables lies inside that temporary folder (S21).
+#[cfg(unix)]
+fn isolated_2546(
+    test: &str,
+    mask: libc::mode_t,
+    overrides: &[(&str, Option<&str>)],
+    body: impl FnOnce(&Iso2546),
+) -> Option<String> {
+    let parent = if std::env::var_os(UMASK_2546_CHILD).is_some() {
+        None
+    } else {
+        Some(tempfile::tempdir().unwrap())
+    };
+    let mut env: Vec<(&str, Option<std::ffi::OsString>)> = Vec::new();
+    if let Some(dir) = &parent {
+        // Canonical, so that the shell's paths equal their canonical form.
+        let base = dir.path().canonicalize().unwrap();
+        for sub in ["home", "amplihack-home", "state"] {
+            make_2546(&base.join(sub), None, 0o700);
+        }
+        env.push((ISO_2546, Some(base.clone().into_os_string())));
+        env.push(("HOME", Some(base.join("home").into_os_string())));
+        env.push((
+            "AMPLIHACK_HOME",
+            Some(base.join("amplihack-home").into_os_string()),
+        ));
+        env.push((
+            "AMPLIHACK_STATE_DIR",
+            Some(base.join("state").into_os_string()),
+        ));
+        for (key, value) in overrides {
+            env.retain(|(k, _)| k != key);
+            env.push((key, value.map(std::ffi::OsString::from)));
+        }
+    }
+    under_umask_2546(test, mask, &env, || {
+        let base = std::path::PathBuf::from(
+            std::env::var_os(ISO_2546).expect("the parent sets the isolated folder"),
+        );
+        assert!(base.is_absolute(), "{base:?}");
+        for var in ["HOME", "AMPLIHACK_HOME", "AMPLIHACK_STATE_DIR"] {
+            if let Some(value) = std::env::var_os(var) {
+                let path = std::path::Path::new(&value);
+                assert!(
+                    !path.is_absolute() || path.starts_with(&base),
+                    "{var}={value:?} is outside the isolated folder {base:?}"
+                );
+            }
+        }
+        body(&Iso2546 { base });
+    })
+}
+
+/// Starts `command` from an empty environment, then adds back PATH and the
+/// child's HOME, AMPLIHACK_HOME and AMPLIHACK_STATE_DIR (when set) and
+/// GIT_CONFIG_NOSYSTEM=1 (S22).
+#[cfg(unix)]
+fn shell_env_2546(command: &mut std::process::Command) -> &mut std::process::Command {
+    command.env_clear().env("GIT_CONFIG_NOSYSTEM", "1");
+    for var in ["PATH", "HOME", "AMPLIHACK_HOME", "AMPLIHACK_STATE_DIR"] {
+        if let Some(value) = std::env::var_os(var) {
+            command.env(var, value);
+        }
+    }
+    command
+}
+
+#[cfg(unix)]
+fn run_ok_2546(command: &mut std::process::Command, what: &str) -> String {
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{what} failed ({:?}):\n{}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// A git repository at `repo` whose origin is `ORIGIN_2546`.
+#[cfg(unix)]
+fn git_repo_2546(repo: &std::path::Path) {
+    run_ok_2546(
+        shell_env_2546(&mut amplihack_git::command())
+            .args(["init", "-q"])
+            .arg(repo),
+        "git init",
+    );
+    run_ok_2546(
+        shell_env_2546(&mut amplihack_git::command())
+            .arg("-C")
+            .arg(repo)
+            .args(["remote", "add", "origin", ORIGIN_2546]),
+        "git remote add",
+    );
+}
+
+/// Calls `autodrive_state_dir <repo> <pr>` from autodrive_state.sh under
+/// `mask`, as a drive does, and returns the folder it chose.
+#[cfg(unix)]
+fn autodrive_state_dir_2546(
+    repo: &std::path::Path,
+    pr: &str,
+    mask: libc::mode_t,
+) -> std::path::PathBuf {
+    let stdout = run_ok_2546(
+        shell_env_2546(&mut std::process::Command::new("bash"))
+            .arg("-c")
+            .arg(
+                r#"umask "$MASK"
+. "$TOOLS/autodrive_state.sh" || exit 3
+autodrive_state_dir "$REPO" "$PR"
+"#,
+            )
+            .env("MASK", format!("{mask:03o}"))
+            .env("TOOLS", tools_2546())
+            .env("REPO", repo)
+            .env("PR", pr),
+        "autodrive_state_dir",
+    );
+    std::path::PathBuf::from(stdout.trim_end_matches('\n'))
 }
 
 #[cfg(unix)]
@@ -1643,6 +1865,13 @@ fn repair_lines_2546(stderr: &str) -> Vec<&str> {
     stderr.lines().filter(|l| l.contains(REPAIR_2546)).collect()
 }
 
+/// A repair line starts with `INFO: `, or with `WARNING: ` when this user's
+/// group may have other members (M3).
+#[cfg(unix)]
+fn is_repair_prefix_2546(line: &str) -> bool {
+    line.starts_with("INFO: ") || line.starts_with("WARNING: ")
+}
+
 /// Stand-in for the amplihack binary the completion context script calls. It
 /// records the mode of each --context-from-file target and of its folder while
 /// they still exist (the script removes them afterwards).
@@ -1660,52 +1889,47 @@ done
 printf '{}'
 "#;
 
-/// Runs the shell writers under `umask 002` against `state`: the phase marker
-/// from autodrive_state.sh and the completion_context writer. Returns the
-/// recorded "<file mode> <folder mode> <name>" lines from the stub.
+/// Runs the shell writers under `mask` against `state`: the phase marker from
+/// autodrive_state.sh and the completion_context writer. Returns the recorded
+/// "<file mode> <folder mode> <name>" lines from the stub.
 #[cfg(unix)]
-fn run_shell_writers_2546(state: &std::path::Path) -> Vec<String> {
+fn run_shell_writers_2546(state: &std::path::Path, mask: libc::mode_t) -> Vec<String> {
     use std::os::unix::fs::PermissionsExt;
-    let tools = concat!(env!("CARGO_MANIFEST_DIR"), "/../../amplifier-bundle/tools");
+    let tools = tools_2546();
     let stub_dir = tempfile::tempdir().unwrap();
     let stub = stub_dir.path().join("amplihack-stub");
     std::fs::write(&stub, CONTEXT_STUB_2546).unwrap();
     std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o700)).unwrap();
     let modes = stub_dir.path().join("modes.txt");
-    let output = std::process::Command::new("bash")
-        .arg("-c")
-        .arg(
-            r#"umask 002
+    run_ok_2546(
+        shell_env_2546(&mut std::process::Command::new("bash"))
+            .arg("-c")
+            .arg(
+                r#"umask "$MASK"
 field() { printf 'stub'; }
 . "$TOOLS/autodrive_state.sh" || exit 3
 autodrive_mark_phase_done "$STATE_DIR" crusty-loop || exit 4
 run_context() { . "$TOOLS/autodrive_completion_context.sh"; }
 run_context || exit 5
 "#,
-        )
-        .env("TOOLS", tools)
-        .env("STATE_DIR", state)
-        .env("AMPLIHACK_BIN", &stub)
-        .env("STUB_MODES", &modes)
-        .env("HISTORY", "history")
-        .env("BASELINE", "baseline")
-        .env("PREV_FINDINGS", "findings")
-        .env("PREV_TEST", "test")
-        .env("PREV_CI", "ci")
-        .env("TOKEN_SAFE", "token")
-        .env("ROUND_LABEL", "round-1")
-        .env("RECORD", state.join("record.json"))
-        .env("REPO", state)
-        .env("REVIEW_REAL", state)
-        .env("LOOP_HOME", tools)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "shell writers failed ({:?}):\n{}\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+            )
+            .env("MASK", format!("{mask:03o}"))
+            .env("TOOLS", &tools)
+            .env("STATE_DIR", state)
+            .env("AMPLIHACK_BIN", &stub)
+            .env("STUB_MODES", &modes)
+            .env("HISTORY", "history")
+            .env("BASELINE", "baseline")
+            .env("PREV_FINDINGS", "findings")
+            .env("PREV_TEST", "test")
+            .env("PREV_CI", "ci")
+            .env("TOKEN_SAFE", "token")
+            .env("ROUND_LABEL", "round-1")
+            .env("RECORD", state.join("record.json"))
+            .env("REPO", state)
+            .env("REVIEW_REAL", state)
+            .env("LOOP_HOME", &tools),
+        "shell writers",
     );
     let lines: Vec<String> = std::fs::read_to_string(&modes)
         .unwrap()
@@ -1716,142 +1940,181 @@ run_context || exit 5
     lines
 }
 
-/// (a) One round written under umask 002 through every writer of state the
-/// evidence check reads, then the next evidence check. The Rust writers and
-/// the shell writers need no repair; the one plain `fs::write` file, standing
-/// in for a file an agent step wrote, is repaired and logged.
+/// (a) B1 end to end, with the real layout: the state folder is chosen and
+/// created by autodrive_state.sh (`autodrive_state_dir`), exactly as a drive
+/// does, under `mask`. One round is written through the normal writers (the
+/// evidence store, the phase marker, the completion context writer), and an
+/// agent step writes `qa-run.log` and `agent-findings.json` by plain shell
+/// redirection. The completion checker (`prepare`) and the next evidence check
+/// (`EvidenceStore`) then pass, each file with group or other bits is repaired
+/// exactly once and logged, and the slug folder needs no repair.
 #[cfg(unix)]
-#[test]
-fn issue_2546_round_written_under_umask_002_passes_next_evidence_check() {
+fn real_layout_round_2546(test: &str, mask: libc::mode_t) {
     use crate::commands::orch::autodrive::helper::write_new_private;
-    use crate::commands::orch::autodrive_completion::secure_fs::{self, Scope};
-    use std::io::Write;
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-    let stderr = under_umask_2546(
-        "issue_2546_round_written_under_umask_002_passes_next_evidence_check",
-        0o002,
-        || {
-            let dir = tempfile::tempdir().unwrap();
-            // A nested parent that does not exist yet.
-            let state = dir.path().join("auto-drive").join("autodrive-state");
-            let auth = authorization("true", "false");
-            let expected: Binding = serde_json::from_value(binding(&auth)).unwrap();
+    let stderr = isolated_2546(test, mask, &[], |iso| {
+        let repo = iso.base.join("repo");
+        git_repo_2546(&repo);
 
-            // Round N, Rust writers: the evidence store and its records.
-            let store = EvidenceStore::create(&state).unwrap();
-            let state = state.canonicalize().unwrap();
-            store
-                .write_new(
-                    "candidate.json",
-                    &serde_json::to_vec(&candidate(&auth)).unwrap(),
+        // The drive's state folder, from the shell, once (R6).
+        let state = autodrive_state_dir_2546(&repo, PR_2546, mask);
+        assert_eq!(
+            state,
+            iso.root().join(SLUG_2546),
+            "the folder the shell chose"
+        );
+        assert_eq!(
+            mode_2546(&state),
+            0o700,
+            "autodrive_private_dir makes it 0700"
+        );
+        assert_eq!(mode_2546(&iso.root()), 0o700, "and the root it created");
+
+        // Round N, Rust writers: the evidence store and its records.
+        let auth = authorization("true", "false");
+        let expected: Binding = serde_json::from_value(binding(&auth)).unwrap();
+        let store = EvidenceStore::create(&state).unwrap();
+        store
+            .write_new(
+                "candidate.json",
+                &serde_json::to_vec(&candidate(&auth)).unwrap(),
+            )
+            .unwrap();
+        let accepted = store
+            .accept_candidate("candidate.json", &auth, &expected)
+            .unwrap();
+        let snapshot = store.snapshot(b"{}").unwrap();
+        write_new_private(&state.join("loop-1.json"), b"{}").unwrap();
+
+        // Round N, shell writers.
+        let context = run_shell_writers_2546(&state, mask);
+        assert_eq!(context.len(), 6, "context files seen: {context:?}");
+        for line in &context {
+            assert!(
+                line.starts_with("600 700 "),
+                "completion_context wrote a file that is not private under umask {mask:03o}: {line}"
+            );
+        }
+        assert_eq!(mode_2546(&state.join("phases.tsv")), 0o600);
+
+        // Round N, an agent step writing by shell redirection.
+        run_ok_2546(
+            shell_env_2546(&mut std::process::Command::new("bash"))
+                .arg("-c")
+                .arg(
+                    r#"umask "$MASK"
+printf 'qa: 12 passed\n' > "$STATE_DIR/qa-run.log"
+printf '{"findings":[]}\n' > "$STATE_DIR/agent-findings.json"
+"#,
                 )
-                .unwrap();
-            let accepted = store
-                .accept_candidate("candidate.json", &auth, &expected)
-                .unwrap();
-            let snapshot = store.snapshot(b"{}").unwrap();
-            write_new_private(&state.join("loop-1.json"), b"{}").unwrap();
+                .env("MASK", format!("{mask:03o}"))
+                .env("STATE_DIR", &state),
+            "agent-style writes",
+        );
+        #[allow(clippy::unnecessary_cast)] // mode_t is u16 on macOS
+        let written = 0o666 & !(mask as u32);
+        assert_eq!(mode_2546(&state.join("qa-run.log")), written);
+        assert_eq!(mode_2546(&state.join("agent-findings.json")), written);
 
-            // Round N, Rust writers: the completion tree, laid out as
-            // private_state.rs lays it out.
-            let completion = tempfile::Builder::new()
-                .prefix(".completion-")
-                .permissions(std::fs::Permissions::from_mode(0o700))
-                .tempdir_in(&state)
+        // The completion checker reads qa-run.log as evaluator context.
+        let s = state.to_str().unwrap();
+        let record = state.join("crusty-round-1.json");
+        let tools = tools_2546();
+        let qa = format!("loop_test_signal={}", state.join("qa-run.log").display());
+        prepare_2546(&[
+            "--state-dir",
+            s,
+            "--round-label",
+            "round-1",
+            "--record",
+            record.to_str().unwrap(),
+            "--repo",
+            repo.to_str().unwrap(),
+            "--review-dir",
+            repo.to_str().unwrap(),
+            "--launch-tools",
+            tools.to_str().unwrap(),
+            "--context-from-file",
+            &qa,
+        ])
+        .unwrap_or_else(|e| panic!("completion prepare under the state root: {e:#}"));
+
+        // Round N+1: the next evidence check reads the same state.
+        let next = EvidenceStore::create(&state).unwrap();
+        next.accept_candidate("candidate.json", &auth, &expected)
+            .unwrap();
+        for name in [
+            "candidate.json".to_owned(),
+            "loop-1.json".to_owned(),
+            "phases.tsv".to_owned(),
+            "qa-run.log".to_owned(),
+            "agent-findings.json".to_owned(),
+            accepted
+                .path()
+                .file_name()
                 .unwrap()
-                .keep();
-            for part in ["driver", "output"] {
-                std::fs::DirBuilder::new()
-                    .mode(0o700)
-                    .create(completion.join(part))
-                    .unwrap();
-            }
-            let private = completion.join("driver").join("state.json");
-            let decision = completion.join("output").join("decision.json");
-            secure_fs::create(Scope::of(&state), &private, b"{}").unwrap();
-            secure_fs::output(Scope::of(&state), &decision)
-                .unwrap()
-                .write_all(b"{}")
-                .unwrap();
-
-            // Round N, shell writers.
-            let context = run_shell_writers_2546(&state);
-            assert_eq!(context.len(), 6, "context files seen: {context:?}");
-            for line in &context {
-                assert!(
-                    line.starts_with("600 700 "),
-                    "completion_context wrote a file not private under umask 002: {line}"
-                );
-            }
-            assert_eq!(mode_2546(&state.join("phases.tsv")), 0o600);
-
-            // Round N, a file written without an explicit mode (agent step).
-            let agent = state.join("agent-notes.json");
-            std::fs::write(&agent, b"{}").unwrap();
-            assert_eq!(mode_2546(&agent), 0o664, "umask 002 is in force");
-
-            // Round N+1: the next evidence check reads the same state.
-            let next = EvidenceStore::create(&state).unwrap();
-            next.accept_candidate("candidate.json", &auth, &expected)
-                .unwrap();
-            for name in [
-                "candidate.json".to_owned(),
-                "loop-1.json".to_owned(),
-                "phases.tsv".to_owned(),
-                "agent-notes.json".to_owned(),
-                accepted
-                    .path()
-                    .file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .into_owned(),
-                snapshot.file_name().unwrap().to_string_lossy().into_owned(),
-            ] {
-                next.read_private(&name)
-                    .unwrap_or_else(|e| panic!("{name}: {e:#}"));
-            }
-            secure_fs::check_dir(&state).unwrap();
-            assert_eq!(
-                secure_fs::read(Scope::of(&state), &private, 1 << 20).unwrap(),
-                b"{}"
-            );
-            assert_eq!(
-                secure_fs::read(Scope::of(&state), &decision, 1 << 20).unwrap(),
-                b"{}"
-            );
-            assert_private_tree_2546(&state);
-        },
-    );
+                .to_string_lossy()
+                .into_owned(),
+            snapshot.file_name().unwrap().to_string_lossy().into_owned(),
+        ] {
+            next.read_private(&name)
+                .unwrap_or_else(|e| panic!("{name}: {e:#}"));
+        }
+        assert_private_tree_2546(&state);
+    });
     if let Some(stderr) = stderr {
         let lines = repair_lines_2546(&stderr);
         assert_eq!(
             lines.len(),
-            1,
-            "only the plain-write file needs repair:\n{stderr}"
+            2,
+            "exactly the two agent-written files need repair:\n{stderr}"
         );
-        let line = lines[0];
+        #[allow(clippy::unnecessary_cast)] // mode_t is u16 on macOS
+        let written = format!("{:04o}", 0o666 & !(mask as u32));
+        for file in ["qa-run.log\"", "agent-findings.json\""] {
+            let matching: Vec<_> = lines.iter().filter(|l| l.contains(file)).collect();
+            assert_eq!(matching.len(), 1, "one repair line for {file}:\n{stderr}");
+            let line = matching[0];
+            assert!(
+                is_repair_prefix_2546(line)
+                    && line.contains(&written)
+                    && line.contains("0600")
+                    && line.contains(SLUG_2546),
+                "{line}"
+            );
+        }
+        let slug_itself = format!("{SLUG_2546}\" had");
         assert!(
-            line.starts_with("INFO: ")
-                && line.contains("agent-notes.json\"")
-                && line.contains("0664")
-                && line.contains("(gid ")
-                && line.contains("0600"),
-            "{line}"
+            !lines.iter().any(|l| l.contains(&slug_itself)),
+            "no repair line for the slug folder itself:\n{stderr}"
         );
     }
 }
 
-/// (b) A record chmod'ed to 0664 is repaired to 0600 and logged.
+#[cfg(unix)]
+#[test]
+fn issue_2546_real_layout_round_under_umask_002() {
+    real_layout_round_2546("issue_2546_real_layout_round_under_umask_002", 0o002);
+}
+
+#[cfg(unix)]
+#[test]
+fn issue_2546_real_layout_round_under_umask_022() {
+    real_layout_round_2546("issue_2546_real_layout_round_under_umask_022", 0o022);
+}
+
+/// (b) A record in a slug folder under the state root, chmod'ed to 0664, is
+/// repaired to 0600 and logged. The folder exists before the store opens it,
+/// so only the location rule can allow the repair.
 #[cfg(unix)]
 #[test]
 fn issue_2546_hand_chmod_0664_is_repaired_and_logged() {
     use std::os::unix::fs::PermissionsExt;
-    let stderr = under_umask_2546(
+    let stderr = isolated_2546(
         "issue_2546_hand_chmod_0664_is_repaired_and_logged",
         0o022,
-        || {
-            let dir = tempfile::tempdir().unwrap();
-            let root = dir.path().join("autodrive-state");
+        &[],
+        |iso| {
+            let root = iso.slug("slug-0664", 0o700);
             let store = EvidenceStore::create(&root).unwrap();
             store.write_new("record.json", b"{}").unwrap();
             let file = root.join("record.json");
@@ -1867,8 +2130,8 @@ fn issue_2546_hand_chmod_0664_is_repaired_and_logged() {
         assert_eq!(lines.len(), 1, "one repair, logged once:\n{stderr}");
         let line = lines[0];
         assert!(
-            line.starts_with("INFO: ")
-                && line.contains("record.json\"")
+            is_repair_prefix_2546(line)
+                && line.contains("slug-0664/record.json\"")
                 && line.contains("0664")
                 && line.contains("(gid ")
                 && line.contains("0600"),
@@ -1877,25 +2140,20 @@ fn issue_2546_hand_chmod_0664_is_repaired_and_logged() {
     }
 }
 
-/// (b) The state folder chmod'ed to 0775 is repaired to 0700 when the
-/// evidence store is opened again.
+/// (b) An existing slug folder under the state root, chmod'ed to 0775, is
+/// repaired to 0700 when the evidence store opens it.
 #[cfg(unix)]
 #[test]
 fn issue_2546_state_folder_0775_is_repaired_and_logged() {
-    use std::os::unix::fs::PermissionsExt;
-    let stderr = under_umask_2546(
+    let stderr = isolated_2546(
         "issue_2546_state_folder_0775_is_repaired_and_logged",
         0o022,
-        || {
-            let dir = tempfile::tempdir().unwrap();
-            let root = dir.path().join("autodrive-state");
-            EvidenceStore::create(&root)
-                .unwrap()
-                .write_new("record.json", b"{}")
-                .unwrap();
-            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o775)).unwrap();
+        &[],
+        |iso| {
+            let root = iso.slug("slug-0775", 0o775);
             let store = EvidenceStore::create(&root).unwrap();
             assert_eq!(mode_2546(&root), 0o700);
+            store.write_new("record.json", b"{}").unwrap();
             assert_eq!(store.read_private("record.json").unwrap(), b"{}");
         },
     );
@@ -1904,8 +2162,8 @@ fn issue_2546_state_folder_0775_is_repaired_and_logged() {
         assert_eq!(lines.len(), 1, "one repair, logged once:\n{stderr}");
         let line = lines[0];
         assert!(
-            line.starts_with("INFO: ")
-                && line.contains("autodrive-state\"")
+            is_repair_prefix_2546(line)
+                && line.contains("slug-0775\"")
                 && line.contains("0775")
                 && line.contains("0700"),
             "{line}"
@@ -1914,44 +2172,53 @@ fn issue_2546_state_folder_0775_is_repaired_and_logged() {
 }
 
 /// S1: outside the auto-drive state root, the completion checker stays strict
-/// and changes nothing, even when the caller passes a repairable root.
+/// and changes nothing. A folder named `autodrive-state` in a temporary folder
+/// is not under the root, so its scope is `Strict` (B1); and even a
+/// `StateTree` scope repairs nothing outside its own tree.
 #[cfg(unix)]
 #[test]
 fn issue_2546_outside_state_tree_stays_strict() {
     use crate::commands::orch::autodrive_completion::secure_fs::{self, Scope};
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
-    // A repairable state root next to the folders read: they are outside it.
     let state = dir.path().join("autodrive-state");
     std::fs::create_dir(&state).unwrap();
-    let scope = Scope::of(&state);
-    assert!(matches!(scope, Scope::StateTree(_)));
-    // An open folder holding an open file.
-    let open = dir.path().join("repo");
-    std::fs::create_dir(&open).unwrap();
-    std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let file = open.join("notes.txt");
-    std::fs::write(&file, b"notes").unwrap();
-    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
-    let error = secure_fs::read(scope, &file, 1 << 20).expect_err("read outside the state tree");
-    assert!(format!("{error:#}").contains(OUTSIDE_2546), "{error:#}");
-    assert_eq!(mode_2546(&open), 0o755, "folder outside the tree changed");
-    assert_eq!(mode_2546(&file), 0o644, "file outside the tree changed");
+    assert!(
+        matches!(Scope::of(&state), Scope::Strict),
+        "the folder name allows no repair"
+    );
+    for scope in [Scope::Strict, Scope::StateTree(&state)] {
+        // An open folder holding an open file.
+        let open = tempfile::tempdir_in(dir.path()).unwrap();
+        std::fs::set_permissions(open.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let file = open.path().join("notes.txt");
+        std::fs::write(&file, b"notes").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let error =
+            secure_fs::read(scope, &file, 1 << 20).expect_err("read outside the state tree");
+        assert!(format!("{error:#}").contains(OUTSIDE_2546), "{error:#}");
+        assert_eq!(
+            mode_2546(open.path()),
+            0o755,
+            "folder outside the tree changed"
+        );
+        assert_eq!(mode_2546(&file), 0o644, "file outside the tree changed");
 
-    // A private folder holding an open file: the file is still refused.
-    let closed = dir.path().join("private");
-    std::fs::create_dir(&closed).unwrap();
-    std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let file = closed.join("notes.txt");
-    std::fs::write(&file, b"notes").unwrap();
-    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
-    let error = secure_fs::read(scope, &file, 1 << 20).expect_err("read outside the state tree");
-    assert!(format!("{error:#}").contains(OUTSIDE_2546), "{error:#}");
-    assert_eq!(mode_2546(&file), 0o644, "file outside the tree changed");
+        // A private folder holding an open file: the file is still refused.
+        let closed = tempfile::tempdir_in(dir.path()).unwrap();
+        std::fs::set_permissions(closed.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let file = closed.path().join("notes.txt");
+        std::fs::write(&file, b"notes").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let error =
+            secure_fs::read(scope, &file, 1 << 20).expect_err("read outside the state tree");
+        assert!(format!("{error:#}").contains(OUTSIDE_2546), "{error:#}");
+        assert_eq!(mode_2546(&file), 0o644, "file outside the tree changed");
 
-    // The same file made private by its owner is read.
-    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
-    assert_eq!(secure_fs::read(scope, &file, 1 << 20).unwrap(), b"notes");
+        // The same file made private by its owner is read.
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(secure_fs::read(scope, &file, 1 << 20).unwrap(), b"notes");
+    }
 }
 
 /// (c) The pure rule: foreign owner, foreign group, world-writable, symlink,
@@ -2272,9 +2539,18 @@ fn prepare_2546(args: &[&str]) -> anyhow::Result<()> {
     prepare(cli.prepare)
 }
 
+#[cfg(unix)]
+fn store_error_2546(root: &std::path::Path) -> String {
+    match EvidenceStore::create(root) {
+        Ok(_) => panic!("{} was accepted", root.display()),
+        Err(error) => format!("{error:#}"),
+    }
+}
+
 /// (i) A `.completion-*` part does not make its parent folder repairable: a
 /// 0755 folder `x` above `x/.completion-y/f` is refused and left at 0755,
-/// with no root and with a root that is not `x`.
+/// with no root and with a root that is not `x`. A folder named
+/// `autodrive-state` outside the state root has scope `Strict` (B1).
 #[cfg(unix)]
 #[test]
 fn issue_2546_completion_part_outside_state_root_stays_strict() {
@@ -2287,140 +2563,492 @@ fn issue_2546_completion_part_outside_state_root_stays_strict() {
     make_2546(&file, Some(b"f"), 0o600);
     let other = dir.path().join("autodrive-state");
     make_2546(&other, None, 0o700);
-    for scope in [Scope::Strict, Scope::of(&other)] {
+    assert!(matches!(Scope::of(&other), Scope::Strict));
+    for scope in [Scope::Strict, Scope::StateTree(&other)] {
         let error = secure_fs::read(scope, &file, 1 << 20).expect_err("x is not repairable");
         assert!(format!("{error:#}").contains(OUTSIDE_2546), "{error:#}");
         assert_eq!(mode_2546(&x), 0o755, "{scope:?} changed x");
     }
 }
 
-/// (ii) `check_dir` repairs only a folder named `autodrive-state`; any other
-/// folder is checked strictly and left as it was.
+/// (ii) B1: `check_dir` repairs a slug folder directly under the auto-drive
+/// state root. A folder anywhere else is checked strictly and left as it was:
+/// a plain folder, a folder named `autodrive-state` in a shared folder (M2), a
+/// folder below a slug folder, and a slug in a sibling of the root.
 #[cfg(unix)]
 #[test]
-fn issue_2546_check_dir_repairs_only_runner_state_folder() {
-    use crate::commands::orch::autodrive_completion::secure_fs;
-    let dir = tempfile::tempdir().unwrap();
-    let plain = dir.path().join("plain");
-    make_2546(&plain, None, 0o755);
-    let error = secure_fs::check_dir(&plain).expect_err("an explicit folder stays strict");
-    assert!(format!("{error:#}").contains("chmod 700"), "{error:#}");
-    assert_eq!(mode_2546(&plain), 0o755);
+fn issue_2546_check_dir_repairs_slug_folder_under_state_root() {
+    use crate::commands::orch::autodrive_completion::secure_fs::{self, Scope};
+    let stderr = isolated_2546(
+        "issue_2546_check_dir_repairs_slug_folder_under_state_root",
+        0o022,
+        &[],
+        |iso| {
+            let slug = iso.slug("slug-check", 0o755);
+            assert!(matches!(Scope::of(&slug), Scope::StateTree(_)));
+            secure_fs::check_dir(&slug).unwrap();
+            assert_eq!(mode_2546(&slug), 0o700);
 
-    let state = dir.path().join("autodrive-state");
-    make_2546(&state, None, 0o755);
-    secure_fs::check_dir(&state).unwrap();
-    assert_eq!(mode_2546(&state), 0o700);
-}
-
-/// (iii) `prepare` validates its arguments before it repairs the state
-/// folder: a rejected call leaves a 0775 `autodrive-state` folder at 0775.
-#[cfg(unix)]
-#[test]
-fn issue_2546_rejected_prepare_changes_no_modes() {
-    let dir = tempfile::tempdir().unwrap();
-    let state = dir.path().join("autodrive-state");
-    make_2546(&state, None, 0o775);
-    let s = state.to_str().unwrap();
-    let record = state.join("crusty-round-x.json");
-    let error = prepare_2546(&[
-        "--state-dir",
-        s,
-        "--round-label",
-        "round-x",
-        "--record",
-        record.to_str().unwrap(),
-        "--repo",
-        s,
-        "--review-dir",
-        s,
-        "--launch-tools",
-        s,
-    ])
-    .expect_err("invalid round label");
-    assert!(
-        format!("{error:#}").contains("invalid round label"),
-        "{error:#}"
+            let plain = iso.base.join("plain");
+            make_2546(&plain, None, 0o755);
+            let shared = iso.base.join("shared");
+            make_2546(&shared, None, 0o777);
+            let named = shared.join("autodrive-state");
+            make_2546(&named, None, 0o755);
+            let parent = iso.slug("slug-parent", 0o700);
+            let deeper = parent.join("deeper");
+            make_2546(&deeper, None, 0o755);
+            let sibling = iso.state().join("auto-drive-x");
+            make_2546(&sibling, None, 0o700);
+            let beside = sibling.join("slug");
+            make_2546(&beside, None, 0o755);
+            for folder in [&plain, &named, &deeper, &beside] {
+                assert!(
+                    matches!(Scope::of(folder), Scope::Strict),
+                    "{}",
+                    folder.display()
+                );
+                let error = secure_fs::check_dir(folder).expect_err("outside the state root");
+                let error = format!("{error:#}");
+                assert!(
+                    error.contains(OUTSIDE_2546) && error.contains("chmod 700"),
+                    "{}: {error}",
+                    folder.display()
+                );
+                assert_eq!(mode_2546(folder), 0o755, "{}", folder.display());
+            }
+        },
     );
-    assert_eq!(mode_2546(&state), 0o775);
-}
-
-/// (iv) `prepare` refuses context files outside the state folder before it
-/// reads them, and leaves them and their folder as they were.
-#[cfg(unix)]
-#[test]
-fn issue_2546_prepare_refuses_context_outside_state_folder() {
-    let dir = tempfile::tempdir().unwrap();
-    let state = dir.path().join("autodrive-state");
-    make_2546(&state, None, 0o700);
-    let outside = dir.path().join("outside");
-    make_2546(&outside, None, 0o755);
-    let file = outside.join("f");
-    make_2546(&file, Some(b"history"), 0o644);
-    let s = state.to_str().unwrap();
-    let record = state.join("crusty-round-1.json");
-    let record = record.to_str().unwrap();
-    let dotted = format!("{s}/../outside/f");
-    for extra in [
-        vec![
-            "--context-from-file".to_owned(),
-            format!("loop_history={}", file.display()),
-        ],
-        vec![
-            "--context-from-file".to_owned(),
-            format!("loop_history={dotted}"),
-        ],
-        vec![
-            "--evaluator-context-file".to_owned(),
-            file.display().to_string(),
-        ],
-    ] {
-        let mut args = vec![
-            "--state-dir",
-            s,
-            "--round-label",
-            "round-1",
-            "--record",
-            record,
-            "--repo",
-            s,
-            "--review-dir",
-            s,
-            "--launch-tools",
-            s,
-        ];
-        args.extend(extra.iter().map(String::as_str));
-        let error = prepare_2546(&args).expect_err("context outside the state folder");
+    if let Some(stderr) = stderr {
+        let lines = repair_lines_2546(&stderr);
+        assert_eq!(lines.len(), 1, "only the slug folder:\n{stderr}");
         assert!(
-            format!("{error:#}").contains("context file must be inside the state directory"),
-            "{extra:?}: {error:#}"
+            is_repair_prefix_2546(lines[0]) && lines[0].contains("slug-check\""),
+            "{}",
+            lines[0]
         );
-        assert_eq!(mode_2546(&outside), 0o755);
-        assert_eq!(mode_2546(&file), 0o644);
     }
 }
 
-/// (v) `EvidenceStore::create` repairs an existing root only when it is the
-/// runner's `autodrive-state` folder; an explicit folder with another name is
-/// refused and left as it was.
+/// (iii) `prepare` validates its arguments before it repairs the state
+/// folder: a rejected call leaves a repairable 0775 slug folder at 0775.
 #[cfg(unix)]
 #[test]
-fn issue_2546_evidence_store_repairs_only_runner_state_root() {
-    let dir = tempfile::tempdir().unwrap();
-    let explicit = dir.path().join("explicit-state");
-    make_2546(&explicit, None, 0o775);
-    let error = match EvidenceStore::create(&explicit) {
-        Ok(_) => panic!("an explicit 0775 state folder was accepted"),
-        Err(error) => error,
-    };
-    assert!(
-        format!("{error:#}").contains(OUTSIDE_2546) && format!("{error:#}").contains("chmod 700"),
-        "{error:#}"
+fn issue_2546_rejected_prepare_changes_no_modes() {
+    let stderr = isolated_2546(
+        "issue_2546_rejected_prepare_changes_no_modes",
+        0o022,
+        &[],
+        |iso| {
+            let state = iso.slug("slug-rejected", 0o775);
+            let s = state.to_str().unwrap();
+            let record = state.join("crusty-round-x.json");
+            let error = prepare_2546(&[
+                "--state-dir",
+                s,
+                "--round-label",
+                "round-x",
+                "--record",
+                record.to_str().unwrap(),
+                "--repo",
+                s,
+                "--review-dir",
+                s,
+                "--launch-tools",
+                s,
+            ])
+            .expect_err("invalid round label");
+            assert!(
+                format!("{error:#}").contains("invalid round label"),
+                "{error:#}"
+            );
+            assert_eq!(mode_2546(&state), 0o775);
+        },
     );
-    assert_eq!(mode_2546(&explicit), 0o775);
+    if let Some(stderr) = stderr {
+        assert!(repair_lines_2546(&stderr).is_empty(), "{stderr}");
+    }
+}
 
-    let runner = dir.path().join("autodrive-state");
-    std::fs::rename(&explicit, &runner).unwrap();
-    EvidenceStore::create(&runner).unwrap();
-    assert_eq!(mode_2546(&runner), 0o700);
+/// (iv) `prepare` refuses context files outside a repairable state folder
+/// before it reads them, and leaves them and their folder as they were.
+#[cfg(unix)]
+#[test]
+fn issue_2546_prepare_refuses_context_outside_state_folder() {
+    let stderr = isolated_2546(
+        "issue_2546_prepare_refuses_context_outside_state_folder",
+        0o022,
+        &[],
+        |iso| {
+            let state = iso.slug("slug-context", 0o700);
+            let outside = iso.root().join("outside");
+            make_2546(&outside, None, 0o755);
+            let file = outside.join("f");
+            make_2546(&file, Some(b"history"), 0o644);
+            let s = state.to_str().unwrap();
+            let record = state.join("crusty-round-1.json");
+            let record = record.to_str().unwrap();
+            let dotted = format!("{s}/../outside/f");
+            for extra in [
+                vec![
+                    "--context-from-file".to_owned(),
+                    format!("loop_history={}", file.display()),
+                ],
+                vec![
+                    "--context-from-file".to_owned(),
+                    format!("loop_history={dotted}"),
+                ],
+                vec![
+                    "--evaluator-context-file".to_owned(),
+                    file.display().to_string(),
+                ],
+            ] {
+                let mut args = vec![
+                    "--state-dir",
+                    s,
+                    "--round-label",
+                    "round-1",
+                    "--record",
+                    record,
+                    "--repo",
+                    s,
+                    "--review-dir",
+                    s,
+                    "--launch-tools",
+                    s,
+                ];
+                args.extend(extra.iter().map(String::as_str));
+                let error = prepare_2546(&args).expect_err("context outside the state folder");
+                assert!(
+                    format!("{error:#}")
+                        .contains("context file must be inside the state directory"),
+                    "{extra:?}: {error:#}"
+                );
+                assert_eq!(mode_2546(&outside), 0o755);
+                assert_eq!(mode_2546(&file), 0o644);
+            }
+        },
+    );
+    if let Some(stderr) = stderr {
+        assert!(repair_lines_2546(&stderr).is_empty(), "{stderr}");
+    }
+}
+
+/// (v) B1: `EvidenceStore::create` repairs an existing folder only when it is
+/// directly under the auto-drive state root. A 0775 folder named
+/// `autodrive-state` outside the root, and a 0775 folder below a slug folder,
+/// are refused and left as they were; the refusal names the state root.
+#[cfg(unix)]
+#[test]
+fn issue_2546_evidence_store_repairs_only_slug_folder_under_state_root() {
+    let stderr = isolated_2546(
+        "issue_2546_evidence_store_repairs_only_slug_folder_under_state_root",
+        0o022,
+        &[],
+        |iso| {
+            let named = iso.base.join("autodrive-state");
+            make_2546(&named, None, 0o775);
+            let error = store_error_2546(&named);
+            assert!(
+                error.contains(OUTSIDE_2546)
+                    && error.contains("chmod 700")
+                    && error.contains(&format!("{:?}", iso.root())),
+                "{error}"
+            );
+            assert_eq!(mode_2546(&named), 0o775);
+
+            let parent = iso.slug("slug-parent", 0o700);
+            let deeper = parent.join("deeper");
+            make_2546(&deeper, None, 0o775);
+            let error = store_error_2546(&deeper);
+            assert!(error.contains(OUTSIDE_2546), "{error}");
+            assert_eq!(mode_2546(&deeper), 0o775);
+
+            let slug = iso.slug("slug-store", 0o775);
+            EvidenceStore::create(&slug).unwrap();
+            assert_eq!(mode_2546(&slug), 0o700);
+        },
+    );
+    if let Some(stderr) = stderr {
+        let lines = repair_lines_2546(&stderr);
+        assert_eq!(lines.len(), 1, "only the slug folder:\n{stderr}");
+        assert!(lines[0].contains("slug-store\""), "{}", lines[0]);
+    }
+}
+
+/// S6 (security review F1): only the store's own `mkdir` makes
+/// `created_now` true. A folder that already exists outside the state root,
+/// as one made by another process between the lstat and the `mkdir` would,
+/// is reported as existing, so the store refuses it and leaves it at 0775. A
+/// missing folder is made at 0700, with its missing parents, and reported as
+/// created. Run under umask 002, where the race matters.
+#[cfg(unix)]
+#[test]
+fn issue_2546_existing_folder_is_not_treated_as_created() {
+    use crate::commands::orch::autodrive::state::open_or_create_root;
+    let stderr = isolated_2546(
+        "issue_2546_existing_folder_is_not_treated_as_created",
+        0o002,
+        &[],
+        |iso| {
+            let existing = iso.base.join("existing");
+            make_2546(&existing, None, 0o775);
+            let (created_now, _) = open_or_create_root(&existing).unwrap();
+            assert!(!created_now, "an existing folder is not created now");
+            let error = store_error_2546(&existing);
+            assert!(error.contains(OUTSIDE_2546), "{error}");
+            assert_eq!(mode_2546(&existing), 0o775);
+
+            let fresh = iso.base.join("parent").join("fresh");
+            let (created_now, _) = open_or_create_root(&fresh).unwrap();
+            assert!(created_now, "a missing folder is created now");
+            assert_eq!(mode_2546(&fresh), 0o700);
+            assert_eq!(mode_2546(&iso.base.join("parent")), 0o700);
+            let (created_now, _) = open_or_create_root(&fresh).unwrap();
+            assert!(!created_now, "the second call finds it existing");
+        },
+    );
+    if let Some(stderr) = stderr {
+        assert!(repair_lines_2546(&stderr).is_empty(), "{stderr}");
+    }
+}
+
+/// D3/D4/S2/S3/S23: the location rule fails strict. With a private root a
+/// slug folder qualifies; the root itself, a folder below a slug and a slug in
+/// a sibling of the root never do. A root with group or other write bits, a
+/// root that is a symlink (even to a private folder) and a missing root each
+/// make the slug folder strict, and nothing is changed.
+#[cfg(unix)]
+#[test]
+fn issue_2546_in_state_root_fails_strict() {
+    use crate::commands::orch::autodrive::private_mode::in_state_root;
+    use crate::commands::orch::autodrive_completion::secure_fs;
+    use std::os::unix::fs::PermissionsExt;
+    let stderr = isolated_2546("issue_2546_in_state_root_fails_strict", 0o022, &[], |iso| {
+        let root = iso.root();
+        let slug = iso.slug("slug-x", 0o775);
+        assert!(in_state_root(&slug), "a slug folder under a private root");
+        assert!(!in_state_root(&root), "the root itself");
+        make_2546(&slug.join("deeper"), None, 0o700);
+        assert!(!in_state_root(&slug.join("deeper")), "below a slug folder");
+        let sibling = iso.state().join("auto-drive-x");
+        make_2546(&sibling, None, 0o700);
+        make_2546(&sibling.join("slug"), None, 0o700);
+        assert!(
+            !in_state_root(&sibling.join("slug")),
+            "a sibling of the root"
+        );
+
+        let refused = |why: &str| {
+            assert!(!in_state_root(&slug), "{why}");
+            let error = store_error_2546(&slug);
+            assert!(error.contains(OUTSIDE_2546), "{why}: {error}");
+            let error = format!("{:#}", secure_fs::check_dir(&slug).expect_err(why));
+            assert!(error.contains(OUTSIDE_2546), "{why}: {error}");
+            assert_eq!(mode_2546(&slug), 0o775, "{why}: the slug folder changed");
+        };
+        for mode in [0o770, 0o757, 0o720, 0o702] {
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(mode)).unwrap();
+            refused(&format!("root at {mode:04o}"));
+            assert_eq!(mode_2546(&root), mode, "the root is never changed");
+        }
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        // The root path is a symlink to a private folder holding the slug.
+        let real = iso.base.join("real-root");
+        std::fs::rename(&root, &real).unwrap();
+        std::os::unix::fs::symlink(&real, &root).unwrap();
+        let real_slug = real.join("slug-x");
+        assert!(!in_state_root(&real_slug), "a symlinked root");
+        let error = store_error_2546(&root.join("slug-x"));
+        assert!(error.contains(OUTSIDE_2546), "symlinked root: {error}");
+        assert_eq!(mode_2546(&real_slug), 0o775);
+
+        // No root at all.
+        std::fs::remove_file(&root).unwrap();
+        assert!(!in_state_root(&real_slug), "a missing root");
+        assert!(!in_state_root(&root.join("slug-x")), "a missing root");
+    });
+    if let Some(stderr) = stderr {
+        assert!(repair_lines_2546(&stderr).is_empty(), "{stderr}");
+    }
+}
+
+/// D3: a relative AMPLIHACK_STATE_DIR leaves every folder strict, even the
+/// one it names relative to the current folder.
+#[cfg(unix)]
+#[test]
+fn issue_2546_relative_state_dir_stays_strict() {
+    use crate::commands::orch::autodrive::private_mode::{autodrive_state_root, in_state_root};
+    let stderr = isolated_2546(
+        "issue_2546_relative_state_dir_stays_strict",
+        0o022,
+        &[("AMPLIHACK_STATE_DIR", Some("rel-state"))],
+        |iso| {
+            // This child runs only this test, so its current folder is its own.
+            std::env::set_current_dir(&iso.base).unwrap();
+            assert_eq!(
+                autodrive_state_root(),
+                std::path::PathBuf::from("rel-state/auto-drive")
+            );
+            let root = iso.base.join("rel-state");
+            make_2546(&root, None, 0o700);
+            make_2546(&root.join("auto-drive"), None, 0o700);
+            let slug = root.join("auto-drive").join("slug-rel");
+            make_2546(&slug, None, 0o775);
+            assert!(!in_state_root(&slug));
+            let error = store_error_2546(&slug);
+            assert!(error.contains(OUTSIDE_2546), "{error}");
+            assert_eq!(mode_2546(&slug), 0o775);
+        },
+    );
+    if let Some(stderr) = stderr {
+        assert!(repair_lines_2546(&stderr).is_empty(), "{stderr}");
+    }
+}
+
+/// S7: with HOME and AMPLIHACK_STATE_DIR both unset the root is the shell's
+/// `/tmp` fallback, which is shared, so the rule never applies there. The test
+/// creates nothing under /tmp.
+#[cfg(unix)]
+#[test]
+fn issue_2546_unset_state_vars_stay_strict() {
+    use crate::commands::orch::autodrive::private_mode::{autodrive_state_root, in_state_root};
+    isolated_2546(
+        "issue_2546_unset_state_vars_stay_strict",
+        0o022,
+        &[("HOME", None), ("AMPLIHACK_STATE_DIR", None)],
+        |_| {
+            let root = autodrive_state_root();
+            assert_eq!(
+                root,
+                std::path::PathBuf::from("/tmp/.amplihack/state/auto-drive")
+            );
+            assert!(!in_state_root(&root.join(SLUG_2546)));
+        },
+    );
+}
+
+/// D2: an empty AMPLIHACK_STATE_DIR counts as unset, as with the shell's
+/// `:-`, so the root is under HOME and a slug folder there is repaired.
+#[cfg(unix)]
+#[test]
+fn issue_2546_empty_state_dir_uses_home_root() {
+    use crate::commands::orch::autodrive::private_mode::{autodrive_state_root, in_state_root};
+    let stderr = isolated_2546(
+        "issue_2546_empty_state_dir_uses_home_root",
+        0o022,
+        &[("AMPLIHACK_STATE_DIR", Some(""))],
+        |iso| {
+            let root = iso.home().join(".amplihack/state/auto-drive");
+            assert_eq!(autodrive_state_root(), root);
+            make_2546(&iso.home().join(".amplihack"), None, 0o700);
+            make_2546(&iso.home().join(".amplihack/state"), None, 0o700);
+            make_2546(&root, None, 0o700);
+            let slug = root.join("slug-home");
+            make_2546(&slug, None, 0o775);
+            assert!(in_state_root(&slug));
+            EvidenceStore::create(&slug).unwrap();
+            assert_eq!(mode_2546(&slug), 0o700);
+        },
+    );
+    if let Some(stderr) = stderr {
+        let lines = repair_lines_2546(&stderr);
+        assert_eq!(lines.len(), 1, "{stderr}");
+        assert!(lines[0].contains("slug-home\""), "{}", lines[0]);
+    }
+}
+
+/// The state root cases for `state_root_from` and the shell parity test:
+/// (AMPLIHACK_STATE_DIR, HOME, expected root).
+const ROOT_CASES_2546: [(Option<&str>, Option<&str>, &str); 7] = [
+    (
+        Some("/srv/state-2546"),
+        Some("/home/u2546"),
+        "/srv/state-2546/auto-drive",
+    ),
+    (
+        None,
+        Some("/home/u2546"),
+        "/home/u2546/.amplihack/state/auto-drive",
+    ),
+    (
+        Some(""),
+        Some("/home/u2546"),
+        "/home/u2546/.amplihack/state/auto-drive",
+    ),
+    (None, None, "/tmp/.amplihack/state/auto-drive"),
+    (None, Some(""), "/tmp/.amplihack/state/auto-drive"),
+    (Some(""), None, "/tmp/.amplihack/state/auto-drive"),
+    (
+        Some("rel/state"),
+        Some("/home/u2546"),
+        "rel/state/auto-drive",
+    ),
+];
+
+/// D2: `state_root_from` is
+/// `${AMPLIHACK_STATE_DIR:-${HOME:-/tmp}/.amplihack/state}/auto-drive`, with an
+/// empty value counting as unset. AMPLIHACK_HOME plays no part.
+#[test]
+fn issue_2546_state_root_from_cases() {
+    use crate::commands::orch::autodrive::private_mode::state_root_from;
+    for (state, home, expected) in ROOT_CASES_2546 {
+        assert_eq!(
+            state_root_from(state.map(Into::into), home.map(Into::into)),
+            std::path::PathBuf::from(expected),
+            "AMPLIHACK_STATE_DIR={state:?} HOME={home:?}"
+        );
+    }
+}
+
+/// D2: the Rust root is the root autodrive_state.sh prints, for every case,
+/// from an empty environment. Nothing is created.
+#[cfg(unix)]
+#[test]
+fn issue_2546_state_root_matches_shell() {
+    use crate::commands::orch::autodrive::private_mode::state_root_from;
+    for (state, home, _) in ROOT_CASES_2546 {
+        let mut command = std::process::Command::new("bash");
+        command
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("AMPLIHACK_HOME", "/elsewhere-2546/amplihack-home")
+            .env("TOOLS", tools_2546())
+            .arg("-c")
+            .arg(r#". "$TOOLS/autodrive_state.sh" || exit 3; autodrive_state_root"#);
+        if let Some(state) = state {
+            command.env("AMPLIHACK_STATE_DIR", state);
+        }
+        if let Some(home) = home {
+            command.env("HOME", home);
+        }
+        let shell = run_ok_2546(&mut command, "autodrive_state_root");
+        assert_eq!(
+            std::path::PathBuf::from(shell.trim_end_matches('\n')),
+            state_root_from(state.map(Into::into), home.map(Into::into)),
+            "AMPLIHACK_STATE_DIR={state:?} HOME={home:?}"
+        );
+    }
+}
+
+/// M3/D7: a group has other members when any listed member is not this user.
+/// Names are compared as raw bytes, so a name that differs only in a byte
+/// that is not valid UTF-8 is another user.
+#[test]
+fn issue_2546_shared_group_cases() {
+    use crate::commands::orch::autodrive::private_mode::shared_group;
+    let me: &[u8] = b"dev";
+    let ops: &[u8] = b"ops";
+    assert!(!shared_group(&[], me), "no listed members");
+    assert!(!shared_group(&[me], me), "only me");
+    assert!(shared_group(&[me, ops], me), "me and another user");
+    assert!(shared_group(&[ops], me), "another user only");
+    let raw_me: &[u8] = b"ry\xffan";
+    let raw_other: &[u8] = b"ry\xfean";
+    assert!(!shared_group(&[raw_me], raw_me), "same raw bytes");
+    assert!(
+        shared_group(&[raw_other], raw_me),
+        "differs in one raw byte"
+    );
 }

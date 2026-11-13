@@ -12,7 +12,9 @@ pub struct EvidenceStore {
     root: PathBuf,
     directory: File,
     /// Whether entries in this store may be repaired (#2546), decided once
-    /// from the root by `repairable_root`.
+    /// by `repairable_root`: the root was created by this call's own mkdir,
+    /// or its canonical path lies directly under the auto-drive state root.
+    /// The folder's name never matters.
     repair: Repair,
 }
 pub struct AcceptedSnapshot {
@@ -22,6 +24,51 @@ pub struct AcceptedSnapshot {
 impl AcceptedSnapshot {
     pub fn path(&self) -> &Path {
         &self.path
+    }
+}
+
+/// Makes the store folder `root` at 0700 if it is missing, and returns
+/// whether this call's own `mkdir` created it, with its lstat. The parents are
+/// made recursively, but only the final, non-recursive `mkdir` can report
+/// `created_now`: a folder that already exists, or that appears between the
+/// lstat and the `mkdir` (EEXIST), is reported as existing (#2546).
+pub(crate) fn open_or_create_root(root: &Path) -> Result<(bool, fs::Metadata)> {
+    let existing = |m: fs::Metadata| {
+        ensure!(
+            !m.file_type().is_symlink() && m.is_dir(),
+            "state root is a symlink or non-directory"
+        );
+        Ok((false, m))
+    };
+    let builder = |recursive: bool| {
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(recursive);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder
+    };
+    match fs::symlink_metadata(root) {
+        Ok(m) => existing(m),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(parent) = root.parent() {
+                builder(true)
+                    .create(parent)
+                    .with_context(|| format!("create private state {}", parent.display()))?;
+            }
+            match builder(false).create(root) {
+                Ok(()) => Ok((true, fs::symlink_metadata(root)?)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    existing(fs::symlink_metadata(root)?)
+                }
+                Err(e) => {
+                    Err(e).with_context(|| format!("create private state {}", root.display()))
+                }
+            }
+        }
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -38,29 +85,7 @@ impl EvidenceStore {
         );
         // Resolve parent aliases uniformly (for example system temporary directories).
         // The designated state entry itself is never allowed to be a symlink.
-        let (created_now, before) = match fs::symlink_metadata(&root) {
-            Ok(m) => {
-                ensure!(
-                    !m.file_type().is_symlink() && m.is_dir(),
-                    "state root is a symlink or non-directory"
-                );
-                (false, m)
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let mut builder = fs::DirBuilder::new();
-                builder.recursive(true);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::DirBuilderExt;
-                    builder.mode(0o700);
-                }
-                builder
-                    .create(&root)
-                    .with_context(|| format!("create private state {}", root.display()))?;
-                (true, fs::symlink_metadata(&root)?)
-            }
-            Err(e) => return Err(e.into()),
-        };
+        let (created_now, before) = open_or_create_root(&root)?;
         let root = root.canonicalize()?;
         let directory = open_directory(&root)?;
         // The folder opened must be the folder checked above: a root swapped

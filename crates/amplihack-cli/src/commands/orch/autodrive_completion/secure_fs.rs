@@ -7,7 +7,7 @@ use anyhow::{Context, ensure};
 use std::io::{Read, Write};
 use std::path::{Component, Path};
 
-/// Where the completion checker may repair entries (#2546, S1).
+/// Where the completion checker may repair entries (#2546).
 #[derive(Debug, Clone, Copy)]
 pub enum Scope<'a> {
     /// No repair anywhere: entries with group or other bits are refused.
@@ -18,14 +18,20 @@ pub enum Scope<'a> {
 
 impl<'a> Scope<'a> {
     /// The scope for a drive's state folder: `StateTree` when the folder is
-    /// absolute, has no `..` part and is repairable (`repairable_root`),
-    /// otherwise `Strict`.
+    /// absolute, has no `..` part, already equals its canonical form
+    /// and lies directly under the auto-drive state root (`in_state_root`);
+    /// otherwise `Strict`, including for a folder that does not exist.
+    /// Canonicalisation only decides eligibility: `StateTree` keeps the raw
+    /// path, and every access still goes through the no-follow walk.
     pub fn of(state_dir: &'a Path) -> Self {
         if state_dir.is_absolute()
             && !state_dir
                 .components()
                 .any(|c| matches!(c, Component::ParentDir))
-            && crate::commands::orch::autodrive::private_mode::repairable_root(state_dir, false)
+            && state_dir.canonicalize().is_ok_and(|canonical| {
+                canonical == state_dir
+                    && crate::commands::orch::autodrive::private_mode::in_state_root(&canonical)
+            })
         {
             Scope::StateTree(state_dir)
         } else {
@@ -117,8 +123,8 @@ mod platform {
         Ok((dir, scope.repair(&at)))
     }
 
-    /// Checks the state folder itself, repairing it only when it is a
-    /// repairable root (`Scope::of`).
+    /// Checks the state folder itself, repairing it only when it lies directly
+    /// under the auto-drive state root (`Scope::of`).
     pub fn check_dir(root: &Path) -> Result<()> {
         parent(Scope::of(root), &root.join(".directory-check"))?;
         Ok(())
