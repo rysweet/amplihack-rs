@@ -103,13 +103,18 @@ pub(super) fn implicit_deploy_allowed(
 }
 
 /// Whether this install may write `src` to `dst`.
-fn may_deploy(mode: InstallMode, stamp: Option<&str>, src: &Path, dst: &Path) -> bool {
+fn may_deploy(
+    mode: InstallMode,
+    version: &str,
+    stamp: Option<&str>,
+    src: &Path,
+    dst: &Path,
+) -> bool {
     // Cheapest first. symlink_metadata: a dangling symlink still occupies
     // `dst`. A source that already is the destination is a no-op copy.
     mode == InstallMode::Explicit
-        || (!crate::self_heal::env_bypass_set()
-            && release_layout::executable_allows_implicit_install()
-            && (implicit_deploy_allowed(dst.symlink_metadata().is_ok(), crate::VERSION, stamp)
+        || (super::may_act_implicitly()
+            && (implicit_deploy_allowed(dst.symlink_metadata().is_ok(), version, stamp)
                 || same_file(src, dst)))
 }
 
@@ -117,15 +122,137 @@ fn same_file(a: &Path, b: &Path) -> bool {
     matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
 }
 
-/// Issue #1526: an implicit copy that failed left the installed binary in
-/// place, so the stamp must not record it at this build's version.
-fn kept_after_failed_copy(mode: InstallMode, dst: &Path) -> bool {
-    mode == InstallMode::Implicit && dst.symlink_metadata().is_ok()
-}
-
 const HOOKS_BIN: &str = "amplihack-hooks";
 const SELF_BIN: &str = "amplihack";
 const RESOLVER_BIN: &str = "amplihack-asset-resolver";
+
+/// Executables authorised by a selected release, independently of framework
+/// assets, PATH, overrides and the running checkout. Owns any extracted archive.
+pub(super) struct ResolvedBinaries {
+    pub(super) version: String,
+    paths: Vec<(&'static str, PathBuf)>,
+    _archive: Option<tempfile::TempDir>,
+}
+
+impl ResolvedBinaries {
+    /// Reassess files at mutation boundaries; a successful earlier lookup is
+    /// not a lasting permission grant if the filesystem has since changed.
+    pub(super) fn validate(&self) -> Result<()> {
+        let home = home_dir()?;
+        for (_, path) in &self.paths {
+            crate::update::validate_release_executable(path)?;
+            if self._archive.is_none() {
+                release_layout::assess_implicit_install_origin(&home, path).map_err(|cause| {
+                    anyhow::anyhow!(
+                        "release executable is no longer eligible: {}",
+                        cause.check()
+                    )
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn resolve(version: &str) -> Result<Self> {
+        let version = semver::Version::parse(version)
+            .context("cannot select release executables without a valid version")?
+            .to_string();
+        let home = home_dir()?;
+        let releases = release_layout::releases_dir(&home.join(".amplihack"));
+        match fs::read_dir(&releases) {
+            Ok(entries) => {
+                for entry in entries {
+                    let root = entry.context("reading installed release candidate")?.path();
+                    // A receipt is only a selection hint. Filesystem eligibility
+                    // and the actual executable versions are checked separately.
+                    if release_layout::read_installed_by(&root)
+                        .is_some_and(|receipt| receipt.version != version)
+                    {
+                        continue;
+                    }
+                    match Self::installed(&home, &root, &version) {
+                        Ok(paths) => {
+                            return Ok(Self {
+                                version,
+                                paths,
+                                _archive: None,
+                            });
+                        }
+                        Err(error) => tracing::debug!(
+                            path = %super::paths::sanitize_path(&root),
+                            error = %error,
+                            "installed release cannot supply selected executables"
+                        ),
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).context("cannot inspect installed release executables");
+            }
+        }
+        let archive = crate::update::acquire_release_archive(&version).with_context(|| {
+            format!("cannot obtain release executables for v{version}; use `amplihack update` or install a published release for this platform; --local supplies framework assets only")
+        })?;
+        let mut paths = Vec::new();
+        for name in [HOOKS_BIN, SELF_BIN] {
+            let path = crate::update::find_release_binary(
+                archive.path(),
+                &crate::path_conflicts::binary_filename(name),
+            )?;
+            crate::update::validate_release_executable(&path)?;
+            crate::update::verify_installed_version(&path, &version)?;
+            paths.push((name, path));
+        }
+        // The resolver is shipped by some releases. If present, it must come
+        // from this archive too; it is never borrowed from PATH or the checkout.
+        if let Some(path) =
+            crate::update::find_optional_release_binary(archive.path(), RESOLVER_BIN)?
+        {
+            crate::update::validate_release_executable(&path)?;
+            paths.push((RESOLVER_BIN, path));
+        }
+        Ok(Self {
+            version,
+            paths,
+            _archive: Some(archive),
+        })
+    }
+
+    fn installed(home: &Path, root: &Path, version: &str) -> Result<Vec<(&'static str, PathBuf)>> {
+        let mut paths = Vec::new();
+        for name in [HOOKS_BIN, SELF_BIN, RESOLVER_BIN] {
+            let path = root
+                .join("bin")
+                .join(crate::path_conflicts::binary_filename(name));
+            if name == RESOLVER_BIN
+                && path
+                    .symlink_metadata()
+                    .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+            {
+                continue;
+            }
+            release_layout::assess_implicit_install_origin(home, &path).map_err(|cause| {
+                anyhow::anyhow!("ineligible release executable: {}", cause.check())
+            })?;
+            let path = path
+                .canonicalize()
+                .context("resolving installed release executable")?;
+            // Links may resolve to an eligible release, but every companion
+            // must belong to the same release selected here.
+            let canonical_root = root.canonicalize()?;
+            if path.parent() != Some(canonical_root.join("bin").as_path()) {
+                bail!("release executable escapes the selected release");
+            }
+            crate::update::validate_release_executable(&path)?;
+            if name != RESOLVER_BIN {
+                crate::update::verify_installed_version(&path, version)?;
+            }
+            paths.push((name, path));
+        }
+        Ok(paths)
+    }
+}
 
 /// Whether `path` is one of the binaries [`deploy_binaries`] writes into
 /// `bin_dir`, or one of their copies inside a release (issue #1954).
@@ -146,12 +273,6 @@ pub(super) fn is_deployed_binary(path: &Path, bin_dir: &Path) -> bool {
                 .iter()
                 .any(|b| n == crate::path_conflicts::binary_filename(b))
         })
-}
-
-/// A new release for this build under `~/.amplihack/releases` (issue #1954).
-pub(super) fn new_release_txn() -> Result<ReleaseTxn> {
-    let amplihack_dir = home_dir()?.join(".amplihack");
-    ReleaseTxn::allocate(&amplihack_dir, crate::VERSION)
 }
 
 /// Commits `txn` and turns a failed link switch into an error naming the
@@ -179,8 +300,11 @@ pub(super) fn deploy_binaries(
     stamp: Option<&str>,
 ) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
     super::require_implicit_install_origin(mode)?;
-    let mut txn = new_release_txn()?;
-    let deployed = deploy_binaries_into(&mut txn, mode, stamp)?;
+    let binaries = ResolvedBinaries::resolve(crate::VERSION)?;
+    super::require_implicit_install_origin(mode)?;
+    binaries.validate()?;
+    let mut txn = ReleaseTxn::allocate(&home_dir()?.join(".amplihack"), &binaries.version)?;
+    let deployed = deploy_binaries_into(&mut txn, mode, stamp, &binaries)?;
     commit_release(txn)?;
     print_path_conflict_advisory();
     Ok(deployed)
@@ -232,99 +356,31 @@ pub(super) fn deploy_binaries_into(
     txn: &mut ReleaseTxn,
     mode: InstallMode,
     stamp: Option<&str>,
+    binaries: &ResolvedBinaries,
 ) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
     super::require_implicit_install_origin(mode)?;
+    binaries.validate()?;
     let local_bin = super::paths::preferred_user_bin_dir()?;
     fs::create_dir_all(&local_bin)
         .with_context(|| format!("failed to create {}", local_bin.display()))?;
 
-    let hooks_dst = local_bin.join(HOOKS_BIN);
-    // Issue #1526: the stamp check vouches only for binaries at this build's
-    // version. An implicit re-stage therefore replaces an installed hooks
-    // binary only with the override or the sibling of this executable; one
-    // found elsewhere on PATH may only fill an empty slot.
-    let hooks_src = match mode {
-        InstallMode::Explicit => Some(find_hooks_binary()?),
-        InstallMode::Implicit => match hooks_override_or_sibling()? {
-            None if hooks_dst.symlink_metadata().is_err() => Some(find_hooks_binary()?),
-            found => found,
-        },
-    };
+    let mut deployed = Vec::new();
     let mut kept = Vec::new();
-    match hooks_src {
-        Some(hooks_src) if may_deploy(mode, stamp, &hooks_src, &hooks_dst) => {
-            stage_binary(txn, &hooks_src, &hooks_dst).with_context(|| {
-                format!(
-                    "failed to deploy {} to {}",
-                    hooks_src.display(),
-                    hooks_dst.display()
-                )
-            })?;
-        }
-        _ => kept.push(hooks_dst.clone()),
-    }
-
-    let mut deployed = vec![hooks_dst.clone()];
-
-    // Also copy self (the amplihack binary) and the asset-resolver. These
-    // copies are best-effort: a failure here must NOT abort the
-    // framework-asset (agents/skills/context) refresh that follows (issue
-    // #885), but it is reported.
-    if let Ok(self_exe) = std::env::current_exe() {
-        let self_src = resolve_running_binary_source(&self_exe);
-        let self_dst = local_bin.join(SELF_BIN);
-        if !may_deploy(mode, stamp, &self_src, &self_dst) {
-            kept.push(self_dst);
+    for (name, source) in &binaries.paths {
+        let destination = local_bin.join(crate::path_conflicts::binary_filename(name));
+        deployed.push(destination.clone());
+        if may_deploy(mode, &binaries.version, stamp, source, &destination) {
+            // Unlike discovery-based deployment, a selected release is a
+            // complete contract: a failed copy must not silently publish a
+            // mixture of checkout, PATH and release executables.
+            if !stage_binary(txn, source, &destination)? {
+                bail!(
+                    "selected release executable disappeared: {}",
+                    source.display()
+                );
+            }
         } else {
-            match stage_binary(txn, &self_src, &self_dst) {
-                Ok(_) => deployed.push(self_dst),
-                Err(e) => {
-                    println!(
-                        "  ⚠️  Skipped amplihack binary copy to {}: {e:#}",
-                        self_dst.display()
-                    );
-                    tracing::warn!("amplihack binary deploy skipped: {e:#}");
-                    if kept_after_failed_copy(mode, &self_dst) {
-                        kept.push(self_dst);
-                    }
-                }
-            }
-        }
-
-        // The real source (`self_src`) is used so the asset-resolver is looked
-        // up next to the freshly-installed binary, not the deleted-marker path.
-        // Issue #1526: as for hooks, a PATH copy may only fill an empty slot
-        // during an implicit re-stage.
-        let resolver_dst = local_bin.join(RESOLVER_BIN);
-        let path_lookup_allowed =
-            mode == InstallMode::Explicit || resolver_dst.symlink_metadata().is_err();
-        let resolver_src = self_src
-            .parent()
-            .map(|dir| dir.join(RESOLVER_BIN))
-            .filter(|candidate| is_executable(candidate))
-            .or_else(|| {
-                path_lookup_allowed
-                    .then(|| find_binary(RESOLVER_BIN))
-                    .flatten()
-            });
-        if let Some(resolver_src) = resolver_src {
-            if !may_deploy(mode, stamp, &resolver_src, &resolver_dst) {
-                kept.push(resolver_dst);
-            } else {
-                match stage_binary(txn, &resolver_src, &resolver_dst) {
-                    Ok(_) => deployed.push(resolver_dst),
-                    Err(e) => {
-                        println!(
-                            "  ⚠️  Skipped amplihack-asset-resolver copy to {}: {e:#}",
-                            resolver_dst.display()
-                        );
-                        tracing::warn!("amplihack-asset-resolver deploy skipped: {e:#}");
-                        if kept_after_failed_copy(mode, &resolver_dst) {
-                            kept.push(resolver_dst);
-                        }
-                    }
-                }
-            }
+            kept.push(destination);
         }
     }
 

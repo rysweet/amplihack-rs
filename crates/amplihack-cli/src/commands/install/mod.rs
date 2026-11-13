@@ -38,7 +38,7 @@ mod codex_alias_fixture;
 mod tests;
 
 pub(crate) use binary::resolve_running_binary_source;
-use binary::{deploy_binaries_into, find_hooks_binary, stable_hooks_binary};
+use binary::{deploy_binaries_into, stable_hooks_binary};
 use bundle_compat::validate_framework_bundle_compatibility;
 use clone::{FrameworkRootQuery, find_bundled_framework_root};
 use directories::*;
@@ -186,16 +186,26 @@ fn run_install_with_fetcher(
             .ok()
             .and_then(|stamp| stamp.parent().map(fetch_backoff::marker_path)),
     };
+    let query = FrameworkRootQuery::from_environment();
+    let validate = |candidate: &Path| {
+        validate_framework_bundle_compatibility(candidate).map_err(|err| format!("{err:#}"))
+    };
+    let available =
+        framework_source::available_framework_source(&policy, &query, binary, &validate)?;
+    let version = match available.as_ref().map(|source| &source.version) {
+        Some(framework_source::SourceVersion::Known(version)) => version.to_string(),
+        _ => binary.version.clone(),
+    };
+    // Executable validation precedes source acquisition (which may cache a
+    // failed fetch), the wizard, locking and every persistent install write.
+    let binaries = binary::ResolvedBinaries::resolve(&version)?;
     // Lives until the install returns, because a fetched tree is deleted with it.
-    let source = framework_source::acquire_framework_source(
-        &policy,
-        &FrameworkRootQuery::from_environment(),
-        binary,
-        fetcher,
-        &|candidate| {
-            validate_framework_bundle_compatibility(candidate).map_err(|err| format!("{err:#}"))
-        },
-    )?;
+    let source = match available {
+        Some(source) => source,
+        None => {
+            framework_source::acquire_framework_source(&policy, &query, binary, fetcher, &validate)?
+        }
+    };
 
     // Run the interactive wizard if --interactive was passed.
     // The wizard produces an optional config; if None, we proceed with defaults.
@@ -207,7 +217,13 @@ fn run_install_with_fetcher(
     for line in source.describe(&binary.version) {
         println!("{line}");
     }
-    local_install_scoped(&source.root, wizard_config.as_ref(), reconcile_codex, mode)?;
+    local_install_resolved(
+        &source.root,
+        wizard_config.as_ref(),
+        reconcile_codex,
+        mode,
+        &binaries,
+    )?;
 
     if source.origin != framework_source::SourceOrigin::ReleaseTag {
         return Ok(());
@@ -388,17 +404,26 @@ pub(crate) fn newer_install_stamp() -> Result<Option<String>> {
         }))
 }
 
+/// Whether this executable may change the host implicitly at all: the
+/// automatic-install opt-out is unset *and* the executable is a binary of a
+/// complete installed release (#2496). The two are independent controls and
+/// either refuses on its own. This is the condition every implicit site
+/// shares; [`may_publish_implicitly`] adds the install stamp on top.
+pub(crate) fn may_act_implicitly() -> bool {
+    !crate::self_heal::env_bypass_set() && release_layout::executable_allows_implicit_install()
+}
+
 /// Whether this executable may publish installation assets implicitly. Origin
 /// and the opt-out apply independently of the install stamp; an unreadable
 /// stamp also refuses publication. Used by launch, profile seeding and the rotator.
 pub(crate) fn may_publish_implicitly() -> bool {
-    !crate::self_heal::env_bypass_set()
-        && release_layout::executable_allows_implicit_install()
-        && matches!(newer_install_stamp(), Ok(None))
+    may_act_implicitly() && matches!(newer_install_stamp(), Ok(None))
 }
 
 fn require_implicit_install_origin(mode: InstallMode) -> Result<()> {
     if mode == InstallMode::Implicit {
+        // Reported separately from [`may_act_implicitly`]: the two causes need
+        // different remedies, so the caller is told which one refused.
         if crate::self_heal::env_bypass_set() {
             bail!("AMPLIHACK_SKIP_AUTO_INSTALL prevents automatic installation");
         }
@@ -442,7 +467,7 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
     } else {
         Vec::new()
     };
-    if crate::self_heal::env_bypass_set() || !release_layout::executable_allows_implicit_install() {
+    if !may_act_implicitly() {
         // Assess without fetching a source, creating a lock or reconciling any
         // installation assets. Dispatch still validates assets it actually needs.
         if framework_restage_needed(staging_exists, &missing)
@@ -564,9 +589,21 @@ fn local_install(
     repo_root: &Path,
     wizard_config: Option<&interactive::InteractiveConfig>,
 ) -> Result<()> {
-    local_install_scoped(repo_root, wizard_config, true, InstallMode::Explicit)
+    // Asset-staging tests supply an isolated release archive; they must never
+    // discover a host binary or contact the published release service.
+    #[cfg(unix)]
+    {
+        crate::test_support::release_fixture::with_release(crate::VERSION, || {
+            local_install_scoped(repo_root, wizard_config, true, InstallMode::Explicit)
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        local_install_scoped(repo_root, wizard_config, true, InstallMode::Explicit)
+    }
 }
 
+#[cfg(test)]
 fn local_install_scoped(
     repo_root: &Path,
     wizard_config: Option<&interactive::InteractiveConfig>,
@@ -574,11 +611,30 @@ fn local_install_scoped(
     mode: InstallMode,
 ) -> Result<()> {
     require_implicit_install_origin(mode)?;
+    let version = match framework_source::read_source_version(repo_root) {
+        framework_source::SourceVersion::Known(version) => version.to_string(),
+        framework_source::SourceVersion::Unknown => crate::VERSION.to_owned(),
+    };
+    let binaries = binary::ResolvedBinaries::resolve(&version)?;
+    local_install_resolved(repo_root, wizard_config, reconcile_codex, mode, &binaries)
+}
+
+fn local_install_resolved(
+    repo_root: &Path,
+    wizard_config: Option<&interactive::InteractiveConfig>,
+    reconcile_codex: bool,
+    mode: InstallMode,
+    binaries: &binary::ResolvedBinaries,
+) -> Result<()> {
+    let selected_version = binaries.version.as_str();
+    require_implicit_install_origin(mode)?;
     // Issue #1954 D6: every install holds the install lock for its whole
     // run, so an explicit install, the post-update install and a self-heal
     // never stage or switch at the same time. Re-entrant on this thread, so
     // the self-heal that calls this while holding it does not deadlock.
     let _install_lock = crate::install_lock::acquire()?;
+    require_implicit_install_origin(mode)?;
+    binaries.validate()?;
     let claude_dir = staging_claude_dir()?;
     let timestamp = unix_timestamp();
 
@@ -614,10 +670,14 @@ fn local_install_scoped(
     // path on the old version. If an exchange itself fails, the binaries and
     // bundle are already on the new release and the trees exchanged so far
     // stay new; running `amplihack install` again completes the rest.
-    let mut release = binary::new_release_txn()?;
+    let mut release =
+        release_layout::ReleaseTxn::allocate(&home_dir()?.join(".amplihack"), &binaries.version)?;
     let (deployed_binaries, kept_binaries) =
-        deploy_binaries_into(&mut release, mode, stamp.as_deref())?;
-    let hooks_bin = find_hooks_binary()?;
+        deploy_binaries_into(&mut release, mode, stamp.as_deref(), binaries)?;
+    let hooks_bin = deployed_binaries
+        .first()
+        .context("release has no hooks executable")?
+        .clone();
     for p in deployed_binaries
         .iter()
         .filter(|p| !kept_binaries.contains(p))
@@ -1052,13 +1112,13 @@ fn local_install_scoped(
     // at the version the old stamp recorded (or unknown). Record both, so the
     // next launch does not re-stage and the guard keeps failing safe. The
     // `binaries:` line is the kept binaries' version only: binaries this run
-    // replaced (often `amplihack` itself) are at `crate::VERSION`, so readers
+    // replaced (often `amplihack` itself) are at `selected_version`, so readers
     // must not attach it to any one path (see `format_downgrade_warning`).
     if kept_binaries.is_empty() {
-        version_stamp::write_installed_version(crate::VERSION)
-    } else if stamp.as_deref() == Some(crate::VERSION) {
+        version_stamp::write_installed_version(selected_version)
+    } else if stamp.as_deref() == Some(selected_version) {
         // Kept binaries already at this version: nothing to replace, no warning.
-        version_stamp::write_installed_version(crate::VERSION)
+        version_stamp::write_installed_version(selected_version)
     } else {
         let kept: Vec<String> = kept_binaries
             .iter()
@@ -1069,9 +1129,9 @@ fn local_install_scoped(
              for v{}; run `amplihack install` to replace them.",
             kept.join(", "),
             stamp.as_deref().unwrap_or("unknown"),
-            crate::VERSION,
+            selected_version,
         );
-        version_stamp::write_installed_versions(crate::VERSION, stamp.as_deref())
+        version_stamp::write_installed_versions(selected_version, stamp.as_deref())
     }
     .context("writing installed-version stamp")?;
 

@@ -138,9 +138,7 @@ pub fn run_update(skip_install: bool) -> Result<()> {
 }
 
 fn maybe_print_update_notice() -> Result<StartupUpdateOutcome> {
-    if crate::self_heal::env_bypass_set()
-        || !crate::commands::install::release_layout::executable_allows_implicit_install()
-    {
+    if !crate::commands::install::may_act_implicitly() {
         return Ok(StartupUpdateOutcome::Continue);
     }
     // NOTE: AMPLIHACK_NO_UPDATE_CHECK is intentionally NOT re-checked here.
@@ -170,9 +168,7 @@ fn maybe_print_update_notice() -> Result<StartupUpdateOutcome> {
 }
 
 fn maybe_prompt_for_startup_update(latest: &str) -> Result<StartupUpdateOutcome> {
-    if crate::self_heal::env_bypass_set()
-        || !crate::commands::install::release_layout::executable_allows_implicit_install()
-    {
+    if !crate::commands::install::may_act_implicitly() {
         return Ok(StartupUpdateOutcome::Continue);
     }
     print_update_notice(latest);

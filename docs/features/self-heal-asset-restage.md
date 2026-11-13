@@ -38,6 +38,9 @@ command or Git hook from switching the host's release beneath running sessions.
 The origin decision uses the running executable reported by
 `std::env::current_exe()`. It canonicalises paths and applies the existing
 release-layout confinement, ownership, permission and complete-release checks.
+The authoritative installation root is `$HOME/.amplihack`; framework-source
+overrides do not redefine it. Eligibility follows the actual filesystem target,
+including when the executable is reached through a symbolic link.
 The decision is read-only. It creates no directories, temporary files, markers,
 caches or locks.
 
@@ -55,6 +58,18 @@ Version metadata and release-like directory names do not establish origin.
 `AMPLIHACK_HOME` selects a candidate framework source; it cannot grant
 installation eligibility or redirect the trusted installed releases tree.
 A redirected releases root cannot make a checkout eligible.
+
+Automatic-install suppression, executable origin and version policy are
+independent controls:
+
+| Condition | Result |
+| --- | --- |
+| Non-empty `AMPLIHACK_SKIP_AUTO_INSTALL`, even with an eligible executable | No implicit installation or profile repair |
+| Ineligible executable, even with the opt-out unset and a higher version | No implicit installation or profile repair |
+| Eligible executable with the opt-out unset | Existing version policy still applies before publication |
+
+The artifact-guard startup bypass is an additional safeguard. Ordinary startup,
+bootstrap and lower-level installation paths enforce these controls themselves.
 
 This restriction covers every implicit installation route: startup self-heal,
 launch bootstrap, binary deployment, command restoration, hook and provider
@@ -135,33 +150,6 @@ clear error. Refusal never reports repair as successful.
 The restriction concerns installation assets. Ordinary command, session and
 runtime writes retain their existing rules.
 
-### Startup regression coverage
-
-The `issue_1955_install_cli::issue_2496` process tests exercise the actual CLI:
-
-- `missing_client_startup_refuses_every_provider_before_acquisition` covers
-  Claude, Copilot, Codex, Amplifier and RustyClawd with missing clients.
-- `upgrade_startup_refuses_acquisition_and_keeps_the_usable_client` supplies
-  a terminal and a local registry response to reach automatic npm upgrades
-  for Claude, Copilot and Codex.
-- `usable_client_startup_from_checkout_does_not_require_acquisition` checks
-  that a checkout can still resolve and launch an existing client.
-- `eligible_missing_client_startup_reaches_the_isolated_installer` checks
-  that a complete installed release can still acquire a missing client.
-
-These tests use disposable homes, configuration, temporary roots and PATHs
-with native Rust installer tripwires. Refusal checks compare installation
-files, modes and literal link targets and assert no installer executes.
-The same module retains canonical-origin, preservation, wrapper, explicit
-install and eligible self-heal regressions. Framework-bootstrap checks alone
-do not cover the earlier host-client resolution path.
-
-The separate `issue_1954_first_install_restager` and
-`issue_1954_install_leaves_live_runs_alone` process suites require Linux
-`/proc` and are excluded on macOS. A macOS run cannot establish their
-first-update restager and live-run preservation guarantees; report them as
-unavailable, even when the portable origin and startup regressions pass.
-
 ## Diagnosing a refusal
 
 The refusal line names the executable and the rule, not the particular check
@@ -217,8 +205,9 @@ its own source validation, so the host can still be repaired deliberately.
 This is an integrity control against a same-user process publishing itself to
 the host without being asked. It crosses no privilege boundary, performs no
 signature or content attestation, and is not an anti-tamper measure. A user who
-can write `~/.amplihack` can install whatever they like through the explicit
-command, which is the intended way to do it.
+can write `~/.amplihack` can alter installed files directly. The explicit
+installation contract also requires executables from a release source; see
+[Explicit install and update](#explicit-install-and-update) for the executable-source contract.
 
 Two limits follow from that scope:
 
@@ -250,11 +239,11 @@ executables, automatic re-stage and launch bootstrap retain these rules:
 | Newer | Re-stage permitted | Replacement requires a strictly newer version than the recorded binaries version |
 | Stamp missing or malformed | Re-stage permitted | Only empty binary slots filled |
 
-Version ordering uses semver precedence. Helper binary replacements must come
-from this build's own copies, including the supported hooks-binary override.
-A helper found elsewhere on `PATH` has an unknown version and may only fill
-an empty slot. These deployment rules apply after origin eligibility; they
-cannot make a checkout eligible.
+Version ordering uses semver precedence. Executables staged for publication
+come from the selected release source, including its required companion
+binaries. A checkout, a sibling build or a helper found on `PATH` cannot
+substitute for those executables. Version policy applies after origin
+eligibility and cannot make a checkout eligible.
 
 An implicit re-stage never writes `~/.claude/settings.json`. For eligible
 launches, bootstrap retains its existing first-install hook repair rules.
@@ -335,8 +324,22 @@ sources, including when the running executable is outside the installed
 releases tree or the opt-out is set.
 
 An explicit update retains its post-update invocation of the new binary's
-`install --force-refresh`. Startup update handling cannot use that explicit
+`install --force-refresh`, after releasing the publication lock, unless
+`--skip-install` is given. Startup update handling cannot use that explicit
 path to bypass an origin refusal.
+
+Both commands publish executables from the selected
+release source. Install uses an eligible installed release matching the
+selected version, or validated executables from that exact published platform
+archive. It never substitutes
+the running checkout, its sibling binaries or a `PATH` companion. If required
+release executables are unavailable, install fails before framework-source
+acquisition, installation locking, persistent staging or profile changes;
+the active release stays unchanged.
+
+`--local` and `AMPLIHACK_HOME` select framework assets only. They do not
+authorise publishing a development executable. See
+[Install from a local repository](../howto/local-install.md).
 
 Explicit operations retain source validation, version checks, locking,
 complete-release validation and publication safeguards. Neither the opt-out
@@ -395,5 +398,6 @@ can still run.
 - [Framework source selection](../reference/framework-source-selection.md)
 - [Environment variables](../reference/environment-variables.md)
 - [Repair a stale framework bundle](../howto/repair-stale-framework-bundle.md)
+- [Run a checkout build safely](../howto/run-checkout-safely.md)
 - [Versioned install layout](../concepts/versioned-install-layout.md)
 - [Issue #2496: checkout builds replacing installed releases](https://github.com/rysweet/amplihack-rs/issues/2496)

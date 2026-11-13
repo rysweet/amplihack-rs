@@ -1502,6 +1502,11 @@ The npm update check is controlled separately, by `--skip-update-check` and
 fixtures also default to the opt-out and use disposable homes. Independently
 of this variable, executables outside a validated installed release cannot
 perform implicit installation. `AMPLIHACK_HOME` cannot grant that eligibility.
+The opt-out also suppresses implicit profile and configuration repair by an
+otherwise eligible installed release. Explicit `install` and `update` remain
+available but publish validated release executables; neither the opt-out nor
+explicit intent authorises publishing a checkout binary. See
+[Run a checkout build safely](../howto/run-checkout-safely.md).
 See [Executable eligibility](../features/self-heal-asset-restage.md#executable-eligibility).
 
 See: [Self-Heal: Auto-Restage Framework Assets](../features/self-heal-asset-restage.md).

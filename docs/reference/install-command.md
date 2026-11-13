@@ -1,3 +1,10 @@
+---
+title: Install and uninstall command reference
+description: Release executable sources, framework installation, configuration and failure behaviour.
+doc_type: reference
+review_schedule: as-needed
+---
+
 # amplihack install / uninstall — Command Reference
 
 ## Synopsis
@@ -29,11 +36,23 @@ The installed `~/.amplihack/amplifier-bundle` is not reused by
 `--force-refresh`, and stale smart-orchestrator assets are rejected before they
 can become active. See [Framework bundle compatibility](./framework-bundle-compatibility.md).
 
-The executable-origin restriction applies to implicit installation. Explicit
-`install` and `update`, including post-update `install --force-refresh`, retain
-their existing valid-source requirements and work with the automatic-install
-opt-out set. A checkout cannot acquire the same authority through startup
-self-heal or launch bootstrap, even when its version is newer. See
+Explicit `install` and `update`, including post-update `install --force-refresh`,
+work with the automatic-install opt-out set and may be invoked outside the
+installed releases tree. They publish release executables, never the running
+checkout as a substitute. Install first resolves all required executables from
+an eligible installed release matching the selected version, or from that exact
+published platform archive. The release version determines release allocation
+and the version stamp; a local framework override does not select executable
+bytes or change that version.
+
+If the release executables cannot be obtained or validated, install exits
+non-zero before acquiring framework sources, taking the installation lock,
+allocating a release or changing profiles. Existing release contents, the
+stamp and active links remain unchanged. Use a supported published release
+through `install` or `update`; building a checkout is not an installation source.
+
+A checkout cannot acquire publication authority through startup self-heal or
+launch bootstrap, even when its version is newer. See
 [Executable eligibility](../features/self-heal-asset-restage.md#executable-eligibility).
 
 You can invoke the same command through the npm wrapper package when desired:
@@ -57,7 +76,7 @@ fall back to a source build.
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--interactive` | `bool` | `false` | Launch a guided setup wizard that prompts for default tool, hook scope, and update-check preference. Requires a TTY; falls back to defaults with a warning if stdin is not a terminal. See [Interactive Install](../howto/interactive-install.md). |
-| `--local <PATH>` | `PathBuf` | absent | Install from a specific local directory. The path must exist, be a directory, contain a framework root marker, and pass framework bundle compatibility validation. Its version may differ from the binary's: install prints both versions and a warning, then stages it. This is the only way to stage a tree with a different version. |
+| `--local <PATH>` | `PathBuf` | absent | Select framework assets from a specific local directory. The path must exist, be a directory, contain a framework root marker, and pass framework bundle compatibility validation. Its version may differ from the binary's: install prints both versions and a warning, then stages it. This is the only way to stage a tree with a different version. It does not select or authorise checkout executables. |
 | `--verbose` | `bool` | `false` | Accepted for diagnostic scripts. The install command already emits phase-level diagnostics by default. |
 | `--force-refresh` | `bool` | `false` | **Hidden.** Refreshes `amplifier-bundle/` while bypassing the installed bundle and the current directory as sources. Uses a same-version `AMPLIHACK_HOME`, or otherwise fetches the release tag `v<binary version>`. Used internally by `amplihack update` when spawning the new binary as a post-update install subprocess. Not shown in `--help` output. See [Post-Update Install - Re-exec New Binary](../features/update-reexec-new-binary.md). |
 
@@ -68,7 +87,7 @@ The `--interactive` and `--local` flags compose: `--interactive` controls config
 | Code | Meaning |
 |------|---------|
 | `0` | Install completed successfully |
-| `1` | `amplihack-hooks` binary not found after 5-step search |
+| `1` | required release executables are unavailable or invalid; the active release was not switched |
 | `1` | `--local` path does not exist or is not a directory |
 | `1` | `--local` path does not contain a framework root marker |
 | `1` | selected framework bundle is stale or incompatible |
@@ -84,13 +103,16 @@ Note: A Node.js version below v24 does **not** cause a non-zero exit from `ampli
 
 ### Install Phases
 
+Executable sources are resolved before framework acquisition and persistent installation writes.
+
 ```
 amplihack install [--interactive]
 │
-├── 0. acquire_framework_source() — --local, a same-version local source, or the release tag; refuse on mismatch
+├── 0a. resolve release binaries  — matching eligible installed release or exact published platform archive; validate required executables
+├── 0b. acquire_framework_source() — --local, a same-version local source, or the release tag; refuse on mismatch
 ├── 1. maybe_run_wizard()         — if --interactive, prompt for tool/scope/update prefs (skipped otherwise)
 ├── 1b. take ~/.amplihack/.install.lock and allocate a new release ~/.amplihack/releases/<release>/
-├── 2. deploy_binaries()          — copy amplihack + amplihack-hooks (+ asset resolver when present) into the release's bin/
+├── 2. stage resolved binaries    — copy validated release executables into the release's bin/; no current-executable or PATH fallback
 ├── 2b. analyze PATH candidates   — classify Rust binaries, stale wrappers, unknowns, and inaccessible paths
 ├── 2c. neutralize stale wrappers — quarantine only shadowing, positively identified Python/uvx wrappers in safe locations
 ├── 2d. persist PATH precedence   — write/update managed shell profile block so ~/.local/bin resolves first
@@ -146,7 +168,7 @@ These variables are read during install. All are optional; the installer works w
 
 | Variable | Effect |
 |----------|--------|
-| `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` | Override the path used for `amplihack-hooks`. Useful in tests and CI. If set but the path does not exist, resolution falls through to Step 2. See [Binary Resolution](./binary-resolution.md). |
+| `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` | Hook lookup override for callers using [binary resolution](./binary-resolution.md). Installation stages companions from the resolved release source, independently of this override. |
 | `AMPLIHACK_HOME` | The first [framework source](./framework-source-selection.md) tried. It doesn't change where install stages, which is always `$HOME/.amplihack`: a different version is refused by plain `install`. |
 | `AMPLIHACK_SKIP_AUTO_INSTALL` | Any non-empty value suppresses [implicit installation](../features/self-heal-asset-restage.md#what-the-bypass-skips), including self-heal and launch reconciliation. Compatibility assessment is read-only and uncached. Has no effect on explicit `install` or `update`. |
 | `AMPLIHACK_NO_RUST_BOOTSTRAP` | When set to a non-empty value other than `0`, install never installs rustup or `build-essential` automatically; a missing cargo or C linker fails phase 9b with manual instructions. |
@@ -154,7 +176,7 @@ These variables are read during install. All are optional; the installer works w
 
 ### Version stamp
 
-Every successful install writes the binary version into
+Every successful install writes the selected release version into
 `~/.amplihack/.installed-version` (plain text, no trailing newline, atomic
 tmp+rename). An implicit re-stage that kept an installed binary adds a second
 line, `binaries: <version|unknown>`
@@ -350,9 +372,9 @@ Located in `crates/amplihack-cli/src/commands/install/bundle_compat.rs`.
 
 Entry point for uninstall. Reads the manifest, then executes phases 1–4.
 
-### `local_install(repo_root: &Path) -> Result<()>`
+### `local_install_resolved(repo_root, wizard, reconcile_codex, mode, binaries) -> Result<()>`
 
-Core install logic. Runs all install phases through manifest writing. Calls `find_hooks_binary()` to locate `amplihack-hooks` before wiring hooks.
+Core install logic. Runs the install phases through manifest writing, using resolved release executables for staging and hook registration.
 
 ### `find_hooks_binary() -> Result<PathBuf>`
 
@@ -367,16 +389,23 @@ Locates the `amplihack-hooks` binary using a 5-step resolution:
 PATH runs at Step 3 so system-wide installs (e.g. a tarball to `/usr/local/bin`) survive the uninstall→reinstall cycle, since `amplihack uninstall` only removes the `~/.local/bin` copies.
 
 Returns an actionable error if none of the five locations yield an executable.
+Release publication uses separately resolved release executables. This lookup remains available to other callers.
 
-### `deploy_binaries() -> Result<Vec<PathBuf>>`
+### Release binary staging (internal)
 
-Copies `amplihack` (current executable) and `amplihack-hooks` (resolved by
-`find_hooks_binary`) to `~/.local/bin` with `0o755` permissions. When a sibling
-`amplihack-asset-resolver` binary is present, it is deployed too so launched
-tools and recipe runs can resolve bundle assets without falling back to Python.
-Returns the list of deployed paths for inclusion in the manifest.
+`deploy_binaries_into()` stages supplied, validated release executable paths
+with `0o755` permissions. It does not discover `current_exe()`, sibling builds
+or companions on `PATH`. The installation coordinator resolves `amplihack`,
+`amplihack-hooks` and the asset resolver where required by the selected release
+before installation mutations. Its private resolved-binaries value retains
+the release version, executable paths and any temporary extraction directory
+until staging completes. This adds no public Rust API or configuration option.
 
-After deployment, install analyzes ordered `PATH` candidates for `amplihack` and
+Lower-level implicit deployment independently enforces the opt-out and
+executable-origin restriction before writing. Callers cannot bypass those
+checks by skipping startup self-heal.
+
+After deployment, install analyses ordered `PATH` candidates for `amplihack` and
 `amplihack-hooks`, quarantines eligible stale Python/uvx wrappers that shadow
 Rust, persists `~/.local/bin` precedence, refreshes the framework bundle, and
 then verifies the selected `amplihack` is the Rust binary. Unknown or
@@ -402,7 +431,8 @@ content and returns the file changed.
 
 Located in `crates/amplihack-cli/src/commands/install/paths.rs`.
 
-> **macOS note:** On macOS with System Integrity Protection (SIP) active, copying the running executable to `~/.local/bin` may produce a quarantined binary. See the [First-time install how-to](../howto/first-install.md#macos-sip-note) for the resolution step.
+For macOS executable quarantine guidance, see the
+[First-time install how-to](../howto/first-install.md#macos-sip-note).
 
 ### `ensure_settings_json(staging_dir: &Path, timestamp: u64, hooks_bin: &Path) -> Result<(bool, Vec<String>)>`
 

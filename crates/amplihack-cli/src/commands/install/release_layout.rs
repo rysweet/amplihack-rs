@@ -323,26 +323,14 @@ impl Drop for TestEligibility {
     }
 }
 
-/// Whether `executable` is an installed release binary of the install tree
-/// under `home`, with the specific cause when it is not.
-///
-/// Every step is deny-by-default: a failure to stat, canonicalise or confine
-/// a path is a refusal, never a permissive default.
-fn installed_executable(home: &Path, executable: &Path) -> Result<(), OriginRefusal> {
-    #[cfg(unix)]
-    {
-        assess_installed_executable(home, executable)
-    }
-    // Issue #2496: the checks that make an origin trustworthy are the Unix
-    // ownership and file-mode ones. Where they do not exist, path, confinement
-    // and completeness checks alone would let any writable tree pass, so the
-    // oracle refuses outright and explicit `amplihack install` is the only
-    // route. This is deliberately not a silent degradation.
-    #[cfg(not(unix))]
-    {
-        let _ = (home, executable);
-        Err(OriginRefusal::pathless(refusal::UNSUPPORTED_PLATFORM))
-    }
+/// Issue #2496: the checks that make an origin trustworthy are the Unix
+/// ownership and file-mode ones. Where they do not exist, path, confinement
+/// and completeness checks alone would let any writable tree pass, so the
+/// oracle refuses outright and explicit `amplihack install` is the only
+/// route. This is deliberately not a silent degradation.
+#[cfg(not(unix))]
+fn installed_executable(_home: &Path, _executable: &Path) -> Result<(), OriginRefusal> {
+    Err(OriginRefusal::pathless(refusal::UNSUPPORTED_PLATFORM))
 }
 
 /// A directory on the trusted path: a real directory, owned by this user and
@@ -383,8 +371,13 @@ fn resolves_into_retired(releases: &Path, canonical: &Path) -> bool {
     )
 }
 
+/// Whether `executable` is an installed release binary of the install tree
+/// under `home`, with the specific cause when it is not.
+///
+/// Every step is deny-by-default: a failure to stat, canonicalise or confine
+/// a path is a refusal, never a permissive default.
 #[cfg(unix)]
-fn assess_installed_executable(home: &Path, executable: &Path) -> Result<(), OriginRefusal> {
+fn installed_executable(home: &Path, executable: &Path) -> Result<(), OriginRefusal> {
     use std::os::unix::fs::PermissionsExt;
 
     let install = home.join(".amplihack");

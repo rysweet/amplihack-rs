@@ -335,13 +335,12 @@ where
     // current stamp must still repair). So it cannot be reordered away.
     // Instead it is memoised on a stat fingerprint of the bundle inputs:
     // ~58 KB of recipe YAML is parsed only when the bundle actually changed.
-    // The opt-out is checked first and the origin assessment is skipped under
-    // it, so an opted-out execution emits neither the refusal line nor the
-    // `debug` cause record: the caller asked for silence, not a diagnosis.
-    // Both verdicts lead to the same uncached, write-nothing compatibility
-    // path, so the short circuit changes no behaviour beyond what is logged.
-    let eligible = !env_bypass_set()
-        && crate::commands::install::release_layout::executable_allows_implicit_install();
+    // `may_act_implicitly` tests the opt-out first and short-circuits, so an
+    // opted-out execution emits neither the refusal line nor the `debug` cause
+    // record: the caller asked for silence, not a diagnosis. Both verdicts
+    // lead to the same uncached, write-nothing compatibility path, so this
+    // changes no behaviour beyond what is logged.
+    let eligible = crate::commands::install::may_act_implicitly();
     let installed_bundle_issue = if eligible {
         installed_bundle_compatibility_issue_cached()
     } else {

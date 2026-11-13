@@ -565,7 +565,9 @@ fn run_install_with_local_path_skips_git_clone() {
     fs::create_dir_all(&local_repo).unwrap();
     create_source_repo(&local_repo);
 
-    let result = run_install(Some(local_repo), false, false);
+    let result = crate::test_support::release_fixture::with_release(crate::VERSION, || {
+        run_install(Some(local_repo), false, false)
+    });
 
     if let Some(v) = prev_hooks {
         unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };

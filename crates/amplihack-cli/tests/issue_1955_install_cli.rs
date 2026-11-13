@@ -140,6 +140,36 @@ fn text(output: &Output) -> String {
     )
 }
 
+fn native_release(host: &Host) -> PathBuf {
+    let source = host.path("release-native.rs");
+    let native = host.path("release-native");
+    fs::write(&source, include_str!("fixtures/issue_2496_release.rs")).unwrap();
+    let compiler =
+        Path::new(env!("CARGO")).with_file_name(if cfg!(windows) { "rustc.exe" } else { "rustc" });
+    let build = std::process::Command::new(compiler)
+        .env("RELEASE_FIXTURE_DEFAULT_VERSION", amplihack_cli::VERSION)
+        .args(["--edition=2024", "-o"])
+        .arg(&native)
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(build.status.success(), "{}", text(&build));
+    native
+}
+
+fn available_release(host: &Host) {
+    let native = native_release(host);
+    let available = host
+        .home
+        .join(".amplihack/releases")
+        .join(amplihack_cli::VERSION);
+    fs::create_dir_all(available.join("bin")).unwrap();
+    for name in ["amplihack", "amplihack-hooks"] {
+        fs::copy(&native, available.join("bin").join(name)).unwrap();
+    }
+    fs::write(available.join(".complete"), b"").unwrap();
+}
+
 const SOURCE_ONLY_MESSAGE: &str = "Bundled framework source not found";
 
 /// The older version a release or dev build of this tree would refuse.
@@ -159,6 +189,7 @@ fn force_refresh_with_a_same_version_amplihack_home_prints_no_false_message() {
     let tree = host.path("tag-worktree");
     source_tree(&tree, amplihack_cli::VERSION);
     fs::write(tree.join("amplifier-bundle/context/sentinel-1955.txt"), "y").unwrap();
+    available_release(&host);
 
     let output = host.install(&["--force-refresh"], Some(&tree), host.temp.path());
 
@@ -228,6 +259,9 @@ fn install_with_an_older_amplihack_home_exits_non_zero_and_stages_nothing() {
 #[test]
 fn force_refresh_on_a_dev_build_with_an_older_home_never_goes_to_the_network() {
     let host = Host::new();
+    // Executables are already available. This test isolates the development
+    // build's framework-fetch refusal rather than contacting a release API.
+    available_release(&host);
     let tree = host.path("old");
     source_tree(&tree, &older_version());
 
@@ -868,6 +902,42 @@ mod issue_2496 {
     }
 
     #[test]
+    fn opt_out_alone_preserves_installation_from_an_eligible_release() {
+        isolated_case(
+            "opt_out_alone_preserves_installation_from_an_eligible_release",
+            None,
+            || {
+                let fixture = Fixture::new();
+                let executable = fixture.release.join("bin/eligible-amplihack");
+                fs::hard_link(amplihack_bin(), &executable).unwrap();
+                let published = fixture.host.path("eligible-link");
+                symlink(&executable, &published).unwrap();
+                let before = snapshot(fixture.host.temp.path());
+
+                let output = fixture
+                    .command(&published)
+                    .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
+                    .args(["recipe", "list"])
+                    .output()
+                    .unwrap();
+
+                assert!(output.status.success(), "{}", text(&output));
+                assert_preserved(fixture.host.temp.path(), &before, &output);
+                assert!(
+                    text(&output).contains("AMPLIHACK_SKIP_AUTO_INSTALL"),
+                    "{}",
+                    text(&output)
+                );
+                assert!(
+                    !text(&output).contains("prevents automatic installation"),
+                    "eligible origin must leave suppression as the sole refusal: {}",
+                    text(&output)
+                );
+            },
+        );
+    }
+
+    #[test]
     fn artifact_guard_invocation_preserves_an_older_complete_release_and_links() {
         isolated_case(
             "artifact_guard_invocation_preserves_an_older_complete_release_and_links",
@@ -1057,6 +1127,11 @@ mod issue_2496 {
                 .unwrap();
                 let executable = release.join("bin/amplihack");
                 fs::hard_link(amplihack_bin(), &executable).unwrap();
+                fs::copy(
+                    native_release(&fixture.host),
+                    release.join("bin/amplihack-hooks"),
+                )
+                .unwrap();
                 let published = fixture.host.home.join(".local/bin/amplihack");
                 fs::remove_file(&published).unwrap();
                 symlink(&executable, &published).unwrap();
@@ -1094,8 +1169,30 @@ mod issue_2496 {
             None,
             || {
                 let fixture = Fixture::new();
+                let native = native_release(&fixture.host);
+                let available = fixture
+                    .host
+                    .home
+                    .join(".amplihack/releases")
+                    .join(amplihack_cli::VERSION);
+                fs::create_dir_all(available.join("bin")).unwrap();
+                for name in ["amplihack", "amplihack-hooks", "amplihack-asset-resolver"] {
+                    fs::copy(&native, available.join("bin").join(name)).unwrap();
+                }
+                fs::write(available.join(".complete"), b"").unwrap();
+                fs::write(
+                    available.join(".installed-by"),
+                    format!(
+                        "format=1\nversion={}\nexe=\npid=1\npost_update=0\n",
+                        amplihack_cli::VERSION
+                    ),
+                )
+                .unwrap();
+                let old_release = snapshot(&fixture.release);
                 let mut command = fixture.checkout();
-                command.args(["install", "--force-refresh"]);
+                command
+                    .args(["install", "--force-refresh"])
+                    .env("RELEASE_FIXTURE_VERSION", amplihack_cli::VERSION);
                 let output = command.output().unwrap();
 
                 assert!(output.status.success(), "{}", text(&output));
@@ -1106,6 +1203,21 @@ mod issue_2496 {
                     fs::canonicalize(fixture.host.home.join(".amplihack/releases")).unwrap()
                 ));
                 assert!(bundle.parent().unwrap().join(".complete").is_file());
+                let bundle_link = fixture.host.home.join(".amplihack/amplifier-bundle");
+                let active_bundle = bundle_link
+                    .parent()
+                    .unwrap()
+                    .join(fs::read_link(&bundle_link).unwrap());
+                let active = active_bundle.parent().unwrap();
+                for name in ["amplihack", "amplihack-hooks", "amplihack-asset-resolver"] {
+                    let link = fixture.host.home.join(".local/bin").join(name);
+                    assert_eq!(fs::read_link(&link).unwrap(), active.join("bin").join(name));
+                    assert!(
+                        fs::read(&link).unwrap() == fs::read(&native).unwrap(),
+                        "{name} must publish release bytes instead of checkout or PATH bytes"
+                    );
+                }
+                assert_preserved(&fixture.release, &old_release, &output);
                 assert_eq!(
                     fs::read(bundle.join("context/issue-2496.txt")).unwrap(),
                     b"matching source\n"

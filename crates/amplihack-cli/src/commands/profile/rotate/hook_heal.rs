@@ -34,7 +34,8 @@ pub(super) struct HealCtx<'a> {
     pub live_profile_dir: Option<&'a Path>,
     pub read_only: bool,
     pub target: Option<&'a HookTarget>,
-    pub newer_stamp: bool,
+    /// Implicit publication is refused by origin, opt-out or version checks.
+    pub publication_refused: bool,
     /// Why the live profile may not receive the hooks path (#1699).
     pub live_refusal: Option<String>,
 }
@@ -42,7 +43,7 @@ pub(super) struct HealCtx<'a> {
 /// Heals the files `ctx` names after a cycle that ended in `outcome`.
 /// Returns the files written; each is logged by the caller.
 pub(super) fn heal(outcome: CycleOutcome, ctx: &HealCtx<'_>) -> Vec<PathBuf> {
-    if !applies(outcome, ctx.read_only, ctx.newer_stamp) {
+    if !applies(outcome, ctx.read_only, ctx.publication_refused) {
         return Vec::new();
     }
     let Some(target) = ctx.target else {
@@ -63,9 +64,11 @@ pub(super) fn heal(outcome: CycleOutcome, ctx: &HealCtx<'_>) -> Vec<PathBuf> {
 }
 
 /// The heal's only gate: a cycle that kept or moved the live login, not a
-/// dry run, from a binary no older than the install stamp.
-fn applies(outcome: CycleOutcome, read_only: bool, newer_stamp: bool) -> bool {
-    matches!(outcome, CycleOutcome::Swapped | CycleOutcome::Stayed) && !read_only && !newer_stamp
+/// dry run, from an executable eligible for implicit hook publication.
+fn applies(outcome: CycleOutcome, read_only: bool, publication_refused: bool) -> bool {
+    matches!(outcome, CycleOutcome::Swapped | CycleOutcome::Stayed)
+        && !read_only
+        && !publication_refused
 }
 
 /// Writes `path` only when it exists and has drifted from both answers to
@@ -104,10 +107,10 @@ fn heal_one(path: &Path, target: &HookTarget) -> bool {
 /// to avoid work: resolving the hooks binary (which may run
 /// `claude --version`) and identifying the live login (which may read the
 /// network). The live profile comes from the rotator's own detection, never from the
-/// ledger or the environment. A stamp that cannot be read counts as newer.
+/// ledger or the environment. A stamp that cannot be read refuses publication.
 pub(super) fn after_cycle(outcome: CycleOutcome, ctx: &Ctx) {
-    let newer_stamp = !crate::commands::install::may_publish_implicitly();
-    if !applies(outcome, ctx.read_only, newer_stamp) {
+    let publication_refused = !crate::commands::install::may_publish_implicitly();
+    if !applies(outcome, ctx.read_only, publication_refused) {
         return;
     }
     let Some(target) = hook_target() else {
@@ -147,7 +150,7 @@ pub(super) fn after_cycle(outcome: CycleOutcome, ctx: &Ctx) {
         live_profile_dir: live_dir.as_deref(),
         read_only: ctx.read_only,
         target: Some(&target),
-        newer_stamp,
+        publication_refused,
         live_refusal,
     };
     let written = heal(outcome, &heal_ctx);

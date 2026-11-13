@@ -2,6 +2,9 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+#[path = "../tests/fixtures/issue_2496_release_support.rs"]
+pub(crate) mod release_fixture;
+
 /// Single global lock for all environment-mutating tests.
 ///
 /// Both HOME and CWD mutations must serialize through one lock to prevent

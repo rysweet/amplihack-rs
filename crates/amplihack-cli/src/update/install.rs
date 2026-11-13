@@ -3,7 +3,49 @@ pub(super) use super::archive::{binary_filename, find_binary};
 use super::checksum::verify_sha256;
 use super::*;
 use std::process::Command;
-use std::time::Duration;
+
+/// Keep the extraction directory alive until the installer has staged its bytes.
+pub(crate) fn acquire_release_archive(version: &str) -> Result<tempfile::TempDir> {
+    let release = super::network::fetch_exact_release(version)?;
+    let bytes = super::network::http_get(&release.asset_url)?;
+    if let Some(url) = &release.checksum_url {
+        verify_sha256(&bytes, url).context("release executable checksum verification failed")?;
+    } else {
+        tracing::warn!(
+            version,
+            "release executable archive has no SHA-256 checksum"
+        );
+    }
+    let temp = tempfile::tempdir().context("failed to create release executable directory")?;
+    extract_archive(&bytes, temp.path())?;
+    Ok(temp)
+}
+
+/// Refuse missing, linked, unreadable or non-executable archive entries before
+/// taking an installation lock or allocating persistent staging directories.
+pub(crate) fn validate_release_executable(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("cannot inspect release executable {}", path.display()))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        bail!(
+            "release executable is not a regular file: {}",
+            path.display()
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            bail!(
+                "release executable has no execute permission: {}",
+                path.display()
+            );
+        }
+    }
+    fs::File::open(path)
+        .with_context(|| format!("cannot read release executable {}", path.display()))?;
+    Ok(())
+}
 
 pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
     let archive_bytes = super::network::http_get_with_retry(&release.asset_url)?;
@@ -21,14 +63,17 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
     let temp_dir = tempfile::tempdir().context("failed to create update temp directory")?;
     extract_archive(&archive_bytes, temp_dir.path())?;
 
+    let new_amplihack = find_binary(temp_dir.path(), binary_filename("amplihack"))?;
+    let new_hooks = find_binary(temp_dir.path(), binary_filename("amplihack-hooks"))?;
+    validate_release_executable(&new_amplihack)?;
+    validate_release_executable(&new_hooks)?;
+
     // Issue #1954 D6: the binaries change only while this process holds the
     // install lock, so no install or self-heal stages at the same time. The
     // guard drops when this function returns, before `run_update` starts the
     // post-update install child, which takes the lock itself.
     let _install_lock = crate::install_lock::acquire()?;
 
-    let new_amplihack = find_binary(temp_dir.path(), binary_filename("amplihack"))?;
-    let new_hooks = find_binary(temp_dir.path(), binary_filename("amplihack-hooks"))?;
     let current_exe =
         std::env::current_exe().context("cannot determine current executable path")?;
     let decision = current_process_install_target_decision(&current_exe)?;
@@ -104,6 +149,10 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
     Ok(amplihack_dest)
 }
 
+#[cfg(all(test, unix))]
+#[path = "tests/issue_2496_publication.rs"]
+mod issue_2496_publication;
+
 /// Issue #1954: copies the downloaded binaries into a new release, checks
 /// what the copies report, then switches `amplihack-hooks` and `amplihack`
 /// to them. `amplihack-asset-resolver` and `amplifier-bundle` stay on their
@@ -117,6 +166,8 @@ fn install_into_release(
     hooks_link: &Path,
 ) -> Result<()> {
     use crate::commands::install::release_layout::{self, ReleaseTxn};
+    validate_release_executable(new_amplihack)?;
+    validate_release_executable(new_hooks)?;
     let amplihack_dir = home.join(".amplihack");
     let releases = release_layout::releases_dir(&amplihack_dir);
     let full_size = fs::metadata(new_amplihack)
@@ -339,45 +390,19 @@ fn current_process_install_target_decision(
 
 /// Invoke `<binary> --version` and confirm the output contains `expected`.
 ///
-/// `clap`'s default `--version` output is `"<name> <version>"`, so we match
-/// on substring rather than equality. Runs with a short timeout so a hung
-/// or broken binary cannot stall the caller.
-fn verify_installed_version(binary: &Path, expected: &str) -> Result<()> {
-    let mut child = Command::new(binary)
+/// Match an entire version token in `clap`'s `"<name> <version>"` output.
+/// Collect output on process exit, without a polling loop or timed probes.
+pub(crate) fn verify_installed_version(binary: &Path, expected: &str) -> Result<()> {
+    let output = Command::new(binary)
         .arg("--version")
         .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
         .env("AMPLIHACK_NONINTERACTIVE", "1")
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .spawn()
+        .output()
         .context("failed to exec updated binary with --version")?;
-
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        if child
-            .try_wait()
-            .context("failed while waiting for updated binary --version")?
-            .is_some()
-        {
-            break;
-        }
-
-        if std::time::Instant::now() >= deadline {
-            if let Err(err) = child.kill() {
-                tracing::warn!("failed to kill timed-out version check process: {err}");
-            }
-            if let Err(err) = child.wait() {
-                tracing::warn!("failed to reap timed-out version check process: {err}");
-            }
-            bail!("timed out waiting for --version from updated binary");
-        }
-
-        std::thread::sleep(Duration::from_millis(50));
-    }
-
-    let output = child
-        .wait_with_output()
-        .context("failed while collecting output from updated binary --version")?;
 
     if !output.status.success() {
         bail!(
@@ -386,7 +411,10 @@ fn verify_installed_version(binary: &Path, expected: &str) -> Result<()> {
         );
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    if !stdout.contains(expected) {
+    if !stdout
+        .split_whitespace()
+        .any(|part| part.trim_start_matches('v') == expected)
+    {
         bail!(
             "expected `{expected}` in --version output, got: {}",
             stdout.trim()
