@@ -1,7 +1,7 @@
 ---
 title: Build Preflight Decision
 description: how autodrive-build step-01 reports PR facts and step-02 decides from them whether to build a new PR or reuse an existing one (#2552).
-last_updated: 2026-11-12
+last_updated: 2026-11-13
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -27,6 +27,7 @@ when no PR existed. A fresh issue lane with no PR could therefore skip the build
 - [Step-02 condition](#step-02-condition)
 - [Worktree and private state](#worktree-and-private-state)
 - [Behaviour test](#behaviour-test)
+- [State key checks (#1680)](#state-key-checks-1680)
 - [Related](#related)
 
 ## Outcomes
@@ -155,6 +156,28 @@ sha256sum amplifier-bundle/recipes/autodrive-build.yaml | cut -c1-16
 ```
 
 `issue_1802` fails when the manifest entry is stale.
+
+## State key checks (#1680)
+
+`tests/issue_1680_fresh_run_state_key.sh` reads `autodrive-build.yaml` and
+checks the step-01 and step-03 contract that keeps two fresh runs in one
+repository from sharing state. CI runs it in the Lint & Format job; pre-push
+does not.
+
+```bash
+bash tests/issue_1680_fresh_run_state_key.sh   # exits 0 when every check passes
+```
+
+PR #2583 (#2552) reworded the step-01 prompt, and three step-01 phrase checks
+were removed rather than rewritten, because the fresh-run decision is a
+behaviour and the Rust tests above cover it. Each removed check is covered
+elsewhere:
+
+| Removed step-01 check | Covered by |
+| --- | --- |
+| The returned JSON carries `state_dir` | The step-01 shape check, the [preflight report fields](#preflight-report-fields), and the step-03 `build_result` `state_dir` check |
+| A fresh preflight does not create branch-keyed state | The `issue_2552_build_preflight_decision.rs` tests and the step-03 check that a fresh run's state is keyed by the PR it resolved |
+| State is private and outside the worktree | `amplihack orch helper autodrive state`, which creates the directory with mode 0700 and refuses unsafe ownership or modes, and the step-03 check of the same clause |
 
 ## Related
 
