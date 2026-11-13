@@ -458,6 +458,52 @@ mod issue_2496 {
             self.command(amplihack_bin())
         }
 
+        fn acquisition_tools(&self, native: &Path) {
+            // Avoid an unrelated memory-consent prompt/write on Linux, where
+            // RAM discovery uses /proc even with the fully isolated PATH.
+            fs::write(
+                self.host.home.join(".amplihack/config.toml"),
+                "[node]\nheap_consent = true\n",
+            )
+            .unwrap();
+            for tool in [
+                "npm",
+                "uv",
+                "node",
+                "cargo",
+                "curl",
+                "wget",
+                "codex-code-mode-host",
+            ] {
+                fs::hard_link(native, self.host.stubs.join(tool)).unwrap();
+            }
+        }
+
+        fn startup(&self, provider: &str) -> Command {
+            self.startup_from(amplihack_bin(), provider)
+        }
+
+        fn startup_from(&self, executable: impl AsRef<std::ffi::OsStr>, provider: &str) -> Command {
+            let mut command = self.command(executable);
+            command
+                .args([provider, "--subprocess-safe", "--no-reflection"])
+                // No host tool directories: even a regression can only run
+                // our Rust tripwire, never a real installer or credential helper.
+                .env("PATH", &self.host.stubs)
+                .env("CARGO_HOME", self.host.home.join(".cargo"))
+                .env("RUSTUP_HOME", self.host.home.join(".rustup"))
+                .env("CARGO_TARGET_DIR", self.host.home.join("target"))
+                .env("npm_config_cache", self.host.home.join(".npm"))
+                .env("UV_CACHE_DIR", self.host.home.join(".cache/uv"))
+                .env("UV_TOOL_DIR", self.host.home.join(".local/share/uv/tools"))
+                .env("XDG_DATA_HOME", self.host.home.join(".local/share"))
+                .env("ACQUISITION_TRIPWIRE", self.host.path("installer-ran"))
+                .env("ACQUISITION_QUERY", self.host.path("registry-query"))
+                .env("AMPLIHACK_NO_SYSTEM_PROMPT_APPEND", "1")
+                .env("IS_SANDBOX", "1");
+            command
+        }
+
         fn assert_refused(&self, executable: &Path) {
             // Also observe redirected release roots and the offered source.
             let before = snapshot(self.host.temp.path());
@@ -499,6 +545,219 @@ mod issue_2496 {
                 text(&output)
             );
         }
+    }
+
+    /// Compile a std-only Rust executable, rather than a shell shim that
+    /// could accidentally delegate to a host npm, uv or network downloader.
+    fn acquisition_native(root: &Path) -> PathBuf {
+        let source = root.join("client.rs");
+        let binary = root.join("client");
+        fs::write(&source, include_str!("fixtures/issue_2496_client.rs")).unwrap();
+        let output = Command::new("rustc")
+            .arg("--edition=2024")
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", text(&output));
+        // Establish that the native fixture is ready before the CLI's bounded
+        // health probe. In particular, macOS may delay a newly linked image
+        // in dyld before main, independently of the stub's version behavior.
+        let output = Command::new(&binary).arg("--version").output().unwrap();
+        assert!(output.status.success(), "{}", text(&output));
+        binary
+    }
+
+    fn assert_origin_refusal(output: &Output) {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let lines: Vec<_> = stderr
+            .lines()
+            .filter(|line| line.contains("prevents automatic installation"))
+            .collect();
+        assert_eq!(lines.len(), 1, "one origin warning: {}", text(output));
+        assert!(lines[0].contains("executable location"), "{}", text(output));
+        assert!(!lines[0].chars().any(char::is_control), "{lines:?}");
+        assert!(
+            !stderr.contains("framework assets re-staged"),
+            "{}",
+            text(output)
+        );
+        assert!(!stderr.contains("Installation failed:"), "{}", text(output));
+    }
+
+    #[test]
+    fn missing_client_startup_refuses_every_provider_before_acquisition() {
+        isolated_case(
+            "missing_client_startup_refuses_every_provider_before_acquisition",
+            None,
+            || {
+                let tools = tempfile::tempdir().unwrap();
+                let native = acquisition_native(tools.path());
+                // RustyClawd uses Claude acquisition when no preferred native
+                // client exists; test its public entrypoint as well.
+                for provider in ["claude", "copilot", "codex", "amplifier", "rustyclawd"] {
+                    let fixture = Fixture::new();
+                    fixture.acquisition_tools(&native);
+                    let before = snapshot(&fixture.host.home);
+                    let output = fixture.startup(provider).output().unwrap();
+                    assert!(
+                        !output.status.success(),
+                        "missing {provider}: {}",
+                        text(&output)
+                    );
+                    assert_origin_refusal(&output);
+                    assert!(
+                        !fixture.host.path("installer-ran").exists(),
+                        "{}",
+                        text(&output)
+                    );
+                    assert_preserved(&fixture.host.home, &before, &output);
+                    assert!(!fixture.host.home.join(".npm-global").exists());
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn usable_client_startup_from_checkout_does_not_require_acquisition() {
+        isolated_case(
+            "usable_client_startup_from_checkout_does_not_require_acquisition",
+            None,
+            || {
+                let fixture = Fixture::new();
+                let native = acquisition_native(fixture.host.temp.path());
+                fixture.acquisition_tools(&native);
+                fs::hard_link(&native, fixture.host.stubs.join("codex")).unwrap();
+                let before = snapshot(&fixture.host.home);
+                let output = fixture.startup("codex").output().unwrap();
+                assert!(output.status.success(), "{}", text(&output));
+                assert!(String::from_utf8_lossy(&output.stdout).contains("CLIENT_LAUNCHED"));
+                assert!(!fixture.host.path("installer-ran").exists());
+                assert!(!fixture.host.path("registry-query").exists());
+                assert_preserved(&fixture.host.home, &before, &output);
+            },
+        );
+    }
+
+    /// Automatic upgrades are interactive-only. A PTY on stdin reaches the
+    /// real startup decision while stdout/stderr remain captured. Keep the
+    /// master alive until the child finishes so stdin remains a terminal.
+    fn terminal_stdin(command: &mut Command) -> fs::File {
+        use std::os::fd::FromRawFd;
+        use std::process::Stdio;
+        let (mut master, mut slave) = (-1, -1);
+        // SAFETY: openpty initialises two owned descriptors; null arguments
+        // request the default terminal settings and window size.
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut::<libc::termios>(),
+                    std::ptr::null_mut::<libc::winsize>(),
+                )
+            },
+            0
+        );
+        // SAFETY: these descriptors were just opened, and each is owned once.
+        let input = unsafe { fs::File::from_raw_fd(master) };
+        let terminal = unsafe { fs::File::from_raw_fd(slave) };
+        command
+            .stdin(Stdio::from(terminal))
+            .env_remove("AMPLIHACK_NONINTERACTIVE");
+        input
+    }
+
+    #[test]
+    fn upgrade_startup_refuses_acquisition_and_keeps_the_usable_client() {
+        isolated_case(
+            "upgrade_startup_refuses_acquisition_and_keeps_the_usable_client",
+            None,
+            || {
+                let tools = tempfile::tempdir().unwrap();
+                let native = acquisition_native(tools.path());
+                for provider in ["claude", "copilot", "codex"] {
+                    let fixture = Fixture::new();
+                    fixture.acquisition_tools(&native);
+                    let bin = fixture.host.home.join(".npm-global/bin");
+                    fs::create_dir_all(&bin).unwrap();
+                    fs::hard_link(&native, bin.join(provider)).unwrap();
+                    if provider == "codex" {
+                        fs::hard_link(&native, bin.join("codex-code-mode-host")).unwrap();
+                    }
+                    let stale = match provider {
+                        "claude" => "@anthropic-ai/.claude-code-sentinel",
+                        "copilot" => "@github/.copilot-sentinel",
+                        "codex" => "@openai/.codex-sentinel",
+                        _ => unreachable!(),
+                    };
+                    let stale = fixture
+                        .host
+                        .home
+                        .join(".npm-global/lib/node_modules")
+                        .join(stale);
+                    fs::create_dir_all(&stale).unwrap();
+                    fs::write(stale.join("sentinel"), b"preserve pending npm contents").unwrap();
+                    let cache = fixture.host.home.join(".npm/_cacache");
+                    fs::create_dir_all(&cache).unwrap();
+                    fs::write(cache.join("sentinel"), b"preserve npm cache").unwrap();
+                    let before = snapshot(&fixture.host.home);
+                    let mut command = fixture.startup(provider);
+                    let _terminal = terminal_stdin(&mut command);
+                    let output = command.output().unwrap();
+                    assert!(output.status.success(), "{provider}: {}", text(&output));
+                    assert!(String::from_utf8_lossy(&output.stdout).contains("CLIENT_LAUNCHED"));
+                    assert_origin_refusal(&output);
+                    assert!(
+                        fixture.host.path("registry-query").exists(),
+                        "upgrade decision was not exercised: {}",
+                        text(&output)
+                    );
+                    assert!(
+                        !fixture.host.path("installer-ran").exists(),
+                        "{}",
+                        text(&output)
+                    );
+                    assert_preserved(&fixture.host.home, &before, &output);
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn eligible_missing_client_startup_reaches_the_isolated_installer() {
+        isolated_case(
+            "eligible_missing_client_startup_reaches_the_isolated_installer",
+            None,
+            || {
+                let fixture = Fixture::new();
+                let native = acquisition_native(fixture.host.temp.path());
+                fixture.acquisition_tools(&native);
+                let executable = fixture.release.join("bin/eligible-amplihack");
+                fs::hard_link(amplihack_bin(), &executable).unwrap();
+                // Same argv/environment as checkout startup, from an eligible
+                // executable instead. Codex resolution precedes asset repair.
+                let output = fixture.startup_from(&executable, "codex").output().unwrap();
+                assert!(
+                    !output.status.success(),
+                    "tripwire must fail: {}",
+                    text(&output)
+                );
+                assert!(
+                    fixture.host.path("installer-ran").exists(),
+                    "{}",
+                    text(&output)
+                );
+                assert!(
+                    text(&output).contains("isolated installer tripwire"),
+                    "{}",
+                    text(&output)
+                );
+                assert!(!text(&output).contains("prevents automatic installation"));
+            },
+        );
     }
 
     #[test]

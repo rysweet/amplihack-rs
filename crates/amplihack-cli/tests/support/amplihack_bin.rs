@@ -35,3 +35,15 @@ pub fn amplihack_bin() -> PathBuf {
     })
     .clone()
 }
+
+/// Give an acquisition regression an eligible executable in its disposable
+/// installation. Ordinary subprocess tests keep using the checkout binary and
+/// automatic-install opt-out; only installation tests opt in to this fixture.
+pub fn installed_copy(binary: &Path, home: &Path) -> PathBuf {
+    let release = home.join(".amplihack/releases/client-fixture");
+    std::fs::create_dir_all(release.join("bin")).unwrap();
+    let executable = release.join("bin/amplihack");
+    super::exec_stub::copy_executable(binary, &executable);
+    std::fs::write(release.join(".complete"), b"").unwrap();
+    executable
+}

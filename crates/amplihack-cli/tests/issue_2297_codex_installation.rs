@@ -117,12 +117,14 @@ fn failed_recovery(installer_fails: bool) {
                 .unwrap()
                 .join("amplihack")
         });
+    let cli = crate::support::amplihack_bin::installed_copy(&cli, home.path());
     let output = crate::isolated_amplihack::isolated(cli)
         .env("HOME", home.path())
         .env("CODEX_HOME", home.path().join(".codex"))
         .env("PATH", &tools)
         .env("AMPLIHACK_NONINTERACTIVE", "1")
         .env("FAIL_INSTALLER", if installer_fails { "1" } else { "0" })
+        .env_remove("AMPLIHACK_SKIP_AUTO_INSTALL")
         .args(["codex", "--no-reflection", "--", "exec", "-"])
         .stdin(Stdio::null())
         .current_dir(home.path())

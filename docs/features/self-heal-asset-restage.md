@@ -56,8 +56,8 @@ A redirected releases root cannot make a checkout eligible.
 
 This restriction covers every implicit installation route: startup self-heal,
 launch bootstrap, binary deployment, command restoration, hook and provider
-reconciliation, and automatic startup updates. Having a framework bundle
-already present does not authorise a secondary repair path.
+reconciliation, host-client acquisition, and automatic startup updates. Having
+a framework bundle already present does not authorise a secondary repair path.
 
 ## Startup and launch behaviour
 
@@ -83,6 +83,18 @@ including missing commands, hooks and provider assets. Profile and rotator
 reconciliation cannot bypass it. An already satisfied installation continues
 without an origin-refusal diagnostic.
 
+Host-client discovery may resolve an already usable Claude, Copilot, Codex or
+Amplifier without installation authority. If a client is missing, or an owned
+npm client needs an automatic upgrade, the shared acquisition helper checks
+the opt-out and executable origin before creating installation directories,
+cleaning npm caches or invoking npm/uv. This includes Codex resolution before
+framework self-heal and RustyClawd's fallback to Claude acquisition.
+
+A refused missing-client acquisition fails startup with an executable-origin
+diagnostic. A refused upgrade reports the refusal, rechecks the unchanged
+client and continues when it remains usable. Read-only resolution itself
+does not require origin eligibility.
+
 Automatic startup updates check eligibility before acquiring a release,
 writing update state or switching installation links. Starting a checkout
 binary does not give a startup update the authority of an explicit `update`.
@@ -106,6 +118,7 @@ Refusal occurs before source acquisition or installation-state mutation:
 | Framework source | No acquisition, fetch or staging |
 | Managed commands, hooks, profiles and provider configuration | No installation or reconciliation |
 | Startup update state | No write or host-release switch |
+| Host-client installation directories and npm caches | No creation, cleanup or installer invocation |
 
 The refusal itself does not abort command dispatch. A command that can use
 available assets keeps its normal behaviour and exit status. A command
@@ -114,6 +127,33 @@ clear error. Refusal never reports repair as successful.
 
 The restriction concerns installation assets. Ordinary command, session and
 runtime writes retain their existing rules.
+
+### Startup regression coverage
+
+The `issue_1955_install_cli::issue_2496` process tests exercise the actual CLI:
+
+- `missing_client_startup_refuses_every_provider_before_acquisition` covers
+  Claude, Copilot, Codex, Amplifier and RustyClawd with missing clients.
+- `upgrade_startup_refuses_acquisition_and_keeps_the_usable_client` supplies
+  a terminal and a local registry response to reach automatic npm upgrades
+  for Claude, Copilot and Codex.
+- `usable_client_startup_from_checkout_does_not_require_acquisition` checks
+  that a checkout can still resolve and launch an existing client.
+- `eligible_missing_client_startup_reaches_the_isolated_installer` checks
+  that a complete installed release can still acquire a missing client.
+
+These tests use disposable homes, configuration, temporary roots and PATHs
+with native Rust installer tripwires. Refusal checks compare installation
+files, modes and literal link targets and assert no installer executes.
+The same module retains canonical-origin, preservation, wrapper, explicit
+install and eligible self-heal regressions. Framework-bootstrap checks alone
+do not cover the earlier host-client resolution path.
+
+The separate `issue_1954_first_install_restager` and
+`issue_1954_install_leaves_live_runs_alone` process suites require Linux
+`/proc` and are excluded on macOS. A macOS run cannot establish their
+first-update restager and live-run preservation guarantees; report them as
+unavailable, even when the portable origin and startup regressions pass.
 
 ## Never an implicit downgrade (#1526)
 

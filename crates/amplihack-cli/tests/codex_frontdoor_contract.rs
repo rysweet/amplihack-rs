@@ -48,6 +48,7 @@ esac
                 .unwrap()
                 .join("amplihack")
         });
+    let cli = crate::support::amplihack_bin::installed_copy(&cli, home.path());
     let out = crate::isolated_amplihack::isolated(cli)
         .args(["codex", "--no-reflection", "--", "exec", "-"])
         .env("HOME", home.path())

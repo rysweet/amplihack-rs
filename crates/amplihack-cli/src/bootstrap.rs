@@ -460,8 +460,7 @@ pub fn ensure_tool_available(tool: &str, override_origin: OverrideOrigin) -> Res
                         "{original}\nAutomatic Codex installation is disabled. Repair with npm install -g @openai/codex."
                     );
                 }
-                install_tool(tool)
-                    .map_err(|error| anyhow!("{original}\nInstallation failed: {error:#}"))?;
+                install_tool(tool)?;
             } else {
                 install_tool(tool)?;
             }
@@ -607,9 +606,7 @@ fn log_rejected_candidates(tool: &str, resolution: &Resolution) {
 
 /// Map a tool name to the npm package used for installation and upgrades.
 ///
-/// This is the single source of truth — both `install_tool` and
-/// `maybe_upgrade_tool` read through here so they can never disagree on
-/// which package backs a given tool.
+/// Installation and upgrade decisions share this mapping.
 pub(crate) fn npm_package_for_install(tool: &str) -> Option<&'static str> {
     match tool {
         "claude" => Some("@anthropic-ai/claude-code"),
@@ -620,6 +617,17 @@ pub(crate) fn npm_package_for_install(tool: &str) -> Option<&'static str> {
 }
 
 fn install_tool(tool: &str) -> Result<()> {
+    // Every caller is implicit (missing-client startup or an owned-client
+    // upgrade). Keep discovery read-only, and refuse here before either npm
+    // or uv can create directories, clean caches or invoke an installer.
+    // Explicit framework install/update do not call this helper.
+    if crate::self_heal::env_bypass_set() {
+        bail!("AMPLIHACK_SKIP_AUTO_INSTALL prevents automatic acquisition of '{tool}'");
+    }
+    if !install::release_layout::executable_allows_implicit_install() {
+        crate::self_heal::warn_implicit_origin_once(&mut std::io::stderr());
+        bail!("Automatic acquisition of '{tool}' refused because of executable origin");
+    }
     if let Some(pkg) = npm_package_for_install(tool) {
         return install_npm_package(tool, pkg);
     }
