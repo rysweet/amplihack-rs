@@ -304,8 +304,12 @@ gh_pr_number_from_url() {
 #                           paths so they wait-for-reset with no REST fallback.
 #
 #   GH_RETRY_DIAGNOSTIC_FILE private file owned by the caller (optional):
-#                           overwritten with each failed attempt's sanitized,
-#                           bounded diagnostic; independent of retry warnings.
+#                           emptied when each attempt starts and overwritten
+#                           with each failed attempt's sanitized, bounded
+#                           diagnostic (or its temp-creation failure);
+#                           independent of retry warnings. Empty after failure
+#                           means no attempt's failure was recorded (e.g.
+#                           cancelled before the next attempt).
 #                           Read only after failure; caller removes the file.
 #
 # Sets GH_RETRY_LAST_CLASS to the class of the final failure (or
@@ -386,11 +390,27 @@ _gh_retry_attempts() {
 
   while :; do
     attempt=$((attempt + 1))
+    # Clear the previous attempt's diagnostic first, so a failure before this
+    # attempt runs gh never reports an earlier attempt's text. Temp creation
+    # failure records its own diagnostic below; a cancellation during a
+    # backoff or reset wait leaves the capture empty, and the caller falls
+    # back to its ordinary stderr capture.
+    if [ -n "${GH_RETRY_DIAGNOSTIC_FILE:-}" ]; then
+      if : >"$GH_RETRY_DIAGNOSTIC_FILE"; then :; else
+        printf 'WARNING: gh terminal diagnostic capture reset failed (exit %s)\n' "$?" >&2
+      fi
+    fi
     if stderr_file="$(umask 077; mktemp "${GH_RETRY_TMPDIR:-${TMPDIR:-/tmp}}/.workflow-gh-retry.XXXXXX" 2>/dev/null)"; then
       :
     else
       status=$?
-      printf 'ERROR: gh %s: private stderr temp creation failed (exit %s)\n' "$label" "$status" >&2
+      diagnostic="private stderr temp creation failed (exit $status)"
+      printf 'ERROR: gh %s: %s\n' "$label" "$diagnostic" >&2
+      # This is the last attempt's failure; record it so the caller does not
+      # have to find it behind earlier retry warnings in ordinary stderr.
+      if [ -n "${GH_RETRY_DIAGNOSTIC_FILE:-}" ]; then
+        printf '%s' "$diagnostic" >"$GH_RETRY_DIAGNOSTIC_FILE" 2>/dev/null || :
+      fi
       return "$status"
     fi
     gh_start_owned timeout 60 gh "$@" >"$stdout_file" 2>"$stderr_file"

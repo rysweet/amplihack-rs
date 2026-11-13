@@ -59,6 +59,47 @@ fn followup_terminal_rejection_survives_long_retry_history_and_is_redacted() {
 }
 
 #[test]
+fn followup_failure_before_a_later_attempt_runs_gh_is_not_reported_as_the_earlier_rejection() {
+    let f = PublishFixture::new();
+    // Attempt 1 is rejected with HTTP 503 and retried. Attempt 2 fails to
+    // create its private stderr capture, so gh never runs again.
+    f.long_transient_create_failure();
+    f.shim(
+        "mktemp",
+        r#"
+case "$*" in
+  *workflow-gh-retry.*)
+    # Earlier gh calls use the same helper; fail once, after create was tried.
+    if [ -e "$CASE_ROOT/first-create" ] && [ ! -e "$CASE_ROOT/capture-failed" ]; then
+      : > "$CASE_ROOT/capture-failed"
+      exit 9
+    fi ;;
+esac
+exec "$REAL_TOOL" "$@"
+"#,
+    );
+    let output = f.publish_command().output().unwrap();
+    assert_eq!(output.status.code(), Some(9), "{}", describe(&output));
+    assert!(f.tmp.path().join("first-create").exists());
+    let result = json(&output);
+    assert_eq!(result["state"], "FAILED_PR_CREATE");
+    let message = result["message"].as_str().unwrap();
+    assert!(
+        message.contains("private stderr temp creation failed (exit 9)"),
+        "{message}"
+    );
+    assert!(!message.contains("HTTP 503"), "{message}");
+    assert!(!message.contains("collision lookup failed"), "{message}");
+    assert!(!describe(&output).contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWX"));
+    assert_eq!(
+        std::fs::read_dir(f.tmp.path().join("private"))
+            .unwrap()
+            .count(),
+        0
+    );
+}
+
+#[test]
 fn followup_template_scope_sanitization_failure_warns_without_partial_output() {
     let f = PublishFixture::new();
     f.write("issue.json", r#"{"title":""}"#);

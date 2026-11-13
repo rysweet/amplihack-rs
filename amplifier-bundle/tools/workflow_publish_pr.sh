@@ -1105,8 +1105,11 @@ else
   CREATE_STATUS=$?
   PUBLISH_CHILD=""
   # Retry history cannot displace the last attempt. The helper retains its
-  # sanitized diagnostic separately across process boundaries. Pre-attempt
-  # failures (e.g. body writing) have only the ordinary stderr capture.
+  # sanitized diagnostic separately across process boundaries and empties it
+  # when each attempt starts; an attempt whose stderr temp creation fails
+  # records that failure instead. Failures with no recorded attempt (body
+  # writing, or cancellation before the next attempt) leave it empty and use
+  # the ordinary stderr capture.
   if [ -s "$CREATE_DIAGNOSTIC_FILE" ]; then
     CREATE_DIAGNOSTIC="$(gh_safe_stderr "$CREATE_DIAGNOSTIC_FILE")"
   else

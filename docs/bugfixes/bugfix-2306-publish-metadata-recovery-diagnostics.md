@@ -182,8 +182,13 @@ bound. The retry helper
 overwrites a separate caller-owned private capture with each failed attempt’s
 sanitized diagnostic. The publisher reads this last-attempt diagnostic
 independently of retry warnings, so earlier warnings cannot displace the final
-rejection in structured messages or runner errors. Pre-attempt failures use
-the ordinary stderr capture. The publisher removes both captures on exit and
+rejection in structured messages or runner errors. The helper empties the
+capture when each attempt starts, so it never holds an earlier attempt's
+rejection. If a later attempt cannot create its private stderr capture, the
+helper records `private stderr temp creation failed (exit N)` as that attempt's
+diagnostic. Failures with no recorded attempt (body writing before the first
+attempt, or cancellation during a backoff or reset wait) leave the capture
+empty, and the publisher uses the ordinary stderr capture. The publisher removes both captures on exit and
 cancellation. Pre-helper failures also identify the operation and status or
 condition. A final-exit backstop prevents unexplained nonzero
 exits without duplicating an existing terminal diagnostic.

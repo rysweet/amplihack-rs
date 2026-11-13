@@ -858,14 +858,6 @@ fn refreshing_after(old: Duration, token: Duration, retry: Duration) -> Refreshi
 /// A stall before the POST skips the refresh only above `SEND_MARGIN`;
 /// a stall before the token answer gives `refresh not saved` only above
 /// `T - TOKEN_D` (4.5 s). Any shorter stall only adds elapsed time.
-///
-/// The save of the rotated tokens (two syncs and a rename) is not bounded
-/// by the read's deadline, and one sync on a loaded disk was measured at
-/// 10 s (see `READ_T`). A save that outlasts `T - TOKEN_D` leaves no time
-/// for the retry: no second `GET` starts, and the read returns `timeout`
-/// once the save ends, past `T + RETURN_SLACK`. That case still pins the
-/// saved tokens, and the read must have run past the deadline, so a read
-/// that skips the retry with time left still fails here.
 #[test]
 fn a_401_refresh_and_retry_share_one_deadline() {
     let t = REFRESH_T;
@@ -884,23 +876,16 @@ fn a_401_refresh_and_retry_share_one_deadline() {
     let start = Instant::now();
     assert_eq!(read(&endpoints(&fake), &req), Err(reason::TIMEOUT));
     let took = start.elapsed();
+    assert!(took < t + RETURN_SLACK, "{took:?}");
     // The refresh was answered in time, so the rotated tokens are saved
     // even though the second GET ran out of time.
     assert_eq!(posts(&fake), 1);
     let gets = gets(&fake);
-    match gets.len() {
-        // The retry started before the deadline and was cut at it.
-        2 => {
-            assert!(took < t + RETURN_SLACK, "{took:?}");
-            assert_eq!(
-                bearer(&gets[1]),
-                Some(format!("Bearer {NEW_ACCESS}").as_str())
-            );
-        }
-        // The save outlasted the deadline, so no retry started.
-        1 => assert!(took >= t, "retry skipped with time left: {took:?}"),
-        n => panic!("expected 1 or 2 GETs, got {n}"),
-    }
+    assert_eq!(gets.len(), 2);
+    assert_eq!(
+        bearer(&gets[1]),
+        Some(format!("Bearer {NEW_ACCESS}").as_str())
+    );
     assert_eq!(l.doc()["claudeAiOauth"]["accessToken"], NEW_ACCESS);
     assert_eq!(l.doc()["claudeAiOauth"]["refreshToken"], NEW_REFRESH);
     assert_eq!(l.entries(), [CREDS]);
