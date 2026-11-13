@@ -505,11 +505,22 @@ fn seed_origin(caller_top: &Path, repository: &Path) -> Result<()> {
         // The recipe's own `git fetch origin` fills them through the refspec.
         return Ok(());
     }
+    // No auto maintenance: it would start a detached repack of this
+    // run-scoped repository that can still be writing when the run releases it.
+    // HEAD is excluded because upload-pack advertises it as a plain object;
+    // the validated `symbolic-ref` below is the only code that writes it.
     let output = preparation_command(repository)
         .env("GIT_ALLOW_PROTOCOL", "file")
-        .args(["fetch", "--no-tags", "--quiet", "--"])
+        .args([
+            "fetch",
+            "--no-tags",
+            "--quiet",
+            "--no-auto-maintenance",
+            "--",
+        ])
         .arg(caller_top)
         .arg("+refs/remotes/origin/*:refs/remotes/origin/*")
+        .arg("^refs/remotes/origin/HEAD")
         .output()?;
     if !output.status.success() {
         bail!(

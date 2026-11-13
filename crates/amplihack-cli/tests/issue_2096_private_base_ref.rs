@@ -307,6 +307,9 @@ fn private_checkout_without_caller_origin_head_invents_none() {
 fn private_checkout_rejects_foreign_origin_head() {
     isolated_body("private_checkout_rejects_foreign_origin_head", |f| {
         with_origin(&f);
+        // An unpushed local commit, so a leaked origin/HEAD at the caller's
+        // main is distinguishable from origin/main.
+        f.git(&["commit", "-q", "--allow-empty", "-m", "unpushed"]);
         // A symbolic origin/HEAD that leaves refs/remotes/origin/.
         f.git(&[
             "symbolic-ref",
@@ -315,14 +318,22 @@ fn private_checkout_rejects_foreign_origin_head() {
         ]);
         match implementation::RunCheckout::prepare(&f.repo, &scratch(&f), false) {
             Ok(checkout) => {
-                let (code, target) = git_status(
-                    &f,
-                    checkout.exec_dir(),
-                    &["symbolic-ref", "-q", "refs/remotes/origin/HEAD"],
-                );
+                let dir = checkout.exec_dir();
+                let (code, target) =
+                    git_status(&f, dir, &["symbolic-ref", "-q", "refs/remotes/origin/HEAD"]);
                 assert!(
                     code != Some(0) || target.starts_with("refs/remotes/origin/"),
                     "a foreign origin/HEAD target must not be copied: {target}"
+                );
+                let (code, leaked) = git_status(
+                    &f,
+                    dir,
+                    &["rev-parse", "--verify", "-q", "refs/remotes/origin/HEAD"],
+                );
+                assert_ne!(
+                    code,
+                    Some(0),
+                    "a rejected origin/HEAD must not arrive as a plain ref: {leaked}"
                 );
             }
             Err(error) => assert!(
@@ -330,5 +341,49 @@ fn private_checkout_rejects_foreign_origin_head() {
                 "{error:#}"
             ),
         }
+    });
+}
+
+#[test]
+fn private_checkout_does_not_copy_plain_origin_head() {
+    isolated_body("private_checkout_does_not_copy_plain_origin_head", |f| {
+        with_origin(&f);
+        let tip = text(f.git(&["rev-parse", "HEAD"]));
+        // Replace the symbolic origin/HEAD with a plain ref to the same commit.
+        f.git(&["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"]);
+        f.git(&["update-ref", "refs/remotes/origin/HEAD", &tip]);
+        assert_eq!(
+            git_status(
+                &f,
+                &f.repo,
+                &["symbolic-ref", "-q", "refs/remotes/origin/HEAD"]
+            )
+            .0,
+            Some(1),
+            "the caller's origin/HEAD is a plain ref"
+        );
+        let checkout = implementation::RunCheckout::prepare(&f.repo, &scratch(&f), false).unwrap();
+        let dir = checkout.exec_dir();
+        assert_ne!(
+            git_status(&f, dir, &["symbolic-ref", "-q", "refs/remotes/origin/HEAD"]).0,
+            Some(0),
+            "a plain origin/HEAD is never turned into a symbolic one"
+        );
+        let (code, leaked) = git_status(
+            &f,
+            dir,
+            &["rev-parse", "--verify", "-q", "refs/remotes/origin/HEAD"],
+        );
+        assert_ne!(code, Some(0), "a plain origin/HEAD is not copied: {leaked}");
+        assert_eq!(
+            git_status(
+                &f,
+                dir,
+                &["rev-parse", "--verify", "-q", "refs/remotes/origin/main"]
+            )
+            .0,
+            Some(0),
+            "origin/main is still seeded"
+        );
     });
 }

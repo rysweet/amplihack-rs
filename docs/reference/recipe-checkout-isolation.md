@@ -105,8 +105,9 @@ private repository, after copying the caller's remote configuration:
 | Caller has | Private repository gets |
 | --- | --- |
 | `remote.origin.url` | `remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*`, the normal refspec. |
-| `refs/remotes/origin/*` | The same refs and the objects they need, copied by one local fetch from the caller's top-level directory: `git fetch --no-tags --quiet -- <caller top> '+refs/remotes/origin/*:refs/remotes/origin/*'`. |
+| `refs/remotes/origin/*` | The same refs and the objects they need, copied by one local fetch from the caller's top-level directory: `git fetch --no-tags --quiet --no-auto-maintenance -- <caller top> '+refs/remotes/origin/*:refs/remotes/origin/*' '^refs/remotes/origin/HEAD'`. |
 | `refs/remotes/origin/HEAD` as a symbolic ref | The same symbolic ref, after checks (below). |
+| `refs/remotes/origin/HEAD` as a plain ref, or as a symbolic ref outside `refs/remotes/origin/` | No `origin/HEAD`, and a warning in the second case. |
 | No `origin` remote | No refspec and no `origin/*` refs. Preparation still succeeds. |
 | `remote.origin.url` but no `origin/*` refs | The refspec only. Nothing is fetched over the network during preparation; the recipe's own `workflow_fetch_origin.sh` fills `origin/*` on its first fetch. |
 | `remote.origin.url` but no `origin/HEAD` | No `origin/HEAD`. Preparation never invents a default branch; the recipes use their existing fallback. |
@@ -114,6 +115,10 @@ private repository, after copying the caller's remote configuration:
 The seeding fetch reads only the caller's local repository. It runs with
 `GIT_ALLOW_PROTOCOL=file`, takes the canonical absolute caller path after
 `--`, and writes only under `refs/remotes/origin/`. Tags are not copied.
+The negative refspec keeps `origin/HEAD` out of the fetch, so `origin/HEAD` is
+written only by the validated `symbolic-ref` step. Automatic maintenance is
+off for the fetch, so no detached repack is still writing to the run's
+storage when the run releases it.
 
 `origin/HEAD` is copied only when the caller's
 `git symbolic-ref -q refs/remotes/origin/HEAD` exits `0` and its target:

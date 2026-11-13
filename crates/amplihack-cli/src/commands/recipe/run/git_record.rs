@@ -37,6 +37,14 @@ const CALLER_TRACE_VARS: &[&str] = &[
     "GIT_TRACE2_CONFIG_PARAMS",
     "GIT_TRACE2_REDACT",
 ];
+/// Observer variables a nested run may inherit from its parent; the observer
+/// PID is handled separately because the Linux path sets it.
+const OBSERVER_INHERITED_VARS: &[&str] = &[
+    "AMPLIHACK_OBSERVER_JOURNAL",
+    "AMPLIHACK_OBSERVER_RUN",
+    "AMPLIHACK_OBSERVER_ATTEMPT",
+    "AMPLIHACK_OBSERVER_ACK_FD",
+];
 const EVENT_VAR: &str = "GIT_TRACE2_EVENT";
 const ENV_VARS_VAR: &str = "GIT_TRACE2_ENV_VARS";
 
@@ -263,12 +271,7 @@ impl GitRecord {
         if self.required {
             let parent = observer::parent_observer()?.unwrap_or_else(std::process::id);
             command.env("AMPLIHACK_OBSERVER_PID", parent.to_string());
-            for key in [
-                "AMPLIHACK_OBSERVER_JOURNAL",
-                "AMPLIHACK_OBSERVER_RUN",
-                "AMPLIHACK_OBSERVER_ATTEMPT",
-                "AMPLIHACK_OBSERVER_ACK_FD",
-            ] {
+            for key in OBSERVER_INHERITED_VARS {
                 command.env_remove(key);
             }
         }
@@ -296,13 +299,8 @@ impl GitRecord {
             State::Unavailable { .. } => {
                 // No observer runs, so no inherited observer variable may
                 // tell a nested run that one does.
-                for key in [
-                    "AMPLIHACK_OBSERVER_PID",
-                    "AMPLIHACK_OBSERVER_JOURNAL",
-                    "AMPLIHACK_OBSERVER_RUN",
-                    "AMPLIHACK_OBSERVER_ATTEMPT",
-                    "AMPLIHACK_OBSERVER_ACK_FD",
-                ] {
+                command.env_remove("AMPLIHACK_OBSERVER_PID");
+                for key in OBSERVER_INHERITED_VARS {
                     command.env_remove(key);
                 }
                 command.env_remove(EVENT_VAR).env_remove(ENV_VARS_VAR);
