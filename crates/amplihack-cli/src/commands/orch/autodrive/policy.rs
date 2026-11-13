@@ -33,6 +33,42 @@ pub struct ResolvedPolicy {
     pub configuration_sha256: Option<String>,
 }
 
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Selection {
+    schema_version: u32,
+    run_id: String,
+    host: String,
+    repository: String,
+    pr_number: u64,
+    pr_url: String,
+}
+fn selection(
+    auth: &InvocationAuthorization,
+    store: &EvidenceStore,
+    b: &Binding,
+    establish: bool,
+) -> Result<()> {
+    let name = format!("selection-{}.json", auth.run_id());
+    let expected = Selection {
+        schema_version: 1,
+        run_id: auth.run_id().into(),
+        host: b.host.clone(),
+        repository: b.repository.clone(),
+        pr_number: b.pr_number,
+        pr_url: b.pr_url.clone(),
+    };
+    match store.read_optional(&name)? {
+        Some(bytes) => ensure!(
+            serde_json::from_slice::<Selection>(&bytes)? == expected,
+            "drive-selection-changed: another PR requires a new invocation"
+        ),
+        None if establish => store.write_new(&name, &serde_json::to_vec(&expected)?)?,
+        None => bail!("drive-selection-missing: authenticated PR selection is required"),
+    }
+    Ok(())
+}
+
 /// Round labels change during review; all identity, commit and policy fields remain bound.
 pub(crate) fn same_binding(a: &Binding, b: &Binding) -> bool {
     let mut a = a.clone();
@@ -71,6 +107,7 @@ pub fn resolve(
         same_binding(binding, &observed.binding),
         "drive-policy-stale: observed PR/head/base changed"
     );
+    selection(auth, store, binding, true)?;
     let tip = host
         .base_tip(binding)
         .context("drive-policy-base: cannot establish authoritative base")?;
@@ -148,6 +185,7 @@ pub(crate) fn load(
 ) -> Result<ResolvedPolicy> {
     check(auth, binding)?;
     store.require_bound(auth)?;
+    selection(auth, store, binding, false)?;
     let policy: ResolvedPolicy = serde_json::from_slice(
         &store
             .read_private(&name(binding)?)

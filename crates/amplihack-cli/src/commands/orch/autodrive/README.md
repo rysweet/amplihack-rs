@@ -108,6 +108,10 @@ The production Rust modules and helpers below implement mode resolution, prepara
 
 ### Policy authority
 
+The first authenticated PR selection is immutable within an invocation,
+including when discovery supplied it. Head or base changes require fresh
+policy and readiness; another host, repository or PR requires a new invocation.
+
 Nested readiness rounds capture their own restricted invocation. The outer
 loop passes its private invocation file separately as
 `autodrive_readiness_invocation_file`: round evidence uses that parent's

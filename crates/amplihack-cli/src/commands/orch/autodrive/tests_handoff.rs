@@ -1185,6 +1185,26 @@ fn preparation_cannot_be_reused_with_a_different_private_policy_or_invocation() 
         merge.prepare(&forged).is_err(),
         "caller changed persisted drive mode"
     );
+    let mut discovered = Drive::new(Some("handoff"));
+    discovered.resolve().unwrap();
+    let mut other_pr = discovered.binding.clone();
+    other_pr.pr_number += 1;
+    other_pr.pr_url = format!(
+        "https://{}/{}/pull/{}",
+        other_pr.host, other_pr.repository, other_pr.pr_number
+    );
+    discovered.host.pr.binding = other_pr.clone();
+    assert!(
+        policy::resolve(
+            &discovered.auth,
+            &discovered.store,
+            &other_pr,
+            &mut discovered.host
+        )
+        .is_err(),
+        "policy resolution changed an implicitly selected PR within one invocation"
+    );
+    assert_eq!(discovered.host.creations(), 0);
 }
 
 #[test]
