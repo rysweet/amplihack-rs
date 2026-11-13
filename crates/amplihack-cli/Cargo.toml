@@ -137,7 +137,7 @@ path = "tests/main.rs"
 # A Rust-only external agent/service fixture for production-path #2553 tests.
 [[example]]
 name = "issue_2553_fixture_agent"
-path = "tests/support/issue_2553_fixture_agent.rs"
+path = "examples/issue_2553_fixture_agent/main.rs"
 
 [lints.rust]
 # `kani` is set by the Kani verifier when it compiles this crate for proof checking

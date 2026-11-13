@@ -8,17 +8,15 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-/// Default max runtime for workstreams (2 hours).
+/// Default runtime budget metadata for workstreams (2 hours).
 pub const DEFAULT_MAX_RUNTIME: u64 = 7200;
 
-/// Timeout policy: interrupt the subprocess and preserve state.
+/// Compatibility metadata naming the interrupt-and-preserve policy.
 pub const INTERRUPT_PRESERVE_TIMEOUT_POLICY: &str = "interrupt-preserve";
-/// Timeout policy: mark timed-out but let the subprocess continue.
+/// Compatibility metadata naming the continue-and-preserve policy.
 pub const CONTINUE_PRESERVE_TIMEOUT_POLICY: &str = "continue-preserve";
-/// Default timeout policy. Issue #867: a non-killing default — a run that
-/// passes `max_runtime` is marked resumable but is NOT interrupted while it is
-/// still producing output. Interrupting is opt-in via `interrupt-preserve`,
-/// and even then only a genuinely idle child is killed.
+/// Default policy metadata. The event-driven engine records this field but
+/// does not install a runtime timer or interrupt an owned child on a deadline.
 pub const DEFAULT_TIMEOUT_POLICY: &str = CONTINUE_PRESERVE_TIMEOUT_POLICY;
 
 /// Lifecycle states eligible for cleanup.

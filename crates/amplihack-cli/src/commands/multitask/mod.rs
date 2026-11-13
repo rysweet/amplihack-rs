@@ -2,7 +2,7 @@
 //!
 //! Executes multiple independent development workstreams in parallel, each in
 //! its own subprocess with isolated working directories. Supports recipe-based
-//! and classic execution modes, per-workstream timeout budgets, state
+//! and classic execution modes, per-workstream runtime metadata, state
 //! persistence for resumption, and automatic cleanup of completed workstreams.
 
 mod cleanup;

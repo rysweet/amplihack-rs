@@ -34,25 +34,18 @@ Source repository, plan, identity, route and execution-directory conflicts prese
 and return an error. The caller's Operations repository is never owned by the
 runtime. These checks do not confine the agent's filesystem access.
 
-The scheduler uses child-exit, cancellation and runtime deadline events.
-`max_runtime` defaults to 7200 seconds. At the deadline, both supported policies
-persist `timed_out_resumable` and retain recovery artefacts:
+The scheduler waits for child-exit and cancellation events. `max_runtime`
+(default 7200 seconds) and `timeout_policy` (`continue-preserve` by default,
+or `interrupt-preserve`) remain saved compatibility metadata. They do not
+install timers, impose runtime deadlines or interrupt idle children. This
+also applies to a zero runtime budget. The eventual process result determines
+completion; an unsuccessful exit cannot be promoted by generated prose.
 
-- `continue-preserve` (default) lets the owned child continue. Its eventual
-  process result determines completion; an unsuccessful exit cannot be promoted
-  by generated prose.
-- `interrupt-preserve` interrupts only after output on both streams has been
-  idle for `AMPLIHACK_IDLE_TIMEOUT_SECS` (default 300 seconds). Active output
-  postpones interruption. The owned process group is killed and the child
-  reaped; the outcome stays resumable, even if the child exits normally after
-  crossing the deadline. Its dependants are blocked.
-
-Output activity is tracked independently of capture size. Both output streams
+Both output streams
 are drained with bounded capture (`AMPLIHACK_MAX_LOG_BYTES`, default 100 MiB
 per stream); truncation is reported and truncated runner results cannot prove
 success. Git default-branch resolution and clone retain their established
-30-second and 300-second bounds. This restores the logging and idle-watchdog responsibilities previously
-provided by `log_output.rs` while retaining structured runner output.
+30-second and 300-second bounds. Output capture completes on pipe closure.
 
 Restored live processes and uncertain launch intents are preserved with an
 actionable error, rather than signalled or relaunched. The engine cannot prove
@@ -134,8 +127,8 @@ recovery information. Private runtime directories and state files must have
 restrictive permissions.
 
 Completion and cancellation events drive transitions and scheduling. The
-orchestrator waits for owned child completion, with receiver deadlines for
-runtime and idle policies. It does not periodically probe process existence or
+orchestrator waits for owned child completion and pipe closure. It does not
+install runtime or idle timers, periodically probe process existence or
 retry uncertain external writes.
 
 A successful completion is persisted before capacity is reused and eligible
@@ -264,7 +257,7 @@ roots and Rust service adapters; they contact no production service.
 | Reconcile uncertain issue creation | `tracking::acquire` saves UUID intent before the authenticated `gh` call | Lost acknowledgements reconcile by exact marker; zero/multiple matches and authentication failures stop the affected leaf without another create |
 | Treat results as data | Separate structured context and result fields; route and ownership never merge from output | Adversarial result fields and shell text cannot change the selected recipe or execute a shell command |
 | Handle credentials and injection | Argv-only service/child invocation, private context files, filtered parent routing variables; tracking and cleanup errors omit raw service stderr; repository scope redacts URL userinfo; credential-bearing development origins fail before Git command construction | Fixture credentials never enter generated state, context, arguments or reported acquisition/cleanup errors; existing scope tests cover credential-bearing remotes |
-| Propagate unsuccessful outcomes | Exit code and runner failure override prose; fixed-point blocking | Reverse-ordered chains and branching graphs block after failure, partial outcome, cancellation or unsuccessful timeout |
+| Propagate unsuccessful outcomes | Exit code and runner failure override prose; fixed-point blocking | Reverse-ordered chains and branching graphs block after failure, partial outcome or cancellation |
 
 These checks enforce native routing and runtime ownership. They do not sandbox
 an agent's tools, redact arbitrary secrets supplied as task data, or remove the

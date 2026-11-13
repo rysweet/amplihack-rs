@@ -1,4 +1,4 @@
-//! External Rust fixture, never an alternative orchestrator implementation.
+//! External Rust example fixture, never an alternative orchestrator implementation.
 //!
 //! `driver` calls the public production entry point. Symlinks named `git`,
 //! `gh` and `amplihack` record external actions; unexpected actions fail closed.
@@ -127,68 +127,22 @@ fn run() -> Result<()> {
                           "inherited_issue": env::var_os("AMPLIHACK_WORKSTREAM_ISSUE"),
                           "inherited_create_issue": env::var_os("AMPLIHACK_CREATE_ISSUE")}),
             )?;
-            if let Some(socket) = env::var_os("ISSUE_2553_READY_SOCKET").filter(|_| {
-                env::var_os("ISSUE_2553_RELEASE_AFTER_TIMEOUT").is_none()
-                    || context["task_description"]
-                        .as_str()
-                        .is_some_and(|s| s.starts_with("Report deadline"))
-            }) {
+            if let Some(socket) = env::var_os("ISSUE_2553_READY_SOCKET") {
                 use std::io::Read;
+                // The parent closes stdin after committing its running state.
+                // Waiting for EOF gives this fixture an event-driven barrier.
+                std::io::copy(&mut std::io::stdin(), &mut std::io::sink())?;
                 let mut connection = std::os::unix::net::UnixStream::connect(socket)?;
-                // The socket is a readiness barrier after the durable running
-                // checkpoint, so a test can revoke writes without racing spawn.
-                let ready_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-                loop {
-                    let state: Value = serde_json::from_slice(&fs::read(
-                        context["workstream_state_file"].as_str().unwrap(),
-                    )?)?;
-                    if state["lifecycle_state"] == "running"
-                        || state["lifecycle_state"] == "timed_out_resumable"
-                    {
-                        break;
-                    }
-                    ensure!(
-                        std::time::Instant::now() < ready_deadline,
-                        "running checkpoint was not committed"
-                    );
-                    std::thread::park_timeout(std::time::Duration::from_millis(5));
-                }
+                let state: Value = serde_json::from_slice(&fs::read(
+                    context["workstream_state_file"].as_str().unwrap(),
+                )?)?;
+                ensure!(
+                    state["lifecycle_state"] == "running",
+                    "running checkpoint was not committed"
+                );
                 connection.write_all(b"ready")?;
-                if env::var_os("ISSUE_2553_RELEASE_AFTER_TIMEOUT").is_some() {
-                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-                    loop {
-                        let state: Value = serde_json::from_slice(&fs::read(
-                            context["workstream_state_file"].as_str().unwrap(),
-                        )?)?;
-                        if state["lifecycle_state"] == "timed_out_resumable" {
-                            break;
-                        }
-                        ensure!(
-                            std::time::Instant::now() < deadline,
-                            "production timeout was not applied"
-                        );
-                        std::thread::park_timeout(std::time::Duration::from_millis(5));
-                    }
-                    if env::var_os("ISSUE_2553_CANCEL_AFTER_TIMEOUT").is_some() {
-                        connection.write_all(b"timed!")?;
-                        let mut release = [0];
-                        connection.read_exact(&mut release)?;
-                    }
-                    if context["task_description"]
-                        .as_str()
-                        .unwrap()
-                        .starts_with("Report deadline")
-                        && env::var("ISSUE_2553_WAIT_FOR_KILL").ok().as_deref() == Some("1")
-                    {
-                        // An interrupted child must never emit successful prose.
-                        loop {
-                            std::thread::park();
-                        }
-                    }
-                } else {
-                    let mut release = [0];
-                    connection.read_exact(&mut release)?;
-                }
+                let mut release = [0];
+                connection.read_exact(&mut release)?;
             }
             let status = env::var("ISSUE_2553_AGENT_STATUS").unwrap_or_else(|_| "completed".into());
             let result = format!("OPERATIONS_RESULT: {status} — fixture answer");

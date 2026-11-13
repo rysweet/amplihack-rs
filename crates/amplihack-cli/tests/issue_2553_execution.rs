@@ -16,6 +16,7 @@ fn fixture_binary() -> &'static Path {
         let output = Command::new(env!("CARGO"))
             .args([
                 "build",
+                "--locked",
                 "--quiet",
                 "-p",
                 "amplihack-cli",
@@ -421,6 +422,40 @@ fn uncertain_acquisition_is_reconciled_on_resume_without_duplicate_creation() {
     assert_eq!(creates, 1);
     assert_eq!(fixture.state("uncertain")["issue"], 711);
     assert_eq!(fixture.actions("completed").len(), 1);
+}
+
+#[test]
+fn oversized_tracking_acknowledgement_is_drained_and_reconciled_without_duplicate_creation() {
+    let fixture = Fixture::new();
+    let mut leaf = operations("tracked");
+    leaf["create_issue"] = json!(true);
+    let config = fixture.config(json!([leaf]));
+    let output = fixture
+        .command("driver")
+        .arg(&config)
+        .env("ISSUE_2553_TRACKING_MODE", "oversized")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("capture limit"));
+    assert!(fixture.actions("execute").is_empty());
+    assert!(
+        !fixture.state("tracked")["tracking_reference"]
+            .as_str()
+            .unwrap()
+            .is_empty()
+    );
+    succeeded(&fixture.command("driver").arg(config).output().unwrap());
+    assert_eq!(fixture.state("tracked")["issue"], 711);
+    assert_eq!(fixture.actions("execute").len(), 1);
+    assert_eq!(
+        fixture
+            .actions("gh")
+            .iter()
+            .filter(|entry| entry["args"][1] == "create")
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -891,57 +926,23 @@ fn transitive_blocking_is_independent_of_plan_order_and_failed_outcome() {
 }
 
 #[test]
-fn runtime_policies_apply_to_owned_children_and_block_dependents_after_interruption() {
-    use std::io::Read;
-    for (policy, idle) in [
-        ("continue-preserve", "1"),
-        ("interrupt-preserve", "1"),
-        ("interrupt-preserve", "60"),
-    ] {
+fn zero_runtime_budgets_preserve_event_driven_execution_and_dependency_results() {
+    for policy in ["continue-preserve", "interrupt-preserve"] {
         let fixture = Fixture::new();
-        let mut root = operations("deadline");
-        root["max_runtime"] = json!(1);
+        let mut root = operations("root");
+        root["max_runtime"] = json!(0);
         root["timeout_policy"] = json!(policy);
         let mut dependent = operations("dependent");
-        dependent["dependencies"] = json!(["deadline"]);
-        let socket = fixture.root.join("r");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-        let child = fixture
-            .command("driver")
-            .arg(fixture.config(json!([dependent, root])))
-            .env("ISSUE_2553_READY_SOCKET", &socket)
-            .env("ISSUE_2553_RELEASE_AFTER_TIMEOUT", "1")
-            .env("AMPLIHACK_IDLE_TIMEOUT_SECS", idle)
-            .env(
-                "ISSUE_2553_WAIT_FOR_KILL",
-                if policy == "interrupt-preserve" && idle == "1" {
-                    "1"
-                } else {
-                    "0"
-                },
-            )
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        let (mut connection, _) = listener.accept().unwrap();
-        let mut ready = [0; 5];
-        connection.read_exact(&mut ready).unwrap();
-        // The fixture waits on the production timeout checkpoint, rather than
-        // relying on a scheduling window before deciding whether to complete.
-        let output = child.wait_with_output().unwrap();
-        if policy == "continue-preserve" {
-            succeeded(&output);
-            assert_eq!(fixture.actions("execute").len(), 2);
-        } else {
-            assert!(!output.status.success());
-            assert_eq!(
-                fixture.state("deadline")["lifecycle_state"],
-                "timed_out_resumable"
-            );
-            assert_eq!(fixture.state("dependent")["lifecycle_state"], "blocked");
-            assert_eq!(fixture.actions("execute").len(), 1);
-        }
+        dependent["dependencies"] = json!(["root"]);
+        succeeded(&fixture.run(json!([dependent, root])));
+        assert_eq!(fixture.state("root")["lifecycle_state"], "completed");
+        assert_eq!(fixture.state("dependent")["lifecycle_state"], "completed");
+        let executions = fixture.actions("execute");
+        assert_eq!(executions.len(), 2);
+        assert_eq!(
+            executions[1]["context"]["prerequisite_results"]["root"]["operations_result"],
+            "OPERATIONS_RESULT: completed — fixture answer"
+        );
     }
 }
 
@@ -1053,38 +1054,36 @@ fn cleanup_rejects_changed_ownership_and_symlink_substitution() {
 }
 
 #[test]
-fn cancellation_after_a_continue_timeout_reaps_the_child_and_blocks_dependencies() {
+fn cancellation_with_a_zero_runtime_budget_reaps_the_child_and_blocks_dependencies() {
     use std::io::Read;
     let fixture = Fixture::new();
-    let mut root = operations("deadline");
-    root["max_runtime"] = json!(1);
+    let mut root = operations("root");
+    root["max_runtime"] = json!(0);
     root["timeout_policy"] = json!("continue-preserve");
     let mut dependent = operations("dependent");
-    dependent["dependencies"] = json!(["deadline"]);
+    dependent["dependencies"] = json!(["root"]);
     let socket = fixture.root.join("r");
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     let mut child = fixture
         .command("driver")
         .arg(fixture.config(json!([dependent, root])))
         .env("ISSUE_2553_READY_SOCKET", &socket)
-        .env("ISSUE_2553_RELEASE_AFTER_TIMEOUT", "1")
-        .env("ISSUE_2553_CANCEL_AFTER_TIMEOUT", "1")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
     let (mut connection, _) = listener.accept().unwrap();
-    let mut ready = [0; 11];
+    let mut ready = [0; 5];
     connection.read_exact(&mut ready).unwrap();
-    assert_eq!(&ready, b"readytimed!");
+    assert_eq!(&ready, b"ready");
     assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGINT) }, 0);
     assert!(!child.wait().unwrap().success());
     assert_eq!(
-        fixture.state("deadline")["lifecycle_state"],
+        fixture.state("root")["lifecycle_state"],
         "interrupted_resumable"
     );
     assert_eq!(fixture.state("dependent")["lifecycle_state"], "blocked");
-    assert!(fixture.state("deadline")["last_pid"].is_null());
+    assert!(fixture.state("root")["last_pid"].is_null());
     assert_eq!(fixture.actions("execute").len(), 1);
 }
 
@@ -1134,7 +1133,7 @@ fn data_and_parent_environment_cannot_override_validated_routes_or_run_shell_com
 }
 
 #[test]
-fn completion_before_the_deadline_succeeds_under_both_runtime_policies() {
+fn runtime_metadata_survives_successful_completion_under_both_policies() {
     for policy in ["continue-preserve", "interrupt-preserve"] {
         let fixture = Fixture::new();
         let mut leaf = operations("quick");
@@ -1143,6 +1142,8 @@ fn completion_before_the_deadline_succeeds_under_both_runtime_policies() {
         succeeded(&fixture.run(json!([leaf])));
         assert_eq!(fixture.state("quick")["lifecycle_state"], "completed");
         assert_eq!(fixture.state("quick")["last_exit_code"], 0);
+        assert_eq!(fixture.state("quick")["max_runtime"], 10);
+        assert_eq!(fixture.state("quick")["timeout_policy"], policy);
     }
 }
 

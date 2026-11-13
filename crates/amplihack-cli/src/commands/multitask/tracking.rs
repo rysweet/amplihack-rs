@@ -3,8 +3,8 @@ use super::{issue, models::Workstream, persistence::persist_state};
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::Value;
 use std::{
+    io::Read,
     process::{Command, Output, Stdio},
-    time::Duration,
 };
 
 fn github(ws: &Workstream, args: &[&str]) -> Result<Output> {
@@ -13,11 +13,36 @@ fn github(ws: &Workstream, args: &[&str]) -> Result<Output> {
         .args(args)
         .current_dir(&ws.work_dir)
         .env("GH_PROMPT_DISABLED", "1")
-        .stdin(Stdio::null());
-    // Never retry creation: even a timeout can follow a successful write.
-    // Bound retained service output and omit raw stderr, which may contain secrets.
-    crate::util::run_output_with_timeout_limited(command, Duration::from_secs(60), 1024 * 1024)
-        .with_context(|| {
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    // Wait for EOF and exit, without retrying an uncertain write. Retain at
+    // most one MiB plus an overflow byte; discard the rest and sensitive stderr.
+    let output = (|| -> Result<Output> {
+        let mut child = command.spawn()?;
+        let mut stdout = child.stdout.take().context("missing tracking output")?;
+        let mut retained = Vec::new();
+        let read = (|| -> std::io::Result<()> {
+            stdout
+                .by_ref()
+                .take(1024 * 1024 + 1)
+                .read_to_end(&mut retained)?;
+            std::io::copy(&mut stdout, &mut std::io::sink())?;
+            Ok(())
+        })();
+        let status = child.wait()?;
+        read?;
+        ensure!(
+            retained.len() <= 1024 * 1024,
+            "tracking output exceeded capture limit"
+        );
+        Ok(Output {
+            status,
+            stdout: retained,
+            stderr: Vec::new(),
+        })
+    })();
+    output.with_context(|| {
             format!(
                 "[{}] tracking service call failed; intent {} retained for reconciliation before resuming",
                 ws.key, ws.tracking_reference

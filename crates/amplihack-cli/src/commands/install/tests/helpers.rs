@@ -160,6 +160,16 @@ esac
 
 fn write_compatible_recipe_bundle(recipes: &Path) {
     fs::create_dir_all(recipes).unwrap();
+    // Operations is a required installed route. Use the shipped recipe so
+    // installation fixtures exercise the same asset as a real bundle.
+    fs::write(
+        recipes.join("operations-direct.yaml"),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../amplifier-bundle/recipes/operations-direct.yaml"
+        )),
+    )
+    .unwrap();
     fs::write(
         recipes.join("smart-orchestrator.yaml"),
         r#"name: "smart-orchestrator"

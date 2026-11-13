@@ -149,7 +149,7 @@ pub(super) fn launch(ws: &mut Workstream, mode: &str, prerequisites: Value) -> R
     let output = private_output(&ws.artefact_dir.join("output.json"))?;
     command
         .current_dir(&ws.work_dir)
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(unix)]
@@ -202,5 +202,8 @@ pub(super) fn launch(ws: &mut Workstream, mode: &str, prerequisites: Value) -> R
         let _ = child.wait();
         return Err(error);
     }
+    // EOF is the launch acknowledgement for consumers that need the durable
+    // running checkpoint before reporting readiness. Other agents ignore it.
+    drop(child.stdin.take());
     Ok(child)
 }

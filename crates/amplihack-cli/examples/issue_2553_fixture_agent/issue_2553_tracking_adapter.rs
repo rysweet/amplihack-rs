@@ -1,4 +1,4 @@
-//! Production `gh` command boundary, backed only by private fixture files.
+//! Production `gh` command boundary, backed only by private example fixture files.
 
 use serde_json::{Value, json};
 use std::{env, fs};
@@ -23,6 +23,11 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             anyhow::bail!("fixture lost acknowledgement after creating issue");
         }
         match mode.as_str() {
+            "oversized" => {
+                use std::io::Write;
+                std::io::stdout().write_all(&vec![b'x'; 2 * 1024 * 1024])?;
+                return Ok(());
+            }
             "zero" => {
                 println!("0");
                 return Ok(());

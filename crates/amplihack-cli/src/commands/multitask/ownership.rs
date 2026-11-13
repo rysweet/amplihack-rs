@@ -27,9 +27,7 @@ impl RepositoryIdentity {
             "--git-dir",
             "--show-toplevel",
         ]);
-        let output =
-            crate::util::run_output_with_timeout(command, std::time::Duration::from_secs(30))
-                .context("read source Git identity")?;
+        let output = command.output().context("read source Git identity")?;
         ensure!(
             output.status.success(),
             "cannot establish source Git identity; run from the originating worktree"
