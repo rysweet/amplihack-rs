@@ -13,6 +13,7 @@ context:
   autodrive_invocation_file: ""
   autodrive_authorization: ""
   build_result: ""
+  finalization_observations: ""
 steps:
   - id: "observe-finalization-entry"
     type: "agent"
