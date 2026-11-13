@@ -216,26 +216,40 @@ impl WorkflowClassifier {
     }
 }
 
-/// True when the request explicitly asks for a tracked repository file to
-/// change (issue #2553).
-///
-/// Conservative by construction: merely mentioning a source path, a coverage
-/// figure or an existing pull request is not enough. A clause must carry an
-/// edit verb as a whole word *and* name an edit destination. The request is
-/// split on `;` and newline so that one administrative clause cannot vouch
-/// for an editing clause, or the reverse.
-///
-/// A clause whose object is administrative — creating or assigning an issue,
-/// reporting coverage, coordinating a review — stays administrative even when
-/// its subject is code, unless the same clause also conjoins an explicit edit
-/// ("and update", "and commit"). "Create an issue about `src/router.rs`" is
-/// therefore not a repository edit, while "... and update it" is.
-///
-/// Shared with `commands::orch::reclassify_task_type`, so the hook-level and
-/// decomposition-level answers cannot drift apart.
+/// Classify requested actions with their own objects and destinations.
+/// Quoted titles are data; infinitives inside an administrative object describe
+/// that object, while conjoined actions are evaluated independently.
 pub fn requires_repository_edit(request: &str) -> bool {
     let lower = request.to_ascii_lowercase();
-    let edit = [
+    let mut quote = None;
+    let mut previous = ' ';
+    let mut start = 0;
+    for (index, c) in lower.char_indices() {
+        if index < start {
+            continue;
+        }
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+        } else if c == '"' || c == '`' || (c == '\'' && !previous.is_alphanumeric()) {
+            quote = Some(c);
+        } else if let Some(separator) = [" and ", ", then ", " then ", ". ", ";", "\n"]
+            .iter()
+            .find(|separator| lower[index..].starts_with(**separator))
+        {
+            if repository_edit_action(&lower[start..index]) {
+                return true;
+            }
+            start = index + separator.len();
+        }
+        previous = c;
+    }
+    repository_edit_action(&lower[start..])
+}
+
+fn repository_edit_action(action: &str) -> bool {
+    let verbs = [
         "rename",
         "change",
         "fix",
@@ -253,90 +267,124 @@ pub fn requires_repository_edit(request: &str) -> bool {
         "build",
         "create",
         "port",
+        "open",
+        "post",
+        "report",
+        "research",
+        "assign",
+        "coordinate",
+        "triage",
+        "read",
     ];
-    // `documentation` on its own is deliberately absent: writing an answer
-    // *about* documentation into chat edits no tracked file. The destinations
-    // here all name a file, a path or an explicit tracked-file scope.
-    let destination = [
+    let words: Vec<&str> = action.split_whitespace().collect();
+    let Some(index) = words
+        .iter()
+        .position(|word| verbs.contains(&word.trim_matches(|c: char| !c.is_ascii_alphanumeric())))
+    else {
+        return false;
+    };
+    let verb = words[index].trim_matches(|c: char| !c.is_ascii_alphanumeric());
+    let object = words[index + 1..].join(" ");
+    let object = object
+        .trim_start_matches("the ")
+        .trim_start_matches("an ")
+        .trim_start_matches("a ");
+    if ["write", "post", "report"].contains(&verb) {
+        let destination = object
+            .rsplit_once(" into ")
+            .or_else(|| object.rsplit_once(" to "))
+            .map(|(_, destination)| {
+                destination
+                    .trim_start_matches(['`', '\'', '"'])
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+            });
+        if destination.is_some_and(|path| {
+            let path = path.trim_matches(['`', '\'', '"', ',', '.']);
+            !path.contains("://")
+                && (path.contains('/')
+                    || path == "readme"
+                    || [".rs", ".md", ".yaml", ".toml"]
+                        .iter()
+                        .any(|extension| path.ends_with(extension)))
+        }) {
+            return true;
+        }
+    }
+    // The head object governs subordinate descriptions, including "to add
+    // tests" and paths in an issue title. Independent actions were split above.
+    let has_object = |noun: &str| {
+        object
+            .strip_prefix(noun)
+            .is_some_and(|tail| tail.chars().next().is_none_or(char::is_whitespace))
+    };
+    if [
+        "issue",
+        "issues",
+        "triage issue",
+        "cross-check issue",
+        "comment",
+        "review",
+    ]
+    .iter()
+    .any(|noun| has_object(noun))
+        || [
+            "post",
+            "report",
+            "research",
+            "assign",
+            "coordinate",
+            "triage",
+            "read",
+        ]
+        .contains(&verb)
+    {
+        return false;
+    }
+    if verb == "open" {
+        return has_object("pr") || has_object("pull request");
+    }
+    if object.starts_with("tests") || object.starts_with("test ") {
+        return true;
+    }
+    let destinations = [
         "tracked",
         "docs/",
-        "readme.md",
+        "readme",
         "documentation file",
-        "documentation files",
         "across the docs",
         "src/",
         "crates/",
         "tests/",
         "source files",
-        "code and docs",
+        "code",
         ".rs",
         ".md",
         ".yaml",
         ".toml",
     ];
-    // Administrative objects remain administrative even when their subject is code.
-    let administration = [
-        "create an issue",
-        "create a triage issue",
-        "open an issue",
-        "open a cross-check issue",
-        "assign issue",
-        "report unit test",
-        "report test coverage",
-        "coordinate review",
-    ];
-    let clauses = lower.replace(", then ", ";").replace(" then ", ";");
-    clauses.split([';', '\n']).any(|clause| {
-        let report_destination = [
-            "in chat",
-            "in the status issue",
-            "in the coordination issue",
-            "in an issue",
-            "issue comment",
-        ]
-        .iter()
-        .any(|destination| clause.contains(destination));
-        let report_object = [
-            "answers",
-            "findings",
-            "status report",
-            "write up",
-            "write-up",
-            "report about",
-        ]
-        .iter()
-        .any(|object| clause.contains(object));
-        let admin = administration.iter().any(|s| clause.contains(s))
-            || (report_destination && report_object);
-        let explicit_edit = [
-            "and edit",
-            "and update",
-            "and commit",
-            "and remove",
-            "and rename",
-            "and replace",
-            "and correct",
-            "and refactor",
-            "and implement",
-        ]
-        .iter()
-        .any(|s| clause.contains(s));
-        (!admin || explicit_edit)
-            && edit.iter().any(|verb| {
-                clause
-                    .split(|c: char| !c.is_ascii_alphanumeric())
-                    .any(|word| word == *verb)
-            })
-            && destination.iter().any(|path| clause.contains(path))
-    }) || [
-        "write tests",
-        "add tests",
-        "add a test",
-        "open a pr",
-        "open pr",
-    ]
-    .iter()
-    .any(|s| lower.contains(s))
+    // A path inside an "about ..." subject is incidental. A later destination
+    // ("into docs/report.md") still authorises an edit of that destination.
+    let destination = object
+        .rsplit_once(" into ")
+        .map(|(_, dest)| dest)
+        .or_else(|| object.rsplit_once(" to ").map(|(_, dest)| dest))
+        .unwrap_or_else(|| {
+            let subject = object
+                .split(" about ")
+                .next()
+                .unwrap_or(object)
+                .split(" regarding ")
+                .next()
+                .unwrap_or(object);
+            if verb == "write" {
+                subject.split(" from ").next().unwrap_or(subject)
+            } else {
+                subject
+            }
+        });
+    destinations.iter().any(|path| destination.contains(path))
 }
 
 /// Administrative objects: triage, issue bookkeeping, coordination, and an
@@ -362,6 +410,8 @@ pub fn administrative_action(request: &str) -> bool {
         "coordina",
         "answers",
         "in chat",
+        "issue comment",
+        "findings",
         "question set",
     ]
     .iter()

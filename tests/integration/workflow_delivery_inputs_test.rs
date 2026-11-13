@@ -813,7 +813,7 @@ fn light_recipes_refuse_an_inherited_strict_delivery() {
 }
 
 // ---------------------------------------------------------------------------
-// smart-orchestrator: parallel workstreams do not carry the inputs
+// smart-orchestrator: concurrency controls preserve every decomposition leaf
 // ---------------------------------------------------------------------------
 
 /// smart-classify-route's activate-workflow with a decomposition of three
@@ -860,14 +860,9 @@ fn run_activate_workflow(strict: &str, force_single: &str) -> (String, String) {
 }
 
 #[test]
-fn smart_orchestrator_keeps_a_strict_run_on_one_workstream() {
-    // launch-parallel-round-1 hands each workstream only create_issue, and
-    // each workstream's default-workflow runs in its own process with its
-    // declared defaults. A strict run split that way would create a branch
-    // per workstream from the remote default, so activate-workflow keeps it
-    // on one workstream, where default-workflow runs in-process and keeps
-    // strict_delivery. A value step-03 does not accept also stays on one
-    // workstream, so step-03 can refuse it.
+fn smart_orchestrator_preserves_all_leaves_under_strict_and_capacity_settings() {
+    // Strict delivery and the concurrency override do not discard leaves
+    // from the decomposition.
     let doc: Value = serde_yaml::from_str(
         &fs::read_to_string(
             workspace_root().join("amplifier-bundle/recipes/smart-classify-route.yaml"),
@@ -876,23 +871,17 @@ fn smart_orchestrator_keeps_a_strict_run_on_one_workstream() {
     )
     .unwrap();
     assert_eq!(doc["context"]["strict_delivery"].as_str(), Some("false"));
-    for (strict, force_single, want) in [
-        ("", "", "3"),
-        ("false", "", "3"),
-        ("false", "true", "1"),
-        ("true", "", "1"),
-        ("TRUE", "", "1"),
+    for (strict, force_single) in [
+        ("", ""),
+        ("false", ""),
+        ("false", "true"),
+        ("true", ""),
+        ("TRUE", ""),
     ] {
         let (count, stderr) = run_activate_workflow(strict, force_single);
         assert_eq!(
-            count, want,
+            count, "3",
             "strict={strict:?} force={force_single:?}\n{stderr}"
-        );
-        let names_strict = stderr.contains("strict_delivery is set");
-        assert_eq!(
-            names_strict,
-            !matches!(strict, "" | "false"),
-            "strict={strict:?}: the override says why\n{stderr}"
         );
     }
 }

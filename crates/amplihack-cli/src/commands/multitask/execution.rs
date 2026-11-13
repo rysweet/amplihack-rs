@@ -145,31 +145,33 @@ pub(super) fn launch(ws: &mut Workstream, mode: &str, prerequisites: Value) -> R
         .env("AMPLIHACK_WORKSTREAM_STATE_FILE", &ws.state_file)
         .env("AMPLIHACK_WORKSTREAM_PROGRESS_FILE", &ws.progress_file)
         .env("AMPLIHACK_DELEGATE", super::launcher::detect_delegate());
-    let mut options = fs::OpenOptions::new();
-    options.create(true).write(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    let log = options.open(&ws.log_file)?;
+    let log = private_output(&ws.log_file)?;
+    let output = private_output(&ws.artefact_dir.join("output.json"))?;
     command
         .current_dir(&ws.work_dir)
         .stdin(Stdio::null())
-        .stdout(private_output(&ws.artefact_dir.join("output.json"))?)
-        .stderr(log);
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
     // Persist the launch intent before the child can perform external actions.
+    ws.exit_code = None;
+    ws.end_time = None;
     ws.lifecycle_state = "launching".into();
     ws.attempt += 1;
     persist_state(ws)?;
     let mut child = command
         .spawn()
         .with_context(|| format!("[{}] launch {}", ws.key, ws.recipe))?;
+    ws.output_capture = Some(super::log_output::Capture::start(
+        child.stdout.take().context("missing child stdout")?,
+        child.stderr.take().context("missing child stderr")?,
+        output,
+        log,
+    ));
     ws.pid = Some(child.id());
     ws.start_time = Some(Instant::now());
     ws.lifecycle_state = "running".into();
@@ -190,12 +192,14 @@ pub(super) fn launch(ws: &mut Workstream, mode: &str, prerequisites: Value) -> R
     };
 
     if let Err(error) = persist_state(ws) {
-        child
-            .kill()
-            .context("stop child after persistence failure")?;
-        child
-            .wait()
-            .context("reap child after persistence failure")?;
+        // Stop the whole owned process group; never act on a restored PID.
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        }
+        #[cfg(not(unix))]
+        let _ = child.kill();
+        let _ = child.wait();
         return Err(error);
     }
     Ok(child)

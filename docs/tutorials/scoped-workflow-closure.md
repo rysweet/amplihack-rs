@@ -4,15 +4,15 @@
 **Skill level**: Intermediate
 
 This tutorial walks through a `default-workflow` run that ignores unrelated PRs
-and stale process records while closing the PR owned by the current workstream.
+while closing the PR owned by the current workstream.
 
 ## What You'll Learn
 
 By the end of this tutorial you can:
 
-1. Launch `default-workflow` with explicit PR and process scope.
+1. Launch `default-workflow` with explicit PR scope.
 2. Validate that a PR belongs to the current workflow.
-3. Recognize stale process records that must not notify.
+3. Understand how multitask recovery handles saved ownership state.
 4. Read final status from scoped PR metadata.
 
 ## Prerequisites
@@ -59,9 +59,12 @@ amplihack recipe run default-workflow \
   -c "task_description=Fix default-workflow monitor notifications for issue #754"
 ```
 
-The launcher records process scope for each workstream. The persisted state
-contains the PID, workdir, branch, issue number, recipe run id, tree id,
-workstream id, base branch, and process start metadata.
+The multitask runner persists each workstream's key, optional tracked issue,
+lifecycle state, workstream scope and process ownership metadata. Its current
+run waits for owned child exits and cancellation; recovery preserves a saved
+live process and requires reconciliation before resuming. See
+[Workstream state and recovery](../reference/workstream-state.md) for the
+persisted schema and recovery steps.
 
 ## Step 3: Validate the Workflow PR
 
@@ -124,33 +127,15 @@ Because `(repository, head, base)` is unique for an OPEN PR, the helper returns
 advanced remote head. `--issue` and `--head-sha` would only be consulted if two
 candidates shared the same head and base.
 
-## Step 4: Observe Stale Process Rejection
+## Step 4: Recover Multitask Ownership
 
-A stale workstream record can appear in monitor state:
-
-```json
-{
-  "workstream_id": "old-default-workflow",
-  "scope": null,
-  "process_scope": {
-    "pid": 41872,
-    "process_start_marker": "41872:73112200"
-  }
-}
-```
-
-When PID `41872` now belongs to a different process, validation returns:
-
-```json
-{
-  "validation": "pid_reused",
-  "authoritative": false,
-  "notification_authority": false
-}
-```
-
-The monitor may show the record for diagnostics. It does not notify that the old
-workstream is active and does not close the current workflow based on it.
+The multitask runner persists logical workstream scope and process ownership
+metadata with each state file. The active runner owns children it launched and
+waits for their exit or cancellation. A saved live process after restart is
+preserved; the runner refuses to resume it until ownership and external outcome
+are reconciled. It does not infer liveness or completion from a persisted PID.
+Follow [Workstream state and recovery](../reference/workstream-state.md)
+for the resume and reconciliation procedure.
 
 ## Step 5: Check Readiness and Final Status
 
@@ -188,14 +173,13 @@ workflow reruns checks against the new head.
 
 ## Step 6: Interpret the Result
 
-Scoped closure produces one of these outcomes:
+PR scope validation and publication produce outcomes such as:
 
 | Outcome | Meaning |
 | --- | --- |
-| `valid` | The PR or process belongs to the current workflow. |
+| `valid` | The PR belongs to the current workflow. |
 | `existing-open-pr` | Publish found the workflow's PR already open (create collision) and adopted it as success instead of failing. |
 | `blocked` | Required current-work scope is missing or mismatched. |
-| `display-only` | State is readable for diagnostics but cannot notify or close. |
 | `not_authoritative` | A candidate exists but fails one or more scope checks. |
 
 The final workflow may close the tracking issue only after the scoped PR is

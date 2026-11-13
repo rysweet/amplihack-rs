@@ -145,6 +145,8 @@ impl WorkstreamConfig {
 /// Runtime state for a single workstream.
 #[derive(Debug)]
 pub struct Workstream {
+    pub(super) output_capture: Option<super::log_output::Capture>,
+    pub source_repository: super::ownership::RepositoryIdentity,
     pub classification: String,
     pub dependencies: Vec<String>,
     pub create_issue: bool,
@@ -200,6 +202,8 @@ impl Workstream {
         let state_file = state_dir.join(format!("ws-{key}.json"));
         let progress_file = state_dir.join(format!("ws-{key}.progress.json"));
         Self {
+            source_repository: Default::default(),
+            output_capture: None,
             classification: if recipe == "operations-direct" {
                 "Operations"
             } else {
@@ -274,6 +278,8 @@ impl Workstream {
 /// Persisted state for a workstream (JSON on disk).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PersistedState {
+    #[serde(default)]
+    pub source_repository: super::ownership::RepositoryIdentity,
     #[serde(default)]
     pub classification: String,
     #[serde(default)]

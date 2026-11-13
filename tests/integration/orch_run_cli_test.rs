@@ -6,8 +6,7 @@
 //!
 //! Contract:
 //! - Subcommand `orch run` accepts a positional `<WS_FILE>` path argument.
-//! - Empty workstreams JSON array exits 0 with a stderr notice (matches
-//!   `multitask::run_multitask` short-circuit at models.rs/mod.rs).
+//! - Empty workstreams JSON arrays are rejected before execution.
 //! - `orch run --help` is visible (subcommand wired into clap).
 
 use tempfile::TempDir;
@@ -36,7 +35,7 @@ fn orch_run_help_is_available() {
 }
 
 #[test]
-fn orch_run_empty_workstreams_exits_zero() {
+fn orch_run_empty_workstreams_is_rejected_before_execution() {
     let tmp = TempDir::new().expect("tempdir");
     let ws = tmp.path().join("ws.json");
     std::fs::write(&ws, "[]").expect("write ws.json");
@@ -47,15 +46,14 @@ fn orch_run_empty_workstreams_exits_zero() {
         .output()
         .expect("failed to execute amplihack orch run");
 
-    assert!(
-        output.status.success(),
-        "orch run with empty array should exit 0; stderr={}",
-        String::from_utf8_lossy(&output.stderr)
-    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("No workstreams"),
-        "expected 'No workstreams' notice on stderr; got: {stderr}"
+        !output.status.success(),
+        "orch run must reject an empty plan; stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("plan.workstreams must be a non-empty array"),
+        "expected a clear empty-plan diagnostic; got: {stderr}"
     );
 }
 

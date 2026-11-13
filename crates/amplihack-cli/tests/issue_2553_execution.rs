@@ -256,10 +256,21 @@ fn pure_operations_overrides_development_recipe_before_any_development_setup() {
     let fixture = Fixture::new();
     let mut leaf = operations("triage");
     leaf["recipe"] = json!("default-workflow");
-    succeeded(&fixture.run(json!([leaf])));
+    use std::os::unix::ffi::OsStringExt;
+    let output = fixture
+        .command("driver")
+        .arg(fixture.config(json!([leaf])))
+        .env(
+            "ISSUE_2553_NON_UTF8",
+            std::ffi::OsString::from_vec(vec![0xff]),
+        )
+        .output()
+        .unwrap();
+    succeeded(&output);
     let executions = fixture.actions("execute");
     assert_eq!(executions.len(), 1, "must execute, not merely register");
     assert_eq!(executions[0]["recipe"], "operations-direct");
+    assert_eq!(executions[0]["delegate"], "amplihack claude");
     assert_eq!(executions[0]["cwd"], json!(fixture.root.join("repository")));
     assert!(!fixture.actions("git").iter().any(|action| {
         action["args"].as_array().unwrap().iter().any(|arg| {
@@ -600,7 +611,11 @@ fn invalid_plans_produce_no_external_actions_even_when_the_first_leaf_is_valid()
     let mut cycle_b = operations("cycle-b");
     cycle_a["dependencies"] = json!(["cycle-b"]);
     cycle_b["dependencies"] = json!(["cycle-a"]);
+    let mut unsupported = operations("unsupported");
+    unsupported["classification"] = json!("Investigation");
+    unsupported["recipe"] = json!("unknown-workflow");
     let mut cases = vec![
+        json!([operations("valid"), unsupported]),
         json!([operations("duplicate"), operations("duplicate")]),
         json!([cycle_a, cycle_b]),
     ];
@@ -611,6 +626,7 @@ fn invalid_plans_produce_no_external_actions_even_when_the_first_leaf_is_valid()
         ("dependencies", json!(["missing"])),
         ("classification", json!("unsupported-route")),
         ("create_issue", json!("perhaps")),
+        ("timeout_policy", json!("ignore")),
     ] {
         let mut invalid = operations("invalid");
         invalid[field] = value;
@@ -671,9 +687,13 @@ fn cancellation_after_child_readiness_preserves_state_without_a_clock_window() {
     let fixture = Fixture::new();
     let socket = fixture.root.join("r");
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let mut dependent = operations("child");
+    dependent["dependencies"] = json!(["cancelled"]);
+    let mut grandchild = operations("grandchild");
+    grandchild["dependencies"] = json!(["child"]);
     let mut child = fixture
         .command("driver")
-        .arg(fixture.config(json!([operations("cancelled")])))
+        .arg(fixture.config(json!([grandchild, dependent, operations("cancelled")])))
         .env("ISSUE_2553_READY_SOCKET", &socket)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -687,6 +707,8 @@ fn cancellation_after_child_readiness_preserves_state_without_a_clock_window() {
     assert!(!child.wait().unwrap().success());
     let state = fixture.state("cancelled");
     assert_eq!(state["lifecycle_state"], "interrupted_resumable");
+    assert_eq!(fixture.state("child")["lifecycle_state"], "blocked");
+    assert_eq!(fixture.state("grandchild")["lifecycle_state"], "blocked");
     assert_eq!(fixture.actions("completed").len(), 0);
     assert!(
         fixture
@@ -765,5 +787,445 @@ fn owned_operations_cleanup_keeps_completion_and_never_repeats_external_actions(
     succeeded(&fixture.run(json!([leaf])));
     assert_eq!(fixture.actions("completed").len(), 1);
     assert!(fixture.actions("gh").is_empty());
+    fixture.assert_preserved();
+}
+
+#[test]
+fn development_recovery_is_bound_to_the_source_repository_and_worktree() {
+    let fixture = Fixture::new();
+    let mut leaf = operations("edit");
+    leaf["task"] = json!("Update src/lib.rs.");
+    leaf["classification"] = json!("Development");
+    leaf["recipe"] = json!("default-workflow");
+    let config = fixture.config(json!([leaf]));
+    let run = || {
+        fixture
+            .command("driver")
+            .arg(&config)
+            .env("ISSUE_2553_DEVELOPMENT_KEY", "edit")
+            .output()
+            .unwrap()
+    };
+    succeeded(&run());
+    succeeded(&run());
+    assert_eq!(fixture.actions("execute").len(), 1);
+    let saved = fixture.state("edit");
+    let other = fixture.root.join("other-repository");
+    fs::create_dir_all(other.join(".git")).unwrap();
+    let output = fixture
+        .command("driver")
+        .arg(&config)
+        .current_dir(&other)
+        .env("ISSUE_2553_DEVELOPMENT_KEY", "edit")
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "foreign repository adopted completed success"
+    );
+    assert_eq!(fixture.state("edit"), saved);
+    assert_eq!(fixture.actions("execute").len(), 1);
+    let linked_worktree = fixture
+        .command("driver")
+        .arg(&config)
+        .current_dir(&other)
+        .env(
+            "ISSUE_2553_COMMON_DIR",
+            fixture.root.join("repository/.git"),
+        )
+        .env("ISSUE_2553_DEVELOPMENT_KEY", "edit")
+        .output()
+        .unwrap();
+    assert!(
+        !linked_worktree.status.success(),
+        "shared Git common directory must not hide a different source worktree"
+    );
+    assert_eq!(fixture.actions("execute").len(), 1);
+}
+
+#[test]
+fn retained_atomic_temporary_files_do_not_prevent_recovery() {
+    let fixture = Fixture::new();
+    let plan = json!([operations("resume")]);
+    succeeded(&fixture.run(plan.clone()));
+    fs::write(
+        fixture.state_dir().join("canonical-plan.tmp"),
+        b"interrupted replacement",
+    )
+    .unwrap();
+    succeeded(&fixture.run(plan));
+    assert_eq!(fixture.actions("execute").len(), 1);
+}
+
+#[test]
+fn transitive_blocking_is_independent_of_plan_order_and_failed_outcome() {
+    for order in [[0, 1, 2, 3], [2, 1, 3, 0], [3, 2, 0, 1]] {
+        for status in ["partial", "failed"] {
+            let fixture = Fixture::new();
+            let mut child = operations("child");
+            child["dependencies"] = json!(["root"]);
+            let mut grandchild = operations("grandchild");
+            grandchild["dependencies"] = json!(["child"]);
+            let mut branch = operations("branch");
+            branch["dependencies"] = json!(["root", "child"]);
+            let nodes = [operations("root"), child, grandchild, branch];
+            let output = fixture
+                .command("driver")
+                .arg(fixture.config(Value::Array(
+                    order.iter().map(|&i| nodes[i].clone()).collect(),
+                )))
+                .env("ISSUE_2553_AGENT_STATUS", status)
+                .output()
+                .unwrap();
+            assert!(!output.status.success());
+            assert_eq!(fixture.actions("execute").len(), 1);
+            for key in ["child", "grandchild", "branch"] {
+                assert_eq!(
+                    fixture.state(key)["lifecycle_state"],
+                    "blocked",
+                    "{order:?}: {key}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn runtime_policies_apply_to_owned_children_and_block_dependents_after_interruption() {
+    use std::io::Read;
+    for (policy, idle) in [
+        ("continue-preserve", "1"),
+        ("interrupt-preserve", "1"),
+        ("interrupt-preserve", "60"),
+    ] {
+        let fixture = Fixture::new();
+        let mut root = operations("deadline");
+        root["max_runtime"] = json!(1);
+        root["timeout_policy"] = json!(policy);
+        let mut dependent = operations("dependent");
+        dependent["dependencies"] = json!(["deadline"]);
+        let socket = fixture.root.join("r");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let child = fixture
+            .command("driver")
+            .arg(fixture.config(json!([dependent, root])))
+            .env("ISSUE_2553_READY_SOCKET", &socket)
+            .env("ISSUE_2553_RELEASE_AFTER_TIMEOUT", "1")
+            .env("AMPLIHACK_IDLE_TIMEOUT_SECS", idle)
+            .env(
+                "ISSUE_2553_WAIT_FOR_KILL",
+                if policy == "interrupt-preserve" && idle == "1" {
+                    "1"
+                } else {
+                    "0"
+                },
+            )
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let (mut connection, _) = listener.accept().unwrap();
+        let mut ready = [0; 5];
+        connection.read_exact(&mut ready).unwrap();
+        // The fixture waits on the production timeout checkpoint, rather than
+        // relying on a scheduling window before deciding whether to complete.
+        let output = child.wait_with_output().unwrap();
+        if policy == "continue-preserve" {
+            succeeded(&output);
+            assert_eq!(fixture.actions("execute").len(), 2);
+        } else {
+            assert!(!output.status.success());
+            assert_eq!(
+                fixture.state("deadline")["lifecycle_state"],
+                "timed_out_resumable"
+            );
+            assert_eq!(fixture.state("dependent")["lifecycle_state"], "blocked");
+            assert_eq!(fixture.actions("execute").len(), 1);
+        }
+    }
+}
+
+#[test]
+fn failed_checkpoint_write_retains_committed_state_and_prevents_next_launch() {
+    use std::io::{Read, Write};
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = Fixture::new();
+    let mut dependent = operations("dependent");
+    dependent["dependencies"] = json!(["root"]);
+    let socket = fixture.root.join("r");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let child = fixture
+        .command("driver")
+        .arg(fixture.config(json!([
+            operations("root"),
+            dependent,
+            operations("independent")
+        ])))
+        .env("ISSUE_2553_READY_SOCKET", &socket)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (mut connection, _) = listener.accept().unwrap();
+    let mut ready = [0; 5];
+    connection.read_exact(&mut ready).unwrap();
+    let path = fixture.state_dir().join("ws-root.json");
+    let committed = fs::read(&path).unwrap();
+    fs::set_permissions(fixture.state_dir(), fs::Permissions::from_mode(0o500)).unwrap();
+    connection.write_all(b"x").unwrap();
+    let output = child.wait_with_output().unwrap();
+    fs::set_permissions(fixture.state_dir(), fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(!output.status.success());
+    assert_eq!(fs::read(path).unwrap(), committed);
+    assert_eq!(fixture.actions("execute").len(), 1);
+    assert_ne!(fixture.state("root")["lifecycle_state"], "completed");
+    assert_ne!(fixture.state("dependent")["lifecycle_state"], "completed");
+    assert_eq!(fixture.state("independent")["lifecycle_state"], "pending");
+}
+
+#[test]
+fn corrupt_saved_routes_and_legacy_identity_fail_before_any_further_execution() {
+    for field in [
+        "recipe",
+        "source_repository",
+        "dependencies",
+        "classification",
+    ] {
+        let fixture = Fixture::new();
+        let leaf = operations("saved");
+        succeeded(&fixture.run(json!([leaf.clone()])));
+        let mut saved = fixture.state("saved");
+        if field == "source_repository" {
+            saved.as_object_mut().unwrap().remove(field);
+        } else {
+            saved[field] = match field {
+                "dependencies" => json!(["saved"]),
+                _ => json!("untrusted-route"),
+            };
+        }
+        fs::write(
+            fixture.state_dir().join("ws-saved.json"),
+            serde_json::to_vec(&saved).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            !fixture.run(json!([leaf])).status.success(),
+            "accepted corrupt {field}"
+        );
+        assert_eq!(fixture.actions("execute").len(), 1);
+        assert_eq!(fixture.state("saved"), saved);
+    }
+}
+
+#[test]
+fn cleanup_rejects_changed_ownership_and_symlink_substitution() {
+    for substitution in ["marker", "directory", "foreign-repository"] {
+        let fixture = Fixture::new();
+        let leaf = operations("owned");
+        succeeded(&fixture.run(json!([leaf.clone()])));
+        let marker = fixture.state_dir().join("ws-owned.owner.json");
+        let directory = fixture.root.join("runtime/amplihack-workstreams/ws-owned");
+        match substitution {
+            "marker" => {
+                fs::remove_file(&marker).unwrap();
+                std::os::unix::fs::symlink(fixture.root.join("repository/keep.txt"), &marker)
+                    .unwrap();
+            }
+            "directory" => {
+                fs::remove_dir_all(&directory).unwrap();
+                std::os::unix::fs::symlink(fixture.root.join("repository"), &directory).unwrap();
+            }
+            _ => {
+                let mut owner: Value = serde_json::from_slice(&fs::read(&marker).unwrap()).unwrap();
+                owner["source_repository"]["worktree"] = json!("/foreign");
+                fs::write(marker, serde_json::to_vec(&owner).unwrap()).unwrap();
+            }
+        }
+        let output = fixture
+            .command("cleanup")
+            .arg(fixture.config(json!([leaf])))
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "accepted {substitution}");
+        fixture.assert_preserved();
+        assert!(fixture.actions("gh").is_empty());
+    }
+}
+
+#[test]
+fn cancellation_after_a_continue_timeout_reaps_the_child_and_blocks_dependencies() {
+    use std::io::Read;
+    let fixture = Fixture::new();
+    let mut root = operations("deadline");
+    root["max_runtime"] = json!(1);
+    root["timeout_policy"] = json!("continue-preserve");
+    let mut dependent = operations("dependent");
+    dependent["dependencies"] = json!(["deadline"]);
+    let socket = fixture.root.join("r");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let mut child = fixture
+        .command("driver")
+        .arg(fixture.config(json!([dependent, root])))
+        .env("ISSUE_2553_READY_SOCKET", &socket)
+        .env("ISSUE_2553_RELEASE_AFTER_TIMEOUT", "1")
+        .env("ISSUE_2553_CANCEL_AFTER_TIMEOUT", "1")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (mut connection, _) = listener.accept().unwrap();
+    let mut ready = [0; 11];
+    connection.read_exact(&mut ready).unwrap();
+    assert_eq!(&ready, b"readytimed!");
+    assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGINT) }, 0);
+    assert!(!child.wait().unwrap().success());
+    assert_eq!(
+        fixture.state("deadline")["lifecycle_state"],
+        "interrupted_resumable"
+    );
+    assert_eq!(fixture.state("dependent")["lifecycle_state"], "blocked");
+    assert!(fixture.state("deadline")["last_pid"].is_null());
+    assert_eq!(fixture.actions("execute").len(), 1);
+}
+
+#[test]
+fn data_and_parent_environment_cannot_override_validated_routes_or_run_shell_commands() {
+    let fixture = Fixture::new();
+    let sentinel = fixture.root.join("injected");
+    let mut first = operations("first");
+    first["task"] = json!(format!(
+        "Report status in chat; $(touch '{}')",
+        sentinel.display()
+    ));
+    let mut second = operations("second");
+    second["dependencies"] = json!(["first"]);
+    let output = fixture
+        .command("driver")
+        .arg(fixture.config(json!([first, second])))
+        .env("RECIPE_VAR_recipe", "default-workflow")
+        .env("RECIPE_VAR_create_issue", "true")
+        .env("AMPLIHACK_CREATE_ISSUE", "true")
+        .env("AMPLIHACK_WORKSTREAM_ISSUE", "999")
+        .env("GITHUB_TOKEN", "private-fixture-credential-2553")
+        .output()
+        .unwrap();
+    succeeded(&output);
+    assert!(!sentinel.exists());
+    assert!(fixture.actions("gh").is_empty());
+    for action in fixture.actions("execute") {
+        assert_eq!(action["recipe"], "operations-direct");
+        assert!(action["inherited_recipe"].is_null());
+        assert!(action["inherited_issue"].is_null());
+        assert!(action["inherited_create_issue"].is_null());
+        assert_eq!(action["context"]["create_issue"], "false");
+    }
+    assert_eq!(fixture.state("second")["recipe"], "operations-direct");
+    for entry in fs::read_dir(fixture.state_dir()).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_file() {
+            assert!(
+                !fs::read_to_string(path)
+                    .unwrap()
+                    .contains("private-fixture-credential-2553")
+            );
+        }
+    }
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("private-fixture-credential-2553"));
+}
+
+#[test]
+fn completion_before_the_deadline_succeeds_under_both_runtime_policies() {
+    for policy in ["continue-preserve", "interrupt-preserve"] {
+        let fixture = Fixture::new();
+        let mut leaf = operations("quick");
+        leaf["max_runtime"] = json!(10);
+        leaf["timeout_policy"] = json!(policy);
+        succeeded(&fixture.run(json!([leaf])));
+        assert_eq!(fixture.state("quick")["lifecycle_state"], "completed");
+        assert_eq!(fixture.state("quick")["last_exit_code"], 0);
+    }
+}
+
+#[test]
+fn mixed_actions_keep_the_complete_task_and_use_a_route_that_permits_the_edit() {
+    for task in [
+        "Write the research findings into docs/report.md and post an issue comment.",
+        "Post an issue comment and write the research findings into docs/report.md.",
+        "Create an issue to add tests for src/router.rs and assign it to Alex.",
+    ] {
+        let fixture = Fixture::new();
+        let mut leaf = operations("edit");
+        leaf["task"] = json!(task);
+        let output = fixture
+            .command("driver")
+            .arg(fixture.config(json!([leaf])))
+            .env("ISSUE_2553_DEVELOPMENT_KEY", "edit")
+            .output()
+            .unwrap();
+        succeeded(&output);
+        let executions = fixture.actions("execute");
+        assert_eq!(executions.len(), 1);
+        assert_eq!(executions[0]["context"]["task_description"], task);
+        assert_eq!(
+            executions[0]["recipe"],
+            if task.starts_with("Create") {
+                "operations-direct"
+            } else {
+                "default-workflow"
+            }
+        );
+    }
+}
+
+#[test]
+fn credential_bearing_origins_are_rejected_before_git_arguments_or_diagnostics_can_expose_them() {
+    let fixture = Fixture::new();
+    let mut leaf = operations("edit");
+    leaf["task"] = json!("Update src/lib.rs.");
+    let output = fixture
+        .command("driver")
+        .arg(fixture.config(json!([leaf])))
+        .env(
+            "ISSUE_2553_ORIGIN",
+            "https://user:private-origin-token@github.com/test/repo.git",
+        )
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(fixture.actions("execute").is_empty());
+    assert!(!fixture.actions("git").iter().any(|action| {
+        action["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|arg| arg == "clone" || arg == "ls-remote")
+    }));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("private-origin-token"));
+}
+
+#[test]
+fn cleanup_service_errors_do_not_expose_credentials_or_remove_artefacts() {
+    let fixture = Fixture::new();
+    let mut leaf = operations("edit");
+    leaf["task"] = json!("Update src/lib.rs.");
+    let config = fixture.config(json!([leaf]));
+    succeeded(
+        &fixture
+            .command("driver")
+            .arg(&config)
+            .env("ISSUE_2553_DEVELOPMENT_KEY", "edit")
+            .output()
+            .unwrap(),
+    );
+    let output = fixture.command("cleanup").arg(config).output().unwrap();
+    assert!(!output.status.success());
+    assert_eq!(fixture.actions("gh").len(), 1);
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("fixture-secret-token"));
+    assert!(
+        fixture
+            .root
+            .join("runtime/amplihack-workstreams/ws-edit")
+            .is_dir()
+    );
     fixture.assert_preserved();
 }

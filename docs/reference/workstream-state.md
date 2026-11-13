@@ -30,14 +30,34 @@ with `TMPDIR`. Use the same root and execution repository when resuming.
 Runtime directories use mode `0700`; JSON state uses atomic replacement and
 mode `0600`. A runtime lock prevents concurrent owners. Invalid or unreadable
 state stops execution. Completed results are persisted before dependants start.
-Identity, route and execution-directory conflicts preserve existing artefacts
+Source repository, plan, identity, route and execution-directory conflicts preserve existing artefacts
 and return an error. The caller's Operations repository is never owned by the
 runtime. These checks do not confine the agent's filesystem access.
 
-The scheduler uses child-exit and cancellation events. It does not enforce
-wall-clock runtime budgets. Restored live processes and uncertain launch intents
-are preserved with an actionable error, rather than signalled or relaunched.
-The engine cannot prove completion for a process it no longer owns.
+The scheduler uses child-exit, cancellation and runtime deadline events.
+`max_runtime` defaults to 7200 seconds. At the deadline, both supported policies
+persist `timed_out_resumable` and retain recovery artefacts:
+
+- `continue-preserve` (default) lets the owned child continue. Its eventual
+  process result determines completion; an unsuccessful exit cannot be promoted
+  by generated prose.
+- `interrupt-preserve` interrupts only after output on both streams has been
+  idle for `AMPLIHACK_IDLE_TIMEOUT_SECS` (default 300 seconds). Active output
+  postpones interruption. The owned process group is killed and the child
+  reaped; the outcome stays resumable, even if the child exits normally after
+  crossing the deadline. Its dependants are blocked.
+
+Output activity is tracked independently of capture size. Both output streams
+are drained with bounded capture (`AMPLIHACK_MAX_LOG_BYTES`, default 100 MiB
+per stream); truncation is reported and truncated runner results cannot prove
+success. Git default-branch resolution and clone retain their established
+30-second and 300-second bounds. This restores the logging and idle-watchdog responsibilities previously
+provided by `log_output.rs` while retaining structured runner output.
+
+Restored live processes and uncertain launch intents are preserved with an
+actionable error, rather than signalled or relaunched. The engine cannot prove
+completion for a process it no longer owns. Cancellation also stops and reaps
+owned children and propagates blocking through every pending descendant.
 
 ## Saved plan and identity
 
@@ -48,6 +68,18 @@ temporary root per plan; this prevents independent plans sharing that file.
 On Unix, use the same `TMPDIR` for launch, inspection, resume and cleanup.
 The canonical plan must survive recipe scratch-file cleanup. It is not the
 helper's disposable `smart-orch-ws-*.json` file.
+
+`state/repository.json`, every ownership marker and each workstream state bind
+recovery to Git's canonical common directory, Git directory and source worktree
+root. A shared remote URL is insufficient. Another repository or linked worktree
+must use its own runtime root. Legacy state without this identity fails with
+instructions to preserve the artefacts and select a fresh runtime directory.
+
+Replacement files are uniquely created with private permissions in the
+destination directory. The writer syncs the complete replacement, renames it,
+and syncs the parent directory on Unix. Ordinary failures remove the temporary
+file without replacing the original error. A retained `canonical-plan.tmp`
+cannot prevent another write. Persistence failure stops subsequent launches.
 
 Before execution, the orchestrator saves each normalised leaf's immutable
 key, task, description, classification, resolved route, dependency keys and
@@ -102,8 +134,9 @@ recovery information. Private runtime directories and state files must have
 restrictive permissions.
 
 Completion and cancellation events drive transitions and scheduling. The
-orchestrator waits for owned child completion without interval probes, timed
-retries or settle sleeps.
+orchestrator waits for owned child completion, with receiver deadlines for
+runtime and idle policies. It does not periodically probe process existence or
+retry uncertain external writes.
 
 A successful completion is persisted before capacity is reused and eligible
 dependants launch. Each dependant receives the prerequisite result identified
@@ -155,7 +188,8 @@ until uncertain acquisition and live-process ownership have been resolved.
 3. If exactly one issue matches, the reconciler validates its positive
    number and atomically saves the confirmed acquisition and tracking metadata
    before launch. Preserve the original key, paths and dependency references.
-4. If no issue matches, stop for operator reconciliation; automatic creation\n   is not retried after an uncertain result. If the result is
+4. If no issue matches, stop for operator reconciliation; automatic creation
+   is not retried after an uncertain result. If the result is
    ambiguous, unavailable or duplicated, keep the leaf unresolved and report
    the repository and reference for operator investigation. Do not launch it
    or guess an issue number.
@@ -213,3 +247,28 @@ repository.
 - [Multitask command](multitask-command.md)
 - [Run Operations and mixed requests](../howto/run-operations-and-mixed-work.md)
 - [Recipe usage-limit recovery](../concepts/recipe-usage-limit-recovery.md)
+
+## Security enforcement and behavioural evidence
+
+The Rust production-path fixtures in
+`crates/amplihack-cli/tests/issue_2553_execution.rs` use private profiles, runtime
+roots and Rust service adapters; they contact no production service.
+
+| Requirement | Production enforcement | Behavioural coverage |
+| --- | --- | --- |
+| Validate a complete plan before actions | `plan::normalise`, `ownership::persist_plan`, `validate_saved` | Invalid keys, collisions, cycles, unsupported policies/recipes, conflicting saved routes and legacy identity reject without child execution |
+| Bind recovery to its source | `RepositoryIdentity`, saved-state validation and ownership markers | Same-repository completion resumes once; a different repository cannot adopt it |
+| Enforce Operations precedence | `plan::resolve_route`, typed `execution::launch` | Conflicting recipes and parent routing variables cannot request development preparation; actual edits receive a development route |
+| Preserve caller files during cleanup | Private runtime lock, `ownership::verify`, terminal/reaped-state checks and canonical deletion containment | Unowned data, altered markers, foreign ownership and directory/marker symlinks are rejected; caller repository survives |
+| Avoid PID-based authority | Live-state rejection; scheduler retains its own `Child`; `WNOWAIT` reserves PID until reaping | A forged saved live PID cannot be adopted, signalled or relaunched |
+| Reconcile uncertain issue creation | `tracking::acquire` saves UUID intent before the authenticated `gh` call | Lost acknowledgements reconcile by exact marker; zero/multiple matches and authentication failures stop the affected leaf without another create |
+| Treat results as data | Separate structured context and result fields; route and ownership never merge from output | Adversarial result fields and shell text cannot change the selected recipe or execute a shell command |
+| Handle credentials and injection | Argv-only service/child invocation, private context files, filtered parent routing variables; tracking and cleanup errors omit raw service stderr; repository scope redacts URL userinfo; credential-bearing development origins fail before Git command construction | Fixture credentials never enter generated state, context, arguments or reported acquisition/cleanup errors; existing scope tests cover credential-bearing remotes |
+| Propagate unsuccessful outcomes | Exit code and runner failure override prose; fixed-point blocking | Reverse-ordered chains and branching graphs block after failure, partial outcome, cancellation or unsuccessful timeout |
+
+These checks enforce native routing and runtime ownership. They do not sandbox
+an agent's tools, redact arbitrary secrets supplied as task data, or remove the
+selected provider/GitHub authentication environment needed by authorised child
+work. Runtime artefacts and agent output therefore remain private data. macOS
+results do not establish Linux process behaviour; Linux/CI evidence is reported
+separately in the implementation hand-off.

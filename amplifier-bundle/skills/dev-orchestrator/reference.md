@@ -92,7 +92,7 @@ Classify by the action required and the destination of its result:
 - Changing a tracked repository file is Development, including a documentation wording change.
 - Reading repository files as research material is not a repository edit.
 
-An Operations workstream gets no worktree, no branch and no pull request. The recipe prompt says so, but the enforcement is `ops-file-change-check` in `smart-execute-routing.yaml`, which opens no PR unless files actually changed.
+An Operations workstream gets no worktree, no branch and no pull request. Classification and per-leaf route resolution happen before preparation; repository edits are Development leaves. The `operations-direct` prompt repeats this scope for the leaf agent.
 
 ### Optional tracking issues
 

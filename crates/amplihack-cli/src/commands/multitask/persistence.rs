@@ -11,8 +11,6 @@ use anyhow::Result;
 use chrono::Utc;
 use std::fs;
 use std::path::Path;
-#[cfg(test)]
-use tracing::error;
 use tracing::warn;
 
 pub(super) fn read_state(path: &Path) -> Result<Option<PersistedState>> {
@@ -61,6 +59,7 @@ pub(super) fn persist_state(ws: &Workstream) -> Result<()> {
         .unwrap_or_else(|| now.clone());
 
     let state = PersistedState {
+        source_repository: ws.source_repository.clone(),
         classification: ws.classification.clone(),
         dependencies: ws.dependencies.clone(),
         create_issue: ws.create_issue,
@@ -100,21 +99,4 @@ pub(super) fn persist_state(ws: &Workstream) -> Result<()> {
     let json = serde_json::to_string_pretty(&state)?;
     atomic_write(&ws.state_file, json.as_bytes())?;
     Ok(())
-}
-
-/// Persist a workstream checkpoint, surfacing (never swallowing) write failures.
-///
-/// A failed checkpoint write leaves nothing on disk while the caller believes
-/// the workstream is resumable. Logging the failure keeps a lost checkpoint
-/// distinguishable from a genuinely up-to-date one.
-#[cfg(test)]
-pub(super) fn persist_checkpoint(ws: &Workstream) {
-    if let Err(e) = persist_state(ws) {
-        error!(
-            key = %ws.key,
-            path = %ws.state_file.display(),
-            error = %e,
-            "failed to persist workstream checkpoint; on-disk state is now stale or missing despite the workstream being marked resumable"
-        );
-    }
 }

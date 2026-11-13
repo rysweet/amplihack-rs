@@ -210,7 +210,6 @@ steps:
       # FIX (heredoc-bulletproof): use env var — no heredoc needed.
       printf '%s' "${RECIPE_VAR_decomposition_json:-}" > "$_DECOMP_TMPFILE"
       TASK_TYPE="${RECIPE_VAR_task_type:-}"
-      FORCE_SINGLE="${RECIPE_VAR_force_single_workstream:-}"
       RAW_COUNT=$(amplihack orch helper count-workstreams < "$_DECOMP_TMPFILE")
       COUNT="$RAW_COUNT"
       # Capacity restrictions are applied at execution; the plan keeps every leaf.

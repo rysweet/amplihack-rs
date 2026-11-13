@@ -14,6 +14,51 @@ use amplihack_cli::commands::orch::{
 use amplihack_workflows::classifier::{WorkflowClassifier, WorkflowType};
 use serde_json::{Value, json};
 
+#[test]
+fn requested_actions_bind_their_own_objects_and_destinations() {
+    let classifier = WorkflowClassifier::default();
+    for task in [
+        "Write the research findings into docs/report.md and post an issue comment.",
+        "Post an issue comment and write the research findings into docs/report.md.",
+        "Create an issue to add tests for src/router.rs and update src/lib.rs.",
+        "Add tests for src/router.rs and create an issue about the findings.",
+        "Add tests for src/router.rs.",
+        "Write the findings into \"docs/report.md\" and post an issue comment.",
+        "Post an issue comment and fix \"src/router.rs\".",
+        "Report the findings into docs/report.md and create an issue.",
+        "Fix issue_router.rs and post an issue comment.",
+    ] {
+        assert_eq!(
+            reclassify_task_type("Operations", task),
+            "Development",
+            "{task}"
+        );
+        assert_eq!(
+            classifier.classify(task).workflow,
+            WorkflowType::Default,
+            "{task}"
+        );
+    }
+    for task in [
+        "Create an issue to add tests for src/router.rs and assign it to Alex.",
+        "Assign it to Alex and create an issue to add tests for src/router.rs.",
+        "Create an issue titled \"Add tests for src/router.rs and update docs/report.md\".",
+        "Post findings about src/router.rs in an issue comment.",
+        "Write the findings about src/router.rs in chat.",
+    ] {
+        assert_eq!(
+            reclassify_task_type("Operations", task),
+            "Operations",
+            "{task}"
+        );
+        assert_eq!(
+            classifier.classify(task).workflow,
+            WorkflowType::Ops,
+            "{task}"
+        );
+    }
+}
+
 /// Build the workstreams-config for `decomp` and return it parsed. The
 /// tempfile is removed before the assertions run, so a failing assertion
 /// cannot leave a file behind.

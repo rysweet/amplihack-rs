@@ -66,6 +66,18 @@ pub(crate) fn resolve_route(config: &mut WorkstreamConfig, default: &str) -> Res
             .unwrap_or("consensus-workflow"),
     };
     ensure!(
+        matches!(
+            recipe,
+            "operations-direct"
+                | "default-workflow"
+                | "quick-change"
+                | "investigation-workflow"
+                | "qa-workflow"
+                | "consensus-workflow"
+        ),
+        "unsupported recipe {recipe:?} for {class}"
+    );
+    ensure!(
         !recipe.is_empty()
             && !recipe.starts_with('-')
             && recipe
@@ -139,6 +151,13 @@ pub(crate) fn normalise(input: &Value, default: &str) -> Result<Vec<WorkstreamCo
             }
             let mut config: WorkstreamConfig = serde_json::from_value(value).context("fields")?;
             ensure!(!config.task.trim().is_empty(), "task must not be blank");
+            ensure!(
+                config
+                    .timeout_policy
+                    .as_deref()
+                    .is_none_or(|p| matches!(p, "interrupt-preserve" | "continue-preserve")),
+                "unsupported timeout policy"
+            );
             let issue = config.issue().context("issue")?;
             config.issue = issue.map(|n| json!(n.get())).unwrap_or(Value::Null);
             let key = super::identity::derive_key(&config, index + 1).context("key")?;

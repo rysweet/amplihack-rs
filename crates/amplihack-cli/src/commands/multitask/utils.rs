@@ -3,10 +3,6 @@
 use anyhow::{Result, bail};
 use std::fs;
 use std::io::Write;
-#[cfg(test)]
-use std::io::{BufRead, BufReader};
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use tracing::debug;
 
@@ -17,6 +13,10 @@ use tracing::debug;
 /// canonicalised first so a symbolic link cannot carry the deletion out of the
 /// base directory. Returns whether the removal was attempted.
 pub(super) fn remove_dir_within(base_dir: &Path, dir: &Path) -> bool {
+    if !fs::symlink_metadata(dir).is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink())
+    {
+        return false;
+    }
     let (Ok(base), Ok(target)) = (fs::canonicalize(base_dir), fs::canonicalize(dir)) else {
         tracing::warn!(
             base = %base_dir.display(),
@@ -25,7 +25,10 @@ pub(super) fn remove_dir_within(base_dir: &Path, dir: &Path) -> bool {
         );
         return false;
     };
-    if !target.starts_with(&base) || target == base {
+    // Every runtime artefact directory is an immediate child named from the
+    // validated key. Canonical containment alone would accept a substituted
+    // symlink to a different workstream under the same root.
+    if dir.file_name().is_none_or(|name| target != base.join(name)) {
         tracing::warn!(
             base = %base.display(),
             dir = %target.display(),
@@ -48,74 +51,28 @@ pub(super) fn default_base_dir() -> String {
     )
 }
 
-/// Tail subprocess output to a log file and prefixed stdout.
-#[cfg(test)]
-pub(super) fn tail_output(
-    stdout: impl std::io::Read,
-    log_file: &Path,
-    label: &str,
-    max_log_bytes: u64,
-) {
-    let reader = BufReader::new(stdout);
-    let mut log_bytes_written: u64 = 0;
-    let mut discarded_log_bytes: u64 = 0;
-
-    // Open log file with 0o600 permissions on Unix, default permissions on Windows.
-    let log_fd = {
-        let mut opts = fs::OpenOptions::new();
-        opts.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        opts.mode(0o600);
-        opts.open(log_file)
-    };
-
-    let mut log_writer = log_fd.ok();
-
-    for line in reader.lines() {
-        let Ok(line) = line else { break };
-        let line_bytes = line.len() as u64 + 1; // +1 for newline
-
-        if log_bytes_written < max_log_bytes && log_bytes_written + line_bytes <= max_log_bytes {
-            if let Some(ref mut w) = log_writer {
-                let _ = writeln!(w, "{line}");
-                let _ = w.flush();
-            }
-            log_bytes_written += line_bytes;
-        } else {
-            discarded_log_bytes = discarded_log_bytes.saturating_add(line_bytes);
-        }
-
-        // Prefix output to stdout
-        println!("[ws:{label}] {line}");
-    }
-
-    if discarded_log_bytes > 0
-        && let Some(ref mut w) = log_writer
-    {
-        let _ = writeln!(
-            w,
-            "[truncated: discarded {discarded_log_bytes} bytes after log capture limit]"
-        );
-        let _ = w.flush();
-    }
+/// Commit a complete private replacement, then durably record the rename.
+/// NamedTempFile removes failed replacements and cannot collide with leftovers
+/// from interrupted writers. The destination remains intact until commit.
+pub(super) fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
+    atomic_write_from(path, |file| file.write_all(data))
 }
 
-/// Atomically write data to a file (write to tmp, then rename).
-pub(super) fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let tmp_path = path.with_extension("tmp");
-    let mut file = {
-        let mut opts = fs::OpenOptions::new();
-        opts.write(true).create_new(true);
-        #[cfg(unix)]
-        opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-        opts.open(&tmp_path)?
-    };
-    file.write_all(data)?;
-    file.sync_all()?;
-    fs::rename(&tmp_path, path)?;
+fn atomic_write_from(
+    path: &Path,
+    write: impl FnOnce(&mut fs::File) -> std::io::Result<()>,
+) -> Result<()> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    fs::create_dir_all(parent)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    write(temporary.as_file_mut())?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    #[cfg(unix)]
+    fs::File::open(parent)?.sync_all()?;
     Ok(())
 }
 
@@ -196,6 +153,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn failed_replacements_preserve_committed_data_and_remove_temporary_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("state.json");
+        atomic_write(&path, b"committed").unwrap();
+        let failure = atomic_write_from(&path, |file| {
+            file.write_all(b"incomplete")?;
+            Err(std::io::Error::other("injected write failure"))
+        })
+        .unwrap_err();
+        assert!(failure.to_string().contains("injected write failure"));
+        assert_eq!(fs::read(&path).unwrap(), b"committed");
+        let directory_target = temp.path().join("directory");
+        fs::create_dir(&directory_target).unwrap();
+        assert!(atomic_write(&directory_target, b"cannot replace directory").is_err());
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 2);
+        assert_eq!(fs::read(&path).unwrap(), b"committed");
+        atomic_write(&path, b"recovered").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"recovered");
+    }
+
+    #[test]
     fn test_atomic_write() {
         let dir = std::env::temp_dir().join("amplihack-test-atomic-write");
         let _ = fs::create_dir_all(&dir);
@@ -203,20 +181,5 @@ mod tests {
         atomic_write(&file, b"hello world").unwrap();
         assert_eq!(fs::read_to_string(&file).unwrap(), "hello world");
         let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn tail_output_reports_when_log_bytes_are_discarded() {
-        let temp = tempfile::tempdir().unwrap();
-        let log_file = temp.path().join("workstream.log");
-        let input = std::io::Cursor::new(b"abcdef\nsecond line\n".to_vec());
-
-        tail_output(input, &log_file, "42", 4);
-
-        let log = fs::read_to_string(&log_file).unwrap_or_default();
-        assert!(
-            log.contains("truncated") && log.contains("discarded"),
-            "log truncation must report discarded diagnostics; got {log:?}"
-        );
     }
 }

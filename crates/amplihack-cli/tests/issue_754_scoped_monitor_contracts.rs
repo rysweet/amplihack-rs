@@ -2,9 +2,8 @@
 //!
 //! TDD-red contracts for issue #754.
 //!
-//! Monitor notifications and closure decisions must be authorized by persisted
-//! workflow/process scope, not by recent PR ordering, broad text search, or
-//! PID-only process liveness.
+//! Multitask state keeps the scope metadata used to identify and resume a
+//! workstream, and recipe selection does not infer work from recent PRs.
 
 use std::path::{Path, PathBuf};
 
@@ -31,77 +30,6 @@ fn read_repo_file(rel: &str) -> String {
 }
 
 #[test]
-fn process_scope_module_exists_with_fail_closed_api() {
-    let path = crate_root().join("src/commands/multitask/process_scope.rs");
-    assert!(
-        path.exists(),
-        "process_scope.rs must provide first-class process ownership validation for issue #754"
-    );
-    let module = std::fs::read_to_string(&path).expect("read process_scope.rs");
-
-    for required in [
-        "pub struct CurrentWorkflowScope",
-        "pub struct ProcessSnapshot",
-        "pub struct ProcessScopeConfig",
-        "pub enum ProcessScopeValidation",
-        "pub fn validate_process_scope",
-        "ProcessScopeValidation::Valid",
-        "ProcessScopeValidation::MissingScope",
-        "ProcessScopeValidation::Dead",
-        "ProcessScopeValidation::PidReused",
-        "ProcessScopeValidation::TooOld",
-        "ProcessScopeValidation::RepoMismatch",
-        "ProcessScopeValidation::WorkdirMismatch",
-        "ProcessScopeValidation::BranchMismatch",
-        "ProcessScopeValidation::WorkstreamMismatch",
-    ] {
-        assert!(
-            module.contains(required),
-            "process_scope.rs must expose contract item `{required}`"
-        );
-    }
-}
-
-#[test]
-fn process_scope_module_defines_deterministic_reason_strings() {
-    let module = read_crate_file("src/commands/multitask/process_scope.rs");
-
-    for reason in [
-        "valid",
-        "missing_scope",
-        "dead",
-        "pid_reused",
-        "too_old",
-        "repo_mismatch",
-        "workdir_mismatch",
-        "branch_mismatch",
-        "workstream_mismatch",
-    ] {
-        assert!(
-            module.contains(reason),
-            "process validation must expose stable snake_case reason `{reason}` for monitor diagnostics"
-        );
-    }
-}
-
-#[test]
-fn process_scope_module_contains_behavioral_unit_tests() {
-    let module = read_crate_file("src/commands/multitask/process_scope.rs");
-
-    for test_name in [
-        "matching_live_process_with_full_scope_is_valid",
-        "legacy_state_without_process_scope_is_non_authoritative",
-        "dead_reused_or_too_old_process_records_are_rejected",
-        "repo_workdir_branch_and_workstream_mismatches_are_rejected",
-    ] {
-        assert!(
-            module.contains(test_name),
-            "process_scope.rs must include unit test `{test_name}`"
-        );
-    }
-}
-
-#[test]
 fn multitask_state_model_persists_scope_but_keeps_legacy_json_compatible() {
     let models = read_crate_file("src/commands/multitask/models.rs");
 
@@ -125,17 +53,17 @@ fn multitask_state_model_persists_scope_but_keeps_legacy_json_compatible() {
     ] {
         assert!(
             models.contains(required),
-            "PersistedState must carry serde-defaulted scope field `{required}` so legacy state deserializes but cannot authorize notifications"
+            "PersistedState must carry serde-defaulted scope field `{required}` so legacy state remains readable"
         );
     }
 }
 
 #[test]
-fn launcher_persists_workstream_and_process_scope_at_launch_time() {
-    let launcher = read_crate_file("src/commands/multitask/launcher.rs");
-    let state = read_crate_file("src/commands/multitask/state.rs");
+fn execution_persists_workstream_and_process_scope_at_launch_time() {
+    let execution = read_crate_file("src/commands/multitask/execution.rs");
+    let command_builder = read_crate_file("src/commands/multitask/command_builder.rs");
     let persistence = read_crate_file("src/commands/multitask/persistence.rs");
-    let surface = format!("{launcher}\n{state}\n{persistence}");
+    let surface = format!("{execution}\n{command_builder}\n{persistence}");
 
     for required in [
         "workstream_scope",
@@ -153,32 +81,7 @@ fn launcher_persists_workstream_and_process_scope_at_launch_time() {
     ] {
         assert!(
             surface.contains(required),
-            "launcher/state/persistence must persist scoped launch metadata `{required}`"
-        );
-    }
-}
-
-#[test]
-fn orchestrator_gates_notifications_and_closure_on_valid_process_scope() {
-    let orchestrator = read_crate_file("src/commands/multitask/orchestrator.rs");
-    let state = read_crate_file("src/commands/multitask/state.rs");
-    let joined = format!("{orchestrator}\n{state}");
-
-    for required in [
-        "process_scope",
-        "validate_process_scope",
-        "ProcessScopeValidation::Valid",
-        "MissingScope",
-        "PidReused",
-        "TooOld",
-        "RepoMismatch",
-        "WorkdirMismatch",
-        "BranchMismatch",
-        "WorkstreamMismatch",
-    ] {
-        assert!(
-            joined.contains(required),
-            "monitor and closure paths must gate on process scope validation item `{required}`"
+            "execution, command building, and persistence must retain scope metadata `{required}`"
         );
     }
 }

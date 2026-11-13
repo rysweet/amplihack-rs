@@ -10,14 +10,13 @@
 
 use super::command_builder_tests::{keep, no_env};
 use super::launcher::{
-    launch_workstream, write_classic_launcher, write_classic_launcher_with, write_recipe_launcher,
+    write_classic_launcher, write_classic_launcher_with, write_recipe_launcher,
     write_recipe_launcher_with,
 };
 use super::launcher_tests::{assert_script_is_lf_only_and_bash_valid, test_workstream};
 use super::models::Workstream;
 use crate::commands::profile::{PROFILE_ENV, ROOT_ENV};
 use crate::test_support::with_env;
-use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
@@ -237,37 +236,4 @@ fn launcher_tests_pass_while_another_thread_sets_a_non_utf8_root() {
     build_and_check_classic(&classic);
 
     guard.finish();
-}
-
-/// `launch_workstream` lets the child inherit the process environment. It
-/// must not first collect the environment into `String`s, which panics when
-/// any variable, here the profile root, is not valid UTF-8.
-#[test]
-fn launch_workstream_tolerates_a_non_utf8_variable_and_sets_the_delegate() {
-    let (_b, _s, mut ws) = fresh_workstream();
-    let out = ws.work_dir.join("delegate.txt");
-    fs::write(
-        ws.work_dir.join("run.sh"),
-        "printf '%s' \"$AMPLIHACK_DELEGATE\" > delegate.txt\n",
-    )
-    .unwrap();
-    let mut processes = HashMap::new();
-    // The lock also keeps `PATH` stable while `bash` is resolved (#1730).
-    with_env(&[(ROOT_ENV, Some(non_utf8_root()))], || {
-        launch_workstream(&mut ws, "classic", DELEGATE, &mut processes)
-    })
-    .expect("a non-UTF-8 variable must not stop the launch");
-
-    let child = processes
-        .remove(&ws.key)
-        .expect("launched child must be recorded");
-    let status = child
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .take()
-        .expect("child must still be owned by the map")
-        .wait()
-        .unwrap();
-    assert!(status.success(), "run.sh failed: {status:?}");
-    assert_eq!(fs::read_to_string(&out).unwrap(), DELEGATE);
 }

@@ -61,9 +61,9 @@ amplihack recipe run default-workflow \
   -c "task_description=Fix monitor over-notifications for issue #754"
 ```
 
-The launcher records the same repository, workdir, branch, recipe run, tree,
-workstream, PID, and process start metadata in multitask state. The
-`expected_pr_title_prefix` field is the canonical recipe context name for
+Multitask state separately records workstream scope and process ownership
+metadata for recovery; see [Workstream state and recovery](../reference/workstream-state.md).
+The `expected_pr_title_prefix` field is the canonical recipe context name for
 title-prefix lookup.
 
 ## 3. Validate a Known PR
@@ -130,27 +130,13 @@ amplifier-bundle/tools/workflow_pr_ready.sh
 fails, readiness is blocked before checks, CI state, or mergeability are
 reported as current-work evidence.
 
-## 5. Read Monitor Output
+## 5. Understand Multitask Recovery
 
-Multitask monitor output distinguishes current work from stale history:
-
-```text
-workstream issue-754-closure: running
-scope: valid
-pid: 41872
-branch: feat/issue-754-scoped-closure
-recipe_run_id: run-01JZ7G7R4Z8KX8F2M9S5YH1VKT
-```
-
-Legacy or mismatched records are visible but non-authoritative:
-
-```text
-workstream old-default-workflow: display-only
-scope: missing_scope
-notification_authority: false
-```
-
-Only `scope: valid` can trigger monitor notifications or closure behavior.
+Multitask state records workstream identity, lifecycle and ownership metadata.
+The active runner waits for children it launched; recovery preserves and
+refuses a saved live process until ownership and external outcomes are
+reconciled. See [Workstream state and recovery](../reference/workstream-state.md) for the
+state format and resume procedure.
 
 ## 6. Finalize with Scoped PR Status
 
@@ -187,9 +173,7 @@ and head repository must both match `REPOSITORY`.
 | `FAILED_PR_CREATE` on publish | `gh pr create` failed and no OPEN PR exists for the branch. | Inspect the redacted GitHub error; a genuine create failure (auth, protected branch) must be resolved. A create collision with an existing OPEN PR is handled automatically as `existing-open-pr`. |
 | `FAILED_DUPLICATE_CLAIM` on publish | A PR already claims the issue this run is working on, on a different branch (issue #1361): either an open PR, or one merged inside the recent window while that issue is still closed. A PR merged inside the window that left the issue open is not a claim (issue #2238). | The refusal names the claiming PR and whether it is open or recently merged, and where a merged PR was in the window it also reports the issue state it read. For an open PR, continue it instead of racing it: re-run with `pr_number=<N>` or `existing_branch=<branch>`, which makes step-04 reuse that branch and makes the claim check step aside. If the existing PR is genuinely abandoned, close it first. A refusal naming a *merged* PR means the issue did not read `OPEN` — it is closed, or its state could not be read, which leaves the merged PR counting as the fail-safe direction. If that issue should be open for follow-up work, reopen it and re-run; no bypass is needed. `AMPLIHACK_SKIP_ISSUE_CLAIM_CHECK=1` bypasses the check. |
 | `step-03c-issue-claim-check` refuses a review, review-fix, CI fix or resume | The issue has a pull request, and the working directory is not on that PR's head branch (issue #1448). | Check out the claiming PR's head branch in the working directory — the check then recognises the run as continuing that PR rather than racing it, and allows it. If the working directory cannot be on that branch (a detached HEAD, a fresh clone), pass `-c allow_existing_pr=true` to state the intent. A run on a *different* branch is still refused; that is the #1361 guard. |
-| `missing_scope` | Persisted multitask state predates scoped fields. | Treat the record as display-only; relaunch the workstream to capture scope. |
-| `pid_reused` | The PID exists but start metadata differs. | Ignore the old record; relaunch the workstream if work is still needed. |
-| `repo_mismatch` or `workdir_mismatch` | State belongs to another checkout or worktree. | Run the monitor from the owning worktree or discard stale state. |
+| Resume reports a saved live process | The previous runner's child is still live or its ownership/outcome cannot be established. | Preserve state and artefacts; reconcile the original process and its external outcomes before resuming. See [Workstream state and recovery](../reference/workstream-state.md). |
 
 ## Related
 

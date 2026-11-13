@@ -6,13 +6,9 @@ use std::{
     collections::HashMap,
     fs,
     process::Child,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
+    sync::mpsc,
     thread,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 enum Event {
@@ -75,6 +71,16 @@ fn observe(pid: u32) -> std::io::Result<()> {
 }
 
 fn complete(ws: &mut Workstream, code: i32) -> Result<()> {
+    ws.pid = None;
+    if let Some(capture) = ws.output_capture.take() {
+        capture.finish()?;
+    }
+    if ws.lifecycle_state == "timed_out_resumable" && ws.timeout_policy == "interrupt-preserve" {
+        ws.exit_code = Some(code);
+        ws.end_time = Some(Instant::now());
+        ws.cleanup_eligible = false;
+        return persist_state(ws);
+    }
     let progress = match fs::read(&ws.progress_file) {
         Ok(bytes) => serde_json::from_slice::<Value>(&bytes).context("invalid progress sidecar")?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Value::Null,
@@ -152,57 +158,156 @@ fn complete(ws: &mut Workstream, code: i32) -> Result<()> {
     persist_state(ws)
 }
 
-fn cancel(children: &mut HashMap<usize, Child>, leaves: &mut [Workstream]) -> Result<()> {
-    for (&index, child) in children.iter_mut() {
-        #[cfg(unix)]
-        {
-            let result = unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
-            if result != 0 {
-                return Err(std::io::Error::last_os_error().into());
-            }
+fn stop(child: &mut Child) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let result = unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+        if result != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+            return Err(std::io::Error::last_os_error().into());
         }
-        #[cfg(not(unix))]
-        {
-            child.kill()?;
-        }
-        child.wait()?;
-        let ws = &mut leaves[index];
-        ws.lifecycle_state = "interrupted_resumable".into();
-        ws.cleanup_eligible = false;
-        ws.pid = None;
-        ws.exit_code = None;
-        persist_state(ws)?;
     }
-    children.clear();
+    #[cfg(not(unix))]
+    child.kill()?;
     Ok(())
 }
 
-pub(super) fn execute(
+fn cancel(children: &mut HashMap<usize, Child>, leaves: &mut [Workstream]) -> Result<()> {
+    let mut failure = None;
+    for (index, mut child) in children.drain() {
+        let result = (|| -> Result<()> {
+            stop(&mut child)?;
+            child.wait()?;
+            let ws = &mut leaves[index];
+            if let Some(capture) = ws.output_capture.take() {
+                capture.finish()?;
+            }
+            ws.lifecycle_state = "interrupted_resumable".into();
+            ws.cleanup_eligible = false;
+            ws.pid = None;
+            ws.exit_code = None;
+            persist_state(ws)
+        })();
+        if let Err(error) = result {
+            failure.get_or_insert(error);
+        }
+    }
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Reach a fixed point before scheduling or terminating, irrespective of plan order.
+fn block_dependents(leaves: &mut [Workstream], children: &HashMap<usize, Child>) -> Result<()> {
+    loop {
+        let mut changed = false;
+        for index in 0..leaves.len() {
+            if children.contains_key(&index) || leaves[index].lifecycle_state != "pending" {
+                continue;
+            }
+            let blocked = leaves[index].dependencies.iter().any(|dep| {
+                leaves.iter().enumerate().any(|(i, ws)| {
+                    ws.key.as_str() == dep
+                        && !children.contains_key(&i)
+                        && [
+                            "blocked",
+                            "partial",
+                            "failed_terminal",
+                            "failed_resumable",
+                            "interrupted_resumable",
+                            "timed_out_resumable",
+                            "abandoned",
+                        ]
+                        .contains(&ws.lifecycle_state.as_str())
+                })
+            });
+            if blocked {
+                leaves[index].lifecycle_state = "blocked".into();
+                persist_state(&leaves[index])?;
+                changed = true;
+            }
+        }
+        if !changed {
+            return Ok(());
+        }
+    }
+}
+
+/// Completion remains event-driven; only configured deadlines wake the receiver.
+fn timeout_wait(
     leaves: &mut [Workstream],
-    mode: &str,
-    running: Arc<AtomicBool>,
-) -> Result<()> {
+    children: &mut HashMap<usize, Child>,
+) -> Result<Option<Duration>> {
+    let mut wait = None;
+    for (&index, child) in children {
+        let ws = &mut leaves[index];
+        let remaining = Duration::from_secs(ws.max_runtime).saturating_sub(
+            ws.start_time
+                .context("owned child has no start time")?
+                .elapsed(),
+        );
+        let next = if !remaining.is_zero() {
+            Some(remaining)
+        } else {
+            if ws.lifecycle_state == "running" {
+                ws.lifecycle_state = "timed_out_resumable".into();
+                ws.cleanup_eligible = false;
+                persist_state(ws)?;
+            }
+            if ws.timeout_policy == "interrupt-preserve" && ws.exit_code.is_none() {
+                let idle = ws
+                    .output_capture
+                    .as_ref()
+                    .context("owned child has no output observer")?
+                    .idle_remaining();
+                if idle.is_zero() {
+                    stop(child)?;
+                    // The observer reports exit; the scheduler reaps exactly once.
+                    ws.exit_code = Some(-1);
+                    None
+                } else {
+                    Some(idle)
+                }
+            } else {
+                None
+            }
+        };
+        if let Some(next) = next {
+            wait = Some(wait.map_or(next, |old: Duration| old.min(next)));
+        }
+    }
+    Ok(wait)
+}
+
+pub(super) fn execute(leaves: &mut [Workstream], mode: &str) -> Result<()> {
+    // Only entry-time recovery may retry a reaped resumable execution. A
+    // timeout produced in this run must remain terminal for its dependents.
+    for ws in leaves.iter_mut() {
+        if [
+            "interrupted_resumable",
+            "timed_out_resumable",
+            "failed_resumable",
+            "tracking",
+            "blocked",
+        ]
+        .contains(&ws.lifecycle_state.as_str())
+        {
+            ws.lifecycle_state = "pending".into();
+        }
+    }
     let (tx, rx) = mpsc::channel();
     let _signals = signals(tx.clone())?;
     let limit = waves::wave_size(leaves.len(), waves::concurrency_limit());
     let mut children = HashMap::new();
     let result = (|| -> Result<()> {
         loop {
-            ensure!(
-                running.load(Ordering::Relaxed),
-                "workstream execution cancelled"
-            );
+            block_dependents(leaves, &children)?;
             for index in 0..leaves.len() {
-                if leaves[index].lifecycle_state == "completed"
-                    || children.contains_key(&index)
-                    || ["blocked", "partial", "failed_terminal"]
-                        .contains(&leaves[index].lifecycle_state.as_str())
-                {
+                if leaves[index].lifecycle_state != "pending" || children.contains_key(&index) {
                     continue;
                 }
                 let mut prerequisites = serde_json::Map::new();
                 let mut ready = true;
-                let mut failed = false;
                 for dep in &leaves[index].dependencies {
                     let other = leaves
                         .iter()
@@ -212,13 +317,7 @@ pub(super) fn execute(
                         prerequisites.insert(dep.clone(), other.result.clone());
                     } else {
                         ready = false;
-                        failed |= ["blocked", "partial", "failed_terminal"]
-                            .contains(&other.lifecycle_state.as_str());
                     }
-                }
-                if failed {
-                    leaves[index].lifecycle_state = "blocked".into();
-                    persist_state(&leaves[index])?;
                 }
                 if !ready || children.len() >= limit {
                     continue;
@@ -235,7 +334,22 @@ pub(super) fn execute(
             if children.is_empty() {
                 break;
             }
-            match rx.recv().context("completion event channel closed")? {
+            // Prefer queued completion/cancellation over a deadline check.
+            let event = match rx.try_recv() {
+                Ok(event) => event,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    anyhow::bail!("completion event channel closed")
+                }
+                Err(mpsc::TryRecvError::Empty) => match timeout_wait(leaves, &mut children)? {
+                    Some(duration) => match rx.recv_timeout(duration) {
+                        Ok(event) => event,
+                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(error) => return Err(error.into()),
+                    },
+                    None => rx.recv().context("completion event channel closed")?,
+                },
+            };
+            match event {
                 Event::Exited(index, status) => {
                     status.context("observe owned child exit")?;
                     let mut child = children
@@ -255,7 +369,16 @@ pub(super) fn execute(
         Ok(())
     })();
     if result.is_err() {
-        cancel(&mut children, leaves)?;
+        if let Err(cleanup) = cancel(&mut children, leaves) {
+            return Err(result
+                .unwrap_err()
+                .context(format!("cleanup also failed: {cleanup:#}")));
+        }
+        if let Err(blocking) = block_dependents(leaves, &children) {
+            return Err(result.unwrap_err().context(format!(
+                "saving blocked dependents also failed: {blocking:#}"
+            )));
+        }
     }
     result
 }

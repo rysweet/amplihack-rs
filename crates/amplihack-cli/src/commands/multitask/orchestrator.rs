@@ -7,12 +7,14 @@ use super::models::*;
 use super::{
     cleanup, default_branch, dispatch, launcher, ownership, persistence, report, state, utils,
 };
-use crate::util::format_output_diagnostics;
+use crate::util::{format_output_diagnostics, run_output_with_timeout};
+use std::time::Duration;
+
+const DEFAULT_BRANCH_RESOLUTION_TIMEOUT: Duration = Duration::from_secs(30);
+const GIT_CLONE_TIMEOUT: Duration = Duration::from_secs(300);
 use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use tracing::warn;
 
 #[cfg(test)]
@@ -61,10 +63,6 @@ impl ParallelOrchestrator {
         }
     }
 
-    pub fn running_flag(&self) -> Arc<AtomicBool> {
-        Arc::new(AtomicBool::new(true))
-    }
-
     pub fn setup(&self) -> Result<()> {
         ownership::private_directory(&self.base_dir)?;
         fs::create_dir_all(&self.base_dir)
@@ -86,18 +84,6 @@ impl ParallelOrchestrator {
         config: &WorkstreamConfig,
         default_recipe: &str,
     ) -> Result<&Workstream> {
-        let (idx, _) = self.register_index(index, config, default_recipe)?;
-        Ok(&self.workstreams[idx])
-    }
-
-    /// [`Self::register`], returning the slot and whether a state file was
-    /// read back for it.
-    fn register_index(
-        &mut self,
-        index: usize,
-        config: &WorkstreamConfig,
-        default_recipe: &str,
-    ) -> Result<(usize, bool)> {
         let key = derive_key(config, index)
             .with_context(|| format!("workstream {index} on branch {:?}", config.branch))?;
         // Two entries on one identity would share a work directory, log and
@@ -140,6 +126,7 @@ impl ParallelOrchestrator {
         ws.is_critical_code = config.is_critical_code.clone();
 
         ws.classification = config.classification.clone().unwrap();
+        ws.source_repository = ownership::RepositoryIdentity::current()?;
         ws.dependencies = config.dependencies.clone();
         ws.create_issue = config.create_issue;
         if ws.classification == "Operations" {
@@ -148,14 +135,34 @@ impl ParallelOrchestrator {
         let saved = persistence::read_state(&ws.state_file)?;
         if let Some(ref saved) = saved {
             ownership::validate_saved(&ws, saved)?;
+            ownership::verify(&ws)?;
             state::apply_saved_state(&mut ws, saved);
         }
 
         self.workstreams.push(ws);
-        Ok((self.workstreams.len() - 1, saved.is_some()))
+        Ok(self
+            .workstreams
+            .last()
+            .expect("just registered a workstream"))
     }
 
     pub fn prepare_all(&mut self) -> Result<()> {
+        if self
+            .workstreams
+            .iter()
+            .any(|ws| ws.classification != "Operations")
+        {
+            let authority = self
+                .repo_url
+                .split_once("://")
+                .map(|(_, rest)| rest.split('/').next().unwrap_or(rest));
+            anyhow::ensure!(
+                authority.is_none_or(|authority| !authority.contains('@')
+                    || (self.repo_url.starts_with("ssh://")
+                        && !authority.split('@').next().unwrap_or("").contains(':'))),
+                "origin URL embeds credentials; configure a Git credential helper before development preparation"
+            );
+        }
         for ws in &self.workstreams {
             ownership::claim(ws)?;
         }
@@ -185,9 +192,11 @@ impl ParallelOrchestrator {
                 let mut cmd = amplihack_git::command();
                 cmd.args(["clone", "--depth=1"])
                     .arg(format!("--branch={default_branch}"))
+                    .arg("--")
                     .arg(&self.repo_url)
                     .arg(&ws.work_dir);
-                let output = cmd.output().context("execute git clone")?;
+                let output =
+                    run_output_with_timeout(cmd, GIT_CLONE_TIMEOUT).context("execute git clone")?;
                 if !output.status.success() {
                     bail!(
                         "[{}] git clone failed: {}",
@@ -216,8 +225,8 @@ impl ParallelOrchestrator {
         persistence::persist_state(ws)
     }
 
-    pub fn monitor(&mut self, running: Arc<AtomicBool>) -> Result<()> {
-        dispatch::execute(&mut self.workstreams, &self.mode, running)
+    pub fn monitor(&mut self) -> Result<()> {
+        dispatch::execute(&mut self.workstreams, &self.mode)
     }
 
     pub fn report(&self) -> String {
@@ -240,8 +249,8 @@ impl ParallelOrchestrator {
         }
 
         let mut cmd = amplihack_git::command();
-        cmd.args(["ls-remote", "--symref", &self.repo_url, "HEAD"]);
-        let branch = match cmd.output() {
+        cmd.args(["ls-remote", "--symref", "--", &self.repo_url, "HEAD"]);
+        let branch = match run_output_with_timeout(cmd, DEFAULT_BRANCH_RESOLUTION_TIMEOUT) {
             Ok(output) if output.status.success() => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 default_branch::parse_from_ls_remote(&stdout).unwrap_or_else(|| {

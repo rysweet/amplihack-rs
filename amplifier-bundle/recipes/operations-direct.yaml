@@ -20,10 +20,10 @@ tags: ["operations", "project-management", "administrative", "no-pr"]
 # If any of those is false, the leaf is Development and belongs on
 # `default-workflow` or `quick-change`.
 #
-# This recipe's prompt is guidance to a model, not an enforcement boundary.
-# The boundary is `ops-file-change-check` in `smart-execute-routing.yaml`,
-# which inspects the working tree and refuses to open a pull request unless
-# files actually changed.
+# Classification and per-leaf route resolution happen before preparation:
+# repository edits are Development leaves, while Operations leaves use this
+# recipe directly without a worktree, branch or pull request. The prompt below
+# repeats that scope at execution time.
 
 context:
   # The administrative task, as the decomposition wrote it.

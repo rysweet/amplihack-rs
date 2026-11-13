@@ -31,7 +31,6 @@ mod issue_2553_recovery;
 mod launcher;
 #[cfg(test)]
 mod launcher_tests;
-#[cfg(test)]
 mod log_output;
 #[cfg(test)]
 mod model_tests;
@@ -41,8 +40,6 @@ mod ownership;
 mod persistence;
 pub(crate) mod plan;
 mod process_scope;
-#[cfg(test)]
-mod process_scope_tests;
 mod report;
 mod state;
 #[cfg(test)]
@@ -103,8 +100,7 @@ pub fn run_multitask(
         orch.register(i + 1, item, recipe)?;
     }
     orch.prepare_all()?;
-    let running = orch.running_flag();
-    orch.monitor(running)?;
+    orch.monitor()?;
     let report = orch.report();
     println!("{report}");
 

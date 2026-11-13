@@ -45,7 +45,7 @@ fn mismatched_saved_identity_cannot_supply_lifecycle_branch_or_worktree() {
 
 #[cfg(unix)]
 #[test]
-fn atomic_persistence_refuses_a_symlinked_temporary_file_without_overwriting_its_target() {
+fn atomic_persistence_ignores_a_stale_temporary_symlink_without_touching_its_target() {
     let temp = tempfile::tempdir().unwrap();
     let target = temp.path().join("caller-data");
     std::fs::write(&target, b"preserve me").unwrap();
@@ -54,8 +54,8 @@ fn atomic_persistence_refuses_a_symlinked_temporary_file_without_overwriting_its
     let result = super::utils::atomic_write(&state, b"new state");
     assert_eq!(std::fs::read(&target).unwrap(), b"preserve me");
     assert!(
-        result.is_err(),
-        "an existing symlink is an ownership collision"
+        result.is_ok(),
+        "unique replacements must ignore stale temporary names"
     );
 }
 
@@ -75,34 +75,4 @@ fn issue_parser_rejects_overflow_and_nonintegral_values_at_the_shared_boundary()
             "accepted {invalid}"
         );
     }
-}
-
-#[test]
-fn cancellation_without_a_live_child_preserves_recovery_state_and_owned_artefacts() {
-    let temp = tempfile::tempdir().unwrap();
-    let mut workstream = Workstream::new(
-        WorkstreamKey::new("cancelled").unwrap(),
-        None,
-        "".into(),
-        "Status report".into(),
-        "Report status".into(),
-        "operations-direct".into(),
-        temp.path(),
-        temp.path(),
-    );
-    std::fs::create_dir_all(&workstream.work_dir).unwrap();
-    std::fs::write(workstream.work_dir.join("answer"), b"partial answer").unwrap();
-    workstream.lifecycle_state = "running".into();
-    let state_file = workstream.state_file.clone();
-    let work_dir = workstream.work_dir.clone();
-    super::state::cleanup_running(std::slice::from_mut(&mut workstream), &Default::default());
-    let saved: PersistedState =
-        serde_json::from_slice(&std::fs::read(state_file).unwrap()).unwrap();
-    assert_eq!(saved.lifecycle_state, "interrupted_resumable");
-    assert!(!saved.cleanup_eligible);
-    assert_eq!(saved.key, "cancelled");
-    assert_eq!(
-        std::fs::read(work_dir.join("answer")).unwrap(),
-        b"partial answer"
-    );
 }

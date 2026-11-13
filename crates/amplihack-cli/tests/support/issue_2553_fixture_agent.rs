@@ -53,10 +53,29 @@ fn run() -> Result<()> {
                 )
             });
             match command.map(String::as_str) {
-                Some("remote") => println!("{}", root().join("repository").display()),
+                Some("remote") => println!(
+                    "{}",
+                    env::var("ISSUE_2553_ORIGIN")
+                        .unwrap_or_else(|_| root().join("repository").display().to_string())
+                ),
                 Some("ls-remote") => println!("ref: refs/heads/main\tHEAD"),
                 Some("symbolic-ref") => println!("origin/main"),
-                Some("rev-parse") => println!("{}", root().join("repository").display()),
+                Some("rev-parse") => {
+                    let cwd = env::current_dir()?;
+                    if args.iter().any(|arg| arg == "--git-common-dir") {
+                        println!(
+                            "{}\n{}\n{}",
+                            env::var_os("ISSUE_2553_COMMON_DIR")
+                                .map(PathBuf::from)
+                                .unwrap_or_else(|| cwd.join(".git"))
+                                .display(),
+                            cwd.join(".git").display(),
+                            cwd.display()
+                        );
+                    } else {
+                        println!("{}", cwd.display());
+                    }
+                }
                 Some("clone") => {
                     let destination = PathBuf::from(args.last().context("clone destination")?);
                     ensure!(destination.starts_with(root()), "clone escaped the fixture");
@@ -75,6 +94,10 @@ fn run() -> Result<()> {
         }
         "gh" => {
             record(json!({"action": "gh", "args": args}))?;
+            if args.first().is_some_and(|arg| arg == "pr") {
+                eprintln!("fixture-secret-token: cleanup authentication failure");
+                std::process::exit(17);
+            }
             issue_2553_tracking_adapter::run(&args)?;
         }
         "amplihack" if args.first().is_some_and(|arg| arg == "recipe") => {
@@ -98,14 +121,74 @@ fn run() -> Result<()> {
                 .transpose()?;
             record(
                 json!({"action": "execute", "recipe": recipe, "context": context,
-                          "cwd": env::current_dir()?, "persisted_state": persisted_state}),
+                          "cwd": env::current_dir()?, "delegate": env::var_os("AMPLIHACK_DELEGATE").map(|value| value.to_string_lossy().into_owned()),
+                          "persisted_state": persisted_state,
+                          "inherited_recipe": env::var_os("RECIPE_VAR_recipe"),
+                          "inherited_issue": env::var_os("AMPLIHACK_WORKSTREAM_ISSUE"),
+                          "inherited_create_issue": env::var_os("AMPLIHACK_CREATE_ISSUE")}),
             )?;
-            if let Some(socket) = env::var_os("ISSUE_2553_READY_SOCKET") {
+            if let Some(socket) = env::var_os("ISSUE_2553_READY_SOCKET").filter(|_| {
+                env::var_os("ISSUE_2553_RELEASE_AFTER_TIMEOUT").is_none()
+                    || context["task_description"]
+                        .as_str()
+                        .is_some_and(|s| s.starts_with("Report deadline"))
+            }) {
                 use std::io::Read;
                 let mut connection = std::os::unix::net::UnixStream::connect(socket)?;
+                // The socket is a readiness barrier after the durable running
+                // checkpoint, so a test can revoke writes without racing spawn.
+                let ready_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                loop {
+                    let state: Value = serde_json::from_slice(&fs::read(
+                        context["workstream_state_file"].as_str().unwrap(),
+                    )?)?;
+                    if state["lifecycle_state"] == "running"
+                        || state["lifecycle_state"] == "timed_out_resumable"
+                    {
+                        break;
+                    }
+                    ensure!(
+                        std::time::Instant::now() < ready_deadline,
+                        "running checkpoint was not committed"
+                    );
+                    std::thread::park_timeout(std::time::Duration::from_millis(5));
+                }
                 connection.write_all(b"ready")?;
-                let mut release = [0];
-                connection.read_exact(&mut release)?;
+                if env::var_os("ISSUE_2553_RELEASE_AFTER_TIMEOUT").is_some() {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    loop {
+                        let state: Value = serde_json::from_slice(&fs::read(
+                            context["workstream_state_file"].as_str().unwrap(),
+                        )?)?;
+                        if state["lifecycle_state"] == "timed_out_resumable" {
+                            break;
+                        }
+                        ensure!(
+                            std::time::Instant::now() < deadline,
+                            "production timeout was not applied"
+                        );
+                        std::thread::park_timeout(std::time::Duration::from_millis(5));
+                    }
+                    if env::var_os("ISSUE_2553_CANCEL_AFTER_TIMEOUT").is_some() {
+                        connection.write_all(b"timed!")?;
+                        let mut release = [0];
+                        connection.read_exact(&mut release)?;
+                    }
+                    if context["task_description"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("Report deadline")
+                        && env::var("ISSUE_2553_WAIT_FOR_KILL").ok().as_deref() == Some("1")
+                    {
+                        // An interrupted child must never emit successful prose.
+                        loop {
+                            std::thread::park();
+                        }
+                    }
+                } else {
+                    let mut release = [0];
+                    connection.read_exact(&mut release)?;
+                }
             }
             let status = env::var("ISSUE_2553_AGENT_STATUS").unwrap_or_else(|_| "completed".into());
             let result = format!("OPERATIONS_RESULT: {status} — fixture answer");
@@ -127,7 +210,9 @@ fn run() -> Result<()> {
                 println!(
                     "{}",
                     json!({"success": env::var_os("ISSUE_2553_RUNNER_FAILURE").is_none(),
-                    "step_results": [{"step_id": "execute-operation", "output": result}]})
+                    "step_results": [{"step_id": "execute-operation", "output": result}],
+                    "recipe": "untrusted-override", "classification": "Development",
+                    "source_repository": {"worktree": "/foreign"}})
                 );
             } else {
                 println!("{result}");

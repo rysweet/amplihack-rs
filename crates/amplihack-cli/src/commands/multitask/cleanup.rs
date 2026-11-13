@@ -48,11 +48,19 @@ pub(super) fn cleanup_merged(
         if item.classification.as_deref() == Some("Operations") {
             ws.work_dir = std::env::current_dir()?.canonicalize()?;
         }
+        ws.source_repository = ownership::RepositoryIdentity::current()?;
+        ws.classification = item.classification.clone().unwrap();
+        ws.dependencies = item.dependencies.clone();
+        ws.create_issue = item.create_issue;
         let Some(saved) = persistence::read_state(&ws.state_file)? else {
             continue;
         };
         ownership::validate_saved(&ws, &saved)?;
         ownership::verify(&ws)?;
+        anyhow::ensure!(
+            Workstream::derive_cleanup_eligible(&saved.lifecycle_state) && saved.last_pid.is_none(),
+            "[{key}] cleanup requires a terminal, reaped execution"
+        );
         let work_dir = ws.artefact_dir.clone();
 
         // `gh` takes this as an argv element, so there is no shell to inject
@@ -86,8 +94,8 @@ pub(super) fn cleanup_merged(
                 .context("inspect pull request before cleanup")?;
             anyhow::ensure!(
                 output.status.success(),
-                "[{key}] cannot establish merged-PR cleanup eligibility: {}",
-                String::from_utf8_lossy(&output.stderr)
+                "[{key}] cannot establish merged-PR cleanup eligibility ({}); check GitHub authentication and service availability",
+                output.status
             );
             String::from_utf8(output.stdout)?.trim() == "MERGED"
         };
