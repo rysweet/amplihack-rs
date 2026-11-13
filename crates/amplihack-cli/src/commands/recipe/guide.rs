@@ -19,11 +19,12 @@
 
 use crate::command_error::exit_error;
 use crate::commands::cleanup::run_dir::RunReport;
+use crate::commands::recipe::run_id::validate_run_id;
 use crate::run_guidance::fs_safety::{check_dir, ensure_private_chain, untrusted_reason};
 use crate::run_guidance::pr_key::{parse_pr_url, pr_guidance_parent, pr_key, state_root};
 use crate::run_guidance::{
     AUTO_DRIVE_DIR, GUIDANCE_DIR, GuideError, HEADER_ROOM, MAX_GUIDANCE_ENTRY_BYTES, Source,
-    append_entry, caller_identity, check_text, valid_run_id,
+    append_entry, caller_identity, check_text,
 };
 use anyhow::Result;
 use std::ffi::OsStr;
@@ -108,11 +109,8 @@ fn read_stdin() -> Result<String, GuideError> {
 fn resolve_target(target: &str) -> Result<(PathBuf, Source), GuideError> {
     if target.contains("://") {
         let pr = parse_pr_url(target)?;
-        let root = state_root().ok_or_else(|| {
-            GuideError::NotFound(
-                "cannot find the state folder: neither AMPLIHACK_STATE_DIR nor HOME is set"
-                    .to_string(),
-            )
+        let root = state_root().map_err(|reason| {
+            GuideError::NotFound(format!("cannot find the state folder: {reason}"))
         })?;
         let key = pr_key(&pr.owner, &pr.repo, pr.number);
         ensure_private_chain(&root, &[AUTO_DRIVE_DIR, &key])?;
@@ -121,15 +119,10 @@ fn resolve_target(target: &str) -> Result<(PathBuf, Source), GuideError> {
             Source::Pr,
         ));
     }
-    let not_found = || {
-        GuideError::NotFound(format!(
-            "no recipe run or detached session named {target:?}"
-        ))
-    };
-    let runs = crate::commands::cleanup::work_root::resolve_from_env()
-        .ok()
-        .map(|w| w.runs_dir());
-    if let Some(runs) = &runs
+    // Kept as a Result: a work root that cannot be resolved must not turn
+    // into a misleading "not found".
+    let runs = crate::commands::cleanup::work_root::resolve_from_env().map(|w| w.runs_dir());
+    if let Ok(runs) = &runs
         && let Some(run_dir) = find_run(runs, target)?
     {
         return Ok((run_dir.join(GUIDANCE_DIR), Source::Run));
@@ -138,11 +131,13 @@ fn resolve_target(target: &str) -> Result<(PathBuf, Source), GuideError> {
         let log_dir = super::detach::log_dir().map_err(|e| GuideError::NotFound(e.to_string()))?;
         let log = log_dir.join(format!("{target}.log"));
         if let Some(run_id) = session_run_id(&log)? {
-            let found = match &runs {
-                Some(runs) => find_run(runs, &run_id)?,
-                None => None,
-            };
-            return match found {
+            let runs = runs.as_ref().map_err(|e| {
+                GuideError::NotFound(format!(
+                    "session {target:?} names run {run_id:?}, but the work root cannot be resolved: {}",
+                    one_line(e)
+                ))
+            })?;
+            return match find_run(runs, &run_id)? {
                 Some(run_dir) => Ok((run_dir.join(GUIDANCE_DIR), Source::Run)),
                 None => Err(GuideError::NotFound(format!(
                     "session {target:?} names run {run_id:?}, which has no run folder"
@@ -150,13 +145,27 @@ fn resolve_target(target: &str) -> Result<(PathBuf, Source), GuideError> {
             };
         }
     }
-    Err(not_found())
+    match &runs {
+        // The target could have been a run, which was never looked for.
+        Err(e) if validate_run_id(target) => Err(GuideError::NotFound(format!(
+            "cannot look for run {target:?}: {}",
+            one_line(e)
+        ))),
+        _ => Err(GuideError::NotFound(format!(
+            "no recipe run or detached session named {target:?}"
+        ))),
+    }
+}
+
+/// An error and its causes on one line.
+fn one_line(e: &anyhow::Error) -> String {
+    format!("{e:#}").replace(['\n', '\r'], " ")
 }
 
 /// The run folder for `id`: a folder of that name under `runs`, or the
 /// folder whose `run.json` lists `id` as an attempt's correlation id.
 fn find_run(runs: &Path, id: &str) -> Result<Option<PathBuf>, GuideError> {
-    if !valid_run_id(id) || !check_dir(runs)? {
+    if !validate_run_id(id) || !check_dir(runs)? {
         return Ok(None);
     }
     let direct = runs.join(id);
@@ -184,28 +193,26 @@ fn find_run(runs: &Path, id: &str) -> Result<Option<PathBuf>, GuideError> {
 /// The run id in the first pointer line of a session log. `None` when the
 /// log does not exist.
 fn session_run_id(log: &Path) -> Result<Option<String>, GuideError> {
-    match fs::symlink_metadata(log) {
-        Ok(meta) => {
-            if let Some(reason) = untrusted_reason(&meta, false) {
-                return Err(GuideError::Unsafe(format!(
-                    "refusing {}: {reason}",
-                    log.display()
-                )));
-            }
-        }
-        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(e) => {
-            return Err(GuideError::Io(format!(
-                "cannot check {}: {e}",
-                log.display()
-            )));
-        }
-    }
-    let file = fs::OpenOptions::new()
+    let file = match fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(log)
-        .map_err(|e| GuideError::Io(format!("cannot open {}: {e}", log.display())))?;
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
+            return Err(GuideError::Unsafe(format!(
+                "refusing {}: it is a symbolic link",
+                log.display()
+            )));
+        }
+        Err(e) => {
+            return Err(GuideError::Io(format!(
+                "cannot open {}: {e}",
+                log.display()
+            )));
+        }
+    };
     let meta = file
         .metadata()
         .map_err(|e| GuideError::Io(format!("cannot check {}: {e}", log.display())))?;
@@ -238,7 +245,7 @@ fn session_run_id(log: &Path) -> Result<Option<String>, GuideError> {
         .get("run_id")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(missing)?;
-    if !valid_run_id(run_id) {
+    if !validate_run_id(run_id) {
         return Err(GuideError::NotFound(format!(
             "the amplihack.recipe.log_pointer line of {} names an invalid run id",
             log.display()

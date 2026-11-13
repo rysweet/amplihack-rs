@@ -337,6 +337,29 @@ fn s4_check_text_refuses_control_bidi_delimiters_and_markers() {
     // A delimiter mentioned inside a line is not a delimiter line.
     assert!(check_text(&format!("the line {END} ends the block")).is_ok());
 
+    // A lone carriage return could end the block early for a model while
+    // `lines()` sees one line, so it is refused, wherever it is.
+    for text in [
+        format!("x\r{END}\rmore"),
+        "a\rb".to_string(),
+        "a\r\r\nb".to_string(),
+    ] {
+        let e = check_text(&text).unwrap_err();
+        assert_eq!(e.exit_code(), 2, "{text:?}");
+        assert!(e.to_string().contains("U+000D"), "{text:?}: {e}");
+        assert!(
+            !e.to_string().contains("more"),
+            "never repeats the text: {e}"
+        );
+    }
+    // CRLF text is accepted and kept as written.
+    assert_eq!(
+        check_text("first line\r\nsecond line").unwrap(),
+        "first line\r\nsecond line"
+    );
+    // A CRLF delimiter line is still a delimiter line.
+    assert!(check_text(&format!("ok\r\n{END}\r\nmore")).is_err());
+
     for (marker, _) in ROUTING_MARKERS {
         let text = format!("please {marker} now");
         let e = check_text(&text).unwrap_err();
@@ -376,6 +399,11 @@ fn s5_caller_field_drops_newlines_and_unsafe_chars_and_is_capped() {
     assert!(!clean.contains('\n') && !clean.contains('\r'), "{clean:?}");
     assert!(clean.starts_with("mallory"));
     assert!(!sanitize_caller("a\u{202e}b\u{1b}c").contains(['\u{202e}', '\u{1b}']));
+    // Line and paragraph separators can read as a line break to a model.
+    assert_eq!(
+        sanitize_caller("mallory\u{2028}[2] x\u{2029}y"),
+        "mallory[2] xy"
+    );
     assert!(sanitize_caller(&"u".repeat(1000)).len() <= 256);
     assert_eq!(sanitize_caller(""), "unknown");
 }
@@ -900,21 +928,114 @@ fn d6_runner_env_value_lists_inherited_run_and_pr_folders_without_duplicates() {
         "pr_url".to_string(),
         "https://github.com/o/r/pull/7".to_string(),
     );
-    let v = env::runner_env_value(Some(&inherited), Some(&run_dir), &ctx, &root, &state).unwrap();
+    let v =
+        env::runner_env_value(Some(&inherited), Some(&run_dir), &ctx, &root, Ok(&state)).unwrap();
     let got: Vec<PathBuf> = std::env::split_paths(&v).collect();
+    // The run's own folders first, then the inherited ones.
     assert_eq!(
         got,
         [
-            outer.clone(),
             run_dir.join(GUIDANCE_DIR),
             state.join("auto-drive/https___github.com_o_r_7/guidance"),
+            outer.clone(),
         ]
     );
 
     // Run again with the result inherited (a nested run of the same PR):
     // nothing is listed twice and order is kept.
-    let again = env::runner_env_value(Some(&v), Some(&run_dir), &ctx, &root, &state).unwrap();
+    let again = env::runner_env_value(Some(&v), Some(&run_dir), &ctx, &root, Ok(&state)).unwrap();
     assert_eq!(std::env::split_paths(&again).collect::<Vec<_>>(), got);
+}
+
+#[test]
+fn d6_the_innermost_run_keeps_its_own_folders_past_the_folder_limit() {
+    let (_tmp, root) = private_root();
+    let state = root.join("state");
+    let inherited: Vec<PathBuf> = (0..17)
+        .map(|i| root.join(format!("runs/outer{i:02}/guidance")))
+        .collect();
+    let inherited = std::env::join_paths(&inherited).unwrap();
+    let run_dir = root.join("runs/innermost");
+    let mut ctx = BTreeMap::new();
+    ctx.insert(
+        "pr_url".to_string(),
+        "https://github.com/o/r/pull/7".to_string(),
+    );
+    let v =
+        env::runner_env_value(Some(&inherited), Some(&run_dir), &ctx, &root, Ok(&state)).unwrap();
+    let got: Vec<PathBuf> = std::env::split_paths(&v).collect();
+    assert_eq!(got.len(), 19);
+    // The launcher reads only the first MAX_ENV_DIRS: both of the run's own
+    // folders are among them.
+    let read = &got[..MAX_ENV_DIRS];
+    assert!(read.contains(&run_dir.join(GUIDANCE_DIR)), "{read:?}");
+    assert!(
+        read.contains(&state.join("auto-drive/https___github.com_o_r_7/guidance")),
+        "{read:?}"
+    );
+}
+
+#[test]
+fn d6_a_folder_holding_the_separator_is_left_out_and_the_others_kept() {
+    let (_tmp, root) = private_root();
+    let state = root.join("state");
+    let outer = root.join("runs/outer/guidance");
+    let inherited = std::env::join_paths([outer.clone()]).unwrap();
+    let bad_run = root.join("runs/a:b");
+    let ctx = BTreeMap::new();
+    let v =
+        env::runner_env_value(Some(&inherited), Some(&bad_run), &ctx, &root, Ok(&state)).unwrap();
+    assert_eq!(std::env::split_paths(&v).collect::<Vec<_>>(), [outer]);
+}
+
+#[test]
+fn d6_an_unresolvable_pr_or_state_root_adds_no_pr_folder_and_keeps_the_run() {
+    let (_tmp, root) = private_root();
+    let state = root.join("state");
+    let run_dir = root.join("runs/x");
+    let only_run = |v: Option<std::ffi::OsString>| {
+        assert_eq!(
+            std::env::split_paths(&v.unwrap()).collect::<Vec<_>>(),
+            [run_dir.join(GUIDANCE_DIR)]
+        );
+    };
+    let mut ctx = BTreeMap::new();
+    ctx.insert(
+        "pr_url".to_string(),
+        "http://example.com/o/r/pull/7".to_string(),
+    );
+    only_run(env::runner_env_value(
+        None,
+        Some(&run_dir),
+        &ctx,
+        &root,
+        Ok(&state),
+    ));
+
+    // A valid PR with no usable state root (relative AMPLIHACK_STATE_DIR).
+    ctx.insert(
+        "pr_url".to_string(),
+        "https://github.com/o/r/pull/7".to_string(),
+    );
+    only_run(env::runner_env_value(
+        None,
+        Some(&run_dir),
+        &ctx,
+        &root,
+        Err("AMPLIHACK_STATE_DIR is not an absolute path"),
+    ));
+
+    // pr_number in a folder that is not a git repository.
+    let mut ctx = BTreeMap::new();
+    ctx.insert("pr_number".to_string(), "7".to_string());
+    ctx.insert("repo_path".to_string(), "no-such-repo".to_string());
+    only_run(env::runner_env_value(
+        None,
+        Some(&run_dir),
+        &ctx,
+        &root,
+        Ok(&state),
+    ));
 }
 
 #[test]
@@ -923,13 +1044,16 @@ fn d6_runner_env_value_without_pr_lists_the_run_folder_only() {
     let state = root.join("state");
     let run_dir = root.join("runs/solo");
     let ctx = BTreeMap::new();
-    let v = env::runner_env_value(None, Some(&run_dir), &ctx, &root, &state).unwrap();
+    let v = env::runner_env_value(None, Some(&run_dir), &ctx, &root, Ok(&state)).unwrap();
     assert_eq!(
         std::env::split_paths(&v).collect::<Vec<_>>(),
         [run_dir.join(GUIDANCE_DIR)]
     );
     // A dry run has no run folder and inherits nothing: no variable at all.
-    assert_eq!(env::runner_env_value(None, None, &ctx, &root, &state), None);
+    assert_eq!(
+        env::runner_env_value(None, None, &ctx, &root, Ok(&state)),
+        None
+    );
 }
 
 #[test]
@@ -955,7 +1079,8 @@ fn d6_pr_number_uses_the_origin_remote_of_repo_path() {
     let mut ctx = BTreeMap::new();
     ctx.insert("pr_number".to_string(), "7".to_string());
     ctx.insert("repo_path".to_string(), repo.display().to_string());
-    let v = env::runner_env_value(None, Some(&root.join("runs/x")), &ctx, &root, &state).unwrap();
+    let v =
+        env::runner_env_value(None, Some(&root.join("runs/x")), &ctx, &root, Ok(&state)).unwrap();
     let got: Vec<PathBuf> = std::env::split_paths(&v).collect();
     // ssh origin gives the https key.
     assert!(
@@ -965,13 +1090,13 @@ fn d6_pr_number_uses_the_origin_remote_of_repo_path() {
 
     // A non-numeric pr_number adds no per-PR folder.
     ctx.insert("pr_number".to_string(), "7; rm -rf /".to_string());
-    let v = env::runner_env_value(None, Some(&root.join("runs/x")), &ctx, &root, &state).unwrap();
+    let v =
+        env::runner_env_value(None, Some(&root.join("runs/x")), &ctx, &root, Ok(&state)).unwrap();
     assert_eq!(std::env::split_paths(&v).count(), 1);
 }
 
 #[test]
-fn unreadable_env_list_is_treated_as_unset() {
-    // A value that is not a path list this platform can split is ignored.
+fn an_empty_env_list_reads_no_folders() {
     let got = env::dirs_from_env_value(OsStr::new(""));
     assert!(got.is_empty());
 }

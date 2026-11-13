@@ -24,15 +24,17 @@ const MARKER: &str = "MARKER-2535-never-publish-this";
 
 /// One agent step whose output becomes the title, body and commit message,
 /// then the publish commands with the fake `gh` and `git` first on PATH.
+/// Their stdout goes to stderr: the runner's stdout must hold only its JSON
+/// result, which `recipe run` parses.
 const PUBLISH_RUNNER: &str = r#"
 out=$(STEP=d.1 AGENT_OUTPUT="Fix retry backoff" "$AMP_BIN" claude --subprocess-safe -- \
   -p "write a pull request title" 2> "$RECORD_DIR/err.d.1") || exit 11
 printf '%s\n' "$out" > "$RECORD_DIR/body.md"
 printf '%s\n' "$out" > "$RECORD_DIR/commit-msg.txt"
-PATH="$PUBLISH_TOOLS:$PATH" gh pr create --title "$out" --body-file "$RECORD_DIR/body.md" || exit 12
-PATH="$PUBLISH_TOOLS:$PATH" gh pr comment 7 --body "$out" || exit 13
-PATH="$PUBLISH_TOOLS:$PATH" git commit -m "$out" || exit 14
-PATH="$PUBLISH_TOOLS:$PATH" git commit -F "$RECORD_DIR/commit-msg.txt" || exit 15
+PATH="$PUBLISH_TOOLS:$PATH" gh pr create --title "$out" --body-file "$RECORD_DIR/body.md" >&2 || exit 12
+PATH="$PUBLISH_TOOLS:$PATH" gh pr comment 7 --body "$out" >&2 || exit 13
+PATH="$PUBLISH_TOOLS:$PATH" git commit -m "$out" >&2 || exit 14
+PATH="$PUBLISH_TOOLS:$PATH" git commit -F "$RECORD_DIR/commit-msg.txt" >&2 || exit 15
 "#;
 
 #[test]

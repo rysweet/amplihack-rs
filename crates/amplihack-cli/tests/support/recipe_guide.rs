@@ -156,6 +156,60 @@ pub fn private_file(p: &Path, body: impl AsRef<[u8]>) {
     fs::set_permissions(p, fs::Permissions::from_mode(0o600)).unwrap();
 }
 
+/// The version the binary under test reports, as `crate::VERSION` builds it.
+const BINARY_VERSION: &str = match option_env!("AMPLIHACK_RELEASE_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
+/// A framework install that startup self-heal accepts as current, so that,
+/// with `AMPLIHACK_SKIP_AUTO_INSTALL` set, it prints nothing: a version stamp
+/// equal to the binary's and the smallest `amplifier-bundle/recipes` that
+/// passes the bundle compatibility check (the required smart-orchestrator
+/// recipes, each naming itself, and a manifest with an entry for each).
+/// Without it, every `amplihack` process prints one "skipping re-stage"
+/// line, and the tests could not check that `recipe guide` prints one line.
+fn stage_current_install(dot_amplihack: &Path) {
+    private_file(
+        &dot_amplihack.join(".installed-version"),
+        format!("{BINARY_VERSION}\n"),
+    );
+    let recipes = dot_amplihack.join("amplifier-bundle").join("recipes");
+    private_dir(&recipes);
+    const COMPANIONS: [&str; 4] = [
+        "smart-classify-route",
+        "smart-execute-routing",
+        "smart-reflect-loop",
+        "smart-validate-summarize",
+    ];
+    let mut smart = String::from("name: \"smart-orchestrator\"\nsteps:\n");
+    let mut manifest = serde_json::Map::new();
+    manifest.insert("smart-orchestrator".into(), "fixture".into());
+    for recipe in COMPANIONS {
+        smart.push_str(&format!(
+            "  - id: \"{recipe}\"\n    type: \"recipe\"\n    recipe: \"{recipe}\"\n"
+        ));
+        manifest.insert(recipe.into(), "fixture".into());
+    }
+    private_file(&recipes.join("smart-orchestrator.yaml"), smart);
+    for recipe in COMPANIONS
+        .iter()
+        .copied()
+        .chain(["default-workflow", "investigation-workflow"])
+    {
+        private_file(
+            &recipes.join(format!("{recipe}.yaml")),
+            format!(
+                "name: \"{recipe}\"\nsteps:\n  - id: smoke\n    type: bash\n    command: 'true'\n"
+            ),
+        );
+    }
+    private_file(
+        &recipes.join("_recipe_manifest.json"),
+        serde_json::Value::Object(manifest).to_string(),
+    );
+}
+
 pub fn show(o: &Output) -> String {
     format!(
         "status: {}\nstdout:\n{}\nstderr:\n{}",
@@ -207,6 +261,7 @@ impl GuideFixture {
         ] {
             private_dir(d);
         }
+        stage_current_install(&dot_amplihack);
         executable(&tools.join("claude"), FAKE_CLAUDE);
         executable(&tools.join("codex"), FAKE_CODEX);
         executable(&tools.join("codex-code-mode-host"), "#!/bin/sh\nexit 0\n");

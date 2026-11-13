@@ -806,14 +806,30 @@ prompt, as written by
 [`amplihack recipe guide`](./recipe-cli-reference.md#amplihack-recipe-guide).
 `recipe run` builds the list from:
 
-1. the value it inherited, so a nested `recipe run` also reads the outer
-   run's guidance;
-2. its own `<work root>/runs/<run folder name>/guidance`;
-3. the pull request's auto-drive guidance folder, when the run's context has
+1. its own `<work root>/runs/<run folder name>/guidance`;
+2. the pull request's auto-drive guidance folder, when the run's context has
    `pr_url`, or a numeric `pr_number` with a `repo_path` whose `origin`
-   remote is on `github.com`.
+   remote is on `github.com`;
+3. the value it inherited, so a nested `recipe run` also reads the outer
+   runs' guidance.
 
-Duplicates are removed and the order is kept. For example, in a round of an
+Duplicates are removed and the order is kept. The run's own folders come
+first so that, in a deep nesting, the 16-folder limit below leaves out the
+outermost runs' folders, never the innermost run's own. Entries are sorted by
+time across all folders, so this order does not change the block. A folder
+whose path contains `:` cannot be listed; it is left out with a warning and
+the other folders are kept.
+
+When the context names a pull request that cannot be resolved (a `pr_url`
+that is not a GitHub pull request URL, a `pr_number` that is not a positive
+whole number, a `repo_path` whose `origin` cannot be read or is not on
+`github.com`, or no usable state folder), the run starts without the pull
+request's folder and prints one line on stderr naming the field and the
+cause, for example:
+
+```text
+amplihack: no pull request operator guidance for this run: cannot resolve pr_number: the origin remote of repo_path is not a github.com repository
+``` For example, in a round of an
 auto-drive for pull request 2535:
 
 ```text
@@ -825,8 +841,7 @@ no guidance and the prompt is unchanged. The launcher reads at most 16
 folders. It skips, with a warning naming it, a folder whose path is not
 absolute, whose last part is not `guidance`, or which (or whose parent) is a
 symbolic link, is owned by another user, or can be written by its group or
-by others. A value that cannot be read as a path list is treated as unset,
-with a warning.
+by others.
 
 `--detach`, `$(amplihack agent-binary --shell)` and the test isolation
 helpers remove the variable, so a new top-level run never reads another

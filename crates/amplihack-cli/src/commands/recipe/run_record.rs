@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+use super::run_id::validate_run_id;
 use crate::commands::cleanup::run_dir::{
     pid_start_ticks, read_capped_nofollow_with_metadata, write_atomic_0600,
 };
@@ -40,8 +41,6 @@ use crate::commands::cleanup::work_root::create_private_dir_all;
 pub(crate) const VERSION: u32 = 1;
 /// The largest record [`find`] reads, in bytes.
 pub(crate) const MAX_RECORD: u64 = 4096;
-/// The longest run id accepted, in bytes.
-pub(crate) const MAX_RUN_ID: usize = 128;
 
 /// The folder of a run folder that holds its attempts' records.
 const PROCS: &str = "procs";
@@ -95,18 +94,6 @@ impl Drop for Guard {
             let _ = fs::remove_dir(procs);
         }
     }
-}
-
-/// A run id that can name a record: 1 to [`MAX_RUN_ID`] bytes, each an ASCII
-/// letter or digit, `.`, `_` or `-`, not starting with `.`. Nothing that
-/// could name another path.
-pub(crate) fn validate_run_id(run_id: &str) -> bool {
-    !run_id.is_empty()
-        && run_id.len() <= MAX_RUN_ID
-        && !run_id.starts_with('.')
-        && run_id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
 fn file_name(run_id: &str) -> String {

@@ -798,13 +798,15 @@ pub(super) fn execute_recipe_via_rust_fresh(
     // dir is deliberately NOT rebuilt: a retry of a transient transport fault
     // should reuse the same artifact/tmp scratch space it was already given.
     // Issue #2535: the guidance folders this run's agent steps read, computed
-    // once: the inherited list, this run's folder and the per-PR folder.
+    // once: this run's folder, the per-PR folder and the inherited list.
     let guidance_dirs = crate::run_guidance::env::runner_env_value(
         std::env::var_os(crate::run_guidance::GUIDANCE_DIRS_ENV).as_ref(),
         workspace.borrow().run_dir(),
         context,
         working_dir,
-        &crate::run_guidance::pr_key::state_root().unwrap_or_default(),
+        crate::run_guidance::pr_key::state_root()
+            .as_deref()
+            .map_err(|e| *e),
     );
     let build_command = |run_id: &str| -> Result<Command> {
         // Issue #1567: no `env_clear` here, so a pinned AMPLIHACK_CLAUDE_PROFILE

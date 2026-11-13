@@ -281,6 +281,40 @@ fn u6_unknown_target_is_exit_1_with_the_documented_message() {
 }
 
 #[test]
+fn a_run_id_target_with_an_unusable_work_root_names_the_cause_not_not_found() {
+    let f = GuideFixture::new();
+    let mut c = f.amplihack(&["recipe", "guide", RUN_FOLDER, "text"]);
+    c.env("AMPLIHACK_WORK_ROOT", "relative/work");
+    let o = f.run_with_stdin(c, None);
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    let line = one_line_error(&o);
+    assert!(
+        line.starts_with(&format!(
+            "recipe guide: cannot look for run \"{RUN_FOLDER}\": "
+        )),
+        "{line}"
+    );
+    assert!(line.contains("must be an absolute path"), "{line}");
+    assert!(stdout(&o).is_empty());
+}
+
+#[test]
+fn a_relative_state_dir_is_refused_with_exit_1_and_nothing_created() {
+    let f = GuideFixture::new();
+    let mut c = f.amplihack(&["recipe", "guide", PR_URL, "text"]);
+    c.env("AMPLIHACK_STATE_DIR", "rel/path");
+    let o = f.run_with_stdin(c, None);
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    assert_eq!(
+        one_line_error(&o),
+        "recipe guide: cannot find the state folder: AMPLIHACK_STATE_DIR is not an absolute path"
+    );
+    assert!(stdout(&o).is_empty());
+    // The command runs in the fixture root: nothing was created there.
+    assert!(!f.root.join("rel").exists());
+}
+
+#[test]
 fn u6_empty_text_is_exit_2() {
     let f = GuideFixture::new();
     f.make_run(RUN_FOLDER, CORRELATION);

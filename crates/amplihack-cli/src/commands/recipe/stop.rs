@@ -112,7 +112,8 @@ fn stop_session(session: &str) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn stop_run_id(run_id: &str) -> Result<()> {
-    use super::run_record::{find, validate_run_id};
+    use super::run_id::validate_run_id;
+    use super::run_record::find;
     use crate::commands::cleanup::work_root::resolve_from_env;
     let not_found =
         || anyhow::anyhow!("recipe stop: no tmux session or running recipe run named {run_id:?}");

@@ -331,7 +331,8 @@ stored. The text is refused, with exit 2 and nothing written, when it:
 - is longer than 51,200 bytes (50 KiB) after trimming;
 - is not valid UTF-8;
 - contains NUL or another control character other than tab, line feed and
-  carriage return;
+  a carriage return directly followed by a line feed (CRLF line ends are
+  accepted; a carriage return on its own is refused);
 - contains a bidirectional-override or zero-width character;
 - has a line equal to one of the block delimiters (see
   [What the agent receives](#what-the-agent-receives));
@@ -433,13 +434,16 @@ When `amplihack recipe run` starts its recipe runner, it sets
 [`AMPLIHACK_RUN_GUIDANCE_DIRS`](./environment-variables.md#amplihack_run_guidance_dirs)
 to the list of guidance folders for that run:
 
-1. the list it inherited, if any, so that a nested `recipe run` also reads
-   the outer run's guidance;
-2. its own `<work root>/runs/<run folder name>/guidance/`;
-3. the pull request's folder, when the run's context has `pr_url`, or a
+1. its own `<work root>/runs/<run folder name>/guidance/`;
+2. the pull request's folder, when the run's context has `pr_url`, or a
    numeric `pr_number` with a `repo_path` whose `origin` remote is on
    `github.com`. An `ssh` remote and an `https` remote for the same
-   repository give the same folder.
+   repository give the same folder. When the pull request cannot be
+   resolved, the run starts without this folder and prints one line on
+   stderr naming the field and the cause;
+3. the list it inherited, if any, so that a nested `recipe run` also reads
+   the outer runs' guidance. These come last so that the 16-folder limit
+   never leaves out the innermost run's own folders.
 
 Each time an agent step starts, the launcher reads every entry in those
 folders, sorts them by file name, and adds one block to the end of the step's
@@ -552,6 +556,8 @@ guidance appended: /home/alice/.amplihack/work/runs/8c0e2a54-1f7d-4c56-9a39-2d1b
 | --- | --- | --- |
 | `0` | The entry was written | |
 | `1` | No run, session or run folder matches the target | `recipe guide: no recipe run or detached session named "nightly-fix"` |
+| `1` | The target could be a run ID, but the work root cannot be resolved | `recipe guide: cannot look for run "nightly-fix": HOME is not set, so the default work root cannot be resolved` |
+| `1` | `AMPLIHACK_STATE_DIR` (or `HOME`) is set to a relative path, for a pull request URL target | `recipe guide: cannot find the state folder: AMPLIHACK_STATE_DIR is not an absolute path` |
 | `1` | The session's log has no pointer line | `recipe guide: /home/alice/.amplihack/recipe-logs/nightly-fix.log has no amplihack.recipe.log_pointer line` |
 | `1` | A folder failed the safety checks | `recipe guide: refusing /home/alice/.amplihack/work/runs/8c0e…/guidance: it is owned by uid 0, not uid 1000` |
 | `1` | The folder already holds 256 KiB of guidance | `recipe guide: guidance folder /home/alice/.amplihack/work/runs/8c0e…/guidance would hold 307285 bytes of entries; the limit is 262144` |

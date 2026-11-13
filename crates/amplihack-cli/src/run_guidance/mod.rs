@@ -16,6 +16,14 @@
 //! ([`GuidanceForLaunch`]). There is no timer, polling or watcher: an entry
 //! reaches the next agent step that starts after it was written.
 //!
+//! Known limit: the [`MAX_GUIDANCE_DIR_BYTES`] check in [`append_entry`] and
+//! the publication of the entry are not one atomic step, and no lock is
+//! taken, so two `recipe guide` commands started at the same moment can both
+//! pass it and leave a folder slightly over the limit. Only the same user can
+//! do that, and the read limits ([`MAX_READ_ENTRIES`] entries of at most
+//! [`MAX_GUIDANCE_ENTRY_BYTES`] plus [`HEADER_ROOM`] bytes each) still bound
+//! what a prompt can receive.
+//!
 //! Guidance never goes into recipe context, step outputs, `run.json`, logs,
 //! error messages or argv, so publish steps (which build PR titles, bodies
 //! and commit messages from context and step outputs) cannot copy it.
@@ -27,6 +35,7 @@ pub(crate) mod routing_markers;
 #[cfg(test)]
 mod tests;
 
+use crate::commands::recipe::run_id::validate_run_id;
 use routing_markers::ROUTING_MARKERS;
 use std::fmt;
 use std::fs;
@@ -162,8 +171,8 @@ fn is_block_delimiter(line: &str) -> bool {
 
 /// Checks operator text and returns the text to store: trimmed, non-empty,
 /// at most [`MAX_GUIDANCE_ENTRY_BYTES`], free of control characters other
-/// than tab, newline and carriage return, of bidirectional and zero-width
-/// characters, of block delimiter lines and of every routing phrase.
+/// than tab, newline and a carriage return that ends a line (CRLF), of
+/// bidirectional and zero-width characters, of block delimiter lines and of every routing phrase.
 ///
 /// # Errors
 ///
@@ -185,6 +194,14 @@ pub(crate) fn check_text(raw: &str) -> Result<String, GuideError> {
             c as u32
         )));
     }
+    // `lines()` splits only on `\n`, so a lone `\r` could hide a delimiter
+    // line from the check below while a model still reads it as a break.
+    if text.split("\r\n").any(|part| part.contains('\r')) {
+        return Err(GuideError::Usage(
+            "guidance text contains a control character (U+000D) not followed by a line feed"
+                .to_string(),
+        ));
+    }
     if text.lines().any(is_block_delimiter) {
         return Err(GuideError::Usage(
             "guidance text contains a line equal to an operator-instructions block delimiter"
@@ -204,14 +221,14 @@ pub(crate) fn check_text(raw: &str) -> Result<String, GuideError> {
 }
 
 /// A caller field safe to write on one header line: control, bidirectional
-/// and zero-width characters dropped, at most 256 bytes, `unknown` when
+/// and zero-width characters and the line and paragraph separators (U+2028,
+/// U+2029) dropped, at most 256 bytes, `unknown` when
 /// nothing is left.
 pub(crate) fn sanitize_caller(raw: &str) -> String {
     let mut out = String::new();
-    for c in raw
-        .chars()
-        .filter(|c| !crate::commands::agent::validate::unsafe_char(*c))
-    {
+    for c in raw.chars().filter(|c| {
+        !crate::commands::agent::validate::unsafe_char(*c) && !matches!(c, '\u{2028}' | '\u{2029}')
+    }) {
         if out.len() + c.len_utf8() > MAX_CALLER_BYTES {
             break;
         }
@@ -250,18 +267,6 @@ fn passwd_name() -> Option<String> {
     name.to_str().ok().map(str::to_string)
 }
 
-/// A run id that can be named in a header: the rule of
-/// `run_record::validate_run_id` (ASCII letters, digits, `.`, `_`, `-`, not
-/// starting with `.`, at most 128 bytes).
-pub(crate) fn valid_run_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 128
-        && !id.starts_with('.')
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
-}
-
 /// Who is appending: the user name of the effective uid (falling back to
 /// `$USER`, then `unknown`), plus ` run=<id>` when this command runs inside
 /// a recipe run whose id passes validation. No credential file is read.
@@ -271,7 +276,7 @@ pub(crate) fn caller_identity() -> String {
         .unwrap_or_default();
     let mut caller = sanitize_caller(&user).replace(' ', "_");
     if let Ok(run) = std::env::var("AMPLIHACK_RECIPE_RUN_ID")
-        && valid_run_id(&run)
+        && validate_run_id(&run)
     {
         caller.push_str(" run=");
         caller.push_str(&run);
@@ -317,7 +322,9 @@ fn folder_total(dir: &Path) -> Result<u64, GuideError> {
         if !name.to_str().is_some_and(is_entry_name) {
             continue;
         }
-        if let Ok(meta) = fs::symlink_metadata(item.path())
+        // `DirEntry::metadata` does not follow links on Unix (an `lstat`
+        // relative to the open folder), so no full path is built.
+        if let Ok(meta) = item.metadata()
             && meta.file_type().is_file()
         {
             total += meta.len();
@@ -468,7 +475,9 @@ pub(crate) fn log_event(log: &Path, record: &serde_json::Value) -> Result<(), Gu
     let mut file = fs::OpenOptions::new()
         .append(true)
         .create(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        // O_NONBLOCK: a FIFO planted at this path must not hang the caller;
+        // the regular-file check below then refuses it.
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .mode(0o600)
         .open(log)
         .map_err(|e| GuideError::Io(format!("cannot open {}: {e}", log.display())))?;
@@ -602,16 +611,18 @@ pub(crate) fn render_block(entries: &[Entry]) -> String {
     if entries.is_empty() {
         return String::new();
     }
+    use std::fmt::Write as _;
     let mut out = format!("{BLOCK_BEGIN}\n{BLOCK_TITLE}\n{BLOCK_PREAMBLE}\n");
     for (i, e) in entries.iter().enumerate() {
-        out.push('\n');
-        out.push_str(&format!(
-            "[{}] {} from {} ({})\n",
+        // Writing to a String cannot fail.
+        let _ = writeln!(
+            out,
+            "\n[{}] {} from {} ({})",
             i + 1,
             e.timestamp,
             e.caller,
             e.source.label()
-        ));
+        );
         out.push_str(&e.text);
         out.push('\n');
     }
@@ -726,7 +737,7 @@ impl GuidanceForLaunch {
         let ts = chrono::Utc::now()
             .format("%Y-%m-%dT%H:%M:%S%.9fZ")
             .to_string();
-        let step = if valid_run_id(step_run_id) {
+        let step = if validate_run_id(step_run_id) {
             step_run_id
         } else {
             "unknown"

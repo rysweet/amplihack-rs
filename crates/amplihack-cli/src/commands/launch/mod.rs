@@ -392,11 +392,14 @@ fn run_launch_core(
     }
     let codex_trailer = guidance_route == GuidanceRoute::CodexTrailer;
     // "\n\n" and the block, written after a prompt that arrives on stdin.
-    let guidance_tail = match guidance_route {
-        GuidanceRoute::Prompt | GuidanceRoute::CodexTrailer => {
-            guidance.trailer().unwrap_or_default()
-        }
-        GuidanceRoute::None | GuidanceRoute::Undeliverable => Vec::new(),
+    let guidance_injected = matches!(
+        guidance_route,
+        GuidanceRoute::Prompt | GuidanceRoute::CodexTrailer
+    );
+    let guidance_tail = if guidance_injected {
+        guidance.trailer().unwrap_or_default()
+    } else {
+        Vec::new()
     };
     let extra_args = rewritten.args.clone();
     let opt_out = std::env::var(system_prompt_append::OPT_OUT_ENV).ok();
@@ -673,7 +676,7 @@ fn run_launch_core(
                     stdin,
                     prompt_then_piped_input_header(payload),
                     Box::new(std::io::stdin()),
-                    guidance_tail.clone(),
+                    guidance_tail,
                 ),
             ),
             (Some(payload), Some(stdin)) => {
@@ -691,17 +694,14 @@ fn run_launch_core(
                     stdin,
                     Vec::new(),
                     Box::new(std::io::stdin()),
-                    guidance_tail.clone(),
+                    guidance_tail,
                 ),
             ),
             _ => None,
         };
         // Issue #2535: the agent has started with the block; say so once
         // (counts only) and record it in each guidance.log it came from.
-        if matches!(
-            guidance_route,
-            GuidanceRoute::Prompt | GuidanceRoute::CodexTrailer
-        ) {
+        if guidance_injected {
             eprintln!("{}", guidance.notice());
             guidance
                 .record_injection(&std::env::var("AMPLIHACK_RECIPE_RUN_ID").unwrap_or_default());

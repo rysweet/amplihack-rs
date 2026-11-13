@@ -96,13 +96,18 @@ pub(crate) fn check_dir(path: &Path) -> Result<bool, GuideError> {
     }
 }
 
-/// Makes sure `path` is a trusted folder, creating it (one level, mode 0700)
-/// when it is missing. Its parent must already exist.
-pub(crate) fn ensure_private_dir(path: &Path) -> Result<(), GuideError> {
+/// Makes sure `path` is a trusted folder, creating it at mode 0700 when it
+/// is missing (with its missing ancestors when `recursive`), then checking it
+/// again.
+fn ensure_dir(path: &Path, recursive: bool) -> Result<(), GuideError> {
     if check_dir(path)? {
         return Ok(());
     }
-    match fs::DirBuilder::new().mode(0o700).create(path) {
+    match fs::DirBuilder::new()
+        .recursive(recursive)
+        .mode(0o700)
+        .create(path)
+    {
         Ok(()) => {}
         // Created by a concurrent `recipe guide`: check it like any other.
         Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
@@ -123,36 +128,21 @@ pub(crate) fn ensure_private_dir(path: &Path) -> Result<(), GuideError> {
     }
 }
 
+/// Makes sure `path` is a trusted folder, creating it (one level, mode 0700)
+/// when it is missing. Its parent must already exist.
+pub(crate) fn ensure_private_dir(path: &Path) -> Result<(), GuideError> {
+    ensure_dir(path, false)
+}
+
 /// Makes sure `base` and each folder below it named by `components` are
 /// trusted, creating missing ones at 0700. `base` itself is created with its
 /// missing ancestors when absent; ancestors above `base` are not checked.
 pub(crate) fn ensure_private_chain(base: &Path, components: &[&str]) -> Result<(), GuideError> {
-    if !check_dir(base)? {
-        match fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(base)
-        {
-            Ok(()) => {}
-            Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
-            Err(e) => {
-                return Err(GuideError::Io(format!(
-                    "cannot create {}: {e}",
-                    base.display()
-                )));
-            }
-        }
-        if !check_dir(base)? {
-            return Err(GuideError::Io(format!(
-                "{} disappeared after it was created",
-                base.display()
-            )));
-        }
-    }
+    ensure_dir(base, true)?;
     let mut path = base.to_path_buf();
     for component in components {
         path.push(component);
-        ensure_private_dir(&path)?;
+        ensure_dir(&path, false)?;
     }
     Ok(())
 }

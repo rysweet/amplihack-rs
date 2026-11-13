@@ -81,11 +81,12 @@ pub(crate) fn dirs_from_env_value(value: &OsStr) -> Vec<PathBuf> {
     out
 }
 
-/// The `github.com` owner and repository of `repo`'s `origin` remote.
+/// The `github.com` owner and repository of `repo`'s `origin` remote, or
+/// why it could not be found.
 ///
 /// One `git -C <repo> remote get-url origin`, with no shell, stdin closed,
 /// terminal prompts off, stderr discarded and stdout capped at 4 KiB.
-fn origin_repo(repo: &Path) -> Option<(String, String)> {
+fn origin_repo(repo: &Path) -> Result<(String, String), &'static str> {
     let mut child = amplihack_git::command()
         .arg("-C")
         .arg(repo)
@@ -94,83 +95,133 @@ fn origin_repo(repo: &Path) -> Option<(String, String)> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .ok()?;
+        .map_err(|_| "`git remote get-url origin` could not be started")?;
     let mut out = Vec::new();
     let read = child
         .stdout
         .take()
         .map(|s| s.take(MAX_REMOTE_BYTES).read_to_end(&mut out));
-    let status = child.wait().ok()?;
-    if !status.success() || !matches!(read, Some(Ok(_))) {
-        return None;
+    let status = child
+        .wait()
+        .map_err(|_| "`git remote get-url origin` could not be waited for")?;
+    if !status.success() {
+        return Err("`git remote get-url origin` failed in repo_path");
     }
-    canonical_repo_from_remote(std::str::from_utf8(&out).ok()?)
+    if !matches!(read, Some(Ok(_))) {
+        return Err("the output of `git remote get-url origin` could not be read");
+    }
+    let remote = std::str::from_utf8(&out)
+        .map_err(|_| "the origin remote of repo_path is not valid UTF-8")?;
+    canonical_repo_from_remote(remote)
+        .ok_or("the origin remote of repo_path is not a github.com repository")
+}
+
+/// Says, on stderr, why the run gets no per-PR guidance folder. Names the
+/// context field and the cause, never its value.
+fn warn_no_pr_dir(reason: &str) {
+    eprintln!("amplihack: no pull request operator guidance for this run: {reason}");
 }
 
 /// The per-PR guidance folder named by the run's context: `pr_url`, or a
 /// numeric `pr_number` with the `origin` of `repo_path` (relative to
 /// `working_dir`; `working_dir` itself when unset).
+///
+/// `None`, silently, when the context names no pull request. When it names
+/// one that cannot be resolved, `None` with one stderr line per cause: the
+/// run still starts, without the per-PR folder.
 fn pr_dir_from_context(
     context: &BTreeMap<String, String>,
     working_dir: &Path,
-    state_root: &Path,
+    state_root: Result<&Path, &str>,
 ) -> Option<PathBuf> {
-    if !state_root.is_absolute() {
+    let field = |key: &str| context.get(key).map(|v| v.trim()).filter(|v| !v.is_empty());
+    let url = field("pr_url");
+    let number = field("pr_number");
+    if url.is_none() && number.is_none() {
         return None;
     }
-    if let Some(url) = context
-        .get("pr_url")
-        .map(|u| u.trim())
-        .filter(|u| !u.is_empty())
-        && let Ok(pr) = parse_pr_url(url)
-    {
-        return Some(pr_guidance_dir(
-            state_root,
-            &pr_key(&pr.owner, &pr.repo, pr.number),
-        ));
+    let root = match state_root {
+        Ok(root) => root,
+        Err(reason) => {
+            warn_no_pr_dir(&format!("cannot find the state folder: {reason}"));
+            return None;
+        }
+    };
+    if let Some(url) = url {
+        match parse_pr_url(url) {
+            Ok(pr) => {
+                return Some(pr_guidance_dir(
+                    root,
+                    &pr_key(&pr.owner, &pr.repo, pr.number),
+                ));
+            }
+            // The error names the rule broken, not the URL.
+            Err(e) => warn_no_pr_dir(&format!("pr_url in the run context is {e}")),
+        }
     }
-    let number = context.get("pr_number").map(|n| n.trim())?;
-    if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
+    let number = number?;
+    let Some(number) = number
+        .bytes()
+        .all(|b| b.is_ascii_digit())
+        .then(|| number.parse::<u64>().ok())
+        .flatten()
+        .filter(|n| *n > 0)
+    else {
+        warn_no_pr_dir("pr_number in the run context is not a positive whole number");
         return None;
-    }
-    let number: u64 = number.parse().ok().filter(|n| *n > 0)?;
-    let repo = match context
-        .get("repo_path")
-        .map(|r| r.trim())
-        .filter(|r| !r.is_empty())
-    {
+    };
+    let repo = match field("repo_path") {
         Some(path) => working_dir.join(path),
         None => working_dir.to_path_buf(),
     };
-    let (owner, name) = origin_repo(&repo)?;
-    Some(pr_guidance_dir(state_root, &pr_key(&owner, &name, number)))
+    match origin_repo(&repo) {
+        Ok((owner, name)) => Some(pr_guidance_dir(root, &pr_key(&owner, &name, number))),
+        Err(reason) => {
+            warn_no_pr_dir(&format!("cannot resolve pr_number: {reason}"));
+            None
+        }
+    }
 }
 
-/// The value `recipe run` gives its runner: the inherited list, then
-/// `<run_dir>/guidance`, then the per-PR folder from the context, without
-/// duplicates and in that order. `None` when the list is empty (a dry run
-/// with nothing inherited).
+/// The value `recipe run` gives its runner: `<run_dir>/guidance`, then the
+/// per-PR folder from the context, then the inherited list, without
+/// duplicates and in that order. The run's own folders come first so that
+/// the launcher's [`MAX_ENV_DIRS`] limit, in a deep nesting, drops the
+/// outermost inherited folders and never the innermost run's own. Entries
+/// are sorted by time across folders, so this order does not change the
+/// block. A folder whose path cannot be put in a path list (it holds the
+/// separator) is left out with a warning; the others are kept. `None` when
+/// the list is empty (a dry run with nothing inherited).
 pub(crate) fn runner_env_value(
     inherited: Option<&OsString>,
     run_dir: Option<&Path>,
     context: &BTreeMap<String, String>,
     working_dir: &Path,
-    state_root: &Path,
+    state_root: Result<&Path, &str>,
 ) -> Option<OsString> {
     let mut list: Vec<PathBuf> = Vec::new();
     let mut push = |p: PathBuf| {
-        if !p.as_os_str().is_empty() && !list.contains(&p) {
-            list.push(p);
+        if p.as_os_str().is_empty() || list.contains(&p) {
+            return;
         }
+        if std::env::join_paths([&p]).is_err() {
+            eprintln!(
+                "amplihack: leaving operator guidance folder {} out of {}: its path contains the list separator",
+                p.display(),
+                super::GUIDANCE_DIRS_ENV
+            );
+            return;
+        }
+        list.push(p);
     };
-    if let Some(value) = inherited.filter(|v| !v.is_empty()) {
-        std::env::split_paths(value).for_each(&mut push);
-    }
     if let Some(run_dir) = run_dir {
         push(run_dir.join(GUIDANCE_DIR));
     }
     if let Some(pr) = pr_dir_from_context(context, working_dir, state_root) {
         push(pr);
+    }
+    if let Some(value) = inherited.filter(|v| !v.is_empty()) {
+        std::env::split_paths(value).for_each(&mut push);
     }
     if list.is_empty() {
         return None;

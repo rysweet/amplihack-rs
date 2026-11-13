@@ -147,10 +147,23 @@ pub(crate) fn pr_guidance_parent(state_root: &Path, key: &str) -> PathBuf {
 }
 
 /// `${AMPLIHACK_STATE_DIR:-$HOME/.amplihack/state}`, as the shell helpers
-/// resolve it. `None` when neither is set.
-pub(crate) fn state_root() -> Option<PathBuf> {
+/// resolve it. Writers (`recipe guide`) and readers (`recipe run`, the
+/// launcher) both go through here, so both refuse the same values.
+///
+/// # Errors
+///
+/// Why there is no usable root: neither variable is set, or the chosen one
+/// is not an absolute path (a relative root would be written to but never
+/// read, since the launcher reads absolute folders only).
+pub(crate) fn state_root() -> Result<PathBuf, &'static str> {
     match std::env::var_os("AMPLIHACK_STATE_DIR").filter(|v| !v.is_empty()) {
-        Some(dir) => Some(PathBuf::from(dir)),
-        None => crate::user_config::home_dir().map(|h| h.join(".amplihack").join("state")),
+        Some(dir) => Some(PathBuf::from(dir))
+            .filter(|p| p.is_absolute())
+            .ok_or("AMPLIHACK_STATE_DIR is not an absolute path"),
+        None => match crate::user_config::home_dir() {
+            Some(home) if home.is_absolute() => Ok(home.join(".amplihack").join("state")),
+            Some(_) => Err("HOME is not an absolute path"),
+            None => Err("neither AMPLIHACK_STATE_DIR nor HOME is set"),
+        },
     }
 }

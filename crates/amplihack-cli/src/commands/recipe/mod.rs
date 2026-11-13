@@ -22,6 +22,8 @@ mod parse;
 mod process_tree;
 mod resolve;
 pub mod run;
+/// The run id check, shared by `recipe stop` and `recipe guide`.
+pub(crate) mod run_id;
 /// Issue #2175: the record `recipe stop <run_id>` finds a run by.
 #[cfg(target_os = "linux")]
 mod run_record;
