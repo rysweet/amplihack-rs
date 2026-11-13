@@ -61,26 +61,32 @@ cd "${REPO_PATH:-.}" 2>/dev/null || { echo "WARNING: cannot cd to REPO_PATH; mea
 ROOT="$(pwd -P)"
 # Free text for the log tail: no control bytes or ANSI CSI sequences.
 san() { LC_ALL=C sed "s|$(printf '\033')\[[0-?]*[ -/]*[@-~]||g" | LC_ALL=C tr '\t\r\n' '   ' | LC_ALL=C tr -d '\000-\037\177'; }
-# jstr <text> -> a JSON string. Quotes, backslashes and every control byte are
-# escaped, so any file name stays one array entry. Bytes that are not UTF-8
-# are dropped, since no JSON reader accepts them.
-jstr() {
-  local s="$1" c i
-  if ! printf '%s' "$s" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
-    s="$(printf '%s' "$s" | LC_ALL=C tr -d '\200-\377'; printf x)"; s="${s%x}"
-  fi
+# jstr_v <text>: sets JSTR to <text> as a JSON string. Quotes, backslashes and
+# every control byte are escaped, so any file name stays one array entry.
+# Bytes that are not UTF-8 are dropped, since no JSON reader accepts them.
+# Plain ASCII text, the usual case, starts no process.
+jstr_v() {
+  local s="$1" c o e i LC_ALL=C
+  case "$s" in *[$'\200'-$'\377']*)
+    if ! printf '%s' "$s" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+      s="$(printf '%s' "$s" | tr -d '\200-\377'; printf x)"; s="${s%x}"
+    fi ;;
+  esac
   s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
-  s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
-  for i in 1 2 3 4 5 6 7 8 11 12 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 127; do
-    printf -v c "\\$(printf '%03o' "$i")"
-    case "$s" in *"$c"*) s="${s//"$c"/$(printf '\\u%04x' "$i")}" ;; esac
-  done
-  printf '"%s"' "$s"
+  case "$s" in *[[:cntrl:]]*)
+    s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
+    for i in 1 2 3 4 5 6 7 8 11 12 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 127; do
+      printf -v o '%03o' "$i"; printf -v c "\\$o"
+      case "$s" in *"$c"*) printf -v e '\\u%04x' "$i"; s="${s//"$c"/$e}" ;; esac
+    done ;;
+  esac
+  JSTR="\"$s\""
 }
+jstr() { jstr_v "$1"; printf '%s' "$JSTR"; }
 # jlist: NUL-separated stdin -> a JSON array.
 jlist() {
   local f sep="" out="["
-  while IFS= read -r -d '' f; do out="${out}${sep}$(jstr "$f")"; sep=","; done
+  while IFS= read -r -d '' f; do jstr_v "$f"; out="${out}${sep}${JSTR}"; sep=","; done
   printf '%s]' "$out"
 }
 
