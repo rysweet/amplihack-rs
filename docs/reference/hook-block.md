@@ -106,7 +106,7 @@ hook list.
 | Launch repair                  | Each `amplihack launch` / `amplihack claude`        | `$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/...`   | The running binary is older than the install stamp; `AMPLIHACK_SKIP_AUTO_INSTALL` is set; no drift     |
 | Profile refresh                | `amplihack profile` refresh paths                   | Each `<profile root>/<name>/settings.json`                 | The profile root is refused by `hook_path_refusal`; the file is absent                                 |
 | Profile seeding                | After `settings.json` is copied into a new profile  | The new profile's `settings.json`                          | Older binary; no hooks binary; the profile root is refused. Seeding still succeeds                     |
-| Rotator cycle                  | End of each `swapped` or `stayed` cycle             | `~/.claude/settings.json` and the live profile's file only | Read-only mode; older binary; no hooks binary; no drift. A refused or unidentified live profile is logged and does not stop the home heal |
+| Rotator events                | Startup and relevant settings changes             | `~/.claude/settings.json` and the live profile's file only | Read-only mode; older binary; no hooks binary; no drift. A refused or unidentified live profile is logged and does not stop the home heal |
 | Launch settings file           | Each `claude` launch                                | `$AMPLIHACK_HOME/runtime/launch-hooks-settings.json`       | See [When the file is not used](#when-the-file-is-not-used)                                            |
 
 Nothing else in amplihack removes amplihack's hooks from a settings file. The
@@ -139,10 +139,10 @@ amplihack: warning: /home/you/.claude/settings.json could not be used (is a syml
 ### Rotator cycle
 
 `amplihack profile rotate` (both a single run and the watch daemon) checks the
-hooks after each cycle that ends `swapped` or `stayed`. `amplihack profile
-switch` does not run this check; the next rotator cycle does. It runs
-after the cycle has released the swap lock and adds no timer of its own; it
-reacts to the cycle finishing.
+hooks at startup and on relevant settings changes, without periodic checks.
+`amplihack profile switch` does not run this check. A later relevant event
+can trigger repair after the state lock is released; expected repair writes
+do not cause another decision.
 
 The live profile's directory comes from the profile store and `root_config`,
 never from the ledger, a status file or the environment. Profiles other than

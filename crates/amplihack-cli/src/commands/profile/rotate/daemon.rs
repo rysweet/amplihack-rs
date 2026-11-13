@@ -3,8 +3,8 @@
 //! and process checks used by `status` and `stop` (in `control.rs`) live
 //! here.
 
-use super::cycle::{self, Ctx, CycleOutcome, LOCK_WAIT, Mode, prototype_guard};
-use super::exhausted::{self, paused};
+use super::cycle::{Ctx, LOCK_WAIT, prototype_guard};
+use super::exhausted::paused;
 use super::inflight::{finish_refreshes, refresh_grace};
 use super::ledger::{LastCycle, RotateState};
 use super::log::{Sink, msg, open_or_warn};
@@ -23,8 +23,7 @@ use crate::commands::profile::usage_cmd::{PROBE_CANCEL, sanitize_display};
 use crate::commands::profile::{PROFILE_ENV, ProfileError};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const MAX_PID_FILE: usize = 32;
 
@@ -156,10 +155,7 @@ pub fn start(store: &ProfileStore, home: &Path, s: &Settings) -> Result<(), Prof
         DaemonState::Stopped | DaemonState::Stale => {}
     }
     let (pid, warnings) = launch_core(&rs, store.root(), home, s, &spawn)?;
-    println!(
-        "rotate: started (pid {pid}), checking every {}s",
-        s.interval
-    );
+    println!("rotate: started (pid {pid}), waiting for usage and login changes");
     println!(
         "log: {}",
         sanitize_display(&rs.log.display().to_string(), false)
@@ -243,7 +239,7 @@ pub(super) fn spawn(rs: &RotateState, s: &Settings, root: &Path) -> Result<u32, 
     Ok(cmd.spawn()?.id())
 }
 
-/// `watch`: cycles every `interval` seconds until SIGTERM or SIGINT. Never
+/// `watch`: blocks on filesystem/completion/shutdown readiness. Never
 /// acts on a signal while holding the lock. A watch that is not `--spawned`
 /// and is supervised (`--supervised[=UNIT]` or `INVOCATION_ID`) records
 /// itself as the rotation owner (issue #1803); no watch removes the marker.
@@ -301,41 +297,27 @@ pub fn watch(
             &format!("overflow: gate not recorded, auto-switch will not use overflow ({e})"),
         );
     }
-    let archive_home = home.clone();
-    let mut ctx = Ctx::new(store.clone(), home, s).with_rereads();
+    // One startup maintenance pass, then native blocking readiness. Neither
+    // archive dates nor hook healing can wake an idle watcher.
+    super::sessions_daily::tick(&rs, &home, now(), &stop);
+    if paused(store.root()) {
+        log_line(&rs, msg::IDLE);
+        record_idle(&rs, store);
+    }
+    let _observations = amplihack_utils::usage_observation::ObservationStore::open(store.root())?;
+    let profiles = store
+        .list()?
+        .iter()
+        .map(|p| super::ProfileName::parse(p))
+        .collect::<Result<Vec<_>, _>>()?;
+    let directories = super::watch_source::watch_dirs(store.root(), &home, &profiles);
+    let source = super::watch_source::open(&directories)?;
+    let mut ctx = Ctx::new(store.clone(), home, s);
     ctx.stop = Some(stop.clone());
-    // Issue #1844: reads that outlast a cycle are used by the next one.
+    ctx.pause = |_| {};
     let (probe_secs, _) = crate::commands::profile::probe_limits::timeout_from_env(None);
     let probe_timeout = Duration::from_secs(probe_secs);
-    ctx.in_flight = Some(std::sync::Mutex::new(super::inflight::InFlight::new(
-        super::inflight::max_age(probe_timeout),
-    )));
-    let mut idle = false;
-    while !stop.load(Ordering::SeqCst) {
-        if !paused(store.root()) {
-            idle = false;
-            match cycle::run_cycle(&mut ctx, Mode::Watch) {
-                Ok(CycleOutcome::Stopped) => break,
-                // Issue #2279 (D6): heal the hooks block after the cycle,
-                // outside the swap lock. It never changes the outcome.
-                Ok(outcome) => super::hook_heal::after_cycle(outcome, &ctx),
-                Err(e) => log_line(&rs, &failure(&e)),
-            }
-        } else if !idle {
-            idle = true;
-            log_line(&rs, msg::IDLE);
-            record_idle(&rs, store);
-        }
-        // Every paused cycle, not once per idle latch; changes nothing.
-        if let Some(line) = exhausted::watch_line(store.root(), now()) {
-            log_line(&rs, &line);
-        }
-        super::sessions_daily::tick(&rs, &archive_home, now(), &stop);
-        let until = Instant::now() + Duration::from_secs(s.interval);
-        while Instant::now() < until && !stop.load(Ordering::SeqCst) {
-            std::thread::sleep(Duration::from_secs(1).min(until - Instant::now()));
-        }
-    }
+    let watched = super::event_runtime::run(ctx, source);
     // SR-9: `stop` is `PROBE_CANCEL`, already set here. A refresh counts
     // itself before it reads that flag and backs out if it is set, so once
     // the count reaches zero no refresh can take a lock. Any that counted
@@ -347,16 +329,7 @@ pub fn watch(
         );
     }
     remove_own_pid(&rs);
-    Ok(())
-}
-
-/// The log line for a cycle that failed: a refused swap is an ALERT.
-fn failure(e: &ProfileError) -> String {
-    match e {
-        ProfileError::RotateRefused(_) => format!("ALERT: {e}"),
-        ProfileError::RotatePrototypeRunning => "skip: the external rotator is running".into(),
-        _ => format!("skip: {e}"),
-    }
+    watched
 }
 
 pub(super) fn log_line(rs: &RotateState, line: &str) {

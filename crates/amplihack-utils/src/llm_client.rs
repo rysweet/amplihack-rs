@@ -138,6 +138,7 @@ fn run_launcher(binary: &str, prompt: &str) -> std::io::Result<std::process::Out
         _ => DeliveryCaps::default(),
     };
     let mut cmd = Command::new(binary);
+    cmd.env_remove("AMPLIHACK_USAGE_PROBE");
     cmd.args(["--print", "-p"]);
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());

@@ -90,6 +90,9 @@ pub(in crate::commands::profile::rotate) fn step(
     mut m: Measurement,
 ) -> Result<Measurement, ProfileError> {
     ctx.live_outlook = None;
+    if ctx.event_inputs.is_some() {
+        return Ok(m);
+    }
     // Issue #2218: an excluded live login is never read again, whatever its
     // probe reads (`Snap::measured_live`, the `config::excluded_from` rule
     // the snapshot applied). This does not rely on `Probed::excluded()`

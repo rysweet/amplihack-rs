@@ -183,6 +183,7 @@ impl Fallback {
         };
         Probe {
             report: UsageReport {
+                observation: Default::default(),
                 state: self.state,
                 session: Some(w("session", 33.0)),
                 week_all: Some(w("all models", 44.0)),

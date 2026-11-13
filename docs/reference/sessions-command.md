@@ -2,7 +2,8 @@
 
 Archive old Claude Code session logs out of `~/.claude/projects`, and put an
 archived session back. The [rotator](./profile-command.md#rotate-daily-session-archive)
-also runs the archive once a day.
+also runs archive maintenance at startup and on relevant events, without
+a recurring schedule. The legacy `sessions.daily_archive` key enables it.
 
 Claude Code keeps one log per session under `~/.claude/projects`, and never
 removes them. The directory grows by several GiB a month and fills the root
@@ -154,8 +155,8 @@ fails with `EPERM`; only `ESRCH` means dead.
 that cannot be parsed, or whose `sessionId` is missing, not a string or
 breaks the [id rules](#what-a-session-is), protects nothing. Each run prints
 `ignored unreadable pid file <path>` once for it, the dry run included, so
-the daily run repeats that line in the rotator log every day while the file
-remains. A pid file refused before it is parsed (a symlink, a non-regular
+archive maintenance can repeat that line on a relevant event while the file
+remains; time passing alone does not schedule a run. A pid file refused before it is parsed (a symlink, a non-regular
 file or one over 64 KiB) is passed over without a message. A dead process's
 pid file protects nothing.
 
@@ -326,7 +327,7 @@ conflict makes the exit status 1.
 
 Restored files get the time of the restore as their modification time, not
 the time stored in the archive. A restored session is therefore new: it is
-kept for `--days` days and is not archived again by the next daily run.
+kept for `--days` days and is not archived again by a later maintenance pass.
 
 The archive and the manifest are left unchanged. When the restored session
 is archived again later, its archive gets a [timestamped name](#archive-names)
@@ -336,8 +337,7 @@ and a new manifest line.
 
 `claude --resume <id>`, and the `/resume` picker inside Claude Code, read
 session logs from `~/.claude/projects`. Once a session has been archived,
-by `sessions archive --apply` or by the
-[daily run](./profile-command.md#rotate-daily-session-archive), its log is no
+by `sessions archive --apply` or by [archive maintenance](./profile-command.md#rotate-daily-session-archive), its log is no
 longer there, so Claude Code does not list it and cannot resume it.
 
 Restore the session first, then resume it from the directory it ran in:
@@ -358,9 +358,9 @@ project:
 grep -- '-home-ryan-src-amplihack-rs' ~/.amplihack/session-archive/MANIFEST.jsonl
 ```
 
-A restored session counts as new, so the daily run keeps it for another
+A restored session counts as new, so archive maintenance keeps it for another
 `sessions.archive_days` days (see [Restore](#restore)). To keep every session
-where Claude Code can see it, turn the daily run off:
+where Claude Code can see it, turn archive maintenance off:
 
 ```
 amplihack config set sessions.daily_archive false
@@ -403,8 +403,7 @@ temporary files a crashed run leaves (see [Lock](#lock)) and the archive of
 a session that failed after it was written, nothing in amplihack removes
 anything from DEST, so DEST only grows. The default DEST,
 `~/.amplihack/session-archive`, is normally on the same filesystem as
-`~/.claude`, and the
-[daily run](./profile-command.md#rotate-daily-session-archive) is on by
+`~/.claude`, and [archive maintenance](./profile-command.md#rotate-daily-session-archive) is on by
 default, so DEST grows without anyone running a command.
 
 Session logs are text and compress well. On one development host, 212 MB of
@@ -427,7 +426,7 @@ To keep new archives on another disk, set `sessions.archive_dest`:
 amplihack config set sessions.archive_dest /mnt/data/claude-sessions
 ```
 
-The daily run and `restore` use the new directory from their next run.
+Archive maintenance and `restore` use the new directory from their next run.
 Archives already written stay in the old directory, with its manifest, and
 `restore` reaches them only when given that directory:
 
@@ -500,7 +499,7 @@ removed.
 |---------|------|------------|---------|
 | Days | `--days` | [`sessions.archive_days`](./user-config.md#sessionsarchive_days-and-sessionsarchive_dest) | `3` |
 | Destination | `--dest` | [`sessions.archive_dest`](./user-config.md#sessionsarchive_days-and-sessionsarchive_dest) | `~/.amplihack/session-archive` |
-| Daily run | none | [`sessions.daily_archive`](./user-config.md#sessionsdaily_archive) | on |
+| Automatic archive maintenance (startup and relevant events) | none | [`sessions.daily_archive`](./user-config.md#sessionsdaily_archive) | on |
 
 A flag overrides its key, and the key overrides the default. Set the keys
 with `amplihack config set`:
@@ -512,15 +511,14 @@ amplihack config set sessions.archive_dest /mnt/backup/claude-sessions
 
 The keys live in `~/.amplihack/config.toml` and are user-only: a project's
 `.amplihack/config.toml` cannot set them. `sessions.archive_dest` must be an
-absolute path. `archive`, `restore` and the
-[daily run](./profile-command.md#rotate-daily-session-archive) all read the
+absolute path. `archive`, `restore` and [archive maintenance](./profile-command.md#rotate-daily-session-archive) all read the
 file each time they start, so they always agree on the destination, and a
 rotator that is already running uses a new value from its next run.
 
 There are no environment variables for these settings. The background
 rotator keeps the environment it was started with, so a variable exported
 later in your shell would change where `restore` looks but not where the
-daily run writes, and `restore` would then report `session <id> not found`.
+archive maintenance writes, and `restore` would then report `session <id> not found`.
 
 A key is read only when its flag is absent. When the file cannot give a key
 a value, because it cannot be read or parsed, holds an invalid value for the
@@ -544,7 +542,7 @@ amplihack sessions archive --days 7 --dest /mnt/backup/claude-sessions --apply
 ```
 
 A session archived with `--dest` is restored with the same `--dest`. To use
-that directory for the daily run and for `restore` as well, set
+that directory for archive maintenance and for `restore` as well, set
 `sessions.archive_dest` instead.
 
 ## Exit status
@@ -609,11 +607,10 @@ Every message below goes to stderr. The tests check these strings exactly.
 
 The summary lines `archived …`, `would archive …` and `restored N files to
 <target>`, with its optional conflict ending, go to stdout; see
-[Output](#output) and [Restore](#restore). In the rotator log, the daily run
+[Output](#output) and [Restore](#restore). In the rotator log, archive maintenance
 also writes
 `sessions archive: cannot read sessions.daily_archive (<why>); not run`
-when the user config file cannot be used to decide whether it is on; see the
-[daily session archive](./profile-command.md#rotate-daily-session-archive).
+when the user config file cannot be used to decide whether it is on; see [archive maintenance](./profile-command.md#rotate-daily-session-archive).
 
 On a filesystem without hard links, every session fails with
 `write failed (<kind>)` and every original is kept.
@@ -626,7 +623,7 @@ or at a directory that cannot be read. `<path>` is then
 `<CLAUDE_CONFIG_DIR>/sessions` for that process. The run stops on purpose:
 the [live check](#live-sessions) cannot tell whether that process is using
 an old session, so nothing is archived. Fix or unset the variable for that
-process, or end it. The daily run stops in the same way until then.
+process, or end it. Archive maintenance stops in the same way until then.
 
 If `<path>` is `~/.amplihack`, `~/.amplihack/agents` or its
 `registry.json`, a registry exists but could not be loaded, and `<reason>`
@@ -662,7 +659,7 @@ outside those is not seen as live there.
 
 - [`amplihack agent` reference](./agent-command.md) - Supervised agents, whose conversations count as live
 
-- [`amplihack profile` reference: daily session archive](./profile-command.md#rotate-daily-session-archive) - How the rotator runs the archive once a day
+- [`amplihack profile` reference: archive maintenance](./profile-command.md#rotate-daily-session-archive) - How startup and relevant events trigger archive maintenance
 - [Shared session directories](./profile-command.md#shared-session-directories) - Why every profile's `projects/` is the same directory
 - [User config: `sessions.archive_days` and `sessions.archive_dest`](./user-config.md#sessionsarchive_days-and-sessionsarchive_dest) - The days and destination keys in full
-- [User config: `sessions.daily_archive`](./user-config.md#sessionsdaily_archive) - The switch for the daily run
+- [User config: `sessions.daily_archive`](./user-config.md#sessionsdaily_archive) - The switch for archive maintenance

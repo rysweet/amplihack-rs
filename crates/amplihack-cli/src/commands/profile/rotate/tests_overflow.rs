@@ -263,6 +263,7 @@ fn report(
     w: Option<(f64, Option<i64>)>,
 ) -> UsageReport {
     UsageReport {
+        observation: Default::default(),
         state,
         session: s.map(|(u, r)| uw("session", u, r)),
         week_all: w.map(|(u, r)| uw("all models", u, r)),

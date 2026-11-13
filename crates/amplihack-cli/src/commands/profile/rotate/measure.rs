@@ -219,7 +219,8 @@ impl fmt::Display for Key {
 /// How long a cycle waits for its reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wait {
-    /// Until this instant; reads still running are used by a later cycle.
+    /// Legacy deadline coverage is test-only; production never schedules cycles.
+    #[cfg(test)]
     Until(Instant),
     /// Until every read is done: the one-shot command and `--dry-run`.
     Full,
@@ -227,6 +228,7 @@ pub enum Wait {
 
 /// Two seconds before the next cycle is due, and at least one second after
 /// `start`.
+#[cfg(test)]
 pub fn cycle_deadline(start: Instant, interval: Duration) -> Instant {
     let wait = interval
         .saturating_sub(Duration::from_secs(2))
@@ -234,11 +236,8 @@ pub fn cycle_deadline(start: Instant, interval: Duration) -> Instant {
     start + wait
 }
 
-/// One reading per key, in the order of `keys`: collect what earlier reads
-/// returned, start a read for each key with no result and none in flight,
-/// wait as `wait` says, then read each key. A key still in flight reads
-/// failed and unknown, with `still_running` set; a later call uses its
-/// result.
+/// Collect existing reads and launch missing keys in input order.
+/// Production awaits completion; legacy deadline behaviour is test-only.
 pub fn gather<K>(
     fl: &mut InFlight<K, Probe>,
     keys: &[K],
@@ -257,14 +256,19 @@ where
         .filter(|k| !got.contains_key(*k) && !fl.busy(k))
         .map(|k| (k.clone(), make(k)))
         .collect();
-    // Issue #1870: a result for a key not started now was started by an
-    // earlier cycle, so it is `carried` and has no reading time.
+    // Carried results cannot claim this command's measurement time.
     let started: Vec<K> = jobs.iter().map(|(k, _)| k.clone()).collect();
     let bound = fl.bound();
     fl.start_all(jobs, bound);
+    #[cfg(test)]
     let more = match wait {
         Wait::Until(t) => fl.wait(t),
         Wait::Full => fl.wait_all(),
+    };
+    #[cfg(not(test))]
+    let more = {
+        let Wait::Full = wait;
+        fl.wait_all()
     };
     got.extend(more);
     for k in fl.take_panicked() {
@@ -290,10 +294,8 @@ where
         .collect()
 }
 
-/// The live login and each candidate read in order (passive, direct,
-/// `claude`), as `profile usage` reads them. A watching rotator keeps reads
-/// that outlast the cycle in `ctx.in_flight` and waits only until two
-/// seconds before the next cycle; any other cycle waits for every read.
+/// Explicit-command reads in passive, direct, then Claude order.
+/// Watches consume generation-bound evidence instead of interval deadlines.
 pub fn measure_ordered(
     ctx: &Ctx,
     live: Live<'_>,
@@ -301,7 +303,9 @@ pub fn measure_ordered(
     unbound: &[ProfileName],
     now: i64,
 ) -> (Probed, Vec<(ProfileName, Probed)>) {
-    let start = Instant::now();
+    if ctx.event_inputs.is_some() {
+        return super::event_measure::measure(ctx, live, candidates);
+    }
     let mode = ctx.read_only_mode().unwrap_or_else(mode);
     let timeout = timeout();
     let n = candidates.len() + unbound.len() + usize::from(live.probed());
@@ -349,8 +353,7 @@ pub fn measure_ordered(
             // Join outstanding refresh reads without trusting their results.
             join_pending(&fl, &mut keys);
             fl.set_bound(bound);
-            let until = cycle_deadline(start, Duration::from_secs(ctx.settings.interval));
-            gather(&mut fl, &keys, make, Wait::Until(until))
+            gather(&mut fl, &keys, make, Wait::Full)
         }
         None => {
             let mut fl = InFlight::new(super::inflight::max_age(timeout));

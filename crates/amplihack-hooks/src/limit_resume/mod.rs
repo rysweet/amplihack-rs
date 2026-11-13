@@ -162,6 +162,9 @@ pub enum Event {
 
 /// Everything `run_with` needs from the outside world.
 pub trait Deps {
+    /// Attribute and publish actual limit evidence before any resume gate.
+    fn publish_limit_observation(&mut self, input: &HookInput) -> io::Result<()>;
+
     /// Whether auto-switch is on for the profile root.
     fn auto_switch_on(&mut self) -> bool;
     /// Epoch seconds.
@@ -285,6 +288,15 @@ fn run_with_affinity<D: Deps + ?Sized>(
     deps: &mut D,
     affinity: &mut Option<Affinity>,
 ) -> Outcome {
+    if let HookInput::StopFailure {
+        session_id, error, ..
+    } = input
+        && is_limit(error.as_deref())
+        && session_id_ok(session_id.as_deref())
+        && let Err(e) = deps.publish_limit_observation(input)
+    {
+        tracing::warn!("limit usage observation was not published: {e}");
+    }
     let enabled = deps.auto_switch_on();
     let HookInput::StopFailure {
         session_id,
@@ -576,6 +588,35 @@ struct SystemDeps {
 }
 
 impl Deps for SystemDeps {
+    fn publish_limit_observation(&mut self, input: &HookInput) -> io::Result<()> {
+        let HookInput::StopFailure {
+            session_id: Some(session),
+            ..
+        } = input
+        else {
+            return Ok(());
+        };
+        let payload = serde_json::json!({ "session_id": session });
+        let evidence = amplihack_utils::usage_observation::Evidence {
+            limit_reached: true,
+            ..Default::default()
+        };
+        let outcome = amplihack_utils::session_attribution::publish(
+            &self.root,
+            &payload,
+            &evidence,
+            epoch_now(),
+        )?;
+        if !matches!(
+            outcome,
+            amplihack_utils::usage_observation::PublishOutcome::Accepted { .. }
+                | amplihack_utils::usage_observation::PublishOutcome::Duplicate
+        ) {
+            tracing::debug!(?outcome, "limit observation refused");
+        }
+        Ok(())
+    }
+
     fn auto_switch_on(&mut self) -> bool {
         rotator_status::auto_switch_on(&self.root)
     }

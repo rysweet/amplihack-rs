@@ -121,6 +121,9 @@ pub struct UsageWindow {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UsageReport {
+    /// Raw complete-window evidence, retained before legacy display rules
+    /// hide a zero or missing session. Only this data may be published.
+    pub observation: amplihack_utils::usage_observation::Evidence,
     pub state: UsageState,
     pub session: Option<UsageWindow>,
     pub week_all: Option<UsageWindow>,
@@ -141,6 +144,7 @@ impl UsageReport {
     /// A report with no windows, for states decided outside the parser.
     pub fn empty(state: UsageState) -> Self {
         Self {
+            observation: Default::default(),
             state,
             session: None,
             week_all: None,
@@ -229,6 +233,15 @@ pub fn parse_usage(stdout: &str, stderr: &str, now: i64) -> UsageReport {
         |w: &Option<UsageWindow>| w.as_ref().is_some_and(|w| w.used_percentage >= 100.0);
     let any_line =
         report.session.is_some() || report.week_all.is_some() || !report.week_models.is_empty();
+    report.observation = measured_evidence(
+        &report.session,
+        &report.week_all,
+        if report.session.is_some() {
+            amplihack_utils::usage_observation::SessionWindow::Present
+        } else {
+            amplihack_utils::usage_observation::SessionWindow::Unknown
+        },
+    );
     let spend = says(SPEND_LIMIT);
     if !spend {
         let week_read = report.week_all.is_some();
@@ -247,7 +260,28 @@ pub fn parse_usage(stdout: &str, stderr: &str, now: i64) -> UsageReport {
     } else {
         UsageState::Unparsed
     };
+    report.observation.limit_reached = matches!(
+        report.state,
+        UsageState::SessionExhausted | UsageState::WeeklyExhausted
+    );
     report
+}
+
+/// Keep collection evidence separate from compatibility formatting. A missing
+/// window never establishes unlimited allowance in an observation.
+pub(super) fn measured_evidence(
+    session: &Option<UsageWindow>,
+    week: &Option<UsageWindow>,
+    session_window: amplihack_utils::usage_observation::SessionWindow,
+) -> amplihack_utils::usage_observation::Evidence {
+    amplihack_utils::usage_observation::Evidence {
+        session_window,
+        session_used: session.as_ref().map(|w| w.used_percentage),
+        week_used: week.as_ref().map(|w| w.used_percentage),
+        session_reset_at: session.as_ref().and_then(|w| w.resets_at),
+        week_reset_at: week.as_ref().and_then(|w| w.resets_at),
+        limit_reached: false,
+    }
 }
 
 /// One usage line, and whether it is a week line.
@@ -338,3 +372,7 @@ fn month_number(name: &str) -> Option<u32> {
     let name = name.to_ascii_lowercase();
     MONTHS.iter().position(|m| *m == name).map(|i| i as u32 + 1)
 }
+
+#[cfg(test)]
+#[path = "tests_issue_2029_evidence.rs"]
+mod issue_2029_evidence;

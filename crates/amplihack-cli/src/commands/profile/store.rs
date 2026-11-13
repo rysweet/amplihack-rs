@@ -285,6 +285,14 @@ impl ProfileStore {
         // pointer as "not the default" could delete its target and leave stale
         // state behind while reporting success.
         let was_default = pointer::read(&self.root)?.as_ref() == Some(name);
+        #[cfg(unix)]
+        let observations = amplihack_utils::usage_observation::ObservationStore::open(&self.root)?;
+        #[cfg(unix)]
+        let mut lock = observations.lock()?;
+        #[cfg(unix)]
+        if let Some(binding) = lock.binding(name.as_str())? {
+            lock.retire(&binding)?;
+        }
         fs::remove_dir_all(dir)?;
         if was_default {
             pointer::clear(&self.root)?;

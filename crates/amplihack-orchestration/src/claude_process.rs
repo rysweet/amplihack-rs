@@ -114,6 +114,7 @@ where
     S: AsRef<std::ffi::OsStr>,
 {
     let mut command = StdCommand::new(program);
+    command.env_remove("AMPLIHACK_USAGE_PROBE");
     command.args(args);
     let delivery_handle = deliver(&mut command, prompt, requested, &caps)?;
     let selected_mode = delivery_handle.mode();
@@ -651,6 +652,29 @@ impl ProcessRunner for MockProcessRunner {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn issue_2029_worker_command_clears_inherited_probe_suppression() {
+        let delivered = super::build_command_with_prompt_delivery(
+            "claude",
+            ["-p"],
+            "worker task",
+            amplihack_utils::prompt_delivery::PromptDelivery::Stdin,
+            amplihack_utils::prompt_delivery::DeliveryCaps {
+                supports_stdin: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            delivered
+                .command
+                .get_envs()
+                .find(|(key, _)| *key == std::ffi::OsStr::new("AMPLIHACK_USAGE_PROBE"))
+                .map(|(_, value)| value),
+            Some(None)
+        );
+    }
 
     // --- issue #1482: root sandbox wiring --------------------------------
 

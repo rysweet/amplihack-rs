@@ -16,14 +16,9 @@ use super::observe::{Measurement, Snap, decide_measured, snapshot};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{State, exists};
 use crate::commands::profile::name::ProfileName;
-use std::time::Duration;
 
-/// How long step 6 waits, holding the lock, before it reads the state again
-/// when `~/.claude.json` held no account. Running sessions rewrite that
-/// file, and a read during a rewrite can find no account.
-pub const REREAD_PAUSE: Duration = Duration::from_millis(500);
-
-/// Logged when step 6 read the state again after [`REREAD_PAUSE`].
+/// Logged when an explicit command revalidates a missing account. Watches
+/// defer to a qualifying external event instead of waiting and rereading.
 pub const REREAD: &str = "revalidate: ~/.claude.json held no account; read again";
 
 /// What changed during measurement that the decision depends on. Holds no
@@ -244,7 +239,7 @@ fn home_blinked(first: &Snap, fresh: &Snap, why: &[Changed]) -> bool {
 /// `failed_before` is the count of failed live probes before this cycle's,
 /// so a re-decision does not count the live probe twice. Probes nothing.
 /// Each retry is made at most once, in line, with no loop: the state is
-/// read again after [`REREAD_PAUSE`] when `~/.claude.json` held no account,
+/// read again on explicit revalidation when `~/.claude.json` held no account,
 /// and usage-based swaps pass the freshness gate on the probes already
 /// taken, limited to fresh candidates with unchanged accounts. A target-only
 /// change also permits reconsideration on those probes.
@@ -256,7 +251,7 @@ pub fn check(
     failed_before: u32,
 ) -> Result<Checked, ProfileError> {
     let (mut fresh, mut why) = compare(ctx, state, first, &m.decision)?;
-    let reread = home_blinked(first, &fresh, &why);
+    let reread = ctx.event_inputs.is_none() && home_blinked(first, &fresh, &why);
     if reread {
         (ctx.pause)(ctx);
         (fresh, why) = compare(ctx, state, first, &m.decision)?;

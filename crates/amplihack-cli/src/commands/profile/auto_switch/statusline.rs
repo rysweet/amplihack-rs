@@ -102,6 +102,9 @@ fn owned(root: Option<&Path>, owner_arg: &str, implicit: bool, input: &[u8]) -> 
         _ => None,
     };
 
+    if let Some((state, _)) = session {
+        publish_observation(&state.root, input);
+    }
     let mut reading = None;
     if let Some((state, owner)) = session {
         reading =
@@ -643,3 +646,49 @@ fn install_one(
 #[cfg(test)]
 #[path = "tests_statusline.rs"]
 mod tests;
+
+/// Publication is independent of legacy display merging and swap gates.
+pub(super) fn publish_observation(root: &Path, input: &[u8]) {
+    if input.len() > usage::MAX_INPUT {
+        return;
+    }
+    let Ok(payload) = serde_json::from_slice::<serde_json::Value>(input) else {
+        return;
+    };
+    if !payload
+        .get("rate_limits")
+        .is_some_and(serde_json::Value::is_object)
+    {
+        return;
+    }
+    let publication = (|| -> std::io::Result<()> {
+        let Some(capture) =
+            amplihack_utils::session_attribution::capture(root, &payload, fsx::now())?
+        else {
+            return Ok(());
+        };
+        let evidence = amplihack_utils::session_attribution::status_evidence(&payload);
+        let store = amplihack_utils::usage_observation::ObservationStore::open(root)?;
+        let mut guard = store.lock()?;
+        let evidence = match evidence {
+            Ok(evidence) => evidence,
+            Err(error) => {
+                guard.abandon(&capture)?;
+                return Err(error);
+            }
+        };
+        let outcome = guard.publish(&capture, &evidence)?;
+        if !matches!(
+            outcome,
+            amplihack_utils::usage_observation::PublishOutcome::Accepted { .. }
+                | amplihack_utils::usage_observation::PublishOutcome::Duplicate
+        ) {
+            guard.abandon(&capture)?;
+            tracing::debug!(?outcome, "status-line observation refused");
+        }
+        Ok(())
+    })();
+    if let Err(e) = publication {
+        tracing::warn!("status-line usage observation was not published: {e}");
+    }
+}

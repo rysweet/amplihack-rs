@@ -688,6 +688,7 @@ pub(super) fn execute_recipe_via_rust_fresh(
         // still override the pinned value until the runner refuses that
         // namespace too (rysweet/amplihack-recipe-runner#146).
         let mut command = Command::new(&binary);
+        command.env_remove("AMPLIHACK_USAGE_PROBE");
         command
             .arg(recipe_path)
             .arg("--output-format")

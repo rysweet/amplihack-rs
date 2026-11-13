@@ -139,10 +139,45 @@ pub fn status_line(root: &Path, now: i64) -> Option<String> {
 
 /// The `rotate.log` line for [`exhausted_while_off`] on a paused cycle, if
 /// any.
+#[cfg(test)]
 pub fn watch_line(root: &Path, now: i64) -> Option<String> {
     match exhausted_while_off(root, now) {
         Ok(None) => None,
         Ok(Some(e)) => Some(format!("ALERT: {ALERT} ({e})")),
         Err(m) => Some(format!("skip: alert check failed: {m}")),
     }
+}
+
+/// Event-driven paused alert uses current-generation evidence, including a
+/// limit with an unknown reset. Elapsed time cannot clear this evidence.
+pub(super) fn observation_line(
+    inputs: &super::coordinator::InputState,
+    threshold: u8,
+) -> Option<String> {
+    if inputs.enabled {
+        return None;
+    }
+    let login = inputs.logins.iter().find(|login| login.live)?;
+    let evidence = inputs.observations.iter().find(|e| {
+        e.profile == login.profile
+            && e.account_id == login.account_id
+            && e.generation == login.generation
+    })?;
+    if evidence.limit_reached {
+        return Some(format!(
+            "ALERT: {ALERT} ({}: usage limit reached)",
+            login.profile
+        ));
+    }
+    let pct = [evidence.session_used, evidence.week_used]
+        .into_iter()
+        .flatten()
+        .reduce(f64::max)?;
+    (pct >= f64::from(threshold)).then(|| {
+        format!(
+            "ALERT: {ALERT} ({}: {})",
+            login.profile,
+            Reason::Threshold { pct, threshold }
+        )
+    })
 }

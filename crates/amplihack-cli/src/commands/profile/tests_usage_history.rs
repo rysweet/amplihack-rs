@@ -46,6 +46,7 @@ fn win(label: &str, pct: f64, at: Option<i64>) -> UsageWindow {
 
 fn report(state: UsageState, s: Option<f64>, w: Option<f64>) -> UsageReport {
     UsageReport {
+        observation: Default::default(),
         state,
         session: s.map(|p| win("session", p, Some(T + HOUR))),
         week_all: w.map(|p| win("all models", p, Some(T + DAY))),

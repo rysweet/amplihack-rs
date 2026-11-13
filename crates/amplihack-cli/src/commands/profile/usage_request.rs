@@ -117,6 +117,22 @@ pub(super) fn parse_limits(limits: &Value, now: i64) -> Limits {
         |w: &Option<UsageWindow>| w.as_ref().is_some_and(|w| w.used_percentage >= 100.0);
     // Issue #1818: decided on the raw `five_hour`, never the cleaned text.
     let reset_seen = session_reset_seen(five_hour, session.is_some());
+    let mut observation = super::usage_parse::measured_evidence(
+        &session,
+        &week_all,
+        match five_hour {
+            Some(Value::Null) => amplihack_utils::usage_observation::SessionWindow::Absent,
+            _ if session.is_some() => amplihack_utils::usage_observation::SessionWindow::Present,
+            _ => amplihack_utils::usage_observation::SessionWindow::Unknown,
+        },
+    );
+    let raw_resets = observation_reset(five_hour).zip(observation_reset(limits.get("seven_day")));
+    if let Some((session_reset, week_reset)) = raw_resets {
+        observation.session_reset_at = session_reset;
+        observation.week_reset_at = week_reset;
+    } else {
+        observation = Default::default();
+    }
     let session_limit = settle_session(&mut session, reset_seen, week_all.is_some());
     let state = if exhausted(&session) {
         UsageState::SessionExhausted
@@ -125,8 +141,14 @@ pub(super) fn parse_limits(limits: &Value, now: i64) -> Limits {
     } else {
         UsageState::Ok
     };
+    observation.limit_reached = raw_resets.is_some()
+        && matches!(
+            state,
+            UsageState::SessionExhausted | UsageState::WeeklyExhausted
+        );
     Limits::Report {
         report: UsageReport {
+            observation,
             state,
             session,
             week_all,
@@ -135,6 +157,23 @@ pub(super) fn parse_limits(limits: &Value, now: i64) -> Limits {
             observed_at: None,
         },
         credits_on,
+    }
+}
+
+/// Raw observation resets have no display horizon. Malformed values are
+/// refused; absence and JSON null explicitly represent an unknown reset.
+fn observation_reset(window: Option<&Value>) -> Option<Option<i64>> {
+    match window.and_then(|w| w.get("resets_at")) {
+        None | Some(Value::Null) => Some(None),
+        Some(value) => value
+            .as_i64()
+            .or_else(|| {
+                value
+                    .as_str()
+                    .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
+                    .map(|time| time.timestamp())
+            })
+            .map(Some),
     }
 }
 

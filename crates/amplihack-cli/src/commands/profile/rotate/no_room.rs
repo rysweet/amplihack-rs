@@ -152,7 +152,11 @@ pub fn record(
     // reading is never recorded under its name.
     let name = live_name(&snap.live).filter(|_| !snap.live_excluded);
     let platform = snap.shown_platform();
-    let interval = ctx.settings.interval;
+    let interval = if ctx.event_inputs.is_some() {
+        0
+    } else {
+        ctx.settings.interval
+    };
     let rec = of_cycle(name, live, others, platform, at, now(), interval);
     // The windows are the probes'; the readings are the ones recorded, which
     // damping may have changed from the probes'.

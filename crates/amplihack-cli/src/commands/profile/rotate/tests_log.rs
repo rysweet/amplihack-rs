@@ -275,6 +275,7 @@ mod issue_1846 {
             resets_at: None,
         };
         UsageReport {
+            observation: Default::default(),
             state,
             session: session.map(|u| w("session", u)),
             week_all: week.map(|u| w("all models", u)),

@@ -40,6 +40,17 @@ pub(super) fn finish(
     l.swapped_at = Some(j.started_at);
     super::alert::clear_alert(&mut l);
     rs.save_ledger(&l)?;
+    let observations = amplihack_utils::usage_observation::ObservationStore::open(&rs.root)?;
+    let mut guard = observations.under_state_lock();
+    for (name, path) in [
+        (&j.from, rs.root.join(&j.from).join(CREDS)),
+        (&j.to, home.join(".claude").join(CREDS)),
+    ] {
+        if let Some(binding) = guard.binding(name)? {
+            guard.set_location(&binding, &path)?;
+        }
+    }
+
     step(rs, &mut j, Phase::S4)?;
     Ok(())
 }

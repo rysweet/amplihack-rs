@@ -419,34 +419,29 @@ amplihack config set governor.wait_secs 1800
 
 ### sessions.daily_archive
 
-Whether the Claude login rotator runs its
-[daily session archive](./profile-command.md#rotate-daily-session-archive),
-which moves session logs older than three days out of `~/.claude/projects`.
-On by default.
+Whether the Claude login rotator enables automatic
+[archive maintenance](./profile-command.md#rotate-daily-session-archive).
+Defaults to `true`. The legacy name does not promise daily execution:
+maintenance runs at startup or on relevant events, without a timer.
 
 ```sh
 amplihack config set sessions.daily_archive false
 ```
 
-The rotator reads the key from the user file each time a run is due, so a
-change reaches a rotator that is already running. It has no environment
-variable: the background rotator does not inherit the launching shell's
-`AMPLIHACK_ROTATE*` variables, so a variable would not reach it. It is
-user-only, because it decides whether files are removed from your home
-directory; a project file's `sessions.daily_archive` is reported and ignored.
-
-Because the run removes files, the rotator treats a user file it cannot use
-as off for that day, not as the default: a file that cannot be read or
-parsed, a value that is not `true` or `false`, or a file that group or
-others can write. The rotator log then says
+The key is user-only because maintenance moves files from your home
+directory. A relevant configuration change reaches the running watcher
+without a restart. A missing, unreadable, unsafe or invalid configuration
+value is handled by the existing safe configuration rules; an unusable
+file prevents archiving and reports
 `sessions archive: cannot read sessions.daily_archive (<why>); not run`.
+The explicit `amplihack sessions archive --apply` command remains available.
 
 ### sessions.archive_days and sessions.archive_dest
 
 The days and the destination for
 [`amplihack sessions archive`](./sessions-command.md#configuration),
 `sessions restore` and the rotator's
-[daily session archive](./profile-command.md#rotate-daily-session-archive).
+[archive maintenance](./profile-command.md#rotate-daily-session-archive).
 A session is archived when nothing in it has been written for
 `sessions.archive_days` days. Archives, the manifest and the lock go in
 `sessions.archive_dest`, which must be an absolute path to a directory you
@@ -460,15 +455,15 @@ amplihack config set sessions.archive_dest /mnt/backup/claude-sessions
 
 The command and the rotator read the keys from the user file each time
 they start a run, so a rotator that is already running uses a new value
-from its next run, and `sessions restore` looks in the directory the daily
-run wrote to. They have no environment variables: a rotator keeps the
+from its next run, and `sessions restore` looks in the directory archive maintenance
+wrote to. They have no environment variables: a rotator keeps the
 environment it was started with, so a variable exported later in a shell
 would reach `restore` but not the rotator. Both are user-only; a project
 file's value is reported and ignored.
 
 As with `sessions.daily_archive`, a user file that cannot give a key a
 value is not replaced by the default. The command prints
-`cannot read <key> (<why>)` and exits 1, and the daily run logs
+`cannot read <key> (<why>)` and exits 1, and archive maintenance logs
 `sessions archive: cannot read <key> (<why>); not run`. A flag still works,
 because the key is then not read.
 

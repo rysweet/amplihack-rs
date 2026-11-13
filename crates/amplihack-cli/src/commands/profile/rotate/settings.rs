@@ -15,7 +15,7 @@ pub struct Settings {
     pub upgrade_margin: u8,
     /// Seconds; 0 disables the hold.
     pub hold: u64,
-    /// Seconds between `watch` cycles.
+    /// Deprecated compatibility input; never used to schedule work.
     pub interval: u64,
     /// Seconds: the rotator and auto-switch move onto an overflow profile
     /// only when the earliest plan reset is further away than this.
@@ -190,7 +190,7 @@ pub fn gate_in_range(g: &Gate) -> bool {
 
 impl Settings {
     /// Explicit flags for the background process, so it reads no variable.
-    pub fn to_args(self, with_interval: bool) -> Vec<String> {
+    pub fn to_args(self, _with_interval: bool) -> Vec<String> {
         let mut args = Vec::new();
         for (flag, v) in [
             (SESSION_AT.flag, u64::from(self.session_at)),
@@ -206,10 +206,6 @@ impl Settings {
         ] {
             args.push(flag.to_string());
             args.push(v.to_string());
-        }
-        if with_interval {
-            args.push(INTERVAL.flag.to_string());
-            args.push(self.interval.to_string());
         }
         args
     }

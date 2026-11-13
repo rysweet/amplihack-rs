@@ -209,7 +209,8 @@ where
         got
     }
 
-    /// Results until no job is in flight or `until` passes.
+    /// Legacy deadline coverage; production waits on completion readiness.
+    #[cfg(test)]
     pub fn wait(&mut self, until: Instant) -> Vec<(K, T)> {
         self.wait_for(Some(until))
     }
@@ -278,4 +279,29 @@ pub(super) fn join_pending(fl: &super::measure::Reads, keys: &mut [super::measur
             *key = other;
         }
     }
+}
+
+/// One observed job resolves exactly once, including a worker panic. Publish
+/// before enqueuing, and enqueue before the coalescible readiness signal.
+pub(super) fn run_observed_job(
+    job: super::coordinator::ProbeJob,
+    measure: impl FnOnce() -> Result<super::coordinator::EvidenceInput, super::coordinator::ProbeResult>,
+    publish: impl FnOnce(
+        &super::coordinator::ProbeJob,
+        &super::coordinator::EvidenceInput,
+    ) -> super::coordinator::ProbeResult,
+    enqueue: impl FnOnce(super::coordinator::ProbeJob, super::coordinator::ProbeResult),
+    wake: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    use super::coordinator::ProbeResult;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match measure() {
+        Ok(evidence) => publish(&job, &evidence),
+        Err(e) => e,
+    }))
+    .unwrap_or_else(|_| {
+        tracing::warn!("usage observation worker panicked");
+        ProbeResult::Failed
+    });
+    enqueue(job, result);
+    wake()
 }

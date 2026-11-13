@@ -221,9 +221,15 @@ pub fn step_with<'a>(
 
 /// The rotation interval as the two-reading rule's gap: at least 1 second.
 pub fn min_gap(ctx: &Ctx) -> i64 {
-    i64::try_from(ctx.settings.interval)
-        .unwrap_or(i64::MAX)
-        .max(1)
+    // A watch input event is independent evidence; unchanged inputs never
+    // enter another cycle. One-shot callers retain the conservative gap.
+    if ctx.event_inputs.is_some() {
+        0
+    } else {
+        i64::try_from(ctx.settings.interval)
+            .unwrap_or(i64::MAX)
+            .max(1)
+    }
 }
 
 /// [`step_with`] on this host: `/proc` and the auto-switch ledger are read

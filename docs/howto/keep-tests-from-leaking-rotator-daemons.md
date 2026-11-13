@@ -218,7 +218,9 @@ Do not use `pkill -f 'rotate watch'`. It also matches your real rotator.
 
 The explicit `amplihack profile rotate start` path has no test stop. Stop B
 covers autostart only. The `issue_1592_daemon` tests need a real daemon: they
-start it with `--interval 1` and stop it themselves. If such a test fails
+use isolated roots, synchronise through readiness and filesystem events,
+and stop it themselves. `--interval` has no scheduling effect; advancing a
+fake clock cannot trigger probes or decisions. If such a test fails
 before it stops its daemon, the leak check reports it. That is intended.
 
 A test that needs a real autostart must remove both stops on purpose, with

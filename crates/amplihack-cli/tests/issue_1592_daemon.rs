@@ -6,11 +6,14 @@
 
 use crate::support::fake_proc::FakeProc;
 use crate::support::profile_rotate::*;
-use crate::support::wait::{output_within, wait_until};
 use std::fs;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::time::Duration;
+#[path = "support/rotator_events.rs"]
+mod rotator_events;
+use rotator_events::{ExitEvent, LogEvents};
 
 /// Kills whatever pid the fixture's pid file names when a test fails, so no
 /// rotator outlives its temporary HOME. It also owns the test's fake process
@@ -79,13 +82,11 @@ fn status(f: &Fixture) -> String {
     rest.to_string()
 }
 
-/// Starts a rotator. `start` must return before the rotator's first cycle:
-/// probes are held, `start` runs to completion, a probe of the first cycle
-/// records its environment, and only then are probes released. A `start`
-/// that waited for a cycle would never return while probes are held, and
-/// the ceiling would fail it (issue #1973 replaced an elapsed-time check).
+/// Production start remains asynchronous. The test separately subscribes to
+/// the child's readiness event, with pidfd exit readiness as a failure signal.
 fn start(f: &Fixture, extra: &[&str]) -> (Reaper, i32) {
     let reaper = reaper(f);
+    let events = LogEvents::before_start(&f.rotate_dir());
     let mut args = vec![
         "profile",
         "rotate",
@@ -96,38 +97,66 @@ fn start(f: &Fixture, extra: &[&str]) -> (Reaper, i32) {
         "0",
     ];
     args.extend_from_slice(extra);
-    let probes_before = f.probe_envs().len();
-    let hold = f.hold_probes();
-    let out = output_within("`profile rotate start` with probes held", &mut f.cmd(&args));
+    let out = f.ok(&args);
     assert_no_secrets(&out);
-    assert!(
-        out.status.success(),
-        "`profile rotate start` failed: {}\nstderr: {}",
-        out.status,
-        text(&out.stderr)
-    );
-    wait_until("the first cycle's probe to start", || {
-        f.probe_envs().len() > probes_before
-    });
-    assert!(
-        !f.log().lines().any(|l| l.contains(" cycle ")),
-        "no cycle can finish while its probe is held: {}",
-        f.log()
-    );
-    drop(hold);
     let stdout = text(&out.stdout);
     assert!(stdout.contains("rotate: started (pid "), "{stdout}");
-    assert!(stdout.contains("checking every 1s"), "{stdout}");
-    assert!(stdout.contains("log: "), "{stdout}");
+    assert!(!stdout.contains("checking every"), "{stdout}");
     let pid: i32 = fs::read_to_string(pid_file(f))
         .unwrap()
         .trim()
         .parse()
         .unwrap();
-    // The daemon this test's `start` launched: a grandchild after `setsid`,
-    // still one of the test's own descendants. Its link dangles once it exits.
     reaper.1.link_own(pid as u32);
+    events.until(pid, || f.log(), |log| log.contains("watch: ready;"));
+    assert!(
+        f.probe_envs().is_empty(),
+        "start-up speculatively probed logins"
+    );
     (reaper, pid)
+}
+
+fn observations(f: &Fixture) -> amplihack_utils::usage_observation::ObservationStore {
+    use amplihack_utils::usage_observation::{Evidence, ObservationStore, SessionWindow};
+    let store = ObservationStore::open(&f.root).unwrap();
+    for (name, session, week) in [
+        ("work", 10.0, 40.0),
+        ("spare", 10.0, 20.0),
+        ("extra", 50.0, 50.0),
+    ] {
+        let binding = store
+            .lock()
+            .unwrap()
+            .authorised_login(name, &format!("uuid-{name}"))
+            .unwrap();
+        let mut guard = store.lock().unwrap();
+        if name == "work" {
+            guard.set_location(&binding, &f.home_login()).unwrap();
+        }
+        let capture = guard
+            .capture_new(&binding, chrono::Utc::now().timestamp())
+            .unwrap();
+        guard
+            .publish(
+                &capture,
+                &Evidence {
+                    session_window: SessionWindow::Present,
+                    session_used: Some(session),
+                    week_used: Some(week),
+                    ..Evidence::default()
+                },
+            )
+            .unwrap();
+    }
+    store
+}
+
+fn stop_rotator(f: &Fixture, pid: i32) -> (std::process::Output, bool) {
+    let exit = ExitEvent::open(pid);
+    let out = f.run(&["profile", "rotate", "stop"]);
+    assert!(out.status.success(), "stop failed: {}", text(&out.stderr));
+    exit.wait();
+    (out, false)
 }
 
 #[test]
@@ -141,9 +170,7 @@ fn start_status_and_stop() {
     );
 
     let (_reaper, pid) = start(&f, &[]);
-    wait_until("a cycle in the log", || {
-        f.log().lines().any(|l| l.contains(" cycle live=work"))
-    });
+    assert!(!f.log().contains(" cycle "), "baseline caused a decision");
     let s = status(&f);
     assert!(s.contains("rotate: running\n"), "{s}");
     assert!(s.contains(&format!("pid: {pid}\n")), "{s}");
@@ -156,7 +183,7 @@ fn start_status_and_stop() {
     assert_eq!(again.status.code(), Some(1), "a second rotator is refused");
     assert!(text(&again.stderr).contains("amplihack profile rotate status"));
 
-    let (out, refused) = f.stop_until_gone(pid);
+    let (out, refused) = stop_rotator(&f, pid);
     f.assert_stopped(&out, refused, pid);
     assert!(status(&f).starts_with("rotate: stopped\n"));
 
@@ -169,17 +196,71 @@ fn start_status_and_stop() {
 #[test]
 fn the_daemon_swaps_and_logs_like_the_one_shot() {
     let f = Fixture::new();
+    // Give the identity endpoint and transaction guards a resolved common
+    // organisation. These are synthetic fixture identities, never credentials
+    // from the host.
+    for name in ["work", "spare", "extra"] {
+        let mut account = account_json(name);
+        account["organizationUuid"] = serde_json::json!("org-test");
+        let dir = if name == "work" {
+            f.home.clone()
+        } else {
+            f.root.join(name)
+        };
+        private_file(
+            &dir.join(".claude.json"),
+            &serde_json::json!({"oauthAccount": account}).to_string(),
+        );
+        private_file(
+            &f.root.join(name).join(".claude.json"),
+            &serde_json::json!({"oauthAccount": account}).to_string(),
+        );
+        private_file(
+            &f.root
+                .join(".auto-switch.d/expected")
+                .join(format!("{name}.json")),
+            &serde_json::json!({"account":format!("uuid-{name}"),"org":"org-test"}).to_string(),
+        );
+        login(&if name == "work" {
+            f.home_login()
+        } else {
+            f.slot(name)
+        });
+    }
+    let store = observations(&f);
     let (_reaper, pid) = start(&f, &[]);
-    // The swap that makes spare live. On a busy host spare's first reading
-    // can still be running, so the daemon may swap work->extra on threshold
-    // and then extra->spare on upgrade; either route ends with spare live,
-    // which the assertions below check.
-    wait_until("a swap to spare", || {
+    let events = LogEvents::before_start(&f.rotate_dir());
+    let mut guard = store.lock().unwrap();
+    let binding = guard.binding("work").unwrap().unwrap();
+    let capture = guard
+        .capture_new(&binding, chrono::Utc::now().timestamp())
+        .unwrap();
+    guard
+        .publish(
+            &capture,
+            &amplihack_utils::usage_observation::Evidence {
+                session_window: amplihack_utils::usage_observation::SessionWindow::Present,
+                session_used: Some(90.0),
+                week_used: Some(40.0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    drop(guard);
+    events.until(
+        pid,
+        || f.log(),
+        |log| log.contains("watch: decision 1 finished:"),
+    );
+    assert!(
         f.log()
             .lines()
-            .any(|l| l.contains(" swap ") && l.contains("->spare live "))
-    });
-    let (out, refused) = f.stop_until_gone(pid);
+            .any(|l| l.contains(" swap ") && l.contains("->spare live ")),
+        "threshold decision failed: {}",
+        f.log()
+    );
+    assert_eq!(f.log().matches("watch: decision 1 finished:").count(), 1);
+    let (out, refused) = stop_rotator(&f, pid);
     f.assert_stopped(&out, refused, pid);
     assert_eq!(ino(&f.home_login()), Some(f.spare_ino));
     assert_eq!(ino(&f.slot("work")), Some(f.live_ino));
@@ -208,10 +289,10 @@ fn a_stale_pid_file_is_reported_removed_and_never_signalled() {
 #[test]
 fn a_foreign_process_named_in_the_pid_file_is_left_alone() {
     let f = Fixture::new();
-    let sleeper = Foreign(
-        Command::new("sleep")
-            .arg("30")
-            .stdin(Stdio::null())
+    let mut sleeper = Foreign(
+        Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
             .spawn()
             .unwrap(),
     );
@@ -223,10 +304,22 @@ fn a_foreign_process_named_in_the_pid_file_is_left_alone() {
     fs::write(pid_file(&f), format!("{pid}\n")).unwrap();
     assert!(status(&f).starts_with("rotate: stale\n"));
     f.ok(&["profile", "rotate", "stop"]);
-    // A kept window (issue #1973): a check that no signal arrives. Load can
-    // only make it miss a signal, never fail wrongly.
-    std::thread::sleep(Duration::from_millis(200));
-    assert!(alive(pid), "a foreign process was signalled");
+    sleeper
+        .0
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"still alive\n")
+        .unwrap();
+    let mut reply = [0u8; 12];
+    sleeper
+        .0
+        .stdout
+        .as_mut()
+        .unwrap()
+        .read_exact(&mut reply)
+        .unwrap();
+    assert_eq!(&reply, b"still alive\n");
 }
 
 #[test]
@@ -240,23 +333,29 @@ fn a_rotator_that_ignores_sigterm_keeps_its_pid_file() {
     let Some(bash) = bash else {
         return;
     };
-    let stubborn = Foreign(
+    let mut stubborn = Foreign(
         Command::new(bash)
+            .arg0("amplihack")
             .args([
                 "-c",
-                "exec -a amplihack bash -c 'trap \"\" TERM; while :; do sleep 1; done' profile rotate watch",
+                "trap '' TERM; printf 'ready\\n'; read -r _",
+                "profile",
+                "rotate",
+                "watch",
             ])
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
             .spawn()
             .unwrap(),
     );
     let pid = stubborn.0.id() as i32;
     let guard = reaper(&f);
     guard.1.link_own(stubborn.0.id());
-    wait_until("the stub to exec", || {
-        fs::read(format!("/proc/{pid}/cmdline"))
-            .is_ok_and(|c| String::from_utf8_lossy(&c).contains("watch"))
-    });
+    let mut ready = String::new();
+    BufReader::new(stubborn.0.stdout.take().unwrap())
+        .read_line(&mut ready)
+        .unwrap();
+    assert_eq!(ready, "ready\n");
     fs::create_dir_all(f.rotate_dir()).unwrap();
     fs::write(pid_file(&f), format!("{pid}\n")).unwrap();
     assert!(
@@ -294,30 +393,33 @@ fn watch_follows_the_auto_switch_toggle() {
         "start warns: {}",
         text(&out.stderr)
     );
-    wait_until("idle", || f.log().contains("idle: auto-switch is off"));
-    // A kept window (issue #1973): a check that a line is not written
-    // again. Load can only make it miss a repeat, never fail wrongly.
-    std::thread::sleep(Duration::from_secs(3));
-    assert_eq!(
-        f.log().matches("idle: auto-switch is off").count(),
-        1,
-        "written once per change: {}",
-        f.log()
+    let events = LogEvents::before_start(&f.rotate_dir());
+    events.until(
+        started as i32,
+        || f.log(),
+        |log| log.contains("watch: ready;"),
     );
+    assert_eq!(f.log().matches("idle: auto-switch is off").count(), 1);
     assert!(!f.log().contains("cycle "), "no probes while off");
-
+    // Toggle events with complete evidence permit a decision without probes.
+    let _observations = observations(&f);
     f.ok(&["profile", "auto-switch", "on"]);
-    wait_until("a cycle after on", || f.log().contains("cycle live="));
+    events.until(
+        started as i32,
+        || f.log(),
+        |log| log.contains("watch: decision "),
+    );
+    assert!(
+        f.probe_envs().is_empty(),
+        "complete observations needed no probes"
+    );
     f.ok(&["profile", "auto-switch", "off"]);
-    wait_until("idle again", || {
-        f.log().matches("idle: auto-switch is off").count() == 2
-    });
     let pid: i32 = fs::read_to_string(pid_file(&f))
         .unwrap()
         .trim()
         .parse()
         .unwrap();
-    let (out, refused) = f.stop_until_gone(pid);
+    let (out, refused) = stop_rotator(&f, pid);
     f.assert_stopped(&out, refused, pid);
 }
 
@@ -387,7 +489,7 @@ fn starts_beside_a_running_rotator_refuse() {
         pid.to_string(),
         "the running rotator keeps its pid file"
     );
-    let (out, refused) = f.stop_until_gone(pid);
+    let (out, refused) = stop_rotator(&f, pid);
     f.assert_stopped(&out, refused, pid);
 }
 

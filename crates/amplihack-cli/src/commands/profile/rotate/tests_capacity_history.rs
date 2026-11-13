@@ -227,6 +227,7 @@ fn from_probes_marks_passive_readings_and_only_those() {
 fn a_probe_is_passive_only_when_its_report_came_from_the_status_line() {
     use crate::commands::profile::usage_parse::{UsageReport, UsageState};
     let mut r = UsageReport {
+        observation: Default::default(),
         state: UsageState::Ok,
         session: None,
         week_all: None,

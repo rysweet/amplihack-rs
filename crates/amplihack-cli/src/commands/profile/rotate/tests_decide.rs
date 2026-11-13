@@ -70,6 +70,7 @@ fn window(label: &str, used: f64) -> UsageWindow {
 
 fn report(state: UsageState, session: Option<f64>, week: Option<f64>) -> UsageReport {
     UsageReport {
+        observation: Default::default(),
         state,
         session: session.map(|u| window("session", u)),
         week_all: week.map(|u| window("all models", u)),

@@ -140,6 +140,7 @@ impl Claude {
         };
         Probe {
             report: UsageReport {
+                observation: Default::default(),
                 state: UsageState::WeeklyExhausted,
                 session: Some(w("session", 43.0)),
                 week_all: Some(w("all models", 100.0)),

@@ -719,6 +719,26 @@ fn write_swap(root: &Path, seq: u64, at: i64, mode: u32) {
 }
 
 impl Deps for DiskDeps {
+    fn publish_limit_observation(&mut self, input: &HookInput) -> std::io::Result<()> {
+        let HookInput::StopFailure {
+            session_id: Some(session),
+            ..
+        } = input
+        else {
+            return Ok(());
+        };
+        amplihack_utils::session_attribution::publish(
+            &self.root,
+            &json!({"session_id":session}),
+            &amplihack_utils::usage_observation::Evidence {
+                limit_reached: true,
+                ..Default::default()
+            },
+            self.clock,
+        )?;
+        Ok(())
+    }
+
     fn auto_switch_on(&mut self) -> bool {
         true
     }
@@ -1016,6 +1036,26 @@ struct SwapDeps {
 }
 
 impl Deps for SwapDeps {
+    fn publish_limit_observation(&mut self, input: &HookInput) -> std::io::Result<()> {
+        let HookInput::StopFailure {
+            session_id: Some(session),
+            ..
+        } = input
+        else {
+            return Ok(());
+        };
+        amplihack_utils::session_attribution::publish(
+            &self.root,
+            &json!({"session_id":session}),
+            &amplihack_utils::usage_observation::Evidence {
+                limit_reached: true,
+                ..Default::default()
+            },
+            self.clock,
+        )?;
+        Ok(())
+    }
+
     fn auto_switch_on(&mut self) -> bool {
         true
     }

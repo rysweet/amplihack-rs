@@ -20,7 +20,7 @@ pub struct RotateArgs {
 pub enum RotateAction {
     /// Start `rotate watch` as a detached background process
     Start(WatchFlags),
-    /// Run a cycle every --interval seconds in the foreground
+    /// Wait for usage and login changes in the foreground
     Watch(WatchFlags),
     /// Stop the background rotator
     Stop,
@@ -76,7 +76,7 @@ pub struct TuneFlags {
 pub struct WatchFlags {
     #[command(flatten)]
     pub tune: TuneFlags,
-    /// Seconds between cycles (default 600)
+    /// Deprecated compatibility option; validated but has no scheduling effect
     #[arg(long, value_name = "SECS")]
     pub interval: Option<String>,
     /// Set by `start`: the pid file is already written

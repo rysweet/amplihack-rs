@@ -9,20 +9,22 @@ review_schedule: as-needed
 
 `amplihack profile rotate` keeps the default Claude login in `~/.claude` on
 an eligible account with capacity, preferring the live login's organisation.
-It measures every
-[login profile](claude-profiles.md) with
-[`profile usage`](claude-profiles.md#check-usage-across-profiles), and when the
+It consumes usage observations from sessions and probes only when a
+decision needs evidence missing from the current login generation. When the
 account in `~/.claude` is close to its session or weekly limit it moves a
 better profile's login into `~/.claude` and puts the outgoing login back in the
 profile it came from.
 
 [Organisation affinity](../reference/profile-organisation-affinity.md) restricts
 selection before capacity ranking: crossing is allowed only for necessary
-capacity relief without an eligible same-organisation target with capacity.
-Plan-room and upgrade moves never make a confirmed crossing, including
-fallbacks; an unknown organisation is not a crossing, so missing metadata never
-keeps a session on an overflow login. The rotate log and `rotate status`
-distinguish confirmed crossings from unresolved affinity. A session stopped
+capacity or overflow cost relief without an eligible same-organisation target
+with capacity (or room, for the overflow room fallback). Upgrades and plan-room
+moves from a plan login require confirmed same-organisation affinity.
+If either organisation is unresolved,
+automatic movement is refused, including leaving overflow: missing metadata
+cannot bypass affinity checks. Resolve the trusted organisation records before
+trying again. The rotate log and `rotate status` distinguish confirmed
+crossings from unresolved affinity in historical swap records. A session stopped
 at a limit receives the warning with the resume that follows the swap, read
 from the swap record; a stop that does not end in a resume gets none.
 
@@ -35,12 +37,21 @@ state lock, so they never move logins at the same time.
 Rotation and manual switching identify each login from trusted evidence
 bound to that login. Running sessions can rewrite `~/.claude.json`; its
 `oauthAccount` is display state and cannot establish ownership. A stale
-session account does not block an otherwise authorized swap or trigger
+session account does not block an otherwise authorised swap or trigger
 recovery, even after the recovery grace period ends. See
 [Rotation login identity](../reference/profile-command.md#rotation-login-identity).
 
 The exact flags, files, exit codes and log lines are in the
 [`profile rotate` reference](../reference/profile-command.md#rotate).
+
+A log entry called a `cycle` is one logical decision, possibly continued by
+probe completion. References to the next cycle mean the next relevant event
+or explicit command, never a scheduled retry. Holds, reset boundaries and
+expiry are evaluated on those inputs; time passing alone does no work.
+Reset-only changes drive decisions, and ordinary readings require complete
+windows. The [observation contract](../reference/usage-observations.md#window-representation-and-validation)
+specifies validation and explicit session-limit absence.
+For a guided exercise, see [Follow an event-driven rotation](../tutorials/event-driven-rotation.md).
 
 ## Contents
 
@@ -107,7 +118,8 @@ sorted the same way, so the first row is not always the rotator's next
 pick. Only a profile in state `ok` can be chosen; an exhausted profile, or
 one whose probe failed, never is. A probe that failed or timed out means
 the account's usage is unknown, not that it is used up: such a profile is not treated as
-exhausted and is probed again on the next cycle.
+exhausted. The watcher retries only after a relevant external input changes
+and a decision still requires that reading.
 
 ## Preview a rotation
 
@@ -319,6 +331,14 @@ The login did move. Fix the cause and run the same `switch` again: it finds
 
 ## Run rotation in the background
 
+The background watcher blocks on usage, login, completion and shutdown
+events. With unchanged inputs it does no recurring work after startup.
+Linux uses inotify; macOS uses kqueue, with the existing
+[credential-movement restrictions](#limits). Threshold crossings trigger one
+logical decision, including any necessary asynchronous probe completion.
+Duplicate notifications and the rotator's own reporting writes do not trigger
+another decision.
+
 Background rotation runs unless auto-switch has been turned off. To be sure
 it runs, turn it on:
 
@@ -328,10 +348,17 @@ amplihack profile rotate start
 ```
 
 ```
-rotate: started (pid 48213), checking every 600s
+rotate: started (pid 48213), waiting for usage and login changes
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 root: /home/you/.claude-profiles
 ```
+
+`start` returns after spawning the child and recording its PID. Baseline
+loading and watch setup happen asynchronously; the command receives no
+readiness acknowledgement. A PID or `status` saying `running` establishes
+process liveness only. Check the child's `rotate.err` diagnostics if setup
+fails. See the
+[startup contract](../concepts/event-driven-rotation.md#startup-establishes-a-baseline).
 
 Turning the toggle on also enables auto-switch for profiled sessions; see
 [Switch accounts automatically](claude-profiles.md#switch-accounts-automatically).
@@ -339,7 +366,7 @@ If auto-switch has been turned off (`auto-switch off`, or
 `AMPLIHACK_CLAUDE_AUTO_SWITCH=0` in the environment `start` ran in), `start`
 prints a warning and starts anyway; the background process then writes
 `idle: auto-switch is off` and does nothing until it is turned on. With no
-auto-switch setting at all, rotation runs. It re-reads the toggle on every cycle, so
+auto-switch setting at all, rotation runs. It watches the toggle for changes, so
 `auto-switch off` and `auto-switch on` take effect without a restart.
 
 Check on it:
@@ -556,7 +583,7 @@ To have a service manager such as systemd keep the rotator running, run
 `rotate watch` in the foreground with `--supervised`. In a systemd user unit:
 
 ```ini
-ExecStart=/home/you/.cargo/bin/amplihack profile rotate watch --supervised=amplihack-rotator.service --interval 120 --session-at 70
+ExecStart=/home/you/.cargo/bin/amplihack profile rotate watch --supervised=amplihack-rotator.service --session-at 70
 ```
 
 Stop any rotator that is already running before you enable the unit. A
@@ -700,8 +727,8 @@ parameters such as `access_token=`. Like the rest of the log,
 the file is private to you (`0600`).
 
 While auto-switch is off, the rotator idles. If the live login is exhausted
-at the same time, it writes an ALERT on every cycle, and `rotate status`
-shows it as an `alert:` line:
+at the same time, a relevant observation or control change writes one ALERT.
+Duplicate notifications do not repeat it. `rotate status` shows an `alert:` line:
 
 ```
 2026-11-01T10:10:05Z ALERT: auto-switch is off while the live login is exhausted (spare: 100% used, threshold 90%)
@@ -773,13 +800,13 @@ the exact rules.
 | `--upgrade-margin N` | `AMPLIHACK_ROTATE_UPGRADE_MARGIN` | `30` | Swap without reaching a threshold when a target has at least N more points of headroom. |
 | `--hold SECS` | `AMPLIHACK_ROTATE_HOLD` | `3600` | No upgrade swap for this long after any swap. `0` turns the hold off. |
 | `--overflow-wait SECS` | `AMPLIHACK_ROTATE_OVERFLOW_WAIT` | `1800` | Use an [overflow profile](#use-usage-credits-when-every-plan-login-is-exhausted) only when the next plan reset is further away than this. |
-| `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | Time between cycles, for `start` and `watch` only. |
+| `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | Deprecated compatibility value (`1`–`86400`); validated but has no operational effect. |
 
 A flag beats the variable, and the variable beats the default. For example, to
-rotate earlier and check every five minutes:
+rotate earlier when usage changes:
 
 ```bash
-amplihack profile rotate start --session-at 75 --interval 300
+amplihack profile rotate start --session-at 75
 ```
 
 Flags for `start` and `watch` go after the subcommand.
@@ -800,9 +827,9 @@ has the most headroom (ties go to the name that sorts first):
 
 1. **Threshold swap.** If the live session use is at or above `--session-at`,
    or the weekly use is at or above `--week-at`, it swaps when the candidate
-   has at least `--margin` more headroom. In `watch`, a session projection
-   that reaches the threshold next cycle also triggers this decision now,
-   with `reason=projected`. A live account that could not be
+   has at least `--margin` more headroom. The watcher uses measured
+   observations; explicit `rotate now` commands also retain the existing
+   session projection with `reason=projected`. A live account that could not be
    measured counts as headroom 0, but is swapped only as described in
    [When the live login cannot be measured](#when-the-live-login-cannot-be-measured).
 2. **ALERT.** If a threshold swap is needed but no candidate has that margin,
@@ -816,308 +843,112 @@ often has its session window reset and looks fresh; without the hold the next
 cycle would swap straight back. Threshold swaps on a measured reading are
 never held back.
 
-Before any swap based on usage, the target must pass the
-[freshness gate](../reference/profile-command.md#rotate-reading-freshness-and-swap-back-damping).
-After a 100% to 90% swap, an older 0%/0% reading for the login just left
-cannot authorize a swap back. The rotator reads that target again and
-decides on the replacement evidence. A fresh exhausted result excludes it;
-a failed or still-stale result makes it unknown for the cycle. Another
-chosen target must pass the same checks.
-
-Target re-reads preserve supplied evidence timestamps. Finishing a re-read
-does not make an older observation fresh. Every usage-based swap repeats the
-freshness check under the lock, even when identity and eligibility are
-unchanged. A stale target becomes unknown without another usage read under
-the lock. See the
-[reading-time contract](../reference/profile-command.md#reading-time) and
-[locked revalidation contract](../reference/profile-command.md#rotate-revalidation).
+Before a usage-based swap, the target must pass the
+[observation and swap-back safeguards](../reference/profile-command.md#rotate-reading-freshness-and-swap-back-damping).
+A reading from a previous login generation is unusable. A login last seen
+full needs qualifying evidence of recovery; an older low reading cannot
+justify moving back. Identity, generation, eligibility, organisation affinity
+and policy are checked again under the state lock before the swap.
 
 ## When live usage stops changing
 
-Look for `stale live reading; re-read` in the rotate log. The third cached
-(status-line) reading with identical session and week figures and a nonzero
-session figure triggers a re-read, as does a reading older than one
-interval. A steady zero session reading alone does not, and neither do
-identical direct readings: when the status line is not being written, the
-cache ages out and the login is read directly each cycle, and the same
-figures then mean an idle login, not a frozen cache.
+An unchanged reading does not cause work. Percentages, limit flags and reset
+timestamps are meaningful inputs, including reset-only changes. See the
+[reset-aware contract](../reference/usage-observations.md#reset-aware-decisions).
+The watcher neither rereads it
+periodically nor probes because it has aged. Status-line updates and the
+actual limit hook publish observations to the owning profile's private
+state. Attribution follows the session's captured account and generation,
+including when that login is live in `~/.claude` or hosted elsewhere.
+Ambiguous sessions still display usage but cannot publish attributed evidence.
 
-Once a re-read establishes lag, older cached values remain untrusted even if
-their percentages change or match the accepted figures. The cache recovers
-only when its observation time is at least as recent as the accepted reading
-and its session figure has caught up. Session use only rises within one
-session window, so a lower session figure counts as a reset only when its
-session reset time is more than an hour later than the last reading's. A
-newer observation time is not enough: the status line rewrites old figures
-with new times, so a lower cached figure in the same window, or with no
-reset time to compare, is read again. See the
-[cache recovery contract](../reference/profile-command.md#stale-live-reading).
+Starting the watcher registers directory watches, reads each observation
+once, reconciles queued changes and establishes a baseline. It does not
+probe every login. If a pending decision needs a newly added login's usage
+and no valid observation exists for its generation, it requests exactly one
+logical probe for that login alone. Overflow recovery repairs watches, reads
+each observation once and returns to blocking without a speculative probe
+sweep or a reset of probe history.
 
-The live re-read uses the configured probe method with passive readings
-off. A direct read uses the credentials in `~/.claude` (the rotator
-home's `.claude` directory), never the copy stored in
-`~/.claude-profiles/<name>`, which is stale or absent while the login is
-live. It never refreshes the token and writes no file. Probe modes `auto`
-and `text` keep their existing fallback behavior; dry runs use direct reads
-only and start no `claude` process.
+To make an explicit check rather than wait for new evidence, run:
 
-The live re-read has one probe deadline of its own. All target re-reads
-share a second deadline and are limited to three targets per cycle.
-Together they can add up to two probe deadlines after measurement: about
-240 seconds with the default settings. See the
-[re-read limits](../reference/profile-command.md#re-reads).
+```bash
+amplihack profile rotate
+```
 
-A live re-read runs after the measurement, but it does not make the
-cycle's own candidate readings stale. A candidate read directly in the same
-measurement still counts as no older than the live login, so the re-read
-adds no target read. A candidate's stored reading from before the
-measurement is read again, as it is next to a direct live read. See the
-[reading-time contract](../reference/profile-command.md#reading-time).
-
-While the cache stays behind, the frozen count keeps rising on the cached
-figures and the rate history takes only the re-read figures, so the
-rotator reads the login again on every cycle and never treats the lower
-cached figure as a new session window. See the
-[frozen-count rules](../reference/profile-command.md#stale-live-reading).
-
-For example, cached 63% does not replace direct evidence of 65%, 68% and
-71% under the cache recovery rule. A failed re-read does not make
-the older cache current, and it does not make a frozen reading trusted
-again either: the frozen count is kept, so the next identical reading is
-read again. If accepted recent usage, over at least one interval, projects
-to `--session-at` by the next cycle, the rotator
-swaps now with `reason=projected`, provided a target qualifies. A projected
-or substituted swap never crosses organisations: it is decided with the
-need of the reading as measured, so a crossing waits for that reading to
-reach a threshold (see
-[outlook and organisation affinity](../reference/profile-command.md#outlook-and-organisation-affinity)). Near the
-threshold (within `--margin` of `--session-at`, or projected to reach it),
-a stale reading whose re-read fails is decided as if the login were at the
-threshold: a swap or the `no-capacity` ALERT, never a stay. With
-`--session-at 70 --margin 5`, a status line that keeps rewriting 66% gets a
-re-read on its third identical reading; if that read fails, the cycle
-swaps, or alerts when no target qualifies, and the next cycle reads again.
-A failed live probe near the threshold only changes timing: the
-failed-probe swap is made at once when its own target beats 70% by the
-margin and is not in another organisation, and otherwise after three
-failures as usual. The last reading counts only
-while its session window can still be open, and for five hours at most. See the
-[live freshness reference](../reference/profile-command.md#rotate-live-reading-freshness).
-A steady low rate stays below the threshold.
-
-Use the existing `--interval`, `--session-at` and `--margin` settings;
-there is no separate freshness toggle. Frozen-reading detection and rate
-history persist across cycles in `watch`, including background runs started
-with `start`. A one-shot command or dry run starts with empty history and
-can re-read an old observation, but cannot detect freezing across cycles
-or project a rate.
+This runs one decision now. The watcher then continues to react to relevant
+changes. Lowering `--interval` or a passive-reading age does not make it
+react sooner. See [event-driven rotation](../concepts/event-driven-rotation.md).
 
 ## When the live login cannot be measured
 
-If recent accepted evidence places the login near its threshold, and the
-swap target has at least `--margin` more headroom than the live login
-would have at its last known use or at `--session-at`, whichever is
-higher, the
-[live freshness rule](../reference/profile-command.md#failed-or-stale-reading-near-the-threshold)
-makes the failed-probe swap on the first failure, unless an API key in
-your home files would fail every login's probe (see the
-[API-key login check](../reference/profile-command.md#api-key-login-check)).
-Otherwise, the
-failed-probe damping below applies unchanged: a near-threshold reading
-never stops the failed-probe swap after three failures.
+A failed probe means unknown usage, not exhaustion or available capacity.
+A failed candidate cannot be chosen and does not justify paid overflow.
+The watcher records the failure and blocks. A relevant external dependency
+change permits a new attempt only if a decision still needs that reading.
+There are no scheduled retries.
 
-If the probe of the live login fails, the rotator cannot tell whether the
-account is near its limit. A failure that follows whichever login is live
-would otherwise make it swap on every cycle. So a failed live probe leads to
-a swap only when:
+Existing failed-live, near-threshold, home-key and hold safeguards still
+apply when qualifying events arrive. Duplicate notifications, repeated
+publication of the same evidence and time passing cannot build a failure
+count or supply confirmation. If a safeguard needs more evidence, the
+watcher defers until distinct qualifying evidence arrives.
 
-- it is the **third failure in a row**, and
-- at least `--hold` seconds have passed since the last swap.
-
-Until then the rotator stays and logs why. In this example the new live
-login fails too. The count starts again after the swap, and the third failure
-comes inside the hold:
-
-```
-2026-10-20T09:00:05Z cycle live=work work:failed personal:s=20%,w=35% spare:s=0%,w=12%
-2026-10-20T09:00:05Z stay: live probe failed (1/3)
-2026-10-20T09:10:05Z stay: live probe failed (2/3)
-2026-10-20T09:20:05Z swap work->spare live failed target s=0% w=12% reason=failed-probe
-2026-10-20T09:30:05Z stay: live probe failed (1/3)
-2026-10-20T09:40:05Z stay: live probe failed (2/3)
-2026-10-20T09:50:05Z stay: live probe failed; held after last swap (1800s left)
-```
-
-The count is kept by the running `watch` process. It goes back to zero when
-the live login is measured, after any swap, and when the rotator restarts.
-The one-shot `amplihack profile rotate` counts every failure as the first, so
-it never swaps because of a failed probe alone. Even with `--hold 0`, the
-rotator swaps for this reason at most once every three cycles.
-
-A failed probe of a *candidate* only stops that candidate being chosen, as
-before. When every account is at or above a threshold, the rotator writes
-one `ALERT` and stays, as before.
-
-A probe that timed out or could not run shows as `<name>:failed` in the
-cycle line, never as a percentage, and writes
-`warning: rotate: probe of <name> timed out` (or `failed: <reason>`) to
-`rotate.err`. Its usage is unknown: the rotator does not choose it, does not
-count or record it as exhausted, and probes it again on the next cycle.
-While a plan profile's usage is unknown this way, the rotator does not move
-onto
-[usage credits](#use-usage-credits-when-every-plan-login-is-exhausted); see
-[When a plan login cannot be measured](#when-a-plan-login-cannot-be-measured).
-A login that reached a limit shows the figures its probe read, with the
-window that ran out never below `100%`, so `work:s=100%,w=62%` is a login at
-its session limit with 38% of its week left. A login at its weekly limit
-shows `w=100%` and the session it read, for example `s=30%,w=100%`, and
-`w=?` means no weekly figure was read. Either way the login has headroom
-0 and is not chosen until the window resets. See
-[Exhausted figures](../reference/profile-command.md#rotate-exhausted-figures).
-
-A login whose read had not finished when the cycle stopped waiting shows as
-`<name>:unknown, still running`. Its usage is unknown for that cycle, as for
-`failed`, and the next cycle uses the result when it arrives; see
-[Readings that take longer than a cycle](#readings-that-take-longer-than-a-cycle).
-
-To see why a probe fails, run `amplihack profile usage --raw`. If the state
-is `timeout`, see
-[When the host is heavily loaded](#when-the-host-is-heavily-loaded).
+Inspect the diagnostic log, repair the reported cause and make an explicit
+check if necessary. For an authenticated usage check, use
+`amplihack profile usage --raw`; it is an explicit command and can start
+Claude probes. Do not use it as a periodic watcher substitute.
 
 ## When the host is heavily loaded
 
-The rotator measures each login as
-[`profile usage`](claude-profiles.md#check-usage-across-profiles) does:
+The watcher consumes usable current-generation observations before requesting
+missing evidence. A required probe retains the configured direct, structured
+`get_usage` and text `/usage` paths and their existing fallbacks. Overflow
+spend checks retain their `/usage` requirement.
 
-1. it uses a reading the status line stored in the last 300 seconds, if
-   there is one;
-2. otherwise it asks Anthropic's OAuth usage endpoint directly, with the
-   login stored in the profile, which takes well under a second and starts
-   no `claude` process;
-3. only if that fails does it start `claude`, first with a `get_usage`
-   request and then with `claude -p /usage`.
+Every Claude usage probe sets `AMPLIHACK_USAGE_PROBE=1` before sandbox
+wrapping, so amplihack session-start returns before expensive initialisation.
+This covers structured, text and fallback invocations. Ordinary interactive,
+worker, profile, login, recipe-worker and LLM command builders clear inherited
+probe suppression and run the full session-start hook. Only the exact value
+`1` suppresses the applicable amplihack session hooks.
 
-The last step is the slow one. Without help, `/usage` reads every
-transcript the profile can see, which can take a minute or more of CPU on a
-busy host. On Linux with a usable `bwrap`, each probe runs with an empty
-folder over the shared `projects`, so it has no transcripts to read, and
-every probe passes `--no-session-persistence`, so it adds no log of its own.
-Without `bwrap`, the rotator writes one `note:` line to `rotate.err` and
-probes with the flag alone; installing `bubblewrap` brings the sandbox back
-after a rotator restart. See
-[Probe sandbox](../reference/profile-command.md#probe-sandbox). A profile
-marked as overflow is always probed with `/usage` alone, because only
-`/usage` shows a used-up spend limit. So each login's `claude` probe gets
-120 seconds, and only a few run at once: between 2 and 4, fewer as the load
-average rises towards the number of CPUs. Direct reads have their own
-bound, 8 by default. The live login counts as one of each. The formula is
-in the [reference](../reference/profile-command.md#probe-parallelism).
+Probes retain `--no-session-persistence`, concurrency bounds and Linux bwrap
+protection over the shared projects directory. Without usable bwrap, the
+existing diagnostic and flag-only fallback still apply. Every fallback keeps
+the probe marker and persistence flag. If required isolation cannot be
+preserved, the request fails terminally. Probe timeouts bound
+work already requested; they never schedule another decision or retry.
 
-If probes still time out, give them longer, run fewer at once, or both. The
-rotator reads these variables from the environment it was started in, so
-set them in the shell that starts it, then restart it:
-
-```bash
-export AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS=300
-export AMPLIHACK_PROFILE_USAGE_PARALLEL=1
-amplihack profile rotate stop
-amplihack profile rotate start --interval 120 --session-at 70
-```
-
-A rotator that a launch [started automatically](#start-the-rotator-automatically)
-has that launch's values, so restart it the same way. Changing a variable
-in another shell does nothing to a running rotator.
+These variables tune probes that a decision actually needs:
 
 | Variable | Values | Default |
 |----------|--------|---------|
 | `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS` | `1` to `600` seconds | `120` |
 | `AMPLIHACK_PROFILE_USAGE_PARALLEL` | `1` to `16` | derived from CPUs and load |
 | `AMPLIHACK_PROFILE_USAGE_DIRECT_PARALLEL` | `1` to `16` | `8` |
-| `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS` | `0` to `3600` seconds; `0` turns passive readings off | `300` |
-| `AMPLIHACK_PROFILE_USAGE_PROBE` | `direct`, `auto` or `text` | unset: passive, direct, then `claude` |
-| `AMPLIHACK_PROFILE_USAGE_API_BASE` | an `https://` URL, or `http://` on a loopback address | `https://api.anthropic.com` |
-| `AMPLIHACK_PROFILE_USAGE_TOKEN_URL` | an `https://` URL, or `http://` on a loopback address | `https://platform.claude.com/v1/oauth/token` |
+| `AMPLIHACK_PROFILE_USAGE_PROBE` | `direct`, `auto` or `text` | unset: direct with Claude fallback |
 
-On an idle host with many profiles that need `claude`, a higher
-`AMPLIHACK_PROFILE_USAGE_PARALLEL` makes each cycle shorter.
-`AMPLIHACK_PROFILE_USAGE_PROBE=direct` starts no `claude` to measure a
-login: a login whose direct read fails reads as failed for that cycle, and
-overflow logins always do, with `direct read: overflow needs /usage`, so the
-rotator never moves onto one. The one `claude` it still starts is the
-spend-limit check of a held cycle whose pinned live login is an overflow
-profile; see [Pin and overflow](../reference/profile-command.md#pin-and-overflow). `AMPLIHACK_PROFILE_USAGE_PROBE=auto` goes back to the behaviour before
-direct reads (the `get_usage` request, then `/usage`), and `text` uses
-`/usage` alone; use them only if the direct read gives wrong figures (see
-[Compare the two probe methods](claude-profiles.md#compare-the-two-probe-methods)),
-because every probe then starts `claude`. An empty value is treated as
-unset. An invalid value is reported once per cycle in `rotate.err` beside
-the log, and the default is used instead.
-
-When a direct read fails and the login is measured with `claude` instead,
-the rotator writes nothing about it to its log or `rotate.err`; the cycle
-line shows the figures as usual. To see why a login fell back, run
-`amplihack profile usage --raw <name>`.
-
-The direct read may refresh a candidate's expired token, under Claude's own
-refresh lock, and write the new token back to that profile's
-`.credentials.json`. It never refreshes a login lent to or from another
-directory; `claude` does that itself. The login in `~/.claude` is refreshed
-once per cycle only when its token has already expired, so that its
-[identity can be read](../reference/profile-command.md#an-expired-live-login).
-The details are in the
-[reference](../reference/profile-command.md#token-refresh).
+Restart the watcher to change its environment. Increasing a timeout only
+changes the protection for an in-flight probe. `--interval` and
+`AMPLIHACK_ROTATE_INTERVAL` are accepted and validated for compatibility;
+they do not affect scheduling, retries, projections or measurement budgets.
+The passive age setting of explicit `profile usage` commands does not create
+watcher work.
 
 ### Readings that take longer than a cycle
 
-A cycle does not wait for every reading. It waits until 2 seconds before
-`--interval` is up, counted from the start of the cycle, and at least
-1 second. A login whose reading has not finished by then shows as
-`<name>:unknown, still running` in the cycle line and counts as unmeasured
-for that cycle. Its reading keeps running, and the next cycle uses the
-result; no second reading of that login starts while one is outstanding.
-With `--interval 120`:
+An asynchronous reading belongs to the logical decision that requested it.
+Successful evidence is validated and atomically published before completion
+is signalled. Completion then wakes the owning decision, which revalidates
+before any swap. Publication failure is reported as failure, never as usable
+evidence. No interval budget abandons it for a later cycle. A second
+job for the same request is not launched while one is outstanding.
 
-```
-2026-11-01T10:00:00Z cycle live=work work:s=41%,w=30% spare:unknown, still running third:s=5%,w=12%
-2026-11-01T10:02:01Z cycle live=work work:s=43%,w=30% spare:s=0%,w=8% third:s=5%,w=12%
-```
-
-A reading still outstanding after twice the probe deadline plus 5 seconds
-(245 seconds by default) is given up, and the next cycle starts a new one.
-When the rotator stops, it waits a little over the deadline for any token
-refresh in progress, so that it does not leave Claude's refresh lock
-behind.
-
-Cycles do not overlap: the next one starts `--interval` seconds after the
-previous one ends.
-
-Each cycle stores the readings it took, and later cycles use a stored
-reading while it is younger than `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS`
-(300 seconds by default). With `--interval 120`, a login is therefore asked
-afresh only about every third cycle. A stored reading can rank a login, but
-the rotator does not swap to it on that reading alone: a target read more
-than 300 seconds ago, earlier than the live login, or not strictly after
-its applicable recorded swap-away time, is read again first (the way
-`AMPLIHACK_PROFILE_USAGE_PROBE` says, so never directly under `auto` or
-`text`), and a login it left full is not
-chosen again until a later reading shows room under the existing rules.
-The recorded time includes the previous login's last swap and retained
-exhaustion-damping entries for other candidates. These records have the
-existing retention limits; they are not a complete login-use history.
-The `reread:` and `damp:` log
-lines show this; see
-[Rotate reading freshness and swap-back damping](../reference/profile-command.md#rotate-reading-freshness-and-swap-back-damping).
-For the rotator to react sooner, lower the age in the shell that starts it:
-
-```bash
-export AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS=100
-amplihack profile rotate stop
-amplihack profile rotate start --interval 120 --session-at 70
-```
-
-A value just under `--interval` makes every cycle ask each login again, at
-the cost of one direct read per login per cycle; `0` does the same and also
-ignores the status line's own readings.
+Login changes arriving during measurement are retained. Removal, re-login
+or a changed policy can invalidate the pending swap; a late result cannot
+be rebound to the replacement login. See the
+[usage observation contract](../reference/usage-observations.md).
 
 ## Remove logs left by old usage probes
 
@@ -1338,7 +1169,7 @@ jq '.hooks.StopFailure' ~/.claude/settings.json
 ```
 
 If this prints `null`, something has stripped the hooks from the file. The
-rotator puts them back at the end of its next cycle, and sessions started with
+rotator repairs them at startup or on relevant settings changes, and sessions started with
 `amplihack claude` receive them through `--settings` in any case. Run
 `amplihack doctor` to see which settings files have drifted; see the
 [hooks block reference](../reference/hook-block.md).
@@ -1347,7 +1178,11 @@ rotator puts them back at the end of its next cycle, and sessions started with
 
 1. The turn ends with a usage-limit error, and Claude Code runs the hook in
    the background.
-2. If no rotator is running, the hook exits at once (`rotator-down`).
+2. The hook publishes recognised limit evidence to the validated owning
+   profile before checking the resume gate. Unknown percentages stay unknown.
+   If no rotator is running, resume ends as `rotator-down`; the evidence
+   remains available. Ambiguous attribution prevents publication without
+   weakening the existing resume checks.
 3. The hook notes the session's tmux pane, if it has one. It takes the pane
    from `$TMUX_PANE`, and only if `$TMUX` is also set and the pane's
    terminal is the one Claude Code reads from, with Claude Code in the
@@ -1730,7 +1565,12 @@ A cycle that stops early, for example on `skip: state lock busy` or
 warning; the next full cycle does. The text in brackets names what changed;
 see [Rotate revalidation](../reference/profile-command.md#rotate-revalidation).
 
-The warning clears by itself when the first account resets. Where it
+The reset time in the warning is informational; reaching it does not wake
+the watcher, refresh usage or clear the warning. A qualifying usage update
+showing capacity lets a subsequent full decision recompute capacity state.
+To check explicitly after a reset, run `amplihack profile usage`, then
+`amplihack profile rotate` to request a decision. Neither elapsed time nor
+the old reset timestamp proves recovered capacity. Where the warning
 appears and how it is deduplicated is in
 [When no account has capacity](claude-profiles.md#when-no-account-has-capacity);
 the file and the exact rules are in the
@@ -1870,7 +1710,8 @@ read, or its directory is refused just before the spawn, the rotator cannot
 tell whether that login has capacity, so it does not move onto credits in
 that cycle, however far away the known resets are. It writes the no-capacity
 ALERT (or makes the free swap onto a plan login at a threshold) as it would
-with no overflow profile, and probes again on the next cycle:
+with no overflow profile. Another attempt requires a relevant external
+change or an explicit command:
 
 ```
 2026-10-24T09:00:05Z cycle live=work work:s=97%,w=91% personal:failed ryan-mistt-org:s=100%,w=100%
@@ -2038,9 +1879,13 @@ Recipe steps in the usage-limit wait do rerun, and then run on credits.
 Claude reports `You've hit your org's monthly spend limit …` (older
 versions say `Your organization has reached its monthly spend limit`) when
 the credits are used up or turned off. The rotator's usage probe recognises
-both and runs against the live overflow profile on every cycle, so it sees
-the message within one cycle. When the probe reads this for an overflow
-profile, it blocks that profile until 00:00 UTC on the 1st of the
+both. The watcher does not probe the live overflow profile on every decision.
+It consumes qualifying observations and requests a probe only when that
+decision needs evidence missing from the current generation. There is no
+periodic spend-limit check or detection deadline. To request a one-shot
+measurement and decision explicitly, run `amplihack profile rotate`.
+When a required probe reports the spend-limit message for an overflow
+profile, the rotator blocks that profile until 00:00 UTC on the 1st of the
 next month, writes one ALERT, and moves to the next overflow profile, a plan
 profile, or nowhere:
 
@@ -2062,11 +1907,16 @@ overflow: cleared the spend block on ryan-mistt-org
 `clear` waits up to 10 seconds for a running cycle and otherwise fails with
 `rotator busy, retry`; run it again.
 
+The block's expiry does not start a probe or a decision. A relevant evidence
+or control change, or an explicit rotation command, must cause another
+evaluation; elapsed time does not prove that credits are available.
+
 The block depends on the spend-limit message appearing in the output of
 `claude -p /usage`. An overflow profile needs its usage credits turned on
 (see [Turn on usage credits](#turn-on-usage-credits)), and a profile marked
-as overflow is always probed with `/usage`, so the rotator can see that
-message. With
+as overflow uses `/usage` when a probe is required so the rotator can see that
+message. An existing observation does not authorise another probe merely
+because time passed. With
 credits off there is no spend limit to reach: the account stops at its plan
 limit like a plan login. If sessions on the overflow profile fail with the
 spend-limit message but no block appears in `overflow list`, the rotator
@@ -2074,8 +1924,8 @@ cannot tell, and you have two ways out:
 
 - `amplihack profile overflow remove <name>` makes it a plan profile. A
   spend-limit reading then counts as a failed probe, so the rotator swaps it
-  out only after three failed cycles in a row (30 minutes at the default
-  interval), and only to a plan profile.
+  out only after the existing failed-live safeguards receive distinct
+  qualifying evidence, and only to a plan profile. Time alone causes no retry.
 - `amplihack profile rotate stop` stops all swapping and leaves that login
   in `~/.claude` until you start the rotator again.
 
@@ -2090,8 +1940,11 @@ the login where it is too.
 If `rotate status` shows `on overflow: yes`, stop the spending first: turn off
 usage credits or lower the spend limit at
 <https://claude.ai/settings/usage>. Claude then refuses work on that login,
-and while the mark is still there the rotator blocks the profile and moves
-away from it, as in [When the credits run out](#when-the-credits-run-out).
+and while the mark is still there a required probe that sees the spend-limit
+message lets the rotator block the profile and evaluate moving away from it,
+as in [When the credits run out](#when-the-credits-run-out). Changing billing
+settings alone does not wake the watcher; request an explicit check as
+described there.
 Ending the Claude sessions on that login also stops spending until the next
 launch.
 
@@ -2423,9 +2276,11 @@ profile. It never decides from `~/.claude.json`, which running sessions
 rewrite, from `claude auth status`, which reads that file, or from usage
 reset times, which accounts created together share.
 
-It does this only when the last swap is at least 10 minutes old
-(`SWAP_GRACE`, 600 seconds), and it acts only on two matching readings taken
-on separate cycles. The tokens are used in memory only, in the request
+It evaluates this recovery on relevant events, subject to the existing
+post-swap grace safeguard (`SWAP_GRACE`, 600 seconds). Confirmation needs
+two matching trusted readings backed by distinct qualifying evidence;
+waiting out the grace period or receiving a duplicate notification does
+not start a reading or confirm a suspicion. The tokens are used in memory only, in the request
 header; they are never printed, logged or stored.
 
 The examples below use the root `/home/you/.claude-profiles`, a ledger
@@ -2448,7 +2303,7 @@ cycles simply carry on:
 2026-11-03T04:52:10Z cycle live=hharkness hharkness:s=4%,w=22% rssourcelabs:s=91%,w=40%
 ```
 
-After 10 minutes, the server reports `hharkness`'s account for the login in
+On a qualifying event after the grace period, the server reports `hharkness`'s account for the login in
 `~/.claude`, which is the account recorded for `hharkness`, so nothing
 happens then either. On 3 November the same pattern hit `nnorth` and
 `mmorrison`, whose usage windows reset at the same times; because identity
@@ -2465,7 +2320,8 @@ note and stops without swapping:
 2026-10-27T03:17:05Z ALERT: the account in ~/.claude is not the one the ledger names (live=ryan-ryansweet); no swap
 ```
 
-On a later cycle, if the reading is the same, the rotator would keep the copy
+On a later qualifying event, if distinct trusted evidence confirms the
+reading, the rotator would keep the copy
 in `~/.claude` and move `ryan-mistt-org`'s copy to a backup. Here it does
 not: `ryan-ryansweet`'s only login was the one the `/login` replaced, and
 recording `ryan-mistt-org` as live would leave `ryan-ryansweet` with no login
@@ -2558,7 +2414,7 @@ and [Recorded account](../reference/profile-command.md#recorded-account).
 
 A legacy ledger containing only the user UUID cannot prove which
 organization owns an unrecorded outgoing login. The existing ledger now
-retains sanitized full identity after an authorized swap or confirmed
+retains sanitized full identity after an authorised swap or confirmed
 credential recovery; ordinary observations do not upgrade legacy keys.
 An interrupted swap retains both authorized identities in its journal,
 so recovery cannot substitute a different unrecorded incoming account or
@@ -2767,7 +2623,7 @@ An amplihack older than
 [#1659](https://github.com/rysweet/amplihack-rs/issues/1659) cannot read the
 `last_cycle.measured_at` field this version writes to `ledger.json`. Its
 rotator does not rewrite a ledger it cannot read, so it logs a failed cycle
-every interval and never swaps again, and the limit-resume hook waits its
+on each relevant decision and never swaps again, and the limit-resume hook waits its
 full 7 days for a swap record that does not come. Before you run the older binary,
 or launch anything with it while [autostart](#start-the-rotator-automatically)
 is on:
@@ -2954,7 +2810,7 @@ it. The rotator's live login counts, though its login file is in
 records only a session's own profile, and `profile usage` probes each
 profile's own directory. It uses the rotator's measurement instead: every
 cycle, the rotator records in its ledger the logins it measured with no room,
-and while that record holds (past the next cycle, at most an hour after the
+and while that record holds (at most an hour after the
 measurement, and no later than the first reset the rotator read for one of
 those logins) those logins no longer keep auto-switch off the key. That includes a login the rotator has
 just moved off. When no rotator is running, or the rotator found room on the
@@ -3110,8 +2966,8 @@ full rule is in
   when no login has room, a session stopped by a limit is never resumed: only
   a swap record wakes the hook. A stay on a login that has room again, for
   example after its session window reset, does not resume a session. The
-  hook waits for at most 7 days; a shorter `--interval` swaps, and so
-  resumes, sooner. If you send a prompt in the session during the wait, the
+  hook waits for at most 7 days. A qualifying event or explicit rotation
+  command is needed for another decision. If you send a prompt in the session during the wait, the
   hook stops without resuming it (`moved-on`). A rotator started after the
   limit does not help that session: its hook already ended as
   `rotator-down`. A session is treated as exited when the hook's parent
@@ -3136,13 +2992,15 @@ full rule is in
 - **Overflow depends on what `/usage` shows.** The rotator assumes that an
   account on credits still answers `claude -p /usage` after its plan limit,
   and that a used-up spend limit shows there as `spend_limit`. A profile
-  marked as overflow is always probed with `/usage`, so it always pays the
-  transcript scan. An overflow profile whose probe fails is never used. A spend block
+  marked as overflow uses `/usage` when a decision requires a probe, paying
+  the transcript scan for that probe. There is no recurring overflow probe.
+  An overflow profile whose probe fails is never used. A spend block
   always lasts until the 1st of the next month (UTC), whatever reset Claude
   states; lift it sooner with `amplihack profile overflow clear <name>`.
 - **The warning can say exhausted while on credits.** The status line and
   `profile usage` do not know about credits and may record the no-capacity
-  warning between cycles; the rotator's next cycle clears it.
+  warning between decisions; a subsequent full decision with qualifying
+  evidence that credits are usable clears it. Time passing does not clear it.
 - **A manual `/login` in `~/.claude` loses a login.** A manual `/login` in
   `~/.claude` replaces whatever login was there; the profile that login
   belonged to is left with no login. The rotator recovers the rest by itself
@@ -3165,13 +3023,26 @@ full rule is in
   swap record, and the usage-limit wait reruns
   a step only when its limit resets; see
   [What the hold changes](#what-the-hold-changes).
-- **Each cycle starts `claude` once or twice per profile.** Each probe
-  starts `claude` for the `get_usage` request, and again for `/usage` when
-  that request falls back, a few profiles at a time. A short `--interval`
-  means many processes.
+- **Required probes can start Claude.** A decision missing usable evidence
+  can use `get_usage` and its `/usage` fallback, with probe-only hook
+  suppression. Existing observations do not cause periodic probes.
 - **`get_usage` is experimental in Claude Code.** A Claude Code update can
   change or remove it. amplihack then falls back to `/usage` on every probe,
   which is slower but still correct. When Claude's own usage lookup fails,
   it can answer `get_usage` with figures it stored earlier, without marking
   them as old; compare with `AMPLIHACK_PROFILE_USAGE_PROBE=text` as in
   [Compare the two probe methods](claude-profiles.md#compare-the-two-probe-methods).
+
+
+## Explicit command diagnostics
+
+An explicit `amplihack profile rotate now` retains the existing failed-read
+safeguards. Its diagnostics can include `stay: live probe failed (1/3)`, a swap
+with `reason=failed-probe`, or `stay: live probe failed; held after last swap (`.
+These describe explicit decisions. An idle watcher never advances the failure
+count or retries a probe on elapsed time.
+
+`AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS` controls legacy passive readings
+for explicit commands. Event-driven observation validity uses login generations
+and never uses that value to request a probe. `AMPLIHACK_PROFILE_USAGE_DIRECT_PARALLEL`
+controls the existing direct-reader pool; it does not introduce a schedule.

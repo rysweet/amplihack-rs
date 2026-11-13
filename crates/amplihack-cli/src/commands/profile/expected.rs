@@ -23,7 +23,7 @@ use crate::commands::profile::ProfileError;
 use std::path::Path;
 
 /// The state subdirectory that holds the records.
-const SUB: &str = "expected";
+pub(super) const SUB: &str = "expected";
 
 /// One profile's record: the account key and its organization.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,7 +49,9 @@ pub fn record(state: &State, name: &ProfileName, account: &Account) -> Result<()
         )));
     }
     let body = serde_json::json!({ "account": key, "org": account.org() });
-    state.write_sub_json(SUB, name.as_str(), &body)
+    state.write_sub_json(SUB, name.as_str(), &body)?;
+    establish_generation(state, name, key)?;
+    Ok(())
 }
 
 /// What [`seed`] found.
@@ -74,6 +76,7 @@ pub fn seed(state: &State, name: &ProfileName, account: &Account) -> Result<Seed
     };
     let body = serde_json::json!({ "account": key, "org": org });
     if state.create_sub_json(SUB, name.as_str(), &body)? {
+        establish_generation(state, name, key)?;
         return Ok(Seeded::Written);
     }
     match lookup(state, name) {
@@ -137,8 +140,33 @@ pub fn save(root: &Path, name: &ProfileName, account: &Account, keep: bool) {
 /// another profile may own: a record left by a removed profile of the same
 /// name must not stand for it.
 pub fn forget(root: &Path, name: &ProfileName) {
-    let removed = State::new(root).and_then(|state| state.remove_sub_json(SUB, name.as_str()));
+    let removed = State::new(root).and_then(|state| {
+        let observations = amplihack_utils::usage_observation::ObservationStore::open(root)?;
+        let mut guard = observations.under_state_lock();
+        if let Some(binding) = guard.binding(name.as_str())? {
+            guard.retire(&binding)?;
+        }
+        state.remove_sub_json(SUB, name.as_str())
+    });
     if let Err(e) = removed {
         eprintln!("warning: the recorded account for profile '{name}' was not removed: {e}");
     }
+}
+
+/// Called only from authorised expected-account transactions, with their
+/// existing state lock. Known movement/backfill preserves the generation.
+fn establish_generation(
+    state: &State,
+    name: &ProfileName,
+    account: &str,
+) -> Result<(), ProfileError> {
+    let store = amplihack_utils::usage_observation::ObservationStore::open(&state.root)?;
+    let mut guard = store.under_state_lock();
+    if guard
+        .binding(name.as_str())?
+        .is_none_or(|b| b.account_id != account)
+    {
+        guard.authorised_login(name.as_str(), account)?;
+    }
+    Ok(())
 }

@@ -377,23 +377,22 @@ pub struct Released {
     pub default: bool,
 }
 
-/// `profile switch --none`: removes the rotation pin and the default
-/// pointer as one operation under the rotate lock; what was there. Off Unix
-/// there is no rotator and so no pin, and only the pointer is removed.
-pub(in crate::commands::profile) fn release(
-    store: &ProfileStore,
-) -> Result<Released, super::ProfileError> {
-    #[cfg(unix)]
-    {
-        switch::release(store)
-    }
-    #[cfg(not(unix))]
-    {
-        let default = super::pointer::exists(store.root());
-        super::pointer::clear(store.root())?;
-        Ok(Released {
-            pin: false,
-            default,
-        })
-    }
-}
+mod release_cmd;
+pub(in crate::commands::profile) use release_cmd::release;
+
+#[cfg(unix)]
+mod coordinator;
+#[cfg(unix)]
+mod coordinator_types;
+#[cfg(unix)]
+mod watch_loop;
+#[cfg(unix)]
+mod watch_source;
+
+#[cfg(unix)]
+mod event_runtime;
+#[cfg(unix)]
+mod inputs;
+
+#[cfg(unix)]
+mod event_measure;

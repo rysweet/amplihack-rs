@@ -35,6 +35,8 @@ mod tests_command;
 #[cfg(test)]
 mod tests_env;
 #[cfg(test)]
+mod tests_issue_2029_probe_marker;
+#[cfg(test)]
 mod tests_issue_2030_contract;
 #[cfg(all(test, unix))]
 mod tests_issue_2279_launch_settings;

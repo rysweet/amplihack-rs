@@ -179,7 +179,7 @@ fn the_documented_message_shape() {
 }
 
 #[test]
-fn to_args_round_trips_through_resolve() {
+fn to_args_round_trips_policy_without_forwarding_the_deprecated_interval() {
     let env = env_of(&[("AMPLIHACK_ROTATE_WEEK_AT", "77")]);
     let f = TuneFlags {
         margin: Some("9".into()),
@@ -206,7 +206,10 @@ fn to_args_round_trips_through_resolve() {
         }
     }
     let again = resolve(&back, interval.as_deref(), &no_env()).unwrap();
-    assert_eq!(again, s);
+    let mut expected = s;
+    expected.interval = resolve(&flags(), None, &no_env()).unwrap().interval;
+    assert_eq!(again, expected);
+    assert!(interval.is_none(), "deprecated interval was forwarded");
     assert!(!s.to_args(false).iter().any(|a| a == "--interval"));
 }
 

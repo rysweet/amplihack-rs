@@ -130,6 +130,7 @@ pub(super) fn login_checked(
     check_root_not_symlink(root).map_err(super::with_hint)?;
     let dir = store.verify_profile_dir(name).map_err(super::with_hint)?;
     let state = State::new(root).map_err(super::with_hint)?;
+    state.ensure().map_err(super::with_hint)?;
     // The live profile's login is `~/.claude`, and the rotator refuses to
     // swap back into a profile that has a login of its own: refused before
     // Claude runs, so nothing is held or moved.
@@ -366,6 +367,17 @@ fn no_login_file(
 fn record_login(store: &ProfileStore, held: &Held, name: &ProfileName) {
     if let Some(account) = Account::of_dir(&held.dir) {
         super::expected::save(store.root(), name, &account, false);
+        let saved = (|| -> Result<(), super::ProfileError> {
+            let observations =
+                amplihack_utils::usage_observation::ObservationStore::open(store.root())?;
+            observations
+                .under_state_lock()
+                .authorised_login(name.as_str(), account.key())?;
+            Ok(())
+        })();
+        if let Err(e) = saved {
+            eprintln!("warning: login usage generation was not saved: {e}");
+        }
     }
 }
 

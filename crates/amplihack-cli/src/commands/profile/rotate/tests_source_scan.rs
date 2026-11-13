@@ -417,6 +417,14 @@ fn every_rotate_submodule_is_unix_only() {
         if t == "mod tests_source_scan;" {
             continue;
         }
+        if t == "mod release_cmd;" {
+            let release = source("release_cmd.rs");
+            assert!(release.contains("#[cfg(unix)]") && release.contains("#[cfg(not(unix))]"));
+            assert!(
+                release.contains("super::switch::release") && release.contains("pointer::clear")
+            );
+            continue;
+        }
         checked += 1;
         let guard = i.checked_sub(1).map(|j| lines[j].trim()).unwrap_or("");
         // `target_os = "linux"` is a narrower guard than `unix` (every Linux

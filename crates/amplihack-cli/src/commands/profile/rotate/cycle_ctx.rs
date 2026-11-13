@@ -5,7 +5,6 @@ use super::super::fresh::{RereadFn, live};
 use super::super::identify::Skip;
 use super::super::key_check::{self, KeyCheckFn};
 use super::super::ledger::RotateState;
-use super::super::revalidate;
 use super::super::settings::Settings;
 use super::MeasureFn;
 use crate::commands::profile::auto_switch::kit::{Liveness, scan_system};
@@ -20,6 +19,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Cycle state and the watch process's retained readings.
 pub struct Ctx {
+    pub(in crate::commands::profile::rotate) event_inputs:
+        Option<super::super::coordinator::InputState>,
+
     pub store: ProfileStore,
     pub rs: RotateState,
     pub home: PathBuf,
@@ -69,6 +71,7 @@ impl Ctx {
     pub fn new(store: ProfileStore, home: PathBuf, settings: Settings) -> Self {
         let rs = RotateState::new(store.root());
         Self {
+            event_inputs: None,
             store,
             rs,
             home,
@@ -83,7 +86,7 @@ impl Ctx {
             reread: None,
             reread_live: None,
             probe_held: None,
-            pause: |_| std::thread::sleep(revalidate::REREAD_PAUSE),
+            pause: |_| {},
             key_check: key_check::reachable,
             home_key: None,
             in_flight: None,

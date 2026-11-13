@@ -1045,16 +1045,19 @@ fn spawn_removes_invocation_id_from_the_child() {
 }
 
 #[test]
-fn the_exhausted_alert_is_logged_outside_the_idle_latch() {
-    let body = fn_body(&source("daemon.rs"), "watch");
+fn the_exhausted_alert_is_event_driven_and_suppresses_duplicate_notifications() {
+    let body = fn_body(&source("event_runtime.rs"), "run");
     assert!(
-        body.contains("exhausted::watch_line"),
-        "watch checks the exhausted-while-off condition"
+        body.contains("exhausted::observation_line"),
+        "watch checks current-generation exhaustion"
     );
-    let latch = block_after(&body, "else if !idle");
     assert!(
-        !latch.contains("exhausted::watch_line"),
-        "the ALERT is written on every paused cycle, not once per idle latch"
+        body.contains("alert != last_off_alert"),
+        "duplicate notifications must not repeat the alert"
+    );
+    assert!(
+        !body.contains("exhausted::watch_line"),
+        "watch must not clear exhaustion from elapsed time"
     );
 }
 

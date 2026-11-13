@@ -92,6 +92,11 @@ fn watch_pinned_spend(
         out.emit(now(), &msg::pinned_excluded(name));
         return Ok(());
     }
+    // Event-driven watches never start an unrelated spend probe. A pinned
+    // login remains held until an attributed event or explicit command.
+    if ctx.event_inputs.is_some() {
+        return Ok(());
+    }
     let spend_limit = match ctx.probe_held {
         Some(stub) => stub(ctx, name)?,
         None => {

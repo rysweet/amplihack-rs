@@ -168,6 +168,9 @@ pub(super) fn settle(
     budget: Duration,
     mut decide: impl FnMut(Probed, Probes, i64) -> Result<Measurement, ProfileError>,
 ) -> Result<Measurement, ProfileError> {
+    if ctx.event_inputs.is_some() {
+        return super::event_measure::gate_observed(ctx, m);
+    }
     if gated_target(&m.decision).is_none() {
         return Ok(m);
     }

@@ -408,6 +408,13 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             .map(|(sw, p)| (p, sw.state.profile_dir(p.as_str())));
         let env = switch_dir.as_ref().map(|(p, d)| (*p, d.as_path()));
         let input = stdin.for_attempt(n);
+        let usage_capture = switch.as_ref().and_then(|sw| {
+            crate::commands::profile::usage_generation::capture(
+                sw.store,
+                profile.as_ref().unwrap_or(&sw.inherited),
+                false,
+            )
+        });
         let attempt = match run_attempt_with_recovery(
             &exe,
             &args,
@@ -432,8 +439,18 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             switch.as_ref().map(|sw| sw.store.root()),
         );
         let Some(lim) = usage_limited(&attempt, waiter.now()) else {
+            if let (Some(sw), Some(capture)) = (&switch, &usage_capture) {
+                crate::commands::profile::usage_generation::abandon(sw.store.root(), capture);
+            }
             return attempt.finish(None);
         };
+        if let (Some(sw), Some(capture)) = (&switch, &usage_capture) {
+            if lim.seen.is_some() {
+                crate::commands::profile::usage_generation::publish_limit(sw.store.root(), capture);
+            } else {
+                crate::commands::profile::usage_generation::abandon(sw.store.root(), capture);
+            }
+        }
         if let Some(client) = &recovery {
             client.outcome(recipe_runner_rs::recovery::model::Outcome::UsageLimit)?;
         }

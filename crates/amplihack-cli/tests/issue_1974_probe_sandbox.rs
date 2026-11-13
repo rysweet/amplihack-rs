@@ -34,6 +34,7 @@ case "$1" in
   --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 printf '%s\n' "$@" > "$RECORD_DIR/args"
+printf '%s\n' "${AMPLIHACK_USAGE_PROBE-unset}" > "$RECORD_DIR/probe-marker"
 p="$CLAUDE_CONFIG_DIR/projects"
 { echo "start:"; ls -A "$p"; } > "$RECORD_DIR/ready"
 read _ < "$RECORD_DIR/go"
@@ -248,6 +249,11 @@ fn a_probe_under_real_bwrap_sees_an_empty_projects_folder_and_a_worker_still_wri
     );
     let args = fs::read_to_string(f.records.join("args")).unwrap();
     assert_eq!(args, "-p\n/usage\n--no-session-persistence\n");
+    assert_eq!(
+        fs::read_to_string(f.records.join("probe-marker")).unwrap(),
+        "1\n",
+        "the real bwrap path must preserve probe hook suppression"
+    );
 
     assert_eq!(
         names(&f.shared()),

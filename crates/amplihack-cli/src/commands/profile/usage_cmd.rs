@@ -1139,6 +1139,23 @@ impl RowReader {
     /// One profile, against `~/.claude` when `live`. An excluded profile is
     /// [`Probe::excluded`], decided before anything is read.
     pub(super) fn profile(&self, name: &ProfileName, live: bool) -> Probe {
+        #[cfg(unix)]
+        let captured = if self.is_excluded(name) {
+            None
+        } else {
+            super::usage_generation::capture(&self.store, name, live)
+        };
+        let result = self.profile_unobserved(name, live);
+        #[cfg(unix)]
+        if let Some(capture) = captured {
+            super::usage_generation::publish(self.store.root(), &capture, &result);
+        }
+        result
+    }
+
+    /// Coordinator workers already own their capture and publish it before
+    /// completion signalling; they must not allocate a second ticket.
+    pub(super) fn profile_unobserved(&self, name: &ProfileName, live: bool) -> Probe {
         if self.is_excluded(name) {
             return Probe::excluded();
         }
@@ -1409,7 +1426,10 @@ pub(super) fn probe_with_sandbox(
     // `wrap` runs before `attempt` sets stdio and the process group, so
     // `bwrap` leads the group and the group kill still ends `claude`.
     let prepared = |args: &[String]| -> Result<Command, ProfileError> {
-        let (cmd, fallback) = probe_sandbox::wrap(build(args)?, sandbox, home);
+        let mut cmd = build(args)?;
+        // All attempts, including structured fallbacks, use this preparation.
+        cmd.env("AMPLIHACK_USAGE_PROBE", "1");
+        let (cmd, fallback) = probe_sandbox::wrap(cmd, sandbox, home);
         if let Some(f) = fallback {
             notice.note(f);
         }

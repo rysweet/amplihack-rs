@@ -89,6 +89,9 @@ pub(super) fn mode(config_dir: Option<&OsStr>, home: Option<&Path>, root: Option
 /// capacity file, under the same private root as the line. Returns the exit
 /// code of `statusline.sh`, or 0 when it did not run.
 pub(super) fn run(root: Option<&Path>, input: &[u8]) -> i32 {
+    if let Some(root) = root {
+        statusline::publish_observation(root, input);
+    }
     let line = std::panic::catch_unwind(|| tick(root, input, fsx::now()))
         .ok()
         .flatten();

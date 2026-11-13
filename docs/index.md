@@ -96,6 +96,10 @@ Centralized plugin system that works across all your projects:
 - [Repair Stale Wrappers and PATH Conflicts](howto/repair-install-update-path-conflicts.md) - Quarantine stale Python/uvx wrappers and make `~/.local/bin/amplihack` resolve first
 - [Repair a Stale Framework Bundle](howto/repair-stale-framework-bundle.md) - Replace stale installed `amplifier-bundle` assets, and what to do when install refuses a source
 - [Manage Claude Login Profiles](howto/claude-profiles.md) - Keep multiple Claude Code logins in separate `CLAUDE_CONFIG_DIR` profiles that share one session store ([reference](reference/profile-command.md), [ccswitch review](reviews/ccswitch-review.md))
+- [Rotate Claude Logins](howto/claude-profile-rotation.md) - Configure rotation and respond to usage and login changes
+- [Follow an Event-driven Rotation](tutorials/event-driven-rotation.md) - Start a watcher and follow login and usage events
+- [Event-driven Rotation](concepts/event-driven-rotation.md) - Baselines, decisions, completion and safeguards without scheduled work
+- [Usage Observation Contract](reference/usage-observations.md) - Generation binding, capture ordering, private storage and producer attribution
 - [Wait for a Usage-Limit Reset](howto/claude-profiles.md#waiting-for-a-usage-limit-reset) - Let a recipe step that hits a Claude usage limit wait for the reset and run once more ([reference](reference/profile-command.md#usage-limit-wait))
 
 ### Configuration

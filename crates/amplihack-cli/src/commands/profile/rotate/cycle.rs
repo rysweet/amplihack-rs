@@ -56,7 +56,6 @@ pub(super) fn save(
 }
 
 pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError> {
-    // Issue #1962: set for each run, so a real cycle never inherits it.
     ctx.read_only = mode == Mode::DryRun;
     if mode == Mode::DryRun {
         return dry_run(ctx);
@@ -135,8 +134,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         out.emit(now(), &format!("ALERT: {alert}"));
         return Ok(CycleOutcome::Alerted);
     }
-    // Steps 4 and 5: measure without the lock, then decide. `claude` is
-    // looked for only when a read falls back to it (issue #1844).
+    // Measure unlocked; Claude is resolved only for a required fallback.
     let measuring = std::time::Instant::now();
     ctx.live_outlook = None;
     let m = match ctx.measure {
@@ -165,9 +163,15 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         out.emit(now(), msg::LOCK_BUSY);
         return Ok(CycleOutcome::Skipped);
     };
-    // The external rotator may have started while this one measured.
     prototype_guard(ctx.store.root())?;
     let t = now();
+    if ctx.event_inputs.is_some() && !super::event_runtime::revalidate_inputs(ctx, &state)? {
+        out.emit(
+            t,
+            "skip: usage generation or relevant inputs changed during decision",
+        );
+        return Ok(CycleOutcome::Skipped);
+    }
     let checked = revalidate::check(ctx, &state, &first, &m, failed_before)?;
     if checked.reread {
         out.emit(t, revalidate::REREAD);
@@ -326,7 +330,6 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                 out.emit(t, line);
             }
             note_live(&mut l, &first, t);
-            // Issue #1907: capacity only on a fresh reading below 100%.
             room.stay(&mut l)
         }
         Decision::Alert => {

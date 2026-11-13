@@ -492,6 +492,7 @@ fn direct_probe(session: f64, week: f64) -> Probe {
     };
     Probe {
         report: UsageReport {
+            observation: Default::default(),
             state: UsageState::Ok,
             session: Some(w("session", session)),
             week_all: Some(w("all models", week)),

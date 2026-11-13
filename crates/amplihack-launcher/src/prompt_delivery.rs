@@ -28,6 +28,7 @@ use crate::flag_matrix::{
 /// markers are removed, so none inherited from the caller outranks it (crusty
 /// review of #1490 at baaafb18).
 fn describe_launched_session(command: &mut Command, tool: &str) {
+    command.env_remove("AMPLIHACK_USAGE_PROBE");
     use amplihack_utils::agent_binary::{BINARY_ENV, SOURCE_ENV, other_clis_markers, session_tag};
     for marker in other_clis_markers(tool) {
         command.env_remove(marker);
@@ -98,6 +99,7 @@ where
     S: AsRef<OsStr>,
 {
     let mut command = Command::new(program);
+    command.env_remove("AMPLIHACK_USAGE_PROBE");
     command.args(args);
     finish_prompt_delivery(command, prompt, requested, caps)
 }

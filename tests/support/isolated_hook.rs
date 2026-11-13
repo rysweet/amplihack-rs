@@ -77,6 +77,12 @@ pub struct HookSandbox {
 
 impl HookSandbox {
     pub fn new() -> Self {
+        // Recipe TMPDIR can be beneath a real framework tree. Context lookup
+        // walks ancestors, so place hook fixtures outside those roots.
+        #[cfg(unix)]
+        let root = tempfile::tempdir_in(fs::canonicalize("/tmp").expect("scratch root"))
+            .expect("hook sandbox temp dir");
+        #[cfg(not(unix))]
         let root = tempfile::tempdir().expect("hook sandbox temp dir");
         for dir in ["home", "amplihack-home", "profiles", "project"] {
             fs::create_dir_all(root.path().join(dir)).expect("hook sandbox subdirectory");

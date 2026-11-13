@@ -30,7 +30,15 @@ fn invariant(msg: impl Into<String>) -> ProfileError {
 }
 
 fn move_login(state: &State, src: &Path, dst: &Path) -> Result<(), MoveError> {
-    mv::move_login(src, dst, &|p| state.rel(p))
+    mv::move_login(src, dst, &|p| state.rel(p))?;
+    let recorded = amplihack_utils::usage_observation::ObservationStore::open(&state.root)
+        .and_then(|store| store.under_state_lock().moved(src, dst));
+    if let Err(e) = recorded {
+        return Err(MoveError::Other(format!(
+            "login moved but usage generation location was not saved: {e}"
+        )));
+    }
+    Ok(())
 }
 
 /// Home slot of `account` while `dir`'s live login changes: the owner of

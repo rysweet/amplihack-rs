@@ -852,7 +852,7 @@ fn a_401_refresh_and_retry_share_one_deadline() {
     );
     assert_eq!(l.doc()["claudeAiOauth"]["accessToken"], NEW_ACCESS);
     assert_eq!(l.doc()["claudeAiOauth"]["refreshToken"], NEW_REFRESH);
-    assert_eq!(l.entries(), [CREDS]);
+    assert_eq!(l.entries(), [".amplihack-usage-refresh.json", CREDS]);
 }
 
 /// With enough time for all three, the same slow sequence reads.
@@ -934,7 +934,7 @@ fn a_refresh_with_the_budget_left_saves_the_rotated_token() {
     assert_eq!(posts(&fake), 1);
     assert_eq!(l.doc()["claudeAiOauth"]["accessToken"], NEW_ACCESS);
     assert_eq!(l.doc()["claudeAiOauth"]["refreshToken"], NEW_REFRESH);
-    assert_eq!(l.entries(), [CREDS]);
+    assert_eq!(l.entries(), [".amplihack-usage-refresh.json", CREDS]);
 }
 
 /// A refresh POST that is sent but answered only after the read's deadline
@@ -1029,7 +1029,11 @@ fn a_401_refreshes_once_writes_back_and_reads_again() {
     assert_eq!(doc["mcpOAuth"], json!({"keep": true}));
     let mode = fs::metadata(l.path()).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600);
-    assert_eq!(l.entries(), [CREDS], "no lock or temporary file left");
+    assert_eq!(
+        l.entries(),
+        [".amplihack-usage-refresh.json", CREDS],
+        "no lock or temporary file left"
+    );
 }
 
 #[test]

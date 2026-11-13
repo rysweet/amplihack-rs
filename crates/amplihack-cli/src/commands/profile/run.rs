@@ -44,6 +44,7 @@ pub(super) fn build_default_dir_command(
 /// and no profile is pinned for descendants.
 pub(super) fn build_home_command(binary: &BinaryInfo, args: &[String]) -> Command {
     let mut cmd = Command::new(&binary.path);
+    cmd.env_remove("AMPLIHACK_USAGE_PROBE");
     cmd.args(args)
         .env_remove("CLAUDE_CONFIG_DIR")
         .env_remove(super::PROFILE_ENV);
@@ -60,6 +61,7 @@ fn pinned_command(
     // `pin_profile_for_descendants` reads the name and root from the path.
     debug_assert_eq!(dir.file_name(), Some(OsStr::new(name.as_str())));
     let mut cmd = Command::new(&binary.path);
+    cmd.env_remove("AMPLIHACK_USAGE_PROBE");
     cmd.args(args);
     // Amplihack launches started inside this session keep its profile (#1567).
     launch::pin_profile_for_descendants(&mut cmd, &dir);

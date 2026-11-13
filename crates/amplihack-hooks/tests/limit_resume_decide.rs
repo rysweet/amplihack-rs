@@ -159,6 +159,8 @@ enum Act {
 }
 
 struct Fake {
+    publications: Vec<HookInput>,
+    publication_error: bool,
     on: bool,
     clock: i64,
     /// What the ledger shows (for the event key's live login).
@@ -199,6 +201,8 @@ struct Fake {
 impl Fake {
     fn new() -> Self {
         Self {
+            publications: Vec::new(),
+            publication_error: false,
             on: true,
             clock: START,
             cycle: Some(ledger("work")),
@@ -261,6 +265,16 @@ impl Fake {
 }
 
 impl Deps for Fake {
+    fn publish_limit_observation(&mut self, input: &HookInput) -> io::Result<()> {
+        if self.publication_error {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "unattributed test session",
+            ));
+        }
+        self.publications.push(input.clone());
+        Ok(())
+    }
     fn auto_switch_on(&mut self) -> bool {
         self.on
     }
@@ -361,6 +375,9 @@ impl Deps for Fake {
         self.gone_after_keys.is_none_or(|n| self.keys.len() < n)
     }
 }
+
+#[path = "support/issue_2029_limit_publication.rs"]
+mod issue_2029_limit_publication;
 
 fn ledger(live: &str) -> CycleStatus {
     CycleStatus {

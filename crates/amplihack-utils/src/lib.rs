@@ -130,3 +130,7 @@ pub(crate) mod test_serial {
 
 #[cfg(test)]
 mod test_support;
+
+#[cfg(unix)]
+pub mod session_attribution;
+pub mod usage_observation;

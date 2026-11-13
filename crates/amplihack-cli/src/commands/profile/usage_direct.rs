@@ -837,6 +837,9 @@ fn refresh(
     };
     // SR-10: a refresh can retire the old refresh token, so it is sent only
     // when the result can be saved.
+    let usage_refresh =
+        amplihack_utils::usage_observation::capture_refresh(&req.creds_dir.join(CREDS))
+            .map_err(|_| reason::REFRESH_REFUSED)?;
     let temp = PrivateTemp::create(req.creds_dir, CREDS).map_err(|_| reason::REFRESH_REFUSED)?;
     let url = ep.token_url();
     // No POST starts with less than REFRESH_BUDGET of the read left: a
@@ -927,5 +930,7 @@ fn refresh(
     }
     let bytes = serde_json::to_vec_pretty(&whole).map_err(|_| reason::REFRESH_NOT_SAVED)?;
     temp.commit(&bytes).map_err(|_| reason::REFRESH_NOT_SAVED)?;
+    amplihack_utils::usage_observation::publish_refresh(usage_refresh)
+        .map_err(|_| reason::REFRESH_NOT_SAVED)?;
     Ok(fresh)
 }

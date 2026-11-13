@@ -121,6 +121,7 @@ pub(super) fn build_command_for_dir(
     hook_settings: Option<&Path>,
 ) -> Result<Command> {
     let mut cmd = Command::new(&binary.path);
+    cmd.env_remove("AMPLIHACK_USAGE_PROBE");
 
     // SEC-2: Only inject --dangerously-skip-permissions when the caller has
     // explicitly opted in via `--skip-permissions`.  This flag bypasses

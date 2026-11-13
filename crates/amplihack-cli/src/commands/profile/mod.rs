@@ -80,6 +80,8 @@ mod tests_duplicates;
 mod tests_expected;
 #[cfg(all(test, unix))]
 mod tests_fake_http;
+#[cfg(test)]
+mod tests_issue_2029_probe_hook;
 #[cfg(all(test, unix))]
 mod tests_issue_2279_profile;
 #[cfg(all(test, unix))]
@@ -1043,3 +1045,6 @@ fn launch_profile_dir_with(
     auto_switch::guard(&store, &name, auto_switch::Action::Launch { join })?;
     Ok(Some(dir))
 }
+
+#[cfg(unix)]
+mod usage_generation;

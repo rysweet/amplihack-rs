@@ -22,6 +22,32 @@ use amplihack_hooks::{
 };
 
 fn main() {
+    // Usage probes need no session context or limit-resume wait. Recognise
+    // only our exact marker before tracing, input parsing and hook setup.
+    // Tool security and Git hooks remain on their ordinary dispatch paths.
+    if std::env::var_os("AMPLIHACK_USAGE_PROBE").as_deref() == Some(std::ffi::OsStr::new("1"))
+        && std::env::args().nth(1).is_some_and(|hook| {
+            matches!(
+                hook.as_str(),
+                "session-start"
+                    | "session-end"
+                    | "session-stop"
+                    | "session-stop-event"
+                    | "sessionEnd"
+                    | "stop"
+                    | "agentStop"
+                    | "user-prompt"
+                    | "user-prompt-submit"
+                    | "pre-compact"
+                    | "workflow-classification-reminder"
+                    | "limit-resume"
+            )
+        })
+    {
+        println!("{{}}");
+        return;
+    }
+
     // `limit-resume` owns its exit code and stderr (exit 2 with one fixed
     // line wakes the session), so it runs before tracing is set up and
     // outside `run_hook`, which always prints JSON.

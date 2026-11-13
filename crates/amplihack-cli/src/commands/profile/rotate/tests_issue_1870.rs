@@ -442,14 +442,14 @@ fn only_production_call_sites_wire_the_direct_reread() {
         code_has("cycle_ctx.rs", "fresh::reread_as_configured)"),
         "Ctx::with_rereads no longer wires fresh::reread_as_configured"
     );
-    // One-shot and --dry-run (mod.rs) and watch (daemon.rs). A switch
-    // decides nothing, so it has no re-read.
-    for file in ["mod.rs", "daemon.rs"] {
-        assert!(
-            code_has(file, ".with_rereads()"),
-            "rotate/{file} no longer wires the configured re-reads"
-        );
-    }
+    // Explicit commands retain configured re-reads. Event-driven watches
+    // consume generation-bound observations and never install age re-reads.
+    assert!(!code_has("daemon.rs", ".with_rereads()"));
+    assert!(code_has("daemon.rs", "event_runtime::run"));
+    assert!(
+        code_has("mod.rs", ".with_rereads()"),
+        "explicit rotation no longer wires the configured re-reads"
+    );
     let switch = fs::read_to_string(dir.join("switch.rs")).unwrap();
     assert!(
         !switch.contains("reread_as_configured") && !switch.contains("with_rereads"),

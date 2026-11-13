@@ -80,6 +80,7 @@ impl ClaudeLauncher {
     pub fn build_claude_command(&self) -> Result<Command> {
         let cli_path = get_claude_cli_path()?;
         let mut cmd = Command::new(&cli_path);
+        cmd.env_remove("AMPLIHACK_USAGE_PROBE");
         if let Some(ref pf) = self.config.append_system_prompt {
             if pf.exists() {
                 // `--append-system-prompt` takes a PROMPT STRING. This field is

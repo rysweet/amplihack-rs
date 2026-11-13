@@ -7,6 +7,9 @@ review_schedule: as-needed
 
 # Profile organisation affinity
 
+Unresolved organisation identity refuses automatic movement. Historical
+unresolved swap records and warnings remain readable.
+
 Automatic login swaps prefer capacity in the live login's organisation, and
 make a confirmed crossing only when capacity forces it. Crossing
 organisations can make earlier thinking unavailable on the next
@@ -65,8 +68,10 @@ follow account metadata and selection behavior, without credential inspection.
 
 First apply existing eligibility and capacity checks. Then restrict candidates
 by affinity, before applying the existing ranking within the permitted set.
-Only a confirmed crossing, where both organisations are known and differ, is
-restricted. An unknown organisation on either side is not a crossing.
+Both organisations must be resolved before automatic movement. An unknown
+organisation on either side is Unresolved, which authorises no automatic
+swap. This applies to upgrades, capacity relief, overflow and every fallback.
+Resolve the trusted organisation records and reselect before moving.
 
 Each decision first works out why the session may move
 (`organisation_affinity::Need::of`), in one place for all three selectors:
@@ -86,7 +91,7 @@ failed-probe crossing sooner. A crossing waits for the reading as measured.
 | Need and final swap purpose | Permitted candidates |
 | --- | --- |
 | Any, with a known source and an eligible Same target that has capacity | Same targets only |
-| Any, otherwise | Same and Unresolved targets |
+| Any, when either organisation is unresolved | No automatic move to that candidate |
 | Capacity relief or leave overflow, with no eligible Same target that has capacity | Crossing targets as well |
 | Upgrade, or plan-room from a plan login | Never a Crossing target |
 | Leaving overflow through its room fallback, with no eligible Same target that has room | Crossing targets as well |
@@ -102,8 +107,8 @@ first.
 
 The plan-room pool applies the same rules with room in place of strict
 capacity: a Same target restricts it only when the plan-room fallback, offered
-that target alone, would pick it. A Same login without room therefore never
-excludes an Unresolved login with room. From a plan login the plan-room pool
+that target alone, would pick it. Unresolved targets remain ineligible even
+when they have room. From a plan login the plan-room pool
 never crosses. From an overflow login it is the way off paid spend, including
 the best-headroom fallback used when the overflow login is blocked, so it may
 cross on the same terms as the selection pool. A blocked overflow login
@@ -111,11 +116,10 @@ therefore moves to a plan login with room in another organisation rather
 than raising an alert and staying.
 
 A better headroom score in another organisation does not override available
-same-organisation capacity. Missing metadata never keeps a session where it
-is: a session on a paid overflow login whose organisation is unknown still
-returns to a plan login once one recovers. Before this policy existed it did,
-and an unknown organisation does not change that. Such a swap carries the
-Unresolved warning.
+same-organisation capacity. Missing metadata can prevent leaving paid
+overflow: cost relief does not establish affinity. Resolve the source and
+target organisations before an automatic return to a plan login. A warning
+alone cannot authorise an unresolved move.
 
 Overflow and fallback selection use the final purpose of the move. A fallback
 cannot turn a preference-only move into capacity necessity or into a
@@ -142,8 +146,8 @@ These are policy examples, using profile names from the rotation guide:
 | `work` needs capacity; `spare` is Same and eligible; `personal` is Crossing with more headroom | Select within Same capacity, preserving its existing ranking |
 | `work` needs capacity; no Same target has capacity; `personal` passes all relief checks | Crossing may proceed, with a confirmed-crossing warning |
 | `work` requests an upgrade; `personal` is the only better target and is Crossing | No upgrade |
-| `work` requests an upgrade; `personal` is the only better target and its ID is unknown | Upgrade, with a risk warning |
-| `work` is a paid overflow login with no recorded organisation; plan login `spare` recovers | Back to `spare`, with a risk warning |
+| `work` requests an upgrade; `personal` is the only better target and its ID is unknown | No automatic upgrade; resolve organisation identity |
+| `work` is a paid overflow login with no recorded organisation; plan login `spare` recovers | No automatic move until both organisations are resolved |
 | `work` is a paid overflow login in organisation B; plan login `spare` (A) recovers and nothing in B has capacity | Back to `spare`, with a confirmed-crossing warning |
 | `work` is a paid overflow login in B; `spare` (B) and `personal` (A) both have capacity, `personal` with more headroom | Back to `spare` |
 | `work` is a blocked overflow login in B; no plan login has capacity; `personal` (A) has room | Moves to `personal`, with a confirmed-crossing warning |
@@ -162,13 +166,13 @@ The existing operator commands remain the entry points:
 | Command | Relevant behavior |
 | --- | --- |
 | `amplihack profile rotate --dry-run` | Previews selection under the affinity policy without moving a login or writing a swap record |
-| `amplihack profile rotate` | Applies the policy, writes an `affinity:` line to the rotate log and records the organisation outcome in the swap record |
-| `amplihack profile rotate status` | Prints the last swap's warning (`last swap: ...`) when that swap was a crossing or unresolved |
-| `amplihack profile auto-switch status` | Prints the last auto-switch crossing (`last crossing: ...`), with both profiles, both organisations and the warning |
+| `amplihack profile rotate` | Applies the policy; for a permitted crossing, writes an `affinity:` line to the rotate log and records the organisation outcome in the swap record |
+| `amplihack profile rotate status` | Prints the last swap's warning (`last swap: ...`) for a crossing or a historical unresolved swap |
+| `amplihack profile auto-switch status` | Prints the last recorded crossing or historical unresolved move (`last crossing: ...`), with both profiles, both organisations and the warning |
 
 Auto-switch makes its swaps inside the status-line wrapper that Claude Code
 runs after each status-line update, not in any `profile auto-switch`
-subcommand. When such a swap is a crossing or unresolved, the wrapper:
+subcommand. When such a swap is a permitted crossing, the wrapper:
 
 - appends the `affinity:` line below to the rotate log;
 - writes `<profile-root>/.auto-switch.d/affinity/last-crossing.json` with
@@ -182,8 +186,8 @@ A swap within one organisation writes none of these.
 
 ### Rotate log line
 
-The rotator and auto-switch write the same rotate-log line after a swap that
-is a crossing or unresolved:
+The rotator and auto-switch write the same rotate-log line after a permitted
+crossing. Readers also accept historical `unresolved` lines:
 
 ```text
 <UTC time> affinity: <crossing|unresolved> <from>-><to>: <warning>
@@ -191,13 +195,11 @@ is a crossing or unresolved:
 
 `<from>` and `<to>` are profile names. No organisation ID is written.
 
-A profile with no expected record (`.auto-switch.d/expected/<profile>.json`)
-has an unknown organisation, so every swap to or from it is `unresolved` and
-writes this line, the stderr line, the `last-crossing.json` record (for
-auto-switch) and the warning in the next resume. This is intended: affinity
-cannot be established without the record. Test fixtures that do not set up
-expected records see these lines; a fixture that should swap silently records
-one organisation for both profiles.
+A profile with no trusted organisation record has unknown affinity and
+cannot participate in a new automatic swap. Older unresolved records remain
+displayable; reading one does not grant permission for another move. Test
+fixtures for permitted swaps must establish trusted organisation identity;
+a same-organisation fixture records the same organisation for both logins.
 
 For setup and command examples, see [Rotate Claude Logins](../howto/claude-profile-rotation.md)
 and [Switch Accounts Automatically](../howto/claude-profiles.md#switch-accounts-automatically).
@@ -209,7 +211,7 @@ Rotate logs, `rotate status`, `auto-switch status` and session delivery use the 
 | Outcome | Warning text |
 | --- | --- |
 | Crossing | Cross-organisation swap: earlier thinking becomes unavailable on the next turn. The visible conversation remains and the session can continue. |
-| Unresolved | Organisation affinity is unresolved: earlier thinking may become unavailable on the next turn. The visible conversation remains and the session can continue. |
+| Unresolved (historical record only) | Organisation affinity is unresolved: earlier thinking may become unavailable on the next turn. The visible conversation remains and the session can continue. |
 | Same | None |
 
 The warning text contains no credentials, tokens, organisation IDs or
@@ -226,7 +228,7 @@ feature:
 | --- | --- |
 | `from_org` | The outgoing login's organisation ID, or absent when unknown |
 | `to_org` | The incoming login's organisation ID, or absent when unknown |
-| `affinity` | `same`, `crossing` or `unresolved`, derived from the two IDs |
+| `affinity` | `same` or `crossing` for a new authorised swap; readers also accept historical `unresolved` records, derived from the two IDs |
 
 A record whose `affinity` disagrees with its IDs, or whose IDs are not valid,
 is rejected as a whole. The record is overwritten by each swap; it describes
@@ -274,8 +276,8 @@ the fixed warning text with `send-keys -l` and never puts record contents
 into a command.
 
 Auto-switch does not write the rotator's swap record and does not wake
-sessions. It prints the warning on its own stderr when it makes a crossing
-or unresolved swap.
+sessions. It prints the warning on its own stderr when it makes a permitted
+crossing. Unresolved warning delivery is retained for historical records.
 
 ## Compatibility and platform limits
 

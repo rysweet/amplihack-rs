@@ -14,6 +14,7 @@ mod migration;
 mod tests;
 #[cfg(all(test, unix))]
 mod tests_capacity;
+mod work;
 
 use crate::original_request::{capture_original_request, format_original_request_context};
 use crate::protocol::{FailurePolicy, Hook};
@@ -44,12 +45,30 @@ impl Hook for SessionStartHook {
     }
 
     fn process(&self, input: HookInput) -> anyhow::Result<Value> {
+        if std::env::var_os("AMPLIHACK_USAGE_PROBE").as_deref() == Some(std::ffi::OsStr::new("1")) {
+            return Ok(serde_json::json!({}));
+        }
         let (session_id, extra) = match input {
             HookInput::SessionStart {
                 session_id, extra, ..
             } => (session_id, extra),
             _ => return Ok(Value::Object(serde_json::Map::new())),
         };
+
+        #[cfg(unix)]
+        if let (Some(root), Some(session)) = (
+            amplihack_utils::rotator_status::resolve_root(),
+            session_id.as_deref(),
+        ) && let Err(e) = amplihack_utils::session_attribution::capture_start(
+            &root,
+            session,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs()
+                .try_into()?,
+        ) {
+            tracing::warn!("session usage attribution was not captured: {e}");
+        }
 
         let dirs = ProjectDirs::from_cwd();
         let mut context_parts: Vec<String> = Vec::new();
@@ -68,24 +87,26 @@ impl Hook for SessionStartHook {
         }
 
         // Load project context (PROJECT.md).
-        if let Some(ctx) = load_project_context(&dirs) {
+        if let Some(ctx) = work::measure("project-context", || load_project_context(&dirs)) {
             context_parts.push(ctx);
         }
 
         // Load recent learnings/discoveries.
-        if let Some(learnings) = load_discoveries(&dirs) {
+        if let Some(learnings) = work::measure("discoveries", || load_discoveries(&dirs)) {
             context_parts.push(learnings);
         }
 
         // Load user preferences.
-        if let Some(prefs) = load_user_preferences(&dirs) {
+        if let Some(prefs) = work::measure("preferences", || load_user_preferences(&dirs)) {
             context_parts.push(prefs);
         }
 
-        context_parts.push(load_workflow_context(&dirs));
+        context_parts.push(work::measure("workflow-context", || {
+            load_workflow_context(&dirs)
+        }));
 
         // Check for version mismatch natively.
-        if let Some(version_notice) = check_version(&dirs) {
+        if let Some(version_notice) = work::measure("version", || check_version(&dirs)) {
             context_parts.push(version_notice);
         }
 
@@ -98,34 +119,37 @@ impl Hook for SessionStartHook {
         //   "started"       — background indexing was triggered or was already running
         //   "complete"      — index is up-to-date; no new indexing triggered
         //   "error:<reason>" — setup failed; session continues (fail-open)
-        let (indexing_status, blarify_setup) = match setup_blarify_indexing(&dirs) {
-            Ok(result) => {
-                let status = if result.indexing_active {
-                    "started".to_string()
-                } else {
-                    "complete".to_string()
-                };
-                (status, result)
-            }
-            Err(err) => {
-                let error_msg = format!("Code-graph setup failed: {err}");
-                tracing::warn!("Blarify setup failed (non-critical): {}", err);
-                // Surface the failure as a structured warning — not just buried in text.
-                warnings.push(error_msg.clone());
-                let notice = BlarifySetupResult::with_notice(
-                    false,
-                    format_code_graph_status(format!(
-                        "{error_msg}. Continuing without automatic refresh."
-                    )),
-                );
-                (format!("error:{err}"), notice)
-            }
-        };
+        let (indexing_status, blarify_setup) =
+            match work::measure("code-graph-setup", || setup_blarify_indexing(&dirs)) {
+                Ok(result) => {
+                    let status = if result.indexing_active {
+                        "started".to_string()
+                    } else {
+                        "complete".to_string()
+                    };
+                    (status, result)
+                }
+                Err(err) => {
+                    let error_msg = format!("Code-graph setup failed: {err}");
+                    tracing::warn!("Blarify setup failed (non-critical): {}", err);
+                    // Surface the failure as a structured warning — not just buried in text.
+                    warnings.push(error_msg.clone());
+                    let notice = BlarifySetupResult::with_notice(
+                        false,
+                        format_code_graph_status(format!(
+                            "{error_msg}. Continuing without automatic refresh."
+                        )),
+                    );
+                    (format!("error:{err}"), notice)
+                }
+            };
 
         if let Some(status_context) = blarify_setup.status_context {
             context_parts.push(status_context);
         }
-        if let Some(compatibility_notice) = code_graph_compatibility_notice(&dirs)? {
+        if let Some(compatibility_notice) = work::measure("code-graph-compatibility", || {
+            code_graph_compatibility_notice(&dirs)
+        })? {
             context_parts.push(compatibility_notice);
         }
         if let Some(memory_notice) = memory_graph_compatibility_notice() {
@@ -133,7 +157,7 @@ impl Hook for SessionStartHook {
         }
 
         if !blarify_setup.indexing_active {
-            match load_code_graph_context(&dirs) {
+            match work::measure("code-graph-context", || load_code_graph_context(&dirs)) {
                 Ok(Some(code_graph_context)) => context_parts.push(code_graph_context),
                 Ok(None) => {}
                 Err(err) => {
