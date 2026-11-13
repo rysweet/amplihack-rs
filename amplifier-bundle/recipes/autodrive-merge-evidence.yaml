@@ -65,7 +65,7 @@ steps:
       BASE="${BASE#origin/}"; BASE="${BASE#refs/heads/}"
       unset AUTODRIVE_QA_HEAD
       if [ -n "$BASE" ]; then export AUTODRIVE_QA_BASE="$BASE"; else unset AUTODRIVE_QA_BASE; echo "WARNING: step-01 reported no base branch; the head stands in for the merge base, so changed_files is empty" >&2; fi
-      AUTODRIVE_QA_EVIDENCE="${RECIPE_VAR_autodrive_qa_evidence:-${AUTODRIVE_QA_EVIDENCE:-}}" \
+      AUTODRIVE_QA_EVIDENCE="${RECIPE_VAR_autodrive_qa_evidence:-}" \
         AUTODRIVE_ROUND_LABEL="${RECIPE_VAR_autodrive_round_label:-round}" bash "$T"
     output: "qa_inputs"
   - id: "step-02-qa-team-scenarios"

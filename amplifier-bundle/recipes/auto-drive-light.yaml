@@ -199,6 +199,7 @@ steps:
     parse_json: true
     command: |
       QC="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/quick_change_common.sh"; QC_STEP=light-qa-inputs; case "$QC" in /*) ;; *) echo "ERROR: auto-drive-light/light-qa-inputs: AMPLIHACK_HOME must be an absolute path" >&2; exit 1 ;; esac; . "$QC" || { echo "ERROR: auto-drive-light/light-qa-inputs: quick_change_common.sh not found under AMPLIHACK_HOME" >&2; exit 1; }
+      git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || qc_die "requires a git repo at $QC_WT; either \`git init\` or rerun from a checkout"
       T="$QC_TOOLS/autodrive_qa_evidence.sh"
       [ -f "$T" ] && [ ! -L "$T" ] || qc_die "autodrive_qa_evidence.sh not found under AMPLIHACK_HOME"
       ( umask 077 && mkdir -p "$QUICK_CHANGE_STATE_DIR/qa" ) || qc_die "cannot create $QUICK_CHANGE_STATE_DIR/qa"

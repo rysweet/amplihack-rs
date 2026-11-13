@@ -303,7 +303,7 @@ else
   # #1520: the step runs the launch tree's autodrive_qa_evidence.sh.
   # #1763: step-01's merge_sync gives the base for the changed files.
   # #2569: the tool writes qa-inputs.json beside AUTODRIVE_QA_EVIDENCE.
-  run_body "$QA_STEP" REPO_PATH="$RESOLVED" AMPLIHACK_HOME="$REPO_ROOT" AUTODRIVE_QA_EVIDENCE="$WORK/qa/qa-evidence.json" \
+  run_body "$QA_STEP" REPO_PATH="$RESOLVED" AMPLIHACK_HOME="$REPO_ROOT" RECIPE_VAR_autodrive_qa_evidence="$WORK/qa/qa-evidence.json" \
     CARGO_PWD_MARKER="$WORK/cargo.pwd" AUTODRIVE_ROUND_LABEL=round-1 RECIPE_VAR_merge_sync='{"base":"main","conflict":"false"}'
   check_eq T1-QA-rc "the QA inputs step succeeds" 0 "$RC"
   check_eq T1-QA-sha "qa inputs head_sha is the PR head" "$SHA_B" "$(field "$OUT" head_sha)"
