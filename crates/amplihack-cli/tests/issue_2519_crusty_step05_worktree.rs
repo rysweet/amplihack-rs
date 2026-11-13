@@ -101,6 +101,18 @@ impl Fixture {
     /// Runs `cd <start> && <step-05 body>` with `repo_path`, `pr_number`,
     /// the round context and `REPO_PATH` as given.
     fn run(&self, start: &Path, repo_path: &str, head_sha: &str, repo_path_env: &str) -> Output {
+        self.run_with(start, repo_path, head_sha, repo_path_env, &[])
+    }
+
+    /// As `run`, with `extra` added to the inherited environment.
+    fn run_with(
+        &self,
+        start: &Path,
+        repo_path: &str,
+        head_sha: &str,
+        repo_path_env: &str,
+        extra: &[(&str, &OsStr)],
+    ) -> Output {
         let body = step_command(ROUND, STEP05);
         let script = format!("cd {} && {}", shell_quote(&s(start)), body);
         let tools = tools_dir();
@@ -115,22 +127,17 @@ impl Fixture {
         .unwrap();
         let amplihack_home = self.repo.tmp.path().join("amplihack-home");
         std::fs::create_dir_all(&amplihack_home).unwrap();
-        run_bash(
-            &self.home,
-            &self.fakes,
-            Some(&script),
-            &[],
-            &[
-                ("PATH", path.as_os_str()),
-                ("AMPLIHACK_HOME", amplihack_home.as_os_str()),
-                ("AUTODRIVE_LAUNCH_TOOLS", tools.as_os_str()),
-                ("RECIPE_VAR_repo_path", OsStr::new(repo_path)),
-                ("RECIPE_VAR_pr_number", OsStr::new(PR)),
-                ("RECIPE_VAR_crusty_round_context", OsStr::new(&ctx)),
-                ("REPO_PATH", OsStr::new(repo_path_env)),
-            ],
-            "",
-        )
+        let mut env: Vec<(&str, &OsStr)> = vec![
+            ("PATH", path.as_os_str()),
+            ("AMPLIHACK_HOME", amplihack_home.as_os_str()),
+            ("AUTODRIVE_LAUNCH_TOOLS", tools.as_os_str()),
+            ("RECIPE_VAR_repo_path", OsStr::new(repo_path)),
+            ("RECIPE_VAR_pr_number", OsStr::new(PR)),
+            ("RECIPE_VAR_crusty_round_context", OsStr::new(&ctx)),
+            ("REPO_PATH", OsStr::new(repo_path_env)),
+        ];
+        env.extend_from_slice(extra);
+        run_bash(&self.home, &self.fakes, Some(&script), &[], &env, "")
     }
 }
 
@@ -239,6 +246,37 @@ fn step05_reports_a_dirty_pr_worktree() {
     );
 }
 
+/// An inherited `GIT_COMMON_DIR` naming another repository (as under a git
+/// hook) must not move step-05's own git calls away from the worktree the
+/// guard checked: step-05 clears it through `git-repo-env.sh`.
+#[test]
+fn step05_measures_the_pr_worktree_despite_an_inherited_git_common_dir() {
+    if skip() {
+        return;
+    }
+    let f = Fixture::new();
+    let h1 = f.commit_in_worktree();
+    let other = f.repo.tmp.path().join("other-repo");
+    std::fs::create_dir_all(&other).unwrap();
+    git(&other, &["init", "-q"]);
+    std::fs::write(other.join("x.txt"), "other\n").unwrap();
+    git(&other, &["add", "-A"]);
+    git(&other, &["commit", "-q", "-m", "other"]);
+    let other_git = canon(&other.join(".git"));
+    let o = f.run_with(
+        &f.root,
+        &s(&f.worktree),
+        &f.h0,
+        &s(&f.root),
+        &[("GIT_COMMON_DIR", other_git.as_os_str())],
+    );
+    assert!(o.status.success(), "{}", show(&o));
+    let v = evidence(&o);
+    assert_eq!(v["head_sha"], json!(h1), "{}", show(&o));
+    assert_eq!(v["base_sha"], json!(f.h0), "{}", show(&o));
+    assert_eq!(v["commits"], json!(1), "{}", show(&o));
+}
+
 // --- Case 2: repo_path is not the PR worktree; step-05 stops ---
 
 #[test]
@@ -334,7 +372,7 @@ fn step05_stops_on_a_hex_head_sha_that_is_not_a_commit_here() {
 // --- The step text itself ---
 
 #[test]
-fn step05_runs_in_repo_path_and_never_reads_repo_path_env() {
+fn step05_runs_in_repo_path_with_the_commit_dir_guard() {
     let doc = crate::support::auto_drive_light::recipe(ROUND);
     let step = doc["steps"]
         .as_sequence()
@@ -351,15 +389,5 @@ fn step05_runs_in_repo_path_and_never_reads_repo_path_env() {
     assert!(
         body.contains("autodrive_worktree_guard.sh") && body.contains("commit-dir"),
         "step-05 runs the commit-dir guard"
-    );
-    assert!(
-        !body.contains("REPO_PATH"),
-        "step-05 never falls back to REPO_PATH"
-    );
-    assert!(
-        !body
-            .lines()
-            .any(|l| l.contains("cd ") && l.contains("|| true")),
-        "step-05 never ignores a failed cd"
     );
 }

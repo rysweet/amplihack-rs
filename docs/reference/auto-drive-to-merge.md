@@ -2351,16 +2351,16 @@ directory, and no round reuses an earlier round's label (see
 
 `step-05-verify-concerns-addressed` measures the fix in the same folder that
 `step-04-address-concerns` commits in: it runs with `working_dir` set to
-`repo_path`, enters that folder with its own `cd`, clears `GIT_DIR`,
-`GIT_WORK_TREE`, `GIT_INDEX_FILE` and `GH_REPO`, and runs
+`repo_path`, enters that folder with its own `cd`, unsets `GH_REPO`, clears
+the 12 repository-selecting `GIT_*` names through
+[`git-repo-env.sh`](git-repo-env-helper.md) the same way step-04 does, and runs
 `autodrive_worktree_guard.sh commit-dir <pr>` (the check described in
-[The round commit block](#the-round-commit-block)). It clears only those four
-names. Step-04's block clears all 12 repository-selecting `GIT_*` names through
-[`git-repo-env.sh`](git-repo-env-helper.md); giving step-05 the same wider list
-is a separate follow-up. It never reads `REPO_PATH` and never falls back to the
-folder it started in. An empty `repo_path`, a `pr_number` that is not all
-digits, a folder it cannot enter or that is not a git repository, or a folder that is not the PR's linked
-worktree on its head branch stops the round with exit 1 and a
+[The round commit block](#the-round-commit-block)). It never reads `REPO_PATH`
+and never falls back to the folder it started in. An empty `repo_path`, a
+`pr_number` that is not all digits, a folder it cannot enter or that is not a
+git repository, a launch tools directory without a loadable `git-repo-env.sh`,
+or a folder that is not the PR's linked worktree on its head branch stops the
+round with exit 1 and a
 `STOP: step-05 … (#2519, #1528)` line on stderr naming `repo_path` and the
 folder the step started in. When `repo_path` is `/work/clone`, the step started
 in `/work/worktrees/pr-7`, and `/work/clone` is not PR 7's linked worktree,
@@ -2377,15 +2377,17 @@ Once the guard passes, step-05 requires the round context's `head_sha` to be
 40 or 64 lowercase hex characters and a commit in this worktree, then reports
 `base_sha` (the resolved reviewed commit), `head_sha` (the worktree's current
 `HEAD`), `commits` (`git rev-list --count base_sha..HEAD`), `dirty_worktree` and
-`git_observed`, which is always `"true"`. Any git failure, or a non-numeric
-count, stops the round the same way, with nothing written to stdout, so
+`git_observed`, which is always `"true"`. Any git failure stops the round the
+same way, with nothing written to stdout, so
 `crusty_fix_evidence` never receives a made-up `commits: 0`. A measured count
 of 0 still prints the `NO commit` warning. Because the count is taken in the
 PR's worktree, step-06's `head_sha` and `commits_this_round` include the
 commit step-04 made (#2519). The dirty check runs
 `git -c core.fsmonitor=false diff --quiet --no-ext-diff --no-textconv`, so
 configuration written during step-04 cannot make step-05 run an external
-program.
+program. A clean tree (exit 0) reports `"false"` and a dirty one (exit 1)
+reports `"true"`; any other exit stops the round with git's own error on
+stderr, never reported as `dirty`.
 
 `autodrive_crusty_final DIR` in `autodrive_state.sh` decides criterion 3 for
 the crusty re-review, step-01b and the gate. It checks one private copy of the
@@ -6335,9 +6337,9 @@ both recipes.
 
 In the crusty round, `step-05-verify-concerns-addressed` runs the same
 `commit-dir <pr>` check in `repo_path` before it measures the head and the
-commit count, and stops rather than measure any other checkout. It does not
-clear the same environment as this block: it unsets only `GIT_DIR`,
-`GIT_WORK_TREE`, `GIT_INDEX_FILE` and `GH_REPO`, not all 12 names (see
+commit count, and stops rather than measure any other checkout. Like this
+block, it clears the repository-selecting `GIT_*` names through
+`git-repo-env.sh` before its first git command (see
 [Criterion 3](#criterion-3-the-crusty-loop-ended-done-and-clean-or-minor_only), #2519).
 
 The prompt prose around the block tells the agent that:
