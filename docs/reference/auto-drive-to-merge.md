@@ -165,9 +165,10 @@ explicit invocation inputs or accepted records.
 
 ### `NO_MERGE` override
 
-The compatibility `NO_MERGE` override may only restrict merging. It cannot
-grant drive permission or cancel handoff or dry-run. Final authorization
-comes from the captured invocation, never a child's environment.
+The compatibility `NO_MERGE` environment alias follows the build-phase
+`no_merge` setting. It does not select or restrict the outer drive action.
+Use `merge=handoff` to prevent outer-drive merging. Final authorisation comes
+from the captured invocation and resolved policy, never a child's environment.
 
 <a id="drive-mode-and-repository-policy"></a>
 
