@@ -359,6 +359,35 @@ fn step05_stops_on_a_head_sha_that_is_not_hex() {
 }
 
 #[test]
+fn step05_stops_on_a_short_or_upper_case_head_sha() {
+    if skip() {
+        return;
+    }
+    let f = Fixture::new();
+    // Step-01 is an agent step; an abbreviated or upper-case id for a real
+    // commit still stops the round rather than being resolved by git.
+    let short = &f.h0[..12];
+    let upper = f.h0.to_uppercase();
+    for bad in [short, upper.as_str()] {
+        let o = f.run(&f.root, &s(&f.worktree), bad, &s(&f.root));
+        assert_stopped(&o);
+    }
+}
+
+#[test]
+fn step05_masks_control_characters_in_a_rejected_head_sha() {
+    if skip() {
+        return;
+    }
+    let f = Fixture::new();
+    let o = f.run(&f.root, &s(&f.worktree), "abc\u{1b}[31mdef", &s(&f.root));
+    assert_stopped(&o);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!err.contains('\u{1b}'), "{}", show(&o));
+    assert!(err.contains("abc?[31mdef"), "{}", show(&o));
+}
+
+#[test]
 fn step05_stops_on_a_hex_head_sha_that_is_not_a_commit_here() {
     if skip() {
         return;

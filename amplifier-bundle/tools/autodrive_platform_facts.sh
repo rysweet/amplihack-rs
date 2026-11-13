@@ -151,7 +151,8 @@ case "$BASE" in '' | -* | /* | *..* | *//* | */ | *[!A-Za-z0-9._/-]*) BASE="" ;;
 
 # Review threads. PAGINATED: `first:100` alone truncates, so a PR whose only
 # unresolved thread is on page two would report 0. Per-page counts are summed;
-# a page that is not a number makes the whole count unreadable.
+# a page that is not a number or a failed later request makes the whole count
+# unreadable. gh may print successful pages before returning a failure.
 # OUTDATED THREADS COUNT. A thread goes outdated when the lines it was left on
 # change; that does not answer it. GitHub's conversation-resolution rule
 # requires every conversation resolved, outdated ones included, so a count
@@ -163,7 +164,7 @@ PAGES="$(gh api graphql --paginate -F pr="${PR:-0}" -F owner='{owner}' -F name='
     pullRequest(number:$pr){reviewThreads(first:100,after:$endCursor){
       pageInfo{hasNextPage endCursor}
       nodes{isResolved}}}}}' \
-  --jq '[.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false)]|length' 2>/dev/null)"
+  --jq '[.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false)]|length' 2>/dev/null)" || PAGES=""
 THREADS="$(printf '%s\n' "$PAGES" | awk 'NF==0{next} /^[0-9]+$/{s+=$1;n++;next} {bad=1} END{if(bad||!n) exit 1; print s}')" || THREADS=""
 [ -n "$THREADS" ] || THREADS="unreadable"
 
