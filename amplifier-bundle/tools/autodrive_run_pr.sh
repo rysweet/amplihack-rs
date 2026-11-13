@@ -44,7 +44,7 @@ autodrive_open_pr_for_run_branch() {
   printf '%s' "$json" | jq -r --arg b "$branch" --arg h "$head" '
     if type != "array" then empty else
       [ .[] | objects
-        | select((.isCrossRepository // false) == false)
+        | select(.isCrossRepository == false)
         | select(.headRefName == $b and .headRefOid == $h)
         | (.number | tostring)
         | select(test("^[1-9][0-9]*$")) ][0] // empty

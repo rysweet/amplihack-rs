@@ -83,6 +83,10 @@ BRANCH="fix/1596-demo"
 #   empty           []
 #   cross-repo      only a fork PR
 #   cross-then-own  a fork PR first, then the same-repo PR
+#   cross-missing   the same-repo PR with no isCrossRepository field (#2538)
+#   cross-null      the same-repo PR with isCrossRepository null (#2538)
+#   cross-string    the same-repo PR with isCrossRepository the string "false" (#2538)
+#   raw-empty       no output at all, exit 0 (#2538)
 #   notjson         unparsable output
 #   nonarray        a JSON object, not an array
 #   401             HTTP 401 Bad credentials (non-retryable)
@@ -120,6 +124,10 @@ if [ "$is_open_list" = "true" ]; then
         empty)           echo '[]' ;;
         cross-repo)      printf '[%s]\n' "$(pr_obj "https://github.com/forker/example/pull/4243" 4243 true)" ;;
         cross-then-own)  printf '[%s,%s]\n' "$(pr_obj "https://github.com/forker/example/pull/4243" 4243 true)" "$(pr_obj "$ok" 4242 false)" ;;
+        cross-missing)   printf '[%s]\n' "$(pr_obj "$ok" 4242 false | jq -c 'del(.isCrossRepository)')" ;;
+        cross-null)      printf '[%s]\n' "$(pr_obj "$ok" 4242 null)" ;;
+        cross-string)    printf '[%s]\n' "$(pr_obj "$ok" 4242 '"false"')" ;;
+        raw-empty)       : ;;
         notjson)         echo 'this is {not json' ;;
         nonarray)        echo '{}' ;;
         401)             echo "HTTP 401: Bad credentials" >&2; exit 1 ;;
@@ -421,6 +429,15 @@ if [ "$RC" -eq 0 ] && grep -qx "terminal_status=EXISTING_OPEN_PR" "$OUT" && grep
 else
     record_fail "5b: fork PR skipped, same-repo PR on the branch selected"; dump
 fi
+
+# --- 5c. issue #2538: only an exact boolean false is same-repository ----------
+# A missing field, null, the string "false", empty output and invalid JSON
+# never resolve the branch PR; the run fails exactly as with no PR.
+for mode in cross-missing cross-null cross-string raw-empty notjson; do
+    repo="$(make_repo "c5c-$mode")"
+    run_final_status "$repo" FAKE_GH_MODE="$mode"
+    assert_unchanged_failure "5c: #2538 isCrossRepository case $mode -> branch PR not resolved"
+done
 
 # --- 6. non-GitHub host -> no lookup ----------------------------------------
 repo="$(make_repo c6)"

@@ -195,7 +195,7 @@ match_by_primary_key() {
         .[]
         | select((.headRefName // "") == $headRefName)
         | select((.baseRefName // "") == $baseRefName)
-        | select((.isCrossRepository // false) == false)
+        | select(.isCrossRepository == false)
         | select(((owner_name + "/" + repo_name) == $repo))
         | select(($prNumber == "") or (((.number // "") | tostring) == $prNumber))
         | select(($prUrl == "") or ((.url // "") == $prUrl))

@@ -460,7 +460,7 @@ steps:
 
       if [ -n "$pr_json" ] && [ "$pr_json" != "{}" ]; then
         pr_fields=(); while IFS= read -r _ml; do pr_fields+=("$_ml"); done < <(
-          printf '%s' "$pr_json" | jq -r '.url // "", ((.number // "") | tostring), .state // "", .mergedAt // "", .headRefName // "", .baseRefName // "", .headRefOid // "", (.headRepositoryOwner.login // .headRepositoryOwner.name // .headRepositoryOwner // ""), (.headRepository.name // ((.headRepository.nameWithOwner // "") | split("/") | .[-1]) // ""), (.isCrossRepository // false | tostring), ([.statusCheckRollup[]? | select((.conclusion? // "") as $c | $c == "FAILURE" or $c == "ERROR" or $c == "TIMED_OUT" or $c == "CANCELLED")] | length | tostring)'
+          printf '%s' "$pr_json" | jq -r '.url // "", ((.number // "") | tostring), .state // "", .mergedAt // "", .headRefName // "", .baseRefName // "", .headRefOid // "", (.headRepositoryOwner.login // .headRepositoryOwner.name // .headRepositoryOwner // ""), (.headRepository.name // ((.headRepository.nameWithOwner // "") | split("/") | .[-1]) // ""), (if .isCrossRepository == false then "false" else "true" end), ([.statusCheckRollup[]? | select((.conclusion? // "") as $c | $c == "FAILURE" or $c == "ERROR" or $c == "TIMED_OUT" or $c == "CANCELLED")] | length | tostring)'
         )
         pr_url_result="${pr_fields[0]:-}"
         pr_number_result="${pr_fields[1]:-}"
@@ -471,7 +471,7 @@ steps:
         pr_head_oid="${pr_fields[6]:-}"
         pr_head_owner="${pr_fields[7]:-}"
         pr_head_repo="${pr_fields[8]:-}"
-        pr_cross_repo="${pr_fields[9]:-false}"
+        pr_cross_repo="${pr_fields[9]:-true}"
         failing_checks="${pr_fields[10]:-0}"
         pr_base_identity="$(parse_github_repo_identity "$pr_url_result" || true)"
         expected_base="$(normalize_base_name "$base_ref")"
@@ -503,7 +503,7 @@ steps:
           # check, which needs that commit. A diverged head is still stale.
           pr_head_ahead="false"
           if [ "$ACCEPT_PR_HEAD_AHEAD" = "true" ] && [ "$pr_state" = "OPEN" ] && [[ "$pr_head_oid" =~ ^[0-9a-f]{40}$ ]] \
-              && [ "$pr_cross_repo" != "true" ] && [ "$pr_head_owner/$pr_head_repo" = "$repo_owner/$repo_name" ] \
+              && [ "$pr_cross_repo" = "false" ] && [ "$pr_head_owner/$pr_head_repo" = "$repo_owner/$repo_name" ] \
               && [ "$pr_base_identity" = "$repo_owner/$repo_name" ] \
               && _finalization_pr_head_descends . "$BRANCH_INPUT" "$local_head" "$pr_head_oid"; then
             pr_head_ahead="true"
@@ -525,7 +525,7 @@ steps:
             fail_terminal_state "FAILED_INVALID_INPUT" "stale PR metadata: headRefOid '$pr_head_oid' does not match local HEAD '$local_head'"
           fi
         fi
-        if [ "$pr_cross_repo" = "true" ] || [ "$pr_head_owner/$pr_head_repo" != "$repo_owner/$repo_name" ] || [ "$pr_base_identity" != "$repo_owner/$repo_name" ]; then
+        if [ "$pr_cross_repo" != "false" ] || [ "$pr_head_owner/$pr_head_repo" != "$repo_owner/$repo_name" ] || [ "$pr_base_identity" != "$repo_owner/$repo_name" ]; then
           fail_terminal_state "FAILED_INVALID_INPUT" "ambiguous PR metadata: PR repo '$pr_head_owner/$pr_head_repo' -> '$pr_base_identity' does not match current repo '$repo_owner/$repo_name'"
         fi
 

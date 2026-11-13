@@ -555,7 +555,7 @@ CLAIMS="$(
       def is_ours:
         ($cwd_head != "")
         and ((.headRefName // "") == $cwd_head)
-        and (((.isCrossRepository // false) | not));
+        and (.isCrossRepository == false);
       [ ($open | map(. + {claim_source: "open"}))
         + ($merged | map(select((.mergedAt // "") >= $cutoff)) | map(. + {claim_source: "recently-merged"}))
         | .[]

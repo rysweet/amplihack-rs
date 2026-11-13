@@ -405,6 +405,8 @@ mod issue_815_804_local_tracking_scope_args;
 // Issue #1017: PR-scope must match on the (head,base,same-repo) primary key so
 // the recipe adopts its own unique-by-branch PR (stale --issue/--head-sha), and
 // publish must be collision-tolerant (adopt an existing OPEN PR on create fail).
+#[path = "issue_2538_cross_repo_readers.rs"]
+mod issue_2538_cross_repo_readers;
 #[path = "pr_scope_primary_key_test.rs"]
 mod pr_scope_primary_key;
 

@@ -434,7 +434,7 @@ resolve_open_pr_for_current_branch() {
   # HEAD; fork PRs never count. Anything other than a JSON array is malformed.
   if ! pick="$(printf '%s' "$json" | jq -c --arg h "$head" 'if type != "array" then error("not an array") else
       [.[] | objects
-      | select((.isCrossRepository // false) == false)
+      | select(.isCrossRepository == false)
       | select((.url // "") != "")
       | select(.headRefOid == $h)][0] // empty end' 2>/dev/null)"; then
     branch_pr_lookup_warn "malformed JSON"

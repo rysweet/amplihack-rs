@@ -350,6 +350,8 @@ mod issue_2218_excluded;
 mod issue_2317_codex_step_commits_in_worktree;
 #[path = "issue_2336_autodrive_completion.rs"]
 mod issue_2336_autodrive_completion;
+#[path = "issue_2538_cross_repo_refusal.rs"]
+mod issue_2538_cross_repo_refusal;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

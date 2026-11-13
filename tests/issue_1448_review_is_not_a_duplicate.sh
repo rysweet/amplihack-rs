@@ -90,6 +90,11 @@ case "\${FAKE_GH:-none}" in
   fork_claim) [ "\$state" = "open" ] && printf '[%s]\n' "\$fork"  || printf '[]\n' ;;
   other_only) [ "\$state" = "open" ] && printf '[%s]\n' "\$other" || printf '[]\n' ;;
   two_claims) [ "\$state" = "open" ] && printf '[%s,%s]\n' "\$mine" "\$other" || printf '[]\n' ;;
+  x_missing)  [ "\$state" = "open" ] && printf '%s\n' "\$mine" | jq -c '[del(.isCrossRepository)]' || printf '[]\n' ;;
+  x_null)     [ "\$state" = "open" ] && printf '%s\n' "\$mine" | jq -c '[.isCrossRepository = null]' || printf '[]\n' ;;
+  x_string)   [ "\$state" = "open" ] && printf '%s\n' "\$mine" | jq -c '[.isCrossRepository = "false"]' || printf '[]\n' ;;
+  raw_empty)  : ;;
+  raw_invalid) printf 'this is {not json\n' ;;
   ratelimit)  echo 'gh: API rate limit exceeded for token ghp_FAKEFAKEFAKEFAKEFAKEFAKE1448. (HTTP 403)' >&2; exit 1 ;;
 esac
 FAKEEOF
@@ -159,6 +164,29 @@ if [ "$RC" -eq 1 ] && grep -q 'allow_existing_pr=true' <<<"$OUT" \
 else
   fail "detached HEAD mishandled: rc=$RC out=${OUT:0:500}"
 fi
+
+echo "== 2b. issue #2538: only an exact boolean false makes the PR ours =="
+# A claiming PR on our own branch whose isCrossRepository is missing, null
+# or the string "false" is not proven to be from this repository, so it is
+# a competing claim and the run is refused, as for a fork.
+for mode in x_missing x_null x_string; do
+  run "$WORK/on-pr-branch" FAKE_GH="$mode"
+  refused "#2538: own-branch PR with isCrossRepository case $mode" 173
+done
+# Empty output and invalid JSON name no PR at all: never ok-own-pr.
+for mode in raw_empty raw_invalid; do
+  run "$WORK/on-pr-branch" FAKE_GH="$mode"
+  if grep -q 'ok-own-pr' <<<"$OUT"; then
+    fail "#2538: gh output case $mode was classed ok-own-pr: rc=$RC out=${OUT:0:400}"
+  else
+    pass "#2538: gh output case $mode is never classed ok-own-pr"
+  fi
+done
+# The exact boolean false on our own branch still proceeds.
+run "$WORK/on-pr-branch" FAKE_GH=claim
+[ "$RC" -eq 0 ] && grep -q 'issue_claim_check: ok-own-pr' <<<"$OUT" \
+  && pass "#2538: own-branch PR with isCrossRepository false proceeds" \
+  || fail "#2538: own-branch PR with isCrossRepository false was refused: rc=$RC out=${OUT:0:400}"
 
 echo "== 3. the allowance is per-claim, not a blanket bypass =="
 run "$WORK/on-pr-branch" FAKE_GH=two_claims
