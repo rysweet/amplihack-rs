@@ -55,11 +55,12 @@ set -uo pipefail
 AUTODRIVE_EXIT_POLICY_REFUSAL=79
 
 LOOP_NAME=""; ROUND_RECIPE=""; CLEAN_TOKEN=""; ALSO_CLEAN=""; VERDICT_FIELD=""
-REPO="."; REVIEW_DIR=""; STATE_DIR=""; TASK_FILE_IN=""; ROUND_CTX=(); BEFORE_ROUND=""; CTX_REFUSED=""; BUDGET_CTX=(); BEFORE_CTX=(); AD_PR=""
+REPO="."; REVIEW_DIR=""; STATE_DIR=""; TASK_FILE_IN=""; ROUND_CTX=(); BEFORE_ROUND=""; CTX_REFUSED=""; BUDGET_CTX=(); BEFORE_CTX=(); AD_PR=""; INVOCATION_FILE=""
 
 # shellcheck disable=SC2034 # AD_PR is read by the sourced autodrive_escalate.sh
 while [ $# -gt 0 ]; do
   case "$1" in
+    --invocation) INVOCATION_FILE="${2:-}"; shift 2 ;;
     --loop-name)     LOOP_NAME="${2:-}"; shift 2 ;;
     --round-recipe)  ROUND_RECIPE="${2:-}"; shift 2 ;;
     --clean-token)   CLEAN_TOKEN="${2:-}"; shift 2 ;;
@@ -70,7 +71,7 @@ while [ $# -gt 0 ]; do
     --state-dir)     STATE_DIR="${2:-}"; shift 2 ;;
     --task-file)     TASK_FILE_IN="${2:-}"; shift 2 ;;
     --context)       case "${2:-}" in review_dir=*|autodrive_launch_tools=*|autodrive_completion_state=*) CTX_REFUSED="${2%%=*}" ;; pr_number=*) AD_PR="${2#*=}" ;; esac
-                     case "${2:-}" in autodrive_budget_*) BUDGET_CTX+=("${2:-}"); BEFORE_CTX+=("-c" "${2:-}") ;; *) ROUND_CTX+=("-c" "${2:-}") ;; esac; shift 2 ;;
+                     case "${2:-}" in no_merge=*|autodrive_dry_run=*|autodrive_base_branch=*) BEFORE_CTX+=("-c" "${2:-}"); ROUND_CTX+=("-c" "${2:-}") ;; autodrive_budget_*) BUDGET_CTX+=("${2:-}"); BEFORE_CTX+=("-c" "${2:-}") ;; *) ROUND_CTX+=("-c" "${2:-}") ;; esac; shift 2 ;;
     --before-round)  BEFORE_ROUND="${2:-}"; shift 2 ;;
     *) echo "ERROR: autodrive_loop.sh: unknown argument '$1'" >&2; exit 2 ;;
   esac
@@ -85,9 +86,7 @@ if [ -n "$BEFORE_ROUND" ] && [ ! -f "$BEFORE_ROUND" ]; then
 fi
 
 # --- private state, whatever the caller's umask ----------------------------
-# The merge gate trusts the records below only if no one else could have written
-# them (autodrive_state.sh, PRIVATE STATE): the state dir is private and this script
-# writes under umask 077; children keep the caller's umask. Helpers come from beside it.
+# Private loop records use launch-side helpers; children keep the caller's umask.
 LOOP_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
 # shellcheck source=/dev/null
 . "${LOOP_HOME}/autodrive_state.sh" 2>/dev/null \
@@ -191,7 +190,7 @@ if [ "$EARLIER_ROUNDS" != "0" ]; then
   echo "INFO: loop '${LOOP_NAME}': ${STATE_DIR} already holds this loop's rounds up to round-${EARLIER_ROUNDS}; this run labels its rounds from round-$((EARLIER_ROUNDS + 1)) and overwrites none of them." >&2
 fi
 ROUND="$EARLIER_ROUNDS"
-ROUND_LABEL=""
+ROUND_LABEL=""; LAST_RECORD=""; [ "$EARLIER_ROUNDS" = "0" ] || LAST_RECORD="${STATE_DIR}/${LOOP_NAME}-round-${EARLIER_ROUNDS}.json" # its .wait is autodrive_prior_wait (#2333)
 HISTORY=""
 PREV_FINDINGS=""
 PREV_TEST=""
@@ -205,7 +204,7 @@ while :; do
   # ROUND is a LABEL for reports. Nothing below compares it to a limit.
   ROUND=$((ROUND + 1))
   ROUND_LABEL="round-${ROUND}"
-  RECORD="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}.json"; rm -f -- "${RECORD}.wait" # an old step-01 sidecar never stops this round (#2333)
+  RECORD="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}.json"; rm -f -- "${RECORD}.wait"; PRIOR_CTX=(); [ "$LOOP_NAME" = crusty ] || PRIOR_CTX=(-c "autodrive_prior_wait=${LAST_RECORD:+${LAST_RECORD}.wait}"); LAST_RECORD="$RECORD" # rm: this round's old sidecar only; the previous round's is --prior-wait (#2333)
   LOG="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}.log"
   BASELINE="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || printf '')"
   stamp_review_dir
@@ -247,7 +246,7 @@ while :; do
   ( umask "$CALLER_UMASK" && AMPLIHACK_USAGE_WAIT_LEDGER="$(wait_ledger round)" AMPLIHACK_AUTODRIVE_STATE_DIR="$STATE_DIR" exec "$AMPLIHACK_BIN" recipe run "$ROUND_RECIPE_PATH" \
       --working-dir "$REPO" \
       -c "autodrive_round_record=${RECORD}" \
-      -c "autodrive_round_label=${ROUND_LABEL}" \
+      -c "autodrive_round_label=${ROUND_LABEL}" ${PRIOR_CTX[@]+"${PRIOR_CTX[@]}"} \
       -c "autodrive_resolved_concerns_file=${STATE_DIR}/resolved-concerns.txt" \
       ${COMPLETION_CTX[@]+"${COMPLETION_CTX[@]}"} "${ROUND_CTX[@]}" -c "review_dir=${REVIEW_REAL}" -c "autodrive_launch_tools=${LOOP_HOME}" ) >"$LOG" 2>&1
   ROUND_RC=$?; usage_add round "$T0"
@@ -377,6 +376,7 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(print
         echo "AUTO_DRIVE_LOOP: DONE — loop '${LOOP_NAME}' converged at ${ROUND_LABEL} with ${VERDICT_FIELD}=${ROUND_VERDICT}." >&2
         record_result "$(printf '{"loop":"%s","loop_result":"DONE","round_label":"%s","round_verdict":"%s"}' \
           "$LOOP_NAME" "$ROUND_LABEL" "$ROUND_VERDICT")"
+        if [ "$LOOP_NAME" = merge-ready ] && [ -n "$INVOCATION_FILE" ]; then "$AMPLIHACK_BIN" orch helper autodrive complete-loop --invocation "$INVOCATION_FILE" --directory "$STATE_DIR" --round "$ROUND_LABEL" || exit 1; fi
         exit 0
       fi
       # #1597: re-review once; a missing record, or a repeat that moved nothing, is STUCK.

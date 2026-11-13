@@ -21,12 +21,19 @@ use std::path::PathBuf;
 
 use crate::commands::multitask;
 
+pub(crate) mod autodrive;
 mod autodrive_completion;
 mod autodrive_gh;
 mod autodrive_waits;
 mod named_branch;
 mod select_workflow;
 mod workflow_log_inventory;
+
+// TDD contracts for #2329. The implementation supplies `mod autodrive`;
+// keeping these registered makes missing implementation a visible red test.
+#[cfg(test)]
+#[path = "orch/autodrive/tests.rs"]
+mod autodrive_contract_tests;
 
 #[derive(Subcommand, Debug)]
 pub enum OrchCommands {
@@ -50,6 +57,11 @@ pub enum OrchCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum OrchHelperCommands {
+    /// Portable auto-drive record, state, and local Git operations.
+    Autodrive {
+        #[command(subcommand)]
+        operation: autodrive::helper::Operations,
+    },
     /// Prepare driver-owned identity and completion dispatch context.
     AutodriveCompletionPrepare(autodrive_completion::Prepare),
     /// Seal the round evidence before the next-action agent runs.
@@ -519,6 +531,7 @@ fn read_bounded_stdin() -> String {
 /// CLI entry point for `amplihack orch helper <subcommand>`.
 pub fn run(command: OrchHelperCommands) -> Result<()> {
     match command {
+        OrchHelperCommands::Autodrive { operation } => autodrive::helper::run(operation),
         OrchHelperCommands::AutodriveCompletionPrepare(args) => autodrive_completion::prepare(args),
         OrchHelperCommands::AutodriveCompletionSeal { private_state } => {
             autodrive_completion::seal(private_state)

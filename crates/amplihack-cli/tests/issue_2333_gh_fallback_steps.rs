@@ -5,8 +5,8 @@ use std::process::Output;
 
 use serde_json::{Value, json};
 
-use crate::support::auto_drive_light::{show, stderr, stdout, step_command, tools_dir};
-use crate::support::autodrive_gh_fake::{BRANCH, GhRepo, git_in};
+use crate::support::auto_drive_light::{show, stderr, stdout, tools_dir};
+use crate::support::autodrive_gh_fake::{BRANCH, GhRepo};
 
 fn last_json(o: &Output) -> Value {
     stdout(o)
@@ -358,97 +358,299 @@ fn pr_head_exits_4_only_when_every_path_is_unavailable_and_says_so() {
     );
 }
 
-// ── autodrive-merge-evidence.yaml step-01: no merge from a guessed base ─────
+// ── merge-evidence step-01 and step-03, through the helpers (A8) ────────────
+//
+// #2340 turned merge-evidence step-01 and step-03 into agent steps, so their
+// bash is gone and a prompt cannot run in a test. The behaviour those steps
+// rely on lives in the helpers they are told to call, and is tested here
+// through the fake `gh`: the base comes from REST, update-branch takes no
+// base and writes only after a qualifying previous-round sidecar, and the
+// CI read is a single call that reports pending as an answer.
 
-fn step(g: &GhRepo, step_id: &str) -> Output {
-    let script = step_command("autodrive-merge-evidence", step_id);
-    g.cmd("bash")
-        .args(["-c", &script])
-        .env("REPO_PATH", &g.repo)
-        .env("PR_NUMBER", "7")
-        .env(
-            "AMPLIHACK_HOME",
-            crate::support::auto_drive_light::repo_root(),
-        )
-        .env("RECIPE_VAR_autodrive_tools_dir", tools_dir())
-        .output()
-        .unwrap()
-}
-
-/// origin/main moves one commit ahead of the PR head, so a step that merged
-/// from a base would change HEAD.
-fn advance_main(g: &GhRepo) {
-    git_in(&g.repo, &["commit", "--allow-empty", "-qm", "base moved"]);
-    git_in(&g.repo, &["push", "-q", "origin", "HEAD:refs/heads/main"]);
-    git_in(&g.repo, &["reset", "-q", "--hard", "HEAD~1"]);
+fn ub_puts(g: &GhRepo) -> Vec<String> {
+    crate::support::autodrive_gh_fake::lines(&g.log.join("update-branch.log"))
 }
 
 #[test]
-fn sync_with_base_reads_the_base_through_rest() {
-    // The PR's base is `develop`, which is ahead; `main` is not. A step that
-    // fell back to `main` would report base main and nothing to merge.
+fn step01_pr_read_gives_base_and_merge_state_over_rest_when_graphql_is_refused() {
     let g = GhRepo::new();
-    git_in(
-        &g.repo,
-        &["commit", "--allow-empty", "-qm", "develop moved"],
-    );
-    git_in(
-        &g.repo,
-        &["push", "-q", "origin", "HEAD:refs/heads/develop"],
-    );
-    git_in(&g.repo, &["reset", "-q", "--hard", "HEAD~1"]);
     let mut pr: Value =
         serde_json::from_str(&std::fs::read_to_string(g.fix.join("rest-pr.json")).unwrap())
             .unwrap();
     pr["base"]["ref"] = json!("develop");
+    pr["mergeable"] = Value::Null;
+    pr["mergeable_state"] = json!("unknown");
     g.fixture("rest-pr.json", &pr);
     g.mode("gql", "refuse");
-    let o = step(&g, "step-01-sync-with-base");
+    let o = g.read(&["pr", "7"]);
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     let v = last_json(&o);
-    assert_eq!(v["base"], "develop", "the base came from REST: {v}");
-    assert_eq!(v["synced"], "true", "{v}");
+    assert_eq!(v["source"], "rest", "{v}");
+    assert_eq!(
+        v["base_ref"], "develop",
+        "the PR's own base, never main: {v}"
+    );
+    assert_eq!(v["merge_state"], "UNKNOWN", "{v}");
+    assert_eq!(v["mergeable"], "UNKNOWN", "{v}");
 }
 
 #[test]
-fn sync_with_base_never_merges_a_guessed_main_when_the_base_is_unavailable() {
+fn step01_pr_read_with_every_path_refused_names_no_base() {
     let g = GhRepo::new();
-    advance_main(&g);
-    let before = g.head();
     g.mode("gql", "refuse");
     g.mode("rest", "refuse");
-    let o = step(&g, "step-01-sync-with-base");
-    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let o = g.read(&["pr", "7"]);
+    assert_eq!(o.status.code(), Some(3), "{}", show(&o));
     let v = last_json(&o);
-    assert_eq!(v["reason"], "base-unavailable", "{v}");
-    assert_ne!(v["base"], "main", "the silent main default is gone: {v}");
-    assert_ne!(v["synced"], "true", "{v}");
-    assert_eq!(g.head(), before, "nothing was merged");
+    assert!(
+        v.get("base_ref").is_none_or(Value::is_null),
+        "an unavailable read never guesses a base: {v}"
+    );
 }
 
-// ── step-03: one CI read, no sleep loop ─────────────────────────────────────
-
-/// A `sleep` that records the call and stops its caller, so a step that still
-/// polls fails at once instead of hanging the test.
-const TRIP_SLEEP: &str = "#!/usr/bin/env bash\necho \"sleep $*\" >> \"$FAKE_LOG/sleep.log\"\nkill -TERM \"$PPID\" 2>/dev/null\nexit 1\n";
+#[test]
+fn update_branch_with_a_base_flag_is_a_usage_error_and_makes_no_gh_call() {
+    let g = GhRepo::new();
+    let head = g.head();
+    let pw = g.prior_wait(&head);
+    let pw = pw.to_str().unwrap();
+    for args in [
+        &[
+            "7",
+            "--expected-head-sha",
+            &head,
+            "--prior-wait",
+            pw,
+            "--base",
+            "main",
+        ][..],
+        &[
+            "7",
+            "--expected-head-sha",
+            &head,
+            "--prior-wait",
+            pw,
+            "--base=main",
+        ],
+        &["7", "--expected-head-sha", &head],
+        &["7", "--prior-wait", pw],
+    ] {
+        let o = g.update_branch(args);
+        assert_eq!(o.status.code(), Some(2), "{args:?}: {}", show(&o));
+    }
+    assert!(g.calls().is_empty(), "{:?}", g.calls());
+    assert!(ub_puts(&g).is_empty());
+}
 
 #[test]
-fn wait_for_ci_reads_once_and_records_pending_without_sleeping() {
+fn update_branch_with_a_mismatched_expected_head_is_refused_once() {
+    let g = GhRepo::new();
+    let head = g.head();
+    let pw = g.prior_wait(&head);
+    g.mode("ub", "422-moved");
+    let o = g.update_branch(&[
+        "7",
+        "--expected-head-sha",
+        &head,
+        "--prior-wait",
+        pw.to_str().unwrap(),
+    ]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let v = last_json(&o);
+    assert_eq!(v["action"], "update-branch", "{v}");
+    assert_eq!(
+        v["result"], "refused",
+        "a 422 SHA mismatch is never a wait: {v}"
+    );
+    assert_eq!(ub_puts(&g).len(), 1, "never retried: {:?}", ub_puts(&g));
+}
+
+/// Runs update-branch against a previous-round sidecar and asserts the
+/// helper answered `first-read` with `reason`, and made no `gh` call.
+fn assert_first_read(g: &GhRepo, head: &str, prior: &str, reason: &str, case: &str) {
+    let o = g.update_branch(&["7", "--expected-head-sha", head, "--prior-wait", prior]);
+    assert_eq!(o.status.code(), Some(0), "{case}: {}", show(&o));
+    let v = last_json(&o);
+    assert_eq!(
+        v,
+        json!({"pr": 7, "action": "none", "result": "first-read",
+               "expected_head_sha": head, "reason": reason}),
+        "{case}"
+    );
+    assert!(g.calls().is_empty(), "{case}: no gh call: {:?}", g.calls());
+    assert!(ub_puts(g).is_empty(), "{case}: no write");
+}
+
+#[test]
+fn update_branch_first_read_cases_make_no_gh_call() {
+    let other = "0123456789abcdef0123456789abcdef01234567";
+
+    let g = GhRepo::new();
+    let head = g.head();
+    assert_first_read(&g, &head, "", "prior wait: none", "empty path");
+
+    let g = GhRepo::new();
+    let head = g.head();
+    let missing = g.tmp.path().join("state/merge-ready-round-0.json.wait");
+    assert_first_read(
+        &g,
+        &head,
+        missing.to_str().unwrap(),
+        "prior wait: none",
+        "missing file",
+    );
+
+    let g = GhRepo::new();
+    let head = g.head();
+    let real = g.prior_wait(&head);
+    let link = real.with_file_name("link.json.wait");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    assert_first_read(
+        &g,
+        &head,
+        link.to_str().unwrap(),
+        "prior wait: invalid",
+        "symlink",
+    );
+
+    let g = GhRepo::new();
+    let head = g.head();
+    let mut big = crate::support::autodrive_gh_fake::unknown_sidecar(&head);
+    big.truncate(big.len() - 1);
+    big.push_str(&format!(",\"pad\":\"{}\"}}", "x".repeat(4096)));
+    let p = g.prior_wait_raw(&big);
+    assert_first_read(
+        &g,
+        &head,
+        p.to_str().unwrap(),
+        "prior wait: invalid",
+        "over 4 KiB",
+    );
+
+    let g = GhRepo::new();
+    let head = g.head();
+    let p = g.prior_wait_raw(
+        &json!({"wait": format!("mergeability@{head}"), "head_sha": head,
+                "merge_state": "UNKNOWN", "extra": 1})
+        .to_string(),
+    );
+    assert_first_read(
+        &g,
+        &head,
+        p.to_str().unwrap(),
+        "prior wait: invalid",
+        "unknown key",
+    );
+
+    let g = GhRepo::new();
+    let head = g.head();
+    let p = g.prior_wait_raw(
+        &json!({"wait": format!("mergeability@{head}"), "head_sha": head.to_uppercase(),
+                "merge_state": "UNKNOWN"})
+        .to_string(),
+    );
+    assert_first_read(
+        &g,
+        &head,
+        p.to_str().unwrap(),
+        "prior wait: invalid",
+        "bad head_sha",
+    );
+
+    let g = GhRepo::new();
+    let head = g.head();
+    let p = g.prior_wait_raw("not json");
+    assert_first_read(
+        &g,
+        &head,
+        p.to_str().unwrap(),
+        "prior wait: invalid",
+        "not JSON",
+    );
+
+    let g = GhRepo::new();
+    let head = g.head();
+    let p = g.prior_wait_raw(
+        &json!({"wait": format!("ci@{head}"), "head_sha": head, "merge_state": "BLOCKED"})
+            .to_string(),
+    );
+    assert_first_read(
+        &g,
+        &head,
+        p.to_str().unwrap(),
+        "prior wait: not unknown",
+        "BLOCKED",
+    );
+
+    let g = GhRepo::new();
+    let head = g.head();
+    let p = g.prior_wait(other);
+    assert_first_read(
+        &g,
+        &head,
+        p.to_str().unwrap(),
+        "prior wait: head differs",
+        "moved head",
+    );
+}
+
+#[test]
+fn update_branch_with_a_qualifying_prior_wait_makes_exactly_one_put() {
+    let g = GhRepo::new();
+    let head = g.head();
+    let pw = g.prior_wait(&head);
+    let o = g.update_branch(&[
+        "7",
+        "--expected-head-sha",
+        &head,
+        "--prior-wait",
+        pw.to_str().unwrap(),
+    ]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let v = last_json(&o);
+    assert_eq!(
+        v,
+        json!({"pr": 7, "action": "update-branch", "result": "ok", "expected_head_sha": head})
+    );
+    let puts = ub_puts(&g);
+    assert_eq!(puts.len(), 1, "{puts:?}");
+    assert!(puts[0].starts_with("PUT "), "{puts:?}");
+    assert!(
+        puts[0].contains(&format!("expected_head_sha={head}")),
+        "{puts:?}"
+    );
+    assert!(!puts[0].contains("base"), "no base is sent: {puts:?}");
+    assert!(pw.exists(), "the helper never deletes the previous sidecar");
+}
+
+// ── step-03: one CI read at the head, pending is an answer ──────────────────
+
+#[test]
+fn step03_checks_by_sha_is_one_gh_call_and_reports_pending() {
     for gql in ["ok", "refuse"] {
         let g = GhRepo::new();
-        crate::support::exec_stub::write_executable(&g.bin.join("sleep"), TRIP_SLEEP, 0o755);
         g.mode("gql", gql);
-        let o = step(&g, "step-03-wait-for-ci");
-        assert!(
-            !g.log.join("sleep.log").exists(),
-            "{gql}: the sleep 60 loop is removed: {}",
-            show(&o)
-        );
+        let head = g.head();
+        let o = g.read(&["checks", &head]);
         assert_eq!(o.status.code(), Some(0), "{gql}: {}", show(&o));
         let v = last_json(&o);
+        assert_eq!(v["source"], "rest", "{gql}: a SHA read goes to REST: {v}");
+        assert!(
+            v["checks"]
+                .as_array()
+                .is_some_and(|c| c.iter().any(|c| c["bucket"] == "pending")),
+            "{gql}: pending checks are reported, not UNREADABLE: {v}"
+        );
+        let check_reads = g
+            .calls()
+            .iter()
+            .filter(|c| c.contains("/check-runs"))
+            .count();
         assert_eq!(
-            v["ci_status"], "PENDING",
-            "{gql}: pending is a recorded wait, not UNREADABLE: {v}"
+            check_reads,
+            1,
+            "{gql}: read once, never polled: {:?}",
+            g.calls()
         );
     }
 }

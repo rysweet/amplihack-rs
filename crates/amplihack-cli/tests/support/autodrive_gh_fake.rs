@@ -352,3 +352,70 @@ pub fn without_source(v: &Value) -> Value {
     v.as_object_mut().unwrap().remove("source");
     v
 }
+
+// ── IV3: the previous round's `.wait` sidecar ───────────────────────────────
+
+impl GhRepo {
+    /// Writes a previous-round sidecar under the fixture's state directory,
+    /// as merge-evidence step-01 does, and returns its path. `body` is
+    /// written verbatim so a test can write a malformed one.
+    pub fn prior_wait_raw(&self, body: &str) -> PathBuf {
+        let state = self.tmp.path().join("state");
+        private_dir(&state);
+        let p = state.join("merge-ready-round-1.json.wait");
+        std::fs::write(&p, body).unwrap();
+        p
+    }
+
+    /// A valid sidecar recording `UNKNOWN` at `head`.
+    pub fn prior_wait(&self, head: &str) -> PathBuf {
+        self.prior_wait_raw(&unknown_sidecar(head))
+    }
+
+    /// Calls made to `git` through the logging wrapper from [`Self::fake_git`].
+    pub fn git_calls(&self) -> Vec<String> {
+        lines(&self.log.join("git.log"))
+    }
+
+    /// Puts a `git` wrapper first on `PATH`. It logs every call to
+    /// `$FAKE_LOG/git.log` (arguments joined by 0x1f) and runs the real git,
+    /// except `remote get-url origin`, which prints `origin_url` so the
+    /// fixture's local bare origin can stand for a GitHub repository without
+    /// any network access.
+    pub fn fake_git(&self, origin_url: &str) {
+        std::fs::write(self.fix.join("origin-url"), origin_url).unwrap();
+        let real = real_git();
+        let script = format!(
+            r#"#!/usr/bin/env bash
+set -u
+( IFS=$'\x1f'; printf '%s\n' "$*" ) >> "${{FAKE_LOG:?}}/git.log"
+prev2=""; prev1=""
+for a in "$@"; do
+  if [ "$prev2 $prev1 $a" = "remote get-url origin" ]; then
+    cat "${{FAKE_FIX:?}}/origin-url"; printf '\n'; exit 0
+  fi
+  prev2="$prev1"; prev1="$a"
+done
+exec '{real}' "$@"
+"#,
+            real = real.display()
+        );
+        crate::support::exec_stub::write_executable(&self.bin.join("git"), &script, 0o755);
+        let _ = std::fs::write(self.log.join("git.log"), "");
+    }
+}
+
+/// The JSON a valid `UNKNOWN` sidecar holds.
+pub fn unknown_sidecar(head: &str) -> String {
+    json!({"wait": format!("mergeability@{head}"), "head_sha": head, "merge_state": "UNKNOWN"})
+        .to_string()
+}
+
+/// The first `git` on the inherited `PATH`, resolved before the fixture's
+/// own `bin` is put in front of it.
+fn real_git() -> PathBuf {
+    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|d| d.join("git"))
+        .find(|p| p.is_file())
+        .expect("git on PATH")
+}

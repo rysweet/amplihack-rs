@@ -325,6 +325,39 @@ impl<'a> Gh<'a> {
     }
 }
 
+/// `owner/name` from a remote URL: `https://host/o/r(.git)`,
+/// `ssh://git@host/o/r.git` or `git@host:o/r.git`. `None` for anything else.
+fn url_repo(url: &str) -> Option<String> {
+    let url = url.trim();
+    let path = if let Some((_, rest)) = url.split_once("://") {
+        rest.split_once('/')?.1
+    } else {
+        url.split_once(':')?.1
+    };
+    let path = path.trim_end_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let (owner, name) = path.split_once('/')?;
+    let repo = format!("{owner}/{name}");
+    valid_repo(&repo).then_some(repo)
+}
+
+/// `Ok` when `origin` in `dir` is `repo` (case-insensitive, as GitHub
+/// names are). Resolved with `git remote get-url origin`, which reads only
+/// the local configuration and contacts no server (IV2).
+fn origin_is(dir: &Path, repo: &str) -> Result<(), String> {
+    let o = amplihack_git::command_in(dir)
+        .args(["remote", "get-url", "origin"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("git could not run: {e}"))?;
+    let url = String::from_utf8_lossy(&o.stdout);
+    match url_repo(&url) {
+        Some(r) if o.status.success() && r.eq_ignore_ascii_case(repo) => Ok(()),
+        _ => Err(format!("origin is not {repo}")),
+    }
+}
+
 fn ls_remote(dir: &Path, n: u64) -> Result<String, String> {
     let refname = format!("refs/pull/{n}/head");
     let o = amplihack_git::command_in(dir)

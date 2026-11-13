@@ -77,6 +77,7 @@ fi
 # The PR number from the environment, digits only, or nothing; `gh pr view`
 # with no number reads the current branch's PR.
 pr_base_ref() {
+  [ -z "${AUTODRIVE_BASE_BRANCH:-}" ] || { printf '%s\n' "$AUTODRIVE_BASE_BRANCH"; return 0; }
   local pr="${PR_NUMBER:-}"
   case "$pr" in *[!0-9]*) pr="" ;; esac
   gh pr view ${pr:+"$pr"} --json baseRefName --jq .baseRefName 2>/dev/null \

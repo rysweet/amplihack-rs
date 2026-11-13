@@ -395,9 +395,12 @@ use objective-completion dispatch before this evaluator is invoked.
 If the round verdict is anything else, the loop does not advance. It runs
 one more round to re-review, and stops as `STUCK` if the round record is
 missing or if the next round repeats the same non-clean `DONE` with no
-progress. A `DONE` from the merge loop only hands over to the
-[merge gate](auto-drive-to-merge.md#no-silent-merge), which checks the evidence
-again before it merges.
+progress. Currently a `DONE` from the merge loop hands over to the shell
+merge gate. The [planned authorized finalization](auto-drive-to-merge.md#no-silent-merge)
+will replace that gate, refreshing mutable facts and validating accepted
+evidence before carrying out the captured action. Invocation-wide authorization
+and gate retirement remain [implementation requirements](auto-drive-to-merge.md#current-behavior-and-authority).
+Readiness does not itself authorize a merge under the target contract.
 
 The same holds for a token followed by a dashed qualifier. The ending rule
 rejects `DONE is premature`, and the later-contradiction rule turns

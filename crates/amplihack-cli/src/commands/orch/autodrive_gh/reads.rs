@@ -2,8 +2,8 @@
 //! spelling, then the cascade per read (issue #2333).
 
 use super::{
-    Gh, MAX_PAGES, Read, Trail, excerpt, ls_remote, now, ratelimit, rest_map, valid_branch,
-    valid_sha,
+    Gh, MAX_PAGES, Read, Trail, excerpt, ls_remote, now, origin_is, ratelimit, rest_map,
+    valid_branch, valid_sha,
 };
 use serde_json::{Map, Value, json};
 
@@ -152,6 +152,10 @@ pub fn head(gh: &Gh, n: u64) -> Read {
                 head_fields(v["head"]["sha"].clone(), &v["head"]["ref"])
             }),
             src("ls-remote", move || {
+                // IV2: `git ls-remote origin` reads origin, whatever --repo says.
+                if let Some(repo) = gh.repo {
+                    origin_is(gh.dir, repo)?;
+                }
                 head_fields(json!(ls_remote(gh.dir, n)?), &Value::Null)
             }),
         ],

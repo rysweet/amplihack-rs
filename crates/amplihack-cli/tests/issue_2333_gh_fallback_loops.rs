@@ -519,3 +519,98 @@ fn a_crusty_completion_with_graphql_refused_but_rest_answering_is_done() {
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     assert_eq!(result(&o)["loop_result"], "DONE", "{}", show(&o));
 }
+
+// ── IV3: autodrive_prior_wait names the previous round's sidecar ────────────
+
+impl Loop {
+    /// The `-c autodrive_prior_wait=` value of each round-recipe call, in call
+    /// order. `None` when a call did not pass it at all.
+    fn prior_wait_values(&self, recipe: &str) -> Vec<Option<String>> {
+        let mut names: Vec<_> = std::fs::read_dir(&self.log)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n.starts_with("call-"))
+            .collect();
+        names.sort();
+        names
+            .iter()
+            .map(|n| {
+                std::fs::read(self.log.join(n))
+                    .unwrap()
+                    .split(|b| *b == 0)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| String::from_utf8_lossy(s).into_owned())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|a| a.get(2).map(String::as_str) == Some(recipe))
+            .map(|a| {
+                a.windows(2).find_map(|w| {
+                    (w[0] == "-c")
+                        .then(|| w[1].strip_prefix("autodrive_prior_wait="))
+                        .flatten()
+                        .map(str::to_owned)
+                })
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn each_round_is_given_the_previous_rounds_sidecar_path() {
+    let Some(l) = Loop::new() else { return };
+    // Round 1 has a fixable finding, so the loop goes on to round 2.
+    l.plan(&[
+        "NOT_MERGE_READY|docs-typo|[]||false|0|",
+        r#"NOT_MERGE_READY||["ci-pending"]|ci@HEAD|true|0|"#,
+    ]);
+    let o = l.run("merge-ready");
+    assert_eq!(
+        l.lines("round-calls"),
+        ["round-1", "round-2"],
+        "{}",
+        show(&o)
+    );
+    let prev = l.state.join("merge-ready-round-1.json.wait");
+    assert_eq!(
+        l.prior_wait_values("autodrive-merge-round"),
+        [Some(String::new()), Some(prev.to_str().unwrap().to_owned())],
+        "round 1 has no previous round; round 2 names round 1's sidecar: {}",
+        show(&o)
+    );
+}
+
+#[test]
+fn a_resumed_drive_names_the_last_round_of_the_earlier_drive_and_keeps_its_sidecar() {
+    let Some(l) = Loop::new() else { return };
+    l.plan(&[
+        r#"NOT_MERGE_READY||["merge-state-unknown"]|mergeability@HEAD|true|0|"#,
+        r#"NOT_MERGE_READY||["merge-state-unknown"]|mergeability@HEAD|true|0|"#,
+    ]);
+    let target = format!("mergeability@{}", l.head());
+    let o = l.run("merge-ready");
+    assert_waiting(&l, &o, "merge-ready", &target);
+    // What merge-evidence step-01 leaves behind on a first UNKNOWN read.
+    let prev = l.state.join("merge-ready-round-1.json.wait");
+    let body = crate::support::autodrive_gh_fake::unknown_sidecar(&l.head());
+    std::fs::write(&prev, &body).unwrap();
+
+    let o = l.run("merge-ready");
+    assert_waiting(&l, &o, "merge-ready", &target);
+    assert_eq!(
+        l.lines("round-calls"),
+        ["round-1", "round-2"],
+        "{}",
+        show(&o)
+    );
+    assert_eq!(
+        l.prior_wait_values("autodrive-merge-round").last().cloned(),
+        Some(Some(prev.to_str().unwrap().to_owned())),
+        "the resumed round-2 names round-1's sidecar: {}",
+        show(&o)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&prev).ok().as_deref(),
+        Some(body.as_str()),
+        "the round-start rm removes only the current round's sidecar"
+    );
+}

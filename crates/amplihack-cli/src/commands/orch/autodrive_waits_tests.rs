@@ -12,7 +12,9 @@
 //! documented fields. `recompute_target` gives the wait target after an R7
 //! merge-state recompute.
 
-use super::{Input, Output, classify, recompute_target};
+use super::{
+    Input, Output, PriorWait, classify, prior_wait_gate, read_prior_wait, recompute_target,
+};
 use serde_json::{Value, json};
 
 const SHA: &str = "3f9c2d1e8b7a6c5d4e3f2a1b0c9d8e7f6a5b4c3d";
@@ -317,4 +319,200 @@ fn recompute_targets_follow_the_documented_table() {
         recompute_target("update-branch", "refused", SHA, None, false, None),
         "read@pr-head"
     );
+}
+
+// ── IV3: the strict reader for the previous round's `.wait` sidecar ─────────
+//
+// `read_prior_wait(path)` returns the sidecar only when it is a regular file
+// (not a symlink), at most 4 KiB, a JSON object with exactly the keys
+// `wait`, `head_sha` and `merge_state` as strings, and a `head_sha` of 40
+// lowercase hex characters. `prior_wait_gate(path, expected_head_sha)`
+// allows the update-branch write only when that sidecar records `UNKNOWN`
+// at `expected_head_sha`; otherwise it names one of four fixed reasons.
+
+fn sidecar_dir() -> tempfile::TempDir {
+    tempfile::tempdir().expect("temp dir")
+}
+
+fn write_sidecar(dir: &tempfile::TempDir, body: &str) -> std::path::PathBuf {
+    let p = dir.path().join("merge-ready-round-1.json.wait");
+    std::fs::write(&p, body).unwrap();
+    p
+}
+
+fn unknown_at(head: &str) -> String {
+    json!({"wait": format!("mergeability@{head}"), "head_sha": head, "merge_state": "UNKNOWN"})
+        .to_string()
+}
+
+fn gate(path: &std::path::Path, head: &str) -> Result<(), &'static str> {
+    prior_wait_gate(path.to_str().unwrap(), head)
+}
+
+#[test]
+fn a_valid_sidecar_is_read_with_its_three_fields() {
+    let d = sidecar_dir();
+    let p = write_sidecar(&d, &unknown_at(SHA));
+    assert_eq!(
+        read_prior_wait(&p),
+        Some(PriorWait {
+            wait: format!("mergeability@{SHA}"),
+            head_sha: SHA.to_string(),
+            merge_state: "UNKNOWN".to_string(),
+        })
+    );
+}
+
+#[test]
+fn a_valid_unknown_sidecar_at_the_same_head_allows_the_write() {
+    let d = sidecar_dir();
+    let p = write_sidecar(&d, &unknown_at(SHA));
+    assert_eq!(gate(&p, SHA), Ok(()));
+}
+
+#[test]
+fn no_previous_round_or_no_file_is_a_first_read() {
+    assert_eq!(prior_wait_gate("", SHA), Err("prior wait: none"));
+    let d = sidecar_dir();
+    let missing = d.path().join("merge-ready-round-0.json.wait");
+    assert_eq!(gate(&missing, SHA), Err("prior wait: none"));
+    assert_eq!(read_prior_wait(&missing), None);
+}
+
+#[test]
+fn a_sidecar_at_another_head_is_a_first_read() {
+    let d = sidecar_dir();
+    let p = write_sidecar(&d, &unknown_at(PUSHED));
+    assert_eq!(gate(&p, SHA), Err("prior wait: head differs"));
+}
+
+#[test]
+fn a_sidecar_with_another_merge_state_is_a_first_read() {
+    for state in ["BLOCKED", "CLEAN", "unknown", ""] {
+        let d = sidecar_dir();
+        let p = write_sidecar(
+            &d,
+            &json!({"wait": format!("ci@{SHA}"), "head_sha": SHA, "merge_state": state})
+                .to_string(),
+        );
+        assert_eq!(gate(&p, SHA), Err("prior wait: not unknown"), "{state:?}");
+    }
+}
+
+#[test]
+fn a_refused_sidecar_is_invalid_and_never_allows_the_write() {
+    let mut big = unknown_at(SHA);
+    big.truncate(big.len() - 1);
+    big.push_str(&format!(",\"wait2\":\"{}\"}}", "x".repeat(4096)));
+    let cases: Vec<(&str, String)> = vec![
+        ("over 4 KiB", big),
+        (
+            "unknown key",
+            json!({"wait": "x", "head_sha": SHA, "merge_state": "UNKNOWN", "round_waiting": true})
+                .to_string(),
+        ),
+        (
+            "missing key",
+            json!({"head_sha": SHA, "merge_state": "UNKNOWN"}).to_string(),
+        ),
+        (
+            "uppercase head_sha",
+            json!({"wait": "x", "head_sha": SHA.to_uppercase(), "merge_state": "UNKNOWN"})
+                .to_string(),
+        ),
+        (
+            "short head_sha",
+            json!({"wait": "x", "head_sha": &SHA[..39], "merge_state": "UNKNOWN"}).to_string(),
+        ),
+        (
+            "non-string field",
+            json!({"wait": 1, "head_sha": SHA, "merge_state": "UNKNOWN"}).to_string(),
+        ),
+        ("not JSON", "mergeability@x".to_string()),
+        ("JSON array", "[]".to_string()),
+        ("empty file", String::new()),
+    ];
+    for (case, body) in cases {
+        let d = sidecar_dir();
+        let p = write_sidecar(&d, &body);
+        assert_eq!(read_prior_wait(&p), None, "{case}");
+        assert_eq!(gate(&p, SHA), Err("prior wait: invalid"), "{case}");
+    }
+}
+
+#[test]
+fn a_symlinked_or_non_regular_sidecar_is_invalid() {
+    let d = sidecar_dir();
+    let real = write_sidecar(&d, &unknown_at(SHA));
+    let link = d.path().join("link.json.wait");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    assert_eq!(read_prior_wait(&link), None, "symlink");
+    assert_eq!(gate(&link, SHA), Err("prior wait: invalid"), "symlink");
+
+    let dir_path = d.path().join("dir.json.wait");
+    std::fs::create_dir(&dir_path).unwrap();
+    assert_eq!(
+        gate(&dir_path, SHA),
+        Err("prior wait: invalid"),
+        "directory"
+    );
+}
+
+#[test]
+fn an_invalid_expected_head_never_qualifies() {
+    let d = sidecar_dir();
+    let upper = SHA.to_uppercase();
+    let p = write_sidecar(&d, &unknown_at(&upper));
+    assert_ne!(
+        gate(&p, &upper),
+        Ok(()),
+        "an invalid expected head never matches"
+    );
+}
+
+// ── `none` / `first-read` recompute and the closed recompute values ─────────
+
+#[test]
+fn a_first_read_recompute_waits_on_mergeability_at_the_expected_head() {
+    assert_eq!(
+        recompute_target("none", "first-read", SHA, None, false, None),
+        format!("mergeability@{SHA}")
+    );
+    let o = run(json!({
+        "merge_state": "UNKNOWN",
+        "recompute": {"action": "none", "result": "first-read"}
+    }));
+    assert!(o.round_waiting, "{o:?}");
+    assert_eq!(o.wait_target, format!("mergeability@{SHA}"));
+}
+
+#[test]
+fn recompute_accepts_only_the_documented_values() {
+    let base = |action: &str, result: &str| {
+        json!({
+            "head_sha": SHA, "ci_signal": "PASS", "merge_state": "UNKNOWN", "mergeable": "UNKNOWN",
+            "unavailable": [], "findings": [], "measured_downgrade": [],
+            "recompute": {"action": action, "result": result}
+        })
+    };
+    for action in ["merge-push", "update-branch", "noop-up-to-date", "none"] {
+        for result in ["ok", "refused", "unavailable", "first-read"] {
+            assert!(
+                serde_json::from_value::<Input>(base(action, result)).is_ok(),
+                "{action}/{result} is accepted"
+            );
+        }
+    }
+    for (action, result) in [
+        ("merge", "ok"),
+        ("update-branch", "done"),
+        ("", "ok"),
+        ("none", ""),
+        ("NONE", "first-read"),
+    ] {
+        assert!(
+            serde_json::from_value::<Input>(base(action, result)).is_err(),
+            "{action:?}/{result:?} is refused"
+        );
+    }
 }

@@ -39,6 +39,10 @@ pub struct UpdateBranchArgs {
     n: String,
     #[arg(long)]
     expected_head_sha: String,
+    /// The previous round's `.wait` sidecar; empty for round 1. The write is
+    /// sent only when it recorded `UNKNOWN` at `--expected-head-sha`.
+    #[arg(long)]
+    prior_wait: String,
     #[arg(long)]
     repo: Option<String>,
 }
@@ -131,12 +135,24 @@ pub fn read_cli(args: ReadArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `amplihack orch helper autodrive-gh-update-branch <n> --expected-head-sha <sha>`.
+/// `amplihack orch helper autodrive-gh-update-branch <n> --expected-head-sha
+/// <sha> --prior-wait <path>`. Without a qualifying previous-round sidecar it
+/// answers `first-read`, makes no `gh` call and exits 0.
 pub fn update_branch_cli(args: UpdateBranchArgs) -> anyhow::Result<()> {
     let repo = checked_repo(&args.repo);
     let n = pr_arg(&args.n);
     if !valid_sha(&args.expected_head_sha) {
         usage("--expected-head-sha must be 40 lowercase hex characters");
+    }
+    if let Err(reason) = crate::commands::orch::autodrive_waits::prior_wait_gate(
+        &args.prior_wait,
+        &args.expected_head_sha,
+    ) {
+        let v = json!({"pr": n, "action": "none", "result": "first-read",
+                       "expected_head_sha": args.expected_head_sha, "reason": reason});
+        eprintln!("INFO: update-branch not sent: {reason}; this round is a first read");
+        println!("{}", serde_json::to_string(&v)?);
+        return Ok(());
     }
     let dir = std::env::current_dir()?;
     let v = update_branch(&Gh::new(&dir, repo), n, &args.expected_head_sha);

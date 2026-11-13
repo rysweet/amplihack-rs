@@ -32,7 +32,9 @@ pub struct UnavailableRead {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Recompute {
+    #[serde(deserialize_with = "recompute_action")]
     pub action: String,
+    #[serde(deserialize_with = "recompute_result")]
     pub result: String,
     #[serde(default)]
     pub pushed_sha: Option<String>,
@@ -40,6 +42,34 @@ pub struct Recompute {
     pub rate_limited: bool,
     #[serde(default)]
     pub reset_epoch: Option<i64>,
+}
+
+/// The recompute actions step-01 can record: the helper's, and `none` when
+/// it wrote nothing (`first-read`).
+const RECOMPUTE_ACTIONS: &[&str] = &["merge-push", "update-branch", "noop-up-to-date", "none"];
+const RECOMPUTE_RESULTS: &[&str] = &["ok", "refused", "unavailable", "first-read"];
+
+fn one_of<'de, D: serde::Deserializer<'de>>(
+    d: D,
+    allowed: &'static [&'static str],
+    what: &str,
+) -> Result<String, D::Error> {
+    let v = String::deserialize(d)?;
+    if allowed.contains(&v.as_str()) {
+        Ok(v)
+    } else {
+        Err(serde::de::Error::custom(format!(
+            "recompute {what} is not one of {allowed:?}"
+        )))
+    }
+}
+
+fn recompute_action<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    one_of(d, RECOMPUTE_ACTIONS, "action")
+}
+
+fn recompute_result<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    one_of(d, RECOMPUTE_RESULTS, "result")
 }
 
 #[derive(Debug, Deserialize)]
@@ -272,7 +302,9 @@ pub fn recompute_target(
 ) -> String {
     match (action, result) {
         ("merge-push", "ok") => at_sha("mergeability", pushed_sha.unwrap_or(head_sha)),
-        ("update-branch" | "noop-up-to-date", "ok") => at_sha("mergeability", head_sha),
+        ("update-branch" | "noop-up-to-date", "ok") | ("none", "first-read") => {
+            at_sha("mergeability", head_sha)
+        }
         (_, "unavailable") if rate_limited => match reset_epoch {
             Some(e) => format!("ratelimit-reset@{e}"),
             None => "ratelimit-reset@unknown".into(),
@@ -280,6 +312,64 @@ pub fn recompute_target(
         (_, "unavailable") => "read@pr".into(),
         _ => "read@pr-head".into(),
     }
+}
+
+// ── IV3: the previous round's `.wait` sidecar ─────────────────────────────
+
+/// Largest sidecar read; a larger file is invalid, never truncated.
+const PRIOR_WAIT_MAX: u64 = 4096;
+
+/// The previous round's `.wait` sidecar, as merge-evidence step-01 writes it
+/// on an `UNKNOWN` merge state.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PriorWait {
+    pub wait: String,
+    pub head_sha: String,
+    pub merge_state: String,
+}
+
+/// Reads the sidecar strictly. `None` unless `path` is a regular file (never
+/// followed through a symlink) of at most 4 KiB holding a JSON object with
+/// exactly the string keys `wait`, `head_sha` and `merge_state`, and a
+/// `head_sha` of 40 lowercase hex characters. The file is untrusted.
+pub fn read_prior_wait(path: &std::path::Path) -> Option<PriorWait> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.file_type().is_file() || meta.len() > PRIOR_WAIT_MAX {
+        return None;
+    }
+    let mut raw = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(PRIOR_WAIT_MAX + 1)
+        .read_to_end(&mut raw)
+        .ok()?;
+    if raw.len() as u64 > PRIOR_WAIT_MAX {
+        return None;
+    }
+    let w: PriorWait = serde_json::from_slice(&raw).ok()?;
+    valid_sha(&w.head_sha).then_some(w)
+}
+
+/// Whether update-branch may write: only when the previous round's sidecar
+/// recorded `UNKNOWN` at `expected_head_sha`. Otherwise one of four fixed
+/// reasons, and the caller treats the round as a first read.
+pub fn prior_wait_gate(path: &str, expected_head_sha: &str) -> Result<(), &'static str> {
+    if path.is_empty() {
+        return Err("prior wait: none");
+    }
+    let p = std::path::Path::new(path);
+    if std::fs::symlink_metadata(p).is_err() {
+        return Err("prior wait: none");
+    }
+    let w = read_prior_wait(p).ok_or("prior wait: invalid")?;
+    if w.merge_state != "UNKNOWN" {
+        return Err("prior wait: not unknown");
+    }
+    if !valid_sha(expected_head_sha) || w.head_sha != expected_head_sha {
+        return Err("prior wait: head differs");
+    }
+    Ok(())
 }
 
 /// `amplihack orch helper autodrive-round-waits`: JSON on stdin, one JSON

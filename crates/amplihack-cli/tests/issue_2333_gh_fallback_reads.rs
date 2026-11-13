@@ -442,7 +442,14 @@ fn ub_calls(g: &GhRepo) -> Vec<String> {
 fn update_branch_sends_one_put_with_the_expected_head_and_never_merges() {
     let g = GhRepo::new();
     let head = g.head();
-    let o = g.update_branch(&["7", "--expected-head-sha", &head]);
+    let pw = g.prior_wait(&head);
+    let o = g.update_branch(&[
+        "7",
+        "--expected-head-sha",
+        &head,
+        "--prior-wait",
+        pw.to_str().unwrap(),
+    ]);
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     assert_eq!(
         one_json(&o),
@@ -470,7 +477,15 @@ fn update_branch_sends_one_put_with_the_expected_head_and_never_merges() {
 fn update_branch_422_no_new_commits_is_noop_up_to_date() {
     let g = GhRepo::new();
     g.mode("ub", "422-noop");
-    let o = g.update_branch(&["7", "--expected-head-sha", &g.head()]);
+    let head = g.head();
+    let pw = g.prior_wait(&head);
+    let o = g.update_branch(&[
+        "7",
+        "--expected-head-sha",
+        &head,
+        "--prior-wait",
+        pw.to_str().unwrap(),
+    ]);
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     let v = one_json(&o);
     assert_eq!(v["action"], "noop-up-to-date", "{v}");
@@ -482,7 +497,15 @@ fn update_branch_422_no_new_commits_is_noop_up_to_date() {
 fn update_branch_with_a_moved_head_is_refused_and_recorded() {
     let g = GhRepo::new();
     g.mode("ub", "422-moved");
-    let o = g.update_branch(&["7", "--expected-head-sha", &g.head()]);
+    let head = g.head();
+    let pw = g.prior_wait(&head);
+    let o = g.update_branch(&[
+        "7",
+        "--expected-head-sha",
+        &head,
+        "--prior-wait",
+        pw.to_str().unwrap(),
+    ]);
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     let v = one_json(&o);
     assert_eq!(
@@ -496,7 +519,15 @@ fn update_branch_with_a_moved_head_is_refused_and_recorded() {
 fn update_branch_rate_limited_is_unavailable_with_the_reset() {
     let g = GhRepo::new();
     g.mode("ub", "refuse");
-    let o = g.update_branch(&["7", "--expected-head-sha", &g.head()]);
+    let head = g.head();
+    let pw = g.prior_wait(&head);
+    let o = g.update_branch(&[
+        "7",
+        "--expected-head-sha",
+        &head,
+        "--prior-wait",
+        pw.to_str().unwrap(),
+    ]);
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     let v = one_json(&o);
     assert_eq!(v["result"], "unavailable", "{v}");
@@ -507,13 +538,109 @@ fn update_branch_rate_limited_is_unavailable_with_the_reset() {
 #[test]
 fn update_branch_requires_a_valid_expected_head_sha() {
     let g = GhRepo::new();
+    let pw = g.prior_wait(&"a".repeat(40));
+    let pw = pw.to_str().unwrap();
     for args in [
-        &["7"][..],
-        &["7", "--expected-head-sha", "abc"],
-        &["0", "--expected-head-sha", &"a".repeat(40)],
+        &["7", "--prior-wait", pw][..],
+        &["7", "--expected-head-sha", "abc", "--prior-wait", pw],
+        &[
+            "0",
+            "--expected-head-sha",
+            &"a".repeat(40),
+            "--prior-wait",
+            pw,
+        ],
     ] {
         let o = g.update_branch(args);
         assert_eq!(o.status.code(), Some(2), "{args:?}: {}", show(&o));
     }
     assert!(g.calls().is_empty(), "{:?}", g.calls());
+}
+
+// ── IV2: the ls-remote head route reads only the repository named ───────────
+//
+// `git ls-remote origin` reads `origin`, whatever `--repo` says. The route is
+// used only when `--repo` is absent or `origin` resolves to the same
+// owner/name; `origin` is resolved with `git remote get-url origin`, which
+// contacts no server. The fake `git` answers that one call and logs every
+// call, so the tests can count `ls-remote` calls. `refs/pull/7/head` is
+// published on the local origin in every case, so a route that wrongly ran
+// would answer, not fail.
+
+fn ls_remote_calls(g: &GhRepo) -> usize {
+    g.git_calls()
+        .iter()
+        .filter(|c| c.split('\u{1f}').any(|a| a == "ls-remote"))
+        .count()
+}
+
+fn head_only_by_ls_remote(origin_url: &str) -> GhRepo {
+    let g = GhRepo::new();
+    g.publish_pull_ref();
+    g.fake_git(origin_url);
+    g.mode("gql", "refuse");
+    g.mode("rest", "refuse");
+    g
+}
+
+#[test]
+fn head_with_a_repo_other_than_origin_makes_no_ls_remote_call_and_is_unavailable() {
+    for url in [
+        "https://github.com/other/r.git",
+        "git@github.com:o/elsewhere.git",
+        "https://github.com/o/r-fork",
+    ] {
+        let g = head_only_by_ls_remote(url);
+        let o = g.read(&["head", "7", "--repo", "o/r"]);
+        let v = unavailable(&o);
+        assert_eq!(
+            ls_remote_calls(&g),
+            0,
+            "{url}: origin is another repository, so ls-remote never runs: {:?}",
+            g.git_calls()
+        );
+        let reason = v["unavailable"]["reason"].as_str().unwrap_or_default();
+        assert!(
+            reason.contains("ls-remote: origin is not o/r"),
+            "{url}: the route names why it was skipped: {v}"
+        );
+        assert!(v.get("head_sha").is_none_or(Value::is_null), "{url}: {v}");
+    }
+}
+
+#[test]
+fn head_with_a_repo_equal_to_origin_still_uses_ls_remote() {
+    for url in [
+        "https://github.com/o/r.git",
+        "https://github.com/o/r",
+        "git@github.com:o/r.git",
+        "ssh://git@github.com/o/r.git",
+    ] {
+        let g = head_only_by_ls_remote(url);
+        let o = g.read(&["head", "7", "--repo", "o/r"]);
+        let v = ok(&o);
+        assert_eq!(v["source"], "ls-remote", "{url}: {v}");
+        assert_eq!(v["head_sha"], g.head().as_str(), "{url}: {v}");
+        assert_eq!(ls_remote_calls(&g), 1, "{url}: {:?}", g.git_calls());
+    }
+}
+
+#[test]
+fn head_without_repo_uses_ls_remote_on_origin_as_before() {
+    let g = head_only_by_ls_remote("https://github.com/anyone/anything.git");
+    let o = g.read(&["head", "7"]);
+    let v = ok(&o);
+    assert_eq!(v["source"], "ls-remote", "{v}");
+    assert_eq!(ls_remote_calls(&g), 1, "{:?}", g.git_calls());
+}
+
+#[test]
+fn a_head_answered_by_graphql_never_runs_ls_remote() {
+    // While GraphQL answers, the origin is never resolved and git is never run.
+    let g = GhRepo::new();
+    g.fake_git("https://github.com/other/r.git");
+    let o = g.read(&["head", "7", "--repo", "o/r"]);
+    let v = ok(&o);
+    assert_eq!(v["source"], "graphql", "{v}");
+    assert_eq!(ls_remote_calls(&g), 0, "{:?}", g.git_calls());
 }
