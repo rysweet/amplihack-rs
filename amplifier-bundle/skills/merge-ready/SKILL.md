@@ -181,7 +181,7 @@ Collect explicit evidence for every aspect below before declaring `MERGE_READY`.
 | Reviews/approvals | Use `gh pr view --json reviewDecision,reviews,reviewRequests` or the GitHub UI. Required approving reviews must be present, requested changes must be cleared, and stale approvals must be revalidated after source changes when protection requires it. | Use `az repos pr reviewer list --id "$PR_ID"` and branch policy status. Required reviewers or reviewer groups must have approved or not voted blocking/rejected; stale votes must be revalidated after source changes when policy requires it. |
 | Merge conflicts | Use `gh pr view --json mergeable,mergeStateStatus` or the GitHub UI. `CONFLICTING`, dirty, unknown, or stale mergeability is blocking until refreshed and clean. | Use `az repos pr show --id "$PR_ID" --query mergeStatus` or the AzDO UI. Conflict, failure, rejected, or unknown merge status is blocking until refreshed and clean. |
 | Policies/protection | Use branch protection/ruleset evidence from `gh pr view`, `gh api`, or the GitHub UI. Required checks, required reviews, signed commit rules, linear history, merge queue, and required conversation resolution must all be satisfied. | Use branch policy evidence from `az repos pr policy list --id "$PR_ID"`, `az repos policy`, or the AzDO UI. Build validation, minimum reviewers, required reviewers, comment resolution, linked work item, status checks, and merge strategy policies must all be satisfied. |
-| Linked work items/issues | Use `gh pr view --json closingIssuesReferences` or the GitHub UI. Required issue links or closing keywords must point to the correct issue(s), or the PR description must state why no issue is required under project policy. | Use `az repos pr work-item list --id "$PR_ID"` or the AzDO UI. Required Azure Boards work items must be linked to the PR, or the PR description must state why no work item is required under project policy. |
+| Linked work items/issues | Read the published body as well as `closingIssuesReferences`, using `gh pr view --json body,closingIssuesReferences` or the GitHub UI. A published `Refs #N` or `Refs owner/repo#N` is issue-link evidence even when `closingIssuesReferences` is empty. Verify the referenced issue identity. Preserve its keyword; do not add a closing reference to satisfy readiness. Separate project requirements for issue links still apply, or record why no issue is required under project policy. | Use `az repos pr work-item list --id "$PR_ID"` or the AzDO UI. Required Azure Boards work items must be linked to the PR, or the PR description must state why no work item is required under project policy. |
 | Comments/threads | Use `gh pr view --json comments,reviews` plus review conversation evidence from `gh api` or the GitHub UI. Required review conversations must be resolved; unresolved comments must be explicitly marked non-blocking by an authorized reviewer or project policy. | Use PR thread evidence from the AzDO UI or authorized REST API. Required threads must be resolved; active comments must be explicitly marked non-blocking by an authorized reviewer or project policy. |
 | Final merge/close verification | If authorized to merge, use `gh pr merge` according to project policy, then verify `gh pr view "$PR" --json state,mergedAt,mergedBy,mergeCommit`. If closing without merge, verify `state:CLOSED` and document the close reason. If not authorized to perform the final action, document the exact external approval or permission blocker. | If authorized to complete the PR, use the platform-approved completion command, UI, or automation according to project policy, then verify `az repos pr show --id "$PR_ID" --query "{status:status,closedBy:closedBy,closedDate:closedDate,lastMergeCommit:lastMergeCommit}"`. `az repos pr update --id "$PR_ID" --status completed` is an example only, not the default path. If abandoning/closing without merge, verify `status:abandoned` and document the reason. If not authorized to perform the final action, document the exact external approval or permission blocker. |
 
@@ -197,23 +197,58 @@ Platform-neutral evidence is enough for scope when it names the source and targe
 
 Use [pr-description-template.md](pr-description-template.md) and replace every placeholder with actual evidence. Keep the wording concise, but make the evidence concrete enough that a reviewer can verify the work without guessing.
 
-If the description already has useful sections, merge the evidence into the existing structure instead of duplicating headings.
+Preserve the published description, including its issue keywords and reference
+identities. Do not reclassify the diff to change a published `Refs` to a
+closing reference. Keep readiness evidence in the report below the boundary.
 
 Keep the change's description and the readiness report apart. The report goes **below** the description, starting with the template's marker line (`<!-- merge-ready-report: … -->`), which stays exactly as written; replace an earlier report below the marker rather than adding a second one above it. Auto-drive's finalize step cuts the squash commit body at the first line that starts with `<!-- merge-ready-report` or `## Merge readiness`, so the text above becomes the commit message on the base branch and the report never does (#2056). Nothing refreshes the report after the last merge-ready round, so readiness state written above the marker would land as history: a head SHA, a verdict, `open` as the platform state, or a round-by-round log. Keep it below.
 
-#### GitHub path
+<a id="fetch-compose-edit"></a>
+
+#### Fetch, compose, then edit
+
+Render only the replacement report from the template into a private
+`REPORT_FILE`, using collected evidence. Keep its marker and cite issue
+identities without closing-keyword trailers. Use trusted `PR` or `PR_ID`
+inputs for platform identity. Never interpolate description or report text
+into executable commands or hand-built JSON.
+
+For GitHub, run this sequence with `PR` and `REPORT_FILE` set:
 
 ```bash
-gh pr edit "$PR" --body-file pr-description.md
+set -euo pipefail
+umask 077
+edit_dir=$(mktemp -d "${TMPDIR:?}/merge-ready.XXXXXX")
+trap 'rm -rf -- "$edit_dir"' EXIT
+# Fetch immediately before composition; each failed command prevents the edit.
+gh pr view "$PR" --json body > "$edit_dir/current.json"
+jq -e --rawfile report "$REPORT_FILE" \
+  'if (.body | type) == "string" then {description: .body, report: $report} else error("PR body must be a string") end' \
+  "$edit_dir/current.json" > "$edit_dir/request.json"
+amplihack workflow compose-readiness-description \
+  < "$edit_dir/request.json" > "$edit_dir/body.md"
+gh pr edit "$PR" --body-file "$edit_dir/body.md"
+gh pr view "$PR" --json body > "$edit_dir/readback.json"
+jq -e --rawfile expected "$edit_dir/body.md" '.body == $expected' \
+  "$edit_dir/readback.json" > /dev/null
 ```
 
-#### Azure DevOps/AzDO path
+For Azure DevOps, use the same private directory and failure handling. Fetch
+with `az repos pr show --id "$PR_ID" --output json`, validate `.description`
+as a string, and encode `{description: .description, report: $report}`.
+Compose with the same Rust command before calling
+`az repos pr update --id "$PR_ID" --description "$(cat "$edit_dir/body.md")"`.
+Fetch again and compare `.description` with the composed body. Keep the
+platform's existing work-item linkage requirements.
 
-```bash
-az repos pr update --id "$PR_ID" --description "$(cat pr-description.md)"
-```
-
-If the platform CLI cannot update the description safely, update it through the authorized UI/API and record that evidence source.
+The composer reads required JSON string fields `description` and `report`
+from stdin, buffers the complete body, and emits no body on validation failure.
+It preserves the published prefix verbatim and replaces or appends one report.
+Conflicting boundaries and new closing references are errors. Failed fetch,
+parsing or composition leaves the platform description untouched; never fall
+back to a direct edit. Report unavailable composition as `NOT_MERGE_READY`.
+Use conditional updates where the platform supports them; otherwise avoid
+concurrent description editing. Check edit and read-back failures explicitly.
 
 ### 8. Return a binary verdict
 

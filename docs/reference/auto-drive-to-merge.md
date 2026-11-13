@@ -1,7 +1,7 @@
 ---
 title: Auto Drive To Merge Reference
 description: responsibilities, authorization, recovery, completion outcomes, and target compatibility for auto-drive-to-merge.
-last_updated: 2026-11-11
+last_updated: 2026-11-13
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -27,6 +27,7 @@ alternatives within the existing loop-health and budget rules.
 - [Current behavior and authority](#current-behavior-and-authority)
 - [Responsibilities](#responsibilities)
 - [Configuration](#configuration)
+- [Issue keyword selection](#issue-keyword-selection)
 - [Authorization](#authorization)
 - [PR head and worktree resolution](#pr-head-and-worktree-resolution)
 - [Crusty review](#crusty-review)
@@ -99,6 +100,7 @@ commands and expected outcomes.
 | `existing_branch` | empty | Source branch; must match the selected PR when supplied. |
 | `branch_prefix` | `feat` | Branch prefix for a new build. |
 | `plan_task_id` | empty | Follow-up task: issue `N` or `#N`, or 1–64 characters from `A-Za-z0-9._:/-`. Otherwise resolve `Closes #N`, `Fixes #N`, or `Resolves #N` from the PR body, then task description. |
+| `pr_issue_link` | `auto` | Generated issue keyword: `auto`, `refs` or `closes`. `refs` keeps the discovered reference non-closing; `closes` remains subject to classification safeguards. |
 | `no_merge` | `false` in the full composer | Prevent merging throughout the invocation when `true`. Build always receives `true`, independently of this outer value. |
 | `autodrive_dry_run` | `false` | Prevent merging and follow-up issue creation. Still assesses readiness and reports missing obligations. |
 | `autodrive_state_dir` | runner-assigned | Private state for this run's records, budgets and receipts. Omitted: the runner assigns a directory inside the run's durable folder. Supplied: must be non-empty, absolute and free of `..` components. See [state directory](#state-directory). |
@@ -108,6 +110,27 @@ The runner's CLI `--dry-run` previews recipe execution; it is distinct from
 
 QA selection uses [operator environment and merge-base configuration](auto-drive-qa.md),
 not agent-selected recipe context. Budget keys are listed below.
+
+## Issue keyword selection
+
+`-c pr_issue_link=refs`
+keeps generated issue references non-closing. The value passes
+unchanged through `auto-drive-to-merge` →
+`autodrive-build` → `default-workflow` → `workflow-publish` →
+`workflow_publish_pr.sh`. The publishing helper consumes
+`RECIPE_VAR_pr_issue_link`.
+
+With omitted mode or `auto`, substantive changes use `Closes #N`; `refs`
+uses `Refs #N`; `closes` uses `Closes #N` only for substantive changes.
+Planning-only, generated-only and empty changes use `Refs #N` in every mode.
+Classification failure also uses `Refs`, including with `closes`. If no
+issue is discovered, no issue reference is added. Cross-repository reference
+identity and Azure DevOps behaviour are preserved.
+
+The policy applies to generated commit messages and PR descriptions.
+`pr_issue_link` selects a keyword; `no_merge` controls permission to merge the
+PR. See the [complete keyword matrix and caller example](workflow-delivery-inputs.md#pr_issue_link)
+for classification scopes, fallback behaviour and context defaults.
 
 ## Authorization
 
@@ -237,6 +260,15 @@ All [13 authoritative criteria and established interpretations](auto-drive-evide
 apply. Evidence accepted for the correct PR and head establishes readiness.
 A criterion-name checklist or a model's assertion cannot do so.
 
+The published issue keyword and reference identity remain authoritative through finalisation and merge-ready editing.
+These steps do not reclassify the diff or add a closing reference.
+Merge-ready accepts a published `Refs`
+reference as issue-link evidence even when `closingIssuesReferences` is
+empty, while retaining separate project linkage requirements. Description
+updates preserve the published text above the readiness report and submit
+only successfully composed updates. See
+[published references and description edits](workflow-delivery-inputs.md#published-references-and-description-edits).
+
 ### Expected checks at the head
 
 **CI green means every expected check exists at the head SHA and passed**
@@ -293,6 +325,14 @@ read:
 | --- | --- | --- |
 | Subject | `autodrive_merge_subject`: the title with C0, DEL and C1 controls removed by code point, then ` (#N)` unless the title already ends with this PR's suffix | the title is absent, null, not a string, blank, or over 1024 characters |
 | Body | `autodrive_merge_body`: the description up to the first line starting `<!-- merge-ready-report` or `## Merge readiness`, so the report never lands on `main`; `MERGE_REPORT_CUT` says whether one was cut | the `body` key is absent, not a string or null, or over 65,536 bytes |
+
+A published `Refs #N` remains in the squash body with the same keyword and
+reference identity, including cross-repository references. This uses the
+published description without reclassifying the diff. It needs no separate
+squash-message setting, and does not concatenate individual commit trailers.
+This existing squash behaviour preserves what is present at finalisation;
+preservation through earlier readiness edits is the
+[composer contract](workflow-delivery-inputs.md#published-references-and-description-edits).
 
 The body goes to `gh` on standard input from the shell's memory, never as a
 path a same-user process could rewrite between a check and the read:
