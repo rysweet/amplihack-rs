@@ -216,7 +216,7 @@ does (rules 3 and 4) and prints one compact JSON object:
 | `linked` | `"true"` when a linked worktree was found. With none, the snapshot prints `{"linked": "false"}` and exits 0; the gate then fails with `not-linked-worktree` |
 | `path` | the worktree's absolute path |
 | `head` | `git rev-parse --verify HEAD`, 40 hexadecimal characters |
-| `status` | `git status --porcelain --untracked-files=no`. Untracked files are kept out of this field and listed in `untracked` instead |
+| `status` | `git -c core.fsmonitor=false status --porcelain --untracked-files=no`. Untracked files are kept out of this field and listed in `untracked` instead |
 | `tracked_dirty` | `"true"` when `status` is not empty |
 | `local_branch` | `git symbolic-ref -q --short HEAD`, or empty |
 | `untracked` | `git ls-files --others --exclude-standard`, sorted under `LC_ALL=C`, cut to the first 200 paths and to 16 KiB, dropping a partial last line. `ls-files` runs without `-z`, so git quotes paths that contain control characters |
@@ -496,7 +496,9 @@ reason shown:
 10. **Ancestry** (`diverged-upstream`). If an upstream is set, the gate runs
     `git -c core.hooksPath=/dev/null fetch origin`, then
     `git rev-list --count HEAD..@{u}` must be 0. This matches step-15's #978
-    refusal.
+    refusal. If either command fails, the gate fails with `push-unverified`
+    and includes git's own error message, flattened, redacted and cut like
+    every other `fail` detail.
 10b. **Fast-forward** (`remote-history-rewritten`, `push-unverified`). When
     `remote_before` is not `absent`, the gate runs
     `git merge-base --is-ancestor <remote_before> HEAD`:
@@ -509,6 +511,10 @@ reason shown:
     - any other exit code, for example because `remote_before` is not in the
       local object store: fail with `push-unverified`.
 
+    The gate exports `GIT_NO_REPLACE_OBJECTS=1` and `GIT_GRAFT_FILE=/dev/null`,
+    so a replace ref or graft written by the agent cannot make
+    `remote_before` look like an ancestor of HEAD.
+
     When `remote_before` is `absent`, there was no remote branch to
     overwrite, and the rule passes. Rule 10b runs before rule 11, so a
     force-push followed by a `CHANGE` verdict is still reported as
@@ -516,11 +522,10 @@ reason shown:
 11. **Cause.**
     - `CHANGE` (`cause-in-change`): exit 1.
     - `ENVIRONMENT` and `NONE`: check that the remote ref equals HEAD with
-      `verify_pushed_ref.sh origin <branch> <sha>`. If the helper is not
-      found, the gate compares `git ls-remote origin -- refs/heads/<branch>`
-      itself; an `ls-remote` error is shown as it is, not as a missing ref.
-      Unlike step-15, a missing helper is not a warning. Any mismatch or
-      error ends the gate with `push-unverified`.
+      `verify_pushed_ref.sh origin <branch> <sha>`. There is no inline
+      fallback: unlike step-15, a missing helper is not a warning but a
+      `push-unverified` failure. Any mismatch or error ends the gate with
+      `push-unverified`.
 
 On exit 1 the gate prints one line to stderr:
 
@@ -536,7 +541,7 @@ When `SAFE` is set, a second line follows; see
 A rule 10b failure looks like this:
 
 ```text
-push-failure-recovery: remote-history-rewritten: origin/feat/issue-2471-fix-amplihack-rs-issue was at 9f2b6d4e8a0c2e4f6a8b0c2d4e6f8a0b2c4d6e8f (fetched), which is not an ancestor of HEAD 3c1e9a0b5d7f2e4a6c8b0d1f3e5a7c9b1d3f5e7a; to restore: git push --force-with-lease=refs/heads/feat/issue-2471-fix-amplihack-rs-issue:3c1e9a0b5d7f2e4a6c8b0d1f3e5a7c9b1d3f5e7a origin 9f2b6d4e8a0c2e4f6a8b0c2d4e6f8a0b2c4d6e8f:refs/heads/feat/issue-2471-fix-amplihack-rs-issue
+push-failure-recovery: remote-history-rewritten: step-15-commit-push (ENVIRONMENT): origin/feat/issue-2471-fix-amplihack-rs-issue was 9f2b6d4e8a0c2e4f6a8b0c2d4e6f8a0b2c4d6e8f before the agent ran (remote_before_source fetched), which is not an ancestor of HEAD 3c1e9a0b5d7f2e4a6c8b0d1f3e5a7c9b1d3f5e7a; the remote history was rewritten and the gate undid nothing. To restore: git push --force-with-lease=refs/heads/feat/issue-2471-fix-amplihack-rs-issue:3c1e9a0b5d7f2e4a6c8b0d1f3e5a7c9b1d3f5e7a origin 9f2b6d4e8a0c2e4f6a8b0c2d4e6f8a0b2c4d6e8f:refs/heads/feat/issue-2471-fix-amplihack-rs-issue
 ```
 
 ### Gate reasons
@@ -614,7 +619,7 @@ object goes, untrusted, under `recovery`:
 | `recovery_attempted` | always `"true"`; the write-back step requires it |
 | `remote_before` | the snapshot's value: the remote branch's commit before the agent ran, or `absent` |
 | `remote_before_source` | `fetched`, `tracking-ref` or `absent`; shows how exact the fast-forward check was |
-| `new_untracked` | untracked paths present after the agent ran but not before; information only |
+| `new_untracked` | untracked paths present after the agent ran but not before, capped like the snapshot at 200 paths and 16 KiB; information only |
 | `recovery` | the agent's object, defanged, redacted and cut |
 
 Before the agent's strings go into the record or into `SAFE`, the gate:
@@ -701,7 +706,7 @@ step-15-commit-push      failed (continue_on_error)
 step-15-push-recovery    running push-failure-recovery
   push_recovery_snapshot remote_before=9f2b6d4… remote_before_source=fetched
   push_recovery          cause=ENVIRONMENT push_result=pushed
-  push_recovery_result   push-failure-recovery: remote-history-rewritten: … to restore: git push --force-with-lease=…
+  push_recovery_result   push-failure-recovery: remote-history-rewritten: … To restore: git push --force-with-lease=…
 run failed: step push_recovery_result exited 1
 ```
 
@@ -746,11 +751,19 @@ budget; the next step added to either of them needs a split.
   snapshot, taken before the agent ran. The agent's `evidence`, and the
   snapshot's `untracked` and the record's `new_untracked`, are
   information only; no rule branches on them.
-- The snapshot's fetch and `ls-remote`, and the gate's fetch and `ls-remote`, run with
+- The snapshot's fetch and `ls-remote`, and the gate's fetch, run with
   `GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never`, so they cannot wait
-  for a password. Their output goes to `/dev/null`, so no URL reaches the
-  record. Both fetches use `-c core.hooksPath=/dev/null`, so the branch under
-  test cannot run `reference-transaction` hooks outside the agent's step.
+  for a password. The snapshot's output goes to `/dev/null`, so no URL
+  reaches the record. The gate's fetch output appears only in a failure
+  message, after `redact` has removed credentials from it. Both fetches use
+  `-c core.hooksPath=/dev/null`, so the branch under test cannot run
+  `reference-transaction` hooks outside the agent's step.
+- Both `git status` calls run with `-c core.fsmonitor=false`, so an
+  fsmonitor command set by the agent does not run in the gate.
+- The gate ignores replace refs and grafts (`GIT_NO_REPLACE_OBJECTS=1`,
+  `GIT_GRAFT_FILE=/dev/null`) for its ancestry checks. It also sets
+  `advice.graftFileDeprecated=false` through `GIT_CONFIG_COUNT`, so git does
+  not print a deprecation hint on every command.
 - The gate refuses a detached HEAD and a protected local branch, as the push
   steps do, so `continue_on_error` does not turn those refusals into a push.
 - No bash command contains a `{{...}}` placeholder.

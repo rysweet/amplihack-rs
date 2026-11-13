@@ -42,6 +42,7 @@ steps:
       # The gate's record of the worktree and the remote branch, taken before the agent runs.
       # It decides nothing: with no linked worktree it prints {"linked":"false"} and the gate decides.
       command -v jq >/dev/null 2>&1 || { echo "push-failure-recovery: push-unverified: jq is required by the snapshot" >&2; exit 1; }
+      # TOOL_DIRS and find_tool must match the copy in the push_recovery_result gate.
       TOOL_DIRS=(); [ -z "${WORKFLOW_RUNTIME_ARTIFACT_HELPER:-}" ] || TOOL_DIRS+=("${WORKFLOW_RUNTIME_ARTIFACT_HELPER%/*}")
       for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -z "$c" ] || TOOL_DIRS+=("$c/amplifier-bundle/tools"); done
       find_tool() { local d; for d in "${TOOL_DIRS[@]}"; do [ -f "$d/$1" ] && { printf '%s' "$d/$1"; return 0; }; done; return 1; }
@@ -55,11 +56,12 @@ steps:
       [ "$gd" != "$cd_" ] && [ "$(git rev-parse --show-toplevel 2>/dev/null)" = "$(pwd -P)" ] || unlinked
       HEAD_SHA="$(git rev-parse --verify HEAD)"
       # Tracked files only: an untracked file the agent leaves is recorded by the gate, not a failure.
-      STATUS="$(git status --porcelain --untracked-files=no)"
+      STATUS="$(git -c core.fsmonitor=false status --porcelain --untracked-files=no)"
       DIRTY=false; [ -z "$STATUS" ] || DIRTY=true
       LOCAL="$(git symbolic-ref -q --short HEAD)" || LOCAL=""
       # The remote branch before the agent runs: one fetch, then ls-remote (exit 2 = no such branch), then the tracking ref.
       # Prompts are off and hooks are not run; no output is kept, so no URL or user-info reaches the record.
+      # SETUP_BRANCH, UP and BRANCH must be derived exactly as in the push_recovery_result gate (rule 5).
       SETUP_BRANCH="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r 'if type == "object" then (.branch_name // "") | tostring else "" end' 2>/dev/null)" || SETUP_BRANCH=""
       UP="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)" || UP=""
       BRANCH="${SETUP_BRANCH:-${UP#origin/}}"
@@ -82,6 +84,7 @@ steps:
             elif (.paths | length) >= 200 or (.bytes + ($p | utf8bytelength) + 1) > 16384 then .truncated = true
             else .paths += [$p] | .bytes += ($p | utf8bytelength) + 1 end)')"
       # SHA-256 of the origin fetch and push URLs; only hashes are recorded, never URLs.
+      # url_hash must stay byte-identical to the copy in the push_recovery_result gate (rule 9b).
       url_hash() { local u; u="$(git remote get-url "$@" origin 2>/dev/null)" || u=""; printf '%s' "$u" | sha256sum | cut -d' ' -f1; }
       jq -nc --arg path "$(pwd -P)" --arg head "$HEAD_SHA" --arg status "$STATUS" --arg dirty "$DIRTY" --arg local "$LOCAL" \
         --arg rb "$RB" --arg rbs "$RBS" --argjson ut "$UNTRACKED" \
@@ -197,10 +200,14 @@ steps:
     type: "bash"
     command: |
       set -euo pipefail
-      export GIT_PAGER=cat PAGER=cat LESS=FRX
+      # Replace refs and grafts are ignored, so they cannot make a rewritten remote commit look like an ancestor (rule 10b).
+      # The graft-file advice is turned off so git does not print a deprecation hint on every command.
+      export GIT_PAGER=cat PAGER=cat LESS=FRX GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null
+      export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=advice.graftFileDeprecated GIT_CONFIG_VALUE_0=false
       # Gate: trusts nothing the agent says it did. Values come only from RECIPE_VAR_* via jq.
       # SAFE is the redacted agent record; once set, fail() prints it on stderr after the reason line.
       SAFE=""
+      # redact must match the jq clean() patterns in SAFE below.
       redact() { sed -E -e 's#([A-Za-z][A-Za-z0-9+.-]*://)[^@/[:space:]]+@#\1***@#g' -e 's#(gh[pousr]_|github_pat_)[A-Za-z0-9_]+#***#g' -e 's#([Bb]earer)[[:space:]]+[^[:space:]]+#\1 ***#g' -e 's#x-access-token:[^@[:space:]]+#x-access-token:***#g'; }
       fail() {
         printf 'push-failure-recovery: %s: %s\n' "$1" "$(printf '%s' "$2" | tr '\n\r' '  ' | redact | head -c 1000)" >&2
@@ -222,6 +229,7 @@ steps:
         || fail invalid-agent-output "$STEP: the recovery agent's output is not the documented JSON object"
       CAUSE="$(printf '%s' "$AGENT" | jq -r '.cause')"; AGENT_BRANCH="$(printf '%s' "$AGENT" | jq -r '.branch')"
       # Redact first, then cut, so a cut cannot split a credential out of its pattern. Compact (-c): one line.
+      # clean() must match the sed patterns in redact() above.
       SAFE="$(printf '%s' "$AGENT" | jq -c '
         def clean: tostring
           | gsub("\\{(?=\\{)"; "{ ") | gsub("\\}(?=\\})"; "} ")
@@ -249,6 +257,7 @@ steps:
       emit() { jq -nc --arg pushed "$1" --arg sha "$2" --arg branch "$3" --arg reason "$4" --arg rb "$RB" --arg rbs "$RBS" --argjson nu "$NEW_UNTRACKED" --argjson recovery "$SAFE" \
         '{pushed: $pushed, sha: $sha, branch: $branch, reason: $reason, recovery_attempted: "true", remote_before: $rb, remote_before_source: $rbs, new_untracked: $nu, recovery: $recovery}'; }
       # Rule 3: helpers from the bundle, never from the task worktree (a branch under test must not replace the check).
+      # TOOL_DIRS and find_tool must match the copy in the push_recovery_snapshot step.
       TOOL_DIRS=(); [ -z "${WORKFLOW_RUNTIME_ARTIFACT_HELPER:-}" ] || TOOL_DIRS+=("${WORKFLOW_RUNTIME_ARTIFACT_HELPER%/*}")
       for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -z "$c" ] || TOOL_DIRS+=("$c/amplifier-bundle/tools"); done
       find_tool() { local d; for d in "${TOOL_DIRS[@]}"; do [ -f "$d/$1" ] && { printf '%s' "$d/$1"; return 0; }; done; return 1; }
@@ -262,7 +271,7 @@ steps:
         fail not-linked-worktree "$STEP: no linked task worktree from worktree_setup.worktree_path; nothing can be verified; the gate requires a git repo, so either \`git init\` or rerun from a checkout"
       fi
       [ "$(snap linked)" = true ] && [ "$(snap path)" = "$(pwd -P)" ] || fail worktree-changed "$STEP: the worktree is not the one in the snapshot"
-      # Rule 5: the gate works out the branch itself.
+      # Rule 5: the gate works out the branch itself, exactly as the push_recovery_snapshot step does.
       SETUP_BRANCH="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r 'if type == "object" then (.branch_name // "") | tostring else "" end' 2>/dev/null)" || SETUP_BRANCH=""
       UP="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)" || UP=""
       UP_BRANCH="${UP#origin/}"; BRANCH="${SETUP_BRANCH:-$UP_BRANCH}"
@@ -289,19 +298,31 @@ steps:
       [ "$LOCAL" = "$BRANCH" ] || [ "$UP" = "origin/$BRANCH" ] || fail branch-mismatch "$STEP: local branch '$LOCAL' neither is nor tracks '$BRANCH'"
       # Rule 9: nothing tracked changed since the snapshot, and the step's commit happened.
       [ "$HEAD_SHA" = "$(snap head)" ] || fail worktree-changed "$STEP: HEAD moved while the agent ran"
-      [ "$(git status --porcelain --untracked-files=no)" = "$(snap status)" ] || fail worktree-changed "$STEP: git status changed while the agent ran"
-      { [ "$(snap tracked_dirty)" = false ] && [ -z "$(git status --porcelain --untracked-files=no)" ]; } || fail uncommitted-changes "$STEP: tracked changes were not committed"
+      STATUS_NOW="$(git -c core.fsmonitor=false status --porcelain --untracked-files=no)" || fail push-unverified "$STEP: git status failed"
+      [ "$STATUS_NOW" = "$(snap status)" ] || fail worktree-changed "$STEP: git status changed while the agent ran"
+      { [ "$(snap tracked_dirty)" = false ] && [ -z "$STATUS_NOW" ]; } || fail uncommitted-changes "$STEP: tracked changes were not committed"
       # Untracked paths that appeared while the agent ran: recorded for information only, never a failure.
+      # Capped as the snapshot caps them (200 paths, 16 KiB), so commit_result stays small in the environment.
       NEW_UNTRACKED="$(LC_ALL=C comm -13 <(printf '%s' "$SNAP" | jq -r '.untracked[]' | LC_ALL=C sort) <(git ls-files --others --exclude-standard | LC_ALL=C sort) \
-        | jq -R -s -c 'split("\n") | map(select(length > 0)) | .[0:200]')" || fail push-unverified "$STEP: cannot list untracked paths"
+        | jq -R -s -c '
+          split("\n") | map(select(length > 0))
+          | reduce .[] as $p ({paths: [], bytes: 0, truncated: false};
+              if .truncated then .
+              elif (.paths | length) >= 200 or (.bytes + ($p | utf8bytelength) + 1) > 16384 then .truncated = true
+              else .paths += [$p] | .bytes += ($p | utf8bytelength) + 1 end)
+          | .paths')" || fail push-unverified "$STEP: cannot list untracked paths"
       # Rule 9b: origin is the remote the snapshot recorded, so every remote check below reads the real one.
+      # url_hash must stay byte-identical to the copy in the push_recovery_snapshot step.
       url_hash() { local u; u="$(git remote get-url "$@" origin 2>/dev/null)" || u=""; printf '%s' "$u" | sha256sum | cut -d' ' -f1; }
       { [ "$(url_hash)" = "$(snap origin_url_sha256)" ] && [ "$(url_hash --push)" = "$(snap origin_pushurl_sha256)" ]; } \
         || fail push-unverified "$STEP: the origin URL changed while the agent ran; the remote cannot be verified"
       # Rule 10: ancestry, as the #978 refusal.
       if [ -n "$UP" ]; then
-        GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -c core.hooksPath=/dev/null fetch --quiet origin >/dev/null 2>&1 || fail push-unverified "$STEP: git fetch origin failed"
-        BEHIND="$(git rev-list --count 'HEAD..@{u}' 2>/dev/null)" || fail push-unverified "$STEP: cannot compare HEAD with '$UP'"
+        # git's own error is kept in the message; fail() flattens, redacts and cuts it.
+        FOUT="$(GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -c core.hooksPath=/dev/null fetch --quiet origin 2>&1)" || fail push-unverified "$STEP: git fetch origin failed: $FOUT"
+        # stdout (the count) and stderr (git's error) are kept apart, so a warning cannot corrupt the count.
+        RL_ERR="$(mktemp)"; trap 'rm -f -- "$RL_ERR"' EXIT
+        BEHIND="$(git rev-list --count 'HEAD..@{u}' 2>"$RL_ERR")" || fail push-unverified "$STEP: cannot compare HEAD with '$UP': $(cat -- "$RL_ERR")"
         [ "$BEHIND" = 0 ] || fail diverged-upstream "$STEP: HEAD is $BEHIND commit(s) behind '$UP' (#978)"
       fi
       # Rule 10b: fast-forward only. The remote branch's commit before the agent ran must be an ancestor of HEAD.
@@ -320,13 +341,9 @@ steps:
         ENVIRONMENT) REASON=recovered-environment ;;
         NONE) REASON=already-at-head ;;
       esac
-      if [ -n "$VERIFY" ]; then
-        VOUT="$(bash "$VERIFY" origin "$BRANCH" "$HEAD_SHA" 2>&1)" || fail push-unverified "$STEP ($CAUSE): origin/$BRANCH is not HEAD $HEAD_SHA: $VOUT"
-      else
-        REMOTE_OUT="$(GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git ls-remote origin -- "refs/heads/$BRANCH" 2>&1)" || fail push-unverified "$STEP ($CAUSE): git ls-remote origin failed: $REMOTE_OUT"
-        REMOTE_SHA="$(printf '%s\n' "$REMOTE_OUT" | awk 'NR == 1 { print $1 }')"
-        [ "$REMOTE_SHA" = "$HEAD_SHA" ] || fail push-unverified "$STEP ($CAUSE): origin/$BRANCH is '${REMOTE_SHA:-missing}', not HEAD $HEAD_SHA"
-      fi
+      # Rule 3 requires the bundle helper; there is no inline second copy of this check.
+      [ -n "$VERIFY" ] || fail push-unverified "$STEP ($CAUSE): verify_pushed_ref.sh not found in the bundle"
+      VOUT="$(bash "$VERIFY" origin "$BRANCH" "$HEAD_SHA" 2>&1)" || fail push-unverified "$STEP ($CAUSE): origin/$BRANCH is not HEAD $HEAD_SHA: $VOUT"
       printf 'push-failure-recovery: %s: %s verified at %s\n' "$REASON" "$BRANCH" "$HEAD_SHA" >&2
       emit true "$HEAD_SHA" "$BRANCH" "$REASON"
     output: "push_recovery_result"
