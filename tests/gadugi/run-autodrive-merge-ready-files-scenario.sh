@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
-# Self-asserting gadugi-test scenario body for issue #1517: the auto-drive merge
-# round reads the merge-ready skill's files instead of invoking a skill that
-# refuses agents (`disable-model-invocation: true`), and a missing gadugi-test
-# stops auto-drive by name before the build (PR #1520 review), but only where
-# criterion 1 needs it: qa-team's repo-type table requires gadugi in a Node
-# repository, and a Rust CLI repository runs `cargo test` without it.
+# Self-checking scenario for issue #1517: the auto-drive merge round reads the
+# merge-ready skill's files instead of invoking a skill that refuses agents
+# (`disable-model-invocation: true`). Step-00 of the merge round resolves those
+# files with or without gadugi-test on PATH, in a Node and in a Rust CLI
+# repository. A missing tool never stops auto-drive here; recovering from a
+# missing tool is left to the QA agent (PR #1520 review).
 #
 # Runs, as black boxes:
 #   - the SHIPPED amplifier-bundle/tools/autodrive_merge_ready_files.sh against
 #     installs laid out in a temporary directory;
-#   - the SHIPPED bash of merge round step-00-merge-ready-files and of
-#     auto-drive-to-merge's autodrive-prerequisites, read from the recipes with
-#     the extractor beside this file, with and without gadugi-test on PATH,
-#     in a Node and a Rust CLI repository.
+#   - the SHIPPED bash of merge round step-00-merge-ready-files, read from the
+#     recipe with the extractor beside this file, with and without gadugi-test
+#     on PATH, in a Node and a Rust CLI repository.
 #
-# Launched by the gadugi `execute` action with no arguments; prints one PASS or
-# FAIL line per case and ALL_CASES_PASSED when every case holds.
+# CI runs this script directly. The gadugi `execute` action in
+# tests/gadugi/scenarios/issue-1517-merge-ready-files.yaml launches it with no
+# arguments. Prints one PASS or FAIL line per case and ALL_CASES_PASSED when
+# every case holds.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -82,17 +83,8 @@ else
   fl merge_ready_missing_install_named "rc=$RC out=$OUT err=$(tr '\n' ' ' < "$WORK/err3")"
 fi
 
-# 4. The merge round reads the files; it never invokes the skill.
-ROUND="$ROUND_RECIPE"
-if ! grep -qE 'Skill\(skill="?merge-ready' "$ROUND" && grep -qF '{{merge_ready_files.skill_md}}' "$ROUND" \
-   && grep -qF '{{merge_ready_files.template}}' "$ROUND"; then
-  pass merge_round_reads_skill_files "the merge round reads SKILL.md and the template; it has no Skill(merge-ready) call"
-else
-  fl merge_round_reads_skill_files "autodrive-merge-round.yaml invokes merge-ready or does not cite its files"
-fi
-
-# 5. The real step-00 body: JSON with gadugi-test on PATH; without it, a named
-#    stop in a Node repository and JSON in a Rust CLI repository.
+# 4. The real step-00 body prints the merge-ready file paths as JSON with
+#    gadugi-test on PATH, and without it in a Node and a Rust CLI repository.
 # The step bodies are read with recipe-step-command.sh, which the Rust suite
 # compares with serde_yaml for every step a harness reads (HARNESS_STEPS).
 RECIPE="$ROUND_RECIPE"
@@ -123,7 +115,7 @@ fi
 # Prerequisite recovery is agentic and is validated separately with controlled
 # Rust records. This harness never starts an agent or a hosting write.
 if [ "$fail" -eq 0 ]; then
-  echo "merge-ready read from its files; gadugi-test checked before the build where criterion 1 needs it"
+  echo "merge-ready read from its files; step-00 resolves them with or without gadugi-test"
   echo "ALL_CASES_PASSED"
   exit 0
 fi
