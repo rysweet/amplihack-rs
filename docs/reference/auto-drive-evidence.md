@@ -72,7 +72,7 @@ API client, gate executable, or serialized command protocol.
 
 | Record | Required information |
 | --- | --- |
-| Invocation | Schema version, fresh run identity, captured action, strictly parsed `no_merge` and dry-run restrictions, trusted bundle/policy provenance. Only the runner grants authorization. |
+| Invocation | Schema version, fresh run identity, optional typed mode selection, captured entrypoint and dry-run restrictions, build-only `no_merge` and trusted bundle provenance. Only the runner captures authority; durable base policy resolves the drive action. |
 | PR identity | Platform and host, target and source repository identities, PR number and URL, branches, verified head SHA, relevant base revision and merge base, linked worktree and observed platform state. |
 | Criterion evidence | Run and round identity, criterion identity, verification status, concrete observations, evidence references, PR/head/base binding, policy provenance, blockers, and any permitted non-applicability explanation. |
 | Failed attempt/recovery | Operation attempted, redacted cause and result, alternative chosen, observations recovered, completeness limits, and remaining blockers. |
