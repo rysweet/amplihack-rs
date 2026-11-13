@@ -293,3 +293,176 @@ fn an_archive_missing_required_hooks_fails_before_locking_or_profile_changes() {
         "missing archive companions cannot be taken from PATH or a checkout"
     );
 }
+
+/// Restores the thread-local synchronization seam even when an assertion fails.
+struct BoundaryHook;
+impl BoundaryHook {
+    fn new(hook: impl FnMut(InstallBoundary) + 'static) -> Self {
+        INSTALL_BOUNDARY.set(Some(Box::new(hook)));
+        Self
+    }
+}
+impl Drop for BoundaryHook {
+    fn drop(&mut self) {
+        INSTALL_BOUNDARY.set(None);
+    }
+}
+
+#[test]
+fn implicit_install_preserves_newer_publication_between_authorization_and_lock() {
+    use std::{cell::RefCell, rc::Rc};
+    let native = native_release().join("release");
+    let _downloads = Downloads::unavailable();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
+    let home = temp.path().join("home");
+    fs::create_dir(&home).unwrap();
+    let mut env = isolate(&home);
+    env.set("RELEASE_FIXTURE_VERSION", crate::VERSION);
+    let original = installed_binaries(&home, crate::VERSION, &native);
+    let _origin = release_layout::TestEligibility::executable(original.join("bin/amplihack"));
+    version_stamp::write_installed_version(crate::VERSION).unwrap();
+    let source = versioned_tree(&temp.path().join("source"), crate::VERSION);
+    let newer = super::issue_1955_support::newer_than_binary();
+    let newer_source = versioned_tree(&temp.path().join("newer-source"), &newer);
+    fs::write(
+        newer_source.join("amplifier-bundle/newer-sentinel"),
+        b"newer framework",
+    )
+    .unwrap();
+    env.set("AMPLIHACK_HOME", &source);
+    let expected = Rc::new(RefCell::new(None));
+    let published = expected.clone();
+    let captured_home = home.clone();
+    let _hook = BoundaryHook::new(move |boundary| {
+        if boundary != InstallBoundary::BeforeLock {
+            return;
+        }
+        // The older installer is paused before taking the lock. Complete a
+        // newer explicit installation, then resume it against the new stamp.
+        unsafe {
+            std::env::set_var("RELEASE_FIXTURE_VERSION", &newer);
+        }
+        let _downloads = Downloads::release(&newer, &native, true);
+        explicit(&newer_source).unwrap();
+        unsafe {
+            std::env::set_var("RELEASE_FIXTURE_VERSION", crate::VERSION);
+        }
+        *published.borrow_mut() = Some(snapshot(&captured_home));
+    });
+
+    ensure_framework_installed_with(&mut Vec::new()).unwrap();
+
+    assert_unchanged(
+        &home,
+        expected.borrow().as_ref().expect("newer install completed"),
+    );
+    assert_eq!(
+        fs::read(home.join(".amplihack/amplifier-bundle/newer-sentinel")).unwrap(),
+        b"newer framework"
+    );
+    assert_eq!(
+        version_stamp::read_installed_version().unwrap(),
+        Some(super::issue_1955_support::newer_than_binary())
+    );
+}
+
+#[test]
+fn implicit_install_rechecks_origin_after_staging_and_discards_the_unpublished_release() {
+    use std::{cell::RefCell, rc::Rc};
+    let native = native_release().join("release");
+    let _downloads = Downloads::unavailable();
+    for revoke in ["completion-marker", "permissions"] {
+        let temp = crate::test_support::tempdir_outside_framework_roots();
+        let home = temp.path().join("home");
+        fs::create_dir(&home).unwrap();
+        let mut env = isolate(&home);
+        env.set("RELEASE_FIXTURE_VERSION", crate::VERSION);
+        let original = installed_binaries(&home, crate::VERSION, &native);
+        // Revoke the running origin independently of the selected executables.
+        let running = home.join(".amplihack/releases/running");
+        fs::create_dir_all(running.join("bin")).unwrap();
+        fs::copy(&native, running.join("bin/amplihack")).unwrap();
+        fs::write(running.join(".complete"), b"").unwrap();
+        let _origin = release_layout::TestEligibility::executable(running.join("bin/amplihack"));
+        version_stamp::write_installed_version(crate::VERSION).unwrap();
+        drop(crate::install_lock::acquire().unwrap());
+        // These legacy leftovers and profiles must survive a staging refusal too.
+        fs::create_dir_all(home.join(".amplihack/amplifier-bundle.staging")).unwrap();
+        fs::write(
+            home.join(".amplihack/amplifier-bundle.staging/sentinel"),
+            b"keep",
+        )
+        .unwrap();
+        fs::write(home.join(".profile"), b"original shell profile").unwrap();
+        let source = versioned_tree(&temp.path().join("source"), crate::VERSION);
+        let resolved = binary::ResolvedBinaries::resolve(crate::VERSION).unwrap();
+        let expected = Rc::new(RefCell::new(None));
+        let captured = expected.clone();
+        let captured_home = home.clone();
+        let _hook = BoundaryHook::new(move |boundary| {
+            if boundary != InstallBoundary::BeforePublication {
+                return;
+            }
+            if revoke == "completion-marker" {
+                fs::remove_file(running.join(".complete")).unwrap();
+            } else {
+                fs::set_permissions(
+                    running.join("bin/amplihack"),
+                    fs::Permissions::from_mode(0o777),
+                )
+                .unwrap();
+            }
+            let mut expected = snapshot(&captured_home);
+            let releases = captured_home.join(".amplihack/releases");
+            let staging: Vec<_> = fs::read_dir(&releases)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .filter(|p| *p != original && *p != running)
+                .collect();
+            assert_eq!(staging.len(), 1, "revocation occurs after staging");
+            expected
+                .retain(|p, _| !p.starts_with(staging[0].strip_prefix(&captured_home).unwrap()));
+            *captured.borrow_mut() = Some(expected);
+        });
+
+        let result = local_install_resolved(&source, None, false, InstallMode::Implicit, &resolved);
+
+        assert!(
+            result.is_err(),
+            "{revoke}: lost origin authorization must refuse publication"
+        );
+        assert_unchanged(
+            &home,
+            expected
+                .borrow()
+                .as_ref()
+                .expect("staging reached publication boundary"),
+        );
+    }
+}
+
+#[test]
+fn implicit_install_with_newer_stamp_skips_before_source_acquisition_or_locking() {
+    let _downloads = Downloads::unavailable();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
+    let home = temp.path().join("home");
+    fs::create_dir(&home).unwrap();
+    let _env = isolate(&home);
+    let _origin = release_layout::TestEligibility::installed();
+    version_stamp::write_installed_version(&super::issue_1955_support::newer_than_binary())
+        .unwrap();
+    let fetcher = FakeFetcher::new(|_| panic!("an older installer must not fetch sources"));
+    let before = snapshot(&home);
+    run_install_with_fetcher(
+        None,
+        false,
+        true,
+        false,
+        InstallMode::Implicit,
+        &framework_source::BinaryIdentity::current(),
+        &fetcher,
+    )
+    .unwrap();
+    assert_eq!(fetcher.call_count(), 0);
+    assert_unchanged(&home, &before);
+}

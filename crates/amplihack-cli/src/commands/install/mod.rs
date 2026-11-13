@@ -35,7 +35,7 @@ pub(crate) mod version_stamp;
 #[path = "tests/codex_alias_fixture.rs"]
 mod codex_alias_fixture;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub(crate) use binary::resolve_running_binary_source;
 use binary::{deploy_binaries_into, stable_hooks_binary};
@@ -67,11 +67,10 @@ pub(in crate::commands) fn essential_files_for_test(
 ) -> &'static [&'static str] {
     types::essential_files(layout)
 }
-use verification::verify_install_completeness;
-
 use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
+use verification::verify_install_completeness;
 
 /// Who asked for an install (issue #1526).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,7 +160,9 @@ fn run_install_with_fetcher(
     binary: &framework_source::BinaryIdentity,
     fetcher: &dyn tag_fetch::TagFetcher,
 ) -> Result<()> {
-    require_implicit_install_origin(mode)?;
+    if !implicit_install_authorized(mode)? {
+        return Ok(());
+    }
     let local = local
         .map(|local_path| -> Result<PathBuf> {
             // Validate and canonicalize the --local path
@@ -417,10 +418,12 @@ pub(crate) fn may_act_implicitly() -> bool {
 /// and the opt-out apply independently of the install stamp; an unreadable
 /// stamp also refuses publication. Used by launch, profile seeding and the rotator.
 pub(crate) fn may_publish_implicitly() -> bool {
-    may_act_implicitly() && matches!(newer_install_stamp(), Ok(None))
+    implicit_install_authorized(InstallMode::Implicit).unwrap_or(false)
 }
 
-fn require_implicit_install_origin(mode: InstallMode) -> Result<()> {
+/// A newer installed framework is a successful skip; opt-out, ineligible
+/// origin and unreadable installed state refuse before any acquisition/write.
+fn implicit_install_authorized(mode: InstallMode) -> Result<bool> {
     if mode == InstallMode::Implicit {
         // Reported separately from [`may_act_implicitly`]: the two causes need
         // different remedies, so the caller is told which one refused.
@@ -432,8 +435,12 @@ fn require_implicit_install_origin(mode: InstallMode) -> Result<()> {
                 "executable location prevents automatic installation; run `amplihack install` explicitly from a valid release source"
             );
         }
+        if let Some(installed) = newer_install_stamp()? {
+            crate::self_heal::warn_implicit_downgrade_once(&mut std::io::stderr(), &installed);
+            return Ok(false);
+        }
     }
-    Ok(())
+    Ok(true)
 }
 
 pub(crate) fn ensure_framework_installed() -> Result<()> {
@@ -484,6 +491,11 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
     if framework_restage_needed(staging_exists, &missing) {
         println!("🔧 Bootstrapping amplihack framework assets...");
         repair_framework_assets()?;
+        // Repair can successfully skip after a newer installer wins the lock.
+        // Its caller must also stop before topping up commands or settings.
+        if !may_publish_implicitly() {
+            return Ok(());
+        }
     }
 
     // Issue #1344: `~/.claude/commands/amplihack/` lives outside `claude_dir`,
@@ -610,7 +622,9 @@ fn local_install_scoped(
     reconcile_codex: bool,
     mode: InstallMode,
 ) -> Result<()> {
-    require_implicit_install_origin(mode)?;
+    if !implicit_install_authorized(mode)? {
+        return Ok(());
+    }
     let version = match framework_source::read_source_version(repo_root) {
         framework_source::SourceVersion::Known(version) => version.to_string(),
         framework_source::SourceVersion::Unknown => crate::VERSION.to_owned(),
@@ -627,13 +641,21 @@ fn local_install_resolved(
     binaries: &binary::ResolvedBinaries,
 ) -> Result<()> {
     let selected_version = binaries.version.as_str();
-    require_implicit_install_origin(mode)?;
+    if !implicit_install_authorized(mode)? {
+        return Ok(());
+    }
     // Issue #1954 D6: every install holds the install lock for its whole
     // run, so an explicit install, the post-update install and a self-heal
     // never stage or switch at the same time. Re-entrant on this thread, so
     // the self-heal that calls this while holding it does not deadlock.
+    #[cfg(test)]
+    if mode == InstallMode::Implicit {
+        install_boundary(InstallBoundary::BeforeLock);
+    }
     let _install_lock = crate::install_lock::acquire()?;
-    require_implicit_install_origin(mode)?;
+    if !implicit_install_authorized(mode)? {
+        return Ok(());
+    }
     binaries.validate()?;
     let claude_dir = staging_claude_dir()?;
     let timestamp = unix_timestamp();
@@ -685,7 +707,6 @@ fn local_install_resolved(
         println!("  ✅ Deployed {}", p.display());
     }
 
-    ensure_dirs(&claude_dir)?;
     let pre_dirs = all_rel_dirs(&claude_dir)?;
 
     let (source_root, layout) = find_source_root(repo_root)?;
@@ -704,6 +725,15 @@ fn local_install_resolved(
 
     println!();
     println!("🔀 Switching to the new release:");
+    #[cfg(test)]
+    if mode == InstallMode::Implicit {
+        install_boundary(InstallBoundary::BeforePublication);
+    }
+    binaries.validate()?;
+    if !implicit_install_authorized(mode)? {
+        return Ok(());
+    }
+    retire_bundle_leftovers(&claude_dir)?;
     let switched = binary::commit_release(release)?;
     for switch in &switched.switched {
         println!(
@@ -717,6 +747,7 @@ fn local_install_resolved(
     binary::print_path_conflict_advisory();
 
     println!();
+    ensure_dirs(&claude_dir)?;
     println!("📁 Copying essential directories:");
     println!(
         "   Source layout: {} (from {})",
@@ -1114,10 +1145,9 @@ fn local_install_resolved(
     // `binaries:` line is the kept binaries' version only: binaries this run
     // replaced (often `amplihack` itself) are at `selected_version`, so readers
     // must not attach it to any one path (see `format_downgrade_warning`).
-    if kept_binaries.is_empty() {
-        version_stamp::write_installed_version(selected_version)
-    } else if stamp.as_deref() == Some(selected_version) {
-        // Kept binaries already at this version: nothing to replace, no warning.
+    if kept_binaries.is_empty() || stamp.as_deref() == Some(selected_version) {
+        // No kept binaries need a separate version record, or they already
+        // match the selected version.
         version_stamp::write_installed_version(selected_version)
     } else {
         let kept: Vec<String> = kept_binaries
@@ -1189,4 +1219,29 @@ fn local_install_resolved(
 
 pub(crate) fn with_codex_binary<T>(binary: &Path, action: impl FnOnce() -> T) -> T {
     codex_plugin::with_binary(binary, action)
+}
+
+// Deterministic test synchronization at the two authorization boundaries.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InstallBoundary {
+    BeforeLock,
+    BeforePublication,
+}
+
+#[cfg(test)]
+type InstallBoundaryHook = Box<dyn FnMut(InstallBoundary)>;
+
+#[cfg(test)]
+thread_local! {
+    static INSTALL_BOUNDARY: std::cell::RefCell<Option<InstallBoundaryHook>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn install_boundary(boundary: InstallBoundary) {
+    INSTALL_BOUNDARY.with_borrow_mut(|hook| {
+        if let Some(hook) = hook {
+            hook(boundary);
+        }
+    });
 }

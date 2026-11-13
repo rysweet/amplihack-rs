@@ -97,7 +97,10 @@ pub(super) struct Env {
     pub(super) rs: RotateState,
     pub(super) l: u64,
     pub(super) t: u64,
+    #[cfg(target_os = "linux")]
     pub(super) proc: FakeProcScope,
+    #[cfg(not(target_os = "linux"))]
+    _proc: FakeProcScope,
 }
 
 pub(super) fn env() -> Env {
@@ -158,7 +161,10 @@ pub(super) fn env() -> Env {
         rs,
         l,
         t,
+        #[cfg(target_os = "linux")]
         proc,
+        #[cfg(not(target_os = "linux"))]
+        _proc: proc,
     }
 }
 

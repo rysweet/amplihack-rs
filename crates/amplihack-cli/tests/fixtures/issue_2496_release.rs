@@ -9,7 +9,21 @@ fn main() {
             .to_owned()
     });
     if args == ["--version"] {
-        println!("amplihack {version}");
+        let executable = env::current_exe().unwrap();
+        let identity = executable.file_stem().unwrap().to_str().unwrap();
+        if env::var("RELEASE_FIXTURE_BAD_BINARY").as_deref() == Ok(identity) {
+            match env::var("RELEASE_FIXTURE_BAD_PROBE").as_deref() {
+                Ok("exit") => process::exit(23),
+                Ok("malformed") => { println!("unparseable"); return; }
+                Ok("identity") => { println!("other-tool {version}"); return; }
+                Ok("version") => { println!("{identity} 0.0.0"); return; }
+                Ok("staged") if executable.parent().unwrap().file_name().unwrap() == "bin" => {
+                    process::exit(24);
+                }
+                _ => {}
+            }
+        }
+        println!("{identity} {version}");
         return;
     }
     assert_eq!(args, ["install", "--force-refresh"]);

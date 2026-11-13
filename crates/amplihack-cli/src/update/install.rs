@@ -65,8 +65,7 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
 
     let new_amplihack = find_binary(temp_dir.path(), binary_filename("amplihack"))?;
     let new_hooks = find_binary(temp_dir.path(), binary_filename("amplihack-hooks"))?;
-    validate_release_executable(&new_amplihack)?;
-    validate_release_executable(&new_hooks)?;
+    validate_release_pair(release, &new_amplihack, &new_hooks)?;
 
     // Issue #1954 D6: the binaries change only while this process holds the
     // install lock, so no install or self-heal stages at the same time. The
@@ -129,21 +128,24 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
     let new_amplihack_size = fs::metadata(&new_amplihack)
         .with_context(|| format!("stat {}", new_amplihack.display()))?
         .len();
-    let existing_hooks_size = fs::metadata(&hooks_dest).map(|m| m.len()).unwrap_or(0);
-    let existing_amplihack_size = fs::metadata(&amplihack_dest).map(|m| m.len()).unwrap_or(0);
-    // Worst case: both destinations keep their current contents while the
-    // `.tmp` files are written, so we need headroom for every new_* byte
-    // plus a safety margin. `saturating_sub` keeps us honest if a future
-    // build shrinks the binaries below the existing sizes.
-    let required_free = new_hooks_size.saturating_sub(existing_hooks_size)
-        + new_amplihack_size.saturating_sub(existing_amplihack_size)
-        + 8 * 1024 * 1024;
+    // Both validated copies coexist with the installed pair until activation;
+    // existing executable sizes cannot be subtracted from the required space.
+    let required_free = new_hooks_size + new_amplihack_size + 8 * 1024 * 1024;
     check_free_space(install_dir, required_free)?;
 
-    install_binary_atomic(&new_hooks, &hooks_dest)?;
-    install_binary_atomic(&new_amplihack, &amplihack_dest)?;
+    // Validate the actual copies that will be renamed into place. Both probes
+    // must pass before either installed executable changes.
+    let staged = tempfile::tempdir_in(install_dir)?;
+    let staged_hooks = staged.path().join(binary_filename("amplihack-hooks"));
+    let staged_amplihack = staged.path().join(binary_filename("amplihack"));
+    install_binary_atomic(&new_hooks, &staged_hooks)?;
+    install_binary_atomic(&new_amplihack, &staged_amplihack)?;
+    validate_release_pair(release, &staged_amplihack, &staged_hooks)?;
+    fs::rename(&staged_hooks, &hooks_dest).context("activating validated hooks executable")?;
+    fs::rename(&staged_amplihack, &amplihack_dest)
+        .context("activating validated amplihack executable")?;
 
-    report_installed_versions(release, &amplihack_dest, &hooks_dest);
+    report_installed_versions(release);
     invalidate_update_cache();
 
     Ok(amplihack_dest)
@@ -166,8 +168,7 @@ fn install_into_release(
     hooks_link: &Path,
 ) -> Result<()> {
     use crate::commands::install::release_layout::{self, ReleaseTxn};
-    validate_release_executable(new_amplihack)?;
-    validate_release_executable(new_hooks)?;
+    validate_release_pair(release, new_amplihack, new_hooks)?;
     let amplihack_dir = home.join(".amplihack");
     let releases = release_layout::releases_dir(&amplihack_dir);
     let full_size = fs::metadata(new_amplihack)
@@ -191,7 +192,7 @@ fn install_into_release(
     install_binary_atomic(new_amplihack, &staged_amplihack)?;
 
     // Checked before the switch (S24), on the copies the links will name.
-    report_installed_versions(release, &staged_amplihack, &staged_hooks);
+    validate_release_pair(release, &staged_amplihack, &staged_hooks)?;
 
     txn.plan_link(hooks_link, &staged_hooks)?;
     txn.plan_link(amplihack_link, &staged_amplihack)?;
@@ -205,6 +206,7 @@ fn install_into_release(
             link.display()
         );
     }
+    report_installed_versions(release);
     for switch in &report.switched {
         println!(
             "Switched {} -> {}",
@@ -215,48 +217,23 @@ fn install_into_release(
     Ok(())
 }
 
-/// Execs both new binaries with `--version` and reports the outcome.
-///
-/// Catches the "release asset was built from an un-bumped Cargo.toml"
-/// failure mode where the update claims success but the new binary still
-/// self-reports the old version — which then retriggers the update prompt
-/// forever. A mismatch warns rather than fails, as it always has: the user
-/// can re-run or ignore. The hooks binary is checked too, because a version
-/// skew between amplihack and amplihack-hooks can silently break hooks.
-fn report_installed_versions(release: &UpdateRelease, amplihack: &Path, hooks: &Path) {
-    let amplihack_ok = verify_installed_version(amplihack, &release.version);
-    let hooks_ok = verify_installed_version(hooks, &release.version);
-
-    match (&amplihack_ok, &hooks_ok) {
-        (Ok(()), Ok(())) => {
-            println!(
-                "Updated amplihack: {} -> {}",
-                CURRENT_VERSION, release.version
-            );
-            println!("Restart amplihack to use the new version.");
-        }
-        _ => {
-            if let Err(err) = &amplihack_ok {
-                eprintln!(
-                    "⚠️  amplihack was written to {} but reports an unexpected version: {err}",
-                    amplihack.display()
-                );
-            }
-            if let Err(err) = &hooks_ok {
-                eprintln!(
-                    "⚠️  amplihack-hooks was written to {} but reports an unexpected version: {err}",
-                    hooks.display()
-                );
-            }
-            eprintln!(
-                "   Expected v{} in both binaries. If the next launch still offers an update, the release asset may have been built without a version bump.",
-                release.version
-            );
-            eprintln!(
-                "   To stop the update loop, set AMPLIHACK_NO_UPDATE_CHECK=1 and report the mismatch."
-            );
-        }
+/// Required validation is separate from success reporting: neither executable
+/// may be published until both identities and release versions have passed.
+fn validate_release_pair(release: &UpdateRelease, amplihack: &Path, hooks: &Path) -> Result<()> {
+    for (path, identity) in [(amplihack, "amplihack"), (hooks, "amplihack-hooks")] {
+        validate_release_executable(path)?;
+        verify_installed_version(path, identity, &release.version)
+            .with_context(|| format!("invalid release executable {}", path.display()))?;
     }
+    Ok(())
+}
+
+fn report_installed_versions(release: &UpdateRelease) {
+    println!(
+        "Updated amplihack: {} -> {}",
+        CURRENT_VERSION, release.version
+    );
+    println!("Restart amplihack to use the new version.");
 }
 
 /// Invalidates the startup update cache whatever the outcome — its entry
@@ -388,11 +365,14 @@ fn current_process_install_target_decision(
     Ok(decision)
 }
 
-/// Invoke `<binary> --version` and confirm the output contains `expected`.
-///
-/// Match an entire version token in `clap`'s `"<name> <version>"` output.
+/// Require exactly the selected product identity and release version in
+/// `<binary> --version` output.
 /// Collect output on process exit, without a polling loop or timed probes.
-pub(crate) fn verify_installed_version(binary: &Path, expected: &str) -> Result<()> {
+pub(crate) fn verify_installed_version(
+    binary: &Path,
+    identity: &str,
+    expected: &str,
+) -> Result<()> {
     let output = Command::new(binary)
         .arg("--version")
         .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
@@ -410,13 +390,12 @@ pub(crate) fn verify_installed_version(binary: &Path, expected: &str) -> Result<
             output.status
         );
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    if !stdout
-        .split_whitespace()
-        .any(|part| part.trim_start_matches('v') == expected)
-    {
+    let stdout = std::str::from_utf8(&output.stdout)
+        .context("release executable returned non-UTF-8 version output")?;
+    let fields: Vec<_> = stdout.split_whitespace().collect();
+    if fields.len() != 2 || fields[0] != identity || fields[1] != expected {
         bail!(
-            "expected `{expected}` in --version output, got: {}",
+            "expected `{identity} {expected}` in --version output, got: {}",
             stdout.trim()
         );
     }

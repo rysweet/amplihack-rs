@@ -1,14 +1,12 @@
 //! First-run bootstrap for framework assets and host CLIs.
 
 use crate::binary_finder::{BinaryFinder, BinaryInfo};
-use crate::claude_plugin;
 use crate::commands::install;
-use crate::copilot_setup;
-use crate::freshness;
 use crate::tool_update_check::{get_latest_version, sanitize_version};
 use crate::util::{
     format_output_diagnostics, is_noninteractive, run_output_with_timeout, run_with_timeout,
 };
+use crate::{claude_plugin, copilot_setup, freshness};
 use amplihack_utils::claude_native::{
     CLAUDE_NPM_PACKAGE, claude_platform_packages, detect_musl, is_materialized,
 };
@@ -528,7 +526,7 @@ fn latest_published_version(
     package: Option<&'static str>,
     target: Option<&LaunchTarget>,
 ) -> Option<String> {
-    if is_noninteractive() {
+    if is_noninteractive() || !install::may_publish_implicitly() {
         return None;
     }
     let package = package?;

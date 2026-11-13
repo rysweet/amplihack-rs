@@ -807,7 +807,10 @@ mod issue_2496 {
             || {
                 let tools = tempfile::tempdir().unwrap();
                 let native = acquisition_native(tools.path());
-                for provider in ["claude", "copilot", "codex"] {
+                for (provider, suppress) in ["claude", "copilot", "codex"]
+                    .into_iter()
+                    .flat_map(|provider| [false, true].map(|suppress| (provider, suppress)))
+                {
                     let fixture = Fixture::new();
                     fixture.acquisition_tools(&native);
                     let bin = fixture.host.home.join(".npm-global/bin");
@@ -832,16 +835,26 @@ mod issue_2496 {
                     let cache = fixture.host.home.join(".npm/_cacache");
                     fs::create_dir_all(&cache).unwrap();
                     fs::write(cache.join("sentinel"), b"preserve npm cache").unwrap();
+                    let eligible = fixture.release.join("bin/eligible-amplihack");
+                    let mut command = if suppress {
+                        fs::hard_link(amplihack_bin(), &eligible).unwrap();
+                        let mut command = fixture.startup_from(&eligible, provider);
+                        command.env("AMPLIHACK_SKIP_AUTO_INSTALL", "1");
+                        command
+                    } else {
+                        fixture.startup(provider)
+                    };
                     let before = snapshot(&fixture.host.home);
-                    let mut command = fixture.startup(provider);
                     let _terminal = terminal_stdin(&mut command);
                     let output = command.output().unwrap();
                     assert!(output.status.success(), "{provider}: {}", text(&output));
                     assert!(String::from_utf8_lossy(&output.stdout).contains("CLIENT_LAUNCHED"));
-                    assert_origin_refusal(&output);
+                    if !suppress {
+                        assert_origin_refusal(&output);
+                    }
                     assert!(
-                        fixture.host.path("registry-query").exists(),
-                        "upgrade decision was not exercised: {}",
+                        !fixture.host.path("registry-query").exists(),
+                        "refused startup queried npm: {}",
                         text(&output)
                     );
                     assert!(

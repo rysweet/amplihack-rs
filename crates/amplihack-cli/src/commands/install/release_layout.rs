@@ -42,9 +42,6 @@ pub const INSTALLED_BY: &str = ".installed-by";
 /// Temporary name the provenance record is written under, then renamed.
 const INSTALLED_BY_TMP: &str = ".installed-by.tmp";
 /// The largest provenance record the reader accepts (S-V6).
-// Production code never reads the record (it is not a trust input); only
-// tests read it back.
-#[cfg_attr(not(test), allow(dead_code))]
 const INSTALLED_BY_MAX_BYTES: u64 = 4 * 1024;
 
 /// The longest accepted version string (S6).
@@ -285,8 +282,12 @@ pub(crate) fn assess_implicit_install_origin(
 /// control that can only refuse further.
 pub(crate) fn executable_allows_implicit_install() -> bool {
     #[cfg(test)]
-    if let Some(eligible) = TEST_ELIGIBILITY.with(std::cell::Cell::get) {
-        return eligible;
+    if let Some(eligible) = TEST_ELIGIBILITY.with_borrow(Clone::clone) {
+        return match eligible {
+            TestOrigin::Installed => true,
+            TestOrigin::Executable(path) => super::paths::home_dir()
+                .is_ok_and(|home| assess_implicit_install_origin(&home, &path).is_ok()),
+        };
     }
     let Ok(home) = super::paths::home_dir() else {
         report_origin_refusal(&OriginRefusal::pathless(refusal::HOME_UNRESOLVED));
@@ -303,23 +304,34 @@ pub(crate) fn executable_allows_implicit_install() -> bool {
 // their running harness. Process-level origin regressions use current_exe().
 #[cfg(test)]
 thread_local! {
-    static TEST_ELIGIBILITY: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    static TEST_ELIGIBILITY: std::cell::RefCell<Option<TestOrigin>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
-pub(crate) struct TestEligibility(Option<bool>);
+#[derive(Clone)]
+enum TestOrigin {
+    Installed,
+    Executable(PathBuf),
+}
+
+#[cfg(test)]
+pub(crate) struct TestEligibility(Option<TestOrigin>);
 
 #[cfg(test)]
 impl TestEligibility {
     pub(crate) fn installed() -> Self {
-        Self(TEST_ELIGIBILITY.replace(Some(true)))
+        Self(TEST_ELIGIBILITY.replace(Some(TestOrigin::Installed)))
+    }
+
+    pub(crate) fn executable(path: PathBuf) -> Self {
+        Self(TEST_ELIGIBILITY.replace(Some(TestOrigin::Executable(path))))
     }
 }
 
 #[cfg(test)]
 impl Drop for TestEligibility {
     fn drop(&mut self) {
-        TEST_ELIGIBILITY.set(self.0);
+        TEST_ELIGIBILITY.replace(self.0.take());
     }
 }
 
@@ -834,9 +846,6 @@ fn write_new_file_0644(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// at most 4 KiB of UTF-8 with a non-empty `version` and a numeric `pid`.
 /// The first occurrence of each key wins; unknown keys are ignored. Never
 /// panics. Not a trust input: see [`InstalledBy`].
-// Production code never reads the record (it is not a trust input); only
-// tests read it back.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn read_installed_by(release_root: &Path) -> Option<InstalledBy> {
     use std::io::Read;
     let path = release_root.join(INSTALLED_BY);
@@ -877,9 +886,6 @@ pub fn read_installed_by(release_root: &Path) -> Option<InstalledBy> {
     })
 }
 
-// Production code never reads the record (it is not a trust input); only
-// tests read it back.
-#[cfg_attr(not(test), allow(dead_code))]
 #[cfg(unix)]
 fn open_no_follow(path: &Path) -> io::Result<fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
@@ -889,9 +895,6 @@ fn open_no_follow(path: &Path) -> io::Result<fs::File> {
         .open(path)
 }
 
-// Production code never reads the record (it is not a trust input); only
-// tests read it back.
-#[cfg_attr(not(test), allow(dead_code))]
 #[cfg(not(unix))]
 fn open_no_follow(path: &Path) -> io::Result<fs::File> {
     if fs::symlink_metadata(path)?.file_type().is_symlink() {
@@ -1414,8 +1417,10 @@ pub fn keep_set(releases: &Path, links: &[PathBuf], previous: &[PathBuf]) -> Vec
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InUse {
     /// The scan completed: each used candidate with the pids using it.
+    #[cfg(any(target_os = "linux", test))]
     Known(BTreeMap<PathBuf, Vec<u32>>),
     /// A same-user process could not be inspected; nothing may be removed.
+    #[cfg(any(target_os = "linux", test))]
     Unknown,
     /// No process scan on this platform; nothing may be removed.
     #[cfg_attr(target_os = "linux", allow(dead_code))]
@@ -1470,6 +1475,7 @@ pub fn in_use_paths(candidates: &[PathBuf]) -> InUse {
 /// started (at boot with lingering on) would be kept for good.
 ///
 /// When the start time cannot be read, the result is [`InUse::Unknown`].
+#[cfg(target_os = "linux")]
 pub fn scan_pids(candidates: &[PathBuf], pids: &[u32]) -> InUse {
     #[cfg(target_os = "linux")]
     {
@@ -1915,33 +1921,42 @@ pub fn cleanup_unused_with(
         return Ok(report);
     }
 
-    let used = match scan(&candidates) {
-        InUse::Known(map) => map,
-        InUse::Unknown => {
-            report.unknown = true;
-            return Ok(report);
+    #[cfg(any(target_os = "linux", test))]
+    {
+        let used = match scan(&candidates) {
+            InUse::Known(map) => map,
+            InUse::Unknown => {
+                report.unknown = true;
+                return Ok(report);
+            }
+            InUse::Unsupported => {
+                report.unsupported = true;
+                return Ok(report);
+            }
+        };
+        for candidate in candidates {
+            if let Some(pids) = used.get(&candidate) {
+                report.kept_in_use.push((candidate, pids.clone()));
+                continue;
+            }
+            // Checked again right before deletion (S13).
+            let is_dir = candidate.parent() == Some(releases.as_path());
+            if !is_removable_candidate(&candidate, is_dir) {
+                continue;
+            }
+            match remove_tree(&candidate) {
+                Ok(()) => report.removed.push(candidate),
+                Err(e) => report.failed.push((candidate, format!("{e:#}"))),
+            }
         }
-        InUse::Unsupported => {
-            report.unsupported = true;
-            return Ok(report);
-        }
-    };
-    for candidate in candidates {
-        if let Some(pids) = used.get(&candidate) {
-            report.kept_in_use.push((candidate, pids.clone()));
-            continue;
-        }
-        // Checked again right before deletion (S13).
-        let is_dir = candidate.parent() == Some(releases.as_path());
-        if !is_removable_candidate(&candidate, is_dir) {
-            continue;
-        }
-        match remove_tree(&candidate) {
-            Ok(()) => report.removed.push(candidate),
-            Err(e) => report.failed.push((candidate, format!("{e:#}"))),
-        }
+        Ok(report)
     }
-    Ok(report)
+    #[cfg(not(any(target_os = "linux", test)))]
+    {
+        let InUse::Unsupported = scan(&candidates);
+        report.unsupported = true;
+        Ok(report)
+    }
 }
 
 /// A direct child that is a real directory (or, in `.retired/`, a real file)

@@ -213,3 +213,50 @@ fn explicit_update_refuses_non_executable_companions_before_allocating_a_release
         );
     }
 }
+
+#[test]
+fn explicit_update_rejects_each_failed_probe_without_changing_published_state() {
+    use crate::commands::install::tests::issue_2496_self_heal_origin::{
+        assert_unchanged, snapshot,
+    };
+    let native = crate::test_support::release_fixture::native_release().join("release");
+    for name in ["amplihack", "amplihack-hooks"] {
+        for failure in [
+            "image",
+            "exit",
+            "malformed",
+            "identity",
+            "version",
+            "staged",
+        ] {
+            let fixture = Fixture::new(&native);
+            if failure == "image" {
+                fs::write(fixture.archive.join(name), b"invalid executable image").unwrap();
+            }
+            for path in [
+                ".amplihack/amplifier-bundle/asset",
+                "profiles/account/settings.json",
+                ".profile",
+            ] {
+                let path = fixture.home.join(path);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(path, b"preserve published contents").unwrap();
+            }
+            let before = snapshot(&fixture.home);
+            let result = crate::test_support::with_env(
+                &[
+                    ("HOME", Some(fixture.home.as_os_str())),
+                    (
+                        "RELEASE_FIXTURE_VERSION",
+                        Some(fixture.release.version.as_ref()),
+                    ),
+                    ("RELEASE_FIXTURE_BAD_BINARY", Some(name.as_ref())),
+                    ("RELEASE_FIXTURE_BAD_PROBE", Some(failure.as_ref())),
+                ],
+                || fixture.publish(),
+            );
+            assert!(result.is_err(), "{name}: {failure} must prevent activation");
+            assert_unchanged(&fixture.home, &before);
+        }
+    }
+}

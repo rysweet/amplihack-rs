@@ -92,8 +92,10 @@ For an eligible executable without the opt-out:
 3. Source selection prefers compatible local sources with the binary's
    version. Otherwise, an eligible release build fetches its release tag,
    never `main`. See [Framework source selection](../reference/framework-source-selection.md).
-4. The installer validates and stages a new release before publishing links,
-   then writes the version stamp after a successful install.
+4. After staging, the installer rechecks suppression, executable origin and
+   the installed-version policy immediately before publishing links or framework
+   assets. Revocation discards the unpublished release; a newer installed
+   version skips the older install without rewriting assets or stamps.
 
 Launch bootstrap applies the same origin restriction before filling gaps,
 including missing commands, hooks and provider assets. Profile and rotator
@@ -104,12 +106,13 @@ Host-client discovery may resolve an already usable Claude, Copilot, Codex or
 Amplifier without installation authority. If a client is missing, or an owned
 npm client needs an automatic upgrade, the shared acquisition helper checks
 the opt-out and executable origin before creating installation directories,
-cleaning npm caches or invoking npm/uv. This includes Codex resolution before
+cleaning npm caches or invoking npm/uv. Registry upgrade queries and advisory
+npm update notices also require implicit publication eligibility before running:
+even `npm show` can write logs and notifier state beneath HOME. This includes Codex resolution before
 framework self-heal and RustyClawd's fallback to Claude acquisition.
 
 A refused missing-client acquisition fails startup with an executable-origin
-diagnostic. A refused upgrade reports the refusal, rechecks the unchanged
-client and continues when it remains usable. Read-only resolution itself
+diagnostic. A suppressed upgrade query leaves the unchanged usable client available. Read-only resolution itself
 does not require origin eligibility.
 
 Automatic startup updates check eligibility before acquiring a release,

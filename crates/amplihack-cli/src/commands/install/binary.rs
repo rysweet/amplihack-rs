@@ -201,7 +201,7 @@ impl ResolvedBinaries {
                 &crate::path_conflicts::binary_filename(name),
             )?;
             crate::update::validate_release_executable(&path)?;
-            crate::update::verify_installed_version(&path, &version)?;
+            crate::update::verify_installed_version(&path, name, &version)?;
             paths.push((name, path));
         }
         // The resolver is shipped by some releases. If present, it must come
@@ -246,7 +246,7 @@ impl ResolvedBinaries {
             }
             crate::update::validate_release_executable(&path)?;
             if name != RESOLVER_BIN {
-                crate::update::verify_installed_version(&path, version)?;
+                crate::update::verify_installed_version(&path, name, version)?;
             }
             paths.push((name, path));
         }
@@ -289,6 +289,7 @@ pub(super) fn commit_release(txn: ReleaseTxn) -> Result<release_layout::SwitchRe
             link.display()
         );
     }
+    persist_shell_path();
     Ok(report)
 }
 
@@ -299,12 +300,19 @@ pub(super) fn deploy_binaries(
     mode: InstallMode,
     stamp: Option<&str>,
 ) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
-    super::require_implicit_install_origin(mode)?;
+    if !super::implicit_install_authorized(mode)? {
+        return Ok((Vec::new(), Vec::new()));
+    }
     let binaries = ResolvedBinaries::resolve(crate::VERSION)?;
-    super::require_implicit_install_origin(mode)?;
+    if !super::implicit_install_authorized(mode)? {
+        return Ok((Vec::new(), Vec::new()));
+    }
     binaries.validate()?;
     let mut txn = ReleaseTxn::allocate(&home_dir()?.join(".amplihack"), &binaries.version)?;
     let deployed = deploy_binaries_into(&mut txn, mode, stamp, &binaries)?;
+    if !super::implicit_install_authorized(mode)? {
+        return Ok((Vec::new(), Vec::new()));
+    }
     commit_release(txn)?;
     print_path_conflict_advisory();
     Ok(deployed)
@@ -358,11 +366,11 @@ pub(super) fn deploy_binaries_into(
     stamp: Option<&str>,
     binaries: &ResolvedBinaries,
 ) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
-    super::require_implicit_install_origin(mode)?;
+    if !super::implicit_install_authorized(mode)? {
+        return Ok((Vec::new(), Vec::new()));
+    }
     binaries.validate()?;
     let local_bin = super::paths::preferred_user_bin_dir()?;
-    fs::create_dir_all(&local_bin)
-        .with_context(|| format!("failed to create {}", local_bin.display()))?;
 
     let mut deployed = Vec::new();
     let mut kept = Vec::new();
@@ -379,11 +387,27 @@ pub(super) fn deploy_binaries_into(
                     source.display()
                 );
             }
+            // The copied artifact is the one publication will activate; a
+            // source changed since resolution must not bypass version checks.
+            let staged = txn
+                .bin_dir()
+                .join(crate::path_conflicts::binary_filename(name));
+            crate::update::validate_release_executable(&staged)?;
+            if *name != RESOLVER_BIN {
+                crate::update::verify_installed_version(&staged, name, &binaries.version)?;
+            }
         } else {
             kept.push(destination);
         }
     }
 
+    Ok((deployed, kept))
+}
+
+fn persist_shell_path() {
+    let Ok(local_bin) = super::paths::preferred_user_bin_dir() else {
+        return;
+    };
     // PATH advisory + auto-persist. Always ensure the managed profile block is
     // present so future shells prefer the user-level Rust binary, even when the
     // current PATH already mentions ~/.local/bin later.
@@ -398,8 +422,6 @@ pub(super) fn deploy_binaries_into(
     if let Err(e) = super::paths::ensure_local_bin_on_shell_path() {
         tracing::warn!("failed to auto-persist PATH: {e}");
     }
-
-    Ok((deployed, kept))
 }
 
 /// Prints the PATH conflict advisory for the installed `amplihack`.

@@ -42,14 +42,23 @@ installed releases tree. They publish release executables, never the running
 checkout as a substitute. Install first resolves all required executables from
 an eligible installed release matching the selected version, or from that exact
 published platform archive. The release version determines release allocation
-and the version stamp; a local framework override does not select executable
-bytes or change that version.
+and the version stamp. A known `--local` framework version selects the matching
+release; the framework directory itself cannot supply executable bytes.
 
-If the release executables cannot be obtained or validated, install exits
+If initial release executable acquisition or validation fails, install exits
 non-zero before acquiring framework sources, taking the installation lock,
 allocating a release or changing profiles. Existing release contents, the
 stamp and active links remain unchanged. Use a supported published release
 through `install` or `update`; building a checkout is not an installation source.
+
+Implicit installation checks suppression, executable origin and the installed
+framework version before acquisition, again after taking the installation lock,
+and after staging immediately before publication. A newer installation that
+completes while an older process waits is preserved, including framework assets
+and stamps. If the running release loses its completion marker or its executable becomes
+writable by group or others during staging, publication fails and the unpublished release is
+removed. Shell profiles and legacy staging leftovers are changed only after
+this final authorization check.
 
 A checkout cannot acquire publication authority through startup self-heal or
 launch bootstrap, even when its version is newer. See
@@ -113,11 +122,11 @@ amplihack install [--interactive]
 ├── 1. maybe_run_wizard()         — if --interactive, prompt for tool/scope/update prefs (skipped otherwise)
 ├── 1b. take ~/.amplihack/.install.lock and allocate a new release ~/.amplihack/releases/<release>/
 ├── 2. stage resolved binaries    — copy validated release executables into the release's bin/; no current-executable or PATH fallback
-├── 2b. analyze PATH candidates   — classify Rust binaries, stale wrappers, unknowns, and inaccessible paths
-├── 2c. neutralize stale wrappers — quarantine only shadowing, positively identified Python/uvx wrappers in safe locations
-├── 2d. persist PATH precedence   — write/update managed shell profile block so ~/.local/bin resolves first
-├── 3. refresh framework assets   — validate source, stage the bundle into the release, compare with source, set modes, validate; swap mapped dirs into ~/.amplihack/.claude and retire the old trees
-├── 3b. commit the release        — write .complete, then atomically switch each planned link (~/.local/bin binaries, ~/.amplihack/amplifier-bundle); no rollback on a partial switch; clean up unused releases
+├── 3. stage framework bundle     — validate source, copy into the unpublished release, compare, set modes and validate
+├── 3a. authorize publication     — implicit installs recheck suppression, running executable origin and installed-version policy
+├── 3b. commit the release        — write .complete, then atomically switch planned binary and bundle links; no rollback on a partial switch
+├── 3c. publish mapped assets     — persist PATH precedence, copy mapped framework trees and retire old trees
+├── 3d. repair PATH candidates    — classify and quarantine positively identified shadowing stale wrappers in safe locations
 ├── 4. verify Rust selection      — confirm selected amplihack is the Rust binary after PATH and bundle repair
 ├── 5. create_runtime_dirs()      — create runtime/ subdirs with 0o755 permissions
 ├── 6. ensure_settings_json()     — backup settings.json, register hooks, set permissions

@@ -19,6 +19,10 @@ fn main() {
         return;
     }
     if tool == "npm" && argv.get(1).map(String::as_str) == Some("show") {
+        let cache = Path::new(&env::var_os("HOME").unwrap()).join(".npm");
+        fs::create_dir_all(cache.join("_logs")).unwrap();
+        fs::write(cache.join("_logs/query.log"), b"npm registry query").unwrap();
+        fs::write(cache.join("_update-notifier-last-checked"), b"queried").unwrap();
         fs::write(env::var_os("ACQUISITION_QUERY").unwrap(), argv.join(" ")).unwrap();
         println!("999.0.0");
         return;

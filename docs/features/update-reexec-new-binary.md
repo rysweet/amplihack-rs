@@ -15,6 +15,14 @@ binary's compiled-in install code. This ensures that binary precedence repair,
 stale wrapper quarantine, asset refresh, and configuration migrations shipped
 in the new version take effect immediately.
 
+Before taking the installation lock or allocating a persistent release, update
+runs both downloaded executables with `--version`. Each must exit successfully
+and report its own product name and the exact selected release version. An
+invalid executable image, failed probe, malformed response or version mismatch
+fails the update without switching active links. The staged copies are probed
+again before either is activated, so validation applies to the artifacts that
+will run. Success messages are emitted only after publication.
+
 ## Problem
 
 Issue [#683](https://github.com/rysweet/amplihack-rs/issues/683).

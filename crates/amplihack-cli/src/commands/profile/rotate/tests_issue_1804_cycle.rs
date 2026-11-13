@@ -23,50 +23,79 @@
 //! - A move onto a credit profile writes the same `per-token` line with the
 //!   credit tier and `probe ok, no spend limit`, and runs no login check.
 
+#[cfg(target_os = "linux")]
 use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
+#[cfg(target_os = "linux")]
 use super::decide::{Probed, Reading, Win, Windows};
+#[cfg(target_os = "linux")]
 use super::identify::LiveId;
+#[cfg(target_os = "linux")]
 use super::ledger::{RotateLedger, RotateState};
+#[cfg(target_os = "linux")]
 use super::observe::{Measurement, Snap, decide_measured};
+#[cfg(target_os = "linux")]
 use super::overflow_record::refresh_capacity;
+#[cfg(target_os = "linux")]
 use super::settings;
+#[cfg(target_os = "linux")]
 use super::tests_swap::{ino_at, login, private};
+#[cfg(target_os = "linux")]
 use crate::commands::profile::ProfileError;
+#[cfg(target_os = "linux")]
 use crate::commands::profile::auto_switch::kit::{Liveness, now};
+#[cfg(target_os = "linux")]
 use crate::commands::profile::name::ProfileName;
+#[cfg(target_os = "linux")]
 use crate::commands::profile::store::ProfileStore;
+#[cfg(target_os = "linux")]
 use amplihack_utils::claude_capacity as cap;
+#[cfg(target_os = "linux")]
 use std::collections::BTreeSet;
+#[cfg(target_os = "linux")]
 use std::fs;
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+#[cfg(target_os = "linux")]
 use std::path::PathBuf;
 
+#[cfg(target_os = "linux")]
 const CREDS: &str = ".credentials.json";
+#[cfg(target_os = "linux")]
 const KEY: &str = "api-key";
+#[cfg(target_os = "linux")]
 const WORK: &str = "work";
 
+#[cfg(target_os = "linux")]
 const MOVED: &str = "moved ~/.claude onto API key profile api-key (billed per token)";
+#[cfg(target_os = "linux")]
 const REASON_HEAD: &str =
     "per-token api-key: no measured plan login below 100%, 0 not measured; earliest reset ";
+#[cfg(target_os = "linux")]
 const REASON_TAIL: &str =
     " beyond overflow_wait; marked overflow tier 10; login check passed (fake)";
+#[cfg(target_os = "linux")]
 const REFUSED: &str = "key_check_refused api-key: fake failure";
+#[cfg(target_os = "linux")]
 const ALERT: &str =
     "ALERT: API key profile api-key failed its login check (fake failure); not moving onto it";
 
+#[cfg(target_os = "linux")]
 fn n(s: &str) -> ProfileName {
     ProfileName::parse(s).unwrap()
 }
 
+#[cfg(target_os = "linux")]
 fn acct(uuid: &str, email: &str) -> String {
     serde_json::json!({"oauthAccount": {"accountUuid": uuid, "emailAddress": email}}).to_string()
 }
 
+#[cfg(target_os = "linux")]
 fn dir700(p: &std::path::Path) {
     fs::create_dir_all(p).unwrap();
     fs::set_permissions(p, fs::Permissions::from_mode(0o700)).unwrap();
 }
 
+#[cfg(target_os = "linux")]
 struct Fx {
     _tmp: tempfile::TempDir,
     home: PathBuf,
@@ -79,6 +108,7 @@ struct Fx {
     key: u64,
 }
 
+#[cfg(target_os = "linux")]
 fn fx() -> Fx {
     let tmp = tempfile::tempdir().unwrap();
     fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -133,7 +163,9 @@ fn fx() -> Fx {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Fx {
+    #[cfg(target_os = "linux")]
     fn ctx(&self, check: super::key_check::KeyCheckFn) -> Ctx {
         let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
         let mut ctx = Ctx::new(self.store.clone(), self.home.clone(), s);
@@ -143,6 +175,7 @@ impl Fx {
         ctx
     }
 
+    #[cfg(target_os = "linux")]
     fn logged(&self) -> Vec<String> {
         fs::read_to_string(&self.rs.log)
             .unwrap_or_default()
@@ -151,10 +184,12 @@ impl Fx {
             .collect()
     }
 
+    #[cfg(target_os = "linux")]
     fn home_login(&self) -> Option<u64> {
         ino_at(&self.home.join(".claude").join(CREDS))
     }
 
+    #[cfg(target_os = "linux")]
     fn key_slot(&self) -> Option<u64> {
         ino_at(&self.root.join(KEY).join(CREDS))
     }
@@ -162,6 +197,7 @@ impl Fx {
 
 /// `work` exhausted and resetting in four hours; `api-key` with its
 /// synthetic reading. The snapshot must hold the marked API-key profile.
+#[cfg(target_os = "linux")]
 fn all_plan_logins_out(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     assert_eq!(snap.live, LiveId::Known(n(WORK)));
     assert_eq!(snap.platform(), Some(&n(KEY)), "api-key is marked");
@@ -221,10 +257,12 @@ fn t3_a_passing_login_check_moves_onto_the_api_key_and_logs_why() {
 }
 
 /// `work`'s `~/.claude.json` with a key in it.
+#[cfg(target_os = "linux")]
 const HOME_WITH_KEY: &str = r#"{"oauthAccount":{"accountUuid":"u-work",
     "emailAddress":"work@example.com"},"primaryApiKey":"SENTINEL-1804-KEY"}"#;
 
 /// `work` measured well below every threshold, so the cycle stays.
+#[cfg(target_os = "linux")]
 fn plenty_of_room(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let live = Probed {
         reading: Reading::Measured {
@@ -309,6 +347,7 @@ fn a_symlinked_settings_key_still_alerts() {
 /// `work`'s probe fails and `spare`, a plan login with room, reads well. A
 /// home key does not change that: `spare` is probed through its own directory
 /// and fails only once it is live. So the swap looks useful, and is not.
+#[cfg(target_os = "linux")]
 fn live_probe_fails(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let failed = Probed {
         reading: Reading::Failed,
@@ -338,6 +377,7 @@ fn live_probe_fails(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError>
 
 /// `f` with a plan login `spare`, and a context three failed cycles in, past
 /// the hold (`fx` swapped two hours ago).
+#[cfg(target_os = "linux")]
 fn failing(f: &Fx) -> Ctx {
     let spare = f.root.join("spare");
     f.store.add(&n("spare")).unwrap();
@@ -720,10 +760,12 @@ fn a_failing_check_never_puts_a_key_value_in_the_log_or_ledger() {
 
 // --- A move onto a credit profile (D4) ------------------------------------------------
 
+#[cfg(target_os = "linux")]
 const CREDITS: &str = "team-credits";
 
 /// The fixture with `team-credits`, an OAuth credit profile, marked at
 /// tier 2 ahead of the API key.
+#[cfg(target_os = "linux")]
 fn fx_credits() -> Fx {
     let f = fx();
     f.store.add(&n(CREDITS)).unwrap();
@@ -740,6 +782,7 @@ fn fx_credits() -> Fx {
 }
 
 /// As [`all_plan_logins_out`], with `team-credits` usable.
+#[cfg(target_os = "linux")]
 fn plan_out_credits_usable(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     assert_eq!(snap.live, LiveId::Known(n(WORK)));
     let reset = Some(now() + 4 * 3600);

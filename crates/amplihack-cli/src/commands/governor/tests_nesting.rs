@@ -3,12 +3,12 @@
 //! an unrelated environment nests nothing (crusty round 1 on #1831).
 
 use super::admit::admit_with;
+#[cfg(target_os = "linux")]
 use super::liveness::start_time;
-use super::model::Slot;
-use super::model::Start;
-use super::nesting::{
-    marked_parent, nested_parent, parent_start, recipe_between, recipe_marker_for,
-};
+use super::model::{Slot, Start};
+#[cfg(target_os = "linux")]
+use super::nesting::recipe_between;
+use super::nesting::{marked_parent, nested_parent, parent_start, recipe_marker_for};
 use super::store::{Queue, State};
 use super::tests_admit::{ROOMY, ctx, load, me_slot, save};
 use super::tests_seed::Root;
@@ -63,9 +63,12 @@ fn parent_marker_nests_a_start_without_session_depth() {
 
 /// A live process that is not an ancestor of this test: a child. It is
 /// killed and reaped on drop.
+#[cfg(target_os = "linux")]
 struct Unrelated(std::process::Child);
 
+#[cfg(target_os = "linux")]
 impl Unrelated {
+    #[cfg(target_os = "linux")]
     fn spawn() -> Self {
         Self(
             std::process::Command::new("sleep")
@@ -75,6 +78,7 @@ impl Unrelated {
         )
     }
 
+    #[cfg(target_os = "linux")]
     fn slot(&self, tree: &str) -> Slot {
         let pid = self.0.id();
         Slot {
@@ -85,6 +89,7 @@ impl Unrelated {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for Unrelated {
     fn drop(&mut self) {
         let _ = self.0.kill();

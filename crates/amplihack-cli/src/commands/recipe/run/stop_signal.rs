@@ -76,11 +76,13 @@ fn orphan_cell() -> &'static OnceLock<OrphanInfo> {
 
 /// Stop the run because its parent `recipe run` exited. A stop signal that
 /// arrived first is kept: the flag is only set when it is still clear.
+#[cfg(target_os = "linux")]
 pub(crate) fn request_orphan_stop(info: OrphanInfo) {
     let _ = orphan_cell().set(info);
     request_orphan_stop_in(received());
 }
 
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn request_orphan_stop_in(flag: &AtomicUsize) -> bool {
     flag.compare_exchange(0, ORPHANED, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()
@@ -100,6 +102,7 @@ pub(crate) fn orphan_info() -> Option<OrphanInfo> {
 }
 
 /// The one stderr line for an orphan stop (D10).
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn orphan_stop_line(parent_pid: i32) -> String {
     format!("orphaned: parent recipe run {parent_pid} exited; stopping")
 }

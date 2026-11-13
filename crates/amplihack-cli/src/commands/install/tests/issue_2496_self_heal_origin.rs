@@ -42,13 +42,13 @@ pub(super) fn isolate(home: &Path) -> IsolatedHome {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum Entry {
+pub(crate) enum Entry {
     Directory(u32),
     File(u32, Vec<u8>),
     Link(PathBuf),
 }
 
-pub(super) fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, Entry> {
+pub(crate) fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, Entry> {
     use std::os::unix::fs::PermissionsExt;
     fn walk(root: &Path, dir: &Path, out: &mut std::collections::BTreeMap<PathBuf, Entry>) {
         for item in fs::read_dir(dir).unwrap() {
@@ -74,7 +74,7 @@ pub(super) fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, Entry
     out
 }
 
-pub(super) fn assert_unchanged(home: &Path, before: &std::collections::BTreeMap<PathBuf, Entry>) {
+pub(crate) fn assert_unchanged(home: &Path, before: &std::collections::BTreeMap<PathBuf, Entry>) {
     let after = snapshot(home);
     let changed: Vec<_> = before
         .keys()
