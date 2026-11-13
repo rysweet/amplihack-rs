@@ -4,6 +4,7 @@ pub(crate) mod completion;
 pub(crate) mod followups;
 pub mod helper;
 pub mod outcome;
+pub mod qa_record;
 pub mod records;
 pub(crate) mod report;
 pub mod review;

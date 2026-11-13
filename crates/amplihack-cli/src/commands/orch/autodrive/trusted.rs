@@ -19,6 +19,8 @@ pub const REQUIRED_ASSETS: &[&str] = &[
     "skills/merge-ready/SKILL.md",
     "skills/crusty-old-engineer/SKILL.md",
     "skills/merge-ready/pr-description-template.md",
+    // #2569: merge evidence step-02 and light-qa judge criterion 1 by it.
+    "skills/merge-ready/criterion-1-qa-judgement.md",
     "recipes/loop-health-evaluator.yaml",
     "recipes/autodrive-finalize.yaml",
     "skills/auto-drive-to-merge/evidence-contract.md",

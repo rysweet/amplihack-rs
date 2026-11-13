@@ -36,6 +36,7 @@ const STEPS: &[&str] = &[
     "light-worktree",
     "light-base-pin",
     "light-implement",
+    "light-qa-inputs",
     "light-qa",
     "light-precommit",
     "light-commit-push",
@@ -53,6 +54,7 @@ const BUILD_STEPS: &[&str] = &[
     "light-worktree",
     "light-base-pin",
     "light-implement",
+    "light-qa-inputs",
     "light-qa",
     "light-precommit",
     "light-commit-push",
@@ -426,18 +428,19 @@ fn check_unmerged_observes_platform_and_retains_failed_attempts() {
 }
 
 #[test]
-fn qa_preserves_selection_and_reports_unavailable_required_tools() {
+fn light_qa_judges_criterion_1_and_records_through_qa_record() {
     let s = step(&r(), "light-qa");
     assert!(is_agent(&s));
     let prompt = s["prompt"].as_str().unwrap();
     for policy in [
         "qa_command",
-        "quick_change_checks.sh",
         "recorded base",
-        "missing required tool",
-        "13 authoritative",
+        "criterion-1-qa-judgement.md",
+        "{{light_qa_inputs}}",
+        "qa-record",
+        "does not meet criterion 1",
     ] {
-        assert!(prompt.contains(policy));
+        assert!(prompt.contains(policy), "light-qa must mention `{policy}`");
     }
 }
 
@@ -569,7 +572,7 @@ fn quick_change_common_is_loaded_from_amplihack_home_only() {
         }
     }
     assert_eq!(
-        n, 3,
+        n, 4,
         "local preparation steps source trusted quick_change_common.sh"
     );
     let pre = yaml_text(&step(&r(), "light-prereqs"));
@@ -838,8 +841,7 @@ fn prereqs_check_the_follow_up_tools_and_hold_no_task_id_rule() {
     assert!(task.contains("AMPLIHACK_HOME"), "from the tool root only");
 }
 
-/// A scratch repository and the fakes, with a stub `gadugi-test` on `PATH`
-/// so `light-prereqs` can pass its last check.
+/// A scratch repository and the fakes on `PATH`.
 struct StepEnv {
     repo: LightRepo,
     fakes: Fakes,
@@ -850,11 +852,6 @@ impl StepEnv {
     fn new() -> Self {
         let repo = LightRepo::new();
         let fakes = fake_bin(repo.tmp.path());
-        crate::support::exec_stub::write_executable(
-            &fakes.bin.join("gadugi-test"),
-            "#!/usr/bin/env bash\nexit 0\n",
-            0o755,
-        );
         let tmpdir = repo.tmp.path().join("private-tmp");
         private_dir(&tmpdir);
         StepEnv {
@@ -1055,6 +1052,32 @@ fn light_prereqs_does_not_check_the_task_id() {
     let o = e.run("light-prereqs", &[("RECIPE_VAR_plan_task_id", "task 17")]);
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     assert!(!stderr(&o).contains(TASK_ID_ERROR), "{}", show(&o));
+}
+
+/// #2569: criterion 1 is judged by an agent step, so `light-prereqs` no
+/// longer looks for `gadugi-test`. In a Node repository with no
+/// `gadugi-test` on `PATH` (the host's own copy is kept out too), it passes
+/// and prints `{}`.
+#[test]
+fn light_prereqs_passes_in_node_repository_without_gadugi_test() {
+    if skip() {
+        return;
+    }
+    let e = StepEnv::new();
+    assert!(!e.fakes.bin.join("gadugi-test").exists());
+    for rel in ["Cargo.toml", "Cargo.lock", "crates/foo/Cargo.toml"] {
+        e.repo.remove(rel);
+    }
+    e.repo.write(
+        "package.json",
+        r#"{"name":"demo","version":"1.0.0","scripts":{"test":"node test.js"}}"#,
+    );
+    e.repo.commit("node project");
+    let path = format!("{}:/usr/bin:/bin", e.fakes.bin.display());
+    let o = e.run("light-prereqs", &[("PATH", path.as_str())]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert_eq!(stdout(&o).trim(), "{}", "{}", show(&o));
+    assert!(!stderr(&o).contains("gadugi"), "{}", show(&o));
 }
 
 #[test]

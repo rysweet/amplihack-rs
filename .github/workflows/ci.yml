@@ -396,7 +396,7 @@ jobs:
       - name: Recipes — criterion 6 when no review is required (issue #2219)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-2219-approval-no-review-required.sh
-      - name: Recipes — documentation-only pull requests need no gadugi scenario (issue #2219)
+      - name: Recipes — documentation-only measurement is recorded for the criterion-1 judgement (issues #2219, #2569)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-2219-docs-only-scenarios.sh
       - name: Recipes — the stop names what held the pull request (issue #2219)

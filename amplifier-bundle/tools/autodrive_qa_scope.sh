@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
-# autodrive_qa_scope.sh — which project auto-drive's QA judges, and whether
-# gadugi is required (issue #1763). autodrive_trust.sh loads this file from
-# its own physical directory and from nowhere else: never $PWD, REPO_PATH or
-# the pull request's tree. It is a gate file (GATE_FILES in merge_guard.rs),
-# since the merge gate's gadugi decision comes from here.
+# autodrive_qa_scope.sh — which project auto-drive's declared QA command
+# runs in (issue #1763). autodrive_trust.sh loads this file from its own
+# physical directory and from nowhere else: never $PWD, REPO_PATH or the pull
+# request's tree. It is a gate file (GATE_FILES in merge_guard.rs). Since
+# #2569 its answers are facts for criterion 1's judging agent, not verdicts.
 #
 # Public functions. Each reads AUTODRIVE_QA_BASE (the base branch name) and
 # AUTODRIVE_QA_HEAD (the head commit, default HEAD) from the environment:
 #   autodrive_qa_changed_paths <dir>  the changed paths, `(unknown)` or `(none)`
 #   autodrive_qa_target <dir>         `<type>\t<dir>` or `unresolved\t<list>`
 #   autodrive_qa_docs_only <dir>      `true|false|unknown` (autodrive_qa_docs.sh)
-# autodrive_trust.sh builds autodrive_repo_type and autodrive_gadugi_required
-# on these. The declared sources, .amplihack/qa.toml and the CI workflows,
+# autodrive_trust.sh builds autodrive_repo_type on these. The declared sources, .amplihack/qa.toml and the CI workflows,
 # are read by autodrive_qa_sources.sh, which only the evidence tool loads.
 # Contract: docs/reference/auto-drive-to-merge.md, "Choosing the QA command".
 #
@@ -34,7 +33,7 @@
 #   _AD_MB           the merge base, or empty when it is unknown
 #   _AD_MANIFESTS    the _autodrive_manifest_dirs lines
 #   _AD_CHOSEN       set once _autodrive_qa_choose has run for _AD_KEY
-#   _AD_KIND, _AD_DIR, _AD_CANDS, _AD_NODE  the choice
+#   _AD_KIND, _AD_DIR, _AD_CANDS  the choice
 _AD_KEY=""
 
 # _autodrive_qa_list <entry>... -> the entries joined by single spaces, each
@@ -133,12 +132,12 @@ autodrive_qa_changed_paths() {
 # autodrive_qa_docs_only lives in autodrive_qa_docs.sh beside this file, which
 # is at its brick budget. Loaded from this file's physical directory only, only
 # as a regular file and not a symlink; without it the predicate says `unknown`,
-# which keeps gadugi required — and says so, since nothing else would (#2219).
+# and says so, since nothing else would (#2219).
 _ad_docs="$(unset CDPATH; cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)" || _ad_docs=""
 _ad_docs="${_ad_docs:+${_ad_docs}/autodrive_qa_docs.sh}"
 # shellcheck source=autodrive_qa_docs.sh
 { [ -n "$_ad_docs" ] && [ -f "$_ad_docs" ] && [ ! -L "$_ad_docs" ] && . "$_ad_docs"; } \
-  || { echo "WARNING: autodrive_qa_docs.sh did not load beside autodrive_qa_scope.sh; docs_only is 'unknown', so gadugi stays required for every pull request." >&2; autodrive_qa_docs_only() { printf 'unknown\n'; }; }
+  || { echo "WARNING: autodrive_qa_docs.sh did not load beside autodrive_qa_scope.sh; docs_only is 'unknown' for every pull request." >&2; autodrive_qa_docs_only() { printf 'unknown\n'; }; }
 unset _ad_docs
 
 # _autodrive_manifest_dirs <dir> -> a `<dir><TAB><cargo|python|node>` line per
@@ -226,8 +225,7 @@ _autodrive_qa_covers() {
 # _autodrive_qa_choose <dir>: the detection choice, made once per scan. Sets
 # _AD_KIND (rust-cli, python, node, unknown or unresolved), _AD_DIR (the
 # chosen directory), _AD_CANDS (the candidate directories after collapse,
-# `!` first after a search error) and _AD_NODE (a candidate has a
-# package.json).
+# `!` first after a search error).
 #
 # Each directory with a manifest is a candidate typed Cargo, then Python, then
 # Node. A candidate is dropped when the nearest directory above it that has a
@@ -254,7 +252,6 @@ _autodrive_qa_choose_now() {
   _AD_KIND="unknown"
   _AD_DIR="."
   _AD_CANDS=()
-  _AD_NODE=""
   # One entry per directory: md holds the directory, me its ecosystems.
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -309,7 +306,6 @@ EOF
       *)
         cdir+=("${md[$i]}")
         ctyp+=("$t")
-        case " ${me[$i]} " in *" node "*) _AD_NODE="1" ;; esac
         ;;
     esac
     i=$((i + 1))
@@ -387,14 +383,4 @@ autodrive_qa_target() {
   else
     printf '%s\t%s\n' "$_AD_KIND" "$_AD_DIR"
   fi
-}
-
-# _autodrive_qa_needs_gadugi <dir>: return 0 when the merge base is unknown
-# (a preflight's is the head), when the choice is `node`, or when it is
-# unresolved and any candidate directory has a package.json.
-_autodrive_qa_needs_gadugi() {
-  _autodrive_qa_choose "${1:-.}"
-  [ -n "$_AD_MB" ] || return 0
-  [ "$_AD_KIND" = "node" ] && return 0
-  [ "$_AD_KIND" = "unresolved" ] && [ -n "$_AD_NODE" ]
 }

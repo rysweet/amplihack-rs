@@ -80,6 +80,18 @@ pub enum Operations {
         #[arg(long)]
         completion: String,
     },
+    /// Record criterion 1's judgement (stdin) in qa-evidence.json (#2569).
+    /// Exit 0 written, 2 refused (nothing written), 1 environment error.
+    QaRecord {
+        #[arg(long)]
+        inputs: PathBuf,
+        #[arg(long)]
+        repo: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        round: Option<String>,
+    },
     /// Verify the local linked worktree and head using sanitized Git arguments.
     Worktree {
         #[arg(long)]
@@ -222,6 +234,28 @@ pub fn run(op: Operations) -> Result<()> {
             let path = store.snapshot(&serde_json::to_vec(&out)?)?;
             println!("{}", serde_json::json!({"outcome":out,"snapshot":path}));
         }
+        Operations::QaRecord {
+            inputs,
+            repo,
+            out,
+            round,
+        } => {
+            use std::io::Write;
+            let stdin = qa_record_stdin().context("qa-record: read the judgement from stdin")?;
+            match super::qa_record::record(&stdin, &inputs, &repo, &out, round.as_deref())
+                .context("qa-record")?
+            {
+                super::qa_record::Recorded::Written(bytes) => {
+                    let mut stdout = std::io::stdout().lock();
+                    stdout.write_all(&bytes)?;
+                    stdout.flush()?;
+                }
+                super::qa_record::Recorded::Refused(refusal) => {
+                    eprintln!("qa-record: {refusal}");
+                    return Err(crate::command_error::exit_error(2));
+                }
+            }
+        }
         Operations::Worktree { repo, head, branch } => {
             ensure!(
                 [40, 64].contains(&head.len()) && head.bytes().all(|b| b.is_ascii_hexdigit()),
@@ -326,6 +360,16 @@ fn stdin_bytes() -> Result<Vec<u8>> {
         bytes.len() <= MAX_RECORD_BYTES,
         "evidence exceeds size limit"
     );
+    Ok(bytes)
+}
+/// Read at most one byte past the judgement limit, so an oversized judgement
+/// is refused by the record contract and never held whole.
+fn qa_record_stdin() -> Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::io::stdin()
+        .take(super::qa_record::MAX_INPUT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
     Ok(bytes)
 }
 fn local_binding(repo: &std::path::Path, b: &Binding) -> Result<()> {

@@ -2,8 +2,9 @@
 # autodrive_qa_docs.sh — is this pull request documentation and nothing else?
 # (issue #2219.) autodrive_qa_scope.sh loads this file from its own physical
 # directory and from nowhere else: never $PWD, REPO_PATH or the pull
-# request's tree. It is a gate file (GATE_FILES in merge_guard.rs), because
-# the merge gate's gadugi decision passes through it.
+# request's tree. It is a gate file (GATE_FILES in merge_guard.rs). Since
+# #2569 its answer is a fact the criterion-1 judging agent may cite, not an
+# exemption.
 #
 # It lives beside autodrive_qa_scope.sh rather than inside it because that
 # file is at its 400-line brick budget (test-issue-1516-qa-command-selection.sh,
@@ -33,8 +34,8 @@
 # extension is generic — a golden fixture, a page template, a fuzz corpus seed
 # and a dependency pin all wear it — so qualifying it everywhere exempted
 # `tests/fixtures/expected.txt`, `src/templates/welcome.txt`,
-# `fuzz/corpus/seed.txt`, `requirements-dev.txt` and `Makefile.txt` from the
-# gadugi requirement. Naming the places prose lives closes the class; the pin
+# `fuzz/corpus/seed.txt`, `requirements-dev.txt` and `Makefile.txt` as
+# documentation. Naming the places prose lives closes the class; the pin
 # disqualifiers below stay, because `docs/requirements.txt` is a Sphinx pin
 # sitting in exactly the directory this rule trusts.
 #
@@ -86,9 +87,8 @@
 # The other arms fail closed too. A diff that changed nothing changed no
 # documentation either, so it is `false`, not `true`. A list that could not be
 # read — no base given, a base that fails the branch rules, a git failure — is
-# `unknown`, and `unknown` is not `true`: autodrive_gadugi_required keeps
-# gadugi required on it. That function is the only intended caller, so the
-# merge round and the merge gate cannot disagree about the answer.
+# `unknown`, and `unknown` is not `true`. autodrive_qa_evidence.sh records the
+# answer in qa-inputs.json for the judging agent.
 #
 # The paths come from _AD_PATHS, not from the line autodrive_qa_changed_paths
 # prints: that line is rendered for people, capped at ten entries with a

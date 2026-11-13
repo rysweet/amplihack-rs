@@ -18,8 +18,9 @@
 #     has the PR branch checked out or that worktree is not at the PR head;
 #   * step-02 of both loops hands that worktree to the loop as --repo and
 #     repo_path, and pins AMPLIHACK_HOME to the launch tree when it is unset;
-#   * the qa-team step, run where the preflight says, records head_sha=B and
-#     runs the scenario runner inside the worktree;
+#   * the QA inputs step (step-02a), run where the preflight says, records
+#     head_sha=B in qa-inputs.json and runs the declared QA command inside
+#     the worktree;
 #   * nothing changes when no PR number was handed to the loop;
 #   * a relative repo_path is resolved once, from the directory the run
 #     started in, not twice (sub/sub);
@@ -93,7 +94,8 @@ MERGE_PREFLIGHT="$(body_of autodrive-merge-loop step-01-merge-loop-preflight)"
 MERGE_LOOP="$(body_of autodrive-merge-loop step-02-merge-ready-loop)"
 CRUSTY_PREFLIGHT="$(body_of autodrive-crusty-loop step-01-crusty-loop-preflight)"
 CRUSTY_LOOP="$(body_of autodrive-crusty-loop step-02-crusty-loop)"
-QA_STEP="$(body_of autodrive-merge-evidence step-02-qa-team-scenarios)"
+# #2569: step-02 is now an agent step; step-02a is the bash step that runs the QA tool.
+QA_STEP="$(body_of autodrive-merge-evidence step-02a-qa-inputs)"
 REPORT="$(body_of auto-drive-to-merge autodrive-report)"
 
 PASS_COUNT=0
@@ -291,21 +293,22 @@ for loop in merge crusty; do
   check_eq "T1-$loop-run" "$loop preflight still runs the phase" true "$(field "$OUT" should_run)"
 done
 
-echo "== T1-QA: qa-team runs in the resolved worktree and records the PR head =="
+echo "== T1-QA: the QA inputs step runs in the resolved worktree and records the PR head =="
 preflight merge
 RESOLVED="$(field "$OUT" repo)"
 if [[ -z "$RESOLVED" ]]; then
   fail T1-QA "the merge preflight emitted no repo; the evidence steps would measure the main checkout"
 else
-  rm -f "$WORK/qa.json" "$WORK/cargo.pwd"
+  rm -rf "$WORK/qa" "$WORK/cargo.pwd"; mkdir -p "$WORK/qa"
   # #1520: the step runs the launch tree's autodrive_qa_evidence.sh.
-  # #1763: step-01's merge_sync gives the base; without it gadugi stays required.
-  run_body "$QA_STEP" REPO_PATH="$RESOLVED" AMPLIHACK_HOME="$REPO_ROOT" AUTODRIVE_QA_EVIDENCE="$WORK/qa.json" \
+  # #1763: step-01's merge_sync gives the base for the changed files.
+  # #2569: the tool writes qa-inputs.json beside AUTODRIVE_QA_EVIDENCE.
+  run_body "$QA_STEP" REPO_PATH="$RESOLVED" AMPLIHACK_HOME="$REPO_ROOT" AUTODRIVE_QA_EVIDENCE="$WORK/qa/qa-evidence.json" \
     CARGO_PWD_MARKER="$WORK/cargo.pwd" AUTODRIVE_ROUND_LABEL=round-1 RECIPE_VAR_merge_sync='{"base":"main","conflict":"false"}'
-  check_eq T1-QA-sha "qa evidence head_sha is the PR head" "$SHA_B" "$(field "$OUT" head_sha)"
-  check_eq T1-QA-status "qa-team ran (stub runner passed)" PASS "$(field "$OUT" qa_status)"
-  check_eq T1-QA-pwd "the scenario runner ran inside the PR worktree" "$WT" "$(cat "$WORK/cargo.pwd" 2>/dev/null)"
-  check_eq T1-QA-file "the evidence file binds to the PR head" "$SHA_B" "$(field "$(cat "$WORK/qa.json" 2>/dev/null)" head_sha)"
+  check_eq T1-QA-rc "the QA inputs step succeeds" 0 "$RC"
+  check_eq T1-QA-sha "qa inputs head_sha is the PR head" "$SHA_B" "$(field "$OUT" head_sha)"
+  check_eq T1-QA-pwd "the declared QA command ran inside the PR worktree" "$WT" "$(cat "$WORK/cargo.pwd" 2>/dev/null)"
+  check_eq T1-QA-file "qa-inputs.json binds to the PR head" "$SHA_B" "$(field "$(cat "$WORK/qa/qa-inputs.json" 2>/dev/null)" head_sha)"
 fi
 
 echo "== T1-LOOP: step-02 hands the PR worktree to the loop =="

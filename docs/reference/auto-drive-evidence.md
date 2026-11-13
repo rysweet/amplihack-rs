@@ -60,8 +60,9 @@ accepted completion dispatch, and required follow-ups; do not claim unperformed 
 
 Non-applicability requires an explanation permitted by the authoritative
 criterion. It cannot excuse missing tooling, access, approvals, policy, or
-evidence. The documentation-only exception narrows scenario obligations in
-criterion 1; suite tests and all other criteria still apply.
+evidence. Criterion 1 is a recorded judgement, not an exemption: a
+documentation-only PR is recorded as Verified with a `not_user_facing`
+judgement that cites its files. See [Auto-drive QA](auto-drive-qa.md).
 
 ## Record contract
 

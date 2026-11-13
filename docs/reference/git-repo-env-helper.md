@@ -249,9 +249,9 @@ jq -r '.git_env_cleared, .run_env_cleared' "$AUTODRIVE_STATE_DIR/qa-evidence.jso
 # none
 ```
 
-`qa_status`, `qa_reason`, `head_sha` and every other field mean what they
-meant before; see the [evidence table](auto-drive-to-merge.md#criterion-1-qa-team-scenarios-by-repository-type)
-in the auto-drive reference.
+The tool writes these fields to `qa-inputs.json`, and `qa-record` copies them
+into `qa-evidence.json`. For `qa_status`, `qa_reason`, `head_sha` and the
+other fields, see [the evidence record](auto-drive-qa.md#the-evidence-record).
 
 ## The drift guard
 

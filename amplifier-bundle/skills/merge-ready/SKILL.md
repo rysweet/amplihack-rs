@@ -35,7 +35,7 @@ Platform detection signals:
 
 A PR/pull request is merge-ready only when **all** of the following are true:
 
-1. `qa-team` scenarios were written or updated, validated with `gadugi-test validate`, and actually run with `gadugi-test run`. Not applicable when the PR/pull request changes documentation and nothing else: there is no user-facing surface (section 3's list) for a scenario to drive. Every other criterion still applies.
+1. QA was judged and recorded as [criterion-1-qa-judgement.md](criterion-1-qa-judgement.md) describes. A PR that changes user-facing behaviour has outside-in scenarios for the affected journeys, written or extended in the PR where missing, and they were run and pass. A PR that changes nothing user-facing (documentation, configuration with no behaviour change) has a recorded reason citing its files. Only a recorded hand-off, naming its reason, owner and what they need, stops at this criterion. Every other criterion still applies.
 2. User-facing docs were updated when the change affects APIs, configuration, deployment, CLI behavior, or other external surfaces.
 3. `quality-audit` completed at least 3 SEEK -> VALIDATE -> FIX cycles, continued past 3 if critical or high findings remained, and ended on a clean final cycle.
 4. Checks/build validation for the current head revision passed according to the active platform and repository policy.
@@ -107,35 +107,39 @@ For PR threads or build validation details that are not exposed by the installed
 
 If no PR/pull request exists yet, you may still prepare evidence, but the final verdict must remain blocked until the PR/pull request exists and platform checks/build validation status is available.
 
-### 2. Satisfy the QA criterion with `qa-team`
+### 2. Judge the QA criterion
 
-First decide whether this PR/pull request changes any user-facing surface, by
-section 3's list. If it changes documentation and nothing else, it changes
-none of them, so there is no behaviour for a scenario to cover: record the
-changed files as the evidence, state that criterion 1 is not applicable, and
-go on to the next criterion. Do not write a scenario to satisfy the letter of
-the rule. This waiver is for documentation alone; a build, workflow,
-configuration or agent-instruction file is not documentation, however it is
-formatted.
+Follow [criterion-1-qa-judgement.md](criterion-1-qa-judgement.md). First
+judge whether this PR/pull request changes user-facing behaviour.
 
-Otherwise invoke `qa-team` and ensure it covers the changed behavior from an external user perspective.
+- If it does not (documentation, or configuration with no behaviour change),
+  record the reason and cite the changed files it rests on. Criterion 1 is
+  then **verified** with that evidence, not "not applicable". A build,
+  workflow, configuration or agent-instruction file that changes behaviour is
+  user-facing, however it is formatted.
+- If it does, invoke `qa-team` for the affected user journeys. Where a
+  journey has no outside-in scenario, or the scenario does not cover the
+  change, write or extend one in the PR. Run the scenarios, preferably in CI
+  or an isolated environment; when one fails, classify the cause, fix it,
+  commit and run again until it passes. Never weaken a failing scenario.
 
 Required deliverables:
 
-- scenario file path(s)
-- proof that `gadugi-test validate` succeeded
-- proof that `gadugi-test run` succeeded
-- target environment used for the run (local or deployed)
+- the judgement (`user_facing` or `not_user_facing`) and its reason
+- the cited files, for a `not_user_facing` judgement
+- scenario file path(s), each with whether it was written in this PR and its result
+- the command used to run each scenario and the target environment (CI, isolated or deployed)
+- the attempts made, with the cause and fix commit of each failure
 - evidence location or execution output summary
 
-Minimum commands:
+The repository's declared QA command (for example from `.amplihack/qa.toml`)
+is evidence for the judgement, not a verdict: a passing suite alone never
+satisfies a user-facing PR.
 
-```bash
-gadugi-test validate path/to/scenario.yaml
-gadugi-test run path/to/scenario.yaml
-```
-
-If the environment needed to run the scenario does not exist, stop and report a blocker. Do not downgrade this to "definition only".
+If a scenario cannot be run because only a person can clear the cause (an
+unreachable service, missing access, a cause outside the PR), record a
+hand-off naming the reason, the owner and what they need. A missing scenario
+is never a reason to stop: write it.
 
 ### 3. Satisfy the docs criterion
 
@@ -261,7 +265,7 @@ Every criterion in [Required outcome](#required-outcome) applies as written, exc
 
 | Criterion | What auto-drive requires |
 | --- | --- |
-| 1. QA-team scenarios | Auto-drive applies qa-team's repo-type table, the per-repository-type rule #1517 proposed, instead of requiring `gadugi-test` everywhere. `autodrive_gadugi_required` in `autodrive_trust.sh` decides, and every auto-drive step asks it. It says `gadugi-test` is required when the chosen project is `node`, when detection is `unresolved` and any candidate directory has a `package.json`, when the merge base of the PR and its base branch is unknown, and in any repository where the operator sets `AUTODRIVE_QA_SCENARIO_DIR`. A Rust CLI repository (`Cargo.toml`) runs `cargo test` and a Python repository runs `pytest`, as qa-team's Rust CLI line says, without `gadugi-test`; their evidence records `gadugi_required` `false` and `gadugi_status` `NOT_REQUIRED`. The evidence step always runs every repository suite command. Suite commands come from the first source present: `AUTODRIVE_QA_COMMAND` (with `AUTODRIVE_QA_DIR`) and `AUTODRIVE_QA_COMMANDS`, then the `.amplihack/qa.toml` committed at the merge base of the PR and its base branch (a PR that changes it is refused), then one clean test step in the CI workflows committed at that merge base, then detection from the merge base's manifests: the deepest project that contains every changed file lying inside some project. Untracked, modified and ignored files in the checkout are never read, so a manifest the PR adds, at any depth, cannot make `gadugi-test` optional. `QA_UNRESOLVED` (`qa-unresolved`: several project candidates and no way to choose) and `BLOCKED` with `qa-config-invalid` (a `.amplihack/qa.toml` that breaks a rule, one the PR itself changes, or one checked while the changed paths are unknown) need operator action, never a code fix: set `AUTODRIVE_QA_COMMAND`, or add or fix `.amplihack/qa.toml` on the base branch. Where `gadugi-test` is required, the step then runs `gadugi-test validate -d <dir>` and one `gadugi-test run --scenario "<name>"` per scenario file. The scenario directory is `$AUTODRIVE_QA_SCENARIO_DIR` if set, else the first of `tests/agentic`, `tests/gadugi/scenarios` and `scenarios` that exists. There, no scenarios, a validate failure, an unnamed scenario, or any failed scenario run makes `qa_status` something other than `PASS`. The evidence records the scenario counts, a `gadugi_scenario_results` entry of `PASS`, `FAIL` or `INVALID` for each scenario file, and the head SHA that was tested. Accepted evidence is bound to the observed PR head, base, policy and current invocation, with concrete suite and scenario results. Finalization refreshes the QA requirement from the trusted merge-base policy and current PR identity; evidence cannot waive it. When `gadugi_status` is `NO_SCENARIOS`, `VALIDATE_FAILED` or `RUN_FAILED`, whatever else failed, the round's blocker-clearing step uses `qa-team` to write or fix the scenarios, validates and runs each one, and commits them. In a Rust CLI or Python repository it adds missing coverage to `cargo test` or `pytest` instead. |
+| 1. QA judgement | An agent step judges criterion 1 by [criterion-1-qa-judgement.md](criterion-1-qa-judgement.md) and records the outcome with `orch helper autodrive qa-record`; nothing else writes `qa-evidence.json`. `autodrive_qa_evidence.sh` only measures: it runs the declared QA command from the first source present (`AUTODRIVE_QA_COMMAND`/`AUTODRIVE_QA_COMMANDS`, then `.amplihack/qa.toml` at the merge base, then one clean merge-base CI test step, then merge-base manifest detection) and writes the changed files, `docs_only`, repository type, scenario directory and existing scenarios to `qa-inputs.json`. The declared command, an unresolved scope or an invalid `qa.toml` are inputs to the judgement, not verdicts. `qa_status` is `PASS`, `FAIL` (fix, commit and record again) or `HANDOFF` (blocker `qa-handoff: <reason> (owner: <owner>, needs: <needs>)`, owned by a person). Criterion 1 is met only by `PASS` in a consistent record: cited files appear in the diff for `not_user_facing`, scenario results are listed for `user_facing`, and the record has `qa_judgement` and no `gadugi_*` fields. See [Auto-drive QA](../../../docs/reference/auto-drive-qa.md). |
 | 3. Quality-audit | The `crusty-old-engineer` loop of the same auto-drive run must have ended DONE, and its last round record, as listed in the loop's manifest `crusty-records.tsv`, must have verdict `CLEAN` or accepted `MINOR_ONLY` with all follow-up obligations satisfied, and a `reviewed_head_sha`. The crusty loop stops at its first clean round, so no minimum round count applies. Every commit from `reviewed_head_sha` to the head being merged that is not already on the base branch must be a clean base merge or change only `PR_DESCRIPTION.md`, `.github/pull_request_template.md` or files under `.autodrive/evidence/`. Any other commit, scenario files included, is reported as blocker `crusty-review-required:<sha>`, and before the next merge round the merge-ready loop runs the crusty loop again on the current head, from its own shell, at the depth phase 2's crusty loop runs at. A range that cannot be read, for example in a shallow clone, is reported as blocker `crusty-range-unreadable`; crusty is not re-run for it, and a person must fix the clone. |
 | 6. Reviews/approvals | The platform-observation agent measures `approval_status`; `autodrive_platform_facts.sh` is an optional example. GitHub's `reviewDecision` decides it when it is set: `APPROVED` is met, `CHANGES_REQUESTED` and `REVIEW_REQUIRED` are not. An empty `reviewDecision` does not mean that no review is required. GitHub publishes it only when a rule requires at least one approving review, so at a required count of `0` it stays empty even while a code-owner, last-push or required-reviewer rule keeps the merge blocked. The step therefore reads the required approval count, the highest of branch protection's `required_approving_review_count` and the `pull_request` rules in the branch's rulesets: `0` is met only when no such rule applies. A `0` beside `require_code_owner_reviews` or `require_last_push_approval` (classic protection), or beside `require_code_owner_review`, `require_last_push_approval` or a non-empty `required_reviewers` (rulesets), is an unknown count, never `0`. A token without admin rights gets 404 from the branch-protection endpoint, and a 404 is never read as zero. When the count cannot be read or is unknown, `mergeStateStatus` `CLEAN`, `HAS_HOOKS` or `UNSTABLE` is met, because GitHub would block the merge if a required review were missing; `required_approvals` is then left empty, never recorded as `0`, and `approval_source` is `merge-state`. When the count cannot be read and `mergeStateStatus` is `DIRTY` or `BEHIND`, or `BLOCKED` while a check in the rollup has not passed, the branch conflicts or a review thread, outdated or not, is unresolved, GitHub's one state cannot say whether a review is also missing: `PENDING` (`approval_source` `other-blockers`), a blocker the merge round clears by fixing the other blockers first. Anything else is `UNREADABLE`, a blocker. |
 
@@ -269,7 +273,7 @@ The merge round and finalization require concrete current evidence for every cri
 
 Private snapshots, current invocation bindings and artifact hashes detect stale or altered evidence. They are workflow safeguards, not an OS security boundary against the same credential holder. Required checks, protection and expected-head merge requests remain necessary.
 
-**Running `/merge-ready` by hand is unchanged.** Criterion 1 still needs `qa-team` scenarios validated with `gadugi-test validate` and run with `gadugi-test run`. Criterion 3 still needs a separate `quality-audit` of at least 3 SEEK -> VALIDATE -> FIX cycles ending on a clean cycle. The repo-type rule for criterion 1 and the crusty-loop substitution for criterion 3 apply only inside auto-drive.
+**Running `/merge-ready` by hand.** Criterion 1 is judged the same way, by [criterion-1-qa-judgement.md](criterion-1-qa-judgement.md), and the judgement is reported in the merge-ready report. `qa-record` is not required by hand; [Record a criterion-1 QA judgement by hand](../../../docs/howto/record-criterion-1-qa-judgement.md) shows how to keep a record file. Criterion 3 still needs a separate `quality-audit` of at least 3 SEEK -> VALIDATE -> FIX cycles ending on a clean cycle. The crusty-loop substitution for criterion 3 applies only inside auto-drive.
 
 See [Auto Drive To Merge Reference](../../../docs/reference/auto-drive-to-merge.md#how-the-merge-round-applies-merge-ready) for the evidence fields, structured outcomes and validity checks.
 
@@ -277,7 +281,7 @@ See [Auto Drive To Merge Reference](../../../docs/reference/auto-drive-to-merge.
 
 Stop and report `NOT_MERGE_READY` when any of these are true:
 
-- no runnable environment exists for the required gadugi scenario
+- criterion 1's judgement ended in a recorded hand-off (reason, owner and needs)
 - the PR/pull request or checks/build validation status cannot be accessed
 - platform access or authentication cannot prove required metadata, reviews/approvals, mergeability, policies/protection, linked work items/issues, comments/threads, or final state
 - quality-audit has not converged to a clean final cycle

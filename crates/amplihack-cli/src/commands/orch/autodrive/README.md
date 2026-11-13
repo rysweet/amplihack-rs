@@ -48,6 +48,18 @@ Agents observe and assess facts under trusted merge-ready policy.
   observes an accepted `MERGE_READY` round and evaluator `DONE`; reject
   receipts from an older invocation.
 - `followups`: validate private MINOR_ONLY issue mappings for reporting.
+- `qa_record` (`helper autodrive qa-record --inputs --repo --out [--round]`):
+  the only writer of `qa-evidence.json` for criterion 1 (#2569). It reads
+  the agent's judgement from stdin (at most 1 MiB, unknown fields refused,
+  every field required), applies the record's shape rules and type limits,
+  takes `head_sha` from trusted Git, derives `qa_reason`, copies
+  `declared_qa` and the flat legacy fields from `qa-inputs.json` without
+  `log_tail`, and writes the file atomically with mode `0600`. Exit 0 prints
+  the bytes written; 2 is a refused judgement; 1 is an environment error.
+  It judges nothing and never opens cited paths. These checks are the
+  record's type contract and replace the shell status mapping that
+  `autodrive_qa_evidence.sh` used to apply. See
+  [Auto-drive QA](../../../../../../docs/reference/auto-drive-qa.md#the-qa-record-helper).
 - `report`: replay the same complete reduction boundary as `helper reduce`,
   including the pre-action accepted snapshot, local Git/review coverage, artifact
   bytes and loop receipt. Require a matching private outcome snapshot from
