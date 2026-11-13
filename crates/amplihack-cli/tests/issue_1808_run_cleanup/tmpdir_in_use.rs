@@ -54,31 +54,44 @@ fn poke(fifo: &Path, line: &str) {
     }
 }
 
-/// Releases the stub blocked on `go.fifo`. On drop (a failed assertion
-/// before the release) it still unblocks a stub already waiting, so no
-/// process is left hanging on the FIFO.
+/// Releases the stub blocked on `go.fifo`. The test holds `go.fifo` open
+/// read-write from before the run starts, so the stub's open never blocks
+/// and a `go` written before the stub opens the FIFO stays buffered instead
+/// of being discarded when the last handle closes.
 struct Gate {
-    go: PathBuf,
+    fifo: Option<fs::File>,
     released: bool,
 }
 
 impl Gate {
-    fn release(mut self) {
-        // O_RDWR: opening never blocks, even if the stub is already gone.
-        let mut f = fs::OpenOptions::new()
+    fn open(go: &Path) -> Self {
+        let fifo = fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .open(&self.go)
+            .open(go)
             .unwrap();
-        writeln!(f, "go").unwrap();
+        Self {
+            fifo: Some(fifo),
+            released: false,
+        }
+    }
+
+    fn release(&mut self) {
+        writeln!(self.fifo.as_ref().unwrap(), "go").unwrap();
         self.released = true;
     }
 }
 
 impl Drop for Gate {
+    /// After a failed assertion before the release, still release the stub,
+    /// and keep the FIFO open for the rest of the test binary so the `go`
+    /// is not discarded before a stub that has not yet opened it reads it.
     fn drop(&mut self) {
-        if !self.released {
-            poke(&self.go, "go");
+        if let Some(fifo) = self.fifo.take()
+            && !self.released
+        {
+            let _ = writeln!(&fifo, "go");
+            std::mem::forget(fifo);
         }
     }
 }
@@ -141,10 +154,7 @@ fn child_holding_run_tmpdir_keeps_folder_until_it_exits_then_sweep_removes_it() 
         .write(true)
         .open(&out_fifo)
         .unwrap();
-    let gate = Gate {
-        go: go_fifo.clone(),
-        released: false,
-    };
+    let mut gate = Gate::open(&go_fifo);
 
     let runner = format!(
         "#!/bin/sh\n\

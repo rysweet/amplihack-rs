@@ -474,6 +474,21 @@ fn runtime_guard_with_no_users_removes_and_missing_counts_as_removed() {
     );
 }
 
+/// Without a readable process table (as on macOS) the guard cannot prove a
+/// folder is in use, so it removes it as before. `in_use` alone would say
+/// "in use" here and keep every runtime folder for good.
+#[test]
+fn runtime_guard_without_a_process_table_removes_as_before() {
+    let procs = fake_proc_scope();
+    std::fs::remove_dir_all(procs.path()).unwrap();
+    let (_tmp, rt) = runtime_with_tmp();
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).remove(),
+        RuntimeRemoval::Removed
+    );
+    assert!(!rt.exists());
+}
+
 fn scoped_workspace(base: &Path) -> RunWorkspace {
     let work = WorkRoot {
         path: base.join("work"),

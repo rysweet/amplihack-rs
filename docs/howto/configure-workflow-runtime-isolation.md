@@ -128,19 +128,21 @@ The runner refuses to launch the step, and the run fails, in two cases. If it
 cannot create the folder, it prints:
 
 ```text
-amplihack: cannot create this run's TMPDIR ~/.amplihack/work/r/<id>/tmp: <reason>; refusing to launch the step
+amplihack: cannot create this run's TMPDIR "~/.amplihack/work/r/<id>/tmp": <reason>; refusing to launch the step
 ```
 
 If `tmp` or `artifacts` already exists as a symbolic link or as a file, the
 runner does not follow or replace it, and prints:
 
 ```text
-amplihack: this run's TMPDIR ~/.amplihack/work/r/<id>/tmp is a symbolic link or not a directory; refusing to launch the step
+amplihack: this run's TMPDIR "~/.amplihack/work/r/<id>/tmp" is a symbolic link or not a directory; refusing to launch the step
 ```
 
 The same message names `artifacts` when that is the folder at fault. The real
-messages show the full absolute path where these examples show
-`~/.amplihack/work/r/<id>`.
+messages show the full absolute path of the runtime root, in double quotes,
+where these examples show `~/.amplihack/work/r/<id>`. The runtime root is
+`<work root>/runs/<run id>/runtime`, or `<work root>/r/<short id>` when that
+path would be too long.
 
 A dry run (`recipe run --dry-run`) has no run folder. It creates a private
 `amplihack-dry-*` folder inside the inherited `TMPDIR`, so that `TMPDIR` must

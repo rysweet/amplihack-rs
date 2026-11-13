@@ -443,10 +443,12 @@ These are the same checks the sweep and `amplihack cleanup` make for
 change its permissions or move it, and prints one line on stderr:
 
 ```text
-amplihack: runtime folder ~/.amplihack/work/r/<id> is still in use by a running process; leaving it in place — the end-of-run cleanup sweep will remove it later
+amplihack: runtime folder "~/.amplihack/work/r/<id>" is still in use by a running process; leaving it in place — the end-of-run cleanup sweep will remove it later
 ```
 
-The real message shows the full absolute path of the folder. The run's exit
+The real message shows the full absolute path of the runtime folder in double
+quotes: `<work root>/runs/<run id>/runtime`, or `<work root>/r/<short id>`
+when that path would be too long. The run's exit
 status does not change. The message names only the folder, never the process
 or its environment.
 
@@ -1198,7 +1200,7 @@ sweep removes the folder once that process exits. To find processes that
 hold it, set `DIR` to the path from the message:
 
 ```bash
-DIR="$HOME/.amplihack/work/r/<id>"   # the path from the message
+DIR="$HOME/.amplihack/work/r/<id>"   # the quoted path from the message
 for p in /proc/[0-9]*; do
   { readlink "$p/cwd"; ls -l "$p/fd";
     tr '\0' '\n' < "$p/environ" | grep -E '^(TMPDIR|TMP|TEMP)='; } 2>/dev/null \
