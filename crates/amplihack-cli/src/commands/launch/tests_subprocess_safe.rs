@@ -277,6 +277,7 @@ fn copilot_subprocess_safe_injects_allow_all_tools_and_paths() {
         true, // subprocess_safe
         None,
         Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+        None,
     )
     .unwrap();
     let args = arg_strings(&cmd);
@@ -309,6 +310,7 @@ fn copilot_subprocess_safe_skips_injection_when_user_supplied_allow_all_tools() 
         true, // subprocess_safe
         None,
         Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+        None,
     )
     .unwrap();
     let args = arg_strings(&cmd);
@@ -341,6 +343,7 @@ fn copilot_subprocess_safe_skips_injection_when_user_supplied_allow_all_paths() 
         true,
         None,
         Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+        None,
     )
     .unwrap();
     let args = arg_strings(&cmd);
@@ -375,6 +378,7 @@ fn copilot_subprocess_safe_skips_both_granular_when_allow_all_present() {
         true,
         None,
         Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+        None,
     )
     .unwrap();
     let args = arg_strings(&cmd);
@@ -412,6 +416,7 @@ fn copilot_subprocess_safe_with_no_allow_all_env_skips_all_three_permission_flag
         true, // subprocess_safe
         None,
         Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+        None,
     )
     .unwrap();
     let args = arg_strings(&cmd);
@@ -459,6 +464,7 @@ fn copilot_interactive_does_not_inject_subprocess_safe_granular_flags() {
         false, // subprocess_safe = false
         None,
         Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+        None,
     )
     .unwrap();
     let args = arg_strings(&cmd);
@@ -494,6 +500,7 @@ fn non_copilot_binaries_never_get_subprocess_safe_granular_flags() {
         true, // subprocess_safe is true but this is a claude binary
         None,
         Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+        None,
     )
     .unwrap();
     let args = arg_strings(&cmd);
@@ -527,6 +534,7 @@ fn codex_does_not_get_subprocess_safe_granular_flags() {
         true,
         None,
         Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+        None,
     )
     .unwrap();
     let args = arg_strings(&cmd);
@@ -566,6 +574,7 @@ fn copilot_subprocess_safe_flags_appear_before_user_trailing_args() {
         true,
         None,
         Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+        None,
     )
     .unwrap();
     let args = arg_strings(&cmd);

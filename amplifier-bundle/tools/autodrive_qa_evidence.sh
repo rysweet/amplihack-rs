@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # autodrive_qa_evidence.sh — measure merge-ready criterion 1 for one round of
-# the auto-drive-to-merge merge loop. step-02-qa-team-scenarios of
+# the auto-drive-to-merge merge loop. step-03-qa-team-scenarios of
 # autodrive-merge-evidence.yaml runs this file (moved out of the step, PR #1520).
 #
 # Criterion 1 follows qa-team's repo-type table: one or two measurements,

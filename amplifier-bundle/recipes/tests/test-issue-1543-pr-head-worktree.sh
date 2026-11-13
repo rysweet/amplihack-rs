@@ -93,7 +93,7 @@ MERGE_PREFLIGHT="$(body_of autodrive-merge-loop step-01-merge-loop-preflight)"
 MERGE_LOOP="$(body_of autodrive-merge-loop step-02-merge-ready-loop)"
 CRUSTY_PREFLIGHT="$(body_of autodrive-crusty-loop step-01-crusty-loop-preflight)"
 CRUSTY_LOOP="$(body_of autodrive-crusty-loop step-02-crusty-loop)"
-QA_STEP="$(body_of autodrive-merge-evidence step-02-qa-team-scenarios)"
+QA_STEP="$(body_of autodrive-merge-evidence step-03-qa-team-scenarios)"
 REPORT="$(body_of auto-drive-to-merge autodrive-report)"
 
 PASS_COUNT=0

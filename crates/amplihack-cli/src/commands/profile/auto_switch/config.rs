@@ -24,7 +24,8 @@ pub const CONFIG_LOCK_WAIT: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadMode {
     /// The defaults in both cases (`auto-switch on` and `off`, which exist
-    /// to recover from a damaged file).
+    /// to recover from a damaged file), except that a corrupt or unsafe
+    /// file's `exclude` list is kept when it still parses (issue #2218).
     DefaultOnInvalid,
     /// The defaults when missing; a corrupt file is refused and left alone
     /// (threshold, exclude, overflow add and remove).
@@ -211,6 +212,12 @@ pub fn effective_from(env: EnvToggle, file: &FileState) -> Effective {
 
 /// The effective setting for this process: the environment first, then the
 /// file. An unrecognised environment value warns once per process.
+///
+/// Issue #2218: for a corrupt or unsafe file every other setting is the
+/// default, but `config.exclude` is [`excluded_profiles`], the same list the
+/// rotator, `profile usage` and `profile verify` apply, so no reader of the
+/// exclude list fails open. When even that cannot be worked out, `on` is
+/// false: nothing may be swapped in if nothing is known to be excluded.
 pub fn effective(root: &Path) -> Effective {
     let env = env_toggle(std::env::var_os(TOGGLE_ENV).as_deref());
     if env == EnvToggle::Invalid {
@@ -219,7 +226,15 @@ pub fn effective(root: &Path) -> Effective {
             eprintln!("warning: {TOGGLE_ENV} must be 1 or 0; using <root>/{FILE}");
         });
     }
-    effective_from(env, &read(root))
+    let file = read(root);
+    let mut eff = effective_from(env, &file);
+    if file == FileState::Corrupt {
+        match excluded_profiles(root) {
+            Ok(names) => eff.config.exclude = names,
+            Err(_) => eff.on = false,
+        }
+    }
+    eff
 }
 
 /// The file as it is. One not owned by the current user, or writable by
@@ -231,6 +246,92 @@ pub fn read(root: &Path) -> FileState {
         ToggleFile::Valid(t) => Config::from_toggle(t).map_or(FileState::Corrupt, FileState::Valid),
         ToggleFile::Corrupt => FileState::Corrupt,
     }
+}
+
+/// The `exclude` list as [`read_exclude`] finds it (issue #2218).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExcludeFile {
+    /// The file is missing (no exclusions), or is a private regular file
+    /// of yours that parses. `trusted` is false when [`read`] would still
+    /// call it corrupt for its other settings, such as an unknown kind.
+    Read {
+        names: Vec<ProfileName>,
+        trusted: bool,
+    },
+    /// The file exists but cannot be trusted for its list: it cannot be
+    /// read, does not parse, or is owned by another user or writable by
+    /// group or others.
+    Unreadable,
+}
+
+/// Issue #2218: the `exclude` list, or [`ExcludeFile::Unreadable`] when
+/// the list cannot be trusted. A list is only as trustworthy as whoever can
+/// write it, and a writer can remove an entry as easily as add one:
+/// rewriting `exclude=shared` to `exclude=` would get `shared` probed and
+/// refreshed, signing out the other hosts that share it. So a file owned by
+/// another user, or writable by group or others, is `Unreadable` like a
+/// symlink, a file that is too large or one that does not parse, and every
+/// profile then counts as excluded. The worst such a writer can do is stop
+/// rotation (a denial of service); it can never un-exclude a login. Only a
+/// private file of yours that is invalid for its other settings keeps its
+/// list, with `trusted: false`: [`read`] still refuses it for those.
+pub fn read_exclude(root: &Path) -> ExcludeFile {
+    use amplihack_utils::secure_files::{owned_by_euid, read_bounded_nofollow, writable_by_others};
+    let (raw, meta) = match read_bounded_nofollow(&root.join(FILE), MAX_BYTES) {
+        Ok(None) => {
+            return ExcludeFile::Read {
+                names: Vec::new(),
+                trusted: true,
+            };
+        }
+        Ok(Some(found)) => found,
+        Err(_) => return ExcludeFile::Unreadable,
+    };
+    if !owned_by_euid(&meta) || writable_by_others(&meta) {
+        return ExcludeFile::Unreadable;
+    }
+    let Ok(toggle) = shared::parse_toggle(&raw) else {
+        return ExcludeFile::Unreadable;
+    };
+    let Ok(names) = toggle
+        .exclude
+        .iter()
+        .map(|n| ProfileName::parse(n))
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        return ExcludeFile::Unreadable;
+    };
+    let trusted = Config::from_toggle(toggle).is_ok();
+    ExcludeFile::Read { names, trusted }
+}
+
+/// Issue #2218: the one rule for which profiles are excluded, followed by
+/// every reader of the list: the file's `exclude` list, or every profile in
+/// the store when the file cannot be read, does not parse or is not a
+/// private file of yours. A
+/// store that cannot be listed is an error, never an empty list, so the
+/// fallback cannot fail open.
+pub fn excluded_profiles(root: &Path) -> Result<Vec<ProfileName>, ProfileError> {
+    excluded_from(read_exclude(root), root)
+}
+
+/// [`excluded_profiles`] for a file already read with [`read_exclude`], so
+/// a caller that warns about the file applies this same rule to the same
+/// read instead of repeating it.
+pub fn excluded_from(file: ExcludeFile, root: &Path) -> Result<Vec<ProfileName>, ProfileError> {
+    match file {
+        ExcludeFile::Read { names, .. } => Ok(names),
+        ExcludeFile::Unreadable => every_profile(root),
+    }
+}
+
+/// Every profile in the store under `root`, or the listing error.
+pub fn every_profile(root: &Path) -> Result<Vec<ProfileName>, ProfileError> {
+    let names = crate::commands::profile::ProfileStore::new(root.to_path_buf()).list()?;
+    Ok(names
+        .iter()
+        .filter_map(|n| ProfileName::parse(n).ok())
+        .collect())
 }
 
 /// The settings an edit starts from: the file's, or the defaults when it
@@ -278,21 +379,23 @@ pub fn update_within(
     // `off` always write over a missing or corrupt file, so the file then
     // says what they set; `was` names that file for the change log.
     let mut was = None;
+    if let Some(refused) = unreplaceable_refusal(root) {
+        return Err(refused);
+    }
     let (before, mut c) = match mode {
         ReadMode::Editable => {
-            let c = read_editable(root)
-                .map_err(|_| fail(format!("{FILE} is unreadable or invalid; not changed")))?;
+            let c = read_editable(root).map_err(|_| corrupt_refusal(root))?;
             (Some(c.clone()), c)
         }
         ReadMode::DefaultOnInvalid => match read(root) {
             FileState::Valid(c) => (Some(c.clone()), c),
-            other => {
-                was = Some(if other == FileState::Missing {
-                    "unset"
-                } else {
-                    "corrupt"
-                });
+            FileState::Missing => {
+                was = Some("unset");
                 (None, Config::default())
+            }
+            FileState::Corrupt => {
+                was = Some("corrupt");
+                (None, recovered(root))
             }
         },
     };
@@ -321,6 +424,92 @@ pub fn update_within(
     #[cfg(not(unix))]
     let _ = was;
     Ok(c)
+}
+
+/// Issue #2218: what `on` and `off` start from over a corrupt or unsafe
+/// file: the defaults, but with the `exclude` list kept when it is a
+/// private file of yours that still parses, so recovering the file does not
+/// drop its exclusions. A file that does not parse, or that others could
+/// have edited, has no list to keep; `auto-switch on` and `off` refuse it
+/// unless `--exclude` names the list ([`exclude_recoverable`]).
+fn recovered(root: &Path) -> Config {
+    let exclude = match read_exclude(root) {
+        ExcludeFile::Read { names, .. } => names,
+        ExcludeFile::Unreadable => Vec::new(),
+    };
+    Config {
+        exclude,
+        ..Config::default()
+    }
+}
+
+/// The refusal of an edit over a `.auto-switch` whose list cannot be
+/// trusted (issue #2218): one that does not parse, or one writable by group
+/// or others. Given to `on` and `off` without `--exclude`, and to every
+/// edit that keeps the file's other keys.
+pub(crate) const EXCLUDE_UNKNOWN_REFUSAL: &str = "auto-switch config does not parse or \
+     others can write it, so its exclude list is unknown; not changed. Run `amplihack profile auto-switch on --exclude \
+     NAME,...` or `off --exclude NAME,...` naming the logins that must stay excluded \
+     (`--exclude ''` for none)";
+
+/// Why an edit that keeps the file's other keys refuses a corrupt file of
+/// yours (issue #2218): `on` and `off` are the recovery that keeps its
+/// exclude list, so the refusal names them and never carries the generic
+/// `AutoSwitchConfig` hint, which says to remove the file. A file that is
+/// not a regular file of yours never gets here: [`update_within`] refuses
+/// it first with [`unreplaceable_refusal`].
+fn corrupt_refusal(root: &Path) -> ProfileError {
+    ProfileError::AutoSwitchExcludeAtRisk(if exclude_recoverable(root) {
+        format!(
+            "{FILE} is invalid; not changed. Run `amplihack profile auto-switch on` \
+             or `off` first: they rewrite it and keep its exclude list"
+        )
+    } else {
+        EXCLUDE_UNKNOWN_REFUSAL.into()
+    })
+}
+
+/// Issue #2218: the refusal of every write over a `.auto-switch` that no
+/// command may replace: a symlink, something that is not a regular file, or
+/// a file owned by another user (for example one left by `sudo amplihack
+/// profile auto-switch ...`). While it is there [`read_exclude`] cannot
+/// trust it, so every profile counts as excluded and rotation is paused.
+/// Removing it would leave no exclusions, so the logins it was meant to
+/// exclude would be probed and refreshed; the refusal says
+/// how to make it writable instead, and its hint never says remove. `None`
+/// when the file is missing or is a regular file of yours.
+pub(crate) fn unreplaceable_refusal(root: &Path) -> Option<ProfileError> {
+    let meta = std::fs::symlink_metadata(root.join(FILE)).ok()?;
+    let fix = if meta.file_type().is_symlink() {
+        "is a symlink"
+    } else if !meta.is_file() {
+        "is not a regular file"
+    } else if !amplihack_utils::secure_files::owned_by_euid(&meta) {
+        "is owned by another user"
+    } else {
+        return None;
+    };
+    Some(ProfileError::AutoSwitchExcludeAtRisk(format!(
+        "{FILE} {fix}, so auto-switch cannot replace it; not changed. Until it is fixed \
+         every profile counts as excluded and rotation is paused. Make it a regular \
+         file of yours holding the `exclude=` line you intend (check it: another user \
+         could have edited it): fix the owner with `chown`, or \
+         replace the symlink with a copy of its target. Do not delete it"
+    )))
+}
+
+/// Whether `.auto-switch` is a regular file (not a symlink) owned by the
+/// effective user: one `on` and `off` can replace.
+pub(crate) fn own_regular_file(root: &Path) -> bool {
+    std::fs::symlink_metadata(root.join(FILE))
+        .is_ok_and(|m| m.file_type().is_file() && amplihack_utils::secure_files::owned_by_euid(&m))
+}
+
+/// Issue #2218: whether `on` or `off` can rewrite the file without being
+/// told the exclude list: it is missing, or it is a private file of yours
+/// that parses.
+pub fn exclude_recoverable(root: &Path) -> bool {
+    !matches!(read_exclude(root), ExcludeFile::Unreadable)
 }
 
 /// Writes the file unlocked; callers go through `update`.

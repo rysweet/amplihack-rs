@@ -93,6 +93,12 @@ const EDITED_RECIPES: &[&str] = &[
     "consensus-requirements-debate",
     "consensus-publish",
     "consensus-merge-finalize",
+    // #2190 edits these two; listing them keeps a merge from main that
+    // changes either file from leaving its manifest hash stale unnoticed.
+    "consensus-test-fix",
+    "autodrive-merge-evidence",
+    // #2362 edits the merge round's blocker guidance.
+    "autodrive-merge-round",
 ];
 
 /// D7: conditional remediation steps a valid fixture run does not trigger.
@@ -101,7 +107,7 @@ const EDITED_RECIPES: &[&str] = &[
 const ALLOWED_SKIPS: &[(&str, &str)] = &[
     (
         "step7-fix-issues",
-        "runs only when test_results.tests_run is 'true'; the stubbed test run reports none",
+        "runs only when test_results.all_passing is not 'true'; the stubbed test run reports all passing",
     ),
     (
         "step12-implement-feedback",
@@ -572,6 +578,12 @@ fn run_composed(sets: &[&str], composer_context: &[(&'static str, Yaml)]) -> Run
         stub.output.insert(
             "step1-requirements-analysis",
             r#"{"requires_debate":"true"}"#.to_string(),
+        );
+        // Issue #2190: step7-fix-issues runs unless the test step reports
+        // all_passing "true", so the stubbed test run reports a clean pass.
+        stub.output.insert(
+            "step7-run-tests",
+            r#"{"tests_run":"true","all_passing":"true"}"#.to_string(),
         );
         sb.write_recipe(phase, &stub_recipe(phase, &stub));
     }

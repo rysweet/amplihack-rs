@@ -8,7 +8,7 @@
 # JSON, and the merge round read a passing QA run as qa_status=MISSING.
 #
 # The record is built by amplifier-bundle/tools/autodrive_qa_evidence.sh, which
-# step-02-qa-team-scenarios of autodrive-merge-evidence.yaml runs. This runs
+# step-03-qa-team-scenarios of autodrive-merge-evidence.yaml runs. This runs
 # that tool, unmodified, on a scratch Rust repository whose test command
 # (AUTODRIVE_QA_COMMAND) prints logs with colour, cursor and erase sequences,
 # quotes, backslashes, tabs, multibyte text and control bytes, and over awkward

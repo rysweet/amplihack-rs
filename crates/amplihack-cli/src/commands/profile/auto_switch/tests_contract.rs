@@ -34,16 +34,33 @@ fn hosts_foreign_account_names_both_profiles_with_a_fixed_hint() {
 
 #[test]
 fn config_and_invariant_hints_are_fixed() {
-    let e = ProfileError::AutoSwitchConfig("symlink".into());
+    // Issue #2218: the generic hint never advises removing the file, whose
+    // exclude list is in force in every case that reaches it.
+    let e = ProfileError::AutoSwitchConfig("busy; retry".into());
     assert_eq!(
         e.hint(),
-        "remove <root>/.auto-switch and run `amplihack profile auto-switch on` or `off`"
+        "fix what the message names and retry; do not remove <root>/.auto-switch, which \
+         holds the exclude list (see \"Settings file\" in docs/reference/profile-command.md)"
     );
     let e = ProfileError::AutoSwitchInvariant("ledger.json: unknown version".into());
     assert_eq!(
         e.hint(),
         "see the Recovery section of docs/howto/claude-profiles.md"
     );
+}
+
+/// Issue #2218: a corrupt file refused because removing it would drop its
+/// exclude list never carries the generic "remove the file" hint.
+#[test]
+fn exclude_at_risk_hint_never_advises_removing_the_file() {
+    let e = ProfileError::AutoSwitchExcludeAtRisk("x".into());
+    assert_eq!(e.to_string(), "auto-switch settings: x");
+    assert!(
+        e.hint().starts_with("do not remove <root>/.auto-switch"),
+        "{}",
+        e.hint()
+    );
+    assert!(!e.hint().contains("and run"), "{}", e.hint());
 }
 
 #[test]

@@ -4,7 +4,7 @@
 #
 # Subject: amplifier-bundle/tools/autodrive_expected_checks.sh, run as
 #   /bin/bash -p autodrive_expected_checks.sh <HEAD_SHA> <BASE_REF>
-# plus its two callers: merge gate section 5 and merge-evidence step-01b.
+# plus its two callers: merge gate section 5 and merge-evidence step-03.
 #
 # Every `gh` call goes to a fake on PATH that serves fixture files
 # (expected-checks-fixtures.sh). No network, no sleep, no wall-clock window.
@@ -23,8 +23,8 @@
 #   8. Job matching rules 1-4, the best match, expression-only names;
 #      8b. block-scalar and multi-line job names (real cpython/tokio shapes).
 #   9. Security: S1 spoof, S2 paths and run ids, name injection, jq version.
-#  10. Callers: gate section 5 (static), merge-evidence step-01b (run), light
-#      drive, platform facts comment, docs.
+#  10. Callers: merge-evidence step-03's agent prompt (#2329 retired the
+#      shell gate), light drive, platform facts comment, docs.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -32,7 +32,6 @@ REPO_ROOT="$(cd "${HERE}/../../.." && pwd -P)"
 TOOLS="${REPO_ROOT}/amplifier-bundle/tools"
 RECIPES="${REPO_ROOT}/amplifier-bundle/recipes"
 HELPER="${TOOLS}/autodrive_expected_checks.sh"
-GATE="${TOOLS}/autodrive_merge_gate.sh"
 # shellcheck source=expected-checks-fixtures.sh
 . "${HERE}/expected-checks-fixtures.sh"
 
@@ -53,9 +52,7 @@ STUB_BIN="${WORK}/bin"; mkdir -p "${STUB_BIN}"
 ROUTE="${WORK}/ci-api-route"; ec_write_route "${ROUTE}"
 
 # The fake gh: `api` goes to the fixture route; `pr view` prints the PR fields
-# (head from GH_HEAD, base from GH_BASE), `pr checks` prints GH_PR_CHECKS;
-# `run list`, `run watch` and `run view` give one finished run at GH_HEAD whose
-# conclusion is GH_RUN_CONCLUSION (default success).
+# (head from GH_HEAD, base from GH_BASE), `pr checks` prints GH_PR_CHECKS.
 # Every call is logged to GH_CALLS. Anything else fails.
 cat > "${STUB_BIN}/gh" <<'GH'
 #!/usr/bin/env bash
@@ -67,12 +64,6 @@ case "${1:-} ${2:-}" in
     [ "${GH_PR_VIEW_FAIL:-0}" = 1 ] && exit 1
     if [ -n "$JQ" ]; then printf '%s' "$j" | jq -r "$JQ"; else printf '%s\n' "$j"; fi
     exit 0 ;;
-  "run list")
-    printf '[{"databaseId":7,"headSha":"%s","workflowName":"CI"}]\n' "${GH_HEAD:-}"; exit 0 ;;
-  "run watch")
-    exit 0 ;;
-  "run view")
-    printf '{"conclusion":"%s","headSha":"%s","workflowName":"CI"}\n' "${GH_RUN_CONCLUSION:-success}" "${GH_HEAD:-}"; exit 0 ;;
   "pr checks")
     d='[{"name":"Test","state":"SUCCESS","bucket":"pass"}]'
     printf '%s\n' "${GH_PR_CHECKS:-$d}"; exit 0 ;;
@@ -149,8 +140,6 @@ check "EC-unset-f" "the helper drops gh/git/jq functions with builtin unset -f" 
   grep -qE '^[[:space:]]*builtin unset -f gh git jq' "${HELPER}"
 check "EC-budget" "the helper is at most 400 lines" \
   test "$(wc -l < "${HELPER}" 2>/dev/null || echo 9999)" -le 400
-check "EC-gate-budget" "the gate stays at most 400 lines" \
-  test "$(wc -l < "${GATE}")" -le 400
 # Every recipe this change grows keeps the shared brick budget (crusty round 5,
 # item 1: autodrive-merge-round.yaml reached 403 lines and turned CI red).
 for y in autodrive-merge-round autodrive-merge-evidence; do
@@ -1498,129 +1487,18 @@ check "EC-exported-fn" "an exported gh function cannot answer for the helper" \
 # ---------------------------------------------------------------------------
 # 10. Callers.
 # ---------------------------------------------------------------------------
-# Gate section 5 (static; the gate's runtime cases are in
-# test-auto-drive-to-merge.sh section 5).
-S5="$(awk '/^# --- 5\./{f=1} /^# --- 6\./{f=0} f' "${GATE}")"
-check "EC-gate-runs-helper" "gate section 5 runs the helper from GATE_HOME" \
-  bash -c 'printf "%s" "$1" | grep -qF "\${GATE_HOME}/autodrive_expected_checks.sh"' _ "$S5"
-check "EC-gate-passes-base" "gate section 5 passes HEAD_SHA and the baseRefName it read" \
-  bash -c 'printf "%s" "$1" | grep -qE "autodrive_expected_checks\.sh\"? +\"\\\$HEAD_SHA\" +\"\\\$[A-Z_]+\""' _ "$S5"
-check "EC-gate-no-pr-checks" "gate section 5 no longer decides CI from gh pr checks" \
-  bash -c '! printf "%s" "$1" | grep -vE "^[[:space:]]*#" | grep -qF "gh pr checks"' _ "$S5"
-check "EC-gate-tail-n1" "gate section 5 reads ci_status from the last line only" \
-  bash -c 'printf "%s" "$1" | grep -qE "tail -n ?1"' _ "$S5"
-check "EC-gate-unreadable-fallback" "gate section 5 carries the fallback blocker text" \
-  bash -c 'printf "%s" "$1" | grep -qF "expected checks unreadable: the reader gave no verdict or no blocker"' _ "$S5"
-check "EC-gate-maps-lines" "gate section 5 maps evidence: lines to note and blocker: lines to block" \
-  bash -c 'printf "%s" "$1" | grep -qF "evidence:" && printf "%s" "$1" | grep -qF "blocker:" && printf "%s" "$1" | grep -qE "(^|[^a-z])note " && printf "%s" "$1" | grep -qE "(^|[^a-z])block "' _ "$S5"
-check "EC-gate-base-read" "the gate reads baseRefName in its own pr view" \
-  grep -qE 'gh pr view "\$PR" --json [a-zA-Z,]*baseRefName' "${GATE}"
-check "EC-gate-argv-kept" "the gate's merge argv keeps --match-head-commit" grep -qF -- '--match-head-commit' "${GATE}"
-
-# Merge-evidence step-01b (#2362): it waits with `gh run watch` on each run at
-# the head, then lowers GREEN to the helper's verdict. Run with the fake gh: one
-# run at the head, finished at once. The base comes from step-01's merge_sync
-# and the tools directory from the round, as the runner exports them.
-extract_step_command() {
-  awk -v step="$2" '
-    index($0, "id: \"" step "\"") { instep=1 }
-    instep && $0 ~ /^    command: \|/ { incmd=1; next }
-    incmd { if ($0 ~ /^    [a-zA-Z_]+:/ || $0 ~ /^  - id:/) { exit } sub(/^      /, ""); print }
-  ' "$1"
-}
-S3="$(extract_step_command "${RECIPES}/autodrive-merge-evidence.yaml" step-01b-wait-for-head-ci)"
-[ -n "$S3" ] || { echo "HARNESS-ERROR: could not extract merge-evidence step-01b" >&2; exit 2; }
-check "EC-S3-amplihack-home" "step-01b runs the helper from \$AMPLIHACK_HOME/amplifier-bundle/tools only" \
-  bash -c 'printf "%s" "$1" | grep -qE "AMPLIHACK_HOME[^/]*/amplifier-bundle/tools/autodrive_expected_checks\.sh" && ! printf "%s" "$1" | grep -qE "(REPO_PATH|TOP|toplevel)[^\n]*autodrive_expected_checks"' _ "$S3"
-check "EC-S3-no-sleep" "step-01b adds no wait of its own (no sleep)" \
-  test "$(printf '%s\n' "$S3" | grep -vE '^[[:space:]]*#' | grep -cE '(^|[^A-Za-z_])sleep ')" -eq 0
-check "EC-S3-tail-n1" "step-01b reads the helper's verdict from the last line" \
-  bash -c 'printf "%s" "$1" | grep -qE "tail -n ?1"' _ "$S3"
-check "EC-S3-quoted" "step-01b passes the head and base to the helper quoted" \
-  bash -c 'printf "%s" "$1" | grep -E "/bin/bash -p .*EC_TOOL" | grep -qE "\"\\\$[A-Za-z_]+\" +\"\\\$[A-Za-z_]+\""' _ "$S3"
-check "EC-S3-signal-arg" "step-01b passes ci_signal to jq as one --arg" \
-  bash -c 'printf "%s" "$1" | grep -qF -- "--arg sig \"\$2\""' _ "$S3"
-
-# A one-commit repository whose head the fixtures follow (GH_HEAD).
-new_repo() { # new_repo <dir>: prints the head SHA
-  local d="$1"
-  mkdir -p "$d" && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git -C "$d" init -q \
-    && printf 'x\n' > "$d/x" \
-    && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git -C "$d" -c user.name=t -c user.email=t@example.invalid \
-      -c commit.gpgsign=false -c core.hooksPath=/dev/null add x \
-    && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git -C "$d" -c user.name=t -c user.email=t@example.invalid \
-      -c commit.gpgsign=false -c core.hooksPath=/dev/null commit -q -m x \
-    && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git -C "$d" rev-parse HEAD
-}
-S1B_REPO="${WORK}/s1b-repo"
-S1B_HEAD="$(new_repo "${S1B_REPO}")" || { echo "HARNESS-ERROR: could not create the step-01b repository" >&2; exit 2; }
-AH="${WORK}/amplihack-home"; mkdir -p "${AH}/amplifier-bundle"
-ln -s "${TOOLS}" "${AH}/amplifier-bundle/tools"
-run_s3() { # run_s3 <fixture> [extra env...] — sets S3_OUT (last line), S3_STATUS, S3_SIGNAL
-  # S3_BASE (default main) is the base in merge_sync, as step-01 reports it.
-  local fx="$1" ms; shift
-  ms="$(jq -cn --arg b "${S3_BASE-main}" '{base:$b}')"
-  (cd "${WORK}" && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE GH_CI_FIX="$fx" GH_CI_ROUTE="${ROUTE}" \
-    GH_HEAD="${S1B_HEAD}" GH_BASE=main GH_CALLS="${WORK}/s3-calls" PR_NUMBER=42 REPO_PATH="${S1B_REPO}" \
-    AMPLIHACK_HOME="${AH}" RECIPE_VAR_autodrive_tools_dir="${TOOLS}" RECIPE_VAR_merge_sync="$ms" \
-    PATH="${STUB_BIN}:${PATH}" env "$@" bash -c "$S3" \
-    >"${WORK}/s3-out" 2>"${WORK}/s3-err" </dev/null)
-  S3_OUT="$(tail -n1 "${WORK}/s3-out")"
-  S3_STATUS="$(printf '%s' "$S3_OUT" | jq -r .ci_status 2>/dev/null)"
-  S3_SIGNAL="$(printf '%s' "$S3_OUT" | jq -r .ci_signal 2>/dev/null)"
-}
-s3_explain() { printf 'out=%s\n%s\n' "$S3_OUT" "$(cat "${WORK}/s3-err")" | sed 's/^/      /' >&2; }
-FX="$(new_fx)"
-run_s3 "$FX"
-if [ "$S3_STATUS" = GREEN ] && grep -qF "commits/${S1B_HEAD}/check-runs" "${WORK}/s3-calls"; then
-  pass "EC-AC8-green" "step-01b keeps GREEN when the helper says GREEN (and the helper ran at the head)"
-else fail "EC-AC8-green" "step-01b did not keep GREEN after a GREEN helper"; s3_explain; fi
-FX="$(new_fx)"; ec_drop_job "$FX" 1001 "Install Smoke Test"
-run_s3 "$FX"
-if [ "$S3_STATUS" = MISSING ] && printf '%s' "$S3_SIGNAL" | grep -qF 'MISSING:missing=' \
-   && printf '%s' "$S3_SIGNAL" | grep -qF 'Install Smoke Test'; then
-  pass "EC-AC8-missing" "step-01b lowers green runs to MISSING and names the missing check in ci_signal"
-else fail "EC-AC8-missing" "step-01b did not lower GREEN to MISSING"; s3_explain; fi
-check "EC-AC8-signal-300" "ci_signal is at most 300 characters" test "${#S3_SIGNAL}" -le 300
-FX="$(new_fx)"
-for i in $(seq 1 30); do ec_required "$FX" "Required check number ${i} with a long name"; done
-run_s3 "$FX"
-check "EC-AC8-signal-cut" "a long missing list is cut to 300 characters in ci_signal" \
-  bash -c '[ "$1" = MISSING ] && [ "${#2}" -le 300 ]' _ "$S3_STATUS" "$S3_SIGNAL"
-FX="$(new_fx)"
-run_s3 "$FX" -u AMPLIHACK_HOME
-if [ "$S3_STATUS" = UNREADABLE ] && [ "$S3_SIGNAL" = expected-checks-unreadable ]; then
-  pass "EC-AC8b-no-home" "step-01b with AMPLIHACK_HOME unset gives UNREADABLE / expected-checks-unreadable"
-else fail "EC-AC8b-no-home" "step-01b with AMPLIHACK_HOME unset did not give UNREADABLE"; s3_explain; fi
-run_s3 "$FX" AMPLIHACK_HOME="${WORK}/no-such-home"
-if [ "$S3_STATUS" = UNREADABLE ] && [ "$S3_SIGNAL" = expected-checks-unreadable ]; then
-  pass "EC-AC8b-no-helper" "step-01b with the helper missing gives UNREADABLE"
-else fail "EC-AC8b-no-helper" "step-01b with the helper missing did not give UNREADABLE"; s3_explain; fi
-# A helper planted in the PR checkout is never run.
-PLANT="${WORK}/plant"
-PLANT_HEAD="$(new_repo "${PLANT}")" || { echo "HARNESS-ERROR: could not create the planted repository" >&2; exit 2; }
-mkdir -p "${PLANT}/amplifier-bundle/tools"
-printf '#!/bin/bash\necho %s\n' "'{\"ci_status\":\"GREEN\",\"missing\":[],\"blockers\":0}'" > "${PLANT}/amplifier-bundle/tools/autodrive_expected_checks.sh"
-chmod +x "${PLANT}/amplifier-bundle/tools/autodrive_expected_checks.sh"
-FX="$(new_fx)"; ec_drop_job "$FX" 1001 "Install Smoke Test"
-run_s3 "$FX" REPO_PATH="${PLANT}" GH_HEAD="${PLANT_HEAD}" AMPLIHACK_HOME="${WORK}/no-such-home"
-check "EC-AC8b-no-planted" "a helper planted under REPO_PATH is never run" test "$S3_STATUS" = UNREADABLE
-FX="$(new_fx)"
-S3_BASE="" run_s3 "$FX"
-check "EC-AC8b-no-base" "step-01b with no base in merge_sync gives UNREADABLE" test "$S3_STATUS" = UNREADABLE
-FX="$(new_fx)"
-S3_BASE='$(touch '"${WORK}"'/pwned3)' run_s3 "$FX"
-check "EC-AC8b-bad-base" "a hostile base value is not executed and does not pass" \
-  bash -c '[ ! -e "$1" ] && [ "$2" != GREEN ]' _ "${WORK}/pwned3" "$S3_STATUS"
-FX="$(new_fx)"
-run_s3 "$FX" GH_RUN_CONCLUSION=failure
-check "EC-AC8-red-unchanged" "a failed run at the head stays RED (the helper only lowers GREEN)" test "$S3_STATUS" = RED
+# #2329 retired the shell merge gate, and merge-evidence step-02 (#2362: CI is
+# read once, before QA) is an agent step: its prompt must run the helper from
+# AMPLIHACK_HOME and keep MISSING, PENDING and RED from passing.
+S3_PROMPT="$(awk '/id: "step-02-read-head-ci"/{f=1} f&&/- id: "step-03/{f=0} f' "${RECIPES}/autodrive-merge-evidence.yaml")"
+check "EC-S3-amplihack-home" "step-02 runs the helper from \$AMPLIHACK_HOME/amplifier-bundle/tools only" \
+  bash -c 'printf "%s" "$1" | grep -qF "/bin/bash -p \"\$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_expected_checks.sh\"" && printf "%s" "$1" | grep -qF "never a copy from the PR worktree"' _ "$S3_PROMPT"
+check "EC-S3-missing-blocks" "step-02 lowers GREEN to RED, PENDING or MISSING and never passes a missing check" \
+  bash -c 'printf "%s" "$1" | grep -qF "RED, PENDING or MISSING replace it" && printf "%s" "$1" | grep -qF "is MISSING, not a pass"' _ "$S3_PROMPT"
 
 # The light drive's merge loop runs the same gate (D17).
 check "EC-D17-light-uses-merge-loop" "auto-drive-light runs autodrive-merge-loop" \
   grep -qE 'recipe: "autodrive-merge-loop"' "${RECIPES}/auto-drive-light.yaml"
-check "EC-D17-merge-loop-runs-gate" "autodrive-merge-loop runs the gate from AMPLIHACK_HOME" \
-  grep -qF 'GATE="${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_merge_gate.sh"' "${RECIPES}/autodrive-merge-loop.yaml"
 # Platform facts: CHECKS is advisory (D18).
 check "EC-D18-advisory" "autodrive_platform_facts.sh says CHECKS is advisory and the helper decides" \
   bash -c 'grep -iE "^[[:space:]]*#.*advisory" "$1" | grep -qF "autodrive_expected_checks"' _ "${TOOLS}/autodrive_platform_facts.sh"
