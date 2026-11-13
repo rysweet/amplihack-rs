@@ -27,7 +27,7 @@ recovery:
   version: 1
   persist:
     context: ["adaptive_recipe", "allow_no_op", "api_design", "architecture_design", "auto_init_repo", "blocking_issues_addressed", "branch_name", "branch_prefix", "ci_status", "clarified_requirements", "cleanup_status", "codebase_analysis", "create_issue", "database_design", "decomposition_json", "design_spec", "doc_review_checkpoint", "doc_review_feedback", "documentation", "existing_branch", "final_cleanup", "final_documentation", "final_requirements", "finalization_handoff", "force_single_workstream", "goal_already_met", "identity_preflight", "implementation", "implementation_terminal_evidence", "infra_error_details", "issue_claim_check", "issue_creation", "issue_number", "issue_url", "no_merge", "ops_modified_files", "philosophy_check", "pr_feedback_changes", "pr_number", "pr_philosophy_review", "pr_review", "pr_security_review", "pr_url", "pre_commit_review", "preflight_status", "publish_status", "quality_audit_results", "quick_change_verdict", "recursion_guard", "refactored_code", "reflection_1", "reflection_2", "reflection_final", "remote_host_type", "repo_path", "requirements", "resume_checkpoint", "review_feedback", "round_1_result", "round_2_result", "round_3_result", "security_requirements", "selected_workflow", "session_complete_status", "session_id", "session_info", "should_finalize", "should_merge", "should_run_ci_wait", "skip_pre_agent_validation", "summary", "task_description", "task_type", "terminal_reason", "terminal_state", "terminal_success", "test_spec", "tree_id", "verification_terminal_evidence", "workflow", "workflow_init", "workspace_status", "workstream", "workstream_count", "workstreams_file", "worktree_path", "worktree_setup"]
-    outputs: ["handle-qa", "handle-ops-agent", "ops-file-change-check", "derive-recursion-guard", "execute-single-round-1-development", "execute-single-round-1-quick-change", "handover-reselect-workflow", "execute-single-round-1-investigation", "create-workstreams-config", "launch-parallel-round-1", "blocked-fallback-reselect-workflow", "execute-single-fallback-blocked-development", "execute-single-fallback-blocked-investigation", "detect-execution-gap", "file-routing-bug", "adaptive-reselect-workflow", "adaptive-execute-development", "adaptive-execute-investigation", "cleanup-helper"]
+    outputs: ["handle-qa", "handle-ops-agent", "derive-recursion-guard", "execute-single-round-1-development", "execute-single-round-1-quick-change", "handover-reselect-workflow", "execute-single-round-1-investigation", "create-workstreams-config", "launch-parallel-round-1", "blocked-fallback-reselect-workflow", "execute-single-fallback-blocked-development", "execute-single-fallback-blocked-investigation", "detect-execution-gap", "file-routing-bug", "adaptive-reselect-workflow", "adaptive-execute-development", "adaptive-execute-investigation", "cleanup-helper"]
 steps:
   # ─────────────────────────────────────────────────────────────────────────
   # Phase 2a: Q&A -- route by intent (technical vs general)
@@ -35,7 +35,7 @@ steps:
   - id: "handle-qa"
     recovery: {"replay": "reuse"}
     type: "agent"
-    condition: "'Q&A' in task_type"
+    condition: "'Q&A' in task_type and (workstream_count == 1 or workstream_count == '1' or workstream_count == '')"
     agent: "amplihack:core:analyzer"
     prompt: |
       Answer this question directly.
@@ -53,35 +53,10 @@ steps:
   # ─────────────────────────────────────────────────────────────────────────
   - id: "handle-ops-agent"
     recovery: {"replay": "reuse"}
-    type: "agent"
-    condition: "'Operations' in task_type"
-    agent: "amplihack:core:builder"
-    prompt: |
-      Execute this operational task directly.
-
-      **Task**: {{task_description}}
-      **Repo**: {{repo_path}}
-
-      Perform the operation, report what was done. End with "STATUS: COMPLETE".
+    type: "recipe"
+    condition: "'Operations' in task_type and (workstream_count == 1 or workstream_count == '1' or workstream_count == '')"
+    recipe: "operations-direct"
     output: "round_1_result"
-  # Detect if Operations modified tracked files (fix #227).
-  # When files were changed, downstream review/cleanup/summarize steps
-  # must still run so changes get reviewed and committed properly.
-  - id: "ops-file-change-check"
-    recovery: {"replay": "reuse"}
-    type: "bash"
-    condition: "'Operations' in task_type"
-    command: |
-      export GIT_PAGER=cat
-      export PAGER=cat
-      export LESS=FRX
-      if [ ! -d "$REPO_PATH" ]; then echo "[skip] repo_path '$REPO_PATH' does not exist; skipping operations git telemetry" >&2; echo ""; exit 0; fi
-      cd "$REPO_PATH"
-      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo "[skip] not a git repo; skipping operations git telemetry" >&2; echo ""; exit 0; fi
-      CHANGED=$(git diff --name-only 2>/dev/null | head -1)
-      UNTRACKED=$(git ls-files --others --exclude-standard 2>/dev/null | head -1)
-      if [ -n "$CHANGED" ] || [ -n "$UNTRACKED" ]; then echo "true"; else echo ""; fi
-    output: "ops_modified_files"
   # ─────────────────────────────────────────────────────────────────────────
   # Recursion guard -- derive from session_info (registered atomically in setup-session)
   # Uses pure shell grep instead of subprocess for status extraction.
@@ -124,7 +99,7 @@ steps:
     # force_single_workstream may be Bool(true) from CLI --set; the evaluator
     # coerces Bool/String (fix #3069 in recipe-runner-rs).
     condition: |
-      'Development' in task_type and selected_workflow != 'quick-change' and ((workstream_count == 1 or workstream_count == '1' or workstream_count == '') or force_single_workstream == 'true')
+      'Development' in task_type and selected_workflow != 'quick-change' and ((workstream_count == 1 or workstream_count == '1' or workstream_count == '') )
     recipe: "default-workflow"
     # Issue #425: explicitly forward worktree_setup and allow_no_op so the
     # recipe-runner threads them across the smart-execute-routing ->
@@ -143,7 +118,7 @@ steps:
     recovery: {"replay": "reuse"}
     type: "recipe"
     condition: |
-      'Development' in task_type and selected_workflow == 'quick-change' and ((workstream_count == 1 or workstream_count == '1' or workstream_count == '') or force_single_workstream == 'true')
+      'Development' in task_type and selected_workflow == 'quick-change' and ((workstream_count == 1 or workstream_count == '1' or workstream_count == '') )
     recipe: "quick-change"
     context:
       worktree_setup: "{{worktree_setup}}"
@@ -165,7 +140,7 @@ steps:
     recovery: {"replay": "reuse"}
     type: "recipe"
     condition: |
-      'Investigation' in task_type and ((workstream_count == 1 or workstream_count == '1' or workstream_count == '') or force_single_workstream == 'true')
+      'Investigation' in task_type and ((workstream_count == 1 or workstream_count == '1' or workstream_count == '') )
     recipe: "investigation-workflow"
     # Issue #507: forward investigation_question — investigation-workflow's
     # downstream prompts read it, but parent context only carries task_description.
@@ -180,7 +155,7 @@ steps:
     recovery: {"replay": "reuse", "resources": [{"kind": "artifact", "path": "{{workstreams_file}}", "context_key": "workstreams_file"}]}
     type: "bash"
     condition: |
-      ('Development' in task_type or 'Investigation' in task_type) and workstream_count != 1 and workstream_count != '1' and workstream_count != '' and 'ALLOWED' in recursion_guard and force_single_workstream != 'true'
+      workstream_count != 1 and workstream_count != '1' and workstream_count != ''
     command: |
       _DECOMP_TMPFILE=$(mktemp)
       trap 'rm -f "$_DECOMP_TMPFILE"' EXIT
@@ -195,13 +170,17 @@ steps:
     recovery: {"replay": "reuse"}
     type: "bash"
     condition: |
-      ('Development' in task_type or 'Investigation' in task_type) and workstream_count != 1 and workstream_count != '1' and workstream_count != '' and 'ALLOWED' in recursion_guard and force_single_workstream != 'true'
+      workstream_count != 1 and workstream_count != '1' and workstream_count != ''
     command: |
       set -o pipefail
       # Emit step-transition marker for progress tracking (#3625)
       echo '{"transition":"step_started","step":"launch-parallel-round-1","timestamp":'$(date +%s)'}' >&2
       REPO_PATH="$REPO_PATH"
+      case "${RECIPE_VAR_force_single_workstream:-}" in true|1) export AMPLIHACK_MAX_PARALLEL_WORKSTREAMS=1 ;; esac
+      case "${RECIPE_VAR_strict_delivery:-}" in ''|false) ;; *) export AMPLIHACK_MAX_PARALLEL_WORKSTREAMS=1 ;; esac
+      case "${RECIPE_VAR_recursion_guard:-}" in BLOCKED*) export AMPLIHACK_MAX_PARALLEL_WORKSTREAMS=1 ;; esac
       WS_FILE="${RECIPE_VAR_workstreams_file:-}"
+
       # FIX (#469/#311): Use env var — safe against injection and word-splitting.
       SESSION_JSON="${RECIPE_VAR_session_info:-}"
       # #283: parse tree_id, depth, and workstreams count using jq instead of
@@ -262,7 +241,7 @@ steps:
     recovery: {"replay": "reuse"}
     type: "bash"
     condition: |
-      'Development' in task_type and 'BLOCKED' in recursion_guard and workstream_count != 1 and workstream_count != '1' and workstream_count != '' and selected_workflow == 'quick-change'
+      'Development' in task_type and 'BLOCKED' in recursion_guard and workstreams_file == '' and workstream_count != 1 and workstream_count != '1' and workstream_count != '' and selected_workflow == 'quick-change'
     command: |
       echo '[dev-orchestrator] Workflow: default-workflow source=override reason=parallel launch blocked; the single-session fallback runs default-workflow' >&2
       printf 'default-workflow'
@@ -272,7 +251,7 @@ steps:
     type: "recipe"
     # Fires when blocked from spawning subworkstreams — adapts to single session
     condition: |
-      'Development' in task_type and 'BLOCKED' in recursion_guard and workstream_count != 1 and workstream_count != '1' and workstream_count != ''
+      'Development' in task_type and 'BLOCKED' in recursion_guard and workstreams_file == '' and workstream_count != 1 and workstream_count != '1' and workstream_count != ''
     recipe: "default-workflow"
     context:
       worktree_setup: "{{worktree_setup}}"
@@ -285,7 +264,7 @@ steps:
     type: "recipe"
     # Fires when blocked from spawning subworkstreams — adapts to single session
     condition: |
-      'Investigation' in task_type and 'BLOCKED' in recursion_guard and workstream_count != 1 and workstream_count != '1' and workstream_count != ''
+      'Investigation' in task_type and 'BLOCKED' in recursion_guard and workstreams_file == '' and workstream_count != 1 and workstream_count != '1' and workstream_count != ''
     recipe: "investigation-workflow"
     context:
       investigation_question: "{{task_description}}"

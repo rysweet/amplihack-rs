@@ -1,7 +1,7 @@
 ---
 title: Quick-Change Recipe
 description: The single-session recipe for small changes, the diff limits that hand work over to default-workflow, and how smart-orchestrator selects it.
-last_updated: 2026-10-31
+last_updated: 2026-11-13
 review_schedule: quarterly
 owner: amplihack
 doc_type: reference
@@ -505,7 +505,7 @@ After the table, a `quick-change` result becomes `default-workflow` when the run
 
 "Names a branch" uses the directive rules of `workflow_branch_name.sh explicit` (#1426), which `workflow-worktree` runs: a line starting `Branch:`, `Branch name:`, `Branch ref:` or `Branch =` (any case) with the value on the same line or the next non-blank one, or `Branch`, a dash (`-`, `–` or `—`), any text and a final `:`, with the value on the next non-blank line. The value must be a valid ref containing `/` or `-`, not a base branch name and not starting with `origin/`, `refs/` or `heads/`. Prose such as "Branch coverage is low in: src/foo-bar.rs" does not count. Whether the branch exists does not matter. The helper reads the task text from `RECIPE_VAR_task_description`; `crates/amplihack-cli/src/commands/orch/named_branch.rs` repeats the shell tool's patterns, a unit test there fails when the shell tool's patterns or bounds change, and `issue_1740_select_workflow` runs both on each directive form and fails when they disagree.
 
-A valid override applies however many workstreams there are. With `-c workflow=quick-change` and a parallel decomposition, every Development workstream runs `quick-change` and orchestrator reflection is skipped. Without an override, every Development workstream of a parallel decomposition runs `default-workflow`, whatever recipe the model gave it, and a non-Development workstream that the model gave `quick-change` runs its classification's own recipe instead; see [Dev-Orchestrator Routing Contract](./dev-orchestrator-routing.md#routing-invariant). The log line therefore names the recipe the workstreams run, with the one correction described under [Log line](#log-line). Non-Development routing (Q&A, Operations, Investigation) never changes.
+A valid override applies however many workstreams there are. With `-c workflow=quick-change` and a parallel decomposition, every Development workstream runs `quick-change` and orchestrator reflection is skipped. Without an override, every Development workstream of a parallel decomposition runs `default-workflow`, whatever recipe the model gave it. Operations with a missing, blank or Development recipe selects `operations-direct`; an explicit non-default conflict is still honoured by the helper. **[PLANNED]** Operations must always select `operations-direct`, regardless of recipe or override. Investigation, Q&A and Consensus workstreams with missing, blank or Development recipes use their classification's route; see the [routing contract and implementation boundary](./dev-orchestrator-routing.md#implementation-boundary). The log line names the helper's recipe selection, with the correction described under [Log line](#log-line); it does not establish native execution behaviour.
 
 Override values are trimmed and lower-cased, then matched against the exact list `quick-change`, `default-workflow`.
 
@@ -528,12 +528,15 @@ Every orchestrated run writes one line to stderr after any warnings:
 [dev-orchestrator] Workflow: <quick-change|default-workflow|none> source=<override|classifier|default|handover> reason=<text>
 ```
 
-Two cases write a second line. When `quick-change` was forced on a run that then falls back to `default-workflow`, because the recursion guard blocked the parallel launch or adaptive recovery took over, `blocked-fallback-reselect-workflow` or `adaptive-reselect-workflow` sets `selected_workflow` to `default-workflow` and logs the change. When a single-workstream `quick-change` hands over, `handover-reselect-workflow` does the same with `source=handover`, as the selection may have come from the classifier or an override. In each case the last line names what ran, and reflection and validation run as for any full workflow:
+Two Development cases write a second line. When `quick-change` was forced on Development work that then falls back to `default-workflow`, because the recursion guard blocked the parallel launch or adaptive recovery took over, `blocked-fallback-reselect-workflow` or `adaptive-reselect-workflow` sets `selected_workflow` to `default-workflow` and logs the change. When a single-workstream `quick-change` hands over, `handover-reselect-workflow` does the same with `source=handover`, as the selection may have come from the classifier or an override. In each case the last line names what ran, and reflection and validation run as for any full workflow:
 
 ```text
 [dev-orchestrator] Workflow: default-workflow source=override reason=parallel launch blocked; the single-session fallback runs default-workflow
 [dev-orchestrator] Workflow: default-workflow source=handover reason=quick-change handed over; default-workflow ran
 ```
+
+These Development log examples do not reroute Operations leaves or replace a
+mixed plan with a single Development task.
 
 The one exception is a parallel run forced to `quick-change`, described under [Hand-over to default-workflow](#hand-over-to-default-workflow).
 
@@ -556,10 +559,12 @@ The reason is sanitised before it is logged: control characters (including ESC a
 | Development | `quick-change` or `default-workflow`, and the top-level `task_type` is Development | any | the override |
 | Development | `quick-change`, with `existing_branch` or `pr_number` set, or a task text that names a branch | any | `default-workflow` |
 | Development | empty or invalid, or the top-level `task_type` is not Development | any, `quick-change` included | `default-workflow` |
-| Non-Development | any | `quick-change` | the classification's own recipe: `investigation-workflow`, `qa-workflow` or `consensus-workflow`, and `default-workflow` for Operations |
-| Non-Development | any | anything else | unchanged |
+| Operations | any | missing, blank, `default-workflow` or `quick-change` | `operations-direct` |
+| Operations | any | explicit non-default route | Currently kept; **[PLANNED]** always replace with `operations-direct` |
+| Investigation, Q&A or Consensus | any | missing, blank, `default-workflow` or `quick-change` | the classification's own recipe: `investigation-workflow`, `qa-workflow` or `consensus-workflow` |
+| Investigation, Q&A or Consensus | any | supported non-default route | Existing selection rules apply |
 
-The helper reads the override from `RECIPE_VAR_workflow`, the two targets from `RECIPE_VAR_existing_branch` and `RECIPE_VAR_pr_number`, and the task text from `RECIPE_VAR_task_description`: the same values `select-workflow` receives. The log line that `select-workflow` writes therefore names the recipe every Development workstream runs: `quick-change` only under a valid override, otherwise `default-workflow`, with `reason=quick-change needs one workstream; got N` when the classifier recommended `quick-change`. W1 to W4 are printed by `select-workflow`; the helper prints W1 again for an invalid override. The blocked-fallback and adaptive execution paths always use `default-workflow`, and correct `selected_workflow` when it said `quick-change`; see [Log line](#log-line).
+The helper reads the override from `RECIPE_VAR_workflow`, the two targets from `RECIPE_VAR_existing_branch` and `RECIPE_VAR_pr_number`, and the task text from `RECIPE_VAR_task_description`: the same values `select-workflow` receives. The log line that `select-workflow` writes therefore names the recipe every Development workstream runs: `quick-change` only under a valid override, otherwise `default-workflow`, with `reason=quick-change needs one workstream; got N` when the classifier recommended `quick-change`. W1 to W4 are printed by `select-workflow`; the helper prints W1 again for an invalid override. Development fallback and adaptive execution use the eligible Development route and correct `selected_workflow` when it changes. **[PLANNED]** Mixed execution must preserve every leaf and dependency and keep Operations on `operations-direct`; the current helper drops plan fields and native preparation still clones workspaces. See [Log line](#log-line).
 
 ## The select-workflow helper
 

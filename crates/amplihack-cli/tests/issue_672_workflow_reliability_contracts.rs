@@ -298,28 +298,56 @@ fn recipe_files_with_git_commands_disable_interactive_pagers() {
     let mut offenders = Vec::new();
 
     for path in collect_files(&recipes, &["yaml"]) {
+        let relative = path.strip_prefix(repo_root()).unwrap_or(&path);
         let content = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let recipe: Value = serde_yaml::from_str(&content)
+            .unwrap_or_else(|e| panic!("parse {}: {e}", relative.display()));
         let file_has_pager_default = content.contains("GIT_PAGER=cat");
-        for (idx, line) in content.lines().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.starts_with('#') {
-                continue;
-            }
-            let mentions_git_command = trimmed.contains("git ")
-                || trimmed.contains("git -C ")
-                || trimmed.contains("$(git ")
-                || trimmed.contains("`git ");
-            let line_is_safe = trimmed.contains("git --no-pager")
-                || trimmed.contains("GIT_PAGER=cat")
-                || trimmed.contains("PAGER=cat");
-            if mentions_git_command && !file_has_pager_default && !line_is_safe {
-                offenders.push(format!(
-                    "{}:{}: {}",
-                    path.strip_prefix(repo_root()).unwrap_or(&path).display(),
-                    idx + 1,
-                    trimmed
-                ));
+        let steps = recipe
+            .get("steps")
+            .and_then(Value::as_sequence)
+            .unwrap_or_else(|| panic!("{} must have steps", relative.display()));
+        let commands: Vec<(&str, &str)> = steps
+            .iter()
+            .filter(|step| {
+                !step
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|step_type| step_type != "bash")
+            })
+            .filter_map(|step| {
+                step.get("command").and_then(Value::as_str).map(|command| {
+                    (
+                        step.get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown-step"),
+                        command,
+                    )
+                })
+            })
+            .collect();
+        for (step_id, command) in commands {
+            for (idx, line) in command.lines().enumerate() {
+                let trimmed = line.trim();
+                if trimmed.starts_with('#') {
+                    continue;
+                }
+                let mentions_git_command = trimmed.contains("git ")
+                    || trimmed.contains("git -C ")
+                    || trimmed.contains("$(git ")
+                    || trimmed.contains("`git ");
+                let line_is_safe = trimmed.contains("git --no-pager")
+                    || trimmed.contains("GIT_PAGER=cat")
+                    || trimmed.contains("PAGER=cat");
+                if mentions_git_command && !file_has_pager_default && !line_is_safe {
+                    offenders.push(format!(
+                        "{}:{step_id}:{}: {}",
+                        relative.display(),
+                        idx + 1,
+                        trimmed
+                    ));
+                }
             }
         }
     }
@@ -334,49 +362,6 @@ fn recipe_files_with_git_commands_disable_interactive_pagers() {
             .collect::<Vec<_>>()
             .join("\n")
     );
-}
-
-#[test]
-fn issue_749_prompts_and_dev_orchestrator_docs_state_development_routing_invariant() {
-    let required = "Development classification routes to `default-workflow`, or to `quick-change` for a small change in a single workstream or when `-c workflow=quick-change` forces it; any recipe value the model gives a workstream is coerced to `default-workflow`.";
-
-    for rel in [
-        "amplifier-bundle/recipes/smart-classify-route.yaml",
-        "amplifier-bundle/recipes/smart-execute-routing.yaml",
-        "amplifier-bundle/skills/dev-orchestrator/SKILL.md",
-        "amplifier-bundle/skills/dev-orchestrator/reference.md",
-        "docs/reference/dev-orchestrator-routing.md",
-        "docs/reference/quick-change-recipe.md",
-    ] {
-        let content = read_repo_file(rel);
-        assert!(
-            !content.contains("Development classification always routes to `default-workflow`"),
-            "{rel} must not keep the pre-#1740 wording of the invariant"
-        );
-        assert!(
-            content.contains(required),
-            "{rel} must explicitly state the Development routing invariant"
-        );
-    }
-}
-
-#[test]
-fn issue_749_prompts_and_dev_orchestrator_docs_state_per_workstream_hybrid_routing() {
-    let required =
-        "Hybrid decompositions route each workstream by its own normalized classification.";
-
-    for rel in [
-        "amplifier-bundle/recipes/smart-classify-route.yaml",
-        "amplifier-bundle/recipes/smart-execute-routing.yaml",
-        "amplifier-bundle/skills/dev-orchestrator/SKILL.md",
-        "amplifier-bundle/skills/dev-orchestrator/reference.md",
-    ] {
-        let content = read_repo_file(rel);
-        assert!(
-            content.contains(required),
-            "{rel} must document per-workstream routing for hybrid decompositions"
-        );
-    }
 }
 
 #[test]

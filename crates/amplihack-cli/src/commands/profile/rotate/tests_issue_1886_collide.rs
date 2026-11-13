@@ -12,6 +12,9 @@
 //! endpoint for each fake `fake-at-1886-<uuid>` token. Measuring is stubbed
 //! (`Ctx.measure`). No `claude`, no daemon, no process variable.
 
+// Shared fixtures also serve Linux-only tests; keep the portable tests enabled.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use super::cred_identity::read_with;
 use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
 use super::decide::{Probed, Reading, Win, Windows};

@@ -110,7 +110,21 @@ impl WorkflowClassifier {
         }
 
         let keywords = self.extract_keywords(request);
-        let (workflow, reason, confidence) = self.classify_by_keywords(&keywords);
+        let (workflow, reason, confidence) = if requires_repository_edit(request) {
+            (
+                WorkflowType::Default,
+                "requested repository edit".into(),
+                0.9,
+            )
+        } else if administrative_action(request) {
+            (
+                WorkflowType::Ops,
+                "administrative action or answer destination".into(),
+                0.9,
+            )
+        } else {
+            self.classify_by_keywords(&keywords)
+        };
 
         trace!(
             workflow = workflow.as_str(),
@@ -200,6 +214,208 @@ impl WorkflowClassifier {
             0.5,
         )
     }
+}
+
+/// Classify requested actions with their own objects and destinations.
+/// Quoted titles are data; infinitives inside an administrative object describe
+/// that object, while conjoined actions are evaluated independently.
+pub fn requires_repository_edit(request: &str) -> bool {
+    let lower = request.to_ascii_lowercase();
+    let mut quote = None;
+    let mut previous = ' ';
+    let mut start = 0;
+    for (index, c) in lower.char_indices() {
+        if index < start {
+            continue;
+        }
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+        } else if c == '"' || c == '`' || (c == '\'' && !previous.is_alphanumeric()) {
+            quote = Some(c);
+        } else if let Some(separator) = [" and ", ", then ", " then ", ". ", ";", "\n"]
+            .iter()
+            .find(|separator| lower[index..].starts_with(**separator))
+        {
+            if repository_edit_action(&lower[start..index]) {
+                return true;
+            }
+            start = index + separator.len();
+        }
+        previous = c;
+    }
+    repository_edit_action(&lower[start..])
+}
+
+fn repository_edit_action(action: &str) -> bool {
+    let verbs = [
+        "rename",
+        "change",
+        "fix",
+        "correct",
+        "remove",
+        "replace",
+        "edit",
+        "update",
+        "write",
+        "commit",
+        "implement",
+        "refactor",
+        "extend",
+        "add",
+        "build",
+        "create",
+        "port",
+        "open",
+        "post",
+        "report",
+        "research",
+        "assign",
+        "coordinate",
+        "triage",
+        "read",
+    ];
+    let words: Vec<&str> = action.split_whitespace().collect();
+    let Some(index) = words
+        .iter()
+        .position(|word| verbs.contains(&word.trim_matches(|c: char| !c.is_ascii_alphanumeric())))
+    else {
+        return false;
+    };
+    let verb = words[index].trim_matches(|c: char| !c.is_ascii_alphanumeric());
+    let object = words[index + 1..].join(" ");
+    let object = object
+        .trim_start_matches("the ")
+        .trim_start_matches("an ")
+        .trim_start_matches("a ");
+    if ["write", "post", "report"].contains(&verb) {
+        let destination = object
+            .rsplit_once(" into ")
+            .or_else(|| object.rsplit_once(" to "))
+            .map(|(_, destination)| {
+                destination
+                    .trim_start_matches(['`', '\'', '"'])
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+            });
+        if destination.is_some_and(|path| {
+            let path = path.trim_matches(['`', '\'', '"', ',', '.']);
+            !path.contains("://")
+                && (path.contains('/')
+                    || path == "readme"
+                    || [".rs", ".md", ".yaml", ".toml"]
+                        .iter()
+                        .any(|extension| path.ends_with(extension)))
+        }) {
+            return true;
+        }
+    }
+    // The head object governs subordinate descriptions, including "to add
+    // tests" and paths in an issue title. Independent actions were split above.
+    let has_object = |noun: &str| {
+        object
+            .strip_prefix(noun)
+            .is_some_and(|tail| tail.chars().next().is_none_or(char::is_whitespace))
+    };
+    if [
+        "issue",
+        "issues",
+        "triage issue",
+        "cross-check issue",
+        "comment",
+        "review",
+    ]
+    .iter()
+    .any(|noun| has_object(noun))
+        || [
+            "post",
+            "report",
+            "research",
+            "assign",
+            "coordinate",
+            "triage",
+            "read",
+        ]
+        .contains(&verb)
+    {
+        return false;
+    }
+    if verb == "open" {
+        return has_object("pr") || has_object("pull request");
+    }
+    if object.starts_with("tests") || object.starts_with("test ") {
+        return true;
+    }
+    let destinations = [
+        "tracked",
+        "docs/",
+        "readme",
+        "documentation file",
+        "across the docs",
+        "src/",
+        "crates/",
+        "tests/",
+        "source files",
+        "code",
+        ".rs",
+        ".md",
+        ".yaml",
+        ".toml",
+    ];
+    // A path inside an "about ..." subject is incidental. A later destination
+    // ("into docs/report.md") still authorises an edit of that destination.
+    let destination = object
+        .rsplit_once(" into ")
+        .map(|(_, dest)| dest)
+        .or_else(|| object.rsplit_once(" to ").map(|(_, dest)| dest))
+        .unwrap_or_else(|| {
+            let subject = object
+                .split(" about ")
+                .next()
+                .unwrap_or(object)
+                .split(" regarding ")
+                .next()
+                .unwrap_or(object);
+            if verb == "write" {
+                subject.split(" from ").next().unwrap_or(subject)
+            } else {
+                subject
+            }
+        });
+    destinations.iter().any(|path| destination.contains(path))
+}
+
+/// Administrative objects: triage, issue bookkeeping, coordination, and an
+/// answer written for a person rather than into a tracked file.
+///
+/// Fix #269 narrowed the OPS keyword list because a generic word was stealing
+/// development work, and that narrowing is not reopened here: every trigger
+/// below names an administrative object rather than a bare verb or noun. A
+/// bare `assign` would claim "refactor the assignment helper", which assigns a
+/// value to a local, and a bare `status` would claim "fix the status bar
+/// rendering", which is a bug report.
+pub fn administrative_action(request: &str) -> bool {
+    let lower = request.to_ascii_lowercase();
+    [
+        "triage",
+        "open an issue",
+        "create an issue",
+        "assign the issue",
+        "assign it to",
+        "status issue",
+        "report status",
+        "status report",
+        "coordina",
+        "answers",
+        "in chat",
+        "issue comment",
+        "findings",
+        "question set",
+    ]
+    .iter()
+    .any(|s| lower.contains(s))
 }
 
 fn default_keyword_map() -> HashMap<WorkflowType, Vec<String>> {
@@ -375,5 +591,128 @@ mod tests {
         );
         assert_eq!(WorkflowType::Ops.recipe_name(), None);
         assert_eq!(WorkflowType::QAndA.recipe_name(), None);
+    }
+
+    /// Issue #2553 — the positive calibration set. An administrative request
+    /// that carries no repository-edit signal is OPS, and OPS has no recipe,
+    /// so it starts no workflow, takes no worktree and opens no PR.
+    ///
+    /// The third row is the 13 November request that motivated the issue; it
+    /// exercises the UNDERSTAND path, which rule 2 or rule 5 of the routing
+    /// prompt would otherwise claim.
+    #[test]
+    fn issue_2553_administrative_requests_classify_as_ops() {
+        let classifier = WorkflowClassifier::default();
+        for request in [
+            "Triage these issues",
+            "Open an issue for X and assign Y",
+            "Research these issues and write up the answers",
+            "Write up the answers to these questions in chat",
+            "Create an issue about src/router.rs and assign its owner",
+            "Research this question set and report the answers in an issue",
+            "Update the project status in the coordination issue",
+            "Coordinate review of the open pull requests",
+            "Report unit test coverage in the status issue",
+        ] {
+            let result = classifier.classify(request);
+            assert_eq!(result.workflow, WorkflowType::Ops, "{request}");
+            assert_eq!(
+                result.workflow.recipe_name(),
+                None,
+                "an OPS classification starts no workflow: {request}"
+            );
+        }
+    }
+
+    /// The negative calibration set. Fix #269 narrowed the OPS keywords
+    /// because a generic word stole development work; the new route must not
+    /// reopen that. Each row is a near neighbour of a row above.
+    #[test]
+    fn issue_2553_near_neighbour_edit_requests_stay_on_the_default_workflow() {
+        let classifier = WorkflowClassifier::default();
+        for request in [
+            "Rename term X across the tracked docs of repos A and B",
+            "Correct the wording in tracked docs/routing.md",
+            "Commit the research answers to README.md",
+            "Remove the stale entries from docs/",
+            "Fix the typo in README",
+            "Rename the config key across crates/amplihack-workflows/",
+            "Add tests for the issue parser",
+            "Open a PR for the routing fix",
+            // `assign` as a bare substring used to steal this one.
+            "Refactor the assignment helper",
+            // `status` as a bare substring used to steal this one.
+            "Fix the status bar rendering",
+        ] {
+            assert_eq!(
+                classifier.classify(request).workflow,
+                WorkflowType::Default,
+                "{request}"
+            );
+        }
+    }
+
+    /// `documentation` as a bare destination used to steal this one: writing
+    /// an answer about documentation into chat edits no tracked file.
+    #[test]
+    fn issue_2553_answering_about_documentation_is_not_a_repository_edit() {
+        let classifier = WorkflowClassifier::default();
+        for request in [
+            "Write up the documentation gaps in chat",
+            "Summarise the documentation gaps in the triage issue",
+        ] {
+            assert_eq!(
+                classifier.classify(request).workflow,
+                WorkflowType::Ops,
+                "{request}"
+            );
+            assert!(!requires_repository_edit(request), "{request}");
+        }
+    }
+
+    #[test]
+    fn issue_2553_report_destination_controls_routing_even_when_the_subject_names_a_file() {
+        let classifier = WorkflowClassifier::default();
+        for request in [
+            "Write the research findings about docs/routing.md in the status issue.",
+            "Write up the answers about src/router.rs in chat.",
+            "Create a status report about README.md in the coordination issue.",
+        ] {
+            assert_eq!(
+                classifier.classify(request).workflow,
+                WorkflowType::Ops,
+                "{request}"
+            );
+            assert!(!requires_repository_edit(request), "{request}");
+        }
+    }
+
+    #[test]
+    fn issue_2553_administrative_prefixes_do_not_hide_repository_edit_workstreams() {
+        let classifier = WorkflowClassifier::default();
+        for request in [
+            "Open an issue about src/router.rs, then correct docs/routing.md.",
+            "Create an issue about the wording and correct docs/routing.md.",
+            "Create a triage issue for the wording sweep, then replace the name across tracked documentation files.",
+        ] {
+            assert_eq!(
+                classifier.classify(request).workflow,
+                WorkflowType::Default,
+                "{request}"
+            );
+            assert!(requires_repository_edit(request), "{request}");
+        }
+    }
+
+    /// Blank input keeps its pre-existing answer: DEFAULT at zero confidence,
+    /// decided before either gate runs.
+    #[test]
+    fn issue_2553_blank_input_is_unchanged_by_the_new_gates() {
+        let classifier = WorkflowClassifier::default();
+        for request in ["", "   ", "\n\t"] {
+            let result = classifier.classify(request);
+            assert_eq!(result.workflow, WorkflowType::Default, "{request:?}");
+            assert_eq!(result.confidence, 0.0, "{request:?}");
+        }
     }
 }

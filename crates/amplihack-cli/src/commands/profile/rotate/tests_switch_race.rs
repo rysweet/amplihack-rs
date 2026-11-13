@@ -8,6 +8,9 @@
 //! stored). `Ctx::measure` replaces finding `claude`, measuring and deciding,
 //! so no binary is stubbed and nothing outside the temp dir is touched.
 
+// Shared fixtures also serve Linux-only tests; keep the portable tests enabled.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use super::cycle::{Ctx, CycleOutcome, MeasureFn, Mode, run_cycle};
 use super::decide::{Decision, Reading, Reason};
 use super::ledger::{LastCycle, SWITCHED};

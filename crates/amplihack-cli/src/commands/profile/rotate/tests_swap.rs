@@ -14,6 +14,9 @@
 //!   Result<RecoverOutcome, ProfileError>`, with `RecoverOutcome::{None,
 //!   RolledBack { from, to }, RolledForward { from, to }, Inconsistent(String)}`.
 
+// Shared fixtures also serve Linux-only tests; keep the portable tests enabled.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use super::ledger::{Phase, RotateJournal, RotateState};
 use super::swap::{RecoverOutcome, Source, recover, swap};
 use crate::commands::profile::ProfileError;

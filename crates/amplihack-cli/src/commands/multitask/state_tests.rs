@@ -1,12 +1,10 @@
 //! Issue #871 — workstream state persistence must be observable.
 //!
-//! Missing != corrupt: a MISSING state file stays silent, a CORRUPT file emits
-//! `error!`, and a FAILED checkpoint write is logged instead of silently
-//! claiming the workstream is resumable.
+//! Missing != corrupt: a MISSING state file stays silent, a CORRUPT file
+//! returns an error, and a failed state write is returned to its caller.
 
-use super::models::{PersistedState, Workstream};
-use super::persistence::load_state;
-use super::state::finalize_workstream;
+use super::models::PersistedState;
+use super::persistence::{persist_state, read_state};
 use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -69,20 +67,12 @@ fn capture<T>(op: impl FnOnce() -> T) -> (T, Vec<String>) {
     (out, captured)
 }
 
-fn has_level(lines: &[String], level: &str) -> bool {
-    lines.iter().any(|l| l.starts_with(level))
-}
-
-fn joined(lines: &[String]) -> String {
-    lines.join("\n")
-}
-
 #[test]
 fn load_state_missing_file_is_silent() {
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("ws-does-not-exist.json");
-    let (result, logs) = capture(|| load_state(&missing));
-    assert!(result.is_none(), "missing file must load as None");
+    let (result, logs) = capture(|| read_state(&missing));
+    assert!(result.unwrap().is_none(), "missing file must load as None");
     assert!(
         logs.is_empty(),
         "a missing state file is the normal first-run condition and must \
@@ -95,17 +85,8 @@ fn load_state_corrupt_file_logs_error() {
     let dir = tempfile::tempdir().unwrap();
     let corrupt = dir.path().join("ws-42.json");
     fs::write(&corrupt, b"{ this is not valid json").unwrap();
-    let (result, logs) = capture(|| load_state(&corrupt));
-    assert!(result.is_none(), "corrupt file still loads as None");
-    assert!(
-        has_level(&logs, "ERROR"),
-        "a corrupt state file must be surfaced at error! (distinguishable \
-         from a missing file); got: {logs:?}"
-    );
-    assert!(
-        joined(&logs).contains("ws-42.json"),
-        "the diagnostic must reference the offending path; got: {logs:?}"
-    );
+    let error = read_state(&corrupt).expect_err("corrupt state must stop execution");
+    assert!(error.to_string().contains("ws-42.json"));
 }
 
 #[test]
@@ -113,24 +94,27 @@ fn load_state_valid_file_returns_some_silently() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ws-7.json");
     let state = PersistedState {
-        issue: 7,
+        key: "7".to_string(),
+        issue: Some(7),
         ..Default::default()
     };
     fs::write(&path, serde_json::to_string(&state).unwrap()).unwrap();
-    let (result, logs) = capture(|| load_state(&path));
-    assert_eq!(result.map(|s| s.issue), Some(7));
+    let (result, logs) = capture(|| read_state(&path));
+    assert_eq!(result.unwrap().map(|s| s.issue), Some(Some(7)));
     assert!(
         logs.is_empty(),
         "a valid load must be silent; got: {logs:?}"
     );
 }
 
+#[cfg(unix)]
 #[test]
-fn persist_state_failure_is_logged() {
+fn persist_state_failure_is_returned() {
     let base = tempfile::tempdir().unwrap();
     let state = tempfile::tempdir().unwrap();
-    let mut ws = Workstream::new(
-        792,
+    let mut ws = super::models::Workstream::new(
+        super::models::WorkstreamKey::new("792").unwrap(),
+        Some(792),
         "feature/obs".to_string(),
         "desc".to_string(),
         "task".to_string(),
@@ -138,22 +122,19 @@ fn persist_state_failure_is_logged() {
         base.path(),
         state.path(),
     );
-    // Point the state file at a path whose parent is a *file*, so the atomic
-    // write can never succeed — deterministic for every user (including root),
-    // unlike a chmod-based approach.
-    let blocker = state.path().join("blocker");
-    fs::write(&blocker, b"x").unwrap();
-    ws.state_file = blocker.join("ws-792.json");
-
-    let (_, logs) = capture(|| finalize_workstream(&mut ws, 1));
-    assert!(
-        !logs.is_empty(),
-        "a failed checkpoint write must be surfaced, not swallowed by a \
-         discarded `persist_state` result"
+    use std::os::unix::fs::PermissionsExt;
+    ws.state_file = state.path().join("ws-792.json");
+    persist_state(&ws).unwrap();
+    let committed = fs::read(&ws.state_file).unwrap();
+    fs::set_permissions(state.path(), fs::Permissions::from_mode(0o500)).unwrap();
+    let result = persist_state(&ws);
+    fs::set_permissions(state.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let error = result.expect_err("failed state writes must propagate");
+    assert_eq!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .map(std::io::Error::kind),
+        Some(std::io::ErrorKind::PermissionDenied)
     );
-    assert!(
-        joined(&logs).contains("792"),
-        "the checkpoint-failure diagnostic must reference the workstream \
-         (issue id / path); got: {logs:?}"
-    );
+    assert_eq!(fs::read(&ws.state_file).unwrap(), committed);
 }

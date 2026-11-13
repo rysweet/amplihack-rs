@@ -585,6 +585,10 @@ pub(super) fn missing_framework_paths(claude_dir: &Path) -> Result<Vec<String>> 
         "recipes/smart-orchestrator.yaml",
         "recipes/default-workflow.yaml",
         "recipes/investigation-workflow.yaml",
+        // Issue #2553: the route a decomposed administrative workstream takes.
+        // Without it an Operations leaf falls back to `default-workflow`,
+        // which opens a pull request for work that changes no tracked file.
+        "recipes/operations-direct.yaml",
     ];
     for rel in required_bundle_paths {
         let path = bundle_dir.join(rel);

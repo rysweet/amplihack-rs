@@ -4,22 +4,18 @@
 //! live in sibling modules (`launcher`, `state`, `utils`).
 
 use super::models::*;
-use super::{cleanup, default_branch, launcher, persistence, state, utils, waves};
+use super::{
+    cleanup, default_branch, dispatch, launcher, ownership, persistence, report, state, utils,
+};
 use crate::util::{format_output_diagnostics, run_output_with_timeout};
-use anyhow::{Context, Result, bail};
-use chrono::Utc;
-use std::collections::HashMap;
-use std::fs;
-use std::path::PathBuf;
-use std::process::Child;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::{Duration, Instant};
-use tracing::warn;
+use std::time::Duration;
 
 const DEFAULT_BRANCH_RESOLUTION_TIMEOUT: Duration = Duration::from_secs(30);
 const GIT_CLONE_TIMEOUT: Duration = Duration::from_secs(300);
+use anyhow::{Context, Result, bail};
+use std::fs;
+use std::path::PathBuf;
+use tracing::warn;
 
 #[cfg(test)]
 #[path = "orchestrator_tests.rs"]
@@ -31,8 +27,7 @@ pub struct ParallelOrchestrator {
     state_dir: PathBuf,
     mode: String,
     workstreams: Vec<Workstream>,
-    processes: HashMap<i64, Arc<Mutex<Option<Child>>>>,
-    cleaned_up: std::collections::HashSet<i64>,
+    cleaned_up: std::collections::HashSet<WorkstreamKey>,
     freed_bytes: u64,
     default_max_runtime: u64,
     default_timeout_policy: String,
@@ -47,7 +42,6 @@ impl ParallelOrchestrator {
             state_dir: PathBuf::from(utils::default_base_dir()).join("state"),
             mode: mode.to_string(),
             workstreams: Vec::new(),
-            processes: HashMap::new(),
             cleaned_up: std::collections::HashSet::new(),
             freed_bytes: 0,
             default_max_runtime: DEFAULT_MAX_RUNTIME,
@@ -69,25 +63,43 @@ impl ParallelOrchestrator {
         }
     }
 
-    pub fn running_flag(&self) -> Arc<AtomicBool> {
-        Arc::new(AtomicBool::new(true))
-    }
-
     pub fn setup(&self) -> Result<()> {
+        ownership::private_directory(&self.base_dir)?;
         fs::create_dir_all(&self.base_dir)
             .with_context(|| format!("Failed to create base dir: {}", self.base_dir.display()))?;
-        fs::create_dir_all(&self.state_dir)
-            .with_context(|| format!("Failed to create state dir: {}", self.state_dir.display()))?;
-        utils::check_disk_space(&self.base_dir, 5.0)?;
+        ownership::private_directory(&self.state_dir)?;
         Ok(())
     }
 
-    pub fn add(&mut self, config: &WorkstreamConfig, default_recipe: &str) -> Result<()> {
-        let issue = config.issue_id();
-        if issue <= 0 {
-            bail!("Invalid issue number: {}", config.issue);
+    /// Register the `index`-th (one-based) workstream of this run without
+    /// touching the filesystem or the network, and return it.
+    ///
+    /// Issue #2553: an absent issue is not an error. The workstream's identity
+    /// is its [`WorkstreamKey`], derived from the configuration, so a
+    /// decomposition that knows no issue numbers still produces distinct work
+    /// directories, logs, state files and process-map slots.
+    pub fn register(
+        &mut self,
+        index: usize,
+        config: &WorkstreamConfig,
+        default_recipe: &str,
+    ) -> Result<&Workstream> {
+        let key = derive_key(config, index)
+            .with_context(|| format!("workstream {index} on branch {:?}", config.branch))?;
+        // Two entries on one identity would share a work directory, log and
+        // state file, and `cleanup_merged` would delete one workstream's work
+        // directory on the other's merge.
+        if self.workstreams.iter().any(|w| w.key == key) {
+            bail!(
+                "duplicate workstream identity '{key}': workstream {index} would share \
+                 the work directory, log and state file of an earlier workstream in \
+                 this run"
+            );
         }
+        let issue = config.issue()?.map(|n| n.get());
 
+        let mut config = config.clone();
+        super::plan::resolve_route(&mut config, default_recipe)?;
         let recipe = config
             .recipe
             .as_deref()
@@ -95,6 +107,7 @@ impl ParallelOrchestrator {
             .to_string();
 
         let mut ws = Workstream::new(
+            key,
             issue,
             config.branch.clone(),
             config.description_or_default(),
@@ -112,236 +125,122 @@ impl ParallelOrchestrator {
         // Issue #1966: copied through unchanged; the recipe validates it.
         ws.is_critical_code = config.is_critical_code.clone();
 
-        let saved = persistence::load_state(&ws.state_file);
-        if let Some(ref s) = saved {
-            state::apply_saved_state(&mut ws, s);
+        ws.classification = config.classification.clone().unwrap();
+        ws.source_repository = ownership::RepositoryIdentity::current()?;
+        ws.dependencies = config.dependencies.clone();
+        ws.create_issue = config.create_issue;
+        if ws.classification == "Operations" {
+            ws.work_dir = std::env::current_dir()?.canonicalize()?;
+        }
+        let saved = persistence::read_state(&ws.state_file)?;
+        if let Some(ref saved) = saved {
+            ownership::validate_saved(&ws, saved)?;
+            ownership::verify(&ws)?;
+            state::apply_saved_state(&mut ws, saved);
         }
 
-        let reuse_existing = saved.is_some() && !ws.cleanup_eligible && ws.work_dir.exists();
-
-        if !reuse_existing && ws.work_dir.exists() {
-            let _ = fs::remove_dir_all(&ws.work_dir);
-        }
-
-        let default_branch = self.resolve_default_branch();
-
-        if reuse_existing {
-            println!(
-                "[{}] Reusing preserved work dir {}",
-                issue,
-                ws.work_dir.display()
-            );
-        } else {
-            println!("[{issue}] Cloning default branch '{default_branch}' from remote...");
-            let branch_arg = format!("--branch={default_branch}");
-            let work_dir_arg = ws.work_dir.to_string_lossy();
-            let mut clone_cmd = amplihack_git::command();
-            clone_cmd.args([
-                "clone",
-                "--depth=1",
-                &branch_arg,
-                &self.repo_url,
-                work_dir_arg.as_ref(),
-            ]);
-            let output = run_output_with_timeout(clone_cmd, GIT_CLONE_TIMEOUT)
-                .with_context(|| format!("[{issue}] git clone timed out or failed to execute"))?;
-
-            if !output.status.success() {
-                bail!(
-                    "[{issue}] git clone failed: {}",
-                    format_output_diagnostics(&output, 400)
-                );
-            }
-        }
-
-        fs::create_dir_all(&ws.work_dir)?;
-
-        launcher::populate_workstream_scope(&mut ws, &self.repo_url, &default_branch);
-
-        let delegate = launcher::detect_delegate();
-        if self.mode == "recipe" {
-            launcher::write_recipe_launcher(&ws, &delegate)?;
-        } else {
-            launcher::write_classic_launcher(&ws, &delegate)?;
-        }
-
-        persistence::persist_state(&ws)?;
         self.workstreams.push(ws);
-        Ok(())
+        Ok(self
+            .workstreams
+            .last()
+            .expect("just registered a workstream"))
     }
 
-    pub fn launch_all(&mut self) -> Result<()> {
-        waves::launch_all(&mut self.workstreams, &mut self.processes, &self.mode)
-    }
-
-    pub fn monitor(&mut self, running: Arc<AtomicBool>) -> Result<()> {
-        let check_interval = Duration::from_secs(10);
-        let start = Instant::now();
-
-        while running.load(Ordering::Relaxed) {
-            state::enforce_timeouts(&mut self.workstreams, &self.processes);
-
-            let status = state::get_status(&mut self.workstreams, &self.processes);
-            let elapsed = start.elapsed().as_secs();
-            let now = Utc::now().format("%H:%M:%S");
-
-            println!(
-                "\n[{now}] Status (elapsed: {elapsed}s):\n  \
-                 Running:   {} {:?}\n  \
-                 Completed: {} {:?}\n  \
-                 Failed:    {} {:?}",
-                status.running.len(),
-                status.running,
-                status.completed.len(),
-                status.completed,
-                status.failed.len(),
-                status.failed,
+    pub fn prepare_all(&mut self) -> Result<()> {
+        if self
+            .workstreams
+            .iter()
+            .any(|ws| ws.classification != "Operations")
+        {
+            let authority = self
+                .repo_url
+                .split_once("://")
+                .map(|(_, rest)| rest.split('/').next().unwrap_or(rest));
+            anyhow::ensure!(
+                authority.is_none_or(|authority| !authority.contains('@')
+                    || (self.repo_url.starts_with("ssh://")
+                        && !authority.split('@').next().unwrap_or("").contains(':'))),
+                "origin URL embeds credentials; configure a Git credential helper before development preparation"
             );
-
-            // Emit JSONL heartbeat to stderr
-            let heartbeat = serde_json::json!({
-                "type": "heartbeat",
-                "ts": Utc::now().timestamp_millis() as f64 / 1000.0,
-                "elapsed_s": elapsed,
-                "summary": {
-                    "running": status.running.len(),
-                    "completed": status.completed.len(),
-                    "failed": status.failed.len(),
-                    "total": self.workstreams.len(),
-                },
-            });
-            eprintln!("{}", serde_json::to_string(&heartbeat).unwrap_or_default());
-
-            // Auto-cleanup completed workstream directories
-            for ws in &self.workstreams {
-                if !self.cleaned_up.contains(&ws.issue)
-                    && ws.exit_code.is_some()
-                    && Workstream::derive_cleanup_eligible(&ws.lifecycle_state)
-                {
-                    self.cleanup_workstream_dir(ws);
-                }
-            }
-
-            if status.running.is_empty() {
-                break;
-            }
-
-            thread::sleep(check_interval);
         }
-
-        // If interrupted, terminate remaining
-        if !running.load(Ordering::Relaxed) {
-            println!("\nInterrupted! Cleaning up workstreams...");
-            state::cleanup_running(&mut self.workstreams, &self.processes);
+        for ws in &self.workstreams {
+            ownership::claim(ws)?;
         }
-
+        for idx in 0..self.workstreams.len() {
+            self.prepare(idx, self.workstreams[idx].state_file.exists())?;
+        }
         Ok(())
+    }
+
+    fn prepare(&mut self, idx: usize, had_state: bool) -> Result<()> {
+        if self.workstreams[idx].lifecycle_state == "completed" {
+            return persistence::persist_state(&self.workstreams[idx]);
+        }
+        let operations = self.workstreams[idx].classification == "Operations";
+        let default_branch = if operations {
+            String::new()
+        } else {
+            self.resolve_default_branch()
+        };
+        let ws = &mut self.workstreams[idx];
+        if !operations {
+            utils::check_disk_space(&self.base_dir, 5.0)?;
+            let reuse = had_state && ws.work_dir.exists();
+            if !reuse {
+                // claim() created only an empty, owned artefact directory.
+                ownership::prepare_clone(ws)?;
+                let mut cmd = amplihack_git::command();
+                cmd.args(["clone", "--depth=1"])
+                    .arg(format!("--branch={default_branch}"))
+                    .arg("--")
+                    .arg(&self.repo_url)
+                    .arg(&ws.work_dir);
+                let output =
+                    run_output_with_timeout(cmd, GIT_CLONE_TIMEOUT).context("execute git clone")?;
+                if !output.status.success() {
+                    bail!(
+                        "[{}] git clone failed: {}",
+                        ws.key,
+                        format_output_diagnostics(&output, 400)
+                    );
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(&ws.artefact_dir, fs::Permissions::from_mode(0o700))?;
+                }
+                ownership::claim(ws)?;
+            }
+        }
+        launcher::populate_workstream_scope(ws, &self.repo_url, &default_branch);
+        if !operations {
+            let delegate = launcher::detect_delegate();
+            if self.mode == "recipe" {
+                launcher::write_recipe_launcher(ws, &delegate)?;
+            } else {
+                launcher::write_classic_launcher(ws, &delegate)?;
+            }
+        }
+
+        persistence::persist_state(ws)
+    }
+
+    pub fn monitor(&mut self) -> Result<()> {
+        dispatch::execute(&mut self.workstreams, &self.mode)
     }
 
     pub fn report(&self) -> String {
-        let mut lines = vec![
-            String::new(),
-            "=".repeat(70),
-            "PARALLEL WORKSTREAM REPORT".to_string(),
-            format!("Mode: {}", self.mode),
-            "=".repeat(70),
-        ];
-
-        let mut succeeded = 0u32;
-        let mut failed = 0u32;
-
-        for ws in &self.workstreams {
-            let runtime = ws
-                .runtime_seconds()
-                .map(|s| format!("{s:.0}s"))
-                .unwrap_or_else(|| "N/A".to_string());
-
-            let status = if ws.exit_code == Some(0) {
-                succeeded += 1;
-                "OK".to_string()
-            } else {
-                failed += 1;
-                format!(
-                    "FAILED (exit {})",
-                    ws.exit_code
-                        .map(|c| c.to_string())
-                        .unwrap_or_else(|| "?".to_string())
-                )
-            };
-
-            lines.push(format!("\n[{}] {}", ws.issue, ws.description));
-            lines.push(format!("  Branch:    {}", ws.branch));
-            lines.push(format!("  Status:    {status}"));
-            lines.push(format!("  Lifecycle: {}", ws.lifecycle_state));
-            lines.push(format!("  Runtime:   {runtime}"));
-            lines.push(format!(
-                "  Checkpoint: {}",
-                if ws.checkpoint_id.is_empty() {
-                    "n/a"
-                } else {
-                    &ws.checkpoint_id
-                }
-            ));
-            lines.push(format!(
-                "  Worktree: {}",
-                if ws.worktree_path.is_empty() {
-                    "n/a"
-                } else {
-                    &ws.worktree_path
-                }
-            ));
-            lines.push(format!("  Log:       {}", ws.log_file.display()));
-            lines.push(format!("  Cleanup eligible: {}", ws.cleanup_eligible));
-        }
-
-        let freed_gb = self.freed_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-        lines.push(String::new());
-        lines.push("-".repeat(70));
-        lines.push(format!(
-            "Total: {} | Succeeded: {succeeded} | Failed: {failed}",
-            self.workstreams.len()
-        ));
-        lines.push(String::new());
-        lines.push("DISK MANAGEMENT:".to_string());
-        lines.push(format!(
-            "  Auto-cleaned: {} workstream dirs ({freed_gb:.2}GB freed)",
-            self.cleaned_up.len()
-        ));
-        lines.push(format!(
-            "  Log files preserved at: {}/log-*.txt",
-            self.base_dir.display()
-        ));
-        lines.push("=".repeat(70));
-
-        let report_text = lines.join("\n");
-
-        // Write report to file
-        let report_file = self.base_dir.join("REPORT.md");
-        if let Err(e) = fs::write(&report_file, &report_text) {
-            warn!("Failed to write report to {}: {e}", report_file.display());
-        } else {
-            println!("Report saved to: {}", report_file.display());
-        }
-
-        report_text
+        report::render(
+            &self.mode,
+            &self.base_dir,
+            &self.workstreams,
+            self.cleaned_up.len(),
+            self.freed_bytes,
+        )
     }
 
     pub fn cleanup_merged(&self, config_path: &str, dry_run: bool) -> Result<()> {
         cleanup::cleanup_merged(&self.base_dir, &self.state_dir, config_path, dry_run)
-    }
-
-    fn cleanup_workstream_dir(&self, ws: &Workstream) {
-        if !ws.work_dir.exists() {
-            return;
-        }
-        let dir_size = utils::dir_size_bytes(&ws.work_dir);
-        let _ = fs::remove_dir_all(&ws.work_dir);
-        let freed_mb = dir_size as f64 / (1024.0 * 1024.0);
-        println!(
-            "[{}] Cleaned up work dir ({freed_mb:.0}MB freed, log preserved at {})",
-            ws.issue,
-            ws.log_file.display()
-        );
     }
 
     fn resolve_default_branch(&mut self) -> String {
@@ -350,7 +249,7 @@ impl ParallelOrchestrator {
         }
 
         let mut cmd = amplihack_git::command();
-        cmd.args(["ls-remote", "--symref", &self.repo_url, "HEAD"]);
+        cmd.args(["ls-remote", "--symref", "--", &self.repo_url, "HEAD"]);
         let branch = match run_output_with_timeout(cmd, DEFAULT_BRANCH_RESOLUTION_TIMEOUT) {
             Ok(output) if output.status.success() => {
                 let stdout = String::from_utf8_lossy(&output.stdout);

@@ -26,6 +26,13 @@
 mod isolated_amplihack;
 mod support;
 
+#[path = "issue_2553_execution.rs"]
+mod issue_2553_execution;
+#[path = "issue_2553_operations_routing.rs"]
+mod issue_2553_operations_routing;
+#[path = "issue_2553_plan_contract.rs"]
+mod issue_2553_plan_contract;
+
 #[path = "issue_2329_autodrive_outcomes.rs"]
 mod issue_2329_autodrive_outcomes;
 #[path = "issue_2545_autodrive_repo_context.rs"]

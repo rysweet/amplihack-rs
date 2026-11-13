@@ -58,6 +58,7 @@ pub fn is_account_mismatch(e: &ProfileError) -> bool {
 
 /// [`guard`] without the printing: `note` gets the warning, if any.
 #[cfg(test)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux callers only
 pub(super) fn decide(
     store: &ProfileStore,
     rs: &RotateState,

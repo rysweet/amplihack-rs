@@ -13,6 +13,9 @@
 //! - `reclaim(&mut Vec<Slot>, &mut Vec<QueueEntry>) -> usize`: removes the
 //!   records of dead processes; never signals anything but 0.
 
+// Shared fixtures also serve Linux-only tests; keep the portable tests enabled.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use super::liveness::{
     alive, parse_stat_ppid, parse_stat_start_time, reclaim, same_process, self_or_ancestor,
     start_time,

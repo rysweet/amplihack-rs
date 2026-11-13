@@ -14,6 +14,7 @@ tags: ["investigation","workflow","composable","explore","verify","report"]
 # Context flows automatically between sub-recipes.
 
 context:
+  prerequisite_results: "{}" # Results of completed dependency leaves, keyed by immutable identity.
   # The main question to investigate. When invoked via smart-orchestrator,
   # this is set by the routing step. When invoked directly, it's populated
   # from task_description (see investigation-prep preflight).

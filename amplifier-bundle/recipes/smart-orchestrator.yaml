@@ -52,7 +52,7 @@ context:
   force_single_workstream: "false" # set to "true" to prevent parallel decomposition
   adaptive_recipe: "" # set by detect-execution-gap when routing fails
   infra_error_details: "" # diagnostic info for infrastructure failures
-  ops_modified_files: "" # set by ops-file-change-check when Operations modifies files
+  ops_modified_files: "" # retained for compatibility with downstream validation gates; operations-direct does not set it
   # Skip pre-agent project validation (npm test, build) — default true to avoid blocking on large codebases (see #453)
   skip_pre_agent_validation: "true"
   # Auto-initialize a git repo when repo_path is not a work tree — default true so repo-creation tasks proceed; set "false" for a fail-closed opt-out (see #900)

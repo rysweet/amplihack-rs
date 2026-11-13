@@ -78,6 +78,30 @@ Hybrid decompositions route each workstream by its own normalized classification
 
 The invariant is enforced in the native orchestration helper when workstream configuration is materialized. This makes routing deterministic even when an agent omits `recipe`, emits an empty recipe, or incorrectly suggests another recipe for a Development workstream.
 
+### Operations routing invariant
+
+Operations classification routes to `operations-direct`. The same helper selects it, so a model-supplied `recipe` value cannot send an administrative workstream through a Development workflow, and a `-c workflow=` override does not apply to it.
+
+The helper replaces the model's recipe on a non-Development workstream when the field is missing, blank, `default-workflow`, or `quick-change`. Naming `default-workflow` on such a workstream is stating a default rather than making a choice. A deliberately named recipe that is none of those four values is preserved.
+
+`Ops`, `PM`, `Project Management` and `project-management` all normalize to `Operations`.
+
+Classify by the action required and the destination of its result:
+
+- Issue triage, issue creation and assignment, research answers destined for chat or an issue, status reporting and coordination are Operations.
+- Changing a tracked repository file is Development, including a documentation wording change.
+- Reading repository files as research material is not a repository edit.
+
+An Operations workstream gets no worktree, no branch and no pull request. Classification and per-leaf route resolution happen before preparation; repository edits are Development leaves. The `operations-direct` prompt repeats this scope for the leaf agent.
+
+### Optional tracking issues
+
+A workstream may have no issue number. Omission, `null`, a blank value and the placeholders `TBD`, `TBC`, `TODO`, `N/A`, `none`, `null`, `unknown`, `unassigned` and `pending` all mean absence, compared after trimming and ignoring case. Absence is carried through as absence: the child context omits `issue_number`, and `AMPLIHACK_WORKSTREAM_ISSUE` is not exported.
+
+Never invent an issue number to fill a gap, and never stop a run because one is missing. A value that is neither a placeholder nor a valid issue reference is still an error worth surfacing.
+
+An issue is never created as a side effect of decomposition. Creating one is an explicit administrative task.
+
 **Required environment variables** for the recipe runner:
 
 - `AMPLIHACK_HOME` — Auto-detected from the current working directory by
@@ -107,6 +131,7 @@ recipe directly based on your classification:
 | Development    | `default-workflow`       | smart-orchestrator decomposition failed |
 | Q&A (complex)  | `qa-workflow`            | Q&A needing multi-step research         |
 | Consensus      | `consensus-workflow`     | Critical decisions needing validation   |
+| Operations     | `operations-direct`      | A dispatched administrative workstream  |
 
 Example:
 
@@ -145,7 +170,9 @@ In this case:
 **Q&A and Operations only** may bypass the recipe runner:
 
 - Q&A: Respond directly (analyzer agent)
-- Operations: Builder agent (direct execution, no workflow steps)
+- Operations: Builder agent (direct execution, no workflow steps). A whole prompt
+  classified Operations launches no recipe at all; a decomposed Operations
+  workstream runs `operations-direct`.
 
 ### Error Recovery: Adaptive Strategy (NOT Degradation)
 

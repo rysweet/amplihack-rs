@@ -281,28 +281,6 @@ fn git_required_workflow_recipes_document_loud_git_preconditions() {
     }
 }
 
-#[test]
-fn operations_git_telemetry_uses_visible_non_git_skip() {
-    let source =
-        fs::read_to_string(recipe_path("smart-execute-routing.yaml")).expect("read routing recipe");
-    let routing = load_yaml(&recipe_path("smart-execute-routing.yaml"));
-    let step = step_command(&routing, "ops-file-change-check")
-        .expect("ops-file-change-check command must exist");
-
-    assert!(
-        step.contains("git rev-parse --is-inside-work-tree"),
-        "ops-file-change-check must probe git availability before git diff/ls-files"
-    );
-    assert!(
-        step.contains("[skip] not a git repo"),
-        "optional operations git telemetry must visibly skip outside git"
-    );
-    assert!(
-        !source.contains("cd \"$REPO_PATH\" 2>/dev/null || true"),
-        "optional git telemetry must not hide a failed cd with `|| true`"
-    );
-}
-
 fn all_recipe_files() -> Vec<PathBuf> {
     let mut files = fs::read_dir(recipes_dir())
         .expect("read recipes dir")
@@ -326,14 +304,6 @@ fn steps(recipe: &Value) -> Vec<&Value> {
         .and_then(Value::as_sequence)
         .map(|steps| steps.iter().collect())
         .unwrap_or_default()
-}
-
-fn step_command<'a>(recipe: &'a Value, step_id: &str) -> Option<&'a str> {
-    steps(recipe).into_iter().find_map(|step| {
-        (step.get("id").and_then(Value::as_str) == Some(step_id))
-            .then(|| step.get("command").and_then(Value::as_str))
-            .flatten()
-    })
 }
 
 /// `command` without the #1561 checks on a worktree path or branch read from

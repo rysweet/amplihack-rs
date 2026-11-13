@@ -1,327 +1,277 @@
 ---
-title: Dev-Orchestrator Routing Contract
-description: Deterministic routing rules for smart-orchestrator task and workstream execution.
-last_updated: 2026-10-29
+title: Dev-orchestrator routing contract
+description: Per-workstream routing, optional tracking and plan validation.
+last_updated: 2026-11-13
 review_schedule: quarterly
 owner: amplihack
 doc_type: reference
 ---
 
-# Dev-Orchestrator Routing Contract
+# Dev-orchestrator routing contract
 
-The dev-orchestrator routes every normalized `Development` workstream to `default-workflow`, except that a small single-workstream task may go to [`quick-change`](./quick-change-recipe.md) when the classifier or `-c workflow=` selects it.
+This reference describes per-workstream classification, routing and tracking.
 
-This document defines the routing contract. Rust-helper enforcement runs before workstream execution: model-produced `recipe` fields are advisory input only and cannot override the `Development` routing invariant.
+## Implementation boundary
+
+The native engine accepts branchless Operations leaves, immutable keys,
+classification, dependencies and Boolean `create_issue`. Both the decomposition
+helper and native execution validate the entire plan. `dependencies` is the
+canonical spelling; `depends_on` is accepted for existing decomposition assets.
+
+Operations runs in the caller's directory. Development uses the existing clone
+and recipe preparation. Each leaf has a separate owned runtime directory.
+Completion and cancellation use events; runtime budgets remain saved metadata
+and do not trigger timed interruption. Completed leaves are preserved on resume.
+A saved live or uncertain launch is rejected for manual reconciliation because
+this engine cannot safely observe a restored child. See
+[state and recovery](workstream-state.md#implementation-boundary).
+
+## Intended contract
+
+Every executable workstream has its own classification, route and immutable
+key. The complete plan is normalised and validated before issue acquisition,
+workspace preparation or agent execution.
 
 ## Contents
 
 - [Routing invariant](#routing-invariant)
 - [Classification authority](#classification-authority)
-- [Recipe normalization](#recipe-normalization)
+- [Classification labels and aliases](#classification-labels-and-aliases)
+- [Recipe normalisation](#recipe-normalisation)
+- [Operations routing](#operations-routing)
+- [Optional tracking issues](#optional-tracking-issues)
+- [Workstream identity](#workstream-identity)
 - [Workstream JSON API](#workstream-json-api)
 - [Configuration](#configuration)
-- [Examples](#examples)
+- [Validation and execution](#validation-and-execution)
 - [Security contract](#security-contract)
-- [Related](#related)
 
 ## Routing invariant
 
-Any workstream whose normalized classification is `Development` must run `default-workflow` or `quick-change`. No other recipe is allowed.
+Operations always selects `operations-direct`. A conflicting recipe,
+including a custom Operations recipe, cannot override that route.
 
-For a single workstream, `select-workflow` chooses between the two and logs the choice and its reason.
+Development selects `default-workflow` or an eligible `quick-change` route.
+Existing Investigation, Q&A and Consensus routes retain their established
+behaviour. See [Quick-change selection](quick-change-recipe.md#precedence).
 
-For a parallel decomposition, `build-workstreams-config` sets each workstream's recipe. The model's `recipe` field never selects `quick-change`, because `quick-change` needs exactly one workstream (row 6 of the [precedence table](./quick-change-recipe.md#precedence)):
-
-- A Development workstream runs `default-workflow`, unless a valid `-c workflow=` override (`quick-change` or `default-workflow`) is set. The override applies only when the top-level `task_type` is Development, and `quick-change` is not applied when `existing_branch` or `pr_number` is set or the task text names its branch with a `Branch: <ref>` line. These are the same rules `select-workflow` applies and logs (W2, W3, W4), so the log line names the recipe the workstreams run.
-- A workstream with any other classification keeps the model's recipe, except that `quick-change`, which commits, pushes and opens a PR, becomes the classification's own recipe: `investigation-workflow`, `qa-workflow` or `consensus-workflow`, and `default-workflow` for Operations. The override never changes these workstreams.
-
-How the single-workstream route chooses between the two is described in [Quick-Change Recipe: Routing from smart-orchestrator](./quick-change-recipe.md#routing-from-smart-orchestrator).
-
-The invariant applies per workstream. A top-level hybrid task can contain multiple workstreams with different classifications, and each workstream must be routed from its own normalized classification.
-
-Prompts that start with `[coord]` are coordination messages between sessions. The workflow classification reminder gives them a short note instead of the routing prompt, unless the body is a work request that starts with a change verb, as in `build #1740` or `fix the parser for #12`. A work request is throttled like the same text without the marker, and receives the note while the throttle holds. A report that starts with a verb used as a noun, such as `fix landed on PR 12` or `fix #12 merged`, receives the note. The note still tells the agent to use dev-orchestrator when the message asks for a code change, so the invariant above holds for marked messages too. See [Coordination Messages](./coordination-messages.md).
+These rules apply to every leaf, including Development leaves in an
+Operations-led plan. Top-level classification and concurrency settings
+cannot suppress required work.
 
 ## Classification authority
 
-The routing implementation uses the most specific classification available.
-
-| Source | Authority | Routing effect |
-| --- | --- | --- |
-| Per-workstream `classification`, `task_type`, or `type` | Highest | Used to normalize that workstream's recipe |
-| Top-level `task_type` | Fallback | Used only when the workstream has no per-workstream classification |
-| Model-provided `recipe` | Advisory | Preserved only when it does not violate deterministic routing |
-
-The normalized classification is authoritative for routing. The raw model text must be normalized before routing decisions are made, so common variants such as `dev`, `development`, or mixed-case `Development` resolve to the same classification.
-
-The exact fallback rule is:
-
-1. Use the workstream's own `classification`, `task_type`, or `type` when present.
-2. Use the top-level `task_type` only when the workstream has none of those fields.
-3. Route an unclassified workstream under top-level `Development` to `default-workflow`.
-
-This keeps hybrid decomposition safe: investigation, Q&A, operations, and consensus workstreams inside a broader development request must not inherit `Development` when they carry their own non-Development classification.
-
-## Recipe normalization
-
-The deterministic normalization rule is:
-
-| Normalized workstream classification | Input recipe | Normalized recipe |
-| --- | --- | --- |
-| `Development` | missing | `default-workflow` |
-| `Development` | `""` or whitespace | `default-workflow` |
-| `Development` | `investigation-workflow` | `default-workflow` |
-| `Development` | `default-workflow` | `default-workflow` |
-| `Development` | `quick-change` | `default-workflow` |
-| `Development` | any other value | `default-workflow` |
-| `Development`, valid `-c workflow=` override, top-level `task_type` Development | any value | the override, except that `quick-change` becomes `default-workflow` when `existing_branch` or `pr_number` is set or the task names its branch |
-| Non-Development, any override | `quick-change` | the classification's own recipe (`investigation-workflow`, `qa-workflow`, `consensus-workflow`, or `default-workflow` for Operations) |
-| Non-Development, any override | any other value | Existing route is preserved |
-
-This table applies to parallel decompositions, the only case in which `build-workstreams-config` runs. A model-provided `quick-change` is not kept, because `quick-change` needs exactly one workstream; only a valid override selects it, which matches the workflow that `select-workflow` logs. Single-workstream runs use `selected_workflow` from `select-workflow` instead.
-
-Non-Development classifications must not be rewritten by the Development invariant. Apart from the `quick-change` replacement above, their existing route selection remains in force:
-
-| Classification | Existing routing behavior |
+| Source | Effect |
 | --- | --- |
-| `Investigation` | Uses the investigation route selected by smart-orchestrator, normally `investigation-workflow` for recipe execution |
-| `Q&A` | Uses the direct analyzer-answer route for top-level Q&A; workstream recipes are preserved when a plan explicitly contains Q&A workstreams |
-| `Operations` | Uses the operations route selected by smart-orchestrator; workstream recipes are preserved when a plan explicitly contains operations workstreams. The current bundle does not define an `ops-workflow` recipe |
-| `Consensus` | Uses the consensus route selected by smart-orchestrator; workstream recipes are preserved when a plan explicitly contains consensus workstreams |
+| Per-workstream `classification`, `task_type`, or `type`, in that order | Determines the leaf's classification |
+| Top-level `task_type` | Fallback when the leaf has no classification |
+| Model-provided `recipe` | Advisory; subject to route validation and the routing invariant |
+
+Classification follows the requested action and destination. Repository-file
+edits require Development handling, including wording changes in
+documentation. References to source paths, tests or documentation alone do
+not establish edit intent. Research reports and issue comments use Operations
+handling; writing those reports into repository files uses Development.
+
+Mixed requests are decomposed before dispatch. Each leaf receives its own
+task and prerequisite results, so an Operations agent is not asked to execute
+the original mixed request again. See [Classifier calibration](workflow-classifier.md#operations-classification).
+
+## Classification labels and aliases
+
+Labels are trimmed and compared without case sensitivity. `Ops`,
+`Operations`, `PM`, `Project Management` and `project-management` identify
+Operations. Canonical plans and child contexts use `Operations`.
+
+The remaining canonical labels are `Development`, `Investigation`, `Q&A`
+and `Consensus`. The compatibility fields `task_type` and `type` follow the
+same classification rules as `classification`.
+
+## Recipe normalisation
+
+| Leaf classification | Input selection | Resolved route |
+| --- | --- | --- |
+| Operations | Any recipe or override | `operations-direct` |
+| Development | Missing, blank or model-selected recipe | `default-workflow` |
+| Development | Eligible `workflow=quick-change` selection | `quick-change` |
+| Development | `workflow=default-workflow` | `default-workflow` |
+| Investigation | Missing, blank or Development recipe | `investigation-workflow` |
+| Q&A | Missing, blank or Development recipe | `qa-workflow` for a plan leaf; direct answer for top-level Q&A |
+| Consensus | Missing, blank or Development recipe | `consensus-workflow` |
+| Investigation, Q&A or Consensus | Explicit supported non-default route | Existing selection rules apply |
+
+Recipe identifiers must be supported by the runner. Arbitrary task text is
+never interpreted as a recipe identifier or shell command.
+
+## Operations routing
+
+A pure Operations request executes directly or through one scoped checklist
+agent. A decomposed Operations leaf uses `operations-direct` regardless of
+recipe overrides. Routing occurs before branch lookup, clone creation or
+worktree preparation.
+
+Operations executes in the supplied context and stores private runtime
+artefacts separately. It does not run `default-workflow`, create a
+development workspace or open a development PR. A dirty working tree does
+not change the classification or authorise a PR.
+
+The checklist agent reports `completed`, `partial` or `failed`, with the
+result and any unfinished actions. An unsuccessful process or runner exit
+overrides a claim of success in its prose. Partial work is not sufficient to
+release a dependant that requires successful completion.
+
+The route controls orchestration and Development setup. It does not provide
+filesystem confinement.
+
+## Optional tracking issues
+
+One parser normalises issue values before numeric validation or downstream
+use.
+
+| Input | Result |
+| --- | --- |
+| Missing field, JSON `null`, empty or whitespace-only string | Absent |
+| `TBD`, `TBC`, `TODO`, `N/A`, `none`, `null`, `unknown`, `unassigned`, `pending` | Absent; trimmed and compared without case sensitivity |
+| Positive JSON integer through `18446744073709551615` | Present |
+| Positive ASCII decimal string, including `"002553"` | Canonical integer `2553` |
+| `"#2553"` | Canonical integer `2553` |
+| `"https://github.com/rysweet/amplihack-rs/issues/2553"` | Canonical integer `2553` |
+| Zero, negative, fraction, overflow, Boolean, container or unknown string | Validation error |
+
+Issue URLs must use the `github.com` host and an `/issues/<number>` path.
+Parsing is lexical and performs no network request. The number is tracking
+metadata; reading an issue as research material does not attach it as tracking.
+
+Absent issues are omitted from generated configuration and child context.
+The child receives neither a fabricated `issue_number` nor an inherited
+`AMPLIHACK_WORKSTREAM_ISSUE` from another leaf. Existing positive numbers
+remain available to downstream tracking consumers.
+
+Legacy persisted numeric zero reads as absence. This compatibility applies
+only to saved state: zero in new configuration is invalid.
+
+### Explicit tracking acquisition
+
+| `issue` after normalisation | `create_issue` | Behaviour before execution |
+| --- | --- | --- |
+| Present | Missing or false | Use the existing issue |
+| Present | True | Use the existing issue; do not create a duplicate |
+| Absent | Missing or false | Execute without an issue |
+| Absent | True | Acquire and persist a valid issue before executing this leaf |
+
+`create_issue` is a Boolean. Absence alone never requests creation. Explicit
+requests for tracked work set it on the affected leaves.
+
+The existing authenticated tracking service performs acquisition. Intent and
+a stable reconciliation reference are saved first; the validated result is
+saved before launch. Failed acquisition prevents that leaf from executing.
+An uncertain result is reconciled on resume, or reported as unresolved with
+an actionable error. It is never retried blindly. See [Acquisition recovery](workstream-state.md#tracking-acquisition).
+
+## Workstream identity
+
+The workstream key is independent of optional tracking metadata. Keys contain
+1–64 ASCII letters, digits, hyphens or underscores. Unsafe or duplicate keys
+are rejected before external actions.
+
+Initially tracked work preserves its numeric identity, for example `2553`.
+An issue-less leaf receives a safe unique key during normalisation. The key
+is persisted with the canonical plan before execution and reused on resume.
+Adding an issue never changes its key, artefact paths or dependency references.
+
+Saved identity or ownership conflicts are errors. A mismatched saved key is
+not ignored or replaced with a newly derived identity. See [Workstream state](workstream-state.md).
 
 ## Workstream JSON API
 
-`amplihack orch helper build-workstreams-config` accepts the decomposition JSON emitted by `smart-classify-route` and writes a workstreams JSON file for `amplihack orch run` with deterministic Development routing applied.
+The following transformation and schema require implementation.
 
-### Input shape
+`amplihack orch helper build-workstreams-config` accepts a decomposition object
+with `task_type` and `workstreams`. `amplihack orch run` consumes the
+normalised workstream array. The transformation preserves each leaf's task,
+description, classification, dependencies and tracking intent.
+
+This is an Operations-led decomposition with a dependent repository edit:
 
 ```json
 {
-  "task_type": "Development",
-  "goal": "Improve routing reliability",
-  "success_criteria": [
-    "Development workstreams always run default-workflow"
-  ],
+  "task_type": "Operations",
   "workstreams": [
     {
-      "name": "routing-normalization",
+      "key": "research-routing",
+      "classification": "Operations",
+      "task": "Read issue #2553 in rysweet/amplihack-rs and answer its routing questions in the result.",
+      "description": "Research routing requirements",
+      "issue": "TBD",
+      "create_issue": false,
+      "recipe": "default-workflow"
+    },
+    {
+      "key": "document-routing",
       "classification": "Development",
-      "description": "Fix deterministic routing normalization",
-      "recipe": "investigation-workflow"
+      "branch": "feat/document-operations-routing",
+      "task": "Use the prerequisite answers to update docs/operations-routing.md.",
+      "description": "Document routing requirements",
+      "depends_on": ["research-routing"],
+      "create_issue": false
     }
   ]
 }
 ```
 
-Supported per-workstream classification keys:
+The first leaf resolves to `operations-direct` and has no tracking issue.
+The second resolves to `default-workflow` and runs after successful research,
+receiving its result under `research-routing`. Both retain their keys.
 
-| Field | Purpose |
-| --- | --- |
-| `classification` | Preferred per-workstream classification field |
-| `task_type` | Backward-compatible classification field |
-| `type` | Backward-compatible classification field |
-
-The helper normalizes whichever per-workstream classification field is present. If more than one exists, the implementation treats the first supported field in its documented precedence order as the workstream classification.
-
-### Output shape
-
-```json
-[
-  {
-    "issue": "TBD",
-    "branch": "feat/orch-1-routing-normalization",
-    "task": "Fix deterministic routing normalization",
-    "description": "routing-normalization",
-    "recipe": "default-workflow"
-  }
-]
-```
-
-The output uses the `amplihack orch run` workstreams schema. See [`orch run`](./orch-run-command.md#workstreams-json-schema) for the complete execution schema.
+The [execution schema](orch-run-command.md#field-reference) defines the fields
+used in the normalised array.
 
 ## Configuration
 
-There is no configuration flag that disables the Development routing invariant.
-
-| Setting | Effect on routing |
+| Setting | Routing effect |
 | --- | --- |
-| `workflow=quick-change` | Forces `quick-change` for every Development workstream. Ignored, with a warning, for non-Development tasks, when `existing_branch` or `pr_number` is set, and when the task text names its branch (`Branch: <ref>`) |
-| `workflow=default-workflow` | Forces `default-workflow` for every Development workstream, even when the classifier recommends `quick-change` |
-| `workflow=<anything else>` | Ignored with `[dev-orchestrator] WARNING: unknown workflow override '<value>' ignored` |
-| `force_single_workstream=true` | Prevents parallel decomposition; a single `Development` workstream runs `default-workflow` or `quick-change` |
-| `strict_delivery` other than empty or `"false"` | Prevents parallel decomposition, as `force_single_workstream=true` does, because parallel workstreams do not carry it ([Where the inputs apply](workflow-delivery-inputs.md#where-the-inputs-apply)) |
-| `AMPLIHACK_MAX_DEPTH=0` | Blocks parallel spawning and adapts to single-session execution; the adaptive path always runs `default-workflow` |
-| `AMPLIHACK_AGENT_BINARY` | Chooses the agent backend; does not affect workflow recipe selection |
-| `AMPLIHACK_HOME` | Locates recipe assets; does not affect the routing invariant |
+| `workflow=quick-change` or `workflow=default-workflow` | Applies only to eligible Development work; cannot change Operations routing |
+| Unknown `workflow` override | Warning; does not select an arbitrary recipe |
+| `force_single_workstream=true` | Executes required leaves sequentially; preserves their tasks, routes and dependencies |
+| `strict_delivery` | Preserves delivery requirements on Development leaves without dropping Operations leaves |
+| `AMPLIHACK_MAX_DEPTH=0` | Does not discard leaves; the caller must supply a supported execution context |
+| `AMPLIHACK_AGENT_BINARY` | Selects the agent backend; does not change classification or routing |
+| `AMPLIHACK_HOME` | Locates installed assets; does not change routing |
 
-Prompt text in `dev-orchestrator`, `smart-classify-route`, `smart-execute-routing`, and the routing hook should state the same rule for model guidance:
+Installed classification prompts, hook guidance and recipe assets follow the
+same boundary as native execution.
 
-> Development classification routes to `default-workflow`, or to `quick-change` for a small change in a single workstream or when `-c workflow=quick-change` forces it; any recipe value the model gives a workstream is coerced to `default-workflow`.
+## Validation and execution
 
-That prompt text is supportive documentation for the model. The Rust helper is authoritative.
+Validation checks non-empty tasks, safe unique keys, issue values, supported
+routes, dependency references and acyclicity across the complete plan.
+Independent errors are reported together with workstream keys and field
+paths. Invalid plans perform no tracking requests, workspace preparation or
+agent execution.
 
-## Examples
-
-### Development workstream with missing recipe
-
-Input:
-
-```json
-{
-  "task_type": "Development",
-  "workstreams": [
-    {
-      "name": "api-fix",
-      "classification": "Development",
-      "description": "Fix the user API timeout"
-    }
-  ]
-}
-```
-
-Normalized output:
-
-```json
-[
-  {
-    "issue": "TBD",
-    "branch": "feat/orch-1-api-fix",
-    "task": "Fix the user API timeout",
-    "description": "api-fix",
-    "recipe": "default-workflow"
-  }
-]
-```
-
-### Development workstream with wrong recipe
-
-Input:
-
-```json
-{
-  "task_type": "Development",
-  "workstreams": [
-    {
-      "name": "test-regression",
-      "classification": "Development",
-      "description": "Add regression tests for routing",
-      "recipe": "investigation-workflow"
-    }
-  ]
-}
-```
-
-Normalized output:
-
-```json
-[
-  {
-    "issue": "TBD",
-    "branch": "feat/orch-1-test-regression",
-    "task": "Add regression tests for routing",
-    "description": "test-regression",
-    "recipe": "default-workflow"
-  }
-]
-```
-
-### Hybrid decomposition preserves non-Development routes
-
-Input:
-
-```json
-{
-  "task_type": "Development",
-  "workstreams": [
-    {
-      "name": "trace-current-routing",
-      "classification": "Investigation",
-      "description": "Trace current workstream route selection",
-      "recipe": "investigation-workflow"
-    },
-    {
-      "name": "fix-routing",
-      "classification": "Development",
-      "description": "Enforce Development routing in Rust",
-      "recipe": "investigation-workflow"
-    }
-  ]
-}
-```
-
-Normalized output:
-
-```json
-[
-  {
-    "issue": "TBD",
-    "branch": "feat/orch-1-trace-current-routing",
-    "task": "Trace current workstream route selection",
-    "description": "trace-current-routing",
-    "recipe": "investigation-workflow"
-  },
-  {
-    "issue": "TBD",
-    "branch": "feat/orch-2-fix-routing",
-    "task": "Enforce Development routing in Rust",
-    "description": "fix-routing",
-    "recipe": "default-workflow"
-  }
-]
-```
-
-The top-level task is `Development`, but the investigation workstream keeps its own route because its per-workstream classification is `Investigation`.
-
-### Unclassified workstream under top-level Development
-
-Input:
-
-```json
-{
-  "task_type": "Development",
-  "workstreams": [
-    {
-      "name": "unclassified-fix",
-      "description": "Fix an unclassified development workstream",
-      "recipe": "investigation-workflow"
-    }
-  ]
-}
-```
-
-Normalized output:
-
-```json
-[
-  {
-    "issue": "TBD",
-    "branch": "feat/orch-1-unclassified-fix",
-    "task": "Fix an unclassified development workstream",
-    "description": "unclassified-fix",
-    "recipe": "default-workflow"
-  }
-]
-```
-
-The workstream has no own classification, so the helper falls back to the top-level `Development` classification.
+Completion and cancellation events drive scheduling. A completed prerequisite
+releases capacity and makes eligible dependants runnable after its result is
+persisted. Failed, partial or cancelled prerequisites visibly block affected
+dependants. Successful prose cannot turn process failure into completion.
+Persistence failure stops additional launches and preserves recovery data.
 
 ## Security contract
 
-Decomposition JSON is model-produced and treated as untrusted input.
+Plans, saved state and prerequisite results are untrusted input. Keys and
+routes are validated before use; task and service values travel through
+structured interfaces or separate process arguments. Issue numbers confer
+no additional authority.
 
-The routing helper must:
-
-- trim recipe strings before checking whether they are empty
-- normalize classification before comparing it to `Development`
-- never let a raw recipe string select `quick-change`: a Development workstream gets `default-workflow` unless a valid override is set, and a non-Development `quick-change` becomes the classification's own recipe
-- accept a `-c workflow=` override only from the exact list `quick-change`, `default-workflow`
-- avoid building shell commands from model-provided recipe values
-- preserve non-Development behavior, apart from the `quick-change` replacement, without broad fallback logic that masks malformed plans
+Private runtime directories and atomic state files use restrictive
+permissions. Ownership and filesystem checks guard reuse and deletion,
+including symlink substitution. A PID alone cannot authorise observation or
+signalling of a restored process. Credentials are excluded from saved plans,
+contexts, reconciliation references and diagnostics.
 
 ## Related
 
-- [Quick-Change Recipe](./quick-change-recipe.md) - The single-session recipe for small changes, its diff limits and the `select-workflow` helper
-- [Getting Started with /dev](../tutorials/dev-orchestrator-tutorial.md)
-- [`amplihack orch run`](./orch-run-command.md)
-- [Workflow Classifier](./workflow-classifier.md)
-- [Coordination Messages](./coordination-messages.md)
-- [Smart-Orchestrator Recovery](../concepts/smart-orchestrator-recovery.md)
+- [Run Operations and mixed requests](../howto/run-operations-and-mixed-work.md)
+- [Operations routing explained](../operations-routing.md)
+- [Workstream state and recovery](workstream-state.md)
+- [Multitask command](multitask-command.md)
+- [Coordination messages](coordination-messages.md)

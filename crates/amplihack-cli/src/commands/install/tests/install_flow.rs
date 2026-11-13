@@ -17,6 +17,14 @@ fn local_install_stages_amplifier_bundle_for_dev_orchestrator() {
     let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().unwrap();
     let previous = crate::test_support::set_home(temp.path());
+    let claude = temp.path().join("private-claude");
+    let codex = temp.path().join("private-codex");
+    let profiles = temp.path().join("private-profiles");
+    let _private_profiles = crate::test_support::EnvGuard::set([
+        ("CLAUDE_CONFIG_DIR", claude.to_str().unwrap()),
+        ("CODEX_HOME", codex.to_str().unwrap()),
+        ("AMPLIHACK_CLAUDE_PROFILE_ROOT", profiles.to_str().unwrap()),
+    ]);
 
     let bin_dir = temp.path().join("stub_bin");
     fs::create_dir_all(&bin_dir).unwrap();
@@ -38,7 +46,24 @@ fn local_install_stages_amplifier_bundle_for_dev_orchestrator() {
     }
 
     create_source_repo(temp.path());
-    local_install(temp.path(), None).unwrap();
+    // Exercise the distributed Operations recipe, rather than the synthetic
+    // smoke recipes used by the general installer fixture.
+    fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../amplifier-bundle/recipes/operations-direct.yaml"),
+        temp.path()
+            .join("amplifier-bundle/recipes/operations-direct.yaml"),
+    )
+    .unwrap();
+    fs::create_dir_all(temp.path().join("amplifier-bundle/agents/core")).unwrap();
+    fs::write(
+        temp.path().join("amplifier-bundle/agents/core/builder.md"),
+        "Fixture agent\n",
+    )
+    .unwrap();
+    // This fixture exercises framework/Operations publication. Native Codex
+    // registration has separate service fixtures and must not run here.
+    local_install_scoped(temp.path(), None, false, InstallMode::Explicit).unwrap();
 
     if let Some(v) = prev_hooks {
         unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };
@@ -48,9 +73,9 @@ fn local_install_stages_amplifier_bundle_for_dev_orchestrator() {
     if let Some(v) = prev_path {
         unsafe { std::env::set_var("PATH", v) };
     }
-    crate::test_support::restore_home(previous);
-
     let bundle = temp.path().join(".amplihack/amplifier-bundle");
+    super::issue_2553_installed_operations::execute(&bundle, temp.path());
+    crate::test_support::restore_home(previous);
     assert!(
         bundle.is_dir(),
         "amplifier-bundle must be staged at ~/.amplihack/amplifier-bundle/ after install"
@@ -59,6 +84,7 @@ fn local_install_stages_amplifier_bundle_for_dev_orchestrator() {
         "recipes/smart-orchestrator.yaml",
         "recipes/default-workflow.yaml",
         "recipes/investigation-workflow.yaml",
+        "recipes/operations-direct.yaml",
     ] {
         assert!(
             bundle.join(recipe).is_file(),

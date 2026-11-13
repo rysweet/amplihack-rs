@@ -28,6 +28,7 @@ pub(super) const NO_PERSIST: &str = "--no-session-persistence";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ProbeSandbox {
     /// The absolute path of a `bwrap` that ran the check successfully.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux callers only
     Bwrap(PathBuf),
     Unavailable(Unavailable),
 }
@@ -38,6 +39,7 @@ pub(super) enum Unavailable {
     /// No `bwrap` on `PATH`, or not Linux.
     NotFound,
     /// `bwrap` failed to start or its check exited non-zero.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux callers only
     Refused,
     /// Unit tests: the host's `bwrap` is never run, and nothing is noted.
     /// Only `detected()` under `cfg(test)` gives it.

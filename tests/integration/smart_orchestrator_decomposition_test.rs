@@ -33,7 +33,6 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "setup-session",
     "handle-qa",
     "handle-ops-agent",
-    "ops-file-change-check",
     "derive-recursion-guard",
     "execute-single-round-1-development",
     "execute-single-round-1-quick-change",

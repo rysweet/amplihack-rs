@@ -20,6 +20,9 @@
 //!   cannot be written, the swap is refused before anything moves.
 //! - No line names an account, an e-mail or a token.
 
+// Shared fixtures also serve Linux-only tests; keep the portable tests enabled.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
 use super::decide::{Probed, Reading, Win, Windows};
 use super::ledger::{RotateLedger, RotateState};

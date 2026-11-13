@@ -2,6 +2,9 @@
 //! a refused swap leaves the logins, the locks and the journal as they were
 //! (D9, issue #1592). Uses the fixture in `tests_swap.rs`.
 
+// Shared fixtures also serve Linux-only tests; keep the portable tests enabled.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use super::ledger::Phase;
 use super::swap::{Source, swap};
 use super::tests_swap::{LOCK, NOW, env, ino, ino_at, login, n};

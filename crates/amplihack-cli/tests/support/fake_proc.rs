@@ -40,6 +40,7 @@ pub const FAKE_PID_BASE: u32 = 4_194_305;
 // include it too (issue #2196).
 #[allow(dead_code, clippy::duplicate_mod)]
 mod proc_tree_seed;
+#[allow(unused_imports)] // Each test binary uses a different subset of this fixture API.
 pub use proc_tree_seed::{SELF_ENVIRON, seed_proc_tree};
 
 fn private_dir(path: &Path) {

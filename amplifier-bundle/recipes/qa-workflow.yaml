@@ -21,6 +21,7 @@ tags: ["questions", "simple", "quick", "minimal"]
 #   }'
 
 context:
+  prerequisite_results: "{}" # Results of completed dependency leaves, keyed by immutable identity.
   # The question to answer
   question: ""
 

@@ -1138,6 +1138,7 @@ pub fn keep_set(releases: &Path, links: &[PathBuf], previous: &[PathBuf]) -> Vec
 
 /// Which candidates running processes use.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux callers only
 pub enum InUse {
     /// The scan completed: each used candidate with the pids using it.
     Known(BTreeMap<PathBuf, Vec<u32>>),
@@ -1196,6 +1197,7 @@ pub fn in_use_paths(candidates: &[PathBuf]) -> InUse {
 /// started (at boot with lingering on) would be kept for good.
 ///
 /// When the start time cannot be read, the result is [`InUse::Unknown`].
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux callers only
 pub fn scan_pids(candidates: &[PathBuf], pids: &[u32]) -> InUse {
     #[cfg(target_os = "linux")]
     {

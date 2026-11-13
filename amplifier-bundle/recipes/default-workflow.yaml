@@ -41,6 +41,7 @@ recursion:
   max_total_steps: 120
 
 context:
+  prerequisite_results: "{}" # Results of completed dependency leaves, keyed by immutable identity.
   # Description of the task
   task_description: ""
 

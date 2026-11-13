@@ -1,3 +1,12 @@
+---
+title: Getting started with dev-orchestrator
+description: Classify and execute single, mixed and parallel requests with dev-orchestrator.
+last_updated: 2026-11-13
+review_schedule: quarterly
+owner: amplihack
+doc_type: tutorial
+---
+
 # Getting Started with /dev — The amplihack Dev Orchestrator
 
 **Time**: ~20 minutes | **Level**: Beginner to Intermediate
@@ -14,9 +23,10 @@ and how to interpret what you see during execution.
 - [Prerequisites](#prerequisites)
 - [Part 1: Your First /dev Command](#part-1-your-first-dev-command-5-minutes)
 - [Part 2: Parallel Workstreams](#part-2-parallel-workstreams-5-minutes)
-- [Part 3: Investigation + Implementation](#part-3-investigation-implementation-5-minutes)
+- [Part 3: Investigation + Implementation](#part-3-investigation--implementation-5-minutes)
 - [Part 4: The Goal-Seeking Loop](#part-4-the-goal-seeking-loop-5-minutes)
 - [Part 5: Interpreting Output](#part-5-interpreting-output-2-minutes)
+- [Try Operations before a repository edit](#try-operations-before-a-repository-edit)
 - [Common Patterns](#common-patterns)
 - [Auto-Routing: How It Works](#auto-routing-how-it-works)
 - [Troubleshooting](#troubleshooting)
@@ -37,9 +47,15 @@ and how to interpret what you see during execution.
 
 `/dev` is the unified entry point for all development and investigation work. It:
 
-1. **Classifies** your request (Q&A, Operations, Investigation, or Development)
+1. **Classifies** your request (Q&A, Operations, Investigation, or Development).
+   Operations covers administration and project management: issue triage,
+   issue creation and assignment, answers destined for chat or an issue, status
+   reporting and coordination. Changing a tracked repository file is
+   Development. See [Operations and Project-Management Routing](../operations-routing.md)
 2. **Decomposes** it into workstreams if it contains independent parallel components (hybrid "investigate then build" requests become multiple workstreams)
-3. **Executes** via the recipe runner with a goal-seeking loop (up to 3 rounds)
+3. **Executes** each required workstream through its resolved route. Pure
+   Operations runs directly or with one checklist agent; Development uses its
+   eligible recipe. Mixed requests preserve every leaf and dependency.
 4. **Reflects** on whether the goal was achieved
 
 ### Try it
@@ -100,11 +116,11 @@ them simultaneously.
 ```
 [dev-orchestrator] Classified as: Development | Workstreams: 2 — starting execution...
 Launching parallel workstreams (tree: abc12345, depth: 0):
-[{"issue": "TBD", "branch": "feat/orch-1-rest-api", ...},
- {"issue": "TBD", "branch": "feat/orch-2-react-webui", ...}]
+[{"branch": "feat/orch-1-rest-api", "recipe": "default-workflow", ...},
+ {"branch": "feat/orch-2-react-webui", "recipe": "default-workflow", ...}]
 ---
-[TBD] Launched PID 12345 (recipe mode)
-[TBD] Launched PID 12346 (recipe mode)
+[rest-api-1] Launched PID 12345 (recipe mode)
+[react-webui-2] Launched PID 12346 (recipe mode)
 2 workstreams launched in parallel (recipe mode)
 ```
 
@@ -131,7 +147,7 @@ If you want to prevent parallel execution:
 ```bash
 export AMPLIHACK_MAX_DEPTH=0
 /dev build a REST API and a React webui
-# Falls back to single-session execution
+# Executes required leaves sequentially, keeping their routes and dependencies
 ```
 
 ---
@@ -160,9 +176,11 @@ about existing structure.
 
 ### Development routing invariant
 
+The native runtime implements the [per-leaf routing boundary](../reference/dev-orchestrator-routing.md#implementation-boundary).
+
 The orchestrator applies deterministic per-workstream routing from each workstream's
-own normalized classification. Any workstream classified as `Development` will
-run `default-workflow`, even if the model omitted `recipe`, emitted an empty
+own normalised classification. Any workstream classified as `Development` will
+run `default-workflow` or eligible `quick-change`, even if the model omitted `recipe`, emitted an empty
 recipe, or emitted another recipe such as `investigation-workflow`.
 
 This rule is per workstream, not per top-level task. In a hybrid request, an
@@ -243,6 +261,44 @@ expected — those task types respond directly and do not generate summaries.
 
 ---
 
+## Try Operations before a repository edit
+
+Use a separate private temporary root for these exercises. The same root and
+execution repository are required for resumption.
+
+In the agent session, enter:
+
+```text
+/dev Read issue #2553 and its comments in rysweet/amplihack-rs. Answer in chat
+which actions are Operations and which change repository files. Do not
+create a tracking issue.
+```
+
+Checkpoint: you receive an Operations answer. Reading an issue does not make
+it the tracking issue, and this request creates no Development clone,
+worktree, branch or PR.
+
+Now enter a request with two explicit outputs:
+
+```text
+/dev Research the routing requirements in issue #2553 in rysweet/amplihack-rs
+and return the answers. Then use them to update docs/operations-routing.md.
+Run both parts without creating tracking issues.
+```
+
+Checkpoint: the research uses Operations handling. The repository edit is a
+separate Development leaf which receives the research result after successful
+completion. Both parts execute without a tracking issue. If research fails,
+the dependent edit is visibly blocked.
+
+To require tracking instead, explicitly ask for a tracking issue before the
+affected work starts. The orchestrator records `create_issue: true`, acquires
+the issue and saves it before execution. An existing issue is reused.
+Attaching tracking keeps the same workstream identity.
+
+Continue with [configured mixed plans](../howto/run-operations-and-mixed-work.md)
+for JSON examples and recovery guidance.
+
 ## Common Patterns
 
 ```bash
@@ -307,8 +363,16 @@ Then resolves by priority:
 | FILE_EDIT or IMPLEMENT alone    | **DEV**         | dev-orchestrator                        |
 | UNDERSTAND alone                | **INVESTIGATE** | dev-orchestrator                        |
 | SHELL_ONLY alone                | **OPS**         | Execute directly                        |
+| Administrative work, no repository edit requested | **OPS** | Execute directly, or one scoped agent |
 | QUESTION alone                  | **Q&A**         | Answer directly                         |
 | "just answer" / "skip workflow" | **SKIP**        | Bypass                                  |
+
+Administrative wording is excluded from the IMPLEMENT and UNDERSTAND signal
+lists so that it reaches the administrative row rather than an earlier one:
+"create an issue for X" would otherwise be claimed by IMPLEMENT, and "research
+these issues and write up the answers" by UNDERSTAND. See the
+[Operations calibration](../reference/coordination-messages.md#operations-calibration)
+for the exact prompt text.
 
 The hook itself does NOT classify — it injects the same routing guidance for
 every message. Claude's natural language understanding handles the rest.
@@ -376,7 +440,7 @@ hand-off expands in your shell first, removes every session marker from the
 session's environment, and carries your answer, and whether it was a guess,
 into it (#1335, #1525). The full template, with logging, is in the
 dev-orchestrator skill's
-[`reference.md`](../../amplifier-bundle/skills/dev-orchestrator/reference.md#durable-execution-tmux--optional).
+[`reference.md`](../../amplifier-bundle/skills/dev-orchestrator/reference.md#durable-execution-detached--optional).
 
 ### Agent Binary Selection
 

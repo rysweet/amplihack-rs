@@ -29,7 +29,7 @@ priority: 5
 flowchart TD
     A[User Request] --> B{Classify Task}
     B -->|Q&A| C[analyzer agent]
-    B -->|Operations| D[builder agent]
+    B -->|Operations| D[direct execution, or operations-direct per leaf]
     B -->|Development| E{Recursion Guard}
     B -->|Investigation| E
 
@@ -102,7 +102,7 @@ User request
      ▼
 [Classify] ──→ Q&A ──────────────────→ analyzer agent (technical/code questions)
      │
-     ├──────→ Ops ────────────────────→ builder agent
+     ├──────→ Ops ────────────────────→ direct execution; a decomposed leaf runs operations-direct
      │
      └──→ Development / Investigation
              │
@@ -231,12 +231,43 @@ strategies, fallback recipes, and enforcement, see [reference.md](./reference.md
 | Type          | Keywords                                                       | Action                                              |
 | ------------- | -------------------------------------------------------------- | --------------------------------------------------- |
 | Q&A           | "what is", "explain", "how does", "how do I", "quick question" | Respond directly                                    |
-| Operations    | "clean up", "delete", "git status", "run command"              | builder agent (direct execution, no workflow steps) |
+| Operations    | "clean up", "delete", "git status", "run command", "triage", "open an issue", "answer in chat", "report status", "coordinate" | Direct execution, or one scoped agent; a decomposed leaf runs `operations-direct`. No Development workflow, worktree, branch or PR |
 | Investigation | "investigate", "analyze", "understand", "explore"              | investigation-workflow                              |
 | Development   | "implement", "build", "create", "add", "fix", "refactor"       | `default-workflow` through smart-orchestrator       |
 | Hybrid\*      | Both investigation + development keywords                      | Decomposed into investigation + dev workstreams     |
 
 \* Hybrid is not a distinct task_type — the orchestrator classifies as Development and decomposes into multiple workstreams (one investigation, one development).
+
+## Operations and Project Management
+
+Operations is the canonical label for operations and project management. `Ops`,
+`PM`, `Project Management` and `project-management` all normalize to it.
+
+Classify by the action required and where its result belongs, not by the verb:
+
+- Issue triage, issue creation and assignment, research answers destined for
+  chat or an issue, status reporting and coordination are **Operations**.
+- Changing a tracked repository file is **Development**. Documentation wording,
+  configuration and recipe files are tracked files exactly as source code is.
+- Reading repository files as research material is not a repository edit.
+  Mentioning a source path, a test or an existing PR does not request one.
+
+A long checklist, a high requirement count and a dirty working tree do not
+promote an administrative request to Development.
+
+An Operations task is executed directly, or by one agent working from the
+request's own checklist. It starts no Development workflow, creates no
+worktree or branch, and opens no pull request. A decomposed Operations
+workstream runs the `operations-direct` recipe; the Rust helper selects that
+route, and a model-supplied `recipe` value cannot change it.
+
+A mixed request is decomposed so that only the repository-editing workstreams
+run `default-workflow`. Never resubmit the whole mixed request to an
+Operations agent as well; its leaves have already been dispatched.
+
+A tracking issue is optional. Omission, `null`, a blank value and recognized
+placeholders such as `TBD` all mean the workstream has none, and it still
+runs. Never invent an issue number, and never stop because one is absent.
 
 ## Workstream Decomposition Examples
 
@@ -247,6 +278,8 @@ strategies, fallback recipes, and enforcement, see [reference.md](./reference.md
 | "add logging and add metrics"            | 2: logging + metrics (parallel)         |
 | "investigate auth system then add OAuth" | 2: investigate + implement (sequential) |
 | "fix bug in payment flow"                | 1: bugfix (default-workflow)            |
+| "triage these issues and open one for the owner" | 1: triage (operations-direct)   |
+| "answer these questions in chat, then record the answer in docs/" | 2: answer (operations-direct) + document (default-workflow, sequential) |
 
 ## Override Options
 
@@ -280,6 +313,7 @@ just parallel workstream spawning.
 - **Parallel execution**: native `amplihack orch` / `amplihack multitask` commands
 - **Development workflow**: `amplifier-bundle/recipes/default-workflow.yaml`
 - **Investigation workflow**: `amplifier-bundle/recipes/investigation-workflow.yaml`
+- **Operations route**: `amplifier-bundle/recipes/operations-direct.yaml`
 - **CLAUDE.md**: Defines this as the default orchestrator
 
 ## Relationship to Other Skills

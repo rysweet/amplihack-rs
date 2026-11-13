@@ -23,6 +23,9 @@
 //! - A move onto a credit profile writes the same `per-token` line with the
 //!   credit tier and `probe ok, no spend limit`, and runs no login check.
 
+// Shared fixtures also serve Linux-only tests; keep the portable tests enabled.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
 use super::decide::{Probed, Reading, Win, Windows};
 use super::identify::LiveId;

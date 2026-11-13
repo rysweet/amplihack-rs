@@ -1,0 +1,89 @@
+name: "operations-direct"
+description: "One administrative (Operations / project-management) workstream, run in place by one agent"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["operations", "project-management", "administrative", "no-pr"]
+
+# OPERATIONS-DIRECT: the route a decomposed administrative leaf takes.
+#
+# Issue #2553: `non_development_recipe` had no Operations arm, so an
+# administrative workstream fell through to `default-workflow`, which clones a
+# worktree, cuts a branch and opens a pull request for work that changes no
+# tracked file. This recipe is that arm's destination.
+#
+# Use this workflow when ALL are true:
+#   - The work is administrative: triage, issue bookkeeping, status reporting,
+#     coordination, or writing up answers for a person.
+#   - No tracked file is created, modified or deleted.
+#   - The answer is delivered in chat or in an issue, not in a commit.
+#
+# If any of those is false, the leaf is Development and belongs on
+# `default-workflow` or `quick-change`.
+#
+# Classification and per-leaf route resolution happen before preparation:
+# repository edits are Development leaves, while Operations leaves use this
+# recipe directly without a worktree, branch or pull request. The prompt below
+# repeats that scope at execution time.
+
+context:
+  # The administrative task, as the decomposition wrote it.
+  task_description: ""
+
+  # The repository the agent is already inside. Operations work happens here;
+  # no worktree is created and no branch is cut.
+  repo_path: "."
+
+  # Issue #2553: present only when the workstream tracks an issue. A
+  # decomposition does not know issue numbers, so absence is normal and is
+  # never a reason to stop.
+  issue_number: ""
+
+  # Issue #1881: the parent run's opt-in, forwarded unchanged. Blank means the
+  # parent did not opt in, and this leaf must not create tracking issues on a
+  # default.
+  create_issue: ""
+
+  # Every remaining key `build_resume_context_with` can supply, declared so a
+  # resumed Operations workstream cannot fail on an unknown context key.
+  workstream_state_file: ""
+  workstream_progress_file: ""
+  prerequisite_results: "{}"
+  resume_checkpoint: ""
+  is_critical_code: ""
+  worktree_setup: "{}"
+
+steps:
+  - id: "execute-operation"
+    type: "agent"
+    agent: "amplihack:core:builder"
+    prompt: |
+      Carry out this administrative task directly, in the repository you are
+      already in. Do it once, completely, and then stop.
+
+      Task: {{task_description}}
+      Repository path: {{repo_path}}
+      Tracked issue (blank when none): {{issue_number}}
+      Tracking-issue opt-in (blank when the parent did not opt in): {{create_issue}}
+
+      Scope:
+        - Do NOT create a git worktree, cut a branch, commit, push, or open a
+          pull request. This leaf changes no tracked file.
+        - Do NOT start another workflow, recipe or orchestration. You are the
+          leaf. Complete this task yourself.
+        - Read-only repository inspection and `gh` commands against issues and
+          pull requests are in scope; so is writing an answer into chat or into
+          an issue comment.
+        - Open a tracking issue only if the task itself asks for one, or the
+          opt-in above is explicitly true and no issue is already attached. Never invent an issue number, and
+          never stop because the tracked issue above is blank.
+
+      Prerequisite results: {{prerequisite_results}}
+
+      Work through the task's own checklist in order. If one item cannot be
+      completed, finish the rest and say which item you left and why.
+
+      Finish with a single status line of exactly this shape, on its own line:
+
+      OPERATIONS_RESULT: <completed|partial|failed> — <one sentence on what was
+      done and where the answer is>
+    output: "operations_result"

@@ -20,6 +20,9 @@ use std::io::Read;
 use std::path::PathBuf;
 
 use crate::commands::multitask;
+// Issue #2553: one definition of "this changes tracked files" and one of
+// "this is administrative", shared with the hook-level classifier.
+use amplihack_workflows::classifier::{administrative_action, requires_repository_edit};
 
 pub(crate) mod autodrive;
 mod autodrive_completion;
@@ -137,7 +140,8 @@ pub enum OrchHelperCommands {
     ///
     /// Equivalent to the `create-workstreams-config` python heredoc in
     /// `smart-orchestrator.yaml`. Each workstream becomes one config entry
-    /// with: `issue: "TBD"`, branch slug, description, task, recipe.
+    /// with: branch slug, description, task, recipe, and `issue` only when
+    /// the decomposition supplied one.
     BuildWorkstreamsConfig,
 
     /// Read JSON from stdin, print the value at `--field` as a string.
@@ -158,14 +162,20 @@ pub enum OrchHelperCommands {
         require_boolean: bool,
     },
 
-    /// Reclassify a task type using deterministic dev-signal heuristics (#269).
+    /// Reclassify a task type using deterministic dev-signal heuristics (#269,
+    /// #2553).
     ///
     /// Reads the task description from stdin and the current task type from
-    /// `--current`. Promotes `Operations` → `Development` when the task
-    /// contains strong development signals (file paths, PR mention, unit
-    /// test mention, "Add"/"Extend"/"Implement"/"Create" keywords, multiple
-    /// numbered requirements). Never demotes any other classification.
-    /// Prints the (possibly updated) task type.
+    /// `--current`. Only `Operations` is ever promoted, and only to
+    /// `Development`; no other classification is changed.
+    ///
+    /// Three gates, in order. A request that explicitly changes tracked files
+    /// is `Development` whatever verb it uses. An administrative object —
+    /// creating or assigning an issue, reporting status, coordinating — stays
+    /// `Operations` even when its subject is code. Otherwise #269's signal
+    /// count applies: file paths, a PR mention, a unit-test mention, an
+    /// "Add"/"Extend"/"Implement"/"Create" keyword, or several numbered
+    /// requirements. Prints the (possibly updated) task type.
     ReclassifyTaskType {
         /// The current task type (e.g. "Operations").
         #[arg(long)]
@@ -351,14 +361,26 @@ pub fn extract_json_with_field(text: &str, field: &str) -> Option<serde_json::Va
 /// Order matters — first matching keyword wins, mirroring Python's
 /// short-circuit `any()` chain.
 pub fn normalise_type(raw: &str) -> &'static str {
-    let t = raw.to_ascii_lowercase();
+    let t = raw.trim().to_ascii_lowercase();
     if ["q&a", "qa", "question", "answer"]
         .iter()
         .any(|k| t.contains(k))
     {
         return "Q&A";
     }
-    if ["ops", "operation", "admin", "command"]
+    // Issue #2553: the deputy's name for this class is "Ops/PM", so the
+    // project-management spellings normalise here too. `pm` is matched as a
+    // whole label rather than as a substring, or `compile` and `pmap` would
+    // become Operations.
+    if t == "pm"
+        || [
+            "ops",
+            "operation",
+            "admin",
+            "command",
+            "project management",
+            "project-management",
+        ]
         .iter()
         .any(|k| t.contains(k))
     {
@@ -660,6 +682,24 @@ pub fn reclassify_task_type(current: &str, task: &str) -> String {
     if canonical != "Operations" {
         return canonical.to_string();
     }
+    // Issue #2553. The two gates in front of #269's signal count are the same
+    // two the hook-level classifier applies, imported rather than restated so
+    // the two layers cannot drift apart.
+    //
+    // A request to change tracked files is Development whatever verb it uses:
+    // "rename term X across the tracked docs" carries no #269 signal at all,
+    // because `rename` is not one of its verbs and "tracked docs" is not one
+    // of its paths.
+    if requires_repository_edit(task) {
+        return "Development".to_string();
+    }
+    // An administrative object stays administrative even when its subject is
+    // code. "Create an issue about src/router.rs" scored a #269 dev verb plus
+    // a source path and was promoted, which is how administrative work
+    // reached the Development route and took a worktree.
+    if administrative_action(task) {
+        return canonical.to_string();
+    }
     if has_strong_dev_signals(task) {
         return "Development".to_string();
     }
@@ -818,75 +858,11 @@ pub fn count_workstreams(decomp: &str) -> usize {
     raw.max(1)
 }
 
-fn workstream_classification<'a>(
-    ws: &'a serde_json::Value,
-    top_level_task_type: Option<&'a str>,
-) -> Option<&'a str> {
-    ["classification", "task_type", "type"]
-        .iter()
-        .find_map(|field| ws.get(*field).and_then(|v| v.as_str()))
-        .or(top_level_task_type)
-}
-
-fn normalise_workstream_classification(raw: &str) -> &'static str {
-    let lower = raw.to_ascii_lowercase();
-    if lower.contains("consensus") {
-        return "Consensus";
-    }
-    normalise_type(raw)
-}
-
-/// Recipe for one workstream of a parallel decomposition (#1740). This
-/// builder runs only when there is more than one workstream, and
-/// `quick-change` needs exactly one (row 6 of the precedence table), so the
-/// model's `recipe` never selects it:
-///
-/// - Development: a valid `-c workflow=` override, else `default-workflow`.
-/// - Any other classification: the model's recipe is kept, except that
-///   `quick-change` (which commits, pushes and opens a PR) becomes the
-///   classification's own recipe; see [`non_development_recipe`].
-fn normalise_workstream_recipe(
-    ws: &serde_json::Value,
-    top_level_task_type: Option<&str>,
-    override_workflow: Option<&'static str>,
-) -> String {
-    let raw_recipe = ws
-        .get("recipe")
-        .and_then(|v| v.as_str())
-        .unwrap_or(select_workflow::DEFAULT_WORKFLOW);
-    let classification =
-        workstream_classification(ws, top_level_task_type).map(normalise_workstream_classification);
-
-    if classification == Some("Development") {
-        return override_workflow
-            .unwrap_or(select_workflow::DEFAULT_WORKFLOW)
-            .to_string();
-    }
-    if raw_recipe
-        .trim()
-        .eq_ignore_ascii_case(select_workflow::QUICK_CHANGE)
-    {
-        return non_development_recipe(classification).to_string();
-    }
-    raw_recipe.to_string()
-}
-
-/// The recipe a non-Development workstream gets in place of `quick-change`.
-/// Operations has no recipe of its own, so it gets `default-workflow`, as an
-/// Operations workstream with no `recipe` field does.
-fn non_development_recipe(classification: Option<&str>) -> &'static str {
-    match classification {
-        Some("Investigation") => "investigation-workflow",
-        Some("Q&A") => "qa-workflow",
-        Some("Consensus") => "consensus-workflow",
-        _ => select_workflow::DEFAULT_WORKFLOW,
-    }
-}
-
 /// Build the workstreams-config tempfile from a decomposition JSON blob and
 /// return the path. Mirrors the `create-workstreams-config` Python heredoc:
-/// each entry has `issue: "TBD"`, `branch: feat/orch-{i}-{slug}`,
-/// `description`, `task`, `recipe` (default `default-workflow`).
+/// each entry has `branch: feat/orch-{i}-{slug}`, `description`, `task` and
+/// `recipe` (default `default-workflow`), plus `issue` when, and only when,
+/// the decomposition supplied a well-formed one.
 pub fn build_workstreams_config_to_tempfile(decomp: &str) -> Result<String> {
     build_workstreams_config_with_override(decomp, "")
 }
@@ -899,49 +875,31 @@ pub fn build_workstreams_config_with_override(
     decomp: &str,
     override_value: &str,
 ) -> Result<String> {
-    let override_workflow = select_workflow::valid_override(override_value);
-    let obj = extract_json(decomp).unwrap_or(serde_json::json!({}));
-    let top_level_task_type = obj.get("task_type").and_then(|v| v.as_str());
-    let workstreams = obj
-        .get("workstreams")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    let mut entries: Vec<serde_json::Value> = Vec::with_capacity(workstreams.len());
-    for (i, ws) in workstreams.iter().enumerate() {
-        let idx = i + 1;
-        let name = ws
-            .get("name")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| format!("workstream-{idx}"));
-        let slug = slugify(&name, idx);
-        let task = ws
-            .get("description")
-            .and_then(|v| v.as_str())
-            .unwrap_or(&name)
-            .to_string();
-        let recipe = normalise_workstream_recipe(ws, top_level_task_type, override_workflow);
-        let mut entry = serde_json::json!({
-            "issue": "TBD",
-            "branch": format!("feat/orch-{idx}-{slug}"),
-            "description": name,
-            "task": task,
-            "recipe": recipe,
-        });
-        // Issue #1966: copy is_critical_code through for the consensus
-        // workflow to validate. A string is kept as is and a Boolean becomes
-        // "true" or "false"; any other type is left out.
-        let criticality = match ws.get("is_critical_code") {
-            Some(serde_json::Value::String(s)) => Some(s.clone()),
-            Some(serde_json::Value::Bool(b)) => Some(b.to_string()),
-            _ => None,
-        };
-        if let Some(v) = criticality {
-            entry["is_critical_code"] = serde_json::Value::String(v);
+    let obj = extract_json(decomp).context("decomposition must contain a JSON plan")?;
+    // Model-selected Development recipes cannot bypass the normal workflow.
+    let mut obj = obj;
+    if let Some(leaves) = obj
+        .get_mut("workstreams")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for leaf in leaves {
+            if leaf
+                .get("recipe")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|r| r.trim().eq_ignore_ascii_case("quick-change"))
+            {
+                leaf["recipe"] = serde_json::json!("default-workflow");
+            }
         }
-        entries.push(entry);
+    }
+    let mut entries = crate::commands::multitask::plan::normalise(&obj, "default-workflow")?;
+
+    if let Some(recipe) = select_workflow::valid_override(override_value) {
+        for entry in &mut entries {
+            if entry.classification.as_deref() == Some("Development") {
+                entry.recipe = Some(recipe.to_owned());
+            }
+        }
     }
 
     let dir = std::env::temp_dir();
@@ -973,7 +931,10 @@ pub fn build_workstreams_config_with_override(
 
 /// Slugify a workstream name to `[a-z0-9-]{1,30}` with no leading/trailing
 /// `-`. Mirrors the Python regex `[^a-z0-9-]` → `-` then trim.
-fn slugify(name: &str, idx: usize) -> String {
+///
+/// Reused by `multitask::models::derive_key` so a workstream's branch name
+/// and its identity key are slugified identically (issue #2553).
+pub(crate) fn slugify(name: &str, idx: usize) -> String {
     let lower: String = name
         .chars()
         .map(|c| {
@@ -1538,7 +1499,7 @@ mod tests {
         assert_eq!(arr.len(), 2);
 
         // Each entry has the required shape.
-        assert_eq!(arr[0]["issue"], "TBD");
+        assert!(arr[0].get("issue").is_none());
         assert_eq!(arr[0]["description"], "API service");
         assert_eq!(arr[0]["task"], "Implement the REST API");
         assert_eq!(arr[0]["recipe"], "default-workflow");
@@ -1635,7 +1596,7 @@ mod tests {
 
         assert_eq!(parsed[0]["recipe"], "investigation-workflow");
         assert_eq!(parsed[1]["recipe"], "qa-workflow");
-        assert_eq!(parsed[2]["recipe"], "ops-sentinel-workflow");
+        assert_eq!(parsed[2]["recipe"], "operations-direct");
         assert_eq!(parsed[3]["recipe"], "consensus-workflow");
     }
 
@@ -1729,7 +1690,7 @@ mod tests {
                 "investigation-workflow",
                 "qa-workflow",
                 "consensus-workflow",
-                "default-workflow",
+                "operations-direct",
                 "qa-workflow",
             ]
         );
@@ -1818,18 +1779,8 @@ mod tests {
     }
 
     #[test]
-    fn build_workstreams_config_handles_missing_fields() {
-        // No `description` → falls back to name. No `recipe` → default-workflow.
-        // No `name` → "workstream-{idx}".
-        let decomp = r#"{"workstreams": [{}]}"#;
-        let path = build_workstreams_config_to_tempfile(decomp).unwrap();
-        let body = std::fs::read_to_string(&path).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(parsed[0]["description"], "workstream-1");
-        assert_eq!(parsed[0]["task"], "workstream-1");
-        assert_eq!(parsed[0]["recipe"], "default-workflow");
-        assert_eq!(parsed[0]["branch"], "feat/orch-1-workstream-1");
-        std::fs::remove_file(&path).ok();
+    fn build_workstreams_config_rejects_a_leaf_without_an_executable_task() {
+        assert!(build_workstreams_config_to_tempfile(r#"{"workstreams": [{}]}"#).is_err());
     }
 
     #[test]
@@ -1847,12 +1798,8 @@ mod tests {
     }
 
     #[test]
-    fn build_workstreams_config_empty_input_writes_empty_array() {
-        let path = build_workstreams_config_to_tempfile("{}").unwrap();
-        let body = std::fs::read_to_string(&path).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(parsed.as_array().unwrap().len(), 0);
-        std::fs::remove_file(&path).ok();
+    fn build_workstreams_config_rejects_an_empty_plan() {
+        assert!(build_workstreams_config_to_tempfile("{}").is_err());
     }
 
     #[test]

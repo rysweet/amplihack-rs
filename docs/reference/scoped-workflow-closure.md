@@ -2,8 +2,9 @@
 
 > [Home](../index.md) > Reference > Scoped Workflow Closure
 
-Field-level contract for scoped PR ownership, scoped process ownership,
-multitask state persistence, and fail-closed monitor decisions.
+Field-level contract for scoped PR ownership and multitask ownership metadata.
+Multitask execution and recovery behaviour is described in
+[Workstream state and recovery](workstream-state.md).
 
 ## Contents
 
@@ -14,16 +15,15 @@ multitask state persistence, and fail-closed monitor decisions.
 - [PR Scope Helper](#pr-scope-helper)
 - [PR Scope Result Schema](#pr-scope-result-schema)
 - [Multitask State Fields](#multitask-state-fields)
-- [Process Scope API](#process-scope-api)
-- [Process Validation Outcomes](#process-validation-outcomes)
 - [Recipe Integration Contract](#recipe-integration-contract)
 - [Failure Semantics](#failure-semantics)
 - [Deterministic Checks](#deterministic-checks)
 
 ## Workflow Context Inputs
 
-`default-workflow` and workflow closure recipes pass these identity fields to
-publish, readiness, final-status, and multitask monitor steps.
+`default-workflow` and workflow closure recipes pass these PR identity fields
+to publish, readiness and final-status steps. Multitask ownership metadata is
+separate and is described below.
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
@@ -38,9 +38,9 @@ publish, readiness, final-status, and multitask monitor steps.
 | `expected_pr_title_prefix` | string | Required for title-based candidate lookup | Prefix that newly created workflow PRs must use. |
 | `created_after` | RFC 3339 timestamp | Recorded for tie-breaking | Workflow start time. Discards older candidates only when disambiguating multiple primary-key matches; never rejects the sole primary-key PR. |
 | `head_sha` | full Git SHA | Required for readiness, final status, and exact-head no-op paths | PR head SHA that must match before scoped success is reported. |
-| `recipe_run_id` | string | Required for multitask monitor authority | Unique recipe run id. |
-| `tree_id` | string | Required for nested recipe authority | Recipe execution tree id. |
-| `workstream_id` | string | Required for workstream authority | Logical workstream id. |
+| `recipe_run_id` | string | Optional workflow context | Unique recipe run id, persisted with multitask workstream scope. |
+| `tree_id` | string | Optional workflow context | Recipe execution tree id, persisted with multitask workstream scope. |
+| `workstream_id` | string | Optional workflow context | Logical workstream id, persisted with multitask workstream scope. |
 
 Known PR identity is authoritative when present. If `pr_number` or `pr_url` is
 known, validators check that concrete PR first and fail closed on mismatch.
@@ -84,7 +84,6 @@ validation.
 | Lookup a PR before identity is persisted | `repository`, `head_ref`, and `base_ref` (the primary key). Tracking discriminators are optional and used only to break ties. |
 | Check readiness | Known PR identity plus `repository`, `head_ref`, `base_ref`, `created_after`, and `head_sha`. |
 | Report final status | Known PR identity plus `repository`, `head_ref`, `base_ref`, `created_after`, and `head_sha`. |
-| Validate a workstream process | `repo_path`, `workdir`, `branch`, `base_ref`, `recipe_run_id`, `tree_id`, `workstream_id`, `started_at`, `pid`, and process start metadata. |
 
 The primary-key lookup (`repository + head_ref + base_ref`, same-repository) is
 sufficient to identify the workflow's own PR because GitHub allows only one OPEN
@@ -242,139 +241,18 @@ Safety invariants that hold across all passes:
 - All GitHub stderr is routed through URL-credential redaction and length-capped
   before it appears in any diagnostic output.
 
-`WorkstreamState` persists logical workflow scope and concrete process scope.
-Missing fields deserialize successfully so old state files remain readable.
+## Multitask State Fields
 
-```json
-{
-  "workstream_id": "issue-754-closure",
-  "status": "running",
-  "scope": {
-    "repository": "rysweet/amplihack-rs",
-    "repo_path": "/home/user/src/amplihack-rs",
-    "workdir": "/home/user/src/amplihack-rs/worktrees/feat/issue-754-scoped-closure",
-    "branch": "feat/issue-754-scoped-closure",
-    "base_ref": "main",
-    "issue_number": 754,
-    "work_item_id": null,
-    "recipe_run_id": "run-01JZ7G7R4Z8KX8F2M9S5YH1VKT",
-    "tree_id": "tree-01JZ7G7R5A7W1JYQXP3CBB2C2E",
-    "workstream_id": "issue-754-closure",
-    "started_at": "2026-06-12T03:52:44Z"
-  },
-  "process_scope": {
-    "pid": 41872,
-    "process_started_at": "2026-06-12T03:52:47Z",
-    "process_start_marker": "41872:74293011",
-    "captured_at": "2026-06-12T03:52:48Z"
-  },
-  "process_scope": {
-    "pid": 41872,
-    "repository": "rysweet/amplihack-rs",
-    "repo_root": "/home/user/src/amplihack-rs/worktrees/feat/issue-754-scoped-closure",
-    "workdir": "/home/user/src/amplihack-rs/worktrees/feat/issue-754-scoped-closure",
-    "branch": "feat/issue-754-scoped-closure",
-    "issue_id": "754",
-    "work_item_id": "754",
-    "recipe_run_id": "tree-01JZ7G7R5A7W1JYQXP3CBB2C2E",
-    "tree_id": "tree-01JZ7G7R5A7W1JYQXP3CBB2C2E",
-    "workstream_id": "ws-754",
-    "process_started_at": "74293011",
-    "recorded_at": "2026-06-12T04:03:24Z"
-  }
-}
-```
+Multitask state persists the workstream key, optional tracked issue, lifecycle,
+logical workflow scope and process ownership metadata. See
+[Workstream state and recovery](workstream-state.md) for the current state
+shape and recovery rules; this reference does not define a process validation
+API.
 
-Legacy state with missing `scope` or `process_scope` is valid for display. It is
-not valid for notifications, closure, readiness, or terminal status decisions.
-
-## Process Scope API
-
-The multitask monitor validates process ownership through
-`process_scope.rs`.
-
-```rust
-pub struct CurrentWorkflowScope {
-    pub repository: String,
-    pub repo_root: String,
-    pub workdir: String,
-    pub branch: String,
-    pub issue_id: String,
-    pub work_item_id: String,
-    pub recipe_run_id: String,
-    pub tree_id: String,
-    pub workstream_id: String,
-}
-
-pub struct ProcessScope {
-    pub pid: Option<u32>,
-    pub repository: String,
-    pub repo_root: String,
-    pub workdir: String,
-    pub branch: String,
-    pub issue_id: String,
-    pub work_item_id: String,
-    pub recipe_run_id: String,
-    pub tree_id: String,
-    pub workstream_id: String,
-    pub process_started_at: String,
-    pub recorded_at: String,
-}
-
-pub struct ProcessSnapshot {
-    pub pid: u32,
-    pub alive: bool,
-    pub workdir: String,
-    pub process_started_at: String,
-}
-
-pub struct ProcessScopeConfig {
-    pub max_age_seconds: i64,
-}
-
-pub enum ProcessScopeValidation {
-    Valid,
-    MissingScope,
-    Dead,
-    PidReused,
-    TooOld,
-    RepoMismatch,
-    WorkdirMismatch,
-    BranchMismatch,
-    WorkstreamMismatch,
-}
-
-pub fn validate_process_scope(
-    current: &CurrentWorkflowScope,
-    persisted_workstream: &WorkstreamScope,
-    persisted_process: &ProcessScope,
-    snapshot: &ProcessSnapshot,
-    config: &ProcessScopeConfig,
-) -> ProcessScopeValidation;
-```
-
-All path comparisons use canonical paths when the paths exist. If canonical
-resolution fails for a required path, validation returns the corresponding
-mismatch instead of guessing.
-
-## Process Validation Outcomes
-
-Rust enum names are internal. CLI and JSON output serializes validation reasons
-as snake_case.
-
-| Rust outcome | Serialized reason | Authoritative | Meaning |
-| --- | --- | --- | --- |
-| `Valid` | `valid` | Yes | Persisted state, current workflow scope, and runtime snapshot match. |
-| `MissingScope` | `missing_scope` | No | Old state lacks required scope fields. |
-| `Dead` | `dead` | No | PID is not running. |
-| `PidReused` | `pid_reused` | No | PID exists, but runtime start metadata differs from the launch record. |
-| `TooOld` | `too_old` | No | Process age exceeds `ProcessScopeConfig::max_age_seconds`. |
-| `RepoMismatch` | `repo_mismatch` | No | Persisted repository or repo path differs from current workflow. |
-| `WorkdirMismatch` | `workdir_mismatch` | No | Persisted workdir differs from current workflow workdir. |
-| `BranchMismatch` | `branch_mismatch` | No | Persisted branch differs from current branch. |
-| `WorkstreamMismatch` | `workstream_mismatch` | No | Recipe run, tree id, or workstream id differs. |
-
-Only `valid` permits monitor notifications or closure behavior.
+The scheduler owns children launched by the current run and uses child-exit
+and cancellation events for transitions. On recovery, a saved live process is
+preserved and refused until its ownership and outcome are reconciled; a PID
+record is not a monitor-validation result.
 
 ## Recipe Integration Contract
 
@@ -388,8 +266,8 @@ These bundled tools and recipes use scoped validation:
 | `workflow-terminal-state.yaml` | Uses persisted PR URL or number, then scoped lookup; no recent-PR fallback. |
 | `workflow-tdd.yaml` | Carries repository, head branch, base branch, tracking item, recipe run, and start-time scope through test and closure steps. |
 | `quality-loop.yaml` | May survey broad PRs for quality reporting, but those surveys are not current-work identity. |
-| multitask launcher | Captures workstream and process scope at process launch. |
-| multitask orchestrator | Emits notifications and closure decisions only for serialized `valid` process scope. |
+| multitask launcher | Persists workstream scope before launch and process ownership metadata with the launched child. |
+| multitask orchestrator | Waits for owned child exits, handles cancellation, and refuses to resume a restored live process until it is reconciled. |
 
 ## Failure Semantics
 
@@ -406,9 +284,7 @@ failure:
 - a stale `issue_number` or `head_sha` does **not** reject the unique
   primary-key PR; those fields only break ties among multiple candidates
 - `no_scoped_pr` is reserved for a genuinely empty primary-key result
-- stale process records are display-only
-- PID reuse is rejected when runtime start metadata differs
-- missing runtime start metadata is rejected as incomplete process scope
+- restored live processes are preserved until their ownership and outcome are reconciled; see [Workstream state and recovery](workstream-state.md)
 - exact-head readiness blocks when `head_sha` differs from PR head
 
 Failure output names the invalid reason and the checked identifiers. It does
@@ -439,11 +315,8 @@ Representative checks:
 | two or more OPEN candidates on the same head and base | helper exits non-zero with `multiple_scoped_prs` |
 | fork or cross-repository PR candidate | helper rejects it during the primary-key pass |
 | `gh pr create` collides with an existing OPEN PR | publish returns `existing-open-pr` success (exit 0), not `FAILED_PR_CREATE` |
-| persisted legacy workstream lacks scope | monitor marks display-only and does not notify |
-| persisted PID is dead | validation returns `dead` |
-| PID exists with different start marker | validation returns `pid_reused` |
-| process start metadata is missing | validation returns `missing_scope` |
-| repo, workdir, branch, recipe, tracking item, or workstream differs | validation returns the named mismatch |
+| saved state claims a live process that the new runner does not own | runner refuses to adopt or relaunch it and preserves the state (`an_unproven_saved_live_process_is_preserved_and_never_adopted_or_relaunched` in `issue_2553_execution.rs`) |
+| saved identity conflicts with the canonical workstream | runner rejects the conflict; see `issue_2553_recovery.rs` |
 
 ## Related
 

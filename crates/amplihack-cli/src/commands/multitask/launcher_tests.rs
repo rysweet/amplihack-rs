@@ -3,7 +3,7 @@ use super::launcher::{
     VALID_DELEGATES, write_classic_launcher_with, write_executable_script,
     write_recipe_launcher_with,
 };
-use super::models::Workstream;
+use super::models::{Workstream, WorkstreamKey};
 use crate::util::run_output_with_timeout;
 use std::fs;
 use std::path::Path;
@@ -79,7 +79,8 @@ fn classic_launcher_script_is_lf_only_and_bash_valid() {
 
 pub(super) fn test_workstream(base_dir: &Path, state_dir: &Path) -> Workstream {
     Workstream::new(
-        792,
+        WorkstreamKey::new("792").unwrap(),
+        Some(792),
         "feature/line-endings".to_string(),
         "Fix line endings".to_string(),
         "Normalize generated executable scripts".to_string(),

@@ -3,7 +3,8 @@
 > [Home](../index.md) > Concepts > Scoped Workflow Closure
 
 Scoped workflow closure prevents `default-workflow` monitors from treating an
-unrelated pull request or stale process as current work.
+unrelated pull request as current work, and explains how multitask recovery
+handles saved live-process state.
 
 ## The Problem
 
@@ -44,14 +45,11 @@ case of multiple candidates (for example, an OPEN and a previously CLOSED PR on
 the same head and base). A stale or drifted discriminator never rejects the
 unique primary-key PR.
 
-For processes and workstreams the persisted scope still requires the full
-identity tuple:
-
-```text
-repository + workdir + branch + recipe/workstream + start time + process marker
-```
-
-Missing primary-key scope is not a soft match. It is display-only history.
+Multitask workstream and process scopes are persisted ownership metadata. They
+do not provide a monitor validation API or prove that a process is still live.
+The current run owns child processes through their handles; recovery preserves
+and refuses a saved live process until its ownership and outcome are
+reconciled. See [Workstream state and recovery](../reference/workstream-state.md).
 
 ## PR Scope
 
@@ -106,33 +104,20 @@ re-runs the scoped lookup and adopts the existing OPEN PR as an `existing-open-p
 success instead of hard-failing the recipe. Only a genuinely absent PR combined
 with a failed create is reported as `FAILED_PR_CREATE`.
 
-## Process Scope
+## Multitask Ownership
 
-Process scope identifies a running agent or workstream process owned by the
-current workflow. The authoritative fields are:
-
-| Scope field | Purpose |
-| --- | --- |
-| `pid` | Process ID captured at launch. |
-| `process_started_at` or platform start marker | Runtime start metadata used to detect PID reuse. |
-| `repo_path` | Canonical repository root. |
-| `workdir` | Canonical worktree or workstream working directory. |
-| `branch` | Git branch captured at launch. |
-| `base_ref` | Base branch captured at launch. |
-| `recipe_run_id` | Current recipe run identity. |
-| `tree_id` | Recipe tree identity for nested runs. |
-| `workstream_id` | Logical workstream identity. |
-| `issue_number` or `work_item_id` | Tracking item owned by the workstream. |
-| `started_at` | Workstream start time. |
-
-The Rust validator rejects dead, reused, too-old, missing-scope, and
-metadata-mismatched process records before monitors emit notifications or close
-workstreams.
+Multitask state persists a workstream key, optional issue, lifecycle state,
+logical workstream scope and process ownership metadata. The current scheduler
+waits for child exits and handles cancellation; recovery does not adopt a saved
+live process or infer completion from its PID. It preserves state and asks for
+ownership and outcome reconciliation before resuming. See
+[Workstream state and recovery](../reference/workstream-state.md) for the
+persisted fields and recovery rules.
 
 ## Fail-Closed Behavior
 
-Every scoped validator returns either an authoritative match or a named invalid
-reason. Invalid scope blocks current-work notifications and closure decisions.
+The PR scope helper returns an authoritative match or a named invalid reason.
+Invalid PR scope blocks current-work PR operations.
 
 Common invalid reasons:
 
@@ -142,27 +127,21 @@ Common invalid reasons:
 | `no_scoped_pr` | No PR matches the primary key (repository, head, base). This is an empty result, not a stale-discriminator rejection. |
 | `multiple_scoped_prs` | Two or more OPEN candidates share the same head and base and survive tie-breaking. |
 | `repo_mismatch` | Repository differs from the current workflow. |
-| `workdir_mismatch` | Work directory differs from persisted process scope. |
 | `branch_mismatch` | Branch or head ref differs from scope. |
-| `workstream_mismatch` | Recipe, tree, or workstream id differs from scope. |
-| `pid_reused` | Runtime process start metadata differs from the launch record. |
-| `too_old` | Persisted process started outside the accepted age window. |
-| `missing_scope` | Required PR or process scope is incomplete. |
 
-Invalid records can still be shown in diagnostic output, but they are not
-authoritative. A monitor may say that a stale record exists; it must not notify
-as though that record is current work.
+Multitask recovery uses its persisted ownership model; it does not emit these
+PR validation reasons for process records.
 
 ## Why This Is Simpler
 
 The design centralizes identity decisions:
 
 - one shell helper for PR ownership
-- one Rust validator for process ownership
-- one persisted scope model shared by multitask launcher and orchestrator
+- persisted workstream and process ownership metadata shared by the multitask
+  launcher and orchestrator
 
-Recipes and monitors no longer duplicate partial matching rules. They ask the
-scope validator whether a candidate is current work and respect the result.
+The PR helper decides PR ownership. The multitask scheduler tracks children it
+launched and preserves uncertain restored processes for reconciliation.
 
 ## Related
 

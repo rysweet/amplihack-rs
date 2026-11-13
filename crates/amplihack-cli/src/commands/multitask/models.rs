@@ -1,31 +1,22 @@
 //! Data models for the parallel workstream orchestrator.
 
-use regex::Regex;
+pub use super::identity::{WorkstreamKey, derive_key, work_dir_for};
+use super::issue::{self, IssueNumber};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 use std::time::Instant;
 
-/// Regex for sanitizing IDs to filesystem-safe strings.
-static SAFE_ID_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^a-zA-Z0-9_-]").unwrap());
-
-/// Sanitize an identifier for use in filesystem paths.
-pub fn sanitize_id(raw: &str) -> String {
-    SAFE_ID_RE.replace_all(raw, "_").to_string()
-}
-
-/// Default max runtime for workstreams (2 hours).
+/// Default runtime budget metadata for workstreams (2 hours).
 pub const DEFAULT_MAX_RUNTIME: u64 = 7200;
 
-/// Timeout policy: interrupt the subprocess and preserve state.
+/// Compatibility metadata naming the interrupt-and-preserve policy.
 pub const INTERRUPT_PRESERVE_TIMEOUT_POLICY: &str = "interrupt-preserve";
-/// Timeout policy: mark timed-out but let the subprocess continue.
+/// Compatibility metadata naming the continue-and-preserve policy.
 pub const CONTINUE_PRESERVE_TIMEOUT_POLICY: &str = "continue-preserve";
-/// Default timeout policy. Issue #867: a non-killing default — a run that
-/// passes `max_runtime` is marked resumable but is NOT interrupted while it is
-/// still producing output. Interrupting is opt-in via `interrupt-preserve`,
-/// and even then only a genuinely idle child is killed.
+/// Default policy metadata. The event-driven engine records this field but
+/// does not install a runtime timer or interrupt an owned child on a deadline.
 pub const DEFAULT_TIMEOUT_POLICY: &str = CONTINUE_PRESERVE_TIMEOUT_POLICY;
 
 /// Lifecycle states eligible for cleanup.
@@ -94,7 +85,20 @@ pub struct ProcessScope {
 /// JSON config entry for a workstream.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkstreamConfig {
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub classification: Option<String>,
+    #[serde(default, alias = "depends_on")]
+    pub dependencies: Vec<String>,
+    #[serde(default)]
+    pub create_issue: bool,
+    /// The tracked issue, which may be absent. Kept as a raw JSON value at
+    /// the wire boundary so that pre-#2553 configuration files still
+    /// deserialise; it is only ever read through [`WorkstreamConfig::issue`].
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub issue: serde_json::Value,
+    #[serde(default)]
     pub branch: String,
     #[serde(default)]
     pub description: Option<String>,
@@ -112,25 +116,45 @@ pub struct WorkstreamConfig {
 }
 
 impl WorkstreamConfig {
-    pub fn issue_id(&self) -> i64 {
-        match &self.issue {
-            serde_json::Value::Number(n) => n.as_i64().unwrap_or(0),
-            serde_json::Value::String(s) => s.parse().unwrap_or(0),
-            _ => 0,
-        }
+    /// The tracked issue, or `None` when the decomposition did not know one.
+    /// Only a value that is neither a well-formed issue nor a recognised
+    /// placeholder is an error; see [`super::issue::parse_optional`].
+    pub fn issue(&self) -> Result<Option<IssueNumber>> {
+        issue::parse_optional(&self.issue)
+            .with_context(|| format!("workstream on branch {:?}", self.branch))
     }
 
     pub fn description_or_default(&self) -> String {
-        self.description
-            .clone()
-            .unwrap_or_else(|| format!("Issue #{}", self.issue_id()))
+        if let Some(d) = self
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return d.to_string();
+        }
+        match self.issue().ok().flatten() {
+            Some(n) => format!("Issue #{}", n.get()),
+            None => self.branch.clone(),
+        }
     }
 }
 
 /// Runtime state for a single workstream.
 #[derive(Debug)]
 pub struct Workstream {
-    pub issue: i64,
+    pub(super) output_capture: Option<super::log_output::Capture>,
+    pub source_repository: super::ownership::RepositoryIdentity,
+    pub classification: String,
+    pub dependencies: Vec<String>,
+    pub create_issue: bool,
+    pub tracking_reference: String,
+    pub result: serde_json::Value,
+    pub artefact_dir: PathBuf,
+    /// Identity: always present, unique within a run, safe in a path.
+    pub key: WorkstreamKey,
+    /// Tracking: the issue this workstream reports against, if any.
+    pub issue: Option<u64>,
     pub branch: String,
     pub description: String,
     pub task: String,
@@ -159,8 +183,11 @@ pub struct Workstream {
 }
 
 impl Workstream {
+    // Keep the established constructor while separating identity from tracking.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        issue: i64,
+        key: WorkstreamKey,
+        issue: Option<u64>,
         branch: String,
         description: String,
         task: String,
@@ -168,17 +195,34 @@ impl Workstream {
         base_dir: &Path,
         state_dir: &Path,
     ) -> Self {
-        let safe_id = sanitize_id(&issue.to_string());
+        let work_dir = work_dir_for(base_dir, &key);
+        let log_file = base_dir.join(format!("log-{key}.txt"));
+        let state_file = state_dir.join(format!("ws-{key}.json"));
+        let progress_file = state_dir.join(format!("ws-{key}.progress.json"));
         Self {
+            source_repository: Default::default(),
+            output_capture: None,
+            classification: if recipe == "operations-direct" {
+                "Operations"
+            } else {
+                "Development"
+            }
+            .into(),
+            dependencies: Vec::new(),
+            create_issue: false,
+            tracking_reference: String::new(),
+            result: serde_json::Value::Null,
+            artefact_dir: work_dir.clone(),
+            key,
             issue,
             branch,
             description,
             task,
             recipe,
-            work_dir: base_dir.join(format!("ws-{issue}")),
-            log_file: base_dir.join(format!("log-{safe_id}.txt")),
-            state_file: state_dir.join(format!("ws-{safe_id}.json")),
-            progress_file: state_dir.join(format!("ws-{safe_id}.progress.json")),
+            work_dir,
+            log_file,
+            state_file,
+            progress_file,
             pid: None,
             start_time: None,
             end_time: None,
@@ -233,7 +277,31 @@ impl Workstream {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PersistedState {
     #[serde(default)]
-    pub issue: i64,
+    pub source_repository: super::ownership::RepositoryIdentity,
+    #[serde(default)]
+    pub classification: String,
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    #[serde(default)]
+    pub create_issue: bool,
+    #[serde(default)]
+    pub tracking_reference: String,
+    #[serde(default)]
+    pub result: serde_json::Value,
+    /// The workstream identity this file belongs to. Recorded for diagnostics
+    /// only: a key read back from disk never constructs a path, so a state
+    /// directory an attacker can write to cannot point a run at another run's
+    /// work.
+    #[serde(default)]
+    pub key: String,
+    /// Absent when the workstream tracks no issue. A pre-#2553 file carrying
+    /// `0` reads back as absence; see [`super::issue::deserialize_persisted`].
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::issue::deserialize_persisted"
+    )]
+    pub issue: Option<u64>,
     #[serde(default)]
     pub branch: String,
     #[serde(default)]
@@ -278,80 +346,4 @@ pub struct PersistedState {
     pub updated_at: String,
     #[serde(default)]
     pub resume_context: Option<HashMap<String, serde_json::Value>>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_sanitize_id() {
-        assert_eq!(sanitize_id("123"), "123");
-        assert_eq!(sanitize_id("hello-world"), "hello-world");
-        assert_eq!(sanitize_id("path/../../etc"), "path_______etc");
-        assert_eq!(sanitize_id("a b c"), "a_b_c");
-    }
-
-    #[test]
-    fn test_workstream_config_parsing() {
-        let json = r#"[
-            {
-                "issue": 42,
-                "branch": "feat/test",
-                "description": "Test workstream",
-                "task": "Do something",
-                "recipe": "default-workflow"
-            }
-        ]"#;
-        let configs: Vec<WorkstreamConfig> = serde_json::from_str(json).unwrap();
-        assert_eq!(configs.len(), 1);
-        assert_eq!(configs[0].issue_id(), 42);
-        assert_eq!(configs[0].branch, "feat/test");
-        assert_eq!(configs[0].description_or_default(), "Test workstream");
-    }
-
-    #[test]
-    fn test_workstream_config_string_issue() {
-        let json = r#"[{"issue": "99", "branch": "b", "task": "t"}]"#;
-        let configs: Vec<WorkstreamConfig> = serde_json::from_str(json).unwrap();
-        assert_eq!(configs[0].issue_id(), 99);
-    }
-
-    #[test]
-    fn test_workstream_config_default_description() {
-        let json = r#"[{"issue": 7, "branch": "b", "task": "t"}]"#;
-        let configs: Vec<WorkstreamConfig> = serde_json::from_str(json).unwrap();
-        assert_eq!(configs[0].description_or_default(), "Issue #7");
-    }
-
-    #[test]
-    fn test_persisted_state_roundtrip() {
-        let state = PersistedState {
-            issue: 42,
-            branch: "feat/test".to_string(),
-            lifecycle_state: "completed".to_string(),
-            ..Default::default()
-        };
-        let json = serde_json::to_string(&state).unwrap();
-        let parsed: PersistedState = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.issue, 42);
-        assert_eq!(parsed.branch, "feat/test");
-        assert_eq!(parsed.lifecycle_state, "completed");
-    }
-
-    #[test]
-    fn test_derive_cleanup_eligible() {
-        assert!(Workstream::derive_cleanup_eligible("completed"));
-        assert!(Workstream::derive_cleanup_eligible("failed_terminal"));
-        assert!(Workstream::derive_cleanup_eligible("abandoned"));
-        assert!(!Workstream::derive_cleanup_eligible("running"));
-        assert!(!Workstream::derive_cleanup_eligible("pending"));
-        assert!(!Workstream::derive_cleanup_eligible("failed_resumable"));
-    }
-
-    #[test]
-    fn test_default_constants() {
-        assert_eq!(DEFAULT_MAX_RUNTIME, 7200);
-        assert_eq!(DEFAULT_TIMEOUT_POLICY, "continue-preserve");
-    }
 }

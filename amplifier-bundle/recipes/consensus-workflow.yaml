@@ -32,6 +32,7 @@ recursion:
   max_total_steps: 100
 
 context:
+  prerequisite_results: "{}" # Results of completed dependency leaves, keyed by immutable identity.
   task_description: ""
   requirements: ""
   repo_path: "."

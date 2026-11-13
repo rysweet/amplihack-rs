@@ -2,7 +2,7 @@
 title: Smart-orchestrator recovery
 description: Adaptive routing recovery and the entry point for durable usage-limit relaunch recovery.
 doc_type: explanation
-last_updated: 2026-11-11
+last_updated: 2026-11-13
 ---
 
 # Smart-Orchestrator Recovery
@@ -15,7 +15,7 @@ For a new launch after a usage-limit stop, see
 This mechanism restores compatible completed work across process launches,
 including delegated `default-workflow` steps. Use
 [the relaunch guide](../howto/resume-recipe-after-usage-limit.md) for commands
-and `--fresh`; the adaptive routing behavior below remains separate.
+and `--fresh`; the adaptive routing behaviour below remains separate.
 
 ## Contents
 
@@ -24,6 +24,7 @@ and `--fresh`; the adaptive routing behavior below remains separate.
 - [Hollow-success detection](#hollow-success-detection)
 - [Issue dedup integration](#issue-dedup-integration)
 - [Recursion guard](#recursion-guard)
+- [Operations and mixed-plan recovery](#operations-and-mixed-plan-recovery)
 - [Goal status values](#goal-status-values)
 
 ---
@@ -39,7 +40,7 @@ modes during execution:
 | **Agent timeout** | Claude/Copilot session exceeds `timeout_seconds` | Runner kills subprocess, step returns error |
 | **Bash failure** | Shell step exits non-zero | `set -euo pipefail` propagates to runner |
 | **Recipe failure** | Nested recipe returns exit code 1 | Runner captures sub-recipe exit |
-| **Hollow success** | Agent completes but produces no real work | Reflection step detects empty artifacts |
+| **Hollow success** | Agent completes but produces no real work | Reflection step detects empty artefacts |
 | **Recursion limit** | Session depth exceeds `AMPLIHACK_MAX_DEPTH` | Session tree blocks spawn |
 | **Infrastructure** | `gh` unavailable, auth expired, disk full | Various — often detected by bash guard steps |
 
@@ -91,8 +92,10 @@ Two conditional steps attempt direct recipe invocation:
 - `adaptive-execute-development` → runs `default-workflow` recipe
 - `adaptive-execute-investigation` → runs `investigation-workflow` recipe
 
-These bypass the normal routing logic entirely, providing a last-resort
-execution path.
+Recovery must retain each leaf's classification and route. A mixed plan keeps
+its Operations leaves on `operations-direct` and its Development leaves on
+their eligible Development route. A fallback never submits the whole mixed
+request to `default-workflow` or drops required leaves.
 
 ### Stage 4: Reflect with context
 
@@ -106,7 +109,7 @@ The reflection step distinguishes real results from hollow successes. A
 result is hollow when **all three** conditions are true:
 
 1. The agent explicitly states it cannot access the codebase or files
-2. No concrete code changes, findings, or artifacts are described
+2. No concrete code changes, findings, or artefacts are described
 3. The output contains no file paths, diffs, test results, or code
    references
 
@@ -143,9 +146,18 @@ sub-orchestration:
 | `AMPLIHACK_MAX_DEPTH` | `3` | Maximum allowed depth |
 | `AMPLIHACK_MAX_SESSIONS` | `10` | Maximum concurrent sessions |
 
-When depth reaches the limit, the orchestrator blocks sub-workstream
-spawning and falls back to single-session execution. Session state is
+When depth reaches the limit, the orchestrator must block sub-workstream
+spawning and executes required leaves sequentially in the available session,
+preserving their routes and dependencies. Session state is
 tracked in `/tmp/amplihack-session-trees/{tree_id}.json`.
+
+## Operations and mixed-plan recovery
+
+The native engine saves its normalised plan and results before releasing dependent
+work. Resume uses the saved canonical plan, the same private temporary root and
+the original execution repository. Restored live processes and uncertain launch
+intents are preserved for reconciliation; they are not blindly relaunched.
+See the [state reference](../reference/workstream-state.md#resumption).
 
 ## Goal status values
 
