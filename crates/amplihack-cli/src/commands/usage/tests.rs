@@ -280,7 +280,100 @@ mod context_and_response_counts {
             assert!(!r.complete && !r.sessions[0].complete, "{field}");
             assert_eq!(r.identifier_backed_response_count, 1, "{field}");
             assert_eq!(r.total.unwrap().input, 100, "{field}: {value}");
+            // Whether the provider served the record is unknown, so it is an
+            // unknown contributor: the ratio is withheld, not left at 130.
+            let v = public(&r);
+            let c = context(&v, 0);
+            unknown(c, "usage_on_client_generated_record");
+            assert!(c["input_tokens"].is_null(), "{field}: {c}");
+            assert!(c["observed_attempts"].is_null(), "{field}: {c}");
         }
+    }
+
+    /// Copied history keeps its native owner: a counted client record held in
+    /// another session's file makes the owner's context unknown, while the
+    /// holder's own, fully known input keeps its ratio.
+    #[test]
+    fn a_copied_client_record_with_counters_makes_its_owner_context_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut record = client_record("9cbe036f-5d2b-4a1e-8f7c-3a6e2d9b0c11", true);
+        record["sessionId"] = json!("owner");
+        record["message"]["usage"]["input_tokens"] = json!(5);
+        write(
+            dir.path(),
+            "owner",
+            &[native_usage(
+                "claude",
+                "owner",
+                "msg_owner",
+                usage(json!(100)),
+            )],
+        );
+        write(
+            dir.path(),
+            "holder",
+            &[
+                native_usage("claude", "holder", "msg_holder", usage(json!(100))),
+                record,
+            ],
+        );
+        let r = collect(
+            &manifest(json!([
+                session("owner", "claude", json!(["owner"])),
+                session("holder", "claude", json!(["holder"])),
+            ])),
+            dir.path(),
+        )
+        .unwrap();
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "usage_on_client_generated_record"
+                    && d.session == Some(1)
+                    && d.line == Some(2))
+        );
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "incomplete_usage_observation" && d.session == Some(0))
+        );
+        assert!(!r.sessions[0].complete && !r.sessions[1].complete);
+        let v = public(&r);
+        unknown(context(&v, 0), "usage_on_client_generated_record");
+        let holder = context(&v, 1);
+        assert_eq!(holder["tokens_per_observed_attempt"], 130.0);
+        assert_eq!(holder["unknown_reasons"], json!([]));
+    }
+
+    /// A `token_count` with `info` but neither total nor last usage may stand
+    /// for a request whose input is unknown, so it cannot leave the ratio
+    /// published as if every request were known.
+    #[test]
+    fn a_codex_token_count_without_usage_leaves_context_input_unknown() {
+        let rows = [
+            json!({"type":"session_meta","payload":{"id":"s"}}),
+            json!({"type":"turn_context","payload":{"model":"m"}}),
+            token_count([100, 20, 30, 10], Some([100, 20, 30, 10]), 1),
+        ];
+        let control = public(&report("codex", &rows));
+        assert_eq!(context(&control, 0)["tokens_per_observed_attempt"], 100.0);
+        let empty = json!({"type":"event_msg","timestamp":"2026-01-01T00:00:02Z",
+            "payload":{"type":"token_count","info":{"model_context_window":1000}}});
+        let mut with_empty = rows.to_vec();
+        with_empty.push(empty);
+        let r = report("codex", &with_empty);
+        assert!(has(&r, "missing_usage"));
+        assert!(!r.complete && !r.sessions[0].complete);
+        assert_eq!(
+            r.total,
+            report("codex", &rows).total,
+            "totals are unaffected"
+        );
+        let v = public(&r);
+        let c = context(&v, 0);
+        unknown(c, "missing_input_fields");
+        assert!(c["input_tokens"].is_null(), "{c}");
+        assert!(c["observed_attempts"].is_null(), "{c}");
     }
 
     #[test]

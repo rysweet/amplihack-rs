@@ -16,6 +16,18 @@ pub(super) enum Event {
         input: InputEvidence,
         last: LastUsage,
     },
+    /// A record that may stand for a provider request but whose usage cannot
+    /// be counted. It adds no response, attempt or tokens, but its owner's
+    /// context input is unknown for `reason`, never a partial sum that looks
+    /// exact. Every parsed record that is diagnosed and then not counted emits
+    /// this (checked in `parse`), so its native owner is marked without a list
+    /// of diagnostic codes. Lines that cannot be read or parsed as JSON never
+    /// reach an adapter and have no native owner; the aggregator marks the
+    /// session that lists them.
+    UnknownInput {
+        native_session: Option<String>,
+        reason: &'static str,
+    },
 }
 
 /// What a cumulative record says about the request that moved its total.
@@ -78,6 +90,16 @@ pub(super) fn parse(provider: &Provider, v: &Value) -> Parsed {
     {
         p.diagnostics.push("missing_timestamp");
     }
+    // A diagnosed record that reaches the aggregator as no event at all would
+    // drop out of context validity unseen; it must be an `UnknownInput`.
+    debug_assert!(
+        matches!(provider, Provider::Unsupported(_))
+            || p.diagnostics.is_empty()
+            || p.event.is_some()
+            || p.snapshot.is_some(),
+        "a diagnosed record produced no event: {:?}",
+        p.diagnostics
+    );
     p
 }
 
@@ -87,7 +109,8 @@ pub(super) fn parse(provider: &Provider, v: &Value) -> Parsed {
 /// provider responses, so they are no observation: counting one would add a
 /// response with a known input of zero. A failed or interrupted call stays an
 /// unrecorded call, unknown rather than zero. If such a record ever carries a
-/// nonzero or non-numeric counter, it is diagnosed instead of dropped silently.
+/// nonzero or non-numeric counter, nothing tells whether the provider served
+/// it: it is diagnosed, and its native session's input becomes unknown.
 fn client_generated(v: &Value) -> bool {
     v["message"]["model"] == "<synthetic>" || v["isApiErrorMessage"] == true
 }
@@ -109,6 +132,10 @@ fn claude(v: &Value, p: &mut Parsed) {
         .any(|field| !u[*field].is_null() && u[*field].as_u64() != Some(0));
         if counted {
             p.diagnostics.push("usage_on_client_generated_record");
+            p.event = Some(Event::UnknownInput {
+                native_session: label(&v["sessionId"]),
+                reason: "usage_on_client_generated_record",
+            });
         }
         return;
     }
@@ -261,7 +288,13 @@ fn codex(v: &Value, p: &mut Parsed) {
     let cumulative = total.is_object();
     let u = if cumulative { total } else { last_usage };
     if !u.is_object() {
+        // `info` is present, so a request may have moved the totals; with
+        // neither total nor last usage, its input is unknown, not zero.
         p.diagnostics.push("missing_usage");
+        p.event = Some(Event::UnknownInput {
+            native_session: None,
+            reason: "missing_input_fields",
+        });
         return;
     }
     // Beside a total, `last_token_usage` is the request that moved it. The

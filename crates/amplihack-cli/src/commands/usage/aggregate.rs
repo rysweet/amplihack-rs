@@ -78,6 +78,15 @@ fn difference(now: Tokens, previous: Tokens) -> Tokens {
         now.values()[i].saturating_sub(previous.values()[i])
     }))
 }
+/// The manifest session that owns a record: its native session, not the
+/// session whose files happen to hold a copy of it.
+fn owner_of(m: &Manifest, provider: &Provider, native: Option<&String>) -> Option<usize> {
+    native.and_then(|id| {
+        m.sessions
+            .iter()
+            .position(|s| s.id == *id && s.provider == *provider)
+    })
+}
 
 pub(super) fn aggregate(
     m: &Manifest,
@@ -94,6 +103,23 @@ pub(super) fn aggregate(
     let mut last = first.clone();
     for o in observations {
         let source = &m.sessions[o.session];
+        if let Event::UnknownInput {
+            native_session,
+            reason,
+        } = &o.event
+        {
+            // Not counted, but not known to be absent: the owner's input and
+            // attempts are unknown. Without an owner the record's usage would
+            // have been unattributed, outside every session's context; its
+            // own diagnostic already makes the listing session incomplete.
+            if let Some(owner) = owner_of(m, &source.provider, native_session.as_ref()) {
+                incomplete_owner(&mut ds, Some(owner));
+                contexts[owner].reasons.insert(reason);
+                contexts[owner].input = None;
+                contexts[owner].attempts = None;
+            }
+            continue;
+        }
         let Event::Usage {
             key,
             native_session,
@@ -106,11 +132,7 @@ pub(super) fn aggregate(
         else {
             continue;
         };
-        let owner = native_session.as_ref().and_then(|id| {
-            m.sessions
-                .iter()
-                .position(|s| s.id == *id && s.provider == source.provider)
-        });
+        let owner = owner_of(m, &source.provider, native_session.as_ref());
         if owner.is_none() {
             diagnostic(
                 &mut ds,

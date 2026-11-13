@@ -104,8 +104,12 @@ or certify accounting completeness.
   no diagnostic. A failed or interrupted call therefore stays an unrecorded
   call, unknown rather than zero. A record with either marker that carries a
   nonzero or non-numeric counter is diagnosed `usage_on_client_generated_record`
-  and makes its session incomplete. A session holding only such records reports
-  the same as a session with no records.
+  in the session that lists it. Nothing tells whether the provider served such
+  a record, so it is an unknown contributor: the session named by its
+  `sessionId` becomes incomplete, and that session's context input and attempts
+  become unknown with the reason `usage_on_client_generated_record`. Its tokens
+  are not added. A session holding only zero-counter client records reports the
+  same as a session with no records.
 - Current Codex `token_usage_record` records deduplicate globally by
   `payload.response_id`, using response `usage` and native `thread_id` (or
   `session_id`) for ownership. `thread_token_usage` and `event_msg/token_count`
@@ -207,6 +211,9 @@ Unknown reasons are sorted and unique:
   Codex requires `input_tokens` and `cached_input_tokens`; Codex CLI
   `token_count` records omit `cache_write_input_tokens`, so an absent value
   counts as zero, and a present value is validated and joins the subset check.
+  A Codex `token_count` whose `info` has neither `total_token_usage` nor
+  `last_token_usage` is diagnosed `missing_usage`; it may stand for a request,
+  so its native session's input and attempts are null with this reason.
 - `invalid_input_fields`: an input bucket is not an unsigned integer.
 - `overlapping_input_subsets`: cache subsets cannot be disjoint within input.
 - `unknown_attempts_for_input`: retained input has no corresponding known
@@ -215,6 +222,9 @@ Unknown reasons are sorted and unique:
 - `unidentified_response_input`: a response-level usage record has no stable
   response identity, so its input can be neither deduplicated nor counted;
   `input_tokens` and `observed_attempts` are both null rather than a partial sum.
+- `usage_on_client_generated_record`: a Claude Code client-generated record
+  (see the counting contract) carries a nonzero or non-numeric counter;
+  `input_tokens` and `observed_attempts` are both null.
 - `incompatible_attempt_basis`: response and cumulative observations disagree.
 - `unsupported_provider`: validated provider label has no adapter.
 - `unsupported_schema`: accounting semantics cannot be established.
@@ -242,7 +252,10 @@ the session is diagnosed
 such evidence: each positive transition counts as one attempt, and a missing
 prefix there is not detected. Replayed snapshots add nothing. Missing,
 malformed and incompatible observations are never silently dropped from
-context validity.
+context validity. A record that is diagnosed and then not counted still makes
+its native session's input unknown. A record that cannot be read or parsed at
+all has no known native session, so it makes the input of the session that
+lists it unknown.
 
 Provider labels are validated, preserving spelling for unsupported providers.
 Only exact `claude` and `codex` select adapters. An unsupported provider retains

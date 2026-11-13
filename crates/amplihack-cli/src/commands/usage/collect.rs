@@ -117,6 +117,11 @@ pub fn collect(m: &Manifest, base: &Path) -> Result<Report> {
                             model = value.clone();
                             continue;
                         }
+                        Event::UnknownInput { native_session, .. } => {
+                            if native_session.is_none() {
+                                *native_session = native.clone();
+                            }
+                        }
                         Event::Usage {
                             native_session,
                             model: event_model,
