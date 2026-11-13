@@ -138,6 +138,7 @@ amplihack copilot
 
 - [Use Amplihack with Codex](howto/install-codex-plugin.md) - Install native skills and hooks, launch sessions, and run recipes
 - [Runner validation reference](reference/recipe-runner-validation.md) - Capability schema, provider compatibility, managed provenance, installer downgrade guard, and diagnostics
+- [Recipe Context Transport Reference](reference/recipe-context-transport.md) - How `recipe run` hands context to the runner without argv
 - [Workflow context transport](reference/workflow-context-transport.md) - File-first authority, structured verifier objects, legacy compatibility, and consumer verdict policies
 - [Native plugin probe](reference/codex-native-plugin-probe.md) - Probe time limits, failure classification and error messages
 - [Native installer ownership](concepts/codex-installation-ownership.md) - Packaging, hook ownership, locking, and recovery
@@ -225,6 +226,8 @@ Understand the philosophy and architecture behind amplihack.
 - [amplihack-rs Parity Reference](amplihack-rs-parity.md) - Subprocess prompt delivery capabilities, configuration, diagnostics, and Rust API
 - [Large Payload Delivery to Child Processes](concepts/large-payload-delivery.md) - Why large prompts, recipe context and GitHub bodies stay out of argv and environment values (`E2BIG`, `MAX_ARG_STRLEN`)
 - [Why Prompt Text Stays Out of argv](concepts/prompt-text-out-of-argv.md) - Why no contract, prompt or brief text appears in an agent's `/proc/<pid>/cmdline` (#2030)
+- [Recipe Context Transport Reference](reference/recipe-context-transport.md) - `context_file_v1`, the 0600 context file in the runtime folder, the `--set` fallback, cleanup and errors (#2582)
+- [Stop Background Jobs by PID](howto/stop-background-jobs-by-pid.md) - Stop your own job by `$!` or process group, never by pattern, and time-box tests with the runner's options (#2582)
 - [Agent Prompt Channels Reference](reference/agent-prompt-channels.md) - Per-launch-path channels, the contract file, the Claude Code 2.1.319 version gate, the `amplihack claude` passthrough rewrite and errors
 - [Check Agent Processes for Prompt Text](howto/check-agent-argv-for-prompt-text.md) - Run the `/proc` check and fix version-gate failures
 - [Large Payload Delivery Reference](reference/large-payload-delivery.md) - `file-reference` mode, sync and async stdin writers, runner value spill, UTF-8 truncation, reasoner bounds, `--prompt-file`, and `workflow_body_file.sh`

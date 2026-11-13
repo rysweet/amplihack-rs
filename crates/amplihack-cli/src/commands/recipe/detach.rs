@@ -701,6 +701,92 @@ mod tests {
         assert_eq!(read_spec(&path).unwrap(), spec);
     }
 
+    /// Issue #2582 (D9): the arguments a detached launch repeats in the pane
+    /// carry no context flag and no context value. The context reaches the
+    /// pane only in the private `<session>.context.json`, so the tmux argv
+    /// holds paths only. The args are assembled as `commands::recipe` does.
+    #[test]
+    fn launch_args_hold_no_context_flag_or_value() {
+        let token = "ZQXV2582DETACHWORD";
+        let task = format!("task={token} fix it");
+        let cli = crate::Cli::try_parse_from([
+            "amplihack",
+            "recipe",
+            "run",
+            "r.yaml",
+            "-c",
+            task.as_str(),
+            "--context=repo_note=ZQXV2582NOTEWORD",
+            "--detach",
+            "--fresh",
+            "-w",
+            ".",
+        ])
+        .expect("recipe run arguments parse");
+        let crate::Commands::Recipe {
+            command:
+                crate::RecipeCommands::Run {
+                    recipe_path,
+                    context,
+                    dry_run,
+                    verbose,
+                    format,
+                    working_dir,
+                    step_timeout,
+                    governor,
+                    fresh,
+                    ..
+                },
+        } = cli.command
+        else {
+            panic!("expected recipe run");
+        };
+        assert!(
+            context.iter().any(|c| c.contains(token)),
+            "the token was parsed"
+        );
+        let mut args = pane_args(
+            &recipe_path,
+            dry_run,
+            verbose,
+            &format,
+            working_dir.as_deref(),
+            step_timeout,
+        );
+        args.extend(governor.to_args());
+        if fresh {
+            args.push("--fresh".into());
+        }
+        for flag in ["-c", "--set", "--context", "--context-from-file"] {
+            assert!(!args.iter().any(|a| a == flag), "{flag} in {args:?}");
+        }
+        assert!(
+            !args.iter().any(|a| a.contains("ZQXV2582")),
+            "a context value reached the pane argv: {args:?}"
+        );
+    }
+
+    /// Issue #2582 (D11): the folder holding the spec and context files is
+    /// private, even when it existed with wider modes.
+    #[test]
+    fn the_log_dir_is_private() {
+        let dir = tempfile::tempdir().unwrap();
+        let fresh = dir.path().join("a").join("recipe-logs");
+        ensure_private_dir(&fresh).unwrap();
+        assert_eq!(
+            fs::metadata(&fresh).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let wide = dir.path().join("wide");
+        fs::create_dir(&wide).unwrap();
+        fs::set_permissions(&wide, fs::Permissions::from_mode(0o755)).unwrap();
+        ensure_private_dir(&wide).unwrap();
+        assert_eq!(
+            fs::metadata(&wide).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+
     /// Issue #1976 (D8, C-S12): a detached run is a top-level run. Its pane
     /// must never watch the launching run as a parent, nor write into another
     /// drive's state directory. `child_env` and the `tmux new-session`

@@ -129,6 +129,8 @@ nav:
           - Explanation: concepts/large-payload-delivery.md
           - How-To: howto/pass-large-recipe-context.md
           - Reference: reference/large-payload-delivery.md
+      - Recipe Context Transport: reference/recipe-context-transport.md
+      - Stop Background Jobs by PID: howto/stop-background-jobs-by-pid.md
       - Clean Result Channel: reference/clean-result-channel.md
       - PR Recovery Readiness:
           - Overview: features/pr-recovery-readiness.md

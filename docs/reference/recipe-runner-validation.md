@@ -42,7 +42,14 @@ Property order and compatible additional fields are accepted. Duplicate property
 names, trailing data, invalid UTF-8, malformed JSON, wrong types, failed probes
 and unsupported schemas fail validation. Probes have bounded duration and output.
 Unsupported Codex platforms advertise an empty array rather than claiming support.
+
 Python and Node are optional; semantic parsing uses existing native JSON support.
+
+Optional capabilities change behaviour without being required:
+
+| Capability | Effect when present |
+| --- | --- |
+| `context_file_v1` | `amplihack recipe run` passes the recipe context as `--context-file <path>` instead of `--set` pairs. Exact membership only. See [Recipe Context Transport Reference](recipe-context-transport.md). |
 
 ### Recovery capability enforcement
 

@@ -930,3 +930,385 @@ mod issue_1976_removed_keys {
         }
     }
 }
+
+// -------------------------------------------------------------------------
+// Issue #2582: context_transport. When the runner reports `context_file_v1`,
+// recipe context reaches it in a 0600 file under the run's private runtime
+// folder and the runner's argv carries only `--context-file <path>`. Without
+// the capability, today's `--set` path runs byte for byte.
+// -------------------------------------------------------------------------
+
+mod context_transport_2582 {
+    use super::super::context_transport::{
+        CONTEXT_FILE_CAPABILITY, ContextTransport, refuse_reserved_keys, supports_context_file,
+        write_context_file,
+    };
+    use super::super::execute::pass_context;
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    /// Distinctive synthetic values, each at least 12 characters with a
+    /// unique token, so a match can only come from this test's context.
+    const TASK: &str = "ZQXV2582TASKWORD fix the widget";
+    const BODY: &str = "ZQXV2582BODYWORD {\"json\": [1, 2]} $(touch pwned) `x`";
+
+    fn context() -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("task_description".to_string(), TASK.to_string()),
+            ("pr_body".to_string(), BODY.to_string()),
+            ("flag".to_string(), "true".to_string()),
+        ])
+    }
+
+    fn report(capabilities: &[&str]) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": 1,
+            "version": "fixture",
+            "capabilities": capabilities,
+        })
+    }
+
+    fn with_capability() -> serde_json::Value {
+        report(&["codex_exec", "durable_recovery_v1", CONTEXT_FILE_CAPABILITY])
+    }
+
+    fn without_capability() -> serde_json::Value {
+        report(&["codex_exec", "durable_recovery_v1"])
+    }
+
+    /// A private runtime folder, as `RuntimeGuard` creates it (0700).
+    fn runtime() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("runtime");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        (tmp, dir)
+    }
+
+    fn args(command: &Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn mode(path: &Path) -> u32 {
+        fs::symlink_metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    fn is_root() -> bool {
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        unsafe { libc::geteuid() == 0 }
+    }
+
+    #[test]
+    fn capability_constant_is_context_file_v1() {
+        assert_eq!(CONTEXT_FILE_CAPABILITY, "context_file_v1");
+    }
+
+    #[test]
+    fn capability_match_is_exact() {
+        assert!(supports_context_file(&with_capability()));
+        assert!(!supports_context_file(&without_capability()));
+        assert!(!supports_context_file(&report(&[
+            "context_file_v10",
+            "context_file",
+            "CONTEXT_FILE_V1",
+            " context_file_v1",
+        ])));
+        assert!(!supports_context_file(&serde_json::json!({})));
+        assert!(!supports_context_file(&serde_json::json!({
+            "capabilities": "context_file_v1"
+        })));
+        assert!(!supports_context_file(&serde_json::Value::Null));
+    }
+
+    #[test]
+    fn file_transport_argv_is_path_only() {
+        let (_tmp, runtime) = runtime();
+        let context = context();
+        let transport = ContextTransport::choose(&with_capability(), &runtime, &context).unwrap();
+        let ContextTransport::File(file) = &transport else {
+            panic!("the capability must select the file transport");
+        };
+        let expected = runtime.join("context").join("context.json");
+        assert_eq!(file.path(), expected.as_path());
+
+        let mut command = Command::new("echo");
+        let bytes = transport.apply(&mut command, &context).unwrap();
+        let argv = args(&command);
+        assert_eq!(
+            argv,
+            ["--context-file".to_string(), expected.display().to_string()]
+        );
+        for value in context.values() {
+            assert!(
+                !argv.iter().any(|a| a.contains(value.as_str())),
+                "a context value reached argv"
+            );
+        }
+        assert!(!argv.iter().any(|a| a == "--set" || a == "-c"));
+        assert_eq!(
+            bytes,
+            "--context-file".len()
+                + 1
+                + expected.as_os_str().len()
+                + 1
+                + 2 * std::mem::size_of::<usize>(),
+            "the argv cost of the file path feeds the env budget (D8)"
+        );
+    }
+
+    #[test]
+    fn file_holds_the_context_as_a_json_object_of_strings() {
+        let (_tmp, runtime) = runtime();
+        let context = context();
+        let file = write_context_file(&runtime, &context).unwrap();
+        let bytes = fs::read(file.path()).unwrap();
+        let parsed: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed.len(), context.len());
+        for (key, value) in &context {
+            assert_eq!(
+                parsed.get(key),
+                Some(&serde_json::Value::String(value.clone())),
+                "{key} must be written as the string amplihack holds (D1)"
+            );
+        }
+    }
+
+    #[test]
+    fn context_file_modes() {
+        let (_tmp, runtime) = runtime();
+        let file = write_context_file(&runtime, &context()).unwrap();
+        let dir = runtime.join("context");
+        assert_eq!(file.path(), dir.join("context.json").as_path());
+        assert_eq!(mode(&dir), 0o700, "context folder must be 0700");
+        assert_eq!(mode(file.path()), 0o600, "context file must be 0600");
+        assert!(
+            fs::symlink_metadata(file.path()).unwrap().is_file(),
+            "context file must be a regular file"
+        );
+    }
+
+    #[test]
+    fn context_file_is_not_under_the_exported_tmp() {
+        let (_tmp, runtime) = runtime();
+        fs::create_dir(runtime.join("tmp")).unwrap();
+        let file = write_context_file(&runtime, &context()).unwrap();
+        assert!(!file.path().starts_with(runtime.join("tmp")));
+        assert!(file.path().starts_with(&runtime));
+    }
+
+    #[test]
+    fn context_file_removed_on_drop() {
+        let (_tmp, runtime) = runtime();
+        let file = write_context_file(&runtime, &context()).unwrap();
+        let path = file.path().to_path_buf();
+        assert!(path.is_file());
+        drop(file);
+        assert!(!path.exists(), "the context file must be removed");
+        assert!(
+            !runtime.join("context").exists(),
+            "the context folder must be removed"
+        );
+        assert!(
+            runtime.is_dir(),
+            "the runtime folder belongs to RuntimeGuard"
+        );
+    }
+
+    #[test]
+    fn context_file_drop_leaves_unexpected_entries_alone() {
+        // Cleanup is remove_file then remove_dir, never remove_dir_all.
+        let (_tmp, runtime) = runtime();
+        let file = write_context_file(&runtime, &context()).unwrap();
+        let stray = runtime.join("context").join("stray.txt");
+        fs::write(&stray, "kept").unwrap();
+        drop(file);
+        assert!(!runtime.join("context").join("context.json").exists());
+        assert_eq!(fs::read_to_string(&stray).unwrap(), "kept");
+    }
+
+    #[test]
+    fn transport_drop_removes_the_file() {
+        let (_tmp, runtime) = runtime();
+        let context = context();
+        let transport = ContextTransport::choose(&with_capability(), &runtime, &context).unwrap();
+        assert!(runtime.join("context").join("context.json").is_file());
+        drop(transport);
+        assert!(!runtime.join("context").exists());
+    }
+
+    #[test]
+    fn fallback_matches_today_byte_for_byte() {
+        let (_tmp, runtime) = runtime();
+        let context = context();
+        let transport =
+            ContextTransport::choose(&without_capability(), &runtime, &context).unwrap();
+        assert!(matches!(transport, ContextTransport::Set));
+        assert!(
+            !runtime.join("context").exists(),
+            "the fallback writes no file"
+        );
+
+        let mut via_transport = Command::new("echo");
+        let transport_bytes = transport.apply(&mut via_transport, &context).unwrap();
+        let mut today = Command::new("echo");
+        let today_bytes = pass_context(&mut today, &context).unwrap();
+        assert_eq!(args(&via_transport), args(&today));
+        assert_eq!(transport_bytes, today_bytes);
+        assert!(args(&via_transport).iter().all(|a| a != "--context-file"));
+    }
+
+    #[test]
+    fn empty_context_passes_no_flag() {
+        let (_tmp, runtime) = runtime();
+        let empty = BTreeMap::new();
+        for report in [with_capability(), without_capability()] {
+            let transport = ContextTransport::choose(&report, &runtime, &empty).unwrap();
+            assert!(matches!(transport, ContextTransport::None));
+            let mut command = Command::new("echo");
+            assert_eq!(transport.apply(&mut command, &empty).unwrap(), 0);
+            assert_eq!(command.get_args().count(), 0);
+        }
+        assert!(!runtime.join("context").exists());
+    }
+
+    #[test]
+    fn reserved_key_refused_on_both_paths() {
+        let (_tmp, runtime) = runtime();
+        let mut context = context();
+        context.insert(
+            "amplihack_claude_profile".to_string(),
+            "ZQXV2582PROFILEWORD".to_string(),
+        );
+        for report in [with_capability(), without_capability()] {
+            let error = match ContextTransport::choose(&report, &runtime, &context) {
+                Ok(_) => panic!("a reserved key must be refused"),
+                Err(error) => error.to_string(),
+            };
+            assert!(error.contains("amplihack_claude_profile"), "{error}");
+            assert!(error.contains("reserved"), "{error}");
+            assert!(!error.contains("ZQXV2582"), "values must not be printed");
+            assert!(
+                !runtime.join("context").exists(),
+                "no file may be written before the refusal"
+            );
+        }
+        assert!(refuse_reserved_keys(&context).is_err());
+        assert!(refuse_reserved_keys(&self::context()).is_ok());
+    }
+
+    #[test]
+    fn refusal_message_is_unchanged_from_pass_context() {
+        let context = BTreeMap::from([("AMPLIHACK_X".to_string(), "v".to_string())]);
+        let moved = refuse_reserved_keys(&context).unwrap_err().to_string();
+        let mut command = Command::new("echo");
+        let today = pass_context(&mut command, &context)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(moved, today);
+    }
+
+    #[test]
+    fn oversize_pair_only_refused_on_fallback() {
+        let (_tmp, runtime) = runtime();
+        let big = "y".repeat(200 * 1024);
+        let context = BTreeMap::from([("task_description".to_string(), big.clone())]);
+
+        let file = ContextTransport::choose(&with_capability(), &runtime, &context).unwrap();
+        let mut command = Command::new("echo");
+        file.apply(&mut command, &context)
+            .expect("the file path has no per-pair MAX_ARG_STRLEN limit (D6)");
+        let written = fs::read(runtime.join("context").join("context.json")).unwrap();
+        assert!(written.len() > big.len());
+        drop(file);
+
+        let set = ContextTransport::choose(&without_capability(), &runtime, &context).unwrap();
+        let mut command = Command::new("echo");
+        let error = set.apply(&mut command, &context).unwrap_err().to_string();
+        assert!(error.contains("131072"), "{error}");
+        assert!(!error.contains("yyyy"));
+    }
+
+    #[test]
+    fn context_dir_preexisting_refused() {
+        // A real folder.
+        let (_tmp, runtime) = runtime();
+        fs::create_dir(runtime.join("context")).unwrap();
+        assert!(write_context_file(&runtime, &context()).is_err());
+        assert!(!runtime.join("context").join("context.json").exists());
+
+        // A symbolic link named `context` pointing at a folder elsewhere.
+        let (tmp, runtime) = self::runtime();
+        let elsewhere = tmp.path().join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, runtime.join("context")).unwrap();
+        assert!(write_context_file(&runtime, &context()).is_err());
+        assert!(
+            fs::read_dir(&elsewhere).unwrap().next().is_none(),
+            "nothing may be written through the link"
+        );
+        assert!(
+            fs::symlink_metadata(runtime.join("context"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the planted link is left as it is"
+        );
+    }
+
+    #[test]
+    fn capability_present_write_failure_does_not_fall_back() {
+        if is_root() {
+            // Root ignores DAC, so a 0500 folder does not stop the write.
+            return;
+        }
+        let (_tmp, runtime) = runtime();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o500)).unwrap();
+        let context = context();
+        let result = ContextTransport::choose(&with_capability(), &runtime, &context);
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
+        match result {
+            Ok(ContextTransport::Set) => panic!("a write failure must never fall back to --set"),
+            Ok(_) => panic!("a write failure must be an error"),
+            Err(error) => {
+                let text = format!("{error:#}");
+                assert!(!text.contains("ZQXV2582"), "values must not be printed");
+            }
+        }
+    }
+
+    #[test]
+    fn write_error_has_no_values() {
+        if is_root() {
+            return;
+        }
+        let (_tmp, runtime) = runtime();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o500)).unwrap();
+        let result = write_context_file(&runtime, &context());
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
+        let text = match result {
+            Ok(_) => panic!("writing into a 0500 folder must fail"),
+            Err(error) => format!("{error:#}"),
+        };
+        assert!(
+            text.contains("failed to write recipe context file"),
+            "{text}"
+        );
+        assert!(!text.contains("ZQXV2582"), "{text}");
+        assert!(!text.contains("widget"), "{text}");
+    }
+
+    #[test]
+    fn missing_runtime_dir_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gone = tmp.path().join("not-created");
+        assert!(write_context_file(&gone, &context()).is_err());
+        assert!(!gone.exists(), "the runtime folder is not created here");
+    }
+}

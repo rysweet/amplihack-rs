@@ -288,7 +288,7 @@ fn env_entry_bytes(name: &str, value: &str) -> usize {
 /// The `AMPLIHACK_` namespace belongs to amplihack. A context key in it is
 /// never mirrored into the env and never forwarded to the runner, so a recipe
 /// cannot choose, for example, the pinned Claude profile (issue #1567).
-fn is_reserved_context_key(key: &str) -> bool {
+pub(super) fn is_reserved_context_key(key: &str) -> bool {
     key.to_ascii_uppercase().starts_with("AMPLIHACK_")
 }
 
@@ -680,23 +680,28 @@ pub(super) fn execute_recipe_via_rust_fresh(
 
     let binary = super::binary::find_recipe_runner_binary()?;
     let recipe_name = recipe_name_for_correlation(recipe_path);
-    if let Err(error) = crate::runner_validation::probe(&binary, &agent_binary.binary) {
-        let correlation = RecipeRunCorrelation::new(
-            recipe_name.clone(),
-            working_dir,
-            &BTreeMap::new(),
-            binary.as_path(),
-        );
-        correlation.emit_early();
-        eprintln!("amplihack: runner capability check failed: {error}");
-        return Err(fail_with_final_record(
-            &correlation,
-            RecipeRunFinalStatus::SpawnFailure,
-            None,
-            None,
-            error,
-        ));
-    }
+    // Issue #2582: the report is kept, so the context transport can check
+    // for `context_file_v1` without a second probe.
+    let runner_report = match crate::runner_validation::probe(&binary, &agent_binary.binary) {
+        Ok(report) => report,
+        Err(error) => {
+            let correlation = RecipeRunCorrelation::new(
+                recipe_name.clone(),
+                working_dir,
+                &BTreeMap::new(),
+                binary.as_path(),
+            );
+            correlation.emit_early();
+            eprintln!("amplihack: runner capability check failed: {error}");
+            return Err(fail_with_final_record(
+                &correlation,
+                RecipeRunFinalStatus::SpawnFailure,
+                None,
+                None,
+                error,
+            ));
+        }
+    };
 
     // Issue #1481: the caller resolved the agent binary once, from
     // `working_dir`, while this process could still see the session markers of
@@ -786,6 +791,25 @@ pub(super) fn execute_recipe_via_rust_fresh(
     let authorization = authorization;
     let context = &invocation_context;
 
+    // Issue #2582: when the runner reports `context_file_v1`, the context goes
+    // to it in a 0600 file under the run's private runtime folder and argv
+    // holds only `--context-file <path>`; otherwise today's `--set` path runs.
+    // Declared after `workspace`, so the file is removed before the runtime
+    // folder, after the last runner child has been reaped. Written once and
+    // reused by every retry.
+    let transport = super::context_transport::ContextTransport::choose(
+        &runner_report,
+        workspace.borrow().runtime_dir(),
+        context,
+    )?;
+    tracing::debug!(
+        file = matches!(
+            transport,
+            super::context_transport::ContextTransport::File(_)
+        ),
+        "recipe context transport"
+    );
+
     // Issue #964: snapshot the caller checkout's git state BEFORE spawning so a
     // runner that corrupts it (e.g. flips `core.bare=true`, which breaks
     // `git status`) can be repaired on a terminal failure — leaving the caller's
@@ -841,10 +865,11 @@ pub(super) fn execute_recipe_via_rust_fresh(
             command.arg("--dry-run");
         }
 
-        // Issue #1570: context goes to the runner as `--set` arguments; their
-        // size comes out of the env-mirror budget below so argv + envp stay
-        // under ARG_MAX together.
-        let context_argv_bytes = pass_context(&mut command, context)?;
+        // Issue #1570 / #2582: context goes to the runner as `--context-file
+        // <path>` or, as the fallback, as `--set` arguments; their size comes
+        // out of the env-mirror budget below so argv + envp stay under
+        // ARG_MAX together.
+        let context_argv_bytes = transport.apply(&mut command, context)?;
         let argv_room = current_arg_max().saturating_sub(inherited_env_bytes());
         if context_argv_bytes > argv_room.saturating_sub(ENV_BUDGET_RESERVATION_BYTES) {
             anyhow::bail!(
@@ -1650,9 +1675,10 @@ fn parse_recipe_output_with_stderr_drops(
 pub(super) const MAX_ARG_STRLEN_BYTES: usize = 131_072;
 
 /// Pass context key-value pairs to the command as `--set KEY=VALUE`
-/// arguments, the only context input `recipe-runner-rs` accepts (it has no
-/// `--context-file` option; the fallback that used one failed every run
-/// whose context totalled over 128 KiB, issue #1570).
+/// arguments. This is the fallback when the runner does not report
+/// `context_file_v1` (issue #2582); the pinned runner does not, so on it the
+/// values are still on the runner's argv. When the capability is reported,
+/// `context_transport` passes only `--context-file <path>` instead.
 ///
 /// Returns the argv bytes the pairs occupy, so the caller can take them out
 /// of the env-mirror budget. A pair longer than one argv string allows is
@@ -1661,12 +1687,7 @@ pub(super) fn pass_context(
     command: &mut Command,
     context: &BTreeMap<String, String>,
 ) -> Result<usize> {
-    if let Some(key) = context.keys().find(|k| is_reserved_context_key(k)) {
-        anyhow::bail!(
-            "recipe context key {} is reserved: the AMPLIHACK_ namespace cannot be set from recipe context",
-            crate::commands::profile::escape_for_error(key)
-        );
-    }
+    super::context_transport::refuse_reserved_keys(context)?;
     if let Some((key, value)) = context
         .iter()
         .find(|(k, v)| k.len() + 1 + v.len() + 1 > MAX_ARG_STRLEN_BYTES)
