@@ -26,7 +26,9 @@ pub struct State {
 
 /// Reads the private `state.json`. The state folder is not known yet, so the
 /// check is strict: `prepare` has already made the state folder private, and
-/// everything under `.completion-*` is created at 0700/0600.
+/// everything under `.completion-*` is created at 0700/0600. A folder with
+/// extra bits is refused; a file this user owns with extra bits inside a
+/// private (0700) folder is repaired to 0600 and logged (#2546).
 pub fn load(path: &Path) -> Result<State> {
     Ok(serde_json::from_slice(&secure_fs::read(
         Scope::Strict,

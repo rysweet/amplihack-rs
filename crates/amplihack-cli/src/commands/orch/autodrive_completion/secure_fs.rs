@@ -89,7 +89,11 @@ mod platform {
     /// first `.completion-*` part, and every folder below that part. Each is
     /// repaired only when `scope` allows it (at or below the state root);
     /// folders above the root are checked strictly. Returns the folder and
-    /// whether the target entry may be repaired.
+    /// how the target entry may be repaired: `Repair::Allowed` where `scope`
+    /// allows it, and `Repair::PrivateFolder` otherwise. The returned folder
+    /// has always passed `make_private(.., Kind::Dir, ..)` above, and callers
+    /// open the target as its single file name with `openat(O_NOFOLLOW)` on
+    /// that descriptor, which is what `PrivateFolder` requires (#2546).
     fn parent(scope: Scope<'_>, path: &Path) -> Result<(File, Repair)> {
         ensure!(path.is_absolute(), "private state path must be absolute");
         let mut dir = File::open("/")?;
@@ -120,7 +124,11 @@ mod platform {
         if !in_private_tree {
             private(&dir, &at, Kind::Dir, scope.repair(&at))?;
         }
-        Ok((dir, scope.repair(&at)))
+        let repair = match scope.repair(&at) {
+            Repair::Allowed => Repair::Allowed,
+            Repair::PrivateFolder | Repair::Refuse => Repair::PrivateFolder,
+        };
+        Ok((dir, repair))
     }
 
     /// Checks the state folder itself, repairing it only when it lies directly

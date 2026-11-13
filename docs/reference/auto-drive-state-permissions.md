@@ -1,6 +1,6 @@
 ---
 title: Auto-drive State Permissions
-description: How auto-drive writes its state and evidence 0700/0600 under any umask, and when the evidence check repairs or refuses an entry, decided by the state folder's location under the auto-drive state root.
+description: How auto-drive writes its state and evidence 0700/0600 under any umask, and when the evidence check repairs or refuses an entry, decided by the state folder's location under the auto-drive state root or, for files, by the folder being private.
 last_updated: 2026-11-13
 review_schedule: quarterly
 owner: workflow-team
@@ -33,7 +33,9 @@ for what the evidence itself must contain.
 
 Folders are `0700`, files are `0600`, whatever the process umask. An entry
 this user owns with extra group or other bits is set back to that mode and
-logged. Anything else that is wrong is refused.
+logged when it lies in a state folder directly under the auto-drive state
+root, or when it is a file read from a private state folder. Anything else
+that is wrong is refused.
 
 ## Writers
 
@@ -53,9 +55,11 @@ when it creates an entry gets that mode even under umask `002`.
 symlink planted at that name.
 
 Files written by agent steps with a plain write (for example
-`std::fs::write`, or `>` in a shell without `umask 077`) can still come out
-`0664` under umask `002`. The evidence check repairs those, as described
-below.
+`std::fs::write`, or `>` in a shell without `umask 077`) take the shell's
+umask: `0664` under umask `002`, `0644` under umask `022`. A drive's QA agent
+that redirects a log into `<run dir>/autodrive-state`, for example
+`qa-criterion1-attempt2-ffi.log`, leaves such a file. The evidence check
+repairs those files, as described below.
 
 ## What the evidence check does
 
@@ -75,8 +79,8 @@ The first matching row wins:
 | 4 | Other-write bit set (`mode & 0o002`) | Refuse: `untrusted evidence ownership or permissions` |
 | 5 | Group bits set and group is not this user's effective group (`gid != getegid()`) | Refuse: `untrusted evidence ownership or permissions` |
 | 6 | File with more than one link, when the caller requires a single link (`Kind::SingleLinkFile`) or the file has extra bits | Refuse: `evidence has unexpected hard links` |
-| 7 | Extra group or other bits, where repair is not allowed (`Repair::Refuse`) | Refuse: `evidence outside the auto-drive state tree has group or other access`, with the advice to `chmod 700` (folder) or `chmod 600` (file), or to keep drive state in a folder directly under the auto-drive state root |
-| 8 | Extra group or other bits | Repair to `mode & 0o700`, log, continue |
+| 7 | Extra group or other bits, where repair is not allowed: `Repair::Refuse` for any entry, or `Repair::PrivateFolder` for a folder | Refuse: `evidence outside the auto-drive state tree has group or other access`, with the advice to `chmod 700` (folder) or `chmod 600` (file), or to keep drive state in a folder directly under the auto-drive state root |
+| 8 | Extra group or other bits: any entry under `Repair::Allowed`, or a file under `Repair::PrivateFolder` | Repair to `mode & 0o700`, log, continue |
 | 9 | Anything else | Private: continue |
 
 Notes on the rows:
@@ -90,9 +94,26 @@ Notes on the rows:
   its other names too. The evidence store requires a single link
   (`Kind::SingleLinkFile`); `secure_fs` does not (`Kind::File`).
 - Row 7: this reason is separate from row 3 so an operator can tell a
-  strict-path refusal from a foreign owner.
+  strict-path refusal from a foreign owner. A folder is never repaired under
+  `Repair::PrivateFolder`; folders follow the location rule only.
 - Row 8: `mode & 0o700` also clears setuid, setgid and sticky bits. A folder
-  at `0775` becomes `0700`; a file at `0664` becomes `0600`.
+  at `0775` becomes `0700`; a file at `0644` or `0664` becomes `0600`.
+- Row 8 under `Repair::PrivateFolder`: the caller passes this value only for
+  a file it opened through a folder descriptor that has just passed the
+  folder check strictly, so that folder is owned by this user, is a real
+  folder and has no group or other bits. No other user can then create,
+  rename, remove or replace any entry in it, so a file there that rows 1 to
+  6 accept (owned by this user, no other-write bit, this user's group, one
+  link) can only have been written by this user. Its extra bits are left by
+  the writer's umask, not by tampering, and removing them is safe.
+
+`Repair` has three values:
+
+| Value | Meaning | Passed by |
+| --- | --- | --- |
+| `Repair::Allowed` | The entry is at or below a repairable state folder (see [the location rule](#the-location-rule)) | `EvidenceStore` and `secure_fs` for entries in a repairable folder |
+| `Repair::PrivateFolder` | The entry is a single name opened with `openat(O_NOFOLLOW)` on a folder descriptor that passed `make_private(.., Kind::Dir, ..)` in the same operation. Files may be repaired; folders may not | `EvidenceStore::read_private` and `secure_fs::read` when the folder is not repairable by location, including every `Scope::Strict` read (`private_state::load` and `private_state::snapshot`) |
+| `Repair::Refuse` | Extra bits are refused, as before #2546 | Folder checks outside a repairable folder |
 
 The repair is `fchmod` on the descriptor that was checked, so the entry
 checked is the entry changed. Nothing is changed for a refused entry.
@@ -116,13 +137,29 @@ assert!(matches!(
     access(foreign, Kind::SingleLinkFile, 1000, 1000, Repair::Allowed),
     Access::Refuse(_)
 ));
+
+// An agent-written 0644 log in a private folder is repaired.
+let log = Entry { mode: 0o644, ..entry };
+assert_eq!(
+    access(log, Kind::SingleLinkFile, 1000, 1000, Repair::PrivateFolder),
+    Access::Repair(0o600)
+);
+
+// A 0755 folder is never repaired under PrivateFolder.
+let folder = Entry { is_dir: true, is_file: false, mode: 0o755, ..entry };
+assert!(matches!(
+    access(folder, Kind::Dir, 1000, 1000, Repair::PrivateFolder),
+    Access::Refuse(_)
+));
 ```
 
 ## Where repairs happen
 
 Each caller decides once, from the state folder's location, whether repairs
 are allowed, and passes that down. A folder's name never allows a repair;
-only its location does.
+only its location does. Files have one further case: a file read from a
+private folder is repaired wherever that folder is (see
+[Files in a private folder](#files-in-a-private-folder)).
 
 ### The auto-drive state root
 
@@ -228,17 +265,19 @@ What this means in practice:
   drive state in a folder directly under the state root.
 - The runner's `<run dir>/autodrive-state` folders are no longer repairable
   by name. They are repairable only when `EvidenceStore::create` has just
-  created them; an existing one must already be `0700`.
+  created them; an existing one must already be `0700`. Files read from such
+  a `0700` folder are repaired under the private-folder rule below.
 - Repairs reach only entries at or below a repairable folder, compared part
   by part. Folders above it, and any path outside it, are checked strictly.
 
-| Caller | Repair allowed for |
-| --- | --- |
-| `EvidenceStore::create` | the evidence store root, when `repairable_root` holds; the device and inode check runs first, so a root swapped for a symlink is refused before the rule is consulted |
-| `EvidenceStore::read_private` | each record it reads, only in a store whose root is repairable |
-| `secure_fs::check_dir(state_dir)` | the state folder, only when `Scope::of` returns `Scope::StateTree`: the path is absolute, has no `..` part, exists, equals its own canonical form, and is a direct child of the state root. A folder that does not exist is `Scope::Strict`; no folder is created to decide the scope |
-| `secure_fs::read`, `output`, `create` with `Scope::StateTree(state_dir)` | the folders checked on the path (the last parent, the folder above the first `.completion-*` part and every folder below it) and the target file, when they are at or below `state_dir` |
-| `secure_fs` with `Scope::Strict` (`private_state::load`, `snapshot`) | nothing |
+| Caller | Repair allowed for | File in a private folder |
+| --- | --- | --- |
+| `EvidenceStore::create` | the evidence store root, when `repairable_root` holds; the device and inode check runs first, so a root swapped for a symlink is refused before the rule is consulted | not applicable: folders only |
+| `EvidenceStore::read_private` | each record it reads, in a store whose root is repairable | each record it reads, in any store: `create` has already proved the root private, so `Repair::Refuse` becomes `Repair::PrivateFolder` |
+| `secure_fs::check_dir(state_dir)` | the state folder, only when `Scope::of` returns `Scope::StateTree`: the path is absolute, has no `..` part, exists, equals its own canonical form, and is a direct child of the state root. A folder that does not exist is `Scope::Strict`; no folder is created to decide the scope | not applicable: folders only |
+| `secure_fs::read` with `Scope::StateTree(state_dir)` | the folders checked on the path (the last parent, the folder above the first `.completion-*` part and every folder below it) and the target file, when they are at or below `state_dir` | the target file, when its parent folder passed the strict check |
+| `secure_fs::read` with `Scope::Strict` (`private_state::load`, `private_state::snapshot`) | no folder | the target file, when its parent folder passed the strict check |
+| `secure_fs::output`, `create` (any scope) | as for `read`; the target is created at `0600` or opened for writing, never repaired | not used |
 
 `prepare` validates its arguments (round label, record, no `..` in the state
 folder) before it calls `check_dir`, so a rejected call changes no modes.
@@ -252,8 +291,60 @@ files in a `.completion-context.*` folder inside the state folder.
 `Scope::StateTree` holds the raw path, and every filesystem operation still
 goes through the `openat(O_NOFOLLOW)` walk.
 
-So `$HOME`, a repository root, the state root itself, a state folder outside
-the state root, or a file outside the state folder is never changed.
+So `$HOME`, a repository root, the state root itself, or a state folder
+outside the state root is never changed, and a file is changed only when it
+lies in a repairable folder or in a private folder.
+
+### Files in a private folder
+
+A file read through `EvidenceStore::read_private` or `secure_fs::read` is
+opened with `openat(O_NOFOLLOW)` as a single name on the folder descriptor
+that has just been checked. That check is `make_private(.., Kind::Dir, ..)`
+on the same descriptor, so the folder is known to be owned by this user, a
+real folder and not a symlink, with no group or other bits. Where the folder
+is not repairable by location, the folder check passes only in that state.
+
+- **Why it is safe.** In a folder that only this user can write, no other
+  user can create, rename, remove or replace an entry. A file there that is
+  owned by this user, has no other-write bit, has this user's group and has
+  one link was written by this user. Extra bits on it are left by the
+  writer's umask, so they are removed and the read goes on.
+- **What it covers.** The agent-written `0644` and `0664` files in
+  `<run dir>/autodrive-state` (ResearchDrafts #865), and files in any other
+  private state folder, wherever it sits.
+- **What it does not cover.** Folders. A folder with extra bits is still
+  repaired only by location, so a `0755` folder outside the state root is
+  refused before any file in it is opened. Rows 1 to 6 still apply to the
+  file, so a foreign owner, a symlink, a wrong type, an other-write bit, a
+  foreign group or a second link is refused as before.
+- **Strict reads of private state.** `private_state::load` and
+  `private_state::snapshot` read `state.json` and its `.evidence` file with
+  `Scope::Strict`. Before this rule they repaired nothing. They now repair a
+  `0644` or `0664` `state.json` or `.evidence` file that this user owns in a
+  `0700` folder, and log one line, as for any other file in a private
+  folder. This change is intended. A folder with extra bits is still refused.
+- **The run folder above does not matter.** Only the folder the file is
+  opened through is checked. `EvidenceStore::create` checks the store folder
+  alone, on the descriptor it has just opened, and `secure_fs::read` checks
+  the last parent (and, on a `.completion-*` path, the folders from the one
+  above that part downwards). The run folder above `autodrive-state` is never
+  checked, so its mode does not change the result. In #865 the run folder
+  was `0700`; T1 also uses a `0700` run folder, and no test covers a `0755`
+  one.
+- **One decision per operation.** The folder is checked again on every read;
+  no decision that a folder is private is cached.
+
+For example, an existing `<run dir>/autodrive-state` at `0700` holding
+`qa-criterion1-attempt2-ffi.log` at `0644`, read through
+`EvidenceStore::create(..).read_private`, gives:
+
+```
+INFO: auto-drive state "<run dir>/autodrive-state/qa-criterion1-attempt2-ffi.log" had mode 0644 (gid 1000); removed group and other access (now 0600)
+```
+
+Here `<run dir>` stands for the runner's absolute run folder; the line
+shows the full path. The read returns the file's bytes unchanged, and a
+second read writes no line.
 
 ## The repair log line
 
@@ -342,12 +433,13 @@ way.
 
 | Error | Likely cause | What to do |
 | --- | --- | --- |
-| `untrusted evidence ownership or permissions` | The entry is owned by another user, is world-writable, or has a foreign group | Find out who wrote it. Do not `chmod` it to make the error go away. |
-| `evidence outside the auto-drive state tree has group or other access` | A file or folder outside a repairable state folder is open to group or other users; most often an explicit state folder that is not directly under the state root, or a state root that is not `0700` | Auto-drive never changes paths outside a repairable folder. Run `chmod 700` on the folder (or `chmod 600` on the file) if it is yours, or keep drive state in a folder directly under the state root named in the message. If the state root itself has group or other write bits, run `chmod 700` on the root. |
+| none; an `INFO:` or `WARNING:` repair line naming a `0644` or `0664` file in a private state folder | An agent step wrote the file under umask `022` or `002` into a `0700` state folder, for example `qa-criterion1-attempt2-ffi.log` in `<run dir>/autodrive-state` | Nothing. The file is now `0600` and was read. To avoid the line, write agent files under `umask 077`. |
+| `untrusted evidence ownership or permissions` | The entry is owned by another user, is world-writable (for example `0666`), or has group bits and a foreign group (for example `0664` with a group taken from a setgid folder). This holds in a private folder too | Find out who wrote it. Do not `chmod` it to make the error go away. |
+| `evidence outside the auto-drive state tree has group or other access` | A folder outside a repairable state folder is open to group or other users, for example a `0755` state folder that is not directly under the state root, or a state root that is not `0700`. The refusal is raised on the folder, before any file in it is opened; files in it keep their modes | Auto-drive never changes a folder outside the state root. Run `chmod 700` on the folder if it is yours; its files are then repaired on the next read. Or keep drive state in a folder directly under the state root named in the message. If the state root itself has group or other write bits, run `chmod 700` on the root. |
 | `context file must be inside the state directory` | A `--context-from-file` or `--evaluator-context-file` path is outside `--state-dir` or contains `..` | Write the context file inside the state folder. |
 | `state root changed during open` | The state root was replaced between the check and the open | Treat as tampering. |
-| `evidence has unexpected hard links` | Another name points at the same file | Remove the other link, or remove the record and let the round rewrite it |
-| `evidence is a symlink` / `evidence is not a regular file or state directory` | Something replaced a state entry | Treat as tampering; remove the entry and rerun the round |
+| `evidence has unexpected hard links` | Another name points at the same file, in a private folder too | Remove the other link, or remove the record and let the round rewrite it |
+| `evidence is a symlink` / `evidence is not a regular file or state directory` | Something replaced a state entry; a private folder does not change this | Treat as tampering; remove the entry and rerun the round |
 
 ## What stays strict
 
@@ -364,10 +456,23 @@ way.
   content was changed earlier. The `WARNING` form of the log line flags this
   when the group's member list names another user. Users who have the group
   only as their primary group are not in that list and are not detected.
+- **Rows 1 to 6.** A private folder changes nothing for a foreign owner, a
+  symlink, a wrong type, an other-write bit (`0666`), group bits with a
+  foreign group, or a second link. These are refused in every folder.
+- **Folders.** The private-folder rule repairs files only. A folder is
+  repaired only by the location rule.
 - **State folders outside the state root.** A state folder that is not a
-  direct child of the auto-drive state root is never repaired, whatever its
-  name, unless `EvidenceStore::create` has just created it. It must be `0700`
-  already.
+  direct child of the auto-drive state root, and is not private, is never
+  repaired, whatever its name, unless `EvidenceStore::create` has just
+  created it. It is refused before any file in it is opened, and its files
+  keep their modes. It must be `0700` already; once it is, its files are
+  repaired under the private-folder rule.
+- **Descriptors opened earlier.** The private-folder rule shows that no other
+  user can change the folder's entries from now on. It cannot show that
+  nobody opened a file earlier. A descriptor another user opened while the
+  folder was not yet `0700`, or a group member's descriptor on a `0664` file,
+  stays open after the repair. The same holds under the location rule; the
+  `WARNING` form of the log line flags a group with other members.
 - **Non-private state roots.** A state root with group or other write bits,
   for example one an older shell created at `0775`, makes every slug folder
   under it strict. Run `chmod 700` on the root.
@@ -403,7 +508,9 @@ below finds them. They use temporary folders only.
   `env_clear()` and add back only `PATH`, `HOME`, `AMPLIHACK_HOME`,
   `AMPLIHACK_STATE_DIR` and `GIT_CONFIG_NOSYSTEM=1`, so `GIT_DIR` and other
   `GIT_*` variables set by git hooks do not leak in.
-- **In-process tests check strict behaviour only.**
+- **In-process tests check strict behaviour only.** The one exception,
+  `issue_2546_outside_state_tree_stays_strict`, repairs a file in a private
+  folder inside a `TempDir`; it reads and writes nothing under `HOME`.
 
 ### End-to-end, real layout
 
@@ -419,7 +526,7 @@ below finds them. They use temporary folders only.
 | `issue_2546_evidence_store_repairs_only_slug_folder_under_state_root` | In the child, `EvidenceStore::create` repairs a `0775` slug folder under the state root to `0700`. A `0775` folder outside the root, including one named `autodrive-state`, is refused with the row 7 reason and left unchanged |
 | `issue_2546_state_folder_0775_is_repaired_and_logged` | In the child, a slug folder chmod'ed to `0775` is repaired to `0700` by `EvidenceStore::create`, with a log line |
 | `issue_2546_hand_chmod_0664_is_repaired_and_logged` | In the child, a file in a slug folder chmod'ed to `0664` is repaired to `0600`, the read succeeds, and stderr names the path |
-| `issue_2546_outside_state_tree_stays_strict` | `secure_fs::read` on a `0644` file in a `0755` folder outside the state root fails with the row 7 reason and changes neither mode |
+| `issue_2546_outside_state_tree_stays_strict` | `Scope::of` gives `Scope::Strict` for a folder outside the state root. `secure_fs::read` on a `0644` file in a `0755` folder there fails with the row 7 reason and changes neither mode. A `0644` file in a `0700` folder there is repaired to `0600` and read (`b"notes"`), and a second read returns the same bytes. Before the private-folder rule, this second half expected a refusal |
 | `issue_2546_completion_part_outside_state_root_stays_strict` | A `0755` folder `x` above `x/.completion-y/f` outside the state root gives `Scope::Strict`, is refused and stays `0755` |
 | `issue_2546_rejected_prepare_changes_no_modes` | In the child, `prepare` with an invalid round label fails and leaves a `0775` slug folder at `0775` |
 | `issue_2546_prepare_refuses_context_outside_state_folder` | In the child, `prepare` refuses `--context-from-file` and `--evaluator-context-file` paths outside the slug folder, or with `..`, and leaves them unchanged |
@@ -428,6 +535,13 @@ below finds them. They use temporary folders only.
 | `issue_2546_unset_state_vars_stay_strict` | In the child, with `HOME` and `AMPLIHACK_STATE_DIR` both unset, the root is `/tmp/.amplihack/state/auto-drive` and `in_state_root` is false for a slug under it. Nothing is created under `/tmp` |
 | `issue_2546_empty_state_dir_uses_home_root` | In the child, an empty `AMPLIHACK_STATE_DIR` counts as unset, so the root is under `HOME`, and a `0775` slug folder there is repaired to `0700` with one repair line |
 | `issue_2546_existing_folder_is_not_treated_as_created` | In the child, under umask `002`: `open_or_create_root` reports a `0775` folder that already exists outside the root as not created, and `EvidenceStore::create` refuses it with the row 7 reason and leaves it at `0775`. A missing folder and its missing parent are made at `0700` and reported as created once. No repair line is written |
+
+### Private folders
+
+| Test | Checks |
+| --- | --- |
+| `issue_2546_private_run_dir_state_repairs_agent_written_files` | In the child, under umask `022`: a `0700` run folder holds an existing `0700` `autodrive-state` folder with `qa-criterion1-attempt2-ffi.log` (`0644`) and `store-0664.log` (`0664`), read through `EvidenceStore::create(..).read_private`, and `fs-0644.log` and `fs-0664.log`, read through `secure_fs::read(Scope::of(&state), ..)`. Every file is read twice. The bytes are unchanged, every file ends `0600`, and stderr has exactly four repair lines, one naming each file, each starting `INFO:` or `WARNING:`. The second reads write nothing |
+| `issue_2546_open_folder_outside_state_root_still_refuses_files` | In the child: a `0755` folder outside the state root holds a `0644` and a `0664` file. `EvidenceStore::create` and `secure_fs::read` both fail with the row 7 reason, the folder and both files keep their modes, and no repair line is written |
 
 ### Root resolution and group check
 
@@ -441,10 +555,10 @@ below finds them. They use temporary folders only.
 
 | Test | Checks |
 | --- | --- |
-| `issue_2546_foreign_owner_symlink_and_hard_link_are_still_refused` | `access` unit cases: foreign uid at `0600` and `0664`, symlink, wrong type, `0666` file, `0777` folder, foreign group, `nlink 2` with and without extra bits, and repair not allowed (row 7 reason): all refused; group write with `gid == egid` repaired to `0600` |
+| `issue_2546_foreign_owner_symlink_and_hard_link_are_still_refused` | `access` unit cases: foreign uid at `0600` and `0664`, symlink, wrong type, `0666` file, `0777` folder, foreign group, `nlink 2` with and without extra bits, and repair not allowed (row 7 reason): all refused; group write with `gid == egid` repaired to `0600`. The same file under `Repair::PrivateFolder`: foreign uid at `0644` (row 3), symlink (row 1), wrong type (row 2), `nlink 2` (row 6), `0666` (row 4), `0664` with a foreign gid (row 5) and a `0755` folder (row 7) are refused; `0644` and `0664` owned by this user, with `gid == egid` and one link, are repaired to `0600` for both `Kind::File` and `Kind::SingleLinkFile`; `0600` is private |
 
 Run them with:
 
 ```bash
-cargo test -p amplihack-cli autodrive
+cargo test -p amplihack-cli --lib autodrive
 ```

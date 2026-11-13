@@ -2171,10 +2171,12 @@ fn issue_2546_state_folder_0775_is_repaired_and_logged() {
     }
 }
 
-/// S1: outside the auto-drive state root, the completion checker stays strict
-/// and changes nothing. A folder named `autodrive-state` in a temporary folder
-/// is not under the root, so its scope is `Strict` (B1); and even a
-/// `StateTree` scope repairs nothing outside its own tree.
+/// S1: outside the auto-drive state root, the completion checker repairs no
+/// folder and refuses an open one, changing nothing. A folder named
+/// `autodrive-state` in a temporary folder is not under the root, so its
+/// scope is `Strict` (B1); and even a `StateTree` scope repairs no folder
+/// outside its own tree. Only this user's file inside a private folder is
+/// repaired (ResearchDrafts #865).
 #[cfg(unix)]
 #[test]
 fn issue_2546_outside_state_tree_stays_strict() {
@@ -2204,19 +2206,19 @@ fn issue_2546_outside_state_tree_stays_strict() {
         );
         assert_eq!(mode_2546(&file), 0o644, "file outside the tree changed");
 
-        // A private folder holding an open file: the file is still refused.
+        // A private folder holding this user's open file (ResearchDrafts
+        // #865): no other user can create, replace or change an entry in a
+        // 0700 folder owned by this user, so the file is repaired to 0600
+        // and read. The folder itself is never repaired by this rule.
         let closed = tempfile::tempdir_in(dir.path()).unwrap();
         std::fs::set_permissions(closed.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let file = closed.path().join("notes.txt");
         std::fs::write(&file, b"notes").unwrap();
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
-        let error =
-            secure_fs::read(scope, &file, 1 << 20).expect_err("read outside the state tree");
-        assert!(format!("{error:#}").contains(OUTSIDE_2546), "{error:#}");
-        assert_eq!(mode_2546(&file), 0o644, "file outside the tree changed");
-
-        // The same file made private by its owner is read.
-        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(secure_fs::read(scope, &file, 1 << 20).unwrap(), b"notes");
+        assert_eq!(mode_2546(&file), 0o600, "file in a private folder");
+        assert_eq!(mode_2546(closed.path()), 0o700);
+        // A second read finds nothing left to repair.
         assert_eq!(secure_fs::read(scope, &file, 1 << 20).unwrap(), b"notes");
     }
 }
@@ -2510,6 +2512,305 @@ fn issue_2546_foreign_owner_symlink_and_hard_link_are_still_refused() {
         ),
         Access::Refuse(OUTSIDE_2546)
     );
+
+    // ResearchDrafts #865: a file opened through a private folder (0700,
+    // owned by this user, a real folder). No other user can create, replace
+    // or change an entry in it, so this user's file with extra bits is
+    // repaired. Rows 1 to 6 still decide first, and no folder is repaired.
+    let check_pf = |entry: Entry, kind: Kind| access(entry, kind, me, group, Repair::PrivateFolder);
+    let agent_file = Entry {
+        mode: 0o644,
+        ..file
+    };
+    for kind in [Kind::File, Kind::SingleLinkFile] {
+        for mode in [0o644, 0o664, 0o640, 0o604] {
+            assert_eq!(
+                check_pf(Entry { mode, ..file }, kind),
+                Access::Repair(0o600),
+                "mode {mode:o}, {kind:?}"
+            );
+        }
+        // Setuid, setgid and sticky bits are cleared with the extra bits.
+        assert_eq!(
+            check_pf(
+                Entry {
+                    mode: 0o2664,
+                    ..file
+                },
+                kind
+            ),
+            Access::Repair(0o600),
+            "{kind:?}"
+        );
+        assert_eq!(
+            check_pf(
+                Entry {
+                    mode: 0o744,
+                    ..file
+                },
+                kind
+            ),
+            Access::Repair(0o700),
+            "{kind:?}"
+        );
+        assert_eq!(
+            check_pf(
+                Entry {
+                    mode: 0o600,
+                    ..file
+                },
+                kind
+            ),
+            Access::Private,
+            "{kind:?}"
+        );
+    }
+    let refused_pf = [
+        // A file another user owns: they could have written it.
+        (
+            Entry {
+                uid: me + 1,
+                ..agent_file
+            },
+            Kind::SingleLinkFile,
+            OWNER,
+        ),
+        (
+            Entry {
+                uid: me + 1,
+                mode: 0o600,
+                ..agent_file
+            },
+            Kind::File,
+            OWNER,
+        ),
+        (
+            Entry {
+                symlink: true,
+                ..agent_file
+            },
+            Kind::SingleLinkFile,
+            SYMLINK,
+        ),
+        (
+            Entry {
+                is_file: false,
+                ..agent_file
+            },
+            Kind::SingleLinkFile,
+            TYPE,
+        ),
+        (folder, Kind::File, TYPE),
+        (
+            Entry {
+                nlink: 2,
+                ..agent_file
+            },
+            Kind::SingleLinkFile,
+            LINKS,
+        ),
+        (
+            Entry {
+                nlink: 2,
+                ..agent_file
+            },
+            Kind::File,
+            LINKS,
+        ),
+        // Other-write is never repaired.
+        (
+            Entry {
+                mode: 0o666,
+                ..file
+            },
+            Kind::SingleLinkFile,
+            OWNER,
+        ),
+        (
+            Entry {
+                mode: 0o602,
+                ..file
+            },
+            Kind::File,
+            OWNER,
+        ),
+        // Group bits for a group that is not this user's (or an inherited
+        // setgid group).
+        (
+            Entry {
+                mode: 0o664,
+                gid: group + 1,
+                ..file
+            },
+            Kind::SingleLinkFile,
+            OWNER,
+        ),
+        // Folders keep the location rule: a private folder repairs no folder.
+        (
+            Entry {
+                mode: 0o755,
+                ..folder
+            },
+            Kind::Dir,
+            OUTSIDE_2546,
+        ),
+        (folder, Kind::Dir, OUTSIDE_2546),
+        (
+            Entry {
+                mode: 0o777,
+                ..folder
+            },
+            Kind::Dir,
+            OWNER,
+        ),
+    ];
+    for (entry, kind, reason) in refused_pf {
+        assert_eq!(
+            check_pf(entry, kind),
+            Access::Refuse(reason),
+            "{entry:?} ({kind:?}, private folder)"
+        );
+    }
+    assert_eq!(
+        check_pf(
+            Entry {
+                mode: 0o700,
+                ..folder
+            },
+            Kind::Dir
+        ),
+        Access::Private
+    );
+    // A clean hard-linked file is still allowed where the completion
+    // checker allows one.
+    assert_eq!(
+        check_pf(
+            Entry {
+                nlink: 2,
+                mode: 0o600,
+                ..file
+            },
+            Kind::File
+        ),
+        Access::Private
+    );
+}
+
+// ── #2546: a file in a private state folder (ResearchDrafts #865) ──
+
+/// The #865 drive: a run folder (0700) holding `autodrive-state` (0700),
+/// outside the auto-drive state root, into which the drive's QA agent wrote
+/// a log with a shell redirect under umask 022. Files at 0644 and 0664 are
+/// repaired to 0600 and read, through both evidence read paths, with one
+/// repair line per file; a second read writes no line.
+#[cfg(unix)]
+#[test]
+fn issue_2546_private_run_dir_state_repairs_agent_written_files() {
+    use crate::commands::orch::autodrive_completion::secure_fs::{self, Scope};
+    const STORE_FILES: [(&str, u32); 2] = [
+        ("qa-criterion1-attempt2-ffi.log", 0o644),
+        ("store-0664.log", 0o664),
+    ];
+    const FS_FILES: [(&str, u32); 2] = [("fs-0644.log", 0o644), ("fs-0664.log", 0o664)];
+    let stderr = isolated_2546(
+        "issue_2546_private_run_dir_state_repairs_agent_written_files",
+        0o022,
+        &[],
+        |iso| {
+            let run = iso.base.join("run");
+            make_2546(&run, None, 0o700);
+            let state = run.join("autodrive-state");
+            make_2546(&state, None, 0o700);
+            assert!(
+                matches!(Scope::of(&state), Scope::Strict),
+                "the run folder is outside the state root"
+            );
+            for (name, mode) in STORE_FILES.iter().chain(FS_FILES.iter()) {
+                make_2546(&state.join(name), Some(name.as_bytes()), *mode);
+                assert_eq!(mode_2546(&state.join(name)), *mode);
+            }
+
+            let store = EvidenceStore::create(&state).unwrap();
+            for _ in 0..2 {
+                for (name, _) in STORE_FILES {
+                    assert_eq!(store.read_private(name).unwrap(), name.as_bytes(), "{name}");
+                    assert_eq!(mode_2546(&state.join(name)), 0o600, "{name}");
+                }
+                for (name, _) in FS_FILES {
+                    let path = state.join(name);
+                    assert_eq!(
+                        secure_fs::read(Scope::of(&state), &path, 1 << 20).unwrap(),
+                        name.as_bytes(),
+                        "{name}"
+                    );
+                    assert_eq!(mode_2546(&path), 0o600, "{name}");
+                }
+            }
+            assert_eq!(mode_2546(&state), 0o700, "the folder is unchanged");
+            assert_eq!(mode_2546(&run), 0o700, "the run folder is unchanged");
+        },
+    );
+    if let Some(stderr) = stderr {
+        let lines = repair_lines_2546(&stderr);
+        assert_eq!(lines.len(), 4, "one repair line per file:\n{stderr}");
+        for (name, mode) in STORE_FILES.iter().chain(FS_FILES.iter()) {
+            let quoted = format!("autodrive-state/{name}\"");
+            let matching: Vec<_> = lines.iter().filter(|l| l.contains(&quoted)).collect();
+            assert_eq!(matching.len(), 1, "{name}:\n{stderr}");
+            let line = matching[0];
+            assert!(
+                is_repair_prefix_2546(line)
+                    && line.contains(&format!("{mode:04o}"))
+                    && line.contains("0600"),
+                "{line}"
+            );
+        }
+    }
+}
+
+/// The same agent-written files in an open (0755) folder outside the state
+/// root are still refused by both evidence read paths: the folder is neither
+/// private nor repairable, so the refusal comes before any file is examined.
+/// Nothing changes and nothing is logged.
+#[cfg(unix)]
+#[test]
+fn issue_2546_open_folder_outside_state_root_still_refuses_files() {
+    use crate::commands::orch::autodrive_completion::secure_fs::{self, Scope};
+    const FILES: [(&str, u32); 2] = [
+        ("qa-criterion1-attempt2-ffi.log", 0o644),
+        ("agent-0664.log", 0o664),
+    ];
+    let stderr = isolated_2546(
+        "issue_2546_open_folder_outside_state_root_still_refuses_files",
+        0o022,
+        &[],
+        |iso| {
+            let state = iso.base.join("autodrive-state");
+            make_2546(&state, None, 0o755);
+            for (name, mode) in FILES {
+                make_2546(&state.join(name), Some(b"log"), mode);
+            }
+
+            let error = store_error_2546(&state);
+            assert!(error.contains(OUTSIDE_2546), "{error}");
+            for (name, _) in FILES {
+                let error = secure_fs::read(Scope::of(&state), &state.join(name), 1 << 20)
+                    .expect_err("a file in an open folder");
+                assert!(format!("{error:#}").contains(OUTSIDE_2546), "{error:#}");
+            }
+
+            assert_eq!(mode_2546(&state), 0o755, "the folder is unchanged");
+            for (name, mode) in FILES {
+                assert_eq!(mode_2546(&state.join(name)), mode, "{name} is unchanged");
+            }
+        },
+    );
+    if let Some(stderr) = stderr {
+        assert!(
+            repair_lines_2546(&stderr).is_empty(),
+            "nothing is repaired:\n{stderr}"
+        );
+    }
 }
 
 // ── #2546: repairs stay at or below a repairable state root (S1) ──

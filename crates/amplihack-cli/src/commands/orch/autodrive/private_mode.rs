@@ -46,6 +46,18 @@ pub(crate) enum Kind {
 pub(crate) enum Repair {
     /// The entry is at or below a repairable state root.
     Allowed,
+    /// The entry is a file inside a private folder (owned by this user, a
+    /// real folder, no group or other bits). No other user can create,
+    /// replace or change an entry in such a folder, so a file this user owns
+    /// with extra bits was written by this user under a loose umask (for
+    /// example an agent's shell redirect under umask 022) and may be repaired.
+    ///
+    /// Pass this only for a file opened with `openat` and `O_NOFOLLOW`, as a
+    /// single `Normal` name, on a folder descriptor that passed
+    /// `make_private(.., Kind::Dir, ..)` in the same operation. Folders are
+    /// never repaired under this value: a folder with extra bits is refused,
+    /// as under `Refuse`.
+    PrivateFolder,
     /// Anywhere else: extra bits are refused, as before #2546.
     Refuse,
 }
@@ -289,7 +301,17 @@ fn group_sharing(euid: u32, egid: u32) -> Result<(Vec<u8>, bool), i32> {
 /// group bits on a group other than `egid`, hard links, then extra bits. A
 /// file with more than one link is refused for `Kind::SingleLinkFile`, and is
 /// never repaired (its other names would change too). Extra bits are repaired
-/// only with `Repair::Allowed`; otherwise they are refused.
+/// with `Repair::Allowed`, and on a file (not a folder) with
+/// `Repair::PrivateFolder`; otherwise they are refused.
+///
+/// `Repair::PrivateFolder` repairs files because the folder they were opened
+/// through has been proved private (owned by this user, a real folder, no
+/// group or other bits). In such a folder only this user can create, rename,
+/// replace or unlink an entry, and the checks above have already refused a
+/// foreign owner, a symlink, a wrong type, a world-writable bit, a foreign
+/// group and hard links. A remaining file with extra bits can only have been
+/// written by this user under a loose umask, so it is not a sign of
+/// tampering.
 ///
 /// Remaining risk: when `egid` is a group shared with other users, a member
 /// of that group could have written a group-writable entry before it was
@@ -322,12 +344,13 @@ pub(crate) fn access(entry: Entry, kind: Kind, euid: u32, egid: u32, repair: Rep
     match (extra, repair) {
         (false, _) => Access::Private,
         (true, Repair::Allowed) => Access::Repair(entry.mode & 0o700),
-        (true, Repair::Refuse) => Access::Refuse(OUTSIDE_TREE),
+        (true, Repair::PrivateFolder) if kind != Kind::Dir => Access::Repair(entry.mode & 0o700),
+        (true, Repair::PrivateFolder | Repair::Refuse) => Access::Refuse(OUTSIDE_TREE),
     }
 }
 
-/// Checks an opened state entry and, with `Repair::Allowed`, removes group and
-/// other bits from one this user owns, logging the repair on stderr. Refuses
+/// Checks an opened state entry and, where `access` allows it, removes group
+/// and other bits from one this user owns, logging the repair on stderr. Refuses
 /// everything `access` refuses, changing nothing.
 #[cfg(unix)]
 pub(crate) fn make_private(file: &File, path: &Path, kind: Kind, repair: Repair) -> Result<()> {

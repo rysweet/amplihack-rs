@@ -14,7 +14,9 @@ pub struct EvidenceStore {
     /// Whether entries in this store may be repaired (#2546), decided once
     /// by `repairable_root`: the root was created by this call's own mkdir,
     /// or its canonical path lies directly under the auto-drive state root.
-    /// The folder's name never matters.
+    /// The folder's name never matters. This decides the root folder; a
+    /// record read from the store is also repaired when the root is merely
+    /// private (`read_private`, `Repair::PrivateFolder`).
     repair: Repair,
 }
 pub struct AcceptedSnapshot {
@@ -165,12 +167,16 @@ impl EvidenceStore {
     }
     pub fn read_private(&self, name: &str) -> Result<Vec<u8>> {
         let file = self.open(name, false)?;
-        make_private(
-            &file,
-            &self.root.join(name),
-            Kind::SingleLinkFile,
-            self.repair,
-        )?;
+        // `create` has proved `self.directory` private with make_private
+        // (Kind::Dir), and `open` validates `name` as one Normal component and
+        // opens it with openat(O_NOFOLLOW) on that descriptor. No other user
+        // can change entries in a private folder, so this user's record with
+        // extra bits may be repaired even outside a repairable root (#2546).
+        let repair = match self.repair {
+            Repair::Refuse => Repair::PrivateFolder,
+            other => other,
+        };
+        make_private(&file, &self.root.join(name), Kind::SingleLinkFile, repair)?;
         ensure!(
             file.metadata()?.len() <= MAX_RECORD_BYTES as u64,
             "evidence exceeds size limit"
