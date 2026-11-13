@@ -1,6 +1,8 @@
 //! Each command is a fresh process with temporary credential and state roots.
 #![cfg(unix)]
-use crate::support::profile_2242::{Fixture, Reply, inode, private, value};
+#[cfg(target_os = "linux")]
+use crate::support::profile_2242::inode;
+use crate::support::profile_2242::{Fixture, Reply, private, value};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
@@ -381,6 +383,8 @@ fn interrupted_entry_alert_delivery_replays_once_using_the_persisted_episode() {
 }
 
 #[test]
+// Successful rotation requires Linux session inspection and atomic exchange.
+#[cfg(target_os = "linux")]
 fn unsafe_profile_assessment_is_isolated_and_preserves_its_existing_episode() {
     let f = Fixture::new();
     let spare = inode(&f.slot("spare"));
