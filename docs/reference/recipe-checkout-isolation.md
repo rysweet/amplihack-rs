@@ -268,7 +268,7 @@ Judging agents start in the launch directory and read the checkout by
 explicit path and SHA. Every verdict records `reviewed_head_sha`.
 `amplihack internal review-release` removes the generation, under the same
 ownership rules as [execution release](#ownership-and-release). See
-[Where the judging agents start](auto-drive-to-merge.md#where-the-judging-agents-start).
+[Review generations](auto-drive-to-merge.md#review-generations).
 
 ## Configuration
 
@@ -375,5 +375,5 @@ bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
 - [Run a recipe](../howto/run-a-recipe.md#know-where-the-run-works)
 - [Clean up after recipe runs](../howto/clean-up-after-recipe-runs.md#what-happens-when-a-run-ends)
 - [Recipe runner logging](recipe-runner-logging.md#git-command-record)
-- [Auto-drive to merge](auto-drive-to-merge.md#where-the-judging-agents-start)
+- [Auto-drive to merge](auto-drive-to-merge.md#review-generations)
 - [Recipe runner architecture](../concepts/recipe-runner-architecture.md#the-runs-own-checkout)

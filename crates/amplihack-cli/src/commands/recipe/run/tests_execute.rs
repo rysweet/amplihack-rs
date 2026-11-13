@@ -3722,7 +3722,20 @@ mod issue_1570_nested_environment {
         let recipe = temp.path().join("recipe.yaml");
         std::fs::write(&recipe, "name: nested-env\nsteps: []\n").unwrap();
 
-        let parent_path = std::env::var("PATH").unwrap_or_default();
+        // The child drops a retired gh-merge-guard PATH entry by design
+        // (`clean_retired_environment`); a parent launched by an older
+        // auto-drive still carries one, so expect PATH without it.
+        let parent_path = std::env::var_os("PATH")
+            .map(|path| {
+                std::env::join_paths(
+                    std::env::split_paths(&path)
+                        .filter(|p| !p.ends_with("amplifier-bundle/tools/gh-merge-guard")),
+                )
+                .expect("PATH entries rejoin")
+                .to_string_lossy()
+                .into_owned()
+            })
+            .unwrap_or_default();
         let parent_home = std::env::var("HOME").unwrap_or_default();
         unsafe {
             std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);

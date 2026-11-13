@@ -378,9 +378,12 @@ jobs:
       - name: Recipes — auto-drive QA clears inherited GIT_* and run identity (issue #2033)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-2033-qa-git-env.sh
-      - name: Recipes — #1551 no merge outside gate
+      - name: Recipes — #2329 agentic finalization and authorization
         shell: bash
-        run: bash amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh
+        run: bash amplifier-bundle/recipes/tests/test-issue-2329-agentic-finalization.sh
+      - name: Auto-drive finalize — squash message is the PR description, not the commits (issue #2056)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-2056-squash-message.sh
       - name: Recipes — #2186 every expected check exists and passed at the head
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-2186-expected-checks.sh

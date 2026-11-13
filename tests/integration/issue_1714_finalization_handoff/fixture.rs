@@ -194,12 +194,10 @@ case "$sub" in
 esac
 "#;
 
-/// autodrive-build step-03's command body, as the runner would run it.
+/// Controlled adapter for the unchanged optional handoff helper. This tests
+/// helper policy, not execution of the new agent responsibility.
 pub fn step03_command() -> String {
-    step(&recipe_yaml("autodrive-build"), "step-03-resolve-pr")["command"]
-        .as_str()
-        .expect("step-03 is a bash step with a command")
-        .to_owned()
+    include_str!("step03_command.sh").to_owned()
 }
 
 /// A private directory for one step-03 run.

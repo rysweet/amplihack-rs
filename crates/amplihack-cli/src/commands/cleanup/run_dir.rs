@@ -587,6 +587,31 @@ impl RunWorkspace {
         create_private_dir_all(&dir.path().join("artifacts"))?;
         Ok(Self::Legacy { dir })
     }
+    /// The durable run folder, or `None` for a dry run's temporary space.
+    ///
+    /// #2329: auto-drive keeps its private state in this folder, so it is
+    /// checked once here: a real directory (not a symlink) owned by the
+    /// current user and not writable by group or others.
+    pub(crate) fn durable_run_dir(&self) -> Result<Option<&Path>> {
+        let Self::Scoped { scope, .. } = self else {
+            return Ok(None);
+        };
+        let run_dir = scope.run_dir.as_path();
+        let metadata = fs::symlink_metadata(run_dir)
+            .with_context(|| format!("cannot inspect run folder {}", run_dir.display()))?;
+        anyhow::ensure!(
+            metadata.is_dir() && !metadata.file_type().is_symlink(),
+            "run folder {} is not a directory",
+            run_dir.display()
+        );
+        anyhow::ensure!(
+            metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o022 == 0,
+            "run folder {} is not owned by the current user or is writable by group or others",
+            run_dir.display()
+        );
+        Ok(Some(run_dir))
+    }
+
     pub(crate) fn runtime_dir(&self) -> &Path {
         match self {
             Self::Scoped { guard, .. } => guard.path(),
