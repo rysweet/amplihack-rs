@@ -632,6 +632,9 @@ fn state_is_private_and_accepted_bytes_are_immutable_after_candidate_changes() {
     let before = std::fs::read(accepted.path()).unwrap();
     std::fs::write(staging, b"{}").unwrap();
     assert_eq!(std::fs::read(accepted.path()).unwrap(), before);
+    store.write_new("policy.json", &before).unwrap();
+    assert!(store.write_new("policy.json", b"{}").is_err());
+    assert_eq!(store.read_private("policy.json").unwrap(), before);
     assert_eq!(
         std::fs::metadata(root).unwrap().permissions().mode() & 0o777,
         0o700
@@ -657,6 +660,7 @@ fn state_rejects_symlinks_traversal_unsafe_permissions_and_historical_completion
     let expected: Binding = serde_json::from_value(binding(&auth)).unwrap();
     let outside = dir.path().join("secret.json");
     std::fs::write(&outside, serde_json::to_vec(&candidate(&auth)).unwrap()).unwrap();
+    let outside_before = std::fs::read(&outside).unwrap();
     symlink(&outside, root.join("linked.json")).unwrap();
     for path in [
         "../secret.json",
@@ -668,7 +672,9 @@ fn state_rejects_symlinks_traversal_unsafe_permissions_and_historical_completion
             store.accept_candidate(path, &auth, &expected).is_err(),
             "unsafe evidence path {path}"
         );
+        assert!(store.write_new(path, b"{}").is_err(), "unsafe write {path}");
     }
+    assert_eq!(std::fs::read(&outside).unwrap(), outside_before);
     let unsafe_file = root.join("unsafe.json");
     std::fs::write(&unsafe_file, serde_json::to_vec(&candidate(&auth)).unwrap()).unwrap();
     std::fs::set_permissions(&unsafe_file, std::fs::Permissions::from_mode(0o666)).unwrap();

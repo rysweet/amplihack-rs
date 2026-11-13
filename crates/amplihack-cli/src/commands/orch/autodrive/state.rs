@@ -180,12 +180,13 @@ impl EvidenceStore {
         Ok(bytes)
     }
     pub fn write_new(&self, name: &str, bytes: &[u8]) -> Result<()> {
+        validate_name(name)?;
         ensure!(bytes.len() <= MAX_RECORD_BYTES, "record exceeds size limit");
-        let mut file = self.open(name, true)?;
+        let staging = format!(".pending-{}", uuid::Uuid::new_v4());
+        let mut file = self.open(&staging, true)?;
         file.write_all(bytes)?;
         file.sync_all()?;
-        self.directory.sync_all()?;
-        Ok(())
+        self.publish(&staging, name)
     }
     pub fn snapshot(&self, bytes: &[u8]) -> Result<PathBuf> {
         ensure!(
@@ -202,16 +203,7 @@ impl EvidenceStore {
         Ok(self.root.join(name))
     }
     fn open(&self, name: &str, create: bool) -> Result<File> {
-        ensure!(
-            !name.is_empty()
-                && !name.chars().any(char::is_control)
-                && Path::new(name).components().count() == 1
-                && matches!(
-                    Path::new(name).components().next(),
-                    Some(Component::Normal(_))
-                ),
-            "evidence must be a direct child of private state"
-        );
+        validate_name(name)?;
         #[cfg(unix)]
         {
             use std::os::fd::{AsRawFd, FromRawFd};
@@ -263,6 +255,19 @@ impl EvidenceStore {
             anyhow::bail!("private auto-drive evidence requires Unix file ownership support")
         }
     }
+}
+fn validate_name(name: &str) -> Result<()> {
+    ensure!(
+        !name.is_empty()
+            && !name.chars().any(char::is_control)
+            && Path::new(name).components().count() == 1
+            && matches!(
+                Path::new(name).components().next(),
+                Some(Component::Normal(_))
+            ),
+        "evidence must be a direct child of private state"
+    );
+    Ok(())
 }
 fn open_directory(path: &Path) -> Result<File> {
     let mut options = fs::OpenOptions::new();
