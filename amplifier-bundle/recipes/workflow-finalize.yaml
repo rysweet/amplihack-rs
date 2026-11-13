@@ -79,8 +79,15 @@ steps:
       **Philosophy Check:** {{philosophy_check}}
       **Patterns Check:** {{patterns_check}}
 
-      Final quality pass:
+      For any GitHub body replacement, preserve the published issue keywords
+      and identities. Set REPO and PR to the observed repository and number,
+      and CANDIDATE_FILE to a private UTF-8 candidate file. Failure blocks
+      finalisation; do not bypass preservation or retry an ambiguous write.
+      ```bash
+      amplihack workflow issue-reference edit-body --repo "$REPO" --pr "$PR" --candidate-file "$CANDIDATE_FILE"
+      ```
 
+      Final quality pass:
       1. Review all changes for philosophy compliance WITHIN user constraints
       2. Review all changes for Forbidden Pattern violations (FORBIDDEN_PATTERNS.md)
       3. Remove temporary artifacts or test files (unless user wanted them)
@@ -88,14 +95,7 @@ steps:
       5. Verify module boundaries remain clean
       6. Ensure zero dead code or stub implementations
 
-      **PR Cleanliness Final Check:**
-      - [ ] Full diff review - all changes intentional
-      - [ ] No temporary patterns (test_*.py, temp_*.js, etc.)
-      - [ ] No debugging code
-      - [ ] Documentation audit passed
-      - [ ] Git hygiene verified
-
-      **FINAL CHECK:** All explicit user requirements preserved.
+      7. Check documentation links, Git hygiene and all explicit user requirements.
     output: "final_cleanup"
 
   - id: "step-20c-quality-audit"

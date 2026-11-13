@@ -26,6 +26,17 @@
 mod isolated_amplihack;
 mod support;
 
+#[path = "issue_2550_issue_reference_policy.rs"]
+mod issue_2550_issue_reference_policy;
+#[path = "issue_2550_policy_propagation_recovery.rs"]
+mod issue_2550_policy_propagation_recovery;
+#[path = "issue_2550_publication_policy.rs"]
+mod issue_2550_publication_policy;
+#[path = "issue_2550_reference_preservation.rs"]
+mod issue_2550_reference_preservation;
+#[path = "issue_2550_squash_reference.rs"]
+mod issue_2550_squash_reference;
+
 #[path = "issue_2329_autodrive_outcomes.rs"]
 mod issue_2329_autodrive_outcomes;
 

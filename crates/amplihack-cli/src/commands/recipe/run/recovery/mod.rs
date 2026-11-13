@@ -89,6 +89,58 @@ pub(super) fn normalize(context: &mut BTreeMap<String, String>, repo: &Path) {
         context.insert("issue_number".into(), issue.to_string());
     }
 }
+
+/// Recover only the publication policy from the runner's admitted source.
+/// Initial context values live in probes, rather than context deltas. Restore
+/// this input before replay compares probes; credentials and merge authority
+/// are never recovered here. Explicit caller context takes precedence.
+pub(super) fn restore_issue_link(
+    admission: &Admission,
+    explicit: &BTreeMap<String, String>,
+    context: &mut BTreeMap<String, String>,
+) -> Result<()> {
+    use recipe_runner_rs::recovery::{
+        model::{ContextChange, Tree},
+        private_fs::{Directory, parse},
+    };
+    let Some(source) = &admission.descriptor.source else {
+        return Ok(());
+    };
+    if !context.contains_key("pr_issue_link") || explicit.contains_key("pr_issue_link") {
+        return Ok(());
+    }
+    let directory = Directory::open(&source.directory, false)?;
+    let tree: Tree = parse(&directory.read("tree.json")?)?;
+    recipe_runner_rs::recovery::store::validate_tree(&tree)?;
+    anyhow::ensure!(
+        tree.run_id == source.run_id
+            && tree.sequence == source.sequence
+            && tree.identity == admission.descriptor.identity,
+        "issue policy recovery source identity mismatch"
+    );
+    let mut value = serde_json::Value::String("auto".into());
+    if let Some(saved) = tree
+        .records
+        .iter()
+        .find_map(|r| r.probe.inputs.get("pr_issue_link"))
+    {
+        value = saved.clone();
+    }
+    for record in &tree.records {
+        if let Some(delta) = record.delta.get("pr_issue_link") {
+            value = match delta {
+                ContextChange::Assign { value } => value.clone(),
+                ContextChange::Remove => serde_json::Value::String("auto".into()),
+            };
+        }
+    }
+    let value = value
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("restored pr_issue_link must be a string"))?;
+    crate::commands::workflow::issue_reference::validate_value(value)?;
+    context.insert("pr_issue_link".into(), value.into());
+    Ok(())
+}
 pub(super) fn admit(
     workspace: &crate::commands::cleanup::run_dir::RunWorkspace,
     recipe: &Path,

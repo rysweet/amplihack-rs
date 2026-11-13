@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Validate the authoritative exported context before creating any artefacts.
+amplihack workflow issue-reference validate
+
 # Fixed operation names only: never print BASH_COMMAND (may contain secrets).
 PUBLISH_OPERATION="publishing prerequisites"
 PUBLISH_DIAGNOSED=false
@@ -1049,15 +1052,16 @@ if ! $HAS_ISSUE_LINK; then
   fi
 else
   if [ -f "$ISSUE_REFERENCE_HELPER" ]; then
-    ISSUE_KEYWORD="$(printf '%s\n' "$CHANGED_FILES_ALL" | bash "$ISSUE_REFERENCE_HELPER" --keyword)" || {
-      echo 'WARNING: optional issue reference derivation failed; using Refs' >&2
-      ISSUE_KEYWORD="Refs"
+    CLASSIFICATION="$(printf '%s\n' "$CHANGED_FILES_ALL" | bash "$ISSUE_REFERENCE_HELPER" --classify)" || {
+      echo 'WARNING: issue classification failed; using empty evidence' >&2
+      CLASSIFICATION=""
     }
   else
     echo "WARNING: workflow_issue_reference.sh not found at ${ISSUE_REFERENCE_HELPER} — using the non-closing 'Refs' keyword (#1361)" >&2
-    ISSUE_KEYWORD="Refs"
+    CLASSIFICATION=""
   fi
-  ISSUE_LINK="${ISSUE_KEYWORD:-Refs} ${ISSUE_TAG}"
+  ISSUE_KEYWORD="$(printf '%s' "$CLASSIFICATION" | amplihack workflow issue-reference keyword)" || exit $?
+  ISSUE_LINK="${ISSUE_KEYWORD} ${ISSUE_TAG}"
 fi
 # Treat evidence as untrusted multiline text; generated issue links stay outside
 # this boundary so the diff-based closing policy remains unchanged.
@@ -1072,7 +1076,7 @@ done
 PR_BODY=$(printf '## Summary\n%s\n\n## Issue\n%s\n\n## Changed files\n%s\n\n## Diff stat\n```text\n%s\n```\n\n## Behavior\n%s\n\n## Validation\n%s\n\n## Risk\n%s\n\n## Checklist\n- [x] Branch has %s commit(s) ahead of %s\n- [ ] Code review completed\n- [ ] Philosophy check passed\n\n---\n*This PR was created as a draft for review before merging.*\n' "$PR_SUMMARY" "$ISSUE_LINK" "$CHANGED_FILES_BODY" "$DIFF_STAT_BODY" "$BEHAVIOR_BODY" "$VALIDATION_BODY" "$RISK_BODY" "$COMMITS_AHEAD" "$BASE_BRANCH") || {
   echo 'WARNING: optional rich PR body construction failed; using a minimal summary' >&2
   PR_BODY="$(printf '## Summary\nBranch changes prepared for review.\n\n')"
-  if $HAS_ISSUE_LINK; then PR_BODY="${PR_BODY}"$'\n\n'"Refs ${ISSUE_TAG}"; else PR_BODY="${PR_BODY}"$'\n\n'"No linked issue."; fi
+  if $HAS_ISSUE_LINK; then PR_BODY="${PR_BODY}"$'\n\n'"${ISSUE_LINK}"; else PR_BODY="${PR_BODY}"$'\n\n'"No linked issue."; fi
 }
 
 PUBLISH_STATE="FOLLOWUP_CREATED"

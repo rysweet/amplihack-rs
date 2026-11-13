@@ -107,6 +107,14 @@ Terminal-state recovery depends on the same configuration context:
 | `goal_already_met` | Optional design signal. Keep it false unless external evidence says the goal is already satisfied; it never overrides Git, PR, diff, or CI evidence. |
 | `task_description` and `issue_requirements` | Scope context for recovery and remediation. They do not prove obsolete state; obsolete proof must come from Git and PR evidence. |
 
+Recovery retains `pr_issue_link`.
+A missing key in an older record defaults to `auto`; invalid restored
+values fail. New invocations accept `refs` for non-closing publication.
+Finalise and merge-ready preserve existing published issue-reference
+keywords when updating a body. See the
+[issue-link policy](../reference/workflow-issue-link-policy.md) and
+[non-closing publication guide](keep-workflow-issues-open.md).
+
 ## 4. Check Branch Reuse Evidence
 
 The workflow emits a recovery identity block. This example shows PR 579:

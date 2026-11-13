@@ -17,9 +17,12 @@ inputs:
     description: "Absolute path to the repository root. Provided by parent recipe context."
 
 # #1561/#1684/#1968: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
-context: { base_branch: "", forbidden_base_branches: "", strict_delivery: "false", repository: "", pr_repository: "", closing_reference: "", worktree_setup: "", allow_no_op: false, terminal_success: "false", terminal_state: "", terminal_reason: "", publish_status: "", should_finalize: "true", should_run_ci_wait: "true", should_merge: "true", repo_path: "", version_bump: "", local_testing_gate: "", precommit_results: "", task_description: "" }
+context: { pr_issue_link: "auto", base_branch: "", forbidden_base_branches: "", strict_delivery: "false", repository: "", pr_repository: "", closing_reference: "", worktree_setup: "", allow_no_op: false, terminal_success: "false", terminal_state: "", terminal_reason: "", publish_status: "", should_finalize: "true", should_run_ci_wait: "true", should_merge: "true", repo_path: "", version_bump: "", local_testing_gate: "", precommit_results: "", task_description: "" }
 
 steps:
+  - id: "validate-issue-link-policy"
+    type: "bash"
+    command: "amplihack workflow issue-reference validate"
   - id: "publish-terminal-state"
     type: "recipe"
     recipe: "workflow-terminal-state"
@@ -115,6 +118,7 @@ steps:
     condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'"
     command: |
       set -euo pipefail
+      amplihack workflow issue-reference validate
       export GIT_PAGER=cat
       export PAGER=cat
       export LESS=FRX
@@ -195,16 +199,15 @@ steps:
       esac
       COMMIT_TITLE=$(printf '%s%.72s' "$COMMIT_PREFIX" "$(printf '%s' "$TASK_DESC" | tr '\n\r' ' ' | head -1)")
       # FIX #684: Host-aware commit references.
-      # FIX #1361: on GitHub the closing keyword is EARNED BY THE DIFF. PR #1283's
-      # body said `Closes #1277` while its whole change was one added planning
-      # document; had it merged, a genuine bug report would have been auto-closed
-      # by an artifact describing what somebody intended to do about it. A change
-      # that only writes down a plan gets `Refs`, which still links the PR to the
-      # issue but leaves it open for the work itself. Unreachable helper -> `Refs`:
-      # under-linking costs a manual close, over-linking closes a live bug silently.
+      # Apply caller policy to staged evidence; failed classification remains
+      # conservative. PR publication classifies the whole branch independently.
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
       CLOSE_KW="Refs"; IR=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_issue_reference.sh" ] && { IR="$c/amplifier-bundle/tools/workflow_issue_reference.sh"; break; }; done
-      if [ -n "$IR" ]; then CLOSE_KW="$(git diff --cached --name-only | bash "$IR" --keyword)" || CLOSE_KW="Refs"; else echo "WARNING: workflow_issue_reference.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack) — using the non-closing 'Refs' keyword (#1361)" >&2; fi
+      CLASSIFICATION=""
+      if [ -n "$IR" ]; then
+        CLASSIFICATION="$(git diff --cached --name-only | bash "$IR" --classify)" || { echo "WARNING: staged classification failed; using empty evidence" >&2; CLASSIFICATION=""; }
+      else echo "WARNING: workflow_issue_reference.sh not found; using empty evidence" >&2; fi
+      CLOSE_KW="$(printf '%s' "$CLASSIFICATION" | amplihack workflow issue-reference keyword)" || exit $?
       case "$HOST_TYPE" in
         github) ISSUE_REF="${CLOSE_KW} ${ISSUE_TAG}"; ISSUE_IMPL="issue ${ISSUE_TAG}" ;;
         azdo)   ISSUE_REF="AB#${ISSUE_NUMBER}"; ISSUE_IMPL="AB#${ISSUE_NUMBER}" ;;
@@ -326,6 +329,7 @@ steps:
     condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true' && commit_result.pushed == 'true'"
     command: |
       set -euo pipefail
+      amplihack workflow issue-reference validate
       trap '_publish_status=$?; [ "$_publish_status" -eq 0 ] || printf "ERROR: step-16-create-draft-pr prerequisites failed (exit %s)\n" "$_publish_status" >&2' EXIT
       export GIT_PAGER=cat PAGER=cat LESS=FRX
       WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done

@@ -121,6 +121,16 @@ pub fn ensure_assets_match_binary_version(args: &[OsString]) -> Result<()> {
 /// Use parsed CLI provider intent for startup repair, ahead of inherited hints.
 /// The scoped selection restores the caller's provider after the check.
 pub fn ensure_assets_for_command(args: &[OsString], command: &crate::Commands) -> Result<()> {
+    // Policy validation must precede publication side effects, including asset
+    // repair. These Rust operations do not consume a staged framework bundle.
+    if matches!(
+        command,
+        crate::Commands::Workflow {
+            command: crate::commands::workflow::WorkflowCommands::IssueReference { .. }
+        }
+    ) {
+        return Ok(());
+    }
     let provider = match command {
         crate::Commands::Launch { .. } | crate::Commands::Claude { .. } => "claude",
         crate::Commands::Copilot { .. } => "copilot",

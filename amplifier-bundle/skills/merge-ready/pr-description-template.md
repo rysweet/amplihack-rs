@@ -4,6 +4,11 @@ Copy these sections into the PR/pull request description and replace every place
 
 Put them **below** the change's own description, starting with the marker line, and keep the marker line exactly as written. Auto-drive's finalize step cuts the squash commit body at that line, or at `## Merge readiness` when the marker is missing, so the description above it becomes the commit message on the base branch and this report does not (#2056). Above the marker, keep only what stays true after the merge: what changed and why. A head SHA, a verdict, the pull request's open state or a round-by-round log is true only before the merge, so it goes below the marker.
 
+Keep published issue references above this marker, with their original keyword
+and identity. Submit GitHub body replacements through
+`amplihack workflow issue-reference edit-body --repo "$REPO" --pr "$PR" --candidate-file "$CANDIDATE_FILE"`.
+The operation preserves references independently of later changes or policy.
+
 <!-- merge-ready-report: everything from this line down is the pre-merge readiness report and is left out of the squash commit -->
 ## Merge readiness
 

@@ -5,6 +5,8 @@ pub mod auto_drive_light;
 pub mod events;
 pub mod exec_stub;
 pub mod fake_proc;
+#[cfg(unix)]
+pub mod issue_2550;
 pub mod proc_root_scan;
 pub mod profile_1962;
 pub mod profile_default;

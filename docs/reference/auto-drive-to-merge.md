@@ -106,6 +106,16 @@ commands and expected outcomes.
 The runner's CLI `--dry-run` previews recipe execution; it is distinct from
 `autodrive_dry_run`, which executes verification with action restrictions.
 
+`pr_issue_link` defaults to `auto`
+and accepts `auto`, `refs` or `closes`. It passes through `autodrive-build`
+to `default-workflow`, then to its `workflow-publish` phase. Recovery
+retains the policy. Finalise and merge-ready preserve each published issue
+reference, including its keyword, above the readiness report. A PR published
+with `refs` retains `Refs` in its actual squash message body, with the
+existing head-commit guard and merge criteria. See the
+[policy contract](workflow-issue-link-policy.md) and
+[usage guide](../howto/keep-workflow-issues-open.md).
+
 QA selection uses [operator environment and merge-base configuration](auto-drive-qa.md),
 not agent-selected recipe context. Budget keys are listed below.
 
@@ -497,6 +507,10 @@ independently of merge enforcement. Selection never falls back to PR-authored
 instructions. Rust helpers validate and snapshot records, manage state, check
 local Git relationships, and reduce outcomes. They do not contact hosting
 services, judge semantic readiness, or merge.
+
+A separate
+[issue-reference body editor](workflow-issue-link-policy.md#published-reference-preservation)
+uses GitHub read-edit-readback to preserve published issue references.
 
 Before any `git` or `gh` call, the merge-round and
 merge-evidence steps clear the `GIT_*` repository selectors and the

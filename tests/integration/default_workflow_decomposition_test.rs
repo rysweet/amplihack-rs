@@ -260,6 +260,7 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-13-local-testing",
     "verification-terminal-evidence",
     // Phase 6: workflow-publish (terminal gate + steps 14-16b)
+    "validate-issue-link-policy",
     "publish-terminal-state",
     "step-14-bump-version",
     "step-14b-sync-lockfile",
@@ -336,20 +337,20 @@ const PR_REVIEW_STEP_INVENTORY: &[&str] = &[
     "step-19d-verification-gate",
 ];
 
-/// The composer must call exactly the 9 phase sub-recipes, in order, and
-/// declare nothing else.
+/// The composer validates publication policy before its nine phase calls.
+/// Execution-level invalid-input coverage lives in issue_2550 tests.
 #[test]
 fn composer_calls_nine_phase_subrecipes_in_order() {
     let composer = load("default-workflow");
     assert_eq!(composer.name, "default-workflow");
     assert_eq!(
         composer.steps.len(),
-        PHASE_RECIPES.len(),
-        "composer must have exactly {} sub-recipe calls; found {}",
+        PHASE_RECIPES.len() + 1,
+        "composer must have an entry validation and {} sub-recipe calls; found {}",
         PHASE_RECIPES.len(),
         composer.steps.len()
     );
-    for (i, (step, expected)) in composer.steps.iter().zip(PHASE_RECIPES).enumerate() {
+    for (i, (step, expected)) in composer.steps.iter().skip(1).zip(PHASE_RECIPES).enumerate() {
         assert_eq!(
             step.step_type.as_deref(),
             Some("recipe"),

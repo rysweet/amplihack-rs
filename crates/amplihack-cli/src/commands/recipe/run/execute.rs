@@ -753,6 +753,9 @@ pub(super) fn execute_recipe_via_rust_fresh(
     } else {
         None
     };
+    if let Some(admission) = &admission {
+        super::recovery::restore_issue_link(admission, explicit_inputs, &mut invocation_context)?;
+    }
     // #2329 (S2): the runner writes its own keys last, after admission and
     // immediately before launch, so no stored, recovered or operator-supplied
     // value for them reaches the child. The private state directory is

@@ -2,13 +2,16 @@
 
 > [Home](../index.md) > Reference > Workflow Delivery Inputs
 
-`default-workflow` takes two optional sets of inputs that decide where a run
+`default-workflow` takes optional inputs that decide where a run
 delivers its work. `base_branch` names the branch a pull request targets.
 `strict_delivery` is for a caller that has already assigned the issue and the
 branch, for example a dispatcher that hands queued work to many runs. The two
 are independent: setting a base does not change how the issue is chosen.
 They apply where `default-workflow` runs; [Where the inputs apply](#where-the-inputs-apply)
 lists the paths that do not use them.
+
+`pr_issue_link` independently selects the issue-reference keyword for commit
+and PR publication. See the [policy reference](workflow-issue-link-policy.md).
 
 ## Contents
 
@@ -161,9 +164,15 @@ is not implemented: step-03 fails instead of opening a pull request that
 closes an issue nobody wants done. A caller that wants a closed issue worked
 on reopens it first.
 
-The closing keyword is still chosen from the diff (#1361): `Closes` when the
-change earns it, `Refs` otherwise. Strict delivery changes how the issue is
-named, not whether the pull request may close it.
+Under the default policy, the closing keyword is chosen from the diff (#1361):
+`Closes` when the change earns it, `Refs` otherwise. Strict delivery changes
+how the issue is named.
+
+The `pr_issue_link` input defaults
+to `auto` and accepts `auto`, `refs` or `closes`, with or without strict
+delivery. `refs` always selects `Refs`; `auto` and `closes` select
+`Closes` only with substantive evidence. Empty and unsupported values
+fail before publication side effects.
 
 The issue claim check (#1361) asks whether a pull request in this repository
 claims issue N of this repository. For an issue in another repository that is
@@ -323,6 +332,8 @@ cargo test -p amplihack --test integration workflow_delivery_inputs
 
 ## Related documentation
 
+- [Issue-link policy](workflow-issue-link-policy.md) — Keyword selection, context propagation, recovery and published-reference preservation
+- [Keep workflow issues open](../howto/keep-workflow-issues-open.md) — `pr_issue_link=refs` usage
 - [Tracking Issue Selection Reference](workflow-tracking-issue-selection.md) - how step-03 chooses the issue when `strict_delivery` is off
 - [Issue Deduplication Reference](issue-dedup.md) - the issue claim check
 - [Workflow GitHub Repo Identity](workflow-github-repo-identity.md) - the `origin` parser publication uses

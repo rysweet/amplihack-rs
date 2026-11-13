@@ -203,8 +203,16 @@ Keep the change's description and the readiness report apart. The report goes **
 
 #### GitHub path
 
+Preserve each published issue-reference keyword and identity, even if the
+current diff or caller policy has changed. Write the UTF-8 candidate beneath
+a private invocation temporary directory (mode 0700, body file mode 0600),
+then use the supported operation. Set REPO to the explicit owner/repository
+and PR to its positive pull request number. The helper reads, preserves,
+edits once and reads back once; any failure blocks readiness. A readback
+failure may mean the update already occurred; inspect it without retrying.
+
 ```bash
-gh pr edit "$PR" --body-file pr-description.md
+amplihack workflow issue-reference edit-body --repo "$REPO" --pr "$PR" --candidate-file "$CANDIDATE_FILE"
 ```
 
 #### Azure DevOps/AzDO path
@@ -213,7 +221,9 @@ gh pr edit "$PR" --body-file pr-description.md
 az repos pr update --id "$PR_ID" --description "$(cat pr-description.md)"
 ```
 
-If the platform CLI cannot update the description safely, update it through the authorized UI/API and record that evidence source.
+For GitHub, an unavailable preservation operation is a blocker; retain its
+diagnostic rather than replacing the body through a different interface.
+For Azure DevOps, an authorised UI/API update remains an evidence source.
 
 ### 8. Return a binary verdict
 

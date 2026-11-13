@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::time::Duration;
 
+pub(crate) mod issue_reference;
 mod provider_detection;
 
 use provider_detection::detect_provider_from_repo;
@@ -26,6 +27,11 @@ const PROVIDER_DIAGNOSTIC_CHARS: usize = 600;
 
 #[derive(Subcommand, Debug)]
 pub enum WorkflowCommands {
+    /// Internal issue-link policy and published-reference preservation.
+    IssueReference {
+        #[command(subcommand)]
+        command: issue_reference::IssueReferenceCommands,
+    },
     /// Detect provider context for the current repository.
     DetectProvider(DetectProviderArgs),
     /// Provider-neutral change request operations.
@@ -169,6 +175,7 @@ impl From<CapabilityArg> for ProviderCapabilityState {
 
 pub fn dispatch(command: WorkflowCommands) -> Result<()> {
     match command {
+        WorkflowCommands::IssueReference { command } => issue_reference::dispatch(command),
         WorkflowCommands::DetectProvider(args) => run_detect_provider(args),
         WorkflowCommands::ChangeRequest { command } => match command {
             ChangeRequestCommands::Publish(args) => run_publish_change_request(args),

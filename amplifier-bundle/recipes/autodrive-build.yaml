@@ -12,6 +12,7 @@ recursion:
   max_depth: 6
   max_total_steps: 80
 context:
+  pr_issue_link: "auto"
   task_description: ""
   requirements: ""
   repo_path: "."
@@ -59,6 +60,7 @@ steps:
     type: "recipe"
     recipe: "default-workflow"
     context:
+      pr_issue_link: "{{pr_issue_link}}"
       task_description: "{{no_merge_directive.task_description}}"
       requirements: "{{no_merge_directive.requirements}}"
       repo_path: "{{repo_path}}"

@@ -14,6 +14,7 @@ recursion:
   max_depth: 6
   max_total_steps: 120
 context:
+  pr_issue_link: "auto"
   task_description: ""
   requirements: ""
   repo_path: "."
@@ -54,6 +55,7 @@ steps:
     type: "recipe"
     recipe: "autodrive-build"
     context:
+      pr_issue_link: "{{pr_issue_link}}"
       task_description: "{{task_description}}"
       requirements: "{{requirements}}"
       repo_path: "{{repo_path}}"
