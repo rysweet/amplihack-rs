@@ -200,7 +200,13 @@ fn recipe_run_stops_before_the_runner_when_claude_would_refuse() {
 /// context naming `launcher`.
 fn project(launcher: Option<amplihack_utils::launcher_context::LauncherKind>) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+    assert!(
+        amplihack_git::command_in(dir.path())
+            .args(["init", "--quiet", "--template="])
+            .status()
+            .unwrap()
+            .success()
+    );
     if let Some(kind) = launcher {
         amplihack_utils::launcher_context::write_launcher_context(
             dir.path(),
@@ -213,6 +219,40 @@ fn project(launcher: Option<amplihack_utils::launcher_context::LauncherKind>) ->
     dir
 }
 
+fn launcher_profile() -> (tempfile::TempDir, crate::test_support::EnvGuard) {
+    let profile = tempfile::tempdir_in("/var/tmp").unwrap();
+    let keys = [
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "AMPLIHACK_HOME",
+        "CLAUDE_CONFIG_DIR",
+        "CODEX_HOME",
+        "AMPLIHACK_CLAUDE_PROFILE_ROOT",
+        "AMPLIHACK_RUNTIME_DIR",
+        "TMPDIR",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_NOSYSTEM",
+    ];
+    let guard = crate::test_support::EnvGuard::capture(&keys);
+    for key in &keys[..8] {
+        let path = if *key == "TMPDIR" {
+            profile.path().to_owned()
+        } else {
+            let path = profile.path().join(key);
+            std::fs::create_dir(&path).unwrap();
+            path
+        };
+        // SAFETY: the caller holds the shared environment mutex.
+        unsafe { std::env::set_var(key, path) };
+    }
+    // SAFETY: the same mutex protects these Git configuration overrides.
+    unsafe {
+        std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
+        std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+    }
+    (profile, guard)
+}
+
 /// Run `recipe run` on an agent recipe as root outside a sandbox, from `cwd`
 /// with `-w working_dir`, resolving the agent binary for real. The runner is
 /// a stub that records the binary it was handed. Returns the pre-flight
@@ -221,12 +261,20 @@ fn run_as_root_outside_a_sandbox(
     cwd: &std::path::Path,
     working_dir: &std::path::Path,
 ) -> (String, Option<String>) {
-    let _guard = crate::test_support::env_lock()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
     // The run folder goes under a private work root, not the caller's
     // (issue #2067).
     let _work_root = crate::test_support::IsolatedWorkRoot::new();
+    // Recovery opens every path component without following links. macOS's
+    // /var temporary-directory alias must therefore be resolved in the fixture.
+    let work_root = _work_root.path();
+    let work_root = work_root
+        .parent()
+        .unwrap()
+        .canonicalize()
+        .unwrap()
+        .join("work");
+    let _work_root_path =
+        crate::test_support::EnvGuard::set([("AMPLIHACK_WORK_ROOT", work_root.to_str().unwrap())]);
     let _agent_env = crate::test_support::AgentBinaryEnv::set(None, None);
     // These runs reach the #964 recursion guard. Run from inside a recipe
     // workflow, the test would inherit that workflow's depth, the guard would
@@ -256,7 +304,7 @@ fn run_as_root_outside_a_sandbox(
     let recipe_path = agent_recipe_file(stub_dir.path());
 
     let mut out = Vec::new();
-    let _ = run_recipe_with(
+    let result = run_recipe_with(
         &recipe_path,
         &[],
         false,
@@ -271,6 +319,9 @@ fn run_as_root_outside_a_sandbox(
         },
         &mut out,
     );
+    if let Err(error) = result {
+        out.extend_from_slice(format!("\nrun_recipe_with failed: {error:#}\n").as_bytes());
+    }
     (
         String::from_utf8(out).unwrap(),
         std::fs::read_to_string(&handed).ok(),
@@ -283,6 +334,10 @@ fn run_as_root_outside_a_sandbox(
 #[test]
 fn preflight_refuses_when_the_working_dir_resolves_to_claude() {
     use amplihack_utils::launcher_context::LauncherKind;
+    let _guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _profile = launcher_profile();
     let cwd = project(None);
     let working_dir = project(Some(LauncherKind::Claude));
     let (out, handed) = run_as_root_outside_a_sandbox(cwd.path(), working_dir.path());
@@ -295,9 +350,13 @@ fn preflight_refuses_when_the_working_dir_resolves_to_claude() {
 #[test]
 fn preflight_ignores_a_launcher_context_only_the_cwd_can_see() {
     use amplihack_utils::launcher_context::LauncherKind;
+    let _guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _profile = launcher_profile();
     let cwd = project(Some(LauncherKind::Claude));
     let working_dir = project(None);
     let (out, handed) = run_as_root_outside_a_sandbox(cwd.path(), working_dir.path());
     assert!(!out.contains("recipe pre-flight failed"), "{out}");
-    assert_eq!(handed.as_deref(), Some("copilot"));
+    assert_eq!(handed.as_deref(), Some("copilot"), "{out}");
 }

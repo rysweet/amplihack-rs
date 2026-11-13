@@ -69,7 +69,7 @@ steps:
         if [ "${BEHIND:-0}" != "0" ]; then
           if git merge --no-edit "origin/${BASE}" >/dev/null 2>&1; then
             SYNCED="true"
-            git push >/dev/null 2>&1 || echo "WARNING: merged origin/${BASE} but the push failed; CI will still be reading the old head." >&2
+            amplihack hygiene workflow publish --repo . || exit $?
           else
             CONFLICT="true"
             git merge --abort >/dev/null 2>&1 || true

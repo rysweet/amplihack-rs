@@ -578,6 +578,13 @@ pub(super) fn execute_recipe_via_rust_fresh(
     merge_guard: bool,
     fresh: bool,
 ) -> Result<RecipeRunResult> {
+    if matches!(
+        recipe_path.file_stem().and_then(|s| s.to_str()),
+        Some("default-workflow" | "consensus-workflow" | "auto-drive-to-merge")
+    ) {
+        amplihack_git::workspace_validation::Workspace::open(working_dir)?.require_workflow()?;
+        amplihack_git::runtime_preparation::prepare(working_dir)?;
+    }
     // Issue #964: fail-closed recursion-depth guard. Refuse to spawn a nested
     // recipe-runner once the session has reached the configured maximum depth,
     // so a failing / misbehaving orchestration can never recursively re-enter

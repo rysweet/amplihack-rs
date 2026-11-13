@@ -188,8 +188,7 @@ fn claude_runtime_subtree_is_exempt_when_untracked_or_ignored() {
 fn staged_or_tracked_claude_runtime_state_is_still_blocked() {
     // The subtree exemption covers only the untracked/ignored output recipes
     // unavoidably produce. Deliberately committing runtime state into the
-    // published tree is genuine pollution and must still fail the guard — except
-    // the two launcher-owned bookkeeping files, which are exempt in all sources.
+    // published tree is pollution and must fail, including launcher bookkeeping.
     let tmp = repo();
     write_file(&tmp.path().join(".gitignore"), ".claude/runtime/\n");
     run_git(tmp.path(), &["add", ".gitignore"]);
@@ -209,7 +208,7 @@ fn staged_or_tracked_claude_runtime_state_is_still_blocked() {
             ".claude/runtime/metrics/post_tool_use_metrics.jsonl",
         ],
     );
-    // Launcher-owned file, also force-staged: exempt in all sources.
+    // Launcher bookkeeping must also be blocked when force-staged.
     write_file(
         &tmp.path().join(".claude/runtime/launcher_context.json"),
         "{}\n",
@@ -234,20 +233,19 @@ fn staged_or_tracked_claude_runtime_state_is_still_blocked() {
         "staged runtime state must still be blocked as claude-runtime"
     );
     assert!(
-        !report
+        report
             .violations
             .iter()
             .any(|v| v.path == ".claude/runtime/launcher_context.json"),
-        "launcher-owned bookkeeping must stay exempt even when staged; got {:#?}",
+        "staged launcher bookkeeping must be blocked; got {:#?}",
         report.violations
     );
 }
 
 #[test]
-fn launcher_context_is_exempt_regardless_of_git_source() {
-    // The exemption is path-based and applies whether the launcher file is
-    // staged, untracked, or ignored-present — the end-of-run guard runs in
-    // `pre-publish` mode and must stay clean in every case.
+fn launcher_context_is_prohibited_when_staged_and_exempt_when_untracked() {
+    // Ordinary launch writes externally. Legacy untracked runtime is still
+    // ignored by collection, while indexed runtime is always prohibited.
     let tmp = repo();
 
     // Staged (force-added past .gitignore).
@@ -269,9 +267,15 @@ fn launcher_context_is_exempt_regardless_of_git_source() {
     .expect("scan artifacts");
 
     assert!(
-        report.is_clean(),
-        "launcher-owned runtime files must not be flagged in any source; got {:#?}",
+        report.blocks(),
+        "staged launcher runtime must be blocked; got {:#?}",
         report.violations
+    );
+    assert!(
+        !report
+            .violations
+            .iter()
+            .any(|v| v.path == ".claude/runtime/sessions.jsonl")
     );
     assert!(
         tmp.path()

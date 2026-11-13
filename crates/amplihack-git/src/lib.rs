@@ -48,6 +48,14 @@
 //! prompt variable alone. It is for the one case where a person can answer
 //! the prompt; see its docs.
 
+pub mod checkpoint_transaction;
+pub mod isolated_history;
+pub mod launcher_state;
+pub mod publication_validation;
+pub mod runtime_preparation;
+pub mod task_scope;
+pub mod workspace_validation;
+
 use std::path::Path;
 use std::process::Command;
 
@@ -63,11 +71,18 @@ pub const REPOSITORY_ENV_VARS: &[&str] = &[
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_CEILING_DIRECTORIES",
     "GIT_COMMON_DIR",
+    "GIT_CONFIG",
+    "GIT_ATTR_SOURCE",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
     "GIT_DIR",
     "GIT_DISCOVERY_ACROSS_FILESYSTEM",
     "GIT_INDEX_FILE",
     "GIT_INDEX_VERSION",
     "GIT_NAMESPACE",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_GRAFT_FILE",
     "GIT_OBJECT_DIRECTORY",
     "GIT_PREFIX",
     "GIT_QUARANTINE_PATH",
@@ -128,6 +143,7 @@ pub fn scrub<C: Scrubbable>(command: &mut C) -> &mut C {
 pub fn command() -> Command {
     let mut command = interactive_command();
     command.env(TERMINAL_PROMPT_VAR, "0");
+    command.env("GIT_NO_REPLACE_OBJECTS", "1");
     command
 }
 
@@ -166,6 +182,7 @@ pub fn tokio_command() -> tokio::process::Command {
     let mut command = tokio::process::Command::new("git");
     scrub(&mut command);
     command.env(TERMINAL_PROMPT_VAR, "0");
+    command.env("GIT_NO_REPLACE_OBJECTS", "1");
     command
 }
 

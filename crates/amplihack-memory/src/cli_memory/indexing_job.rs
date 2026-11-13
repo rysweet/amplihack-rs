@@ -24,6 +24,7 @@ pub fn background_index_job_active(project_path: &Path) -> Result<bool> {
 }
 
 pub fn record_background_index_pid(project_path: &Path, pid: u32) -> Result<()> {
+    crate::cli_memory::helpers::prepare_checkout_runtime(project_path)?;
     let pid_path = background_index_job_path(project_path);
     ensure_parent_dir(&pid_path)?;
     fs::write(pid_path, format!("{pid}\n"))?;
@@ -67,5 +68,16 @@ mod tests {
         record_background_index_pid(dir.path(), u32::MAX).unwrap();
         assert!(!background_index_job_active(dir.path()).unwrap());
         assert!(!background_index_job_path(dir.path()).exists());
+    }
+}
+
+#[cfg(test)]
+mod issue_1554_plain_project {
+    #[test]
+    fn background_indexing_remains_available_without_initialising_git() {
+        let project = tempfile::tempdir_in("/var/tmp").unwrap();
+        super::record_background_index_pid(project.path(), std::process::id()).unwrap();
+        assert!(super::background_index_job_path(project.path()).is_file());
+        assert!(!project.path().join(".git").exists());
     }
 }

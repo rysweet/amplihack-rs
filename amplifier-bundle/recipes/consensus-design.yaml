@@ -22,6 +22,7 @@ context: {}
 steps:
   - id: "step4-design-round1-architect"
     agent: "amplihack:architect"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       MANDATORY ARCHITECTURE DEBATE - ROUND 1: Independent Design (Architect)
@@ -60,6 +61,7 @@ steps:
 
   - id: "step4-design-round1-api"
     agent: "amplihack:api-designer"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       MANDATORY ARCHITECTURE DEBATE - ROUND 1: Independent Design (API Designer)
@@ -98,6 +100,7 @@ steps:
 
   - id: "step4-design-round1-database"
     agent: "amplihack:database"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       MANDATORY ARCHITECTURE DEBATE - ROUND 1: Independent Design (Database)
@@ -136,6 +139,7 @@ steps:
 
   - id: "step4-design-round1-security"
     agent: "amplihack:security"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       MANDATORY ARCHITECTURE DEBATE - ROUND 1: Independent Design (Security)
@@ -178,6 +182,7 @@ steps:
 
   - id: "step4-design-round1-tester"
     agent: "amplihack:tester"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       MANDATORY ARCHITECTURE DEBATE - ROUND 1: Independent Design (Tester)
@@ -218,6 +223,7 @@ steps:
 
   - id: "step4-design-round2-cross-examination"
     agent: "amplihack:architect"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       MANDATORY ARCHITECTURE DEBATE - ROUND 2: Cross-Examination
@@ -267,6 +273,7 @@ steps:
 
   - id: "step4-design-round3-consensus"
     agent: "amplihack:architect"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       MANDATORY ARCHITECTURE DEBATE - ROUND 3: Consensus Building
@@ -291,6 +298,9 @@ steps:
       Return as JSON:
       ```json
       {
+        "version": 1,
+        "task": "identical task identity from final_requirements",
+        "files_to_change": ["exact permitted_source_paths reviewed by this panel, including tests and new files"],
         "consensus_achieved": true/false,
         "unified_design": {
           "architecture": {

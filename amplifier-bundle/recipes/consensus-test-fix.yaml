@@ -44,6 +44,7 @@ steps:
   - id: "step7-fix-issues"
     condition: "test_results.tests_run == 'true'"
     agent: "amplihack:pre-commit-diagnostic"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       Diagnose and fix any test or pre-commit failures:
@@ -73,6 +74,7 @@ steps:
 
   - id: "step8-local-testing"
     agent: "amplihack:tester"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       Perform mandatory local testing:

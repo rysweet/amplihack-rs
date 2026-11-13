@@ -3,6 +3,8 @@
 //! All hooks reference paths through `ProjectDirs` instead of
 //! ad-hoc `.join(".claude")` chains. Single source of truth.
 
+pub mod owned_runtime;
+
 use std::env;
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};

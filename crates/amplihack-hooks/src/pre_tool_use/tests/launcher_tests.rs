@@ -1,8 +1,43 @@
 use super::*;
 use crate::test_support::env_lock;
-use amplihack_utils::launcher_context::{LauncherContext, write_launcher_context};
+use amplihack_utils::launcher_context::write_launcher_context;
 use std::collections::BTreeMap;
 use std::fs;
+
+/// Establish an isolated profile before resolving persisted launcher state.
+struct LauncherFixture {
+    checkout: tempfile::TempDir,
+    _state: tempfile::TempDir,
+    _runtime: crate::test_support::EnvVarGuard,
+    _home: crate::test_support::EnvVarGuard,
+    _global_config: crate::test_support::EnvVarGuard,
+}
+impl LauncherFixture {
+    fn new() -> Self {
+        let state = tempfile::tempdir_in("/var/tmp").unwrap();
+        let runtime = crate::test_support::EnvVarGuard::set("AMPLIHACK_RUNTIME_DIR", state.path());
+        let home = crate::test_support::EnvVarGuard::set("HOME", state.path());
+        let global_config = crate::test_support::EnvVarGuard::set("GIT_CONFIG_GLOBAL", "/dev/null");
+        let checkout = tempfile::tempdir_in("/var/tmp").unwrap();
+        assert!(
+            amplihack_git::command_in(checkout.path())
+                .args(["init", "--quiet", "--template="])
+                .status()
+                .unwrap()
+                .success()
+        );
+        Self {
+            checkout,
+            _state: state,
+            _runtime: runtime,
+            _home: home,
+            _global_config: global_config,
+        }
+    }
+    fn path(&self) -> &std::path::Path {
+        self.checkout.path()
+    }
+}
 
 #[test]
 fn unknown_launcher_by_default() {
@@ -11,7 +46,8 @@ fn unknown_launcher_by_default() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _authoritative_host = crate::test_support::EnvVarGuard::unset("AMPLIHACK_AGENT_BINARY");
     set_launcher_env(None, None, None, None);
-    let result = detect_launcher();
+    let dir = LauncherFixture::new();
+    let result = detect_launcher_for_dirs(&ProjectDirs::new(dir.path()));
     assert!(
         matches!(result, LauncherType::Unknown),
         "Expected Unknown when no launcher env vars set, got: {result:?}"
@@ -25,7 +61,7 @@ fn detects_copilot_from_persisted_launcher_context() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _authoritative_host = crate::test_support::EnvVarGuard::unset("AMPLIHACK_AGENT_BINARY");
     set_launcher_env(None, None, None, None);
-    let dir = tempfile::tempdir().unwrap();
+    let dir = LauncherFixture::new();
     write_launcher_context(
         dir.path(),
         LauncherKind::Copilot,
@@ -46,7 +82,7 @@ fn detects_copilot_from_persisted_launcher_context_when_agent_cwd_is_nested() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _authoritative_host = crate::test_support::EnvVarGuard::unset("AMPLIHACK_AGENT_BINARY");
     set_launcher_env(None, None, None, None);
-    let dir = tempfile::tempdir().unwrap();
+    let dir = LauncherFixture::new();
     let nested = dir.path().join("worktrees/feature/subdir");
     fs::create_dir_all(&nested).unwrap();
     write_launcher_context(
@@ -66,26 +102,55 @@ fn detects_copilot_from_persisted_launcher_context_when_agent_cwd_is_nested() {
 }
 
 #[test]
+fn a_nested_repository_never_borrows_its_containing_checkouts_context() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _host = crate::test_support::EnvVarGuard::unset("AMPLIHACK_AGENT_BINARY");
+    set_launcher_env(None, None, None, None);
+    let outer = LauncherFixture::new();
+    write_launcher_context(
+        outer.path(),
+        LauncherKind::Copilot,
+        "amplihack copilot",
+        BTreeMap::new(),
+    )
+    .unwrap();
+    // An asset directory must not make the containing checkout authoritative.
+    fs::create_dir(outer.path().join(".claude")).unwrap();
+    let nested = outer.path().join("nested");
+    fs::create_dir(&nested).unwrap();
+    assert!(
+        amplihack_git::command_in(&nested)
+            .args(["init", "--quiet", "--template="])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert_eq!(
+        detect_launcher_for_dirs(&ProjectDirs::new(&nested)),
+        LauncherType::Unknown
+    );
+}
+
+#[test]
 fn ignores_stale_persisted_launcher_context() {
     let _guard = env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _authoritative_host = crate::test_support::EnvVarGuard::unset("AMPLIHACK_AGENT_BINARY");
     set_launcher_env(None, None, None, None);
-    let dir = tempfile::tempdir().unwrap();
+    let dir = LauncherFixture::new();
     let dirs = ProjectDirs::new(dir.path());
-    fs::create_dir_all(&dirs.runtime).unwrap();
-    fs::write(
-        dirs.launcher_context_file(),
-        serde_json::to_string_pretty(&LauncherContext {
-            launcher: LauncherKind::Copilot,
-            command: "amplihack copilot".to_string(),
-            timestamp: "2000-01-01T00:00:00+00:00".to_string(),
-            environment: BTreeMap::new(),
-        })
-        .unwrap(),
+    let context = write_launcher_context(
+        dir.path(),
+        LauncherKind::Copilot,
+        "amplihack copilot",
+        BTreeMap::new(),
     )
     .unwrap();
+    let mut record: serde_json::Value =
+        serde_json::from_slice(&fs::read(&context).unwrap()).unwrap();
+    record["context"]["timestamp"] = serde_json::json!("2000-01-01T00:00:00+00:00");
+    fs::write(&context, serde_json::to_vec(&record).unwrap()).unwrap();
 
     let result = detect_launcher_for_dirs(&dirs);
 
@@ -111,7 +176,7 @@ fn codex_persisted_context_is_recognized_without_raw_input_side_effects() {
     let _claude_alt = crate::test_support::EnvVarGuard::unset("CLAUDE_SESSION_ID");
     // Empty authoritative marker should not mask the persisted context.
     let _host = crate::test_support::EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "");
-    let dir = tempfile::tempdir().unwrap();
+    let dir = LauncherFixture::new();
     write_launcher_context(
         dir.path(),
         LauncherKind::Codex,

@@ -22,7 +22,7 @@ pub struct NestingResult {
 
 /// Detect nested amplihack sessions and source repo execution.
 pub struct NestingDetector {
-    runtime_log: PathBuf,
+    runtime_log: Option<PathBuf>,
 }
 
 impl Default for NestingDetector {
@@ -33,14 +33,12 @@ impl Default for NestingDetector {
 
 impl NestingDetector {
     pub fn new() -> Self {
-        Self {
-            runtime_log: PathBuf::from(".claude/runtime/sessions.jsonl"),
-        }
+        Self { runtime_log: None }
     }
 
     /// Override the runtime log path (for testing).
     pub fn with_runtime_log(mut self, path: PathBuf) -> Self {
-        self.runtime_log = path;
+        self.runtime_log = Some(path);
         self
     }
 
@@ -78,11 +76,21 @@ impl NestingDetector {
 
     /// Find an active session in the runtime log with a live PID.
     pub fn find_active_session(&self, cwd: &Path) -> Option<SessionEntry> {
-        if !self.runtime_log.exists() {
+        let resolved;
+        let runtime_log = if let Some(path) = &self.runtime_log {
+            path
+        } else {
+            resolved = amplihack_git::launcher_state::resolve(cwd)
+                .ok()?
+                .directory
+                .join("sessions.jsonl");
+            &resolved
+        };
+        if !runtime_log.exists() {
             return None;
         }
 
-        let content = fs::read_to_string(&self.runtime_log).ok()?;
+        let content = fs::read_to_string(runtime_log).ok()?;
         if content.trim().is_empty() {
             return None;
         }

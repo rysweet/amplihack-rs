@@ -28,6 +28,7 @@ steps:
   - id: "step-05-architecture"
     recovery: {"replay": "reuse", "resources": [{"kind": "repository", "path": "{{worktree_setup.worktree_path}}"}]}
     agent: "amplihack:architect"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       # Step 5: Research and Design - Architecture
@@ -93,12 +94,13 @@ steps:
     recovery: {"replay": "reuse", "resources": [{"kind": "repository", "path": "{{worktree_setup.worktree_path}}"}]}
     condition: "clarified_requirements.requires_api_design != 'false'"
     agent: "amplihack:api-designer"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       # Step 5b: API Design
 
       **Architecture:** {{architecture_design}}
-      **Requirements:** {{final_requirements}}
+      **Requirements:** {{final_requirements}}. Preserve task identity; files_to_change contains exact permitted_source_paths, including new files and tests.
 
       Design API contracts:
       - Endpoint definitions
@@ -112,6 +114,7 @@ steps:
     recovery: {"replay": "reuse", "resources": [{"kind": "repository", "path": "{{worktree_setup.worktree_path}}"}]}
     condition: "clarified_requirements.requires_database_design != 'false'"
     agent: "amplihack:database"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       # Step 5c: Database Design
@@ -130,6 +133,7 @@ steps:
   - id: "step-05d-security-review"
     recovery: {"replay": "reuse", "resources": [{"kind": "repository", "path": "{{worktree_setup.worktree_path}}"}]}
     agent: "amplihack:security"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       # Step 5d: Security Requirements Review
@@ -151,6 +155,7 @@ steps:
   - id: "step-05e-design-consolidation"
     recovery: {"replay": "reuse", "resources": [{"kind": "repository", "path": "{{worktree_setup.worktree_path}}"}]}
     agent: "amplihack:architect"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       # Step 5e: Design Consolidation
@@ -164,8 +169,10 @@ steps:
 
       ```json
       {
+        "version": 1,
+        "task": "identical task identity from final_requirements",
         "components": [{"name": "...", "action": "create/modify", "purpose": "..."}],
-        "files_to_change": ["list of file paths"],
+        "files_to_change": ["all reviewed exact permitted_source_paths, including every new_file and test_file"],
         "new_files": ["files to create"],
         "test_files": ["test files to create/modify"],
         "implementation_order": ["ordered steps"],
@@ -182,6 +189,7 @@ steps:
   - id: "step-06-documentation"
     recovery: {"replay": "reuse", "resources": [{"kind": "repository", "path": "{{worktree_setup.worktree_path}}"}]}
     agent: "amplihack:documentation-writer"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       # Step 6: Retcon Documentation Writing
@@ -205,6 +213,7 @@ steps:
   - id: "step-06b-documentation-review"
     recovery: {"replay": "reuse", "resources": [{"kind": "repository", "path": "{{worktree_setup.worktree_path}}"}]}
     agent: "amplihack:architect"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     # Documentation review is a QUALITY SIGNAL, not a gate (#834): non-fatal so a
     # failed/empty review never discards durable upstream work. The follow-on
@@ -243,6 +252,7 @@ steps:
   - id: "step-06c-documentation-refinement"
     recovery: {"replay": "reuse", "resources": [{"kind": "repository", "path": "{{worktree_setup.worktree_path}}"}]}
     agent: "amplihack:documentation-writer"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     continue_on_error: true
     prompt: |

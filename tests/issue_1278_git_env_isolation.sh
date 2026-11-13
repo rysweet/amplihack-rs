@@ -30,7 +30,13 @@ PRECOMMIT="$REPO_ROOT/.pre-commit-config.yaml"
 
 pass=0
 fail=0
-TMPROOT="$(mktemp -d)"
+TMPROOT="$(mktemp -d /var/tmp/issue-1278.XXXXXX)"
+# Fixtures and cache probes must never resolve the operator's agent profiles.
+export HOME="$TMPROOT/home" XDG_CONFIG_HOME="$TMPROOT/xdg" XDG_CACHE_HOME="$TMPROOT/cache"
+export AMPLIHACK_HOME="$TMPROOT/amplihack" CLAUDE_CONFIG_DIR="$TMPROOT/claude" CODEX_HOME="$TMPROOT/codex"
+export AMPLIHACK_CLAUDE_PROFILE_ROOT="$TMPROOT/profiles" TMPDIR="$TMPROOT/tmp"
+export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$AMPLIHACK_HOME" "$CLAUDE_CONFIG_DIR" "$CODEX_HOME" "$AMPLIHACK_CLAUDE_PROFILE_ROOT" "$TMPDIR"
 trap 'rm -rf "$TMPROOT"' EXIT
 
 # ---------------------------------------------------------------------------
@@ -373,7 +379,7 @@ printf '%s\n' $shell_order | sort > "$TMPROOT/shell.list"
 drift="$(comm -3 "$TMPROOT/rust.list" "$TMPROOT/shell.list" | tr -d '\t' | tr '\n' ' ')"
 assert_eq "helper list and REPOSITORY_ENV_VARS hold the same names (comm -3)" "" "$drift"
 assert_eq "helper list is in REPOSITORY_ENV_VARS order" "$rust_order" "$shell_order"
-assert_eq "helper lists 12 git names" "12" "$(printf '%s\n' $shell_order | grep -c .)"
+assert_eq "helper lists 19 git names" "19" "$(printf '%s\n' $shell_order | grep -c .)"
 assert_eq "helper run-identity list is the 5 names, in order" "$RUN_NAMES" \
     "$(helper_sh 'printf "%s" "$AMPLIHACK_RUN_IDENTITY_VARS"' | tr -s ' \n' ' ' | sed 's/^ //; s/ $//')"
 
@@ -438,24 +444,24 @@ done
 
 # 6.6a autodrive_trust.sh keeps the one recorded copy: it is a merge-guard
 # GATE_FILE and does not load git-repo-env.sh (see its comment). Its list must
-# be the helper's 12 names in order, then GIT_REPLACE_REF_BASE, and
+# be the helper's repository, configuration and history names in order, and
 # autodrive_trust_git must remove every one of them before git runs.
 TRUST_SH="$REPO_ROOT/amplifier-bundle/tools/autodrive_trust.sh"
 trust_list="$(env -i PATH="$PATH" HOME="$HOME" AUTODRIVE_TRUST_GIT_UNSET_VARS=GIT_DIR bash -c '. "$0" >/dev/null 2>&1; printf "%s" "$AUTODRIVE_TRUST_GIT_UNSET_VARS"' "$TRUST_SH" 2>&1)"
-assert_eq "autodrive_trust.sh unsets git-repo-env.sh's list, then GIT_REPLACE_REF_BASE" \
-    "$shell_order GIT_REPLACE_REF_BASE" "$trust_list"
+assert_eq "autodrive_trust.sh unsets git-repo-env.sh's complete list" \
+    "$shell_order" "$trust_list"
 TRUST_REPO="$TMPROOT/trust-repo"
 git init -q "$TRUST_REPO"
-trust_seen="$(for v in $shell_order GIT_REPLACE_REF_BASE; do printf '%s=/decoy ' "$v"; done)"
+trust_seen="$(for v in $shell_order; do printf '%s=/decoy ' "$v"; done)"
 # The alias prints git's environment, then a marker, so a git that refused to
 # start (as it would with GIT_DIR=/decoy) cannot pass for a clean one.
 # shellcheck disable=SC2086 # word-splitting the NAME=value list is intended
 trust_out="$(env -i PATH="$PATH" HOME="$HOME" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null $trust_seen \
     bash -c '. "$0" >/dev/null 2>&1; autodrive_trust_git "$1" -c alias.envdump="!env; echo TRUST_GIT_RAN" envdump' "$TRUST_SH" "$TRUST_REPO" 2>&1)"
 case "$trust_out" in
-    *TRUST_GIT_RAN*) assert_eq "autodrive_trust_git passes none of the 13 names to git" "" \
+    *TRUST_GIT_RAN*) assert_eq "autodrive_trust_git passes none of the 19 names to git" "" \
         "$(printf '%s\n' "$trust_out" | grep -E '^GIT_[A-Z_]+=/decoy$' | tr '\n' ' ')" ;;
-    *) record_fail "autodrive_trust_git passes none of the 13 names to git" "git did not run: $trust_out" ;;
+    *) record_fail "autodrive_trust_git passes none of the 19 names to git" "git did not run: $trust_out" ;;
 esac
 
 # 6.7 The hook refuses a missing or symlinked helper, by exact message, and
@@ -501,6 +507,6 @@ esac
 echo
 echo "passed: $pass, failed: $fail"
 if [ "$fail" -eq 0 ]; then
-    echo "PASS: git env isolation (12 git names, 5 run-identity names)"
+    echo "PASS: git env isolation (19 git names, 5 run-identity names)"
 fi
 [ "$fail" -eq 0 ]

@@ -142,15 +142,16 @@ fn launch_environment_puts_is_sandbox_on_the_child_last() {
 /// A sealed launch environment for `run_launch_with("claude", ..)`: `PATH`
 /// holds only a fake `claude` (plus the system shell tools it needs), which
 /// records the `IS_SANDBOX` it inherited in `$HOME/child-env` and exits 0;
-/// auto-install is off, `HOME` and the cwd are a temp dir, and the variables
+/// auto-install is off, profile and checkout are separate temp dirs, and the variables
 /// that would change the decision or hand the launch off are unset. So even a
 /// regression can never reach the real Claude Code CLI.
 #[cfg(unix)]
 struct FakeClaudeLaunch {
-    home: tempfile::TempDir,
-    _env: crate::test_support::EnvGuard,
-    _home: crate::test_support::HomeGuard,
     _cwd: crate::test_support::CwdGuard,
+    _home: crate::test_support::HomeGuard,
+    _env: crate::test_support::EnvGuard,
+    _checkout: tempfile::TempDir,
+    home: tempfile::TempDir,
 }
 
 #[cfg(unix)]
@@ -158,7 +159,8 @@ impl FakeClaudeLaunch {
     fn new() -> Self {
         use std::os::unix::fs::PermissionsExt;
 
-        let home = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir_in("/var/tmp").unwrap();
+        let checkout = tempfile::tempdir_in("/var/tmp").unwrap();
         let bin = home.path().join("bin");
         std::fs::create_dir(&bin).unwrap();
         let claude = bin.join("claude");
@@ -172,11 +174,22 @@ impl FakeClaudeLaunch {
         std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
         let path = format!("{}:/usr/bin:/bin", bin.display());
         let claude_text = claude.to_string_lossy().into_owned();
+        let profile_text = home.path().to_string_lossy().into_owned();
+        let runtime_text = home.path().join("runtime").to_string_lossy().into_owned();
         let env = crate::test_support::EnvGuard::set([
             ("PATH", path.as_str()),
             ("AMPLIHACK_CLAUDE_BINARY_PATH", claude_text.as_str()),
             ("AMPLIHACK_SKIP_AUTO_INSTALL", "1"),
             ("AMPLIHACK_NONINTERACTIVE", "1"),
+            ("AMPLIHACK_HOME", profile_text.as_str()),
+            ("AMPLIHACK_RUNTIME_DIR", runtime_text.as_str()),
+            ("XDG_CONFIG_HOME", profile_text.as_str()),
+            ("CLAUDE_CONFIG_DIR", profile_text.as_str()),
+            ("CODEX_HOME", profile_text.as_str()),
+            ("AMPLIHACK_CLAUDE_PROFILE_ROOT", profile_text.as_str()),
+            ("TMPDIR", profile_text.as_str()),
+            ("GIT_CONFIG_GLOBAL", "/dev/null"),
+            ("GIT_CONFIG_NOSYSTEM", "1"),
             (IS_SANDBOX_ENV, ""),
             ("CLAUDE_CODE_BUBBLEWRAP", ""),
             ("AMPLIHACK_USE_DOCKER", ""),
@@ -198,9 +211,17 @@ impl FakeClaudeLaunch {
             unsafe { std::env::remove_var(name) };
         }
         let home_guard = crate::test_support::HomeGuard::set(home.path());
-        let cwd = crate::test_support::CwdGuard::set(home.path()).unwrap();
+        assert!(
+            amplihack_git::command_in(checkout.path())
+                .args(["init", "--quiet", "--template="])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let cwd = crate::test_support::CwdGuard::set(checkout.path()).unwrap();
         Self {
             home,
+            _checkout: checkout,
             _env: env,
             _home: home_guard,
             _cwd: cwd,

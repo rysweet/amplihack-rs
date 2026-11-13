@@ -510,45 +510,79 @@ pub fn scan_artifacts(
     let mut violations = Vec::new();
     let mut seen = BTreeSet::new();
     let mut baseline = None;
-    let mut add =
-        |paths: &[String], source: ArtifactSource, introduced: Option<&BTreeSet<String>>| {
-            for path in paths {
-                // The #857 exemption covers the ignored-present scan only: a
-                // registered worktree under a `worktrees/` that is NOT ignored
-                // is an untracked directory a broad add would sweep in, and it
-                // stays a violation (issue #1528, R6).
-                if source == ArtifactSource::IgnoredPresent
-                    && is_inside_registered_nested_worktree(path, &skip_prefixes)
-                {
-                    continue;
-                }
-                if source != ArtifactSource::Tracked && allowlist.is_allowed(path) {
-                    allowed_outside_index.insert(path.clone());
-                }
-                add_violation_if_prohibited(
-                    path,
-                    source,
-                    &allowlist,
-                    &manifests,
-                    introduced,
-                    &mut violations,
-                    &mut seen,
-                );
+    let mut add = |paths: &[String],
+                   source: ArtifactSource,
+                   introduced: Option<&BTreeSet<String>>| {
+        for path in paths {
+            // The #857 exemption covers the ignored-present scan only: a
+            // registered worktree under a `worktrees/` that is NOT ignored
+            // is an untracked directory a broad add would sweep in, and it
+            // stays a violation (issue #1528, R6).
+            if source == ArtifactSource::IgnoredPresent
+                && is_inside_registered_nested_worktree(path, &skip_prefixes)
+            {
+                continue;
             }
-        };
+            if source != ArtifactSource::Tracked && allowlist.is_allowed(path) {
+                allowed_outside_index.insert(path.clone());
+            }
+            if matches!(source, ArtifactSource::Staged | ArtifactSource::Tracked)
+                && amplihack_types::paths::owned_runtime::prohibited(path)
+            {
+                if seen.insert((source, path.clone())) {
+                    violations.push(ArtifactViolation {
+                            path: path.clone(), source,
+                            rule_id: "claude-runtime".to_owned(),
+                            remediation: "Remove framework runtime from the proposed publication; preserve unrelated staged work".to_owned(),
+                            provenance: ArtifactProvenance::Introduced,
+                            removal_root: None,
+                        });
+                }
+                continue;
+            }
+            add_violation_if_prohibited(
+                path,
+                source,
+                &allowlist,
+                &manifests,
+                introduced,
+                &mut violations,
+                &mut seen,
+            );
+        }
+    };
 
+    // Runtime policy applies to the complete index, including unchanged entries.
+    // Baselines and allowlists cannot turn framework state into source.
+    let runtime: Vec<_> = read_index(&repo)?
+        .into_iter()
+        .filter(|path| amplihack_types::paths::owned_runtime::prohibited(path))
+        .collect();
+    add(&runtime, ArtifactSource::Staged, None);
     if config.mode.scans_staged() {
         let staged = git_paths(
+            &repo,
+            &["diff", "--cached", "--no-renames", "--name-only", "-z"],
+        )?;
+        let runtime_endpoints: Vec<_> = staged
+            .into_iter()
+            .filter(|path| amplihack_types::paths::owned_runtime::prohibited(path))
+            .collect();
+        add(&runtime_endpoints, ArtifactSource::Staged, None);
+        // Generated-file cleanup remains permitted. Runtime policy separately
+        // checks deletion and rename endpoints, before all exemptions.
+        let committable = git_paths(
             &repo,
             &[
                 "diff",
                 "--cached",
+                "--no-renames",
                 "--diff-filter=ACMRTUXB",
                 "--name-only",
                 "-z",
             ],
         )?;
-        add(&staged, ArtifactSource::Staged, None);
+        add(&committable, ArtifactSource::Staged, None);
     }
 
     if let Some(index) = index.as_deref() {
@@ -1496,3 +1530,130 @@ fn segment_match_bytes(pattern: &[u8], text: &[u8]) -> bool {
 #[cfg(test)]
 #[path = "tests/artifact_guard_tests.rs"]
 mod tests;
+
+/// Inspect a validated private index without touching the user's real index.
+/// Explicit selection is deliberately limited to the pre-publish gate.
+pub fn scan_validated_index(
+    config: &ArtifactGuardConfig,
+    index: &amplihack_git::checkpoint_transaction::ValidatedIndex,
+) -> Result<ArtifactGuardReport, ArtifactGuardError> {
+    if config.mode != ArtifactGuardMode::PrePublish {
+        return Err(ArtifactGuardError::InvalidMode(
+            "an explicit private index requires pre-publish".to_owned(),
+        ));
+    }
+    let repo = resolve_repo_root(&config.repo)?;
+    let validated =
+        amplihack_git::checkpoint_transaction::ValidatedIndex::open(&repo, index.path())
+            .map_err(|error| ArtifactGuardError::PathEscape(error.to_string()))?;
+    let paths = |args: &[&str]| -> Result<Vec<String>, ArtifactGuardError> {
+        let out = guard_git()
+            .current_dir(&repo)
+            .env("GIT_INDEX_FILE", validated.path())
+            .args(args)
+            .output()?;
+        if !out.status.success() {
+            return Err(ArtifactGuardError::Git {
+                args: args.join(" "),
+                code: out.status.code(),
+                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            });
+        }
+        out.stdout
+            .split(|b| *b == 0)
+            .filter(|p| !p.is_empty())
+            .map(|p| {
+                String::from_utf8(p.to_vec()).map_err(|_| {
+                    ArtifactGuardError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "unsupported private-index filename",
+                    ))
+                })
+            })
+            .collect()
+    };
+    let indexed = paths(&["ls-files", "-z"])?;
+    let manifests = manifest_dirs(&indexed);
+    let registered_worktrees = gitlink::registered_worktrees(&repo)?;
+    let allowlist = load_effective_allowlist(config, &repo)?;
+    let staged = paths(&["diff", "--cached", "--no-renames", "--name-only", "-z"])?;
+    let mut violations = Vec::new();
+    let mut seen = BTreeSet::new();
+    for path in indexed
+        .iter()
+        .filter(|path| amplihack_types::paths::owned_runtime::prohibited(path))
+        .chain(staged.iter())
+    {
+        if amplihack_types::paths::owned_runtime::prohibited(path) {
+            if seen.insert((ArtifactSource::Staged, path.clone())) {
+                violations.push(ArtifactViolation {
+                    path: path.clone(),
+                    source: ArtifactSource::Staged,
+                    rule_id: "claude-runtime".to_owned(),
+                    remediation: "Framework runtime cannot be published".to_owned(),
+                    provenance: ArtifactProvenance::Introduced,
+                    removal_root: None,
+                });
+            }
+        } else {
+            add_violation_if_prohibited(
+                path,
+                ArtifactSource::Staged,
+                &allowlist,
+                &manifests,
+                None,
+                &mut violations,
+                &mut seen,
+            );
+        }
+    }
+    let out = guard_git()
+        .current_dir(&repo)
+        .env("GIT_INDEX_FILE", validated.path())
+        .args(["ls-files", "--stage", "-z"])
+        .output()?;
+    if !out.status.success() {
+        return Err(ArtifactGuardError::Git {
+            args: "ls-files --stage".to_owned(),
+            code: out.status.code(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        });
+    }
+    for record in out
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|record| record.starts_with(b"160000 "))
+    {
+        let (_, name) =
+            record.split_at(
+                record.iter().position(|b| *b == b'\t').ok_or_else(|| {
+                    ArtifactGuardError::PathEscape("invalid index record".to_owned())
+                })? + 1,
+            );
+        let path = std::str::from_utf8(name).map_err(|_| {
+            ArtifactGuardError::PathEscape("unsupported gitlink filename".to_owned())
+        })?;
+        if gitlink::is_run_worktree_gitlink(path, &registered_worktrees) {
+            violations.retain(|v| !gitlink::is_at_or_under(&v.path, path));
+            violations.push(ArtifactViolation {
+                path: path.to_owned(),
+                source: ArtifactSource::Staged,
+                rule_id: RUN_WORKTREE_GITLINK.to_owned(),
+                remediation: rule(RUN_WORKTREE_GITLINK)
+                    .expect("gitlink rule")
+                    .remediation
+                    .to_owned(),
+                provenance: ArtifactProvenance::Introduced,
+                removal_root: None,
+            });
+        }
+    }
+    Ok(ArtifactGuardReport {
+        repo,
+        mode: config.mode,
+        violations,
+        baseline: None,
+        preexisting_policy: config.preexisting_policy,
+        registered_worktrees,
+    })
+}

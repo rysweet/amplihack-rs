@@ -56,11 +56,11 @@ autodrive_is_sha() {
   return 0
 }
 
-# Copy git-repo-env.sh's 12 names, then GIT_REPLACE_REF_BASE to forbid history
-# rewriting. This GATE_FILE cannot source another helper without widening the
+# Copy git-repo-env.sh's repository, configuration and history names to forbid
+# inherited rewriting. This GATE_FILE cannot source another helper without widening the
 # guard's trusted set. tests/issue_1278_git_env_isolation.sh checks the copy.
 # Assign unconditionally so the environment cannot shorten it (#2033).
-AUTODRIVE_TRUST_GIT_UNSET_VARS="GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_COMMON_DIR GIT_DIR GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_INDEX_FILE GIT_INDEX_VERSION GIT_NAMESPACE GIT_OBJECT_DIRECTORY GIT_PREFIX GIT_QUARANTINE_PATH GIT_WORK_TREE GIT_REPLACE_REF_BASE"
+AUTODRIVE_TRUST_GIT_UNSET_VARS="GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_COMMON_DIR GIT_CONFIG GIT_ATTR_SOURCE GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_DIR GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_INDEX_FILE GIT_INDEX_VERSION GIT_NAMESPACE GIT_REPLACE_REF_BASE GIT_SHALLOW_FILE GIT_GRAFT_FILE GIT_OBJECT_DIRECTORY GIT_PREFIX GIT_QUARANTINE_PATH GIT_WORK_TREE"
 
 # autodrive_trust_git <repo> <git args...>: git without history rewriting,
 # inherited repository selection or credential prompts.

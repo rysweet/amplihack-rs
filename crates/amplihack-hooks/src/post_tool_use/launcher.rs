@@ -48,7 +48,7 @@ mod tests {
         let _authoritative_host = crate::test_support::EnvVarGuard::unset("AMPLIHACK_AGENT_BINARY");
         set_launcher_env(Some("1"), None);
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir_in("/var/tmp").unwrap();
         let message = copilot_post_tool_use_message(&ProjectDirs::new(dir.path()), "Bash").unwrap();
 
         assert_eq!(
@@ -65,7 +65,7 @@ mod tests {
         let _authoritative_host = crate::test_support::EnvVarGuard::unset("AMPLIHACK_AGENT_BINARY");
         set_launcher_env(None, Some("session"));
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir_in("/var/tmp").unwrap();
         assert!(copilot_post_tool_use_message(&ProjectDirs::new(dir.path()), "Read").is_none());
     }
 
@@ -77,7 +77,32 @@ mod tests {
         let _authoritative_host = crate::test_support::EnvVarGuard::unset("AMPLIHACK_AGENT_BINARY");
         set_launcher_env(None, None);
 
-        let dir = tempfile::tempdir().unwrap();
+        let profile = tempfile::tempdir_in("/var/tmp").unwrap();
+        let _profiles: Vec<_> = [
+            "HOME",
+            "XDG_CONFIG_HOME",
+            "AMPLIHACK_HOME",
+            "CODEX_HOME",
+            "CLAUDE_CONFIG_DIR",
+            "AMPLIHACK_CLAUDE_PROFILE_ROOT",
+            "AMPLIHACK_RUNTIME_DIR",
+        ]
+        .into_iter()
+        .map(|key| {
+            let path = profile.path().join(key);
+            std::fs::create_dir(&path).unwrap();
+            crate::test_support::EnvVarGuard::set(key, path)
+        })
+        .collect();
+        let _git_config = crate::test_support::EnvVarGuard::set("GIT_CONFIG_GLOBAL", "/dev/null");
+        let dir = tempfile::tempdir_in("/var/tmp").unwrap();
+        assert!(
+            amplihack_git::command_in(dir.path())
+                .args(["init", "--quiet", "--template="])
+                .status()
+                .unwrap()
+                .success()
+        );
         write_launcher_context(
             dir.path(),
             LauncherKind::Copilot,
@@ -102,7 +127,7 @@ mod tests {
         let _authoritative_host = crate::test_support::EnvVarGuard::unset("AMPLIHACK_AGENT_BINARY");
         set_launcher_env(Some("1"), None);
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir_in("/var/tmp").unwrap();
         let message = copilot_post_tool_use_message(&ProjectDirs::new(dir.path()), "   ").unwrap();
 
         assert_eq!(

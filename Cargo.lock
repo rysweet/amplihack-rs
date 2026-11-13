@@ -252,6 +252,13 @@ dependencies = [
 name = "amplihack-git"
 version = "1.2.0"
 dependencies = [
+ "amplihack-types",
+ "anyhow",
+ "fs2",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
 ]
@@ -339,6 +346,7 @@ dependencies = [
 name = "amplihack-memory"
 version = "1.2.0"
 dependencies = [
+ "amplihack-git",
  "anyhow",
  "chrono",
  "fs4",

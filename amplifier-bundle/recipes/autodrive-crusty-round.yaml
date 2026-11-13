@@ -104,6 +104,7 @@ steps:
 
   - id: "step-02-crusty-review"
     agent: "amplihack:reviewer"
+    auto_stage: false
     working_dir: "{{review_dir}}"
     prompt: |
       # Crusty review — the maintainer's proxy on PR #{{crusty_round_context.pr}}
@@ -252,6 +253,7 @@ steps:
   - id: "step-04-address-concerns"
     condition: "crusty_verdict.crusty_verdict == 'CONCERNS'"
     agent: "amplihack:builder"
+    auto_stage: false
     working_dir: "{{repo_path}}"
     prompt: |
       # Address every concern crusty raised
@@ -298,10 +300,9 @@ steps:
       amplihack_prepare_git_commit_identity || { echo "ERROR: git identity helper not found; stop rather than commit under a guessed identity" >&2; exit 2; }
 
       amplihack hygiene artifact-guard --repo . --mode pre-commit || { echo "STOP: artifact guard refused before staging (#1528)" >&2; exit 1; }
-      git add -A
       amplihack hygiene artifact-guard --repo . --mode pre-commit || { echo "STOP: artifact guard refused after staging; fix the cause, never bypass (#1528)" >&2; exit 1; }
-      git commit -m "address crusty review: <what changed>" || { echo "STOP: the commit failed; fix what the hook reports, never bypass it (#1528)" >&2; exit 1; }
-      git push || { echo "STOP: the push failed (#1528)" >&2; exit 1; }
+      amplihack hygiene workflow checkpoint --repo . -m "address crusty review: <what changed>" || { echo "STOP: the commit failed; fix what the hook reports, never bypass it (#1528)" >&2; exit 1; }
+      amplihack hygiene workflow publish --repo . || { echo "STOP: the push failed (#1528)" >&2; exit 1; }
       ```
 
       The artifact guard runs before and after staging; if it objects, remove
@@ -355,6 +356,7 @@ steps:
 
   - id: "step-07-select-next-action"
     agent: "amplihack:reviewer"
+    auto_stage: false
     working_dir: "{{review_dir}}"
     prompt: |
       Assess whether this Crusty review objective is complete BEFORE asking

@@ -12,7 +12,17 @@ use std::sync::{Mutex, OnceLock};
 use amplihack_utils::agent_binary::{ALLOWED_BINARIES, resolve, validate_binary_name};
 
 mod common;
-use common::bounded_tempdir;
+use common::isolated_bounded_tempdir as bounded_tempdir;
+
+fn context_path(repo: &std::path::Path) -> std::path::PathBuf {
+    amplihack_utils::launcher_context::write_launcher_context(
+        repo,
+        amplihack_utils::launcher_context::LauncherKind::Claude,
+        "amplihack claude",
+        Default::default(),
+    )
+    .unwrap()
+}
 
 fn env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -130,14 +140,17 @@ fn s3_json_typed_struct_rejects_unexpected_shape() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = bounded_tempdir();
-    let runtime = tmp.path().join(".claude").join("runtime");
-    fs::create_dir_all(&runtime).unwrap();
+    let path = context_path(tmp.path());
+    assert_eq!(
+        resolve(tmp.path()).unwrap(),
+        "claude",
+        "positive control must read the bound context"
+    );
+    let mut envelope: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     // launcher field is an array, not a string.
-    fs::write(
-        runtime.join("launcher_context.json"),
-        r#"{"launcher":["claude"],"pid":1}"#,
-    )
-    .unwrap();
+    envelope["context"]["launcher"] = serde_json::json!(["claude"]);
+    fs::write(path, serde_json::to_vec(&envelope).unwrap()).unwrap();
     assert_eq!(resolve(tmp.path()).unwrap(), "copilot");
 }
 
@@ -146,14 +159,17 @@ fn s3_json_64kib_size_cap() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = bounded_tempdir();
-    let runtime = tmp.path().join(".claude").join("runtime");
-    fs::create_dir_all(&runtime).unwrap();
+    let path = context_path(tmp.path());
+    assert_eq!(
+        resolve(tmp.path()).unwrap(),
+        "claude",
+        "positive control must read the bound context"
+    );
+    let mut envelope: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     let huge = "p".repeat(64 * 1024 + 1);
-    fs::write(
-        runtime.join("launcher_context.json"),
-        format!(r#"{{"launcher":"claude","x":"{huge}"}}"#),
-    )
-    .unwrap();
+    envelope["context"]["x"] = serde_json::json!(huge);
+    fs::write(path, serde_json::to_vec(&envelope).unwrap()).unwrap();
     assert_eq!(resolve(tmp.path()).unwrap(), "copilot");
 }
 
@@ -162,7 +178,13 @@ fn s5_walk_up_capped_at_32_ancestors() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = bounded_tempdir();
-    // No launcher_context anywhere.
+    let _context = context_path(tmp.path());
+    assert_eq!(
+        resolve(tmp.path()).unwrap(),
+        "claude",
+        "positive control must read the bound context"
+    );
+    // The valid context must remain out of reach beyond the walk-up bound.
     let mut current = tmp.path().to_path_buf();
     for i in 0..40 {
         current = current.join(format!("d{i}"));
@@ -178,20 +200,17 @@ fn s5_symlink_escape_is_blocked() {
     clear_env();
     let outer = bounded_tempdir();
     let attacker = bounded_tempdir();
-    // Place valid (allowlisted) but unintended config outside the cwd tree.
-    // It must be fresh: a file with no timestamp is rejected whatever the
-    // symlink check does, which left this test unable to fail.
-    let attacker_runtime = attacker.path().join(".claude").join("runtime");
-    fs::create_dir_all(&attacker_runtime).unwrap();
-    let now = chrono::Utc::now().to_rfc3339();
-    fs::write(
-        attacker_runtime.join("launcher_context.json"),
-        format!(r#"{{"launcher":"claude","timestamp":"{now}"}}"#),
-    )
-    .unwrap();
-    // Symlink the entire .claude inside outer to attacker's .claude.
-    let link_parent = outer.path().join(".claude");
-    symlink(attacker.path().join(".claude"), &link_parent).unwrap();
+    let path = context_path(outer.path());
+    assert_eq!(
+        resolve(outer.path()).unwrap(),
+        "claude",
+        "positive control must read the bound context"
+    );
+    // Keep the same valid identity and timestamp: only the symlink escapes.
+    let target = attacker.path().join("forged-context.json");
+    fs::copy(&path, &target).unwrap();
+    fs::remove_file(&path).unwrap();
+    symlink(target, path).unwrap();
     // Resolver MUST reject path that escapes its anchor (canonicalized starts_with check).
     let result = resolve(outer.path()).unwrap();
     assert_eq!(

@@ -24,16 +24,10 @@ steps:
     type: "bash"
     command: |
       set -euo pipefail
-      # Guard: fail-fast if repo_path does not exist (prevents path traversal, catches misconfiguration).
-      if [ ! -d "$REPO_PATH" ]; then
-        echo "ERROR: repo_path '$REPO_PATH' does not exist or is not a directory" >&2
-        exit 1
-      fi
-      cd "$REPO_PATH"
-      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        echo "ERROR: step-04-setup-worktree requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
-        exit 1
-      fi
+      # Validation covers existence, checkout identity, origin and committed history.
+      cd "${REPO_PATH:?}" || { echo "ERROR: cannot enter task repository" >&2; exit 2; }
+      amplihack hygiene workflow validate-workspace --repo .
+      amplihack hygiene workflow prepare --repo .
       # Canonicalize repo_path so WORKTREE_PATH matches git porcelain (issue #1121).
       REPO_PATH="$(pwd -P)"
 
@@ -172,9 +166,9 @@ steps:
         echo "INFO: Targeting existing branch '$BRANCH_NAME' (issue #342 path)." >&2
         EB_BASE_REF=""; [ -z "${RECIPE_VAR_base_branch:-}" ] || EB_BASE_REF="$(bash "$TOOLS_DIR/workflow_delivery_inputs.sh" worktree "$RECIPE_VAR_base_branch" "${RECIPE_VAR_strict_delivery:-false}" "$BRANCH_NAME" "${RECIPE_VAR_forbidden_base_branches:-}")" || exit 1  # same base check as a new branch, before any worktree or agent work
 
-        # Best-effort fetch so remote-only branches resolve. Explicit refspec
+        # Fetch once so remote-only branches resolve. Explicit refspec
         # creates the local remote-tracking ref. Branch name is validated above.
-        git fetch origin "+refs/heads/${BRANCH_NAME}:refs/remotes/origin/${BRANCH_NAME}" >&2 2>/dev/null || true
+        git fetch --atomic origin "+refs/heads/${BRANCH_NAME}:refs/remotes/origin/${BRANCH_NAME}" >&2 || exit $?
 
         # Resolve worktree path: (a) reuse a worktree already on the branch; (b) Gates B/C,
         # the caller checkout: an alias (#1762); (c) else MAIN_REPO_PATH/worktrees/<branch> (#1134).
@@ -233,7 +227,7 @@ steps:
         CREATED=false  # the branch pre-existed (its worktree may still be new)
 
         # Push/upstream best-effort (idempotent on existing PR branches); never for an alias.
-        [ -n "$LOCAL_BRANCH" ] || git -C "$WORKTREE_PATH" push origin "$BRANCH_NAME" > /dev/null 2>&1 || true
+        # Publication waits for established requirements and reviewed design.
         [ -n "$LOCAL_BRANCH" ] || git -C "$WORKTREE_PATH" branch --set-upstream-to="origin/${BRANCH_NAME}" "$BRANCH_NAME" > /dev/null 2>&1 || true
 
         echo "" >&2
@@ -250,10 +244,10 @@ steps:
         exit 0
       fi
 
-      # Fetch with retries (tools/workflow_fetch_origin.sh; one plain fetch without it), then resolve
+      # Fetch once (tools/workflow_fetch_origin.sh or the direct fallback), then resolve
       # the base without assuming origin/main: a task worktree never branches off the caller's HEAD (#858).
       if [ -f "$TOOLS_DIR/workflow_fetch_origin.sh" ]; then bash "$TOOLS_DIR/workflow_fetch_origin.sh"
-      else git fetch origin --no-tags >&2 || true; fi
+      else git fetch --atomic origin --no-tags >&2 || exit $?; fi
       resolve_base_ref() {
         local ref
         ref="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
@@ -361,9 +355,9 @@ steps:
         CREATED=true
       fi
 
-      # Push branch to remote with tracking (idempotent). Push failures are
-      # suppressed here and surface at step-16 PR creation, so re-runs converge.
-      git -C "${WORKTREE_PATH}" push origin "${BRANCH_NAME}" > /dev/null 2>&1 || true
+      # Establish tracking when the remote branch already exists. New branches
+      # are first published through the destination-validated publication step.
+      # Publication waits for established requirements and reviewed design.
       git -C "${WORKTREE_PATH}" branch --set-upstream-to="origin/${BRANCH_NAME}" "${BRANCH_NAME}" > /dev/null 2>&1 || true
 
       # Per-branch runtime root and its folders: tools/workflow_runtime_root.sh, else made here (#1808).

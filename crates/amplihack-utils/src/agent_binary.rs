@@ -13,7 +13,7 @@
 //!    and a live marker the caller reports the tmux server's global
 //!    environment holds (a copy of whatever started the server).
 //! 4. Those tmux-server-held values, in that order.
-//! 5. `<cwd-or-ancestor>/.claude/runtime/launcher_context.json` `launcher` field
+//! 5. the checkout's external `launcher_context.json` `launcher` field
 //!    (persisted state, possibly written by a different session).
 //! 6. Built-in default: `"copilot"`.
 //!
@@ -914,7 +914,7 @@ fn untrusted_context_dir(_dir: &Path) -> Option<String> {
     None
 }
 
-/// Walk up from `start` looking for `.claude/runtime/launcher_context.json`.
+/// Walk to the checkout root and read its identity-bound external context.
 ///
 /// Stops at any `.git` directory boundary, at the first world-writable or
 /// foreign-owned directory, or after [`ANCESTOR_WALK_LIMIT`] hops.
@@ -935,51 +935,42 @@ fn untrusted_context_dir(_dir: &Path) -> Option<String> {
 /// any working directory beneath `/tmp`.
 fn lookup_persisted_launcher(start: &Path) -> PersistedLookup {
     let mut lookup = PersistedLookup::default();
-    let Ok(anchor) = start.canonicalize() else {
-        return lookup;
-    };
-    let mut current: PathBuf = anchor;
+    let mut current = start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
     for _ in 0..ANCESTOR_WALK_LIMIT {
-        let runtime_file = current
-            .join(".claude")
-            .join("runtime")
-            .join("launcher_context.json");
-        if let Some(reason) = untrusted_context_dir(&current) {
-            debug!(
-                dir = %current.display(),
-                "stopping launcher_context walk-up at an untrusted directory"
-            );
-            if runtime_file.is_file() {
-                lookup.unusable.push(UnusableContext {
-                    path: runtime_file,
-                    reason,
-                });
-            }
-            return lookup;
-        }
-        // Stop at git boundary (but still inspect this dir on this iteration).
-        if runtime_file.is_file() {
-            match read_launcher_field(&runtime_file, &current) {
-                ContextRead::Usable(name) => {
-                    lookup.found = Some((name, runtime_file));
+        if let Ok(state) = amplihack_git::launcher_state::resolve(&current) {
+            let path = state.directory.join("launcher_context.json");
+            if path.is_file() {
+                if let Some(reason) = untrusted_context_dir(&current) {
+                    lookup.unusable.push(UnusableContext { path, reason });
                     return lookup;
                 }
-                ContextRead::Stale => {}
-                // Keep walking, as before, but keep the evidence: this file
-                // was meant to answer, and something above it may now do so.
-                ContextRead::Unusable(reason) => lookup.unusable.push(UnusableContext {
-                    path: runtime_file,
-                    reason,
-                }),
+                if let Some(reason) = untrusted_context_dir(&state.directory) {
+                    lookup.unusable.push(UnusableContext { path, reason });
+                    return lookup;
+                }
+                if crate::launcher_context::read_bound_document(&current).is_none() {
+                    lookup.unusable.push(UnusableContext {
+                        path,
+                        reason: "has an invalid checkout identity or context".to_owned(),
+                    });
+                    return lookup;
+                }
+                match read_launcher_field(&path, &state.directory) {
+                    ContextRead::Usable(name) => lookup.found = Some((name, path)),
+                    ContextRead::Unusable(reason) => {
+                        lookup.unusable.push(UnusableContext { path, reason })
+                    }
+                    ContextRead::Stale => {}
+                }
+                return lookup;
             }
         }
-        // Don't walk past a .git boundary.
         if current.join(".git").exists() {
             return lookup;
         }
         match current.parent() {
-            Some(parent) if parent != current => current = parent.to_path_buf(),
-            _ => return lookup,
+            Some(parent) => current = parent.to_owned(),
+            None => return lookup,
         }
     }
     lookup
@@ -1043,7 +1034,9 @@ fn read_launcher_field(path: &Path, anchor: &Path) -> ContextRead {
     }
     // serde_json's own messages can quote a string from the input, so only the
     // category and position are reported.
-    let parsed: LauncherContextSnippet = match serde_json::from_str(&body) {
+    let parsed: LauncherContextSnippet = match serde_json::from_str::<serde_json::Value>(&body)
+        .and_then(|value| serde_json::from_value(value.get("context").cloned().unwrap_or(value)))
+    {
         Ok(parsed) => parsed,
         Err(error) if error.is_data() => {
             return ContextRead::Unusable(format!(
@@ -1220,18 +1213,59 @@ mod tests {
     // Trust boundary on the persisted layer.
     // ---------------------------------------------------------------------
 
-    /// A context is only consulted while it is fresh, so the fixture has to
-    /// carry a real timestamp. Writing one without it exercises the
-    /// no-timestamp-is-stale path, not the walk-up these tests are about.
+    struct ContextFixture {
+        checkout: tempfile::TempDir,
+        _state: tempfile::TempDir,
+        _environment: crate::test_support::EnvGuard,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+    impl ContextFixture {
+        fn new() -> Self {
+            let lock = crate::test_support::env_lock()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let state = tempfile::tempdir_in("/var/tmp").unwrap();
+            let environment = crate::test_support::EnvGuard::set([
+                ("AMPLIHACK_HOME", state.path().to_str().unwrap()),
+                ("HOME", state.path().to_str().unwrap()),
+                ("XDG_CONFIG_HOME", state.path().to_str().unwrap()),
+                ("GIT_CONFIG_GLOBAL", "/dev/null"),
+                ("GIT_CONFIG_NOSYSTEM", "1"),
+                ("AMPLIHACK_RUNTIME_DIR", ""),
+            ]);
+            let checkout = tempfile::tempdir_in("/var/tmp").unwrap();
+            assert!(
+                amplihack_git::command_in(checkout.path())
+                    .args(["init", "--quiet", "--template="])
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            Self {
+                checkout,
+                _state: state,
+                _environment: environment,
+                _lock: lock,
+            }
+        }
+        fn path(&self) -> &Path {
+            self.checkout.path()
+        }
+    }
+    fn external_context(dir: &Path) -> PathBuf {
+        amplihack_git::launcher_state::resolve(dir)
+            .unwrap()
+            .directory
+            .join("launcher_context.json")
+    }
     fn write_launcher_context(dir: &Path, launcher: &str) {
-        let runtime = dir.join(".claude").join("runtime");
-        fs::create_dir_all(&runtime).unwrap();
-        let now = chrono::Utc::now().to_rfc3339();
-        fs::write(
-            runtime.join("launcher_context.json"),
-            format!(r#"{{"launcher":"{launcher}","timestamp":"{now}"}}"#),
-        )
-        .unwrap();
+        let kind = match launcher {
+            "claude" => crate::launcher_context::LauncherKind::Claude,
+            "codex" => crate::launcher_context::LauncherKind::Codex,
+            _ => crate::launcher_context::LauncherKind::Copilot,
+        };
+        crate::launcher_context::write_launcher_context(dir, kind, launcher, Default::default())
+            .unwrap();
     }
 
     /// The launcher the persisted layer would answer with from `dir`.
@@ -1247,7 +1281,7 @@ mod tests {
     #[cfg(unix)]
     fn world_writable_ancestor_context_is_ignored() {
         use std::os::unix::fs::PermissionsExt;
-        let shared = tempfile::tempdir().unwrap();
+        let shared = ContextFixture::new();
         fs::set_permissions(shared.path(), fs::Permissions::from_mode(0o1777)).unwrap();
         write_launcher_context(shared.path(), "copilot");
         let work = shared.path().join("work");
@@ -1260,11 +1294,12 @@ mod tests {
             "a context under a world-writable ancestor must not be consulted"
         );
         // It is still named, so the default's notice can say why it lost.
+        let context_path = external_context(shared.path());
         let shared = shared.path().canonicalize().unwrap();
         assert_eq!(
             lookup.unusable,
             vec![UnusableContext {
-                path: shared.join(".claude/runtime/launcher_context.json"),
+                path: context_path,
                 reason: format!(
                     "is under {}, which any user can write to, so it was not read",
                     shared.display()
@@ -1281,18 +1316,19 @@ mod tests {
     #[cfg(unix)]
     fn a_context_in_a_world_writable_start_dir_is_named_not_read() {
         use std::os::unix::fs::PermissionsExt;
-        let repo = tempfile::tempdir().unwrap();
-        fs::create_dir_all(repo.path().join(".git")).unwrap();
+        let repo = ContextFixture::new();
+
         write_launcher_context(repo.path(), "claude");
         fs::set_permissions(repo.path(), fs::Permissions::from_mode(0o777)).unwrap();
 
         let lookup = lookup_persisted_launcher(repo.path());
         assert_eq!(lookup.found, None);
+        let context_path = external_context(repo.path());
         let repo = repo.path().canonicalize().unwrap();
         assert_eq!(
             lookup.unusable,
             vec![UnusableContext {
-                path: repo.join(".claude/runtime/launcher_context.json"),
+                path: context_path,
                 reason: format!(
                     "is under {}, which any user can write to, so it was not read",
                     repo.display()
@@ -1324,7 +1360,7 @@ mod tests {
     #[cfg(unix)]
     fn group_writable_owned_ancestor_is_still_trusted() {
         use std::os::unix::fs::PermissionsExt;
-        let root = tempfile::tempdir().unwrap();
+        let root = ContextFixture::new();
         fs::set_permissions(root.path(), fs::Permissions::from_mode(0o775)).unwrap();
         write_launcher_context(root.path(), "codex");
         let work = root.path().join("repo");
@@ -1630,31 +1666,17 @@ mod tests {
     /// the one reported -- not a fixed relative path that names neither.
     #[test]
     fn the_walk_up_records_a_bad_file_and_names_the_one_that_answered() {
-        let root = tempfile::tempdir().unwrap();
-        fs::create_dir_all(root.path().join(".git")).unwrap();
+        let root = ContextFixture::new();
         write_launcher_context(root.path(), "codex");
         let sub = root.path().join("sub");
         let bad = write_raw_context(&sub, "");
-
         let lookup = lookup_persisted_launcher(&sub);
-        let (name, path) = lookup.found.expect("the ancestor still answers");
+        let (name, path) = lookup.found.expect("the checkout context answers");
         assert_eq!(name, "codex");
-        assert_eq!(
-            path,
-            root.path()
-                .canonicalize()
-                .unwrap()
-                .join(".claude/runtime/launcher_context.json")
-        );
-        assert_eq!(
-            lookup.unusable,
-            vec![UnusableContext {
-                path: sub
-                    .canonicalize()
-                    .unwrap()
-                    .join(".claude/runtime/launcher_context.json"),
-                reason: "is empty".into(),
-            }]
+        assert_eq!(path, external_context(root.path()));
+        assert!(
+            lookup.unusable.is_empty(),
+            "legacy checkout files are not routing inputs"
         );
         assert!(bad.exists());
     }

@@ -64,6 +64,8 @@ fn parse_git_sha1(value: &str) -> Result<String, String> {
 
 #[derive(Subcommand, Debug)]
 pub enum HygieneCommands {
+    /// Bounded workflow operations using established task authority.
+    Workflow(WorkflowArgs),
     /// Conservative local cleanup for stale worktrees, detached Cargo targets, and session artifacts
     Cleanup(HygieneCleanupArgs),
     /// Block generated/runtime artifacts before broad staging, commit, or publication
@@ -71,10 +73,27 @@ pub enum HygieneCommands {
 }
 
 #[derive(Args, Debug, Clone)]
+pub struct WorkflowArgs {
+    #[arg(value_parser = ["prepare", "validate-workspace", "checkpoint", "stage", "publish", "complete-publication", "validate-index"])]
+    pub action: String,
+    #[arg(long, default_value = ".")]
+    pub repo: PathBuf,
+    #[arg(short = 'm', long, default_value = "workflow source checkpoint")]
+    pub message: String,
+    #[arg(long)]
+    pub index: Option<PathBuf>,
+    #[arg(long)]
+    pub authority: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
 #[command(
-    after_help = "Modes: pre-commit and pre-publish scan staged, tracked, untracked, and ignored-present artifact paths. staged scans staged paths only. worktree scans tracked, untracked, and ignored-present paths. exit code 0 = clean, exit code 1 = prohibited artifacts found, exit code 2 = configuration, mode, allowlist, Git, or path error. The guard reports clear remediation and does not delete, move, unstage, or rewrite artifacts. Use a narrow repo-controlled allowlist only for intentional generated artifacts. Provenance: tracked artifacts already committed on the baseline and untouched by the change under review are reported as pre-existing and, in the pre-commit and pre-publish gates, do not block (--preexisting block restores the old behaviour; --mode all always fails closed on them)."
+    after_help = "Modes: pre-commit and pre-publish scan staged, tracked, untracked, and ignored-present artifact paths. staged scans staged paths plus indexed framework runtime and run-worktree gitlinks. worktree scans tracked, untracked, and ignored-present paths. exit code 0 = clean, exit code 1 = prohibited artifacts found, exit code 2 = configuration, mode, allowlist, Git, or path error. The guard reports clear remediation and does not delete, move, unstage, or rewrite artifacts. Use a narrow repo-controlled allowlist only for intentional generated artifacts. Framework runtime and run-worktree gitlinks are always prohibited when indexed. Provenance: other tracked artifacts already committed on the baseline and untouched by the change under review are reported as pre-existing and, in the pre-commit and pre-publish gates, do not block (--preexisting block restores the old behaviour; --mode all always fails closed on them)."
 )]
 pub struct HygieneArtifactGuardArgs {
+    /// Explicit private index in this checkout's Git metadata (pre-publish only).
+    #[arg(long)]
+    pub index: Option<PathBuf>,
     /// Repository worktree to scan.
     #[arg(long)]
     pub repo: Option<PathBuf>,

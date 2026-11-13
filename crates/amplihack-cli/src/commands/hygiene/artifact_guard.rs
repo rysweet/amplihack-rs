@@ -96,7 +96,17 @@ pub fn run(args: HygieneArtifactGuardArgs) -> Result<()> {
         }
     }
 
-    match scan_artifacts(&config) {
+    let inspection = if let Some(path) = args.index {
+        let index = amplihack_git::checkpoint_transaction::ValidatedIndex::open(&repo, &path)
+            .map_err(|error| {
+                eprintln!("Artifact Guard private index refused: {error:#}");
+                command_error::exit_error(2)
+            })?;
+        artifact_guard::scan_validated_index(&config, &index)
+    } else {
+        scan_artifacts(&config)
+    };
+    match inspection {
         Ok(report) => {
             // Pre-existing findings are printed whether or not they block, so a
             // gate that passes still tells the operator the repository is dirty.

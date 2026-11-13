@@ -1,15 +1,13 @@
+---
+title: Artifact Guard
+description: Read-only checks for generated artefacts and the strict staged runtime publication boundary.
+doc_type: reference
+last_updated: 2026-11-12
+---
+
 # Artifact Guard
 
-**Status:** Implemented. The base guard (staged, tracked, and untracked
-scanning across all modes) is implemented, and the issue #928 *ignored-present
-narrowing* documented here — restricting ignored-present scans to the
-`worktree` and `all` modes via `ArtifactGuardMode::scans_ignored_present()` — is
-now in effect. `pre-commit` and `pre-publish` no longer block on ignored-present
-artifacts. See
-[Worked example](#worked-example-cache-leftovers-do-not-block-a-commit-or-publish)
-for the behavior.
-
-Artifact Guard prevents generated, runtime, cache, and build artifacts from
+Artifact Guard prevents generated, runtime, cache, and build artefacts from
 leaking into the parent repository worktree during agent and plugin workflows.
 It is a blocking safety gate for broad staging, pre-commit, and publication
 paths. It reports violations with remediation guidance and never deletes,
@@ -17,7 +15,8 @@ moves, unstages, or rewrites files.
 
 ## Contents
 
-- [Behavior](#behavior)
+- [Behaviour](#behaviour)
+- [Strict runtime publication boundary](#strict-runtime-publication-boundary)
 - [Provenance: this change vs the repository's history](#provenance-this-change-vs-the-repositorys-history)
   - [Baseline selection](#baseline-selection)
   - [Stacked PRs](#stacked-prs)
@@ -32,11 +31,11 @@ moves, unstages, or rewrites files.
 - [Workflow and pre-commit coverage](#workflow-and-pre-commit-coverage)
 - [Output isolation](#output-isolation)
 - [Workflow runtime cleanup preflight](#workflow-runtime-cleanup-preflight)
-- [Intended Rust API](#intended-rust-api)
+- [Rust API](#rust-api)
 - [Fixing violations](#fixing-violations)
 - [Worked example: cache leftovers do not block a commit or publish](#worked-example-cache-leftovers-do-not-block-a-commit-or-publish)
 
-## Behavior
+## Behaviour
 
 Artifact Guard:
 
@@ -45,11 +44,13 @@ Artifact Guard:
    run worktree. See [Run worktrees in the index](#run-worktrees-in-the-index).
 3. Check tracked and untracked paths before broad staging and workflow
    publication.
-4. Check ignored-present artifact paths only in the `worktree` and `all` modes,
+4. Check ignored-present artefact paths only in the `worktree` and `all` modes,
    which are local-hygiene scans. The commit- and publication-gate modes
-   (`pre-commit`, `pre-publish`) never block on ignored-present artifacts.
-5. Separate artifacts the change under review introduced from artifacts the
-   repository already carried, and block the gate modes only on the former. See
+   (`pre-commit`, `pre-publish`) never block on ignored-present artefacts.
+5. Separate artefacts the change under review introduced from artefacts the
+   repository already carried, and block the gate modes only on the former,
+   except for run-worktree gitlinks and the strict runtime
+   publication boundary below. See
    [Provenance](#provenance-this-change-vs-the-repositorys-history).
 6. Fail closed on invalid configuration, invalid paths, Git failures, and unsafe
    allowlist entries.
@@ -58,13 +59,36 @@ Artifact Guard:
    directory holding live worktrees.
 8. Leave the repository unchanged.
 
+## Strict runtime publication boundary
+
+In `pre-publish` mode, every indexed path beneath `.amplihack/` or
+`.claude/runtime/` is prohibited, including unchanged tracked entries. Staged
+differences are also inspected. This covers already tracked files,
+force-staged files, staged deletions and both endpoints of a rename.
+`launcher_context.json`, `sessions.jsonl` and their locks have no exemption.
+The rule runs before allowlists, baseline comparisons and launcher exemptions;
+`--preexisting report` cannot soften it. Source intent cannot soften it either:
+an indexed `.amplihack/config.toml` is prohibited even if it is legitimate source,
+and no exact-path or fixture allowlist can authorise it for publication.
+
+The guard inspects the explicitly validated index without changing it; see
+[Rust API](#rust-api). A
+violation returns `1` and preserves all staged entries, including unrelated
+source blobs. It never silently unstages a prohibited entry to recover.
+Configuration or Git inspection failure returns `2`.
+
+The exclusion catalogue is intentionally narrower than this publication rule:
+legitimate configuration under `.amplihack/` remains visible in Git, but indexed
+paths there still block publication, even when unchanged. See the
+[checkpoint contract](reference/workflow-checkpoint-publication.md#independent-runtime-guard).
+
 ### Ignored-present scope
 
-An *ignored-present* artifact is a path that exists in the worktree, is
+An *ignored-present* artefact is a path that exists in the worktree, is
 untracked, and is excluded by `.gitignore` (for example an untracked
-`.pytest_cache/` or `node_modules/` directory). Because Git will never stage,
-commit, or publish an ignored path, such a path cannot leak through a commit or
-a publication step. The guard therefore treats ignored-present artifacts as a
+`.pytest_cache/` or `node_modules/` directory). Ordinary non-forced Git staging
+skips an ignored, untracked path. Once tracked or force-staged, that path is
+checked as index content. The guard treats ignored-present artefacts as a
 **local-hygiene** concern, not a **commit/publish-gate** concern:
 
 | Mode | Purpose | Scans ignored-present? |
@@ -76,9 +100,11 @@ a publication step. The guard therefore treats ignored-present artifacts as a
 | `all` | Manual full safety scan | Yes |
 
 This is a deliberate fail-*open* narrowing for a class of paths that are outside
-the guard's threat model. Anything that could actually be committed or published
-— staged, tracked, or untracked-but-not-ignored paths — is still blocked
-fail-closed in every gate mode. In particular, an untracked cache directory that
+the guard's threat model. Paths that match a prohibited rule in the scanned
+sources are subject to that mode's provenance and exemption policies. This is not a blanket block on
+every committable path. The strict runtime rule overrides those
+policies in `pre-publish`, including launcher-file exemptions.
+An untracked cache directory that
 is **not** covered by `.gitignore` is still a violation under `pre-commit` and
 `pre-publish`, because it could be swept into a `git add -A`.
 
@@ -88,7 +114,7 @@ Before this narrowing, a gitignored, untracked `.pytest_cache/` or
 to fail closed at the end of a workflow, even though those directories could
 never be committed or published. See issue #928.
 
-`.gitignore` reduces Git noise, and it is not a general authorization mechanism:
+`.gitignore` reduces Git noise, and it is not a general authorisation mechanism:
 the `worktree` and `all` modes still report ignored-present dependency trees,
 runtime directories, or cache directories so you can clean up local
 parent-worktree pollution. The commit and publication gates simply do not treat
@@ -213,7 +239,7 @@ tracked files was already a separate open pull request, moving them was the same
 edit by another name, and "a narrow reviewed allowlist entry" is not 668 lines.
 The run then hit the same wall four more times.
 
-A pre-existing tracked artifact is *already on the baseline*. No commit or
+A pre-existing tracked artefact is *already on the baseline*. No commit or
 publish gate can keep it out of anything, because it is not in the change's
 diff. Blocking there protects nothing and discards the verified work standing in
 front of it. This is the same reasoning that narrowed the gates away from
@@ -241,15 +267,15 @@ amplihack hygiene artifact-guard \
 | `--mode <mode>` | Scan mode: `pre-commit`, `pre-publish`, `all`, `staged`, or `worktree`. | `pre-commit` |
 | `--allowlist <path>` | Optional allowlist file. Relative paths resolve from the repository root. | `.amplihack-artifact-allowlist` when present |
 | `--baseline <rev>` | Revision the change under review is measured against for provenance. Env: `AMPLIHACK_ARTIFACT_GUARD_BASELINE`. | first resolvable of `origin/HEAD`, `origin/main`, `origin/master`, `main`, `master`, `@{upstream}` ([Baseline selection](#baseline-selection)) |
-| `--preexisting <policy>` | What the gate modes do about pre-existing artifacts: `report` (print in full, do not block) or `block`. Ignored by the audit modes, which always fail closed. Env: `AMPLIHACK_ARTIFACT_GUARD_PREEXISTING`. | `report` |
+| `--preexisting <policy>` | What the gate modes do about pre-existing artefacts: `report` (print in full, do not block) or `block`. Ignored by the audit modes, which always fail closed. Env: `AMPLIHACK_ARTIFACT_GUARD_PREEXISTING`. | `report` |
 
 | Mode | Sources checked | Typical use |
 | --- | --- | --- |
 | `pre-commit` | Staged, tracked, and untracked (committable candidates) | Local pre-commit hook |
 | `pre-publish` | Staged, tracked, and untracked (committable candidates) | Workflow broad-staging and PR/finalize gates |
-| `all` | Staged, tracked, untracked, and ignored-present artifact candidates | Manual full safety scan |
+| `all` | Staged, tracked, untracked, and ignored-present artefact candidates | Manual full safety scan |
 | `staged` | Staged paths only | Diagnose why a commit is blocked |
-| `worktree` | Tracked, untracked, and ignored-present artifact candidates | Check local leftovers before cleanup or staging |
+| `worktree` | Tracked, untracked, and ignored-present artefact candidates | Check local leftovers before cleanup or staging |
 
 `pre-commit` and `pre-publish` are commit/publish gates. They only scan paths
 that could actually reach a commit or publication (staged, tracked, and
@@ -263,8 +289,8 @@ Exit codes:
 
 | Code | Meaning |
 | --- | --- |
-| `0` | No blocking prohibited artifacts were found (a pre-existing condition may still have been reported) |
-| `1` | Blocking prohibited artifacts were found |
+| `0` | No blocking prohibited artefacts were found (a pre-existing condition may still have been reported) |
+| `1` | Blocking prohibited artefacts were found |
 | `2` | The guard could not complete because configuration, paths, mode, allowlist, or Git state was invalid, or because `git worktree list` failed or printed records the guard cannot trust. Nothing but the error and a hint line is printed. |
 
 Violation output (this example is from a `--mode all` scan, which is the only
@@ -323,14 +349,16 @@ Fix the repository path, Git state, mode, allowlist, or baseline and rerun the g
 
 ## Default prohibited rules
 
-Artifact Guard rejects these paths by default when they appear in the parent
-repository worktree:
+The table covers artefact rules and the strict runtime
+publication boundary. Each rule is subject to its scan mode, provenance and
+allowed exemptions unless stated otherwise:
 
-| Rule | Examples | Ignored-present behavior |
+| Rule | Examples | Ignored-present behaviour |
 | --- | --- | --- |
 | Dependency trees | `node_modules/`, `packages/*/node_modules/` | Blocked in `worktree`/`all` only |
 | Plugin bundles | `dist/plugin.js`, `*/dist/plugin.js` | Blocked in `worktree`/`all` only |
-| Claude runtime | `.claude/runtime/` | Exempt as untracked/ignored-present; blocked only when **staged or tracked** (except the launcher-owned files — see below) |
+| Amplihack runtime publication boundary | `.amplihack/`, `.claude/runtime/` | Every indexed path and staged change is blocked in `pre-publish`, before exemptions and allowlists. |
+| Claude runtime | `.claude/runtime/` | The strict `pre-publish` boundary overrides launcher-file, baseline and allowlist exemptions for indexed paths and staged differences. |
 | Nested worktrees | `worktrees/` | Blocked in `worktree`/`all` only |
 | Run worktree gitlinks (`run-worktree-gitlink`) | A gitlink under `worktrees/`, or at the path of a registered worktree such as `wt/review` | Not applicable: the rule reads the index. Blocks in every mode and cannot be allowlisted. See [Run worktrees in the index](#run-worktrees-in-the-index). |
 | Cache directories | `.cache/`, `.npm/`, `.pnpm-store/`, `.yarn/cache/`, `.turbo/`, `.parcel-cache/`, `.pytest_cache/` | Blocked in `worktree`/`all` only |
@@ -338,16 +366,19 @@ repository worktree:
 | Rust build output | `target/` | Blocked only when staged, tracked, or untracked |
 | Generated indexes and logs | `index.scip`, generated runtime logs, generated output directories | Blocked in `worktree`/`all` only |
 
-The **Ignored-present behavior** column describes what happens when a prohibited
+The **Ignored-present behaviour** column describes what happens when a prohibited
 path exists in the worktree but is untracked and gitignored. These paths are
 only blocked in the local-hygiene modes (`worktree`, `all`). In the commit and
 publication gates (`pre-commit`, `pre-publish`), the same path is not blocked as
-ignored-present, because it cannot be committed or published. Every rule still
-blocks fail-closed in **all** modes when the path is staged, tracked, or
-untracked-but-not-ignored.
+ignored-present, because ordinary staging skips it. Other sources are checked
+only in modes that scan them, subject to provenance, manifest and allowlist
+policies. Two rules have stronger contracts:
+run-worktree gitlinks block in every mode without allowlisting, and the strict
+runtime publication boundary blocks every indexed path and staged change in
+`pre-publish`, regardless of provenance, source intent or allowlisting.
 
-Rules match normalized repo-relative paths using `/` separators. The guard does
-not need to read artifact file contents; path-level scanning is the intended
+Rules match normalised repo-relative paths using `/` separators. The guard does
+not need to read artefact file contents; path-level scanning is the intended
 contract.
 
 ### Generic output segments and source manifests
@@ -413,59 +444,31 @@ tracked output does less harm than telling an agent to delete a real
 application. Allowlist and manifest changes both show up in review, so watch
 for a new `dist/package.json` the same way you watch allowlist edits.
 
-### Built-in `.claude/runtime/` exemption
+### Runtime placement and legacy exemptions
 
-The amplihack launcher and session tracker write bookkeeping into
-`<repo>/.claude/runtime/` as a normal part of launching and running an agent:
-launcher context, the session log, locks, and power-steering state can land
-here while a recipe runs. This subtree is `.gitignore`d, tool-generated runtime
-state. The `amplihack-hooks` binary no longer writes its tool metrics,
-transcripts or session state here; they go to `runtime/` under the hook state
-root, which is `$AMPLIHACK_HOME` when that is an absolute path with no `..`
-component and not a Git checkout, and `$HOME/.amplihack` otherwise (see
-[Hook State Root Reference](reference/hook-state-root.md)). Files left at the
-old locations by earlier versions, such as
-`.claude/runtime/metrics/post_tool_use_metrics.jsonl`, are still covered by
-this exemption.
+Launcher context, session records and their locks
+use [external identity-bound state](reference/workflow-runtime-artifacts.md#launcher-identity-and-readers).
+Remaining owned checkout-local runtime receives common-Git exclusions before
+its first write. Neither mechanism relies on the target's `.gitignore`.
 
-The guard exempts the whole `.claude/runtime/` subtree **when it appears as
-untracked or ignored-present output** — the form this unavoidable runtime state
-always takes. This holds in every mode, including the fail-closed `pre-commit`
-and `pre-publish` gates:
-
-| Path | Untracked / ignored-present | Staged or tracked |
-| --- | --- | --- |
-| `.claude/runtime/` (whole subtree) | Exempt | Blocked as `claude-runtime` |
-| `.claude/runtime/launcher_context.json` | Exempt | Exempt (launcher-owned) |
-| `.claude/runtime/sessions.jsonl` | Exempt | Exempt (launcher-owned) |
-
-Deliberately committing runtime state into the published tree (a *staged* or
-*tracked* `.claude/runtime/` path) is genuine pollution and is still blocked —
-except the two launcher-owned bookkeeping files, which are exempt in all git
-sources because the launcher itself may stage them.
-
-These are built-in implicit exemptions, not `.amplihack-artifact-allowlist`
-entries (and `.claude/runtime` cannot be broadly allowlisted anyway — it is a
-root-prohibited exemption). Because the untracked/ignored exemption lives in
-`rule_for_path`, it also removes that runtime output from the `worktree`/`all`
-audit modes; that is intentional, since always-present regenerated runtime state
-is not actionable pollution.
-
-Before this exemption, files under
-`.claude/runtime/` (originally the launcher's own `launcher_context.json`, and
-later the metrics file that the PostToolUse hook appended to on every tool call
-before #1963 moved it to the hook state root) failed the
-end-of-run `pre-publish` guard, which left `recipe-runner-rs` and its child
-agents hung after the work was already committed and pushed (issue #807).
+No launcher-owned filename, baseline or allowlist overrides the strict
+`pre-publish` boundary. Other modes retain their own scanning rules.
 
 ## Remediation policy
+
+For the strict runtime publication rule, source intent never permits an
+allowlist exception. Review exact staged paths and resolve the conflict
+explicitly, preserving unrelated entries. The guard never silently unstages
+anything. A runtime-root path that may be source receives no deletion advice;
+it still blocks `pre-publish`. The possibly-source allowlist guidance below
+applies only to ordinary allowlist-eligible artefact rules outside that boundary.
 
 Agents run the commands the guard prints. The guard therefore prints a removal
 command only for a path that is certainly generated. It never prints one for a
 path that might be source.
 
-Every violation has a **removal root**. This is the narrowest path that is
-entirely generated, or *none* when the guard cannot be sure:
+Every ordinary artefact violation has a **removal root**: the narrowest path
+that is entirely generated, or *none* when the guard cannot be sure:
 
 | Rule and match | Removal root |
 | --- | --- |
@@ -488,7 +491,8 @@ a `/`. It is never a parent of the matched segment. For example, a new
 `git rm -r --cached -- 'apps/coverage/node_modules'`
 and never `-- 'apps/coverage'`.
 
-When the removal root is *none*, neither report prints `git rm -r --cached`,
+For ordinary allowlist-eligible rules, when the removal root is *none*, neither
+report prints `git rm -r --cached`,
 `git rm --cached`, `rm -rf`, or the `.gitignore && git commit` cleanup chain.
 The report says the path may be source and points it at review and the
 allowlist:
@@ -511,7 +515,7 @@ The wording above is illustrative. The parts that stay fixed are the
 
 The closing `First violation detail` line follows the same split. For a
 violation with a removal root it prints the rule's generic remediation, which
-begins "remove the artifact from the parent worktree". For a violation without
+begins "remove the artefact from the parent worktree". For a violation without
 one it prints the review sentence shown above instead, so the last line of the
 report never tells the reader to delete a path the report has just called
 possibly source.
@@ -535,7 +539,7 @@ line and no removal command.
 
 The guard also checks every suggestion against the parser's own rules, so it
 never suggests an entry the parser would refuse. A tracked file that is itself
-a root artifact name, such as a `build` script or a `logs` file, cannot be
+a root artefact name, such as a `build` script or a `logs` file, cannot be
 allowlisted. The report says so and tells you to rename or remove it instead.
 A path reported by more than one source (for example both staged and tracked)
 is listed once.
@@ -814,7 +818,7 @@ First violation detail:
 - The gitlink bullet is printed only when at least one blocking violation is a
   `run-worktree-gitlink`. The general bullets are printed only when at least
   one blocking violation is something else.
-- Each gitlink gets its own command line, never grouped under an artifact
+- Each gitlink gets its own command line, never grouped under an artefact
   root such as `worktrees`.
 
 Run the printed line from the checkout the guard scanned. It removes the entry
@@ -964,8 +968,9 @@ no hint line.
 
 The default allowlist path is `.amplihack-artifact-allowlist`. This file is
 repo-controlled configuration and should be reviewed like a security-sensitive
-change because it can permit generated artifacts that the guard would otherwise
-block.
+change because it can permit generated artefacts that the guard would otherwise
+block. No entry can exempt the strict runtime boundary in
+`pre-publish`, including legitimate source under `.amplihack/`.
 
 Format:
 
@@ -989,7 +994,7 @@ Matching semantics:
 | `*`, `?` | Supported within a path segment |
 | `**` | Supported across path segments |
 | Directory entries | Must use an explicit suffix such as `tests/fixtures/output/**`; a bare directory does not imply recursive matching |
-| Duplicates | Duplicate entries are allowed but normalized to one effective rule |
+| Duplicates | Duplicate entries are allowed but normalised to one effective rule |
 | Comments | Lines beginning with `#` after optional whitespace are ignored |
 
 Valid entries are narrow and intentional:
@@ -1021,49 +1026,31 @@ Directory allowlists are accepted only for narrow fixture or example paths. They
 must not exempt a default prohibited directory directly at the repository root or
 across the whole repository.
 
-No entry applies to the `run-worktree-gitlink` rule. See
+No entry applies to the `run-worktree-gitlink` rule or to the strict
+runtime publication boundary. See
 [Nothing softens the rule](#nothing-softens-the-rule).
 
 ## Workflow and pre-commit coverage
 
-Artifact Guard runs before and after every broad staging operation in the
-bundled recipes, not just publish and finalize. A guard before `git add -A`
-cannot see a run-worktree gitlink that the add itself creates, so every commit
-block runs guard, `git add -A`, guard, commit (issue #1528). The guarded recipe
-set is every recipe that invokes `git add -A`:
+Default, consensus and autodrive agent steps explicitly disable automatic
+staging with `auto_stage: false`. This includes review step `02` and concern-fix
+step `04` in `autodrive-crusty-round`. Checkpoint, hook-repair, feedback,
+publication and cleanup adapters stage explicit authorised source candidates;
+they do not collect changes with `git add -A` or blanket `git add -u`.
 
-| Recipe | Guard placement |
-| --- | --- |
-| `workflow-finalize.yaml` | Before and after final broad staging in `step-20b-push-cleanup`, which runs only at the top of the linked task worktree and skips with a warning otherwise. See [Workflow Runtime Artifacts: lifecycle integration](reference/workflow-runtime-artifacts.md#lifecycle-integration). |
-| `workflow-publish.yaml` | Before and after publication staging, and before and after broad staging in the outside-in fix loop (one chained line ending in `\|\| { …; exit 1; }`) |
-| `workflow-refactor-review.yaml` | Before and after broad staging |
-| `workflow-tdd.yaml` | Before and after broad staging |
-| `workflow-pr-review.yaml` | Before and after broad staging |
-| `consensus-publish.yaml` | Before and after broad staging |
-| `consensus-pr-feedback.yaml` | Before and after broad staging |
-| `autodrive-crusty-round.yaml` | Before and after `git add -A` in the `step-04` commit block, which runs only inside the pull request's worktree. See [Auto Drive To Merge: the round commit block](reference/auto-drive-to-merge.md#the-round-commit-block). |
-| `autodrive-merge-round.yaml` | Same as `autodrive-crusty-round.yaml` |
+The guard checks the selected index before committing. Bounded checkpoint
+transactions also validate after the last index-mutating hook and before commit
+creation. An earlier guard pass cannot authorise content added by a later hook.
+Normal hooks remain enabled. The
+[checkpoint and publication reference](reference/workflow-checkpoint-publication.md)
+defines exact staged-entry preservation and outgoing-history checks.
+Those intended workflow contracts remain subject to the documented
+[implementation gaps](reference/workflow-checkpoint-publication.md#implementation-gaps).
 
-In bash steps, which run under `set -e`, the post-add guard shares the add
-line: `git add -A; amplihack hygiene artifact-guard --repo . --mode pre-publish`.
-Both guards use the same `--mode`. No bundled recipe or tool force-adds
-(`git add -f`), since a forced add is how an ignored run worktree becomes a
-gitlink.
-
-Future recipe changes must preserve the rule: any new `git add -A` or equivalent
-broad-staging step that commits needs an Artifact Guard gate immediately before
-it and again between it and the commit, and each gate must be able to stop the
-step.
-
-Before those gates run, bundled workflows also run the narrow workflow runtime
-preflight documented in [Workflow Runtime Artifacts Reference](reference/workflow-runtime-artifacts.md).
-That preflight removes only known workflow-owned `.claude/runtime` and
-root-level `worktrees/` leftovers from the active task worktree. In
-amplihack-managed task worktrees, root-level `worktrees/` is reserved for
-workflow-owned nested scratch worktrees; tracked source under that path is a
-repository layout conflict and must fail closed rather than be deleted.
-Artifact Guard itself remains non-mutating and still fails on every unexpected
-artifact.
+Finalisation commits run only in the verified linked task worktree. A missing or
+unsuitable task worktree produces a visible skip; these steps never fall back
+to staging or committing in the launch checkout. Runtime preparation occurs
+before the first write, independently of cleanup and guard placement.
 
 The checked-in pre-commit hook scans the repository's committable state —
 staged, tracked, and untracked-but-not-ignored paths. It does not block on
@@ -1076,14 +1063,14 @@ the hook contract:
   hooks:
     - id: artifact-guard
       name: amplihack artifact guard
-      entry: bash -c 'CARGO_TARGET_DIR="${TMPDIR:-/tmp}/amplihack-precommit-target" cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit'
+      entry: scripts/git-hook-cargo.sh cargo run --locked --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit
       language: system
       pass_filenames: false
       always_run: true
 ```
 
 `pass_filenames: false` is required. Git normally passes only staged filenames to
-pre-commit hooks, which would miss untracked artifact leftovers that a later
+pre-commit hooks, which would miss untracked artefact leftovers that a later
 `git add -A` could sweep into the commit. Artifact Guard must inspect repository
 state itself.
 
@@ -1096,8 +1083,7 @@ pre-commit run artifact-guard --all-files
 Or run the same guard command directly from a source checkout:
 
 ```bash
-CARGO_TARGET_DIR="${TMPDIR:-/tmp}/amplihack-precommit-target" \
-  cargo run --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit
+scripts/git-hook-cargo.sh cargo run --locked --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit
 ```
 
 Contract tests parse the hook entry as shell tokens so legal Cargo option
@@ -1130,162 +1116,60 @@ tags the current cache with `CACHEDIR.TAG` (issue #1771).
 
 The preferred fix for a violation is output isolation, not allowlisting.
 Allowlisting is only for intentional checked-in fixtures or reviewed generated
-artifacts.
+artefacts.
 
-These locations are intentionally not prohibited by default:
+Launcher state and run output use private external state. Remaining owned
+checkout-local graph, index, cache and lock data receives root-anchored
+exclusions in the common Git `info/exclude` before writing. Paths beneath
+`.amplihack/` are not a publication escape hatch: every indexed path or staged change there is
+rejected by `pre-publish`.
 
-```text
-<repo>/.amplihack/runtime/
-<repo>/.amplihack/cache/
-<repo>/.amplihack/generated/
-<git-common-dir>/.claude/runtime/
-/tmp/amplihack-<purpose>-<id>/
-```
-
-Use `CARGO_TARGET_DIR` for workflow-owned Rust builds that need to avoid the
-repo-local `target/` directory:
-
-```bash
-CARGO_TARGET_DIR=.amplihack/cache/cargo-target cargo test --workspace
-```
-
-Avoid writing generated output directly to:
-
-```text
-<repo>/node_modules/
-<repo>/dist/plugin.js
-<repo>/worktrees/
-<repo>/build/
-```
+For workflow-owned Rust builds, choose an external `CARGO_TARGET_DIR`, as
+described in [Developing amplihack](DEVELOPING_AMPLIHACK.md).
 
 ## Workflow runtime cleanup preflight
 
-`default-workflow` and recovery flows use external runtime roots for generated
-agent state, provenance, logs, metrics, and reflection output. The runtime root
-contract is documented in [Workflow Runtime Isolation](features/workflow-runtime-isolation.md).
+The [runtime reference](reference/workflow-runtime-artifacts.md) defines
+first-write preparation and narrow cleanup. Cleanup preserves tracked source,
+protected staged entries and other runs' live worktrees. It cannot authorise
+staging or turn a prohibited pre-existing staged entry into a successful
+checkpoint. The guard itself never deletes or rewrites anything.
 
-As defense-in-depth, workflow lifecycle steps run
-`preflight_known_workflow_runtime_artifacts "$worktree"` before checkpoint,
-broad staging, publish, pre-commit-related staging, and finalization/status
-gates. The preflight is intentionally narrower than Artifact Guard:
+## Rust API
 
-| Path | Preflight behavior | Artifact Guard behavior if still present |
-| --- | --- | --- |
-| `.claude/runtime` | Remove when it is exactly under the active task worktree. | Exempt when untracked/ignored; blocked as `claude-runtime` only if staged or tracked. |
-| `worktrees/` | Remove when it is exactly under the active task worktree and not tracked source. Keep it, with a warning, while it holds a registered worktree or when `git worktree list` fails (issue #1528). | Block as `nested-worktree`; a gitlink blocks as `run-worktree-gitlink`. |
-| `.claude/settings.json` | Preserve. | Not blocked by the runtime rule. |
-| Unrelated untracked files | Preserve. | Block when they match prohibited artifact rules or dirty-worktree gates. |
-
-The preflight is not an allowlist. It is a cleanup step for workflow-owned
-runtime paths that should have been isolated outside the worktree. If cleanup
-fails or the paths remain afterward, the lifecycle gate fails visibly.
-
-## Intended Rust API
-
-The guard core should live in `amplihack_utils::artifact_guard` so CLI commands,
-recipes, and tests share one implementation. This is the intended public shape;
-implementation may rename fields only if this document is updated in the same
-change.
+The guard core lives in `amplihack_utils::artifact_guard`. Its
+configuration uses `ArtifactGuardConfig::new(&Path)` and builders
+`with_mode`, `with_allowlist`, `with_baseline` and `with_preexisting_policy`.
+The scan entry point is:
 
 ```rust
-pub struct ArtifactGuardConfig {
-    pub repo_path: PathBuf,
-    pub mode: ArtifactGuardMode,
-    pub allowlist_path: Option<PathBuf>,
-}
-
-pub enum ArtifactGuardMode {
-    All,
-    Staged,
-    Worktree,
-    PreCommit,
-    PrePublish,
-}
-
-impl ArtifactGuardMode {
-    /// Whether this mode scans staged (indexed) paths.
-    fn scans_staged(self) -> bool;
-
-    /// Whether this mode scans tracked and untracked worktree paths.
-    fn scans_worktree(self) -> bool;
-
-    /// Whether this mode scans ignored-present artifacts (gitignored,
-    /// untracked paths that exist in the worktree).
-    ///
-    /// Returns `true` only for the local-hygiene modes `All` and `Worktree`.
-    /// The commit/publish gates `PreCommit`, `PrePublish`, and `Staged` return
-    /// `false`, because a gitignored path can never be committed or published
-    /// and is outside the guard's threat model for those gates.
-    ///
-    /// Concretely: `matches!(self, Self::All | Self::Worktree)`.
-    fn scans_ignored_present(self) -> bool;
-}
-
-/// Rule id for a gitlink that records a run worktree (issue #1528).
-pub const RUN_WORKTREE_GITLINK: &str = "run-worktree-gitlink";
-
-pub enum ArtifactSource {
-    Staged,
-    Tracked,
-    Untracked,
-    IgnoredPresent,
-}
-
-pub enum ArtifactProvenance {
-    /// The change under review staged, committed, or left this path.
-    Introduced,
-    /// Committed on the baseline and untouched by the change under review.
-    PreExisting,
-}
-
-pub struct ArtifactViolation {
-    pub path: String,
-    pub source: ArtifactSource,
-    pub rule_id: String,
-    pub message: String,
-    pub provenance: ArtifactProvenance,
-    /// Narrowest repo-relative path that is wholly generated. `None` means
-    /// the path may be source and the guard never suggests removing it.
-    /// See "Remediation policy".
-    pub removal_root: Option<String>,
-}
-
-pub struct ArtifactGuardReport {
-    pub repo_root: PathBuf,
-    pub mode: ArtifactGuardMode,
-    pub violations: Vec<ArtifactViolation>,
-    pub baseline: Option<ArtifactBaseline>,
-    pub preexisting_policy: PreExistingPolicy,
-    /// Repo-relative paths of the worktrees `git worktree list --porcelain`
-    /// registers inside the scanned top level, prunable ones included.
-    /// Sorted and de-duplicated; the top level itself and worktrees outside
-    /// it are left out. Filled in every mode.
-    pub registered_worktrees: Vec<String>,
-}
-
-impl ArtifactGuardReport {
-    /// Violations that must fail the caller (exit 1).
-    fn blocking_violations(&self) -> Vec<&ArtifactViolation>;
-    /// Pre-existing violations reported without failing a gate mode.
-    fn advisory_violations(&self) -> Vec<&ArtifactViolation>;
-    fn blocks(&self) -> bool;
-}
-
-pub fn run_artifact_guard(
-    config: ArtifactGuardConfig,
+pub fn scan_artifacts(
+    config: &ArtifactGuardConfig,
 ) -> Result<ArtifactGuardReport, ArtifactGuardError>;
 ```
 
-`run_artifact_guard` resolves the repository root, validates the allowlist,
-collects candidate paths from Git, applies prohibited rules, applies allowlist
-exceptions, and returns a structured report. It must not mutate the repository.
+This is a signature reference, not an executable example. The source of truth
+is [artifact_guard.rs](../crates/amplihack-utils/src/artifact_guard.rs).
+
+Internal checkpoint integration accepts an opaque validated checkout/index
+selection. The selection binds the canonical checkout and deliberately chosen
+index; all Git reads use that same index with inherited repository, index,
+configuration and history redirection sanitised. CLI calls validate the real
+checkout index. Private checkpoint calls validate their private index, including
+after relevant hook mutations and before commit creation.
+
+Inherited `GIT_INDEX_FILE` and arbitrary caller-supplied paths do not establish
+private-index authority. Strict runtime rejection precedes baseline, launcher
+and allowlist exemptions without mutating either index. Automatic commits refuse
+to proceed if they cannot establish this boundary. See the
+[checkpoint transaction contract](reference/workflow-checkpoint-publication.md#checkpoint-transactions).
 
 Errors are fail-closed:
 
 | Error class | Examples |
 | --- | --- |
 | Repository errors | `--repo` is not a Git worktree, Git command fails |
-| Path errors | Path escapes repo root, path cannot be normalized |
+| Path errors | Path escapes repo root, path cannot be normalised |
 | Mode errors | Unknown CLI mode |
 | Allowlist errors | Unreadable file, absolute path, parent traversal, broad exemption |
 | Worktree list errors | `git worktree list --porcelain` prints untrustworthy records, in any mode: `ArtifactGuardError::WorktreeList(String)`, displayed as `artifact guard could not list worktrees: <payload>`, where the payload is one of three fixed strings. A failing Git command is a repository error. No partial report is returned. |
@@ -1299,7 +1183,7 @@ amplihack hygiene artifact-guard --repo . --mode staged
 git restore --staged dist/plugin.js
 ```
 
-Then move the build output to an isolated location or remove the local artifact
+Then move the build output to an isolated location or remove the local artefact
 if it is not needed.
 
 For a `run-worktree-gitlink` refusal, never delete the path: drop the entry from
@@ -1315,7 +1199,7 @@ Use `--mode all` (or `--mode worktree`) to surface ignored-present leftovers.
 The `pre-commit` and `pre-publish` gates deliberately do not report them,
 because gitignored, untracked paths cannot be committed or published. If the
 guard reports `node_modules/`, `.pytest_cache/`, `.cache/`, or another
-ignored-present artifact under those hygiene modes, relocate or remove the local
+ignored-present artefact under those hygiene modes, relocate or remove the local
 output. Do not treat `.gitignore` as approval to keep parent-worktree pollution
 — clean it up locally even though it will not block a commit or a publish.
 
@@ -1334,8 +1218,11 @@ Do not widen the allowlist to cover it. A directory-wide entry such as
 [Allowlist configuration](#allowlist-configuration)); provenance, not a broad
 exemption, is what keeps the pre-existing tree from stopping unrelated work.
 
-For a path reported as possibly source, decide whether it is source or output.
-If it is source, commit the allowlist entry the report suggests:
+For an ordinary allowlist-eligible violation outside the strict runtime
+publication boundary, decide whether the path is source or output. If it is
+source, commit the allowlist entry the report suggests. This cannot authorise
+any staged `.amplihack/` or `.claude/runtime/` change in the
+`pre-publish` contract:
 
 ```bash
 printf 'build/notes.md\n' >> .amplihack-artifact-allowlist
@@ -1348,7 +1235,7 @@ untrack it as a side effect of unrelated work.
 If the report says the path needs manual review, it has no literal allowlist
 form (for example `build/a*b.txt`). Rename it, or remove it in a reviewed
 change. A glob entry would also allowlist other paths. If it says the path
-cannot be allowlisted, the path is a root artifact name such as `build`, which
+cannot be allowlisted, the path is a root artefact name such as `build`, which
 the parser refuses. Rename it or remove it in a reviewed change.
 
 For an intentional fixture, add the narrowest allowlist entry that preserves the
@@ -1359,7 +1246,7 @@ tests/fixtures/plugin-output/dist/plugin.js
 ```
 
 Commit the allowlist change with the fixture. Reviewers should confirm the
-artifact is necessary, deterministic, and safe to keep in the repository.
+artefact is necessary, deterministic, and safe to keep in the repository.
 
 ## Worked example: cache leftovers do not block a commit or publish
 
@@ -1407,7 +1294,9 @@ git rm -r --cached --ignore-unmatch . >/dev/null 2>&1 || true
 amplihack hygiene artifact-guard --repo . --mode pre-publish  # exit 1
 ```
 
-Likewise, staging or tracking a prohibited artifact blocks every gate mode:
+Likewise, staging or tracking a newly introduced artefact such as
+`dist/plugin.js`, without a qualifying manifest or allowlist exemption, blocks
+the commit and publication gates:
 
 ```bash
 git add -f dist/plugin.js
@@ -1419,8 +1308,8 @@ amplihack hygiene artifact-guard --repo . --mode pre-publish  # exit 1
 | --- | --- | --- |
 | Gitignored, untracked `.pytest_cache/`, `node_modules/` | Pass (exit 0) | Flag (exit 1) |
 | Untracked cache dir **not** in `.gitignore` | Flag (exit 1) | Flag (exit 1) |
-| Staged or tracked artifact this change introduced | Flag (exit 1) | Flag (exit 1) |
-| Tracked artifact committed on the baseline, untouched here | Report, pass (exit 0) | Flag (exit 1) |
+| Staged or tracked artefact this change introduced | Flag (exit 1) | Flag (exit 1) |
+| Tracked artefact committed on the baseline, untouched here | Report, pass (exit 0) | Flag (exit 1) |
 
 ## Worked example: a pre-existing tracked tree does not stop unrelated work
 
@@ -1437,7 +1326,7 @@ amplihack hygiene artifact-guard --repo . --mode pre-publish   # exit 0
 The gate prints all 668 pre-existing paths, grouped under `node_modules/`, with
 the baseline they were measured against and a way forward — and passes, because
 the tracked tree is already on `origin/main` and cannot enter this change's
-diff. The moment the change adds an artifact of its own, the gate refuses:
+diff. The moment the change adds an artefact of its own, the gate refuses:
 
 ```bash
 git add -f dist/plugin.js && git commit -m 'oops'
@@ -1463,7 +1352,7 @@ Review these changes carefully:
 2. Changes to prohibited rules, and new source manifests (`package.json`,
    `Cargo.toml`, `tsconfig.json`, `pyproject.toml`, `go.mod`) placed directly
    inside a `dist`, `build`, `coverage`, `out`, `logs`, or `outputs` directory.
-3. Recipe edits around `git add -A`, publication, finalization, or PR creation.
+3. Recipe edits around `git add -A`, publication, finalisation, or PR creation.
 4. Pre-commit changes that remove `pass_filenames: false`.
 5. Build, plugin, or runtime changes that redirect outputs into the parent
    worktree.

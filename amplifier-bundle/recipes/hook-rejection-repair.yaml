@@ -41,6 +41,7 @@ context:
 steps:
   - id: "fix-hook-rejection"
     agent: "amplihack:pre-commit-diagnostic"
+    auto_stage: false
     working_dir: "{{hook_repair_worktree}}"
     prompt: |
       # Fix the cause of a rejected git hook

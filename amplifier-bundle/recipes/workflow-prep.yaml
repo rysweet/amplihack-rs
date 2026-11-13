@@ -55,6 +55,7 @@ steps:
     recovery: {"replay": "rebind"}
     type: "bash"
     command: |
+      set -euo pipefail
       # Fail closed: a failed `cd` must NOT fall through to the auto-init path
       # (issue #900), or `git init` would run in the recipe runner's actual cwd
       # instead of $REPO_PATH.
@@ -63,44 +64,14 @@ steps:
       echo ""
       echo "Current directory: $(pwd)"
       echo ""
-      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        # Non-git workspace. By default (AUTO_INIT_REPO != "false") we initialize
-        # a fresh repository so repo-creation tasks can proceed. Set
-        # AUTO_INIT_REPO="false" to restore the strict hard-fail behavior for
-        # locked-down/CI contexts (fail-closed opt-out).
-        if [ "${AUTO_INIT_REPO:-true}" = "false" ]; then
-          echo "ERROR: step-01-prepare-workspace requires a git repo at $(pwd) and AUTO_INIT_REPO=false; either \`git init\` or rerun from a checkout" >&2
-          exit 1
-        fi
-        echo "[init] no git repo found — initialized a new one for repo-creation task"
-        # `git init -b main` needs git >= 2.28; fall back for older gits.
-        if ! git init -b main >/dev/null 2>&1; then
-          git init >/dev/null 2>&1
-          git checkout -b main >/dev/null 2>&1 || git symbolic-ref HEAD refs/heads/main >/dev/null 2>&1
-        fi
-      fi
+      amplihack hygiene workflow validate-workspace --repo .
+      amplihack hygiene workflow prepare --repo .
       echo "--- Git Status ---"; STATUS_RC=0
       git status || STATUS_RC=$?
       [ "$STATUS_RC" -eq 0 ] || echo "WARNING: git status failed (exit $STATUS_RC) — continuing with degraded workspace diagnostics after repository validation succeeded" >&2
       echo ""
       echo "--- Fetching Latest ---"
-      FETCH_RC=0
-      git fetch --all --no-tags 2>/dev/null || FETCH_RC=$?
-      if [ "$FETCH_RC" -ne 0 ]; then
-        echo "WARNING: git fetch failed (exit $FETCH_RC) — continuing with local branch state" >&2
-        REMOTE_URL=$(git remote get-url origin 2>/dev/null || true)
-        case "$REMOTE_URL" in
-          *dev.azure.com*|*visualstudio.com*)
-            echo "WARNING: ADO remote detected. Remediation steps:" >&2
-            echo "  1. Run 'az login' to refresh Azure credentials" >&2
-            echo "  2. Configure git credential-manager: git config credential.helper manager" >&2
-            echo "  3. Or set a Personal Access Token (PAT) for authentication" >&2
-            ;;
-          *)
-            echo "WARNING: Check remote credentials or network connectivity" >&2
-            ;;
-        esac
-      fi
+      git fetch --all --atomic --no-tags || { rc=$?; echo "ERROR: workspace fetch failed; preparation stopped" >&2; exit "$rc"; }
       echo ""
       echo "--- Current Branch ---"
       git branch --show-current
@@ -122,6 +93,7 @@ steps:
   - id: "step-02-clarify-requirements"
     recovery: {"replay": "reuse"}
     agent: "amplihack:prompt-writer"
+    auto_stage: false
     prompt: |
       # Step 2: Rewrite and Clarify Requirements
       **Task Description:** {{task_description}}
@@ -152,6 +124,7 @@ steps:
   - id: "step-02b-analyze-codebase"
     recovery: {"replay": "reuse"}
     agent: "amplihack:architect"
+    auto_stage: false
     prompt: |
       # Step 2b: Analyze Existing Codebase Context
       **Task:** {{task_description}}
@@ -194,6 +167,7 @@ steps:
   - id: "step-02c-resolve-ambiguity"
     recovery: {"replay": "reuse"}
     agent: "amplihack:ambiguity"
+    auto_stage: false
     prompt: |
       # Step 2c: Resolve Any Remaining Ambiguity
       **Task:** {{task_description}}
@@ -207,8 +181,13 @@ steps:
       If no ambiguity:
       - Confirm requirements are clear
       - Proceed with confidence
-      Output final, unambiguous requirements ready for design phase.
+      Output final, unambiguous requirements ready for design phase as JSON.
+      Include integer `version: 1`, `task` (stable issue/task identity) and `permitted_source_paths`
+      (exact repository-relative source filenames from the inspected codebase,
+      including new files and tests). No directories or patterns. These paths
+      establish task authority; later candidate inventories cannot extend it.
     output: "final_requirements"
+    parse_json: true
 
   # ==========================================================================
   # STEP 02d: DETECT REMOTE HOST TYPE

@@ -481,7 +481,7 @@ hook_repair_push_commit() {
   if declare -F amplihack_prepare_git_commit_identity >/dev/null; then
     amplihack_prepare_git_commit_identity || true
   fi
-  hook_repair_run commit "$1" -- git commit -m "$2"
+  hook_repair_run commit "$1" -- amplihack hygiene workflow checkpoint --repo . --message "$2"
 }
 
 # hook_repair_evaluate <hr> <round> <output> <bin> <recipe> <step> <op> <wt>

@@ -31,7 +31,7 @@ pub const STATUS_ACTIVE: &str = "active";
 pub const STATUS_COMPLETED: &str = "completed";
 pub const STATUS_CRASHED: &str = "crashed";
 
-/// Manage session lifecycle in `.claude/runtime/sessions.jsonl`.
+/// Manage session lifecycle in the checkout's external runtime directory.
 pub struct SessionTracker {
     runtime_log: PathBuf,
 }
@@ -39,9 +39,8 @@ pub struct SessionTracker {
 impl SessionTracker {
     /// Create a new tracker using the given base directory.
     pub fn new(base_dir: &Path) -> anyhow::Result<Self> {
-        let runtime_log = base_dir
-            .join(".claude")
-            .join("runtime")
+        let runtime_log = amplihack_git::launcher_state::prepare(base_dir)?
+            .directory
             .join("sessions.jsonl");
         let tracker = Self { runtime_log };
         tracker.ensure_runtime_dir()?;
@@ -108,10 +107,33 @@ impl SessionTracker {
     }
 
     fn write_log(&self, line: &str) -> anyhow::Result<()> {
-        let mut file = OpenOptions::new()
+        let mut lock_options = OpenOptions::new();
+        lock_options
             .create(true)
-            .append(true)
-            .open(&self.runtime_log)?;
+            .truncate(false)
+            .read(true)
+            .write(true);
+        let mut log_options = OpenOptions::new();
+        log_options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            lock_options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+            log_options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        let lock = lock_options.open(self.runtime_log.with_extension("jsonl.lock"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            lock.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        fs2::FileExt::lock_exclusive(&lock)?;
+        let mut file = log_options.open(&self.runtime_log)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
         writeln!(file, "{line}")?;
         Ok(())
     }
@@ -162,8 +184,10 @@ mod tests {
     use super::*;
 
     fn setup_tracker() -> (tempfile::TempDir, SessionTracker) {
-        let dir = tempfile::tempdir().unwrap();
-        let tracker = SessionTracker::new(dir.path()).unwrap();
+        let dir = tempfile::tempdir_in("/var/tmp").unwrap();
+        let tracker = SessionTracker {
+            runtime_log: dir.path().join("sessions.jsonl"),
+        };
         (dir, tracker)
     }
 

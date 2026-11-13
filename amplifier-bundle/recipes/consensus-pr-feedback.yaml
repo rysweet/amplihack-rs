@@ -24,33 +24,10 @@ steps:
   - id: "step12-push-updates"
     condition: "pr_review_consensus.final_verdict == 'needs_work'"
     type: "bash"
+    working_dir: "{{worktree_setup.worktree_path}}"
     command: |
       set -euo pipefail
-      export GIT_PAGER=cat
-      export PAGER=cat
-      export LESS=FRX
-      echo "Pushing review updates..."
-      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        echo "ERROR: step12-push-updates requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
-        exit 1
-      fi
-      amplihack hygiene artifact-guard --repo . --mode pre-publish
-      git add -A; amplihack hygiene artifact-guard --repo . --mode pre-publish
-      STAGED=$(git diff --cached --name-only)
-      if [ -n "$STAGED" ]; then
-        GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(pwd)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || { echo "ERROR: git identity helper not found: $GIT_IDENTITY_HELPER" >&2; exit 2; }; . "$GIT_IDENTITY_HELPER"
-        amplihack_prepare_git_commit_identity
-        git commit -m "Address PR review feedback"
-      else
-        echo "Nothing to commit (working tree clean)" >&2
-      fi
-      if git remote get-url origin >/dev/null 2>&1; then
-        git pull --rebase || echo "WARNING: rebase failed, pushing anyway" >&2
-        git push || echo "WARNING: push failed — may need manual push" >&2
-      else
-        echo "Skipping push — no remote configured" >&2
-      fi
-      echo '{"updates_pushed": true}'
+      amplihack hygiene workflow complete-publication --repo . --message "Address PR review feedback"
     output: "review_updates"
     parse_json: true
 
@@ -66,6 +43,7 @@ steps:
 
   - id: "step13-philosophy-reviewer"
     agent: "amplihack:reviewer"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       PHILOSOPHY COMPLIANCE - Reviewer Agent
@@ -93,6 +71,7 @@ steps:
 
   - id: "step13-philosophy-patterns"
     agent: "amplihack:patterns"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       PHILOSOPHY COMPLIANCE - Patterns Agent
@@ -121,6 +100,7 @@ steps:
 
   - id: "step13-philosophy-cleanup"
     agent: "amplihack:cleanup"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       PHILOSOPHY COMPLIANCE - Cleanup Agent
@@ -148,6 +128,7 @@ steps:
 
   - id: "step13-philosophy-guardian"
     agent: "amplihack:philosophy-guardian"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       PHILOSOPHY GUARDIAN - Final Validation

@@ -150,8 +150,11 @@ amplihack copilot
 - [AMPLIHACK_* Environment Variable Audit](reference/amplihack-env-vars.md) - Every `AMPLIHACK_*` name classified as user preference, internal or test-only, with its config key
 - [Profile Management](PROFILE_MANAGEMENT.md) - Multiple environment configurations
 - [Hook Configuration](HOOK_CONFIGURATION_GUIDE.md) - Customize framework behavior
-- [Artifact Guard](artifact-guard.md) - Guard for broad staging, pre-commit, and workflow publication artifacts
-- [Configure Workflow Runtime Isolation](howto/configure-workflow-runtime-isolation.md) - Keep generated workflow runtime output outside commit worktrees
+- [Artifact Guard](artifact-guard.md) - Read-only artefact checks and strict runtime publication boundary
+- [Configure Workflow Runtime Isolation](howto/configure-workflow-runtime-isolation.md) - Intended configuration and implementation limits
+- [Workflow Runtime Artefacts](reference/workflow-runtime-artifacts.md) - Required runtime ownership, sharing and exclusion coverage, with implementation gaps
+- [Workflow Checkpoints and Publication](reference/workflow-checkpoint-publication.md) - Intended index, result and outgoing-ref contracts, with implementation gaps
+- [Runtime Isolation Tutorial](tutorials/workflow-runtime-isolation.md) - Prepare exclusions and check runtime rejection in an isolated repository
 - [Clean Up After Recipe Runs](howto/clean-up-after-recipe-runs.md) - Where runs write, end-of-run cleanup, when a checkout's build target is removed, linked targets, and `amplihack cleanup` for worktrees, targets, temporary folders and old logs
 - [Memory Configuration Consent](features/memory-consent-prompt.md) - Intelligent memory settings with timeout protection
 - [Verify .claude/ Staging](howto/verify-claude-staging.md) - Check that framework files are properly staged
@@ -353,10 +356,10 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [How to Configure Workflow Execution Guardrails](howto/configure-workflow-execution-guardrails.md) - Supply `expected_gh_account`, inspect `execution_root`, and troubleshoot failures
 - [Tutorial: Workflow Execution Guardrails](tutorials/workflow-execution-guardrails.md) - End-to-end walkthrough of the guarded workflow contract
 - [Workflow Execution Guardrails Reference](reference/workflow-execution-guardrails.md) - Input fields, output schema, signals, and failure semantics
-- [Workflow Runtime Isolation](features/workflow-runtime-isolation.md) - Runtime-root isolation and narrow cleanup for generated workflow artifacts
-- [How to Configure Workflow Runtime Isolation](howto/configure-workflow-runtime-isolation.md) - Set `AMPLIHACK_RUNTIME_ROOT`, inspect runtime files, and troubleshoot guard failures
-- [Tutorial: Workflow Runtime Isolation](tutorials/workflow-runtime-isolation.md) - Practice the runtime isolation and strict Artifact Guard contract
-- [Workflow Runtime Artifacts Reference](reference/workflow-runtime-artifacts.md) - Environment variables, shell helper API, lifecycle hooks, and regression contract
+- [Workflow Runtime Isolation](features/workflow-runtime-isolation.md) - Runtime isolation, shared state and bounded staging
+- [How to Configure Workflow Runtime Isolation](howto/configure-workflow-runtime-isolation.md) - Configure runtime storage and diagnose index or publication refusals
+- [Tutorial: Workflow Runtime Isolation](tutorials/workflow-runtime-isolation.md) - Check runtime isolation in a disposable repository
+- [Workflow Runtime Artefacts Reference](reference/workflow-runtime-artifacts.md) - Runtime sharing, helper and first-write preparation contracts
 - [Workflow Commit Identity Reference](reference/workflow-commit-identity.md) - Explicit author/committer identity contract for workflow-created commits
 - [Workflow Identity Preflight Reference](reference/identity-preflight.md) - One-call check, before any step does real work, that the acting `gh` account can write to the target repository (issue #1290)
 - [How to Configure Workflow Commit Identity](howto/configure-workflow-commit-identity.md) - Setup for `AMPLIHACK_GIT_*`, repo-local Git identity, and provider-safe fallbacks

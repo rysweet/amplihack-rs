@@ -26,6 +26,15 @@
 mod isolated_amplihack;
 mod support;
 
+mod issue_1554_checkpoint_preservation;
+#[path = "issue_1554/fixture.rs"]
+mod issue_1554_fixture;
+mod issue_1554_launch_inventory;
+mod issue_1554_publication;
+mod issue_1554_recipe_controls;
+mod issue_1554_recipe_results;
+mod issue_1554_runtime_boundaries;
+
 #[path = "issue_1753_expired_live.rs"]
 mod issue_1753_expired_live;
 #[path = "issue_1753_login_identity.rs"]

@@ -25,6 +25,7 @@ steps:
   - id: "step1-debate-round1-architect"
     condition: "initial_requirements.requires_debate == 'true'"
     agent: "amplihack:architect"
+    auto_stage: false
     prompt: |
       MULTI-AGENT DEBATE - ROUND 1: Independent Analysis (Architect Perspective)
 
@@ -57,6 +58,7 @@ steps:
   - id: "step1-debate-round1-security"
     condition: "initial_requirements.requires_debate == 'true'"
     agent: "amplihack:security"
+    auto_stage: false
     prompt: |
       MULTI-AGENT DEBATE - ROUND 1: Independent Analysis (Security Perspective)
 
@@ -89,6 +91,7 @@ steps:
   - id: "step1-debate-round1-api"
     condition: "initial_requirements.requires_debate == 'true'"
     agent: "amplihack:api-designer"
+    auto_stage: false
     prompt: |
       MULTI-AGENT DEBATE - ROUND 1: Independent Analysis (API Designer Perspective)
 
@@ -121,6 +124,7 @@ steps:
   - id: "step1-debate-round1-database"
     condition: "initial_requirements.requires_debate == 'true'"
     agent: "amplihack:database"
+    auto_stage: false
     prompt: |
       MULTI-AGENT DEBATE - ROUND 1: Independent Analysis (Database Perspective)
 
@@ -153,6 +157,7 @@ steps:
   - id: "step1-debate-round1-tester"
     condition: "initial_requirements.requires_debate == 'true'"
     agent: "amplihack:tester"
+    auto_stage: false
     prompt: |
       MULTI-AGENT DEBATE - ROUND 1: Independent Analysis (Tester Perspective)
 
@@ -185,6 +190,7 @@ steps:
   - id: "step1-debate-round2-cross-examination"
     condition: "initial_requirements.requires_debate == 'true'"
     agent: "amplihack:architect"
+    auto_stage: false
     prompt: |
       MULTI-AGENT DEBATE - ROUND 2: Cross-Examination
 
@@ -234,6 +240,7 @@ steps:
   - id: "step1-debate-round3-consensus"
     condition: "initial_requirements.requires_debate == 'true'"
     agent: "amplihack:architect"
+    auto_stage: false
     prompt: |
       MULTI-AGENT DEBATE - ROUND 3: Consensus Building
 
@@ -281,6 +288,7 @@ steps:
 
   - id: "step1-finalize-requirements"
     agent: "amplihack:prompt-writer"
+    auto_stage: false
     prompt: |
       Finalize the requirements specification:
 
@@ -292,6 +300,9 @@ steps:
 
       ```json
       {
+        "version": 1,
+        "task": "stable issue/task identity",
+        "permitted_source_paths": ["exact repository-relative filenames, including new files and tests; no directories"],
         "task_summary": "one-line summary",
         "explicit_requirements": ["MUST-HAVE requirements that cannot be removed"],
         "implicit_requirements": ["derived requirements"],

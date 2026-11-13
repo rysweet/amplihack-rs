@@ -2,7 +2,6 @@
 
 use crate::nesting::NestingResult;
 use crate::session_log;
-use amplihack_types::ProjectDirs;
 use anyhow::{Context, Result};
 use fs4::fs_std::FileExt;
 use serde::Serialize;
@@ -31,23 +30,28 @@ impl LogLock {
         let mut name = log_path.as_os_str().to_os_string();
         name.push(LOCK_FILE_SUFFIX);
         let lock_path = PathBuf::from(name);
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
+        let mut options = OpenOptions::new();
+        options.create(true).read(true).write(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        let file = options
             .open(&lock_path)
             .with_context(|| format!("failed to open {}", lock_path.display()))?;
+        restrict_permissions(&file)?;
         FileExt::lock_exclusive(&file)
             .with_context(|| format!("failed to lock {}", lock_path.display()))?;
-        restrict_permissions(&lock_path);
         Ok(Self { file })
     }
 }
 
 impl Drop for LogLock {
     fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
+        if let Err(error) = FileExt::unlock(&self.file) {
+            tracing::warn!("cannot unlock session log: {error}");
+        }
     }
 }
 
@@ -79,11 +83,9 @@ pub struct SessionTracker {
 
 impl SessionTracker {
     pub fn new(project_root: &Path) -> Result<Self> {
-        let dirs = ProjectDirs::from_root(project_root);
-        fs::create_dir_all(&dirs.runtime)
-            .with_context(|| format!("failed to create {}", dirs.runtime.display()))?;
+        let state = amplihack_git::launcher_state::prepare(project_root)?;
         Ok(Self {
-            log_path: dirs.sessions_log_file(),
+            log_path: state.directory.join("sessions.jsonl"),
         })
     }
 
@@ -138,24 +140,29 @@ impl SessionTracker {
         // shutdown was because `create(true)` does not create intermediate
         // directories. Ensure the runtime dir exists before opening.
         if let Some(parent) = self.log_path.parent() {
-            let _ = fs::create_dir_all(parent);
+            fs::create_dir_all(parent).context("cannot prepare session log parent")?;
         }
         // Issue #1272: the append and the retention check share one advisory
         // lock. Without it a concurrent launch could open the log, have
         // compaction rename a new inode into place underneath it, and then
         // write its record into the orphaned old inode — losing an entry.
         let _lock = LogLock::acquire(&self.log_path)?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
+        let mut options = OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        let mut file = options
             .open(&self.log_path)
             .with_context(|| format!("failed to open {}", self.log_path.display()))?;
+        restrict_permissions(&file)?;
         file.write_all(line.as_bytes())
             .with_context(|| format!("failed to write {}", self.log_path.display()))?;
         file.write_all(b"\n")
             .with_context(|| format!("failed to write newline to {}", self.log_path.display()))?;
         drop(file);
-        restrict_permissions(&self.log_path);
         // Bound the log so the launch-path reader's cost cannot grow without
         // limit. A compaction failure must not fail the session it is only
         // tidying up after, so it is reported and swallowed here.
@@ -188,23 +195,29 @@ fn generate_session_id() -> String {
 }
 
 #[cfg(unix)]
-fn restrict_permissions(path: &Path) {
+fn restrict_permissions(file: &File) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
-
-    if let Ok(metadata) = fs::metadata(path) {
-        let mut permissions = metadata.permissions();
-        permissions.set_mode(0o600);
-        let _ = fs::set_permissions(path, permissions);
-    }
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+        .context("cannot make session log or lock private")
 }
 
 #[cfg(not(unix))]
-fn restrict_permissions(_path: &Path) {}
+fn restrict_permissions(_file: &File) -> Result<()> {
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::Value;
+
+    fn fixture_tracker(root: &Path) -> SessionTracker {
+        let directory = root.join("external-runtime");
+        fs::create_dir(&directory).unwrap();
+        SessionTracker {
+            log_path: directory.join("sessions.jsonl"),
+        }
+    }
 
     #[test]
     fn append_line_creates_missing_runtime_dir() {
@@ -213,8 +226,8 @@ mod tests {
         // file, not intermediate dirs, so ending a session before any prior
         // write produced a cosmetic ENOENT on shutdown that surfaced as
         // "Status: ✗ Failed" in recipe-runner consumers.
-        let temp = tempfile::tempdir().unwrap();
-        let tracker = SessionTracker::new(temp.path()).unwrap();
+        let temp = tempfile::tempdir_in("/var/tmp").unwrap();
+        let tracker = fixture_tracker(temp.path());
         // Simulate the race: runtime dir removed between tracker construction
         // and append (e.g. by a sibling cleanup hook).
         let runtime = tracker.log_path.parent().unwrap().to_path_buf();
@@ -229,8 +242,8 @@ mod tests {
 
     #[test]
     fn session_tracker_writes_start_and_complete_entries() {
-        let dir = tempfile::tempdir().unwrap();
-        let tracker = SessionTracker::new(dir.path()).unwrap();
+        let dir = tempfile::tempdir_in("/var/tmp").unwrap();
+        let tracker = fixture_tracker(dir.path());
         let argv = vec!["amplihack".to_string(), "claude".to_string()];
 
         let session_id = tracker
@@ -238,8 +251,7 @@ mod tests {
             .unwrap();
         tracker.complete_session(&session_id).unwrap();
 
-        let content =
-            fs::read_to_string(dir.path().join(".claude/runtime/sessions.jsonl")).unwrap();
+        let content = fs::read_to_string(tracker.log_path.clone()).unwrap();
         let entries = content
             .lines()
             .map(|line| serde_json::from_str::<Value>(line).unwrap())
@@ -254,8 +266,8 @@ mod tests {
 
     #[test]
     fn session_tracker_records_parent_session_for_nested_runs() {
-        let dir = tempfile::tempdir().unwrap();
-        let tracker = SessionTracker::new(dir.path()).unwrap();
+        let dir = tempfile::tempdir_in("/var/tmp").unwrap();
+        let tracker = fixture_tracker(dir.path());
         let argv = vec!["amplihack".to_string(), "copilot".to_string()];
 
         let session_id = tracker
@@ -271,8 +283,7 @@ mod tests {
             )
             .unwrap();
 
-        let content =
-            fs::read_to_string(dir.path().join(".claude/runtime/sessions.jsonl")).unwrap();
+        let content = fs::read_to_string(tracker.log_path.clone()).unwrap();
         let entry = serde_json::from_str::<Value>(content.lines().next().unwrap()).unwrap();
         assert_eq!(entry["session_id"], session_id);
         assert_eq!(entry["is_auto_mode"], true);
@@ -284,9 +295,9 @@ mod tests {
     /// bounding must not cost a session that is still running.
     #[test]
     fn appending_to_an_oversized_log_bounds_it_without_losing_a_live_session() {
-        let dir = tempfile::tempdir().unwrap();
-        let tracker = SessionTracker::new(dir.path()).unwrap();
-        let log = dir.path().join(".claude/runtime/sessions.jsonl");
+        let dir = tempfile::tempdir_in("/var/tmp").unwrap();
+        let tracker = fixture_tracker(dir.path());
+        let log = tracker.log_path.clone();
 
         // A live session whose record sits at the very top of the log.
         let argv = vec!["amplihack".to_string(), "claude".to_string()];
@@ -369,9 +380,9 @@ mod tests {
     /// compaction is in flight must neither corrupt the file nor lose entries.
     #[test]
     fn concurrent_appends_across_a_compaction_lose_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let tracker = SessionTracker::new(dir.path()).unwrap();
-        let log = dir.path().join(".claude/runtime/sessions.jsonl");
+        let dir = tempfile::tempdir_in("/var/tmp").unwrap();
+        let tracker = fixture_tracker(dir.path());
+        let log = tracker.log_path.clone();
 
         // Seed the log just over the compaction threshold so the very first
         // concurrent append trips a rewrite while the others are mid-flight.

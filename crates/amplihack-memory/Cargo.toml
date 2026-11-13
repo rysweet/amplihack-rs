@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Five-type cognitive memory system with distributed sharding"
 
 [dependencies]
+amplihack-git = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

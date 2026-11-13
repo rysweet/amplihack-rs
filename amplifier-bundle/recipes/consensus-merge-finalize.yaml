@@ -46,6 +46,7 @@ steps:
   - id: "step14-diagnose-ci"
     condition: "ci_status.ci_checked == 'true'"
     agent: "amplihack:ci-diagnostic-workflow"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       Diagnose any CI failures:
@@ -72,6 +73,7 @@ steps:
 
   - id: "step14-verify-mergeable"
     agent: "amplihack:reviewer"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       Verify PR is mergeable:
@@ -119,6 +121,7 @@ steps:
 
   - id: "step15-final-cleanup"
     agent: "amplihack:cleanup"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       FINAL QUALITY PANEL - Cleanup Agent
@@ -148,6 +151,7 @@ steps:
 
   - id: "step15-final-reviewer"
     agent: "amplihack:reviewer"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       FINAL QUALITY PANEL - Reviewer Agent
@@ -177,6 +181,7 @@ steps:
 
   - id: "step15-final-patterns"
     agent: "amplihack:patterns"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       FINAL QUALITY PANEL - Patterns Agent
@@ -207,6 +212,7 @@ steps:
 
   - id: "step15-final-consensus"
     agent: "amplihack:architect"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       FINAL QUALITY CONSENSUS - Unanimous Approval Required

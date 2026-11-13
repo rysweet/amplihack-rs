@@ -1,149 +1,85 @@
-# Workflow Runtime Isolation
+---
+title: Workflow runtime isolation
+description: How workflows keep runtime state and unrelated staged work out of task commits.
+doc_type: explanation
+last_updated: 2026-11-12
+---
 
-Workflow runtime isolation keeps generated agent state, provenance, logs,
-metrics, reflection output, and workflow-owned nested worktrees out of commit
-worktrees.
+# Workflow runtime isolation
 
-Updated: 2026-06-19
+**Acceptance remains incomplete.** The candidate implementation retains the
+[runner and historical-evidence gates](../reference/workflow-checkpoint-publication.md#regression-and-runner-acceptance).
+See the [current restrictions](../reference/workflow-checkpoint-publication.md#implementation-gaps).
 
-## Contents
+Amplihack keeps its runtime state out of source inventories and task commits,
+including in repositories without a `.gitignore`. Launch does not require changes
+to tracked ignore rules, source manifests or the user's global Git configuration.
 
-- [What it protects](#what-it-protects)
-- [Runtime root contract](#runtime-root-contract)
-- [Lifecycle preflight](#lifecycle-preflight)
-- [What cleanup is allowed to remove](#what-cleanup-is-allowed-to-remove)
-- [What Artifact Guard still blocks](#what-artifact-guard-still-blocks)
-- [Related documentation](#related-documentation)
+## Separate runtime state from source
 
-## What it protects
+Launcher context, session records and their locks live outside every registered
+checkout, beneath external Amplihack state or the run's own directory. Writers,
+agent resolution, session readers and nesting detection use the same locations.
+Checkout-local launcher records left by older releases do not select an agent.
 
-`default-workflow` and PR recovery runs spawn nested agents, child recipes, shell
-helpers, checkpoint steps, publish steps, and finalization checks. Those runtime
-activities generate files that are useful while the workflow is running but must
-not become source code:
+State has two scopes. Launcher context belongs to a particular checkout; power
+steering state shared by linked worktrees belongs to the clone. Moving storage
+outside the checkout preserves that sharing. Independent clones remain separate.
 
-```text
-provenance/
-logs/
-metrics/
-reflection/
-locks/
-agent runtime state
-workflow-owned scratch worktrees
-```
+Graph databases and some generated indexes remain checkout-local. Before their
+first write, Amplihack registers precise exclusions in the clone's common Git
+`info/exclude`. Linked worktrees share that file. The exclusions work when `HOME`
+and `XDG_CONFIG_HOME` are unset, so a repository's source-inventory hook sees the
+same source files before and after launch.
 
-The workflow isolates that output under a shared runtime root instead of writing
-it into the task worktree. The active Git worktree remains reserved for source
-changes that can be reviewed, staged, committed, pushed, and merged.
+Exclusions cover owned runtime paths rather than the entire `.amplihack/` or
+`.claude/` tree. Project configuration, agents and skills remain discoverable.
 
-Runtime isolation also scopes process state. Child recipes and agents inherit
-the top-level runtime root, run with explicit non-interactive environment
-variables, and record process/workstream identity under the runtime root instead
-of the commit worktree.
+## Protect the index independently
 
-## Runtime root contract
+Ignore rules affect untracked discovery. Already tracked and force-staged files
+need a separate boundary: the publication guard rejects every indexed path
+beneath `.amplihack/` or `.claude/runtime/`, including unchanged tracked entries,
+deletions and rename endpoints. Configuration in `.amplihack/` remains visible
+but cannot enter a workflow commit under this policy.
 
-Every workflow run has one runtime root. The top-level workflow establishes
-that root once and exports `AMPLIHACK_RUNTIME_ROOT`. Launchers, recipe steps,
-provenance logging, child agents, and shell helpers inherit that same value.
-Child workflows must not recompute their own runtime roots.
+Default, consensus and applicable autodrive roles disable runner automatic
+staging. Checkpoints stage exact filenames agreed by the requirements and
+reviewed design. A changed-file inventory identifies candidates without granting
+permission to commit them.
 
-1. If `AMPLIHACK_RUNTIME_ROOT` is set, use it.
-2. Otherwise use `$XDG_RUNTIME_DIR/amplihack/runtime/<run-id>` when
-   `XDG_RUNTIME_DIR` is available.
-3. Otherwise use `/tmp/amplihack-runtime/<user>/<run-id>`.
+The real index can hold unrelated user work, including a staged blob that differs
+from the working file. Checkpoints commit through a private index and preserve
+protected entries, bytes and Git metadata. Unsupported preservation or overlap
+causes refusal before committing. Normal hooks run, and the resulting index is
+validated before commit creation. A hook cannot silently extend task authority.
 
-The runtime root is outside the commit worktree by default. It contains these
-standard subdirectories:
+## Validate what the destination receives
 
-```text
-locks/
-logs/
-metrics/
-provenance/
-reflection/
-```
+Every pushed ref is checked against the actual destination's advertisement.
+For a new branch, all advertised remote commit tips contribute to the boundary.
+Local tracking refs and `FETCH_HEAD` cannot narrow it.
 
-The runtime root and its subdirectories are created with restrictive
-owner-only permissions where the platform supports them. Custom
-`AMPLIHACK_RUNTIME_ROOT` values should point at a private external directory,
-not a shared repository path.
+Each outgoing commit needs task authority, even if a later commit reverts its
+change. Advertised imports do not become task changes, but merge resolution
+changes still need review. Incomplete history, failed fetches and unsupported
+updates stop publication. Unauthorised outgoing commits return status `78`.
 
-See [Workflow Runtime Artifacts Reference](../reference/workflow-runtime-artifacts.md)
-for the exact resolution order, environment variables, and helper APIs.
+## Validate before creating runtime state
 
-## Lifecycle preflight
+Workflow preparation requires an existing non-bare checkout, committed history
+and the workflow's remote and tool prerequisites. It refuses a non-repository,
+including a parent containing nested checkouts, without initialising Git.
+`auto_init_repo=true` alone does not authorise repository creation.
 
-Workflow lifecycle gates clean known workflow-owned artifacts before operations
-that inspect or broadly stage the worktree:
-
-| Lifecycle point | Behavior |
-| --- | --- |
-| Checkpoint | Remove known workflow runtime artifacts before checkpoint status checks. |
-| Broad staging | Remove known workflow runtime artifacts before `git add -A` or equivalent broad staging. |
-| Publish | Remove known workflow runtime artifacts before dirty-worktree checks, publication staging, commit, push, and PR creation. |
-| Pre-commit staging | Remove known workflow runtime artifacts before pre-commit-related staging paths. |
-| Finalization | Remove known workflow runtime artifacts before final status and clean-worktree gates. |
-
-This preflight is defense-in-depth. The preferred behavior is still isolation
-outside the worktree. Cleanup handles interrupted or legacy child processes that
-left known workflow-generated paths behind.
-
-## What cleanup is allowed to remove
-
-Cleanup is intentionally narrow. It removes only these exact paths under the
-active task worktree:
-
-```text
-<worktree>/.claude/runtime
-<worktree>/worktrees
-```
-
-In amplihack-managed task worktrees, root-level `worktrees/` is reserved for
-workflow-owned nested scratch worktrees. Do not use that directory for
-user-authored source. If an implementation detects tracked source under
-`worktrees/`, it must fail closed instead of deleting it.
-
-It does not remove:
-
-```text
-<worktree>/.claude
-<worktree>/.claude/settings.json
-<worktree>/.claude/agents
-<worktree>/.claude/skills
-<worktree>/node_modules
-<worktree>/dist
-<worktree>/target
-unrelated untracked files
-```
-
-Absent known paths are a no-op. Existing targets are resolved and validated
-before deletion: the worktree must be a Git worktree, the target must be inside
-that worktree, and the target must exactly match a known workflow-owned path.
-
-## What Artifact Guard still blocks
-
-[Artifact Guard](../artifact-guard.md) remains strict and non-mutating. It still
-fails on generated, runtime, cache, dependency, and build artifacts that are not
-part of the narrow workflow runtime cleanup contract.
-
-For example, these paths still block publication or pre-commit gates:
-
-```text
-node_modules/
-dist/plugin.js
-coverage/
-.pytest_cache/
-logs/generated.log
-```
-
-The workflow does not weaken Artifact Guard with broad ignore rules or broad
-allowlists. It removes only known workflow-owned runtime leftovers before the
-guard runs, then lets the guard fail on anything unexpected.
+Cleanup uses run ownership and preserves tracked source, the user's index and
+other runs' worktrees. It does not replace first-write preparation or publication
+validation.
 
 ## Related documentation
 
-- [Configure Workflow Runtime Isolation](../howto/configure-workflow-runtime-isolation.md)
-- [Workflow Runtime Artifacts Reference](../reference/workflow-runtime-artifacts.md)
-- [Tutorial: Workflow Runtime Isolation](../tutorials/workflow-runtime-isolation.md)
+- [Configure workflow runtime isolation](../howto/configure-workflow-runtime-isolation.md)
+- [Runtime paths, sharing and preparation API](../reference/workflow-runtime-artifacts.md)
+- [Checkpoint and publication contracts](../reference/workflow-checkpoint-publication.md)
+- [Runtime isolation tutorial](../tutorials/workflow-runtime-isolation.md)
 - [Artifact Guard](../artifact-guard.md)

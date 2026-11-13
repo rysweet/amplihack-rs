@@ -10,7 +10,7 @@
 //! fix (issue #862). Security checks (CWD, branch, --no-verify) are
 //! independent of the detected launcher.
 
-use amplihack_types::paths::{ProjectDirs, framework_roots_from};
+use amplihack_types::paths::ProjectDirs;
 use amplihack_utils::launcher_context::{
     LauncherKind, is_launcher_context_stale, read_launcher_context,
 };
@@ -76,12 +76,19 @@ fn detect_launcher_from_env() -> Option<LauncherType> {
 fn read_launcher_context_from_project_or_ancestors(
     root: &Path,
 ) -> Option<(PathBuf, amplihack_utils::launcher_context::LauncherContext)> {
-    for candidate in framework_roots_from(root) {
-        if let Some(context) = read_launcher_context(&candidate) {
-            return Some((candidate, context));
-        }
+    // External context has no checkout-local asset marker. Git identifies the
+    // nearest checkout even when the hook runs from a nested directory; never
+    // borrow a containing checkout's context across a nested repository boundary.
+    let output = amplihack_git::command_in(root)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
     }
-    read_launcher_context(root).map(|context| (root.to_path_buf(), context))
+    let top = std::str::from_utf8(&output.stdout).ok()?;
+    let checkout = PathBuf::from(top.strip_suffix('\n').unwrap_or(top));
+    read_launcher_context(&checkout).map(|context| (checkout, context))
 }
 
 #[cfg(test)]

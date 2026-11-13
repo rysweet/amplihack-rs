@@ -2,8 +2,8 @@
 //!
 //! Detection strategy:
 //! 1. Primary: Check `AMPLIHACK_SESSION_ID` env var — if set, we're nested.
-//! 2. Secondary: Check `.claude/runtime/sessions.jsonl` in the current project.
-//! 3. Fallback: Check session file with PID + timestamp in `~/.claude/runtime/`.
+//! 2. Secondary: Check the current checkout's external session log.
+//! 3. Fallback: Check the legacy claim in the external launcher-state base.
 //! 4. Stale detection: If holder PID is dead AND session is >1h old, consider stale.
 
 mod helpers;
@@ -89,8 +89,9 @@ impl NestingDetector {
 
     /// Write a session file to claim the current session.
     pub fn claim_session(session_id: &str) -> anyhow::Result<()> {
+        amplihack_git::launcher_state::prepare(&env::current_dir()?)?;
         let session_path = session_file_path()
-            .ok_or_else(|| anyhow::anyhow!("could not determine HOME directory"))?;
+            .ok_or_else(|| anyhow::anyhow!("could not resolve external session claim"))?;
 
         if let Some(parent) = session_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -106,14 +107,25 @@ impl NestingDetector {
         };
 
         let content = serde_json::to_string_pretty(&session)?;
-        std::fs::write(&session_path, content)?;
+        use std::io::Write;
+        let mut temporary = tempfile::NamedTempFile::new_in(
+            session_path
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("session claim has no parent"))?,
+        )?;
+        temporary.write_all(content.as_bytes())?;
+        temporary.as_file().sync_all()?;
+        temporary.persist(&session_path)?;
         Ok(())
     }
 
     /// Remove the session file (on clean exit).
     pub fn release_session() {
-        if let Some(session_path) = session_file_path() {
-            let _ = std::fs::remove_file(session_path);
+        if let Some(session_path) = session_file_path()
+            && let Err(error) = std::fs::remove_file(&session_path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(path = %session_path.display(), "cannot release external session claim: {error}");
         }
     }
 }
@@ -130,7 +142,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         // Use a temp HOME to isolate from any real session.json on the host.
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir_in("/var/tmp").unwrap();
         let original_home = set_home(tmp.path());
         let _cwd = crate::test_support::CwdGuard::set(tmp.path()).unwrap();
 
@@ -212,13 +224,24 @@ mod tests {
         let _guard = home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let dir = tempfile::tempdir().unwrap();
-        let session_path = dir
-            .path()
-            .join(".claude")
-            .join("runtime")
-            .join("session.json");
-
+        let dir = tempfile::tempdir_in("/var/tmp").unwrap();
+        let external = dir.path().join("external-state");
+        let _environment = crate::test_support::EnvGuard::set([
+            ("AMPLIHACK_RUNTIME_DIR", external.to_str().unwrap()),
+            ("GIT_CONFIG_GLOBAL", "/dev/null"),
+            ("GIT_CONFIG_NOSYSTEM", "1"),
+        ]);
+        let checkout = dir.path().join("checkout");
+        fs::create_dir(&checkout).unwrap();
+        assert!(
+            amplihack_git::command_in(&checkout)
+                .args(["init", "--quiet", "--template="])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let _cwd = crate::test_support::CwdGuard::set(&checkout).unwrap();
+        let session_path = session_file_path().unwrap();
         let original_home = set_home(dir.path());
 
         NestingDetector::claim_session("test-claim").unwrap();
@@ -240,10 +263,27 @@ mod tests {
         let _home_guard = home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir_in("/var/tmp").unwrap();
         let project_dir = dir.path().join("project");
-        fs::create_dir_all(project_dir.join(".claude/runtime")).unwrap();
-        let sessions_log = project_dir.join(".claude/runtime/sessions.jsonl");
+        fs::create_dir_all(&project_dir).unwrap();
+        let state = dir.path().join("external-launcher-state");
+        let _runtime = crate::test_support::EnvGuard::set([
+            ("HOME", dir.path().to_str().unwrap()),
+            ("AMPLIHACK_RUNTIME_DIR", state.to_str().unwrap()),
+            ("GIT_CONFIG_GLOBAL", "/dev/null"),
+            ("GIT_CONFIG_NOSYSTEM", "1"),
+        ]);
+        assert!(
+            amplihack_git::command_in(&project_dir)
+                .args(["init", "--quiet", "--template="])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let sessions_log = amplihack_git::launcher_state::prepare(&project_dir)
+            .unwrap()
+            .directory
+            .join("sessions.jsonl");
         fs::write(
             &sessions_log,
             format!(
@@ -280,10 +320,27 @@ mod tests {
         let _home_guard = home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir_in("/var/tmp").unwrap();
         let project_dir = dir.path().join("project");
-        fs::create_dir_all(project_dir.join(".claude/runtime")).unwrap();
-        let sessions_log = project_dir.join(".claude/runtime/sessions.jsonl");
+        fs::create_dir_all(&project_dir).unwrap();
+        let state = dir.path().join("external-launcher-state");
+        let _runtime = crate::test_support::EnvGuard::set([
+            ("HOME", dir.path().to_str().unwrap()),
+            ("AMPLIHACK_RUNTIME_DIR", state.to_str().unwrap()),
+            ("GIT_CONFIG_GLOBAL", "/dev/null"),
+            ("GIT_CONFIG_NOSYSTEM", "1"),
+        ]);
+        assert!(
+            amplihack_git::command_in(&project_dir)
+                .args(["init", "--quiet", "--template="])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let sessions_log = amplihack_git::launcher_state::prepare(&project_dir)
+            .unwrap()
+            .directory
+            .join("sessions.jsonl");
         fs::write(
             &sessions_log,
             format!(
@@ -317,10 +374,27 @@ mod tests {
         let _home_guard = home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir_in("/var/tmp").unwrap();
         let project_dir = dir.path().join("project");
-        fs::create_dir_all(project_dir.join(".claude/runtime")).unwrap();
-        let sessions_log = project_dir.join(".claude/runtime/sessions.jsonl");
+        fs::create_dir_all(&project_dir).unwrap();
+        let state = dir.path().join("external-launcher-state");
+        let _runtime = crate::test_support::EnvGuard::set([
+            ("HOME", dir.path().to_str().unwrap()),
+            ("AMPLIHACK_RUNTIME_DIR", state.to_str().unwrap()),
+            ("GIT_CONFIG_GLOBAL", "/dev/null"),
+            ("GIT_CONFIG_NOSYSTEM", "1"),
+        ]);
+        assert!(
+            amplihack_git::command_in(&project_dir)
+                .args(["init", "--quiet", "--template="])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let sessions_log = amplihack_git::launcher_state::prepare(&project_dir)
+            .unwrap()
+            .directory
+            .join("sessions.jsonl");
         fs::write(
             &sessions_log,
             format!(
@@ -361,10 +435,27 @@ mod tests {
         let _home_guard = home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir_in("/var/tmp").unwrap();
         let project_dir = dir.path().join("project");
-        fs::create_dir_all(project_dir.join(".claude/runtime")).unwrap();
-        let sessions_log = project_dir.join(".claude/runtime/sessions.jsonl");
+        fs::create_dir_all(&project_dir).unwrap();
+        let state = dir.path().join("external-launcher-state");
+        let _runtime = crate::test_support::EnvGuard::set([
+            ("HOME", dir.path().to_str().unwrap()),
+            ("AMPLIHACK_RUNTIME_DIR", state.to_str().unwrap()),
+            ("GIT_CONFIG_GLOBAL", "/dev/null"),
+            ("GIT_CONFIG_NOSYSTEM", "1"),
+        ]);
+        assert!(
+            amplihack_git::command_in(&project_dir)
+                .args(["init", "--quiet", "--template="])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let sessions_log = amplihack_git::launcher_state::prepare(&project_dir)
+            .unwrap()
+            .directory
+            .join("sessions.jsonl");
         fs::write(
             &sessions_log,
             format!(

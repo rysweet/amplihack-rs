@@ -88,6 +88,7 @@ steps:
   - id: "step-02-evaluate-loop-health"
     condition: "loop_evidence.terminal_refusal == 'false'"
     agent: "amplihack:analyzer"
+    auto_stage: false
     working_dir: "{{loop_agent_working_dir}}"
     prompt: |
       # Loop-health evaluation — is this loop still doing useful work?

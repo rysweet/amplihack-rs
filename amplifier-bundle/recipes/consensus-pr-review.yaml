@@ -22,6 +22,7 @@ context: {}
 steps:
   - id: "step11-pr-review-reviewer"
     agent: "amplihack:reviewer"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       EXPERT PANEL PR REVIEW - Reviewer Agent
@@ -53,6 +54,7 @@ steps:
 
   - id: "step11-pr-review-security"
     agent: "amplihack:security"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       EXPERT PANEL PR REVIEW - Security Agent
@@ -84,6 +86,7 @@ steps:
 
   - id: "step11-pr-review-optimizer"
     agent: "amplihack:optimizer"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       EXPERT PANEL PR REVIEW - Optimizer Agent
@@ -112,6 +115,7 @@ steps:
 
   - id: "step11-pr-review-patterns"
     agent: "amplihack:patterns"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       EXPERT PANEL PR REVIEW - Patterns Agent
@@ -140,6 +144,7 @@ steps:
 
   - id: "step11-pr-review-tester"
     agent: "amplihack:tester"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       EXPERT PANEL PR REVIEW - Tester Agent
@@ -170,6 +175,7 @@ steps:
 
   - id: "step11-pr-review-consensus"
     agent: "amplihack:architect"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       EXPERT PANEL CONSENSUS - PR Review Approval
@@ -217,6 +223,7 @@ steps:
   - id: "step12-implement-feedback"
     condition: "pr_review_consensus.final_verdict == 'needs_work'"
     agent: "amplihack:builder"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       Implement required changes from PR review:

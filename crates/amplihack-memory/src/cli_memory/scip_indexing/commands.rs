@@ -105,6 +105,7 @@ pub fn run_native_scip_indexing(
     let mut artifacts = Vec::new();
     let mut errors = Vec::new();
 
+    crate::cli_memory::helpers::prepare_checkout_runtime(&project_path)?;
     let artifact_paths = project_artifact_paths(&project_path);
     fs::create_dir_all(&artifact_paths.indexes_dir)
         .with_context(|| format!("failed to create {}", artifact_paths.indexes_dir.display()))?;

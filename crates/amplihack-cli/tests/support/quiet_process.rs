@@ -66,7 +66,13 @@ pub fn in_quiet_process(module_path: &str, name: &str, body: impl FnOnce()) {
     let name = test_path(module_path, name);
     let exe = std::env::current_exe().expect("resolve the running test binary");
     let output = Command::new(&exe)
-        .args(["--exact", &name, "--test-threads=1", "--nocapture"])
+        .args([
+            "--exact",
+            &name,
+            "--include-ignored",
+            "--test-threads=1",
+            "--nocapture",
+        ])
         .env(QUIET_CHILD_ENV, std::process::id().to_string())
         .output()
         .unwrap_or_else(|e| panic!("cannot re-run {name} in {}: {e}", exe.display()));

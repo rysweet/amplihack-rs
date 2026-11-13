@@ -22,6 +22,7 @@ context: {}
 steps:
   - id: "step6-panel-cleanup"
     agent: "amplihack:cleanup"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       EXPERT PANEL REVIEW - Cleanup Agent
@@ -62,6 +63,7 @@ steps:
 
   - id: "step6-panel-optimizer"
     agent: "amplihack:optimizer"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       EXPERT PANEL REVIEW - Optimizer Agent
@@ -100,6 +102,7 @@ steps:
 
   - id: "step6-panel-reviewer"
     agent: "amplihack:reviewer"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       EXPERT PANEL REVIEW - Reviewer Agent
@@ -139,6 +142,7 @@ steps:
 
   - id: "step6-panel-patterns"
     agent: "amplihack:patterns"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       EXPERT PANEL REVIEW - Patterns Agent
@@ -176,6 +180,7 @@ steps:
 
   - id: "step6-panel-consensus"
     agent: "amplihack:architect"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       EXPERT PANEL CONSENSUS - Refactoring Approval
@@ -222,6 +227,7 @@ steps:
 
   - id: "step6-apply-refactoring"
     agent: "amplihack:builder"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       Apply consensus-approved refactoring:

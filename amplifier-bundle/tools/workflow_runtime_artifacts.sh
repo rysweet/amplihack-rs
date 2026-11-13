@@ -36,20 +36,7 @@ _amplihack_is_linked_worktree() {
 # clean-status gate there (e.g. the no-diff check in workflow_final_status.sh)
 # and invite `git add -A` to stage them. Idempotent; best-effort.
 _amplihack_exclude_worktrees_dir() {
-  local repo="${1:-.}" common exclude
-  common="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || return 0
-  case "$common" in /*) ;; *) common="$repo/$common" ;; esac
-  exclude="$common/info/exclude"
-  if [ -f "$exclude" ] && grep -qxF '/worktrees/' "$exclude" 2>/dev/null; then
-    return 0
-  fi
-  mkdir -p "$common/info" 2>/dev/null || return 0
-  # End an unterminated last line first, or the user's last rule and ours merge.
-  if [ -s "$exclude" ] && [ -n "$(tail -c1 "$exclude" 2>/dev/null)" ]; then
-    printf '\n' >> "$exclude" 2>/dev/null || true
-  fi
-  printf '/worktrees/\n' >> "$exclude" 2>/dev/null || true
-  return 0
+  amplihack hygiene workflow prepare --repo "${1:-.}"
 }
 
 cleanup_known_workflow_runtime_artifacts() {
@@ -102,7 +89,7 @@ cleanup_known_workflow_runtime_artifacts() {
 }
 
 preflight_known_workflow_runtime_artifacts() {
-  cleanup_known_workflow_runtime_artifacts "$@"
+  amplihack hygiene workflow prepare --repo "${1:-.}"
 }
 
 # ---------------------------------------------------------------------------

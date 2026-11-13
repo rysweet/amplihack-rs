@@ -163,6 +163,7 @@ steps:
     output: "crusty_evidence"
   - id: "step-02-merge-ready-assessment"
     agent: "amplihack:core:reviewer"
+    auto_stage: false
     working_dir: "{{review_dir}}"
     prompt: |
       # merge-ready assessment — PR #{{platform_facts.pr}} ({{autodrive_round_label}})
@@ -282,6 +283,7 @@ steps:
   - id: "step-04-address-blockers"
     condition: "merge_ready_verdict.merge_ready_verdict == 'NOT_MERGE_READY'"
     agent: "amplihack:builder"
+    auto_stage: false
     working_dir: "{{repo_path}}"
     prompt: |
       # Clear every merge-ready blocker
@@ -363,10 +365,9 @@ steps:
       amplihack_prepare_git_commit_identity || { echo "ERROR: git identity helper not found; stop rather than commit under a guessed identity" >&2; exit 2; }
 
       amplihack hygiene artifact-guard --repo . --mode pre-commit || { echo "STOP: artifact guard refused before staging (#1528)" >&2; exit 1; }
-      git add -A
       amplihack hygiene artifact-guard --repo . --mode pre-commit || { echo "STOP: artifact guard refused after staging; fix the cause, never bypass (#1528)" >&2; exit 1; }
-      git commit -m "clear merge-ready blockers: <what changed>" || { echo "STOP: the commit failed; fix what the hook reports, never bypass it (#1528)" >&2; exit 1; }
-      git push || { echo "STOP: the push failed (#1528)" >&2; exit 1; }
+      amplihack hygiene workflow checkpoint --repo . -m "clear merge-ready blockers: <what changed>" || { echo "STOP: the commit failed; fix what the hook reports, never bypass it (#1528)" >&2; exit 1; }
+      amplihack hygiene workflow publish --repo . || { echo "STOP: the push failed (#1528)" >&2; exit 1; }
       ```
 
       If the artifact guard objects, before or after staging, remove the

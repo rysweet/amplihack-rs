@@ -25,6 +25,7 @@ context:
 steps:
   - id: "step4-write-tests"
     agent: "amplihack:tester"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       Write comprehensive failing tests based on consensus design (TDD):
@@ -86,6 +87,7 @@ steps:
   - id: "step5-standard-implementation"
     condition: "is_critical_code == 'false'"
     agent: "amplihack:builder"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       Implement the solution following the consensus design:
@@ -123,6 +125,7 @@ steps:
   - id: "step5-nversion-identify-critical"
     condition: "is_critical_code == 'true'"
     agent: "amplihack:architect"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       Identify critical code sections for N-Version programming:
@@ -158,6 +161,7 @@ steps:
   - id: "step5-nversion-builder1-conservative"
     condition: "is_critical_code == 'true'"
     agent: "amplihack:builder"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       N-VERSION IMPLEMENTATION - Version 1: CONSERVATIVE Approach
@@ -191,6 +195,7 @@ steps:
   - id: "step5-nversion-builder2-pragmatic"
     condition: "is_critical_code == 'true'"
     agent: "amplihack:builder"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       N-VERSION IMPLEMENTATION - Version 2: PRAGMATIC Approach
@@ -224,6 +229,7 @@ steps:
   - id: "step5-nversion-builder3-minimalist"
     condition: "is_critical_code == 'true'"
     agent: "amplihack:builder"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       N-VERSION IMPLEMENTATION - Version 3: MINIMALIST Approach
@@ -257,6 +263,7 @@ steps:
   - id: "step5-nversion-compare"
     condition: "is_critical_code == 'true'"
     agent: "amplihack:architect"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       N-VERSION COMPARISON: Evaluate all implementations
@@ -304,6 +311,7 @@ steps:
   - id: "step5-nversion-synthesize"
     condition: "is_critical_code == 'true'"
     agent: "amplihack:builder"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       N-VERSION SYNTHESIS: Create final implementation
@@ -327,6 +335,7 @@ steps:
   - id: "step5-nversion-vote"
     condition: "is_critical_code == 'true'"
     agent: "amplihack:architect"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       N-VERSION CONSENSUS VOTE: Final approval for critical code

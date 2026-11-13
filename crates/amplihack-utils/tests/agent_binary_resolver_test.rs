@@ -5,7 +5,8 @@
 //! 2. Strict allowlist: only {claude, copilot, codex, amplifier}.
 //! 3. Walk-up boundary, file size cap, validation hardening.
 //!
-//! Run with: `TMPDIR=/tmp cargo test -p amplihack-utils --test agent_binary_resolver_test`
+//! Run with: `cargo test -p amplihack-utils --test agent_binary_resolver_test`.
+//! Repositories and profiles are isolated under `/var/tmp`.
 //!
 //! NOTE: tests mutate process env so they share `serial_test::serial` (or a
 //! single-threaded runner). Edition-2024 requires `unsafe` for env mutation.
@@ -22,7 +23,8 @@ use amplihack_utils::agent_binary::{
 };
 
 mod common;
-use common::bounded_tempdir;
+
+use common::isolated_bounded_tempdir as bounded_tempdir;
 
 /// Serialize tests that mutate `AMPLIHACK_AGENT_BINARY`. `cargo test` runs
 /// integration tests in parallel by default, which races env mutation across
@@ -65,21 +67,31 @@ fn write_launcher_context(repo: &Path, launcher: &str) {
 /// around the writer. Use this for hostile or malformed input, and the real
 /// writer for everything legitimate.
 fn write_raw_launcher_context(repo: &Path, body: &str) {
-    let runtime = repo.join(".claude").join("runtime");
-    fs::create_dir_all(&runtime).unwrap();
-    fs::write(runtime.join("launcher_context.json"), body).unwrap();
+    write_launcher_context(repo, "claude");
+    let path = amplihack_utils::launcher_context::launcher_context_path(repo);
+    let contents = match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(context) => {
+            let mut envelope: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            envelope["context"] = context;
+            serde_json::to_string(&envelope).unwrap()
+        }
+        Err(_) => body.to_owned(), // Deliberately malformed input remains malformed.
+    };
+    fs::write(path, contents).unwrap();
 }
 
 /// Same, but stamped into the past so the staleness bound can be exercised.
 ///
-/// Built from the real `LauncherContext` struct, so a field rename breaks this
-/// at compile time rather than silently at runtime.
+/// Change only the timestamp inside the real producer's bound envelope.
+/// Its identity metadata and other context fields remain unchanged.
 fn write_launcher_context_aged(repo: &Path, launcher: &str, age_hours: i64) {
     write_launcher_context(repo, launcher);
     let path = amplihack_utils::launcher_context::launcher_context_path(repo);
-    let mut ctx: amplihack_utils::launcher_context::LauncherContext =
+    let mut ctx: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-    ctx.timestamp = (chrono::Utc::now() - chrono::Duration::hours(age_hours)).to_rfc3339();
+    ctx["context"]["timestamp"] =
+        serde_json::json!((chrono::Utc::now() - chrono::Duration::hours(age_hours)).to_rfc3339());
     fs::write(&path, serde_json::to_string_pretty(&ctx).unwrap()).unwrap();
 }
 
@@ -220,12 +232,10 @@ fn oversized_launcher_context_is_rejected() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = bounded_tempdir();
-    let runtime = tmp.path().join(".claude").join("runtime");
-    fs::create_dir_all(&runtime).unwrap();
     // > 64 KiB cap.
     let huge = "x".repeat(70 * 1024);
     let body = format!(r#"{{"launcher":"claude","junk":"{huge}"}}"#);
-    fs::write(runtime.join("launcher_context.json"), body).unwrap();
+    write_raw_launcher_context(tmp.path(), &body);
     let result = resolve(tmp.path()).unwrap();
     assert_eq!(result, "copilot", "oversized file must be rejected");
 }
@@ -235,9 +245,7 @@ fn malformed_launcher_context_falls_back_to_default() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = bounded_tempdir();
-    let runtime = tmp.path().join(".claude").join("runtime");
-    fs::create_dir_all(&runtime).unwrap();
-    fs::write(runtime.join("launcher_context.json"), "{not valid json").unwrap();
+    write_raw_launcher_context(tmp.path(), "{not valid json");
     let result = resolve(tmp.path()).unwrap();
     assert_eq!(result, "copilot");
 }
@@ -261,9 +269,16 @@ fn walk_up_stops_at_git_boundary() {
     let tmp = bounded_tempdir();
     // Outer repo with launcher_context = claude.
     write_launcher_context(tmp.path(), "claude");
-    // Inner "repo" with .git boundary, no launcher_context.
+    // Inner repository boundary, with no launcher context.
     let inner = tmp.path().join("inner");
-    fs::create_dir_all(inner.join(".git")).unwrap();
+    fs::create_dir_all(&inner).unwrap();
+    assert!(
+        amplihack_git::command_in(&inner)
+            .args(["init", "--quiet", "--template="])
+            .status()
+            .unwrap()
+            .success()
+    );
     let nested = inner.join("src");
     fs::create_dir_all(&nested).unwrap();
     let result = resolve(&nested).unwrap();
@@ -327,13 +342,7 @@ fn launcher_context_without_timestamp_is_ignored_and_named() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = bounded_tempdir();
-    let runtime = tmp.path().join(".claude").join("runtime");
-    fs::create_dir_all(&runtime).unwrap();
-    fs::write(
-        runtime.join("launcher_context.json"),
-        r#"{"launcher":"claude","pid":1234}"#,
-    )
-    .unwrap();
+    write_raw_launcher_context(tmp.path(), r#"{"launcher":"claude","pid":1234}"#);
     let resolution = agent_binary::resolve_detailed(tmp.path()).unwrap();
     assert_eq!(resolution.binary, "copilot");
     assert_eq!(resolution.context_file, None);
@@ -353,14 +362,11 @@ fn launcher_context_with_a_non_rfc3339_timestamp_is_ignored_and_named() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = bounded_tempdir();
-    let runtime = tmp.path().join(".claude").join("runtime");
-    fs::create_dir_all(&runtime).unwrap();
     let local = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S");
-    fs::write(
-        runtime.join("launcher_context.json"),
-        format!(r#"{{"launcher":"claude","timestamp":"{local}"}}"#),
-    )
-    .unwrap();
+    write_raw_launcher_context(
+        tmp.path(),
+        &format!(r#"{{"launcher":"claude","timestamp":"{local}"}}"#),
+    );
     let resolution = agent_binary::resolve_detailed(tmp.path()).unwrap();
     assert_eq!(resolution.binary, "copilot");
     let reasons: Vec<&str> = resolution

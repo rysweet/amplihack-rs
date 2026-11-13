@@ -1,6 +1,5 @@
 //! Shared launcher context persistence for launcher commands and hooks.
 
-use amplihack_types::ProjectDirs;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -57,10 +56,8 @@ pub fn write_launcher_context(
     command: impl Into<String>,
     environment: BTreeMap<String, String>,
 ) -> Result<PathBuf> {
-    let dirs = ProjectDirs::from_root(project_root);
-    fs::create_dir_all(&dirs.runtime)
-        .with_context(|| format!("failed to create {}", dirs.runtime.display()))?;
-    let context_path = dirs.launcher_context_file();
+    let state = amplihack_git::launcher_state::prepare(project_root)?;
+    let context_path = state.directory.join("launcher_context.json");
     let context = LauncherContext {
         launcher,
         command: command.into(),
@@ -68,7 +65,7 @@ pub fn write_launcher_context(
         environment,
     };
     let body =
-        serde_json::to_string_pretty(&context).context("failed to encode launcher context")?;
+        serde_json::to_string_pretty(&serde_json::json!({"context": context, "schema_version": 1, "checkout": state.checkout, "common": state.common})).context("failed to encode launcher context")?;
     replace_file(&context_path, |file| file.write_all(body.as_bytes()))
         .with_context(|| format!("failed to write {}", context_path.display()))?;
     Ok(context_path)
@@ -112,7 +109,24 @@ fn replace_file(
 }
 
 pub fn read_launcher_context(project_root: &Path) -> Option<LauncherContext> {
-    let path = launcher_context_path(project_root);
+    let envelope = read_bound_document(project_root)?;
+    match serde_json::from_value::<LauncherContext>(envelope["context"].clone()) {
+        Ok(context) => Some(context),
+        Err(error) => {
+            tracing::warn!("invalid launcher context file: {error}");
+            None
+        }
+    }
+}
+
+/// Validate identity before each reader applies its own field diagnostics.
+pub(crate) fn read_bound_document(project_root: &Path) -> Option<serde_json::Value> {
+    let state = amplihack_git::launcher_state::resolve(project_root).ok()?;
+    let path = state.directory.join("launcher_context.json");
+    let metadata = fs::symlink_metadata(&path).ok()?;
+    if !metadata.is_file() || metadata.len() > 64 * 1024 {
+        return None;
+    }
     let raw = match fs::read_to_string(&path) {
         Ok(raw) => raw,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
@@ -124,20 +138,22 @@ pub fn read_launcher_context(project_root: &Path) -> Option<LauncherContext> {
             return None;
         }
     };
-    match serde_json::from_str::<LauncherContext>(&raw) {
-        Ok(context) => Some(context),
-        Err(error) => {
-            tracing::warn!(
-                path = %path.display(),
-                "invalid launcher context file: {error}"
-            );
-            None
-        }
+    let envelope: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    if envelope["schema_version"] != 1
+        || envelope["checkout"].as_str() != state.checkout.to_str()
+        || envelope["common"].as_str() != state.common.to_str()
+    {
+        tracing::warn!("launcher context identity does not match this checkout");
+        return None;
     }
+    Some(envelope)
 }
 
 pub fn launcher_context_path(project_root: &Path) -> PathBuf {
-    ProjectDirs::from_root(project_root).launcher_context_file()
+    // An unusable identity resolves to a non-file; readers never revive legacy state.
+    amplihack_git::launcher_state::resolve(project_root)
+        .map(|s| s.directory.join("launcher_context.json"))
+        .unwrap_or_else(|_| PathBuf::from("/dev/null/invalid-launcher-context"))
 }
 
 pub fn is_launcher_context_stale(context: &LauncherContext) -> bool {
@@ -183,9 +199,49 @@ fn is_launcher_context_stale_with(context: &LauncherContext, _max_age_hours: i64
 mod tests {
     use super::*;
 
+    struct Fixture {
+        checkout: tempfile::TempDir,
+        _state: tempfile::TempDir,
+        _environment: crate::test_support::EnvGuard,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+    impl Fixture {
+        fn new() -> Self {
+            let lock = crate::test_support::env_lock()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let state = tempfile::tempdir_in("/var/tmp").unwrap();
+            let environment = crate::test_support::EnvGuard::set([
+                ("AMPLIHACK_HOME", state.path().to_str().unwrap()),
+                ("HOME", state.path().to_str().unwrap()),
+                ("XDG_CONFIG_HOME", state.path().to_str().unwrap()),
+                ("GIT_CONFIG_GLOBAL", "/dev/null"),
+                ("GIT_CONFIG_NOSYSTEM", "1"),
+                ("AMPLIHACK_RUNTIME_DIR", ""),
+            ]);
+            let checkout = tempfile::tempdir_in("/var/tmp").unwrap();
+            assert!(
+                amplihack_git::command_in(checkout.path())
+                    .args(["init", "--quiet", "--template="])
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            Self {
+                checkout,
+                _state: state,
+                _environment: environment,
+                _lock: lock,
+            }
+        }
+        fn path(&self) -> &Path {
+            self.checkout.path()
+        }
+    }
+
     #[test]
     fn writes_and_reads_launcher_context() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = Fixture::new();
         let mut environment = BTreeMap::new();
         environment.insert("AMPLIHACK_LAUNCHER".to_string(), "copilot".to_string());
 
@@ -210,7 +266,7 @@ mod tests {
     /// previous file whole and no temporary file behind.
     #[test]
     fn a_failed_write_leaves_the_previous_context_intact() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = Fixture::new();
         let path = write_launcher_context(
             dir.path(),
             LauncherKind::Claude,
@@ -245,7 +301,7 @@ mod tests {
     #[test]
     fn a_written_context_is_readable_by_its_owner_only() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = Fixture::new();
         let path = write_launcher_context(
             dir.path(),
             LauncherKind::Copilot,
@@ -270,7 +326,7 @@ mod tests {
 
     #[test]
     fn invalid_context_file_reads_as_none() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = Fixture::new();
         let path = launcher_context_path(dir.path());
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "{not-json").unwrap();

@@ -1,362 +1,260 @@
-# Workflow Runtime Artifacts Reference
+---
+title: Workflow runtime artefacts reference
+description: Workspace validation, external launcher state and common-Git runtime exclusion contracts.
+doc_type: reference
+last_updated: 2026-11-12
+---
 
-This reference defines the runtime-root, cleanup, and guard-point contracts used
-by `default-workflow`, recovery flows, launchers, provenance logging, publish
-helpers, and finalization helpers.
+# Workflow runtime artefacts reference
 
-Updated: 2026-10-06
+This reference describes candidate runtime boundaries for launchers, indexing commands,
+default and consensus workflows, nested recipes and recovery helpers.
+
+**Acceptance remains incomplete.** Required runner acceptance and historical
+evidence are recorded separately from these implementation contracts.
 
 ## Contents
 
-- [Environment variables](#environment-variables)
-- [Runtime root resolution](#runtime-root-resolution)
-- [Runtime directory layout](#runtime-directory-layout)
-- [Known worktree-local artifacts](#known-worktree-local-artifacts)
+- [Implementation gaps](#implementation-gaps)
+- [Workspace validation](#workspace-validation)
+- [External state resolution](#external-state-resolution)
+- [Launcher identity and readers](#launcher-identity-and-readers)
+- [Checkout-local exclusions](#checkout-local-exclusions)
+- [First-write preparation API](#first-write-preparation-api)
 - [Shell helper API](#shell-helper-api)
 - [Lifecycle integration](#lifecycle-integration)
-- [Artifact Guard interaction](#artifact-guard-interaction)
 - [Regression contract](#regression-contract)
 
-## Environment variables
+## Implementation gaps
 
-| Variable | Direction | Meaning |
+External launcher context and session records use checkout-specific directories.
+`get_shared_runtime_dir` uses a separate clone-scoped directory for power-steering
+state, preserving linked-worktree sharing. The owned exclusion catalogue includes
+`/.amplihack/runtime/`, `/index.scip.backup` and indexing PID files. Registration
+preserves existing rules and permissions and appends effective runtime rules
+after later negations; repeated preparation is idempotent.
+
+The [checkpoint reference](workflow-checkpoint-publication.md#implementation-gaps)
+describes supported index formats and publication restrictions. The original
+native runner controls and historical publication packet remain outstanding
+acceptance evidence; source changes alone do not close those gaps.
+
+## Workspace validation
+
+Validation is read-only. It establishes an existing, non-bare checkout, its
+canonical root and common Git directory, expected task location, and the remote
+and base-history prerequisites for the requested workflow. It completes before
+runtime preparation, checkout-local writes or worktree creation.
+
+Ordinary launch never runs `git init`, including when `auto_init_repo=true` is
+defaulted or supplied alone. A non-Git workspace, including one containing nested
+checkouts, is refused without alteration. Any separately supported explicit
+creation flow establishes all applicable preparation, remote and worktree
+prerequisites before mutation.
+
+## External state resolution
+
+| Context | State location |
+| --- | --- |
+| Managed recipe run | The run's external runtime directory, supplied by the runner. |
+| Standalone launcher | Identity-scoped state beneath the existing Amplihack external state root. |
+| Child recipe or agent | The inherited run root and validated project, checkout and session identity. |
+
+Recipe work-root configuration and retention follow
+[Clean up after recipe runs](../howto/clean-up-after-recipe-runs.md).
+`AMPLIHACK_WORK_ROOT` selects the runner's work area. The runner sets
+`AMPLIHACK_RUNTIME_ROOT` and `AMPLIHACK_WORKFLOW_RUNTIME_DIR` for its steps;
+caller-supplied `AMPLIHACK_RUNTIME_ROOT` does not override that selection.
+
+| Setting | Role |
+| --- | --- |
+| `AMPLIHACK_WORK_ROOT` | External work area selected before recipe launch. |
+| `AMPLIHACK_RUNTIME_ROOT`, `AMPLIHACK_WORKFLOW_RUNTIME_DIR` | Run locations supplied to child steps by the runner. |
+| `AMPLIHACK_RUNTIME_DIR` | Explicit launcher-state base; must pass external-placement validation. |
+| `AMPLIHACK_HOME` | External state root when suitable; can separately identify framework assets. |
+
+A launcher-state override remains identity-scoped and cannot alter clone-sharing
+contracts. Children use the run's validated location consistently; conflicting
+or checkout-local overrides fail rather than creating a second state collection.
+
+Without a run root, standalone launchers use the
+[external state-root convention](hook-state-root.md): a suitable external
+`AMPLIHACK_HOME`, otherwise `$HOME/.amplihack`. A checkout used as
+`AMPLIHACK_HOME` remains an asset source and is not used for state. There is no
+fallback to the current directory or `REPO_PATH`.
+
+Effective state paths are absolute and private. Resolution checks existing
+ancestors and symlinks and rejects a runtime override resolving inside the
+target checkout, its Git metadata or any other registered checkout of the clone.
+An invalid override is reported, not silently treated as
+external. Launcher prompt-file storage is validated before writing; an explicit
+external runtime directory also supports launch when `HOME` is unset. Missing usable external state is an error for dependent launcher
+writes. Read-only resolution creates no directories; preparation revalidates
+containment and ownership before and after creation, using private directories
+and owner-only files. A path that changes identity during preparation is refused.
+
+Standard run directories include `locks/`, `logs/`, `metrics/`, `provenance/`
+and `reflection/`. Internal identity directory names are not a user-configurable
+interface.
+
+## Launcher identity and readers
+
+External state contains `launcher_context.json`, `sessions.jsonl` and
+`sessions.jsonl.lock`. Other launcher locks and temporary replacement files
+remain external too. Context replacement is atomic; session logging retains
+locking and compaction.
+
+Project identity derives from the canonical common Git directory. Checkout
+identity derives from the canonical worktree root. Session keys cannot escape
+their directory and distinguish original IDs that would collide after simple
+character replacement. Records retain the original identity metadata; corrupt
+or mismatched records are rejected.
+
+Writers and readers share resolution: launcher context, `agent-binary`, CLI
+environment resolution, both session trackers, both nesting detectors and
+shared-runtime lookup all use the external identity. Independent repositories
+with the same directory name or session label do not share context. Linked
+worktrees share project identity but retain distinct checkout identity.
+
+| State | Identity scope | Linked-worktree behaviour |
 | --- | --- | --- |
-| `AMPLIHACK_RUNTIME_ROOT` | Read and propagated | Absolute directory for workflow-generated runtime files. |
-| `AMPLIHACK_RECIPE_RUN_ID` | Set by `amplihack recipe run` | Stable per-run ID used in default runtime-root paths and log correlation. |
-| `XDG_RUNTIME_DIR` | Read | Preferred platform runtime base when `AMPLIHACK_RUNTIME_ROOT` is unset. |
-| `TMPDIR` | Read indirectly | Host temporary directory preference for tools that create additional scratch output. |
-| `AMPLIHACK_AGENT_BINARY` | Propagated | Active agent runtime for child agentic steps. |
-| `AMPLIHACK_NONINTERACTIVE` | Propagated | Forces child workflow and helper processes into non-interactive mode. |
+| Launcher context | Clone and checkout | Each checkout selects its own context. |
+| Session records and locks | The owning session collection | Writers, readers and locks resolve the same external collection. |
+| Shared power-steering state | Clone | All linked worktrees resolve the same external directory. |
 
-`AMPLIHACK_RUNTIME_ROOT` is treated only as a filesystem path. Recipes and shell
-helpers quote it and never evaluate it as shell code.
+`get_shared_runtime_dir` returns a clone-scoped external directory. Launcher
+context remains checkout-specific. Moving the files preserves which callers
+share them. Session identity is retained within the relevant collection;
+independent clones never share records merely because their names match.
 
-The top-level workflow establishes `AMPLIHACK_RUNTIME_ROOT` once. Child
-workflows, nested recipes, and agents inherit it unchanged; they must not run
-runtime-root resolution again and create sibling roots.
+Agent selection retains precedence: explicit binary override, live session
+markers, user-configured binary, tmux-server-held values, validated persisted
+context, then the built-in default. Relocating context does not elevate it above
+live session evidence. Legacy `<checkout>/.claude/runtime/launcher_context.json`
+is never a routing or nesting authority. Readers do not recreate it or search
+unrelated ancestor checkouts for a replacement.
 
-## Runtime root resolution
+## Checkout-local exclusions
 
-The shared resolver returns one runtime root for a workflow run.
-
-| Priority | Source | Example |
-| --- | --- | --- |
-| 1 | `AMPLIHACK_RUNTIME_ROOT` | `/var/tmp/amplihack-runtime/alice/run-123` |
-| 2 | `$XDG_RUNTIME_DIR/amplihack/runtime/<run-id>` | `/run/user/1000/amplihack/runtime/550e8400-e29b-41d4-a716-446655440000` |
-| 3 | `/tmp/amplihack-runtime/<user>/<run-id>` | `/tmp/amplihack-runtime/alice/550e8400-e29b-41d4-a716-446655440000` |
-
-The resolver rejects empty paths, root paths, and paths that cannot be created.
-Workflow-managed defaults are outside Git worktrees and are created with
-restrictive owner-only permissions where the platform supports them. If a caller
-explicitly sets `AMPLIHACK_RUNTIME_ROOT`, they are responsible for selecting a
-private external path.
-
-## Runtime directory layout
-
-The resolver creates these subdirectories before child workflows or agents run:
+Every owned checkout-local writer first registers exclusions in:
 
 ```text
-<runtime-root>/
-  locks/
-  logs/
-  metrics/
-  provenance/
-  reflection/
+<canonical git-common-dir>/info/exclude
 ```
 
-Launchers use the runtime root for generated launcher state. Provenance logging
-uses the `provenance/`, `logs/`, `metrics/`, and `reflection/` directories.
-Recipe helpers may add run-scoped files under these directories, but must not
-write generated runtime output into the task worktree.
+The common directory is resolved through Git, not by assuming `.git` is a
+directory. The same exclusions apply to the main checkout and linked worktrees
+without user or system Git configuration.
 
-Launcher context files used for active-agent routing belong under the runtime
-root. `<worktree>/.claude/runtime/launcher_context.json` is legacy fallback
-state only and must not be treated as canonical by new workflow code.
+The ownership catalogue covers these locations and their owned sidecars.
 
-Process metadata for nested agents, workstreams, provider helper calls, and
-simulation runs is stored under the runtime root. Recipes use that metadata for
-scoped closure and finalization instead of relying on host-global process lists
-or stale PID-only records.
+| Root-anchored location | Contents |
+| --- | --- |
+| `/.amplihack/graph_db` | Graph data, whether represented by a file or directory. |
+| `/.amplihack/kuzu_db` | Legacy graph database storage. |
+| `/.amplihack/graph_db.wal`, `/.amplihack/graph_db.lock`, `/.amplihack/kuzu_db.wal`, `/.amplihack/kuzu_db.lock` | Database sidecars. |
+| `/index.scip`, `/index.scip.backup` | Retained framework-generated root index output, where applicable. |
+| `/.amplihack/indexes/` | Framework-generated indexes. |
+| `/.amplihack/index.scip`, `/.amplihack/index.scip.backup` | Framework SCIP output and backup. |
+| `/.amplihack/indexing.pid` | Indexing process state. |
+| `/.amplihack/blarify.json` | Framework-generated graph input. |
+| `/.amplihack/runtime/`, `/.amplihack/locks/`, `/.amplihack/session-state/` | Owned runtime and locks. |
+| `/.amplihack/metrics/`, `/.amplihack/classification_state/` | Owned metrics and classification state. |
+| `/.claude/runtime/` | Any remaining local runtime, including locks, metrics and classification state. |
+| `/worktrees/` | Workflow-owned nested worktrees. |
 
-## Known worktree-local artifacts
+Graph storage remains checkout-local. Framework-generated root `index.scip` and
+its backup are redirected into owned index storage where consumers support it;
+any retained root output is registered before writing. Additional owned cache,
+index, lock or temporary paths enter the catalogue before their writers run.
+Ownership includes sidecars beside a database file, not just descendants of a
+directory.
 
-Only these worktree-local paths are classified as known workflow runtime
-artifacts:
+The catalogue does not blanket-ignore `/.amplihack/` or `/.claude/`.
+`.amplihack/config.toml`, `.claude/settings.json`, agents and skills remain
+visible. Existing user-authored index files are not reclassified as runtime
+merely because their basename matches generated output.
 
-| Repo-relative path | Owner | Cleanup behavior |
+Registration serialises cooperating writers and replaces the exclusion file
+atomically. It preserves existing bytes, comments, permissions and an
+unterminated final line, separating appended patterns with a newline. Equivalent
+effective exclusions are not appended twice. Matching observes Git ignore
+semantics, including anchoring, file/directory forms and later negations. A
+comment or ineffective earlier pattern is not proof of coverage.
+
+Registration failures are reported before dependent directories, databases,
+PID files, locks, metrics or temporary files are created. There is no global
+ignore or tracked `.gitignore` fallback.
+
+## First-write preparation API
+
+These internal interfaces separate path descriptions from validated Git
+operations. Their handles are opaque; callers cannot manufacture mutation
+authority from a path string.
+
+| Module | Inputs | Result and side effects |
 | --- | --- | --- |
-| `.claude/runtime` | legacy amplihack launcher and nested agent runtime state | Removed by workflow runtime preflight when present. |
-| `worktrees` | reserved root for amplihack workflow-created nested scratch worktrees under a managed task worktree | Nested git worktrees are deregistered (`git worktree remove --force` + `git worktree prune`) and the directory is removed by workflow runtime preflight when present and not tracked source. A bare `rm -rf` is never sufficient: it leaves dangling worktree registrations behind (issue #808 — a regression of the #780/#755 local-leak fixes). While it holds a registered worktree, as a main checkout's does, it is kept; see [`cleanup_known_workflow_runtime_artifacts`](#cleanup_known_workflow_runtime_artifacts). |
+| `amplihack_types::paths::owned_runtime` | Owned artefact kind | Pure local path and exclusion description; no Git subprocesses. |
+| `amplihack_git::launcher_state` | External root and canonical project, checkout and session identities | Pure identity-bound paths; no directory creation. |
+| `amplihack_git::workspace_validation` | Requested root and workflow prerequisites | Opaque validated checkout handle, or an error before mutation. |
+| `amplihack_git::runtime_preparation` | Validated handle and owned runtime locations | Fallible, serialised common-exclusion registration before dependent writes. |
 
-The cleanup contract does not include `.claude` itself, `.claude/settings.json`,
-source files, build output, dependency directories, logs outside the runtime
-root, or arbitrary untracked files.
-
-Root-level `worktrees/` is reserved in amplihack-managed task worktrees. If a
-repository intentionally tracks source under that path, the workflow must fail
-closed and require a repository layout change instead of deleting it.
+Standalone indexing commands use the same preparation boundary as workflows.
+Callers cannot replace a validated handle with an arbitrary path or ignore a
+preparation error and continue writing.
 
 ## Shell helper API
 
-The helper script lives at:
+The installed helper remains
+`amplifier-bundle/tools/workflow_runtime_artifacts.sh`. Recipe helper lookup
+checks `WORKFLOW_RUNTIME_ARTIFACT_HELPER`, the explicit `AMPLIHACK_HOME` bundle,
+the target or active checkout's bundle, then installed Copilot and Amplihack
+bundles. Missing helpers fail visibly; a target need not vendor the framework.
 
-```text
-amplifier-bundle/tools/workflow_runtime_artifacts.sh
-```
+| Function | Contract |
+| --- | --- |
+| `cleanup_known_workflow_runtime_artifacts(worktree)` | Narrow owned-leftover cleanup; preserves tracked source and the index. |
+| `preflight_known_workflow_runtime_artifacts(worktree)` | Cleanup and lifecycle validation; never authorises broad staging. |
+| `record_run_created_branch(repo, branch)` | Idempotent run-scoped branch manifest in the common Git directory. |
+| `cleanup_run_created_branches(repo, intended_branch)` | Preserves intended, checked-out and protected branches; remote changes use validated publication. |
+| `cleanup_nested_worktrees(repo)` | Removes owned nested worktrees with Git deregistration, preserving siblings and the main checkout. |
+| `finalize_workflow_runtime_artifacts(task_worktree, intended_branch)` | Finalises only the dedicated task worktree's owned resources. |
+| `finalize_workflow_cleanup_entry(repo_root, worktree_path, intended_branch)` | Confirms a distinct linked task worktree before nested cleanup; never falls back to committing in the launch checkout. |
 
-Source it from recipe shell steps or workflow helper scripts:
-
-```bash
-. "$AMPLIHACK_HOME/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
-```
-
-### Helper path resolution
-
-The helper is not required to live under the target repository. Recipe lifecycle
-steps resolve `workflow_runtime_artifacts.sh` by checking these locations in
-order and using the first that exists:
-
-| Priority | Candidate | Purpose |
-| --- | --- | --- |
-| 1 | `$WORKFLOW_RUNTIME_ARTIFACT_HELPER` | Explicit override (publish/tool steps). |
-| 2 | `$AMPLIHACK_HOME/amplifier-bundle/tools/...` | Honor an explicit Amplihack home. |
-| 3 | `$REPO_PATH/amplifier-bundle/tools/...` | Target repo checkout that bundles the tools. |
-| 4 | `$(pwd)/amplifier-bundle/tools/...` | Active worktree that bundles the tools. |
-| 5 | `$HOME/.copilot/amplifier-bundle/tools/...` | Copilot-installed bundle. |
-| 6 | `$HOME/.amplihack/amplifier-bundle/tools/...` | Default installed Amplihack bundle. |
-
-When `AMPLIHACK_HOME` is unset and the target repository does not vendor an
-`amplifier-bundle/` directory, the helper still resolves from the installed
-`~/.amplihack` (or `~/.copilot`) bundle. The step fails with a clear error only
-when no candidate resolves. This prevents a successful implementation from being
-reported as failed at `checkpoint-after-implementation` (issue #817).
-
-
-### `cleanup_known_workflow_runtime_artifacts`
-
-```bash
-cleanup_known_workflow_runtime_artifacts "$worktree"
-```
-
-Removes the known workflow runtime artifact paths if they exist. Missing known
-paths are a successful no-op. For each existing target, the helper:
-
-1. Requires a non-empty worktree path.
-2. Requires the path to resolve to a Git worktree.
-3. Resolves the worktree and existing target paths before deletion.
-4. Rejects tracked source paths, symlink escapes, and targets outside the
-   worktree.
-5. Deletes only exact matches for `.claude/runtime` and `worktrees` under the
-   active worktree.
-6. Fails non-zero if validation or deletion fails.
-
-Before it removes `worktrees`, the helper runs `git worktree list --porcelain`
-in the target. If that fails, the helper cannot prove the directory is safe to
-delete, so it keeps it, passes Git's own error through on stderr, prints
-`WARNING: runtime cleanup kept <repo>/worktrees: git worktree list failed (#1528)`
-and moves on to the next path without failing.
-
-In a repository's main checkout, `worktrees` holds the live worktrees of every
-run launched from it, so it is never removed there, whether or not anything
-under it is registered (issue #1494). The helper also prints
-`INFO: leaving <repo>/worktrees in place: on the main checkout it holds other runs' worktrees (#1494)`
-and adds `/worktrees/` to the repository's `info/exclude`, so the kept
-directory never shows as untracked. In a linked task worktree, `worktrees`
-holds this run's nested scratch worktrees, which are deregistered and removed
-as described above (issue #808). `.claude/runtime` is cleaned either way.
-
-Some steps run the preflight in `REPO_PATH`, which is the launch checkout:
-`step-22b-final-status` in `workflow-finalize.yaml` does, and so does the
-`workflow_final_status.sh` it calls. Without this rule, cleanup's
-`rm -rf -- "$repo/worktrees"` would delete every live run worktree under a main
-checkout.
-
-### `preflight_known_workflow_runtime_artifacts`
-
-```bash
-preflight_known_workflow_runtime_artifacts "$worktree"
-```
-
-Runs cleanup, then verifies that the known runtime artifact paths are absent.
-The one exception is a `worktrees` that cleanup kept on purpose: a main
-checkout's, or any whose worktree list failed. Use this function before
-guard-sensitive lifecycle operations.
-
-### Deterministic finalization cleanup (issue #808)
-
-When a `default-workflow` run hits a denied force-push, its push-fallback path
-could spray throwaway branches to the shared remote and leave nested worktrees
-behind, with no finalization cleanup to remove them. The helper exposes a
-deterministic, idempotent, fail-soft cleanup for that leak class. Every function
-returns success even when individual `git` operations fail, so it is safe to
-call from success and failure/early-exit paths (for example an `EXIT` trap). The
-intended PR branch, any branch still checked out in a worktree, and the
-protected base branches (`main`, `master`, `develop`) are never deleted.
-
-#### `record_run_created_branch`
-
-```bash
-record_run_created_branch "$repo" "$fallback_branch"
-```
-
-Tracks a run-created fallback/intermediate branch in a per-run manifest stored
-under the shared git common dir
-(`$(git rev-parse --git-common-dir)/amplihack/run-created-branches-<run-id>`,
-scoped by `AMPLIHACK_RECIPE_RUN_ID` so concurrent runs never consume each
-other's entries). Deduplicated and idempotent. Whenever the workflow pushes a
-branch other than the intended PR branch, it records it here so finalization
-can delete it.
-
-#### `cleanup_run_created_branches`
-
-```bash
-cleanup_run_created_branches "$repo" "$intended_branch"
-```
-
-Deletes every manifest-tracked branch from the shared remote
-(`git push origin --delete`) and locally (`git branch -D`), then consumes the
-manifest. Preserves the intended/checked-out/protected branches.
-
-#### `cleanup_nested_worktrees`
-
-```bash
-cleanup_nested_worktrees "$repo"
-```
-
-Removes every registered git worktree that lives under `<repo>/worktrees/` with
-`git worktree remove --force` and prunes dangling registrations with
-`git worktree prune`. Operating on the per-task worktree, this only touches
-worktrees nested **inside** it — never the task worktree itself, a sibling task
-worktree, or the main worktree.
-
-#### `finalize_workflow_runtime_artifacts`
-
-```bash
-finalize_workflow_runtime_artifacts "$task_worktree" "$intended_branch"
-```
-
-Finalization entry point. It captures the branches of nested worktrees, removes
-the nested worktrees, deletes those now-orphaned branches plus any
-manifest-tracked fallback branches from the shared remote and locally, and then
-runs the narrow runtime-artifact sweep. **Call it with a dedicated per-task
-worktree** as `<repo>`: nested-worktree removal only touches `worktrees/`
-children of that worktree, never the worktree itself, a sibling task worktree,
-or the main worktree.
-
-#### `finalize_workflow_cleanup_entry`
-
-```bash
-finalize_workflow_cleanup_entry "$repo_root" "$worktree_path" "$intended_branch"
-```
-
-Recipe-facing entry point (invoked from `workflow_agentic_finalization.sh
-collect`). It runs `finalize_workflow_runtime_artifacts` only when
-`worktree_path` is a *linked* worktree whose canonical toplevel differs from the
-repo root; otherwise it runs only the manifest-keyed branch cleanup (which never
-removes a worktree). Deleted branches never include the intended PR branch, a
-checked-out branch, or a protected/default branch.
+Cleanup preserves a main checkout's `worktrees/` and other runs' live worktrees.
+Failed worktree discovery preserves the directory and reports the failure.
+Tracked source, symlink escapes and unproven ownership prevent deletion. Missing
+owned paths are no-ops. Cleanup does not silently remove protected staged work.
 
 ## Lifecycle integration
 
-The bundled workflows and helper scripts call
-`preflight_known_workflow_runtime_artifacts` before lifecycle operations that
-would otherwise fail on workflow-owned leftovers.
+Preparation precedes the first write; cleanup is not the exclusion mechanism.
+Checkpoints, hook repair, review feedback, publication and finalisation use the
+[bounded checkpoint and publication contracts](workflow-checkpoint-publication.md).
+The required `auto_stage: false` setting applies to reachable default, consensus
+and autodrive agent roles, including `autodrive-crusty-round` steps `02` and `04`.
 
-| File | Required preflight points |
-| --- | --- |
-| `workflow-worktree.yaml` | Establish `AMPLIHACK_RUNTIME_ROOT` for the top-level managed task worktree and propagate it unchanged to child workflows. |
-| `workflow-tdd.yaml` | Before checkpoint and broad staging. |
-| `workflow-refactor-review.yaml` | Before checkpoint and broad staging. |
-| `workflow-pr-review.yaml` | Before checkpoint and broad staging. |
-| `workflow-publish.yaml` | Before dirty checks, publish staging, commit, push, and PR creation. |
-| `workflow-finalize.yaml` | Before final status gates and final broad staging. The deterministic finalization cleanup runs inside `workflow_agentic_finalization.sh collect` (invoked unconditionally by `collect-finalization-evidence`) via `finalize_workflow_cleanup_entry`, deleting run-created fallback branches (remote + local) and removing nested worktrees before evidence is collected. |
-| `workflow_publish_pr.sh` | Before dirty-worktree checks and broad staging. |
-| `workflow_final_status.sh` | Before final clean-worktree validation. |
-
-Any new recipe step that invokes `git add -A`, performs publication staging, or
-requires a clean worktree must run the same preflight immediately before the
-operation.
-
-In `workflow-finalize.yaml`, `step-20a-artifact-guard` and
-`step-20b-push-cleanup` run only in the task worktree
-(`worktree_setup.worktree_path`). Before the preflight runs, each step checks
-that path and skips when either check fails. A skip prints one warning on
-stderr and exits `0`:
-
-| Condition | Reason in the warning |
-| --- | --- |
-| The path is empty, missing, or not a directory | `worktree path gone` |
-| The path is a directory but not the top of a linked worktree: a plain directory, the main checkout, or a subdirectory of a checkout | `worktree path is not a linked worktree` |
-
-The linked-worktree check compares `git rev-parse --absolute-git-dir` with
-`git rev-parse --path-format=absolute --git-common-dir`; they differ only in a
-linked worktree. The full warning lines are:
-
-```text
-WARNING: step-20a worktree path gone; skipping the artifact guard — never runs in REPO_PATH (#1528)
-WARNING: step-20a worktree path is not a linked worktree; skipping the artifact guard — never runs in REPO_PATH (#1528)
-WARNING: step-20b worktree path gone; skipping cleanup commit/push — never commits in REPO_PATH (#1528)
-WARNING: step-20b worktree path is not a linked worktree; skipping cleanup commit/push — never commits in REPO_PATH (#1528)
-```
-
-The step-20b lines are tested exactly
-(`tests/integration/artifact_guard_workflow_tests.rs`), and every skip must come
-before the preflight, the guard and `git add -A`. The step-20a lines are the
-intended text but no test checks them.
-
-Neither step falls back to `REPO_PATH` or the current directory. That fallback
-is the launch checkout, where the preflight would act on live run worktrees
-and step-20b would stage, commit and push (issue #1528). `step-21-pr-ready`
-keeps its fallback because it does not commit.
-
-## Artifact Guard interaction
-
-Artifact Guard is still the authority for unexpected artifacts. It does not
-delete files and it is not weakened for workflow runtime isolation.
-
-The order is:
-
-```text
-isolate runtime output outside worktree
-preflight known workflow runtime leftovers
-run strict Artifact Guard or clean-worktree gate
-stage, commit, publish, or finalize
-```
-
-If `.claude/runtime` or `worktrees/` remains after preflight, the lifecycle step
-fails visibly, except for a `worktrees/` that preflight keeps on purpose (a main checkout's, or one
-whose worktree list failed). If any unrelated artifact remains, Artifact Guard fails visibly.
+Finalisation commit and guard steps require the actual linked task worktree.
+They skip visibly if that worktree is missing or unsuitable, and never fall back
+to the launch checkout. The strict runtime rule in
+`artifact-guard --mode pre-publish` applies before any launcher-file exemption.
 
 ## Regression contract
 
-Regression coverage for workflow runtime isolation verifies:
+Fixtures use disposable repositories without ignore rules and isolated profile
+roots configured before any profile lookup. Launch acceptance unsets `HOME` and
+`XDG_CONFIG_HOME` and supplies external `AMPLIHACK_HOME`, Claude and Codex roots.
+Fixtures never use the real profile roots. Synchronisation uses child completion,
+readiness signals or isolation, without timers, interval probes or timed retries.
 
-1. Creating `.claude/runtime` under a task worktree no longer breaks later
-   checkpoint, staging, publish, or finalization gates because preflight removes
-   the known workflow-owned path.
-2. Creating `worktrees/` under a task worktree no longer breaks later lifecycle
-   gates because preflight removes the known workflow-owned path.
-3. User-authored `.claude` files, including `.claude/settings.json`, remain
-   untouched.
-4. Unrelated untracked files still fail strict guard behavior.
-5. Runtime-root resolution honors `AMPLIHACK_RUNTIME_ROOT` and otherwise chooses
-   an external default path.
-6. Launcher state and provenance output are written under the shared runtime
-   root contract.
-7. Child workflows inherit `AMPLIHACK_RUNTIME_ROOT`, `AMPLIHACK_AGENT_BINARY`,
-   and non-interactive settings without recomputing or leaking runtime state into
-   the commit worktree.
-8. Lifecycle steps resolve `workflow_runtime_artifacts.sh` from the installed
-   `~/.amplihack` (or `~/.copilot`) bundle when `AMPLIHACK_HOME` is unset and the
-   target repository has no `amplifier-bundle/` directory (issue #817).
-9. Finalization deletes run-created fallback branches from the shared remote and
-   locally, removes nested worktrees without leaving dangling worktree
-   registrations, deletes the nested worktree's orphaned branch (remote + local),
-   and always preserves the intended PR branch and protected base branches
-   (issue #808). The cleanup is idempotent and never aborts the caller.
-10. Runtime cleanup pointed at a main checkout keeps a `worktrees/` directory
-    that holds a registered worktree, including that worktree's uncommitted
-    files and registration, and keeps it when `git worktree list` fails. Each
-    case prints its warning and the preflight still succeeds. Finalize steps 20a and 20b skip with a warning
-    instead of running in `REPO_PATH` when the task worktree is gone
-    (issue #1528).
+Launch checks compare `git ls-files --others --exclude-standard` with the same
+source manifest before and after launch, with `HOME` and `XDG_CONFIG_HOME` unset
+through launch and inventory collection; an explicit external run or state root
+is supplied. A repository-owned inventory hook continues to pass with its
+original source manifest. Coverage includes every location above plus launcher
+context, session logs and their lock. Linked-worktree controls cover shared
+exclusions, existing content, idempotence and registration failure before writes.
+
+Publication and runner acceptance have separate requirements in the
+[checkpoint reference](workflow-checkpoint-publication.md#regression-and-runner-acceptance).
+This contract describes required behaviour, not a record of executed checks.

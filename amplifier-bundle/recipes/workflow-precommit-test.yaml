@@ -24,6 +24,7 @@ context:
 steps:
   - id: "step-12-run-precommit"
     agent: "amplihack:pre-commit-diagnostic"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "goal_already_met != 'true'"
     prompt: |
@@ -97,6 +98,7 @@ steps:
   # ==========================================================================
   - id: "step-13-local-testing"
     agent: "amplihack:builder"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "goal_already_met != 'true'"
     prompt: |

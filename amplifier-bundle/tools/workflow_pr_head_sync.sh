@@ -49,15 +49,14 @@ branch="$(bash "$here/workflow_remote_branch.sh" .)" || {
 }
 
 bound=""
-! command -v timeout >/dev/null 2>&1 || bound="timeout 60"
+
 ssh_cmd=""
 _finalization_batch_ssh_command . ssh_cmd
-if ! GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="$ssh_cmd" $bound git \
-    -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 \
-    fetch --quiet --no-tags --no-write-fetch-head \
+if ! GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="$ssh_cmd" git \
+    fetch --atomic --quiet --no-tags --no-write-fetch-head \
     origin "+refs/heads/$branch:refs/remotes/origin/$branch" </dev/null >/dev/null 2>&1; then
   echo "WARNING: workflow_pr_head_sync: could not fetch origin/$branch; worktree left as it is (#1714)" >&2
-  exit 0
+  exit 1
 fi
 
 remote_ref="refs/remotes/origin/$branch"

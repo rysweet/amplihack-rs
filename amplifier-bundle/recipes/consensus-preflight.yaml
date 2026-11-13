@@ -50,6 +50,7 @@ steps:
 
   - id: "step1-requirements-analysis"
     agent: "amplihack:prompt-writer"
+    auto_stage: false
     prompt: |
       Clarify and structure the task requirements:
 
@@ -83,6 +84,7 @@ steps:
 
   - id: "step1-codebase-analysis"
     agent: "amplihack:architect"
+    auto_stage: false
     prompt: |
       Analyze the existing codebase context for this task:
 

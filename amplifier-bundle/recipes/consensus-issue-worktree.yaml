@@ -70,6 +70,7 @@ steps:
 
   - id: "step3-setup-worktree"
     agent: "amplihack:worktree-manager"
+    auto_stage: false
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       Setup git worktree and branch for isolated development:
@@ -86,6 +87,8 @@ steps:
 
       Commands to execute:
       ```bash
+      amplihack hygiene workflow validate-workspace --repo "${REPO_PATH:?}"
+      amplihack hygiene workflow prepare --repo "${REPO_PATH:?}"
       # NOTE: This pipeline mirrors default-workflow.yaml step-04-setup-worktree with a
       # 30-char limit (vs 50). Keep both in sync on security patches. See Issue #2952.
       # FIX (issue #3041): Use heredoc instead of single-quote wrapping.
@@ -145,7 +148,7 @@ steps:
           exit 1
         fi
         echo "INFO: Targeting existing branch '$BRANCH_NAME' (issue #342 path)." >&2
-        git fetch origin "+refs/heads/${BRANCH_NAME}:refs/remotes/origin/${BRANCH_NAME}" >&2 2>/dev/null || true
+        git fetch --atomic origin "+refs/heads/${BRANCH_NAME}:refs/remotes/origin/${BRANCH_NAME}" >&2 || exit $?
         WORKTREE_PATH="$WORKTREE_DIR/$BRANCH_NAME"
         EXISTING_WT="$(git worktree list --porcelain | awk -v b="refs/heads/$BRANCH_NAME" '
           $1=="worktree" { wt=$2 }
@@ -233,7 +236,7 @@ steps:
       if [ -f "$TOOLS_DIR/workflow_fetch_origin.sh" ]; then
         bash "$TOOLS_DIR/workflow_fetch_origin.sh"
       else
-        git fetch origin --no-tags >&2 || echo "WARNING: git fetch origin failed; continuing with local refs." >&2
+        git fetch --atomic origin --no-tags >&2 || exit $?
       fi
       if ! BASE_REF="$(resolve_base_ref)"; then
         echo "ERROR: could not resolve a remote base ref — refusing to fall back to caller HEAD (issue #858)." >&2
@@ -361,8 +364,8 @@ steps:
       if [ "$BOOTSTRAP" = "true" ]; then
         echo "BOOTSTRAP: Skipping push — no remote main branch available." >&2
       else
-        git push -u origin "$BRANCH_NAME" > /dev/null 2>&1 || \
-          echo "WARNING: Initial push of '$BRANCH_NAME' failed — will retry at PR creation." >&2
+        # Publication waits for established requirements and reviewed design.
+
       fi
 
       printf '{"branch_name": "%s", "worktree_path": "%s", "commands_executed": ["%s"], "setup_complete": true}\n' \

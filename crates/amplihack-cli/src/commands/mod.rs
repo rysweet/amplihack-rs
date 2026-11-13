@@ -577,6 +577,110 @@ pub fn dispatch(command: Commands) -> Result<()> {
 
 fn dispatch_hygiene(command: HygieneCommands) -> Result<()> {
     match command {
+        HygieneCommands::Workflow(args) => {
+            use amplihack_git::publication_validation::{PolicyRefusal, WorkflowResult};
+            let mut outcome = WorkflowResult::default();
+            let result = (|| -> Result<()> {
+                match args.action.as_str() {
+                    "prepare" => {
+                        let workspace =
+                            amplihack_git::workspace_validation::Workspace::open(&args.repo)?;
+                        workspace.require_workflow()?;
+                        amplihack_git::runtime_preparation::register(&workspace)?;
+                    }
+                    "validate-workspace" => {
+                        amplihack_git::workspace_validation::Workspace::open(&args.repo)?
+                            .require_workflow()?;
+                    }
+                    "checkpoint" | "stage" => {
+                        amplihack_git::checkpoint_transaction::checkpoint_into(
+                            &args.repo,
+                            &args.message,
+                            args.action == "stage",
+                            &mut outcome,
+                        )?
+                    }
+                    "publish" => amplihack_git::publication_validation::publish_into(
+                        &args.repo,
+                        &mut outcome,
+                    )?,
+                    "complete-publication" => {
+                        let workspace =
+                            amplihack_git::workspace_validation::Workspace::open(&args.repo)?;
+                        workspace.require_workflow()?;
+                        amplihack_git::runtime_preparation::register(&workspace)?;
+                        amplihack_git::checkpoint_transaction::checkpoint_into(
+                            &args.repo,
+                            &args.message,
+                            false,
+                            &mut outcome,
+                        )?;
+                        amplihack_git::publication_validation::publish_into(
+                            &args.repo,
+                            &mut outcome,
+                        )?;
+                    }
+                    "validate-index" => {
+                        let path = args
+                            .index
+                            .as_deref()
+                            .context("missing explicit private index")?;
+                        amplihack_git::checkpoint_transaction::validate_index(
+                            &args.repo,
+                            path,
+                            args.authority
+                                .as_deref()
+                                .context("missing checkpoint authority")?,
+                        )?;
+                        let index = amplihack_git::checkpoint_transaction::ValidatedIndex::open(
+                            &args.repo, path,
+                        )?;
+                        let config =
+                            amplihack_utils::artifact_guard::ArtifactGuardConfig::new(&args.repo)
+                                .with_mode(
+                                    amplihack_utils::artifact_guard::ArtifactGuardMode::PrePublish,
+                                );
+                        let report =
+                            amplihack_utils::artifact_guard::scan_validated_index(&config, &index)?;
+                        if report.blocks() {
+                            anyhow::bail!(
+                                "private checkpoint index contains publication artefacts: {:?}",
+                                report.violations
+                            );
+                        }
+                    }
+                    _ => unreachable!("clap validated workflow operation"),
+                }
+                Ok(())
+            })();
+            let status = match result {
+                Ok(()) => 0,
+                Err(error) => {
+                    eprintln!("Workflow operation refused: {error:#}");
+                    outcome.errors.push(format!("{error:#}"));
+                    if error.downcast_ref::<PolicyRefusal>().is_some() {
+                        outcome.push_reason = "policy_rejected".to_owned();
+                        78
+                    } else {
+                        if outcome.push_reason == "not_attempted" {
+                            outcome.push_reason = "failed".to_owned();
+                        }
+                        2
+                    }
+                }
+            };
+            if matches!(
+                args.action.as_str(),
+                "checkpoint" | "stage" | "publish" | "complete-publication"
+            ) {
+                println!("{}", serde_json::to_string(&outcome)?);
+            }
+            if status == 0 {
+                Ok(())
+            } else {
+                Err(crate::command_error::exit_error(status))
+            }
+        }
         HygieneCommands::Cleanup(args) => hygiene::cleanup::run(args),
         HygieneCommands::ArtifactGuard(args) => hygiene::artifact_guard::run(args),
     }

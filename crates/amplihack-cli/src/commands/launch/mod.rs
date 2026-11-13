@@ -483,10 +483,24 @@ fn run_launch_core(
             )?;
         }
     }
+    let execution_dir = resolve_checkout_repo(checkout_repo.as_deref())?
+        .or(Some(current_dir.clone()))
+        .unwrap_or_else(|| PathBuf::from("."));
+    amplihack_git::runtime_preparation::prepare(&execution_dir)?;
+    amplihack_git::launcher_state::resolve(&execution_dir)?;
     let contract_file = if inject_contract {
-        Some(system_prompt_append::ensure_contract_file(
-            &system_prompt_append::contract_home()?,
-        )?)
+        let home = match system_prompt_append::contract_home() {
+            Ok(home) => amplihack_git::launcher_state::validate_external(&execution_dir, &home)?,
+            Err(error) => {
+                if std::env::var_os("AMPLIHACK_RUNTIME_DIR").is_some_and(|value| !value.is_empty())
+                {
+                    amplihack_git::launcher_state::prepare(&execution_dir)?.directory
+                } else {
+                    return Err(error);
+                }
+            }
+        };
+        Some(system_prompt_append::ensure_contract_file(&home)?)
     } else {
         None
     };
@@ -497,9 +511,6 @@ fn run_launch_core(
         "launching {tool}"
     );
 
-    let execution_dir = resolve_checkout_repo(checkout_repo.as_deref())?
-        .or(Some(current_dir.clone()))
-        .unwrap_or_else(|| PathBuf::from("."));
     let node_options = resolve_launch_node_options(subprocess_safe)?;
     if !subprocess_safe {
         maybe_prompt_re_enable_power_steering(&execution_dir)?;

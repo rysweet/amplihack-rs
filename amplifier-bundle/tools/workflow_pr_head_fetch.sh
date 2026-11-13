@@ -22,7 +22,7 @@
 #     HTTPS credentials;
 #   - GIT_SSH_COMMAND is the caller's ssh command (GIT_SSH_COMMAND,
 #     core.sshCommand, GIT_SSH or plain ssh) plus `-o BatchMode=yes
-#     -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2`,
+#    `,
 #     so ssh fails instead of asking for a key passphrase, a password or an
 #     unknown host key on /dev/tty, and drops a dead connection after ~30s;
 #   - http.lowSpeedLimit/lowSpeedTime abort an HTTPS transfer that stalls
@@ -49,7 +49,7 @@ _finalization_batch_ssh_command() {
     printf -v q '%q' "$GIT_SSH"; base="$q"
   fi
   [ -n "$base" ] || base="ssh"
-  printf -v "$2" '%s' "$base -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2"
+  printf -v "$2" '%s' "$base -o BatchMode=yes"
 }
 
 # _finalization_pr_head_descends <dir> <branch> <local_head> <pr_head>
@@ -59,12 +59,11 @@ _finalization_pr_head_descends() {
   local dir="$1" branch="$2" local_head="$3" pr_head="$4" bound="" ssh_cmd=""
   [[ "$pr_head" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || return 1
   if ! git -C "$dir" cat-file -e "${pr_head}^{commit}" 2>/dev/null; then
-    ! command -v timeout >/dev/null 2>&1 || bound="timeout 60"
+
     _finalization_batch_ssh_command "$dir" ssh_cmd
-    GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="$ssh_cmd" $bound git -C "$dir" \
-      -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 \
-      fetch --quiet --no-tags --no-write-fetch-head --refmap= \
-      origin "refs/heads/$branch" </dev/null >/dev/null 2>&1 || :
+    GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="$ssh_cmd" git -C "$dir" \
+      fetch --atomic --quiet --no-tags --no-write-fetch-head --refmap= \
+      origin "refs/heads/$branch" </dev/null >/dev/null 2>&1 || return 1
     git -C "$dir" cat-file -e "${pr_head}^{commit}" 2>/dev/null || return 1
   fi
   git -C "$dir" merge-base --is-ancestor "$local_head" "$pr_head" 2>/dev/null

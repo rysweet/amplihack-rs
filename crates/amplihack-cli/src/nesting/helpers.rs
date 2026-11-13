@@ -6,14 +6,12 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use amplihack_types::ProjectDirs;
-
 use super::NestingResult;
 
 const SESSION_FILE_NAME: &str = "session.json";
 pub(super) const STALE_THRESHOLD: Duration = Duration::from_secs(3600); // 1 hour
 
-/// Session file format stored in `~/.claude/runtime/session.json`.
+/// Legacy session claim stored in the external launcher-state base.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(super) struct SessionFile {
     pub(super) session_id: String,
@@ -79,7 +77,10 @@ impl SessionLogEntry {
 }
 
 pub(super) fn detect_from_sessions_log(current_dir: &Path) -> Option<NestingResult> {
-    let log_path = ProjectDirs::from_root(current_dir).sessions_log_file();
+    let log_path = amplihack_git::launcher_state::resolve(current_dir)
+        .ok()?
+        .directory
+        .join("sessions.jsonl");
     let content = std::fs::read_to_string(log_path).ok()?;
     if content.trim().is_empty() {
         return None;
@@ -132,12 +133,10 @@ pub(super) fn resolve_path(path: &Path) -> PathBuf {
 }
 
 pub(super) fn session_file_path() -> Option<PathBuf> {
-    env::var("HOME").ok().map(|h| {
-        PathBuf::from(h)
-            .join(".claude")
-            .join("runtime")
-            .join(SESSION_FILE_NAME)
-    })
+    let state = amplihack_git::launcher_state::resolve(&env::current_dir().ok()?).ok()?;
+    // Preserve the legacy claim's global sharing within the external base;
+    // checkout-specific session collections continue to use sessions.jsonl.
+    Some(state.directory.parent()?.parent()?.join(SESSION_FILE_NAME))
 }
 
 /// Check if a process with the given PID is alive.

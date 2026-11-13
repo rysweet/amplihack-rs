@@ -1,145 +1,151 @@
-# Tutorial: Workflow Runtime Isolation
+---
+title: Check workflow runtime isolation
+description: Prepare clone-local exclusions and check runtime rejection in a disposable repository.
+doc_type: tutorial
+last_updated: 2026-11-12
+---
 
-This tutorial shows how a workflow keeps generated runtime output out of a task
-worktree while preserving strict Artifact Guard behavior.
+# Check workflow runtime isolation
 
-Updated: 2026-06-19
+This exercise creates a repository without `.gitignore`, prepares its runtime
+exclusions and checks that deliberately staged runtime files are refused without
+changing protected source bytes or the index. A repository-owned inventory hook
+runs during a normal source commit with its original manifest.
 
-## What you will learn
+You need Git, Bash and an Amplihack installation providing
+`amplihack hygiene workflow prepare`. No agent login or network access is needed.
+All files and profile roots stay beneath a temporary directory. `HOME` and
+`XDG_CONFIG_HOME` remain unset throughout the child environment.
 
-- Run `default-workflow` with the default external runtime root.
-- Override `AMPLIHACK_RUNTIME_ROOT` for a single run.
-- Verify that workflow-owned leftovers are cleaned narrowly.
-- Confirm that unrelated generated artifacts still fail Artifact Guard.
+## 1. Create an isolated checkout
 
-## Before you start
-
-You need:
-
-- an amplihack checkout
-- `git`
-- `amplihack` on `PATH`
-- `AMPLIHACK_HOME` pointing at the installed amplihack home when using bundled
-  helper scripts directly
-
-Run commands from a disposable branch or scratch worktree.
-
-## 1. Run a workflow normally
+Run the complete block below in Bash. The child environment discards inherited
+Git, agent and profile settings before invoking Amplihack.
 
 ```bash
-amplihack recipe run default-workflow \
-  -c task_description="Update README wording" \
-  -c repo_path=. \
-  --format json > result.json 2> progress.log
+TUTORIAL_ROOT="$(mktemp -d /tmp/amplihack-isolation.XXXXXX)"
+AMPLIHACK_BIN="$(command -v amplihack)"
+env -i PATH="$PATH" TUTORIAL_ROOT="$TUTORIAL_ROOT" \
+  AMPLIHACK_BIN="$AMPLIHACK_BIN" bash --noprofile --norc <<'BASH'
+set -eu
+umask 077
+export AMPLIHACK_HOME="$TUTORIAL_ROOT/state"
+export AMPLIHACK_WORK_ROOT="$TUTORIAL_ROOT/work"
+export CLAUDE_CONFIG_DIR="$TUTORIAL_ROOT/claude"
+export CODEX_HOME="$TUTORIAL_ROOT/codex"
+export XDG_CACHE_HOME="$TUTORIAL_ROOT/cache"
+export XDG_STATE_HOME="$TUTORIAL_ROOT/xdg-state"
+export GIT_CONFIG_NOSYSTEM=1
+export GIT_CONFIG_GLOBAL=/dev/null
+mkdir -p "$AMPLIHACK_HOME" "$CLAUDE_CONFIG_DIR" "$CODEX_HOME"
+
+git init -q -b main "$TUTORIAL_ROOT/source"
+git init -q --bare "$TUTORIAL_ROOT/remote.git"
+cd "$TUTORIAL_ROOT/source"
+git config user.name 'Runtime Isolation Tutorial'
+git config user.email 'runtime-isolation@example.invalid'
+git remote add origin "$TUTORIAL_ROOT/remote.git"
+printf '# Runtime isolation exercise\n' > README.md
+git add -- README.md
+git commit -q -m 'Add exercise source'
+printf 'Installation notes\n' > notes.md
+
+# Record both the untracked inventory and the repository-owned source manifest.
+git ls-files --others --exclude-standard > "$TUTORIAL_ROOT/untracked-before"
+git ls-files --cached --others --exclude-standard | LC_ALL=C sort > "$TUTORIAL_ROOT/manifest"
+COMMON_GIT_DIR="$(git rev-parse --path-format=absolute --git-common-dir)"
+cat > "$COMMON_GIT_DIR/hooks/pre-commit" <<'HOOK'
+#!/bin/sh
+set -eu
+git ls-files --cached --others --exclude-standard | LC_ALL=C sort > "$TUTORIAL_ROOT/hook-inventory"
+cmp "$TUTORIAL_ROOT/manifest" "$TUTORIAL_ROOT/hook-inventory"
+printf 'Source inventory unchanged\n'
+HOOK
+chmod 700 "$COMMON_GIT_DIR/hooks/pre-commit"
+
+# 2. Prepare automatically before creating checkout-local runtime fixtures.
+"$AMPLIHACK_BIN" hygiene workflow prepare --repo .
+cp "$COMMON_GIT_DIR/info/exclude" "$TUTORIAL_ROOT/exclude-first"
+"$AMPLIHACK_BIN" hygiene workflow prepare --repo .
+cmp "$TUTORIAL_ROOT/exclude-first" "$COMMON_GIT_DIR/info/exclude"
+mkdir -p .amplihack .claude/runtime worktrees
+printf 'graph fixture\n' > .amplihack/graph_db
+printf '123\n' > .amplihack/indexing.pid
+printf '{}\n' > .claude/runtime/launcher_context.json
+printf '{}\n' > .claude/runtime/sessions.jsonl
+: > .claude/runtime/sessions.jsonl.lock
+printf 'scratch fixture\n' > worktrees/runtime.txt
+git ls-files --others --exclude-standard > "$TUTORIAL_ROOT/untracked-after"
+cmp "$TUTORIAL_ROOT/untracked-before" "$TUTORIAL_ROOT/untracked-after"
+cat "$TUTORIAL_ROOT/untracked-after"
+
+# 3. Keep staged source different from the working file; test each runtime path.
+git add -- notes.md
+git show :notes.md > "$TUTORIAL_ROOT/staged-notes"
+printf 'Installation notes with unstaged edits\n' > notes.md
+for RUNTIME_PATH in .amplihack/graph_db .amplihack/indexing.pid \
+  .claude/runtime/launcher_context.json .claude/runtime/sessions.jsonl \
+  .claude/runtime/sessions.jsonl.lock; do
+  git add -f -- "$RUNTIME_PATH"
+  cp "$COMMON_GIT_DIR/index" "$TUTORIAL_ROOT/index-before"
+  if "$AMPLIHACK_BIN" hygiene artifact-guard --repo . --mode pre-publish; then
+    printf 'Guard accepted prohibited runtime: %s\n' "$RUNTIME_PATH" >&2
+    exit 1
+  else
+    GUARD_STATUS=$?
+    test "$GUARD_STATUS" -eq 1 || exit "$GUARD_STATUS"
+  fi
+  cmp "$TUTORIAL_ROOT/index-before" "$COMMON_GIT_DIR/index"
+  git show :notes.md > "$TUTORIAL_ROOT/staged-notes-after"
+  cmp "$TUTORIAL_ROOT/staged-notes" "$TUTORIAL_ROOT/staged-notes-after"
+
+  # Deliberate tutorial action: remove only the runtime entry just force-staged.
+  git rm -q --cached -- "$RUNTIME_PATH"
+done
+
+# 4. Commit the original staged source through the inventory hook.
+git diff --cached --name-only
+git commit -q -m 'Record reviewed installation notes'
+git show HEAD:notes.md > "$TUTORIAL_ROOT/committed-notes"
+cmp "$TUTORIAL_ROOT/staged-notes" "$TUTORIAL_ROOT/committed-notes"
+printf 'Runtime checks passed\n'
+BASH
 ```
 
-The workflow writes generated runtime state outside the Git worktree and passes
-the selected runtime root to all child workflows. The task worktree contains
-source changes only.
+## 2. Read the results
 
-## 2. Override the runtime root
+Both filename listings contain only `notes.md`. Each guard invocation names its
+runtime violation and returns `1`; that expected refusal lets the exercise
+continue. Every `cmp` succeeds silently. The hook prints
+`Source inventory unchanged`, then the exercise prints `Runtime checks passed`.
+The committed source contains the original staged notes; the later working-file
+edit remains uncommitted.
 
-Use an external path when CI needs predictable cleanup.
+Both source manifests are sorted in the C locale. Git lists untracked files
+before cached files, so staging `notes.md` changes the listing order without
+changing the inventory. Sorting keeps the hook comparison independent of that
+order.
 
-```bash
-export AMPLIHACK_RUNTIME_ROOT="/tmp/amplihack-runtime/$USER/tutorial-run"
-install -d -m 700 "$AMPLIHACK_RUNTIME_ROOT"
+The graph and PID fixtures demonstrate automatic exclusions. The launcher files
+are deliberately misplaced fixtures: real launchers put their context, session
+records and locks outside registered checkouts. Checking runtime paths separately
+prevents one violation from masking an exemption for another.
 
-amplihack recipe run default-workflow \
-  -c task_description="Update README wording" \
-  -c repo_path=.
-```
+The forced adds and exact removals are deliberate actions inside this disposable
+repository. Workflows never automatically unstage protected entries.
 
-Inspect the runtime directories:
+## 3. Continue with a real workflow
 
-```bash
-find "$AMPLIHACK_RUNTIME_ROOT" -maxdepth 1 -type d | sort
-```
+The disposable repository remains at `$TUTORIAL_ROOT/source`. This exercise
+covers preparation, index rejection and a source-inventory hook. Full launch,
+linked-worktree sharing, bounded checkpoint transactions and destination-history
+validation have separate acceptance controls in the
+[checkpoint reference](../reference/workflow-checkpoint-publication.md#regression-and-runner-acceptance).
+It does not replace the original native runner controls or lift a dependency hold.
+The [shared-state and exclusion contract](../reference/workflow-runtime-artifacts.md#implementation-gaps)
+also need separate controls; this exercise does not cover them.
 
-Expected directories:
-
-```text
-/tmp/amplihack-runtime/<user>/tutorial-run
-/tmp/amplihack-runtime/<user>/tutorial-run/locks
-/tmp/amplihack-runtime/<user>/tutorial-run/logs
-/tmp/amplihack-runtime/<user>/tutorial-run/metrics
-/tmp/amplihack-runtime/<user>/tutorial-run/provenance
-/tmp/amplihack-runtime/<user>/tutorial-run/reflection
-```
-
-## 3. Simulate legacy runtime leftovers
-
-Create the two known workflow-owned paths that old runs could leave inside a
-task worktree. In managed task worktrees, root-level `worktrees/` is reserved
-for workflow-owned nested scratch worktrees.
-
-```bash
-mkdir -p .claude/runtime
-mkdir -p worktrees/generated-child-worktree
-
-mkdir -p .claude
-printf '{"permissions":{}}\n' > .claude/settings.json
-```
-
-Run the workflow runtime preflight:
-
-```bash
-. "$AMPLIHACK_HOME/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
-preflight_known_workflow_runtime_artifacts "$PWD"
-```
-
-Verify the result:
-
-```bash
-test ! -e .claude/runtime
-test ! -e worktrees
-test -f .claude/settings.json
-```
-
-The known runtime leftovers are gone. The user-authored `.claude` configuration
-file remains.
-
-## 4. Confirm strict guard behavior
-
-Create an unrelated generated artifact:
-
-```bash
-mkdir -p dist
-printf 'generated bundle\n' > dist/plugin.js
-```
-
-Run Artifact Guard:
-
-```bash
-amplihack hygiene artifact-guard --repo . --mode all
-```
-
-The guard fails because `dist/plugin.js` is not a known workflow runtime
-artifact. Remove it before publishing:
-
-```bash
-rm -- dist/plugin.js
-rmdir dist
-amplihack hygiene artifact-guard --repo . --mode all
-```
-
-## What happened
-
-The workflow runtime isolation contract has two layers:
-
-1. Workflow runtime output is written outside the task worktree through
-   `AMPLIHACK_RUNTIME_ROOT`.
-2. Lifecycle preflight removes only known workflow-owned leftovers before
-   checkpoint, staging, publish, pre-commit, and finalization gates.
-
-Artifact Guard stays strict. It still blocks unexpected generated artifacts that
-are not part of the narrow runtime cleanup contract. General clean-worktree gates
-also remain strict because the runtime preflight does not remove arbitrary
-untracked files.
-
-## Related documentation
-
-- [Workflow Runtime Isolation](../features/workflow-runtime-isolation.md)
-- [Configure Workflow Runtime Isolation](../howto/configure-workflow-runtime-isolation.md)
-- [Workflow Runtime Artifacts Reference](../reference/workflow-runtime-artifacts.md)
-- [Artifact Guard](../artifact-guard.md)
+Use [Configure workflow runtime isolation](../howto/configure-workflow-runtime-isolation.md)
+to launch with a configured agent and remote. See the
+[runtime catalogue](../reference/workflow-runtime-artifacts.md#checkout-local-exclusions)
+for the complete set of owned paths.

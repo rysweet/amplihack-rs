@@ -357,7 +357,11 @@ fn augment_claude_launch_env_prefers_installed_plugin_cache_path() {
 
 #[test]
 fn persist_launcher_context_writes_copilot_context_file() {
-    let dir = tempfile::tempdir().unwrap();
+    let _guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _profile = context_profile();
+    let dir = context_checkout();
     let args = vec!["--model".to_string(), "opus".to_string()];
 
     persist_hermetic("copilot", Some(dir.path()), &args).unwrap();
@@ -391,7 +395,11 @@ fn persist_launcher_context_writes_copilot_context_file() {
 /// claude as well. See `persist_launcher_context_records_the_launcher_that_ran`.
 #[test]
 fn persist_launcher_context_writes_agent_binary_for_copilot() {
-    let dir = tempfile::tempdir().unwrap();
+    let _guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _profile = context_profile();
+    let dir = context_checkout();
 
     persist_hermetic("copilot", Some(dir.path()), &[]).unwrap();
 
@@ -773,13 +781,17 @@ fn a_dot_relative_resolved_target_does_not_reach_the_child_path() {
 /// lost `AMPLIHACK_AGENT_BINARY` could not resolve back to claude by any path.
 #[test]
 fn persist_launcher_context_records_the_launcher_that_ran() {
+    let _guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _profile = context_profile();
     for (tool, expected) in [
         ("claude", LauncherKind::Claude),
         ("copilot", LauncherKind::Copilot),
         ("codex", LauncherKind::Codex),
         ("amplifier", LauncherKind::Amplifier),
     ] {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = context_checkout();
         persist_hermetic(tool, Some(dir.path()), &[]).unwrap();
 
         let context = read_launcher_context(dir.path())
@@ -823,16 +835,17 @@ fn persist_launcher_context_reads_the_inherited_guess_from_the_process_env() {
     let _guard = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|p| p.into_inner());
+    let _profile = context_profile();
     let _env = crate::test_support::AgentBinaryEnv::set(Some("copilot"), Some("default:copilot"));
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = context_checkout();
     persist_launcher_context("copilot", Some(dir.path()), &[]).unwrap();
     assert!(
         read_launcher_context(dir.path()).is_none(),
         "a launch on an inherited guess must not persist"
     );
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = context_checkout();
     persist_launcher_context("claude", Some(dir.path()), &[]).unwrap();
     assert_eq!(
         read_launcher_context(dir.path()).map(|c| c.launcher),
@@ -879,6 +892,10 @@ fn a_launch_picked_by_the_default_layer_persists_nothing() {
 /// different launcher than the one that ran.
 #[test]
 fn a_launch_not_picked_by_the_default_layer_still_persists() {
+    let _guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _profile = context_profile();
     for (tool, binary, tag) in [
         ("claude", Some("claude"), None),
         ("claude", None, None),
@@ -891,7 +908,7 @@ fn a_launch_not_picked_by_the_default_layer_still_persists() {
         ("copilot", None, Some("default:copilot")),
         ("copilot", Some("claude"), Some("default:copilot")),
     ] {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = context_checkout();
         let env = inherited(binary, tag);
         persist_launcher_context_with(tool, Some(dir.path()), &[], &env).unwrap();
         let context = read_launcher_context(dir.path()).unwrap_or_else(|| {
@@ -908,6 +925,10 @@ fn a_launch_not_picked_by_the_default_layer_still_persists() {
 /// #1490 at baaafb18), and a nested launcher still persists it.
 #[test]
 fn a_launch_on_a_default_guess_hands_the_guess_on_tagged() {
+    let _guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _profile = context_profile();
     use crate::env_builder::launch_binary_source;
     use amplihack_utils::agent_binary::{ResolutionSource, SOURCE_ENV};
 
@@ -926,7 +947,7 @@ fn a_launch_on_a_default_guess_hands_the_guess_on_tagged() {
 
     // The child's own view: a nested `amplihack copilot` persists nothing.
     let child = |key: &str| env.get(key).cloned();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = context_checkout();
     persist_launcher_context_with("copilot", Some(dir.path()), &[], &child).unwrap();
     assert!(read_launcher_context(dir.path()).is_none());
 
@@ -956,7 +977,7 @@ fn a_launch_on_a_default_guess_hands_the_guess_on_tagged() {
         Some("session:copilot")
     );
     let child = |key: &str| env.get(key).cloned();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = context_checkout();
     persist_launcher_context_with("copilot", Some(dir.path()), &[], &child).unwrap();
     assert_eq!(
         read_launcher_context(dir.path()).map(|c| c.launcher),
@@ -999,7 +1020,11 @@ fn persist_launcher_context_skips_non_session_invocations() {
 /// A real session with ordinary arguments still persists.
 #[test]
 fn persist_launcher_context_still_persists_a_real_session() {
-    let dir = tempfile::tempdir().unwrap();
+    let _guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _profile = context_profile();
+    let dir = context_checkout();
     persist_hermetic(
         "claude",
         Some(dir.path()),
@@ -1022,8 +1047,9 @@ fn a_persisted_context_round_trips_through_the_resolver() {
     let _guard = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|p| p.into_inner());
+    let _profile = context_profile();
     for tool in ["claude", "copilot", "codex", "amplifier"] {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = context_checkout();
         persist_hermetic(tool, Some(dir.path()), &[]).unwrap();
 
         // Layers above the file must be silent so the file is what answers.
@@ -1069,6 +1095,10 @@ fn a_persisted_context_round_trips_through_the_resolver() {
 /// the failure this guard exists to prevent, re-entered through another door.
 #[test]
 fn prompt_text_that_merely_mentions_a_flag_still_persists() {
+    let _guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _profile = context_profile();
     for args in [
         vec![
             "help".to_string(),
@@ -1080,7 +1110,7 @@ fn prompt_text_that_merely_mentions_a_flag_still_persists() {
         vec!["-p".to_string(), "help".into()],
         vec!["--model".to_string(), "opus".into(), "--version".into()],
     ] {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = context_checkout();
         // `help` in position zero is a real question-and-exit; deeper in the
         // list it is just a word.
         let is_query = matches!(args.first().map(String::as_str), Some("help"));
@@ -1091,4 +1121,50 @@ fn prompt_text_that_merely_mentions_a_flag_still_persists() {
             "args {args:?}: only a leading question-and-exit token may suppress persistence"
         );
     }
+}
+
+fn context_profile() -> (tempfile::TempDir, crate::test_support::EnvGuard) {
+    let profile = tempfile::tempdir_in("/var/tmp").unwrap();
+    let keys = [
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "AMPLIHACK_HOME",
+        "CLAUDE_CONFIG_DIR",
+        "CODEX_HOME",
+        "AMPLIHACK_CLAUDE_PROFILE_ROOT",
+        "AMPLIHACK_RUNTIME_DIR",
+        "TMPDIR",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_NOSYSTEM",
+    ];
+    let guard = crate::test_support::EnvGuard::capture(&keys);
+    for key in &keys[..8] {
+        let path = if *key == "TMPDIR" {
+            profile.path().to_owned()
+        } else {
+            let path = profile.path().join(key);
+            std::fs::create_dir(&path).unwrap();
+            path
+        };
+        // SAFETY: the caller holds the shared environment mutex.
+        unsafe { std::env::set_var(key, path) };
+    }
+    // SAFETY: the same mutex protects these Git configuration overrides.
+    unsafe {
+        std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
+        std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+    }
+    (profile, guard)
+}
+
+fn context_checkout() -> tempfile::TempDir {
+    let repo = tempfile::tempdir().unwrap();
+    assert!(
+        amplihack_git::command_in(repo.path())
+            .args(["init", "--quiet", "--template="])
+            .status()
+            .unwrap()
+            .success()
+    );
+    repo
 }

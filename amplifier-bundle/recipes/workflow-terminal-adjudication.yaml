@@ -63,6 +63,7 @@ steps:
   - id: "terminal-state-adjudicator"
     condition: "terminal_adjudication_evidence and terminal_adjudication_evidence.mechanical_verdict != 'SUCCESS'"
     agent: "amplihack:core:reviewer"
+    auto_stage: false
     prompt: |
       # Terminal-State Adjudication (issue #1268)
 
