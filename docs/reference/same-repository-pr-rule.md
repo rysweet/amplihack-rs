@@ -66,7 +66,7 @@ decision point is enough.
 
 | Reader | Where | Effect of a refusal |
 | --- | --- | --- |
-| `light-eligibility` step | `amplifier-bundle/recipes/auto-drive-light.yaml` | The step stops with `light-cross-repo` (see below). |
+| `light-eligibility` step (on `build_result.is_cross_repository`, read by `light-resolve-pr`) | `amplifier-bundle/recipes/auto-drive-light.yaml` | The step stops with `light-cross-repo` (see below). |
 | PR facts in `workflow-terminal-state` | `amplifier-bundle/recipes/workflow-terminal-state.yaml` | The PR is not accepted as the run's same-repository PR; the run takes the existing cross-repository failure branch and is not reported as a success. |
 | `autodrive_open_pr_for_run_branch` | `amplifier-bundle/tools/autodrive_run_pr.sh` | The PR is not selected; no PR number is printed. |
 | Branch PR lookup | `amplifier-bundle/tools/workflow_final_status.sh` | The PR is not selected as the branch's PR. |
@@ -80,30 +80,32 @@ same-repository PR.
 
 ### light-eligibility
 
-`light-eligibility` reads the field directly, immediately after it validates
-the PR number, head and base from the build result:
+`light-eligibility` makes no `gh` call: #2329 keeps platform reads in agent
+steps. The `light-resolve-pr` agent step reads the PR and returns the observed
+`isCrossRepository` as `build_result.is_cross_repository`, a JSON boolean.
+Immediately after it validates the PR number, head and base from the build
+result, `light-eligibility` checks that value:
 
 ```sh
-( cd "${RECIPE_VAR_repo_path:-.}" && env -u GH_REPO gh pr view "$PR" --json isCrossRepository ) 2>/dev/null \
-  | jq -e '.isCrossRepository == false' >/dev/null 2>&1 \
-  || die "light-cross-repo: PR #$PR is not a same-repository PR (isCrossRepository is not exactly false)"
+printf '%s' "${RECIPE_VAR_build_result:-}" | jq -e '.is_cross_repository == false' >/dev/null 2>&1 \
+  || die "light-cross-repo: PR #$PR is not a same-repository PR (build_result.is_cross_repository is not exactly false)"
 ```
 
 - The check runs before the step creates private state or reuses a cached
   `light-eligibility.json` or `escalation.json`. A cached `light` decision
   cannot bypass it.
-- `GH_REPO` is removed for this call, so the PR number is looked up in the
-  target repository and not in a repository named by the environment.
+- `true`, a missing field, `null`, the string `"false"` and any other
+  non-boolean are refused, the same table as the other readers apply to
+  `isCrossRepository`.
 - A refusal is a hard stop with exit status 1. It is never an `escalate`
   decision, because escalation would still hand the PR to
   `auto-drive-to-merge`.
-- A refusal writes nothing and makes no mutating `gh` call. `gh` stderr is
-  discarded, and the message names only the validated PR number.
-- A `gh` failure or outage refuses the light drive. There is no retry.
+- A refusal writes nothing. The message names only the validated PR number.
+- If the agent cannot read the PR, it returns no `is_cross_repository`, and
+  the light drive is refused.
 
-The `light-resolve-pr` agent prompt also tells the agent to refuse a
+The `light-resolve-pr` prompt also tells the agent to refuse a
 cross-repository PR, or one whose `isCrossRepository` is missing or `null`.
-That instruction is a second line of defence; the step above is the control.
 See [Auto-Drive-Light Recipe](auto-drive-light.md#same-repository-check).
 
 ### workflow-terminal-state
@@ -215,7 +217,7 @@ accepted.
 
 | Test | Covers |
 | --- | --- |
-| `crates/amplihack-cli/tests/issue_2538_cross_repo_refusal.rs` | `light-eligibility`, including a `gh` failure, a cached `light` decision, a cached escalation and `GH_REPO` set to another repository; `autodrive_run_pr.sh` |
+| `crates/amplihack-cli/tests/issue_2538_cross_repo_refusal.rs` | `light-eligibility` on `build_result.is_cross_repository`, including a cached `light` decision, a cached escalation and a check that the step makes no `gh` call; the `light-resolve-pr` prompt; `autodrive_run_pr.sh` |
 | `tests/integration/issue_2538_cross_repo_readers.rs` | `workflow_pr_scope.sh` discovery, `workflow-terminal-state` field 9, `workflow_pr_ready.sh` (which must never call `gh pr ready` on a refusal), and the REST fallback in `workflow_gh_retry.sh` |
 | `tests/issue_1596_final_status_branch_pr_lookup.sh` | `workflow_final_status.sh` |
 | `tests/issue_1448_review_is_not_a_duplicate.sh` | `workflow_issue_claim_check.sh`: missing, `null` and the string `"false"` (with `true` covered by the existing fork cases). Empty or invalid output already makes the check report `unknown` (`claim-filter-unreadable`), never `ok-own-pr` |

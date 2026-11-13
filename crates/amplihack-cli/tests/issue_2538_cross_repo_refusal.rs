@@ -1,17 +1,19 @@
 //! Issue #2538: only an exact boolean `false` makes a pull request a
 //! same-repository PR.
 //!
-//! `light-eligibility` in `auto-drive-light.yaml` reads
-//! `gh pr view <PR> --json isCrossRepository` itself and stops with
-//! `light-cross-repo` unless jq finds `.isCrossRepository == false`. The
-//! refusal is a hard stop, never an `escalate` decision, and it comes before
-//! any cached `light-eligibility.json` or `escalation.json` is reused.
-//! `autodrive_open_pr_for_run_branch` (`autodrive_run_pr.sh`) applies the same
-//! rule to the PRs it lists.
+//! `light-resolve-pr` in `auto-drive-light.yaml` is the agent step that reads
+//! the PR, and it returns the observed `isCrossRepository` as
+//! `build_result.is_cross_repository` (#2329 keeps platform reads out of bash
+//! steps). `light-eligibility` stops with `light-cross-repo` unless jq finds
+//! `.is_cross_repository == false` in `build_result`. The refusal is a hard
+//! stop, never an `escalate` decision, it comes before any cached
+//! `light-eligibility.json` or `escalation.json` is reused, and the step makes
+//! no `gh` call. `autodrive_open_pr_for_run_branch` (`autodrive_run_pr.sh`)
+//! applies the same rule to the PRs it lists.
 //!
 //! Each reader is run for real, with a fake `gh` first on `PATH`, over the
-//! same table: `true`, a missing field, `null`, the string `"false"`, empty
-//! output and invalid JSON are refused; `false` is accepted.
+//! same table: `true`, a missing field, `null` and the string `"false"` are
+//! refused; `false` is accepted.
 //!
 //! No agent, real `gh`, network or real `~/.amplihack` is used. Every test
 //! skips, with a note, when `jq` is not installed.
@@ -23,24 +25,24 @@ use std::process::Output;
 use serde_json::{Value, json};
 
 use crate::support::auto_drive_light::{
-    Fakes, LightRepo, fake_bin, git, jq_available, private_dir, private_file, repo_root, run_bash,
-    show, stderr, stdout, step_command, tools_dir,
+    Fakes, LightRepo, fake_bin, git, jq_available, private_dir, private_file, recipe, repo_root,
+    run_bash, show, stderr, stdout, step_command, tools_dir,
 };
 
 const RECIPE: &str = "auto-drive-light";
 const STEP: &str = "light-eligibility";
 
-/// `gh pr view --json isCrossRepository` answers that must be refused.
-const REFUSED_VIEW: &[(&str, &str)] = &[
-    ("true", r#"{"isCrossRepository":true}"#),
-    ("missing field", r#"{}"#),
-    ("null", r#"{"isCrossRepository":null}"#),
-    ("string \"false\"", r#"{"isCrossRepository":"false"}"#),
-    ("empty output", ""),
-    ("invalid JSON", "{this is not json"),
-];
-
-const ACCEPTED_VIEW: &str = r#"{"isCrossRepository":false}"#;
+/// `build_result.is_cross_repository` values that must be refused. `None`
+/// leaves the field out.
+fn refused_values() -> Vec<(&'static str, Option<Value>)> {
+    vec![
+        ("true", Some(json!(true))),
+        ("missing field", None),
+        ("null", Some(Value::Null)),
+        ("string \"false\"", Some(json!("false"))),
+        ("number 0", Some(json!(0))),
+    ]
+}
 
 fn skip() -> bool {
     if !jq_available() {
@@ -81,15 +83,18 @@ impl Env {
         }
     }
 
-    fn build_result(&self) -> String {
-        json!({
+    fn build_result(&self, cross: Option<&Value>) -> String {
+        let mut br = json!({
             "pr": "7",
             "head_sha": self.head,
             "base_sha": self.repo.base,
             "state_dir": self.state.to_string_lossy(),
             "repo": self.repo.wt.to_string_lossy(),
-        })
-        .to_string()
+        });
+        if let Some(v) = cross {
+            br["is_cross_repository"] = v.clone();
+        }
+        br.to_string()
     }
 
     /// A valid cached `light` decision for this head, as an earlier run
@@ -110,12 +115,12 @@ impl Env {
         std::fs::read_to_string(self.state.join(name)).ok()
     }
 
-    /// Runs the live `light-eligibility` step. `view` is the raw `gh pr view`
-    /// answer (`None` keeps the fake's default PR, which has `false`).
-    fn run(&self, view: Option<&str>, env: &[(&str, &str)]) -> Output {
+    /// Runs the live `light-eligibility` step with `cross` as
+    /// `build_result.is_cross_repository` (`None` leaves it out).
+    fn run(&self, cross: Option<&Value>, env: &[(&str, &str)]) -> Output {
         let script = step_command(RECIPE, STEP);
         let root = repo_root();
-        let br = self.build_result();
+        let br = self.build_result(cross);
         let mut v: Vec<(&str, &OsStr)> = vec![
             ("AMPLIHACK_HOME", root.as_os_str()),
             ("RECIPE_VAR_build_result", OsStr::new(&br)),
@@ -128,38 +133,20 @@ impl Env {
             ("TMPDIR", self.tmpdir.as_os_str()),
             ("FAKE_GH_HEAD", OsStr::new(&self.head)),
         ];
-        if let Some(raw) = view {
-            v.push(("FAKE_GH_PR_VIEW", OsStr::new(raw)));
-        }
         v.extend(env.iter().map(|(k, val)| (*k, OsStr::new(*val))));
         let mut wd_script = format!("cd {:?} || exit 99\n", self.repo.wt.display().to_string());
         wd_script.push_str(&script);
         run_bash(&self.repo.home, &self.fakes, Some(&wd_script), &[], &v, "")
     }
-
-    /// The `gh pr view` calls that asked for `isCrossRepository`.
-    fn cross_repo_reads(&self) -> usize {
-        self.fakes
-            .gh_calls()
-            .iter()
-            .filter(|c| {
-                c.first().map(String::as_str) == Some("pr")
-                    && c.get(1).map(String::as_str) == Some("view")
-                    && c.iter().any(|a| a.contains("isCrossRepository"))
-            })
-            .count()
-    }
 }
 
-/// Every `gh` call the step made is a read: `pr view` only.
-fn assert_read_only(e: &Env, why: &str) {
-    for c in e.fakes.gh_calls() {
-        assert!(
-            c.first().map(String::as_str) == Some("pr")
-                && c.get(1).map(String::as_str) == Some("view"),
-            "{why}: light-eligibility may only read the PR, but called gh {c:?}"
-        );
-    }
+/// The step made no platform call (#2329): the agent step reads the PR.
+fn assert_no_gh(e: &Env, why: &str) {
+    let calls = e.fakes.gh_calls();
+    assert!(
+        calls.is_empty(),
+        "{why}: light-eligibility must not call gh, but called {calls:?}"
+    );
 }
 
 /// The refusal: a non-zero exit naming `light-cross-repo`, no measurement,
@@ -191,7 +178,7 @@ fn assert_refused(e: &Env, o: &Output, why: &str) {
         "{why}: a refusal is never an escalation\n{}",
         show(o)
     );
-    assert_read_only(e, why);
+    assert_no_gh(e, why);
 }
 
 #[test]
@@ -199,39 +186,17 @@ fn light_eligibility_refuses_every_value_but_exact_false() {
     if skip() {
         return;
     }
-    for (label, raw) in REFUSED_VIEW {
+    for (label, cross) in refused_values() {
         let e = Env::new();
-        let o = e.run(Some(raw), &[]);
-        let why = format!("isCrossRepository {label}");
+        let o = e.run(cross.as_ref(), &[]);
+        let why = format!("is_cross_repository {label}");
         assert_refused(&e, &o, &why);
         assert!(
             e.file("light-eligibility.json").is_none(),
             "{why}: light-eligibility.json must not be written\n{}",
             show(&o)
         );
-        assert_eq!(
-            e.cross_repo_reads(),
-            1,
-            "{why}: the step must read isCrossRepository with gh pr view exactly once\n{}",
-            show(&o)
-        );
     }
-}
-
-#[test]
-fn light_eligibility_refuses_when_gh_pr_view_fails() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    let o = e.run(None, &[("FAKE_GH_FAIL", "pr view")]);
-    assert_refused(&e, &o, "gh pr view fails");
-    assert!(e.file("light-eligibility.json").is_none(), "{}", show(&o));
-    assert!(
-        !stderr(&o).contains("HTTP 404"),
-        "gh stderr is untrusted and is not echoed\n{}",
-        show(&o)
-    );
 }
 
 #[test]
@@ -239,11 +204,11 @@ fn light_eligibility_refuses_before_reusing_a_cached_decision() {
     if skip() {
         return;
     }
-    for (label, raw) in REFUSED_VIEW {
+    for (label, cross) in refused_values() {
         let e = Env::new();
         let cached = e.cached_light();
-        let o = e.run(Some(raw), &[]);
-        let why = format!("cached light decision, isCrossRepository {label}");
+        let o = e.run(cross.as_ref(), &[]);
+        let why = format!("cached light decision, is_cross_repository {label}");
         assert_refused(&e, &o, &why);
         assert!(
             !stderr(&o).contains("reusing the eligibility decision"),
@@ -274,7 +239,7 @@ fn light_eligibility_refuses_a_cached_escalation_too() {
             json!({"reason": "over-limit", "base_sha": e.repo.base, "head_sha": e.head})
         ),
     );
-    let o = e.run(Some(r#"{"isCrossRepository":true}"#), &[]);
+    let o = e.run(Some(&json!(true)), &[]);
     assert_ne!(o.status.code(), Some(0), "{}", show(&o));
     assert!(stderr(&o).contains("light-cross-repo"), "{}", show(&o));
     assert!(stdout(&o).trim().is_empty(), "{}", show(&o));
@@ -282,12 +247,16 @@ fn light_eligibility_refuses_a_cached_escalation_too() {
 }
 
 #[test]
-fn light_eligibility_accepts_exact_false_and_measures() {
+fn light_eligibility_accepts_exact_false_and_measures_without_gh() {
     if skip() {
         return;
     }
     let e = Env::new();
-    let o = e.run(Some(ACCEPTED_VIEW), &[]);
+    // A failing gh and a foreign GH_REPO change nothing: the step never calls gh.
+    let o = e.run(
+        Some(&json!(false)),
+        &[("FAKE_GH_FAIL", "pr view"), ("GH_REPO", "other/repo")],
+    );
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     assert!(
         stderr(&o).contains("AUTODRIVE_LIGHT_ELIGIBILITY="),
@@ -301,49 +270,25 @@ fn light_eligibility_accepts_exact_false_and_measures() {
         j["decision"] == "light" || j["decision"] == "escalate",
         "decision: {j}"
     );
-    assert_eq!(
-        e.cross_repo_reads(),
-        1,
-        "the step must read isCrossRepository with gh pr view\n{}",
-        show(&o)
-    );
-    assert_read_only(&e, "accepted");
-    let view = e
-        .fakes
-        .gh_calls()
-        .into_iter()
-        .find(|c| c.iter().any(|a| a.contains("isCrossRepository")))
-        .expect("pr view call");
-    assert!(
-        view.iter().any(|a| a == "7"),
-        "the PR read must be the build_result PR: {view:?}"
-    );
-    assert!(
-        !view
-            .iter()
-            .any(|a| a == "--jq" || a == "-q" || a.starts_with("--jq=")),
-        "the value is compared by jq on the typed JSON, not through gh --jq: {view:?}"
-    );
+    assert_no_gh(&e, "accepted");
 }
 
 #[test]
-fn light_eligibility_reads_the_pr_in_the_target_repository_not_gh_repo() {
-    if skip() {
-        return;
-    }
-    let e = Env::new();
-    let o = e.run(Some(ACCEPTED_VIEW), &[("GH_REPO", "other/repo")]);
-    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
-    let calls = e.fakes.gh_calls();
-    let seen = e.fakes.gh_repo_seen();
-    let idx = calls
+fn light_resolve_pr_returns_the_observed_is_cross_repository() {
+    // The value light-eligibility checks comes from the agent step that reads
+    // the PR; without it in the prompt every run would be refused.
+    let prompt = recipe(RECIPE)["steps"]
+        .as_sequence()
+        .expect("steps")
         .iter()
-        .position(|c| c.iter().any(|a| a.contains("isCrossRepository")))
-        .unwrap_or_else(|| panic!("no isCrossRepository read\n{}", show(&o)));
-    assert_eq!(
-        seen.get(idx).map(String::as_str),
-        Some("<unset>"),
-        "GH_REPO must not choose the repository the PR number is looked up in"
+        .find(|s| s["id"].as_str() == Some("light-resolve-pr"))
+        .and_then(|s| s["prompt"].as_str())
+        .expect("light-resolve-pr prompt")
+        .to_string();
+    assert!(
+        prompt.contains("\"is_cross_repository\"")
+            && prompt.contains("is_cross_repository (JSON boolean)"),
+        "light-resolve-pr must return is_cross_repository as a JSON boolean"
     );
 }
 

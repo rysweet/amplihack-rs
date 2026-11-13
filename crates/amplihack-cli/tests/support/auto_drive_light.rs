@@ -247,8 +247,7 @@ pub fn fault(o: &Output, token: &str) {
 }
 
 /// A fake `gh`. Every call appends its argv to `$FAKE_LOG/gh.log` as one
-/// line of arguments joined by U+001F, appends the `GH_REPO` it saw (or
-/// `<unset>`) to `$FAKE_LOG/gh-repo.log` on the same line number, and copies any `--body-file` to
+/// line of arguments joined by U+001F, and copies any `--body-file` to
 /// `$FAKE_LOG/body-<n>.md`. Answers come from canned JSON, with `--jq`
 /// applied by the real `jq`:
 ///
@@ -256,10 +255,7 @@ pub fn fault(o: &Output, token: &str) {
 /// - `repo view`                 `{"nameWithOwner":"o/r","url":"https://github.com/o/r"}`
 /// - `pr view`                   PR 7 of `o/r`, head `$FAKE_GH_HEAD`, base
 ///   `$FAKE_GH_BASE_NAME` (default `main`) at `$FAKE_GH_BASE_OID` (default
-///   empty). When `$FAKE_GH_PR_VIEW` is set, even to the empty string,
-///   its bytes are printed verbatim instead (through `--jq` when given),
-///   so a test can return a missing field, `null`, empty output or
-///   invalid JSON (#2538).
+///   empty)
 /// - `label list`                `$FAKE_GH_LABELS` (default `[]`)
 /// - `search issues`/`issue list` `$FAKE_GH_SEARCH` (default `[]`)
 /// - `api .../search/issues...`  `{"items": $FAKE_GH_SEARCH_API}` (default `[]`)
@@ -276,7 +272,6 @@ set -u
 log="${FAKE_LOG:?}"
 n=$(( $(wc -l < "$log/gh.log" 2>/dev/null || echo 0) + 1 ))
 ( IFS=$'\x1f'; printf '%s\n' "$*" ) >> "$log/gh.log"
-printf '%s\n' "${GH_REPO-<unset>}" >> "$log/gh-repo.log"
 args=("$@")
 jqf=""
 for ((i=0; i<${#args[@]}; i++)); do
@@ -296,9 +291,7 @@ login="${FAKE_GH_LOGIN:-me}"
 case "$1 ${2:-}" in
   "api user") emit "{\"login\":\"$login\"}" ;;
   "repo view") emit '{"nameWithOwner":"o/r","url":"https://github.com/o/r","owner":{"login":"o"},"name":"r"}' ;;
-  "pr view") if [ -n "${FAKE_GH_PR_VIEW+x}" ]; then
-      if [ -n "$jqf" ]; then printf '%s' "$FAKE_GH_PR_VIEW" | jq -r "$jqf"; else printf '%s' "$FAKE_GH_PR_VIEW"; fi
-    else emit "{\"number\":7,\"url\":\"https://github.com/o/r/pull/7\",\"isCrossRepository\":false,\"headRefOid\":\"${FAKE_GH_HEAD:-}\",\"headRefName\":\"quick/demo\",\"baseRefName\":\"${FAKE_GH_BASE_NAME:-main}\",\"baseRefOid\":\"${FAKE_GH_BASE_OID:-}\",\"state\":\"OPEN\",\"headRepository\":{\"name\":\"r\"},\"headRepositoryOwner\":{\"login\":\"o\"}}"; fi ;;
+  "pr view") emit "{\"number\":7,\"url\":\"https://github.com/o/r/pull/7\",\"isCrossRepository\":false,\"headRefOid\":\"${FAKE_GH_HEAD:-}\",\"headRefName\":\"quick/demo\",\"baseRefName\":\"${FAKE_GH_BASE_NAME:-main}\",\"baseRefOid\":\"${FAKE_GH_BASE_OID:-}\",\"state\":\"OPEN\",\"headRepository\":{\"name\":\"r\"},\"headRepositoryOwner\":{\"login\":\"o\"}}" ;;
   "label list") emit "${FAKE_GH_LABELS:-[]}" ;;
   "search issues"|"issue list") emit "${FAKE_GH_SEARCH:-[]}" ;;
   "issue view") emit "${FAKE_GH_ISSUE_VIEW:-{\"number\":${3:-0},\"state\":\"OPEN\",\"author\":{\"login\":\"$login\"},\"body\":\"\"}}" ;;
@@ -362,16 +355,6 @@ impl Fakes {
     /// Every `gh` call, each as its argv.
     pub fn gh_calls(&self) -> Vec<Vec<String>> {
         read_log(&self.log.join("gh.log"))
-    }
-
-    /// The `GH_REPO` each `gh` call saw, in call order (`<unset>` when the
-    /// variable was not in its environment).
-    pub fn gh_repo_seen(&self) -> Vec<String> {
-        std::fs::read_to_string(self.log.join("gh-repo.log"))
-            .unwrap_or_default()
-            .lines()
-            .map(str::to_string)
-            .collect()
     }
 
     pub fn amplihack_calls(&self) -> Vec<Vec<String>> {
