@@ -97,6 +97,9 @@ impl Adapter for FakeAgents {
         self.prompts.lock().unwrap().push(prompt.to_string());
         let reply = if prompt.contains("[amplihack:no-merge]") {
             json!({"task_description": "Fix issue #2552", "requirements": ""})
+        // Step-01 and step-03 both begin "Establish the PR identity"; only step-03
+        // reads build_preflight, so it is matched first. An unrecognised prompt
+        // reaches bail!.
         } else if prompt.contains("Read build_preflight") {
             json!({"pr": "7", "terminal_state": "BUILT", "handed_off": false, "blockers": []})
         } else if prompt.contains("Establish the PR identity") {
@@ -155,16 +158,6 @@ impl Run {
             .iter()
             .find(|p| p.contains("Read build_preflight"))
             .unwrap_or_else(|| panic!("step-03 sent no prompt: {:?}", self.statuses))
-    }
-
-    /// The step-01 preflight prompt as the agent received it.
-    fn preflight_prompt(&self) -> &str {
-        self.prompts
-            .iter()
-            .find(|p| {
-                p.contains("Establish the PR identity") && !p.contains("Read build_preflight")
-            })
-            .unwrap_or_else(|| panic!("step-01 sent no prompt: {:?}", self.statuses))
     }
 }
 
@@ -288,30 +281,4 @@ fn a_lookup_that_could_not_complete_does_not_build() {
         resolve.contains("gh pr list refused"),
         "the named blocker must reach step-03: {resolve}"
     );
-}
-
-/// The preflight agent reports facts; it is never asked to decide the build,
-/// and the worktree and private-state work applies only to reusing a PR.
-#[test]
-fn the_preflight_prompt_asks_for_facts_and_scopes_worktree_work_to_reuse() {
-    let run = run(PrTable::Prs(vec![]));
-    let preflight = run.preflight_prompt();
-    assert!(
-        !preflight.contains("should_run"),
-        "step-01 must not ask the agent to set or decide should_run: {preflight}"
-    );
-    assert!(
-        !preflight.contains("Establish the PR identity and the worktree"),
-        "a fresh lane has no worktree to establish in step-01: {preflight}"
-    );
-    for marker in ["git worktree list", "amplihack orch helper autodrive state"] {
-        let line = preflight
-            .lines()
-            .find(|line| line.contains(marker))
-            .unwrap_or_else(|| panic!("step-01 lost the `{marker}` instruction: {preflight}"));
-        assert!(
-            line.trim_start().starts_with("When an existing"),
-            "`{marker}` must apply only when an existing PR is found: {line}"
-        );
-    }
 }

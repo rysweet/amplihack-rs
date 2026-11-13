@@ -127,7 +127,7 @@ taken from the agent again.
 | `a_fresh_lane_with_no_pr_runs_default_workflow` | empty | Step-02 runs |
 | `a_closed_unmerged_pr_does_not_stop_the_build` | CLOSED, unmerged PR | Step-02 runs |
 | `a_lane_with_an_open_pr_reuses_it_without_building` | OPEN, then MERGED, PR 7 | Step-02 skipped; step-03 completes and its prompt names PR 7 |
-| `a_lookup_that_could_not_complete_does_not_build` | lookup refused | Step-02 skipped; the blocker reaches step-03 or `build_preflight` |
+| `a_lookup_that_could_not_complete_does_not_build` | lookup refused | Step-02 skipped; the blocker reaches step-03 |
 
 The open-PR test runs once with an OPEN PR and once with a MERGED PR, and makes
 the same checks on both passes, including that the step-03 prompt names PR 7.
