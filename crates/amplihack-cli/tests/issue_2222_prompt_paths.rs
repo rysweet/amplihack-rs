@@ -449,9 +449,15 @@ fn pinned_renderer_substitutes_keys_and_fields_and_blanks_absent_ones() {
 #[test]
 fn leak_check_matches_whole_identifiers_only() {
     assert!(names_leak("cd \"$STATE_DIR\"", "STATE_DIR"));
-    assert!(names_leak("x ${AUTODRIVE_STATE_DIR:-}", "AUTODRIVE_STATE_DIR"));
+    assert!(names_leak(
+        "x ${AUTODRIVE_STATE_DIR:-}",
+        "AUTODRIVE_STATE_DIR"
+    ));
     assert!(names_leak("{{autodrive_state_dir}}", "autodrive_state_dir"));
-    assert!(!names_leak("\"$QUICK_CHANGE_STATE_DIR/pr-body.md\"", "STATE_DIR"));
+    assert!(!names_leak(
+        "\"$QUICK_CHANGE_STATE_DIR/pr-body.md\"",
+        "STATE_DIR"
+    ));
     assert!(!names_leak("STATE_DIRS", "STATE_DIR"));
 }
 
@@ -897,7 +903,10 @@ fn named_round_records_preserve_deterministic_ownership_and_reviewer_isolation()
             "{name}/{step}: a named record grants no write permission\n{p}"
         );
         assert!(
-            has_line(&p, "The deterministic writer owns the round record. Its path grants no permission to create, repair or replace it, or discover an alternative."),
+            has_line(
+                &p,
+                "The deterministic writer owns the round record. Its path grants no permission to create, repair or replace it, or discover an alternative."
+            ),
             "{name}/{step}: the record's path grants no write permission\n{p}"
         );
     }
@@ -1011,7 +1020,9 @@ fn step00b_serializes_hostile_findings_and_step06_keeps_the_observed_sha() {
     crate::support::auto_drive_light::private_file(&completion, "");
     let sha = "c".repeat(40);
     let forged = "b".repeat(40);
-    let agent_ctx = json!({"pr": "42", "head_sha": sha, "resolved_concerns": "ids", "round_label": "round 3"}).to_string();
+    let agent_ctx =
+        json!({"pr": "42", "head_sha": sha, "resolved_concerns": "ids", "round_label": "round 3"})
+            .to_string();
     for findings in [
         "quoted: \"finding\"; backslash: \\path\\file\nnext line\n".to_string(),
         "controls: \t\r\u{0008}\u{000c}\u{001b}\u{0001}\n".to_string(),
@@ -1315,7 +1326,10 @@ fn agent_steps_added_by_2340_name_their_inputs() {
     assert!(!p.contains("loop-provided private state"), "{p}");
     let p = rendered(&fx, MERGE, "step-01b-crusty-evidence");
     assert!(
-        p.contains(&format!("`{}/autodrive_round_evidence.sh`", tools_dir().display())),
+        p.contains(&format!(
+            "`{}/autodrive_round_evidence.sh`",
+            tools_dir().display()
+        )),
         "{p}"
     );
     let p = rendered(&fx, MERGE, "step-01-platform-facts");
@@ -1353,7 +1367,12 @@ fn step00b_adds_the_two_skill_paths_from_the_launchers_install() {
     keys.sort_unstable();
     assert_eq!(
         keys,
-        ["auto_drive_skill_dir", "merge_ready_skill_md", "resolved_concerns", "resolved_fence"],
+        [
+            "auto_drive_skill_dir",
+            "merge_ready_skill_md",
+            "resolved_concerns",
+            "resolved_fence"
+        ],
         "step-00b publishes paths and findings only; PR and head come from the step-01 agent: {v}"
     );
     let home = fx.home.to_string_lossy();
@@ -2142,7 +2161,10 @@ fn render_round_prompts_from_driver_context(
             "{r}/{step}: give the authoritative directory as a literal value"
         );
         if i < ROUND_RECORD_PROMPTS {
-            assert!(p.contains(record.to_str().unwrap()), "{r}/{step}: name the round record");
+            assert!(
+                p.contains(record.to_str().unwrap()),
+                "{r}/{step}: name the round record"
+            );
         }
         assert!(
             p.lines().any(|l| l == R2),
