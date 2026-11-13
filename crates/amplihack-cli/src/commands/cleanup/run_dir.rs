@@ -105,6 +105,10 @@ impl RuntimeGuard {
             );
             return RuntimeRemoval::KeptInUse;
         }
+        // No process uses the folder: give the owner back access to folders
+        // a step left locked, so removal is not stopped by them.
+        let unchanged = restore_owner_access(&path, euid());
+        report_unchanged(&path, &unchanged);
         match fs::remove_dir_all(&path) {
             Ok(()) => RuntimeRemoval::Removed,
             Err(error) if error.kind() == ErrorKind::NotFound => RuntimeRemoval::Removed,
@@ -123,6 +127,126 @@ impl RuntimeGuard {
 impl Drop for RuntimeGuard {
     fn drop(&mut self) {
         let _ = self.remove_inner();
+    }
+}
+
+/// This process's effective uid (a copy of `sweep.rs`'s, so `run_dir` does
+/// not depend on the sweep).
+fn euid() -> u32 {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    unsafe { libc::geteuid() }
+}
+
+/// How many entries left unchanged are named on stderr; the rest are counted
+/// in one last line, so a step that leaves millions of them cannot flood it.
+const UNCHANGED_STDERR_LIMIT: usize = 20;
+
+/// Gives the owner back read, write and search access (`u+rwx`) on every
+/// folder under `root`, `root` included, that `uid` owns and that is on the
+/// same filesystem as `root`, so `remove_dir_all` is not stopped by a folder
+/// a step left at mode `000` or `0500` (issue #2486).
+///
+/// Only the owner's bits are added; no bit is removed, files are never
+/// chmodded (removing a file depends on its folder's mode), and symbolic links
+/// are neither followed nor chmodded. An entry owned by another uid, or on
+/// another filesystem, is neither changed nor entered: its path is returned
+/// so the caller can report it. Errors are logged and the walk goes on; this
+/// never panics, because it runs from `Drop`.
+fn restore_owner_access(root: &Path, uid: u32) -> Vec<PathBuf> {
+    let mut unchanged = Vec::new();
+    let root_dev = match fs::symlink_metadata(root) {
+        Ok(meta) => meta.dev(),
+        Err(error) if error.kind() == ErrorKind::NotFound => return unchanged,
+        Err(error) => {
+            tracing::warn!(path = ?root, %error, "cannot inspect the runtime folder before removing it");
+            return unchanged;
+        }
+    };
+    // An explicit stack, not recursion, so a deep tree cannot overflow it.
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        let meta = match fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => {
+                tracing::warn!(path = ?path, %error, "cannot inspect a runtime folder entry");
+                continue;
+            }
+        };
+        let file_type = meta.file_type();
+        if file_type.is_symlink() {
+            continue;
+        }
+        if meta.uid() != uid || meta.dev() != root_dev {
+            unchanged.push(path);
+            continue;
+        }
+        if !file_type.is_dir() {
+            continue;
+        }
+        let mode = meta.mode() & 0o7777;
+        if mode & 0o700 != 0o700 {
+            // The chmod goes by path straight after the lstat above, so an
+            // entry swapped for a symlink in between would be followed. The
+            // race is accepted: the runtime folder is private to this uid and
+            // no process uses it any more, so only this uid or root could
+            // make the swap. Linux has no working
+            // fchmodat(AT_SYMLINK_NOFOLLOW), an O_PATH fd cannot be
+            // fchmodded, and a 000 folder cannot be opened to fchmod it.
+            let wanted = fs::Permissions::from_mode((mode | 0o700) & 0o7777);
+            if let Err(error) = fs::set_permissions(&path, wanted) {
+                tracing::warn!(path = ?path, %error, "cannot give the owner access to a runtime folder");
+                continue;
+            }
+        }
+        match fs::read_dir(&path) {
+            Ok(entries) => {
+                for entry in entries {
+                    match entry {
+                        Ok(entry) => stack.push(entry.path()),
+                        Err(error) => {
+                            tracing::warn!(path = ?path, %error, "cannot list a runtime folder");
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(path = ?path, %error, "cannot list a runtime folder");
+            }
+        }
+    }
+    unchanged
+}
+
+/// Reports the entries [`restore_owner_access`] left unchanged: every path at
+/// debug level, a count as a warning, and at most
+/// [`UNCHANGED_STDERR_LIMIT`] paths on stderr. Paths are shown quoted
+/// (`{:?}`), so a name holding a newline or control bytes cannot forge a log
+/// line. It never changes the run's result.
+fn report_unchanged(runtime: &Path, unchanged: &[PathBuf]) {
+    if unchanged.is_empty() {
+        return;
+    }
+    for path in unchanged {
+        tracing::debug!(path = ?path, "left permissions unchanged in the runtime folder");
+    }
+    tracing::warn!(
+        runtime = ?runtime,
+        count = unchanged.len(),
+        "runtime folder holds entries not owned by this user or on another filesystem; \
+         their permissions were left unchanged"
+    );
+    for path in unchanged.iter().take(UNCHANGED_STDERR_LIMIT) {
+        eprintln!(
+            "amplihack: warning: leaving permissions unchanged on {path:?} in the runtime \
+             folder: not owned by this user or on another filesystem"
+        );
+    }
+    if unchanged.len() > UNCHANGED_STDERR_LIMIT {
+        eprintln!(
+            "amplihack: warning: \u{2026} and {} more entries left unchanged",
+            unchanged.len() - UNCHANGED_STDERR_LIMIT
+        );
     }
 }
 

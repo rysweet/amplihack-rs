@@ -33,7 +33,13 @@ child recipes, agents, provenance logging, publish helpers, and finalization
 helpers. `TMPDIR`, `TMP` and `TEMP` point at its `tmp/` subfolder.
 
 The runner removes the runtime root when the run ends, whether it succeeded or
-failed, unless a running process still uses it. The run report `run.json`
+failed, unless a running process still uses it. Before removing it, the runner
+gives the owner back read, write and search access on every folder in it that
+the run owns, so a test fixture left at mode `000` or `0500` does not block the
+removal. Entries the run does not own, or that sit on another filesystem, are
+left unchanged and named in a warning; the warning never fails the run. See
+[Locked folders inside the runtime folder](clean-up-after-recipe-runs.md#locked-folders-inside-the-runtime-folder).
+The run report `run.json`
 stays in the run folder. A runtime root left by a killed run, or kept because
 a process still used it, is removed by a later sweep or by `amplihack cleanup`
 (category `run-tmp`) once no process uses it. See

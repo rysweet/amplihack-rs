@@ -616,3 +616,249 @@ fn prepare_attempt_recreates_tmp_in_a_dry_run_workspace() {
     ws.prepare_attempt().expect("prepare_attempt");
     assert!(rt.join("tmp").is_dir());
 }
+
+// ----- issue #2486 (13 Nov): locked folders inside the runtime folder ----------
+//
+// Contract:
+// - Before `remove_dir_all`, and only after the process scan found no user,
+//   `RuntimeGuard` adds the owner's `rwx` bits to every folder the run owns
+//   (lstat uid == euid, same `dev()` as the root). No other bit is added or
+//   removed. Files are never chmodded. Symlinks are neither followed nor
+//   chmodded.
+// - Entries the run does not own are left unchanged, reported in a warning,
+//   and do not fail the run: no new `RuntimeRemoval` variant.
+// - `fn restore_owner_access(root: &Path, uid: u32) -> Vec<PathBuf>` (private,
+//   in `run_dir.rs`) does the walk and returns the paths it skipped because
+//   they are not owned by `uid` or are on another filesystem.
+//
+// Nothing here needs root: the not-owned case passes a uid other than the
+// test's own. Under root the bug cannot be reproduced (root ignores modes),
+// so the removal tests print a note and still assert.
+
+fn test_euid() -> u32 {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    unsafe { libc::geteuid() }
+}
+
+fn note_if_root(test: &str) {
+    if test_euid() == 0 {
+        eprintln!(
+            "{test}: running as root, which ignores folder modes; this run does not exercise #2486"
+        );
+    }
+}
+
+fn set_mode(path: &Path, bits: u32) {
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(bits)).unwrap();
+}
+
+/// Puts every real folder under the given roots back to 0700 when dropped,
+/// so a failed test leaves nothing `TempDir` cannot delete. lstat only;
+/// symlinks are skipped; the chmod comes before `read_dir`; errors ignored.
+struct RestoreModes(Vec<PathBuf>);
+
+impl Drop for RestoreModes {
+    fn drop(&mut self) {
+        let mut stack = self.0.clone();
+        while let Some(dir) = stack.pop() {
+            let Ok(meta) = std::fs::symlink_metadata(&dir) else {
+                continue;
+            };
+            if !meta.file_type().is_dir() {
+                continue;
+            }
+            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                stack.extend(entries.flatten().map(|e| e.path()));
+            }
+        }
+    }
+}
+
+/// `tmp/locked000/inner/file` with both folders at 000, and `tmp/ro0500/file`
+/// with `ro0500` at 0500, as fixtures from #2574 leave them.
+fn lock_fixtures(rt: &Path) {
+    let locked = rt.join("tmp/locked000");
+    std::fs::create_dir_all(locked.join("inner")).unwrap();
+    std::fs::write(locked.join("inner/file"), "x").unwrap();
+    let ro = rt.join("tmp/ro0500");
+    std::fs::create_dir_all(&ro).unwrap();
+    std::fs::write(ro.join("file"), "x").unwrap();
+    set_mode(&locked.join("inner"), 0o000);
+    set_mode(&locked, 0o000);
+    set_mode(&ro, 0o500);
+}
+
+/// The 13 Nov case: e1044c618 returns `Failed` here with "Permission denied
+/// (os error 13)" and leaves the runtime folder behind.
+#[test]
+fn removes_runtime_with_mode_000_and_0500_folders() {
+    note_if_root("removes_runtime_with_mode_000_and_0500_folders");
+    let _procs = fake_proc_scope();
+    let (tmp, rt) = runtime_with_tmp();
+    let _restore = RestoreModes(vec![tmp.path().to_path_buf()]);
+    lock_fixtures(&rt);
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).remove(),
+        RuntimeRemoval::Removed
+    );
+    assert!(
+        !rt.exists(),
+        "the runtime folder and the locked folders are gone"
+    );
+}
+
+/// `Drop` takes the same path as `remove()`.
+#[test]
+fn runtime_guard_drop_removes_locked_folders_too() {
+    note_if_root("runtime_guard_drop_removes_locked_folders_too");
+    let _procs = fake_proc_scope();
+    let (tmp, rt) = runtime_with_tmp();
+    let _restore = RestoreModes(vec![tmp.path().to_path_buf()]);
+    lock_fixtures(&rt);
+
+    drop(RuntimeGuard::new(rt.clone()));
+    assert!(!rt.exists());
+}
+
+/// A runtime folder itself left at 0500 is restored and removed as well (D2).
+#[test]
+fn removes_runtime_whose_root_is_0500() {
+    note_if_root("removes_runtime_whose_root_is_0500");
+    let _procs = fake_proc_scope();
+    let (tmp, rt) = runtime_with_tmp();
+    let _restore = RestoreModes(vec![tmp.path().to_path_buf()]);
+    set_mode(&rt, 0o500);
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).remove(),
+        RuntimeRemoval::Removed
+    );
+    assert!(!rt.exists());
+}
+
+/// A folder still in use is not touched at all: the modes are restored only
+/// after the scan finds no user (D8).
+#[test]
+fn a_folder_in_use_keeps_its_locked_modes() {
+    let procs = fake_proc_scope();
+    let (tmp, rt) = runtime_with_tmp();
+    let _restore = RestoreModes(vec![tmp.path().to_path_buf()]);
+    let ro = rt.join("tmp/ro0500");
+    std::fs::create_dir_all(&ro).unwrap();
+    set_mode(&ro, 0o500);
+    let holder = cat_holder(&rt.join("tmp"), &rt.join("tmp"));
+    procs.fake.link_own(holder.0.id());
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).remove(),
+        RuntimeRemoval::KeptInUse
+    );
+    assert_eq!(mode(&ro), 0o500, "an in-use folder is never changed");
+    holder.finish();
+}
+
+/// A symlink inside the runtime folder that points at a 0500 folder outside
+/// it: the link is removed, the target is neither entered nor chmodded.
+#[test]
+fn restore_does_not_follow_symlinks() {
+    let _procs = fake_proc_scope();
+    let (tmp, rt) = runtime_with_tmp();
+    let target = tmp.path().join("outside/target");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("sentinel"), "s").unwrap();
+    let _restore = RestoreModes(vec![tmp.path().to_path_buf()]);
+    set_mode(&target, 0o500);
+    std::os::unix::fs::symlink(&target, rt.join("tmp/link")).unwrap();
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).remove(),
+        RuntimeRemoval::Removed
+    );
+    assert!(!rt.exists());
+    assert_eq!(mode(&target), 0o500, "the link's target keeps its mode");
+    assert!(
+        target.join("sentinel").is_file(),
+        "the target is not emptied"
+    );
+}
+
+/// Entries the run does not own are reported and left unchanged. Passing a
+/// uid other than the test's own makes the root itself "not owned", so the
+/// walk reports it and changes nothing below it (D2, D3).
+#[test]
+fn restore_skips_entries_not_owned() {
+    let (tmp, rt) = runtime_with_tmp();
+    let _restore = RestoreModes(vec![tmp.path().to_path_buf()]);
+    let ro = rt.join("tmp/ro0500");
+    std::fs::create_dir_all(&ro).unwrap();
+    set_mode(&ro, 0o500);
+    let root_mode = mode(&rt);
+
+    let skipped = restore_owner_access(&rt, test_euid().wrapping_add(1));
+
+    assert_eq!(skipped, vec![rt.clone()], "only the root is reported");
+    assert_eq!(mode(&ro), 0o500, "nothing below a not-owned root changes");
+    assert_eq!(mode(&rt), root_mode, "the not-owned root keeps its mode");
+}
+
+/// Only the owner's bits are added; group and other bits stay as they were;
+/// files keep their mode; folders that already have u+rwx are left as they
+/// are; the walk reaches folders below a 000 folder (chmod before read_dir).
+#[test]
+fn restore_adds_only_owner_bits() {
+    let (tmp, rt) = runtime_with_tmp();
+    let _restore = RestoreModes(vec![tmp.path().to_path_buf()]);
+    let ro = rt.join("tmp/ro0500");
+    std::fs::create_dir_all(&ro).unwrap();
+    std::fs::write(ro.join("file"), "x").unwrap();
+    set_mode(&ro.join("file"), 0o400);
+    set_mode(&ro, 0o500);
+    let grp = rt.join("tmp/g0050");
+    std::fs::create_dir_all(&grp).unwrap();
+    set_mode(&grp, 0o050);
+    let deep = rt.join("tmp/a000/b000");
+    std::fs::create_dir_all(&deep).unwrap();
+    set_mode(&deep, 0o000);
+    set_mode(&rt.join("tmp/a000"), 0o000);
+    let open = rt.join("tmp/open0755");
+    std::fs::create_dir_all(&open).unwrap();
+    set_mode(&open, 0o755);
+
+    let skipped = restore_owner_access(&rt, test_euid());
+
+    assert!(skipped.is_empty(), "everything is owned: {skipped:?}");
+    assert_eq!(mode(&ro), 0o700);
+    assert_eq!(mode(&ro.join("file")), 0o400, "files are never chmodded");
+    assert_eq!(mode(&grp), 0o750, "group bits kept, owner bits added");
+    assert_eq!(mode(&rt.join("tmp/a000")), 0o700);
+    assert_eq!(mode(&deep), 0o700, "reached below a 000 folder");
+    assert_eq!(mode(&open), 0o755, "no bit is removed");
+}
+
+/// The walk never follows a symlink, even one pointing at a folder the run
+/// owns, and never reports one as not owned.
+#[test]
+fn restore_neither_enters_nor_reports_symlinks() {
+    let (tmp, rt) = runtime_with_tmp();
+    let target = tmp.path().join("outside/target");
+    std::fs::create_dir_all(target.join("sub")).unwrap();
+    let _restore = RestoreModes(vec![tmp.path().to_path_buf()]);
+    set_mode(&target.join("sub"), 0o500);
+    set_mode(&target, 0o500);
+    std::os::unix::fs::symlink(&target, rt.join("tmp/link")).unwrap();
+
+    let skipped = restore_owner_access(&rt, test_euid());
+
+    assert!(skipped.is_empty(), "{skipped:?}");
+    assert_eq!(mode(&target), 0o500);
+    assert_eq!(mode(&target.join("sub")), 0o500, "not entered");
+}
+
+/// A missing root is not an error and reports nothing.
+#[test]
+fn restore_on_a_missing_root_reports_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    assert!(restore_owner_access(&tmp.path().join("gone"), test_euid()).is_empty());
+}

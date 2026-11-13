@@ -380,7 +380,9 @@ panicked, the runner:
    `TMPDIR` and `artifacts/`, unless a running process still uses it. Durable
    `recovery/` state and copied artifacts will remain outside that disposable
    folder. See
-   [A runtime folder still in use is kept](#a-runtime-folder-still-in-use-is-kept).
+   [A runtime folder still in use is kept](#a-runtime-folder-still-in-use-is-kept)
+   and
+   [Locked folders inside the runtime folder](#locked-folders-inside-the-runtime-folder).
 2. Finalises `run.json` with the end time, outcome and step summary.
 3. Unless `AMPLIHACK_CLEANUP_ON_EXIT=0` is set, sweeps the whole work root for
    run-owned items that are now eligible (the categories `run-tmp`,
@@ -470,6 +472,66 @@ still keeps every folder it cannot prove unused.
 The folder of a `recipe run --dry-run` is not checked: it lives in the system
 temporary folder, no sweep ever looks at it, and keeping it would leave it
 there for good. It is removed at the end of the dry run.
+
+### Locked folders inside the runtime folder
+
+A step can leave a folder under `TMPDIR` that its owner cannot write to or
+search, for example a test fixture left at mode `000` or `0500`. Removing the
+contents of such a folder fails with `Permission denied (os error 13)`.
+
+So once the runner has found that no process uses `runtime/`, and before it
+removes it, the runner walks the folder from its root and gives the owner back
+read, write and search access (`u+rwx`) on every folder the run owns. It adds
+only those three owner bits: group and other bits stay as they were, and no
+bit is ever removed. File modes are never changed, because removing a file
+depends on the mode of the folder that holds it, not on the file's own mode.
+
+The walk does not follow symbolic links. A link inside `runtime/` is removed
+as a link, and the folder it points to keeps its mode and its contents.
+
+The walk leaves alone, and does not enter, any entry that:
+
+- belongs to another user; or
+- is on another filesystem than the runtime folder, such as a bind mount.
+
+It names each such entry in a warning on stderr and leaves its permissions
+unchanged:
+
+```text
+amplihack: warning: leaving permissions unchanged on "/home/ryan/.amplihack/work/r/3f0c9a526d1e/tmp/fixture" in the runtime folder: not owned by this user or on another filesystem
+```
+
+At most 20 entries are named on stderr; any further ones are counted in one
+last line, `amplihack: warning: … and 37 more entries left unchanged`. Every
+path is quoted, so a name with a newline or control characters in it is shown
+escaped. The full list is written to the debug log only, which is off by
+default. To see every path, run with `RUST_LOG=amplihack_cli=debug` (or
+`RUST_LOG=debug`); the entries then appear on stderr.
+
+These warnings never change the run's exit status. The runner then removes
+`runtime/` as usual. If an entry it left alone stops the removal, it prints the
+existing `could not remove the run's runtime folder` warning and the folder
+stays in place. A later sweep tries again, but it fails for as long as the
+entry still belongs to another user or a folder in it is still locked, so fix
+the folder by hand as shown below.
+
+This applies to the runner's own removal of `runtime/` at the end of a run.
+The sweep and `amplihack cleanup` do not change permissions: a `run-tmp`
+folder that still holds a locked folder is reported as failed and kept, and
+`amplihack cleanup` exits with a non-zero status. Give the owner access back on
+the folders only, then run the sweep again. Point `find` at the runtime folder
+itself, which is `<work root>/runs/<run id>/runtime` or, when that path is too
+long, `<work root>/r/<short id>`:
+
+```bash
+RUNTIME="$HOME/.amplihack/work/r/3f0c9a526d1e"   # or .../runs/<run id>/runtime
+find "$RUNTIME" -type d -exec chmod u+rwx {} +
+amplihack cleanup --apply --only run-tmp
+```
+
+The `-type d` test leaves file modes unchanged, as the runner does. Avoid
+`chmod -R u+rwx`, which also makes every file executable. Entries owned by
+another user need that user, or root, to change or remove them.
 
 If the work root cannot be used, for example because it is group-writable,
 execution stops with an error. Failed recovery admission or durable publication
