@@ -84,6 +84,7 @@ while [ $# -gt 0 ]; do
       case "${2:-}" in
         pr_number=*) PR="${2#*=}" ;;
         pr_url=*) PR_URL_V="${2#*=}" ;;
+        no_merge=*|autodrive_dry_run=*|autodrive_base_branch=*) BUDGET_ARGS+=(--context "${2:-}"); case "${2:-}" in autodrive_base_branch=*) export AUTODRIVE_BASE_BRANCH="${2#*=}" ;; esac ;;
         plan_task_id=*) TASK_ID="${2#*=}" ;;
         autodrive_budget_loop_rounds=*|autodrive_budget_total_rounds=*|autodrive_budget_wall_seconds=*)
           BUDGET_ARGS+=(--context "${2:-}") ;;

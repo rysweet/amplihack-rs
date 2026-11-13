@@ -467,6 +467,7 @@ esac
         .env_clear()
         .env("PATH", format!("{}:{old_path}", bin_dir.display()))
         .env("HOME", tmp.path())
+        .env("TMPDIR", tmp.path())
         .env("REMOTE_HOST_TYPE", "github")
         .env("ISSUE_NUMBER", "7")
         .env(

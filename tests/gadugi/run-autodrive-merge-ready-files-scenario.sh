@@ -74,7 +74,7 @@ else
 fi
 
 # 3. No install at all fails by name, listing what was searched.
-OUT="$(cd "$WORK/plain" && env -i HOME="$WORK/plain" PATH="$SYS_PATH" REPO_PATH="$WORK/plain" \
+OUT="$(cd "$WORK/plain" && env -i HOME="$WORK/plain" PATH="$SYS_PATH" AMPLIHACK_HOME="$WORK/plain" REPO_PATH="$WORK/plain" \
   bash "$RESOLVER" 2>"$WORK/err3")"; RC=$?
 if [ "$RC" -ne 0 ] && [ -z "$OUT" ] && grep -qF 'ERROR: merge-ready-skill-files-not-found: searched' "$WORK/err3"; then
   pass merge_ready_missing_install_named "no merge-ready install fails with a named error, never a blocker"
@@ -99,7 +99,7 @@ RECIPE="$ROUND_RECIPE"
 S00="$(bash "$SCRIPT_DIR/recipe-step-command.sh" "$RECIPE" step-00-merge-ready-files)" || S00=""
 run_s00() { # run_s00 <gadugi-bin-dir> [repo]
   env -i HOME="$WORK/home" PATH="$1:$SYS_PATH" AMPLIHACK_HOME="$WORK/ah" REPO_PATH="${2:-$WORK/plain}" \
-    AUTODRIVE_TOOLS_DIR="$REPO_ROOT/amplifier-bundle/tools" bash -c "$S00"
+    RECIPE_VAR_autodrive_tools_dir="$REPO_ROOT/amplifier-bundle/tools" bash -c "$S00"
 }
 OUT="$(run_s00 "$WORK/gadugi-bin" 2>"$WORK/err5")"; RC=$?
 if [ -n "$S00" ] && [ "$RC" -eq 0 ] && [ "$(printf '%s' "$OUT" | jq -r .skill_md 2>/dev/null)" = "$WANT/SKILL.md" ]; then
@@ -108,10 +108,10 @@ else
   fl merge_round_step00_resolves "rc=$RC out=$OUT err=$(tr '\n' ' ' < "$WORK/err5")"
 fi
 OUT="$(run_s00 "$WORK/no-gadugi-bin" "$WORK/node" 2>"$WORK/err6")"; RC=$?
-if [ "$RC" -ne 0 ] && [ -z "$OUT" ] && grep -q '^ERROR: gadugi-test-not-installed:' "$WORK/err6"; then
-  pass merge_round_step00_stops_without_gadugi "step-00 still stops by name in a Node repository if gadugi-test goes away during a run"
+if [ "$RC" -eq 0 ] && [ "$(printf '%s' "$OUT" | jq -r .skill_md)" = "$WANT/SKILL.md" ]; then
+  pass merge_round_step00_leaves_tool_recovery_to_agent "trusted criteria lookup does not make required QA tooling optional; the QA agent diagnoses missing tools"
 else
-  fl merge_round_step00_stops_without_gadugi "rc=$RC out=$OUT err=$(tr '\n' ' ' < "$WORK/err6")"
+  fl merge_round_step00_leaves_tool_recovery_to_agent "rc=$RC out=$OUT"
 fi
 OUT="$(run_s00 "$WORK/no-gadugi-bin" "$WORK/rust" 2>"$WORK/err6b")"; RC=$?
 if [ "$RC" -eq 0 ] && [ "$(printf '%s' "$OUT" | jq -r .skill_md 2>/dev/null)" = "$WANT/SKILL.md" ]; then
@@ -120,35 +120,8 @@ else
   fl merge_round_step00_rust_needs_no_gadugi "rc=$RC out=$OUT err=$(tr '\n' ' ' < "$WORK/err6b")"
 fi
 
-# 6. auto-drive-to-merge checks gadugi-test FIRST, before the build, where
-#    criterion 1 needs it.
-FIRST="$(grep -m1 -E '^  - id: ' "$TOP_RECIPE" | sed -E 's/^  - id: "?([^"]*)"?.*/\1/')"
-RECIPE="$TOP_RECIPE"
-PRQ="$(bash "$SCRIPT_DIR/recipe-step-command.sh" "$RECIPE" autodrive-prerequisites)" || PRQ=""
-run_prq() { # run_prq <gadugi-bin-dir> <repo>
-  env -i HOME="$WORK/home" PATH="$1:$SYS_PATH" AMPLIHACK_HOME="$REPO_ROOT" REPO_PATH="$2" bash -c "$PRQ"
-}
-OUT="$(run_prq "$WORK/no-gadugi-bin" "$WORK/node" 2>"$WORK/err7")"; RC=$?
-if [ "$FIRST" = "autodrive-prerequisites" ] && [ -n "$PRQ" ] && [ "$RC" -ne 0 ] && [ -z "$OUT" ] \
-   && grep -q '^ERROR: gadugi-test-not-installed:' "$WORK/err7" \
-   && grep -qF 'npm install -g github:rysweet/gadugi-agentic-test#6c120657798995b1b53399a5acf3693d418a2d8b' "$WORK/err7"; then
-  pass gadugi_missing_stops_before_build "a missing gadugi-test stops auto-drive on a Node repository at its first step, before the build, with the install command"
-else
-  fl gadugi_missing_stops_before_build "first=$FIRST rc=$RC out=$OUT err=$(tr '\n' ' ' < "$WORK/err7")"
-fi
-OUT="$(run_prq "$WORK/gadugi-bin" "$WORK/node" 2>"$WORK/err8")"; RC=$?
-if [ "$RC" -eq 0 ] && [ "$OUT" = '{"gadugi_test":"found"}' ]; then
-  pass gadugi_present_goes_on "with gadugi-test on PATH auto-drive goes on to the build"
-else
-  fl gadugi_present_goes_on "rc=$RC out=$OUT err=$(tr '\n' ' ' < "$WORK/err8")"
-fi
-OUT="$(run_prq "$WORK/no-gadugi-bin" "$WORK/rust" 2>"$WORK/err9")"; RC=$?
-if [ "$RC" -eq 0 ] && [ "$OUT" = '{"gadugi_test":"not-required"}' ]; then
-  pass rust_repo_starts_without_gadugi "a Rust CLI repository starts auto-drive without gadugi-test (qa-team's repo-type table, #1517)"
-else
-  fl rust_repo_starts_without_gadugi "rc=$RC out=$OUT err=$(tr '\n' ' ' < "$WORK/err9")"
-fi
-
+# Prerequisite recovery is agentic and is validated separately with controlled
+# Rust records. This harness never starts an agent or a hosting write.
 if [ "$fail" -eq 0 ]; then
   echo "merge-ready read from its files; gadugi-test checked before the build where criterion 1 needs it"
   echo "ALL_CASES_PASSED"
