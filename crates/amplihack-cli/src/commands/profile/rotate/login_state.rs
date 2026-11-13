@@ -236,7 +236,13 @@ pub(super) fn assess_with(
         } else {
             store.verify_profile_dir(&name)?
         };
-        let before = evidence(&dir)?;
+        let before = match evidence(&dir) {
+            Ok(evidence) => evidence,
+            Err(error) => {
+                eprintln!("profile {name}: authentication assessment skipped: {error}");
+                continue;
+            }
+        };
         if s.profiles.get(&raw).is_some_and(|e| e.evidence == before) {
             continue;
         }

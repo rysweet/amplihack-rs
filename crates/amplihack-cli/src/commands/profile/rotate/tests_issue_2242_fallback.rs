@@ -1,6 +1,33 @@
 use super::*;
 
 #[test]
+fn an_unsafe_stored_credential_does_not_block_another_eligible_login() {
+    let e = fixture();
+    let extra = ino_at(&e.slot("extra"));
+    let unverified = e._tmp.path().join("unverified-credential");
+    private(&unverified, "unverified material");
+    fs::remove_file(e.slot("spare")).unwrap();
+    std::os::unix::fs::symlink(&unverified, e.slot("spare")).unwrap();
+    let link = ino_at(&e.slot("spare"));
+    let mut c = context(&e);
+    assert_eq!(
+        drive(&e, &mut c).unwrap(),
+        CycleOutcome::Swapped,
+        "{}",
+        log(&e)
+    );
+    assert_eq!(ino_at(&e.live()), extra);
+    assert_eq!(ino_at(&e.slot("work")), Some(e.l));
+    assert_eq!(ino_at(&e.slot("spare")), link);
+    assert_eq!(fs::read_link(e.slot("spare")).unwrap(), unverified);
+    assert_eq!(
+        fs::read_to_string(&unverified).unwrap(),
+        "unverified material"
+    );
+    assert!(!e.rs.journal.exists());
+}
+
+#[test]
 fn an_api_key_refusal_preserves_its_actionable_alert_once_across_cycles() {
     let e = fixture();
     private(&e.slot("spare"), "{}");
