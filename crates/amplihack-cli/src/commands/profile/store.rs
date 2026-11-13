@@ -667,8 +667,7 @@ fn copy_allowlisted_tree(
         *entries += 1;
         if *entries > MAX_COPY_ENTRIES {
             return Err(ProfileError::SharedAssetLimit(format!(
-                "more than {MAX_COPY_ENTRIES} entries while copying shared folder {}",
-                shown.display()
+                "more than {MAX_COPY_ENTRIES} entries while copying shared folder {shown:?}"
             )));
         }
         let source_path = entry.path();
@@ -952,8 +951,7 @@ pub(super) mod fdwalk {
             *entries += 1;
             if *entries > MAX_COPY_ENTRIES {
                 return Err(ProfileError::SharedAssetLimit(format!(
-                    "more than {MAX_COPY_ENTRIES} entries while copying shared folder {}",
-                    shown.display()
+                    "more than {MAX_COPY_ENTRIES} entries while copying shared folder {shown:?}"
                 )));
             }
             let kind = match file_type(src.as_raw_fd(), &name) {

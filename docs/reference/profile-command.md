@@ -3759,7 +3759,9 @@ Rules:
   `skills/synced` alone therefore do not prevent profile creation; more than
   5,000 included entries still do. An entry-limit error names the containing
   folder where the excess entry was encountered, relative to `$HOME/.claude`,
-  for example `more than 5000 entries while copying shared folder skills/custom`.
+  for example `more than 5000 entries while copying shared folder "skills/custom"`.
+  Folder names are quoted and control characters are escaped so they cannot
+  inject diagnostic lines or terminal control sequences.
   Special files are skipped without being opened, so a FIFO cannot block the copy.
 - Excluded entirely: `.credentials.json`, `.claude.json`, `history*`,
   `sessions`, `todos`, `statsig`, `shell-snapshots`, `ide`,

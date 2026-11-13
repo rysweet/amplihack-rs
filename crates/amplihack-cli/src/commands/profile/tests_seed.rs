@@ -299,8 +299,57 @@ fn issue_2522_entry_limit_is_aggregate_across_shared_folders() {
         .split_once("while copying shared folder ")
         .expect("limit error must identify its source-relative folder")
         .1;
-    assert!(["agents", "commands"].contains(&folder), "{detail}");
+    assert!(["\"agents\"", "\"commands\""].contains(&folder), "{detail}");
     assert!(!store.root().join("work").exists());
+}
+
+// Windows disallows ASCII controls in filenames, but permits C1 controls.
+// Exercise the native walker through profile publication and rollback.
+#[test]
+fn issue_2522_entry_limit_escapes_folder_controls_and_rolls_back() {
+    for (name, escaped) in [
+        #[cfg(not(windows))]
+        ("custom\nforged", r"custom\nforged"),
+        #[cfg(not(windows))]
+        ("custom\u{1b}[31m", r"custom\u{1b}[31m"),
+        ("custom\u{85}forged", r"custom\u{85}forged"),
+        ("custom\u{9b}31m", r"custom\u{9b}31m"),
+    ] {
+        let (_d, source, store) = fixture();
+        let existing = store.add(&n("existing")).unwrap();
+        fs::write(existing.join(".sentinel"), b"existing profile bytes").unwrap();
+        let before = inventory(store.root());
+        let relative = Path::new("skills").join(name);
+        numbered_files(&source.join(&relative), 5_000);
+
+        let error = store.add(&n("work")).unwrap_err();
+
+        // Check the full error too: this is what callers render on stderr.
+        let rendered = error.to_string();
+        assert!(rendered.contains(escaped), "{rendered:?}");
+        assert!(!rendered.chars().any(char::is_control), "{rendered:?}");
+        let ProfileError::SharedAssetLimit(detail) = error else {
+            panic!("expected an entry-limit error, got {error:?}");
+        };
+        assert_eq!(
+            detail,
+            format!("more than 5000 entries while copying shared folder {relative:?}")
+        );
+        assert_eq!(
+            inventory(store.root()),
+            before,
+            "failed add left staging or partial profile entries"
+        );
+        assert_eq!(
+            fs::read(existing.join(".sentinel")).unwrap(),
+            b"existing profile bytes"
+        );
+        assert_eq!(fs::read_dir(source.join(&relative)).unwrap().count(), 5_000);
+        assert_eq!(
+            fs::read(source.join(relative).join("0.md")).unwrap(),
+            b"skill 0\n"
+        );
+    }
 }
 
 #[test]
@@ -538,8 +587,8 @@ fn excessive_entry_count_fails_closed_and_rolls_back() {
     assert!(detail.contains("more than 5000 entries"), "{detail}");
     assert!(
         detail.contains(&format!(
-            "while copying shared folder {}",
-            Path::new("skills").join("custom").display()
+            "while copying shared folder {:?}",
+            Path::new("skills").join("custom")
         )),
         "{detail}"
     );
