@@ -23,7 +23,7 @@ pub(in crate::commands::profile::rotate) fn swap_operation_custody(
     let to_dir = store
         .verify_profile_dir(to)
         .map_err(|_| refused(format!("profile {to} failed the directory check")))?;
-    let live_dir = super::super::verified_dirs::Directory::open(&dot, None)?;
+    let live_dir = super::super::verified_dirs::Directory::open_login(&dot, None)?;
     let target_dir =
         super::super::verified_dirs::Directory::open(&store.root().join(to.as_str()), None)?;
     let (l, t) = (dot.join(CREDS), to_dir.join(CREDS));

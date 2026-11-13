@@ -620,20 +620,16 @@ pub(super) fn direct_cycle(f: &Fixture, ep: &Endpoint) -> std::process::Output {
 fn review_expired_candidate_is_refreshed_then_fresh_identity_permits_rotation() {
     let (f, ep) = expired_candidate();
     ep.refresh_allowed.store(true, Ordering::Relaxed);
-    let _first = direct_cycle(&f, &ep);
+    let first = direct_cycle(&f, &ep);
     assert!(
         ep.refreshes.load(Ordering::Relaxed) > 0,
         "identity prefilter must not suppress existing usage refresh"
     );
-    assert_eq!(
-        ino(&f.home_login()),
-        Some(f.live_ino),
-        "unbound pre-refresh measurement cannot authorize movement"
-    );
-    let refreshed = ino(&f.slot("extra")).unwrap();
-    let out = direct_cycle(&f, &ep);
-    assert!(out.status.success(), "{}", text(&out.stderr));
-    assert_eq!(ino(&f.home_login()), Some(refreshed));
+    assert!(first.status.success(), "{}", text(&first.stderr));
+    // Assessment refreshes before the snapshot; fresh server evidence binds
+    // the resulting file and permits the swap in this same cycle.
+    assert_ne!(ino(&f.home_login()), Some(f.live_ino));
+    assert_eq!(f.home_account(), "uuid-extra");
     assert_eq!(ino(&f.slot("work")), Some(f.live_ino));
     assert_eq!(ino(&f.slot("extra")), None);
     assert_eq!(f.ledger().unwrap()["account"], "uuid-extra");

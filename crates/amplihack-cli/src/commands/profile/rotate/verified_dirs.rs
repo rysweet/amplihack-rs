@@ -3,7 +3,7 @@
 use super::swap_authorize::refused;
 use crate::commands::profile::{
     ProfileError,
-    auto_switch::kit::{CREDS, euid},
+    auto_switch::kit::{CREDS, euid, writable_by_others},
     store::renameat_noreplace,
 };
 use std::ffi::CString;
@@ -18,10 +18,41 @@ pub(super) struct Directory {
     file: File,
     path: PathBuf,
     id: (u64, u64),
+    private: bool,
 }
 
 fn invalid() -> ProfileError {
     refused("credential directory binding changed or is unsafe; journal retained")
+}
+
+/// Apply the shared private-group/ACL rule to the retained descriptor, so a
+/// substituted path cannot supply the ACL evidence for a different directory.
+fn untrusted_writers(file: &File, meta: &std::fs::Metadata) -> bool {
+    amplihack_utils::secure_files::dir_rule(meta.mode(), !writable_by_others(meta), || {
+        #[cfg(target_os = "linux")]
+        {
+            // SAFETY: retained descriptor and a constant NUL-terminated name;
+            // a null buffer asks only for the attribute's size.
+            let size = unsafe {
+                libc::fgetxattr(
+                    file.as_raw_fd(),
+                    c"system.posix_acl_access".as_ptr(),
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+            if size < 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = file;
+            Err(std::io::ErrorKind::Unsupported.into())
+        }
+    })
 }
 
 pub(super) fn incomplete(error: ProfileError) -> ProfileError {
@@ -31,9 +62,26 @@ pub(super) fn incomplete(error: ProfileError) -> ProfileError {
 }
 
 impl Directory {
+    /// Existing live directories permit readers, but only trusted writers.
+    pub(super) fn open_login(
+        path: &Path,
+        expected: Option<(u64, u64)>,
+    ) -> Result<Self, ProfileError> {
+        Self::open_with_policy(path, expected, false)
+    }
+
+    /// Stored profiles and reserved custody directories remain owner-only.
+    pub(super) fn open(path: &Path, expected: Option<(u64, u64)>) -> Result<Self, ProfileError> {
+        Self::open_with_policy(path, expected, true)
+    }
+
     /// Walk from `/` without following symlinks. System ancestors may be owned
     /// by root; only root's sticky temporary directories may be world writable.
-    pub(super) fn open(path: &Path, expected: Option<(u64, u64)>) -> Result<Self, ProfileError> {
+    fn open_with_policy(
+        path: &Path,
+        expected: Option<(u64, u64)>,
+        private: bool,
+    ) -> Result<Self, ProfileError> {
         if !path.is_absolute() {
             return Err(invalid());
         }
@@ -73,20 +121,25 @@ impl Directory {
             let m = file.metadata()?;
             let uid = euid();
             if (m.uid() != uid && m.uid() != 0)
-                || (m.mode() & 0o022 != 0 && !(m.uid() == 0 && m.mode() & 0o1000 != 0))
+                || (untrusted_writers(&file, &m) && !(m.uid() == 0 && m.mode() & 0o1000 != 0))
             {
                 return Err(invalid());
             }
         }
         let m = file.metadata()?;
         let id = (m.dev(), m.ino());
-        if m.uid() != euid() || m.mode() & 0o077 != 0 || expected.is_some_and(|e| e != id) {
+        if m.uid() != euid()
+            || (private && m.mode() & 0o077 != 0)
+            || untrusted_writers(&file, &m)
+            || expected.is_some_and(|e| e != id)
+        {
             return Err(invalid());
         }
         Ok(Self {
             file,
             path: path.to_owned(),
             id,
+            private,
         })
     }
 
@@ -95,7 +148,7 @@ impl Directory {
     }
 
     pub(super) fn current(&self) -> Result<(), ProfileError> {
-        Self::open(&self.path, Some(self.id)).map(|_| ())
+        Self::open_with_policy(&self.path, Some(self.id), self.private).map(|_| ())
     }
 
     fn credential(&self, expected: u64) -> Result<(), ProfileError> {

@@ -6747,6 +6747,12 @@ unsupported window supplies no rate. A changed account,
 reset, stale or future observation, or insufficient span cannot provide a
 consumption rate for that window.
 
+The decision uses both independently valid forecasts together. If either
+forecast is unavailable, that window keeps its measured percentage. For
+example, over a 120-second interval, `(40%, 40%)` followed by `(65%, 75%)`
+gives a decision outlook of `(90%, 100%)`. History and published readings
+keep the measured values.
+
 For a valid series, percentages are percentage points and times are seconds:
 
 ```text
@@ -8139,6 +8145,13 @@ or deleting credential contents; trusted identity verification remains
 separate. Affected directories are synchronised before custody is
 committed. Reservation, receipt or synchronisation failure requires
 placement-aware recovery before fallback can continue.
+
+The existing live login directory follows the shared trusted-writer rule:
+user-owned `0755` is supported, as is group write for a verified private
+group without an access ACL. Stored profiles and reserved custody remain
+owner-only. Movement and recovery revalidate the same directory policy
+against no-follow descriptors and recorded inode bindings; credential
+files must remain private.
 
 Recovery profiles are discoverable through `ProfileStore` for recovery
 and future use. Automatic selection requires fresh trusted verification,

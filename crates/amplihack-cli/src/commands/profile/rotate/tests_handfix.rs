@@ -1,7 +1,7 @@
 //! `rotate::handfix`: recovery after a manual `/login` in `~/.claude`
 //! replaced the live login (issues #1693 and #1886). Every assertion about a
-//! login is by inode; login fixtures hold an empty `claudeAiOauth` block and
-//! no token. Whose login is where comes from a fake credential reader keyed
+//! login is by inode; login fixtures hold a synthetic, unexpired token.
+//! Whose login is where comes from a fake credential reader keyed
 //! by directory, never from `.claude.json`. No daemon, no `claude`, no
 //! sleeps; the time is fixed.
 //!
@@ -272,13 +272,16 @@ fn fx_at(home_rel: &str, l_own: bool, m_own: bool, capacity: bool) -> Fx {
     f
 }
 
-/// A private OAuth login file with an empty `claudeAiOauth` block: it
-/// holds no token, and `login_kind` (which recovery uses to choose whom to
+/// A private OAuth login file with a synthetic, unexpired token:
+/// `login_kind` (which recovery uses to choose whom to
 /// read) must be able to read its keys. The fake reader decides what it
 /// answers.
 #[cfg(target_os = "linux")]
 fn oauth_login(p: &Path) -> u64 {
-    private(p, r#"{"claudeAiOauth":{}}"#);
+    private(
+        p,
+        r#"{"claudeAiOauth":{"accessToken":"synthetic-handfix","expiresAt":9223372036854775807}}"#,
+    );
     ino_at(p).unwrap()
 }
 

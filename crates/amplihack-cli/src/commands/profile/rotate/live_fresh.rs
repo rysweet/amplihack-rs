@@ -180,15 +180,18 @@ pub(in crate::commands::profile::rotate) fn step(
                         .push(format!("projection {window}: next cycle {p:.1}%")),
                 }
             }
-            let session_projection = session_projection
-                .ok()
-                .filter(|p| *p >= at && session < at)
-                .map(|p| (p, week, Basis::Projected));
-            let week_projection = week_projection
-                .ok()
-                .filter(|p| *p >= f64::from(s.week_at) && week < f64::from(s.week_at))
-                .map(|w| (session, w, Basis::Projected));
-            session_projection.or(week_projection)
+            // Both windows inform the same decision. An unavailable forecast
+            // leaves that window at its measured value; observations stay intact.
+            let session_projection = session_projection.ok();
+            let week_projection = week_projection.ok();
+            (session_projection.is_some_and(|p| p >= at && session < at)
+                || week_projection
+                    .is_some_and(|p| p >= f64::from(s.week_at) && week < f64::from(s.week_at)))
+            .then_some((
+                session_projection.unwrap_or(session),
+                week_projection.unwrap_or(week),
+                Basis::Projected,
+            ))
         }
         Reading::Exhausted { .. } => None,
         // A failed probe, or a reading still stale after the step: never

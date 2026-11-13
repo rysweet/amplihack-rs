@@ -666,21 +666,23 @@ pub(super) fn expired(creds_dir: &Path, now_ms: i64) -> bool {
 /// Authentication evidence is classified before any human-readable message.
 pub(super) enum Authentication {
     Usable { refreshed: bool },
-    NeedsLogin,
+    NeedsLogin(&'static str),
     Uncertain(&'static str),
 }
 
 pub(super) fn assess_authentication(ep: &Endpoints, req: &Request<'_>) -> Authentication {
     let creds = match load(req.creds_dir) {
         Ok(c) => c,
-        Err(reason::NO_FILE | reason::NO_TOKEN) => return Authentication::NeedsLogin,
+        Err(cause @ (reason::NO_FILE | reason::NO_TOKEN)) => {
+            return Authentication::NeedsLogin(cause);
+        }
         Err(cause) => return Authentication::Uncertain(cause),
     };
     if !creds.expires_at_ms.is_some_and(|at| at <= req.now_ms) {
         return Authentication::Usable { refreshed: false };
     }
     if creds.refresh.is_none() {
-        return Authentication::NeedsLogin;
+        return Authentication::NeedsLogin("no refresh token");
     }
     if !req.allow_refresh || !ep.usable() {
         return Authentication::Uncertain(reason::REFRESH_REFUSED);
@@ -700,7 +702,7 @@ pub(super) fn assess_authentication(ep: &Endpoints, req: &Request<'_>) -> Authen
             Authentication::Usable { refreshed: true }
         }
         Ok(_) => Authentication::Uncertain(reason::EXPIRED),
-        Err(_) if definitive.get() => Authentication::NeedsLogin,
+        Err(_) if definitive.get() => Authentication::NeedsLogin(reason::REFRESH_FAILED),
         Err(cause) => Authentication::Uncertain(cause),
     }
 }

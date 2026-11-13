@@ -112,7 +112,7 @@ pub(super) fn recover_at(
     // Names were checked when the journal was loaded.
     let (from, to) = (ProfileName::parse(&j.from)?, ProfileName::parse(&j.to)?);
     super::swap::check_home(home)?;
-    let live_dir = super::verified_dirs::Directory::open(
+    let live_dir = super::verified_dirs::Directory::open_login(
         &home.join(".claude"),
         j.movement_directories.map(|d| d[0]),
     )

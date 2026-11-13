@@ -82,12 +82,21 @@ pub fn refresh_expired_live(
     }
     // Structured assessment refreshes at most once and persists definitive
     // failures before any identity reader can attempt this credential again.
-    super::super::login_state::assess_with(
+    let failure = super::super::login_state::assess_with(
         &ctx.store,
         &ctx.home,
         (ctx.now)(),
         ctx.identity_reader(),
     )?;
+    if expired
+        && excluded.is_none()
+        && let Some(cause) = failure
+    {
+        out.emit(
+            (ctx.now)(),
+            &format!("refresh: expired login in ~/.claude not refreshed ({cause})"),
+        );
+    }
     if expired
         && excluded.is_none()
         && !usage_direct::expired(&dir, (ctx.now)().saturating_mul(1000))

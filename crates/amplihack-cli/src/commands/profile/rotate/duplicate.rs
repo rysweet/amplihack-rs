@@ -49,10 +49,7 @@ pub(super) fn recovery_conflict(
     let (Some(a), Some(b)) = (live.account(), occupied.account()) else {
         return Err(refused(UNAVAILABLE));
     };
-    if [a, b]
-        .iter()
-        .any(|a| a.block().get("accountUuid").is_none())
-    {
+    if [a, b].iter().any(|a| !a.has_uuid()) {
         return Err(refused(
             "outgoing custody lacks stable server identity; retained for repair",
         ));
@@ -118,10 +115,7 @@ pub(super) fn verify(
     let (Some(a), Some(b)) = (live.account(), duplicate.account()) else {
         return Err(refused(UNAVAILABLE));
     };
-    if [a, b]
-        .iter()
-        .any(|a| a.block().get("accountUuid").is_none())
-    {
+    if [a, b].iter().any(|a| !a.has_uuid()) {
         return Err(refused(
             "duplicate identity lacks a stable server account identifier; both logins preserved",
         ));

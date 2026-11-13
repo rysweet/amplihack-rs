@@ -1078,7 +1078,9 @@ fn issue_1886_run_cycle_stays_on_the_swapped_in_login() {
     assert_nothing_moved(&f, &inodes);
     no_recovered(&f.logged());
     assert!(
-        !f.logged().iter().any(|l| l.starts_with("ALERT:")),
+        !f.logged()
+            .iter()
+            .any(|l| l.starts_with("ALERT:") && !l.starts_with("ALERT: needs-login ")),
         "{:?}",
         f.logged()
     );
@@ -1104,7 +1106,7 @@ fn an_open_suspicion_stops_the_cycle_before_measuring() {
     let log: Vec<String> = f
         .logged()
         .into_iter()
-        .filter(|l| !l.starts_with("skip: "))
+        .filter(|l| !l.starts_with("skip: ") && !l.starts_with("ALERT: needs-login "))
         .collect();
     assert_eq!(
         log,

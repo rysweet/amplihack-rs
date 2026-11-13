@@ -6,7 +6,7 @@
 use super::identify::{LoginKind, login_kind};
 use super::swap::{DOT_CLAUDE_NOT_PRIVATE, HOME_NOT_OWNED};
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{CREDS, euid, exists, writable_by_others};
+use crate::commands::profile::auto_switch::kit::{CREDS, dir_writable_by_others, euid, exists};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
 use std::fs;
@@ -28,7 +28,11 @@ pub(super) fn check_home(home: &Path) -> Result<PathBuf, ProfileError> {
     }
     let dot = home.join(".claude");
     let m = fs::symlink_metadata(&dot).map_err(|_| refused("~/.claude cannot be read"))?;
-    if m.file_type().is_symlink() || !m.is_dir() || m.uid() != euid() || writable_by_others(&m) {
+    if m.file_type().is_symlink()
+        || !m.is_dir()
+        || m.uid() != euid()
+        || dir_writable_by_others(&dot, &m)
+    {
         return Err(refused(DOT_CLAUDE_NOT_PRIVATE));
     }
     Ok(dot)

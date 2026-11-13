@@ -72,6 +72,13 @@ fn missing_token_episode_survives_restarts_without_more_authentication_or_alerts
         "unchanged episodes bypass identity, usage and refresh requests"
     );
     assert_eq!(entry_alerts(&f, "spare"), 1);
+    let out = f.ok(&["profile", "usage", "--json", "spare"]);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(rows[0]["state"], "not_logged_in");
+    assert_eq!(rows[0]["source"], "direct");
+    assert!(rows[0]["error"].is_null(), "{}", rows[0]);
+    assert_eq!(f.requests("spare"), requests);
+    assert_eq!(entry_alerts(&f, "spare"), 1);
     let ledger = f.state().join("ledger.json");
     if ledger.exists() {
         assert_ne!(

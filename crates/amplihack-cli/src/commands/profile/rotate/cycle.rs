@@ -263,9 +263,14 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                     break 'swap CycleOutcome::Alerted;
                 }
                 Ok(super::cycle_attempts::Attempts::Refused(error)) => {
-                    refusal = Some(error);
                     l = ctx.rs.load_ledger()?.unwrap_or_default();
                     note_live(&mut l, &first, t);
+                    let key_check = first.platform().map(|n| alert_key("key_check", Some(n)));
+                    if key_check.is_none() || l.alert != key_check {
+                        let key = alert_key("swap-refused", live_name(&first.live));
+                        alert_once(&mut out, &mut l, &key, t, &format!("ALERT: {error}"));
+                    }
+                    refusal = Some(error);
                     tag = None;
                     break 'swap CycleOutcome::Alerted;
                 }

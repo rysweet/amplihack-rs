@@ -33,6 +33,20 @@ pub const ACCOUNT_MISMATCH: &str = "the login in ~/.claude is not the account re
 pub const NOT_RELABELLED: &str =
     "the recorded account could not be written to the .claude.json of profile";
 
+/// Commit verified recovery ownership through the same record-writing boundary.
+pub(super) fn record_custody(
+    store: &ProfileStore,
+    name: &ProfileName,
+    account: &Account,
+) -> Result<(), ProfileError> {
+    super::swap_authorize::check_record(store, name, Some(account))?;
+    expected::record(
+        &super::super::auto_switch::kit::State::new(store.root())?,
+        name,
+        account,
+    )
+}
+
 /// What a completed swap records for the outgoing profile.
 pub(super) enum Pending {
     /// Nothing.

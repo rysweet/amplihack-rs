@@ -218,7 +218,10 @@ fn a_dry_run_changes_nothing_and_prints_only_would_and_cycle_lines() {
     let ls = lines(&out);
     assert!(!ls.is_empty());
     for l in &ls {
-        assert!(l.starts_with("would ") || l.starts_with("cycle "), "{l:?}");
+        assert!(
+            l.starts_with("would ") || l.starts_with("cycle ") || l.starts_with("projection "),
+            "{l:?}"
+        );
         assert_log_grammar(l, false);
     }
     assert!(

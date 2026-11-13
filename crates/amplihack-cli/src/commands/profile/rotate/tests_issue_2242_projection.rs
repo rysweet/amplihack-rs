@@ -165,3 +165,88 @@ fn predictive_swap_keeps_measured_usage_and_records_projected_reason() {
     );
     assert_eq!(event["reading"]["measured_at"], T + 120);
 }
+
+#[test]
+fn simultaneous_forecasts_preserve_weekly_exhaustion_through_publication() {
+    let e = fixture();
+    let mut c = context(&e);
+    c.measure = Some(|ctx, snap| {
+        decide_measured(
+            ctx,
+            snap,
+            SAMPLE.with(|s| s.borrow().clone()),
+            probes_for(snap, &[("spare", ok(5.0, 88.0)), ("extra", ok(5.0, 90.0))]),
+            clock(),
+        )
+    });
+    sample(40.0, 40.0, 0, T + 10_000);
+    assert_ne!(drive(&e, &mut c).unwrap(), CycleOutcome::Swapped);
+    advance(120);
+    sample(65.0, 75.0, 0, T + 10_000);
+    assert_eq!(
+        drive(&e, &mut c).unwrap(),
+        CycleOutcome::Swapped,
+        "{}",
+        log(&e)
+    );
+    assert_eq!(ino_at(&e.live()), Some(e.t));
+    assert_eq!(ino_at(&e.slot("work")), Some(e.l));
+    let event = json(&e.rs.dir.join("swap.json"));
+    assert_eq!(event["live_login"], "spare");
+    assert_eq!(event["reading"]["session"], 5);
+    assert_eq!(event["reading"]["week"], 88);
+    assert_eq!(event["reading"]["measured_at"], T + 120);
+    assert!(log(&e).contains("reason=projected"), "{}", log(&e));
+    assert!(log(&e).contains("75%"), "{}", log(&e));
+}
+
+#[test]
+fn independent_forecasts_use_measured_values_only_for_unavailable_windows() {
+    for unavailable in [None, Some("session"), Some("week")] {
+        let e = fixture();
+        let mut c = context(&e);
+        for (elapsed, session, week) in [(0, 40.0, 40.0), (120, 65.0, 75.0)] {
+            advance(elapsed);
+            sample(session, week, 0, T + 10_000);
+            SAMPLE.with(|s| {
+                let mut p = s.borrow_mut();
+                match unavailable {
+                    Some("session") => p.windows.session.as_mut().unwrap().resets_at = None,
+                    Some("week") => p.windows.week.as_mut().unwrap().resets_at = None,
+                    _ => {}
+                }
+            });
+            let state = State::new(c.store.root()).unwrap();
+            let snap = observe::snapshot(&c, &state).unwrap();
+            let measured = measure(&c, &snap).unwrap();
+            let decided = fresh::live::step(&mut c, &snap, measured).unwrap();
+            assert_eq!(
+                decided.live,
+                super::super::super::decide::Reading::Measured { session, week },
+                "decision outlook must not replace observed history"
+            );
+            if elapsed == 0 {
+                assert!(c.live_outlook.is_none());
+                continue;
+            }
+            assert!(is_swap(decided.decision), "unavailable={unavailable:?}");
+            let outlook = c.live_outlook.as_ref().unwrap();
+            assert_eq!(
+                (outlook.session, outlook.week),
+                (
+                    if unavailable == Some("session") {
+                        65.0
+                    } else {
+                        90.0
+                    },
+                    if unavailable == Some("week") {
+                        75.0
+                    } else {
+                        100.0
+                    },
+                ),
+                "unavailable={unavailable:?}"
+            );
+        }
+    }
+}

@@ -118,6 +118,11 @@ impl Account {
         self.uuid.is_some() && self.org.is_some()
     }
 
+    /// Stable server identity for custody; an e-mail alone is insufficient.
+    pub(super) fn has_uuid(&self) -> bool {
+        self.uuid.is_some()
+    }
+
     /// The e-mail, when the server sent one that is safe to print.
     pub fn email(&self) -> Option<&str> {
         self.email.as_deref()

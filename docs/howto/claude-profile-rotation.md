@@ -3359,3 +3359,11 @@ full rule is in
   it can answer `get_usage` with figures it stored earlier, without marking
   them as old; compare with `AMPLIHACK_PROFILE_USAGE_PROBE=text` as in
   [Compare the two probe methods](claude-profiles.md#compare-the-two-probe-methods).
+
+Explicit switches without verified duplicate recovery can still refuse an occupied
+outgoing slot (`already has a login`):
+
+```text
+error: swap refused: profile work already has a login
+hint: nothing was moved; see "Swap refused" in docs/howto/claude-profile-rotation.md
+```

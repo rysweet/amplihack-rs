@@ -111,10 +111,8 @@ impl Custody {
             &serde_json::to_vec(&serde_json::json!({"oauthAccount":account.block()}))
                 .map_err(|e| ProfileError::Io(std::io::Error::other(e)))?,
         )?;
-        let state = crate::commands::profile::auto_switch::kit::State::new(store.root())?;
         let name = ProfileName::parse(&self.destination)?;
-        super::swap_authorize::check_record(store, &name, Some(account))?;
-        crate::commands::profile::expected::record(&state, &name, account)
+        super::swap_expect::record_custody(store, &name, account)
     }
     /// Remove only our still-empty reservation, never another writer's files.
     pub(super) fn rollback(&self, store: &ProfileStore) -> Result<(), ProfileError> {

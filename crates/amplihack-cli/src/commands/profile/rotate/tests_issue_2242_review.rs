@@ -3,6 +3,116 @@ use super::super::super::{pin, recover, verified_dirs};
 use super::*;
 use std::os::unix::fs::PermissionsExt;
 
+#[test]
+fn readable_live_directory_supports_rotation_and_explicit_switch() {
+    for explicit in [false, true] {
+        let e = fixture();
+        fs::set_permissions(e.home.join(".claude"), fs::Permissions::from_mode(0o755)).unwrap();
+        let mut c = context(&e);
+        if explicit {
+            let result = test_exchange::within(e._tmp.path(), || {
+                super::super::super::switch::switch_in(c, &n("spare"))
+            })
+            .unwrap()
+            .unwrap();
+            assert!(
+                matches!(result, super::super::super::switch::Switched::Moved { .. }),
+                "{result:?}"
+            );
+        } else {
+            assert_eq!(
+                drive(&e, &mut c).unwrap(),
+                CycleOutcome::Swapped,
+                "{}",
+                log(&e)
+            );
+            assert_eq!(json(&e.rs.dir.join("swap.json"))["live_login"], "spare");
+        }
+        assert_eq!(ino_at(&e.live()), Some(e.t));
+        assert_eq!(ino_at(&e.slot("work")), Some(e.l));
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn private_group_writable_live_directory_and_ancestor_follow_shared_policy() {
+    use crate::commands::profile::auto_switch::kit::dir_writable_by_others;
+    for explicit in [false, true] {
+        let e = fixture();
+        for dir in [e.home.clone(), e.home.join(".claude")] {
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o770)).unwrap();
+            if dir_writable_by_others(&dir, &fs::metadata(&dir).unwrap()) {
+                // Hosts without a user-private group must still refuse this mode.
+                assert!(verified_dirs::Directory::open_login(&dir, None).is_err());
+                return;
+            }
+        }
+        let mut c = context(&e);
+        if explicit {
+            let result = test_exchange::within(e._tmp.path(), || {
+                super::super::super::switch::switch_in(c, &n("spare"))
+            })
+            .unwrap()
+            .unwrap();
+            assert!(
+                matches!(result, super::super::super::switch::Switched::Moved { .. }),
+                "{result:?}"
+            );
+        } else {
+            assert_eq!(
+                drive(&e, &mut c).unwrap(),
+                CycleOutcome::Swapped,
+                "{}",
+                log(&e)
+            );
+        }
+        assert_eq!(ino_at(&e.live()), Some(e.t));
+        assert_eq!(ino_at(&e.slot("work")), Some(e.l));
+        if !explicit {
+            assert_eq!(json(&e.rs.dir.join("swap.json"))["live_login"], "spare");
+        }
+    }
+}
+
+#[test]
+fn retained_live_directory_revalidates_writers_and_custody_stays_private() {
+    let e = fixture();
+    let live = e.home.join(".claude");
+    fs::set_permissions(&live, fs::Permissions::from_mode(0o755)).unwrap();
+    let held = verified_dirs::Directory::open_login(&live, None).unwrap();
+    assert!(held.current().is_ok());
+    assert!(verified_dirs::Directory::open(&live, None).is_err());
+    fs::set_permissions(&live, fs::Permissions::from_mode(0o757)).unwrap();
+    assert!(held.current().is_err());
+    assert_eq!(ino_at(&e.live()), Some(e.l));
+    assert_eq!(ino_at(&e.slot("spare")), Some(e.t));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn retained_live_directory_refuses_a_new_access_acl_without_moving_credentials() {
+    let e = fixture();
+    let live = e.home.join(".claude");
+    let held = verified_dirs::Directory::open_login(&live, None).unwrap();
+    let target = verified_dirs::Directory::open(&e.root.join("spare"), None).unwrap();
+    let before_live = fs::read(e.live()).unwrap();
+    let before_target = fs::read(e.slot("spare")).unwrap();
+    let acl = std::process::Command::new("setfacl")
+        .args(["-m", "u:root:rwx"])
+        .arg(&live)
+        .output();
+    if !acl.is_ok_and(|o| o.status.success()) {
+        eprintln!("SKIP: setfacl unavailable or filesystem lacks ACL support");
+        return;
+    }
+    assert!(held.current().is_err());
+    assert!(target.exchange(&held, e.t, e.l).is_err());
+    assert_eq!(ino_at(&e.live()), Some(e.l));
+    assert_eq!(ino_at(&e.slot("spare")), Some(e.t));
+    assert_eq!(fs::read(e.live()).unwrap(), before_live);
+    assert_eq!(fs::read(e.slot("spare")).unwrap(), before_target);
+}
+
 struct Reset;
 impl Drop for Reset {
     fn drop(&mut self) {

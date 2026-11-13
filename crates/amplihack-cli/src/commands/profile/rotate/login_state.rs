@@ -59,6 +59,8 @@ struct Entry {
     evidence: Evidence,
     alert_id: String,
     alerted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -144,9 +146,24 @@ pub(in crate::commands::profile) fn suppressed(
     root: &Path,
     name: &ProfileName,
 ) -> Result<bool, ProfileError> {
+    Ok(suppressed_reason(root, name)?.is_some())
+}
+
+/// Only fixed authentication causes may reach usage cells from persisted state.
+pub(in crate::commands::profile) fn suppressed_reason(
+    root: &Path,
+    name: &ProfileName,
+) -> Result<Option<&'static str>, ProfileError> {
     Ok(load(&RotateState::new(root))?
         .profiles
-        .contains_key(name.as_str()))
+        .get(name.as_str())
+        .map(|e| match e.reason.as_deref() {
+            Some(usage_direct::reason::NO_FILE) => usage_direct::reason::NO_FILE,
+            Some(usage_direct::reason::NO_TOKEN) => usage_direct::reason::NO_TOKEN,
+            Some("no refresh token") => "no refresh token",
+            Some(usage_direct::reason::REFRESH_FAILED) => usage_direct::reason::REFRESH_FAILED,
+            _ => "needs-login",
+        }))
 }
 
 pub(super) fn suppressed_dirs(root: &Path, home: &Path) -> Result<Vec<PathBuf>, ProfileError> {
@@ -182,6 +199,7 @@ pub(super) fn assess(store: &ProfileStore, home: &Path, t: i64) -> Result<(), Pr
             budget: &budget,
         },
     )
+    .map(|_| ())
 }
 
 pub(super) fn assess_with(
@@ -189,8 +207,9 @@ pub(super) fn assess_with(
     home: &Path,
     t: i64,
     reader: super::login_identity::Reader<'_>,
-) -> Result<(), ProfileError> {
+) -> Result<Option<&'static str>, ProfileError> {
     let rs = RotateState::new(store.root());
+    let mut live_failure = None;
     let mut s = load(&rs)?;
     let prior = s.clone();
     s.conflicts.retain(|name, _| {
@@ -222,9 +241,10 @@ pub(super) fn assess_with(
         // not evidence of a missing login; no request uses those empty slots.
         if excluded.contains(&name)
             || origin.as_ref().is_some_and(|o| excluded.contains(o))
-            || ledger.leased_to(&raw).is_some()
-            || ledger.hosts.contains_key(&raw)
-            || exists(&store.root().join(".auto-switch.d/parked").join(&raw))
+            || (live.as_ref() != Some(&name)
+                && (ledger.leased_to(&raw).is_some()
+                    || ledger.hosts.contains_key(&raw)
+                    || exists(&store.root().join(".auto-switch.d/parked").join(&raw))))
             || kinds.resolve_kind(store, &name).kind == kind::Kind::Platform
         {
             continue;
@@ -307,13 +327,14 @@ pub(super) fn assess_with(
                     }
                 }
             }
-            Authentication::NeedsLogin => {
+            Authentication::NeedsLogin(cause) => {
                 // No successful refresh: a substitution invalidates this conclusion.
                 if evidence(&dir)? != before {
                     return Err(bad());
                 }
                 if let Some(entry) = s.profiles.get_mut(&raw) {
                     entry.evidence = before;
+                    entry.reason = Some(cause.into());
                 } else {
                     s.profiles.insert(
                         raw,
@@ -322,6 +343,7 @@ pub(super) fn assess_with(
                             evidence: before,
                             alert_id: uuid::Uuid::new_v4().to_string(),
                             alerted: false,
+                            reason: Some(cause.into()),
                         },
                     );
                 }
@@ -330,6 +352,9 @@ pub(super) fn assess_with(
                 // Retain the last conclusively assessed binding, so changed
                 // credentials remain pending on the next existing cycle.
                 eprintln!("profile {name}: authentication reassessment uncertain ({cause})");
+                if live.as_ref() == Some(&name) {
+                    live_failure = Some(cause);
+                }
             }
         }
     }
@@ -356,45 +381,13 @@ pub(super) fn assess_with(
         s.profiles.get_mut(&name).ok_or_else(bad)?.alerted = true;
         save(&rs, &s)?;
     }
-    Ok(())
+    Ok(live_failure)
 }
 
 #[path = "login_alerts.rs"]
 mod alerts;
 pub(super) use alerts::{clear_conflict, conflict};
 
-/// One sorted persisted summary, shared by both commands. No authentication.
-pub(in crate::commands::profile) fn line(root: &Path) -> String {
-    match load(&RotateState::new(root)) {
-        Err(_) => "needs-login: unknown (state unreadable; preserved for repair)".into(),
-        Ok(s) if s.profiles.is_empty() => "needs-login: none".into(),
-        Ok(s) => format!(
-            "needs-login: {}; stored login: amplihack profile login <name>; live login: claude /login",
-            s.profiles
-                .iter()
-                .map(|(n, e)| format!("{n} (first seen {})", timestamp(e.first_seen)))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-    }
-}
-
-/// A usage command reassesses episodes once, before its parallel row readers.
-pub(in crate::commands::profile) fn assess_usage(
-    store: &ProfileStore,
-    home: &Path,
-) -> Result<(), ProfileError> {
-    let state = State::new(store.root())?;
-    let Some(_lock) = state.try_lock(Duration::ZERO)? else {
-        return Ok(());
-    };
-    let rs = RotateState::new(store.root());
-    if exists(&rs.journal) || exists(&state.dir.join("journal.json")) {
-        return Ok(());
-    }
-    assess(
-        store,
-        home,
-        crate::commands::profile::auto_switch::kit::now(),
-    )
-}
+#[path = "login_status.rs"]
+mod status;
+pub(in crate::commands::profile) use status::{assess_usage, line};

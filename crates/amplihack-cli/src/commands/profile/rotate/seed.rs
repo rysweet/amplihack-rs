@@ -1,13 +1,10 @@
-//! Issue #1962: seeding a profile's record from one fresh reading. A record is a
-//! trust anchor, because swap authorization skips the strict outgoing scan when
-//! there is one, so every doubt here stops the seed. A seed moves no login, writes
-//! no credentials file and never refreshes. It reads logins only through
-//! [`Reader`]. See "Seeding a record" in docs/reference/profile-command.md.
+//! Seeds ownership from one fresh reading (#1962). A record is a trust anchor;
+//! uncertainty refuses the seed. No credential moves or refreshes occur.
+//! Identity is read through [`Reader`]; see "Seeding a record" in
+//! docs/reference/profile-command.md.
 //!
-//! [`evaluate`] holds every rule, behind [`in_cycle`], [`preview`] and
-//! [`explicit`]. Only [`commit`] writes, under the rotate lock, after checking the
-//! stamped logins and records again; a record that stood in for a failed read is
-//! checked alone. Account values never reach the log, the ledger or an alert.
+//! [`evaluate`] shares policy across [`in_cycle`], [`preview`] and [`explicit`].
+//! [`commit`] rechecks bound logins and claims under the lock; account values stay private.
 
 use super::cycle::{Ctx, LOCK_WAIT, prototype_guard};
 use super::handfix_msg::join;
@@ -341,6 +338,9 @@ pub fn explicit(
 ) -> Result<Explicit, ProfileError> {
     let rs = RotateState::new(store.root());
     let state = State::new(store.root())?;
+    if !matches!(rs.load_journal(), Ok(None)) || !matches!(state.load_journal(), Ok(None)) {
+        return Ok(Explicit::Refused(JOURNAL.to_string()));
+    }
     // Issue #2218: an excluded profile's identity comes from local files.
     let budget = super::identify::excluded_offline::gated_budget(store, &rs, home)?;
     let read = default_read();

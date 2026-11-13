@@ -35,7 +35,8 @@ pub fn near(last: f64, rate: Option<f64>, s: &Settings) -> bool {
 /// on the reading as measured, so there is no variant for that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Basis {
-    /// The session use projected one interval ahead.
+    /// Independently valid session and weekly use projected one interval ahead;
+    /// each unavailable forecast retains that window's measured use.
     Projected,
     /// The larger of `--session-at` and the last known session use,
     /// standing in for a failed or stale reading near the threshold.
