@@ -194,6 +194,23 @@ the linked PR worktree, preserve unrelated work, run hooks, and verify that
 pushed changes reached the platform head. A failed push leaves local work
 intact and prevents local-only QA from proving readiness for the PR.
 
+In the crusty round, `step-05-verify-concerns-addressed` measures the fix in
+the folder where step-04 commits (#2519). It enters `repo_path`, unsets
+`GH_REPO`, clears the 12 repository-selecting `GIT_*` names through
+[`git-repo-env.sh`](git-repo-env-helper.md) and runs
+`autodrive_worktree_guard.sh commit-dir <pr>`. It never reads `REPO_PATH` and
+never falls back to the folder it started in. It then requires the round
+context's `head_sha` to be a full 40- or 64-character lowercase hex commit id
+in that worktree; step-01 is told to return it in that form, and a short or
+upper-case id stops the round. Any missing input, failed check or git error
+stops the round with exit 1, a `STOP: step-05 … (#2519, #1528)` line on stderr
+naming `repo_path` and the start folder, and nothing on stdout, so
+`crusty_fix_evidence` never receives an unmeasured `commits: 0`. On success it
+reports `base_sha`, `head_sha` (the worktree's `HEAD`), `commits`,
+`dirty_worktree` and `git_observed` (always `"true"`). The dirty check runs
+`git -c core.fsmonitor=false diff --quiet --no-ext-diff --no-textconv`, and a
+git exit other than 0 or 1 stops the round.
+
 ## Crusty review
 
 <a id="minor-findings-end-the-crusty-loop-1979"></a>
