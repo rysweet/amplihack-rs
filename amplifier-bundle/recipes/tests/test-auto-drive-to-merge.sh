@@ -5441,16 +5441,23 @@ else
 fi
 
 # step-05 counts the fix commits from the reviewed head, read from
-# RECIPE_VAR_crusty_round_context as the runner exports it.
+# RECIPE_VAR_crusty_round_context as the runner exports it, in the PR's linked
+# worktree named by repo_path (#2519): a worktree on the PR head branch, which
+# the stub gh (GH_MODE=green) answers as headRefName. The step starts in the main checkout and
+# REPO_PATH names it too; neither may be measured instead.
 S5C_BODY="$(extract_step_command "${RECIPES}/autodrive-crusty-round.yaml" "step-05-verify-concerns-addressed")"
-fx_head "${CR_SHA2}"
-S5C_OUT="$(env -u CRUSTY_ROUND_CONTEXT PATH="${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" REPO_PATH="${FX}" \
+S5C_WT="${WORK_PHYS}/fx-s5c"
+git -C "$FX_MAIN" worktree add -q -b s5c/head "${S5C_WT}" "$CR_SHA2" >/dev/null 2>&1 \
+  || { echo "HARNESS-ERROR: could not create the step-05 PR worktree" >&2; exit 2; }
+S5C_OUT="$(cd -- "${FX_MAIN}" && env -u CRUSTY_ROUND_CONTEXT PATH="${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" REPO_PATH="${FX_MAIN}" \
+  GH_MODE=green GH_HEAD_REF="s5c/head" AUTODRIVE_LAUNCH_TOOLS="${TOOLS}" \
+  RECIPE_VAR_repo_path="${S5C_WT}" RECIPE_VAR_pr_number="42" \
   RECIPE_VAR_crusty_round_context="{\"pr\":\"42\",\"head_sha\":\"${CR_SHA}\",\"resolved_concerns\":\"\",\"round_label\":\"round-1\"}" \
-  bash -c "${S5C_BODY}" 2>/dev/null)"
+  bash -c "${S5C_BODY}" 2>"${WORK_PHYS}/s5c.err")"
 if [ "$(printf '%s' "${S5C_OUT}" | jq -r '[.base_sha, .head_sha, (.commits | tostring)] | join(" ")' 2>/dev/null)" = "${CR_SHA} ${CR_SHA2} 1" ]; then
   pass "CRUSTY-STEP05-runner-context" "step-05 reads the reviewed head from RECIPE_VAR_crusty_round_context and counts one fix commit"
 else
-  fail "CRUSTY-STEP05-runner-context" "out=${S5C_OUT}"
+  fail "CRUSTY-STEP05-runner-context" "out=${S5C_OUT} err=$(cat "${WORK_PHYS}/s5c.err" 2>/dev/null)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -6906,11 +6913,16 @@ if [ "$(out_field crusty_verdict)" = "CLEAN" ]; then
 else
   fail "1511-crusty-round-03" "a CLEAN review read through RECIPE_VAR_ became '$(out_field crusty_verdict)': ${BODY_ERR}"
 fi
-run_body "$CR5" RECIPE_VAR_crusty_round_context='{"head_sha":"0123456789abcdef0123456789abcdef01234567"}'
-if [ "$(out_field base_sha)" = "0123456789abcdef0123456789abcdef01234567" ]; then
-  pass "1511-crusty-round-05" "the round's base SHA is read through RECIPE_VAR_crusty_round_context"
+# With no repo_path, step-05 stops (#2519): it never measures the folder it
+# started in or REPO_PATH (here a folder that is not a git repository) and
+# never reports unobserved evidence. The base SHA read through
+# RECIPE_VAR_crusty_round_context is covered by CRUSTY-STEP05-runner-context.
+run_body "$CR5" RECIPE_VAR_crusty_round_context='{"head_sha":"0123456789abcdef0123456789abcdef01234567"}' \
+  RECIPE_VAR_pr_number="42" AUTODRIVE_LAUNCH_TOOLS="${TOOLS}"
+if [ "$BODY_RC" -ne 0 ] && [ -z "${BODY_OUT}" ] && printf '%s' "${BODY_ERR}" | grep -qF 'STOP: step-05'; then
+  pass "1511-crusty-round-05" "with no repo_path step-05 stops with a STOP line and prints no evidence"
 else
-  fail "1511-crusty-round-05" "the base SHA was lost: ${BODY_OUT}"
+  fail "1511-crusty-round-05" "rc=${BODY_RC} stdout [${BODY_OUT}] stderr ${BODY_ERR}"
 fi
 # The record needs whole SHAs: the reviewed head from the round context and
 # the post-fix head from the fix evidence (#1517, section 6e).

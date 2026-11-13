@@ -433,3 +433,6 @@ mod issue_2279_doctor;
 
 #[path = "issue_2297_codex_installation.rs"]
 mod issue_2297_codex_installation;
+
+#[path = "issue_2519_crusty_step05_worktree.rs"]
+mod issue_2519_crusty_step05_worktree;
