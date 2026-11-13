@@ -2776,6 +2776,43 @@ fn issue_2546_evidence_store_repairs_only_slug_folder_under_state_root() {
     }
 }
 
+/// S6 (security review F1): only the store's own `mkdir` makes
+/// `created_now` true. A folder that already exists outside the state root,
+/// as one made by another process between the lstat and the `mkdir` would,
+/// is reported as existing, so the store refuses it and leaves it at 0775. A
+/// missing folder is made at 0700, with its missing parents, and reported as
+/// created. Run under umask 002, where the race matters.
+#[cfg(unix)]
+#[test]
+fn issue_2546_existing_folder_is_not_treated_as_created() {
+    use crate::commands::orch::autodrive::state::open_or_create_root;
+    let stderr = isolated_2546(
+        "issue_2546_existing_folder_is_not_treated_as_created",
+        0o002,
+        &[],
+        |iso| {
+            let existing = iso.base.join("existing");
+            make_2546(&existing, None, 0o775);
+            let (created_now, _) = open_or_create_root(&existing).unwrap();
+            assert!(!created_now, "an existing folder is not created now");
+            let error = store_error_2546(&existing);
+            assert!(error.contains(OUTSIDE_2546), "{error}");
+            assert_eq!(mode_2546(&existing), 0o775);
+
+            let fresh = iso.base.join("parent").join("fresh");
+            let (created_now, _) = open_or_create_root(&fresh).unwrap();
+            assert!(created_now, "a missing folder is created now");
+            assert_eq!(mode_2546(&fresh), 0o700);
+            assert_eq!(mode_2546(&iso.base.join("parent")), 0o700);
+            let (created_now, _) = open_or_create_root(&fresh).unwrap();
+            assert!(!created_now, "the second call finds it existing");
+        },
+    );
+    if let Some(stderr) = stderr {
+        assert!(repair_lines_2546(&stderr).is_empty(), "{stderr}");
+    }
+}
+
 /// D3/D4/S2/S3/S23: the location rule fails strict. With a private root a
 /// slug folder qualifies; the root itself, a folder below a slug and a slug in
 /// a sibling of the root never do. A root with group or other write bits, a

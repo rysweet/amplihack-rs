@@ -205,7 +205,11 @@ holds when `created_now` is true or `private_mode::in_state_root` holds:
   rule does not apply.
 - **`created_now`.** `EvidenceStore::create` also treats a folder as
   repairable when its own `mkdir` call has just created it at `0700`.
-  `Scope::of` has no such case.
+  `state::open_or_create_root` makes the missing parents recursively, then
+  the folder itself with one non-recursive `mkdir`. Only that `mkdir`
+  succeeding sets `created_now`. A folder that already exists, including one
+  that another process makes between the lstat and the `mkdir` (`EEXIST`),
+  is treated as existing. `Scope::of` has no such case.
 - **Failures fail strict.** Any error while resolving or checking the root
   gives `false`. On platforms other than unix the rule is always `false`.
 
@@ -272,7 +276,7 @@ WARNING: auto-drive state "/home/dev/.amplihack/state/auto-drive/https___github.
 When the entry had group bits and the group's members could not be read:
 
 ```
-WARNING: auto-drive state "/home/dev/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_2579/round-2/qa.json" had mode 0664 (gid 1000); group members could not be read; removed group and other access (now 0600)
+WARNING: auto-drive state "/home/dev/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_2579/round-2/qa.json" had mode 0664 (gid 1000); group members could not be read (errno 2); removed group and other access (now 0600)
 ```
 
 - The path and the group name are printed with Rust's `{:?}` quoting, so a
@@ -297,7 +301,8 @@ group bits (`mode & 0o070 != 0`).
   with `getpwuid_r` and the group's `gr_mem` list with `getgrgid_r`. The
   buffer starts at the size `sysconf` reports (16 KiB if it reports none) and
   doubles on `ERANGE` up to 1 MiB. Reaching the cap, a non-zero return or a
-  missing entry gives the "could not be read" form.
+  missing entry gives the "could not be read" form, with the errno: `ERANGE`
+  at the cap, the value returned, or `ENOENT` for a missing entry.
 - `gr_mem` does not list users whose primary group is this group. Those
   users are not detected; see [What stays strict](#what-stays-strict).
 
@@ -387,12 +392,13 @@ below finds them. They use temporary folders only.
   the test binary as a child (`--exact`, one test thread) through
   `under_umask_2546`, which sets the umask and the environment only in the
   child. The parent never changes its umask and never calls `set_var`.
-- **Isolated environment.** `isolated_env_2546` creates `home`,
-  `amplihack-home` and `state` folders at `0700` inside a `TempDir` and
-  returns `HOME`, `AMPLIHACK_HOME` and `AMPLIHACK_STATE_DIR` for the child.
-  Before any repair, the child checks that `AMPLIHACK_STATE_DIR` starts with
-  the temporary path, so a test can never repair the real
-  `~/.amplihack/state`.
+- **Isolated environment.** `isolated_2546(test, mask, overrides, body)`
+  creates `home`, `amplihack-home` and `state` folders at `0700` inside a
+  `TempDir` and sets `HOME`, `AMPLIHACK_HOME` and `AMPLIHACK_STATE_DIR` to
+  them for the child only. `overrides` changes or removes any of the three
+  for that child. Before `body` runs, the child checks that every absolute
+  value of the three lies inside the temporary path, so a test can never
+  repair the real `~/.amplihack/state`.
 - **Clean shell and git.** The `git` and `bash` helpers start from
   `env_clear()` and add back only `PATH`, `HOME`, `AMPLIHACK_HOME`,
   `AMPLIHACK_STATE_DIR` and `GIT_CONFIG_NOSYSTEM=1`, so `GIT_DIR` and other
@@ -417,7 +423,11 @@ below finds them. They use temporary folders only.
 | `issue_2546_completion_part_outside_state_root_stays_strict` | A `0755` folder `x` above `x/.completion-y/f` outside the state root gives `Scope::Strict`, is refused and stays `0755` |
 | `issue_2546_rejected_prepare_changes_no_modes` | In the child, `prepare` with an invalid round label fails and leaves a `0775` slug folder at `0775` |
 | `issue_2546_prepare_refuses_context_outside_state_folder` | In the child, `prepare` refuses `--context-from-file` and `--evaluator-context-file` paths outside the slug folder, or with `..`, and leaves them unchanged |
-| `issue_2546_in_state_root_fails_strict` | In the child, each of these leaves a `0775` store refused and unchanged: a relative `AMPLIHACK_STATE_DIR`; a root at `0770`; a root at `0757`; a missing root; a root that is a symlink to a private `0700` folder; a sibling `auto-drive-x/<slug>`; the root itself as the store; `<root>/<slug>/deeper` as the store; `AMPLIHACK_STATE_DIR` and `HOME` both unset |
+| `issue_2546_in_state_root_fails_strict` | In the child, `in_state_root` is true for a slug folder under a private root, and false for the root itself, for `<root>/<slug>/deeper` and for a slug in the sibling `auto-drive-x`. With the root at `0770`, `0757`, `0720` or `0702`, or with the root path a symlink to a private folder, a `0775` slug folder is refused by `EvidenceStore::create` (and, for the modes, by `check_dir`) with the row 7 reason, and neither the slug folder nor the root changes. With the root missing, `in_state_root` is false. No repair line is written |
+| `issue_2546_relative_state_dir_stays_strict` | In the child, with `AMPLIHACK_STATE_DIR=rel-state`, the root resolves to `rel-state/auto-drive`, and a `0775` slug folder under it is not in the root, is refused with the row 7 reason and stays `0775` |
+| `issue_2546_unset_state_vars_stay_strict` | In the child, with `HOME` and `AMPLIHACK_STATE_DIR` both unset, the root is `/tmp/.amplihack/state/auto-drive` and `in_state_root` is false for a slug under it. Nothing is created under `/tmp` |
+| `issue_2546_empty_state_dir_uses_home_root` | In the child, an empty `AMPLIHACK_STATE_DIR` counts as unset, so the root is under `HOME`, and a `0775` slug folder there is repaired to `0700` with one repair line |
+| `issue_2546_existing_folder_is_not_treated_as_created` | In the child, under umask `002`: `open_or_create_root` reports a `0775` folder that already exists outside the root as not created, and `EvidenceStore::create` refuses it with the row 7 reason and leaves it at `0775`. A missing folder and its missing parent are made at `0700` and reported as created once. No repair line is written |
 
 ### Root resolution and group check
 

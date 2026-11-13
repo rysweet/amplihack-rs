@@ -7,7 +7,7 @@ use anyhow::{Context, ensure};
 use std::io::{Read, Write};
 use std::path::{Component, Path};
 
-/// Where the completion checker may repair entries (#2546, S1).
+/// Where the completion checker may repair entries (#2546).
 #[derive(Debug, Clone, Copy)]
 pub enum Scope<'a> {
     /// No repair anywhere: entries with group or other bits are refused.
@@ -18,11 +18,11 @@ pub enum Scope<'a> {
 
 impl<'a> Scope<'a> {
     /// The scope for a drive's state folder: `StateTree` when the folder is
-    /// absolute, has no `..` part, already equals its canonical form (S10)
+    /// absolute, has no `..` part, already equals its canonical form
     /// and lies directly under the auto-drive state root (`in_state_root`);
-    /// otherwise `Strict`, including for a folder that does not exist (S12).
+    /// otherwise `Strict`, including for a folder that does not exist.
     /// Canonicalisation only decides eligibility: `StateTree` keeps the raw
-    /// path, and every access still goes through the no-follow walk (S9).
+    /// path, and every access still goes through the no-follow walk.
     pub fn of(state_dir: &'a Path) -> Self {
         if state_dir.is_absolute()
             && !state_dir

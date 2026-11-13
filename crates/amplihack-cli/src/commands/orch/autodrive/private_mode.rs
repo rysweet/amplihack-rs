@@ -54,7 +54,7 @@ pub(crate) enum Repair {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Entry {
     /// Always false after `fstat` on an `O_NOFOLLOW` descriptor; kept so that
-    /// `access` is complete on its own (D6).
+    /// `access` is complete on its own.
     pub symlink: bool,
     pub is_dir: bool,
     pub is_file: bool,
@@ -89,7 +89,7 @@ pub(crate) fn autodrive_state_root() -> PathBuf {
 
 /// The canonical state root, when it can be trusted; `None` otherwise.
 ///
-/// Fails strict (S2, S7, D3, D4): the `/tmp` fallback (both variables unset
+/// Fails strict: the `/tmp` fallback (both variables unset
 /// or empty), a relative root, a root path that is a symlink, a root that
 /// cannot be canonicalised, is not a directory, is owned by another user or
 /// has group or other write bits.
@@ -121,7 +121,7 @@ fn trusted_state_root() -> Option<PathBuf> {
 
 /// Whether `canonical_dir` is a folder directly under the trusted auto-drive
 /// state root (a slug folder). The root itself and deeper folders do not
-/// qualify. Paths are compared part by part, never as string prefixes (S3).
+/// qualify. Paths are compared part by part, never as string prefixes.
 /// `canonical_dir` must already be canonical; callers canonicalise it.
 #[cfg(unix)]
 pub(crate) fn in_state_root(canonical_dir: &Path) -> bool {
@@ -142,7 +142,7 @@ pub(crate) fn repairable_root(canonical_root: &Path, created_now: bool) -> bool 
 }
 
 /// Whether a group's listed members include anyone other than `me`. Names
-/// are compared as raw bytes (S15). Pure.
+/// are compared as raw bytes. Pure.
 pub(crate) fn shared_group(members: &[&[u8]], me: &[u8]) -> bool {
     members.iter().any(|member| *member != me)
 }
@@ -164,11 +164,11 @@ fn nss_buf_start(name: libc::c_int) -> usize {
     }
 }
 
-/// The next buffer size after ERANGE, or `Err` at the cap.
+/// The next buffer size after ERANGE, or `Err(ERANGE)` at the cap.
 #[cfg(unix)]
-fn nss_buf_grow(size: usize) -> Result<usize, ()> {
+fn nss_buf_grow(size: usize) -> Result<usize, i32> {
     if size >= NSS_BUF_CAP {
-        Err(())
+        Err(libc::ERANGE)
     } else {
         Ok((size * 2).min(NSS_BUF_CAP))
     }
@@ -176,7 +176,7 @@ fn nss_buf_grow(size: usize) -> Result<usize, ()> {
 
 /// This user's name, from `getpwuid_r`.
 #[cfg(unix)]
-fn user_name(euid: u32) -> Result<Vec<u8>, ()> {
+fn user_name(euid: u32) -> Result<Vec<u8>, i32> {
     let mut size = nss_buf_start(libc::_SC_GETPW_R_SIZE_MAX);
     loop {
         let mut buf = vec![0 as libc::c_char; size];
@@ -197,14 +197,17 @@ fn user_name(euid: u32) -> Result<Vec<u8>, ()> {
             size = nss_buf_grow(size)?;
             continue;
         }
-        if rc != 0 || result.is_null() {
-            return Err(());
+        if rc != 0 {
+            return Err(rc);
+        }
+        if result.is_null() {
+            return Err(libc::ENOENT);
         }
         // SAFETY: on success `result` points to the initialised `pwd`, whose
         // strings live in `buf`, which is still alive here.
         let name = unsafe { (*result).pw_name };
         if name.is_null() {
-            return Err(());
+            return Err(libc::ENOENT);
         }
         // SAFETY: `name` is a NUL-terminated string inside `buf`.
         return Ok(unsafe { std::ffi::CStr::from_ptr(name) }
@@ -214,10 +217,10 @@ fn user_name(euid: u32) -> Result<Vec<u8>, ()> {
 }
 
 /// The name of group `egid` and whether its listed members (`gr_mem`)
-/// include anyone other than this user (M3). `Err(())` when either lookup
-/// fails. Users whose primary group is `egid` are not listed in `gr_mem`.
+/// include anyone other than this user (M3). `Err(errno)` when either lookup
+/// fails (ENOENT when there is no entry). Users whose primary group is `egid` are not listed in `gr_mem`.
 #[cfg(unix)]
-fn group_sharing(euid: u32, egid: u32) -> Result<(Vec<u8>, bool), ()> {
+fn group_sharing(euid: u32, egid: u32) -> Result<(Vec<u8>, bool), i32> {
     let me = user_name(euid)?;
     let mut size = nss_buf_start(libc::_SC_GETGR_R_SIZE_MAX);
     loop {
@@ -239,14 +242,17 @@ fn group_sharing(euid: u32, egid: u32) -> Result<(Vec<u8>, bool), ()> {
             size = nss_buf_grow(size)?;
             continue;
         }
-        if rc != 0 || result.is_null() {
-            return Err(());
+        if rc != 0 {
+            return Err(rc);
+        }
+        if result.is_null() {
+            return Err(libc::ENOENT);
         }
         // SAFETY: on success `result` points to the initialised `grp`, whose
         // strings and member array live in `buf`, which is still alive here.
         let (name, mem) = unsafe { ((*result).gr_name, (*result).gr_mem) };
         if name.is_null() {
-            return Err(());
+            return Err(libc::ENOENT);
         }
         // SAFETY: `name` is a NUL-terminated string inside `buf`.
         let name = unsafe { std::ffi::CStr::from_ptr(name) }
@@ -368,7 +374,10 @@ pub(crate) fn make_private(file: &File, path: &Path, kind: Kind, repair: Repair)
                             String::from_utf8_lossy(&name)
                         ),
                     ),
-                    Err(()) => ("WARNING", " group members could not be read;".to_string()),
+                    Err(rc) => (
+                        "WARNING",
+                        format!(" group members could not be read (errno {rc});"),
+                    ),
                 }
             };
             eprintln!(
