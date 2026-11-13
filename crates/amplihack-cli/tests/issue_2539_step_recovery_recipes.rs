@@ -227,11 +227,14 @@ fn autodrive_build_recovers_its_sub_recipe_step_and_keeps_build_result_for_resol
     assert_eq!(s02["continue_on_error"].as_bool(), Some(true));
     assert_eq!(s02["output"].as_str(), Some("workflow_result"));
     let s02r = step("autodrive-build", "step-02r-default-workflow-recovery");
-    assert!(
-        s02r["condition"]
-            .as_str()
-            .unwrap()
-            .contains("not workflow_result")
+    // step-02r runs only where step-02 ran and failed, never for a build
+    // step-02 skipped.
+    assert_eq!(
+        s02r["condition"].as_str().unwrap(),
+        format!(
+            "{} and not workflow_result",
+            s02["condition"].as_str().unwrap()
+        )
     );
     assert_eq!(s02r["output"].as_str(), Some("build_recovery"));
     let cmd = s02r["command"].as_str().unwrap();
