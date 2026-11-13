@@ -6,163 +6,174 @@
 
 use super::decide::Reading;
 use super::ledger::RotateState;
-use super::log::Sink;
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::now;
-use crate::commands::profile::name::ProfileName;
 use amplihack_utils::rotator_status::swap_record::{SWAP_FILE, SwapReading, SwapRecord};
+use serde::{Deserialize, Serialize};
 
-/// The log line prefix for a swap that wrote no record.
-const NOT_WRITTEN: &str = "swap record not written";
+/// Original measurement and publication identity, saved before movement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Completion {
+    reading: Option<SwapReading>,
+    from_org: Option<String>,
+    to_org: Option<String>,
+    record: Option<SwapRecord>,
+    completed_at: Option<i64>,
+    overflow: Option<String>,
+}
+impl Completion {
+    pub(super) fn placed(&mut self, at: i64) {
+        self.completed_at.get_or_insert(at);
+    }
+    pub(super) fn valid(&self, from: &str, to: &str) -> bool {
+        let orgs = [&self.from_org, &self.to_org].into_iter().all(|v| {
+            v.as_deref()
+                .is_none_or(amplihack_utils::organisation_affinity::valid_id)
+        });
+        orgs && self
+            .overflow
+            .as_deref()
+            .is_none_or(|t| super::ledger::OVERFLOW_TAGS.contains(&t))
+            && self.reading.as_ref().is_none_or(|r| r.measured_at > 0)
+            && self.completed_at.is_none_or(|t| t > 0)
+            && self.record.as_ref().is_none_or(|r| {
+                r.seq > 0
+                    && r.from_login == from
+                    && r.live_login == to
+                    && Some(r.swapped_at) == self.completed_at
+                    && Some(&r.reading) == self.reading.as_ref()
+                    && r.from_org == self.from_org
+                    && r.to_org == self.to_org
+                    && r.affinity
+                        == Some(amplihack_utils::organisation_affinity::Affinity::between(
+                            self.from_org.as_deref(),
+                            self.to_org.as_deref(),
+                        ))
+            })
+    }
+    pub(super) fn new(
+        reading: &Reading,
+        measured_at: i64,
+        orgs: (Option<&str>, Option<&str>),
+        tag: Option<super::overflow::Tag>,
+    ) -> Self {
+        let reading = match *reading {
+            Reading::Measured { session, week } if session.is_finite() && week.is_finite() => {
+                Some(SwapReading {
+                    session: percent(session),
+                    week: percent(week),
+                    measured_at,
+                })
+            }
+            _ => None,
+        };
+        Self {
+            reading,
+            from_org: orgs
+                .0
+                .filter(|id| amplihack_utils::organisation_affinity::valid_id(id))
+                .map(str::to_owned),
+            to_org: orgs
+                .1
+                .filter(|id| amplihack_utils::organisation_affinity::valid_id(id))
+                .map(str::to_owned),
+            record: None,
+            completed_at: None,
+            overflow: tag.map(|t| t.as_str().to_string()),
+        }
+    }
+}
 
-/// The log line prefix for a record written with `seq` 1 because the
-/// previous one could not be used.
-const RESTART: &str = "swap record seq restarts at 1";
+/// Called after placement is complete and ownership is committed. Persist the
+/// event identity before publishing it, so replay never increments seq twice.
+pub(super) fn complete(
+    rs: &RotateState,
+    j: &mut super::ledger::RotateJournal,
+    at: i64,
+) -> Result<(), ProfileError> {
+    use super::ledger::LastCycle;
+    let Some(c) = &mut j.completion else {
+        return Ok(());
+    };
+    let completed = *c.completed_at.get_or_insert(at);
+    let mut l = rs.load_ledger()?.unwrap_or_default();
+    if l.live.as_deref() != Some(j.to.as_str()) {
+        return Err(ProfileError::RotateInconsistent(
+            "completion ownership is not committed".into(),
+        ));
+    }
+    if l.last_cycle
+        .as_ref()
+        .is_some_and(|v| v.outcome == super::ledger::SWITCHED && v.at > j.started_at)
+    {
+        return Err(ProfileError::RotateInconsistent(
+            "newer manual-switch record preserved; completion retained".into(),
+        ));
+    }
+    l.since = Some(completed);
+    l.swapped_at = Some(completed);
+    if !super::ledger::newer_than(
+        l.last_cycle.as_ref(),
+        c.reading.as_ref().map_or(j.started_at, |r| r.measured_at),
+    ) || l
+        .last_cycle
+        .as_ref()
+        .is_some_and(|v| v.outcome == "swapped")
+    {
+        l.last_cycle = Some(LastCycle {
+            at: completed,
+            outcome: "swapped".into(),
+            measured_at: Some(c.reading.as_ref().map_or(j.started_at, |r| r.measured_at)),
+            overflow: c.overflow.clone(),
+        });
+        rs.save_ledger(&l)?;
+    }
+    if c.record.is_none()
+        && let Some(reading) = &c.reading
+    {
+        let previous = rs
+            .read(&rs.dir.join(SWAP_FILE), "swap record")?
+            .map(|raw| amplihack_utils::rotator_status::swap_record::parse_swap(&raw, at).ok_or(()))
+            .transpose()
+            .map_err(|_| {
+                ProfileError::RotateInconsistent(
+                    "previous swap record is unreadable; completion retained".into(),
+                )
+            })?;
+        c.record = Some(SwapRecord {
+            seq: previous
+                .map_or(Some(1), |p| p.seq.checked_add(1))
+                .ok_or_else(|| {
+                    ProfileError::RotateInconsistent(
+                        "swap event sequence exhausted; completion retained".into(),
+                    )
+                })?,
+            from_login: j.from.clone(),
+            live_login: j.to.clone(),
+            swapped_at: completed,
+            reading: reading.clone(),
+            from_org: c.from_org.clone(),
+            to_org: c.to_org.clone(),
+            affinity: Some(amplihack_utils::organisation_affinity::Affinity::between(
+                c.from_org.as_deref(),
+                c.to_org.as_deref(),
+            )),
+        });
+    }
+    rs.save_journal(j)?;
+    if let Some(record) = j.completion.as_ref().and_then(|c| c.record.as_ref()) {
+        let bytes =
+            serde_json::to_vec(record).map_err(|e| ProfileError::Io(std::io::Error::other(e)))?;
+        if rs.read(&rs.dir.join(SWAP_FILE), "swap record")?.as_deref() != Some(bytes.as_slice()) {
+            rs.write(SWAP_FILE, &bytes)?;
+        }
+        crate::commands::profile::auto_switch::kit::abort_point("swap-event-published");
+    }
+    rs.delete_journal()
+}
 
 /// A percentage as stored: rounded up and clamped to `0..=255`. The caller
 /// has checked it is finite.
 fn percent(p: f64) -> u8 {
     p.ceil().clamp(0.0, 255.0) as u8
-}
-
-/// Writes the record for a swap from `from` to `to` at `t`, whose target
-/// reading `reading` was measured from `measured_at`. `Ok(false)`, writing
-/// nothing, when the reading is not `Reading::Measured` or a figure is not
-/// finite (S8: a NaN must never read as 0% used). `seq` is the previous
-/// record's plus one, or 1 when there is none or it cannot be read; a
-/// previous record that exists but cannot be read or parsed is one line on
-/// `out`. The write is private (0600) and atomic.
-#[cfg(test)]
-pub(super) fn record_swap(
-    rs: &RotateState,
-    out: &mut Sink,
-    from: &ProfileName,
-    to: &ProfileName,
-    reading: &Reading,
-    measured_at: i64,
-    t: i64,
-) -> Result<bool, ProfileError> {
-    record_with_affinity(
-        rs,
-        out,
-        from,
-        to,
-        reading,
-        measured_at,
-        t,
-        None,
-        None,
-        false,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn record_with_affinity(
-    rs: &RotateState,
-    out: &mut Sink,
-    from: &ProfileName,
-    to: &ProfileName,
-    reading: &Reading,
-    measured_at: i64,
-    t: i64,
-    from_org: Option<&str>,
-    to_org: Option<&str>,
-    explicit: bool,
-) -> Result<bool, ProfileError> {
-    let Reading::Measured { session, week } = *reading else {
-        return Ok(false);
-    };
-    let from_org = from_org.filter(|id| amplihack_utils::organisation_affinity::valid_id(id));
-    let to_org = to_org.filter(|id| amplihack_utils::organisation_affinity::valid_id(id));
-    if !session.is_finite() || !week.is_finite() {
-        return Ok(false);
-    }
-    let previous = match rs.read(&rs.dir.join(SWAP_FILE), "swap record") {
-        Ok(None) => None,
-        Ok(Some(raw)) => match serde_json::from_slice::<SwapRecord>(&raw) {
-            Ok(p) => Some(p),
-            Err(_) => {
-                out.emit(now(), &format!("{RESTART}: previous unparsable"));
-                None
-            }
-        },
-        Err(e) => {
-            out.emit(now(), &format!("{RESTART}: previous unreadable ({e})"));
-            None
-        }
-    };
-    let record = SwapRecord {
-        from_org: from_org.map(str::to_owned),
-        to_org: to_org.map(str::to_owned),
-        affinity: explicit
-            .then(|| amplihack_utils::organisation_affinity::Affinity::between(from_org, to_org)),
-        seq: previous.map_or(1, |p| p.seq.saturating_add(1)),
-        live_login: to.as_str().to_string(),
-        from_login: from.as_str().to_string(),
-        swapped_at: t,
-        reading: SwapReading {
-            session: percent(session),
-            week: percent(week),
-            measured_at,
-        },
-    };
-    let bytes = serde_json::to_vec(&record)
-        .map_err(|e| ProfileError::Io(std::io::Error::other(e.to_string())))?;
-    rs.write(SWAP_FILE, &bytes)?;
-    Ok(true)
-}
-
-/// After a cycle's swap is saved, under the rotate lock: writes the record
-/// when the ledger on disk shows `to` live. Any reason it is not written is
-/// one log line; the swap stands and the cycle outcome is unchanged.
-/// `swapped_at` is when `swap_with` returned, never the cycle's start time.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn after_swap(
-    rs: &RotateState,
-    out: &mut Sink,
-    from: &ProfileName,
-    to: &ProfileName,
-    others: &[(ProfileName, Reading)],
-    measured_at: i64,
-    swapped_at: i64,
-    organisations: (Option<&str>, Option<&str>),
-) {
-    let live = match rs.load_ledger() {
-        Ok(Some(l)) => l.live,
-        Ok(None) => None,
-        Err(e) => {
-            out.emit(now(), &format!("{NOT_WRITTEN}: ledger: {e}"));
-            return;
-        }
-    };
-    if live.as_deref() != Some(to.as_str()) {
-        out.emit(
-            now(),
-            &format!("{NOT_WRITTEN}: the ledger does not show {to} live"),
-        );
-        return;
-    }
-    let Some((_, reading)) = others.iter().find(|(n, _)| n == to) else {
-        out.emit(now(), &format!("{NOT_WRITTEN}: no reading of {to}"));
-        return;
-    };
-    match record_with_affinity(
-        rs,
-        out,
-        from,
-        to,
-        reading,
-        measured_at,
-        swapped_at,
-        organisations.0,
-        organisations.1,
-        true,
-    ) {
-        Ok(true) => {}
-        Ok(false) => out.emit(
-            now(),
-            &format!("{NOT_WRITTEN}: {to} has no finite measured reading"),
-        ),
-        Err(e) => out.emit(now(), &format!("{NOT_WRITTEN}: {e}")),
-    }
 }

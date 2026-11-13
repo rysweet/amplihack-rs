@@ -178,6 +178,7 @@ impl Fixture {
             )
             .env("AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS", "0")
             .env("AMPLIHACK_NONINTERACTIVE", "1")
+            .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
             .env("CODEX_PROFILES_ROOT", self.home.join("no-codex-profiles"))
             .env("CODEX_BIN", self.home.join("no-codex"));
         for (k, v) in env {

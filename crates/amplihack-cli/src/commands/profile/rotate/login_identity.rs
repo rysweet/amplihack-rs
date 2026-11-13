@@ -88,14 +88,16 @@ pub fn unavailable_line(cause: &str) -> String {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
-struct Stamp {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Stamp {
     /// Device, inode, owner, group and mode: group write is accepted only
     /// for the directory's group, so a new group is a new set of writers.
     directory: (u64, u64, u32, u32, u32),
     file: FileStamp,
 }
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FileStamp {
     dev: u64,
     ino: u64,
@@ -136,6 +138,23 @@ fn stamp(dir: &Path) -> Result<Stamp, &'static str> {
     })
 }
 
+impl Stamp {
+    pub(super) fn inode(&self) -> u64 {
+        self.file.ino
+    }
+    pub(super) fn current(&self, dir: &Path) -> bool {
+        stamp(dir).is_ok_and(|s| s == *self)
+    }
+    /// Rename changes ctime. Every other credential attribute must agree.
+    pub(super) fn moved(&self, dir: &Path) -> bool {
+        stamp(dir).is_ok_and(|s| {
+            let mut expected = self.file.clone();
+            expected.changed = s.file.changed;
+            expected == s.file
+        })
+    }
+}
+
 /// Shared identity-work budget; unrelated usage measurement is excluded.
 /// Issue #2218: it also holds this cycle's local-only folders, whose
 /// identity [`Reader::bound`] takes from local files, never a request.
@@ -143,6 +162,7 @@ pub struct Budget {
     started: Cell<Instant>,
     local_only: RefCell<Vec<PathBuf>>,
     home: RefCell<Option<PathBuf>>,
+    suppressed: RefCell<Vec<PathBuf>>,
 }
 impl Budget {
     /// Start a new identity-work budget, with no local-only folder.
@@ -151,11 +171,19 @@ impl Budget {
             started: Cell::new(Instant::now()),
             local_only: RefCell::new(Vec::new()),
             home: RefCell::new(None),
+            suppressed: RefCell::new(Vec::new()),
         }
     }
     /// Begin the next cycle's identity work.
     pub fn reset(&self) {
         self.started.set(Instant::now());
+        self.suppressed.borrow_mut().clear();
+    }
+    pub(super) fn set_suppressed(&self, paths: Vec<PathBuf>) {
+        *self.suppressed.borrow_mut() = paths;
+    }
+    pub(super) fn suppressed(&self, dir: &Path) -> bool {
+        self.suppressed.borrow().iter().any(|p| same_dir(p, dir))
     }
     /// Whether another bounded identity read may start.
     pub fn available(&self) -> bool {
@@ -239,6 +267,12 @@ impl std::fmt::Debug for Bound {
     }
 }
 impl Bound {
+    pub(super) fn directory(&self) -> &Path {
+        &self.dir
+    }
+    pub(super) fn stamp(&self) -> Stamp {
+        self.stamp.clone()
+    }
     /// The account returned for this login; absent only for platform logins.
     pub fn account(&self) -> Option<&Account> {
         self.account.as_ref()
@@ -273,10 +307,20 @@ impl Bound {
     }
 }
 impl Reader<'_> {
+    /// Parking requires server evidence even when ordinary excluded reads are local.
+    pub(super) fn server_bound(&self, dir: &Path) -> Result<Bound, &'static str> {
+        if self.budget.is_local_only(dir) {
+            return Err(UNAVAILABLE);
+        }
+        self.bound(dir, false)
+    }
     /// Reads only an unchanged private regular login; platform evidence must
     /// be explicitly permitted by the caller's existing kind policy. The
     /// error is the cause, one of "Identity read causes".
     pub fn bound(&self, dir: &Path, platform: bool) -> Result<Bound, &'static str> {
+        if self.budget.suppressed(dir) {
+            return Err("needs-login");
+        }
         if !self.budget.available() {
             return Err(BUDGET_SPENT);
         }

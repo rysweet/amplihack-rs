@@ -9,8 +9,9 @@
 //! times, and many sessions write the same cache. [`contradicts`] says when
 //! a cached figure cannot be current next to the last accepted point. The
 //! series also keeps the frozen count on the measured figures and the mark
-//! that a re-read found the cache behind. It holds a profile name, times and
-//! percentages only. See "Live reading series" in
+//! that a re-read found the cache behind. It holds a profile name, times,
+//! percentages and verified account identity for continuity, never credentials.
+//! See "Live reading series" in
 //! docs/reference/profile-command.md.
 
 use super::super::super::decide::{Probed, Reading};
@@ -97,6 +98,8 @@ pub struct Series {
     /// source is behind, so a measured figure below the last point is stale,
     /// not a new session window.
     behind: bool,
+    weekly: VecDeque<Point>,
+    identity: Option<super::super::super::login_identity::Identity>,
 }
 
 #[cfg(test)]
@@ -109,10 +112,84 @@ pub(super) fn stale_at(a: i64, t: i64, interval: i64) -> bool {
 }
 
 impl Series {
+    pub(super) fn bind(&mut self, account: Option<&super::super::super::identify::Account>) {
+        let same = match (&self.identity, account) {
+            (Some(prior), Some(now)) => prior.names(now),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.clear();
+        }
+        self.identity = account.map(super::super::super::login_identity::Identity::new);
+    }
+
+    pub(super) fn note_week(&mut self, at: i64, used: f64, resets: Option<i64>, t: i64) {
+        if !used.is_finite() || !(0.0..=100.0).contains(&used) || at > t {
+            return;
+        }
+        if let Some(last) = self.weekly.back() {
+            if at <= last.at {
+                return;
+            }
+            if window(last.resets, resets) != Window::Same || used < last.session {
+                self.weekly.clear();
+            }
+        }
+        self.weekly.push_back(Point {
+            at,
+            session: used,
+            resets,
+        });
+        while self.weekly.len() > MAX_POINTS {
+            self.weekly.pop_front();
+        }
+    }
+
+    /// Extrapolate from the actual observation through observation age and the
+    /// next interval. A reset before exhaustion invalidates the prediction.
+    pub(super) fn forecast(
+        &self,
+        weekly: bool,
+        t: i64,
+        interval: i64,
+    ) -> Result<f64, &'static str> {
+        let points = if weekly { &self.weekly } else { &self.points };
+        let (Some(first), Some(last)) = (points.front(), points.back()) else {
+            return Err("insufficient history");
+        };
+        if points.len() < 2 {
+            return Err("insufficient samples");
+        }
+        let span = last
+            .at
+            .checked_sub(first.at)
+            .ok_or("observation time regressed")?;
+        if interval <= 0
+            || span < interval
+            || span > interval.saturating_mul(MAX_POINTS as i64)
+            || stale_at(last.at, t, interval)
+            || window(first.resets, last.resets) != Window::Same
+        {
+            return Err("insufficient comparable recent history or reset evidence");
+        }
+        let rate = (last.session - first.session) / span as f64;
+        if !rate.is_finite() || rate <= 0.0 {
+            return Err("no positive consumption rate");
+        }
+        let exhaustion = last.at as f64 + (100.0 - last.session) / rate;
+        if last.resets.is_none_or(|reset| reset as f64 <= exhaustion) {
+            return Err("usage resets before projected exhaustion");
+        }
+        let horizon = t.saturating_sub(last.at).saturating_add(interval);
+        Ok(super::projected(last.session, rate, horizon as u64))
+    }
     /// Starts afresh for `name` when another login owned the series.
     fn own(&mut self, name: &ProfileName) {
         if self.name.as_ref() != Some(name) {
+            let identity = self.identity.take();
             self.clear();
+            self.identity = identity;
             self.name = Some(name.clone());
         }
     }

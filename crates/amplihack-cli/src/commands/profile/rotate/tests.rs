@@ -22,6 +22,7 @@ mod tests_gate_record;
 #[path = "tests_identity_limits.rs"]
 mod tests_identity_limits;
 #[path = "tests_issue_1886_collide.rs"]
+#[cfg(target_os = "linux")]
 mod tests_issue_1886_collide;
 #[path = "tests_issue_1947.rs"]
 mod tests_issue_1947;
@@ -32,6 +33,8 @@ mod tests_issue_2136;
 mod tests_issue_2211;
 #[path = "tests_issue_2211_cycle.rs"]
 mod tests_issue_2211_cycle;
+#[path = "tests_issue_2242.rs"]
+mod tests_issue_2242;
 #[path = "tests_ledger.rs"]
 mod tests_ledger;
 #[path = "tests_live_readers.rs"]

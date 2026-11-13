@@ -14,7 +14,8 @@
 #[allow(unused_imports)]
 mod fake_proc;
 
-pub(crate) use fake_proc::{FAKE_PID_BASE, FakeEntry, FakeProc, SELF_ENVIRON};
+pub(crate) use fake_proc::proc_tree_seed::SELF_ENVIRON;
+pub(crate) use fake_proc::{FAKE_PID_BASE, FakeEntry, FakeProc};
 
 use crate::commands::agent::procfs::{ProcRootOverride, checked_fake_tree, override_proc_root};
 use std::os::unix::fs::PermissionsExt;

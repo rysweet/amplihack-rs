@@ -233,6 +233,14 @@ pub fn effective(root: &Path) -> Effective {
             Ok(names) => eff.config.exclude = names,
             Err(_) => eff.on = false,
         }
+    } else {
+        match crate::commands::profile::rotate::custody::extend_exclusions(
+            root,
+            eff.config.exclude.clone(),
+        ) {
+            Ok(names) => eff.config.exclude = names,
+            Err(_) => eff.on = false,
+        }
     }
     eff
 }
@@ -320,7 +328,9 @@ pub fn excluded_profiles(root: &Path) -> Result<Vec<ProfileName>, ProfileError> 
 /// read instead of repeating it.
 pub fn excluded_from(file: ExcludeFile, root: &Path) -> Result<Vec<ProfileName>, ProfileError> {
     match file {
-        ExcludeFile::Read { names, .. } => Ok(names),
+        ExcludeFile::Read { names, .. } => {
+            crate::commands::profile::rotate::custody::extend_exclusions(root, names)
+        }
         ExcludeFile::Unreadable => every_profile(root),
     }
 }

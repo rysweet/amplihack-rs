@@ -14,7 +14,7 @@
 use super::alert::clear_alert;
 use super::cycle::{Ctx, LOCK_WAIT, prototype_guard};
 use super::identify::{LiveId, Skip};
-use super::ledger::{LastCycle, RotateState, SWITCHED, active_blocks};
+use super::ledger::{LastCycle, RotateState, SWITCHED};
 use super::log::msg;
 use super::observe::{Snap, live_alert_for};
 use super::pin;
@@ -146,7 +146,7 @@ pub(super) fn switch_in(
     // A pin stops every rotator move, so pinning an overflow profile whose
     // credits are known to be spent would hold the login where it cannot
     // work. Refused like a skip reason, for the already-live case too.
-    if let Some(reason) = spend_blocked(&ctx.rs, &first, name)? {
+    if let Some(reason) = spend_blocked(&ctx.rs, store, &first, name)? {
         return default_only(&ctx.rs, store, name, reason);
     }
     let switched = match source {
@@ -269,6 +269,10 @@ pub(super) fn not_a_candidate(
         }
         Skip::NoLogin => LOGIN_NOT_MOVABLE.to_string(),
         Skip::NotOAuth => "its login file holds no subscription login".to_string(),
+        Skip::NeedsLogin => {
+            format!("authentication needs repair; run `amplihack profile login {name}` first")
+        }
+        Skip::CustodyUnknown => "its recovery receipt or origin provenance is missing or inconsistent; retain the recovery profile and repair its recorded custody with the current binary".to_string(),
         Skip::SessionRunning if !snap.sees_sessions => {
             "running sessions cannot be seen here, so its login may be in use".to_string()
         }
@@ -295,24 +299,21 @@ pub(super) fn not_a_candidate(
     ))
 }
 
-/// Why `name` may not be pinned for its spend, if it may not: it is an
-/// overflow profile in the prelude's snapshot and the ledger holds an active
-/// spend block for it (#1606). A ledger that cannot be read fails the
-/// switch, since the blocks are then unknown.
+/// The same origin-aware spending guard used by automatic rotation.
 pub(super) fn spend_blocked(
     rs: &RotateState,
+    store: &ProfileStore,
     snap: &Snap,
     name: &ProfileName,
 ) -> Result<Option<String>, ProfileError> {
-    if !snap.overflow.iter().any(|e| &e.name == name) {
-        return Ok(None);
-    }
-    let Some(l) = rs.load_ledger()? else {
-        return Ok(None);
-    };
-    Ok(active_blocks(&l, now())
-        .get(name.as_str())
-        .map(|b| msg::switch_spend_blocked(name, b.until)))
+    let ledger = rs.load_ledger()?;
+    Ok(super::spending::refusal(
+        store,
+        snap,
+        ledger.as_ref(),
+        name,
+        now(),
+    ))
 }
 
 /// `PlatformBlocked` when `name` is an API-key profile and the API-key

@@ -24,6 +24,11 @@
 
 #[path = "../../../tests/support/isolated_amplihack.rs"]
 mod isolated_amplihack;
+mod issue_2242_candidate_fallback;
+mod issue_2242_duplicate_parking;
+mod issue_2242_login_health;
+mod issue_2242_projection;
+mod issue_2242_swap_publication;
 mod support;
 
 #[path = "issue_2329_autodrive_outcomes.rs"]

@@ -45,9 +45,9 @@
 //! context, which `decide_measured` reads. They reach the decision rule's
 //! threshold row only ([`with_outlook`]): the plan-room swap and the overflow
 //! rules always run on the reading as measured. The ledger, the history and
-//! the log lines keep the reading as measured. `Point`, [`Series`] and
-//! [`Outlook`] hold a profile name, times and percentages only: never a
-//! token, an account id, an email or a path. Nothing here is persisted.
+//! the log lines keep the reading as measured. `Point` and [`Outlook`] hold
+//! profile names, times and percentages. [`Series`] also retains verified
+//! account identity for continuity, never credentials. Nothing here is persisted.
 //! See "Rotate live reading freshness" in docs/reference/profile-command.md.
 
 use super::super::cycle::Ctx;
@@ -101,6 +101,7 @@ pub(in crate::commands::profile::rotate) fn step(
             return Ok(m);
         }
     };
+    ctx.live_series.bind(snap.trusted_live.as_ref());
     // A stub that built the measurement by hand kept no probes.
     let Some((probe, probes)) = m.probed.clone() else {
         return Ok(m);
@@ -157,13 +158,40 @@ pub(in crate::commands::profile::rotate) fn step(
             if let Some(read) = read_at(&live, m.measured_at) {
                 let resets = session_resets(&live);
                 ctx.live_series.note(&name, read, session, resets, t);
+                ctx.live_series.note_week(
+                    read,
+                    week,
+                    live.windows.week.and_then(|w| w.resets_at),
+                    t,
+                );
             }
-            ctx.live_series
-                .rate(span)
-                .filter(|r| *r > 0.0 && session < at)
-                .map(|r| projected(session, r, s.interval))
-                .filter(|p| *p >= at)
-                .map(|p| (p, week, Basis::Projected))
+            let session_projection = ctx.live_series.forecast(false, t, interval);
+            let week_projection = ctx.live_series.forecast(true, t, interval);
+            for (window, projection) in [
+                ("session", &session_projection),
+                ("weekly", &week_projection),
+            ] {
+                match projection {
+                    Err(reason) => m
+                        .fresh_lines
+                        .push(format!("projection {window}: unavailable ({reason})")),
+                    Ok(p) => m
+                        .fresh_lines
+                        .push(format!("projection {window}: next cycle {p:.1}%")),
+                }
+            }
+            // Both windows inform the same decision. An unavailable forecast
+            // leaves that window at its measured value; observations stay intact.
+            let session_projection = session_projection.ok();
+            let week_projection = week_projection.ok();
+            (session_projection.is_some_and(|p| p >= at && session < at)
+                || week_projection
+                    .is_some_and(|p| p >= f64::from(s.week_at) && week < f64::from(s.week_at)))
+            .then_some((
+                session_projection.unwrap_or(session),
+                week_projection.unwrap_or(week),
+                Basis::Projected,
+            ))
         }
         Reading::Exhausted { .. } => None,
         // A failed probe, or a reading still stale after the step: never
@@ -176,7 +204,11 @@ pub(in crate::commands::profile::rotate) fn step(
                 _ => at,
             };
             let week = ctx.live_series.week();
-            let rate = ctx.live_series.rate(span);
+            let rate = ctx
+                .live_series
+                .forecast(false, t, interval)
+                .ok()
+                .and_then(|_| ctx.live_series.rate(span));
             ctx.live_series
                 .last_known(&name, t)
                 .filter(|last| near(last.session, rate, s))

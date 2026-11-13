@@ -11,11 +11,17 @@ use std::path::Path;
 
 pub const REFRESH_LOCK: &str = ".oauth_refresh.lock";
 
+#[cfg(test)]
+#[path = "tests_exchange_boundary.rs"]
+pub(in crate::commands::profile) mod test_exchange;
+
 #[cfg(debug_assertions)]
 const TEST_ABORT_ENV: &str = "AMPLIHACK_AUTO_SWITCH_TEST_ABORT_AFTER";
 
 /// Debug builds only: stop the process at a named step, as a crash would.
 pub fn abort_point(step: &str) {
+    #[cfg(test)]
+    test_exchange::interrupt(step);
     #[cfg(debug_assertions)]
     if std::env::var_os(TEST_ABORT_ENV).is_some_and(|v| v == step) {
         std::process::exit(86);
@@ -72,13 +78,22 @@ pub fn move_login(src: &Path, dst: &Path, show: &dyn Fn(&Path) -> String) -> Res
 /// throughout. Both must pass [`fsx::movable_login`]. Only Linux has the
 /// call; anywhere else, and on a filesystem that refuses it, the result is
 /// `Unsupported` and nothing has moved. There is no copy fallback.
+#[cfg(test)]
 pub fn exchange_logins(a: &Path, b: &Path) -> Result<(), MoveError> {
     if !fsx::movable_login(a) || !fsx::movable_login(b) {
         return Err(MoveError::Other(
             "a login file is not a private regular file with one link".into(),
         ));
     }
-    exchange(a, b).map_err(|e| {
+    #[cfg(test)]
+    let result = if test_exchange::active() {
+        test_exchange::exchange(a, b)
+    } else {
+        exchange(a, b)
+    };
+    #[cfg(not(test))]
+    let result = exchange(a, b);
+    result.map_err(|e| {
         if unsupported(&e) {
             MoveError::Unsupported
         } else {
@@ -88,7 +103,7 @@ pub fn exchange_logins(a: &Path, b: &Path) -> Result<(), MoveError> {
     sync_parents(a, b).map_err(|e| MoveError::Other(format!("sync after exchange: {e}")))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(test, target_os = "linux"))]
 fn exchange(a: &Path, b: &Path) -> std::io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
     let cstr = |p: &Path| {
@@ -114,7 +129,7 @@ fn exchange(a: &Path, b: &Path) -> std::io::Result<()> {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(test, not(target_os = "linux")))]
 fn exchange(_a: &Path, _b: &Path) -> std::io::Result<()> {
     Err(std::io::Error::from_raw_os_error(libc::ENOSYS))
 }

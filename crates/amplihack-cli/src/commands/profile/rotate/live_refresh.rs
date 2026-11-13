@@ -10,34 +10,19 @@
 //! here. See "An expired live login" in docs/reference/profile-command.md.
 
 use super::super::cycle::Ctx;
-use super::super::identify::{LoginKind, login_kind};
 use super::super::log::{Sink, msg};
-use crate::commands::profile::auto_switch::kit::{CREDS, now};
-use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::usage_cmd::PROBE_CANCEL;
-use crate::commands::profile::usage_direct::{self, Endpoints};
+use crate::commands::profile::usage_direct;
+use crate::commands::profile::usage_direct::Endpoints;
 use std::path::Path;
 use std::time::Duration;
-
-/// Refreshes the login in a directory once when its token has expired;
-/// `Ok(true)` when the file now holds a fresh token. Arguments: the profile
-/// root, whose swap journals forbid a refresh, and the directory.
-pub type RefreshFn = fn(&Path, &Path) -> Result<bool, &'static str>;
 
 /// Each refresh of an expired live login ends within this time.
 pub const LIVE_REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The refresh a cycle uses: [`refresh_direct`], except in unit tests,
-/// where nothing is sent and no login is written.
-#[cfg(not(test))]
-const DEFAULT_REFRESH: RefreshFn = refresh_direct;
-#[cfg(test)]
-const DEFAULT_REFRESH: RefreshFn = |_, _| Ok(false);
-
 /// `usage_direct::refresh_expired` against the endpoints the environment
 /// sets, with the direct read's refusals: a pending swap journal under
 /// `root`, a directory others can write, or a cancelled probe.
-#[cfg_attr(test, allow(dead_code))]
 pub fn refresh_direct(root: &Path, creds_dir: &Path) -> Result<bool, &'static str> {
     let (ep, _warnings) = Endpoints::from_env();
     let state = root.join(".auto-switch.d");
@@ -64,36 +49,59 @@ pub fn refresh_direct(root: &Path, creds_dir: &Path) -> Result<bool, &'static st
 /// lock, a directory others can write and an unexpired token are refused by
 /// `usage_direct`. A refresh that fails is logged; the snapshot then finds no
 /// trusted identity, and the cycle alerts and moves nothing.
-pub fn refresh_expired_live(ctx: &Ctx, out: &mut Sink) {
+pub fn refresh_expired_live(
+    ctx: &Ctx,
+    out: &mut Sink,
+) -> Result<(), crate::commands::profile::ProfileError> {
     if ctx.read_only {
-        return;
+        return Ok(());
     }
     let dir = ctx.home.join(".claude");
-    match excluded_live(ctx) {
-        // Logged only when a refresh was due; the expiry is read locally.
-        Ok(Some(name)) => {
-            if usage_direct::expired(&dir, chrono::Utc::now().timestamp_millis()) {
-                out.emit(now(), &msg::excluded_not_refreshed(&name));
+    let expired = usage_direct::expired(&dir, (ctx.now)().saturating_mul(1000));
+    let excluded = super::super::live_excluded_offline(&ctx.store, &ctx.rs, &ctx.home)?;
+    if let Some((name, _)) = &excluded
+        && expired
+    {
+        out.emit((ctx.now)(), &msg::excluded_not_refreshed(name));
+    }
+    if ctx.rs.load_ledger().is_err() {
+        // Preserve #1962: refresh only the live slot before the prelude
+        // reports the unreadable ledger. Unknown ownership cannot authorise
+        // profile assessment or movement. Unit fixtures never call a real endpoint.
+        if expired && excluded.is_none() && !cfg!(test) {
+            match refresh_direct(ctx.store.root(), &dir) {
+                Ok(true) => out.emit((ctx.now)(), msg::LIVE_REFRESHED),
+                Ok(false) => {}
+                Err(cause) => out.emit(
+                    (ctx.now)(),
+                    &format!("refresh: expired login in ~/.claude not refreshed ({cause})"),
+                ),
             }
-            return;
         }
-        Ok(None) => {}
-        // Issue #2218: an unknown exclude list refreshes nothing.
-        Err(_) => return,
+        return Ok(()); // The prelude owns the ledger error and its stop line.
     }
-    if login_kind(&dir.join(CREDS)) != LoginKind::OAuth {
-        return;
+    // Structured assessment refreshes at most once and persists definitive
+    // failures before any identity reader can attempt this credential again.
+    let failure = super::super::login_state::assess_with(
+        &ctx.store,
+        &ctx.home,
+        (ctx.now)(),
+        ctx.identity_reader(),
+    )?;
+    if expired
+        && excluded.is_none()
+        && let Some(cause) = failure
+    {
+        out.emit(
+            (ctx.now)(),
+            &format!("refresh: expired login in ~/.claude not refreshed ({cause})"),
+        );
     }
-    match DEFAULT_REFRESH(ctx.store.root(), &dir) {
-        Ok(false) => {}
-        Ok(true) => out.emit(now(), msg::LIVE_REFRESHED),
-        Err(why) => out.emit(now(), &format!("{} ({why})", msg::LIVE_REFRESH_FAILED)),
+    if expired
+        && excluded.is_none()
+        && !usage_direct::expired(&dir, (ctx.now)().saturating_mul(1000))
+    {
+        out.emit((ctx.now)(), msg::LIVE_REFRESHED);
     }
-}
-
-/// The excluded profile whose login is in `~/.claude`, by any rule of the
-/// local proof (`super::super::live_excluded_offline`); no request is made.
-fn excluded_live(ctx: &Ctx) -> Result<Option<ProfileName>, crate::commands::profile::ProfileError> {
-    let found = super::super::live_excluded_offline(&ctx.store, &ctx.rs, &ctx.home)?;
-    Ok(found.map(|(n, _)| n))
+    Ok(())
 }

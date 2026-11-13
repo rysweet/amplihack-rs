@@ -54,6 +54,7 @@ pub(in super::super) fn decide(
     measured: &[Measured],
     eligible: &[bool],
     need: Need,
+    attempted: &[ProfileName],
 ) -> Verdict {
     let overflow = input.overflow;
     let is_overflow = |n: &ProfileName| overflow.iter().any(|e| &e.name == n);
@@ -67,7 +68,8 @@ pub(in super::super) fn decide(
         .iter()
         .zip(eligible)
         .map(|(m, &ok)| {
-            let eligible = ok && (paid_allowed || !is_overflow(&m.name));
+            let eligible =
+                ok && !attempted.contains(&m.name) && (paid_allowed || !is_overflow(&m.name));
             // Whether the authoritative selector, offered only this target,
             // picks it. Plan-room fallback has its own pool.
             let permitted = [m.name.clone()];
@@ -121,10 +123,11 @@ pub(in super::super) fn with_outlook(
     input: &OverflowInput<'_>,
     verdict: Verdict,
     o: &Outlook,
-    measured: &[Measured],
-    eligible: &[bool],
+    pool: (&[Measured], &[bool]),
     need: Need,
+    attempted: &[ProfileName],
 ) -> Verdict {
+    let (measured, eligible) = pool;
     let (s, real) = (input.settings, &input.live.reading);
     let on_outlook = if *real == Reading::Failed {
         outlook_failed(snap, s, &verdict.decision, &o.reading(), measured)
@@ -137,7 +140,7 @@ pub(in super::super) fn with_outlook(
             live: &figures,
             ..*input
         };
-        outlook(snap, &input, measured, eligible, need)
+        outlook(snap, &input, measured, eligible, need, attempted)
     };
     live::with_outlook(verdict, on_outlook, o.basis, s, real)
 }
@@ -169,6 +172,7 @@ fn outlook(
     measured: &[Measured],
     eligible: &[bool],
     need: Need,
+    attempted: &[ProfileName],
 ) -> Decision {
     let threshold = |d: &Decision| {
         matches!(
@@ -179,7 +183,7 @@ fn outlook(
             }
         )
     };
-    let d = decide(snap, input, measured, eligible, need).decision;
+    let d = decide(snap, input, measured, eligible, need, attempted).decision;
     if threshold(&d) {
         d
     } else if threshold(&decide_restricted(input, None).decision) {

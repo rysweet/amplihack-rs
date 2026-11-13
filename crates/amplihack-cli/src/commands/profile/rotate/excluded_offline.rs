@@ -241,6 +241,16 @@ pub(in crate::commands::profile::rotate) fn local_only_dirs(
     // An error, not a shorter list, when the exclude list is unknown.
     let excluded = exclude_list(store.root(), |_| {})?;
     let mut dirs: Vec<PathBuf> = excluded.iter().map(|p| slot(store, p)).collect();
+    // An in-flight reservation has no committed receipt yet. Its journalled,
+    // inode-bound destination must remain available for fresh server
+    // verification during recovery, unless its original account is excluded.
+    if let Some(journal) = rs.load_journal()?
+        && let Some(custody) = &journal.outgoing
+        && !excluded.contains(&ProfileName::parse(&custody.origin)?)
+    {
+        custody.dir(store)?;
+        dirs.retain(|dir| dir != &store.root().join(&custody.destination));
+    }
     if find_live(store, rs, home, excluded).is_some() {
         dirs.push(home.join(".claude"));
     }

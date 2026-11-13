@@ -118,7 +118,7 @@ fn a_token_refresh_in_home_after_the_exchange_is_tolerated() {
 }
 
 #[test]
-fn an_unrecognised_layout_is_inconsistent_until_a_person_resolves_it() {
+fn an_unrecognised_layout_waits_for_repair_then_recovers_on_the_next_cycle() {
     let f = Fixture::new();
     abort_at(&f, "S1");
     // A person put a login back by hand at the source: neither way is safe.
@@ -126,7 +126,14 @@ fn an_unrecognised_layout_is_inconsistent_until_a_person_resolves_it() {
     let before = f.logins();
 
     let out = f.run(&["profile", "rotate"]);
-    assert_eq!(out.status.code(), Some(1), "RotateInconsistent");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "RotateInconsistent: {}\n{}\n{}",
+        text(&out.stdout),
+        text(&out.stderr),
+        f.log()
+    );
     assert!(
         text(&out.stderr)
             .contains("see the Recovery section of docs/howto/claude-profile-rotation.md")
@@ -146,9 +153,14 @@ fn an_unrecognised_layout_is_inconsistent_until_a_person_resolves_it() {
     let status = f.ok(&["profile", "rotate", "status"]);
     assert!(text(&status.stdout).contains("journal: inconsistent"));
 
-    // Still inconsistent on the next run, even once the stray login is gone.
+    // A repaired version-2 layout is reassessed by the next existing cycle.
     fs::rename(f.slot("work"), f.tmp.path().join("aside")).unwrap();
-    assert_eq!(f.run(&["profile", "rotate"]).status.code(), Some(1));
+    quiet(&f);
+    f.ok(&["profile", "rotate"]);
+    assert!(!f.rotate_dir().join("journal.json").exists());
+    assert_eq!(ino(&f.home_login()), Some(f.spare_ino));
+    assert_eq!(ino(&f.slot("work")), Some(f.live_ino));
+    assert_eq!(ino(&f.tmp.path().join("aside")), Some(stray));
 }
 
 #[test]
@@ -202,6 +214,8 @@ fn a_refused_swap_alerts_once_across_runs_and_records_the_cycle() {
     let f = Fixture::new();
     // Claude is refreshing in the target, so the threshold swap is refused.
     fs::create_dir(f.root.join("spare").join(LOCK)).unwrap();
+    // Every candidate must refuse; otherwise #2242 correctly falls back.
+    fs::create_dir(f.root.join("extra").join(LOCK)).unwrap();
     for _ in 0..2 {
         let out = f.run(&["profile", "rotate"]);
         assert_no_secrets(&out);

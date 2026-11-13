@@ -9,10 +9,12 @@
 
 use super::identify::Account;
 #[cfg(test)]
+#[cfg(target_os = "linux")]
 use super::ledger::RotateState;
 use super::swap::Source;
 use crate::commands::profile::ProfileError;
 #[cfg(test)]
+#[cfg(target_os = "linux")]
 use crate::commands::profile::auto_switch::kit::State;
 use crate::commands::profile::auto_switch::kit::{
     CLAUDE_JSON, exists, read_claude_json, write_atomic_keep_mode,
@@ -21,6 +23,7 @@ use crate::commands::profile::expected;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
 #[cfg(test)]
+#[cfg(target_os = "linux")]
 use std::path::Path;
 
 /// The refusal reason, followed by the outgoing profile's name.
@@ -29,6 +32,20 @@ pub const ACCOUNT_MISMATCH: &str = "the login in ~/.claude is not the account re
 /// The refusal when [`relabel`] cannot write, followed by the profile's name.
 pub const NOT_RELABELLED: &str =
     "the recorded account could not be written to the .claude.json of profile";
+
+/// Commit verified recovery ownership through the same record-writing boundary.
+pub(super) fn record_custody(
+    store: &ProfileStore,
+    name: &ProfileName,
+    account: &Account,
+) -> Result<(), ProfileError> {
+    super::swap_authorize::check_record(store, name, Some(account))?;
+    expected::record(
+        &super::super::auto_switch::kit::State::new(store.root())?,
+        name,
+        account,
+    )
+}
 
 /// What a completed swap records for the outgoing profile.
 pub(super) enum Pending {
@@ -52,12 +69,14 @@ pub(super) enum Pending {
 
 /// Whether `e` is the refusal [`guard`] returns: the cycle writes its ALERT
 /// once per profile, keyed `account_mismatch:<from>`.
+#[cfg(test)]
 pub fn is_account_mismatch(e: &ProfileError) -> bool {
     matches!(e, ProfileError::RotateRefused(m) if m.starts_with(ACCOUNT_MISMATCH))
 }
 
 /// [`guard`] without the printing: `note` gets the warning, if any.
 #[cfg(test)]
+#[cfg(target_os = "linux")]
 pub(super) fn decide(
     store: &ProfileStore,
     rs: &RotateState,
@@ -154,5 +173,31 @@ pub(super) fn settle(store: &ProfileStore, from: &ProfileName, pending: Pending)
         Pending::Adopted(a) => expected::save(store.root(), from, &a, false),
         Pending::AdoptedUnrecorded => expected::forget(store.root(), from),
         Pending::Backfill(a) => expected::save(store.root(), from, &a, true),
+    }
+}
+
+/// Rotation retains its journal until expected ownership is durable.
+pub(super) fn settle_durable(
+    store: &ProfileStore,
+    from: &ProfileName,
+    pending: Pending,
+) -> Result<(), ProfileError> {
+    match pending {
+        Pending::Nothing | Pending::Relabel(_) => Ok(()),
+        Pending::Adopted(a) => expected::record(
+            &super::super::auto_switch::kit::State::new(store.root())?,
+            from,
+            &a,
+        ),
+        Pending::Backfill(a) => {
+            super::swap_authorize::check_record(store, from, Some(&a))?;
+            expected::record(
+                &super::super::auto_switch::kit::State::new(store.root())?,
+                from,
+                &a,
+            )
+        }
+        Pending::AdoptedUnrecorded => super::super::auto_switch::kit::State::new(store.root())?
+            .remove_sub_json("expected", from.as_str()),
     }
 }

@@ -13,8 +13,9 @@ It measures every
 [login profile](claude-profiles.md) with
 [`profile usage`](claude-profiles.md#check-usage-across-profiles), and when the
 account in `~/.claude` is close to its session or weekly limit it moves a
-better profile's login into `~/.claude` and puts the outgoing login back in the
-profile it came from.
+better profile's login into `~/.claude`. It returns the outgoing login to
+its profile, or preserves it in private recovery custody if that profile
+holds a different verified account.
 
 [Organisation affinity](../reference/profile-organisation-affinity.md) restricts
 selection before capacity ranking: crossing is allowed only for necessary
@@ -45,6 +46,7 @@ The exact flags, files, exit codes and log lines are in the
 ## Contents
 
 - [Before you start](#before-you-start)
+- [Repair profiles marked needs-login](#repair-profiles-marked-needs-login)
 - [Preview a rotation](#preview-a-rotation)
 - [Rotate once](#rotate-once)
 - [Switch to a login by hand](#switch-to-a-login-by-hand)
@@ -108,6 +110,66 @@ pick. Only a profile in state `ok` can be chosen; an exhausted profile, or
 one whose probe failed, never is. A probe that failed or timed out means
 the account's usage is unknown, not that it is used up: such a profile is not treated as
 exhausted and is probed again on the next cycle.
+
+## Repair profiles marked needs-login
+
+Check the consolidated list in either command:
+
+```bash
+amplihack profile usage
+amplihack profile auto-switch status
+```
+
+Both show every affected profile on one sorted line, with the time each
+continuous episode was first seen. For example:
+
+```text
+needs-login: personal (first seen 2026-11-10T03:00:00Z), spare (first seen 2026-11-10T03:01:00Z); stored login: amplihack profile login <name>; live login: claude /login
+```
+
+The rotator marks a profile `needs-login` when its OAuth token is missing,
+or its expired login definitively cannot be refreshed. It alerts once and
+excludes that profile from selection. A network failure, service error or
+busy refresh lock does not establish this state. An API-key profile is
+handled by its own rules. A live or loaned login is assessed where it is
+held; an empty home folder alone does not mean its login is missing.
+
+For an affected profile whose login is stored in its own directory, log in
+again, for example:
+
+```bash
+amplihack profile login personal
+```
+
+For the live profile, run plain `claude` using `~/.claude` (without a
+`CLAUDE_CONFIG_DIR` override), then use `/login` to sign in to that profile's
+intended account and organisation. `amplihack profile login <name>` refuses
+the live profile before starting Claude because its login is in `~/.claude`.
+If a login is on loan, or its home directory hosts another account, wait
+for the borrowing session to end and custody to be restored before logging
+in again. The usual [lease restrictions](../reference/profile-command.md#leases)
+still apply; do not replace a borrowed or hosted credential to clear the
+warning.
+
+The next existing rotation cycle detects the changed credential file and
+reassesses it. Successful authentication and trusted server-identity
+verification clear the episode; the usual profile checks still decide
+eligibility. A locally present token alone does not clear it. A temporary
+reassessment failure is retried on a later cycle. Every unsuccessful repair,
+including a changed file that is definitively still unusable, preserves the
+same episode, original first-seen timestamp, exclusion and alert suppression.
+
+Restarting the rotator preserves both the timestamp and alert suppression.
+Unchanged files are not repeatedly authenticated or probed, including when
+you run `profile usage` or `auto-switch status`. Creation, replacement,
+modification and removal of the credential file permit reassessment; a
+change alone does not restore eligibility or clear the episode. After a successful repair, a
+later failure starts a separate episode and alerts once again.
+
+If the line reads `needs-login: unknown`, resolve the reported state-file
+problem before relying on the list. Keep the state file: deleting it loses
+the episode and alert evidence. See the
+[login-health reference](../reference/profile-command.md#needs-login-profiles).
 
 ## Preview a rotation
 
@@ -800,16 +862,31 @@ has the most headroom (ties go to the name that sorts first):
 
 1. **Threshold swap.** If the live session use is at or above `--session-at`,
    or the weekly use is at or above `--week-at`, it swaps when the candidate
-   has at least `--margin` more headroom. In `watch`, a session projection
-   that reaches the threshold next cycle also triggers this decision now,
-   with `reason=projected`. A live account that could not be
-   measured counts as headroom 0, but is swapped only as described in
+   has at least `--margin` more headroom. In `watch`, a session or weekly
+   projection that reaches its threshold by the next scheduled cycle also
+   triggers this decision now, with `reason=projected`. A live account that
+   could not be measured counts as headroom 0, but is swapped only as described in
    [When the live login cannot be measured](#when-the-live-login-cannot-be-measured).
 2. **ALERT.** If a threshold swap is needed but no candidate has that margin,
    it writes one `ALERT` line and leaves `~/.claude` alone.
 3. **Upgrade.** If no threshold is reached, it swaps when the candidate has at
    least `--upgrade-margin` more headroom, unless the last swap was less than
    `--hold` seconds ago.
+
+Projection uses fresh, comparable observations from existing cycles. It
+includes the age of the latest observation and the configured interval
+after the current cycle. If the observed rate would reach 100% before the
+next cycle, rotation is requested now, subject to the same target and
+policy checks. For example, with `--interval 300`, a weekly window rising
+from 78% to 88% over 300 seconds projects to 101% when the next cycle is
+390 seconds after the latest observation. It warrants a swap even with
+`--week-at 95`.
+
+A reset at or before predicted exhaustion invalidates that prediction.
+Missing history, stale observations or incomparable windows supply no
+rate; ordinary threshold decisions still work. Projection adds no probes,
+timer or timed retries, and cannot protect against a sudden increase that
+has not yet been observed. See [Projected swap](../reference/profile-command.md#projected-swap).
 
 The hold stops flapping. Just after a swap, the account that was swapped out
 often has its session window reset and looks fresh; without the hold the next
@@ -1231,7 +1308,9 @@ The same ALERT is written to the log once. It is written again only after
 something changes: a swap succeeds, a cycle needs no swap, or the reason
 changes. The one-shot `rotate` still prints it on every run. The ALERTs for a
 [manual `/login` in `~/.claude`](#after-a-manual-login-in-claude), their `fix`
-lines, refusals caused by missing or conflicting trusted identity, the
+lines, refusals caused by missing or conflicting trusted identity (except
+the persistent [destination conflict](#recover-an-occupied-outgoing-profile)
+and [needs-login episodes](#repair-profiles-marked-needs-login)), the
 `has no login anywhere` line and the
 [exhausted-while-off](#see-who-turned-rotation-off) ALERT are the exception:
 they are written on every cycle until the problem is resolved. The log
@@ -1420,8 +1499,22 @@ times. A stay, an ALERT, a refused or failed swap, a
 [`profile switch`](#switch-to-a-login-by-hand) and an in-session auto-switch
 swap write nothing. A swap whose target reading was not a measured reading,
 or whose session or weekly figure is not a finite number, writes nothing
-either, so a missing figure is never recorded as 0%. The rotator logs
-`swap record not written: …` and the swap itself stands.
+either, so a missing figure is never recorded as 0%. A publication failure
+logs `swap event publication pending: …` and retains the completion journal
+for recovery; it does not undo committed custody.
+
+Successful duplicate recovery and candidate fallback publish the same
+event. Ownership and cycle state are committed before publication, and
+completion evidence is cleared last. Interrupted publication is recovered
+without publishing twice or advancing the sequence twice. Keep a pending
+completion journal until recovery finishes. See the
+[swap-record contract](../reference/profile-command.md#swap-record).
+
+Rotation preserves the existing event contract consumed by
+[the merged session-resumption change (#2141)](https://github.com/rysweet/amplihack-rs/pull/2141).
+After fallback, the record names the candidate that actually became live
+and the original outgoing profile. A recovery-storage name never replaces
+that outgoing profile in the event.
 
 A waiting hook resumes on a record only when all of these hold:
 
@@ -2223,18 +2316,32 @@ claim the live login. See [Rotate live profile](../reference/profile-command.md#
 
 ## Swap refused
 
-The rotator checks everything before it moves anything. If a check fails it
-moves nothing and exits with status 1:
+Each cycle records the selected candidate and explains why an attempt was
+refused, failed or could not proceed. A safe refusal before credential
+movement makes the rotator consider the next eligible candidate in the same
+cycle. It retains the measured readings and applies the same ranking,
+organisation affinity, overflow, freshness, custody, lease, busy-profile and
+manual-hold rules. It attempts each candidate at most once and completes at
+most one swap per cycle.
+
+If an attempt leaves a pending journal, recovery runs before another
+attempt. Uncertain custody stops further attempts for that cycle. Exhausting
+candidates records the outcome without disabling rotation: the next
+existing cycle reassesses them while the live login still needs rotation.
+
+An occupied outgoing destination is handled as described below. Other
+refusals still report their reason; a one-shot command that ends in refusal
+exits with status 1, for example:
 
 ```
-error: swap refused: profile work already has a login
+error: swap refused: ~/.claude and the profile root are on different devices
 hint: nothing was moved; see "Swap refused" in docs/howto/claude-profile-rotation.md
 ```
 
 | Reason | What to do |
 |--------|------------|
 | ``profile <name> has no stored login; run `amplihack profile login <name>` first`` | `profile switch <name>` found no login in that profile to move into `~/.claude`. Log it in with `amplihack profile login <name>`, then switch. |
-| `profile <name> already has a login` | The profile the live login should return to has a `.credentials.json` of its own. Decide which login to keep; log that profile in again with `amplihack profile login <name>` if needed. |
+| The outgoing profile already holds a login | Follow [Recover an occupied outgoing profile](#recover-an-occupied-outgoing-profile). Matching verified identities are recovered automatically; differing or unverifiable identities preserve both logins. |
 | `~/.claude and the profile root are on different devices` | Move the profile root onto the same filesystem as your home directory. Logins are only ever renamed, never copied. |
 | `a login file is not a private regular file with one link` | The login in `~/.claude` or in the target profile is a symlink, has more than one link, is not owned by you, or can be read by other users. Run `chmod 600` on it, or replace it with a plain file by logging in again. |
 | `HOME is not a directory owned by you`, `~/.claude is not a private directory owned by you` | Fix the ownership or mode (`chmod go-w`). |
@@ -2245,7 +2352,7 @@ hint: nothing was moved; see "Swap refused" in docs/howto/claude-profile-rotatio
 | `the login in ~/.claude is not the account recorded for profile <name>` | The live login would go back to `<name>`, but it is not the account recorded for `<name>`. Saving it there would leave `<name>` holding another account's login. See [The live login is not the profile's account](#the-live-login-is-not-the-profiles-account). |
 | `the recorded account could not be written to the .claude.json of profile <name>: <reason>` | The login in `~/.claude` is the account recorded for `<name>`, but `<root>/<name>/.claude.json` names another account and could not be updated. Moving the login there would leave the file naming the wrong account. Repair the file so it holds a JSON object, or check its ownership and mode; the next cycle writes it. |
 
-Three situations write an ALERT instead of refusing:
+These situations stop the cycle with an ALERT:
 
 - `ALERT: no login in ~/.claude; no swap`. Log in with plain `claude` first.
   The rotator never fills an empty `~/.claude`.
@@ -2260,6 +2367,58 @@ Three situations write an ALERT instead of refusing:
 - `ALERT: auto-switch recovery is inconsistent; no swap`. Run
   `amplihack profile auto-switch repair`.
 
+### Recover an occupied outgoing profile
+
+When the live login's home profile already contains a credential file, let
+the rotator verify both files through the trusted server-identity mechanism
+used by `profile verify`. Profile labels and session display data cannot
+authorise recovery.
+
+- **Matching accounts:** the rotator moves the profile-side duplicate into
+  a fresh private location beneath `<root>/.auto-switch.d/rotate/`, retains
+  its contents and writes a durable receipt identifying the origin, parked
+  location and verified ownership. Verification may read credentials; the
+  parking operation only renames the file, without reading, copying,
+  overwriting or deleting it. The normal journalled swap then completes in
+  the same cycle when its remaining checks succeed.
+- **Different accounts:** both files stay in place. One alert names both
+  verified accounts and explains the custody conflict. That attempt is
+  refused. A later eligible candidate in the same cycle can succeed by
+  reserving a distinct private recovery profile for the outgoing live
+  login. The conflicting profile credential and its recorded account stay
+  intact. The outgoing credential is moved into recovery custody with a
+  receipt linking it to its verified account and original profile. An
+  unchanged conflict alerts once across cycles and restarts; materially
+  changed account or credential evidence permits another alert.
+- **Verification fails:** both files stay in place and the refusal explains
+  the missing evidence. A different candidate is considered only after safe
+  placement has been established.
+
+Keep parked credentials, recovery profiles and their receipts. Recovery
+profiles remain discoverable through the profile store for recovery and
+future selection, subject to verification and the original profile's
+exclusions, leases, active-session, organisation and spending restrictions.
+Discovery alone does not make a recovered login eligible. Missing or
+inconsistent origin records prevent automatic selection.
+
+Use the verified rotator or explicit profile switching for recovery
+profiles. Automatic in-session borrowing skips them because its lease
+transaction does not carry credential-bound server authority.
+
+For example, if `work` is live, its stored slot holds another verified
+account and `personal` and `spare` are eligible, the first attempt can be
+refused against `personal`. Fallback can then make `spare` live, preserve
+the credential in `work` unchanged and move the outgoing `work` credential
+into private recovery custody. The cycle reuses its measured usage.
+
+An interrupted parking or custody operation is recovered from durable
+intent and observed placement before another candidate is attempted.
+Unresolved custody stops that cycle; the next explicitly invoked cycle
+reconsiders it. There is no separate retry timer. Do not clear a journal to
+make the rotator proceed. See
+[Recovery](#recovery) and the
+[duplicate-parking reference](../reference/profile-command.md#verified-duplicate-parking).
+
 ### The live login is not the profile's account
 
 Both automatic rotation and `profile switch` check the outgoing login,
@@ -2273,7 +2432,9 @@ If a required identity read fails, times out, lacks the fields needed for
 the ownership check, or conflicts with a record, the command reports an
 identity refusal and moves nothing. It also keeps the existing ledger identity. An unreadable
 duplicate candidate is uncertainty, not proof that no duplicate exists.
-Identity refusals remain visible on every affected attempt or cycle.
+Identity refusals remain visible on every affected attempt or cycle,
+except that an unchanged occupied-destination/account-pair conflict alerts
+once across cycles and restarts; every refused attempt is still recorded.
 
 For example, if `work`'s login is live while a running session writes
 `personal` into `~/.claude.json`, a switch to `spare` still succeeds when
@@ -2348,8 +2509,11 @@ a session's email-only `oauthAccount` neither satisfies nor invalidates it.
 
 ## Recovery
 
-A swap is two renames and an update to `~/.claude.json`, recorded in a
-journal before the first rename. If the rotator is killed part-way, the next
+A normal swap is two renames and an update to `~/.claude.json`. A version 2
+journal records intent before credential movement, including duplicate
+parking or reservation of an outgoing recovery profile. Version 1 journals
+retain their original recovery rules.
+If the rotator is killed part-way, the next
 `rotate`, `start` or cycle attempts recovery before doing anything else.
 The recorded inode placement determines whether to finish or undo the
 swap; the last recorded step is only a hint. Before further login movement
@@ -2383,13 +2547,26 @@ error: rotate state is inconsistent: the login files are not where the journal e
 hint: see the Recovery section of docs/howto/claude-profile-rotation.md
 ```
 
-Later runs report `an earlier swap stopped half way` in place of the first
-reason.
+Each later explicit cycle rechecks a version 2 transaction using observed
+placement and fresh authority. Once its obstruction is safely repaired,
+recovery can finish without deleting the journal. An unresolved transaction
+still stops the cycle. Legacy version 1 journals remain sticky and report
+`an earlier swap stopped half way` until their documented repair completes.
 
-To resolve it by hand, without opening any credentials file:
+Every version 2 custody journal, including duplicate-parking, outgoing
+recovery-custody, reservation and pending swap-event evidence, must be
+recovered by a binary that understands it. Keep the journal,
+parked files, recovery profiles and receipts together. Recovery checks intent even
+when the recorded phase precedes the exchange, and completes any pending
+automatic swap publication before clearing the journal. Do not use the
+legacy procedure below for these transactions.
+
+For a legacy version 1 two-file swap journal with no parking or publication evidence,
+resolve it by hand without opening any credentials file:
 
 1. Stop the background process: `amplihack profile rotate stop`.
-2. Read the journal, which holds only profile names, phases and inode numbers:
+2. Read the journal, which holds sanitised ownership and placement evidence,
+   never tokens or credential contents:
    ```bash
    cat ~/.claude-profiles/.auto-switch.d/rotate/journal.json
    ```
@@ -2409,9 +2586,8 @@ To resolve it by hand, without opening any credentials file:
    ```bash
    ls -di ~/.claude/.oauth_refresh.lock
    ```
-   If they match, remove it with `rmdir`. If the journal has no inode for a
-   lock that exists, and no `claude` is running, it was left by the rotator
-   and can also be removed.
+   If they match, remove it with `rmdir`. Leave any lock without matching
+   recorded evidence in place.
 6. Delete `journal.json`, then run `amplihack profile rotate --dry-run` and
    check that it reports no pending journal.
 7. Start the background process again: `amplihack profile rotate start`.
@@ -2774,6 +2950,13 @@ would note: ~/.claude holds the same account as profile ryan-mistt-org (ledger n
 
 ### Go back to an older amplihack
 
+First finish recovery with the current binary for every version 2 custody
+journal, including duplicate parking, outgoing recovery custody,
+reservations and pending automatic swap publication. Older readers
+deliberately refuse these journals. Keep the journal, receipts, parked
+credentials and recovery profiles together; do not delete them to bypass
+that refusal. The steps below apply only after recovery has completed.
+
 An amplihack older than
 [#1659](https://github.com/rysweet/amplihack-rs/issues/1659) cannot read the
 `last_cycle.measured_at` field this version writes to `ledger.json`. Its
@@ -2792,8 +2975,9 @@ is on:
 
 The ledger holds only bookkeeping, and the next cycle rebuilds it. Deleting
 it also clears the swap hold, so the first cycle may make an upgrade swap
-sooner than it otherwise would. The same steps recover an older rotator that
-is already running and logging failures.
+sooner than it otherwise would. If an older rotator is already running and
+logging failures, finish any pending recovery with the current binary before
+following the same steps.
 
 If you cannot tell which login belongs where, log each affected profile in
 again with `amplihack profile login <name>`.
@@ -3186,3 +3370,11 @@ full rule is in
   it can answer `get_usage` with figures it stored earlier, without marking
   them as old; compare with `AMPLIHACK_PROFILE_USAGE_PROBE=text` as in
   [Compare the two probe methods](claude-profiles.md#compare-the-two-probe-methods).
+
+Explicit switches without verified duplicate recovery can still refuse an occupied
+outgoing slot (`already has a login`):
+
+```text
+error: swap refused: profile work already has a login
+hint: nothing was moved; see "Swap refused" in docs/howto/claude-profile-rotation.md
+```

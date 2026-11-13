@@ -141,6 +141,9 @@ impl Fixture {
             "profile add {name}: {}",
             String::from_utf8_lossy(&out.stderr)
         );
+        let credential = self.root.join(name).join(".credentials.json");
+        fs::write(&credential, r#"{"claudeAiOauth":{"accessToken":"synthetic-sandbox","expiresAt":9223372036854775807}}"#).unwrap();
+        fs::set_permissions(&credential, fs::Permissions::from_mode(0o600)).unwrap();
         let link = self.root.join(name).join("projects");
         assert!(
             fs::symlink_metadata(&link).is_ok_and(|m| m.file_type().is_symlink()),

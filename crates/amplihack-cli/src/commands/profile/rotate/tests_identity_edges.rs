@@ -59,12 +59,16 @@ fn invalidated_completion_reports_a_pending_transaction_instead_of_no_movement()
     let incoming = reader.bound(&e.root.join("spare"), false).unwrap();
     e.exchanged();
     let incoming = incoming.moved_to(&e.home.join(".claude")).unwrap();
-    let journal = e.journal(Phase::S1);
+    let mut journal = e.journal(Phase::S1);
     e.rs.save_journal(&journal).unwrap();
     credential(&e.live(), "work");
-    let error =
-        crate::commands::profile::rotate::swap_finish::finish(&e.rs, &e.home, &journal, &incoming)
-            .unwrap_err();
+    let error = crate::commands::profile::rotate::swap_finish::finish(
+        &e.rs,
+        &e.home,
+        &mut journal,
+        &incoming,
+    )
+    .unwrap_err();
     assert!(
         matches!(error, ProfileError::RotateInconsistent(_)),
         "{error}"

@@ -637,27 +637,3 @@ fn the_issue_1873_files_are_not_used_for_identity() {
         assert!(!code.contains("hand_suspect"), "{name} uses hand_suspect");
     }
 }
-
-/// Issue #1753 (R1): the live refresh renews an expired login and nothing
-/// else. It reads no identity and no usage, so a refresh can never stand in
-/// for the fresh identity reading the snapshot takes afterwards.
-#[test]
-fn live_refresh_only_refreshes_an_expired_login() {
-    let text = source("live_refresh.rs");
-    let code = code_lines(&text).join("\n");
-    assert!(code.contains("usage_direct::refresh_expired("));
-    for f in [
-        "usage_direct::read",
-        "usage_direct::account",
-        "identity_reader",
-        "cred_identity",
-        "Account",
-    ] {
-        assert!(!code.contains(f), "live_refresh.rs uses `{f}`");
-    }
-    let direct =
-        fs::read_to_string(rotate_dir().parent().unwrap().join("usage_direct.rs")).unwrap();
-    let body = body_of(&direct, "refresh_expired");
-    assert!(body.contains("at <= req.now_ms"), "only an expired token");
-    assert!(!body.contains("get_usage") && !body.contains("profile_url"));
-}

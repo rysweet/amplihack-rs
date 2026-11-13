@@ -51,6 +51,19 @@ pub struct ProfileStore {
 }
 
 impl ProfileStore {
+    /// Exclusive private reservation without seeding assets or opening credentials.
+    #[cfg(unix)]
+    pub(in crate::commands::profile) fn reserve_recovery(
+        &self,
+        name: &ProfileName,
+    ) -> Result<PathBuf, ProfileError> {
+        use std::os::unix::fs::DirBuilderExt;
+        self.check_root_not_symlink()?;
+        let dir = self.root.join(name.as_str());
+        fs::DirBuilder::new().mode(0o700).create(&dir)?;
+        super::auto_switch::kit::fsync_dir(&self.root)?;
+        Ok(dir)
+    }
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,

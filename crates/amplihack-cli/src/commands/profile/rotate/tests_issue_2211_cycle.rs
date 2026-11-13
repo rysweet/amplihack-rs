@@ -78,11 +78,19 @@ macro_rules! lane {
             /// Whether the context was read-only during the last re-read.
             pub static READ_ONLY: AtomicBool = AtomicBool::new(false);
             /// When the live probe's session window resets, epoch seconds;
-            /// 0 for a probe that gives no reset time.
+            /// 0 initialises a shared synthetic window on the first read.
             pub static RESET: AtomicI64 = AtomicI64::new(0);
 
             pub fn clock() -> i64 {
                 CLOCK.load(Ordering::SeqCst)
+            }
+
+            fn reset() -> i64 {
+                let first = clock() + 18_000;
+                match RESET.compare_exchange(0, first, Ordering::SeqCst, Ordering::SeqCst) {
+                    Ok(_) => first,
+                    Err(at) => at,
+                }
             }
 
             pub fn measure(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
@@ -103,7 +111,7 @@ macro_rules! lane {
                     }
                     Live::Failed => Probed::failed(),
                 };
-                let live = super::in_window(live, RESET.load(Ordering::SeqCst));
+                let live = super::in_window(live, reset());
                 let table = OTHERS.lock().unwrap().clone();
                 let probes = probes_for(snap, &table);
                 let decided = decide_measured(ctx, snap, live, probes, at);
@@ -117,11 +125,16 @@ macro_rules! lane {
                 calls.push(name.to_string());
                 let nth = calls.len() - 1;
                 let queue = REREAD.lock().unwrap();
-                queue
+                let probe = queue
                     .get(nth)
                     .or(queue.last())
                     .cloned()
-                    .unwrap_or_else(Probed::failed)
+                    .unwrap_or_else(Probed::failed);
+                if probe.windows.session.is_some_and(|w| w.resets_at.is_some()) {
+                    probe
+                } else {
+                    super::in_window(probe, reset())
+                }
             }
 
             pub fn calls() -> Vec<String> {

@@ -28,6 +28,8 @@ pub enum Skip {
     /// A subscription profile whose login file has no OAuth login or is
     /// unreadable: moved into `~/.claude` it would bill the API key.
     NotOAuth,
+    NeedsLogin,
+    CustodyUnknown,
 }
 
 impl Skip {
@@ -43,6 +45,8 @@ impl Skip {
             Self::Parked => "parked",
             Self::NoAccount => "no account",
             Self::NotOAuth => "not oauth",
+            Self::NeedsLogin => "needs-login",
+            Self::CustodyUnknown => "recovery provenance unavailable",
         }
     }
 }
@@ -102,6 +106,34 @@ pub fn candidates(
     let kinds = kind::Ctx::load(store, None);
     for name in names.iter().filter_map(|n| ProfileName::parse(n).ok()) {
         let n = name.as_str();
+        let origin = match super::custody::origin(store, &name) {
+            Ok(origin) => origin,
+            Err(_) => {
+                skips.push((name, Skip::CustodyUnknown));
+                continue;
+            }
+        };
+        if let Some(origin) = &origin {
+            let blocked = if input.exclude.contains(origin) {
+                Some(Skip::Excluded)
+            } else if input.live == Some(origin) || input.liveness.is_live(origin) {
+                Some(Skip::SessionRunning)
+            } else if input.auto_switch.leased_to(origin.as_str()).is_some() {
+                Some(Skip::Leased)
+            } else if input.auto_switch.hosts.contains_key(origin.as_str()) {
+                Some(Skip::Hosting)
+            } else if exists(&parked.join(origin.as_str())) {
+                Some(Skip::Parked)
+            } else if store.verify_profile_dir(origin).is_err() {
+                Some(Skip::Refused)
+            } else {
+                None
+            };
+            if let Some(skip) = blocked {
+                skips.push((name, skip));
+                continue;
+            }
+        }
         let dir = store.verify_profile_dir(&name).ok();
         let resolved = std::cell::OnceCell::new();
         let resolved = || resolved.get_or_init(|| kinds.resolve_kind(store, &name));
@@ -115,6 +147,8 @@ pub fn candidates(
             } else {
                 Skip::Refused
             })
+        } else if super::login_state::suppressed(store.root(), &name)? {
+            Some(Skip::NeedsLogin)
         } else if let Some(s) = login_skip(dir.as_deref(), resolved) {
             Some(s)
         } else if input.exclude.contains(&name) {
@@ -142,7 +176,7 @@ pub fn candidates(
 pub fn refused_dirs(skips: &[(ProfileName, Skip)]) -> Vec<ProfileName> {
     skips
         .iter()
-        .filter(|(_, s)| *s == Skip::Refused)
+        .filter(|(_, s)| matches!(s, Skip::Refused | Skip::CustodyUnknown))
         .map(|(n, _)| n.clone())
         .collect()
 }

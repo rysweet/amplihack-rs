@@ -42,6 +42,8 @@ pub enum Proof<'a> {
     Live,
     /// Recovery retains the complete original authorization, when available.
     Recovery(Option<&'a SwapIdentity>),
+    Duplicate(&'a super::duplicate::DuplicateProof),
+    Conflict(&'a super::duplicate::ConflictProof),
 }
 
 /// Keep the final authorization tied to the accounts the accepted snapshot
@@ -91,6 +93,7 @@ pub struct Authorized {
     pub pending: Pending,
     records: Vec<(ProfileName, Option<Record>)>,
     claims: Vec<Claims>,
+    occupied: Option<Bound>,
 }
 
 impl Authorized {
@@ -105,6 +108,7 @@ impl Authorized {
         };
         self.outgoing.current()
             && self.incoming.current()
+            && self.occupied.as_ref().is_none_or(Bound::current)
             && self
                 .records
                 .iter()
@@ -145,6 +149,8 @@ pub fn authorize(
             && crate::commands::profile::auto_switch::kit::exists(
                 &dir.join(crate::commands::profile::auto_switch::kit::CREDS),
             )
+            && !matches!(proof, Proof::Duplicate(p) if p.permits(&dir))
+            && !matches!(proof, Proof::Conflict(p) if p.permits(&dir))
         {
             return Err(refused(UNAVAILABLE));
         }
@@ -156,6 +162,9 @@ pub fn authorize(
     let incoming = reader
         .bound(incoming_dir, platform_in)
         .map_err(read_refused)?;
+    if let Some(origin) = super::custody::origin(store, to)? {
+        check_record(store, &origin, incoming.account())?;
+    }
     if let Proof::Recovery(Some(prior)) = proof
         && !prior.names(outgoing.account(), incoming.account())
     {
@@ -256,6 +265,10 @@ pub fn authorize(
         pending,
         records,
         claims,
+        occupied: match proof {
+            Proof::Conflict(p) => Some(p.occupied().clone()),
+            _ => None,
+        },
     };
     if !auth.current(store) {
         return Err(refused(UNAVAILABLE));

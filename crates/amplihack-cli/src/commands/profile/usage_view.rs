@@ -222,6 +222,13 @@ enum Middle {
 }
 
 fn middle(row: &Row, time: &TimeView, colour: bool) -> Middle {
+    if row.source == Some(super::usage_source::Source::Direct)
+        && row.report.state == UsageState::NotLoggedIn
+        && row.error.is_none()
+        && let Some(reason) = row.direct_failure
+    {
+        return Middle::Span(format!("not signed in ({reason})"));
+    }
     if row.is_excluded() {
         return Middle::Span(EXCLUDED_CELL.to_string());
     }

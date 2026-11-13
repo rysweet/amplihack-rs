@@ -22,15 +22,20 @@
 //!   pin and the default pointer together under the rotate lock;
 //!   `Released { pin, default }` says which were there.
 
+#[cfg(target_os = "linux")]
 use super::Released;
 use super::cycle::Ctx;
 use super::ledger::{Phase, RotateLedger};
 use super::observe::snapshot;
-use super::pin::{self, Gate, PinState};
+#[cfg(target_os = "linux")]
+use super::pin::Gate;
 use super::settings;
 use super::swap::{DOCUMENTED, Source, swap};
 use super::switch::{Switched, release, switch_live};
-use super::tests_swap::{CREDS, Env, LOCK, NOW, env, hold_state_lock, ino_at, json, login, n};
+#[cfg(target_os = "linux")]
+use super::tests_swap::json;
+use super::tests_swap::{CREDS, Env, LOCK, NOW, env, hold_state_lock, ino_at, login, n};
+use super::{pin, pin::PinState};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::State;
 use crate::commands::profile::name::ProfileName;
@@ -379,10 +384,10 @@ fn a_hand_changed_login_is_refused_without_an_alert() {
 }
 
 #[test]
-fn no_login_in_home_is_refused() {
+fn a_missing_live_login_is_refused_with_needs_login_guidance() {
     let e = env();
     fs::remove_file(e.live()).unwrap();
-    assert_refused(&e, "spare", "no login in ~/.claude");
+    assert_refused(&e, "spare", "needs-login: work");
 }
 
 #[test]

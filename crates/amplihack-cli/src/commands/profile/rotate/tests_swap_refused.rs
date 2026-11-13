@@ -6,6 +6,7 @@ use super::ledger::Phase;
 use super::swap::{Source, swap};
 use super::tests_swap::{LOCK, NOW, env, ino, ino_at, login, n};
 use crate::commands::profile::ProfileError;
+#[cfg(target_os = "linux")]
 use crate::commands::profile::auto_switch::euid;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -137,7 +138,7 @@ fn a_refused_adopting_swap_leaves_no_empty_profile() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn a_failed_move_to_the_source_releases_the_locks() {
+fn a_failed_move_to_the_source_retains_owned_locks_until_recovery() {
     let e = env();
     // The source profile cannot be written, so the second rename fails
     // after the exchange.
@@ -152,21 +153,18 @@ fn a_failed_move_to_the_source_releases_the_locks() {
         "{r:?}"
     );
     assert!(
-        !e.home.join(".claude").join(LOCK).exists(),
-        "home lock released"
+        e.home.join(".claude").join(LOCK).exists(),
+        "home lock protects uncertain custody"
     );
     assert!(
-        !e.root.join("spare").join(LOCK).exists(),
-        "target lock released"
+        e.root.join("spare").join(LOCK).exists(),
+        "target lock protects uncertain custody"
     );
     assert_eq!(ino_at(&e.live()), Some(e.t), "the incoming login is live");
     let j = e.rs.load_journal().unwrap().unwrap();
     assert_eq!(j.phase, Phase::S1, "recovery finishes the swap later");
-    assert_eq!(
-        (j.home_lock_ino, j.to_lock_ino),
-        (None, None),
-        "released locks are forgotten, so recovery never releases them again"
-    );
+    assert_eq!(j.home_lock_ino, ino_at(&e.home.join(".claude").join(LOCK)));
+    assert_eq!(j.to_lock_ino, ino_at(&e.root.join("spare").join(LOCK)));
 }
 
 #[test]

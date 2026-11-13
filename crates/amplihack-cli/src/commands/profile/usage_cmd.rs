@@ -200,6 +200,14 @@ impl Probe {
         p
     }
 
+    /// A persisted authentication episode is actionable status, not a probe error.
+    pub(super) fn needs_login(why: &'static str) -> Self {
+        let mut p = Self::read(UsageReport::empty(UsageState::NotLoggedIn), Source::Direct);
+        p.direct_failure = Some(why);
+        p.spend = Spend::Unknown;
+        p
+    }
+
     /// A direct read that failed in a mode that starts no `claude`.
     pub(super) fn direct_error(why: &'static str) -> Self {
         let mut p = Self::failed(ErrorReason::Direct(why), None);
@@ -346,6 +354,16 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
         return refusal_result(&refused);
     }
     let home = home_dir();
+    #[cfg(unix)]
+    {
+        if let Some(home) = &home
+            && !matches!(mode, ProbeMode::Auto | ProbeMode::Text)
+            && let Err(e) = super::rotate::login_state::assess_usage(store, home)
+        {
+            eprintln!("{e}");
+        }
+        eprintln!("{}", super::rotate::login_state::line(store.root()));
+    }
     let live = detect_live(store, home.as_deref(), &profiles);
     // Issue #2218: when `~/.claude` holds an excluded profile's login, by
     // the rotator's local proof, no other profile is read against it.
@@ -1194,6 +1212,16 @@ impl RowReader {
     pub(super) fn profile(&self, name: &ProfileName, live: bool) -> Probe {
         if self.is_excluded(name) {
             return Probe::excluded();
+        }
+        #[cfg(unix)]
+        {
+            if (!live || self.home.is_some())
+                && let Some(reason) = super::rotate::login_state::suppressed_reason(self.store.root(), name).unwrap_or(Some("needs-login"))
+                // On other platforms a missing file may be a Keychain login.
+                && (cfg!(target_os = "linux") || reason != super::usage_direct::reason::NO_FILE)
+            {
+                return Probe::needs_login(reason);
+            }
         }
         let claude = |m: ProbeMode| {
             usage_source::fallback_with(&self.binary, |bin| {
@@ -2045,6 +2073,12 @@ pub(super) fn render_table(rows: &[Row]) -> String {
                     EXCLUDED_CELL.to_string()
                 } else if r.api_key {
                     API_KEY_CELL.to_string()
+                } else if r.source == Some(Source::Direct)
+                    && r.report.state == UsageState::NotLoggedIn
+                    && r.error.is_none()
+                    && let Some(reason) = r.direct_failure
+                {
+                    format!("not signed in ({reason})")
                 } else if no_session_limit(r) {
                     NO_SESSION_LIMIT_CELL.to_string()
                 } else {

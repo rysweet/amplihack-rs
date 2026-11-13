@@ -10,6 +10,9 @@ use std::io::{self, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
+#[path = "log_alert.rs"]
+mod alert_delivery;
+
 pub const MAX_LOG: u64 = 1024 * 1024;
 
 /// UTC time in the log's format.
@@ -277,7 +280,6 @@ pub mod msg {
     /// identity was read.
     pub const LIVE_REFRESHED: &str =
         "refresh: expired login in ~/.claude refreshed; identity read again";
-    pub const LIVE_REFRESH_FAILED: &str = "refresh: expired login in ~/.claude not refreshed";
     /// Issue #2218: the lines about an excluded live or pinned profile.
     pub use super::shown::excluded::*;
     pub const CHANGED: &str = "skip: state changed during measurement";

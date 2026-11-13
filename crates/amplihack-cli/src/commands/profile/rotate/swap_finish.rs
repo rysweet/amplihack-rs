@@ -15,10 +15,9 @@ use std::path::Path;
 pub(super) fn finish(
     rs: &RotateState,
     home: &Path,
-    j: &RotateJournal,
+    j: &mut RotateJournal,
     incoming: &super::login_identity::Bound,
 ) -> Result<(), ProfileError> {
-    let mut j = j.clone();
     if !incoming.current() {
         return Err(ProfileError::RotateInconsistent(
             super::login_identity::UNAVAILABLE.into(),
@@ -26,7 +25,7 @@ pub(super) fn finish(
     }
     let block = incoming.account().map(Account::block);
     patch_home_account(home, block.as_ref())?;
-    step(rs, &mut j, Phase::S3)?;
+    step(rs, j, Phase::S3)?;
     let mut l = rs.load_ledger()?.unwrap_or_default();
     l.live = Some(j.to.clone());
     l.previous = Some(j.from.clone());
@@ -40,7 +39,7 @@ pub(super) fn finish(
     l.swapped_at = Some(j.started_at);
     super::alert::clear_alert(&mut l);
     rs.save_ledger(&l)?;
-    step(rs, &mut j, Phase::S4)?;
+    step(rs, j, Phase::S4)?;
     Ok(())
 }
 
@@ -58,8 +57,9 @@ fn patch_home_account(home: &Path, block: Option<&serde_json::Value>) -> Result<
         // `swap` refuses this before J0; only a file damaged since then,
         // during recovery, gets here.
         None => {
-            eprintln!("warning: {HOME_JSON_UNREADABLE}; its account was not updated");
-            return Ok(());
+            return Err(ProfileError::RotateInconsistent(format!(
+                "{HOME_JSON_UNREADABLE}; ownership display update pending"
+            )));
         }
     };
     if v.get("oauthAccount") == Some(block) {
@@ -74,10 +74,27 @@ fn patch_home_account(home: &Path, block: Option<&serde_json::Value>) -> Result<
 /// but the copied `oauthAccount` block is in it.
 pub(super) fn remove_unused_adoption(store: &ProfileStore, j: &RotateJournal) {
     let dir = store.root().join(&j.from);
-    if j.adopt
-        && !exists(&dir.join(CREDS))
-        && let Err(e) = fs::remove_dir_all(&dir)
-    {
-        eprintln!("warning: unused profile {} was not removed: {e}", j.from);
+    if j.adopt && !exists(&dir.join(CREDS)) {
+        // Legacy journals recorded no directory binding. Never recursively
+        // remove files another writer may have added to an adopted profile.
+        match fs::read_dir(&dir) {
+            Ok(mut entries) => {
+                if entries.next().is_none() && j.version == 1 {
+                    if let Err(e) = fs::remove_dir(&dir) {
+                        eprintln!("warning: unused profile {} was not removed: {e}", j.from);
+                    }
+                } else {
+                    eprintln!(
+                        "warning: unused adoption {} retained; directory ownership is not journalled",
+                        j.from
+                    );
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => eprintln!(
+                "warning: unused adoption {} could not be inspected: {e}",
+                j.from
+            ),
+        }
     }
 }

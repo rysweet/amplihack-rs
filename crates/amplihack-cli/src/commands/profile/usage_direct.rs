@@ -744,6 +744,50 @@ pub(super) fn expired(creds_dir: &Path, now_ms: i64) -> bool {
     load(creds_dir).is_ok_and(|c| c.expires_at_ms.is_some_and(|at| at <= now_ms))
 }
 
+/// Authentication evidence is classified before any human-readable message.
+pub(super) enum Authentication {
+    Usable { refreshed: bool },
+    NeedsLogin(&'static str),
+    Uncertain(&'static str),
+}
+
+pub(super) fn assess_authentication(ep: &Endpoints, req: &Request<'_>) -> Authentication {
+    let creds = match load(req.creds_dir) {
+        Ok(c) => c,
+        Err(cause @ (reason::NO_FILE | reason::NO_TOKEN)) => {
+            return Authentication::NeedsLogin(cause);
+        }
+        Err(cause) => return Authentication::Uncertain(cause),
+    };
+    if !creds.expires_at_ms.is_some_and(|at| at <= req.now_ms) {
+        return Authentication::Usable { refreshed: false };
+    }
+    if creds.refresh.is_none() {
+        return Authentication::NeedsLogin("no refresh token");
+    }
+    if !req.allow_refresh || !ep.usable() {
+        return Authentication::Uncertain(reason::REFRESH_REFUSED);
+    }
+    let definitive = std::cell::Cell::new(false);
+    match refresh_evidence(
+        ep,
+        req,
+        &creds.access,
+        Deadline::after(req.timeout),
+        &definitive,
+    ) {
+        Ok(_)
+            if load(req.creds_dir)
+                .is_ok_and(|c| !c.expires_at_ms.is_some_and(|at| at <= req.now_ms)) =>
+        {
+            Authentication::Usable { refreshed: true }
+        }
+        Ok(_) => Authentication::Uncertain(reason::EXPIRED),
+        Err(_) if definitive.get() => Authentication::NeedsLogin(reason::REFRESH_FAILED),
+        Err(cause) => Authentication::Uncertain(cause),
+    }
+}
+
 /// The agent for the `GET`s. Its DNS lookups end at the read's deadline.
 fn agent(ep: &Endpoints, timeout: Duration, deadline: Deadline) -> ureq::Agent {
     let step = MAX_STEP
@@ -894,6 +938,16 @@ fn refresh(
     used: &Token,
     deadline: Deadline,
 ) -> Result<Token, &'static str> {
+    refresh_evidence(ep, req, used, deadline, &std::cell::Cell::new(false))
+}
+
+fn refresh_evidence(
+    ep: &Endpoints,
+    req: &Request<'_>,
+    used: &Token,
+    deadline: Deadline,
+    definitive: &std::cell::Cell<bool>,
+) -> Result<Token, &'static str> {
     if !dir_private(req.creds_dir) {
         return Err(reason::REFRESH_REFUSED);
     }
@@ -914,6 +968,7 @@ fn refresh(
         return Ok(current.access);
     }
     let Some(old_refresh) = current.refresh.as_ref() else {
+        definitive.set(true);
         return Err(reason::REFRESH_FAILED);
     };
     // SR-10: a refresh can retire the old refresh token, so it is sent only
@@ -962,9 +1017,19 @@ fn refresh(
     // `refresh not saved`, which tells the user to log in again; only a
     // failure that provably came before the request was written, or a 3xx or
     // 4xx status the server turned it away with, is `refresh failed`.
-    let resp = post
-        .send_string(&payload.to_string())
-        .map_err(|e| post_failure(&e))?;
+    let resp = post.send_string(&payload.to_string()).map_err(|e| {
+        // Only an explicit OAuth invalid_grant establishes rejection.
+        // Transport, rate limits and server failures remain uncertain.
+        let reason = post_failure(&e);
+        if let HttpError::Status(400 | 401 | 403, response) = e
+            && let Ok(raw) = body(response)
+            && let Ok(v) = serde_json::from_slice::<Value>(&raw)
+            && v.get("error").and_then(Value::as_str) == Some("invalid_grant")
+        {
+            definitive.set(true);
+        }
+        reason
+    })?;
     if resp.status() != 200 {
         return Err(refresh_status(resp.status()));
     }

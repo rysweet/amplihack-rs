@@ -73,6 +73,13 @@ fn journal() -> RotateJournal {
         started_at: 1,
         pid: 2,
         identity: None,
+        from_lock_ino: None,
+        parking: None,
+        completion: None,
+        outgoing: None,
+        outgoing_lock_ino: None,
+        from_directory: None,
+        movement_directories: None,
     }
 }
 

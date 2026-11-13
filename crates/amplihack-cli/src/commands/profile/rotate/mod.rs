@@ -21,7 +21,11 @@ mod control;
 #[cfg(unix)]
 pub(super) mod cred_identity;
 #[cfg(unix)]
+pub(super) mod custody;
+#[cfg(unix)]
 mod cycle;
+#[cfg(unix)]
+mod cycle_attempts;
 #[cfg(unix)]
 pub(super) mod daemon;
 #[cfg(unix)]
@@ -30,6 +34,8 @@ mod damp;
 pub(super) mod decide;
 #[cfg(unix)]
 mod dry_run;
+#[cfg(unix)]
+mod duplicate;
 #[cfg(unix)]
 mod exhausted;
 #[cfg(unix)]
@@ -69,6 +75,8 @@ mod log;
 #[cfg(unix)]
 mod login_identity;
 #[cfg(unix)]
+pub(super) mod login_state;
+#[cfg(unix)]
 mod lost;
 #[cfg(unix)]
 mod measure;
@@ -107,6 +115,8 @@ mod settings;
 #[cfg(unix)]
 mod spend_blocks;
 #[cfg(unix)]
+mod spending;
+#[cfg(unix)]
 mod swap;
 #[cfg(unix)]
 mod swap_authorize;
@@ -122,14 +132,14 @@ mod swap_finish;
 mod swap_record;
 #[cfg(unix)]
 mod switch;
-#[cfg(all(test, unix))]
-pub(super) use swap::DOCUMENTED as DOCUMENTED_REFUSALS;
-
+#[cfg(unix)]
+mod verified_dirs;
 pub use super::rotate_args::{RotateAction, RotateArgs, TuneFlags};
 pub use candidates::login_unusable;
 pub use overflow_msg::{CheckNote, alert_key_held_session, per_token_off_key, per_token_reason};
 pub use overflow_record::append_to_log;
-
+#[cfg(all(test, unix))]
+pub(super) use swap::DOCUMENTED as DOCUMENTED_REFUSALS;
 #[cfg(all(test, unix))]
 mod tests;
 #[cfg(all(test, unix))]
@@ -138,19 +148,21 @@ mod tests_autostart;
 mod tests_daemon;
 #[cfg(all(test, unix))]
 mod tests_handfix;
-#[cfg(all(test, unix))]
+// These cycle suites already gate every test on Linux; their fixtures belong
+// under the same gate. Mixed-platform suites below keep their portable tests.
+#[cfg(all(test, target_os = "linux"))]
 mod tests_handfix_cycle;
-#[cfg(all(test, unix))]
+#[cfg(all(test, target_os = "linux"))]
 mod tests_handfix_overflow;
-#[cfg(all(test, unix))]
+#[cfg(all(test, target_os = "linux"))]
 mod tests_home_unreadable;
 #[cfg(all(test, unix))]
 mod tests_identify;
 #[cfg(all(test, unix))]
 mod tests_issue_1804;
-#[cfg(all(test, unix))]
+#[cfg(all(test, target_os = "linux"))]
 mod tests_issue_1804_cycle;
-#[cfg(all(test, unix))]
+#[cfg(all(test, target_os = "linux"))]
 mod tests_issue_1845_cycle;
 #[cfg(all(test, unix))]
 mod tests_issue_1845_swap;
@@ -176,7 +188,7 @@ mod tests_pin;
 mod tests_pin_overflow;
 #[cfg(all(test, unix))]
 mod tests_recover;
-#[cfg(all(test, unix))]
+#[cfg(all(test, target_os = "linux"))]
 mod tests_revalidate;
 #[cfg(all(test, unix))]
 mod tests_revalidate_cause;
@@ -198,32 +210,24 @@ mod tests_switch_candidates;
 mod tests_switch_hold;
 #[cfg(all(test, unix))]
 mod tests_switch_race;
-use super::{name::ProfileName, root_config::RootSource, store::ProfileStore};
-
-// Issue #1797: `Probes` is what the usage history records from a cycle.
 #[cfg(unix)]
 pub(super) use self::{autostart::autostart_line, identify::excluded_offline::*};
 #[cfg(unix)]
 pub(super) use self::{identify::is_live, observe::Probes, platform_block::platform_live_line};
-#[cfg(unix)]
-pub(crate) use {autostart::autostart_on_launch, older_readers::warn_foreign_rotator};
-#[cfg(unix)]
-pub(super) use {control::clear_overflow_block, control::overflow_blocks, log::timestamp};
-
+use super::{name::ProfileName, root_config::RootSource, store::ProfileStore};
 #[cfg(all(test, unix))]
 pub(super) use gate_record::effective_at as overflow_gate_at;
 #[cfg(unix)]
 pub(super) use gate_record::{GateSource, effective as overflow_gate, line as overflow_gate_line};
-
-/// The tail of the warning after `profile switch NAME` (#1691) while a rotator
-/// of another amplihack binary, which ignores the switch hold, runs.
+#[cfg(unix)]
+pub(crate) use {autostart::autostart_on_launch, older_readers::warn_foreign_rotator};
+#[cfg(unix)]
+pub(super) use {control::clear_overflow_block, control::overflow_blocks, log::timestamp};
+/// Warn when another binary's rotator ignores the switch hold (#1691).
 #[cfg(unix)]
 const FOREIGN_IGNORES_HOLD: &str = "runs another amplihack binary and ignores the switch \
     hold; restart it: amplihack profile rotate stop && amplihack profile rotate start";
-
-/// The switch-hold warning for the rotator of `rs`, judged against
-/// `proc_root` and this process's executable `exe`; `None` when no rotator
-/// runs or it runs this binary.
+/// Switch-hold warning, comparing the running rotator with this executable.
 #[cfg(unix)]
 fn foreign_note_for(
     rs: &ledger::RotateState,
@@ -235,9 +239,7 @@ fn foreign_note_for(
     })
 }
 
-/// After a successful `profile switch NAME`: one line on stderr when the
-/// running rotator would ignore the hold. The switch itself succeeded, so
-/// this never changes the exit code.
+/// Warn after a successful switch when the running rotator ignores the hold.
 #[cfg(unix)]
 fn warn_switch_hold(root: &std::path::Path) {
     let exe = std::env::current_exe().ok();
@@ -377,9 +379,7 @@ pub struct Released {
     pub default: bool,
 }
 
-/// `profile switch --none`: removes the rotation pin and the default
-/// pointer as one operation under the rotate lock; what was there. Off Unix
-/// there is no rotator and so no pin, and only the pointer is removed.
+/// Removes the rotation pin and default pointer under the rotate lock.
 pub(in crate::commands::profile) fn release(
     store: &ProfileStore,
 ) -> Result<Released, super::ProfileError> {
