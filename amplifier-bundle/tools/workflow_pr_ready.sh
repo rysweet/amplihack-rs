@@ -189,7 +189,6 @@ if ! EXPECTED_BASE="$(resolve_expected_base_branch "$repo_identity" "$current_br
   echo "ERROR: unable to resolve expected base branch for scoped PR validation" >&2
   exit 1
 fi
-expected_base="$EXPECTED_BASE"
 
 scoped_issue_id="${RECIPE_VAR_issue_number:-}"
 # issue_number can carry a non-numeric local tracking reference (e.g.
@@ -200,7 +199,7 @@ case "$scoped_issue_id" in ''|*[!0-9]*) scoped_issue_id="" ;; esac
 scope_args=(
   --repo "$repo_identity"
   --head "$current_branch"
-  --base "$expected_base"
+  --base "$EXPECTED_BASE"
   --issue "$scoped_issue_id"
   --work-item "$scoped_issue_id"
   --head-sha "$local_head"

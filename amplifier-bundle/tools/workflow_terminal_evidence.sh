@@ -147,13 +147,8 @@ resolve_base_ref() {
       printf '%s\n' "$candidate"; return 0
     fi
   fi
-  candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-  if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null 2>&1; then
-    printf 'WARNING: workflow_terminal_evidence.sh: the base of the run'"'"'s pull request was not resolved; evidence uses %q\n' "$candidate" >&2
-    printf '%s\n' "${candidate#origin/}"; return 0
-  fi
-  for candidate in origin/main origin/master origin/develop; do
-    if git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null 2>&1; then
+  for candidate in "$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)" origin/main origin/master origin/develop; do
+    if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null 2>&1; then
       printf 'WARNING: workflow_terminal_evidence.sh: the base of the run'"'"'s pull request was not resolved; evidence uses %q\n' "$candidate" >&2
       printf '%s\n' "${candidate#origin/}"; return 0
     fi
