@@ -1,105 +1,92 @@
-# Workflow Classifier — Reference
-
-The workflow classifier examines a task description and routes it to the appropriate workflow type. This reference documents the classification keywords, priority rules, and edge-case handling.
-
-## Contents
-
-- [Workflow types](#workflow-types)
-- [Keyword tables](#keyword-tables)
-- [Classification algorithm](#classification-algorithm)
-- [Constructive-verb disambiguation](#constructive-verb-disambiguation)
-- [Examples](#examples)
-
+---
+title: Workflow classifier
+description: Action-based classification for Operations, repository edits and mixed requests.
+last_updated: 2026-11-12
+review_schedule: quarterly
+owner: amplihack
+doc_type: reference
 ---
 
-## Workflow types
+# Workflow classifier
 
-| Type | Purpose | Typical trigger phrases |
-|------|---------|------------------------|
-| `Default` | Feature development, bug fixes, refactoring | "add", "create", "fix", "implement", "refactor" |
-| `Investigation` | Research, exploration, understanding existing code | "investigate", "analyze", "understand", "explore" |
-| `Ops` | System maintenance, cleanup, file management | "disk cleanup", "manage repos", "delete files" |
-| `Verification` | Trivial changes, config tweaks | "update version", "change constant" |
+> **[IMPLEMENTED - Validation Pending]** These issue #2553 classification and
+> leaf-plan rules describe the intended feature. Calibration and deterministic
+> fixture coverage must be implemented and run before acceptance.
 
----
+The classifier identifies the required action and destination of each result.
+The routing hook, deterministic helpers and dev-orchestrator share these
+boundaries. The [routing contract](dev-orchestrator-routing.md) defines the
+canonical labels and executable plan.
 
-## Keyword tables
+## Classification boundaries
 
-### Default workflow keywords
+| Action | Canonical orchestration classification |
+| --- | --- |
+| Issue triage, creation or assignment | `Operations` |
+| Research answers in chat or issues, status reports, coordination | `Operations` |
+| Edits to tracked code, documentation, configuration or recipes | `Development` |
+| Investigation into how an existing implementation works | `Investigation` |
+| Ordinary explanation question | `Q&A` |
+| Structured decision-making | `Consensus` |
 
-General development verbs match `Default` by default. No explicit keyword list is needed — `Default` is the fallback when no other workflow matches with higher confidence.
+`Operations` includes project management. `Ops`, `PM`, `Project Management`
+and `project-management` are accepted aliases at classification boundaries;
+normalised plans use `Operations`.
 
-### Ops workflow keywords
+The lower-level classifier retains compatible workflow variants such as
+`Default`, `Ops` and `Verification`. `Default` represents the Development
+workflow family; `Ops` maps to canonical Operations. Existing Investigation
+and Verification behaviour remains in force. These internal names do not
+introduce alternative public labels for a normalised leaf plan.
 
-OPS keywords are multi-word phrases. Single generic words are not used because they cause false positives when they appear inside code paths or task descriptions for development work.
+## Action and destination take priority
 
-| Keyword phrase | Example match |
-|----------------|---------------|
-| `run command` | "run command to restart service" |
-| `disk cleanup` | "disk cleanup on staging servers" |
-| `repo management` | "repo management for archived projects" |
-| `git operations` | "git operations to prune old branches" |
-| `delete files` | "delete files from tmp directory" |
-| `organize files` | "organize files into date folders" |
-| `clean up temp` | "clean up temp directories on build box" |
-| `manage repos` | "manage repos for team onboarding" |
+Generic verbs such as “write”, “create”, “add” and “build” are not sufficient
+Development evidence. Nor are requirement counts, complexity, a repository
+name or a file mentioned as research material.
 
-**Why multi-word phrases:** Single words like `cleanup` matched as substrings in code paths (e.g., `cmd_cleanup.rs`) and development task descriptions ("Add an agentic disk-cleanup loop"), causing development tasks to be misrouted to the Ops workflow.
+A requested tracked-file change is Development evidence, including a
+documentation-only wording change. An administrative action stays Operations
+even when it has a long checklist. Reading code to answer a question does not
+by itself request a code change.
 
----
+Operational phrases in a feature request do not change the requested action.
+“Implement a disk-cleanup loop in the CLI” requests repository changes and is
+Development. “Run disk cleanup on a staging host” requests an operation.
 
-## Classification algorithm
+## Mixed-request handling
 
-```
-1. Lowercase the input task description
-2. For each workflow type (in priority order):
-   a. Count keyword phrase matches in the input
-   b. Weight by phrase specificity (longer phrases score higher)
-3. Return the workflow type with the highest weighted score
-4. If no keywords match, return Default
-```
+A request combining administration and repository edits is decomposed into
+explicitly classified executable leaves. Each leaf retains its own route.
+Dependencies preserve required ordering, including cross-repository work.
+The original mixed request is not also executed by an Operations agent.
 
-Priority order when scores tie: `Investigation` > `Ops` > `Verification` > `Default`.
+Per-leaf classification fields take precedence in this order:
+`classification`, `task_type`, `type`. Top-level classification is a compatible
+homogeneous fallback. New mixed plans require explicit leaf classifications.
 
----
+## Calibration cases
 
-## Constructive-verb disambiguation
+| Request | Expected interpretation |
+| --- | --- |
+| “Triage these issues” | Operations |
+| “Open an issue for X and assign Y” | Operations; X and Y are supplied task and owner details |
+| “Write up the answers to these questions” | Operations when the answers belong in chat or an issue |
+| “Write those answers into docs/operations-routing.md” | Development |
+| “Rename a term across the docs of two repositories” | Development leaves for the repository edits |
+| “Create an issue, then change a tracked document using it as tracking” | Explicit tracking resolution followed by Development; no duplicate issue-creation leaf |
+| “Read a routing module and report its behaviour in chat” | Research answer; no tracked-file change |
+| “Remove a programme name from code and docs, answer research questions and open a cross-check issue” | Mixed Development and Operations leaves with relevant dependencies |
 
-When a task description contains both OPS keyword phrases and constructive development verbs, the classifier favors `Default`. This prevents development tasks that mention operational concepts from being misrouted.
+Fixture-supplied classifications exercise deterministic routing. They do not
+prove model interpretation quality. Calibration evaluates the original prose
+separately, including output destination, decomposition, dependencies and
+the absence of duplicated administrative actions.
 
-Constructive verbs that override OPS classification:
+## Source and related documentation
 
-- `add`, `create`, `build`, `implement`, `write`, `design`, `develop`, `make`, `extend`, `refactor`
-
-**Example:**
-
-```
-Input:  "Add an agentic disk-cleanup loop. Extend src/cmd_cleanup.rs."
-Ops match:  "disk cleanup" (1 match)
-Override:   "Add" and "Extend" are constructive verbs
-Result:     Default (constructive verb override wins)
-```
-
----
-
-## Examples
-
-| Input | Classification | Reason |
-|-------|---------------|--------|
-| `"Fix the login bug in auth.rs"` | Default | No OPS/Investigation keywords |
-| `"disk cleanup on staging servers"` | Ops | Matches "disk cleanup" phrase |
-| `"Add an agentic disk-cleanup loop"` | Default | "disk cleanup" matches OPS, but "Add" is constructive |
-| `"investigate why tests fail on CI"` | Investigation | Matches investigation keywords |
-| `"manage repos for team onboarding"` | Ops | Matches "manage repos" phrase |
-| `"Implement repo management feature"` | Default | "repo management" matches OPS, but "Implement" is constructive |
-
----
-
-## Source
-
-`crates/amplihack-workflows/src/classifier.rs`
-
-## Related
-
-- [Recipe Execution Flow](../concepts/recipe-execution-flow.md) — How recipes invoke workflow classification
-- [amplihack recipe](./recipe-command.md) — CLI reference for recipe execution
+- [Classifier implementation](../../crates/amplihack-workflows/src/classifier.rs)
+- [Operations routing explained](../operations-routing.md)
+- [Run Operations and mixed requests](../howto/run-operations-and-mixed-work.md)
+- [Verify routing behaviour](../howto/verify-dev-orchestrator-routing.md)
+- [Recipe execution flow](../concepts/recipe-execution-flow.md)

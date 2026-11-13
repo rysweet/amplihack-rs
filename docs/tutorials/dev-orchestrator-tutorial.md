@@ -1,4 +1,18 @@
+---
+title: Getting started with /dev
+description: Learn classification and execution for Development, Investigation and Operations workstreams.
+last_updated: 2026-11-12
+review_schedule: quarterly
+owner: amplihack
+doc_type: tutorial
+---
+
 # Getting Started with /dev — The amplihack Dev Orchestrator
+
+> **[IMPLEMENTED - Validation Pending]** The issue #2553 leaf routing, optional
+> tracking and complete-plan validation behaviour in this tutorial describes
+> the intended feature. Its [acceptance coverage](../howto/verify-dev-orchestrator-routing.md)
+> must be implemented and registered before these additions can be verified.
 
 **Time**: ~20 minutes | **Level**: Beginner to Intermediate
 
@@ -14,7 +28,7 @@ and how to interpret what you see during execution.
 - [Prerequisites](#prerequisites)
 - [Part 1: Your First /dev Command](#part-1-your-first-dev-command-5-minutes)
 - [Part 2: Parallel Workstreams](#part-2-parallel-workstreams-5-minutes)
-- [Part 3: Investigation + Implementation](#part-3-investigation-implementation-5-minutes)
+- [Part 3: Investigation + Implementation](#part-3-investigation--implementation-5-minutes)
 - [Part 4: The Goal-Seeking Loop](#part-4-the-goal-seeking-loop-5-minutes)
 - [Part 5: Interpreting Output](#part-5-interpreting-output-2-minutes)
 - [Common Patterns](#common-patterns)
@@ -38,9 +52,14 @@ and how to interpret what you see during execution.
 `/dev` is the unified entry point for all development and investigation work. It:
 
 1. **Classifies** your request (Q&A, Operations, Investigation, or Development)
-2. **Decomposes** it into workstreams if it contains independent parallel components (hybrid "investigate then build" requests become multiple workstreams)
+2. **Decomposes** it into executable leaves, preserving dependencies and separating Operations from repository edits
 3. **Executes** via the recipe runner with a goal-seeking loop (up to 3 rounds)
-4. **Reflects** on whether the goal was achieved
+4. **Checks results** against each leaf's task, applying Development reflection and review to Development results
+
+Operations covers issue management, research answers, status and coordination.
+It runs directly without a worktree or implementation PR. Tracked documentation
+edits are Development. See [Run Operations and mixed requests](../howto/run-operations-and-mixed-work.md)
+for examples.
 
 ### Try it
 
@@ -97,27 +116,18 @@ them simultaneously.
 
 ### What you will see
 
-```
-[dev-orchestrator] Classified as: Development | Workstreams: 2 — starting execution...
-Launching parallel workstreams (tree: abc12345, depth: 0):
-[{"issue": "TBD", "branch": "feat/orch-1-rest-api", ...},
- {"issue": "TBD", "branch": "feat/orch-2-react-webui", ...}]
----
-[TBD] Launched PID 12345 (recipe mode)
-[TBD] Launched PID 12346 (recipe mode)
-2 workstreams launched in parallel (recipe mode)
-```
-
-Both workstreams run in isolated `/tmp` clones. When they complete, you get two
-PRs — one for the API, one for the webui.
+The plan contains two Development leaves, each with its own stable execution
+UUID. Each has separate state, logs and an isolated workspace. An issue number
+is optional; no placeholder is needed. When both complete, you get their
+Development delivery results, including their PRs.
 
 ### When does /dev use parallel workstreams?
 
-The architect agent decides. These decompose into parallel workstreams:
+The architect agent decides. These decompose into workstreams:
 
 - "build X **and** Y" — two independent features
 - "add auth **and** add logging" — independent concerns
-- "investigate X **then** implement Y" — two sequential phases
+- "investigate X **then** implement Y" — dependent leaves; implementation waits for persisted findings
 
 These stay as a single workstream:
 
@@ -126,13 +136,16 @@ These stay as a single workstream:
 
 ### Force single workstream
 
-If you want to prevent parallel execution:
+If you want to prevent parallel execution, set this in your shell before
+launching the agent:
 
 ```bash
 export AMPLIHACK_MAX_DEPTH=0
-/dev build a REST API and a React webui
-# Falls back to single-session execution
 ```
+
+Then enter `/dev build a REST API and a React webui` in chat. The leaves execute
+serially with their identities and routes retained. Mixed Operations and
+Development leaves also retain their separate routes in sequential mode.
 
 ---
 
@@ -161,14 +174,15 @@ about existing structure.
 ### Development routing invariant
 
 The orchestrator applies deterministic per-workstream routing from each workstream's
-own normalized classification. Any workstream classified as `Development` will
-run `default-workflow`, even if the model omitted `recipe`, emitted an empty
-recipe, or emitted another recipe such as `investigation-workflow`.
+own normalised classification. A Development leaf runs `default-workflow`
+unless eligible `quick-change` selection applies. A model-provided recipe
+cannot choose an unrelated workflow.
 
 This rule is per workstream, not per top-level task. In a hybrid request, an
 `Investigation` workstream keeps the investigation route while the `Development`
-workstream runs `default-workflow`. The top-level classification is used only
-when a workstream has no own classification.
+workstream uses Development routing. An Operations leaf always runs directly.
+New mixed plans classify every leaf explicitly; top-level classification is
+only a compatible homogeneous fallback.
 
 For the full contract, see the
 [Dev-Orchestrator Routing Contract](../reference/dev-orchestrator-routing.md).
@@ -221,8 +235,8 @@ faster:
 | Agent output streaming                              | The builder is working                                                |
 | `GOAL_STATUS: PARTIAL -- [reason]`                  | Round N incomplete, round N+1 starting                                |
 | `NOTE: Session registration failed`                 | Tree tracking inactive (non-blocking)                                 |
-| `WARNING: Could not parse decomposition JSON`       | Architect output was ambiguous; defaulted to Development/1-workstream |
-| `NOTE: Parallel workstream spawning is unavailable` | Depth/capacity limit hit; running as single session                   |
+| `WARNING: Could not parse decomposition JSON`       | Invalid plan; execution stops before tracking creation or child launch |
+| `NOTE: Parallel workstream spawning is unavailable` | Depth/capacity limit hit; same leaves and dependencies execute serially |
 
 ### At completion
 
@@ -376,7 +390,7 @@ hand-off expands in your shell first, removes every session marker from the
 session's environment, and carries your answer, and whether it was a guess,
 into it (#1335, #1525). The full template, with logging, is in the
 dev-orchestrator skill's
-[`reference.md`](../../amplifier-bundle/skills/dev-orchestrator/reference.md#durable-execution-tmux--optional).
+[`reference.md`](../../amplifier-bundle/skills/dev-orchestrator/reference.md#durable-execution-detached--optional).
 
 ### Agent Binary Selection
 
@@ -409,9 +423,12 @@ export AMPLIHACK_MAX_DEPTH=5
 
 **"WARNING: Could not parse decomposition JSON"**
 
-The architect agent's response was not parseable. The task will still run as a
-Development/1-workstream default. Re-run for better results or simplify the
-task description.
+The architect agent's response was not parseable. Execution stops before any
+tracking creation or child launch. Correct or regenerate the decomposition,
+then validate the complete plan before starting it. Invalid input must not
+default to Development or collapse a mixed request into one workstream. A
+valid homogeneous plan may use the documented top-level classification
+fallback; that does not make malformed JSON valid.
 
 **"orch helper" or asset resolution failures**
 

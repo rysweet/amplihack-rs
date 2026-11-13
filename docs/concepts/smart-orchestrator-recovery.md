@@ -2,7 +2,7 @@
 title: Smart-orchestrator recovery
 description: Adaptive routing recovery and the entry point for durable usage-limit relaunch recovery.
 doc_type: explanation
-last_updated: 2026-11-11
+last_updated: 2026-11-12
 ---
 
 # Smart-Orchestrator Recovery
@@ -44,6 +44,17 @@ modes during execution:
 | **Infrastructure** | `gh` unavailable, auth expired, disk full | Various — often detected by bash guard steps |
 
 ## Recovery pipeline
+
+> **[IMPLEMENTED - Validation Pending]** The mixed-plan recovery rules in the
+> following paragraph are the issue #2553 contract; the adaptive recipe stages
+> below describe the existing recovery mechanism.
+
+For a normalised mixed plan, recovery retains the same leaves, identities,
+dependencies and routes. Sequential fallback changes concurrency only.
+Operations stays direct; completed leaves are skipped, and interrupted external
+mutations require reconciliation before replay. The Development and
+Investigation steps below apply only to their respective leaves, never to the
+whole mixed request. See the [routing contract](../reference/dev-orchestrator-routing.md#execution-controls).
 
 Recovery proceeds through four stages, implemented across multiple recipe
 steps:

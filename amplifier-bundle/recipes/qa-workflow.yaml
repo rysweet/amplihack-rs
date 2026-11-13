@@ -21,6 +21,7 @@ tags: ["questions", "simple", "quick", "minimal"]
 #   }'
 
 context:
+  workstream_context_file: ""
   # The question to answer
   question: ""
 
@@ -154,3 +155,12 @@ steps:
     command: |
       echo '{"workflow":"qa-workflow","status":"escalated","is_qa":false}'
     output: "final_output"
+
+  - id: "capture-workstream-answer"
+    type: "bash"
+    condition: "workstream_context_file"
+    command: |
+      set -euo pipefail
+      printf '%s' "${RECIPE_VAR_answer:?workflow answer required}" |
+        amplihack multitask capture-answer --context-file "${RECIPE_VAR_workstream_context_file:?context required}"
+    output: "workstream_answer"

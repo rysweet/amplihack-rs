@@ -1,4 +1,17 @@
+---
+title: Workflow delivery inputs
+description: Base branches and strict delivery for Development workstreams.
+last_updated: 2026-11-12
+review_schedule: quarterly
+owner: amplihack
+doc_type: reference
+---
+
 # Workflow Delivery Inputs Reference
+
+> **[IMPLEMENTED - Validation Pending]** The issue #2553 mixed-plan and
+> per-leaf routing additions below require implementation and validation.
+> Existing strict-delivery requirements still apply to Development leaves.
 
 > [Home](../index.md) > Reference > Workflow Delivery Inputs
 
@@ -251,7 +264,7 @@ request without `default-workflow`'s publish phase, and one route runs
 | Path | `base_branch`, `forbidden_base_branches` | `strict_delivery` |
 | ---- | ---------------------------------------- | ----------------- |
 | `quick-change`, and `auto-drive-light` for a new change | Cleared in the call to `workflow-worktree`. The `quick/` branch starts from `origin/HEAD`, and the pull request targets the branch `origin/HEAD` names, so the two agree. A `base_branch` from the caller is not used. | Left as inherited. Step-04 refuses to create a branch when it is `"true"`, so a strict run stops before any agent runs. |
-| `smart-orchestrator`, task split into parallel workstreams | Not forwarded. `launch-parallel-round-1` passes only `create_issue` to `amplihack orch run`. Each development workstream runs `default-workflow` in its own process, whose declared defaults replace any inherited value, so each branch starts from, and each pull request targets, the remote default branch. | Never split. `activate-workflow` keeps the run on one workstream when `strict_delivery` is anything but empty or `"false"`, and says so on stderr. |
+| `smart-orchestrator`, decomposed task | Delivery inputs belong to the relevant Development leaf; Operations does not create branches or implementation PRs. The normalised leaf context preserves the applicable delivery contract. | Executes the same leaves serially, preserving routes, dependencies and per-leaf delivery requirements. It does not collapse a mixed request into one Development task. |
 
 The runner merges a sub-recipe's context back into its caller's. Once
 `quick-change` or `auto-drive-light` has called `workflow-worktree`,
@@ -264,16 +277,18 @@ to `default-workflow` therefore continues the `quick/` branch with no
 (`existing_branch` or `pr_number` set) does not call `workflow-worktree` and
 opens no pull request.
 
-A strict development task that `smart-orchestrator` keeps on one workstream
-goes to `default-workflow` in-process, which applies the contract above. `quick-change`
+A strict Development leaf uses `default-workflow`, which applies the contract above. `quick-change`
 is not chosen, because strict delivery requires `existing_branch`, which rules
 it out (#1740); a strict run without `existing_branch` is refused by step-03 of
 `default-workflow` or by step-04 under `quick-change`.
 
 To deliver to `base_branch` through `smart-orchestrator`, pass
-`force_single_workstream=true` and `workflow=default-workflow`, which keep the
-task on one workstream and off `quick-change`, or call `default-workflow`
+`force_single_workstream=true` and `workflow=default-workflow`, which execute
+the leaves serially and keep Development off `quick-change`, or call `default-workflow`
 directly.
+
+These controls preserve separate Operations and Development leaves. See the
+[routing contract](dev-orchestrator-routing.md#execution-controls).
 
 ## Example
 

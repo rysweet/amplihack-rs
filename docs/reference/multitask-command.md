@@ -1,4 +1,17 @@
+---
+title: Multitask command reference
+description: Execute and inspect leaf workstreams with stable identities and optional issues.
+last_updated: 2026-11-12
+review_schedule: quarterly
+owner: amplihack
+doc_type: reference
+---
+
 # amplihack multitask — Command Reference
+
+> **[IMPLEMENTED - Validation Pending]** Per-leaf routing, optional tracking,
+> result bindings and the `reconcile` subcommand describe the issue #2553
+> contract. These additions require implementation and validation before use.
 
 ## Synopsis
 
@@ -8,15 +21,21 @@ amplihack multitask <SUBCOMMAND>
 
 ## Description
 
-Parallel workstream orchestrator. Runs multiple independent development tasks
-concurrently, each in its own isolated workspace. Tracks status, enforces
-timeouts, and cleans up after merged PRs.
+Dependency-aware workstream orchestrator. Runs ready leaves concurrently,
+using stable execution UUIDs independently of optional issue tracking.
+Development uses isolated workspaces; Operations executes one scoped task in
+its trusted repository with a separate private artefact directory.
 
 ## Subcommands
 
 ### run
 
-Launch parallel workstreams from a JSON configuration file.
+Launch workstreams from a JSON configuration file. Operations always uses the
+direct adapter in both `recipe` and `classic` modes; neither `--recipe` nor a
+per-entry recipe can send it through Development.
+
+The [workstreams JSON schema](orch-run-command.md#workstreams-json-schema) and
+[routing contract](dev-orchestrator-routing.md) apply to both entry points.
 
 ```
 amplihack multitask run <CONFIG> [OPTIONS]
@@ -31,9 +50,27 @@ amplihack multitask run <CONFIG> [OPTIONS]
 | `--timeout-policy <POLICY>` | string | — | What to do when `--max-runtime` is exceeded: `interrupt-preserve` (stop and keep artifacts) or `continue-preserve` (let active work finish, keep artifacts). |
 | `--dry-run` | bool | `false` | Show what would be executed without launching any workstreams. |
 
+### reconcile (planned)
+
+Record an externally verified outcome for an uncertain tracking attempt or
+Operations action. This command does not launch work or change GitHub:
+
+```text
+amplihack multitask reconcile <CONFIG> --resolution-file <PATH>
+```
+
+`CONFIG` is the original saved normalised plan; `PATH` contains one resolution
+object. The [reconciliation contract](workstream-state.md#reconciliation-and-safe-resume)
+defines its required identities, revision, evidence, outcome and receipt.
+An exclusive lock, ownership validation and revision check protect the update.
+Unresolved outcomes remain blocked. Resume separately with `run` using the same
+plan and options. See the [resume procedure](../howto/run-operations-and-mixed-work.md#resume-without-repeating-administrative-actions).
+
 ### cleanup
 
-Remove workstream artifacts for workstreams whose PRs have been merged.
+Remove eligible owned workstream artefacts. Development retains its existing
+delivery and merged-PR checks. Operations cleanup never removes its repository
+working directory. Unknown external outcomes are retained for reconciliation.
 
 ```
 amplihack multitask cleanup <CONFIG> [OPTIONS]
@@ -46,7 +83,8 @@ amplihack multitask cleanup <CONFIG> [OPTIONS]
 
 ### status
 
-Display the current state of existing workstreams.
+Display the current state of existing workstreams by execution identity,
+including optional tracking, completion and blocked or uncertain outcomes.
 
 ```
 amplihack multitask status [OPTIONS]
@@ -88,17 +126,18 @@ amplihack multitask cleanup workstreams.json --dry-run
 ## Workstream context in recipe mode
 
 In recipe mode each workstream writes its context to `context.json` (mode
-0600) and its launcher script runs:
-
-```bash
-RECIPE='default-workflow'
-exec amplihack recipe run "$RECIPE" --context-file "$CONTEXT_JSON" --verbose
-```
+0600). The launcher passes it through `amplihack recipe run` with
+`--context-file` and the trusted leaf route. Operations uses `operations-direct`.
+Classic mode supplies an equivalent scoped context to its direct adapter.
 
 The context is never expanded into command-line arguments, so a workstream
 with a large task description cannot fail with `Argument list too long`, and
 values containing spaces or quotes are passed unchanged. The recipe name is
 validated before it is quoted into the script.
+
+Absent issues are omitted from context and inherited issue-specific variables
+are cleared. Only relevant prerequisite results are passed, with provenance.
+See [child context and environment](workstream-state.md#child-context-and-environment).
 
 When a workstream entry has an `is_critical_code` field, its value is written
 to `context.json` byte for byte under the same key. The launcher does not

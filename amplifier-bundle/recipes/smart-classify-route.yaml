@@ -111,21 +111,27 @@ steps:
          "default-workflow".
 
       **Classification rules — read carefully (#269)**:
-      - **Operations** is ONLY for one-shot read-only or trivial mutating
-        commands the user could type themselves: "git status", "ls", "delete
-        old logs", "show disk usage", "run cargo test". Operations NEVER
-        writes new functions, NEVER opens PRs, NEVER writes tests, NEVER
-        modifies source files in `src/`, `crates/`, `bins/`, etc.
-      - **Development** is the correct type whenever the task asks you to:
-        "Add", "Extend", "Implement", "Create", "Build", "Refactor", or "Port"
-        ANY code; OR write/add tests; OR open a PR; OR modify files in
-        `src/` / `crates/` / `bins/`. Multi-requirement tasks with numbered
-        items `(1)`, `(2)`, `(3)` are almost always Development.
-      - Development classification routes to `default-workflow`, or to `quick-change` for a small change in a single workstream or when `-c workflow=quick-change` forces it; any recipe value the model gives a workstream is coerced to `default-workflow`.
-      - Hybrid decompositions route each workstream by its own normalized classification.
-      - When in doubt between Operations and Development, choose Development.
+      - Operations is the canonical class for operations and project management (PM).
+        Triage, issue creation and assignment, research answers in chat or issues,
+        status reporting and coordination run directly with one agent and a checklist.
+        Complexity, requirement counts, generic verbs and source-path mentions do not
+        turn administrative work into Development.
+      - Actual changes to tracked repository files, including documentation wording,
+        are Development. Rename term X across docs of repos A and B is Development
+        in each repository whose files change.
+      - Mixed requests MUST have separate explicit Operations and Development leaves.
+        For removing a programme name from code/docs, researching questions and opening
+        a cross-check issue: edits are Development; research and issue creation are
+        Operations. Preserve depends_on edges where a leaf needs another's result.
+      - Every leaf has a unique name, repository, explicit classification, description,
+        depends_on (names) and required_outputs. Output kinds are answer, issue,
+        operation and delivery. Declare every requested external mutation as an output.
+      - issue is optional. Omit unknown tracking; never invent a number or placeholder.
+        Supplied positive numbers are preserved. Explicitly requested new tracking uses
+        tracking: {required: true, title: ..., body: ...}; otherwise it is optional.
+        Administrative created issues remain outputs unless explicitly bound as tracking.
 
-      **Decomposition override**: {{force_single_workstream}} — if "true", use exactly 1 workstream regardless of task structure.
+      **Execution capacity**: {{force_single_workstream}} — if "true", execute the same leaves sequentially; preserve mixed routes and dependencies.
 
       **Output exactly this JSON**:
       ```json
@@ -135,7 +141,7 @@ steps:
         "success_criteria": ["Criterion 1", "Criterion 2"],
         "no_merge": false,
         "workstreams": [
-          {"name": "slug", "description": "full task", "recipe": "default-workflow"}
+          {"name": "slug", "classification": "Development", "description": "full repository edit task", "depends_on": [], "required_outputs": {"delivery": "delivery"}}
         ],
         "recommended_workflow": "default-workflow",
         "workflow_reason": "one short sentence"
@@ -175,8 +181,7 @@ steps:
       RAW_TYPE=$(printf '%s' "$RAW_OBJ" | amplihack orch helper extract-field --field task_type --default Development)
       CANONICAL_TYPE=$(printf '%s' "$RAW_TYPE" | amplihack orch helper normalise-type)
       # Deterministic safety net (#269): if the LLM said Operations but the
-      # task description has strong development signals (file paths, "Add"+
-      # path, PR mention, tests, multi-requirement), promote to Development.
+      # requested action edits tracked repository files, promote to Development.
       _TASK_TMPFILE=$(mktemp)
       # FIX (heredoc-bulletproof): use env var — no heredoc needed.
       printf '%s' "$TASK_DESCRIPTION" > "$_TASK_TMPFILE"
@@ -201,15 +206,8 @@ steps:
       TASK_TYPE="${RECIPE_VAR_task_type:-}"
       FORCE_SINGLE="${RECIPE_VAR_force_single_workstream:-}"
       RAW_COUNT=$(amplihack orch helper count-workstreams < "$_DECOMP_TMPFILE")
-      case "$(printf '%s' "$FORCE_SINGLE" | tr '[:upper:]' '[:lower:]')" in
-        true|1) COUNT=1 ;;
-        *)      COUNT="$RAW_COUNT" ;;
-      esac
-      # launch-parallel-round-1 forwards only create_issue, so a strict run stays on one
-      # workstream, where default-workflow runs in-process and keeps strict_delivery. Any
-      # value but "" or "false" counts; step-03 refuses one it does not accept.
+      COUNT="$RAW_COUNT"
       STRICT="${RECIPE_VAR_strict_delivery:-}"
-      case "$STRICT" in ''|false) ;; *) COUNT=1 ;; esac
 
       # Set workflow-active semaphore so the hook skips injection during execution.
       # Pure-bash: write JSON matching the Rust hook's expected schema in
@@ -318,8 +316,8 @@ steps:
     type: "bash"
     condition: "'Development' in task_type or 'Investigation' in task_type or task_type == ''"
     command: |
-      # #283: replace scripted uuid with /proc/sys/kernel/random/uuid (POSIX)
-      SESSION_ID=$(tr -d '-' < /proc/sys/kernel/random/uuid | head -c 8)
+      # Generate a portable session identity in Rust, including on macOS.
+      SESSION_ID=$(amplihack orch helper new-session-id)
 
       # #248: native Rust subcommand for session tree registration.
       # Issue #1062 (finding D2): request structured JSON via the additive

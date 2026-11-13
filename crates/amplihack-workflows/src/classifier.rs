@@ -110,7 +110,21 @@ impl WorkflowClassifier {
         }
 
         let keywords = self.extract_keywords(request);
-        let (workflow, reason, confidence) = self.classify_by_keywords(&keywords);
+        let (workflow, reason, confidence) = if requires_repository_edit(request) {
+            (
+                WorkflowType::Default,
+                "requested repository edit".into(),
+                0.9,
+            )
+        } else if administrative_action(request) {
+            (
+                WorkflowType::Ops,
+                "administrative action or answer destination".into(),
+                0.9,
+            )
+        } else {
+            self.classify_by_keywords(&keywords)
+        };
 
         trace!(
             workflow = workflow.as_str(),
@@ -200,6 +214,97 @@ impl WorkflowClassifier {
             0.5,
         )
     }
+}
+
+/// Conservative safeguard for explicitly requested tracked-file changes.
+/// Merely mentioning a source path, coverage or an existing PR is insufficient.
+pub fn requires_repository_edit(request: &str) -> bool {
+    let lower = request.to_ascii_lowercase();
+    let edit = [
+        "rename",
+        "correct",
+        "remove",
+        "replace",
+        "edit",
+        "update",
+        "write",
+        "commit",
+        "implement",
+        "refactor",
+        "extend",
+        "add",
+        "build",
+        "create",
+        "port",
+    ];
+    let destination = [
+        "tracked",
+        "docs/",
+        "readme.md",
+        "documentation",
+        "across the docs",
+        "src/",
+        "crates/",
+        "tests/",
+        "source files",
+        "code and docs",
+    ];
+    // Administrative objects remain administrative even when their subject is code.
+    let administration = [
+        "create an issue",
+        "create a triage issue",
+        "open an issue",
+        "open a cross-check issue",
+        "assign issue",
+        "report unit test",
+        "report test coverage",
+        "coordinate review",
+    ];
+    lower.split([';', '\n']).any(|clause| {
+        let admin = administration.iter().any(|s| clause.contains(s));
+        let explicit_edit = [
+            "and edit",
+            "and update",
+            "and commit",
+            "and remove",
+            "and rename",
+            "and replace",
+        ]
+        .iter()
+        .any(|s| clause.contains(s));
+        (!admin || explicit_edit)
+            && edit.iter().any(|verb| {
+                clause
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .any(|word| word == *verb)
+            })
+            && destination.iter().any(|path| clause.contains(path))
+    }) || [
+        "write tests",
+        "add tests",
+        "add a test",
+        "open a pr",
+        "open pr",
+    ]
+    .iter()
+    .any(|s| lower.contains(s))
+}
+
+fn administrative_action(request: &str) -> bool {
+    let lower = request.to_ascii_lowercase();
+    [
+        "triage",
+        "open an issue",
+        "create an issue",
+        "assign",
+        "status",
+        "coordina",
+        "answers",
+        "in chat",
+        "question set",
+    ]
+    .iter()
+    .any(|s| lower.contains(s))
 }
 
 fn default_keyword_map() -> HashMap<WorkflowType, Vec<String>> {
@@ -375,5 +480,40 @@ mod tests {
         );
         assert_eq!(WorkflowType::Ops.recipe_name(), None);
         assert_eq!(WorkflowType::QAndA.recipe_name(), None);
+    }
+
+    #[test]
+    fn issue_2553_administrative_actions_use_ops_despite_generic_development_verbs() {
+        let classifier = WorkflowClassifier::default();
+        for request in [
+            "Triage these issues",
+            "Open an issue for X and assign Y",
+            "Create an issue about src/router.rs and assign its owner",
+            "Write up the answers to these questions in chat",
+            "Research this question set and report the answers in an issue",
+            "Update the project status in the coordination issue",
+        ] {
+            assert_eq!(
+                classifier.classify(request).workflow,
+                WorkflowType::Ops,
+                "{request}"
+            );
+        }
+    }
+
+    #[test]
+    fn issue_2553_tracked_documentation_changes_use_development() {
+        let classifier = WorkflowClassifier::default();
+        for request in [
+            "Rename term X across the tracked docs of repos A and B",
+            "Correct the wording in tracked docs/routing.md",
+            "Commit the research answers to README.md",
+        ] {
+            assert_eq!(
+                classifier.classify(request).workflow,
+                WorkflowType::Default,
+                "{request}"
+            );
+        }
     }
 }

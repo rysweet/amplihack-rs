@@ -41,6 +41,7 @@ recursion:
   max_total_steps: 120
 
 context:
+  workstream_context_file: ""
   # Description of the task
   task_description: ""
 
@@ -206,3 +207,12 @@ steps:
     recovery: {"replay": "never"}
     type: "recipe"
     recipe: "workflow-finalize"
+
+  - id: "capture-workstream-delivery"
+    recovery: {"replay": "reuse"}
+    type: "bash"
+    condition: "workstream_context_file"
+    command: |
+      set -euo pipefail
+      amplihack multitask capture-delivery --context-file "${RECIPE_VAR_workstream_context_file:?context required}" --recipe default-workflow
+    output: "workstream_delivery"

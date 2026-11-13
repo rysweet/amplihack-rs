@@ -1,0 +1,64 @@
+name: "operations-direct"
+description: "One administrative leaf, executed once by one agent in its repository"
+version: "1.0.0"
+context:
+  task_description: ""
+  repo_path: "."
+  repository: ""
+  workstream_id: ""
+  required_outputs: {}
+  prerequisite_results: []
+  operation_attempts: []
+  workstream_result_file: ""
+  workstream_context_file: ""
+recovery:
+  version: 1
+  persist:
+    context: ["workstream_completion", "workstream_id", "repository", "required_outputs"]
+    outputs: ["execute-operation", "store-result"]
+steps:
+  - id: "execute-operation"
+    recovery: {"replay": "never"}
+    type: "agent"
+    agent: "amplihack:core:builder"
+    prompt: |
+      Execute this administrative leaf once, following its checklist.
+      Task: {{task_description}}
+      Trusted repository: {{repository}} at {{repo_path}}
+      Prerequisite results: {{prerequisite_results}}
+      Already recorded actions: {{operation_attempts}}
+      Reuse successful recorded actions. If an external outcome is unknown, report
+      reconciliation_required and explain why; do not repeat the mutation.
+      This leaf does not authorise tracked-file edits, a worktree, a branch or an
+      implementation PR. Complete only this leaf, without starting another workflow.
+
+      For issue creation and assignment, use the durable adapter:
+      `amplihack multitask operation --context-file {{workstream_context_file}}
+      --output-name <declared-output> --request-file <private-json-file>`.
+      The request is {"action":"create_issue","arguments":{"title":"...","body":"..."}}
+      or {"action":"assign","arguments":{"issue":123,"assignees":["login"]}}.
+      Use its returned output verbatim. It records attempts before invocation, reuses
+      successful actions and refuses to repeat uncertain outcomes. For other external
+      systems, preserve an inspectable service receipt and report uncertainty rather
+      than replaying an interrupted action.
+
+      Return a single JSON object: schema_version 1, workstream_id
+      "{{workstream_id}}", repository "{{repository}}", classification "Operations",
+      effective_recipe "operations-direct", outcome (succeeded, failed or
+      reconciliation_required), and outputs matching {{required_outputs}}.
+      Failures and uncertainty require a non-blank diagnostic. Each output has its
+      declared kind and evidence: a non-empty array of source, reference and
+      observation strings. Answers require text and destination (chat or issue).
+      Issue outputs require issue: {repository, number}. Operation outputs require
+      action and a repository-scoped target issue. Evidence must establish the
+      requested external outcome; a narrative assertion is insufficient.
+    output: "workstream_completion"
+  - id: "store-result"
+    recovery: {"replay": "reuse"}
+    type: "bash"
+    condition: "workstream_context_file"
+    command: |
+      set -euo pipefail
+      printf '%s' "${RECIPE_VAR_workstream_completion:?completion required}" |
+        amplihack multitask complete --context-file "${RECIPE_VAR_workstream_context_file:?context required}"
+    output: "stored_result"

@@ -1,34 +1,45 @@
 //! Data models for the parallel workstream orchestrator.
 
+#[cfg(test)]
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+#[cfg(test)]
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::sync::LazyLock;
+#[cfg(test)]
 use std::time::Instant;
 
 /// Regex for sanitizing IDs to filesystem-safe strings.
+#[cfg(test)]
 static SAFE_ID_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^a-zA-Z0-9_-]").unwrap());
 
 /// Sanitize an identifier for use in filesystem paths.
+#[cfg(test)]
 pub fn sanitize_id(raw: &str) -> String {
     SAFE_ID_RE.replace_all(raw, "_").to_string()
 }
 
 /// Default max runtime for workstreams (2 hours).
+#[cfg(test)]
 pub const DEFAULT_MAX_RUNTIME: u64 = 7200;
 
 /// Timeout policy: interrupt the subprocess and preserve state.
+#[cfg(test)]
 pub const INTERRUPT_PRESERVE_TIMEOUT_POLICY: &str = "interrupt-preserve";
 /// Timeout policy: mark timed-out but let the subprocess continue.
+#[cfg(test)]
 pub const CONTINUE_PRESERVE_TIMEOUT_POLICY: &str = "continue-preserve";
 /// Default timeout policy. Issue #867: a non-killing default — a run that
 /// passes `max_runtime` is marked resumable but is NOT interrupted while it is
 /// still producing output. Interrupting is opt-in via `interrupt-preserve`,
 /// and even then only a genuinely idle child is killed.
+#[cfg(test)]
 pub const DEFAULT_TIMEOUT_POLICY: &str = CONTINUE_PRESERVE_TIMEOUT_POLICY;
 
 /// Lifecycle states eligible for cleanup.
+#[cfg(test)]
 pub const CLEANUP_ELIGIBLE_STATES: &[&str] = &["completed", "failed_terminal", "abandoned"];
 
 /// Logical workflow ownership scope persisted with every workstream.
@@ -44,7 +55,7 @@ pub struct WorkstreamScope {
     pub branch: String,
     #[serde(default)]
     pub base_ref: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub issue_id: String,
     #[serde(default)]
     pub work_item_id: String,
@@ -75,7 +86,7 @@ pub struct ProcessScope {
     pub workdir: String,
     #[serde(default)]
     pub branch: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub issue_id: String,
     #[serde(default)]
     pub work_item_id: String,
@@ -94,7 +105,13 @@ pub struct ProcessScope {
 /// JSON config entry for a workstream.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkstreamConfig {
+    #[serde(
+        default,
+        deserialize_with = "super::issue::deserialize_value",
+        skip_serializing_if = "serde_json::Value::is_null"
+    )]
     pub issue: serde_json::Value,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub branch: String,
     #[serde(default)]
     pub description: Option<String>,
@@ -109,8 +126,23 @@ pub struct WorkstreamConfig {
     /// workflow, which validates it. Must be a JSON string when present.
     #[serde(default)]
     pub is_critical_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workstream_id: Option<super::identity::WorkstreamId>,
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub repository: String,
+    #[serde(default)]
+    pub classification: String,
+    #[serde(default)]
+    pub depends_on: Vec<super::identity::WorkstreamId>,
+    #[serde(default)]
+    pub required_outputs: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub tracking: super::plan::Tracking,
 }
 
+#[cfg(test)]
 impl WorkstreamConfig {
     pub fn issue_id(&self) -> i64 {
         match &self.issue {
@@ -121,14 +153,19 @@ impl WorkstreamConfig {
     }
 
     pub fn description_or_default(&self) -> String {
-        self.description
-            .clone()
-            .unwrap_or_else(|| format!("Issue #{}", self.issue_id()))
+        self.description.clone().unwrap_or_else(|| {
+            if self.issue.is_null() {
+                self.task.clone()
+            } else {
+                format!("Issue #{}", self.issue)
+            }
+        })
     }
 }
 
 /// Runtime state for a single workstream.
 #[derive(Debug)]
+#[cfg(test)]
 pub struct Workstream {
     pub issue: i64,
     pub branch: String,
@@ -158,6 +195,7 @@ pub struct Workstream {
     pub is_critical_code: Option<String>,
 }
 
+#[cfg(test)]
 impl Workstream {
     pub fn new(
         issue: i64,
@@ -232,8 +270,12 @@ impl Workstream {
 /// Persisted state for a workstream (JSON on disk).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PersistedState {
-    #[serde(default)]
-    pub issue: i64,
+    #[serde(
+        default,
+        deserialize_with = "super::issue::deserialize_legacy",
+        skip_serializing_if = "super::issue::is_zero"
+    )]
+    pub issue: i128,
     #[serde(default)]
     pub branch: String,
     #[serde(default)]
@@ -278,6 +320,15 @@ pub struct PersistedState {
     pub updated_at: String,
     #[serde(default)]
     pub resume_context: Option<HashMap<String, serde_json::Value>>,
+    #[serde(
+        default,
+        deserialize_with = "super::plan::deserialize_lifecycle",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub lifecycle: String,
+    /// Retain new records when adapting historic state; unknown fields must not disappear.
+    #[serde(flatten)]
+    pub contract: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[cfg(test)]

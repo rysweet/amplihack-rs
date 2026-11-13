@@ -25,6 +25,7 @@ recursion:
   max_total_steps: 140
 
 context:
+  workstream_context_file: ""
   task_description: ""
   repo_path: "."
   issue_number: ""
@@ -298,3 +299,12 @@ steps:
         --body-file "$QUICK_CHANGE_STATE_DIR/pr-body.md" "$@"
       qc_remove_state
     output: "quick_change_pr_url"
+
+  - id: "capture-workstream-delivery"
+    recovery: {"replay": "reuse"}
+    type: "bash"
+    condition: "workstream_context_file"
+    command: |
+      set -euo pipefail
+      amplihack multitask capture-delivery --context-file "${RECIPE_VAR_workstream_context_file:?context required}" --recipe quick-change
+    output: "workstream_delivery"

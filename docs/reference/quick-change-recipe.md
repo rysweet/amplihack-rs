@@ -1,13 +1,17 @@
 ---
 title: Quick-Change Recipe
 description: The single-session recipe for small changes, the diff limits that hand work over to default-workflow, and how smart-orchestrator selects it.
-last_updated: 2026-10-31
+last_updated: 2026-11-12
 review_schedule: quarterly
 owner: amplihack
 doc_type: reference
 ---
 
 # Quick-Change Recipe
+
+> **[IMPLEMENTED - Validation Pending]** The issue #2553 per-leaf routing,
+> optional tracking and per-result hand-over validation rules on this page
+> describe the intended additions to the existing quick-change recipe.
 
 `quick-change` makes a small change in one agent session, runs the repository's own checks, then commits, pushes and opens a pull request. It stops once the PR is open. It does not review, merge, drive CI or finalise.
 
@@ -104,7 +108,9 @@ The run log shows the routing choice on stderr:
 | `existing_branch`, `pr_number` | `""` | Not used by `quick-change`, which always creates a new `quick/` branch. Its worktree step passes both as empty, so values inherited from the orchestrator are ignored; the orchestrator does not choose `quick-change` when either is set, or when the task text names a branch (see [Precedence](#precedence)). The recipe sets `existing_branch` itself when it invokes `default-workflow` on hand-over. |
 | `base_branch`, `forbidden_base_branches`, `strict_delivery` | inherited | The [delivery inputs](workflow-delivery-inputs.md#where-the-inputs-apply) of `default-workflow`, not declared here. The worktree step passes `base_branch` and `forbidden_base_branches` as empty, so the `quick/` branch starts from `origin/HEAD`, the branch the PR targets, and a base inherited from the orchestrator is not used. `strict_delivery` is passed through: when it is `"true"`, step 04 of `workflow-worktree` refuses to create the branch and the run stops. |
 
-No GitHub issue is created by `quick-change`. A hand-over can create one; see [Hand-over to default-workflow](#hand-over-to-default-workflow).
+No GitHub issue is created by `quick-change`. Under the planned issue #2553
+contract, a hand-over reuses resolved tracking; it creates an issue only when
+tracking is explicitly required and none is available. See [Hand-over to default-workflow](#hand-over-to-default-workflow).
 
 ### Tuning the limits
 
@@ -294,6 +300,10 @@ Only the exact value `"true"` counts, as in `default-workflow`'s own no-op check
 
 ## Hand-over to default-workflow
 
+> **[IMPLEMENTED - Validation Pending]** The issue #2553 tracking and per-result
+> validation rules in this section are the intended contract. They require
+> implementation in both serial and parallel execution.
+
 When the verdict is `handover`:
 
 1. `quick-change-write-handover` writes the full diff against the pinned base, untracked files included, to `<state dir>/quick-change-handover.patch`, and writes the hand-over note described below.
@@ -303,10 +313,18 @@ When the verdict is `handover`:
 `default-workflow` then reuses the `quick/` branch through its own steps:
 
 - Step 04 (`workflow-worktree`) finds the worktree already registered for the `quick/` branch and reuses it as it is. It does not reset, clean or check out anything on that path, so the changes from `quick-change`, committed by the agent or not, are still in the worktree when the builder starts.
-- `workflow-prep` creates a tracking issue, because `quick-change` did not. This is a second issue when the task already had one.
+- Tracking resolution reuses an applicable supplied issue, persisted success or explicit producer binding. Without tracking, the hand-over remains issue-less unless creation was explicitly required; it must not create a second issue merely because `quick-change` did not create one.
 - Step 04 also runs a best-effort `git push origin <branch>` before the builder starts. When the agent made no commit, nothing but the base is on the branch, so the remote briefly has an empty `quick/` branch. When the agent committed (`agent-commit`, or a size reason decided first), this pushes those commits before any check or review has run. They are not in a PR yet, but anyone with access to the repository can see them.
 
-smart-execute-routing then runs `handover-reselect-workflow`, which sets `selected_workflow` to `default-workflow` and logs the change, so orchestrator reflection and outside-in validation run as for any full workflow. See [Log line](#log-line). This correction is for a run that went through `execute-single-round-1-quick-change`. Each workstream of a parallel run under `-c workflow=quick-change` is a separate process whose outputs do not reach the parent, so such a run still skips those steps after a workstream hands over.
+`handover-reselect-workflow` sets `selected_workflow` to `default-workflow` and
+logs the change on the single-workstream path. See [Log line](#log-line). Each
+leaf's completion record also carries `effective_recipe: "default-workflow"`
+after a hand-over. The parent validates that result against the full workflow's
+reflection and outside-in evidence before persisting success or releasing
+dependants. This applies to serial and parallel runs, including a parallel run
+forced with `-c workflow=quick-change`. A missing child result or workflow
+binding prevents acceptance; it is never a reason to skip validation. See the
+[completion contract](workstream-state.md#completion-and-prerequisite-json).
 
 ### Hand-over note
 
@@ -505,7 +523,13 @@ After the table, a `quick-change` result becomes `default-workflow` when the run
 
 "Names a branch" uses the directive rules of `workflow_branch_name.sh explicit` (#1426), which `workflow-worktree` runs: a line starting `Branch:`, `Branch name:`, `Branch ref:` or `Branch =` (any case) with the value on the same line or the next non-blank one, or `Branch`, a dash (`-`, `–` or `—`), any text and a final `:`, with the value on the next non-blank line. The value must be a valid ref containing `/` or `-`, not a base branch name and not starting with `origin/`, `refs/` or `heads/`. Prose such as "Branch coverage is low in: src/foo-bar.rs" does not count. Whether the branch exists does not matter. The helper reads the task text from `RECIPE_VAR_task_description`; `crates/amplihack-cli/src/commands/orch/named_branch.rs` repeats the shell tool's patterns, a unit test there fails when the shell tool's patterns or bounds change, and `issue_1740_select_workflow` runs both on each directive form and fails when they disagree.
 
-A valid override applies however many workstreams there are. With `-c workflow=quick-change` and a parallel decomposition, every Development workstream runs `quick-change` and orchestrator reflection is skipped. Without an override, every Development workstream of a parallel decomposition runs `default-workflow`, whatever recipe the model gave it, and a non-Development workstream that the model gave `quick-change` runs its classification's own recipe instead; see [Dev-Orchestrator Routing Contract](./dev-orchestrator-routing.md#routing-invariant). The log line therefore names the recipe the workstreams run, with the one correction described under [Log line](#log-line). Non-Development routing (Q&A, Operations, Investigation) never changes.
+A valid override applies to eligible Development leaves however many workstreams
+there are. With `-c workflow=quick-change`, those leaves use `quick-change` and
+its reflection rules. Operations always uses `operations-direct`, including
+inside mixed plans and sequential fallback. Without an override, Development
+leaves in a decomposition use `default-workflow`; a model recipe alone cannot
+select `quick-change`. Other classifications retain their own trusted routes.
+See the [routing contract](dev-orchestrator-routing.md#route-selection).
 
 Override values are trimmed and lower-cased, then matched against the exact list `quick-change`, `default-workflow`.
 
@@ -528,14 +552,18 @@ Every orchestrated run writes one line to stderr after any warnings:
 [dev-orchestrator] Workflow: <quick-change|default-workflow|none> source=<override|classifier|default|handover> reason=<text>
 ```
 
-Two cases write a second line. When `quick-change` was forced on a run that then falls back to `default-workflow`, because the recursion guard blocked the parallel launch or adaptive recovery took over, `blocked-fallback-reselect-workflow` or `adaptive-reselect-workflow` sets `selected_workflow` to `default-workflow` and logs the change. When a single-workstream `quick-change` hands over, `handover-reselect-workflow` does the same with `source=handover`, as the selection may have come from the classifier or an override. In each case the last line names what ran, and reflection and validation run as for any full workflow:
+When a Development leaf hands over from `quick-change` to `default-workflow`,
+`handover-reselect-workflow` corrects its selection and logs `source=handover`.
+Its reflection and validation then apply to the full workflow result. Serial
+fallback or a depth limit alone does not change the leaf's route, and never
+changes an Operations leaf to Development. The hand-over log reads:
 
 ```text
-[dev-orchestrator] Workflow: default-workflow source=override reason=parallel launch blocked; the single-session fallback runs default-workflow
 [dev-orchestrator] Workflow: default-workflow source=handover reason=quick-change handed over; default-workflow ran
 ```
 
-The one exception is a parallel run forced to `quick-change`, described under [Hand-over to default-workflow](#hand-over-to-default-workflow).
+The planned [per-result hand-over contract](#hand-over-to-default-workflow)
+applies equally to parallel runs forced to `quick-change`.
 
 Examples:
 
@@ -553,13 +581,18 @@ The reason is sanitised before it is logged: control characters (including ESC a
 
 | Workstream classification | Override (`-c workflow=`) | Model `recipe` | Result |
 | --- | --- | --- | --- |
-| Development | `quick-change` or `default-workflow`, and the top-level `task_type` is Development | any | the override |
+| Development | eligible `quick-change` or `default-workflow` override | any | the override |
 | Development | `quick-change`, with `existing_branch` or `pr_number` set, or a task text that names a branch | any | `default-workflow` |
-| Development | empty or invalid, or the top-level `task_type` is not Development | any, `quick-change` included | `default-workflow` |
-| Non-Development | any | `quick-change` | the classification's own recipe: `investigation-workflow`, `qa-workflow` or `consensus-workflow`, and `default-workflow` for Operations |
-| Non-Development | any | anything else | unchanged |
+| Development | empty or invalid override | any, `quick-change` included | `default-workflow` |
+| Operations | any | any | `operations-direct` |
+| Other non-Development | any | `quick-change` | the classification's own trusted route |
+| Other non-Development | any | anything else | existing trusted route |
 
-The helper reads the override from `RECIPE_VAR_workflow`, the two targets from `RECIPE_VAR_existing_branch` and `RECIPE_VAR_pr_number`, and the task text from `RECIPE_VAR_task_description`: the same values `select-workflow` receives. The log line that `select-workflow` writes therefore names the recipe every Development workstream runs: `quick-change` only under a valid override, otherwise `default-workflow`, with `reason=quick-change needs one workstream; got N` when the classifier recommended `quick-change`. W1 to W4 are printed by `select-workflow`; the helper prints W1 again for an invalid override. The blocked-fallback and adaptive execution paths always use `default-workflow`, and correct `selected_workflow` when it said `quick-change`; see [Log line](#log-line).
+The helper reads the override from `RECIPE_VAR_workflow`, targets from
+`RECIPE_VAR_existing_branch` and `RECIPE_VAR_pr_number`, and the leaf task from
+`RECIPE_VAR_task_description`. The same selection guards apply per Development
+leaf. The complete leaf plan survives serial fallback and adaptive execution;
+neither path substitutes one Development recipe for the whole mixed request.
 
 ## The select-workflow helper
 
@@ -613,7 +646,12 @@ When `selected_workflow` is still `quick-change` after execution, these smart-or
 
 `summarize` and `complete-session` still run, including after a run that finished with verdict `empty`.
 
-Reflection rounds and outside-in validation exist to judge a full workflow run. Outside-in validation looks for Step 13 and qa-team evidence that `quick-change` never produces, so running it would start extra rounds and remove the saving the recipe is for. A run that hands over has run `default-workflow`, which does produce that evidence, so `handover-reselect-workflow` changes the selection and these steps run.
+Under the planned per-result contract, a result that finishes in `quick-change`
+is checked against its quick-change task, checks and delivery evidence. It does
+not require the full workflow's Step 13 and qa-team evidence. A hand-over
+reports `default-workflow` as its effective recipe and requires that workflow's
+reflection and outside-in evidence before acceptance. Serial and parallel
+parents apply the same rule to every Development result.
 
 `selected_workflow` is declared in the context of `smart-orchestrator`, `smart-classify-route`, `smart-execute-routing`, `smart-reflect-loop` and `smart-validate-summarize`, so each condition can read it.
 

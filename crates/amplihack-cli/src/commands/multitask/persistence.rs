@@ -62,7 +62,7 @@ pub(super) fn persist_state(ws: &Workstream) -> Result<()> {
         .unwrap_or_else(|| now.clone());
 
     let state = PersistedState {
-        issue: ws.issue,
+        issue: i128::from(ws.issue),
         branch: ws.branch.clone(),
         description: ws.description.clone(),
         task: ws.task.clone(),
@@ -89,6 +89,7 @@ pub(super) fn persist_state(ws: &Workstream) -> Result<()> {
         created_at,
         updated_at: now,
         resume_context: existing.and_then(|s| s.resume_context),
+        ..Default::default()
     };
 
     let json = serde_json::to_string_pretty(&state)?;

@@ -26,6 +26,13 @@
 mod isolated_amplihack;
 mod support;
 
+mod issue_2553_dependency_execution;
+mod issue_2553_fixture;
+mod issue_2553_operations_routing;
+mod issue_2553_plan_contract;
+mod issue_2553_state_ownership;
+mod issue_2553_tracking_resolution;
+
 #[path = "issue_2329_autodrive_outcomes.rs"]
 mod issue_2329_autodrive_outcomes;
 

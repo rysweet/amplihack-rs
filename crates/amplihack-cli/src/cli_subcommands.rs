@@ -717,6 +717,38 @@ pub enum ModeCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum MultitaskCommands {
+    /// Perform a declared issue mutation with durable attempt tracking
+    Operation {
+        #[arg(long)]
+        context_file: String,
+        #[arg(long)]
+        output_name: String,
+        #[arg(long)]
+        request_file: String,
+    },
+    /// Capture an existing Investigation or Q&A report supplied on stdin
+    CaptureAnswer {
+        #[arg(long)]
+        context_file: String,
+    },
+    /// Record verified Development delivery after its selected workflow gates
+    CaptureDelivery {
+        #[arg(long)]
+        context_file: String,
+        #[arg(long, value_parser = ["default-workflow", "quick-change", "consensus-workflow"])]
+        recipe: String,
+    },
+    /// Validate a child's completion from stdin and save its owned result
+    Complete {
+        #[arg(long)]
+        context_file: String,
+    },
+    /// Record a revision-bound decision about an uncertain external outcome
+    Reconcile {
+        config: String,
+        #[arg(long)]
+        resolution_file: String,
+    },
     /// Run parallel workstreams from a JSON config file
     Run {
         /// Path to workstreams JSON config file

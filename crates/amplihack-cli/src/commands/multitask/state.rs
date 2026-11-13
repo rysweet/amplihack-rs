@@ -34,7 +34,7 @@ pub(super) fn finalize_workstream(ws: &mut Workstream, exit_code: i32) {
         return;
     }
 
-    if exit_code == 0 {
+    if exit_code == 0 && ws.recipe != "operations-direct" {
         ws.lifecycle_state = "completed".to_string();
     } else if !ws.checkpoint_id.is_empty() {
         ws.lifecycle_state = "failed_resumable".to_string();
@@ -46,6 +46,22 @@ pub(super) fn finalize_workstream(ws: &mut Workstream, exit_code: i32) {
 }
 
 pub(super) fn apply_saved_state(ws: &mut Workstream, state: &PersistedState) {
+    if (!ws.workstream_scope.repository.is_empty()
+        && ws.workstream_scope.repository != state.workstream_scope.repository)
+        || (!ws.branch.is_empty() && ws.branch != state.branch)
+    {
+        warn!("refusing saved state with conflicting repository or branch ownership");
+        return;
+    }
+    for (saved, target) in [
+        (&state.work_dir, &mut ws.work_dir),
+        (&state.log_file, &mut ws.log_file),
+        (&state.progress_sidecar, &mut ws.progress_file),
+    ] {
+        if !saved.is_empty() {
+            *target = saved.into();
+        }
+    }
     if !state.branch.is_empty() {
         ws.branch = state.branch.clone();
     }

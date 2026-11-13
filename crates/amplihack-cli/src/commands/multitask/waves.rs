@@ -7,14 +7,28 @@
 //! Kept in its own module so `orchestrator.rs` stays inside the 400-line brick limit
 //! that `tests/integration/multitask_orchestrator_spec_test.rs` enforces.
 
+#[cfg(test)]
+#[allow(dead_code)]
 use std::collections::HashMap;
+#[cfg(test)]
+#[allow(dead_code)]
 use std::process::Child;
+#[cfg(test)]
+#[allow(dead_code)]
 use std::sync::{Arc, Mutex};
+#[cfg(test)]
+#[allow(dead_code)]
 use std::time::Duration;
 
+#[cfg(test)]
+#[allow(dead_code)]
 use anyhow::Result;
 
+#[cfg(test)]
+#[allow(dead_code)]
 use super::launcher;
+#[cfg(test)]
+#[allow(dead_code)]
 use super::models::Workstream;
 
 /// Environment override for the launch concurrency limit. `0` means unlimited,
@@ -24,6 +38,8 @@ pub(super) const MAX_PARALLEL_ENV: &str = "AMPLIHACK_MAX_PARALLEL_WORKSTREAMS";
 /// Pause between waves. Long enough that a wave establishes itself before the next
 /// is added; the monitor loop is what actually reaps completions, so this only stops
 /// a thundering herd at t=0.
+#[cfg(test)]
+#[allow(dead_code)]
 pub(super) const WAVE_SETTLE: Duration = Duration::from_secs(2);
 
 /// How many workstreams may be launched concurrently.
@@ -61,6 +77,8 @@ pub(crate) fn wave_size(count: usize, limit: usize) -> usize {
 /// Lives here rather than on `ParallelOrchestrator` so `orchestrator.rs` stays inside
 /// the 400-line brick limit that `multitask_orchestrator_spec_test` enforces -- the
 /// limit was doing its job: that file was already 4 lines from the cap.
+#[cfg(test)]
+#[allow(dead_code)]
 pub(super) fn launch_all(
     workstreams: &mut [Workstream],
     processes: &mut HashMap<i64, Arc<Mutex<Option<Child>>>>,
@@ -90,6 +108,8 @@ pub(super) fn launch_all(
 ///
 /// Keeps the announcement and the reasoning here so `orchestrator::launch_all` stays
 /// short enough for the brick limit.
+#[cfg(test)]
+#[allow(dead_code)]
 pub(super) fn plan(count: usize) -> usize {
     let limit = concurrency_limit();
     if limit != 0 && count > limit {

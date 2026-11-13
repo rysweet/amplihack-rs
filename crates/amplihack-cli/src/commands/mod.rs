@@ -823,6 +823,23 @@ fn dispatch_mode(command: ModeCommands) -> Result<()> {
 
 fn dispatch_multitask(command: MultitaskCommands) -> Result<()> {
     match command {
+        MultitaskCommands::Operation {
+            context_file,
+            output_name,
+            request_file,
+        } => multitask::run_operation(&context_file, &output_name, &request_file),
+        MultitaskCommands::CaptureAnswer { context_file } => {
+            multitask::capture_answer(&context_file)
+        }
+        MultitaskCommands::CaptureDelivery {
+            context_file,
+            recipe,
+        } => multitask::capture_delivery(&context_file, &recipe),
+        MultitaskCommands::Complete { context_file } => multitask::complete(&context_file),
+        MultitaskCommands::Reconcile {
+            config,
+            resolution_file,
+        } => multitask::run_reconcile(&config, &resolution_file),
         MultitaskCommands::Run {
             config,
             mode,

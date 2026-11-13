@@ -1,334 +1,154 @@
 ---
-title: Verify Dev-Orchestrator Routing
-description: Check that Development workstreams route to default-workflow or quick-change while hybrid non-Development workstreams keep their routes.
-last_updated: 2026-10-29
+title: Verify dev-orchestrator routing
+description: Exercise leaf routing, optional issues, tracking and resumption through isolated Rust fixtures.
+last_updated: 2026-11-12
 review_schedule: quarterly
 owner: amplihack
 doc_type: howto
 ---
 
-# Verify Dev-Orchestrator Routing
+# Verify dev-orchestrator routing
 
-Use this guide to verify the deterministic Development routing contract from the command line: Development workstreams run `default-workflow`, or `quick-change` for small single-workstream tasks. Binaries that predate this behavior may fail these checks by preserving an incorrect model-provided `recipe`.
+> **[IMPLEMENTED - Validation Pending]** Feature acceptance is pending. The five
+> `issue_2553_*` modules listed below are absent from the current tree and are
+> not registered in `crates/amplihack-cli/tests/main.rs`. Their names describe
+> required coverage, not tests that have run or passed.
+
+Use this procedure after implementing and registering the Rust behavioural
+fixtures. They must verify the full path from decomposition through configuration
+to execution. Valid JSON and local links alone do not establish routing behaviour.
 
 ## Prerequisites
 
-- Run from the repository root.
-- Install amplihack so `amplihack orch helper` is available.
-- Use an installed bundle that contains `smart-orchestrator`, `smart-classify-route`, and `smart-execute-routing`.
+Run from the repository root with the pinned Rust toolchain and recipe runner
+available. The fixtures must use temporary repositories, homes, profile roots,
+configuration, runtime and temporary directories. They clear inherited agent
+and issue-specific configuration and use private tmux sockets where needed.
+They must never access the real `~/.claude`, `~/.amplihack`, `~/.codex` or profile root.
 
-## Verify a Development workstream with a missing recipe
+## Implement and register coverage first
 
-Create a decomposition payload:
+Implement these proposed integration modules, then register them with `mod`
+declarations and paths in [tests/main.rs](../../crates/amplihack-cli/tests/main.rs).
+Registration is required because `cli_integration` uses that explicit entry point.
 
-```bash
-cat > /tmp/dev-routing-missing-recipe.json <<'JSON'
-{
-  "task_type": "Development",
-  "workstreams": [
-    {
-      "name": "missing-recipe",
-      "classification": "Development",
-      "description": "Fix the routing bug"
-    }
-  ]
-}
-JSON
-```
+| Planned module (not yet registered) | Required behaviour |
+| --- | --- |
+| `issue_2553_plan_contract` | Full-plan validation, classification precedence, dependencies, optional issue parsing through `u64::MAX`, serialisation and stable identities |
+| `issue_2553_operations_routing` | Administrative examples, mixed requests, tracked documentation edits, recipe coercion, per-leaf overrides and dirty initial repositories |
+| `issue_2553_tracking_resolution` | Supplied or persisted issue reuse, explicit producer/output bindings, required creation, definite failure, ambiguous outcomes and no unsolicited creation |
+| `issue_2553_dependency_execution` | Readiness, single launch, completion events, log EOF, typed results, hand-over validation, result persistence, blocked dependants and sequential fallback |
+| `issue_2553_state_ownership` | Multiple issue-less leaves, resume, interrupted external mutations, legacy adaptation and cancellation/cleanup ownership |
 
-Normalize it:
+Include reconciliation success, proven non-application with explicit retry,
+unresolved and partial outcomes, stale revisions, duplicate resolution
+submissions, ownership rejection and failed durable writes in the tracking and
+state modules. Verify that resolving one action cannot replay earlier successful
+actions or release dependants before the whole prerequisite succeeds.
 
-```bash
-WS_FILE=$(amplihack orch helper build-workstreams-config < /tmp/dev-routing-missing-recipe.json)
-jq '.[0].recipe' "$WS_FILE"
-```
+## Run the registered behavioural fixtures
 
-Expected output:
-
-```json
-"default-workflow"
-```
-
-## Verify a Development workstream with the wrong recipe
-
-Create a decomposition payload:
+After implementation and registration, inventory the selected tests first:
 
 ```bash
-cat > /tmp/dev-routing-wrong-recipe.json <<'JSON'
-{
-  "task_type": "Development",
-  "workstreams": [
-    {
-      "name": "wrong-recipe",
-      "classification": "Development",
-      "description": "Add routing regression tests",
-      "recipe": "investigation-workflow"
-    }
-  ]
-}
-JSON
+cargo test --locked -p amplihack-cli --test cli_integration issue_2553_ -- --list
 ```
 
-Normalize it:
+Expected result after registration: fully qualified test names appear under all
+five modules. If no tests are listed or a required module is missing, stop:
+acceptance remains pending. A successful command with zero selected tests is
+not a passing feature check.
+
+Then execute the fixtures:
 
 ```bash
-WS_FILE=$(amplihack orch helper build-workstreams-config < /tmp/dev-routing-wrong-recipe.json)
-jq '.[0].recipe' "$WS_FILE"
+cargo test --locked -p amplihack-cli --test cli_integration issue_2553_
 ```
 
-Expected output:
+Expected result after implementation: the selected applicable tests execute and
+pass. Each execution fixture must record actual runner invocations, child
+contexts, external-adapter calls and owned artefacts. Isolated Rust executables
+stand in for agents and external tools; these tests must not create live GitHub
+issues. This guide records no feature pass result before those fixtures exist.
 
-```json
-"default-workflow"
-```
+## Check the acceptance scenarios
 
-## Verify hybrid route preservation
+Use the fixture traces to check these outcomes:
 
-Create a mixed decomposition payload:
+1. Triage, issue creation and assignment, research answers, status and
+   coordination reach `operations-direct` with one scoped task. There are no
+   Development workflow, clone, worktree, branch or implementation-PR calls.
+2. A mixed request executes each leaf once. The motivating programme-name
+   request and cross-repository documentation edits send only file changes
+   through Development; prerequisite results arrive with provenance.
+3. An issue-less decomposition reaches its execution fixture without issue
+   context. Multiple issue-less leaves have separate identity, state, logs,
+   artefact directories and process tracking.
+4. Missing, null and blank issue values, all recognised placeholders with case
+   and whitespace variants, valid positive numbers and malformed values follow
+   the [shared parser contract](../reference/dev-orchestrator-routing.md#optional-issue-parsing).
+5. Required tracking creates a validated fixture issue before downstream execution.
+   Persisted success is reused. Definite failure remains visible, and unknown
+   outcomes do not trigger a second creation attempt. A producer-bound issue
+   resolves only from its declared output with matching UUID and repository.
+6. Sequential mode, depth limits, strict delivery, resume and fallback retain
+   the same leaves, routes and dependencies. Completed Operations are skipped;
+   uncertain external mutations require reconciliation.
+   Supported reconciliation durably records the verified outcome; only an
+   explicitly authorised, proven-safe retry permits a new attempt.
+7. Failed prerequisite persistence or invalid completion evidence prevents
+   dependant launch. Cleanup leaves the Operations repository intact and
+   rejects ambiguous ownership.
+8. Every Development result carries its effective workflow. A `quick-change`
+   hand-over receives `default-workflow` validation in serial and parallel
+   execution; parent context loss cannot skip the gates.
 
-```bash
-cat > /tmp/dev-routing-hybrid.json <<'JSON'
-{
-  "task_type": "Development",
-  "workstreams": [
-    {
-      "name": "investigate",
-      "classification": "Investigation",
-      "description": "Trace current routing behavior",
-      "recipe": "investigation-workflow"
-    },
-    {
-      "name": "implement",
-      "classification": "Development",
-      "description": "Enforce Development routing",
-      "recipe": "investigation-workflow"
-    },
-    {
-      "name": "answer",
-      "classification": "Q&A",
-      "description": "Explain the routing contract",
-      "recipe": "qa-workflow"
-    },
-    {
-      "name": "operate",
-      "classification": "Operations",
-      "description": "Run routing diagnostics",
-      "recipe": "sentinel-preserved-operations-route"
-    },
-    {
-      "name": "decide",
-      "classification": "Consensus",
-      "description": "Select the rollout strategy",
-      "recipe": "consensus-workflow"
-    }
-  ]
-}
-JSON
-```
+Fixture synchronisation must use process completion, events, readiness signals and
+isolation. Sleeps, polling, interval probes, timed retries and wall-clock test
+windows are not used. Source-text compliance scans do not satisfy these checks.
 
-Normalize it:
+## Check interpretation separately
 
-```bash
-WS_FILE=$(amplihack orch helper build-workstreams-config < /tmp/dev-routing-hybrid.json)
-jq '[.[] | {description, recipe}]' "$WS_FILE"
-```
+Run the [calibration requests](../reference/workflow-classifier.md#calibration-cases)
+through the model-backed classifier in an isolated environment. Compare its
+classifications, executable leaves, output destinations and dependencies with
+the expected interpretation. Include the original motivating request.
 
-Expected output:
+Report calibration separately from deterministic fixture routing. A fixture
+that supplies `Operations` as input proves the handling of that label; it
+does not establish that the model recognised an administrative task in prose.
 
-```json
-[
-  {
-    "description": "investigate",
-    "recipe": "investigation-workflow"
-  },
-  {
-    "description": "implement",
-    "recipe": "default-workflow"
-  },
-  {
-    "description": "answer",
-    "recipe": "qa-workflow"
-  },
-  {
-    "description": "operate",
-    "recipe": "sentinel-preserved-operations-route"
-  },
-  {
-    "description": "decide",
-    "recipe": "consensus-workflow"
-  }
-]
-```
+## Validate on macOS and Linux
 
-Only the `Development` workstream is rewritten. Non-Development workstreams keep the route selected by classification and decomposition. The Operations recipe above is a sentinel preservation value for helper-output verification, not a real bundle recipe to execute with `amplihack orch run`.
+After registration, run the applicable Rust tests on macOS and Linux. Preserve
+platform gating for tests that actually require Linux facilities such as
+`/proc`, pidfd ownership checks or FIFO pools. Do not classify an entire proposed
+module as Linux-only without inspecting its implemented tests.
 
-## Verify top-level fallback for unclassified workstreams
+Record actual commands, exit statuses and executed/passed/failed counts in the
+implementation PR and CI logs. Compare the macOS and Linux `-- --list`
+inventories and inspect each difference's platform gate. List every Linux-only
+omission by its exact fully qualified Rust test name, gate/reason and Linux CI
+result or pending job. Also record ignored tests, runtime skips and unavailable
+tools; listing a test does not prove its body ran. No exact omission inventory
+can be claimed for the five proposed modules before they exist. Until both
+inventories and actual results are available, platform validation is pending.
 
-Create a decomposition payload where the workstream has no own `classification`, `task_type`, or `type`:
+Run applicable formatting, Clippy and configured hooks without bypasses,
+including `pre-commit run --all-files`. Do not disable hooks, force-push or
+change versions. The implementation PR includes `Fixes #2553`; candide owns
+the subsequent PR drive and merge.
 
-```bash
-cat > /tmp/dev-routing-top-level-fallback.json <<'JSON'
-{
-  "task_type": "Development",
-  "workstreams": [
-    {
-      "name": "fallback",
-      "description": "Fix a workstream that relies on top-level classification",
-      "recipe": "investigation-workflow"
-    }
-  ]
-}
-JSON
-```
+## Diagnose failures
 
-Normalize it:
+| Observation | Check |
+| --- | --- |
+| Operations starts `default-workflow` | Route coercion, fallback handling and bundle/binary agreement |
+| A documentation edit runs directly | Action/destination classification and the leaf's explicit classification |
+| Missing tracking stops execution | Shared issue parser and omitted context at every boundary |
+| A sibling's issue leaks into a child | Inherited variable removal and per-leaf context construction |
+| Issue creation repeats on resume | Stable identity, durable tracking attempt and reconciliation state |
+| A dependant starts before durable success | Completion validation and persistence ordering |
 
-```bash
-WS_FILE=$(amplihack orch helper build-workstreams-config < /tmp/dev-routing-top-level-fallback.json)
-jq '.[0].recipe' "$WS_FILE"
-```
-
-Expected output:
-
-```json
-"default-workflow"
-```
-
-Per-workstream classification wins when present. Top-level `task_type` is used only when the workstream has no own classification, so an unclassified workstream under top-level `Development` routes to `default-workflow`.
-
-## Verify that a model quick-change recipe is not kept
-
-`build-workstreams-config` runs only for a parallel decomposition, and `quick-change` needs exactly one workstream, so the model's `recipe` field never selects it:
-
-```bash
-cat > /tmp/dev-routing-quick-change.json <<'JSON'
-{
-  "task_type": "Development",
-  "workstreams": [
-    {
-      "name": "fix-link",
-      "classification": "Development",
-      "description": "Fix the broken link in docs/index.md",
-      "recipe": "quick-change"
-    },
-    {
-      "name": "fix-typo",
-      "classification": "Development",
-      "description": "Correct the misspelt word in the orch.rs doc comment",
-      "recipe": "quick-change"
-    }
-  ]
-}
-JSON
-WS_FILE=$(amplihack orch helper build-workstreams-config < /tmp/dev-routing-quick-change.json)
-jq -c '[.[].recipe]' "$WS_FILE"
-```
-
-Expected output:
-
-```json
-["default-workflow","default-workflow"]
-```
-
-Force `quick-change` with the override that `-c workflow=` sets. The helper applies it only for a Development task, as `select-workflow` does:
-
-```bash
-WS_FILE=$(RECIPE_VAR_workflow=quick-change RECIPE_VAR_task_type=Development \
-  amplihack orch helper build-workstreams-config < /tmp/dev-routing-quick-change.json)
-jq -c '[.[].recipe]' "$WS_FILE"
-```
-
-Expected output:
-
-```json
-["quick-change","quick-change"]
-```
-
-With `RECIPE_VAR_existing_branch` or `RECIPE_VAR_pr_number` also set, or a `Branch: <ref>` line in `RECIPE_VAR_task_description`, both workstreams get `default-workflow` again, because `quick-change` cannot work on an existing or named branch.
-
-## Verify the workflow selection and log line
-
-```bash
-printf '%s' '{"recommended_workflow":"quick-change","workflow_reason":"comment typo"}' \
-  | amplihack orch helper select-workflow --task-type Development --workstream-count 2
-```
-
-Expected stdout, because `quick-change` needs exactly one workstream:
-
-```text
-default-workflow
-```
-
-Expected stderr:
-
-```text
-[dev-orchestrator] Workflow: default-workflow source=classifier reason=quick-change needs one workstream; got 2
-```
-
-An override on a non-Development task is ignored:
-
-```bash
-printf '%s' '{}' \
-  | amplihack orch helper select-workflow --override quick-change --task-type 'Q&A' --workstream-count 1
-```
-
-Expected stdout is `none`, and stderr starts with:
-
-```text
-[dev-orchestrator] WARNING: workflow override 'quick-change' ignored for task_type Q&A
-```
-
-A task that names its branch never gets `quick-change`, because `workflow-worktree` would give it that branch in place of a `quick/` one. The helper reads the task text from `RECIPE_VAR_task_description`, where the recipe runner puts it:
-
-```bash
-printf '%s' '{"recommended_workflow":"quick-change","workflow_reason":"comment typo"}' \
-  | RECIPE_VAR_task_description=$'Fix the typo.\nBranch: feat/issue-9-typo' \
-    amplihack orch helper select-workflow --task-type Development --workstream-count 1
-```
-
-Expected stdout is `default-workflow`, and stderr is:
-
-```text
-[dev-orchestrator] Workflow: default-workflow source=classifier reason=task names a branch
-```
-
-The full precedence table is in [Quick-Change Recipe: Routing from smart-orchestrator](../reference/quick-change-recipe.md#routing-from-smart-orchestrator).
-
-## Verify with focused tests
-
-Run the routing helper regression tests:
-
-```bash
-NODE_OPTIONS=--max-old-space-size=32768 cargo test -p amplihack-cli orch
-```
-
-Run the quick-change selection and recipe tests:
-
-```bash
-NODE_OPTIONS=--max-old-space-size=32768 cargo test -p amplihack-cli --test cli_integration issue_1740
-```
-
-Run the workflow reliability contract tests:
-
-```bash
-NODE_OPTIONS=--max-old-space-size=32768 cargo test -p amplihack-cli --test cli_integration issue_672_workflow_reliability_contracts::
-```
-
-## Troubleshooting
-
-| Symptom | Cause | Fix |
-| --- | --- | --- |
-| Development workstream keeps `investigation-workflow` | An old binary or stale installed bundle is being used | Run `cargo build -p amplihack-cli`, then run the intended binary explicitly or refresh the install |
-| Every workstream becomes `default-workflow` | Top-level classification is being applied too broadly | Ensure each hybrid workstream that should keep a non-Development route carries its own `classification`, `task_type`, or `type` |
-| `RECIPE_VAR_workflow=quick-change` leaves Development workstreams on `default-workflow` | `RECIPE_VAR_task_type` is not `Development`, `RECIPE_VAR_existing_branch` or `RECIPE_VAR_pr_number` is set, or `RECIPE_VAR_task_description` names a branch | Expected: the override applies only to a Development task that does not target an existing or named branch or a PR (W2, W3 and W4) |
-| Development workstream with `recipe: "quick-change"` becomes `default-workflow` | Expected in a parallel decomposition: the model's `recipe` never selects `quick-change` | Use `-c workflow=quick-change` to force it |
-| `WARNING: unknown workflow override` | `-c workflow=` holds a value other than `quick-change` or `default-workflow` | Correct the value; it is matched after trimming and lower-casing |
-| `amplihack orch helper` is missing | The installed CLI is too old | Rebuild or reinstall amplihack |
-| `jq` is missing | The examples use `jq` for display only | Inspect the workstreams file with another JSON viewer |
-
-## Related
-
-- [Dev-Orchestrator Routing Contract](../reference/dev-orchestrator-routing.md)
-- [Quick-Change Recipe](../reference/quick-change-recipe.md)
-- [`amplihack orch run`](../reference/orch-run-command.md)
-- [Getting Started with /dev](../tutorials/dev-orchestrator-tutorial.md)
+See the [routing contract](../reference/dev-orchestrator-routing.md) and
+[state reference](../reference/workstream-state.md) for the corresponding invariants.

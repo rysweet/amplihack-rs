@@ -55,6 +55,8 @@ pub enum OrchCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum OrchHelperCommands {
+    /// Allocate a portable execution session identifier in Rust
+    NewSessionId,
     /// Portable auto-drive record, state, and local Git operations.
     Autodrive {
         #[command(subcommand)]
@@ -351,17 +353,27 @@ pub fn extract_json_with_field(text: &str, field: &str) -> Option<serde_json::Va
 /// Order matters — first matching keyword wins, mirroring Python's
 /// short-circuit `any()` chain.
 pub fn normalise_type(raw: &str) -> &'static str {
-    let t = raw.to_ascii_lowercase();
+    let t = raw.trim().to_ascii_lowercase();
     if ["q&a", "qa", "question", "answer"]
         .iter()
         .any(|k| t.contains(k))
     {
         return "Q&A";
     }
-    if ["ops", "operation", "admin", "command"]
-        .iter()
-        .any(|k| t.contains(k))
+    if [
+        "ops",
+        "operation",
+        "admin",
+        "command",
+        "project management",
+        "project-management",
+    ]
+    .iter()
+    .any(|k| t.contains(k))
     {
+        return "Operations";
+    }
+    if t == "pm" {
         return "Operations";
     }
     if ["invest", "research", "explor", "analys", "understand"]
@@ -521,6 +533,10 @@ fn read_bounded_stdin() -> String {
 /// CLI entry point for `amplihack orch helper <subcommand>`.
 pub fn run(command: OrchHelperCommands) -> Result<()> {
     match command {
+        OrchHelperCommands::NewSessionId => {
+            println!("{}", uuid::Uuid::new_v4());
+            Ok(())
+        }
         OrchHelperCommands::Autodrive { operation } => autodrive::helper::run(operation),
         OrchHelperCommands::AutodriveCompletionPrepare(args) => autodrive_completion::prepare(args),
         OrchHelperCommands::AutodriveCompletionSeal { private_state } => {
@@ -579,12 +595,20 @@ pub fn run(command: OrchHelperCommands) -> Result<()> {
                 &var("RECIPE_VAR_pr_number"),
                 &var("RECIPE_VAR_task_description"),
             );
-            let effective = select_workflow::parallel_override(
-                &workflow,
-                &var("RECIPE_VAR_task_type"),
-                target.is_some(),
-            )
-            .unwrap_or("");
+            let selected = var("RECIPE_VAR_selected_workflow");
+            let requested = if workflow.trim().is_empty()
+                && count_workstreams(&input) == 1
+                && selected == "quick-change"
+            {
+                selected.as_str()
+            } else {
+                workflow.as_str()
+            };
+            // The validated normaliser applies this selection only to Development
+            // leaves, including those in an Operations-led mixed plan.
+            let effective =
+                select_workflow::parallel_override(requested, "Development", target.is_some())
+                    .unwrap_or("");
             let path = build_workstreams_config_with_override(&input, effective)?;
             println!("{path}");
             Ok(())
@@ -666,110 +690,8 @@ pub fn reclassify_task_type(current: &str, task: &str) -> String {
     canonical.to_string()
 }
 
-/// True if `haystack` contains `needle` as a whole word (separated by
-/// non-alphanumeric chars or string boundaries). All inputs assumed lowercase.
-fn contains_word(haystack: &str, needle: &str) -> bool {
-    let nlen = needle.len();
-    if nlen == 0 || nlen > haystack.len() {
-        return false;
-    }
-    let bytes = haystack.as_bytes();
-    let mut start = 0;
-    while let Some(idx) = haystack[start..].find(needle) {
-        let abs = start + idx;
-        let before_ok = abs == 0 || !bytes[abs - 1].is_ascii_alphanumeric();
-        let after = abs + nlen;
-        let after_ok = after == bytes.len() || !bytes[after].is_ascii_alphanumeric();
-        if before_ok && after_ok {
-            return true;
-        }
-        start = abs + 1;
-    }
-    false
-}
-
 fn has_strong_dev_signals(task: &str) -> bool {
-    let lower = task.to_lowercase();
-
-    // 1. Explicit PR mention is an unambiguous dev signal.
-    let mentions_pr = lower.contains("open a pr")
-        || lower.contains("open pr")
-        || lower.contains("pull request")
-        || lower.contains("opens a pr");
-    if mentions_pr {
-        return true;
-    }
-
-    // 2. Test-writing language — Operations doesn't write tests.
-    let mentions_tests = lower.contains("unit test")
-        || lower.contains("unit tests")
-        || lower.contains("write tests")
-        || lower.contains("add tests")
-        || lower.contains("add a test")
-        || lower.contains("test coverage");
-    if mentions_tests {
-        return true;
-    }
-
-    // 3. Verb signals (word-boundary aware to avoid e.g. "report" → "port").
-    let dev_verbs = [
-        "add",
-        "extend",
-        "implement",
-        "create",
-        "build",
-        "refactor",
-        "port",
-    ];
-    let has_dev_verb = dev_verbs.iter().any(|v| contains_word(&lower, v));
-
-    // 4. Source-file/path signals.
-    let path_markers = [
-        "src/",
-        "crates/",
-        "bins/",
-        "lib/",
-        "tests/",
-        "amplifier-bundle/",
-        ".rs ",
-        ".rs.",
-        ".rs:",
-        ".rs,",
-        ".py ",
-        ".py.",
-        ".py:",
-        ".py,",
-        ".ts ",
-        ".tsx",
-        ".js ",
-        ".go ",
-        ".java ",
-        ".cpp ",
-        ".c ",
-        ".h ",
-    ];
-    let has_path = path_markers.iter().any(|p| lower.contains(p))
-        || lower.contains(".rs)")
-        || lower.contains(".py)")
-        || lower.ends_with(".rs")
-        || lower.ends_with(".py");
-
-    if has_dev_verb && has_path {
-        return true;
-    }
-
-    // 5. Multi-requirement structure: 3+ enumerated items like "(1)", "(2)".
-    let mut req_count = 0;
-    for n in 1..=9 {
-        if lower.contains(&format!("({n})")) {
-            req_count += 1;
-        }
-    }
-    if req_count >= 3 && has_dev_verb {
-        return true;
-    }
-
-    false
+    amplihack_workflows::classifier::requires_repository_edit(task)
 }
 
 /// Extract `field` from a top-level JSON object. Returns the string form of
@@ -818,75 +740,8 @@ pub fn count_workstreams(decomp: &str) -> usize {
     raw.max(1)
 }
 
-fn workstream_classification<'a>(
-    ws: &'a serde_json::Value,
-    top_level_task_type: Option<&'a str>,
-) -> Option<&'a str> {
-    ["classification", "task_type", "type"]
-        .iter()
-        .find_map(|field| ws.get(*field).and_then(|v| v.as_str()))
-        .or(top_level_task_type)
-}
-
-fn normalise_workstream_classification(raw: &str) -> &'static str {
-    let lower = raw.to_ascii_lowercase();
-    if lower.contains("consensus") {
-        return "Consensus";
-    }
-    normalise_type(raw)
-}
-
-/// Recipe for one workstream of a parallel decomposition (#1740). This
-/// builder runs only when there is more than one workstream, and
-/// `quick-change` needs exactly one (row 6 of the precedence table), so the
-/// model's `recipe` never selects it:
-///
-/// - Development: a valid `-c workflow=` override, else `default-workflow`.
-/// - Any other classification: the model's recipe is kept, except that
-///   `quick-change` (which commits, pushes and opens a PR) becomes the
-///   classification's own recipe; see [`non_development_recipe`].
-fn normalise_workstream_recipe(
-    ws: &serde_json::Value,
-    top_level_task_type: Option<&str>,
-    override_workflow: Option<&'static str>,
-) -> String {
-    let raw_recipe = ws
-        .get("recipe")
-        .and_then(|v| v.as_str())
-        .unwrap_or(select_workflow::DEFAULT_WORKFLOW);
-    let classification =
-        workstream_classification(ws, top_level_task_type).map(normalise_workstream_classification);
-
-    if classification == Some("Development") {
-        return override_workflow
-            .unwrap_or(select_workflow::DEFAULT_WORKFLOW)
-            .to_string();
-    }
-    if raw_recipe
-        .trim()
-        .eq_ignore_ascii_case(select_workflow::QUICK_CHANGE)
-    {
-        return non_development_recipe(classification).to_string();
-    }
-    raw_recipe.to_string()
-}
-
-/// The recipe a non-Development workstream gets in place of `quick-change`.
-/// Operations has no recipe of its own, so it gets `default-workflow`, as an
-/// Operations workstream with no `recipe` field does.
-fn non_development_recipe(classification: Option<&str>) -> &'static str {
-    match classification {
-        Some("Investigation") => "investigation-workflow",
-        Some("Q&A") => "qa-workflow",
-        Some("Consensus") => "consensus-workflow",
-        _ => select_workflow::DEFAULT_WORKFLOW,
-    }
-}
-
 /// Build the workstreams-config tempfile from a decomposition JSON blob and
-/// return the path. Mirrors the `create-workstreams-config` Python heredoc:
-/// each entry has `issue: "TBD"`, `branch: feat/orch-{i}-{slug}`,
-/// `description`, `task`, `recipe` (default `default-workflow`).
+/// return the path after complete pure plan validation and trusted route selection.
 pub fn build_workstreams_config_to_tempfile(decomp: &str) -> Result<String> {
     build_workstreams_config_with_override(decomp, "")
 }
@@ -899,50 +754,14 @@ pub fn build_workstreams_config_with_override(
     decomp: &str,
     override_value: &str,
 ) -> Result<String> {
-    let override_workflow = select_workflow::valid_override(override_value);
-    let obj = extract_json(decomp).unwrap_or(serde_json::json!({}));
-    let top_level_task_type = obj.get("task_type").and_then(|v| v.as_str());
-    let workstreams = obj
-        .get("workstreams")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    let mut entries: Vec<serde_json::Value> = Vec::with_capacity(workstreams.len());
-    for (i, ws) in workstreams.iter().enumerate() {
-        let idx = i + 1;
-        let name = ws
-            .get("name")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| format!("workstream-{idx}"));
-        let slug = slugify(&name, idx);
-        let task = ws
-            .get("description")
-            .and_then(|v| v.as_str())
-            .unwrap_or(&name)
-            .to_string();
-        let recipe = normalise_workstream_recipe(ws, top_level_task_type, override_workflow);
-        let mut entry = serde_json::json!({
-            "issue": "TBD",
-            "branch": format!("feat/orch-{idx}-{slug}"),
-            "description": name,
-            "task": task,
-            "recipe": recipe,
-        });
-        // Issue #1966: copy is_critical_code through for the consensus
-        // workflow to validate. A string is kept as is and a Boolean becomes
-        // "true" or "false"; any other type is left out.
-        let criticality = match ws.get("is_critical_code") {
-            Some(serde_json::Value::String(s)) => Some(s.clone()),
-            Some(serde_json::Value::Bool(b)) => Some(b.to_string()),
-            _ => None,
-        };
-        if let Some(v) = criticality {
-            entry["is_critical_code"] = serde_json::Value::String(v);
-        }
-        entries.push(entry);
-    }
+    let mut obj = extract_json(decomp).context("decomposition must contain a JSON plan")?;
+    super::multitask::plan::allocate_identities(&mut obj)?;
+    let roots = super::multitask::plan::repositories()?;
+    let entries = super::multitask::plan::normalise_plan(
+        &obj,
+        &super::multitask::plan::repository_names(&roots),
+        override_value.trim(),
+    )?;
 
     let dir = std::env::temp_dir();
     let mut tmp = tempfile::Builder::new()
@@ -969,28 +788,6 @@ pub fn build_workstreams_config_with_override(
         .keep()
         .context("failed to persist workstreams tempfile")?;
     Ok(path.to_string_lossy().into_owned())
-}
-
-/// Slugify a workstream name to `[a-z0-9-]{1,30}` with no leading/trailing
-/// `-`. Mirrors the Python regex `[^a-z0-9-]` → `-` then trim.
-fn slugify(name: &str, idx: usize) -> String {
-    let lower: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    let truncated: String = lower.chars().take(30).collect();
-    let trimmed = truncated.trim_matches('-').to_string();
-    if trimmed.is_empty() {
-        format!("ws-{idx}")
-    } else {
-        trimmed
-    }
 }
 
 /// Dispatch helper used by the top-level CLI: matches the `Orch` variant
@@ -1515,8 +1312,21 @@ mod tests {
 
     // --- build_workstreams_config_to_tempfile --------------------------------
 
+    fn complete_recipe_fixture(decomp: &str) -> String {
+        let mut value: serde_json::Value = serde_json::from_str(decomp).unwrap();
+        for leaf in value["workstreams"].as_array_mut().unwrap() {
+            if leaf.get("description").is_none() {
+                leaf["description"] = serde_json::json!(format!(
+                    "Complete the {} task",
+                    leaf["name"].as_str().unwrap()
+                ));
+            }
+        }
+        value.to_string()
+    }
+
     fn workstreams_config_from(decomp: &str) -> serde_json::Value {
-        let path = build_workstreams_config_to_tempfile(decomp).unwrap();
+        let path = build_workstreams_config_to_tempfile(&complete_recipe_fixture(decomp)).unwrap();
         let body = std::fs::read_to_string(&path).unwrap();
         std::fs::remove_file(&path).ok();
         serde_json::from_str(&body).unwrap()
@@ -1538,7 +1348,7 @@ mod tests {
         assert_eq!(arr.len(), 2);
 
         // Each entry has the required shape.
-        assert_eq!(arr[0]["issue"], "TBD");
+        assert!(arr[0].get("issue").is_none());
         assert_eq!(arr[0]["description"], "API service");
         assert_eq!(arr[0]["task"], "Implement the REST API");
         assert_eq!(arr[0]["recipe"], "default-workflow");
@@ -1620,7 +1430,7 @@ mod tests {
     }
 
     #[test]
-    fn non_development_workstream_recipes_are_preserved() {
+    fn non_development_workstreams_use_their_trusted_recipes() {
         let parsed = workstreams_config_from(
             r#"{
                 "task_type": "Development",
@@ -1635,7 +1445,7 @@ mod tests {
 
         assert_eq!(parsed[0]["recipe"], "investigation-workflow");
         assert_eq!(parsed[1]["recipe"], "qa-workflow");
-        assert_eq!(parsed[2]["recipe"], "ops-sentinel-workflow");
+        assert_eq!(parsed[2]["recipe"], "operations-direct");
         assert_eq!(parsed[3]["recipe"], "consensus-workflow");
     }
 
@@ -1653,7 +1463,8 @@ mod tests {
     }"#;
 
     fn recipes_with_override(decomp: &str, ov: &str) -> Vec<String> {
-        let path = build_workstreams_config_with_override(decomp, ov).unwrap();
+        let path =
+            build_workstreams_config_with_override(&complete_recipe_fixture(decomp), ov).unwrap();
         let body = std::fs::read_to_string(&path).unwrap();
         std::fs::remove_file(&path).ok();
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -1729,8 +1540,8 @@ mod tests {
                 "investigation-workflow",
                 "qa-workflow",
                 "consensus-workflow",
-                "default-workflow",
-                "qa-workflow",
+                "operations-direct",
+                "investigation-workflow",
             ]
         );
     }
@@ -1835,7 +1646,9 @@ mod tests {
     #[test]
     fn build_workstreams_config_truncates_slug_to_30_chars() {
         let long = "A".repeat(80);
-        let decomp = format!(r#"{{"workstreams": [{{"name": "{long}"}}]}}"#);
+        let decomp = format!(
+            r#"{{"workstreams": [{{"name": "{long}", "description": "Update tracked documentation."}}]}}"#
+        );
         let path = build_workstreams_config_to_tempfile(&decomp).unwrap();
         let body = std::fs::read_to_string(&path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -1857,7 +1670,8 @@ mod tests {
 
     #[test]
     fn slug_falls_back_when_input_has_no_alphanumeric() {
-        let decomp = r#"{"workstreams": [{"name": "!!!"}]}"#;
+        let decomp =
+            r#"{"workstreams": [{"name": "!!!", "description": "Update tracked documentation."}]}"#;
         let path = build_workstreams_config_to_tempfile(decomp).unwrap();
         let body = std::fs::read_to_string(&path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -1959,7 +1773,10 @@ mod tests {
             "Development"
         );
         assert_eq!(
-            reclassify_task_type("Operations", "Please open a pull request for the fix"),
+            reclassify_task_type(
+                "Operations",
+                "Please edit tracked src/lib.rs and open a pull request for the fix"
+            ),
             "Development"
         );
     }
@@ -1967,7 +1784,7 @@ mod tests {
     #[test]
     fn reclassify_promotes_on_test_mention_alone() {
         assert_eq!(
-            reclassify_task_type("Operations", "Write unit tests for the parser"),
+            reclassify_task_type("Operations", "Write tests for the parser"),
             "Development"
         );
         assert_eq!(
@@ -1987,16 +1804,16 @@ mod tests {
             "Development"
         );
         assert_eq!(
-            reclassify_task_type("Operations", "Implement amplifier-bundle/recipes/foo.yaml"),
+            reclassify_task_type("Operations", "Implement crates/workflows/src/foo.rs"),
             "Development"
         );
     }
 
     #[test]
-    fn reclassify_promotes_on_three_plus_numbered_reqs_with_dev_verb() {
-        let task = "Add a feature: (1) parse input, (2) validate config, \
-                    (3) emit metrics, (4) record audit log";
-        assert_eq!(reclassify_task_type("Operations", task), "Development");
+    fn reclassify_does_not_infer_repository_edits_from_requirement_counts() {
+        let task =
+            "Create a triage issue: (1) collect reports, (2) assign owners, (3) report status";
+        assert_eq!(reclassify_task_type("Operations", task), "Operations");
     }
 
     #[test]

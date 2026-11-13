@@ -1,17 +1,24 @@
 //! Utility functions for the parallel workstream orchestrator.
 
+#[cfg(test)]
 use amplihack_utils::idle_watchdog::{IdleConfig, file_idle_since};
+#[cfg(test)]
 use anyhow::{Result, bail};
+#[cfg(test)]
 use std::fs;
+#[cfg(test)]
 use std::io::{BufRead, BufReader, Write};
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 use std::os::unix::fs::OpenOptionsExt;
+#[cfg(test)]
 use std::path::Path;
+#[cfg(test)]
 use tracing::debug;
 
 /// Issue #867: a past-max_runtime child may be interrupted only if its log file
 /// has stopped growing for the idle window (`AMPLIHACK_IDLE_TIMEOUT_SECS`,
 /// default 300 s). A probe error is treated as "still live" — never interrupt.
+#[cfg(test)]
 pub(super) fn child_is_idle(log_file: &Path) -> bool {
     let idle = IdleConfig::from_env().idle_timeout;
     file_idle_since(log_file, idle).unwrap_or(false)
@@ -26,6 +33,7 @@ pub(super) fn default_base_dir() -> String {
 }
 
 /// Tail subprocess output to a log file and prefixed stdout.
+#[cfg(test)]
 pub(super) fn tail_output(
     stdout: impl std::io::Read,
     log_file: &Path,
@@ -40,7 +48,7 @@ pub(super) fn tail_output(
     let log_fd = {
         let mut opts = fs::OpenOptions::new();
         opts.write(true).create(true).truncate(true);
-        #[cfg(unix)]
+        #[cfg(all(test, unix))]
         opts.mode(0o600);
         opts.open(log_file)
     };
@@ -77,6 +85,7 @@ pub(super) fn tail_output(
 }
 
 /// Atomically write data to a file (write to tmp, then rename).
+#[cfg(test)]
 pub(super) fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -85,7 +94,7 @@ pub(super) fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     let mut file = {
         let mut opts = fs::OpenOptions::new();
         opts.write(true).create(true).truncate(true);
-        #[cfg(unix)]
+        #[cfg(all(test, unix))]
         opts.mode(0o600);
         opts.open(&tmp_path)?
     };
@@ -96,7 +105,8 @@ pub(super) fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
 }
 
 /// Set a file as executable (chmod +x). No-op on Windows.
-#[cfg(unix)]
+#[cfg(all(test, unix))]
+#[cfg(test)]
 pub(super) fn set_executable(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let mut perms = fs::metadata(path)?.permissions();
@@ -106,11 +116,13 @@ pub(super) fn set_executable(path: &Path) -> Result<()> {
 }
 
 #[cfg(not(unix))]
+#[cfg(test)]
 pub(super) fn set_executable(_path: &Path) -> Result<()> {
     Ok(())
 }
 
 /// Calculate total size of a directory tree.
+#[cfg(test)]
 pub(super) fn dir_size_bytes(path: &Path) -> u64 {
     let mut total = 0u64;
     if let Ok(entries) = fs::read_dir(path) {
@@ -127,6 +139,7 @@ pub(super) fn dir_size_bytes(path: &Path) -> u64 {
 }
 
 /// Simple pseudo-random u32 using time-based seed (no external crate needed).
+#[cfg(test)]
 pub(super) fn rand_u32() -> u32 {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -135,8 +148,9 @@ pub(super) fn rand_u32() -> u32 {
 }
 
 /// Check available disk space at the given path.
+#[cfg(test)]
 pub(super) fn check_disk_space(base_dir: &Path, min_free_gb: f64) -> Result<()> {
-    #[cfg(unix)]
+    #[cfg(all(test, unix))]
     {
         // Use statvfs to check available space
         let path_cstr = std::ffi::CString::new(base_dir.to_string_lossy().as_bytes())?;

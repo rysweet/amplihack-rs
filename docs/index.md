@@ -319,8 +319,11 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Recipe Runner Overview](recipes/README.md) - Architecture, YAML format, and creating custom recipes
 - [UltraThink Recipe Runner Integration](recipes/RECIPE_RUNNER_ULTRATHINK_INTEGRATION.md) - How ultrathink uses Recipe Runner for code-enforced workflow execution
 - [Recipe CLI Commands How-To](howto/recipe-cli-commands.md) - Task-oriented guide for using recipe commands
-- [Dev-Orchestrator Routing Contract](reference/dev-orchestrator-routing.md) - Issue #749 target rules for Development and hybrid workstream routing
-- [Verify Dev-Orchestrator Routing](howto/verify-dev-orchestrator-routing.md) - Check deterministic Development-to-default-workflow routing from the CLI
+- [Operations and Project-management Routing](operations-routing.md) - Planned administrative actions, repository edits and mixed requests
+- [Run Operations and Mixed Requests](howto/run-operations-and-mixed-work.md) - Planned usage, explicit tracking and supported reconciliation
+- [Dev-Orchestrator Routing Contract](reference/dev-orchestrator-routing.md) - Planned leaf plans, trusted routes, optional issues and result bindings
+- [Workstream State and Migration](reference/workstream-state.md) - Planned identities, JSON results, tracking attempts and safe resumption
+- [Verify Dev-Orchestrator Routing](howto/verify-dev-orchestrator-routing.md) - Pending acceptance coverage and the implementation/registration gate
 - [Quick-Change Recipe](reference/quick-change-recipe.md) - Single-session recipe for small changes: diff limits, hand-over to default-workflow, routing precedence and the `Workflow:` log line, `-c workflow=`
 - [Auto-Drive-Light Recipe](reference/auto-drive-light.md) - Smaller drive-to-merge recipe for small PRs: eligibility rules, escalation to auto-drive-to-merge, the task id its follow-up issues name, and the per-finding follow-up model it shares with auto-drive-to-merge
 - [Correlate Recipe Runs with Logs](howto/correlate-recipe-runs.md) - Match terminal output, final JSON, child process IDs, and runner log paths by run ID

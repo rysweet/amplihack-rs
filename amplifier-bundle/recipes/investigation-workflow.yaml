@@ -14,6 +14,7 @@ tags: ["investigation","workflow","composable","explore","verify","report"]
 # Context flows automatically between sub-recipes.
 
 context:
+  workstream_context_file: ""
   # The main question to investigate. When invoked via smart-orchestrator,
   # this is set by the routing step. When invoked directly, it's populated
   # from task_description (see investigation-prep preflight).
@@ -69,3 +70,12 @@ steps:
   - id: "investigation-report"
     type: "recipe"
     recipe: "investigation-report"
+
+  - id: "capture-workstream-answer"
+    type: "bash"
+    condition: "workstream_context_file"
+    command: |
+      set -euo pipefail
+      printf '%s' "${RECIPE_VAR_final_result:?workflow answer required}" |
+        amplihack multitask capture-answer --context-file "${RECIPE_VAR_workstream_context_file:?context required}"
+    output: "workstream_answer"

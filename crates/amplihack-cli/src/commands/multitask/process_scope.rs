@@ -90,17 +90,20 @@ pub fn validate_process_scope(
     if workstream_scope.repository.is_empty()
         || workstream_scope.repo_root.is_empty()
         || workstream_scope.workdir.is_empty()
-        || workstream_scope.branch.is_empty()
-        || workstream_scope.issue_id.is_empty()
+        || (matches!(
+            workstream_scope.recipe.as_str(),
+            "default-workflow" | "quick-change" | "consensus-workflow"
+        ) && workstream_scope.branch.is_empty())
         || workstream_scope.workstream_id.is_empty()
         || process_scope.repository.is_empty()
         || process_scope.repo_root.is_empty()
         || process_scope.workdir.is_empty()
-        || process_scope.branch.is_empty()
-        || process_scope.issue_id.is_empty()
         || process_scope.workstream_id.is_empty()
         || process_scope.process_started_at.is_empty()
         || process_scope.recorded_at.is_empty()
+        || process_scope.recipe_run_id.is_empty()
+        || process_scope.tree_id.is_empty()
+        || process_scope.work_item_id.is_empty()
     {
         return ProcessScopeValidation::MissingScope;
     }
@@ -167,7 +170,30 @@ pub fn process_start_metadata(pid: u32) -> Option<String> {
             .and_then(|(_, rest)| rest.split_whitespace().nth(19))
             .map(str::to_string)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
+        let size = std::mem::size_of::<libc::proc_bsdinfo>();
+        // proc_pidinfo initialises exactly this BSD process record on success.
+        let count = unsafe {
+            libc::proc_pidinfo(
+                pid as i32,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                info.as_mut_ptr().cast(),
+                size as i32,
+            )
+        };
+        if count != size as i32 {
+            return None;
+        }
+        let info = unsafe { info.assume_init() };
+        Some(format!(
+            "{}:{}",
+            info.pbi_start_tvsec, info.pbi_start_tvusec
+        ))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = pid;
         None
@@ -396,5 +422,48 @@ mod tests {
             ),
             ProcessScopeValidation::WorkstreamMismatch
         );
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod native_identity_tests {
+    use super::process_start_metadata;
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+
+    fn child_identity_contract() {
+        let home = tempfile::tempdir().unwrap();
+        let mut child = Command::new("/bin/cat")
+            .env_clear()
+            .env("HOME", home.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut input = child.stdin.take().unwrap();
+        input.write_all(b"ready\n").unwrap();
+        let mut ready = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        assert_eq!(ready, "ready\n");
+        let identity = process_start_metadata(child.id()).expect("live child start evidence");
+        assert!(!identity.is_empty());
+        assert_eq!(process_start_metadata(child.id()).as_ref(), Some(&identity));
+        drop(input);
+        assert!(child.wait().unwrap().success());
+        assert!(process_start_metadata(child.id()).is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn issue_2553_linux_start_ticks_follow_child_completion() {
+        child_identity_contract();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn issue_2553_macos_start_evidence_follows_child_completion() {
+        child_identity_contract();
     }
 }
