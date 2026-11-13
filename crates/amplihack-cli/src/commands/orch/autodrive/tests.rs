@@ -635,7 +635,7 @@ fn state_is_private_and_accepted_bytes_are_immutable_after_candidate_changes() {
 fn state_rejects_symlinks_traversal_unsafe_permissions_and_historical_completion() {
     use std::os::unix::{fs::PermissionsExt, fs::symlink};
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("state");
+    let root = dir.path().join("autodrive-state");
     let store = EvidenceStore::create(&root).unwrap();
     let auth = authorization("true", "false");
     let expected: Binding = serde_json::from_value(binding(&auth)).unwrap();
@@ -656,10 +656,40 @@ fn state_rejects_symlinks_traversal_unsafe_permissions_and_historical_completion
     let unsafe_file = root.join("unsafe.json");
     std::fs::write(&unsafe_file, serde_json::to_vec(&candidate(&auth)).unwrap()).unwrap();
     std::fs::set_permissions(&unsafe_file, std::fs::Permissions::from_mode(0o666)).unwrap();
+    // #2546: a world-writable file is refused and left unchanged.
     assert!(
         store
             .accept_candidate("unsafe.json", &auth, &expected)
-            .is_err()
+            .is_err(),
+        "a world-writable evidence file is refused"
+    );
+    assert_eq!(
+        std::fs::metadata(&unsafe_file)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o666
+    );
+    std::fs::set_permissions(&unsafe_file, std::fs::Permissions::from_mode(0o664)).unwrap();
+    // #2546: our own file with group bits only is repaired, not refused.
+    store
+        .accept_candidate("unsafe.json", &auth, &expected)
+        .unwrap();
+    assert_eq!(
+        std::fs::metadata(&unsafe_file)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    std::fs::hard_link(&unsafe_file, dir.path().join("second-name.json")).unwrap();
+    assert!(
+        store
+            .accept_candidate("unsafe.json", &auth, &expected)
+            .is_err(),
+        "a hard-linked evidence file is still refused"
     );
     std::fs::write(root.join("merge.completed"), "DONE").unwrap();
     assert!(
@@ -677,16 +707,27 @@ fn state_rejects_symlinks_traversal_unsafe_permissions_and_historical_completion
 fn state_rejects_special_files_and_untrusted_existing_directory_modes() {
     use std::os::unix::{fs::PermissionsExt, net::UnixListener};
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("state");
+    let root = dir.path().join("autodrive-state");
     let store = EvidenceStore::create(&root).unwrap();
     let auth = authorization("true", "false");
     let expected: Binding = serde_json::from_value(binding(&auth)).unwrap();
-    let _socket = UnixListener::bind(root.join("socket")).unwrap();
-    assert!(store.accept_candidate("socket", &auth, &expected).is_err());
+    // A one-letter name keeps the socket path within the sun_path limit
+    // under a long TMPDIR.
+    let _socket = UnixListener::bind(root.join("s")).unwrap();
+    assert!(store.accept_candidate("s", &auth, &expected).is_err());
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o777)).unwrap();
-    assert!(
-        EvidenceStore::create(&root).is_err(),
-        "permission repair cannot grant provenance to an unsafe historical directory"
+    // #2546: a world-writable state folder is refused and left unchanged.
+    assert!(EvidenceStore::create(&root).is_err());
+    assert_eq!(
+        std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+        0o777
+    );
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o775)).unwrap();
+    // #2546: our own `autodrive-state` folder with group bits is repaired.
+    EvidenceStore::create(&root).unwrap();
+    assert_eq!(
+        std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+        0o700
     );
 }
 
@@ -1525,4 +1566,861 @@ fn crusty_objective_completion_without_merge_ready_receipt_stays_incomplete() {
             "{no_merge}: {report}"
         );
     }
+}
+
+// ── #2546: umask 002 and repair of our own state ──
+//
+// The umask is per process and sibling tests create files concurrently, so the
+// umask tests run alone in a child of the test binary. The parent test process
+// never changes its umask.
+
+#[cfg(unix)]
+const UMASK_2546_CHILD: &str = "AMPLIHACK_ISSUE_2546_UMASK_CHILD";
+
+/// The log line the evidence check writes for each repaired entry.
+#[cfg(unix)]
+const REPAIR_2546: &str = "removed group and other access";
+
+/// The refusal for an entry with extra bits outside the state tree (row 7).
+const OUTSIDE_2546: &str = "evidence outside the auto-drive state tree has group or other access";
+
+/// Runs `body` in a child test process under `mask`, and returns its stderr.
+#[cfg(unix)]
+fn under_umask_2546(test: &str, mask: libc::mode_t, body: impl FnOnce()) -> Option<String> {
+    if std::env::var_os(UMASK_2546_CHILD).is_some() {
+        // SAFETY: umask has no failure mode, and this child runs only this test.
+        let old = unsafe { libc::umask(mask) };
+        body();
+        unsafe { libc::umask(old) };
+        return None;
+    }
+    let name = format!("commands::orch::autodrive_contract_tests::{test}");
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", &name, "--test-threads=1", "--nocapture"])
+        .env(UMASK_2546_CHILD, "1")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        output.status.success(),
+        "{name} failed under umask {mask:o}:\n{stdout}\n{stderr}"
+    );
+    assert!(
+        stdout.contains("test result: ok. 1 passed"),
+        "re-running {name} ran no test:\n{stdout}"
+    );
+    Some(stderr)
+}
+
+#[cfg(unix)]
+fn mode_2546(path: &std::path::Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::symlink_metadata(path)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o7777
+}
+
+/// Every folder at or below `root` is 0700 and every file 0600.
+#[cfg(unix)]
+fn assert_private_tree_2546(root: &std::path::Path) {
+    let meta = std::fs::symlink_metadata(root).unwrap();
+    if meta.is_dir() {
+        assert_eq!(mode_2546(root), 0o700, "folder {}", root.display());
+        for entry in std::fs::read_dir(root).unwrap() {
+            assert_private_tree_2546(&entry.unwrap().path());
+        }
+    } else {
+        assert!(meta.is_file(), "{} is not a regular file", root.display());
+        assert_eq!(mode_2546(root), 0o600, "file {}", root.display());
+    }
+}
+
+#[cfg(unix)]
+fn repair_lines_2546(stderr: &str) -> Vec<&str> {
+    stderr.lines().filter(|l| l.contains(REPAIR_2546)).collect()
+}
+
+/// Stand-in for the amplihack binary the completion context script calls. It
+/// records the mode of each --context-from-file target and of its folder while
+/// they still exist (the script removes them afterwards).
+#[cfg(unix)]
+const CONTEXT_STUB_2546: &str = r#"#!/usr/bin/env bash
+mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+while [ $# -gt 0 ]; do
+  if [ "$1" = --context-from-file ]; then
+    p="${2#*=}"
+    printf '%s %s %s\n' "$(mode "$p")" "$(mode "$(dirname "$p")")" "${2%%=*}" >> "$STUB_MODES"
+    shift
+  fi
+  shift
+done
+printf '{}'
+"#;
+
+/// Runs the shell writers under `umask 002` against `state`: the phase marker
+/// from autodrive_state.sh and the completion_context writer. Returns the
+/// recorded "<file mode> <folder mode> <name>" lines from the stub.
+#[cfg(unix)]
+fn run_shell_writers_2546(state: &std::path::Path) -> Vec<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let tools = concat!(env!("CARGO_MANIFEST_DIR"), "/../../amplifier-bundle/tools");
+    let stub_dir = tempfile::tempdir().unwrap();
+    let stub = stub_dir.path().join("amplihack-stub");
+    std::fs::write(&stub, CONTEXT_STUB_2546).unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let modes = stub_dir.path().join("modes.txt");
+    let output = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(
+            r#"umask 002
+field() { printf 'stub'; }
+. "$TOOLS/autodrive_state.sh" || exit 3
+autodrive_mark_phase_done "$STATE_DIR" crusty-loop || exit 4
+run_context() { . "$TOOLS/autodrive_completion_context.sh"; }
+run_context || exit 5
+"#,
+        )
+        .env("TOOLS", tools)
+        .env("STATE_DIR", state)
+        .env("AMPLIHACK_BIN", &stub)
+        .env("STUB_MODES", &modes)
+        .env("HISTORY", "history")
+        .env("BASELINE", "baseline")
+        .env("PREV_FINDINGS", "findings")
+        .env("PREV_TEST", "test")
+        .env("PREV_CI", "ci")
+        .env("TOKEN_SAFE", "token")
+        .env("ROUND_LABEL", "round-1")
+        .env("RECORD", state.join("record.json"))
+        .env("REPO", state)
+        .env("REVIEW_REAL", state)
+        .env("LOOP_HOME", tools)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "shell writers failed ({:?}):\n{}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let lines: Vec<String> = std::fs::read_to_string(&modes)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    assert!(!lines.is_empty(), "the context stub recorded nothing");
+    lines
+}
+
+/// (a) One round written under umask 002 through every writer of state the
+/// evidence check reads, then the next evidence check. The Rust writers and
+/// the shell writers need no repair; the one plain `fs::write` file, standing
+/// in for a file an agent step wrote, is repaired and logged.
+#[cfg(unix)]
+#[test]
+fn issue_2546_round_written_under_umask_002_passes_next_evidence_check() {
+    use crate::commands::orch::autodrive::helper::write_new_private;
+    use crate::commands::orch::autodrive_completion::secure_fs::{self, Scope};
+    use std::io::Write;
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    let stderr = under_umask_2546(
+        "issue_2546_round_written_under_umask_002_passes_next_evidence_check",
+        0o002,
+        || {
+            let dir = tempfile::tempdir().unwrap();
+            // A nested parent that does not exist yet.
+            let state = dir.path().join("auto-drive").join("autodrive-state");
+            let auth = authorization("true", "false");
+            let expected: Binding = serde_json::from_value(binding(&auth)).unwrap();
+
+            // Round N, Rust writers: the evidence store and its records.
+            let store = EvidenceStore::create(&state).unwrap();
+            let state = state.canonicalize().unwrap();
+            store
+                .write_new(
+                    "candidate.json",
+                    &serde_json::to_vec(&candidate(&auth)).unwrap(),
+                )
+                .unwrap();
+            let accepted = store
+                .accept_candidate("candidate.json", &auth, &expected)
+                .unwrap();
+            let snapshot = store.snapshot(b"{}").unwrap();
+            write_new_private(&state.join("loop-1.json"), b"{}").unwrap();
+
+            // Round N, Rust writers: the completion tree, laid out as
+            // private_state.rs lays it out.
+            let completion = tempfile::Builder::new()
+                .prefix(".completion-")
+                .permissions(std::fs::Permissions::from_mode(0o700))
+                .tempdir_in(&state)
+                .unwrap()
+                .keep();
+            for part in ["driver", "output"] {
+                std::fs::DirBuilder::new()
+                    .mode(0o700)
+                    .create(completion.join(part))
+                    .unwrap();
+            }
+            let private = completion.join("driver").join("state.json");
+            let decision = completion.join("output").join("decision.json");
+            secure_fs::create(Scope::of(&state), &private, b"{}").unwrap();
+            secure_fs::output(Scope::of(&state), &decision)
+                .unwrap()
+                .write_all(b"{}")
+                .unwrap();
+
+            // Round N, shell writers.
+            let context = run_shell_writers_2546(&state);
+            assert_eq!(context.len(), 6, "context files seen: {context:?}");
+            for line in &context {
+                assert!(
+                    line.starts_with("600 700 "),
+                    "completion_context wrote a file not private under umask 002: {line}"
+                );
+            }
+            assert_eq!(mode_2546(&state.join("phases.tsv")), 0o600);
+
+            // Round N, a file written without an explicit mode (agent step).
+            let agent = state.join("agent-notes.json");
+            std::fs::write(&agent, b"{}").unwrap();
+            assert_eq!(mode_2546(&agent), 0o664, "umask 002 is in force");
+
+            // Round N+1: the next evidence check reads the same state.
+            let next = EvidenceStore::create(&state).unwrap();
+            next.accept_candidate("candidate.json", &auth, &expected)
+                .unwrap();
+            for name in [
+                "candidate.json".to_owned(),
+                "loop-1.json".to_owned(),
+                "phases.tsv".to_owned(),
+                "agent-notes.json".to_owned(),
+                accepted
+                    .path()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                snapshot.file_name().unwrap().to_string_lossy().into_owned(),
+            ] {
+                next.read_private(&name)
+                    .unwrap_or_else(|e| panic!("{name}: {e:#}"));
+            }
+            secure_fs::check_dir(&state).unwrap();
+            assert_eq!(
+                secure_fs::read(Scope::of(&state), &private, 1 << 20).unwrap(),
+                b"{}"
+            );
+            assert_eq!(
+                secure_fs::read(Scope::of(&state), &decision, 1 << 20).unwrap(),
+                b"{}"
+            );
+            assert_private_tree_2546(&state);
+        },
+    );
+    if let Some(stderr) = stderr {
+        let lines = repair_lines_2546(&stderr);
+        assert_eq!(
+            lines.len(),
+            1,
+            "only the plain-write file needs repair:\n{stderr}"
+        );
+        let line = lines[0];
+        assert!(
+            line.starts_with("INFO: ")
+                && line.contains("agent-notes.json\"")
+                && line.contains("0664")
+                && line.contains("(gid ")
+                && line.contains("0600"),
+            "{line}"
+        );
+    }
+}
+
+/// (b) A record chmod'ed to 0664 is repaired to 0600 and logged.
+#[cfg(unix)]
+#[test]
+fn issue_2546_hand_chmod_0664_is_repaired_and_logged() {
+    use std::os::unix::fs::PermissionsExt;
+    let stderr = under_umask_2546(
+        "issue_2546_hand_chmod_0664_is_repaired_and_logged",
+        0o022,
+        || {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("autodrive-state");
+            let store = EvidenceStore::create(&root).unwrap();
+            store.write_new("record.json", b"{}").unwrap();
+            let file = root.join("record.json");
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o664)).unwrap();
+            assert_eq!(store.read_private("record.json").unwrap(), b"{}");
+            assert_eq!(mode_2546(&file), 0o600);
+            // A second read finds nothing left to repair.
+            assert_eq!(store.read_private("record.json").unwrap(), b"{}");
+        },
+    );
+    if let Some(stderr) = stderr {
+        let lines = repair_lines_2546(&stderr);
+        assert_eq!(lines.len(), 1, "one repair, logged once:\n{stderr}");
+        let line = lines[0];
+        assert!(
+            line.starts_with("INFO: ")
+                && line.contains("record.json\"")
+                && line.contains("0664")
+                && line.contains("(gid ")
+                && line.contains("0600"),
+            "{line}"
+        );
+    }
+}
+
+/// (b) The state folder chmod'ed to 0775 is repaired to 0700 when the
+/// evidence store is opened again.
+#[cfg(unix)]
+#[test]
+fn issue_2546_state_folder_0775_is_repaired_and_logged() {
+    use std::os::unix::fs::PermissionsExt;
+    let stderr = under_umask_2546(
+        "issue_2546_state_folder_0775_is_repaired_and_logged",
+        0o022,
+        || {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("autodrive-state");
+            EvidenceStore::create(&root)
+                .unwrap()
+                .write_new("record.json", b"{}")
+                .unwrap();
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o775)).unwrap();
+            let store = EvidenceStore::create(&root).unwrap();
+            assert_eq!(mode_2546(&root), 0o700);
+            assert_eq!(store.read_private("record.json").unwrap(), b"{}");
+        },
+    );
+    if let Some(stderr) = stderr {
+        let lines = repair_lines_2546(&stderr);
+        assert_eq!(lines.len(), 1, "one repair, logged once:\n{stderr}");
+        let line = lines[0];
+        assert!(
+            line.starts_with("INFO: ")
+                && line.contains("autodrive-state\"")
+                && line.contains("0775")
+                && line.contains("0700"),
+            "{line}"
+        );
+    }
+}
+
+/// S1: outside the auto-drive state root, the completion checker stays strict
+/// and changes nothing, even when the caller passes a repairable root.
+#[cfg(unix)]
+#[test]
+fn issue_2546_outside_state_tree_stays_strict() {
+    use crate::commands::orch::autodrive_completion::secure_fs::{self, Scope};
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    // A repairable state root next to the folders read: they are outside it.
+    let state = dir.path().join("autodrive-state");
+    std::fs::create_dir(&state).unwrap();
+    let scope = Scope::of(&state);
+    assert!(matches!(scope, Scope::StateTree(_)));
+    // An open folder holding an open file.
+    let open = dir.path().join("repo");
+    std::fs::create_dir(&open).unwrap();
+    std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let file = open.join("notes.txt");
+    std::fs::write(&file, b"notes").unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let error = secure_fs::read(scope, &file, 1 << 20).expect_err("read outside the state tree");
+    assert!(format!("{error:#}").contains(OUTSIDE_2546), "{error:#}");
+    assert_eq!(mode_2546(&open), 0o755, "folder outside the tree changed");
+    assert_eq!(mode_2546(&file), 0o644, "file outside the tree changed");
+
+    // A private folder holding an open file: the file is still refused.
+    let closed = dir.path().join("private");
+    std::fs::create_dir(&closed).unwrap();
+    std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let file = closed.join("notes.txt");
+    std::fs::write(&file, b"notes").unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let error = secure_fs::read(scope, &file, 1 << 20).expect_err("read outside the state tree");
+    assert!(format!("{error:#}").contains(OUTSIDE_2546), "{error:#}");
+    assert_eq!(mode_2546(&file), 0o644, "file outside the tree changed");
+
+    // The same file made private by its owner is read.
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(secure_fs::read(scope, &file, 1 << 20).unwrap(), b"notes");
+}
+
+/// (c) The pure rule: foreign owner, foreign group, world-writable, symlink,
+/// wrong type and hard links are refused; repair happens only where allowed.
+#[test]
+fn issue_2546_foreign_owner_symlink_and_hard_link_are_still_refused() {
+    use crate::commands::orch::autodrive::private_mode::{Access, Entry, Kind, Repair, access};
+    const SYMLINK: &str = "evidence is a symlink";
+    const TYPE: &str = "evidence is not a regular file or state directory";
+    const OWNER: &str = "untrusted evidence ownership or permissions";
+    const LINKS: &str = "evidence has unexpected hard links";
+    let (me, group) = (1000, 1000);
+    // The table below lists (entry, dir, single_link, repair) as booleans;
+    // this maps them onto `Kind` and `Repair`.
+    let check = |entry: Entry, dir: bool, single_link: bool, repair: bool| {
+        let kind = match (dir, single_link) {
+            (true, _) => Kind::Dir,
+            (false, true) => Kind::SingleLinkFile,
+            (false, false) => Kind::File,
+        };
+        let repair = if repair {
+            Repair::Allowed
+        } else {
+            Repair::Refuse
+        };
+        access(entry, kind, me, group, repair)
+    };
+    let file = Entry {
+        symlink: false,
+        is_dir: false,
+        is_file: true,
+        uid: me,
+        gid: group,
+        mode: 0o664,
+        nlink: 1,
+    };
+    let folder = Entry {
+        is_dir: true,
+        is_file: false,
+        mode: 0o775,
+        nlink: 3,
+        ..file
+    };
+
+    // Repaired: this user's entries with extra bits, in the state tree.
+    assert_eq!(check(file, false, true, true), Access::Repair(0o600));
+    assert_eq!(check(folder, true, true, true), Access::Repair(0o700));
+    assert_eq!(
+        check(
+            Entry {
+                mode: 0o640,
+                ..file
+            },
+            false,
+            true,
+            true
+        ),
+        Access::Repair(0o600)
+    );
+    // The setgid bit goes with the group bits.
+    assert_eq!(
+        check(
+            Entry {
+                mode: 0o2775,
+                ..folder
+            },
+            true,
+            true,
+            true
+        ),
+        Access::Repair(0o700)
+    );
+    // Other-read only, with a foreign group: no group bit trusts that group.
+    assert_eq!(
+        check(
+            Entry {
+                mode: 0o705,
+                gid: group + 1,
+                ..folder
+            },
+            true,
+            true,
+            true
+        ),
+        Access::Repair(0o700)
+    );
+
+    // Already private.
+    assert_eq!(
+        check(
+            Entry {
+                mode: 0o600,
+                ..file
+            },
+            false,
+            true,
+            true
+        ),
+        Access::Private
+    );
+    assert_eq!(
+        check(
+            Entry {
+                mode: 0o700,
+                ..folder
+            },
+            true,
+            true,
+            true
+        ),
+        Access::Private
+    );
+    assert_eq!(
+        check(
+            Entry {
+                mode: 0o600,
+                ..file
+            },
+            false,
+            true,
+            false
+        ),
+        Access::Private
+    );
+
+    // Refused, each with its reason, whether or not repair is allowed.
+    let refused = [
+        (
+            Entry {
+                uid: me + 1,
+                ..file
+            },
+            false,
+            true,
+            OWNER,
+        ),
+        (
+            Entry {
+                uid: me + 1,
+                mode: 0o600,
+                ..file
+            },
+            false,
+            true,
+            OWNER,
+        ),
+        (
+            Entry {
+                uid: me + 1,
+                ..folder
+            },
+            true,
+            true,
+            OWNER,
+        ),
+        (
+            Entry {
+                mode: 0o666,
+                ..file
+            },
+            false,
+            true,
+            OWNER,
+        ),
+        (
+            Entry {
+                mode: 0o602,
+                ..file
+            },
+            false,
+            true,
+            OWNER,
+        ),
+        (
+            Entry {
+                mode: 0o777,
+                ..folder
+            },
+            true,
+            true,
+            OWNER,
+        ),
+        (
+            Entry {
+                gid: group + 1,
+                ..file
+            },
+            false,
+            true,
+            OWNER,
+        ),
+        (
+            Entry {
+                gid: group + 1,
+                mode: 0o750,
+                ..folder
+            },
+            true,
+            true,
+            OWNER,
+        ),
+        (
+            Entry {
+                symlink: true,
+                ..file
+            },
+            false,
+            true,
+            SYMLINK,
+        ),
+        (
+            Entry {
+                symlink: true,
+                ..folder
+            },
+            true,
+            true,
+            SYMLINK,
+        ),
+        (file, true, true, TYPE),
+        (folder, false, true, TYPE),
+        (
+            Entry {
+                is_file: false,
+                ..file
+            },
+            false,
+            true,
+            TYPE,
+        ),
+        (
+            Entry {
+                nlink: 2,
+                mode: 0o600,
+                ..file
+            },
+            false,
+            true,
+            LINKS,
+        ),
+        (Entry { nlink: 2, ..file }, false, true, LINKS),
+        (Entry { nlink: 2, ..file }, false, false, LINKS),
+    ];
+    for repair in [true, false] {
+        for (entry, dir, single_link, reason) in refused {
+            assert_eq!(
+                check(entry, dir, single_link, repair),
+                Access::Refuse(reason),
+                "{entry:?} (dir {dir}, single_link {single_link}, repair {repair})"
+            );
+        }
+    }
+
+    // The completion checker allows a clean hard-linked file but never
+    // repairs one.
+    assert_eq!(
+        check(
+            Entry {
+                nlink: 2,
+                mode: 0o600,
+                ..file
+            },
+            false,
+            false,
+            true
+        ),
+        Access::Private
+    );
+
+    // Extra bits where repair is not allowed: the old strict refusal, with
+    // its own reason.
+    assert_eq!(
+        check(file, false, true, false),
+        Access::Refuse(OUTSIDE_2546)
+    );
+    assert_eq!(
+        check(folder, true, true, false),
+        Access::Refuse(OUTSIDE_2546)
+    );
+    assert_eq!(
+        check(
+            Entry {
+                mode: 0o755,
+                ..folder
+            },
+            true,
+            false,
+            false
+        ),
+        Access::Refuse(OUTSIDE_2546)
+    );
+}
+
+// ── #2546: repairs stay at or below a repairable state root (S1) ──
+
+/// Creates `path` as a folder (or a file holding `bytes`) with `mode`.
+#[cfg(unix)]
+fn make_2546(path: &std::path::Path, bytes: Option<&[u8]>, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    match bytes {
+        Some(bytes) => std::fs::write(path, bytes).unwrap(),
+        None => std::fs::create_dir(path).unwrap(),
+    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+/// Runs `amplihack orch auto-drive-completion prepare` with `args`.
+#[cfg(unix)]
+fn prepare_2546(args: &[&str]) -> anyhow::Result<()> {
+    use crate::commands::orch::autodrive_completion::{Prepare, prepare};
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        prepare: Prepare,
+    }
+    let cli = Cli::try_parse_from(std::iter::once("prepare").chain(args.iter().copied())).unwrap();
+    prepare(cli.prepare)
+}
+
+/// (i) A `.completion-*` part does not make its parent folder repairable: a
+/// 0755 folder `x` above `x/.completion-y/f` is refused and left at 0755,
+/// with no root and with a root that is not `x`.
+#[cfg(unix)]
+#[test]
+fn issue_2546_completion_part_outside_state_root_stays_strict() {
+    use crate::commands::orch::autodrive_completion::secure_fs::{self, Scope};
+    let dir = tempfile::tempdir().unwrap();
+    let x = dir.path().join("x");
+    make_2546(&x, None, 0o755);
+    make_2546(&x.join(".completion-y"), None, 0o700);
+    let file = x.join(".completion-y").join("f");
+    make_2546(&file, Some(b"f"), 0o600);
+    let other = dir.path().join("autodrive-state");
+    make_2546(&other, None, 0o700);
+    for scope in [Scope::Strict, Scope::of(&other)] {
+        let error = secure_fs::read(scope, &file, 1 << 20).expect_err("x is not repairable");
+        assert!(format!("{error:#}").contains(OUTSIDE_2546), "{error:#}");
+        assert_eq!(mode_2546(&x), 0o755, "{scope:?} changed x");
+    }
+}
+
+/// (ii) `check_dir` repairs only a folder named `autodrive-state`; any other
+/// folder is checked strictly and left as it was.
+#[cfg(unix)]
+#[test]
+fn issue_2546_check_dir_repairs_only_runner_state_folder() {
+    use crate::commands::orch::autodrive_completion::secure_fs;
+    let dir = tempfile::tempdir().unwrap();
+    let plain = dir.path().join("plain");
+    make_2546(&plain, None, 0o755);
+    let error = secure_fs::check_dir(&plain).expect_err("an explicit folder stays strict");
+    assert!(format!("{error:#}").contains("chmod 700"), "{error:#}");
+    assert_eq!(mode_2546(&plain), 0o755);
+
+    let state = dir.path().join("autodrive-state");
+    make_2546(&state, None, 0o755);
+    secure_fs::check_dir(&state).unwrap();
+    assert_eq!(mode_2546(&state), 0o700);
+}
+
+/// (iii) `prepare` validates its arguments before it repairs the state
+/// folder: a rejected call leaves a 0775 `autodrive-state` folder at 0775.
+#[cfg(unix)]
+#[test]
+fn issue_2546_rejected_prepare_changes_no_modes() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("autodrive-state");
+    make_2546(&state, None, 0o775);
+    let s = state.to_str().unwrap();
+    let record = state.join("crusty-round-x.json");
+    let error = prepare_2546(&[
+        "--state-dir",
+        s,
+        "--round-label",
+        "round-x",
+        "--record",
+        record.to_str().unwrap(),
+        "--repo",
+        s,
+        "--review-dir",
+        s,
+        "--launch-tools",
+        s,
+    ])
+    .expect_err("invalid round label");
+    assert!(
+        format!("{error:#}").contains("invalid round label"),
+        "{error:#}"
+    );
+    assert_eq!(mode_2546(&state), 0o775);
+}
+
+/// (iv) `prepare` refuses context files outside the state folder before it
+/// reads them, and leaves them and their folder as they were.
+#[cfg(unix)]
+#[test]
+fn issue_2546_prepare_refuses_context_outside_state_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("autodrive-state");
+    make_2546(&state, None, 0o700);
+    let outside = dir.path().join("outside");
+    make_2546(&outside, None, 0o755);
+    let file = outside.join("f");
+    make_2546(&file, Some(b"history"), 0o644);
+    let s = state.to_str().unwrap();
+    let record = state.join("crusty-round-1.json");
+    let record = record.to_str().unwrap();
+    let dotted = format!("{s}/../outside/f");
+    for extra in [
+        vec![
+            "--context-from-file".to_owned(),
+            format!("loop_history={}", file.display()),
+        ],
+        vec![
+            "--context-from-file".to_owned(),
+            format!("loop_history={dotted}"),
+        ],
+        vec![
+            "--evaluator-context-file".to_owned(),
+            file.display().to_string(),
+        ],
+    ] {
+        let mut args = vec![
+            "--state-dir",
+            s,
+            "--round-label",
+            "round-1",
+            "--record",
+            record,
+            "--repo",
+            s,
+            "--review-dir",
+            s,
+            "--launch-tools",
+            s,
+        ];
+        args.extend(extra.iter().map(String::as_str));
+        let error = prepare_2546(&args).expect_err("context outside the state folder");
+        assert!(
+            format!("{error:#}").contains("context file must be inside the state directory"),
+            "{extra:?}: {error:#}"
+        );
+        assert_eq!(mode_2546(&outside), 0o755);
+        assert_eq!(mode_2546(&file), 0o644);
+    }
+}
+
+/// (v) `EvidenceStore::create` repairs an existing root only when it is the
+/// runner's `autodrive-state` folder; an explicit folder with another name is
+/// refused and left as it was.
+#[cfg(unix)]
+#[test]
+fn issue_2546_evidence_store_repairs_only_runner_state_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let explicit = dir.path().join("explicit-state");
+    make_2546(&explicit, None, 0o775);
+    let error = match EvidenceStore::create(&explicit) {
+        Ok(_) => panic!("an explicit 0775 state folder was accepted"),
+        Err(error) => error,
+    };
+    assert!(
+        format!("{error:#}").contains(OUTSIDE_2546) && format!("{error:#}").contains("chmod 700"),
+        "{error:#}"
+    );
+    assert_eq!(mode_2546(&explicit), 0o775);
+
+    let runner = dir.path().join("autodrive-state");
+    std::fs::rename(&explicit, &runner).unwrap();
+    EvidenceStore::create(&runner).unwrap();
+    assert_eq!(mode_2546(&runner), 0o700);
 }

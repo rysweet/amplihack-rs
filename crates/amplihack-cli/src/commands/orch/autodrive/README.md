@@ -21,7 +21,10 @@ Agents observe and assess facts under trusted merge-ready policy.
   (`bind_state_dir` / `state_dir`). An explicit `autodrive_state_dir` must be
   non-empty, absolute, free of `..` components and free of control
   characters; otherwise capture fails with
-  `autodrive_state_dir must be an absolute path`. Without one, the runner uses
+  `autodrive_state_dir must be an absolute path`. It must also be `0700`
+  unless it is named `autodrive-state`: only the runner's own
+  `autodrive-state` folder has its group and other bits removed
+  automatically (#2546, see `docs/reference/auto-drive-state-permissions.md`). Without one, the runner uses
   `<durable run folder>/autodrive-state`, or `autodrive-state` in the launch
   bundle for dry runs. The bound path is the absolute path passed to
   `EvidenceStore::create`, before canonicalisation. Round history and budgets

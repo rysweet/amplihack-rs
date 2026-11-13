@@ -1,4 +1,5 @@
 //! Private, bounded evidence snapshots. Historical completion markers grant no authority.
+use super::private_mode::{Kind, Repair, make_private, repairable_root};
 use super::{authorization::InvocationAuthorization, records::*, validation::*};
 use anyhow::{Context, Result, ensure};
 use std::{
@@ -10,6 +11,9 @@ use std::{
 pub struct EvidenceStore {
     root: PathBuf,
     directory: File,
+    /// Whether entries in this store may be repaired (#2546), decided once
+    /// from the root by `repairable_root`.
+    repair: Repair,
 }
 pub struct AcceptedSnapshot {
     path: PathBuf,
@@ -34,11 +38,14 @@ impl EvidenceStore {
         );
         // Resolve parent aliases uniformly (for example system temporary directories).
         // The designated state entry itself is never allowed to be a symlink.
-        match fs::symlink_metadata(&root) {
-            Ok(m) => ensure!(
-                !m.file_type().is_symlink() && m.is_dir(),
-                "state root is a symlink or non-directory"
-            ),
+        let (created_now, before) = match fs::symlink_metadata(&root) {
+            Ok(m) => {
+                ensure!(
+                    !m.file_type().is_symlink() && m.is_dir(),
+                    "state root is a symlink or non-directory"
+                );
+                (false, m)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let mut builder = fs::DirBuilder::new();
                 builder.recursive(true);
@@ -50,13 +57,37 @@ impl EvidenceStore {
                 builder
                     .create(&root)
                     .with_context(|| format!("create private state {}", root.display()))?;
+                (true, fs::symlink_metadata(&root)?)
             }
             Err(e) => return Err(e.into()),
-        }
+        };
         let root = root.canonicalize()?;
         let directory = open_directory(&root)?;
-        private(&directory.metadata()?, true)?;
-        Ok(Self { root, directory })
+        // The folder opened must be the folder checked above: a root swapped
+        // for a symlink in between is refused before any repair.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let opened = directory.metadata()?;
+            ensure!(
+                (opened.dev(), opened.ino()) == (before.dev(), before.ino()),
+                "state root changed during open: {}",
+                root.display()
+            );
+        }
+        #[cfg(not(unix))]
+        let _ = before;
+        let repair = if repairable_root(&root, created_now) {
+            Repair::Allowed
+        } else {
+            Repair::Refuse
+        };
+        make_private(&directory, &root, Kind::Dir, repair)?;
+        Ok(Self {
+            root,
+            directory,
+            repair,
+        })
     }
     pub fn accept_candidate(
         &self,
@@ -109,7 +140,12 @@ impl EvidenceStore {
     }
     pub fn read_private(&self, name: &str) -> Result<Vec<u8>> {
         let file = self.open(name, false)?;
-        private(&file.metadata()?, false)?;
+        make_private(
+            &file,
+            &self.root.join(name),
+            Kind::SingleLinkFile,
+            self.repair,
+        )?;
         ensure!(
             file.metadata()?.len() <= MAX_RECORD_BYTES as u64,
             "evidence exceeds size limit"
@@ -215,20 +251,4 @@ fn open_directory(path: &Path) -> Result<File> {
         options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
     }
     Ok(options.open(path)?)
-}
-fn private(m: &fs::Metadata, dir: bool) -> Result<()> {
-    ensure!(
-        if dir { m.is_dir() } else { m.is_file() },
-        "evidence is not a regular file or state directory"
-    );
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        ensure!(
-            m.uid() == unsafe { libc::geteuid() } && m.permissions().mode() & 0o077 == 0,
-            "untrusted evidence ownership or permissions"
-        );
-        ensure!(dir || m.nlink() == 1, "evidence has unexpected hard links");
-    }
-    Ok(())
 }
