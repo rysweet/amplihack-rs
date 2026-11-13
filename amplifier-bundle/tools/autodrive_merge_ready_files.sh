@@ -5,17 +5,8 @@
 # The merge-ready skill sets `disable-model-invocation: true`, so an agent
 # cannot invoke it; the merge round reads its files instead. This script is
 # the deterministic lookup that step-00 of autodrive-merge-round.yaml runs, in
-# the order the other auto-drive steps use to find bundle files:
-#
-#   1. $AMPLIHACK_HOME/amplifier-bundle/skills/merge-ready
-#   2. $REPO_PATH/amplifier-bundle/skills/merge-ready
-#   3. <git toplevel of $REPO_PATH>/amplifier-bundle/skills/merge-ready
-#   4. $HOME/.copilot/skills/merge-ready              (flat layout)
-#   5. $HOME/.amplihack/amplifier-bundle/skills/merge-ready
-#
-# A candidate whose variable is empty is skipped. The first directory whose
-# SKILL.md is a regular file wins, and the template must be in that same
-# directory: the two files are never taken from two installs.
+# the runner-pinned AMPLIHACK_HOME only. Repository and PR-worktree copies
+# never supply instructions. The skill and its template come from one directory.
 #
 #   stdout  one line of JSON: skill_dir, skill_md, template, skill_md_sha
 #   exit 1  ERROR: merge-ready-template-not-found / merge-ready-skill-files-not-found
@@ -38,12 +29,11 @@ unsafe_path() { # unsafe_path <path>: true when it could break JSON or look like
   [ "$(printf '%s' "$1" | LC_ALL=C tr -d '\040-\176\200-\377'; printf x)" != "x" ]
 }
 
+case "${AMPLIHACK_HOME:-}" in /*) ;; *) echo "ERROR: trusted AMPLIHACK_HOME is required for merge-ready criteria" >&2; exit 1 ;; esac
+# The repository under review, used only to warn when its copy of the
+# criteria is the trusted one and differs from the base branch.
 TOP="$(git -C "${REPO_PATH:-.}" rev-parse --show-toplevel 2>/dev/null || printf '')"
-CANDIDATES=()
-[ -n "${AMPLIHACK_HOME:-}" ] && CANDIDATES+=("${AMPLIHACK_HOME}/amplifier-bundle/skills/merge-ready")
-[ -n "${REPO_PATH:-}" ] && CANDIDATES+=("${REPO_PATH}/amplifier-bundle/skills/merge-ready")
-[ -n "$TOP" ] && CANDIDATES+=("${TOP}/amplifier-bundle/skills/merge-ready")
-[ -n "${HOME:-}" ] && CANDIDATES+=("${HOME}/.copilot/skills/merge-ready" "${HOME}/.amplihack/amplifier-bundle/skills/merge-ready")
+CANDIDATES=("${AMPLIHACK_HOME}/amplifier-bundle/skills/merge-ready")
 
 SEARCHED=""
 # ${arr[@]+...}: an empty array under `set -u` is an error in bash 3.2 (macOS).
