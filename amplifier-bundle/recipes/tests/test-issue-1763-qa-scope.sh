@@ -904,7 +904,7 @@ else fail tool-bash-c "bash -c appears more than once in autodrive_qa_evidence.s
 if code "$TOOL" | grep -E 'Cargo\.toml|package\.json|pyproject\.toml' >/dev/null; then
     fail tool-markers "autodrive_qa_evidence.sh names a manifest outside comments"
 else pass tool-markers "manifest names stay in the scope helper"; fi
-STEP02="$(awk '/- id: "step-02-qa-team-scenarios"/{on=1} on && /- id: "step-03/{on=0} on' "$RECIPES/autodrive-merge-evidence.yaml")"
+STEP02="$(awk '/- id: "step-03-qa-team-scenarios"/{on=1} on && /^output:/{on=0} on' "$RECIPES/autodrive-merge-evidence.yaml")"
 if printf '%s' "$STEP02" | grep -q 'merge-base QA configuration' && printf '%s' "$STEP02" | grep -q 'operator overrides'; then
     pass evidence-step02 "agent keeps merge-base policy and operator precedence"
 else fail evidence-step02 "missing source precedence"; fi

@@ -248,6 +248,34 @@ from the launch bundle, never from the pull request's worktree. `MISSING`,
 `PENDING`, `RED` and `UNREADABLE` all block; a job that was never created is
 not a pass. See [Expected checks at the head](autodrive-expected-checks.md).
 
+### Base sync and CI at the head (#2362)
+
+Each merge round collects its evidence in this order:
+
+1. **Base sync.** The round reads the PR once with the hosting service. It
+   merges the base only when GitHub reports `mergeStateStatus` `BEHIND`, or
+   `DIRTY` (`mergeable` `CONFLICTING`). A `BEHIND` merge is pushed even when
+   it changes no file content, because only the merge commit moves the branch
+   off `BEHIND`. In any other state nothing is merged or pushed, so a round
+   does not restart CI. The head the round works on is GitHub's
+   `headRefOid`. When the local `HEAD` differs from it, the round does not
+   merge and reports `head-mismatch`.
+2. **CI read.** CI is read once per round at that head: one list of the
+   workflow runs at the SHA, keeping the newest run per workflow so that a
+   run superseded by a re-run does not count. A run with no conclusion gives
+   `PENDING`, with `ci_pending` set to the number of unfinished runs and
+   `ci_signal` naming them. The round never waits on CI: it does not use
+   `gh run watch` or `gh pr checks --watch`, and it does not sleep or loop
+   over `gh` calls. The REST allowance is shared by every drive, so the next
+   round is what reads again. A workflow that never finishes (an offline
+   self-hosted runner, an approval nobody gives) stays visible in `ci_signal`.
+   It does not hold the round; the loop-health evaluator and the budgets end
+   the drive.
+3. **QA.** The repository's tests run only when CI at the head has finished.
+   While it is `PENDING`, QA returns `BLOCKED` with `qa_reason`
+   `head-ci-pending` and runs no suite, because a QA command may read the
+   head's check runs. The round's fix step pushes nothing for a pending CI.
+
 ### Limits of the expected set
 
 The helper counts defined jobs, not matrix legs; it cannot see a workflow
@@ -433,8 +461,9 @@ width, and memory safeguards remain in force and are never raised to recover.
 
 ### No short timeouts
 
-Steps add no per-step or default recipe timeouts. Tests, builds, model calls,
-and CI waiting follow existing timeout policy. Execute tools noninteractively
+Steps add no per-step or default recipe timeouts. Tests, builds and model
+calls follow existing timeout policy. CI is read once per round and never
+waited on (#2362). Execute tools noninteractively
 and assess failures; GNU `timeout` and `setsid` are not mandatory interfaces.
 Usage budgets remain separate from tool timeouts.
 

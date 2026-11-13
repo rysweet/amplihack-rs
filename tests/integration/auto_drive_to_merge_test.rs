@@ -420,9 +420,10 @@ fn no_short_timeouts_anywhere() {
             }
         }
     }
-    // The only wait in the workflow is the CI poll, and its interval is 60s.
+    // #2362: CI is read once per round and never waited on inside a round.
     let evidence = recipe_text("autodrive-merge-evidence");
-    assert!(evidence.contains("Poll pending work to its natural terminal state"));
+    assert!(!evidence.contains("Poll pending work"));
+    assert!(evidence.contains("Read CI for PR #{{pr_number}} ONCE in this round"));
     for path in control_path_files() {
         let text = read(&path);
         for (n, line) in text.lines().enumerate() {
@@ -1762,7 +1763,7 @@ fn merge_round_blocker_step_writes_missing_gadugi_scenarios() {
     assert!(validate < run, "step-04 must validate before it runs");
 }
 
-// step-02-qa-team-scenarios runs autodrive_qa_evidence.sh, the file that
+// step-03-qa-team-scenarios runs autodrive_qa_evidence.sh, the file that
 // measures criterion 1. It is executed, never sourced, and a missing tool
 // fails the step by name instead of producing evidence nobody measured.
 
@@ -4321,8 +4322,8 @@ fn issue_2033_merge_evidence_steps_clear_before_any_git_command() {
     // first in the prompt and applies to every call that runs git, gh or tests.
     for id in [
         "step-01-sync-with-base",
-        "step-02-qa-team-scenarios",
-        "step-03-wait-for-ci",
+        "step-02-read-head-ci",
+        "step-03-qa-team-scenarios",
     ] {
         let prompt = field(step(&recipe, id), "prompt");
         let first = prompt.lines().next().unwrap_or_default();

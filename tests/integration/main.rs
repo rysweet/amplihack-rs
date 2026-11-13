@@ -182,6 +182,11 @@ mod pre_commit_artifact_guard;
 #[path = "autodrive_pr_worktree_tests.rs"]
 mod autodrive_pr_worktree;
 
+// Issue #2362: merge evidence reads CI once at GitHub's head before QA, never
+// watches it, and step-01 merges the base only when GitHub requires it.
+#[path = "issue_2362_merge_evidence_head_ci.rs"]
+mod issue_2362_merge_evidence_head_ci;
+
 #[path = "doctor_node_remediation_test.rs"]
 mod doctor_node_remediation;
 

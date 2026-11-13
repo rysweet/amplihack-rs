@@ -153,6 +153,12 @@ CI is green only when every expected check exists at the head SHA and passed
 `autodrive_expected_checks.sh` from the launch bundle. `MISSING`, `PENDING`,
 `RED` and `UNREADABLE` block; a job that was never created is not a pass.
 
+Each merge round merges the base only when GitHub reports the branch `BEHIND`
+or `DIRTY`, reads CI once at GitHub's `headRefOid` (newest run per workflow),
+and runs QA only when that CI has finished; a `PENDING` head is read again by
+the next round, never watched or polled (#2362). See "Base sync and CI at the
+head" in `docs/reference/auto-drive-to-merge.md`.
+
 ## Related documentation
 
 - Workflow options and budgets: `docs/reference/auto-drive-to-merge.md`

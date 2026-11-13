@@ -1487,13 +1487,13 @@ check "EC-exported-fn" "an exported gh function cannot answer for the helper" \
 # ---------------------------------------------------------------------------
 # 10. Callers.
 # ---------------------------------------------------------------------------
-# #2329 retired the shell merge gate, and merge-evidence step-03 is an agent
-# step: its prompt must run the helper from AMPLIHACK_HOME and keep MISSING,
-# PENDING and RED from passing.
-S3_PROMPT="$(awk '/id: "step-03-wait-for-ci"/{f=1} f&&/^output:/{f=0} f' "${RECIPES}/autodrive-merge-evidence.yaml")"
-check "EC-S3-amplihack-home" "step-03 runs the helper from \$AMPLIHACK_HOME/amplifier-bundle/tools only" \
+# #2329 retired the shell merge gate, and merge-evidence step-02 (#2362: CI is
+# read once, before QA) is an agent step: its prompt must run the helper from
+# AMPLIHACK_HOME and keep MISSING, PENDING and RED from passing.
+S3_PROMPT="$(awk '/id: "step-02-read-head-ci"/{f=1} f&&/- id: "step-03/{f=0} f' "${RECIPES}/autodrive-merge-evidence.yaml")"
+check "EC-S3-amplihack-home" "step-02 runs the helper from \$AMPLIHACK_HOME/amplifier-bundle/tools only" \
   bash -c 'printf "%s" "$1" | grep -qF "/bin/bash -p \"\$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_expected_checks.sh\"" && printf "%s" "$1" | grep -qF "never a copy from the PR worktree"' _ "$S3_PROMPT"
-check "EC-S3-missing-blocks" "step-03 lowers GREEN to RED, PENDING or MISSING and never passes a missing check" \
+check "EC-S3-missing-blocks" "step-02 lowers GREEN to RED, PENDING or MISSING and never passes a missing check" \
   bash -c 'printf "%s" "$1" | grep -qF "RED, PENDING or MISSING replace it" && printf "%s" "$1" | grep -qF "is MISSING, not a pass"' _ "$S3_PROMPT"
 
 # The light drive's merge loop runs the same gate (D17).

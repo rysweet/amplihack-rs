@@ -97,6 +97,8 @@ const EDITED_RECIPES: &[&str] = &[
     // changes either file from leaving its manifest hash stale unnoticed.
     "consensus-test-fix",
     "autodrive-merge-evidence",
+    // #2362 edits the merge round's blocker guidance.
+    "autodrive-merge-round",
 ];
 
 /// D7: conditional remediation steps a valid fixture run does not trigger.
