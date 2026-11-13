@@ -86,15 +86,15 @@ impl Drive {
         }]}).to_string());
         for (file, id) in [
             ("guard.sh", "step-00-review-dir-guard"),
-            ("context.sh", "step-01-round-context"),
             ("guard-check.sh", "step-02b-review-dir-unchanged"),
             ("classify.sh", "step-03-extract-crusty-verdict"),
             ("record.sh", "step-06-write-round-record"),
         ] {
             d.set(file, &step_command(ROUND, id));
         }
-        // Agent boundary: review prose and next-action judgement are supplied by
+        // Agent boundary: round context, review prose and next-action judgement are supplied by
         // the fixture. The prompt itself is checked by the regression module.
+        d.set("context.sh", boundary::CONTEXT_SCRIPT);
         d.set("round.sh", boundary::ROUND_SCRIPT);
         d.set("action", "complete");
         d.set("round-rc", "0");
@@ -294,8 +294,10 @@ impl Drive {
             .env("REPO_PATH", &self.review)
             .env(
                 "RECIPE_VAR_crusty_loop_preflight",
+                // The #2329 preflight agent's contract includes the review dir.
                 json!({
-                    "should_run":"true", "repo":self.repo, "pr":"7", "state_dir":self.state
+                    "should_run":"true", "repo":self.repo, "pr":"7", "state_dir":self.state,
+                    "review_dir":self.review
                 })
                 .to_string(),
             )
@@ -305,20 +307,15 @@ impl Drive {
             .unwrap()
     }
 
+    /// The crusty loop's step-03 is an agent step (#2329). The fixture plays
+    /// that agent: only a DONE loop result is finalized, through the shared
+    /// trusted finalizer the re-review also uses.
     pub fn finalize(&self, dry_run: bool, fail: bool) -> Output {
-        let script = step_command("autodrive-crusty-loop", "step-03-record-crusty-phase");
-        let mut c = self.script(&script);
+        let mut c = self.script(FINALIZE_AGENT);
         c.env("REPO_PATH", &self.repo)
-            .env(
-                "RECIPE_VAR_crusty_loop_preflight",
-                json!({"should_run":"true","pr":"7","state_dir":self.state}).to_string(),
-            )
-            .env(
-                "RECIPE_VAR_crusty_loop_result",
-                self.read("crusty-result.json"),
-            )
-            .env("RECIPE_VAR_plan_task_id", "#2336")
-            .env("RECIPE_VAR_task_description", "Fix issue #2336")
+            .env("STATE_DIR", &self.state)
+            .env("LOOP_RESULT", self.read("crusty-result.json"))
+            .env("TASK_FILE", &self.task)
             .env("AUTODRIVE_DRY_RUN", if dry_run { "true" } else { "false" });
         if fail {
             c.env("FAKE_GH_FAIL", "issue create");
@@ -395,3 +392,13 @@ pub fn assert_complete(d: &Drive, o: &Output) {
         "dispatch ends iteration; follow-up finalization marks the phase"
     );
 }
+
+/// The agent side of autodrive-crusty-loop step-03-record-crusty-phase.
+const FINALIZE_AGENT: &str = r#"set -uo pipefail
+result="$(printf '%s' "$LOOP_RESULT" | jq -r '.loop_result // empty')"
+if [ "$result" != DONE ]; then
+  echo "INFO: crusty loop result is '${result:-unknown}', not DONE; the phase is NOT recorded complete." >&2
+  exit 0
+fi
+bash "$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_crusty_finalize.sh" "$STATE_DIR" 7 '#2336' "$TASK_FILE"
+"#;

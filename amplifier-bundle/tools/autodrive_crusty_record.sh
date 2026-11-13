@@ -28,7 +28,7 @@ if ! hex "$REVIEWED" || ! hex "$SHA"; then
   exit 1
 fi
 LABEL="$(printf '%s' "${AUTODRIVE_ROUND_LABEL:-round}" | tr -c 'A-Za-z0-9._-' '_')"
-# The merge gate trusts this record as criterion-3 evidence only when no one else could have written
+# Readiness trusts this record as criterion-3 evidence only when no one else could have written
 # it, so it is created new under umask 077, whatever the caller's umask (autodrive_state.sh, PRIVATE STATE).
 umask 077
 [ -f "${RECORD}.findings" ] || : > "${RECORD}.findings"
