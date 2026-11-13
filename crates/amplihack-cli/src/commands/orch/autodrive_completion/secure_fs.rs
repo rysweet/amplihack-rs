@@ -112,6 +112,32 @@ mod platform {
         Ok(bytes)
     }
 
+    /// Appends `bytes` with one write, creating the file at 0600 if needed.
+    /// The file must be private and a regular file; it is never repaired.
+    pub fn append(path: &Path, bytes: &[u8]) -> Result<()> {
+        let dir = parent(path)?;
+        let mut file = open_at(
+            &dir,
+            path.file_name().context("missing filename")?,
+            libc::O_WRONLY | libc::O_APPEND | libc::O_CREAT,
+        )?;
+        private(&file, false)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        Ok(())
+    }
+
+    /// Like [`read`], but a file that does not exist reads as `None`.
+    pub fn read_optional(path: &Path, limit: usize) -> Result<Option<Vec<u8>>> {
+        match std::fs::symlink_metadata(path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                check_dir(path.parent().context("missing parent")?)?;
+                Ok(None)
+            }
+            _ => read(path, limit).map(Some),
+        }
+    }
+
     pub fn create(path: &Path, bytes: &[u8]) -> Result<()> {
         let dir = parent(path)?;
         // Create an unnamed-to-the-agent temporary file, then publish with a
@@ -155,7 +181,7 @@ mod platform {
 }
 
 #[cfg(unix)]
-pub use platform::{check_dir, create, output, read};
+pub use platform::{append, check_dir, create, output, read, read_optional};
 #[cfg(not(unix))]
 pub fn read(_: &Path, _: usize) -> Result<Vec<u8>> {
     anyhow::bail!("completion dispatch requires Unix private-state support")
@@ -165,6 +191,14 @@ pub fn create(_: &Path, _: &[u8]) -> Result<()> {
     anyhow::bail!("completion dispatch requires Unix private-state support")
 }
 
+#[cfg(not(unix))]
+pub fn append(_: &Path, _: &[u8]) -> Result<()> {
+    anyhow::bail!("step recovery requires Unix private-state support")
+}
+#[cfg(not(unix))]
+pub fn read_optional(_: &Path, _: usize) -> Result<Option<Vec<u8>>> {
+    anyhow::bail!("step recovery requires Unix private-state support")
+}
 #[cfg(not(unix))]
 pub fn check_dir(_: &Path) -> Result<()> {
     anyhow::bail!("completion dispatch requires Unix private-state support")

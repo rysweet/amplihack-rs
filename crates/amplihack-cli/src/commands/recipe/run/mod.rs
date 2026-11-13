@@ -9,7 +9,7 @@ pub(crate) mod execute;
 /// Issue #1267 — transient vs terminal classification of a failed run.
 mod failure_class;
 /// Issue #1437 — evidence gathering and the marker tables `failure_class` reads.
-mod failure_evidence;
+pub(crate) mod failure_evidence;
 mod failure_markers;
 mod format;
 /// Issue #1618: the usage-limit patterns of every agent harness, in one place.

@@ -16,6 +16,7 @@ recursion:
   max_depth: 6
   max_total_steps: 40
 context:
+  step_recovery_dir: ""
   repo_path: "."
   review_dir: ""
   autodrive_launch_tools: ""
@@ -71,14 +72,29 @@ steps:
   - id: "step-00-review-dir-guard"
     type: "bash"
     command: |
+      # Issue #2539: with a recovery directory, a failure goes to the recovery
+      # agent (docs/reference/step-failure-recovery.md); without one, the body
+      # runs as before. The body is unchanged and runs with no shell splicing.
+      IFS= read -r -d '' STEP_BODY <<'STEP_RECOVERY_BODY' || :
       # AUTODRIVE_LAUNCH_TOOLS (#1543): the leading "/" keeps an empty or relative value from resolving against the cwd;
       # the guard itself checks the value (autodrive_worktree_guard.sh, "AUTODRIVE_LAUNCH_TOOLS").
       bash "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_worktree_guard.sh" round-guard || { echo "STOP: review-dir guard refused or not found under AUTODRIVE_LAUNCH_TOOLS (#1528) [autodrive-merge-round/step-00]" >&2; exit 1; }
+      STEP_RECOVERY_BODY
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-00-review-dir-guard
+      exec amplihack orch helper step-recovery run --step-id step-00-review-dir-guard --essential \
+        --dir "$RECIPE_VAR_step_recovery_dir" \
+        --goal "Check the review directory before merge-ready round ${RECIPE_VAR_autodrive_round_label:-round} of PR ${RECIPE_VAR_pr_number:-unknown}" \
+        --state-file /dev/null \
+        -- bash -c "$STEP_BODY" step-00-review-dir-guard
     output: "review_index"
   - id: "step-00-merge-ready-files"
     type: "bash"
     parse_json: true
     command: |
+      # Issue #2539: with a recovery directory, a failure goes to the recovery
+      # agent (docs/reference/step-failure-recovery.md); without one, the body
+      # runs as before. The body is unchanged and runs with no shell splicing.
+      IFS= read -r -d '' STEP_BODY <<'STEP_RECOVERY_BODY' || :
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
       TOOLS_D="${RECIPE_VAR_autodrive_tools_dir:-}"
@@ -89,6 +105,13 @@ steps:
       # Executed, never sourced: it prints one JSON line or a named ERROR.
       OUT="$(bash "$R")" || exit 1
       printf '%s\n' "$OUT"
+      STEP_RECOVERY_BODY
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-00-merge-ready-files
+      exec amplihack orch helper step-recovery run --step-id step-00-merge-ready-files --essential \
+        --dir "$RECIPE_VAR_step_recovery_dir" \
+        --goal "Resolve the merge-ready skill files for round ${RECIPE_VAR_autodrive_round_label:-round} of PR ${RECIPE_VAR_pr_number:-unknown}" \
+        --state-file /dev/null \
+        -- bash -c "$STEP_BODY" step-00-merge-ready-files
     output: "merge_ready_files"
   - id: "merge-evidence"
     type: "recipe"
@@ -217,7 +240,18 @@ steps:
   - id: "step-02b-review-dir-unchanged"
     type: "bash"
     command: |
+      # Issue #2539: with a recovery directory, a failure goes to the recovery
+      # agent (docs/reference/step-failure-recovery.md); without one, the body
+      # runs as before. The body is unchanged and runs with no shell splicing.
+      IFS= read -r -d '' STEP_BODY <<'STEP_RECOVERY_BODY' || :
       bash "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_worktree_guard.sh" round-index-check "${REVIEW_DIR:-}" "${RECIPE_VAR_review_index:-}" step-02-merge-ready-assessment || exit 1
+      STEP_RECOVERY_BODY
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-02b-review-dir-unchanged
+      exec amplihack orch helper step-recovery run --step-id step-02b-review-dir-unchanged --essential \
+        --dir "$RECIPE_VAR_step_recovery_dir" \
+        --goal "Confirm the merge-ready assessment left the review directory unchanged in round ${RECIPE_VAR_autodrive_round_label:-round} of PR ${RECIPE_VAR_pr_number:-unknown}" \
+        --state-file /dev/null \
+        -- bash -c "$STEP_BODY" step-02b-review-dir-unchanged
   - id: "step-03-extract-merge-ready-verdict"
     type: "bash"
     parse_json: true

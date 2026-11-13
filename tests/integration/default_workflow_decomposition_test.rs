@@ -285,6 +285,8 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-19c-zero-bs-verification",
     "step-19d-verification-gate",
     // Phase 8: workflow-finalize (terminal gate + steps 20-22b + complete)
+    // Issue #2539: the run's step-recovery directory, checked or created first.
+    "step-recovery-init",
     "finalize-terminal-state",
     // Issue #1714: fast-forward to an accepted PR head before any agent edits.
     "step-20-sync-pr-head",
@@ -303,6 +305,8 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "agentic-finalizer",
     "finalizer-step-status",
     "validate-agentic-finalization",
+    // Issue #2539: a recorded handoff ends the run here, before completion.
+    "step-recovery-report",
     "workflow-complete",
 ];
 

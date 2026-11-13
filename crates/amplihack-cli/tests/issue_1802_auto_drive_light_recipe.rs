@@ -673,8 +673,8 @@ fn crusty_round_has_no_light_branch_in_any_step() {
     );
     assert_eq!(
         round["context"].as_mapping().unwrap().len(),
-        13,
-        "completion state, shared authorization and dry-run context reach the crusty round"
+        14,
+        "completion state, shared authorization, dry-run context and the step-recovery directory (#2539) reach the crusty round"
     );
 }
 

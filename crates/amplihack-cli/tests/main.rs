@@ -350,6 +350,24 @@ mod issue_2218_excluded;
 mod issue_2317_codex_step_commits_in_worktree;
 #[path = "issue_2336_autodrive_completion.rs"]
 mod issue_2336_autodrive_completion;
+#[path = "issue_2539_step_recovery_driver.rs"]
+mod issue_2539_step_recovery_driver;
+#[path = "issue_2539_step_recovery_fixture.rs"]
+mod issue_2539_step_recovery_fixture;
+#[path = "issue_2539_step_recovery_init.rs"]
+mod issue_2539_step_recovery_init;
+#[path = "issue_2539_step_recovery_loop.rs"]
+mod issue_2539_step_recovery_loop;
+#[path = "issue_2539_step_recovery_policy.rs"]
+mod issue_2539_step_recovery_policy;
+#[path = "issue_2539_step_recovery_recipes.rs"]
+mod issue_2539_step_recovery_recipes;
+#[path = "issue_2539_step_recovery_recurrence.rs"]
+mod issue_2539_step_recovery_recurrence;
+#[path = "issue_2539_step_recovery_report.rs"]
+mod issue_2539_step_recovery_report;
+#[path = "issue_2539_step_recovery_validation.rs"]
+mod issue_2539_step_recovery_validation;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

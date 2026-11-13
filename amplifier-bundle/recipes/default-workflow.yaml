@@ -41,6 +41,8 @@ recursion:
   max_total_steps: 120
 
 context:
+  # Issue #2539: the run's step-recovery directory, shared with workflow-finalize.
+  step_recovery_dir: ""
   # Description of the task
   task_description: ""
 

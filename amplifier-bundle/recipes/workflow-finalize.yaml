@@ -3,18 +3,16 @@ description: "Phase 8: cleanup, quality audit, mergeable, complete (20-22b)"
 version: "1.0.0"
 author: "Amplihack Team"
 tags: ["development", "cleanup", "merge"]
-
 recursion:
   max_depth: 6
   max_total_steps: 80
-
 inputs:
   - name: worktree_setup.worktree_path
     description: "Absolute path to the per-task worktree produced by workflow-worktree (step-04). Required by bash steps in step-20b-push-cleanup and step-21-pr-ready that cd into the worktree."
   - name: repo_path
     description: "Absolute path to the repository root. Required by step-22b-final-status, which locates helpers through it and falls back to it only when the run's worktree (worktree_setup.worktree_path) is unset or gone; the final status itself runs in that worktree (issue #1596)."
-
 context:
+  step_recovery_dir: ""  # #2539: the run's step-recovery directory
   worktree_setup: ""
   base_branch: ""  # the base step-16 gave the PR; every base check here uses it (docs/reference/workflow-delivery-inputs.md)
   allow_no_op: false
@@ -39,8 +37,11 @@ context:
   implementation_terminal_evidence: ""
   verification_terminal_evidence: ""
   publish_terminal_evidence: ""
-
 steps:
+  - id: "step-recovery-init"  # #2539: check the caller's directory, or create a private one
+    type: "bash"
+    command: exec amplihack orch helper step-recovery init ${RECIPE_VAR_step_recovery_dir:+--dir "$RECIPE_VAR_step_recovery_dir"}
+    output: "step_recovery_dir"
   - id: "finalize-terminal-state"
     type: "recipe"
     recipe: "workflow-terminal-state"
@@ -49,7 +50,6 @@ steps:
       # #1714: a PR head that fast-forwards the local HEAD (main merged in from
       # elsewhere) is this run's PR; step-20-sync-pr-head fast-forwards to it.
       accept_pr_head_ahead: "true"
-
   # #1714 case 2: before any agent edits the tree, fast-forward to a PR head the
   # probe accepted as ahead and set a missing upstream. Never fails the run.
   - id: "step-20-sync-pr-head"
@@ -65,7 +65,6 @@ steps:
       { gd=$(git rev-parse --absolute-git-dir) && cd_=$(git rev-parse --path-format=absolute --git-common-dir) && [ "$gd" != "$cd_" ] && [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ]; } 2>/dev/null || skip "worktree path is not a linked worktree"
       bash "$(dirname "$WT_TOOL")/workflow_pr_head_sync.sh"
     output: "pr_head_sync_result"
-
   - id: "step-20-final-cleanup"
     agent: "amplihack:cleanup"
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
@@ -97,7 +96,6 @@ steps:
 
       **FINAL CHECK:** All explicit user requirements preserved.
     output: "final_cleanup"
-
   - id: "step-20c-quality-audit"
     agent: "amplihack:core:reviewer"
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
@@ -120,7 +118,6 @@ steps:
       Finish with a self-improvement pass for systemic critical issues.
       Output "QUALITY AUDIT: CLEAN" or list remaining findings and fixes.
     output: "quality_audit_results"
-
   - id: "step-20a-artifact-guard"
     type: "bash"
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
@@ -135,11 +132,11 @@ steps:
       RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
       if [ -f "$RUNTIME_ARTIFACT_HELPER" ]; then . "$RUNTIME_ARTIFACT_HELPER"; preflight_known_workflow_runtime_artifacts .; else echo "WARNING: workflow runtime artifact helper not found; skipping artifact preflight enrichment and continuing in degraded mode (searched AMPLIHACK_HOME, REPO_PATH, worktree, ~/.copilot, ~/.amplihack): $RUNTIME_ARTIFACT_HELPER; cwd=$(pwd)" >&2; fi
       amplihack hygiene artifact-guard --repo . --mode pre-publish
-
   - id: "step-20b-push-cleanup"
     type: "bash"
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
     command: |
+      IFS= read -r -d '' STEP_BODY <<'STEP_RECOVERY_BODY' || : # #2539: docs/reference/step-failure-recovery.md
       set -euo pipefail
       # Issue #1528: stage, commit and push only at the top of the linked task worktree, never in REPO_PATH or the cwd.
       skip() { echo "WARNING: step-20b ${1:-worktree_setup_path.sh not found}; skipping cleanup commit/push — never commits in REPO_PATH (#1528)" >&2; exit 0; }
@@ -225,12 +222,14 @@ steps:
         exit "$push_rc"
       fi
       echo "=== Cleanup Complete ==="
+      STEP_RECOVERY_BODY
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-20b-push-cleanup; exec amplihack orch helper step-recovery run --step-id step-20b-push-cleanup --dir "$RECIPE_VAR_step_recovery_dir" --goal "Commit and push the final cleanup of the workflow branch for PR ${RECIPE_VAR_pr_number:-unknown}" --state-file /dev/null -- bash -c "$STEP_BODY" step-20b-push-cleanup
     output: "cleanup_push_result"
-
   - id: "step-21-pr-ready"
     type: "bash"
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_run_ci_wait == 'true'"
     command: |
+      IFS= read -r -d '' STEP_BODY <<'STEP_RECOVERY_BODY' || : # #2539: docs/reference/step-failure-recovery.md
       set -euo pipefail
       WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
       WT_GONE="${WT_TOOL:+worktree path gone}"
@@ -242,8 +241,9 @@ steps:
       READY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_pr_ready.sh"; [ -f "$READY_HELPER" ] || READY_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_pr_ready.sh"; [ -f "$READY_HELPER" ] || READY_HELPER="$(pwd)/amplifier-bundle/tools/workflow_pr_ready.sh"; [ -f "$READY_HELPER" ] || READY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_pr_ready.sh"; [ -f "$READY_HELPER" ] || READY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_pr_ready.sh"
       [ -f "$READY_HELPER" ] || { echo "ERROR: workflow PR-ready helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $READY_HELPER; cwd=$(pwd)" >&2; exit 1; }
       bash "$READY_HELPER" --base "${RECIPE_VAR_base_branch:-}"
+      STEP_RECOVERY_BODY
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-21-pr-ready; exec amplihack orch helper step-recovery run --step-id step-21-pr-ready --dir "$RECIPE_VAR_step_recovery_dir" --goal "Mark PR ${RECIPE_VAR_pr_number:-unknown} ready for review" --state-file /dev/null -- bash -c "$STEP_BODY" step-21-pr-ready
     output: "pr_ready_result"
-
   - id: "step-22-ensure-mergeable"
     agent: "amplihack:ci-diagnostic-workflow"
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_run_ci_wait == 'true'"
@@ -257,14 +257,12 @@ steps:
       comments addressed, and approval present. If CI fails, diagnose and fix.
       This is the task completion point. **no_merge:** {{no_merge}}. When it is "true": do not merge; stop at merge-ready.
     output: "ci_status"
-
   # Issue #1268: the scope match below is a SIGNAL, not the verdict. Collect the
   # run's real artifacts and adjudicate over them before step-22b decides.
   - id: "terminal-adjudication-gate"
     type: "recipe"
     recipe: "workflow-terminal-adjudication"
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
-
   - id: "step-22b-final-status"
     type: "bash"
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
@@ -286,7 +284,6 @@ steps:
       [ -f "$FINAL_STATUS_HELPER" ] || { echo "ERROR: workflow final-status helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $FINAL_STATUS_HELPER; cwd=$(pwd)" >&2; exit 1; }
       bash "$FINAL_STATUS_HELPER" --base "${RECIPE_VAR_base_branch:-}"
     output: "final_status"
-
   - id: "collect-finalization-evidence"
     type: "bash"
     parse_json: true
@@ -295,7 +292,6 @@ steps:
       FINALIZER_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="$(pwd)/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $FINALIZER_HELPER; cwd=$(pwd)" >&2; exit 2; }
       bash "$FINALIZER_HELPER" collect --base "${RECIPE_VAR_base_branch:-}"
     output: "finalization_evidence"
-
   - id: "agentic-finalizer"
     agent: "amplihack:core:reviewer"
     prompt: |
@@ -328,7 +324,6 @@ steps:
       evidence indicates one of these, name it plainly in your narrative so the
       operator understands the durable state.
     output: "agentic_finalizer_narrative"
-
   - id: "finalizer-step-status"
     type: "bash"
     parse_json: true
@@ -360,11 +355,11 @@ steps:
       jq -nc --arg status "$status" --arg reporting_failure "$reporting_failure" \
         '{status: $status, reporting_failure: $reporting_failure}'
     output: "finalizer_step_status"
-
   - id: "validate-agentic-finalization"
     type: "bash"
     parse_json: true
     command: |
+      IFS= read -r -d '' STEP_BODY <<'STEP_RECOVERY_BODY' || : # #2539: docs/reference/step-failure-recovery.md
       set -euo pipefail
       # Issue #969 contract: this step classifies the terminal state from typed
       # deterministic evidence ONLY. It reads finalization_evidence and the typed
@@ -379,13 +374,18 @@ steps:
       # Success also includes EXISTING_OPEN_PR (#1641): see default-workflow-agentic-finalization.md.
       FINALIZER_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="$(pwd)/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $FINALIZER_HELPER; cwd=$(pwd)" >&2; exit 2; }
       bash "$FINALIZER_HELPER" validate
+      STEP_RECOVERY_BODY
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" validate-agentic-finalization; exec amplihack orch helper step-recovery run --step-id validate-agentic-finalization --essential --dir "$RECIPE_VAR_step_recovery_dir" --goal "Validate the finalization evidence of the workflow for PR ${RECIPE_VAR_pr_number:-unknown}" --state-file /dev/null -- bash -c "$STEP_BODY" validate-agentic-finalization
     output: "workflow_result"
-
+  - id: "step-recovery-report"  # #2539: a recorded handoff ends the run here with exit 81
+    type: "bash"
+    command: exec amplihack orch helper step-recovery report --dir "$RECIPE_VAR_step_recovery_dir"
   - id: "workflow-complete"
     type: "bash"
     parse_json: true
     command: |
       set -euo pipefail
+      [ -z "${RECIPE_VAR_step_recovery_dir:-}" ] || amplihack orch helper step-recovery report --dir "$RECIPE_VAR_step_recovery_dir" >/dev/null || exit $? # #2539
       # Reports workflow_result, terminal_outcome, terminal_state, terminal_success,
       # required_next_action, hollow_success_detected, evidence_used, reporting_failure,
       # finalizer_schema_version, finalizer_confidence, finalizer_output_valid,
