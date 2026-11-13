@@ -1,7 +1,7 @@
 ---
 title: Auto-drive Crusty Completion Contract
 description: Completion-first dispatch, decision integrity, and follow-up finalization for Crusty reviews.
-last_updated: 2026-11-11
+last_updated: 2026-11-12
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -34,14 +34,29 @@ loop's own evaluator and completion policy are unchanged.
 
 ## Next-action judgment
 
-After the round record is written, an agent selects the next action:
+After the round record is written, an agent reads the record and its
+`.findings`, `.minor` and `.severity` sidecars, then selects the next action:
 
 | Current review state | Action | Next step |
 | --- | --- | --- |
-| Successful, evidence-valid `CLEAN` | `complete` | Finalize required follow-ups, then record phase completion. |
-| Successful, evidence-valid `MINOR_ONLY` | `complete` | File or verify every minor follow-up before recording phase completion. |
-| Blocking or major concerns remain | `evaluate` | Retain remediation, progress and budget checks, then evaluate convergence where applicable. |
-| Missing or invalid evidence, unsuccessful child, or terminal refusal | Cannot authorize completion | Fail visibly or preserve the applicable failure handling. |
+| `CLEAN`, and `reviewed_head_sha` equals `head_sha` | `complete` | Finalize required follow-ups, then record phase completion. |
+| `MINOR_ONLY`, and `reviewed_head_sha` equals `head_sha` | `complete` | File or verify every minor follow-up before recording phase completion. |
+| `CONCERNS` (blocking or major concerns open), including after a round with commits when the heads differ | `evaluate` | Retain remediation, progress and budget checks, then evaluate convergence where applicable. |
+| `CLEAN` or `MINOR_ONLY`, but `reviewed_head_sha` differs from `head_sha` | `evaluate`, with the head mismatch as the reason | The new head is not reviewed yet, so `complete` is not allowed. Dispatch currently refuses this decision too, so the round stops with a dispatch error. It fails closed and grants no merge authority; changing dispatch is a follow-up under #2472. |
+| Invalid evidence: missing or unreadable record, no verdict, or a failed or refused round (rc not 0, exit `79`) | `evaluate`, with the fault as the reason | Never `complete`. Dispatch keeps its own failure handling: exits `79` and `75` return before the decision is read, a missing or unreadable record fails dispatch validation, and a record with no verdict goes to the evaluator as `MISSING`. |
+
+`CONCERNS` always means `evaluate`, whatever the head SHAs or sidecars say.
+After a round with commits, `reviewed_head_sha` differing from `head_sha` is
+expected and is not invalid evidence; it only means the new head has not been
+reviewed. The `.minor` sidecar is required only for `MINOR_ONLY`. Dispatch
+checks the sidecars itself: `CLEAN` and `MINOR_ONLY` need an empty
+`.findings` sidecar, and `MINOR_ONLY` also needs a non-empty `.minor` and a
+`.severity` sidecar.
+
+The agent always runs the Rust writer and records a decision. It stops
+without a decision only when the writer itself fails. It writes the reason in
+its own words and never copies text from the record, sidecars or review prose
+into it.
 
 Completed reviews repeated in persisted history or within the same run are
 still complete. An unchanged `MINOR_ONLY` verdict is not evidence of
