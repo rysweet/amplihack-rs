@@ -2182,9 +2182,10 @@ fn merge_loop_files_before_the_gate() {
     assert!(b < g, "step-02b runs before the gate");
     let s = step("autodrive-merge-loop", "step-02b-file-followups");
     assert_eq!(s["type"].as_str(), Some("agent"));
+    // #2472: a WAITING merge loop files nothing.
     assert_eq!(
         s["condition"].as_str(),
-        Some("merge_loop_preflight.should_run == 'true'")
+        Some("merge_loop_preflight.should_run == 'true' and 'WAITING' not in merge_loop_result")
     );
     assert!(
         s["prompt"]
