@@ -32,7 +32,7 @@ Downstream steps — particularly the `step-08c-work-verifier` / `step-08c-enfor
 
 ## The propagation chain
 
-Context must flow through every recipe boundary in the chain. The recipe runner's `_execute_sub_recipe()` merges parent context into child context, but only for keys the child **declares** in its `context:` block.
+Context must flow through every recipe boundary in the chain. The Rust recipe runner (`recipe-runner-rs`) passes the parent's whole context to an in-process sub-recipe and merges the child's context back when it finishes. A separate `amplihack recipe run` process sees the parent's values only as inherited `RECIPE_VAR_<key>` variables, and a key the child declares replaces the inherited value with its own default (#1561). Declare each key the chain needs, and pass it explicitly in the calling step's `context:` when the value must cross a process boundary; see [How the inputs reach each phase](workflow-delivery-inputs.md#how-the-inputs-reach-each-phase).
 
 ```
 smart-orchestrator

@@ -10,10 +10,12 @@ export GH_PAGER=cat PAGER=cat LESS=FRX
 #   --base BRANCH  The base the pull request was opened against: the run's
 #                  base_branch, which step-16 passed to `gh pr create --base`.
 #                  The no-diff check, the scoped PR match and the terminal
-#                  evidence all use it. Empty or absent keeps the discovery
-#                  (origin/HEAD, then origin/main, origin/master, origin/develop),
-#                  which matches a pull request step-16 opened without --base. A
-#                  set value is never replaced by a discovered one
+#                  evidence all use it. A set value is never replaced. Empty
+#                  or absent: the base of the pull request this run recorded,
+#                  from step-16's publish result or the pull request's own
+#                  baseRefName (delivery_run_base in workflow_delivery_inputs.sh).
+#                  origin/HEAD, then origin/main, origin/master, origin/develop,
+#                  is used only when the run recorded no pull request at all
 #                  (docs/reference/workflow-delivery-inputs.md).
 EXPECTED_BASE_INPUT=""
 while [ "$#" -gt 0 ]; do
@@ -79,6 +81,39 @@ fi
 # Defines parse_github_repo_identity (issue #1642).
 # shellcheck source=workflow_github_repo.sh disable=SC1090
 . "$GITHUB_REPO_HELPER"
+# Defines delivery_run_base, the one rule for the base of this run's PR (#2520).
+DELIVERY_INPUTS_HELPER="${WORKFLOW_DELIVERY_INPUTS_HELPER:-${SCRIPT_DIR}/workflow_delivery_inputs.sh}"
+if [ ! -f "$DELIVERY_INPUTS_HELPER" ] || [ ! -r "$DELIVERY_INPUTS_HELPER" ]; then
+  echo "ERROR: workflow_final_status.sh requires the delivery-input helper at $DELIVERY_INPUTS_HELPER" >&2
+  exit 2
+fi
+# shellcheck source=workflow_delivery_inputs.sh disable=SC1090
+. "$DELIVERY_INPUTS_HELPER"
+
+# The base of the pull request this run opened, in the current directory's
+# checkout (delivery_run_base). Prints the branch name without origin/. The
+# delivered branch is not passed: the scoped match compares the head itself.
+resolve_expected_base_branch() {
+  local repo
+  repo="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" 2>/dev/null || true)"
+  delivery_run_base "$EXPECTED_BASE_INPUT" "$(rv_field pr_publish_result base_branch)" \
+    "${PR_URL:-$PR_NUMBER}" "$repo" "" "${RECIPE_VAR_forbidden_base_branches:-}"
+}
+
+# Works the base out once (at most one gh call) and keeps it in EXPECTED_BASE,
+# so the no-diff check and the scoped match use the same value.
+EXPECTED_BASE=""
+EXPECTED_BASE_STATE=""
+ensure_expected_base() {
+  case "$EXPECTED_BASE_STATE" in ok) return 0 ;; failed) return 1 ;; esac
+  if EXPECTED_BASE="$(resolve_expected_base_branch)" && [ -n "$EXPECTED_BASE" ]; then
+    EXPECTED_BASE_STATE="ok"
+    return 0
+  fi
+  EXPECTED_BASE=""
+  EXPECTED_BASE_STATE="failed"
+  return 1
+}
 
 # Best-effort final PR status read. This is a display-only read that the caller
 # already tolerates failing (`|| true`); it must NOT stall the workflow's final
@@ -183,13 +218,9 @@ case "$PUBLISH_STATE" in
       # shellcheck source=/dev/null
       . "$RUNTIME_ARTIFACT_HELPER"
       preflight_known_workflow_runtime_artifacts .
-      if [ -n "$EXPECTED_BASE_INPUT" ]; then
-        base_ref="origin/$EXPECTED_BASE_INPUT"
-      else
-        base_ref="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-        [ -n "$base_ref" ] || base_ref="origin/main"
-      fi
-      if git rev-parse --verify --quiet "${base_ref}^{commit}" >/dev/null && [ -z "$(git status --porcelain)" ] && git diff --quiet "${base_ref}..HEAD"; then
+      base_ref=""
+      ! ensure_expected_base || base_ref="origin/$EXPECTED_BASE"
+      if [ -n "$base_ref" ] && git rev-parse --verify --quiet "${base_ref}^{commit}" >/dev/null && [ -z "$(git status --porcelain)" ] && git diff --quiet "${base_ref}..HEAD"; then
         if [ "$PUBLISH_STATE" = "no-diff" ]; then
           PUBLISH_STATE="NO_DIFF_SUCCESS"
         fi
@@ -204,17 +235,6 @@ case "$PUBLISH_STATE" in
     ;;
 esac
 
-resolve_expected_base_branch() {
-  local candidate
-  if [ -n "$EXPECTED_BASE_INPUT" ]; then printf '%s\n' "$EXPECTED_BASE_INPUT"; return 0; fi
-  candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-  if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then printf '%s\n' "${candidate#origin/}"; return 0; fi
-  for candidate in origin/main origin/master origin/develop; do
-    if git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then printf '%s\n' "${candidate#origin/}"; return 0; fi
-  done
-  return 1
-}
-
 validate_final_pr_scope() {
   local current_branch local_head repo_identity expected_base scoped_json reason created_after
   [ -x "$PR_SCOPE_HELPER" ] || { echo "ERROR: workflow_pr_scope.sh missing or not executable at $PR_SCOPE_HELPER" >&2; return 1; }
@@ -223,7 +243,8 @@ validate_final_pr_scope() {
   current_branch="$(bash "$SCRIPT_DIR/workflow_remote_branch.sh" .)" || { echo "ERROR: workflow_remote_branch.sh is missing or failed at $SCRIPT_DIR" >&2; return 1; }
   local_head="$(git rev-parse --verify HEAD 2>/dev/null || true)"
   repo_identity="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" || true)"
-  expected_base="$(resolve_expected_base_branch || true)"
+  expected_base=""
+  ! ensure_expected_base || expected_base="$EXPECTED_BASE"
   [ -n "$repo_identity" ] && [ -n "$current_branch" ] && [ -n "$local_head" ] && [ -n "$expected_base" ] || {
     echo "ERROR: scoped final PR validation lacks repo, branch, headRefOid, or baseRefName context" >&2
     return 1

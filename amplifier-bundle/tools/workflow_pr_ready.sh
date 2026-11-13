@@ -5,12 +5,14 @@ export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Usage: workflow_pr_ready.sh [--base BRANCH]
-#   --base BRANCH  The base the pull request was opened against: the run's
-#                  base_branch, which step-16 passed to `gh pr create --base`.
-#                  Empty or absent keeps the discovery below (origin/HEAD, then
-#                  origin/main, origin/master, origin/develop), which matches a
-#                  pull request step-16 opened without --base. A set value is
-#                  never replaced by a discovered one
+#   --base BRANCH  The run's base_branch, which step-16 passed to
+#                  `gh pr create --base`. A set value is never replaced.
+#                  Empty or absent: the base of the pull request this run
+#                  recorded, from step-16's publish result or the pull
+#                  request's own baseRefName (delivery_run_base in
+#                  workflow_delivery_inputs.sh). origin/HEAD, then origin/main,
+#                  origin/master, origin/develop, is used only when the run
+#                  recorded no pull request at all
 #                  (docs/reference/workflow-delivery-inputs.md).
 EXPECTED_BASE_INPUT=""
 while [ "$#" -gt 0 ]; do
@@ -66,6 +68,14 @@ fi
 # Defines parse_github_repo_identity (issue #1642).
 # shellcheck source=workflow_github_repo.sh disable=SC1090
 . "$GITHUB_REPO_HELPER"
+# Defines delivery_run_base, the one rule for the base of this run's PR (#2520).
+DELIVERY_INPUTS_HELPER="${WORKFLOW_DELIVERY_INPUTS_HELPER:-${SCRIPT_DIR}/workflow_delivery_inputs.sh}"
+if [ ! -f "$DELIVERY_INPUTS_HELPER" ] || [ ! -r "$DELIVERY_INPUTS_HELPER" ]; then
+  echo "ERROR: workflow_pr_ready.sh requires the delivery-input helper at $DELIVERY_INPUTS_HELPER" >&2
+  exit 2
+fi
+# shellcheck source=workflow_delivery_inputs.sh disable=SC1090
+. "$DELIVERY_INPUTS_HELPER"
 
 # Rate-limit-aware retry. This helper both reads (pr view) and MUTATES (pr ready,
 # pr comment); per the workflow contract mutation paths must never fall back to
@@ -77,19 +87,17 @@ gh_with_retry() {
   _gh_retry_core "$label" "$@"
 }
 
+# The base is worked out once, after the repository and branch are known, and
+# that one value is used by both the scoped lookup and the identity check.
+EXPECTED_BASE=""
 resolve_expected_base_branch() {
-  local candidate
-  if [ -n "$EXPECTED_BASE_INPUT" ]; then printf '%s\n' "$EXPECTED_BASE_INPUT"; return 0; fi
-  candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-  if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then printf '%s\n' "${candidate#origin/}"; return 0; fi
-  for candidate in origin/main origin/master origin/develop; do
-    if git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then printf '%s\n' "${candidate#origin/}"; return 0; fi
-  done
-  return 1
+  local repo="$1" branch="$2"
+  delivery_run_base "$EXPECTED_BASE_INPUT" "$(rv_field pr_publish_result base_branch)" \
+    "${PR_URL:-$PR_NUMBER}" "$repo" "$branch" "${RECIPE_VAR_forbidden_base_branches:-}"
 }
 
 validate_pr_identity_before_mutation() {
-  local pr_json="$1" pr_url="$2" current_branch local_head repo_identity pr_base_identity expected_base
+  local pr_json="$1" pr_url="$2" current_branch local_head repo_identity pr_base_identity expected_base="$EXPECTED_BASE"
   local pr_head_ref pr_base_ref pr_head_oid pr_head_owner pr_head_repo pr_cross_repo
 
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
@@ -143,7 +151,7 @@ validate_pr_identity_before_mutation() {
     echo "ERROR: refusing to mutate PR '$pr_url'; PR head repo '$pr_head_owner/$pr_head_repo' does not match current repo '$repo_identity'" >&2
     return 1
   fi
-  if ! expected_base="$(resolve_expected_base_branch)"; then
+  if [ -z "$expected_base" ]; then
     echo "ERROR: refusing to mutate PR '$pr_url'; unable to resolve expected base branch for baseRefName validation" >&2
     return 1
   fi
@@ -169,16 +177,19 @@ fi
 current_branch="$(bash "$SCRIPT_DIR/workflow_remote_branch.sh" .)" || { echo "ERROR: workflow_remote_branch.sh is missing or failed at $SCRIPT_DIR; refusing PR readiness mutation" >&2; exit 1; }
 local_head="$(git rev-parse --verify HEAD 2>/dev/null || true)"
 repo_identity="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" || true)"
-expected_base="$(resolve_expected_base_branch || true)"
 [ -n "$repo_identity" ] || { echo "ERROR: unable to determine current GitHub repo identity from origin remote" >&2; exit 1; }
 [ -n "$current_branch" ] || { echo "ERROR: current branch is empty; refusing ambiguous PR readiness mutation" >&2; exit 1; }
 [ -n "$local_head" ] || { echo "ERROR: local HEAD does not resolve; refusing ambiguous PR readiness mutation" >&2; exit 1; }
-[ -n "$expected_base" ] || { echo "ERROR: unable to resolve expected base branch for scoped PR validation" >&2; exit 1; }
 [ -x "$PR_SCOPE_HELPER" ] || { echo "ERROR: workflow_pr_scope.sh missing or not executable at $PR_SCOPE_HELPER" >&2; exit 1; }
 if [[ "$PR_NUMBER" =~ [^[:space:]] ]] && ! [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
   echo "ERROR: invalid PR_NUMBER '$PR_NUMBER' for workflow_pr_ready.sh" >&2
   exit 1
 fi
+if ! EXPECTED_BASE="$(resolve_expected_base_branch "$repo_identity" "$current_branch")" || [ -z "$EXPECTED_BASE" ]; then
+  echo "ERROR: unable to resolve expected base branch for scoped PR validation" >&2
+  exit 1
+fi
+expected_base="$EXPECTED_BASE"
 
 scoped_issue_id="${RECIPE_VAR_issue_number:-}"
 # issue_number can carry a non-numeric local tracking reference (e.g.

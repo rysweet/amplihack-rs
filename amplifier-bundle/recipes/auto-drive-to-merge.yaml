@@ -14,6 +14,7 @@ recursion:
   max_depth: 6
   max_total_steps: 120
 context:
+  base_branch: ""  # base for the pull request, passed on to default-workflow; empty: the PR's own base (docs/reference/workflow-delivery-inputs.md)
   task_description: ""
   requirements: ""
   repo_path: "."
@@ -54,6 +55,7 @@ steps:
     type: "recipe"
     recipe: "autodrive-build"
     context:
+      base_branch: "{{base_branch}}"
       task_description: "{{task_description}}"
       requirements: "{{requirements}}"
       repo_path: "{{repo_path}}"

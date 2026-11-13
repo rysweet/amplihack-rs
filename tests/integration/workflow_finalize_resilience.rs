@@ -166,6 +166,10 @@ fn private_git_scope(tmp: &Path) -> PathBuf {
     repo
 }
 
+/// A step-16 publish result that records the pull request's base (#2520).
+const RECORDED_MAIN_BASE: &str =
+    r#"{"pr_url":"https://github.com/owner/repo/pull/7","pr_number":"7","base_branch":"main"}"#;
+
 fn write_failing_gh(tmp: &Path, read: &str) {
     let gh = tmp.join("bin/gh");
     write_file(
@@ -390,8 +394,12 @@ fn pr_ready_helper_fails_closed_when_pr_view_metadata_is_unavailable() {
     let repo = private_git_scope(tmp.path());
     write_failing_gh(tmp.path(), "view");
 
+    // The publish result records the base step-16 gave the pull request
+    // (#2520), so the base is known without a GitHub read and the scoped
+    // lookup is the read that fails.
     let output = private_scope_command(tmp.path(), &repo, "workflow_pr_ready.sh")
         .env("RECIPE_VAR_pr_url", "https://github.com/owner/repo/pull/7")
+        .env("RECIPE_VAR_pr_publish_result", RECORDED_MAIN_BASE)
         .env("PR_URL", "https://github.com/owner/repo/pull/9999") // deliberately stale (#1561)
         .output()
         .expect("run workflow_pr_ready.sh");
@@ -899,9 +907,11 @@ fn final_status_unreadable_gh_is_uncertain_never_silent_success() {
     let repo = private_git_scope(tmp.path());
     write_failing_gh(tmp.path(), "view");
 
+    // Base recorded by step-16 (#2520): the scoped lookup is the read that fails.
     let output = private_scope_command(tmp.path(), &repo, "workflow_final_status.sh")
         .env("REMOTE_HOST_TYPE", "github")
         .env("RECIPE_VAR_pr_url", "https://github.com/owner/repo/pull/7")
+        .env("RECIPE_VAR_pr_publish_result", RECORDED_MAIN_BASE)
         .env("PR_URL", "https://github.com/owner/repo/pull/9999") // deliberately stale (#1561)
         .env("TASK_DESCRIPTION", "test task")
         .env("ISSUE_NUMBER", "7")

@@ -4,9 +4,7 @@ version: "1.0.0"
 author: "Amplihack Team"
 tags: ["development", "cleanup", "merge"]
 
-recursion:
-  max_depth: 6
-  max_total_steps: 80
+recursion: { max_depth: 6, max_total_steps: 80 }
 
 inputs:
   - name: worktree_setup.worktree_path
@@ -16,7 +14,8 @@ inputs:
 
 context:
   worktree_setup: ""
-  base_branch: ""  # the base step-16 gave the PR; every base check here uses it (docs/reference/workflow-delivery-inputs.md)
+  base_branch: ""  # the base step-16 gave the PR; every base check here uses it; empty: the PR's own base (docs/reference/workflow-delivery-inputs.md)
+  forbidden_base_branches: ""  # a base read from the PR must not match these globs either
   allow_no_op: false
   terminal_success: "false"
   terminal_state: ""

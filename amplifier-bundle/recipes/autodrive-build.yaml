@@ -12,6 +12,7 @@ recursion:
   max_depth: 6
   max_total_steps: 80
 context:
+  base_branch: ""  # base for the pull request, passed on to default-workflow; empty: the PR's own base (docs/reference/workflow-delivery-inputs.md)
   task_description: ""
   requirements: ""
   repo_path: "."
@@ -59,6 +60,7 @@ steps:
     type: "recipe"
     recipe: "default-workflow"
     context:
+      base_branch: "{{base_branch}}"
       task_description: "{{no_merge_directive.task_description}}"
       requirements: "{{no_merge_directive.requirements}}"
       repo_path: "{{repo_path}}"

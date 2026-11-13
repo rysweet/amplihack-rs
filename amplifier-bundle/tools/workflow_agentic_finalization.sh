@@ -5,8 +5,11 @@ export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
 
 mode="${1:-}"
 # collect [--base BRANCH]: BRANCH is the run's base_branch, the base step-16
-# gave the pull request. The evidence's diff is taken against origin/BRANCH;
-# empty keeps origin/HEAD (docs/reference/workflow-delivery-inputs.md).
+# gave the pull request. The evidence's diff is taken against origin/BRANCH.
+# Empty: the base of the pull request this run recorded (delivery_run_base in
+# workflow_delivery_inputs.sh); when that cannot be read, the collector keeps
+# its origin/HEAD discovery and a warning says so
+# (docs/reference/workflow-delivery-inputs.md).
 FINALIZATION_BASE_BRANCH=""
 if [ "$mode" = collect ] && [ "${2:-}" = "--base" ]; then FINALIZATION_BASE_BRANCH="${3:-}"; fi
 if [ -n "$FINALIZATION_BASE_BRANCH" ] && ! git check-ref-format --branch "$FINALIZATION_BASE_BRANCH" >/dev/null 2>&1; then
@@ -61,6 +64,15 @@ resolve_pr_url() { workflow_finalization_metadata pr_url || :; }
 resolve_pr_number() { workflow_finalization_metadata pr_number || :; }
 
 here="$(dirname "${BASH_SOURCE[0]}")"
+# rv_field (#1561) and delivery_run_base (#2520), for resolve_finalization_base.
+. "$here/recipe_var.sh"
+DELIVERY_INPUTS_HELPER="${WORKFLOW_DELIVERY_INPUTS_HELPER:-$here/workflow_delivery_inputs.sh}"
+if [ ! -f "$DELIVERY_INPUTS_HELPER" ] || [ ! -r "$DELIVERY_INPUTS_HELPER" ]; then
+  echo "ERROR: workflow_agentic_finalization.sh requires the delivery-input helper at $DELIVERY_INPUTS_HELPER" >&2
+  exit 2
+fi
+# shellcheck source=workflow_delivery_inputs.sh disable=SC1090
+. "$DELIVERY_INPUTS_HELPER"
 . "$here/workflow_finalization_metadata.sh"
 . "$here/workflow_finalization_collect.sh"
 . "$here/workflow_gh_retry.sh"
@@ -70,6 +82,32 @@ here="$(dirname "${BASH_SOURCE[0]}")"
 . "$here/workflow_finalization_validate.sh"
 . "$here/workflow_finalization_complete.sh"
 
+# Sets FINALIZATION_BASE_BRANCH from the run's pull request when --base was
+# empty and no explicit base_ref was recorded (#2520). Evidence only: a base
+# that cannot be read leaves it empty, so workflow_finalization_collect.sh
+# keeps its discovery, and a warning names that fallback.
+resolve_finalization_base() {
+  local target pr_ref base
+  [ -z "$FINALIZATION_BASE_BRANCH" ] || return 0
+  [ -z "$(workflow_finalization_metadata base_ref || :)" ] || return 0
+  target="$(workflow_finalization_metadata worktree_path || :)"
+  if [ -z "$target" ] || [ "$target" = "''" ]; then target="$(workflow_finalization_metadata repo_path || :)"; fi
+  [ -n "$target" ] || target="."
+  git -C "$target" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  pr_ref="$(resolve_pr_url)"
+  [ "$pr_ref" != "''" ] || pr_ref=""
+  [ -n "$pr_ref" ] || pr_ref="$(resolve_pr_number)"
+  [ "$pr_ref" != "''" ] || pr_ref=""
+  if base="$(cd "$target" && delivery_run_base "" "$(rv_field pr_publish_result base_branch)" "$pr_ref" \
+      "$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" 2>/dev/null || true)" \
+      "" "${RECIPE_VAR_forbidden_base_branches:-}")" && [ -n "$base" ]; then
+    FINALIZATION_BASE_BRANCH="$base"
+  else
+    echo "WARNING: workflow_agentic_finalization.sh: the base of the run's pull request was not resolved; the evidence diff uses the discovered base (origin/HEAD)" >&2
+  fi
+}
+
+[ "$mode" != collect ] || resolve_finalization_base
 case "$mode" in
   collect) run_finalization_cleanup; collect_evidence ;;
   validate) validate_finalization ;;

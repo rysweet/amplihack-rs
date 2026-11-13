@@ -14,6 +14,7 @@ lists the paths that do not use them.
 
 - [Inputs](#inputs)
 - [`base_branch`](#base_branch)
+- [How finalize finds the base](#how-finalize-finds-the-base)
 - [`forbidden_base_branches`](#forbidden_base_branches)
 - [`strict_delivery`](#strict_delivery)
 - [How the issue is referenced](#how-the-issue-is-referenced)
@@ -29,7 +30,7 @@ lists the paths that do not use them.
 
 | Key | Default | Meaning |
 | --- | ------- | ------- |
-| `base_branch` | `""` | Branch a new task branch starts from and the pull request targets. Empty keeps the remote default branch. |
+| `base_branch` | `""` | Branch a new task branch starts from and the pull request targets. Empty keeps the remote default branch for the new branch and the new pull request; finalize then takes the base from the pull request the run opened. |
 | `forbidden_base_branches` | `""` | Shell globs that `base_branch` must not match, separated by spaces, tabs or newlines (see [below](#forbidden_base_branches)). |
 | `strict_delivery` | `"false"` | Exactly `"true"` turns on the strict contract below. `"false"` or empty leaves it off. Step-03 fails on any other value, such as `1`, `yes` or `TRUE`. |
 | `repository` | `""` | Strict delivery: the `owner/repo` on github.com that owns `issue_number`. |
@@ -50,11 +51,17 @@ sees it, instead of turning the contract off.
 
 ## `base_branch`
 
-When `base_branch` is empty, nothing changes. Step-04 starts a new branch from
-the remote default branch (`origin/HEAD`, then `origin/master`, then
-`origin/develop`), step-16 calls `gh pr create` without `--base`, so GitHub
-uses the repository's default branch, and finalize checks the pull request
-against `origin/HEAD` as before.
+When `base_branch` is empty, step-04 starts a new branch from the remote
+default branch: the first of `origin/HEAD`, `origin/master` and
+`origin/develop` that exists. Step-04's list has no `origin/main`; the finalize
+helpers use a different list, given in rule 5 of
+[How finalize finds the base](#how-finalize-finds-the-base). Step-16 calls `gh pr create` without `--base`, so GitHub uses the
+repository's default branch. Finalize does not assume either of those. It
+checks the pull request against the base that pull request actually has, as
+described in [How finalize finds the base](#how-finalize-finds-the-base). A
+local `origin/HEAD` that is out of date, for example after the repository's
+default branch on GitHub changed to `dev`, no longer makes step-21 miss the
+pull request.
 
 When `base_branch` is set:
 
@@ -71,13 +78,14 @@ When `base_branch` is set:
 | terminal adjudication, step-22b | `workflow_terminal_evidence.sh collect-for-step --base <base_branch>` and `workflow_final_status.sh --base <base_branch>`: the no-diff check, the scoped match and the "work already in the base" evidence use `base_branch`. |
 | collect-finalization-evidence | `workflow_agentic_finalization.sh collect --base <base_branch>`: the evidence's `base_ref`, diff and commit count are taken from `origin/<base_branch>`. |
 
-Finalize applies the rule step-16 applies: `base_branch` when it is set,
-otherwise the discovery it always had. It reads the run's `base_branch`, not
-the receipt's `base_ref`. For an ordinary new branch the receipt holds step-04's
-own discovery, which need not be the branch GitHub chose for a pull request
-opened without `--base`. When `base_branch` is set the two are the same branch.
-`base_branch` reaches every finalize recipe because the runner passes a
-parent's whole context into each sub-recipe; see
+Finalize reads the run's `base_branch`, not the receipt's `base_ref`. For an
+ordinary new branch the receipt holds step-04's own discovery, which need not
+be the branch GitHub chose for a pull request opened without `--base`. When
+`base_branch` is set the two are the same branch. `base_branch` reaches every
+finalize recipe because the runner passes a parent's whole context into each
+in-process sub-recipe. Every bundled recipe that calls `default-workflow` also
+declares the key and passes it on explicitly, so the value still arrives when a
+call runs in a separate process; see
 [How the inputs reach each phase](#how-the-inputs-reach-each-phase).
 
 `delivery_base_ref` checks the value before it is used. The step fails, and no
@@ -93,6 +101,81 @@ other base is substituted, when `base_branch`:
 GitHub applies closing keywords only when a pull request merges into the
 repository's default branch. With any other base, `Closes` links the pull
 request to the issue but does not close the issue when it merges.
+
+## How finalize finds the base
+
+Step-21 (`workflow_pr_ready.sh`), step-22b (`workflow_final_status.sh`), the
+terminal evidence (`workflow_terminal_evidence.sh`), the finalization evidence
+(`workflow_agentic_finalization.sh collect`) and the terminal-state probe all
+use one function, `delivery_run_base`, to decide which base the run's pull
+request has. It takes the first rule that gives a value:
+
+| Order | Source | Checks |
+| ----- | ------ | ------ |
+| 1 | The run's `base_branch`, when it is set. | Format, `refs/*` and `@` checks. A pull request with another base still fails closed. |
+| 2 | `base_branch` in step-16's publish result (`pr_publish_result.base_branch`). | Rule 4. |
+| 3 | The `baseRefName` of the pull request this run recorded, found by `pr_url` or `pr_number` with one read-only `gh pr view`. | The reference and rule 4. |
+| 4 | Not a source: the value from rule 2 or 3 goes through `delivery_base_ref`. | See below. |
+| 5 | Only when the run recorded no pull request at all: the old discovery, the first of `origin/HEAD`, `origin/main`, `origin/master` and `origin/develop` that exists. This is the finalize helpers' own list, not step-04's. | As before. |
+
+An explicit `base_branch` always wins. It is never replaced by the pull
+request's base, so `base_branch=main` with a pull request into `dev` still
+ends in `no_scoped_pr`, and `gh pr ready` is not called.
+
+A base taken from the publish result or from the pull request is data, not
+input from the caller, so it is checked before it is used. `delivery_base_ref`
+refuses it, and the helper fails with `unable to resolve expected base branch`,
+when the name:
+
+- is not a valid branch name, is written as a ref (`refs/...`) or as `@`;
+- has no remote-tracking ref `refs/remotes/origin/<base>`. A local branch or
+  tag named `origin/<base>` does not count;
+- matches a pattern in `forbidden_base_branches`;
+- equals the branch being delivered.
+
+Rule 3 runs `gh pr view` only for a reference that is a positive number or a
+`https://github.com/<owner>/<repo>/pull/<N>` URL whose repository is this
+checkout's `origin`. Anything else fails before `gh` runs. The output is read
+with `jq` for `baseRefName` and nothing else.
+
+Once the run has recorded a pull request, `origin/HEAD` and the
+`origin/main`/`origin/master`/`origin/develop` list are never used, even when `gh pr view` fails. The
+helper fails closed instead, so a stale `origin/HEAD` cannot send finalize to
+the wrong pull request, or tell it there is none.
+
+Each helper works the base out once and uses that one value for both the
+scoped lookup (`workflow_pr_scope.sh --base`) and the identity check before
+`gh pr ready`. `workflow_pr_scope.sh` does not change: it still requires
+`--base` and still compares the head branch, head commit, head repository and
+`baseRefName`. A pull request this run did not open is never found by a
+search.
+
+Step-16 writes `base_branch` into the publish result only when the base was
+checked: the base it passed to `gh pr create --base`, or the `baseRefName` of
+an existing pull request whose identity it confirmed. A pull request created
+without `--base`, the no-diff exit and every error exit record `""`. A run
+whose publish result has no `base_branch`, including runs from before the
+field existed, uses rule 3. A recorded base is still compared with the live
+pull request's `baseRefName` by the scope and identity checks.
+
+The two evidence steps (`workflow_terminal_evidence.sh` and
+`workflow_agentic_finalization.sh collect`) only collect evidence. When
+`delivery_run_base` fails they fall back to the old discovery and write one
+line to stderr naming the base they used. The terminal-state probe never
+reports success when the base cannot be worked out: a pull request that does
+not match ends in `FAILED_INVALID_INPUT`, as before.
+
+Example: the repository's default branch on GitHub is `main`, `origin/dev`
+exists, and the run is started with `-c base_branch=dev`. Step-16 opens
+`feat/x → dev` and records `base_branch: "dev"`. Step-21 expects `dev`, finds
+the pull request with `workflow_pr_scope.sh --base dev`, and runs
+`gh pr ready`. Run again with `base_branch` empty against a pull request whose
+base is `dev` and whose publish result has no `base_branch`: step-21 reads
+`baseRefName` with `gh pr view`, gets `dev`, checks `origin/dev`, and marks the
+same pull request ready. Run a third time with `-c base_branch=main` against
+the same pull request: rule 1 gives `main`, the scoped lookup finds no pull
+request from `feat/x` into `main`, step-21 ends in `no_scoped_pr`, and
+`gh pr ready` is not called.
 
 ## `forbidden_base_branches`
 
@@ -235,6 +318,52 @@ to `default-workflow` when it calls it in-process. What happens then:
 No bundled recipe gives any of these keys a value of its own. `quick-change`
 and `auto-drive-light` clear `base_branch` and `forbidden_base_branches`, and
 `smart-classify-route` declares `strict_delivery` so that it can read it; see
+[Where the inputs apply](#where-the-inputs-apply).
+
+Every bundled recipe on a path to `default-workflow` declares
+`base_branch: ""` and passes `base_branch: "{{base_branch}}"` in the
+`context:` of each call to `default-workflow`, `autodrive-build`,
+`auto-drive-to-merge`, `smart-classify-route` or `smart-execute-routing`:
+
+| Recipe | Calls that pass `base_branch` |
+| ------ | ----------------------------- |
+| `auto-drive-to-merge` | the build call to `autodrive-build` |
+| `autodrive-build` | step-02, the call to `default-workflow` |
+| `auto-drive-light` | `light-escalate`, the call to `auto-drive-to-merge` |
+| `quick-change` | `quick-change-handover`, the call to `default-workflow` |
+| `smart-orchestrator` | the calls to `smart-classify-route` and `smart-execute-routing` |
+| `smart-classify-route` | none; it declares the key only |
+| `smart-execute-routing` | all three calls to `default-workflow` |
+| `quality-loop` | its call to `default-workflow` |
+| `oxidizer-workflow` | all thirteen calls to `default-workflow` |
+
+In-process, the whole-context merge would deliver `base_branch` without these
+entries. They are needed when a phase runs as a separate
+`amplihack recipe run`: that process sees the parent's value only as an
+inherited `RECIPE_VAR_base_branch`, and the child's own `base_branch: ""`
+declaration replaces it (#1561), so without `{{base_branch}}` in the calling
+step the child would run with an empty base. The explicit entry also keeps the
+value from depending on which keys some other step merged back into the
+parent's context. (The older text in
+[Worktree setup propagation](worktree-setup-propagation.md#the-propagation-chain)
+says only declared keys are merged; that describes the earlier Python runner.
+`recipe-runner-rs` merges every key.)
+
+The runner reads a step's values only from its `context:` key. The thirteen
+`oxidizer-workflow` calls to `default-workflow` used to name that map
+`sub_context:`, which the runner does not know and skips with a warning, so
+none of their values, the phase's own `task_description` included, reached
+`default-workflow`. They now use `context:`.
+
+`workflow-finalize`, `workflow-terminal-state` and
+`workflow-terminal-adjudication` also declare `forbidden_base_branches: ""`,
+because their helpers check a base read from the pull request against it.
+
+So `amplihack recipe run auto-drive-to-merge -c base_branch=dev` reaches
+step-04, step-16 and finalize of the nested `default-workflow` as `dev`, and
+the same holds for the other recipes above. `{{base_branch}}` appears only in
+`context:` maps, never in `command:` or bash text. The only clears are the two
+`workflow-worktree` calls described in
 [Where the inputs apply](#where-the-inputs-apply). A parent that needs one of
 these names for something else clears it in the calling step's `context:`
 (for example `base_branch: ""`) before it calls `default-workflow`, or uses
@@ -262,7 +391,11 @@ to `default-workflow` therefore continues the `quick/` branch with no
 
 `auto-drive-light` continuing an existing branch or pull request
 (`existing_branch` or `pr_number` set) does not call `workflow-worktree` and
-opens no pull request.
+opens no pull request. On that path `light-escalate` passes the caller's
+`base_branch` to `auto-drive-to-merge`. After a new change, `light-worktree`
+has cleared it, so escalation sees an empty base, which is correct: the
+`quick/` branch was cut from `origin/HEAD`, and finalize takes the base from
+the pull request itself ([How finalize finds the base](#how-finalize-finds-the-base)).
 
 A strict development task that `smart-orchestrator` keeps on one workstream
 goes to `default-workflow` in-process, which applies the contract above. `quick-change`
@@ -299,12 +432,16 @@ amplihack recipe run default-workflow \
 | `strict_issue_tag ISSUE REPOSITORY PR_REPOSITORY` | step-03, step-15, step-16 | Prints `#N` or `owner/repo#N`. |
 | `same_github_repository A B` | step-03, step-16 | Case-insensitive `owner/repo` comparison. |
 | `select_strict_delivery_issue` (`tools/workflow_issue_tracking.sh`) | step-03 | Confirms the caller's issue or fails. |
+| `delivery_run_base EXPLICIT RECORDED PR_REF REPO BRANCH FORBIDDEN` | the finalize helpers below, the terminal-state probe | Prints the base the run's pull request has, by the rules in [How finalize finds the base](#how-finalize-finds-the-base), without `origin/`. Returns 1, with names quoted by `printf '%q'` on stderr, when no rule gives a checked value. |
 
 None of them read `RECIPE_VAR_*`. Each recipe passes the values it has
-declared in its own `context` (#1561).
+declared in its own `context` (#1561). `delivery_run_base` makes at most one
+`gh pr view` call and never retries.
 
-The finalize helpers take the base the same way, as an argument. An empty or
-absent `--base` keeps their discovery; a set one is never replaced:
+The finalize helpers take the base the same way, as an argument. A set
+`--base` is never replaced. An empty or absent `--base` uses
+`delivery_run_base`, which falls back to discovery only when the run recorded
+no pull request:
 
 | Helper | Called by |
 | ------ | --------- |
@@ -319,7 +456,26 @@ absent `--base` keeps their discovery; a set one is never replaced:
 cargo test -p amplihack --test integration issue_1881_local_default_tracking::strict_delivery
 cargo test -p amplihack --test integration workflow_publish_pr_metadata::recovery
 cargo test -p amplihack --test integration workflow_delivery_inputs
+cargo test -p amplihack --test integration workflow_finalize_resilience
 ```
+
+The finalize tests use a fake `gh` and a local git repository whose
+`origin/HEAD` is `main`, with a real `origin/dev` and pull request 7
+(`feat/x → dev`). They cover `base_branch=dev`, an empty `base_branch` with
+the base recorded in the publish result, an empty `base_branch` with no
+recorded base (one `gh pr view` call), and the cases that must fail closed: an
+explicit or recorded `main`, a recorded base with no `origin/<base>`, a base on
+the forbidden list, a base that exists only as a local ref named
+`origin/dev`, a malformed `pr_number`, and a failed `gh pr view` while
+`origin/HEAD` names the right branch. `gh pr ready` is never called in those
+cases. Each test sets every `RECIPE_VAR_*` and `WORKFLOW_*` variable the
+helpers read, so it does not depend on its environment.
+
+`every_finalize_recipe_declares_base_branch` and
+`every_caller_passes_base_branch_to_default_workflow` parse the recipes listed
+in [How the inputs reach each phase](#how-the-inputs-reach-each-phase) and
+check the declarations and the `{{base_branch}}` pass-through, allowing only
+the two documented clears.
 
 ## Related documentation
 

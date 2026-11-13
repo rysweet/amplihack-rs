@@ -7,7 +7,10 @@
 # recipe that passes a value is the one that declares its key (#1561).
 #
 # Sourced for its functions by step-03 (directly, and through
-# workflow_issue_tracking.sh) and by workflow_publish_pr.sh (step-16).
+# workflow_issue_tracking.sh), by workflow_publish_pr.sh (step-16), by the
+# finalize helpers (workflow_pr_ready.sh, workflow_final_status.sh,
+# workflow_terminal_evidence.sh, workflow_agentic_finalization.sh) and by the
+# workflow-terminal-state probe.
 # Executed by step-04-setup-worktree:
 #
 #   workflow_delivery_inputs.sh worktree BASE_BRANCH STRICT EXISTING_BRANCH FORBIDDEN
@@ -28,6 +31,23 @@
 #       flow list or a comma-separated list), so a list in the wrong syntax is
 #       refused instead of being enforced in part. It never substitutes another
 #       base and never fetches: the caller has fetched.
+#   delivery_run_base EXPLICIT RECORDED PR_REF REPO BRANCH FORBIDDEN
+#       Prints the base branch (no `origin/`) of the pull request this run
+#       opened (#2520). The first rule that gives a value decides:
+#         1. EXPLICIT, the run's base_branch. Checked for format only; a
+#            mismatch with the pull request is caught by the caller's scope
+#            and identity checks, so it fails closed.
+#         2. RECORDED, the base_branch field of step-16's publish result.
+#         3. The baseRefName of PR_REF, read with one `gh pr view`. PR_REF must
+#            be a positive number or https://github.com/<REPO>/pull/<n>;
+#            anything else returns 1 before gh runs.
+#         4. A base from 2 or 3 must pass delivery_base_ref (a plain branch
+#            name, refs/remotes/origin/<base>, not in FORBIDDEN, not BRANCH).
+#         5. Only when RECORDED and PR_REF are both empty: origin/HEAD, then
+#            origin/main, origin/master, origin/develop. Once a pull request is
+#            recorded this list is never used, even when gh fails.
+#       Returns 1, with the reason on stderr, when no rule gives a checked
+#       base. Never retries, never fetches.
 #   delivery_strict_mode STRICT REPOSITORY PR_REPOSITORY CLOSING_REFERENCE
 #       Prints `true` when STRICT is `true`, and `false` when STRICT is `false`
 #       or empty and the three strict-only inputs are empty. Returns 1, with
@@ -96,6 +116,75 @@ delivery_base_ref() {
     return 1
   fi
   printf 'origin/%s\n' "$base"
+}
+
+delivery_run_base() {
+  local explicit="${1:-}" recorded="${2:-}" pr_ref="${3:-}" repo="${4:-}" branch="${5:-}" forbidden="${6:-}"
+  local candidate="" url_repo raw ref
+  # 1. The run's own base_branch is never replaced.
+  if [ -n "$explicit" ]; then
+    if ! git check-ref-format --branch "$explicit" >/dev/null 2>&1; then
+      printf 'ERROR: base_branch %q is not a valid branch name\n' "$explicit" >&2
+      return 1
+    fi
+    case "$explicit" in
+      refs/*|@)
+        printf 'ERROR: base_branch %q must be a plain branch name, not a ref\n' "$explicit" >&2
+        return 1 ;;
+    esac
+    printf '%s\n' "$explicit"
+    return 0
+  fi
+  if [ -n "$recorded" ]; then
+    # 2. The base step-16 recorded when it opened or matched the pull request.
+    candidate="$recorded"
+  elif [ -n "$pr_ref" ]; then
+    # 3. The pull request's own base. Only a reference this run recorded, in
+    # a shape gh cannot read as an option or another repository.
+    if [[ "$pr_ref" =~ ^[1-9][0-9]*$ ]]; then
+      :
+    elif [[ "$pr_ref" =~ ^https://github\.com/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/pull/[1-9][0-9]*/?$ ]]; then
+      url_repo="${BASH_REMATCH[1]}"
+      if ! same_github_repository "$url_repo" "$repo"; then
+        printf 'ERROR: pull request %q is not in this repository %q; its base is not read\n' "$pr_ref" "$repo" >&2
+        return 1
+      fi
+    else
+      printf 'ERROR: pull request reference %q is neither a number nor a github.com pull request URL; its base is not read\n' "$pr_ref" >&2
+      return 1
+    fi
+    # gh's own stderr is dropped: it can quote a remote URL with credentials.
+    if ! raw="$(gh pr view "$pr_ref" --json baseRefName 2>/dev/null)"; then
+      printf 'ERROR: could not read the base of pull request %q (gh pr view failed); no other base is substituted\n' "$pr_ref" >&2
+      return 1
+    fi
+    if ! candidate="$(printf '%s' "$raw" | jq -r '.baseRefName // empty')"; then
+      printf 'ERROR: gh pr view for %q returned output that is not JSON\n' "$pr_ref" >&2
+      return 1
+    fi
+    if [ -z "$candidate" ]; then
+      printf 'ERROR: pull request %q reported no baseRefName\n' "$pr_ref" >&2
+      return 1
+    fi
+  else
+    # 5. No pull request recorded: the old discovery.
+    candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+    if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then
+      printf '%s\n' "${candidate#origin/}"
+      return 0
+    fi
+    for candidate in origin/main origin/master origin/develop; do
+      if git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then
+        printf '%s\n' "${candidate#origin/}"
+        return 0
+      fi
+    done
+    echo "ERROR: no pull request recorded and none of origin/HEAD, origin/main, origin/master, origin/develop resolves" >&2
+    return 1
+  fi
+  # 4. A base worked out from data gets the same checks as an explicit one.
+  ref="$(delivery_base_ref "$candidate" "$branch" "$forbidden")" || return 1
+  printf '%s\n' "${ref#origin/}"
 }
 
 delivery_strict_mode() {

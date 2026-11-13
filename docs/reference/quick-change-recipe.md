@@ -102,7 +102,8 @@ The run log shows the routing choice on stderr:
 | `quick_change_max_lines` | `"150"` | Line limit (additions plus deletions). Must match `^[0-9]{1,6}$`. |
 | `allow_no_op` | `"false"` | When exactly `"true"`, an empty diff finishes the run with verdict `empty` and no commit, push or PR, in place of failing it. smart-classify-route sets it for docs-only, audit, orchestration and meta tasks, and smart-execute-routing passes it on, as it does to `default-workflow`. See [Empty diff](#empty-diff). |
 | `existing_branch`, `pr_number` | `""` | Not used by `quick-change`, which always creates a new `quick/` branch. Its worktree step passes both as empty, so values inherited from the orchestrator are ignored; the orchestrator does not choose `quick-change` when either is set, or when the task text names a branch (see [Precedence](#precedence)). The recipe sets `existing_branch` itself when it invokes `default-workflow` on hand-over. |
-| `base_branch`, `forbidden_base_branches`, `strict_delivery` | inherited | The [delivery inputs](workflow-delivery-inputs.md#where-the-inputs-apply) of `default-workflow`, not declared here. The worktree step passes `base_branch` and `forbidden_base_branches` as empty, so the `quick/` branch starts from `origin/HEAD`, the branch the PR targets, and a base inherited from the orchestrator is not used. `strict_delivery` is passed through: when it is `"true"`, step 04 of `workflow-worktree` refuses to create the branch and the run stops. |
+| `base_branch` | `""` | Declared here with default `""`. The worktree step (step 1) passes it to `workflow-worktree` as empty, so the `quick/` branch starts from `origin/HEAD` and a base inherited from the orchestrator is not used; the context merged back from that step keeps it empty. `quick-change-handover` passes `base_branch: "{{base_branch}}"` to `default-workflow`, which is empty, so finalize reads the base from the pull request ([How finalize finds the base](workflow-delivery-inputs.md#how-finalize-finds-the-base)). |
+| `forbidden_base_branches`, `strict_delivery` | inherited | [Delivery inputs](workflow-delivery-inputs.md#where-the-inputs-apply) of `default-workflow`, not declared here. The worktree step passes `forbidden_base_branches` as empty. `strict_delivery` is passed through: when it is `"true"`, step 04 of `workflow-worktree` refuses to create the branch and the run stops. |
 
 No GitHub issue is created by `quick-change`. A hand-over can create one; see [Hand-over to default-workflow](#hand-over-to-default-workflow).
 
@@ -298,7 +299,7 @@ When the verdict is `handover`:
 
 1. `quick-change-write-handover` writes the full diff against the pinned base, untracked files included, to `<state dir>/quick-change-handover.patch`, and writes the hand-over note described below.
 2. Nothing is committed or pushed by `quick-change`. The worktree and branch are left as they are, including any commit the agent made against its instructions.
-3. `quick-change-handover` runs `default-workflow` with the original task, the note appended, and `existing_branch` set from `worktree_setup.branch_name`.
+3. `quick-change-handover` runs `default-workflow` with the original task, the note appended, `existing_branch` set from `worktree_setup.branch_name`, and `base_branch: "{{base_branch}}"`, which is empty after step 1.
 
 `default-workflow` then reuses the `quick/` branch through its own steps:
 
