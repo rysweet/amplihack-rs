@@ -49,7 +49,7 @@ const AUTODRIVE_RECIPES: [&str; 8] = [
     "autodrive-finalize",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 31] = [
+const AUTODRIVE_TOOLS: [&str; 32] = [
     "autodrive_budget.sh",
     "autodrive_crusty_rereview.sh",
     "autodrive_done_override.sh",
@@ -64,6 +64,7 @@ const AUTODRIVE_TOOLS: [&str; 31] = [
     "autodrive_crusty_finalize.sh",
     "autodrive_completion_context.sh",
     "autodrive_merge_message.sh",
+    "autodrive_merge_method.sh",
     "autodrive_merge_ready_files.sh",
     "autodrive_platform_facts.sh",
     "autodrive_pr_head.sh",
@@ -948,6 +949,12 @@ fn the_forbidden_flag_scanner_catches_every_spelling() {
         "git add -A",
         "git push",
         r#"MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA" --subject "$MERGE_SUBJECT" --body-file -)"#,
+        // #1888: the three argv shapes autodrive_merge_method.sh builds, and
+        // the one merge line the finalize prompt gives the agent.
+        r#"MERGE_ARGV=("$pr" --squash --match-head-commit "$head" --subject "$subject" --body-file -) ;;"#,
+        r#"merge:--merge) MERGE_ARGV=("$pr" --merge --match-head-commit "$head" --body-file -) ;;"#,
+        r#"rebase:--rebase) MERGE_ARGV=("$pr" --rebase --match-head-commit "$head") ;;"#,
+        r#"printf '%s' "$MERGE_BODY" | gh pr merge "${MERGE_ARGV[@]}""#,
         r#"gh pr merge "$PR" --squash --subject "$MERGE_SUBJECT""#,
         r#"printf '%s' "$MERGE_BODY" | gh pr merge "$PR" --squash --body-file -"#,
         "gh pr view \"$PR\" --json state,mergedAt,title,body",
@@ -3872,12 +3879,86 @@ fn finalize_supplies_the_squash_message_instead_of_the_platform_default() {
         "MM=\"$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_message.sh\"",
         "[ ! -L \"$MM\" ] && . \"$MM\"",
         "case \"${AMPLIHACK_HOME:-}\" in /*) ;;",
-        "--subject \"$subject\" --body-file -",
-        "printf '%s' \"$MERGE_BODY\" | gh pr merge",
+        // #1888: the arguments, the subject among them, come from the
+        // launch-bundle helper for the method the selector chose.
+        "autodrive_merge_argv <number> <verified-head> \"$subject\"",
+        "printf '%s' \"$MERGE_BODY\" | gh pr merge \"${MERGE_ARGV[@]}\"",
     ] {
         assert!(
             prompt.contains(needle),
             "finalize-observed-action must say `{needle}` (#2056)"
+        );
+    }
+    // Where the squash subject and body now go on the argv: the helper's
+    // code, comments excluded.
+    let helper = shell_code(&read(&tool_path("autodrive_merge_method.sh")));
+    for needle in [
+        r#"MERGE_ARGV=("$pr" --squash --match-head-commit "$head" --subject "$subject" --body-file -)"#,
+        r#"MERGE_ARGV=("$pr" --merge --match-head-commit "$head" --body-file -)"#,
+        r#"MERGE_ARGV=("$pr" --rebase --match-head-commit "$head")"#,
+    ] {
+        assert!(
+            helper.contains(needle),
+            "autodrive_merge_method.sh's code must build `{needle}` (#1888, #2056)"
+        );
+    }
+}
+
+// ── The merge method (#1888) ─────────────────────────────────────────────────
+
+/// Shell source with its full-line comments removed, so a structural check
+/// is not satisfied by a comment that describes the code it means to pin.
+fn shell_code(text: &str) -> String {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+// #2329 retired the shell merge gate that first carried the merge-method
+// selection. The selector is now reached through autodrive_merge_method.sh,
+// sourced by autodrive-finalize's finalize-observed-action agent step. This
+// runs the helper-level suite and requires its cases by name, so none can drop
+// out unnoticed.
+#[test]
+fn the_merge_method_suite_passes_and_keeps_its_named_cases() {
+    let root = workspace_root();
+    let script = root.join("amplifier-bundle/recipes/tests/test-issue-1888-merge-method.sh");
+    assert!(script.is_file(), "missing {}", script.display());
+    let out = Command::new("bash")
+        .arg(&script)
+        .current_dir(&root)
+        .env_remove("BASH_ENV")
+        .output()
+        .expect("run the merge method suite");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "test-issue-1888-merge-method.sh failed ({:?})\n{stdout}\n{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for case in [
+        "MM-selector-argv",
+        "MM-squash-reaches-gh",
+        "MM-merge-reaches-gh",
+        "MM-rebase-reaches-gh",
+        "MM-error-blocks",
+        "MM-refusal-79",
+        "MM-malformed-refused",
+        "MM-error-no-merge",
+        "MM-no-jq",
+        "MM-argv-refuses",
+        "MM-preamble-loads",
+        "MM-preamble-symlink",
+        "MM-preamble-missing",
+        "MM-finalize-prompt",
+        "MM-finalize-no-method-flag",
+        "MM-context-forwarded",
+    ] {
+        assert!(
+            stdout.contains(&format!("PASS[{case}]")),
+            "{case} did not pass; the merge method must keep #1888's contract\n{stdout}"
         );
     }
 }

@@ -14,7 +14,8 @@ pub fn applies(name: &str) -> bool {
 /// Assets a launch bundle must hold before any loop runs. The finalize helpers
 /// are here so a bundle without them fails at launch, not after the crusty and
 /// merge-ready loops (`finalize-observed-action` sources
-/// `autodrive_merge_message.sh`; merge evidence runs `autodrive_expected_checks.sh`).
+/// `autodrive_merge_message.sh` and `autodrive_merge_method.sh`; merge evidence
+/// runs `autodrive_expected_checks.sh`).
 pub const REQUIRED_ASSETS: &[&str] = &[
     "skills/merge-ready/SKILL.md",
     "skills/crusty-old-engineer/SKILL.md",
@@ -24,6 +25,7 @@ pub const REQUIRED_ASSETS: &[&str] = &[
     "skills/auto-drive-to-merge/evidence-contract.md",
     "tools/autodrive_loop.sh",
     "tools/autodrive_merge_message.sh",
+    "tools/autodrive_merge_method.sh",
     "tools/autodrive_expected_checks.sh",
 ];
 
@@ -286,6 +288,7 @@ mod required_assets_tests {
     fn finalize_helpers_are_required_and_shipped() {
         for helper in [
             "tools/autodrive_merge_message.sh",
+            "tools/autodrive_merge_method.sh",
             "tools/autodrive_expected_checks.sh",
         ] {
             assert!(

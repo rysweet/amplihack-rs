@@ -60,6 +60,35 @@ pub enum OrchHelperCommands {
         #[command(subcommand)]
         operation: autodrive::helper::Operations,
     },
+    /// Select an allowed merge method for the finalisation step (#1888).
+    /// Prints one JSON object: the selection, or `{"error": reason}` with a
+    /// non-zero exit (79 when gh refuses by policy), so the step can record
+    /// the reason as a blocker.
+    SelectMergeMethod {
+        /// The pull request URL `gh pr view` reported; it names the repository.
+        #[arg(long)]
+        pr_url: String,
+        /// The checkout whose object store holds the base and the head.
+        #[arg(long)]
+        repo_root: PathBuf,
+        /// The pull request's base branch name (`baseRefName`); the rulesets
+        /// on it are read whatever the method's source. A `-`-led value is
+        /// taken too, so that it is refused with a reason.
+        #[arg(long, default_value = "", allow_hyphen_values = true)]
+        base_ref: String,
+        /// The fetched base branch tip, where `.amplihack/auto-drive.toml`
+        /// is read.
+        #[arg(long, default_value = "")]
+        base: String,
+        /// The pull request head commit.
+        #[arg(long, default_value = "")]
+        head: String,
+        /// The recipe's merge_method context; empty when not given. Any
+        /// value is taken, `--admin` included, so that a bad one is refused
+        /// with a reason rather than a usage error.
+        #[arg(long, default_value = "", allow_hyphen_values = true)]
+        merge_method: String,
+    },
     /// Prepare driver-owned identity and completion dispatch context.
     AutodriveCompletionPrepare(autodrive_completion::Prepare),
     /// Seal the round evidence before the next-action agent runs.
@@ -522,6 +551,36 @@ fn read_bounded_stdin() -> String {
 pub fn run(command: OrchHelperCommands) -> Result<()> {
     match command {
         OrchHelperCommands::Autodrive { operation } => autodrive::helper::run(operation),
+        OrchHelperCommands::SelectMergeMethod {
+            pr_url,
+            repo_root,
+            base_ref,
+            base,
+            head,
+            merge_method,
+        } => {
+            let request = super::merge_method::SelectionRequest {
+                pr_url: &pr_url,
+                repo_root: &repo_root,
+                base_ref: &base_ref,
+                base: &base,
+                head: &head,
+                explicit: &merge_method,
+            };
+            match super::merge_method::select(&request) {
+                Ok(selection) => {
+                    println!("{}", serde_json::to_string(&selection)?);
+                    Ok(())
+                }
+                Err(error) => {
+                    let reason = format!("{error:#}");
+                    println!("{}", serde_json::json!({ "error": reason }));
+                    eprintln!("ERROR: select-merge-method: {reason}");
+                    let refused = error.is::<super::merge_method::PolicyRefusal>();
+                    std::process::exit(if refused { 79 } else { 1 });
+                }
+            }
+        }
         OrchHelperCommands::AutodriveCompletionPrepare(args) => autodrive_completion::prepare(args),
         OrchHelperCommands::AutodriveCompletionSeal { private_state } => {
             autodrive_completion::seal(private_state)

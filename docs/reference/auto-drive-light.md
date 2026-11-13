@@ -1,7 +1,7 @@
 ---
 title: Auto-Drive-Light Recipe
 description: small-change eligibility, authorization, escalation, and shared readiness outcomes.
-last_updated: 2026-11-11
+last_updated: 2026-11-12
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -44,6 +44,7 @@ recipe name when the change is eligible.
 | --- | --- | --- |
 | `task_description` | empty | Change to build; required unless an existing PR or branch is selected. |
 | `repo_path` | `.` | Repository. |
+| `merge_method` | empty | `merge`, `squash` or `rebase`. Empty: `merge_method` in the repository's `.amplihack/auto-drive.toml` at the base branch tip, else the first method the repository settings and the base branch's rulesets both allow, in squash, merge, rebase order. Passed unchanged to the merge loop and through escalation, and used only by the finalisation step. See [Choosing the merge method](auto-drive-to-merge.md#choosing-the-merge-method-1888). |
 | `pr_number` | empty | Existing PR; explicit selection takes precedence. |
 | `existing_branch` | empty | Existing source branch with an open PR; must match explicit PR input. |
 | `issue_number` | empty | Issue reference used by the branch/PR and task fallback. A positive issue number, up to 10 digits. |

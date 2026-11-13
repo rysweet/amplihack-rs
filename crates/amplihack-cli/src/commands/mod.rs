@@ -20,6 +20,7 @@ pub mod litellm;
 pub mod lock;
 pub mod mcp_eval;
 pub mod memory;
+mod merge_method;
 pub mod mode;
 pub mod multitask;
 pub mod new_agent;

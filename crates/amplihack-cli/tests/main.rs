@@ -26,6 +26,8 @@
 mod isolated_amplihack;
 mod support;
 
+#[path = "issue_1888_merge_method_selection.rs"]
+mod issue_1888_merge_method_selection;
 #[path = "issue_2329_autodrive_outcomes.rs"]
 mod issue_2329_autodrive_outcomes;
 

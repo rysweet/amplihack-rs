@@ -1,7 +1,7 @@
 ---
 title: Auto Drive To Merge Reference
 description: responsibilities, authorization, recovery, completion outcomes, and target compatibility for auto-drive-to-merge.
-last_updated: 2026-11-11
+last_updated: 2026-11-12
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -32,6 +32,7 @@ alternatives within the existing loop-health and budget rules.
 - [Crusty review](#crusty-review)
 - [Crusty completion decision contract](autodrive-crusty-completion.md)
 - [Readiness and finalization](#readiness-and-finalization)
+- [Choosing the merge method (#1888)](#choosing-the-merge-method-1888)
 - [Loop health and budgets](#loop-health-and-budgets)
 - [Resumability](#resumability)
 - [Trusted execution and portability](#trusted-execution-and-portability)
@@ -100,6 +101,7 @@ commands and expected outcomes.
 | `branch_prefix` | `feat` | Branch prefix for a new build. |
 | `plan_task_id` | empty | Follow-up task: issue `N` or `#N`, or 1–64 characters from `A-Za-z0-9._:/-`. Otherwise resolve `Closes #N`, `Fixes #N`, or `Resolves #N` from the PR body, then task description. |
 | `no_merge` | `false` in the full composer | Prevent merging throughout the invocation when `true`. Build always receives `true`, independently of this outer value. |
+| `merge_method` | empty | `merge`, `squash` or `rebase`: how an authorized merge lands. Empty: `merge_method` in `.amplihack/auto-drive.toml` at the base branch tip, else the first method the repository settings and the base branch's rulesets allow, in squash, merge, rebase order. A method that is not allowed blocks the merge. See [Choosing the merge method](#choosing-the-merge-method-1888). |
 | `autodrive_dry_run` | `false` | Prevent merging and follow-up issue creation. Still assesses readiness and reports missing obligations. |
 | `autodrive_state_dir` | runner-assigned | Private state for this run's records, budgets and receipts. Omitted: the runner assigns a directory inside the run's durable folder. Supplied: must be non-empty, absolute and free of `..` components. See [state directory](#state-directory). |
 
@@ -295,20 +297,71 @@ read:
 | Body | `autodrive_merge_body`: the description up to the first line starting `<!-- merge-ready-report` or `## Merge readiness`, so the report never lands on `main`; `MERGE_REPORT_CUT` says whether one was cut | the `body` key is absent, not a string or null, or over 65,536 bytes |
 
 The body goes to `gh` on standard input from the shell's memory, never as a
-path a same-user process could rewrite between a check and the read:
+path a same-user process could rewrite between a check and the read. The
+arguments come from `autodrive_merge_argv` in the trusted
+`autodrive_merge_method.sh`, for the method the selector chose ([Choosing the
+merge method](#choosing-the-merge-method-1888)), so the prompt gives one merge
+line for all three methods:
 
 ```bash
-printf '%s' "$MERGE_BODY" | gh pr merge <N> --squash --match-head-commit <sha> --subject "$subject" --body-file -
+printf '%s' "$MERGE_BODY" | gh pr merge "${MERGE_ARGV[@]}"
 ```
 
-A refusal from either function is a blocker; the step reports it and does
-not fall back to the platform's default message. The step records the
-subject and whether a report was cut.
+| Method | `MERGE_ARGV` |
+| --- | --- |
+| squash | `<N> --squash --match-head-commit <sha> --subject <subject> --body-file -` |
+| merge | `<N> --merge --match-head-commit <sha> --body-file -` |
+| rebase | `<N> --rebase --match-head-commit <sha>` |
+
+A refusal from either message function is a blocker whatever the method; the
+step reports it and does not fall back to the platform's default message. The
+step records the subject and whether a report was cut.
 
 Two limitations stay open. An empty description gives `gh` an empty body;
 whether GitHub then falls back to its default message is unverified (#2263).
 GitHub is believed, from landed commits rather than a controlled probe, to
 add no `Co-authored-by` lines to a supplied body (#2263).
+
+#### The merge commit message (#1888)
+
+A merge commit is not one of the branch's commits. GitHub creates it at merge
+time and writes its message itself. `gh pr merge --merge` with no message flags
+leaves both parts to two repository settings ([REST "Update a
+repository"](https://docs.github.com/en/rest/repos/repos#update-a-repository)):
+
+| Setting | Values | What GitHub writes |
+| --- | --- | --- |
+| `merge_commit_title` | `PR_TITLE`, `MERGE_MESSAGE` | The headline: the pull request title, or `Merge pull request #N from owner/branch` |
+| `merge_commit_message` | `PR_BODY`, `PR_TITLE`, `BLANK` | The body: the whole pull request body (the settings page calls it "Pull request title and description"), the title, or nothing |
+
+Under `PR_BODY` the whole body is committed, merge-ready report included, and
+that report is the text #2056 keeps out of history: it says the pull request
+is open and can say `NOT_MERGE_READY`, nothing refreshes it, and once
+committed it cannot be corrected. An owner who requires merge commits, the
+case #1888 was opened for, is the one most likely to have chosen that
+setting.
+
+So a merge commit gets `--body-file -` with the same body a squash gets, cut
+at the report, and no `--subject`. `gh` sends the body as the GraphQL
+`commitBody` ("Commit body to use for the merge commit; if omitted, a default
+message will be used", [`MergePullRequestInput`](https://docs.github.com/en/graphql/reference/input-objects#mergepullrequestinput);
+[`gh pr merge`](https://cli.github.com/manual/gh_pr_merge): `--body-file` and
+`--subject` set "the merge commit" text, not only a squash's). With no
+`commitHeadline`, GitHub writes the headline from `merge_commit_title`, by
+default `Merge pull request #N from owner/branch`, which is what an owner who
+requires merge commits expects.
+
+The step does not read `merge_commit_message`, and the body it passes
+replaces whatever that setting names. An owner who chose `PR_TITLE` gets the
+description in the merge commit's body instead of the title; one who chose
+`BLANK` gets the description instead of an empty body. The rule is simpler
+than reading the setting: the report is never committed, whatever the
+setting says. A body that is nothing but the report is cut to nothing, which
+is the empty-body limitation above (#2263): if GitHub treats an empty
+`commitBody` as omitted, it falls back to `merge_commit_message`, and under
+`PR_BODY` that is the uncut body.
+
+A rebase writes no commit of its own and takes no message.
 
 ### Hosting calls and rate limits
 
@@ -338,6 +391,304 @@ governs calls to the hosting service:
 Never skip commit hooks or bypass branch protection. Fix failures and satisfy
 checks, reviews, and policies through their normal paths, whichever interface
 the agent chooses.
+
+## Choosing the merge method (#1888)
+
+An authorized merge does not always squash. The `finalize-observed-action`
+step sources the trusted
+`$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_method.sh` by its
+absolute path, in the same shell call and with the same checks as
+`autodrive_merge_message.sh`, and `LaunchBundle::prepare` refuses a launch
+bundle without it. Its `autodrive_merge_method` runs
+`amplihack orch helper select-merge-method` with the pull request URL, the
+base branch, the base SHA and the head from the accepted readiness record,
+the linked worktree as the repository root, and the `merge_method` context
+unchanged. The selector picks one method from the first source below that is
+present. A later source is not read once an earlier one is present.
+
+| Order | `source` | Source | Present when |
+| --- | --- | --- | --- |
+| 1 | `explicit` | The recipe context `-c merge_method=merge`, `squash` or `rebase` | The value is not empty. `.amplihack/auto-drive.toml` is then not read, as `AUTODRIVE_QA_COMMAND` stops `.amplihack/qa.toml` from being read. Any other value, including `MERGE` or ` merge`, blocks the merge. |
+| 2 | `repository` | `merge_method` in [`.amplihack/auto-drive.toml`](#the-repository-file-amplihackauto-drivetoml), committed at the base branch tip the accepted readiness record binds | The base tip's tree has the file, or `.amplihack` there is not a directory, or the pull request changes the file. |
+| 3 | `default` | The first of squash, merge and rebase that is [allowed](#which-methods-are-allowed) | Always tried last. |
+
+The method chosen must then be allowed. A method that is not allowed blocks
+the merge, and nothing falls back to another method. `autodrive_merge_argv`
+turns the method into the arguments listed in [The squash commit
+message](#the-squash-commit-message-2056), with one flag per method:
+
+| Method | Repository setting | Ruleset `allowed_merge_methods` value | Ruleset `merge_queue` `merge_method` | Under a `required_linear_history` rule | Flag |
+| --- | --- | --- | --- | --- | --- |
+| `merge` | `allow_merge_commit` | `merge` | `MERGE` | Not allowed | `--merge` |
+| `squash` | `allow_squash_merge` | `squash` | `SQUASH` | Allowed | `--squash` |
+| `rebase` | `allow_rebase_merge` | `rebase` | `REBASE` | Allowed | `--rebase` |
+
+`auto-drive-to-merge`, [`auto-drive-light`](auto-drive-light.md),
+`autodrive-merge-loop` and `autodrive-finalize` each declare
+`merge_method: ""`, and each passes it unchanged to the recipe it calls, down
+to `autodrive-finalize`. No recipe inserts a default. To merge an existing
+pull request with a merge commit:
+
+```bash
+amplihack recipe run auto-drive-to-merge -c pr_number=1234 -c repo_path=. -c merge_method=merge
+```
+
+### What the finalisation step can promise
+
+The retired shell merge gate built the merge argv itself and checked it
+element by element before `gh` ran. Since #2329 the merge is requested by an
+agent step, and an agent's command line cannot be fixed by position. What
+the recipe still guarantees:
+
+- The selector is the only place the method is decided. The prompt hands the
+  context to `autodrive_merge_method`, takes the arguments from
+  `autodrive_merge_argv`, and tells the agent never to choose, substitute or
+  fall back to a method and never to write a method flag itself. Any other
+  interface the agent uses must send the same method and message.
+- `autodrive-finalize.yaml` names no `--merge`, `--squash` or `--rebase`
+  anywhere, comments included. The Rust test
+  `finalize_takes_the_method_from_the_selector_and_names_no_method_itself`
+  and the shell case `MM-finalize-no-method-flag` enforce it.
+- `test-issue-1888-merge-method.sh` runs the prompt's own preamble and merge
+  line with the real helpers, a stub selector and a stub `gh`. It checks the
+  argv and the standard input `gh` receives for each method, and that every
+  kind of selector failure stops before `gh` runs.
+
+An agent that disregards its prompt can still run a different command. No
+test of the recipe can exclude that.
+
+### How a selection is recorded
+
+On success `autodrive_merge_method` sets `MERGE_METHOD`, `MERGE_FLAG` and
+`MERGE_METHOD_SELECTION`, the selector's JSON object:
+
+| Field | Contract |
+| --- | --- |
+| `method` | `merge`, `squash` or `rebase` |
+| `source` | `explicit`, `repository` or `default` |
+| `repository` | `OWNER/REPO` from the pull request URL |
+| `config_commit` | The base tip SHA `.amplihack/auto-drive.toml` was looked for at, or `null` when the source is `explicit` and the file was not read |
+| `rationale` | A sentence built from validated values only: the source, where the file was read, and what the settings and the branch rulesets allowed |
+
+The step records the selection as an attempt with operation
+`select-merge-method` and outcome `succeeded`.
+
+On failure the selector prints `{"error": "<reason>"}` and exits 1, or 79 for
+a policy refusal from `gh api`. The helper refuses every other answer too: no
+output, text around the object, two objects, an unknown method or source, a
+`config_commit` that is not a SHA or does not match the source, an invalid
+repository, a missing rationale, or no `jq` to check them with. It leaves
+`MERGE_FLAG` and `MERGE_ARGV` empty and sets `MERGE_METHOD_ERROR` to one
+printable line, for example:
+
+```text
+merge-method selection failed (exit 1): selected merge method squash is disallowed by the rulesets on branch main (pull_request allowed_merge_methods allow merge); no other method is tried
+```
+
+The step then requests no merge. It sets the finalisation record's
+`failure_cause` to that line and records a `select-merge-method` attempt with
+outcome `refused` for exit 79 and `failed` otherwise. The reducer reports
+`action: not_requested` and `stop_reason: blockers`, with the reason in
+`failure_cause`. Exit 79 is terminal and is never retried.
+
+### The repository file `.amplihack/auto-drive.toml`
+
+A repository that needs a method other than the default declares it once, so
+every operator's drive uses it:
+
+```toml
+# .amplihack/auto-drive.toml
+merge_method = "merge"
+```
+
+- **Where it is read.** In the tree of the base branch tip that the accepted
+  readiness record binds (`base_sha`), never in the working tree. The
+  finalisation step merges only while that tip is still current; a base that
+  moved since acceptance sends the run back to a fresh assessment. The merge
+  method is the base branch's policy for accepting history, so it applies at
+  merge time to every open pull request, including one that branched before
+  the file was committed and was never brought up to date. A base that does
+  not require up-to-date branches never reports `BEHIND`, so nothing else
+  would bring such a pull request up to date. The base tip is recorded as
+  `config_commit`. A pull request cannot write that commit, so it cannot
+  choose the method it is merged with. The settings and rulesets come from the
+  repository in the pull request URL; binding every read to the pull
+  request's repository is
+  [#2440](https://github.com/rysweet/amplihack-rs/issues/2440). An
+  untracked, modified or ignored copy in the working tree is never read, so
+  the launch checkout's branch, age and local edits do not change the method.
+- **A pull request never chooses its own method.** The changed paths are the
+  diff from the merge base of the base tip and the head to the head: what the
+  pull request itself changes. A pull request that adds, edits or deletes
+  `.amplihack/auto-drive.toml`, or replaces `.amplihack`, is refused with
+  `changed-in-pr`. Rewriting the file with the same bytes is not a change, and
+  neither is merging in a base that changed it. To merge the pull request that
+  adds the file, give the method explicitly: `-c merge_method=merge`.
+- **Format.** At most 4096 bytes of printable ASCII, tabs and newlines. Each
+  line is blank, a `#` comment, or `key = "value"`. The only key is
+  `merge_method`, and its value is exactly `merge`, `squash` or `rebase`. A
+  file with no `merge_method` line gives no preference.
+- **Refusals.** Each is a blocker naming one token, and the base tip for the
+  tree and grammar tokens: `symlink` (`.amplihack` or the file is a symlink),
+  `not-regular`, `too-large`, `syntax`, `unknown-key`, `duplicate-key`,
+  `invalid-merge-method`, `changed-in-pr`, and `paths-empty` (the file is
+  present but the pull request's diff is empty, so nothing shows that it
+  leaves the file alone). No file content is copied into the record.
+- **Unknown base.** If the base SHA is not in the linked worktree's object
+  store, the head is not there, there is no merge base, or the changed paths
+  cannot be read, the selection fails and nothing merges. The step fetches
+  the base branch first when the base SHA is missing. An explicit method needs
+  none of these.
+
+### How the two repository files relate
+
+The merge method is not a key in `.amplihack/qa.toml`. That file has a closed
+key set (`command`, `dir`) and requires `command`, so a repository that wants
+only a merge method would have to declare a QA suite. The two files live in
+the same directory and follow the same grammar and trust rules. The test
+`the_two_amplihack_toml_readers_agree_on_their_shared_rules` in
+`crates/amplihack-cli/tests/issue_1888_merge_method_selection.rs` enforces
+this. It runs the shell `autodrive_qa_config` and the Rust reader over one
+fixture set and requires the same token from each. Folding the two readers
+into one is tracked in
+[#2455](https://github.com/rysweet/amplihack-rs/issues/2455).
+
+| Rule | `.amplihack/qa.toml` | `.amplihack/auto-drive.toml` |
+| --- | --- | --- |
+| Present | `.amplihack` is not a directory, or the file has an entry | Same |
+| Tree entries | `symlink`, `not-regular` | Same |
+| Size | `too-large` above 4096 bytes | Same |
+| Grammar | `syntax`, `unknown-key`, `duplicate-key` | Same |
+| Changed paths | Merge base to head; `changed-in-pr`, `paths-empty` | Same |
+| Commit read | The merge base. The file says how to test the pull request's code, so it comes from the commit that code branched from. | The base branch tip. The file is the base's policy for accepting history, so it comes from the base as it stands at merge time. |
+| Keys and values | `command` (required), `dir`; `missing-command`, `unsafe-command`, `unsafe-dir`, `dir-not-found` | `merge_method` (optional); `invalid-merge-method` |
+| Changed paths unreadable | `paths-unknown` when the file is present; otherwise the next source | Always refused |
+
+### Which methods are allowed
+
+A method is allowed when both of these allow it:
+
+1. **The repository settings.** The three `allow_*` fields of
+   `gh api --hostname HOST repos/OWNER/REPO`.
+2. **The rulesets on the base branch.** The active rules in
+   `gh api --hostname HOST --paginate repos/OWNER/REPO/rules/branches/<base>`.
+   Three rule types limit the method:
+   - **`pull_request` with `allowed_merge_methods`.** A method must be in
+     every such list. Since December 2024 a ruleset can limit the merge
+     methods this way without changing the `allow_*` fields
+     ([changelog](https://github.blog/changelog/2024-12-04-pull-request-merge-method-rule-public-preview)).
+   - **`merge_queue`.** The rule's required `merge_method` (`MERGE`, `SQUASH`
+     or `REBASE`) is the "Method to use when merging changes from queued pull
+     requests" ([repository rules API](https://docs.github.com/en/rest/repos/rules)).
+     On such a branch `gh pr merge` adds the pull request to the queue, and
+     "no merge strategy is required"
+     ([`gh pr merge`](https://cli.github.com/manual/gh_pr_merge)): the queue
+     merges with its own method, whatever flag the request carries. So a
+     `merge_queue` rule allows only its `merge_method`. Without this, an
+     explicit `merge` on a `SQUASH` queue would be squashed, and the recorded
+     selection would name a method that did not land. The rationale names the
+     rule: `1 ruleset merge_queue rule(s) on branch <base> allow squash`.
+   - **`required_linear_history`.** "Any pull requests merged into the branch
+     or tag must use a squash merge or a rebase merge"
+     ([Require linear history](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets#require-linear-history)),
+     so `merge` is not allowed. The rationale and any refusal name the rule:
+     `a required_linear_history rule on branch <base> forbids merge`.
+
+   The selector reads no other rule type
+   ([available rules](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)).
+   None of the others names a merge method. One can still refuse one: under
+   `required_signatures`, "unsigned commits on the head branch can block a
+   squash merge". That depends on the head's commits, not on a setting the
+   selector can read, so GitHub refuses the merge request and the step
+   reports the refusal without trying another method.
+   The endpoint returns only active rules, at the repository, organisation and
+   enterprise level, and not rules in `evaluate` or `disabled` rulesets. Every
+   page is read, so a rule on the second page counts. `<base>` is the pull
+   request's base branch. It must be a valid branch name: no leading `-`, no
+   empty, `.`-led or `.lock` component, and only `A-Z a-z 0-9 . _ / -`.
+
+The rules are read for every source, the explicit one included, because
+GitHub rejects a disallowed method whoever chose it. The default is the first
+of squash, merge and rebase that both allow, so on a linear-history branch
+whose settings allow merge and rebase but not squash it is `rebase`. An
+explicit or repository method that a ruleset does not allow is refused with
+the rule as the reason; the selector does not pick another.
+
+The response is read strictly. Each page must be a JSON array of objects with
+a string `type`, and a `pull_request` rule must have a `parameters` object.
+A `merge_queue` rule must have a `parameters` object whose `merge_method` is
+exactly `MERGE`, `SQUASH` or `REBASE`; any other value, a lower-case one
+included, is an unreadable rule.
+An `allowed_merge_methods` value must be an array of strings. If it is absent
+or `null`, the rule does not limit the method, as for a ruleset created
+before GitHub added the parameter. An empty list allows nothing. A string
+other than `merge`, `squash` or `rebase` is ignored: it can only name a method
+auto-drive never uses, so ignoring it never allows a method the rule does not
+list. Anything else is an unreadable answer and blocks the merge. An
+unreadable rule is not treated as an absent rule.
+
+`autodrive_expected_checks.sh` reads `rules/branches/<base>` as well, for the
+required checks, through `gh`'s default `{owner}/{repo}`; the selector's read
+goes through the pull request URL. The two reads have separate parsers and
+can resolve the repository differently. Binding every read to the pull
+request's own repository is tracked in #2440.
+
+### Which repository's permissions are read
+
+The repository is the one the pull request URL names, as the accepted
+readiness record binds it. The selector accepts only
+`https://HOST/OWNER/REPO/pull/NUMBER`, with GitHub's owner and repository name
+rules, and both reads above use that host, owner and name. No recipe context
+names the repository, and `GH_REPO` does not change which permissions are
+read.
+
+All three `allow_*` fields must be booleans. A token without admin rights on
+the repository still gets them when it can push, which merging needs anyway. A
+read-only token does not get the `allow_*` fields at all: GitHub leaves them
+out of the response rather than setting them to `null`, so a missing field is
+the case to test (the settings-schema cases in
+`crates/amplihack-cli/tests/issue_1888_merge_method_selection.rs` include a
+read-only response), and the selection fails closed. The branch rules
+need only read access. Any of these blocks the merge: a `gh api` failure from
+either read, malformed JSON, a missing or non-boolean `allow_*` field, a
+malformed rule, or no allowed method. On GitHub Enterprise Server without the
+rulesets endpoint, the rules read fails and the merge blocks; there is no
+fallback to the settings alone. Classic branch protection is not read: its
+"Require linear history" setting (`required_linear_history` in
+`branches/<base>/protection`) is returned only to a token with admin rights on
+the repository, which auto-drive does not require. On a base branch with
+classic linear-history protection, an explicit or repository `merge`, or a
+default of `merge` when squash is not allowed, passes the selection, GitHub
+refuses the merge request, and the step reports that refusal without trying
+another method. A ruleset `required_linear_history` rule is read and has no
+such gap. Exit 79 from either `gh api` read is a terminal policy refusal.
+
+| Inputs | Result |
+| --- | --- |
+| No file; every method allowed; no ruleset limit | `squash`, source `default` |
+| No file; merge and rebase allowed | `merge`, source `default` |
+| No file; only merge allowed | `merge`, source `default` |
+| No file; every setting allowed; a ruleset allows only merge | `merge`, source `default` |
+| No file; settings allow only squash; a ruleset allows only merge | Blocked: no merge method is allowed by both |
+| No file; settings allow merge and rebase; a `required_linear_history` ruleset rule | `rebase`, source `default` |
+| No file; settings allow only merge; a `required_linear_history` ruleset rule | Blocked: no merge method is allowed by both |
+| Explicit `merge`, or file says `merge`; a `required_linear_history` ruleset rule | Blocked; no merge is requested |
+| No file; every method allowed; a `merge_queue` rule with `merge_method` `REBASE` | `rebase`, source `default` |
+| Explicit `merge`, or file says `merge`; a `merge_queue` rule with `merge_method` `SQUASH` | Blocked; no merge is requested |
+| No file; settings allow merge and rebase; a `merge_queue` rule with `merge_method` `SQUASH` | Blocked: no merge method is allowed by both |
+| Any source; a `merge_queue` rule with no readable `merge_method` | Blocked: the rule is unreadable |
+| File says `merge`; merge allowed | `merge`, source `repository` |
+| File says `merge` at the base tip, committed after the pull request branched | `merge`, source `repository` |
+| File says `merge`; only squash allowed | Blocked; no merge is requested |
+| File says `rebase`; explicit `merge`; only merge allowed | `merge`, source `explicit` |
+| Explicit `rebase`; only merge allowed | Blocked; no merge is requested |
+| Explicit `squash`; a ruleset allows only merge | Blocked; no merge is requested |
+| The pull request edits the file; no explicit method | Blocked: `changed-in-pr` |
+| Invalid file; explicit `squash`, allowed | `squash`, source `explicit`; the file is not read |
+
+Selection does not change repository settings, rulesets or branch protection.
+If GitHub rejects the merge, the step reports it and does not retry with
+another method.
 
 ## Loop health and budgets
 

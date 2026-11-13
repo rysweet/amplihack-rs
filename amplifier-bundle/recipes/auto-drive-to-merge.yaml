@@ -14,6 +14,9 @@ recursion:
   max_depth: 6
   max_total_steps: 120
 context:
+  # Optional merge method (#1888): merge, squash or rebase. Empty: the
+  # repository's .amplihack/auto-drive.toml, else the first allowed method.
+  merge_method: ""
   task_description: ""
   requirements: ""
   repo_path: "."
@@ -96,6 +99,7 @@ steps:
     type: "recipe"
     recipe: "autodrive-merge-loop"
     context:
+      merge_method: "{{merge_method}}"
       repo_path: "{{repo_path}}"
       pr_number: "{{build_result.pr}}"
       autodrive_pr_input: "{{autodrive_pr_input}}"

@@ -7,7 +7,7 @@ description: contract to build a PR, repair crusty concerns, verify readiness, a
 version: 1.0.0
 allowed-tools: ["Read", "Grep", "Glob", "Bash", "Agent", "Edit", "Write"]
 user-invocable: true
-last_updated: 2026-11-11
+last_updated: 2026-11-12
 doc_type: reference
 auto-activation:
   priority: 4
@@ -30,6 +30,10 @@ not a verified compatibility claim.
 
 Use the [verify-only instructions](../../../docs/howto/verify-pr-with-auto-drive.md) to leave an existing PR open. Pass `no_merge=true` explicitly. The full-composer default is `false`; its build always receives `true`.
 Dry-run separately suppresses merging and follow-up issue creation.
+`merge_method` (`merge`, `squash` or `rebase`, default empty) chooses how an
+authorized merge lands; empty means `merge_method` in the base branch's
+`.amplihack/auto-drive.toml`, else the first method the repository settings
+and the base branch's rulesets allow, in squash, merge, rebase order.
 
 Strictly parse authorization before children run. Preserve fresh runner-owned
 authorization through context overwrite, shared loops, re-review, and
@@ -53,14 +57,18 @@ captures authorization afresh.
    disabled, make no merge request and report the observed open PR.
 5. For an authorized merge, require expected-head protection. Observe platform
    state before retrying ambiguous requests and after the action. Report
-   `merged` only with platform confirmation. Squash with an explicit message
-   composed by the trusted
-   `$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_message.sh`, sourced
-   by that absolute path (never from the PR worktree, never through a
-   symlink): subject `<title> (#N)`
-   with control characters removed, body the PR description up to the
-   merge-ready report, piped on stdin with `--body-file -`. Never let the
-   platform concatenate the branch's commit messages and trailers (#2056).
+   `merged` only with platform confirmation. Merge by the method
+   `amplihack orch helper select-merge-method` chooses (#1888), through the
+   trusted `$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_method.sh`;
+   a selector failure is a blocker and no other method is tried. Supply an
+   explicit message composed by the trusted
+   `$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_message.sh`. Source
+   both by that absolute path (never from the PR worktree, never through a
+   symlink). A squash takes the subject `<title> (#N)`, with control
+   characters removed, and the body; a merge commit takes the body alone; a
+   rebase takes neither. The body is the PR description up to the merge-ready
+   report, piped on stdin with `--body-file -`. Never let the platform
+   concatenate the branch's commit messages and trailers (#2056).
 6. Report readiness, requested action, request outcome, platform state,
    blockers, failures/recovery, and stop reason separately.
 

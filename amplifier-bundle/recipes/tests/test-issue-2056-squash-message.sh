@@ -16,7 +16,10 @@
 #   4. The record: private, never follows a symlink, never reused.
 #   5. The merge-ready template's marker is the helper's cut line.
 #   6. The finalize prompt: the helper from the launch bundle, an explicit
-#      subject, the body on stdin, never the platform's default message.
+#      subject, the body on stdin, never the platform's default message. The
+#      argv itself, `--subject` and `--body-file -` for a squash, comes from
+#      autodrive_merge_argv for the selected method (#1888); its MM-*-reaches-gh
+#      cases in test-issue-1888-merge-method.sh check what `gh` receives.
 #
 # No network, no gh, no agent runtime.
 set -uo pipefail
@@ -159,8 +162,9 @@ for clause in \
   'autodrive_merge_subject <json> <number>' \
   'autodrive_merge_body <json>' \
   'treat a non-zero return from either as a blocker' \
-  '--match-head-commit <verified-head> --subject "$subject" --body-file -' \
-  "printf '%s' \"\$MERGE_BODY\" | gh pr merge"; do
+  'autodrive_merge_argv <number> <verified-head> "$subject"' \
+  'a squash takes the subject and the body' \
+  "printf '%s' \"\$MERGE_BODY\" | gh pr merge \"\${MERGE_ARGV[@]}\""; do
   case "$FP" in *"$clause"*) pass MSG-finalize-prompt "finalize-observed-action says: ${clause:0:70}" ;;
     *) fail MSG-finalize-prompt "finalize-observed-action lacks: $clause" ;; esac
 done

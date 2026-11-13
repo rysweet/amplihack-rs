@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# autodrive_merge_message.sh — the squash commit message for an auto-drive merge.
+# autodrive_merge_message.sh — the commit message for an auto-drive merge.
 #
 # `main` squashes with `squash_merge_commit_message: COMMIT_MESSAGES`, so a
 # merge that supplies no message gets every commit on the branch concatenated
@@ -10,6 +10,13 @@
 # does not rewrite pushed commits. So the merge supplies the message itself,
 # from the pull request's title and the description part of its body, without
 # the merge-ready report; what GitHub adds to it is not seen here (issue #2056).
+#
+# A merge commit (`--merge`, #1888) takes the body alone. Given no body, GitHub
+# writes the merge commit's body from the repository's `merge_commit_message`
+# setting, and under `PR_BODY` that is the whole pull request body, the
+# merge-ready report included. Given this one, GitHub keeps its own headline
+# (`merge_commit_title`) and commits the body composed here. A rebase writes no
+# commit of its own and takes nothing.
 #
 # The caller is autodrive-finalize's `finalize-observed-action` agent step
 # (#2329 retired the shell merge gate). It sources this file from the trusted
