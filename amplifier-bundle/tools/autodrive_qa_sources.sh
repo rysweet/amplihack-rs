@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # autodrive_qa_sources.sh — the declared QA command sources (issue #1763):
-# .amplihack/qa.toml and one clean CI test step. autodrive_trust.sh loads this
-# file from its own physical directory after autodrive_qa_scope.sh, which gives
+# .amplihack/qa.toml and one clean CI test step. autodrive_qa_evidence.sh and
+# autodrive_trust.sh load it: autodrive_trust.sh sources this file from its own
+# physical directory after autodrive_qa_scope.sh, which gives
 # the changed paths and merge base read here (_autodrive_qa_scan, _AD_PATHS,
 # _AD_PATHS_STATE, _AD_MB). Public functions:
 #   autodrive_qa_config <dir>       .amplihack/qa.toml: none, ok or invalid

@@ -39,7 +39,7 @@ use std::process::{Output, Stdio};
 use serde_json::{Value, json};
 
 use crate::support::auto_drive_light::{
-    FAKE_AMPLIHACK, jq_available, private_dir, private_file, read, repo_root, show, stderr, stdout,
+    FAKE_AMPLIHACK, jq_available, private_dir, private_file, read, show, stderr, stdout,
     step_command, tools_dir,
 };
 
@@ -1625,8 +1625,24 @@ fn crusty_final_accepts_a_minor_only_terminal_record() {
     d.loop_writes_round(1, "MINOR_ONLY", 2);
     d.minor(1, &three()[..2]);
     // Completion authority comes from actual successful finalization, never
-    // a hand-written marker with missing follow-up obligations (#2336).
-    let recorded = loop_step03(&d, "1979", &[]);
+    // a hand-written marker with missing follow-up obligations (#2336). The
+    // crusty loop's step-03 is an agent step on this branch (#2329), so the
+    // shared finalizer it and the re-review call is run directly.
+    let task = d.tmp.path().join("task.txt");
+    private_file(&task, "Implement the thing");
+    let finalize = tools_dir().join("autodrive_crusty_finalize.sh");
+    let recorded = d.bash(
+        None,
+        &[
+            finalize.as_os_str(),
+            d.state.as_os_str(),
+            OsStr::new(PR),
+            OsStr::new("1979"),
+            task.as_os_str(),
+        ],
+        &[],
+        "",
+    );
     assert_eq!(recorded.status.code(), Some(0), "{}", show(&recorded));
     let o = crusty_final(&d);
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
@@ -1851,210 +1867,6 @@ fn round_step06_records_minor_only() {
 }
 
 /// Runs crusty-loop step-03 on a drive whose loop ended DONE.
-fn loop_step03(d: &Drive, plan_task_id: &str, env: &[(&str, &str)]) -> Output {
-    let script = step_command("autodrive-crusty-loop", "step-03-record-crusty-phase");
-    let root = repo_root();
-    let tools = tools_dir();
-    let pre = json!({"should_run": "true", "pr": PR, "state_dir": d.state}).to_string();
-    let mut v: Vec<(&str, &OsStr)> = vec![
-        ("RECIPE_VAR_crusty_loop_preflight", OsStr::new(&pre)),
-        (
-            "RECIPE_VAR_crusty_loop_result",
-            OsStr::new("{\"loop_result\":\"DONE\"}"),
-        ),
-        ("RECIPE_VAR_plan_task_id", OsStr::new(plan_task_id)),
-        (
-            "RECIPE_VAR_task_description",
-            OsStr::new("Implement the thing"),
-        ),
-        ("RECIPE_VAR_pr_number", OsStr::new(PR)),
-        ("AMPLIHACK_HOME", root.as_os_str()),
-        ("AUTODRIVE_LAUNCH_TOOLS", tools.as_os_str()),
-        ("REPO_PATH", d.tmp.path().as_os_str()),
-    ];
-    v.extend(env.iter().map(|(k, val)| (*k, OsStr::new(*val))));
-    d.bash(Some(&script), &[], &v, "")
-}
-
-fn marker_written(d: &Drive) -> bool {
-    d.read("phases.tsv")
-        .lines()
-        .any(|l| l.starts_with("crusty-loop\t"))
-}
-
-#[test]
-fn crusty_loop_step03_files_followups_before_the_marker() {
-    if skip() {
-        return;
-    }
-    let d = Drive::new();
-    d.loop_writes_round(1, "MINOR_ONLY", 2);
-    d.minor(1, &three()[..2]);
-    let o = loop_step03(&d, "1979", &[]);
-    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
-    assert_eq!(d.creates().len(), 2, "{}", show(&o));
-    assert_eq!(d.tsv_rows().len(), 2);
-    assert!(
-        marker_written(&d),
-        "the crusty-loop marker is written after filing\n{}",
-        show(&o)
-    );
-    assert!(
-        !d.read("resolved-concerns.txt").contains("naming-1"),
-        "minor ids are not marked resolved"
-    );
-}
-
-#[test]
-fn crusty_loop_step03_writes_no_marker_when_filing_fails() {
-    if skip() {
-        return;
-    }
-    let d = Drive::new();
-    d.loop_writes_round(1, "MINOR_ONLY", 2);
-    d.minor(1, &three()[..2]);
-    let o = loop_step03(&d, "1979", &[("FAKE_GH_CREATE_EXIT", "1")]);
-    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
-    assert!(
-        !marker_written(&d),
-        "no marker: the drive cannot reach READY\n{}",
-        show(&o)
-    );
-}
-
-#[test]
-fn crusty_loop_step03_writes_no_marker_without_a_task_id() {
-    if skip() {
-        return;
-    }
-    let d = Drive::new();
-    d.loop_writes_round(1, "MINOR_ONLY", 1);
-    d.minor(1, &three()[..1]);
-    let o = loop_step03(&d, "", &[]);
-    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
-    assert!(!marker_written(&d), "{}", show(&o));
-    assert!(d.creates().is_empty());
-}
-
-#[test]
-fn crusty_loop_step03_dry_run_keeps_unfiled_phase_incomplete() {
-    if skip() {
-        return;
-    }
-    // A dry run writes nothing to GitHub. The set is still collected, so the
-    // gate reports the unfiled finding. Under #2336 no phase-completion
-    // marker may claim these required follow-ups have been recorded.
-    let d = Drive::new();
-    d.loop_writes_round(1, "MINOR_ONLY", 1);
-    d.minor(1, &three()[..1]);
-    let o = loop_step03(&d, "1979", &[("AUTODRIVE_DRY_RUN", "true")]);
-    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
-    assert!(d.creates().is_empty(), "no issue is filed\n{}", show(&o));
-    assert!(
-        d.read("followups.jsonl").contains("naming-1"),
-        "{}",
-        show(&o)
-    );
-    assert!(!marker_written(&d), "{}", show(&o));
-    let g = d.check_as("gate");
-    assert_eq!(g.status.code(), Some(1), "{}", show(&g));
-    assert!(
-        stdout(&g).contains("followup-missing:naming-1"),
-        "{}",
-        show(&g)
-    );
-}
-
-#[test]
-fn crusty_loop_step03_clean_files_nothing_and_needs_no_task() {
-    if skip() {
-        return;
-    }
-    let d = Drive::new();
-    d.loop_writes_round(1, "CLEAN", 0);
-    let o = loop_step03(&d, "", &[]);
-    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
-    assert!(d.creates().is_empty());
-    assert!(marker_written(&d), "{}", show(&o));
-}
-
-#[test]
-fn crusty_loop_step03_files_only_from_amplihack_home() {
-    if skip() {
-        return;
-    }
-    // REPO_PATH holds a full bundle, as a PR checkout would. Without
-    // AMPLIHACK_HOME the state helper may still come from there, but the tool
-    // that writes to GitHub must not: the MINOR_ONLY loop is refused.
-    let d = Drive::new();
-    d.loop_writes_round(1, "MINOR_ONLY", 1);
-    d.minor(1, &three()[..1]);
-    let root = repo_root();
-    let root = root.to_str().unwrap();
-    let o = loop_step03(&d, "1979", &[("AMPLIHACK_HOME", ""), ("REPO_PATH", root)]);
-    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
-    assert!(d.creates().is_empty(), "no issue is filed\n{}", show(&o));
-    assert!(!marker_written(&d), "{}", show(&o));
-    assert!(stderr(&o).contains("followups-unfiled"), "{}", show(&o));
-}
-
-#[test]
-fn merge_loop_step02b_files_and_fails_the_step_on_error() {
-    if skip() {
-        return;
-    }
-    let script = step_command("autodrive-merge-loop", "step-02b-file-followups");
-    let root = repo_root();
-    let tools = tools_dir();
-    for (fail, want_rc) in [(false, 0), (true, 1)] {
-        let d = Drive::new();
-        d.minor_drive(&three()[..1]);
-        let pre = json!({"should_run": "true", "pr": PR, "state_dir": d.state}).to_string();
-        let mut v: Vec<(&str, &OsStr)> = vec![
-            ("RECIPE_VAR_merge_loop_preflight", OsStr::new(&pre)),
-            ("RECIPE_VAR_plan_task_id", OsStr::new("1979")),
-            (
-                "RECIPE_VAR_task_description",
-                OsStr::new("Implement the thing"),
-            ),
-            ("AMPLIHACK_HOME", root.as_os_str()),
-            ("AUTODRIVE_LAUNCH_TOOLS", tools.as_os_str()),
-            ("REPO_PATH", d.tmp.path().as_os_str()),
-        ];
-        if fail {
-            v.push(("FAKE_GH_CREATE_EXIT", OsStr::new("1")));
-        }
-        let o = d.bash(Some(&script), &[], &v, "");
-        assert_eq!(o.status.code(), Some(want_rc), "fail={fail}\n{}", show(&o));
-        assert_eq!(d.tsv_rows().len(), if fail { 0 } else { 1 });
-    }
-}
-
-#[test]
-fn merge_loop_step02b_dry_run_files_nothing() {
-    if skip() {
-        return;
-    }
-    let script = step_command("autodrive-merge-loop", "step-02b-file-followups");
-    let root = repo_root();
-    let tools = tools_dir();
-    let d = Drive::new();
-    d.minor_drive(&three()[..1]);
-    let pre = json!({"should_run": "true", "pr": PR, "state_dir": d.state}).to_string();
-    let v: Vec<(&str, &OsStr)> = vec![
-        ("RECIPE_VAR_merge_loop_preflight", OsStr::new(&pre)),
-        ("RECIPE_VAR_plan_task_id", OsStr::new("1979")),
-        ("AMPLIHACK_HOME", root.as_os_str()),
-        ("AUTODRIVE_LAUNCH_TOOLS", tools.as_os_str()),
-        ("REPO_PATH", d.tmp.path().as_os_str()),
-        ("AUTODRIVE_DRY_RUN", OsStr::new("true")),
-    ];
-    let o = d.bash(Some(&script), &[], &v, "");
-    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
-    assert!(d.creates().is_empty(), "no issue is filed\n{}", show(&o));
-    assert!(d.tsv_rows().is_empty(), "{}", show(&o));
-}
-
 #[test]
 fn auto_drive_passes_dry_run_to_the_crusty_loop() {
     let top = step("auto-drive-to-merge", "autodrive-crusty-loop");
@@ -2160,8 +1972,7 @@ fn every_touched_recipe_and_tool_stays_within_400_lines() {
         "amplifier-bundle/tools/autodrive_completion_context.sh",
         "amplifier-bundle/tools/autodrive_crusty_rereview.sh",
         "amplifier-bundle/tools/autodrive_state.sh",
-        "amplifier-bundle/tools/autodrive_merge_gate.sh",
-        // #2186: the expected-checks reader the gate runs for its CI section.
+        // #2186: the expected-checks reader the CI evidence step runs.
         "amplifier-bundle/tools/autodrive_expected_checks.sh",
         "amplifier-bundle/tools/autodrive_round_evidence.sh",
         "amplifier-bundle/recipes/autodrive-crusty-round.yaml",
@@ -2342,7 +2153,6 @@ fn plan_task_id_is_an_input_and_reaches_both_loops() {
             "{r} declares plan_task_id"
         );
     }
-    let top = read("amplifier-bundle/recipes/auto-drive-to-merge.yaml");
     for id in ["autodrive-crusty-loop", "autodrive-merge-loop"] {
         let s = step("auto-drive-to-merge", id);
         let text = serde_yaml::to_string(&s).unwrap();
@@ -2352,7 +2162,8 @@ fn plan_task_id_is_an_input_and_reaches_both_loops() {
         );
     }
     assert!(
-        top.contains("followups.tsv"),
+        read("crates/amplihack-cli/src/commands/orch/autodrive/followups.rs")
+            .contains("followups.tsv"),
         "the final summary lists follow-ups"
     );
 }
@@ -2367,16 +2178,16 @@ fn merge_loop_files_before_the_gate() {
         .iter()
         .position(|i| i == "step-02b-file-followups")
         .expect("step-02b exists");
-    let g = ids.iter().position(|i| i == "step-03-merge-gate").unwrap();
+    let g = ids.iter().position(|i| i == "step-03-finalize").unwrap();
     assert!(b < g, "step-02b runs before the gate");
     let s = step("autodrive-merge-loop", "step-02b-file-followups");
-    assert_eq!(s["type"].as_str(), Some("bash"));
+    assert_eq!(s["type"].as_str(), Some("agent"));
     assert_eq!(
         s["condition"].as_str(),
         Some("merge_loop_preflight.should_run == 'true'")
     );
     assert!(
-        s["command"]
+        s["prompt"]
             .as_str()
             .unwrap()
             .contains("autodrive_followups.sh")
@@ -2384,27 +2195,14 @@ fn merge_loop_files_before_the_gate() {
 }
 
 #[test]
-fn merge_gate_runs_the_gate_command_from_its_own_directory() {
-    let g = read("amplifier-bundle/tools/autodrive_merge_gate.sh");
-    assert!(
-        g.contains(
-            r#"bash "${GATE_HOME}/autodrive_followups.sh" gate --state-dir "$STATE_DIR" --pr "$PR""#
-        ),
-        "the follow-up check runs from GATE_HOME"
-    );
-    assert!(
-        g.contains(r#"&& note "$FU" || block "#),
-        "a pass is evidence, anything else blocks"
-    );
-    assert!(
-        g.contains("ERROR: followups-unfiled: autodrive_followups.sh gate did not run"),
-        "a missing or silent tool still blocks with the error token"
-    );
-    let t = read("amplifier-bundle/tools/autodrive_followups_check.sh");
-    assert!(
-        t.contains(r#"echo "ERROR: followups-unfiled: ${out}" >&2"#),
-        "the gate command prints the error"
-    );
+fn agent_followups_preserve_dry_run_and_parent_obligations() {
+    let prep = step("autodrive-crusty-loop", "step-03-record-crusty-phase");
+    assert_eq!(prep["type"].as_str(), Some("agent"));
+    let prompt = prep["prompt"].as_str().unwrap();
+    assert!(prompt.contains("Dry-run"));
+    assert!(prompt.contains("followup-missing"));
+    assert!(prompt.contains("linked to plan task"));
+    assert!(prompt.contains("Only after verified DONE"));
 }
 
 /// `check` and `gate` live in their own file beside the tool, and the tool
