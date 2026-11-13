@@ -114,6 +114,75 @@ fn checkout_self_heal_refuses_before_cache_lock_or_installer() {
 }
 
 #[test]
+fn unreadable_stamp_does_not_block_self_heal_refusal() {
+    for (case, eligible, opted_out, succeeds) in [
+        ("checkout", false, false, true),
+        ("eligible-opted-out", true, true, true),
+        ("eligible-unsuppressed", true, false, false),
+    ] {
+        let temp = crate::test_support::tempdir_outside_framework_roots();
+        let home = temp.path();
+        let mut env = isolate(home);
+        let _origin = eligible.then(release_layout::TestEligibility::installed);
+        if opted_out {
+            env.set("AMPLIHACK_SKIP_AUTO_INSTALL", "1");
+        }
+        create_minimal_staged_assets(home);
+        // EISDIR is deterministic even when tests have elevated permissions.
+        fs::create_dir(version_stamp::installed_version_path().unwrap()).unwrap();
+        let before = snapshot(home);
+        let calls = Cell::new(0);
+        let result = crate::self_heal::ensure_assets_match_binary_version_with(
+            &args(&["amplihack", "recipe", "list"]),
+            &mut Vec::new(),
+            || {
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+        );
+
+        assert_eq!(result.is_ok(), succeeds, "{case}: {result:?}");
+        assert_eq!(calls.get(), 0, "{case}: no installer may run");
+        assert_unchanged(home, &before);
+    }
+}
+
+#[test]
+fn unreadable_install_state_does_not_block_launch_bootstrap_refusal() {
+    for unreadable in ["stamp", "layout"] {
+        for (case, eligible, opted_out, succeeds) in [
+            ("checkout", false, false, true),
+            ("eligible-opted-out", true, true, true),
+            ("eligible-unsuppressed", true, false, false),
+        ] {
+            let temp = crate::test_support::tempdir_outside_framework_roots();
+            let home = temp.path();
+            let mut env = isolate(home);
+            let _origin = eligible.then(release_layout::TestEligibility::installed);
+            if opted_out {
+                env.set("AMPLIHACK_SKIP_AUTO_INSTALL", "1");
+            }
+            create_minimal_staged_assets(home);
+            let unreadable_path = match unreadable {
+                "stamp" => version_stamp::installed_version_path().unwrap(),
+                "layout" => {
+                    version_stamp::write_installed_version(crate::VERSION).unwrap();
+                    home.join(".amplihack/.claude/.layout")
+                }
+                _ => unreachable!(),
+            };
+            fs::create_dir(unreadable_path).unwrap();
+            let before = snapshot(home);
+
+            let result = ensure_framework_installed_with(&mut Vec::new());
+
+            assert_eq!(result.is_ok(), succeeds, "{unreadable}/{case}: {result:?}");
+            assert_unchanged(home, &before);
+        }
+    }
+}
+
+#[test]
 fn satisfied_checkout_self_heal_is_quiet_and_does_not_prime_cache() {
     let temp = crate::test_support::tempdir_outside_framework_roots();
     let home = temp.path();

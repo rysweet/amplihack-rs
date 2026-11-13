@@ -306,7 +306,28 @@ where
         return Ok(());
     }
 
-    let stamp = version_stamp::read_installed_version().context("reading install version stamp")?;
+    let eligible = crate::commands::install::may_act_implicitly();
+    let stamp = match version_stamp::read_installed_version()
+        .context("reading install version stamp")
+    {
+        Ok(stamp) => stamp,
+        Err(error) if !eligible => {
+            // A refused repair must not prevent commands using available assets.
+            // Keep assessment errors fatal only when installation is authorised.
+            if env_bypass_set() {
+                writeln!(
+                    notice,
+                    "amplihack: AMPLIHACK_SKIP_AUTO_INSTALL set; skipping re-stage (install stamp unreadable)"
+                )
+                .context("emitting bypass diagnostic")?;
+            } else {
+                warn_implicit_origin_once(notice);
+            }
+            tracing::debug!(error = %sanitize_text(&format!("{error:#}")), "refused repair skipped unreadable install stamp");
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
     let expected = crate::VERSION;
 
     // Issue #1526 Guard #1: before the #1271 bundle check (a re-stage too)
@@ -340,7 +361,6 @@ where
     // record: the caller asked for silence, not a diagnosis. Both verdicts
     // lead to the same uncached, write-nothing compatibility path, so this
     // changes no behaviour beyond what is logged.
-    let eligible = crate::commands::install::may_act_implicitly();
     let installed_bundle_issue = if eligible {
         installed_bundle_compatibility_issue_cached()
     } else {

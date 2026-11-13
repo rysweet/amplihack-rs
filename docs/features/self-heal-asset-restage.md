@@ -149,6 +149,8 @@ The refusal itself does not abort command dispatch. A command that can use
 available assets keeps its normal behaviour and exit status. A command
 requiring unavailable assets may fail through its normal validation with a
 clear error. Refusal never reports repair as successful.
+Installation assessment errors, such as an unreadable version stamp or staged
+`.layout` marker, also leave dispatch available after repair is refused.
 
 The restriction concerns installation assets. Ordinary command, session and
 runtime writes retain their existing rules.
@@ -298,6 +300,8 @@ incompatible, self-heal emits one diagnostic on stderr identifying
 `AMPLIHACK_SKIP_AUTO_INSTALL`, the stamp, the running version and the bundle
 compatibility result. A missing stamp is reported as `<missing>`.
 A matching stamp with a compatible bundle produces no bypass diagnostic.
+If the stamp cannot be read, the diagnostic instead says `install stamp
+unreadable`, and dispatch continues without installation assessment writes.
 
 ### What the bypass skips
 
@@ -362,8 +366,8 @@ nor explicit invocation broadens the accepted sources. See the
 | Contents | Framework version on the first line. An optional second line, `binaries: <version>` or `binaries: unknown`, records binaries kept by an implicit re-stage |
 | Writes | Atomic temporary-file rename, no trailing newline, mode `0600` |
 | Missing or malformed | Treated as no prior install; repair still requires eligible origin |
-| Other read errors | Reported through existing error handling |
-| Symlink or non-regular file | Refused without reading or overwriting its target |
+| Other read errors | Fatal for eligible automatic repair; refused or opted-out executions report the refusal or bypass and continue dispatch |
+| Symlink or non-regular file | Stamp reads use normal file reads; stamp writes refuse a symlink. A non-regular file may produce a read error, handled as above |
 
 The binaries line does not identify the version of each executable separately.
 Successful explicit installation and self-heal both write the stamp. Blocked
@@ -380,6 +384,12 @@ lock is acquired or created. Publication uses the existing
 For eligible automatic repair, installation errors propagate and produce a
 non-zero exit status. A failed repair does not mark the stamp as current,
 and releases the installation lock.
+
+When repair is refused by origin or the opt-out, installation assessment
+errors do not prevent dispatch. This includes an unreadable installation
+stamp or a failed launch-bootstrap assessment of the staged `.layout` marker.
+Each command still validates the assets it uses and reports its own errors
+when they are unavailable.
 
 ### Failed source fetch with a compatible bundle
 

@@ -450,6 +450,29 @@ pub(crate) fn ensure_framework_installed() -> Result<()> {
 /// [`ensure_framework_installed`], writing the #1526 refusal warning to
 /// `notice` (stderr in the binary).
 pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W) -> Result<()> {
+    if !may_act_implicitly() {
+        // Assessment is advisory after repair is refused. An unreadable stamp
+        // or layout marker must not block commands using other available assets.
+        let assessment = (|| -> Result<bool> {
+            let staging_dir = staging_claude_dir()?;
+            let staging_exists = staging_dir.exists();
+            let missing = if staging_exists {
+                missing_framework_paths(&staging_dir)?
+            } else {
+                Vec::new()
+            };
+            Ok(framework_restage_needed(staging_exists, &missing)
+                || !claude_commands::claude_commands_dir()?.is_dir()
+                || launch_repair::settings_hooks_need_repair()?)
+        })();
+        if !matches!(assessment, Ok(false)) {
+            crate::self_heal::warn_implicit_origin_once(notice);
+        }
+        if let Err(error) = assessment {
+            tracing::debug!(error = %paths::sanitize_text(&format!("{error:#}")), "refused bootstrap skipped installation assessment error");
+        }
+        return Ok(());
+    }
     // Issue #1526: this bootstrap is an implicit installer too. A binary older
     // than the installed stamp must not stage, top up commands or repair
     // settings.json over the newer install.
@@ -474,17 +497,6 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
     } else {
         Vec::new()
     };
-    if !may_act_implicitly() {
-        // Assess without fetching a source, creating a lock or reconciling any
-        // installation assets. Dispatch still validates assets it actually needs.
-        if framework_restage_needed(staging_exists, &missing)
-            || !claude_commands::claude_commands_dir()?.is_dir()
-            || launch_repair::settings_hooks_need_repair()?
-        {
-            crate::self_heal::warn_implicit_origin_once(notice);
-        }
-        return Ok(());
-    }
     // Issue #254: framework assets are now bundled in the amplihack-rs source
     // tree.  The legacy upstream freshness check is removed;
     // framework updates are delivered via amplihack-rs binary updates instead.

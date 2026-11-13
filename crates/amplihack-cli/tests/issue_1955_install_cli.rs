@@ -923,6 +923,22 @@ mod issue_2496 {
     }
 
     #[test]
+    fn checkout_with_unreadable_install_stamp_still_lists_recipes_without_writes() {
+        isolated_case(
+            "checkout_with_unreadable_install_stamp_still_lists_recipes_without_writes",
+            None,
+            || {
+                let fixture = Fixture::new();
+                let stamp = fixture.host.home.join(".amplihack/.installed-version");
+                fs::remove_file(&stamp).unwrap();
+                fs::create_dir(&stamp).unwrap();
+
+                fixture.assert_refused(&amplihack_bin());
+            },
+        );
+    }
+
+    #[test]
     fn opt_out_alone_preserves_installation_from_an_eligible_release() {
         isolated_case(
             "opt_out_alone_preserves_installation_from_an_eligible_release",

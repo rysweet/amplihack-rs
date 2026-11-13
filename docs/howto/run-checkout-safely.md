@@ -37,6 +37,12 @@ A command needing missing assets may fail with recovery guidance. Refusal
 does not create installation locks, fetch sources, switch releases or repair
 profiles and agent settings.
 
+A refused or opted-out repair also permits dispatch when installation
+assessment fails, for example because the version stamp or staged `.layout`
+marker cannot be read. Each command still validates the assets it uses and
+may fail if they are unavailable. An eligible installed executable with
+automatic installation enabled continues to report these assessment errors.
+
 Use a supported release CLI's explicit `install` or `update` to repair the
 host. The [release-executable contract](../reference/install-command.md#release-binary-staging-internal)
 prevents explicit install from publishing checkout executables. For local framework assets, see
