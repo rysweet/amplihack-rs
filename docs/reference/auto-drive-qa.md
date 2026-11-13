@@ -155,6 +155,26 @@ Example for a PR that changes two Markdown files in a Node repository:
 `log_tail` stays in the inputs file. It is never copied into
 `qa-evidence.json`, because test output can contain secrets.
 
+`qa-record` requires every field above and ignores fields it does not know,
+so a newer inputs script (#2458) does not break an older helper. The strings
+it copies into the evidence (`qa_round` when `--round` is absent,
+`repo_type`, `docs_only`, `git_env_cleared`, `run_env_cleared` and the
+`declared_qa` strings except `log_tail`) must meet the judgement's
+[type limits](#type-limits): the inputs file sits in a directory the agent
+can write, so it is checked like standard input. A field that breaks them
+exits 1, names the field (for example `inputs.declared_qa.command`) and not
+its value, and writes nothing.
+
+Before the PR exists (`light-qa-inputs`), the change is uncommitted, and the
+script diffs committed history only. `changed_files`, `base_sha` and
+`docs_only` therefore do not describe the change there; `light-qa` takes the
+change set from the working tree instead.
+
+When `git diff` from a known merge base fails, the script prints a
+`WARNING:` line, writes `changed_files` as `[]` and clears `base_sha`, the
+recorded sign that the change set is unknown. When `git ls-files` fails,
+`existing_scenarios` is `[]` and a `WARNING:` line says the listing failed.
+
 ## The declared QA command
 
 The declared command is evidence for the judgement, not a verdict. A
@@ -356,7 +376,7 @@ amplihack orch helper autodrive qa-record \
 | --- | --- |
 | `--inputs` | The inputs file from `step-02a-qa-inputs`. Opened with `O_NOFOLLOW`; must be a regular file of at most 1 MiB. |
 | `--repo` | The PR worktree. `head_sha` is read here with `git rev-parse --verify HEAD^{commit}`, with inherited `GIT_*` variables removed and Git configuration isolated. |
-| `--out` | The evidence file to write. Its parent directory must be owned by the user and not writable by group or others. |
+| `--out` | The evidence file to write. Its parent directory must be private: owned by the user, with no group or other access (mode `0700` or stricter), the same check the auto-drive evidence store applies. |
 | `--round` | Overrides `qa_round` from the inputs file. |
 
 The judgement is read from standard input, at most 1 MiB.
@@ -365,7 +385,7 @@ The judgement is read from standard input, at most 1 MiB.
 | --- | --- |
 | `0` | The record was written. Standard output holds exactly the bytes written. |
 | `2` | The judgement was refused. Nothing was written. |
-| `1` | Environment error: the inputs file, the repository or the output directory could not be used. Nothing was written. |
+| `1` | Environment error: the inputs file, the repository or the output directory could not be used. Nothing was written. This includes an inputs file whose copied fields break the [type limits](#type-limits). |
 
 A refusal prints one line on standard error, at most 200 bytes, naming the
 rule and the field path. It never repeats the refused value:
@@ -406,7 +426,7 @@ be supplied on standard input.
 | `qa_judgement` | `user_facing` or `not_user_facing`. |
 | `qa_judgement_reason` | Non-empty string, at most 16 KiB. |
 | `qa_cited_files` | List of repository-relative paths. |
-| `qa_scenarios` | List of `{path, written_in_pr, commit, result}`. `written_in_pr` is a boolean; `commit` is a commit ID or `null`; `result` is `pass`, `fail` or `not_run`. |
+| `qa_scenarios` | List of `{path, written_in_pr, commit, result}`. `written_in_pr` is a boolean; `commit` is a commit ID or `null`; `result` is `pass` or `fail`. |
 | `qa_iterations` | List of `{attempt, failing_scenario, cause, fix_commit, result}`. `attempt` is a positive integer; `failing_scenario` a path, or `null` when the attempt was a run of the declared QA command recorded in `declared_qa`; `cause` is `product`, `scenario` or `environment`; `fix_commit` a commit ID or `null`; `result` is `pass` or `fail`. |
 | `qa_handoff` | `null`, or `{step_id, failure, choice, reason, owner, needs}` with `choice` equal to `handoff`. These names match the arguments of `orch helper step-recovery record`. |
 

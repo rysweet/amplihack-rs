@@ -216,7 +216,7 @@ fn open_directory(path: &Path) -> Result<File> {
     }
     Ok(options.open(path)?)
 }
-fn private(m: &fs::Metadata, dir: bool) -> Result<()> {
+pub(super) fn private(m: &fs::Metadata, dir: bool) -> Result<()> {
     ensure!(
         if dir { m.is_dir() } else { m.is_file() },
         "evidence is not a regular file or state directory"

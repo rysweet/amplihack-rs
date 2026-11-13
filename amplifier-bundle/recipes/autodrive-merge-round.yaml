@@ -260,9 +260,8 @@ steps:
         (`qa-team-scenarios-do-not-cover-the-change`): follow
         `criterion-1-qa-judgement.md` beside the merge-ready SKILL.md. Write or
         extend the outside-in scenarios with `Skill(skill="qa-team")`, fix the
-        cause, commit, run them again,
-        and record the new judgement with `orch helper autodrive qa-record`
-        as the last action. Never delete or weaken a failing scenario to reach a
+        cause, commit and push. Do not record a judgement here: the next
+        round's step-02 judges and records it at the new head. Never delete or weaken a failing scenario to reach a
         pass. `declared_qa.status` `unresolved` or `config-invalid` is an input
         to that judgement, not a stop.
       - **Criterion 1 `HANDOFF`**: keep the blocker

@@ -17,7 +17,7 @@ meanings are in [Auto-drive QA](../reference/auto-drive-qa.md).
 ## Before you start
 
 - A worktree at the PR head, and an installed `amplihack`.
-- A private state directory: owned by you, not writable by group or others.
+- A private state directory: owned by you, mode `0700` (no group or other access).
 
 ```bash
 cd ~/src/my-pr-worktree
@@ -137,8 +137,8 @@ Correct that field and record again. The rules are listed under
 [shape rules](../reference/auto-drive-qa.md#shape-rules).
 
 Exit 1 is an environment problem: a missing or symlinked inputs file, a
-repository with no `HEAD`, or a state directory writable by group or
-others. Fix the environment; the judgement is not at fault.
+repository with no `HEAD`, a state directory that group or others can
+access, or an inputs field that breaks the type limits. Fix the environment; the judgement is not at fault.
 
 ## Clean up
 

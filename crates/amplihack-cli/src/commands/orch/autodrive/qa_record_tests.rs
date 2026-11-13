@@ -339,3 +339,78 @@ fn refusal_text_never_repeats_the_value() {
     assert!(s.len() <= 200, "{s}");
     assert!(!s.contains('\n'), "{s}");
 }
+
+fn inputs() -> Value {
+    json!({
+        "schema": 1, "qa_round": "round-1", "head_sha": "", "base_sha": "",
+        "repo_type": "node", "docs_only": "true", "changed_files": [],
+        "scenario_dir": "tests/agentic", "existing_scenarios": [],
+        "declared_qa": {
+            "source": "detected", "dir": ".", "command": "npm test", "status": "ran",
+            "exit_status": 0, "cause": "", "candidates": "", "ci_skip": "", "log_tail": "x\u{1b}[31m"
+        },
+        "git_env_cleared": "none", "run_env_cleared": "none"
+    })
+}
+
+fn copied(v: Value, copies_round: bool) -> Result<(), Refusal> {
+    let parsed: super::QaInputs = serde_json::from_value(v).expect("documented inputs shape");
+    super::check_copied(&parsed, copies_round)
+}
+
+/// R2.2: unknown inputs fields are ignored, so #2458 can add fields; the
+/// stdin judgement keeps its exact-key check.
+#[test]
+fn inputs_ignore_unknown_fields_but_require_documented_ones() {
+    let mut v = inputs();
+    v["kind"] = json!("future");
+    v["declared_qa"]["scenarios"] = json!(["a.yaml"]);
+    assert_eq!(copied(v, true), Ok(()));
+    let mut v = inputs();
+    v.as_object_mut().unwrap().remove("repo_type");
+    assert!(serde_json::from_value::<super::QaInputs>(v).is_err());
+}
+
+/// R2.3: copied inputs strings follow the judgement's text rule; log_tail
+/// is never copied, so it is not checked.
+#[test]
+fn copied_inputs_fields_are_single_line_without_control_characters() {
+    assert_eq!(copied(inputs(), true), Ok(()));
+    for (path, field) in [
+        (
+            &["declared_qa", "command"][..],
+            "inputs.declared_qa.command",
+        ),
+        (
+            &["declared_qa", "candidates"][..],
+            "inputs.declared_qa.candidates",
+        ),
+        (
+            &["declared_qa", "ci_skip"][..],
+            "inputs.declared_qa.ci_skip",
+        ),
+        (&["repo_type"][..], "inputs.repo_type"),
+        (&["run_env_cleared"][..], "inputs.run_env_cleared"),
+        (&["qa_round"][..], "inputs.qa_round"),
+    ] {
+        for bad in [
+            "npm test\u{1b}[31m",
+            "a\nforged line",
+            "x".repeat(5000).as_str(),
+        ] {
+            let mut v = inputs();
+            let mut slot = &mut v;
+            for k in path {
+                slot = &mut slot[*k];
+            }
+            *slot = json!(bad);
+            let r = copied(v, true).expect_err("refused");
+            assert_eq!((r.rule, r.field.as_str()), ("schema", field));
+            assert!(!r.to_string().contains("forged"), "{r}");
+        }
+    }
+    // With --round given, the inputs qa_round is not copied.
+    let mut v = inputs();
+    v["qa_round"] = json!("a\nb");
+    assert_eq!(copied(v, false), Ok(()));
+}

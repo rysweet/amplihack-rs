@@ -180,10 +180,18 @@ fn exact_object<'a>(
 
 /// One line, no control characters (C0, DEL, C1, so no ANSI escapes), and at
 /// most `limit` bytes.
+fn check_str(s: &str, limit: usize, path: &str) -> Result<(), Refusal> {
+    if s.len() <= limit && !s.chars().any(char::is_control) {
+        Ok(())
+    } else {
+        schema(path)
+    }
+}
+
 fn text(v: &Value, limit: usize, path: &str) -> Result<String, Refusal> {
     match v.as_str() {
-        Some(s) if s.len() <= limit && !s.chars().any(char::is_control) => Ok(s.to_owned()),
-        _ => schema(path),
+        Some(s) => check_str(s, limit, path).map(|()| s.to_owned()),
+        None => schema(path),
     }
 }
 
@@ -388,9 +396,11 @@ fn derived_reason(status: QaStatus) -> &'static str {
 }
 
 /// The declared QA command as `autodrive_qa_evidence.sh` measured it. #2458
-/// adds its kind and scenarios fields here and in that script's block.
+/// adds its kind and scenarios fields here and in that script's block. Unknown
+/// fields are ignored (R2.2), so a newer script does not break an older
+/// binary; only the fields named here are copied.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, default)]
+#[serde(default)]
 pub struct DeclaredQa {
     pub source: String,
     pub dir: String,
@@ -408,10 +418,11 @@ pub struct DeclaredQa {
 
 /// `qa-inputs.json`, written by `autodrive_qa_evidence.sh` (step-02a). The
 /// agent reads every field; this module copies only the declared command and
-/// the flat legacy facts, and parses the rest to hold the file to its shape.
+/// the flat legacy facts. Every documented field is required; unknown fields
+/// are ignored (R2.2).
+// Fields are parsed so the file's shape is checked; only some are copied.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct QaInputs {
     pub schema: u32,
     pub qa_round: String,
@@ -462,7 +473,7 @@ struct Evidence<'a> {
     run_env_cleared: &'a str,
 }
 
-fn read_inputs(path: &Path) -> Result<QaInputs> {
+fn read_inputs(path: &Path, round: Option<&str>) -> Result<QaInputs> {
     use std::io::Read;
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
@@ -492,11 +503,41 @@ fn read_inputs(path: &Path) -> Result<QaInputs> {
         inputs.schema == 1,
         "qa inputs has an unknown schema version"
     );
+    check_copied(&inputs, round.is_none()).context("qa inputs")?;
     Ok(inputs)
 }
 
-/// The output's parent must be a directory owned by this user and not
-/// writable by group or others, as the private evidence state requires.
+/// Every inputs string copied into the evidence follows the judgement's text
+/// rule (R2.3): the file sits in a directory the agent can write, so its
+/// fields are no more trusted than stdin. `qa_round` is copied only when
+/// `--round` is absent.
+fn check_copied(inputs: &QaInputs, copies_round: bool) -> Result<(), Refusal> {
+    let d = &inputs.declared_qa;
+    let mut fields = vec![
+        ("inputs.repo_type", inputs.repo_type.as_str()),
+        ("inputs.docs_only", inputs.docs_only.as_str()),
+        ("inputs.git_env_cleared", inputs.git_env_cleared.as_str()),
+        ("inputs.run_env_cleared", inputs.run_env_cleared.as_str()),
+        ("inputs.declared_qa.source", d.source.as_str()),
+        ("inputs.declared_qa.dir", d.dir.as_str()),
+        ("inputs.declared_qa.command", d.command.as_str()),
+        ("inputs.declared_qa.status", d.status.as_str()),
+        ("inputs.declared_qa.cause", d.cause.as_str()),
+        ("inputs.declared_qa.candidates", d.candidates.as_str()),
+        ("inputs.declared_qa.ci_skip", d.ci_skip.as_str()),
+    ];
+    if copies_round {
+        fields.push(("inputs.qa_round", inputs.qa_round.as_str()));
+    }
+    for (path, s) in fields {
+        check_str(s, MAX_STRING_BYTES, path)?;
+    }
+    Ok(())
+}
+
+/// The output's parent must be a private state directory: owned by this
+/// user with no group or other access, the same check the evidence store
+/// applies (`state::private`).
 fn check_parent(out: &Path) -> Result<PathBuf> {
     let parent = match out.parent() {
         Some(p) if !p.as_os_str().is_empty() => p.to_owned(),
@@ -511,20 +552,8 @@ fn check_parent(out: &Path) -> Result<PathBuf> {
     );
     let meta = std::fs::metadata(&parent)
         .with_context(|| format!("stat output directory {}", parent.display()))?;
-    ensure!(meta.is_dir(), "output directory is not a directory");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        ensure!(
-            // SAFETY: geteuid has no preconditions.
-            meta.uid() == unsafe { libc::geteuid() },
-            "output directory is not owned by this user"
-        );
-        ensure!(
-            meta.permissions().mode() & 0o022 == 0,
-            "output directory is writable by group or others"
-        );
-    }
+    super::state::private(&meta, true)
+        .with_context(|| format!("output directory {}", parent.display()))?;
     Ok(parent)
 }
 
@@ -600,7 +629,7 @@ pub fn record(
             "--round must be one line of at most 200 bytes"
         );
     }
-    let inputs = read_inputs(inputs)?;
+    let inputs = read_inputs(inputs, round)?;
     let head = trusted::git(repo, &["rev-parse", "--verify", "HEAD^{commit}"])
         .context("read the repository HEAD")?;
     if !([40, 64].contains(&head.len())

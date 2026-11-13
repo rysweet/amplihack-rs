@@ -1119,6 +1119,24 @@ fn qa_record_environment_errors_exit_1_and_write_nothing() {
     );
     assert!(!shared.join("qa-evidence.json").exists());
 
+    // An output directory readable by group: the evidence store's own rule.
+    let readable = w.base.join("readable-state");
+    fs::create_dir_all(&readable).unwrap();
+    fs::set_permissions(&readable, fs::Permissions::from_mode(0o750)).unwrap();
+    let o = w.qa_record(
+        &inputs,
+        &readable.join("qa-evidence.json"),
+        body.clone(),
+        &[],
+    );
+    assert_eq!(
+        o.status.code(),
+        Some(1),
+        "group-readable parent: {}",
+        show(&o)
+    );
+    assert!(!readable.join("qa-evidence.json").exists());
+
     // A repository with no HEAD.
     let empty = w.base.join("empty-repo");
     private_dir(&empty);
@@ -1166,4 +1184,43 @@ fn qa_record_replaces_a_symlink_at_out_and_stays_private_under_umask_000() {
     assert!(meta.file_type().is_file(), "--out is now a regular file");
     assert_eq!(meta.permissions().mode() & 0o777, 0o600);
     assert_eq!(read_json(&out)["qa_status"], "PASS");
+}
+
+/// R2.3: an inputs field copied into the evidence is held to the judgement's
+/// text rule. A control character exits 1, names the field and not the
+/// value, and writes nothing. Unknown inputs fields are ignored (R2.2).
+#[test]
+fn qa_record_refuses_control_characters_in_copied_inputs_fields() {
+    let w = World::new();
+    w.node_repo();
+    w.docs_pr();
+    let inputs = w.inputs_fixture();
+    let body = serde_json::to_vec(&docs_judgement()).unwrap();
+    let out = w.evidence_path();
+
+    let mut v = read_json(&inputs);
+    v["declared_qa"]["command"] = json!("npm test\u{1b}[31mFORGED-5c2a");
+    fs::write(&inputs, serde_json::to_vec(&v).unwrap()).unwrap();
+    let o = w.qa_record(&inputs, &out, body.clone(), &[]);
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    let err = text(&o.stderr);
+    assert!(err.contains("inputs.declared_qa.command"), "{}", show(&o));
+    assert!(
+        !err.contains("FORGED-5c2a"),
+        "the value is never repeated: {}",
+        show(&o)
+    );
+    assert!(!out.exists(), "--out is never created");
+
+    let mut v = read_json(&w.inputs_fixture());
+    v["kind"] = json!("added-by-a-newer-script");
+    v["declared_qa"]["scenarios"] = json!([]);
+    fs::write(&inputs, serde_json::to_vec(&v).unwrap()).unwrap();
+    let o = w.qa_record(&inputs, &out, body, &[]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "unknown inputs fields are ignored: {}",
+        show(&o)
+    );
 }

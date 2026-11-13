@@ -109,8 +109,12 @@ fi
 [ -n "$MB" ] || echo "WARNING: the merge base is unknown (AUTODRIVE_QA_BASE unset, invalid or not fetched); changed_files is empty" >&2
 CHANGED="[]"
 if [ -n "$DIFF_OK" ]; then
-  CHANGED="$(git diff --name-only --no-renames --no-ext-diff --no-textconv -z --end-of-options "$MB" "$HEAD_SHA" 2>/dev/null | jlist)" \
-    || CHANGED="[]"
+  # A failed diff is not "no files changed": base_sha is cleared too, the
+  # recorded sign that the change set is unknown.
+  if ! CHANGED="$(git diff --name-only --no-renames --no-ext-diff --no-textconv -z --end-of-options "$MB" "$HEAD_SHA" 2>/dev/null | jlist)"; then
+    echo "WARNING: git diff from the merge base failed; changed_files is empty and base_sha is cleared" >&2
+    CHANGED="[]"; MB=""
+  fi
 fi
 
 # --- repository type, docs_only and the command sources --------------
@@ -128,7 +132,7 @@ if [ -n "$HELPERS" ]; then
       printf 'noscope\t1\n'
     fi)" || SCAN=""
 fi
-[ -n "$SCAN" ] || SCAN=$'noscope\t1'
+[ -n "$SCAN" ] || { [ -z "$HELPERS" ] || echo "WARNING: the QA scope scan failed; repo_type and docs_only are unknown" >&2; SCAN=$'noscope\t1'; }
 KIND="unknown"; DOCSONLY="unknown"; NOSCOPE=""; TARGET=""; DSRC=""; DDIR=""; DCMD=""; DBAD=""; CISKIP=""
 while IFS=$'\t' read -r key val; do
   case "$key" in
@@ -255,7 +259,11 @@ if [ -z "$SDIR" ]; then
 fi
 SDIR="${SDIR%/}"
 SCENARIOS="[]"
-[ -z "$HELPERS" ] || SCENARIOS="$(git ls-files -z -- "${SDIR}/*.yaml" "${SDIR}/*.yml" 2>/dev/null | jlist)" || SCENARIOS="[]"
+if [ -n "$HELPERS" ] \
+   && ! SCENARIOS="$(git ls-files -z -- "${SDIR}/*.yaml" "${SDIR}/*.yml" 2>/dev/null | jlist)"; then
+  echo "WARNING: git ls-files failed; existing_scenarios is empty because the listing failed, not because none exist" >&2
+  SCENARIOS="[]"
+fi
 
 # --- the inputs file -------------------------------------------------
 OUT="$(printf '{"schema":1,"qa_round":%s,"head_sha":%s,"base_sha":%s,"repo_type":%s,"docs_only":%s,' \

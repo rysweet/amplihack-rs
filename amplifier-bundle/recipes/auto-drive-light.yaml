@@ -193,6 +193,10 @@ steps:
     output: "light_implementation"
   # Criterion 1 before the PR exists (#2569): measure the facts, then judge them. This record is a
   # pre-PR check only; every merge round of light-merge-loop judges and records again at the PR head.
+  # The change is still uncommitted here, and the script diffs committed history only, so
+  # changed_files, base_sha and docs_only in these inputs do not describe it. light-qa takes the
+  # change set from the working tree instead. The step order stays: light-commit-push commits any
+  # scenario light-qa writes.
   - id: "light-qa-inputs"
     type: "bash"
     condition: "not pr_number and not existing_branch"
@@ -216,7 +220,7 @@ steps:
     parse_json: true
     prompt: |
       Use noninteractive command execution with GIT_PAGER=cat, GH_PAGER=cat and PAGER=cat.
-      Judge merge-ready criterion 1 for the change in the established linked worktree, before the PR exists. Read and follow `$AMPLIHACK_HOME/amplifier-bundle/skills/merge-ready/criterion-1-qa-judgement.md` in full. Its inputs: the uncommitted change (`git diff` against the recorded base {{light_base}}), the task description, the existing scenarios, and the measured facts `{{light_qa_inputs}}`, which `light-qa-inputs` also wrote to `qa-inputs.json` in the `qa` directory of the quick-change state directory (`$QUICK_CHANGE_STATE_DIR/qa`, set by sourcing `$AMPLIHACK_HOME/amplifier-bundle/tools/quick_change_common.sh` with `QC_STEP=light-qa`). If the operator gave qa_command {{qa_command}}, run it as further evidence. Do not commit here: light-commit-push commits the change, including any scenario you write, after this step.
+      Judge merge-ready criterion 1 for the change in the established linked worktree, before the PR exists. Read and follow `$AMPLIHACK_HOME/amplifier-bundle/skills/merge-ready/criterion-1-qa-judgement.md` in full. Its inputs: the uncommitted change, the task description, the existing scenarios, and the measured facts `{{light_qa_inputs}}`, which `light-qa-inputs` also wrote to `qa-inputs.json` in the `qa` directory of the quick-change state directory (`$QUICK_CHANGE_STATE_DIR/qa`, set by sourcing `$AMPLIHACK_HOME/amplifier-bundle/tools/quick_change_common.sh` with `QC_STEP=light-qa`). Nothing is committed yet, so `changed_files`, `base_sha` and `docs_only` in the measured facts describe committed history only: they are empty or do not apply here, so ignore them. Take the change set from `git diff {{light_base}}` plus `git status --porcelain --untracked-files=all`, because new files are untracked and `git diff` does not show them. If the operator gave qa_command {{qa_command}}, run it as further evidence. Do not commit here: light-commit-push commits the change, including any scenario you write, after this step.
 
       Judge whether the change is user-facing. If it is, write or extend and run the outside-in scenarios for the affected journeys, and loop on failures with fixes until PASS or HANDOFF. If it is not, record why, citing the files. Never weaken a failing scenario, never install tools on the host, and never run tests/gadugi/* on the host in amplihack-rs. As your last action, record the judgement through `amplihack orch helper autodrive qa-record --inputs "$QUICK_CHANGE_STATE_DIR/qa/qa-inputs.json" --repo <this worktree> --out "$QUICK_CHANGE_STATE_DIR/qa/qa-evidence.json"` with the judgement JSON on stdin, and return its stdout. Exit 2 names the rule and field it refused; correct the record and call it again. Never write qa-evidence.json yourself.
 
