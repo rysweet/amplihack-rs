@@ -111,18 +111,22 @@ fn guide(
     let text = check_text(&raw)?;
     let (dir, source) = resolve_target(target)?;
     let appended = append_entry(&dir, &text, &caller_identity())?;
+    // PR #2567 M1: a PR folder is read only by runs started with the pull
+    // request in their context, so a PR entry is not reported as "appended"
+    // to anything that will read it.
+    let verb = match source {
+        Source::Pr => "guidance saved for pull request",
+        _ => "guidance appended",
+    };
     println!(
-        "guidance appended: {} ({} bytes, {})",
+        "{verb}: {} ({} bytes, {})",
         appended.path.display(),
         appended.bytes,
         source.label()
     );
     if source == Source::Pr {
-        // PR #2567 M1: a PR folder is read only by runs that were started
-        // with this pull request in their context; a drive that has not yet
-        // created its pull request never reads it.
         println!(
-            "written to {}; read by runs that started with this pull request in their context. For a run that created this pull request, address the run by its run ID instead.",
+            "written to {}; it is read at the next agent step of each run started with this pull request in its context (pr_url or pr_number), such as a later auto-drive round. A run that opened this pull request itself does not read it; address that run by its run ID or session name.",
             dir.display()
         );
     }

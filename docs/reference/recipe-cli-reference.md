@@ -503,7 +503,12 @@ to the list of guidance folders for that run:
    `github.com`. An `ssh` remote and an `https` remote for the same
    repository give the same folder. When the pull request cannot be
    resolved, the run starts without this folder and prints one line on
-   stderr naming the field and the cause;
+   stderr naming the field and the cause. The list is worked out once, when
+   the run starts, so a run that opens its pull request part-way through
+   (an `auto-drive-to-merge` started without `pr_url` or `pr_number`) does
+   not read the pull request folder. Later drive rounds, which start as new
+   runs with the pull request in their context, do. To reach the run that
+   opened the pull request, give its run ID or session name;
 3. the list it inherited, if any, so that a nested `recipe run` also reads
    the outer runs' guidance. These come last so that the 16-folder limit
    never leaves out the innermost run's own folders.
@@ -631,12 +636,13 @@ stdout:
 guidance appended: /home/alice/.amplihack/work/runs/8c0e2a54-1f7d-4c56-9a39-2d1b6f0c7e15/guidance/20261112T091405.120458911Z-48211-0.md (141 bytes, run)
 ```
 
-For a pull request URL it prints a second line, which names the pull
+For a pull request URL the first line says `guidance saved for pull
+request` rather than `guidance appended`, and a second line names the pull
 request's guidance folder and says which runs read it:
 
 ```text
-guidance appended: /home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_2535/guidance/20261112T100241.007311204Z-49102-0.md (58 bytes, pr)
-written to /home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_2535/guidance; read by runs that started with this pull request in their context. For a run that created this pull request, address the run by its run ID instead.
+guidance saved for pull request: /home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_2535/guidance/20261112T100241.007311204Z-49102-0.md (58 bytes, pr)
+written to /home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_2535/guidance; it is read at the next agent step of each run started with this pull request in its context (pr_url or pr_number), such as a later auto-drive round. A run that opened this pull request itself does not read it; address that run by its run ID or session name.
 ```
 
 The command does not check whether any run reads the folder. A drive that
@@ -722,8 +728,8 @@ keeps the instruction:
 $ amplihack recipe guide https://github.com/rysweet/amplihack-rs/pull/2535 - <<'EOF'
 Do not change the CI workflow files in this pull request.
 EOF
-guidance appended: /home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_2535/guidance/20261112T100241.007311204Z-49102-0.md (58 bytes, pr)
-written to /home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_2535/guidance; read by runs that started with this pull request in their context. For a run that created this pull request, address the run by its run ID instead.
+guidance saved for pull request: /home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_2535/guidance/20261112T100241.007311204Z-49102-0.md (58 bytes, pr)
+written to /home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_2535/guidance; it is read at the next agent step of each run started with this pull request in its context (pr_url or pr_number), such as a later auto-drive round. A run that opened this pull request itself does not read it; address that run by its run ID or session name.
 ```
 
 If the drive opened this pull request itself and is still running, also give

@@ -871,15 +871,17 @@ fn m1_pr_target_prints_where_and_when() {
     let lines: Vec<&str> = out.lines().collect();
     assert_eq!(lines.len(), 2, "{}", show(&o));
     assert!(
-        lines[0].starts_with(&format!("guidance appended: {}/", dir.display()))
-            && lines[0].ends_with(" (23 bytes, pr)"),
+        lines[0].starts_with(&format!(
+            "guidance saved for pull request: {}/",
+            dir.display()
+        )) && lines[0].ends_with(" (23 bytes, pr)"),
         "{}",
         lines[0]
     );
     assert_eq!(
         lines[1],
         format!(
-            "written to {}; read by runs that started with this pull request in their context. For a run that created this pull request, address the run by its run ID instead.",
+            "written to {}; it is read at the next agent step of each run started with this pull request in its context (pr_url or pr_number), such as a later auto-drive round. A run that opened this pull request itself does not read it; address that run by its run ID or session name.",
             dir.display()
         )
     );

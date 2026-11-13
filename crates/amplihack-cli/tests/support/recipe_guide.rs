@@ -563,26 +563,35 @@ impl GuideFixture {
 /// (PR #2567 M1), for the guidance folder `dir`.
 pub fn pr_where_line(dir: &Path) -> String {
     format!(
-        "written to {}; read by runs that started with this pull request in their context. For a run that created this pull request, address the run by its run ID instead.",
+        "written to {}; it is read at the next agent step of each run started with this pull request in its context (pr_url or pr_number), such as a later auto-drive round. A run that opened this pull request itself does not read it; address that run by its run ID or session name.",
         dir.display()
     )
 }
 
 /// The stdout of a successful `recipe guide`: the line
-/// `guidance appended: <path> (<n> bytes, run|pr)`, and for `pr` exactly one
+/// `guidance appended: <path> (<n> bytes, run)`, or for a pull request
+/// `guidance saved for pull request: <path> (<n> bytes, pr)` and exactly one
 /// more line, [`pr_where_line`] for the entry's folder. Returns
 /// (path, n, source).
 pub fn parse_appended(o: &Output) -> (PathBuf, usize, String) {
     let out = stdout(o);
     let lines: Vec<&str> = out.lines().collect();
     assert!(!lines.is_empty(), "no stdout line: {}", show(o));
-    let re =
-        regex::Regex::new(r"^guidance appended: (/.+\.md) \((\d+) bytes, (run|pr)\)$").unwrap();
+    let re = regex::Regex::new(
+        r"^(guidance appended|guidance saved for pull request): (/.+\.md) \((\d+) bytes, (run|pr)\)$",
+    )
+    .unwrap();
     let caps = re
         .captures(lines[0])
         .unwrap_or_else(|| panic!("stdout line does not match the contract: {}", show(o)));
-    let path = PathBuf::from(&caps[1]);
-    let source = caps[3].to_string();
+    let path = PathBuf::from(&caps[2]);
+    let source = caps[4].to_string();
+    let verb = if source == "pr" {
+        "guidance saved for pull request"
+    } else {
+        "guidance appended"
+    };
+    assert_eq!(&caps[1], verb, "{}", show(o));
     match source.as_str() {
         "run" => assert_eq!(lines.len(), 1, "exactly one stdout line: {}", show(o)),
         _ => {
@@ -595,7 +604,7 @@ pub fn parse_appended(o: &Output) -> (PathBuf, usize, String) {
             );
         }
     }
-    (path, caps[2].parse().unwrap(), source)
+    (path, caps[3].parse().unwrap(), source)
 }
 
 /// A failure prints exactly one line on stderr.
