@@ -226,6 +226,13 @@ fn an_operations_led_mixed_plan_executes_every_leaf_in_dependency_order_at_capac
         executions[1]["context"]["prerequisite_results"]["research"]["operations_result"],
         "OPERATIONS_RESULT: completed — fixture answer"
     );
+    assert!(
+        executions[1]["context"]["task_description"]
+            .as_str()
+            .unwrap()
+            .contains("fixture answer"),
+        "the Development agent must receive prerequisite answers in its task prompt"
+    );
     assert_eq!(
         fixture
             .actions("git")

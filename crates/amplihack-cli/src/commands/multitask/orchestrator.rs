@@ -70,7 +70,6 @@ impl ParallelOrchestrator {
         fs::create_dir_all(&self.base_dir)
             .with_context(|| format!("Failed to create base dir: {}", self.base_dir.display()))?;
         ownership::private_directory(&self.state_dir)?;
-        utils::check_disk_space(&self.base_dir, 5.0)?;
         Ok(())
     }
 
@@ -178,6 +177,7 @@ impl ParallelOrchestrator {
         };
         let ws = &mut self.workstreams[idx];
         if !operations {
+            utils::check_disk_space(&self.base_dir, 5.0)?;
             let reuse = had_state && ws.work_dir.exists();
             if !reuse {
                 // claim() created only an empty, owned artefact directory.

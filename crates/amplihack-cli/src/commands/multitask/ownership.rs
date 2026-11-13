@@ -11,7 +11,7 @@ use std::{fs, path::Path};
 pub(super) fn lock(base: &Path) -> Result<fs::File> {
     private_directory(base)?;
     let mut options = fs::OpenOptions::new();
-    options.create(true).read(true).write(true);
+    options.create(true).read(true).write(true).truncate(false);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;

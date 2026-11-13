@@ -158,3 +158,23 @@ work. Resume uses the saved canonical plan, the same private temporary root and
 the original execution repository. Restored live processes and uncertain launch
 intents are preserved for reconciliation; they are not blindly relaunched.
 See the [state reference](../reference/workstream-state.md#resumption).
+
+## Goal status values
+
+The reflection step ends with exactly one status:
+
+| Status | Meaning | Next action |
+|---|---|---|
+| `ACHIEVED` | All criteria met with evidence | Proceed to summary |
+| `PARTIAL -- [what's missing]` | Some criteria met | Trigger round 2 |
+| `NOT_ACHIEVED -- [reason]` | No criteria met | Trigger round 2 |
+| `HOLLOW -- [what was empty]` | Agent ran but produced nothing | Flag infrastructure issue |
+
+The orchestrator runs up to 3 rounds (configurable) before accepting the
+best result.
+
+## Related
+
+- [Issue Deduplication](../reference/issue-dedup.md) — Dedup guards and proposed fingerprint system
+- [Recipe Execution Flow](./recipe-execution-flow.md) — Step-by-step execution semantics
+- [Recipe Runner Architecture](./recipe-runner-architecture.md) — External binary model

@@ -183,6 +183,8 @@ pub struct Workstream {
 }
 
 impl Workstream {
+    // Keep the established constructor while separating identity from tracking.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         key: WorkstreamKey,
         issue: Option<u64>,

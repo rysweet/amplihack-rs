@@ -23,6 +23,12 @@ fn classification(raw: &str) -> Result<&'static str> {
 }
 
 pub(crate) fn resolve_route(config: &mut WorkstreamConfig, default: &str) -> Result<()> {
+    config.recipe = config
+        .recipe
+        .as_deref()
+        .map(str::trim)
+        .filter(|recipe| !recipe.is_empty())
+        .map(str::to_owned);
     let inferred = match config.recipe.as_deref().unwrap_or(default) {
         "operations-direct" => "Operations",
         "investigation-workflow" => "Investigation",
@@ -53,7 +59,11 @@ pub(crate) fn resolve_route(config: &mut WorkstreamConfig, default: &str) -> Res
             .as_deref()
             .filter(|r| !matches!(*r, "" | "quick-change" | "default-workflow"))
             .unwrap_or("qa-workflow"),
-        _ => "consensus-workflow",
+        _ => config
+            .recipe
+            .as_deref()
+            .filter(|recipe| !matches!(*recipe, "quick-change" | "default-workflow"))
+            .unwrap_or("consensus-workflow"),
     };
     ensure!(
         !recipe.is_empty()
@@ -115,15 +125,14 @@ pub(crate) fn normalise(input: &Value, default: &str) -> Result<Vec<WorkstreamCo
                     crate::commands::orch::slugify(name, index + 1)
                 ));
             }
-            if value.get("classification").is_none() {
-                if let Some(class) = leaf
+            if value.get("classification").is_none()
+                && let Some(class) = leaf
                     .get("task_type")
                     .or_else(|| leaf.get("type"))
                     .cloned()
                     .or_else(|| top.clone())
-                {
-                    value["classification"] = class;
-                }
+            {
+                value["classification"] = class;
             }
             if let Some(Value::Bool(b)) = value.get("is_critical_code") {
                 value["is_critical_code"] = json!(b.to_string());

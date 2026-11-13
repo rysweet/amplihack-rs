@@ -12,6 +12,18 @@ fn context(ws: &Workstream, results: Value) -> Value {
     let mut context = json!({"task_description": ws.task, "repo_path": ws.work_dir,
         "workstream_state_file": ws.state_file, "workstream_progress_file": ws.progress_file,
         "prerequisite_results": results, "create_issue": "false"});
+    if context["prerequisite_results"]
+        .as_object()
+        .is_some_and(|results| !results.is_empty())
+    {
+        context["task_description"] = json!(format!(
+            "{}\n\nPrerequisite results by workstream key:\n{}",
+            ws.task, context["prerequisite_results"]
+        ));
+    }
+    if ws.classification == "Q&A" {
+        context["question"] = context["task_description"].clone();
+    }
     if let Some(issue) = ws.issue {
         context["issue_number"] = json!(issue);
     }
