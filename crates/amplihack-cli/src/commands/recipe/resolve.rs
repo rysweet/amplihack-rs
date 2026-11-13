@@ -304,3 +304,69 @@ pub(crate) fn resolve_recipe_path(input: &str, working_dir: impl AsRef<Path>) ->
             .join(", ")
     )
 }
+
+/// Issue #2528: where `recipe run` loaded its recipe file from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RecipeOrigin {
+    /// A bare name, found in the selected bundle's `recipes/`.
+    Bundle,
+    /// A path the user gave; sub-recipes and tools still come from the
+    /// selected bundle (D6).
+    File(PathBuf),
+}
+
+/// True when `recipe run` treats `input` as a path rather than a bare name:
+/// it contains `/`, `\`, `..` or NUL, or ends in `.yaml` or `.yml`.
+pub(crate) fn is_path_like_recipe(input: &str) -> bool {
+    input.contains(['/', '\\', '\0'])
+        || input.contains("..")
+        || RECIPE_FILE_EXTENSIONS
+            .iter()
+            .any(|ext| input.ends_with(&format!(".{ext}")))
+}
+
+/// Issue #2528 (D6, E9): resolves the `recipe run` argument against one
+/// bundle. A bare name is looked up only in `selection.recipes_dir()`, and
+/// its canonical result must stay inside that directory. A path-like
+/// argument loads from the given path, with the usual relative-path roots.
+pub(crate) fn resolve_recipe_in_bundle(
+    recipe: &str,
+    selection: &super::run::bundle_pin::Selection,
+    working_dir: &Path,
+) -> Result<(PathBuf, RecipeOrigin)> {
+    if is_path_like_recipe(recipe) {
+        anyhow::ensure!(
+            !recipe.contains('\0'),
+            "recipe path {recipe:?} contains a NUL byte"
+        );
+        let path = resolve_recipe_path(recipe, working_dir)?;
+        return Ok((path.clone(), RecipeOrigin::File(path)));
+    }
+    let recipes = selection.recipes_dir();
+    for extension in RECIPE_FILE_EXTENSIONS {
+        let candidate = recipes.join(format!("{recipe}.{extension}"));
+        if std::fs::symlink_metadata(&candidate).is_err() {
+            continue;
+        }
+        let canonical = std::fs::canonicalize(&candidate)
+            .with_context(|| format!("recipe '{recipe}' resolves outside {}", recipes.display()))?;
+        anyhow::ensure!(
+            canonical.starts_with(recipes) && canonical.is_file(),
+            "recipe '{recipe}' resolves outside {}",
+            recipes.display()
+        );
+        return Ok((canonical, RecipeOrigin::Bundle));
+    }
+    let choice = selection.choice();
+    let hint = match choice {
+        super::run::bundle_pin::BundleChoice::Installed => {
+            "; to use this checkout's recipes, pass --bundle checkout"
+        }
+        super::run::bundle_pin::BundleChoice::Checkout => "",
+    };
+    anyhow::bail!(
+        "recipe '{recipe}' not found in the {} bundle at {}{hint}",
+        choice.as_str(),
+        selection.source().display()
+    )
+}

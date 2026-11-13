@@ -207,6 +207,7 @@ Execute a recipe by delegating to the `recipe-runner-rs` binary.
 
 ```
 amplihack recipe run <FILE> [-c KEY=VALUE]... [--dry-run] [--fresh] [--verbose]
+  [--bundle <installed|checkout>]
   [--format <FORMAT>] [--working-dir <DIR>] [--step-timeout <SECONDS>]
   [--detach | --no-detach] [--governor-wait <DURATION>]
   [--governor-class <CLASS>] [--workstream <ID>]
@@ -214,8 +215,9 @@ amplihack recipe run <FILE> [-c KEY=VALUE]... [--dry-run] [--fresh] [--verbose]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `<FILE>` | (required) | Path to the recipe YAML file |
+| `<FILE>` | (required) | Recipe name, looked up only in the selected bundle's `recipes/`, or a path to a recipe YAML file. See [Resolving the recipe argument](./recipe-run-bundle.md#resolving-the-recipe-argument) |
 | `-c KEY=VALUE` | (none) | Set a context variable; repeat for multiple values |
+| `--bundle <CHOICE>` | `installed` | Bundle that supplies recipes, sub-recipes, agents and tools for the whole run: `installed` (`AMPLIHACK_HOME`, then `paths.home`, then `$HOME/.amplihack`) or `checkout` (nearest ancestor of the working directory with `.git` and `amplifier-bundle/`). Same as `-c bundle=<CHOICE>`; the two must agree. See [Recipe run bundle selection and pinning](./recipe-run-bundle.md) |
 | `--dry-run` | false | Print the execution plan without running any steps |
 | `--fresh` | false | Bypass historical recovery for this launch and its delegated execution; preserve existing history |
 | `--verbose` | false, or [`recipe.verbose`](./user-config.md#recipeverbose) | Increase progress detail on stderr; basic step progress is emitted by default. On when either the flag or `recipe.verbose = true` is set |
@@ -230,7 +232,9 @@ amplihack recipe run <FILE> [-c KEY=VALUE]... [--dry-run] [--fresh] [--verbose]
 
 When the [capacity governor](./capacity-governor.md) is turned on (it ships off; see [Kill switch and governor keys](./capacity-governor.md#kill-switch-and-governor-keys)), then after the pre-flight checks and before `recipe-runner-rs` starts, `recipe run` (but not `--dry-run`) asks it for a slot and holds it until the recipe returns. Before the slot is recorded, the run's `AMPLIHACK_TREE_ID` is settled (inherited, or generated once) and the environment built for agent steps reuses it, so agent steps run under that slot. If the governor makes the run wait, a reason line goes to stderr; if the wait runs out or the run is refused, the runner is not started and the command exits with 80. With `--detach`, the governor flags are passed on to the run in the tmux session, and that run asks the governor; the detaching command itself holds no slot.
 
-Before spawning `recipe-runner-rs`, the Rust CLI always injects `AMPLIHACK_HOME` and, when available, `AMPLIHACK_ASSET_RESOLVER` into the child environment. That gives recipes a stable native way to resolve `amplifier-bundle/...` assets without assuming the Python package layout. Additionally, when `--step-timeout` is provided, the CLI sets [`AMPLIHACK_STEP_TIMEOUT`](./environment-variables.md#amplihack_step_timeout) in the child environment so `recipe-runner-rs` can read and apply the override. Without the flag, an `AMPLIHACK_STEP_TIMEOUT` already in the environment is passed on unchanged, and otherwise a configured `recipe.step_timeout` is exported.
+Before spawning `recipe-runner-rs`, `recipe run` checks the selected bundle and copies it into `<run dir>/runtime/bundle/amplifier-bundle`. It sets `AMPLIHACK_HOME` and `AMPLIHACK_RUN_BUNDLE` to `<run dir>/runtime/bundle`, sets `AMPLIHACK_RUN_BUNDLE_CHOICE` and `AMPLIHACK_STATE_HOME`, and passes the runner `-R <copy>/recipes`, `--agent-dir <copy>/agents` and `--no-default-search`, so every step uses the same bundle until the run ends, across an `amplihack update`. Nested runs reuse the outer copy. A dry run makes no copy: it passes the source bundle's `recipes/` and `agents/` and does not set these variables. See [Recipe run bundle selection and pinning](./recipe-run-bundle.md).
+
+The Rust CLI also injects, when available, `AMPLIHACK_ASSET_RESOLVER` into the child environment. That gives recipes a stable native way to resolve `amplifier-bundle/...` assets without assuming the Python package layout. Additionally, when `--step-timeout` is provided, the CLI sets [`AMPLIHACK_STEP_TIMEOUT`](./environment-variables.md#amplihack_step_timeout) in the child environment so `recipe-runner-rs` can read and apply the override. Without the flag, an `AMPLIHACK_STEP_TIMEOUT` already in the environment is passed on unchanged, and otherwise a configured `recipe.step_timeout` is exported.
 
 > **No per-step timeouts on agent steps by default.** As of the resolution
 > of [issue #439](https://github.com/rysweet/amplihack-rs/issues/439), the
@@ -795,6 +799,11 @@ required host-tool work must fail before doing partial or misleading work.
 
 ## Recipe search path
 
+This search path applies to `recipe list`, `recipe show` and `recipe validate`.
+`recipe run` does not use it: a bare recipe name is looked up only in the
+selected bundle's `recipes/` directory. See
+[Resolving the recipe argument](./recipe-run-bundle.md#resolving-the-recipe-argument).
+
 `amplihack recipe list` (without `--dir`) searches these directories in order,
 later entries overriding earlier ones with the same recipe name:
 
@@ -881,6 +890,7 @@ For general troubleshooting, see [Troubleshoot Recipe Execution Failures](../how
 ## Related
 
 - [Run a Recipe End-to-End](../howto/run-a-recipe.md) — Step-by-step guide to executing recipes
+- [Recipe Run Bundle Selection and Pinning](./recipe-run-bundle.md): `--bundle`, the per-run bundle copy, nested runs and bundle errors
 - [Capacity Governor](./capacity-governor.md): When `recipe run` may start, waits or exits with 80
 - [Environment Variables](./environment-variables.md) — `AMPLIHACK_CONTEXT_*`, `AMPLIHACK_TASK_DESCRIPTION`, `RECIPE_RUNNER_RS_PATH`
 - [Recipe Runner Logging](./recipe-runner-logging.md) — stderr progress, heartbeats, snippets, and JSONL logs

@@ -2,6 +2,8 @@ use super::*;
 use crate::commands::governor::{self, AdmitRequest, Denied, GovernorArgs};
 
 mod binary;
+/// Issue #2528: one bundle per run, selected, checked and pinned.
+pub(crate) mod bundle_pin;
 /// Issue #1570: `--context-file` and `--context-from-file`.
 pub(crate) mod context_sources;
 mod correlation;
@@ -92,28 +94,10 @@ fn execute_recipe_via_rust_for_test(
     )
 }
 
-/// Build the ordered, deduplicated list of sub-recipe search dirs to forward
-/// to recipe-runner-rs as `-R` flags (issue #494).
-///
-/// Order:
-///   1. The recipe's own parent directory (so co-located sub-recipes win).
-///   2. Canonical `recipe_search_dirs(None, working_dir)` output (anchored,
-///      env, and home-based dirs; same list amplihack uses to resolve
-///      top-level recipes).
-///
-/// Duplicates are removed using `push_unique_path` (path equality only — no
-/// canonicalisation here; upstream is responsible for resolving symlinks).
-fn build_search_dirs(recipe_path: &Path, working_dir: &Path) -> Result<Vec<PathBuf>> {
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    if let Some(parent) = recipe_path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        push_unique_path(&mut dirs, parent.to_path_buf());
-    }
-    for dir in recipe_search_dirs(None, working_dir)? {
-        push_unique_path(&mut dirs, dir);
-    }
-    Ok(dirs)
+/// Issue #2528: takes the lower-case `bundle` key out of the context, so it
+/// is never exported to steps. Keys are case-sensitive.
+pub(crate) fn take_bundle_key(context: &mut BTreeMap<String, String>) -> Option<String> {
+    context.remove("bundle")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -152,6 +136,7 @@ pub fn run_recipe_fresh(
     step_timeout: Option<u64>,
     governor: &GovernorArgs,
     fresh: bool,
+    bundle: Option<&str>,
 ) -> Result<()> {
     run_recipe_with_options(
         recipe_path,
@@ -164,6 +149,7 @@ pub fn run_recipe_fresh(
         &RootSandboxPreflight::live().governed(governor),
         &mut io::stderr(),
         fresh,
+        bundle,
     )
 }
 
@@ -221,6 +207,7 @@ pub(crate) fn run_recipe_with(
         preflight,
         preflight_out,
         false,
+        None,
     )
 }
 
@@ -236,18 +223,29 @@ fn run_recipe_with_options(
     preflight: &RootSandboxPreflight,
     preflight_out: &mut dyn Write,
     fresh: bool,
+    bundle: Option<&str>,
 ) -> Result<()> {
     // Issue #1976: also checked in the CLI before --detach; this copy covers
     // the detached pane's child and every caller inside the crate.
     reject_removed_context_keys(context_args, &mut io::stderr())?;
     let format = OutputFormat::parse(format)?;
-    let (context, errors) = parse_context_args(context_args);
+    let (mut context, errors) = parse_context_args(context_args);
     if !errors.is_empty() {
         for error in errors {
             writeln!(io::stderr(), "Error: {error}")?;
         }
         return Err(exit_error(1));
     }
+    // Issue #2528 (D1): `--bundle` and `-c bundle=` are one choice, and the
+    // key never reaches the steps.
+    let bundle_key = take_bundle_key(&mut context);
+    let choice = match bundle_pin::BundleChoice::from_inputs(bundle, bundle_key.as_deref()) {
+        Ok(choice) => choice,
+        Err(error) => {
+            writeln!(io::stderr(), "Error: {error:#}")?;
+            return Err(exit_error(1));
+        }
+    };
 
     let working_dir = working_dir.unwrap_or(".");
     let abs_working_dir = validate_path(working_dir, false)?;
@@ -263,7 +261,22 @@ fn run_recipe_with_options(
             crate::user_config::recipe_step_timeout(&abs_working_dir)
         }
     });
-    let validated_path = resolve_recipe_path(recipe_path, &abs_working_dir)?;
+    // Issue #2528 (D1, D6): select and check the one bundle, then resolve
+    // the recipe against it alone.
+    let selected = bundle_pin::select(choice, &abs_working_dir).and_then(|selection| {
+        for note in selection.notes() {
+            eprintln!("{note}");
+        }
+        let (path, origin) = resolve_recipe_in_bundle(recipe_path, &selection, &abs_working_dir)?;
+        Ok((selection, path, origin))
+    });
+    let (selection, validated_path, origin) = match selected {
+        Ok(selected) => selected,
+        Err(error) => {
+            writeln!(io::stderr(), "Error: {error:#}")?;
+            return Err(exit_error(1));
+        }
+    };
     let recipe = parse_recipe_from_path(&validated_path)?;
     // Keep operator inputs separate from defaults for authorization. Auto-drive
     // expands context only after selecting its pinned trusted entrypoint.
@@ -316,7 +329,6 @@ fn run_recipe_with_options(
     let governed = preflight.governor.as_ref().filter(|_| !dry_run);
     let request = AdmitRequest::recipe(governed, &recipe.name);
     let _slot = governor::admit(request).map_err(Denied::report)?;
-    let search_dirs = build_search_dirs(&validated_path, &abs_working_dir)?;
     let result = match execute::execute_recipe_via_rust_fresh(
         &validated_path,
         &merged_context,
@@ -324,10 +336,14 @@ fn run_recipe_with_options(
         dry_run,
         verbose,
         &abs_working_dir,
-        &search_dirs,
+        &[],
         step_timeout,
         agent_binary,
         fresh,
+        Some(execute::RunBundle {
+            selection: &selection,
+            origin: &origin,
+        }),
     ) {
         Ok(result) => result,
         Err(error) => {
@@ -481,10 +497,19 @@ fn scalar_to_context_value(value: &Value) -> String {
 
 #[cfg(test)]
 mod tests_autodrive_health_log;
+/// Issue #2528 (T7): bundled agent and sub-recipe references resolve in the bundle alone.
+#[cfg(test)]
+mod tests_bundle_agents;
+/// Issue #2528: bundle selection, trust and the per-run snapshot.
+#[cfg(all(test, unix))]
+mod tests_bundle_pin;
 #[cfg(test)]
 mod tests_context;
 #[cfg(test)]
 mod tests_execute;
+/// Issue #2528: runner search directories and environment for a pinned run.
+#[cfg(all(test, unix))]
+mod tests_execute_bundle;
 #[cfg(test)]
 mod tests_failure_class;
 #[cfg(test)]

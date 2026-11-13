@@ -44,6 +44,31 @@ pub(super) struct RunSettings {
     pub(super) agent_binary_source: Option<&'static str>,
     /// The `AMPLIHACK_HOME` handed to the runner.
     pub(super) amplihack_home: Option<String>,
+    /// Issue #2528: the bundle the recipe and its sub-recipes came from.
+    pub(super) recipe_bundle: Option<BundleRecord>,
+    /// Issue #2528: the bundle the tools came from; always equal to
+    /// `recipe_bundle` in a pinned run.
+    pub(super) tool_bundle: Option<BundleRecord>,
+}
+
+/// Issue #2528: one bundle as the log pointer records it. Holds only paths,
+/// the sanitised version, the choice and booleans.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub(crate) struct BundleRecord {
+    /// Canonical source bundle path, before copying.
+    pub(crate) source: String,
+    /// Sanitised version, or `unknown`.
+    pub(crate) version: String,
+    /// `<run dir>/runtime/bundle`; absent on a dry run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) snapshot: Option<String>,
+    /// `installed` or `checkout`.
+    pub(crate) choice: String,
+    /// True when a nested run reused its parent's snapshot.
+    pub(crate) inherited: bool,
+    /// The recipe file, only when the recipe was given as a path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) recipe_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -154,6 +179,8 @@ impl RecipeRunCorrelation {
             agent_binary: self.settings.agent_binary.as_deref(),
             agent_binary_source: self.settings.agent_binary_source,
             amplihack_home: self.settings.amplihack_home.as_deref(),
+            recipe_bundle: self.settings.recipe_bundle.as_ref(),
+            tool_bundle: self.settings.tool_bundle.as_ref(),
             child_pid: None,
             exit_code: None,
             status: None,
@@ -224,6 +251,8 @@ impl RecipeRunCorrelation {
             agent_binary: self.settings.agent_binary.as_deref(),
             agent_binary_source: self.settings.agent_binary_source,
             amplihack_home: self.settings.amplihack_home.as_deref(),
+            recipe_bundle: self.settings.recipe_bundle.as_ref(),
+            tool_bundle: self.settings.tool_bundle.as_ref(),
             child_pid,
             exit_code,
             status: Some(status.as_str()),
@@ -346,6 +375,10 @@ struct LogPointerEvent<'a> {
     agent_binary_source: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     amplihack_home: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recipe_bundle: Option<&'a BundleRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_bundle: Option<&'a BundleRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     child_pid: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]

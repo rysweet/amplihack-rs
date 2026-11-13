@@ -10,6 +10,9 @@ Several of these variables have a persistent equivalent in the [user config file
   - [AMPLIHACK_AGENT_BINARY](#amplihack_agent_binary)
   - [AMPLIHACK_ASSET_RESOLVER](#amplihack_asset_resolver)
   - [AMPLIHACK_HOME](#amplihack_home)
+  - [AMPLIHACK_RUN_BUNDLE](#amplihack_run_bundle)
+  - [AMPLIHACK_RUN_BUNDLE_CHOICE](#amplihack_run_bundle_choice)
+  - [AMPLIHACK_STATE_HOME](#amplihack_state_home)
   - [AMPLIHACK_GRAPH_DB_PATH](#amplihack_graph_db_path)
   - [AMPLIHACK_KUZU_DB_PATH](#amplihack_kuzu_db_path-backward-compatible-alias)
   - [AMPLIHACK_NONINTERACTIVE](#amplihack_noninteractive)
@@ -251,7 +254,39 @@ AMPLIHACK_HOME=/opt/amplihack amplihack claude --print-env 2>&1 | grep AMPLIHACK
 
 **Install source:** `amplihack install` also tries `AMPLIHACK_HOME` as its first framework source. Plain `install` refuses it when its version differs from the binary's. The post-update install of `amplihack update` uses a same-version tree without network access, and fetches the release tag only when the version differs. Install always stages into `$HOME/.amplihack`, so this variable never moves the install. See [Framework source selection](./framework-source-selection.md).
 
+**Recipe runs:** inside an executing `amplihack recipe run`, steps and the runner see `AMPLIHACK_HOME=<run dir>/runtime/bundle`, the run's checked copy of the selected bundle, not the value above. The variable is still the first candidate for the installed bundle when the run starts, but a value that is a git checkout is skipped with a note on stderr; use `--bundle checkout` for a checkout's bundle. See [Recipe run bundle selection and pinning](./recipe-run-bundle.md).
+
 **Python parity:** Corresponds to `AMPLIHACK_HOME` propagation in the Python launcher.
+
+---
+
+### AMPLIHACK_RUN_BUNDLE
+
+**Type:** absolute path
+**Set by:** `amplihack recipe run`, on the runner and every step
+**Read by:** nested `amplihack recipe run`
+
+The run's bundle copy, `<run dir>/runtime/bundle`. Not set on a dry run. A nested run reuses this copy when the value names an existing directory, equals `AMPLIHACK_HOME`, ends in `runtime/bundle`, passes the bundle trust checks and `AMPLIHACK_RUN_BUNDLE_CHOICE` is valid. Otherwise the nested run ignores it, prints a note and selects a bundle itself. Reserved: `-c AMPLIHACK_RUN_BUNDLE=...` is refused. See [Nested runs](./recipe-run-bundle.md#nested-runs).
+
+---
+
+### AMPLIHACK_RUN_BUNDLE_CHOICE
+
+**Type:** `installed` or `checkout`
+**Set by:** `amplihack recipe run`, on the runner and every step
+**Read by:** nested `amplihack recipe run`
+
+The bundle choice the outermost run made, from `--bundle` or `-c bundle=`. A nested run that reuses the outer copy compares its own `--bundle` or `-c bundle=` request with this value: a different choice is refused, the same choice reuses the copy. A value other than `installed` or `checkout` makes the nested run ignore the outer copy and select a bundle itself. Changing the value in a step never changes which bundle a nested run uses. Reserved: `-c AMPLIHACK_RUN_BUNDLE_CHOICE=...` is refused. Not set on a dry run. See [Nested runs](./recipe-run-bundle.md#nested-runs).
+
+---
+
+### AMPLIHACK_STATE_HOME
+
+**Type:** absolute path
+**Set by:** `amplihack recipe run`, on the runner and every step
+**Read by:** `amplihack_types::paths::amplihack_state_root()`, the launch contract reader
+
+The state root that applied before `recipe run` pointed `AMPLIHACK_HOME` at the bundle copy. A nested run passes the inherited value through unchanged rather than computing it again. State readers use it first when it is an absolute path with no `..` component; otherwise they fall back, without a message, to the rules in [Hook State Root Reference](./hook-state-root.md). `recipe run` refuses to start (E8) only when the settled value lies under a run's `runtime/` folder. It keeps hook, session and contract state out of the bundle copy, which is deleted when the run ends. Not set on a dry run. See [State home](./recipe-run-bundle.md#state-home).
 
 ---
 

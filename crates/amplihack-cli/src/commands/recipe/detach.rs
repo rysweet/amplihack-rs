@@ -586,6 +586,7 @@ pub(crate) fn pane_args(
     format: &str,
     working_dir: Option<&str>,
     step_timeout: Option<u64>,
+    bundle: Option<&str>,
 ) -> Vec<String> {
     let mut args: Vec<String> = vec!["recipe".into(), "run".into(), recipe_path.into()];
     if dry_run {
@@ -597,6 +598,10 @@ pub(crate) fn pane_args(
     args.extend(["--format".into(), format.into()]);
     if let Some(dir) = working_dir {
         args.extend(["--working-dir".into(), dir.into()]);
+    }
+    // Issue #2528 (D11): the pane's run selects and pins its own bundle.
+    if let Some(bundle) = bundle {
+        args.extend(["--bundle".into(), bundle.into()]);
     }
     if let Some(seconds) = step_timeout {
         args.extend(["--step-timeout".into(), seconds.to_string()]);
@@ -626,7 +631,7 @@ mod tests {
 
     #[test]
     fn pane_args_repeat_everything_but_detach_and_context() {
-        let args = pane_args("r.yaml", false, true, "table", Some("."), Some(30));
+        let args = pane_args("r.yaml", false, true, "table", Some("."), Some(30), None);
         assert_eq!(
             args,
             [
@@ -643,6 +648,39 @@ mod tests {
                 "--no-detach"
             ]
         );
+    }
+
+    /// Issue #2528 (D11): the pane's own run selects and pins the bundle, so
+    /// `--bundle` is passed through as two argv elements after
+    /// `--working-dir`; the detaching command makes no copy.
+    #[test]
+    fn pane_args_forward_bundle() {
+        let args = pane_args(
+            "default-workflow",
+            false,
+            false,
+            "table",
+            Some("/w"),
+            None,
+            Some("checkout"),
+        );
+        assert_eq!(
+            args,
+            [
+                "recipe",
+                "run",
+                "default-workflow",
+                "--format",
+                "table",
+                "--working-dir",
+                "/w",
+                "--bundle",
+                "checkout",
+                "--no-detach"
+            ]
+        );
+        let none = pane_args("r", false, false, "table", None, None, None);
+        assert!(!none.iter().any(|a| a == "--bundle"), "{none:?}");
     }
 
     #[test]

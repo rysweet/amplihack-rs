@@ -22,8 +22,8 @@ pub use paths::ProjectDirs;
 pub use paths::sanitize_session_id;
 /// Hook state-root resolution and per-session state directories (#1963).
 pub use paths::{
-    UNKNOWN_SESSION_KEY, amplihack_state_root, is_git_checkout, resolve_state_root,
-    session_state_dir, session_state_dir_under,
+    STATE_HOME_ENV, UNKNOWN_SESSION_KEY, amplihack_state_root, is_git_checkout, resolve_state_root,
+    session_state_dir, session_state_dir_under, state_home_override,
 };
 /// Deserialized settings from `settings.json`.
 pub use settings::Settings;

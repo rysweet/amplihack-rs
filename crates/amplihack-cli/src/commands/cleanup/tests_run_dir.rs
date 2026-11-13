@@ -269,3 +269,36 @@ fn five_field_lines_count_toward_the_10000_line_cap() {
     assert_eq!(parsed.len(), 10_000);
     assert!(parsed.iter().all(|o| o.target.is_some()));
 }
+
+/// Issue #2528 (D10, T5b): the per-run bundle snapshot lives under the
+/// runtime folder, so the guard removes it on unwind too; no cleanup process
+/// is involved.
+#[cfg(unix)]
+#[test]
+fn runtime_guard_removes_the_bundle_snapshot_on_unwind() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = crate::test_support::tempdir_outside_framework_roots();
+    let runtime = tmp.path().join("runs/r/runtime");
+    let snapshot = runtime.join("bundle/amplifier-bundle");
+    std::fs::create_dir_all(snapshot.join("tools")).unwrap();
+    std::fs::write(snapshot.join("tools/identity.sh"), "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(
+        snapshot.join("tools/identity.sh"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let guarded = runtime.clone();
+    let unwound = std::panic::catch_unwind(move || {
+        let _guard = RuntimeGuard::new(guarded);
+        panic!("a step failed with a panic");
+    });
+    assert!(unwound.is_err());
+    assert!(!snapshot.exists(), "the snapshot is gone after unwind");
+    assert!(!runtime.exists());
+    assert!(
+        tmp.path().join("runs/r").is_dir(),
+        "only runtime/ is removed"
+    );
+}

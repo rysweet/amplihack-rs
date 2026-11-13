@@ -636,3 +636,83 @@ mod state_root {
         let _: fn(Option<&str>) -> Option<PathBuf> = crate::session_state_dir;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Issue #2528 (D3): a pinned recipe run sets AMPLIHACK_HOME to its bundle
+// snapshot and passes the real state root in AMPLIHACK_STATE_HOME. State
+// readers take AMPLIHACK_STATE_HOME first when it is usable (absolute, no
+// `..`), and otherwise fall back silently to their usual rules.
+// ---------------------------------------------------------------------------
+
+mod state_home_2528 {
+    use super::super::amplihack_state_root;
+    use crate::test_support::env_lock;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    struct Restore(Vec<(&'static str, Option<OsString>)>);
+
+    impl Restore {
+        fn set(values: &[(&'static str, Option<&str>)]) -> Self {
+            let previous = values
+                .iter()
+                .map(|(key, _)| (*key, std::env::var_os(key)))
+                .collect();
+            for (key, value) in values {
+                match value {
+                    Some(value) => unsafe { std::env::set_var(key, value) },
+                    None => unsafe { std::env::remove_var(key) },
+                }
+            }
+            Self(previous)
+        }
+    }
+
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            for (key, value) in &self.0 {
+                match value {
+                    Some(value) => unsafe { std::env::set_var(key, value) },
+                    None => unsafe { std::env::remove_var(key) },
+                }
+            }
+        }
+    }
+
+    fn root_with(state_home: Option<&str>) -> Option<PathBuf> {
+        let _lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _env = Restore::set(&[
+            ("AMPLIHACK_STATE_HOME", state_home),
+            ("AMPLIHACK_HOME", Some("/runs/r/runtime/bundle")),
+            ("HOME", Some("/home/alice")),
+        ]);
+        amplihack_state_root()
+    }
+
+    #[test]
+    fn state_home_is_read_first() {
+        assert_eq!(
+            root_with(Some("/home/alice/.amplihack")),
+            Some(PathBuf::from("/home/alice/.amplihack"))
+        );
+    }
+
+    #[test]
+    fn unusable_state_home_is_ignored_without_error() {
+        for value in ["", "relative/state", "/home/alice/../bob/.amplihack"] {
+            assert_eq!(
+                root_with(Some(value)),
+                Some(PathBuf::from("/runs/r/runtime/bundle")),
+                "{value:?} is not usable; the usual rules apply"
+            );
+        }
+    }
+
+    #[test]
+    fn unset_state_home_keeps_the_usual_rules() {
+        assert_eq!(
+            root_with(None),
+            Some(PathBuf::from("/runs/r/runtime/bundle"))
+        );
+    }
+}

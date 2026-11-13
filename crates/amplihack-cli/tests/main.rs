@@ -28,6 +28,10 @@ mod support;
 
 #[path = "issue_2329_autodrive_outcomes.rs"]
 mod issue_2329_autodrive_outcomes;
+#[path = "issue_2528_no_cleanup_child.rs"]
+mod issue_2528_no_cleanup_child;
+#[path = "issue_2528_one_bundle.rs"]
+mod issue_2528_one_bundle;
 #[path = "issue_2545_autodrive_repo_context.rs"]
 mod issue_2545_autodrive_repo_context;
 
