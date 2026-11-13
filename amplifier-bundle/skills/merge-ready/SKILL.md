@@ -236,8 +236,9 @@ jq -e --rawfile expected "$edit_dir/body.md" '.body == $expected' \
 For Azure DevOps, use the same private directory and failure handling. Fetch
 with `az repos pr show --id "$PR_ID" --output json`, validate `.description`
 as a string, and encode `{description: .description, report: $report}`.
-Compose with the same Rust command before calling
-`az repos pr update --id "$PR_ID" --description "$(cat "$edit_dir/body.md")"`.
+Compose with the same Rust command. Preserve trailing newlines when loading
+the result: `description_bytes=$(cat "$edit_dir/body.md" && printf x); description_bytes=${description_bytes%x}`.
+Then call `az repos pr update --id "$PR_ID" --description "$description_bytes"`.
 Fetch again and compare `.description` with the composed body. Keep the
 platform's existing work-item linkage requirements.
 
