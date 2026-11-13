@@ -383,3 +383,104 @@ fn session_start_process_always_emits_indexing_status() {
         "indexing_status must be 'started', 'complete', or 'error:<reason>', got: {status}"
     );
 }
+
+/// Issue #2279 (C13): with amplihack hooks in both `~/.claude/settings.json`
+/// and the project's `.claude/settings.json`, session start leaves the home
+/// file byte-equal and says nothing about removing it. The old removal wrote
+/// the hook-less home file.
+#[test]
+fn session_start_never_removes_global_hooks_when_the_project_has_its_own() {
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _state = crate::test_support::isolate_state_home(home.path());
+    let hooks = serde_json::json!({
+        "env": {"XPIA_ENABLED": "false"},
+        "hooks": {
+            "SessionStart": [
+                {"hooks": [{"type": "command", "command": "\"/opt/amplihack-test/bin/amplihack-hooks\" session-start"}]},
+                {"hooks": [{"type": "command", "command": "/usr/local/bin/third-party-hook"}]}
+            ]
+        }
+    });
+    let body = serde_json::to_vec_pretty(&hooks).unwrap();
+    let global = home.path().join(".claude/settings.json");
+    fs::create_dir_all(global.parent().unwrap()).unwrap();
+    fs::write(&global, &body).unwrap();
+    let local = dir.path().join(".claude/settings.json");
+    fs::create_dir_all(local.parent().unwrap()).unwrap();
+    fs::write(&local, &body).unwrap();
+    let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
+    unsafe { std::env::set_var("AMPLIHACK_BLARIFY_MODE", "skip") };
+
+    let result = SessionStartHook
+        .process(HookInput::SessionStart {
+            session_id: Some("issue-2279".to_string()),
+            cwd: None,
+            extra: serde_json::json!({}),
+        })
+        .unwrap();
+
+    unsafe { std::env::remove_var("AMPLIHACK_BLARIFY_MODE") };
+    drop(cwd);
+
+    assert_eq!(fs::read(&global).unwrap(), body, "home file byte-equal");
+    assert_eq!(fs::read(&local).unwrap(), body, "project file byte-equal");
+    let context = result["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(!context.contains("Removed redundant global amplihack hooks"));
+}
+
+/// Issue #2279 (C13): a session started in `$HOME` itself. The project's
+/// `.claude/settings.json` is then the home file, so the old removal saw
+/// "project-local" hooks in the very file it was about to strip and removed
+/// them, keeping `env` and foreign hooks. Released 1.2.132 does this when
+/// run by hand in a temporary `$HOME`; it is the writer that left the live
+/// file with only a foreign `PreToolUse` hook. The home file must now stay
+/// byte-equal.
+#[test]
+fn session_start_in_home_leaves_the_home_file_byte_equal() {
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let home = tempfile::tempdir().unwrap();
+    let _state = crate::test_support::isolate_state_home(home.path());
+    let settings = serde_json::json!({
+        "env": {"XPIA_ENABLED": "false"},
+        "hooks": {
+            "PreToolUse": [
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": "/usr/local/bin/block-tmux-kill.py", "timeout": 10}]},
+                {"matcher": "*", "hooks": [{"type": "command", "command": "\"/opt/amplihack-test/bin/amplihack-hooks\" pre-tool-use"}]}
+            ],
+            "SessionStart": [
+                {"hooks": [{"type": "command", "command": "\"/opt/amplihack-test/bin/amplihack-hooks\" session-start"}]}
+            ]
+        }
+    });
+    let body = serde_json::to_vec_pretty(&settings).unwrap();
+    let global = home.path().join(".claude/settings.json");
+    fs::create_dir_all(global.parent().unwrap()).unwrap();
+    fs::write(&global, &body).unwrap();
+    let cwd = crate::test_support::CwdGuard::set(home.path()).unwrap();
+    unsafe { std::env::set_var("AMPLIHACK_BLARIFY_MODE", "skip") };
+
+    let result = SessionStartHook
+        .process(HookInput::SessionStart {
+            session_id: Some("issue-2279-home".to_string()),
+            cwd: None,
+            extra: serde_json::json!({}),
+        })
+        .unwrap();
+
+    unsafe { std::env::remove_var("AMPLIHACK_BLARIFY_MODE") };
+    drop(cwd);
+
+    assert_eq!(fs::read(&global).unwrap(), body, "home file byte-equal");
+    let context = result["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(!context.contains("Removed redundant global amplihack hooks"));
+}

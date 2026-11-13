@@ -174,9 +174,8 @@ the steps of `auto-drive-to-merge.yaml`, `autodrive-prerequisites`,
 recipe's own steps do the clearing).
 
 `autodrive_trust_git` in `autodrive_trust.sh` does not source the helper.
-`autodrive_trust.sh` is one of the merge guard's `GATE_FILES`, and every file
-the merge gate sources gets the guard's mode check, so loading another helper
-there would widen that trusted set. It holds the one recorded copy instead:
+`autodrive_trust.sh` is one of the pinned trusted auto-drive files, so
+loading another helper there would widen that trusted set. It holds the one recorded copy instead:
 `AUTODRIVE_TRUST_GIT_UNSET_VARS` is the helper's 12 names, in the helper's
 order, followed by `GIT_REPLACE_REF_BASE`, and `autodrive_trust_git` removes
 each of them with `env -u` before git runs. The
@@ -224,7 +223,7 @@ three `STOP` lines, and the [end-to-end test](#the-end-to-end-test) checks the
 `qa-evidence.json` has two fields at the end of its one JSON line. Both are
 strings and pass through the same `san` and `ascii` filters as the other
 fields. Programs that read the evidence look fields up by key, so existing
-readers (`autodrive_merge_gate.sh`, `autodrive_round_evidence.sh`) are
+readers (`autodrive_round_evidence.sh` and the Rust evidence reducer) are
 unaffected.
 
 | Field | Value |

@@ -1,5 +1,5 @@
-//! Issue #1510: the loop-evidence collector must not treat agent prose as a
-//! terminal policy refusal.
+//! Issues #1510 and #1437: the loop-evidence collector must not treat round
+//! text as a terminal policy refusal.
 //!
 //! On PR #1586 a Crusty review quoted the token `BLOCKED_TERMINAL` (and the
 //! phrase "exit 79") while explaining how the loop stops. Agent output lines
@@ -7,18 +7,27 @@
 //! matched the bare token and the exit-79 regex over that prose, so the loop
 //! stopped as if the guard had refused.
 //!
-//! The fix applies the rule `terminal_refusal()` in
-//! `amplifier-bundle/tools/autodrive_loop.sh` uses, before BOTH text
-//! detectors: cut the last round's output at the runner's run summary header,
-//! because the summary reprints step output unprefixed (round 3 of PR #1632);
-//! then drop agent output lines and the runner's
-//! `amplihack.recipe.log_pointer` lines that echo `task_description` (round 1
-//! of PR #1632). Only those two detectors read the filtered text; the
-//! duration / still-running / failure-class checks keep the full blob.
+//! #1510 filtered the text: it cut the runner's run summary, dropped agent
+//! and `amplihack.recipe.log_pointer` lines, and required the guard's full
+//! phrase. Each filter closed one way in, and #1437 came through another: an
+//! agent handled a descendant's refusal inline and then lost its session, and
+//! the phrase in its transcript ended the run. Since #1437 step-01 reads no
+//! text for this. It sources `amplifier-bundle/tools/autodrive_refusal.sh`,
+//! the helper `autodrive_loop.sh` uses, and applies `terminal_refusal` to
+//! `loop_child_exit_code` and `loop_last_round_output` only: exit 79, or a
+//! failed child whose LAST line beginning `amplihack.recipe.failure_class `
+//! has `"structural_refusal": true`.
+//!
+//! The #1510 cases are kept. Every text that was not a refusal is still not
+//! one. Every text that used to be one (the guard's phrase at column 0, an
+//! unprefixed "exit status 79") is no longer one, and is checked again with
+//! the runner's final marker after it, which is. The filter-sharing tests are
+//! replaced by one that checks both readers source the same helper.
 //!
 //! These tests run the real step-01 command from the YAML through `bash`, in a
 //! cleared environment, and parse the single JSON line it prints. They need
-//! `bash` and `git`, not the `amplihack` binary.
+//! `bash`, `git` and the built `amplihack` binary, which the helper calls to
+//! read a marker's fields.
 
 use serde_json::Value as Json;
 use serde_yaml::Value as Yaml;
@@ -34,9 +43,14 @@ const AGENT_QUOTES_EXIT_79: &str =
 /// The real guard line, as it reaches the log unprefixed.
 const GUARD_LINE: &str = "BLOCKED_TERMINAL orchestration_unavailable: nested orchestration refused";
 
+/// The reasons step-01 gave before #1437 for a text match. Neither may appear.
 const REASON_BLOCKED: &str = "BLOCKED_TERMINAL reported by a child";
 const REASON_EXIT_TEXT: &str = "exit code 79 present in round output";
 const REASON_EXIT_CODE: &str = "child process exited 79";
+const REASON_MARKER: &str = "structural_refusal in failure_class marker";
+
+/// The runner's own final marker for a run a structural guard refused (#1437).
+const REFUSED_MARKER: &str = r#"amplihack.recipe.failure_class {"action":"terminal","attempt":1,"class":"work","retryable":false,"signal":"blocked_terminal orchestration_unavailable","structural_refusal":true}"#;
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -95,7 +109,11 @@ fn isolated(cmd: &mut Command, scratch: &Path) {
     cmd.env("TMPDIR", std::env::temp_dir())
         .env("HOME", scratch)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1");
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        // #1437: step-01 sources autodrive_refusal.sh from AMPLIHACK_HOME,
+        // and the helper reads marker fields with `amplihack orch helper`.
+        .env("AMPLIHACK_HOME", workspace_root())
+        .env("AMPLIHACK_BIN", env!("CARGO_BIN_EXE_amplihack"));
 }
 
 /// Run step-01 with `vars` and return its JSON evidence object.
@@ -158,6 +176,37 @@ fn assert_not_terminal(evidence: &Json, case: &str) {
         "false",
         "{case}: text echoed from inputs must not be a terminal refusal; evidence: {evidence}"
     );
+}
+
+/// Not terminal, and not for any of the text-match reasons #1437 removed.
+fn assert_text_is_not_terminal(evidence: &Json, case: &str) {
+    assert_not_terminal(evidence, case);
+    for old in [REASON_BLOCKED, REASON_EXIT_TEXT] {
+        assert!(
+            !reason(evidence).contains(old),
+            "{case}: no text match may set terminal_reason; got {:?}",
+            reason(evidence)
+        );
+    }
+}
+
+/// `text` alone is not a refusal, whatever the exit status; with the
+/// runner's final marker after it and a failed child, it is (#1437).
+fn assert_only_the_marker_refuses(var: &str, text: &str, case: &str) {
+    assert_text_is_not_terminal(&run_collector(&[(var, text)]), case);
+    for rc in ["1", "2"] {
+        let ev = run_collector(&[(var, text), ("LOOP_CHILD_EXIT_CODE", rc)]);
+        assert_text_is_not_terminal(&ev, &format!("{case}, exit {rc}"));
+    }
+    if var == "LOOP_LAST_ROUND_OUTPUT" {
+        let with_marker = format!("{text}\n{REFUSED_MARKER}");
+        let ev = run_collector(&[(var, &with_marker), ("LOOP_CHILD_EXIT_CODE", "1")]);
+        assert_terminal_with(
+            &ev,
+            REASON_MARKER,
+            &format!("{case}, then the final marker"),
+        );
+    }
 }
 
 fn assert_terminal_with(evidence: &Json, needle: &str, case: &str) {
@@ -240,32 +289,26 @@ fn issue_1510_bare_token_without_marker_is_not_terminal() {
     }
 }
 
-// --- Real refusals stay terminal (fail-closed) -----------------------------
+// --- The guard's text is not a refusal; the runner's marker is (#1437) ------
 
 #[test]
-fn issue_1510_guard_line_at_column_zero_is_terminal() {
-    let ev = run_collector(&[("LOOP_LAST_ROUND_OUTPUT", GUARD_LINE)]);
-    assert_terminal_with(&ev, REASON_BLOCKED, "case 3 (column 0)");
-}
-
-#[test]
-fn issue_1510_guard_line_indented_with_spaces_is_terminal() {
-    let text = format!("    {GUARD_LINE}");
-    let ev = run_collector(&[("LOOP_LAST_ROUND_OUTPUT", &text)]);
-    assert_terminal_with(&ev, REASON_BLOCKED, "case 3 (4 spaces)");
-}
-
-#[test]
-fn issue_1510_guard_line_indented_with_tab_is_terminal() {
-    let text = format!("\t{GUARD_LINE}");
-    let ev = run_collector(&[("LOOP_LAST_ROUND_OUTPUT", &text)]);
-    assert_terminal_with(&ev, REASON_BLOCKED, "case 3 (tab)");
-}
-
-#[test]
-fn issue_1510_guard_line_in_history_is_terminal() {
-    let ev = run_collector(&[("LOOP_HISTORY", GUARD_LINE)]);
-    assert_terminal_with(&ev, REASON_BLOCKED, "case 3 (history)");
+fn issue_1437_guard_line_text_is_not_terminal_in_any_position() {
+    for (case, text) in [
+        ("column 0", GUARD_LINE.to_string()),
+        ("4 spaces", format!("    {GUARD_LINE}")),
+        ("tab", format!("\t{GUARD_LINE}")),
+        (
+            "after agent prose",
+            format!("{AGENT_QUOTES_TOKEN}\n{GUARD_LINE}"),
+        ),
+        (
+            "unprefixed exit status",
+            "child exited with status 79".to_string(),
+        ),
+    ] {
+        assert_only_the_marker_refuses("LOOP_LAST_ROUND_OUTPUT", &text, case);
+    }
+    assert_only_the_marker_refuses("LOOP_HISTORY", GUARD_LINE, "history");
 }
 
 #[test]
@@ -276,7 +319,7 @@ fn issue_1510_child_exit_code_79_with_empty_text_is_terminal() {
 
 #[test]
 fn issue_1510_child_exit_code_79_with_only_agent_prose_is_terminal() {
-    // The structural signal is authoritative: filtering text must never hide it.
+    // The structural signal is authoritative: no text can hide it.
     let text = format!("{AGENT_QUOTES_TOKEN}\n{AGENT_QUOTES_EXIT_79}");
     let ev = run_collector(&[
         ("LOOP_CHILD_EXIT_CODE", "79"),
@@ -287,23 +330,51 @@ fn issue_1510_child_exit_code_79_with_only_agent_prose_is_terminal() {
 }
 
 #[test]
-fn issue_1510_unprefixed_exit_status_79_is_terminal() {
-    let ev = run_collector(&[("LOOP_LAST_ROUND_OUTPUT", "child exited with status 79")]);
-    assert_terminal_with(&ev, REASON_EXIT_TEXT, "case 5");
+fn issue_1437_final_marker_needs_a_failed_child_a_boolean_and_column_0() {
+    let ev = run_collector(&[
+        ("LOOP_LAST_ROUND_OUTPUT", REFUSED_MARKER),
+        ("LOOP_CHILD_EXIT_CODE", "1"),
+    ]);
+    assert_terminal_with(&ev, REASON_MARKER, "the final marker of a failed child");
+    let later_false = format!(
+        "{REFUSED_MARKER}\n{}",
+        REFUSED_MARKER.replace(
+            "\"structural_refusal\":true",
+            "\"structural_refusal\":false"
+        )
+    );
+    for (case, rc, text) in [
+        ("exit 0", "0", REFUSED_MARKER.to_string()),
+        ("no exit code", "", REFUSED_MARKER.to_string()),
+        ("non-numeric exit code", "x1", REFUSED_MARKER.to_string()),
+        ("indented", "1", format!("  {REFUSED_MARKER}")),
+        (
+            "string \"true\"",
+            "1",
+            REFUSED_MARKER.replace(
+                "\"structural_refusal\":true",
+                "\"structural_refusal\":\"true\"",
+            ),
+        ),
+        ("a later false marker", "1", later_false),
+    ] {
+        let ev = run_collector(&[
+            ("LOOP_LAST_ROUND_OUTPUT", &text),
+            ("LOOP_CHILD_EXIT_CODE", rc),
+        ]);
+        assert_not_terminal(&ev, case);
+    }
+    let ev = run_collector(&[
+        ("LOOP_HISTORY", REFUSED_MARKER),
+        ("LOOP_CHILD_EXIT_CODE", "1"),
+    ]);
+    assert_not_terminal(&ev, "a marker in history only");
 }
 
 #[test]
-fn issue_1510_agent_prose_followed_by_guard_line_is_terminal() {
-    let text = format!("{AGENT_QUOTES_TOKEN}\n{GUARD_LINE}");
-    let ev = run_collector(&[("LOOP_LAST_ROUND_OUTPUT", &text)]);
-    assert_terminal_with(&ev, REASON_BLOCKED, "case 8");
-}
-
-#[test]
-fn issue_1510_near_miss_prefixes_are_not_filtered() {
-    // SR-2: only the exact `[HH:MM:SS] [amplihack:` prefix is dropped. A
-    // partial timestamp, another tag, or a different case is NOT agent output,
-    // so the token on such a line still counts as a refusal.
+fn issue_1510_near_miss_prefixes_are_not_terminal_either() {
+    // Before #1437 these were kept from the agent-line filter so the guard's
+    // phrase on them still counted. Text no longer counts on any line.
     for (case, line) in [
         (
             "short timestamp",
@@ -326,8 +397,7 @@ fn issue_1510_near_miss_prefixes_are_not_filtered() {
             format!("note: [10:13:17] [amplihack:claude:3] {GUARD_LINE}"),
         ),
     ] {
-        let ev = run_collector(&[("LOOP_LAST_ROUND_OUTPUT", &line)]);
-        assert_terminal_with(&ev, REASON_BLOCKED, case);
+        assert_only_the_marker_refuses("LOOP_LAST_ROUND_OUTPUT", &line, case);
     }
 }
 
@@ -376,36 +446,33 @@ fn issue_1510_agent_only_log_does_not_abort_the_step() {
 }
 
 #[test]
-fn issue_1510_filter_ere_matches_autodrive_loop_byte_for_byte() {
-    // The two detectors must not drift apart. terminal_refusal() is the
-    // reference, and its rule has two halves: drop agent lines and the
-    // runner's log_pointer lines (this ERE)
-    // and require the full marker (MARKER below). Both are pinned here.
-    const ERE: &str = r"'^[[:space:]]*(\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] \[amplihack:|amplihack\.recipe\.log_pointer \{)'";
+fn issue_1437_collector_and_loop_share_one_refusal_helper() {
+    // The two readers cannot drift apart: both call terminal_refusal from
+    // autodrive_refusal.sh, and neither reads the guard's text.
     let root = workspace_root();
     let loop_sh = std::fs::read_to_string(root.join("amplifier-bundle/tools/autodrive_loop.sh"))
         .expect("read autodrive_loop.sh");
+    let code = |text: &str| -> String {
+        text.lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(code(&loop_sh).contains(". \"${LOOP_HOME}/autodrive_refusal.sh\""));
+    assert!(!code(&loop_sh).contains("terminal_refusal() {"));
+    let cmd = code(&step01_command());
     assert!(
-        loop_sh.contains(ERE),
-        "autodrive_loop.sh terminal_refusal() ERE changed; update this test and the collector together"
+        cmd.contains("amplifier-bundle/tools/autodrive_refusal.sh"),
+        "step-01 must source autodrive_refusal.sh"
     );
-    let cmd = step01_command();
-    assert!(
-        cmd.contains(&format!("grep -vE {ERE}")),
-        "step-01 must drop agent output lines with the same ERE as terminal_refusal()"
-    );
-    const MARKER: &str = "grep -qF 'BLOCKED_TERMINAL orchestration_unavailable'";
-    assert!(
-        loop_sh.contains(MARKER),
-        "autodrive_loop.sh terminal_refusal() marker changed; update this test and the collector together"
-    );
-    for detector in [
-        "grep -qF 'BLOCKED_TERMINAL orchestration_unavailable' \"$WORK/terminal_blob\"",
-        "79([^0-9]|$)' \"$WORK/terminal_blob\"",
-    ] {
+    assert!(cmd.contains("terminal_refusal \"${LOOP_CHILD_EXIT_CODE:-}\" \"$WORK/last\""));
+    for gone in ["BLOCKED_TERMINAL", "terminal_blob", "79([^0-9]|$)"] {
         assert!(
-            cmd.contains(detector),
-            "both terminal detectors must read $WORK/terminal_blob; missing {detector:?}"
+            !loop_sh
+                .lines()
+                .any(|l| !l.trim_start().starts_with('#') && l.contains(gone))
+                && !cmd.contains(gone),
+            "no reader may match {gone:?} in text (#1437)"
         );
     }
 }
@@ -467,10 +534,13 @@ fn issue_1510_indented_log_pointer_line_is_not_terminal() {
 }
 
 #[test]
-fn issue_1510_guard_line_after_log_pointer_is_terminal() {
+fn issue_1437_guard_line_after_log_pointer_is_not_terminal() {
     let text = format!("{}\n{GUARD_LINE}", log_pointer_round());
-    let ev = run_collector(&[("LOOP_LAST_ROUND_OUTPUT", &text)]);
-    assert_terminal_with(&ev, REASON_BLOCKED, "log_pointer then guard line");
+    assert_only_the_marker_refuses(
+        "LOOP_LAST_ROUND_OUTPUT",
+        &text,
+        "log_pointer then guard line",
+    );
 }
 
 #[test]
@@ -486,10 +556,9 @@ fn issue_1510_log_pointer_exit_79_defers_to_the_child_exit_code() {
 }
 
 #[test]
-fn issue_1510_log_pointer_filter_is_anchored_on_its_key() {
-    // Only a line that BEGINS with `amplihack.recipe.log_pointer {` is
-    // dropped. A guard line inside any other JSON, a mention of the key
-    // mid-line, or the key without its JSON object is still read.
+fn issue_1437_guard_line_in_any_json_is_not_terminal() {
+    // Before #1437 only a line that began `amplihack.recipe.log_pointer {` was
+    // dropped, so these were refusals. No text is one now.
     for (case, line) in [
         ("other JSON object", format!(r#"{{"note":"{GUARD_LINE}"}}"#)),
         (
@@ -509,53 +578,29 @@ fn issue_1510_log_pointer_filter_is_anchored_on_its_key() {
             format!(r#"amplihack.recipe.other {{"x":"{GUARD_LINE}"}}"#),
         ),
     ] {
-        let ev = run_collector(&[("LOOP_LAST_ROUND_OUTPUT", &line)]);
-        assert_terminal_with(&ev, REASON_BLOCKED, case);
+        assert_only_the_marker_refuses("LOOP_LAST_ROUND_OUTPUT", &line, case);
     }
 }
 
-// --- terminal_refusal() in autodrive_loop.sh, extracted and run ------------
+// --- terminal_refusal() from autodrive_refusal.sh, sourced and run ----------
 
-/// The exact body of `terminal_refusal()` from autodrive_loop.sh, from its
-/// opening line to the first line that is only `}`.
-fn terminal_refusal_fn() -> String {
-    let path = workspace_root().join("amplifier-bundle/tools/autodrive_loop.sh");
-    let text =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    let mut out = Vec::new();
-    let mut inside = false;
-    for line in text.lines() {
-        if line.starts_with("terminal_refusal() {") {
-            inside = true;
-        }
-        if inside {
-            out.push(line);
-            if line == "}" {
-                return out.join("\n");
-            }
-        }
-    }
-    panic!("terminal_refusal() not found in {}", path.display());
-}
-
-/// Run `terminal_refusal <exit_code> <log>` over `log` and return whether it
-/// called the round a refusal.
+/// Run `terminal_refusal <exit_code> <log>` from `autodrive_refusal.sh`, the
+/// helper `autodrive_loop.sh` sources, and return whether it called the child
+/// a refusal.
 fn terminal_refusal(exit_code: &str, log: &str) -> bool {
     let scratch = ScratchDir::new();
     let log_path = scratch.0.join("round.log");
     std::fs::write(&log_path, log).expect("write round log");
-    let script = format!(
-        "AUTODRIVE_EXIT_POLICY_REFUSAL=79\n{}\nterminal_refusal \"$1\" \"$2\"",
-        terminal_refusal_fn()
-    );
+    let helper = workspace_root().join("amplifier-bundle/tools/autodrive_refusal.sh");
     let mut bash = Command::new("bash");
     isolated(&mut bash, &scratch.0);
     let out = bash
         .arg("-c")
-        .arg(script)
+        .arg(". \"$3\" && terminal_refusal \"$1\" \"$2\"")
         .arg("terminal_refusal")
         .arg(exit_code)
         .arg(&log_path)
+        .arg(&helper)
         .output()
         .expect("spawn bash");
     match out.status.code() {
@@ -582,11 +627,15 @@ fn issue_1510_terminal_refusal_ignores_log_pointer_task_description() {
 }
 
 #[test]
-fn issue_1510_terminal_refusal_still_sees_guard_line_after_log_pointer() {
+fn issue_1437_terminal_refusal_reads_the_marker_not_the_guard_line() {
     let log = format!("{}\n{GUARD_LINE}\n", log_pointer_round());
     assert!(
-        terminal_refusal("1", &log),
-        "unprefixed guard line must stop the loop"
+        !terminal_refusal("1", &log),
+        "the guard's phrase is text; only the runner's marker refuses (#1437)"
+    );
+    assert!(
+        terminal_refusal("1", &format!("{log}{REFUSED_MARKER}\n")),
+        "the runner's final marker after it does"
     );
 }
 
@@ -609,12 +658,10 @@ fn issue_1510_terminal_refusal_ignores_agent_prose_and_bare_token() {
 }
 
 #[test]
-fn issue_1510_terminal_refusal_log_pointer_filter_is_anchored_on_its_key() {
+fn issue_1437_terminal_refusal_ignores_the_guard_line_inside_json() {
     let log = format!("{{\"note\":\"{GUARD_LINE}\"}}\n");
-    assert!(
-        terminal_refusal("0", &log),
-        "a guard line echoed inside other JSON must still stop the loop"
-    );
+    assert!(!terminal_refusal("0", &log));
+    assert!(!terminal_refusal("1", &log));
 }
 
 // --- The byte tail handed to the collector ---------------------------------
@@ -698,11 +745,9 @@ fn issue_1510_round_tail_keeps_a_short_log_whole() {
 // `Status:`, `Log pointer:`, then `Steps:` with each step's first 200
 // characters under `    Output: `. An agent step's output is multi-line and
 // its first line is the `ℹ NODE_OPTIONS` notice, so the agent's own prose
-// follows at column 0 with no prefix. Both detectors cut the log at the
-// summary header, so nothing in the summary is read as guard output.
-
-/// The awk both detectors cut the runner summary with. Pinned byte for byte.
-const SUMMARY_CUT_AWK: &str = "awk 'NR > 1 { if (prev ~ /^Recipe: / && $0 ~ /^(Run ID|Status): /) { cut = 1; exit } print prev } { prev = $0 } END { if (NR > 0 && !cut) print prev }'";
+// follows at column 0 with no prefix. #1510 cut the log at the summary
+// header for that reason; since #1437 no text is read at all, so the summary
+// cannot stop the loop whatever it reprints.
 
 /// The tail of a real successful crusty round log (crusty-round-2.log of
 /// PR #1632, paths replaced), edited the way crusty asked: the review's
@@ -775,26 +820,16 @@ fn real_round_tail_with_line_before_summary(line: &str) -> String {
 }
 
 #[test]
-fn issue_1510_guard_line_before_the_summary_is_still_terminal() {
-    let log = real_round_tail_with_line_before_summary(GUARD_LINE);
-    let ev = run_collector(&[("LOOP_LAST_ROUND_OUTPUT", &log)]);
-    assert_terminal_with(&ev, REASON_BLOCKED, "guard line before the summary");
-    assert!(
-        terminal_refusal("0", &log),
-        "terminal_refusal: guard line before the summary"
-    );
-
-    let log = real_round_tail_with_line_before_summary("child exit status 79");
-    let ev = run_collector(&[("LOOP_LAST_ROUND_OUTPUT", &log)]);
-    assert_terminal_with(
-        &ev,
-        REASON_EXIT_TEXT,
-        "unprefixed exit 79 before the summary",
-    );
+fn issue_1437_guard_line_before_the_summary_is_not_terminal() {
+    for line in [GUARD_LINE, "child exit status 79"] {
+        let log = real_round_tail_with_line_before_summary(line);
+        assert_only_the_marker_refuses("LOOP_LAST_ROUND_OUTPUT", &log, line);
+        assert!(!terminal_refusal("1", &log), "terminal_refusal: {line}");
+    }
 }
 
 #[test]
-fn issue_1510_exit_79_still_stops_a_round_whose_summary_is_cut() {
+fn issue_1510_exit_79_still_stops_a_round_whose_summary_echoes_the_marker() {
     let log = real_round_tail();
     let ev = run_collector(&[
         ("LOOP_LAST_ROUND_OUTPUT", &log),
@@ -805,10 +840,10 @@ fn issue_1510_exit_79_still_stops_a_round_whose_summary_is_cut() {
 }
 
 #[test]
-fn issue_1510_summary_cut_is_anchored_on_the_header_pair() {
-    // The cut needs `Recipe: ` at column 0 AND `Run ID: ` or `Status: ` at
-    // column 0 on the very next line. Anything less cuts nothing, so a guard
-    // line after it is still read.
+fn issue_1437_a_summary_header_neither_hides_nor_makes_a_refusal() {
+    // #1510 cut the log at the exact header pair, so a guard line after a
+    // near-miss header was a refusal and one after the real header was not.
+    // Neither is one now, and the final marker after either one still is.
     for (case, before) in [
         (
             "Recipe: alone",
@@ -822,59 +857,27 @@ fn issue_1510_summary_cut_is_anchored_on_the_header_pair() {
         ),
         ("other key", "Recipe: x\nSteps:"),
         ("lower-case header", "recipe: x\nstatus: ✓ Success"),
-    ] {
-        let log = format!("{before}\n{GUARD_LINE}\n");
-        let ev = run_collector(&[("LOOP_LAST_ROUND_OUTPUT", &log)]);
-        assert_terminal_with(&ev, REASON_BLOCKED, case);
-        assert!(terminal_refusal("0", &log), "terminal_refusal: {case}");
-    }
-    for (case, header) in [
         ("Run ID form", "Recipe: x\nRun ID: 1"),
         ("Status form (no run id)", "Recipe: x\nStatus: ✗ Failed"),
     ] {
-        let log = format!("{header}\n{GUARD_LINE}\n");
-        let ev = run_collector(&[("LOOP_LAST_ROUND_OUTPUT", &log)]);
-        assert_not_terminal(&ev, case);
+        let log = format!("{before}\n{GUARD_LINE}");
+        assert_only_the_marker_refuses("LOOP_LAST_ROUND_OUTPUT", &log, case);
         assert!(!terminal_refusal("0", &log), "terminal_refusal: {case}");
+        assert!(
+            terminal_refusal("1", &format!("{log}\n{REFUSED_MARKER}")),
+            "terminal_refusal with the final marker: {case}"
+        );
     }
 }
 
 #[test]
-fn issue_1510_history_is_not_cut_by_a_summary_header() {
-    // LOOP_HISTORY holds round records, never a runner summary. A header
-    // shape in it must not hide a guard line in the last round's output.
+fn issue_1437_a_guard_line_in_the_last_round_is_not_terminal_beside_a_history_header() {
     let ev = run_collector(&[
         ("LOOP_HISTORY", "Recipe: x\nStatus: ✓ Success"),
         ("LOOP_LAST_ROUND_OUTPUT", GUARD_LINE),
+        ("LOOP_CHILD_EXIT_CODE", "1"),
     ]);
-    assert_terminal_with(
-        &ev,
-        REASON_BLOCKED,
-        "header in history, guard in last round",
-    );
-}
-
-#[test]
-fn issue_1510_summary_cut_awk_is_shared_byte_for_byte() {
-    let root = workspace_root();
-    let loop_sh = std::fs::read_to_string(root.join("amplifier-bundle/tools/autodrive_loop.sh"))
-        .expect("read autodrive_loop.sh");
-    assert!(
-        terminal_refusal_fn().contains(&format!("{SUMMARY_CUT_AWK} \"$2\"")),
-        "terminal_refusal() must cut the runner summary with the shared awk"
-    );
-    assert!(loop_sh.contains(SUMMARY_CUT_AWK));
-    let cmd = step01_command();
-    assert!(
-        cmd.contains(&format!("printf '%s\\n' \"$LAST\" | {SUMMARY_CUT_AWK}")),
-        "step-01 must cut the runner summary from the last round with the shared awk"
-    );
-    let tail = std::fs::read_to_string(root.join("amplifier-bundle/tools/autodrive_round_tail.sh"))
-        .expect("read autodrive_round_tail.sh");
-    assert!(
-        tail.contains("prev ~ /^Recipe: / && $0 ~ /^(Run ID|Status): /"),
-        "autodrive_round_tail.sh must find the summary header with the detectors' pattern"
-    );
+    assert_text_is_not_terminal(&ev, "header in history, guard in last round");
 }
 
 #[test]

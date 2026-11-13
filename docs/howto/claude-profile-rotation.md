@@ -55,6 +55,7 @@ The exact flags, files, exit codes and log lines are in the
 - [Which root the rotator uses](#which-root-the-rotator-uses)
 - [Change the thresholds](#change-the-thresholds)
 - [When a swap happens](#when-a-swap-happens)
+- [When live usage stops changing](#when-live-usage-stops-changing)
 - [When the live login cannot be measured](#when-the-live-login-cannot-be-measured)
 - [When the host is heavily loaded](#when-the-host-is-heavily-loaded)
 - [Remove logs left by old usage probes](#remove-logs-left-by-old-usage-probes)
@@ -799,7 +800,9 @@ has the most headroom (ties go to the name that sorts first):
 
 1. **Threshold swap.** If the live session use is at or above `--session-at`,
    or the weekly use is at or above `--week-at`, it swaps when the candidate
-   has at least `--margin` more headroom. A live account that could not be
+   has at least `--margin` more headroom. In `watch`, a session projection
+   that reaches the threshold next cycle also triggers this decision now,
+   with `reason=projected`. A live account that could not be
    measured counts as headroom 0, but is swapped only as described in
    [When the live login cannot be measured](#when-the-live-login-cannot-be-measured).
 2. **ALERT.** If a threshold swap is needed but no candidate has that margin,
@@ -813,7 +816,115 @@ often has its session window reset and looks fresh; without the hold the next
 cycle would swap straight back. Threshold swaps on a measured reading are
 never held back.
 
+Before any swap based on usage, the target must pass the
+[freshness gate](../reference/profile-command.md#rotate-reading-freshness-and-swap-back-damping).
+After a 100% to 90% swap, an older 0%/0% reading for the login just left
+cannot authorize a swap back. The rotator reads that target again and
+decides on the replacement evidence. A fresh exhausted result excludes it;
+a failed or still-stale result makes it unknown for the cycle. Another
+chosen target must pass the same checks.
+
+Target re-reads preserve supplied evidence timestamps. Finishing a re-read
+does not make an older observation fresh. Every usage-based swap repeats the
+freshness check under the lock, even when identity and eligibility are
+unchanged. A stale target becomes unknown without another usage read under
+the lock. See the
+[reading-time contract](../reference/profile-command.md#reading-time) and
+[locked revalidation contract](../reference/profile-command.md#rotate-revalidation).
+
+## When live usage stops changing
+
+Look for `stale live reading; re-read` in the rotate log. The third cached
+(status-line) reading with identical session and week figures and a nonzero
+session figure triggers a re-read, as does a reading older than one
+interval. A steady zero session reading alone does not, and neither do
+identical direct readings: when the status line is not being written, the
+cache ages out and the login is read directly each cycle, and the same
+figures then mean an idle login, not a frozen cache.
+
+Once a re-read establishes lag, older cached values remain untrusted even if
+their percentages change or match the accepted figures. The cache recovers
+only when its observation time is at least as recent as the accepted reading
+and its session figure has caught up. Session use only rises within one
+session window, so a lower session figure counts as a reset only when its
+session reset time is more than an hour later than the last reading's. A
+newer observation time is not enough: the status line rewrites old figures
+with new times, so a lower cached figure in the same window, or with no
+reset time to compare, is read again. See the
+[cache recovery contract](../reference/profile-command.md#stale-live-reading).
+
+The live re-read uses the configured probe method with passive readings
+off. A direct read uses the credentials in `~/.claude` (the rotator
+home's `.claude` directory), never the copy stored in
+`~/.claude-profiles/<name>`, which is stale or absent while the login is
+live. It never refreshes the token and writes no file. Probe modes `auto`
+and `text` keep their existing fallback behavior; dry runs use direct reads
+only and start no `claude` process.
+
+The live re-read has one probe deadline of its own. All target re-reads
+share a second deadline and are limited to three targets per cycle.
+Together they can add up to two probe deadlines after measurement: about
+240 seconds with the default settings. See the
+[re-read limits](../reference/profile-command.md#re-reads).
+
+A live re-read runs after the measurement, but it does not make the
+cycle's own candidate readings stale. A candidate read directly in the same
+measurement still counts as no older than the live login, so the re-read
+adds no target read. A candidate's stored reading from before the
+measurement is read again, as it is next to a direct live read. See the
+[reading-time contract](../reference/profile-command.md#reading-time).
+
+While the cache stays behind, the frozen count keeps rising on the cached
+figures and the rate history takes only the re-read figures, so the
+rotator reads the login again on every cycle and never treats the lower
+cached figure as a new session window. See the
+[frozen-count rules](../reference/profile-command.md#stale-live-reading).
+
+For example, cached 63% does not replace direct evidence of 65%, 68% and
+71% under the cache recovery rule. A failed re-read does not make
+the older cache current, and it does not make a frozen reading trusted
+again either: the frozen count is kept, so the next identical reading is
+read again. If accepted recent usage, over at least one interval, projects
+to `--session-at` by the next cycle, the rotator
+swaps now with `reason=projected`, provided a target qualifies. A projected
+or substituted swap never crosses organisations: it is decided with the
+need of the reading as measured, so a crossing waits for that reading to
+reach a threshold (see
+[outlook and organisation affinity](../reference/profile-command.md#outlook-and-organisation-affinity)). Near the
+threshold (within `--margin` of `--session-at`, or projected to reach it),
+a stale reading whose re-read fails is decided as if the login were at the
+threshold: a swap or the `no-capacity` ALERT, never a stay. With
+`--session-at 70 --margin 5`, a status line that keeps rewriting 66% gets a
+re-read on its third identical reading; if that read fails, the cycle
+swaps, or alerts when no target qualifies, and the next cycle reads again.
+A failed live probe near the threshold only changes timing: the
+failed-probe swap is made at once when its own target beats 70% by the
+margin and is not in another organisation, and otherwise after three
+failures as usual. The last reading counts only
+while its session window can still be open, and for five hours at most. See the
+[live freshness reference](../reference/profile-command.md#rotate-live-reading-freshness).
+A steady low rate stays below the threshold.
+
+Use the existing `--interval`, `--session-at` and `--margin` settings;
+there is no separate freshness toggle. Frozen-reading detection and rate
+history persist across cycles in `watch`, including background runs started
+with `start`. A one-shot command or dry run starts with empty history and
+can re-read an old observation, but cannot detect freezing across cycles
+or project a rate.
+
 ## When the live login cannot be measured
+
+If recent accepted evidence places the login near its threshold, and the
+swap target has at least `--margin` more headroom than the live login
+would have at its last known use or at `--session-at`, whichever is
+higher, the
+[live freshness rule](../reference/profile-command.md#failed-or-stale-reading-near-the-threshold)
+makes the failed-probe swap on the first failure, unless an API key in
+your home files would fail every login's probe (see the
+[API-key login check](../reference/profile-command.md#api-key-login-check)).
+Otherwise, the
+failed-probe damping below applies unchanged: a near-threshold reading
+never stops the failed-probe swap after three failures.
 
 If the probe of the live login fails, the rotator cannot tell whether the
 account is near its limit. A failure that follows whichever login is live
@@ -850,12 +961,17 @@ one `ALERT` and stays, as before.
 A probe that timed out or could not run shows as `<name>:failed` in the
 cycle line, never as a percentage, and writes
 `warning: rotate: probe of <name> timed out` (or `failed: <reason>`) to
-`rotate.err`. Its usage is unknown: the rotator does not choose it, does not
-count or record it as exhausted, and probes it again on the next cycle.
-While a plan profile's usage is unknown this way, the rotator does not move
-onto
+`rotate.err`. A profile with no login to use is the one exception: it shows
+as `<name>:failed` but writes no warning line, to stderr or to `rotate.err`;
+see [Logins with no token](../reference/profile-command.md#logins-with-no-token).
+The rotator does not choose a failed profile, does not count or record it as
+exhausted, and probes it again on the next cycle.
+A probe that timed out or could not run leaves that plan login's usage
+unknown, so while it lasts the rotator does not move onto
 [usage credits](#use-usage-credits-when-every-plan-login-is-exhausted); see
 [When a plan login cannot be measured](#when-a-plan-login-cannot-be-measured).
+A profile with no login is not unknown: it is read as `not_logged_in`, as
+when `claude` reported it, so it does not stop the move onto usage credits.
 A login that reached a limit shows the figures its probe read, with the
 window that ran out never below `100%`, so `work:s=100%,w=62%` is a login at
 its session limit with 38% of its week left. A login at its weekly limit
@@ -985,10 +1101,15 @@ reading while it is younger than `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS`
 (300 seconds by default). With `--interval 120`, a login is therefore asked
 afresh only about every third cycle. A stored reading can rank a login, but
 the rotator does not swap to it on that reading alone: a target read more
-than 300 seconds ago, earlier than the live login, or not since the rotator
-left it full, is read again first (the way `AMPLIHACK_PROFILE_USAGE_PROBE`
-says, so never directly under `auto` or `text`), and a login it left full is not
-chosen again until a later reading shows room. The `reread:` and `damp:` log
+than 300 seconds ago, earlier than the live login, or not strictly after
+its applicable recorded swap-away time, is read again first (the way
+`AMPLIHACK_PROFILE_USAGE_PROBE` says, so never directly under `auto` or
+`text`), and a login it left full is not
+chosen again until a later reading shows room under the existing rules.
+The recorded time includes the previous login's last swap and retained
+exhaustion-damping entries for other candidates. These records have the
+existing retention limits; they are not a complete login-use history.
+The `reread:` and `damp:` log
 lines show this; see
 [Rotate reading freshness and swap-back damping](../reference/profile-command.md#rotate-reading-freshness-and-swap-back-damping).
 For the rotator to react sooner, lower the age in the shell that starts it:
@@ -1220,6 +1341,12 @@ jq '.hooks.StopFailure' ~/.claude/settings.json
   }
 ]
 ```
+
+If this prints `null`, something has stripped the hooks from the file. The
+rotator puts them back at the end of its next cycle, and sessions started with
+`amplihack claude` receive them through `--settings` in any case. Run
+`amplihack doctor` to see which settings files have drifted; see the
+[hooks block reference](../reference/hook-block.md).
 
 ### What happens on a limit
 
@@ -1758,6 +1885,12 @@ with no overflow profile, and probes again on the next cycle:
 A plan probe that timed out or could not run never moves work onto
 credits. If the probes keep timing out, see
 [When the host is heavily loaded](#when-the-host-is-heavily-loaded).
+
+A plan profile with no login to use (no token, no refresh token, or on
+Linux no credentials file) is not in this group. Its login is known to be
+absent, so it shows as `<name>:failed` but does not hold the move onto
+credits; see
+[Logins with no token](../reference/profile-command.md#logins-with-no-token).
 
 A plan profile whose directory fails the ownership and mode check (it is a
 symlink, is not yours, or is open to group or other users) is skipped

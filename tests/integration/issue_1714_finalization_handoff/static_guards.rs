@@ -223,31 +223,13 @@ fn both_loops_run_on_a_handed_off_build() {
 
 // T6: the merge gate stays the only merge control and never reads the hand-off.
 #[test]
-fn the_merge_gate_never_reads_the_handoff() {
-    let mut files = vec![tool_path("autodrive_merge_gate.sh")];
-    for name in [
-        "autodrive-merge-loop",
-        "autodrive-merge-round",
-        "autodrive-merge-evidence",
-        "autodrive-crusty-loop",
-    ] {
-        files.push(recipe_path(name));
-    }
-    for path in files {
-        let text = read(&path);
-        for needle in [
-            "handed_off",
-            "build_result.terminal_state",
-            "finalization_handoff",
-            "merge_ready_loop",
-        ] {
-            assert!(
-                !text.contains(needle),
-                "{} must not read `{needle}`",
-                rel(&path)
-            );
-        }
-    }
+fn finalization_handoff_cannot_authorize_a_merge() {
+    let source = read(
+        &workspace_root().join("crates/amplihack-cli/src/commands/orch/autodrive/authorization.rs"),
+    );
+    assert!(!source.contains("finalization_handoff"));
+    let recipe = recipe_yaml("autodrive-finalize");
+    assert_eq!(recipe["context"]["no_merge"].as_str(), Some("true"));
 }
 
 // The step-03 call: direct, after PR resolution, before the no-PR error.
