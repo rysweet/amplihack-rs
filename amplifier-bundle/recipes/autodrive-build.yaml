@@ -89,7 +89,7 @@ steps:
       BRANCH="${RECIPE_VAR_existing_branch:-}"
       if [ -z "$BRANCH" ] && [ -f "${RECIPE_VAR_step_recovery_dir:-}/build-branch.txt" ]; then
         IFS= read -r BRANCH < "$RECIPE_VAR_step_recovery_dir/build-branch.txt" || :
-        git check-ref-format --branch "$BRANCH" >/dev/null 2>&1 || { echo "ERROR: build-branch.txt holds no valid branch name" >&2; exit 1; }
+        case "$BRANCH" in ''|-*|*[[:space:][:cntrl:]]*|*..*) echo "ERROR: build-branch.txt holds no valid branch name" >&2; exit 1 ;; esac
         echo "INFO: retrying on the first attempt's branch '$BRANCH' (#2539)." >&2
       fi
       d() { printf '%s' "${RECIPE_VAR_no_merge_directive:-}" | amplihack orch helper extract-json --require-field "$1" \
