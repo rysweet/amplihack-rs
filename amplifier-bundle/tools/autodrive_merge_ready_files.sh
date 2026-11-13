@@ -5,30 +5,12 @@
 # The merge-ready skill sets `disable-model-invocation: true`, so an agent
 # cannot invoke it; the merge round reads its files instead. This script is
 # the deterministic lookup that step-00 of autodrive-merge-round.yaml runs, in
-# the order the other auto-drive steps use to find bundle files:
-#
-#   1. $AMPLIHACK_HOME/amplifier-bundle/skills/merge-ready
-#   2. $REPO_PATH/amplifier-bundle/skills/merge-ready
-#   3. <git toplevel of $REPO_PATH>/amplifier-bundle/skills/merge-ready
-#   4. $HOME/.copilot/skills/merge-ready              (flat layout)
-#   5. $HOME/.amplihack/amplifier-bundle/skills/merge-ready
-#
-# A candidate whose variable is empty is skipped. The first directory whose
-# SKILL.md is a regular file wins, and the template must be in that same
-# directory: the two files are never taken from two installs. The
-# auto-drive-to-merge skill folder is taken only from the sibling of that
+# the runner-pinned AMPLIHACK_HOME only. Repository and PR-worktree copies
+# never supply instructions. The skill and its template come from one directory.
+# The auto-drive-to-merge skill folder is taken only from the sibling of that
 # directory, ../auto-drive-to-merge, so the prompts can give its absolute path
-# (issue #2222).
-#
-# Requirement: any root that ships skills/merge-ready must also ship
-# skills/auto-drive-to-merge beside it. That includes candidates 2 and 3, the
-# repository under review: a consumer repository that ships only merge-ready
-# makes the merge round stop with auto-drive-skill-dir-not-found. Before #2222
-# such a round ran. A missing sibling is a hard stop, not "try the next
-# candidate", for the same reason as a missing template: the criteria and the
-# skill the prompts point at are never taken from two installs. To fix it,
-# ship both skills in the repository, or remove its merge-ready copy so the
-# install's pair is used.
+# (issue #2222). A missing sibling is a hard stop, like a missing template: the
+# criteria and the skill the prompts point at are never taken from two places.
 #
 #   stdout  one line of JSON: skill_dir, skill_md, template, skill_md_sha,
 #           auto_drive_skill_dir
@@ -49,12 +31,8 @@ set -u
 # step-01-round-context of autodrive-crusty-round.yaml (#2222); keep the two identical.
 unsafe_path() { case "$1" in *'"'* | *'\'* | *'{{'* | *'}}'*) return 0 ;; esac; [ "$(printf '%s' "$1" | LC_ALL=C tr -d '\040-\176\200-\377'; printf x)" != "x" ]; }
 
-TOP="$(git -C "${REPO_PATH:-.}" rev-parse --show-toplevel 2>/dev/null || printf '')"
-CANDIDATES=()
-[ -n "${AMPLIHACK_HOME:-}" ] && CANDIDATES+=("${AMPLIHACK_HOME}/amplifier-bundle/skills/merge-ready")
-[ -n "${REPO_PATH:-}" ] && CANDIDATES+=("${REPO_PATH}/amplifier-bundle/skills/merge-ready")
-[ -n "$TOP" ] && CANDIDATES+=("${TOP}/amplifier-bundle/skills/merge-ready")
-[ -n "${HOME:-}" ] && CANDIDATES+=("${HOME}/.copilot/skills/merge-ready" "${HOME}/.amplihack/amplifier-bundle/skills/merge-ready")
+case "${AMPLIHACK_HOME:-}" in /*) ;; *) echo "ERROR: trusted AMPLIHACK_HOME is required for merge-ready criteria" >&2; exit 1 ;; esac
+CANDIDATES=("${AMPLIHACK_HOME}/amplifier-bundle/skills/merge-ready")
 
 SEARCHED=""
 # ${arr[@]+...}: an empty array under `set -u` is an error in bash 3.2 (macOS).
@@ -83,30 +61,10 @@ for d in ${CANDIDATES[@]+"${CANDIDATES[@]}"}; do
   fi
   SHA="$(git hash-object --no-filters --stdin < "${DIR}/SKILL.md" 2>/dev/null || printf '')"
   echo "INFO: merge-ready criteria from ${DIR} (${SHA:-unhashed})" >&2
-  # In a repository that ships amplifier-bundle/, the criteria may come from
-  # the branch under review. Say so when they differ from the base; this
-  # never fails the step, because the merge gate re-measures criteria 1 and 3.
-  if [ -n "$TOP" ]; then
-    case "$DIR" in
-      "$TOP"/*)
-        BASE="$(git -C "$TOP" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || printf 'origin/main')"
-        if git -C "$TOP" rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null 2>&1 \
-           && ! git -C "$TOP" --no-optional-locks diff --quiet "$BASE" -- "${DIR}/SKILL.md" 2>/dev/null; then
-          echo "WARNING: merge-ready criteria come from the branch under review and differ from ${BASE}" >&2
-        fi
-        ;;
-    esac
-    # The same check for the auto-drive-to-merge skill the prompts point at (#2222, S1).
-    case "$ADS" in
-      "$TOP"/*)
-        BASE="$(git -C "$TOP" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || printf 'origin/main')"
-        if git -C "$TOP" rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null 2>&1 \
-           && ! git -C "$TOP" --no-optional-locks diff --quiet "$BASE" -- "${ADS}/SKILL.md" 2>/dev/null; then
-          echo "WARNING: auto-drive-to-merge skill comes from the branch under review and differs from ${BASE}" >&2
-        fi
-        ;;
-    esac
-  fi
+  # The only candidate is the runner-pinned AMPLIHACK_HOME, never the branch
+  # under review, so there is no base comparison to make here. (The block that
+  # made one read $TOP, which #2340 no longer sets; under set -u that ended the
+  # script before it printed anything.)
   printf '{"skill_dir":"%s","skill_md":"%s","template":"%s","skill_md_sha":"%s","auto_drive_skill_dir":"%s"}\n' \
     "$DIR" "${DIR}/SKILL.md" "${DIR}/pr-description-template.md" "$SHA" "$ADS"
   exit 0

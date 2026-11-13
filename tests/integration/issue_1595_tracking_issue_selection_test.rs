@@ -219,9 +219,7 @@ impl Sandbox {
                 ),
             )
             .env("HOME", self.path("home"))
-            // env_clear drops the runner's TMPDIR. Keep helper scratch files
-            // in this sandbox rather than falling back to shared /tmp quotas.
-            .env("TMPDIR", self.temp.path())
+            .env("TMPDIR", self.path("home"))
             .env("AMPLIHACK_HOME", workspace_root())
             .env("REPO_PATH", self.path("repo"))
             .env("GH_LOG", self.path("gh.log"))

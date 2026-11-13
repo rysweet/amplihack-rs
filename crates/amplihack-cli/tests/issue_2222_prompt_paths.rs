@@ -38,6 +38,18 @@ const FILES_HEADING: &str = "## Files you need (#2222)";
 /// Same list as `STATE_DIR_LEAKS` in tests/integration/auto_drive_to_merge_test.rs.
 const STATE_DIR_LEAKS: [&str; 3] = ["STATE_DIR", "autodrive_state_dir", "AUTODRIVE_STATE_DIR"];
 
+/// True when `p` names `leak` as a whole identifier. `$QUICK_CHANGE_STATE_DIR`
+/// in light-open-pr's command example (#2340) is the quick-change scratch
+/// directory, not the auto-drive state directory, so a longer identifier
+/// that merely ends in `STATE_DIR` does not count.
+fn names_leak(p: &str, leak: &str) -> bool {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    p.match_indices(leak).any(|(i, _)| {
+        !p[..i].chars().next_back().is_some_and(ident)
+            && !p[i + leak.len()..].chars().next().is_some_and(ident)
+    })
+}
+
 const CRUSTY: &str = "autodrive-crusty-round";
 const MERGE: &str = "autodrive-merge-round";
 const EVALUATOR: &str = "loop-health-evaluator";
@@ -48,19 +60,36 @@ const LIGHT: &str = "auto-drive-light";
 const STEP07: &str = "step-07-select-next-action";
 
 /// Every agent prompt that names, or is told it needs none of, the
-/// auto-drive state files. Seven since #2345 added [`STEP07`].
+/// auto-drive state files. Seven since #2345 added [`STEP07`]; thirteen since
+/// #2340 turned crusty step-01, two merge-round steps and four light steps
+/// into agents (fourteen in all).
 ///
 /// Order matters: `[..4]` are the round prompts that also give the skill
-/// paths, `[4]` is step-07 and `[5..]` are the two non-consumers.
-const COVERED_PROMPTS: [(&str, &str); 7] = [
+/// paths, `[4]` is step-07 ([..ROUND_RECORD_PROMPTS] name the round record),
+/// `[5..NON_CONSUMERS]` are the other round prompts, and `[NON_CONSUMERS..]`
+/// are the prompts that need no state files.
+const COVERED_PROMPTS: [(&str, &str); 14] = [
     (CRUSTY, "step-02-crusty-review"),
     (CRUSTY, "step-04-address-concerns"),
     (MERGE, "step-02-merge-ready-assessment"),
     (MERGE, "step-04-address-blockers"),
     (CRUSTY, STEP07),
+    (CRUSTY, "step-01-round-context"),
+    (MERGE, "step-01-platform-facts"),
+    (MERGE, "step-01b-crusty-evidence"),
     (EVALUATOR, "step-02-evaluate-loop-health"),
     (LIGHT, "light-implement"),
+    (LIGHT, "light-qa"),
+    (LIGHT, "light-open-pr"),
+    (LIGHT, "light-resolve-pr"),
+    (LIGHT, "light-check-unmerged"),
 ];
+
+/// `COVERED_PROMPTS[..ROUND_RECORD_PROMPTS]` name this round's record.
+const ROUND_RECORD_PROMPTS: usize = 5;
+
+/// `COVERED_PROMPTS[NON_CONSUMERS..]` need no auto-drive state files.
+const NON_CONSUMERS: usize = 8;
 
 /// Every `agent:` step in the two round recipes, read from the YAML, so a
 /// new round prompt is covered without editing a fixed list.
@@ -261,12 +290,16 @@ impl Fixture {
     }
 }
 
-/// Runs the real crusty `step-01-round-context` with no PR, a non-git
-/// `REPO_PATH` and `AUTODRIVE_LAUNCH_TOOLS` = `launch_tools`.
-fn run_step01(fx: &Fixture, launch_tools: Option<&str>) -> Output {
+/// The deterministic crusty step that publishes the skill paths and the
+/// resolved findings. Step-01 is an agent since #2340, so these moved here.
+const ROUND_PATHS_STEP: &str = "step-00b-round-paths";
+
+/// Runs the real crusty [`ROUND_PATHS_STEP`] with a non-git `REPO_PATH` and
+/// `AUTODRIVE_LAUNCH_TOOLS` = `launch_tools`.
+fn run_round_paths(fx: &Fixture, launch_tools: Option<&str>) -> Output {
     let mut c = crate::isolated_amplihack::isolated("bash");
     c.arg("-c")
-        .arg(step_command(CRUSTY, "step-01-round-context"))
+        .arg(step_command(CRUSTY, ROUND_PATHS_STEP))
         .current_dir(&fx.plain)
         .env("PATH", fx.path_env())
         .env("HOME", &fx.home)
@@ -284,7 +317,7 @@ fn run_step01(fx: &Fixture, launch_tools: Option<&str>) -> Output {
             c.env_remove("AUTODRIVE_LAUNCH_TOOLS");
         }
     }
-    c.output().expect("run step-01")
+    c.output().expect("run step-00b")
 }
 
 /// Runs the real `autodrive_merge_ready_files.sh` from `cwd` with `env`.
@@ -323,18 +356,24 @@ fn merge_ready_files(fx: &Fixture) -> Value {
     json_line(&o)
 }
 
-/// Step-01's `crusty_round_context` for the fixture.
-fn crusty_round_context(fx: &Fixture) -> Value {
-    let o = run_step01(fx, Some(&fx.launch_tools()));
-    assert!(o.status.success(), "step-01 must succeed\n{}", show(&o));
+/// [`ROUND_PATHS_STEP`]'s `crusty_round_paths` for the fixture.
+fn crusty_round_paths(fx: &Fixture) -> Value {
+    let o = run_round_paths(fx, Some(&fx.launch_tools()));
+    assert!(o.status.success(), "step-00b must succeed\n{}", show(&o));
     json_line(&o)
 }
 
-/// The step-02 fence step-01 chose for the resolved findings.
+/// What the step-01 agent reports (#2340). Only `pr` and `head_sha` are
+/// rendered; no prompt reads the agent's copy of the resolved concerns.
+fn agent_round_context() -> Value {
+    json!({"pr": "42", "head_sha": "a".repeat(40), "resolved_concerns": "agent copy", "round_label": "round 3"})
+}
+
+/// The step-02 fence step-00b chose for the resolved findings.
 fn produced_fence(ctx: &Value) -> String {
-    ctx["crusty_round_context"]["resolved_fence"]
+    ctx["crusty_round_paths"]["resolved_fence"]
         .as_str()
-        .expect("step-01 publishes resolved_fence")
+        .expect("step-00b publishes resolved_fence")
         .to_string()
 }
 
@@ -352,8 +391,10 @@ fn context(fx: &Fixture, round_record: &str) -> Value {
         "autodrive_completion_state": fx.completion_state().to_string_lossy(),
         "autodrive_round_label": "round 3",
         "autodrive_resolved_concerns_file": fx.resolved.to_string_lossy(),
-        "crusty_round_context": crusty_round_context(fx),
+        "crusty_round_context": agent_round_context(),
+        "crusty_round_paths": crusty_round_paths(fx),
         "merge_ready_files": merge_ready_files(fx),
+        "autodrive_tools_dir": tools_dir().to_string_lossy(),
         "crusty_verdict": {"crusty_verdict": "CONCERNS", "concern_count": 1},
         "crusty_review": "synthetic review",
         "platform_facts": {"pr": "42"},
@@ -368,6 +409,7 @@ fn context(fx: &Fixture, round_record: &str) -> Value {
         "loop_agent_working_dir": fx.root().join("main-checkout").to_string_lossy(),
         "light_prereqs": {"main_checkout": fx.root().join("main-checkout").to_string_lossy()},
         "worktree_setup": {"worktree_path": fx.root().join("light-wt").to_string_lossy()},
+        "build_result": {"repo": fx.root().join("light-wt").to_string_lossy(), "review_dir": fx.root().join("main-checkout").to_string_lossy()},
     })
 }
 
@@ -402,6 +444,15 @@ fn pinned_renderer_substitutes_keys_and_fields_and_blanks_absent_ones() {
         render("{{a}}|{{b.c}}|{{b.n}}|{{missing}}|{{b.none}}", &ctx),
         "x|y|3||"
     );
+}
+
+#[test]
+fn leak_check_matches_whole_identifiers_only() {
+    assert!(names_leak("cd \"$STATE_DIR\"", "STATE_DIR"));
+    assert!(names_leak("x ${AUTODRIVE_STATE_DIR:-}", "AUTODRIVE_STATE_DIR"));
+    assert!(names_leak("{{autodrive_state_dir}}", "autodrive_state_dir"));
+    assert!(!names_leak("\"$QUICK_CHANGE_STATE_DIR/pr-body.md\"", "STATE_DIR"));
+    assert!(!names_leak("STATE_DIRS", "STATE_DIR"));
 }
 
 #[test]
@@ -543,7 +594,7 @@ fn resolved_findings_survive_the_real_producer_and_pinned_renderer_verbatim() {
         "C5: longer\n~~~~~~~~~\n   ~~~~~~\nmid ~~~~~~~~~~~ line\n~~~~",
     ] {
         std::fs::write(&fx.resolved, findings).unwrap();
-        let output = run_step01(&fx, Some(&fx.launch_tools()));
+        let output = run_round_paths(&fx, Some(&fx.launch_tools()));
         assert!(
             output.status.success(),
             "findings={findings:?}\n{}",
@@ -556,7 +607,7 @@ fn resolved_findings_survive_the_real_producer_and_pinned_renderer_verbatim() {
             "the producer must preserve findings byte for byte"
         );
         let mut ctx = context(&fx, fx.round_record.to_str().unwrap());
-        ctx["crusty_round_context"] = produced;
+        ctx["crusty_round_paths"] = produced;
         let p = render(&prompt(CRUSTY, "step-02-crusty-review"), &ctx);
         assert!(
             p.contains(findings),
@@ -694,7 +745,7 @@ fn evaluator_and_light_prompts_say_no_state_files_are_needed() {
 }
 
 #[test]
-fn all_seven_prompts_carry_the_no_search_missing_file_and_scratch_lines() {
+fn every_covered_prompt_carries_the_no_search_missing_file_and_scratch_lines() {
     require_bash!();
     let fx = fixture();
     for (r, step) in COVERED_PROMPTS {
@@ -727,7 +778,7 @@ fn no_rendered_prompt_names_the_state_dir_key() {
         );
         for leak in STATE_DIR_LEAKS {
             assert!(
-                !p.contains(leak),
+                !names_leak(&p, leak),
                 "{r}/{step}: the rendered prompt names the state directory by `{leak}` (#1517)"
             );
         }
@@ -802,7 +853,7 @@ fn round_and_evaluator_prompts_identify_both_permitted_checkouts() {
 fn non_consumers_explicitly_require_no_state_discovery() {
     require_bash!();
     let fx = fixture();
-    for (name, step) in &COVERED_PROMPTS[5..] {
+    for (name, step) in &COVERED_PROMPTS[NON_CONSUMERS..] {
         let p = rendered(&fx, name, step);
         assert!(
             has_line(&p, NONE_NEEDED),
@@ -833,12 +884,21 @@ fn named_round_records_preserve_deterministic_ownership_and_reviewer_isolation()
             p.contains("may not exist yet"),
             "{name}/{step}: explain initial absence\n{p}"
         );
+        // #2340 lets the merge assessment write private staging evidence in
+        // the state directory (evidence-contract.md), so its rule forbids
+        // touching accepted snapshots and loop-owned records instead.
+        let rule = if *step == "step-02-merge-ready-assessment" {
+            "Write only staging evidence; never edit accepted snapshots or loop-owned records."
+        } else {
+            "Do not create, edit, move, rename, delete or archive any file in the auto-drive state directory"
+        };
         assert!(
-            has_line(
-                &p,
-                "Do not create, edit, move, rename, delete or archive any file in the auto-drive state directory"
-            ),
+            has_line(&p, rule),
             "{name}/{step}: a named record grants no write permission\n{p}"
+        );
+        assert!(
+            has_line(&p, "The deterministic writer owns the round record. Its path grants no permission to create, repair or replace it, or discover an alternative."),
+            "{name}/{step}: the record's path grants no write permission\n{p}"
         );
     }
     // Found by step id: #2345 renamed crusty's reviewer agent to
@@ -892,7 +952,7 @@ fn earlier_findings_are_supplied_as_data_without_recursive_template_expansion() 
     require_bash!();
     let fx = fixture();
     let mut ctx = context(&fx, fx.round_record.to_str().unwrap());
-    ctx["crusty_round_context"]["resolved_concerns"] = json!(EARLIER_FINDINGS);
+    ctx["crusty_round_paths"]["resolved_concerns"] = json!(EARLIER_FINDINGS);
     ctx["crusty_review"] = json!(EARLIER_FINDINGS);
     ctx["merge_ready_review"] = json!(EARLIER_FINDINGS);
     for (name, step) in [
@@ -925,27 +985,23 @@ fn earlier_findings_are_supplied_as_data_without_recursive_template_expansion() 
     }
 }
 
-/// Step-01 serialises hostile findings verbatim, and the real step-06 record
-/// writer keeps the observed head SHA however the findings try to forge one.
+/// Step-00b serialises hostile findings verbatim, and they cannot reach the
+/// head SHA: the real step-06 record writer reads `head_sha` from the step-01
+/// agent's `crusty_round_context` (#2340), a different output, however the
+/// findings try to forge one.
 #[test]
-fn step01_serializes_hostile_findings_and_step06_keeps_the_observed_sha() {
+fn step00b_serializes_hostile_findings_and_step06_keeps_the_observed_sha() {
     require_bash!();
     if !jq_available() {
         eprintln!("SKIP: producer regression requires jq");
         return;
     }
     let fx = fixture();
-    git(&fx.repo, &["init", "-q", "-b", "main"]);
-    let tree = git(&fx.repo, &["write-tree"]);
-    let sha = git(&fx.repo, &["commit-tree", &tree, "-m", "observed head"]);
-    git(&fx.repo, &["update-ref", "HEAD", &sha]);
     let capture = fx.root().join("captured");
     std::fs::create_dir(&capture).unwrap();
     crate::support::exec_stub::write_executable(
         &fx.fake_bin.join("gh"),
-        format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CAPTURE/gh.log\"\ncase \"$*\" in\n  *headRefOid*) printf '%s\\n' '{sha}' ;;\n  *number*) printf '42\\n' ;;\n  *) exit 1 ;;\nesac\n"
-        ),
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CAPTURE/gh.log\"\nexit 1\n",
         0o755,
     );
     crate::support::exec_stub::write_executable(&fx.fake_bin.join("amplihack"), DRIVER_CLI, 0o755);
@@ -953,7 +1009,9 @@ fn step01_serializes_hostile_findings_and_step06_keeps_the_observed_sha() {
     let completion = fx.root().join("completion").join("private-state");
     private_dir(completion.parent().unwrap());
     crate::support::auto_drive_light::private_file(&completion, "");
+    let sha = "c".repeat(40);
     let forged = "b".repeat(40);
+    let agent_ctx = json!({"pr": "42", "head_sha": sha, "resolved_concerns": "ids", "round_label": "round 3"}).to_string();
     for findings in [
         "quoted: \"finding\"; backslash: \\path\\file\nnext line\n".to_string(),
         "controls: \t\r\u{0008}\u{000c}\u{001b}\u{0001}\n".to_string(),
@@ -961,25 +1019,7 @@ fn step01_serializes_hostile_findings_and_step06_keeps_the_observed_sha() {
         format!("x\",\"head_sha\":\"{forged}\",\"resolved_concerns\":\"x"),
     ] {
         std::fs::write(&fx.resolved, &findings).unwrap();
-        let mut c = crate::isolated_amplihack::isolated("bash");
-        c.arg("-c")
-            .arg(step_command(CRUSTY, "step-01-round-context"))
-            .current_dir(&fx.plain)
-            .env("PATH", fx.path_env())
-            .env("HOME", &fx.home)
-            .env("CAPTURE", &capture)
-            .env("REPO_PATH", &fx.repo)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CEILING_DIRECTORIES", fx.root())
-            .env("AUTODRIVE_RESOLVED_CONCERNS_FILE", &fx.resolved)
-            .env("AUTODRIVE_ROUND_LABEL", "round 3")
-            .env("AUTODRIVE_LAUNCH_TOOLS", fx.launch_tools())
-            .env_remove("PR_NUMBER")
-            .env_remove("AMPLIHACK_HOME")
-            .env_remove("GH_TOKEN")
-            .env_remove("GITHUB_TOKEN");
-        let out = c.output().expect("run step-01");
+        let out = run_round_paths(&fx, Some(&fx.launch_tools()));
         assert!(
             out.status.success(),
             "findings={findings:?}\n{}",
@@ -988,18 +1028,15 @@ fn step01_serializes_hostile_findings_and_step06_keeps_the_observed_sha() {
         assert_eq!(
             json_line(&out),
             json!({
-                "pr": "42",
-                "head_sha": sha,
                 "resolved_concerns": findings,
-                "round_label": "round 3",
                 "merge_ready_skill_md": fx.merge_ready_skill_md(),
                 "auto_drive_skill_dir": fx.auto_drive_skill_dir(),
                 "resolved_fence": "~~~~",
             }),
             "exact field set, and findings kept byte for byte"
         );
-        // The step-01 output goes, unchanged, to the real record writer
-        // through the step-06 command and its forced-absolute tools path.
+        // The real record writer, through the step-06 command and its
+        // forced-absolute tools path, with both step outputs present.
         let _ = std::fs::remove_file(capture.join("completion-seal.log"));
         let record = crate::isolated_amplihack::isolated("bash")
             .args(["-c", &step_command(CRUSTY, "step-06-write-round-record")])
@@ -1011,7 +1048,8 @@ fn step01_serializes_hostile_findings_and_step06_keeps_the_observed_sha() {
             .env("AUTODRIVE_ROUND_RECORD", &fx.round_record)
             .env("AUTODRIVE_ROUND_LABEL", "round-3")
             .env("AUTODRIVE_COMPLETION_STATE", &completion)
-            .env("RECIPE_VAR_crusty_round_context", stdout(&out))
+            .env("RECIPE_VAR_crusty_round_context", &agent_ctx)
+            .env("RECIPE_VAR_crusty_round_paths", stdout(&out))
             .env(
                 "RECIPE_VAR_crusty_verdict",
                 r#"{"crusty_verdict":"CLEAN","concern_count":0}"#,
@@ -1041,15 +1079,15 @@ fn step01_serializes_hostile_findings_and_step06_keeps_the_observed_sha() {
     assert!(
         std::fs::read_to_string(capture.join("gh.log"))
             .unwrap_or_default()
-            .contains("headRefOid"),
-        "the fake gh must have supplied the PR head"
+            .is_empty(),
+        "step-00b reads no hosting state"
     );
 }
 
 /// A failing serialiser publishes nothing: no partial JSON on stdout, a
 /// named error, and the findings are not echoed (SR-5).
 #[test]
-fn step01_serializer_failure_publishes_no_context() {
+fn step00b_serializer_failure_publishes_no_context() {
     require_bash!();
     let fx = fixture();
     let jq_log = fx.root().join("jq.log");
@@ -1063,7 +1101,7 @@ fn step01_serializer_failure_publishes_no_context() {
     );
     let secret_finding = "C9: private finding text that must not be echoed\n";
     std::fs::write(&fx.resolved, secret_finding).unwrap();
-    let out = run_step01(&fx, Some(&fx.launch_tools()));
+    let out = run_round_paths(&fx, Some(&fx.launch_tools()));
     assert!(
         std::fs::read_to_string(&jq_log).is_ok_and(|s| s.contains("called")),
         "the fake jq must have been reached\n{}",
@@ -1225,43 +1263,63 @@ fn resolver_rejects_an_unusable_auto_drive_skill_path() {
     );
 }
 
+/// Since #2340 the resolver reads the runner-pinned `AMPLIHACK_HOME` only, so a
+/// checkout's copy of the skills (the branch under review) never supplies the
+/// criteria or the auto-drive-to-merge folder the prompts point at.
 #[test]
-fn resolver_warns_when_the_auto_drive_skill_comes_from_the_branch_under_review() {
+fn resolver_never_takes_skills_from_the_checkout() {
     require_bash!();
     let fx = fixture();
     let repo = fx.root().join("checkout");
-    std::fs::create_dir_all(&repo).unwrap();
-    git(&repo, &["init", "-q", "-b", "main"]);
     mk_skills(&repo.join("amplifier-bundle/skills"), true);
-    git(&repo, &["add", "-A"]);
-    git(&repo, &["commit", "-q", "-m", "base"]);
-    git(&repo, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
-    let warning = "WARNING: auto-drive-to-merge skill comes from the branch under review and differs from origin/main";
-    let env = [("REPO_PATH", repo.to_str().unwrap())];
-
-    let same = run_resolver(&fx, &fx.plain, &env);
-    assert!(same.status.success(), "{}", show(&same));
+    let unset = run_resolver(&fx, &fx.plain, &[("REPO_PATH", repo.to_str().unwrap())]);
+    assert!(!unset.status.success(), "{}", show(&unset));
+    assert!(stdout(&unset).trim().is_empty(), "{}", show(&unset));
     assert!(
-        !stderr(&same).contains(warning),
-        "no warning when it matches the base\n{}",
-        show(&same)
+        stderr(&unset).contains("ERROR: trusted AMPLIHACK_HOME is required"),
+        "{}",
+        show(&unset)
     );
-
-    write(
-        &repo.join("amplifier-bundle/skills/auto-drive-to-merge/SKILL.md"),
-        "# changed on the branch\n",
+    let empty_home = fx.root().join("empty-home");
+    std::fs::create_dir_all(&empty_home).unwrap();
+    let o = run_resolver(
+        &fx,
+        &repo,
+        &[
+            ("AMPLIHACK_HOME", empty_home.to_str().unwrap()),
+            ("REPO_PATH", repo.to_str().unwrap()),
+        ],
     );
-    let changed = run_resolver(&fx, &fx.plain, &env);
+    assert!(!o.status.success(), "{}", show(&o));
     assert!(
-        changed.status.success(),
-        "the warning never fails the step\n{}",
-        show(&changed)
+        stderr(&o).contains("ERROR: merge-ready-skill-files-not-found:"),
+        "{}",
+        show(&o)
     );
-    assert!(stderr(&changed).contains(warning), "{}", show(&changed));
-    assert_eq!(
-        json_line(&changed)["auto_drive_skill_dir"].as_str(),
-        Some(phys(&repo.join("amplifier-bundle/skills/auto-drive-to-merge")).as_str())
+    assert!(
+        !stdout(&o).contains(&phys(&repo)),
+        "no checkout path is published\n{}",
+        show(&o)
     );
+}
+
+/// The agent steps #2340 added to the rounds name what they read: the
+/// crusty step-01 agent the resolved-concerns file, the merge-round crusty
+/// evidence agent the trusted helper that reads the records (#2222).
+#[test]
+fn agent_steps_added_by_2340_name_their_inputs() {
+    require_bash!();
+    let fx = fixture();
+    let p = rendered(&fx, CRUSTY, "step-01-round-context");
+    assert!(p.contains(&format!("`{}`", fx.resolved.display())), "{p}");
+    assert!(!p.contains("loop-provided private state"), "{p}");
+    let p = rendered(&fx, MERGE, "step-01b-crusty-evidence");
+    assert!(
+        p.contains(&format!("`{}/autodrive_round_evidence.sh`", tools_dir().display())),
+        "{p}"
+    );
+    let p = rendered(&fx, MERGE, "step-01-platform-facts");
+    assert!(p.contains("You need no file in the state directory"), "{p}");
 }
 
 #[test]
@@ -1274,13 +1332,13 @@ fn merge_round_step04_renders_the_merge_ready_skill_md() {
     assert!(p.contains("{{merge_ready_files.auto_drive_skill_dir}}"));
 }
 
-// ── Crusty step-01-round-context ────────────────────────────────────────────
+// ── Crusty step-00b-round-paths ─────────────────────────────────────────────
 
 #[test]
-fn step01_adds_the_two_skill_paths_from_the_launchers_install() {
+fn step00b_adds_the_two_skill_paths_from_the_launchers_install() {
     require_bash!();
     let fx = fixture();
-    let v = crusty_round_context(&fx);
+    let v = crusty_round_paths(&fx);
     assert_eq!(
         v["merge_ready_skill_md"].as_str(),
         Some(fx.merge_ready_skill_md().as_str()),
@@ -1291,9 +1349,13 @@ fn step01_adds_the_two_skill_paths_from_the_launchers_install() {
         Some(fx.auto_drive_skill_dir().as_str()),
         "{v}"
     );
-    for k in ["pr", "head_sha", "resolved_concerns", "round_label"] {
-        assert!(v.get(k).is_some(), "existing key `{k}` is kept: {v}");
-    }
+    let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        ["auto_drive_skill_dir", "merge_ready_skill_md", "resolved_concerns", "resolved_fence"],
+        "step-00b publishes paths and findings only; PR and head come from the step-01 agent: {v}"
+    );
     let home = fx.home.to_string_lossy();
     for k in ["merge_ready_skill_md", "auto_drive_skill_dir"] {
         assert!(
@@ -1304,13 +1366,13 @@ fn step01_adds_the_two_skill_paths_from_the_launchers_install() {
 }
 
 #[test]
-fn step01_fails_by_name_when_a_skill_is_missing() {
+fn step00b_fails_by_name_when_a_skill_is_missing() {
     require_bash!();
     let fx = fixture_with(false);
     // Crusty must not fall back to checkout- or HOME-sourced instructions.
     mk_skills(&fx.repo.join("amplifier-bundle/skills"), true);
     mk_skills(&fx.home.join(".amplihack/amplifier-bundle/skills"), true);
-    let o = run_step01(&fx, Some(&fx.launch_tools()));
+    let o = run_round_paths(&fx, Some(&fx.launch_tools()));
     assert!(
         !o.status.success(),
         "no fallback: a missing skill fails\n{}",
@@ -1330,7 +1392,7 @@ fn step01_fails_by_name_when_a_skill_is_missing() {
 
     let fx = fixture();
     std::fs::remove_dir_all(fx.bundle.join("skills/merge-ready")).unwrap();
-    let o = run_step01(&fx, Some(&fx.launch_tools()));
+    let o = run_round_paths(&fx, Some(&fx.launch_tools()));
     assert!(!o.status.success(), "{}", show(&o));
     assert!(
         stderr(&o).contains("ERROR: crusty-skill-path-not-found: "),
@@ -1341,11 +1403,11 @@ fn step01_fails_by_name_when_a_skill_is_missing() {
 }
 
 #[test]
-fn step01_fails_by_name_with_empty_launch_tools() {
+fn step00b_fails_by_name_with_empty_launch_tools() {
     require_bash!();
     let fx = fixture();
     for value in [None, Some("")] {
-        let o = run_step01(&fx, value);
+        let o = run_round_paths(&fx, value);
         assert!(!o.status.success(), "{value:?}\n{}", show(&o));
         assert!(stdout(&o).trim().is_empty(), "{}", show(&o));
         assert!(
@@ -1358,13 +1420,13 @@ fn step01_fails_by_name_with_empty_launch_tools() {
 }
 
 #[test]
-fn step01_rejects_unusable_skill_path() {
+fn step00b_rejects_unusable_skill_path() {
     require_bash!();
     let fx = fixture();
     let odd = fx.root().join("we\"ird");
     std::fs::create_dir_all(odd.join("tools")).unwrap();
     mk_skills(&odd.join("skills"), true);
-    let o = run_step01(&fx, Some(odd.join("tools").to_str().unwrap()));
+    let o = run_round_paths(&fx, Some(odd.join("tools").to_str().unwrap()));
     assert!(!o.status.success(), "{}", show(&o));
     assert!(
         stdout(&o).trim().is_empty(),
@@ -1379,12 +1441,12 @@ fn step01_rejects_unusable_skill_path() {
 }
 
 #[test]
-fn step01_strips_control_bytes_from_echoed_paths() {
+fn step00b_strips_control_bytes_from_echoed_paths() {
     require_bash!();
     let fx = fixture();
     let odd = fx.root().join("esc\x1b[31mape");
     std::fs::create_dir_all(odd.join("tools")).unwrap();
-    let o = run_step01(&fx, Some(odd.join("tools").to_str().unwrap()));
+    let o = run_round_paths(&fx, Some(odd.join("tools").to_str().unwrap()));
     assert!(!o.status.success(), "{}", show(&o));
     assert!(
         stderr(&o).contains("ERROR: crusty-skill-path-"),
@@ -2055,30 +2117,39 @@ fn render_round_prompts_from_driver_context(
     let mut ctx = captured_context(&d.argv(round, "round-2"));
     // These two outputs are produced by the real deterministic steps,
     // since the external recipe CLI is intentionally faked in this test.
-    ctx["crusty_round_context"] = crusty_round_context(&d.fx);
+    // The step-01 agent's report is synthetic: no agent is started.
+    ctx["crusty_round_paths"] = crusty_round_paths(&d.fx);
     assert_eq!(
-        ctx["crusty_round_context"]["resolved_concerns"],
+        ctx["crusty_round_paths"]["resolved_concerns"],
         EARLIER_FINDINGS
     );
+    ctx["crusty_round_context"] = agent_round_context();
     ctx["merge_ready_files"] = merge_ready_files(&d.fx);
+    ctx["autodrive_tools_dir"] = json!(tools_dir().to_string_lossy());
     ctx["crusty_review"] = json!(EARLIER_FINDINGS);
     ctx["merge_ready_review"] = json!(EARLIER_FINDINGS);
     let record = state.join(format!("{name}-round-2.json"));
     let mut rendered_steps = Vec::new();
-    for (r, step) in COVERED_PROMPTS.iter().filter(|(r, _)| *r == round) {
+    for (i, (r, step)) in COVERED_PROMPTS
+        .iter()
+        .enumerate()
+        .filter(|(_, (r, _))| *r == round)
+    {
         let p = render(&prompt(r, step), &ctx);
         assert_checkout_paths(&p, &phys(&d.fx.repo), &phys(&d.main), step);
         assert!(
             p.contains(&format!("`{}`", phys(state))),
             "{r}/{step}: give the authoritative directory as a literal value"
         );
-        assert!(p.contains(record.to_str().unwrap()));
+        if i < ROUND_RECORD_PROMPTS {
+            assert!(p.contains(record.to_str().unwrap()), "{r}/{step}: name the round record");
+        }
         assert!(
             p.lines().any(|l| l == R2),
             "{r}/{step}: exact restriction missing"
         );
         for leak in STATE_DIR_LEAKS {
-            assert!(!p.contains(leak), "{r}/{step}: leaked {leak}");
+            assert!(!names_leak(&p, leak), "{r}/{step}: leaked {leak}");
         }
         if *step == STEP07 {
             let completion = ctx["autodrive_completion_state"]
