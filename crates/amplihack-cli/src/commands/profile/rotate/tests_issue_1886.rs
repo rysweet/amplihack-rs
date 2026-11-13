@@ -830,6 +830,7 @@ mod note_live_account {
             detected_mark: None,
             home_no_oauth: api_key,
             candidate_accounts: Vec::new(),
+            live_excluded: false,
         }
     }
 

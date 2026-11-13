@@ -8,12 +8,13 @@ mod correlation;
 pub(crate) mod execute;
 /// Issue #1267 — transient vs terminal classification of a failed run.
 mod failure_class;
+/// Issue #1437 — evidence gathering and the marker tables `failure_class` reads.
+mod failure_evidence;
+mod failure_markers;
 mod format;
 /// Issue #1618: the usage-limit patterns of every agent harness, in one place.
 pub(crate) mod limit_patterns;
 mod limit_reset;
-/// Issue #1551 — the `gh` merge guard for auto-drive runs.
-pub(crate) mod merge_guard;
 /// Issue #1976 — a nested run watches its parent `recipe run`.
 pub(crate) mod orphan_record;
 pub(crate) mod parent_watch;
@@ -24,6 +25,8 @@ pub(crate) mod removed_keys;
 mod retry;
 /// Issue #1606: SIGHUP/SIGINT/SIGTERM stop the whole recipe tree.
 pub(crate) mod stop_signal;
+/// Issue #1437 — a failed step's terminating exit status, from the runner's envelope.
+mod termination;
 
 pub use context_sources::resolve_context_args;
 /// Issue #1569: the auto-switch rerun supervisor uses the same classifier, so
@@ -79,13 +82,13 @@ fn execute_recipe_via_rust_for_test(
     execute_recipe_via_rust(
         recipe_path,
         context,
+        context,
         dry_run,
         verbose,
         working_dir,
         search_dirs,
         step_timeout,
         crate::env_builder::resolve_agent_binary_in(working_dir),
-        false,
     )
 }
 
@@ -262,7 +265,14 @@ fn run_recipe_with_options(
     });
     let validated_path = resolve_recipe_path(recipe_path, &abs_working_dir)?;
     let recipe = parse_recipe_from_path(&validated_path)?;
-    let (mut merged_context, inferred) = infer_missing_context(&recipe.context, &context);
+    // Keep operator inputs separate from defaults for authorization. Auto-drive
+    // expands context only after selecting its pinned trusted entrypoint.
+    let (mut merged_context, inferred) =
+        if crate::commands::orch::autodrive::trusted::applies(&recipe.name) {
+            (context.clone(), Vec::new())
+        } else {
+            infer_missing_context(&recipe.context, &context)
+        };
     if verbose {
         writeln!(io::stderr(), "Executing recipe: {}", recipe.name)?;
         if dry_run {
@@ -277,6 +287,10 @@ fn run_recipe_with_options(
             )?;
         }
     }
+    // Recovery normalisation rewrites the derived context only. `context`, the
+    // raw operator inputs, is passed on untouched as `explicit_inputs`: it is
+    // the sole source of auto-drive authority and must never be normalised,
+    // defaulted or recovered (#2329).
     recovery::normalize(&mut merged_context, &abs_working_dir);
     // Issue #1481: resolve the agent binary once, from the directory the steps
     // run in, and hand that one answer to both the #1482 pre-flight and the
@@ -303,23 +317,16 @@ fn run_recipe_with_options(
     let request = AdmitRequest::recipe(governed, &recipe.name);
     let _slot = governor::admit(request).map_err(Denied::report)?;
     let search_dirs = build_search_dirs(&validated_path, &abs_working_dir)?;
-    // Issue #1551: auto-drive, and any run nested inside one, gets the `gh`
-    // merge guard first on PATH.
-    let merge_guard = merge_guard::guard_applies(
-        &recipe.name,
-        &validated_path,
-        std::env::var(merge_guard::MERGE_GUARD_ENV).ok().as_deref(),
-    );
     let result = match execute::execute_recipe_via_rust_fresh(
         &validated_path,
         &merged_context,
+        &context,
         dry_run,
         verbose,
         &abs_working_dir,
         &search_dirs,
         step_timeout,
         agent_binary,
-        merge_guard,
         fresh,
     ) {
         Ok(result) => result,
@@ -347,6 +354,7 @@ fn run_recipe_with_options(
     if result.success {
         Ok(())
     } else {
+        failure_class::emit_final_failure_class_marker(&result);
         Err(exit_error(1))
     }
 }
@@ -480,13 +488,13 @@ mod tests_execute;
 #[cfg(test)]
 mod tests_failure_class;
 #[cfg(test)]
+mod tests_failure_class_1437;
+#[cfg(test)]
 mod tests_format;
 #[cfg(test)]
 mod tests_limit_patterns;
 #[cfg(test)]
 mod tests_limit_reset;
-#[cfg(test)]
-mod tests_merge_guard;
 #[cfg(all(test, unix))]
 mod tests_merge_guard_pin;
 #[cfg(test)]
@@ -497,6 +505,10 @@ mod tests_root_sandbox;
 mod tests_teardown;
 #[cfg(test)]
 mod tests_terminal_record;
+#[cfg(test)]
+mod tests_termination;
+#[cfg(test)]
+mod tests_termination_contract;
 
 #[cfg(all(test, unix))]
 mod test_runner;

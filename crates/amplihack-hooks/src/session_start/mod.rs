@@ -26,9 +26,7 @@ use context_loaders::{
     load_user_preferences, load_workflow_context,
 };
 pub(crate) use context_loaders::{is_nested_recipe_session, is_workflow_active};
-use migration::{
-    code_graph_compatibility_notice, memory_graph_compatibility_notice, migrate_global_hooks,
-};
+use migration::{code_graph_compatibility_notice, memory_graph_compatibility_notice};
 
 pub struct SessionStartHook;
 
@@ -91,12 +89,8 @@ impl Hook for SessionStartHook {
             context_parts.push(version_notice);
         }
 
-        // Migrate global hooks if needed.
-        if !codex_protocol_selected()
-            && let Some(migration_notice) = migrate_global_hooks(&dirs)
-        {
-            context_parts.push(migration_notice);
-        }
+        // Issue #2279 (C13): amplihack's global hooks are never removed here,
+        // even when the project has its own copy.
 
         // Run blarify / code-graph indexing setup and track the lifecycle status.
         //
@@ -201,10 +195,6 @@ fn maybe_capture_original_request(
     let prompt = extra.get("prompt").and_then(Value::as_str).map(str::trim)?;
     capture_original_request(session_dir, session_id, prompt)
         .map(|captured| format_original_request_context(&captured.request))
-}
-
-pub(crate) fn codex_protocol_selected() -> bool {
-    crate::protocol::codex_hook_protocol_selected()
 }
 
 fn format_code_graph_status(body: String) -> String {

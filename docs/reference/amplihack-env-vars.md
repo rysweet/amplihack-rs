@@ -135,8 +135,8 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_MEMORY_TOKEN_BUDGET` | user preference |  | Memory injection token budget. |
 | `AMPLIHACK_MEMORY_TOPOLOGY` | user preference |  | Distributed-memory topology. |
 | `AMPLIHACK_MEMORY_TRANSPORT` | user preference |  | Distributed-memory transport. |
-| `AMPLIHACK_MERGE_GUARD` | internal |  | Set by `recipe run` for auto-drive recipes; the merge guard (`gh pr merge` shim and pre-tool-use hook) is active while it is non-empty. |
-| `AMPLIHACK_MERGE_GUARD_USER_BASH_ENV` | internal |  | The user's own `BASH_ENV`, kept while the merge guard's `BASH_ENV` file is in place; that file sources it first. |
+| `AMPLIHACK_MERGE_GUARD` | internal |  | Retired marker. Launch and recipe execution remove it; it grants no merge authority. |
+| `AMPLIHACK_MERGE_GUARD_USER_BASH_ENV` | internal |  | Retired compatibility value. When removing the exact retired guard `BASH_ENV`, launch restores this unrelated user path without sourcing the retired guard. |
 | `AMPLIHACK_MIN_AVAILABLE_MIB` | user preference |  | Free-memory floor before a session-tree spawn. |
 | `AMPLIHACK_MODE` | user preference |  | Forces the detected framework mode. |
 | `AMPLIHACK_NONINTERACTIVE` | internal |  | Marks a delegated, non-interactive process; set by `recipe run` for every step. |

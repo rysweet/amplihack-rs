@@ -754,10 +754,21 @@ fn corrupt_settings_file_means_off_and_is_replaced_by_on() {
             .contains("switch: off (corrupt)")
     );
 
-    // `threshold` refuses a corrupt file; `on` replaces it.
+    // `threshold` refuses a corrupt file. So does a bare `on` while the file
+    // does not parse, since its exclude list is unknown (issue #2218);
+    // `on --exclude ''` names the list and replaces the file.
     let out = f.run_args(&["profile", "auto-switch", "threshold", "50"]);
     assert!(!out.status.success());
-    f.switch_on();
+    let out = f.run_args(&["profile", "auto-switch", "on"]);
+    assert!(!out.status.success());
+    assert!(
+        text(&out.stderr).contains("exclude list is unknown"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert_eq!(fs::read_to_string(&file).unwrap(), "x".repeat(5000));
+    let out = f.run_args(&["profile", "auto-switch", "on", "--exclude", ""]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
     assert_eq!(
         fs::read_to_string(&file).unwrap(),
         "enabled=on\nthreshold=90\nexclude=\n"
@@ -772,7 +783,20 @@ fn symlinked_settings_file_is_never_written_through() {
     std::os::unix::fs::symlink(&target, f.root.join(".auto-switch")).unwrap();
     let out = f.run_args(&["profile", "auto-switch", "on"]);
     assert!(!out.status.success());
-    assert!(text(&out.stderr).contains("hint:"), "{}", text(&out.stderr));
+    let stderr = text(&out.stderr);
+    // Issue #2218: while the symlink is there every profile counts as
+    // excluded, so the advice is to make it a regular file, never to
+    // remove it (that would leave no exclusions).
+    assert!(stderr.contains("is a symlink"), "{stderr}");
+    assert!(stderr.contains("Do not delete it"), "{stderr}");
+    assert!(
+        stderr.contains("hint: do not remove <root>/.auto-switch"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("remove <root>/.auto-switch and run"),
+        "{stderr}"
+    );
     assert_eq!(fs::read_to_string(&target).unwrap(), "enabled=off\n");
     assert!(
         f.stdout(&["profile", "auto-switch", "status"])

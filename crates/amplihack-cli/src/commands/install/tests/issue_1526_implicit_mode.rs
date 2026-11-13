@@ -588,12 +588,20 @@ fn hook_drift_names_an_outdated_timeout() {
     assert!(!notice.contains("SessionStart"), "{notice}");
 }
 
-/// A file with no amplihack hooks, a missing file and a non-JSON file are
-/// not drift; the launch bootstrap handles them.
+/// A missing file and a non-JSON file are not drift; the launch bootstrap
+/// handles them. Issue #2279 (D8): a file with no amplihack hook at all is
+/// drift, and every registration is named.
 #[test]
-fn hook_drift_ignores_unconfigured_missing_and_unparseable_files() {
+fn hook_drift_names_every_event_of_a_stripped_file_and_ignores_missing_and_unparseable() {
     let empty = settings_with(&[]);
-    assert_eq!(drift_notice(empty.path()), "");
+    let notice = drift_notice(empty.path());
+    for spec in types::AMPLIHACK_HOOK_SPECS {
+        let types::HookCommandKind::BinarySubcmd { subcmd } = spec.cmd;
+        assert!(
+            notice.contains(&format!("{} ({subcmd})", spec.event)),
+            "{notice}"
+        );
+    }
     assert_eq!(drift_notice(Path::new("/nonexistent/settings.json")), "");
     let bad = tempfile::NamedTempFile::new().unwrap();
     fs::write(bad.path(), b"{ not json").unwrap();

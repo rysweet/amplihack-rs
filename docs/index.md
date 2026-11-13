@@ -326,11 +326,15 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Correlate Recipe Runs with Logs](howto/correlate-recipe-runs.md) - Match terminal output, final JSON, child process IDs, and runner log paths by run ID
 - [Recipe Executor Environment](reference/recipe-executor-environment.md) - Step-level variables plus subprocess environment contract for forced non-interactive recipe execution
 - [Recipe Commit Hook Repair](reference/recipe-commit-hook-repair.md) - How checkpoint and publish steps hand a rejected git `pre-commit` or `pre-push` hook to a fixing agent, retry under loop-health evaluation, and refuse changes to hook configuration
+- [Recipe Check Exit Status](reference/recipe-check-exit-status.md) - How test, hook and CI check steps report the real exit status, keep stderr in the step log, and route failures to fix or diagnosis steps (issue #2190)
 - [Structured Verdict & Intent Parsing Reference](reference/structured-verdict-parsing.md) - `normalise-verdict` helper, `session-tree register --json`, and the `verdict`/`no_merge`/`goal_status`/`status` fields that replace brittle agent-prose scraping
-- [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - the build → crusty-review → merge-ready loops, how the autodrive recipes read step outputs through `RECIPE_VAR_<output>`, how the `LOOP_HEALTH:` line is read, the no-progress stop and per-run usage budget (`autodrive_budget_*`), and the evidence-gated merge
-- [Crusty Completion Contract](reference/autodrive-crusty-completion.md) - Completion-first dispatch for CLEAN and MINOR_ONLY, decision integrity, and follow-up recording before phase completion
+- [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - Planned responsibilities, invocation-wide authorization, gate retirement, and target compatibility matrix
+- [Auto-drive Evidence and Outcomes](reference/auto-drive-evidence.md) - Planned evidence contract for all 13 criteria and auto-drive's crusty convergence substitution
+- [Auto-drive QA Selection](reference/auto-drive-qa.md) - QA selection requirements for the planned evidence workflow
+- [Verify a PR Without Merging](howto/verify-pr-with-auto-drive.md) - Planned guide; current no_merge=true does not protect final merging
 - [Loop-Health Evaluator Reference](reference/loop-health-evaluator.md) - the reusable `CONTINUE`/`DONE`/`STUCK` agentic loop-health contract, `normalise-loop-verdict`, and why the loop terminator is absence of progress rather than an iteration cap
-- [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - the three phases, how the merge round applies the merge-ready criteria (gadugi scenarios run one per process, the crusty loop as criterion 3), the `AUTODRIVE_QA_*` variables, `.amplihack/qa.toml` and how the QA command is chosen and scoped to the changed paths, the evidence-gated merge, and why rounds commit only in the pull request's worktree, and how minor-only crusty verdicts end the crusty loop with a follow-up issue per finding (#1979), and what "CI green" means: every expected check exists at the head SHA and passed (#2186)
+- [Crusty Completion Contract](reference/autodrive-crusty-completion.md) - Completion-first dispatch for CLEAN and MINOR_ONLY, decision integrity, and follow-up recording before phase completion
+- [Expected Checks at the Head](reference/autodrive-expected-checks.md) - `autodrive_expected_checks.sh`: CI green means every expected check (required checks and every pull_request workflow job) exists at the head SHA and passed; MISSING, PENDING, RED and UNREADABLE block, and the limits of the expected set (#2186)
 - [Git Repository Environment Helper](reference/git-repo-env-helper.md) - `git-repo-env.sh`: the one shell list of `GIT_*` repository selectors and outer-run `AMPLIHACK_*` names, which auto-drive QA steps and the cargo hook clear before running tests, the `git_env_cleared` and `run_env_cleared` evidence fields, and the drift guard (#2033)
 - [Session-Tree Recursion Control](reference/session-tree-recursion-control.md) - where tree state lives, how the depth ceiling is sealed, the `BLOCKED_TERMINAL` exit-79 contract, `session-tree gc` retention, and mixed-version fleets
 - [Read Agent Verdicts with orch helper](howto/parse-agent-verdicts-with-orch-helper.md) - Migrate grep/awk/jq gates to `orch helper extract-json | extract-field | normalise-verdict` and structured `parse_json` conditions
@@ -784,8 +788,10 @@ Advanced configuration, deployment patterns, and environment management.
 
 - [Profile Management](PROFILE_MANAGEMENT.md) - Multiple environment configurations
 - [Hook Configuration](HOOK_CONFIGURATION_GUIDE.md) - Customize framework behavior
+- [amplihack Hooks Block](reference/hook-block.md) - The single hooks definition, every writer that keeps it in `settings.json`, the launch `--settings` file and the `doctor` drift report
+- [One Source for the Hooks Block](concepts/hook-block-single-source.md) - Why install, launch, profiles and the rotator share one merge, and why launches also pass `--settings`
 - [Hook Payload Compatibility](HOOK_PAYLOAD_COMPATIBILITY.md) - Claude Code, Amplifier, and Copilot CLI tool-input payload shapes and normalization
-- [Global Hook Cleanup & Doctor Hook Detection](HOOK_MIGRATION_AND_DOCTOR.md) - Safe global-vs-project-local hook cleanup on session start and how `amplihack doctor` detects installed hooks
+- [Global Hooks at Session Start & Doctor Hook Detection](HOOK_MIGRATION_AND_DOCTOR.md) - Why session start keeps global hooks alongside project-local ones, and how `amplihack doctor` checks installed hooks
 - [Shell Command Hook](SHELL_COMMAND_HOOK.md) - Custom shell integrations
 
 ### Deployment

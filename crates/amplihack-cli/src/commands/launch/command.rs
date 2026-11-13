@@ -102,6 +102,7 @@ pub(super) fn build_command(
         false, // subprocess_safe
         None,  // claude_config_dir
         Some(Path::new(TEST_CONTRACT_PATH)),
+        None, // hook_settings
     )
     .expect("a contract path is supplied")
 }
@@ -117,6 +118,7 @@ pub(super) fn build_command_for_dir(
     subprocess_safe: bool,
     claude_config_dir: Option<&Path>,
     contract_file: Option<&Path>,
+    hook_settings: Option<&Path>,
 ) -> Result<Command> {
     let mut cmd = Command::new(&binary.path);
 
@@ -228,6 +230,14 @@ pub(super) fn build_command_for_dir(
     ) {
         let path = contract_file.context(system_prompt_append::CONTRACT_PATH_MISSING)?;
         cmd.arg("--append-system-prompt-file");
+        cmd.arg(path);
+    }
+
+    // Issue #2279 (D5): amplihack's hooks block as a settings source of its
+    // own, by path (#2030), before the user's arguments. The caller decides
+    // whether it applies (`hook_settings::prepare`).
+    if let Some(path) = hook_settings {
+        cmd.arg("--settings");
         cmd.arg(path);
     }
 
