@@ -23,6 +23,8 @@ context:
   pr_url: ""
   plan_task_id: ""
   autodrive_state_dir: ""
+  autodrive_invocation_file: ""
+  autodrive_authorization: ""
   autodrive_dry_run: "false"
   no_merge: "false"
   merge: ""

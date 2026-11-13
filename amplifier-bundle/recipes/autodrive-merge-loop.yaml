@@ -32,6 +32,7 @@ context:
   autodrive_authorization: ""
   autodrive_finalization: ""
   build_result: ""
+  drive_policy: ""
 steps:
   - id: "step-01-merge-loop-preflight"
     type: "agent"
