@@ -260,7 +260,7 @@ mod runner {
 
     impl Fixture {
         fn new() -> Self {
-            let temp = tempfile::tempdir().unwrap();
+            let temp = tempfile::tempdir_in(crate::support::scratch_base::scratch_base()).unwrap();
             let root = temp.path().canonicalize().unwrap();
             let home = root.join("home");
             fs::create_dir_all(&home).unwrap();
@@ -321,6 +321,11 @@ mod runner {
                 .arg(&self.root)
                 .current_dir(&self.root)
                 .env("HOME", &self.home)
+                .env("TMPDIR", &self.root)
+                .env("XDG_CONFIG_HOME", self.home.join(".config"))
+                .env("CLAUDE_CONFIG_DIR", self.home.join(".claude"))
+                .env("CODEX_HOME", self.home.join(".codex"))
+                .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", self.home.join("profiles"))
                 .env("AMPLIHACK_HOME", &self.bundle)
                 .env("RECIPE_RUNNER_RS_PATH", &self.runner)
                 .env("RECORD_FILE", &self.record)
@@ -373,6 +378,13 @@ mod runner {
         )
     }
 
+    fn isolated_drive_test(name: &str, body: impl FnOnce()) {
+        crate::support::quiet_process::in_quiet_process(module_path!(), name, || {
+            crate::support::quiet_process::child_set_var("TMPDIR", "/var/tmp");
+            body();
+        });
+    }
+
     #[test]
     fn local_recipe_defaults_cannot_grant_authority_or_replace_trusted_defaults() {
         for (name, args, no_merge, dry_run) in [
@@ -418,7 +430,7 @@ mod runner {
             );
             assert_eq!(
                 auth["requested_action"],
-                if no_merge || dry_run {
+                if name != "auto-drive-to-merge" || dry_run {
                     "verify_readiness"
                 } else {
                     "merge"
@@ -455,15 +467,78 @@ mod runner {
 
     #[test]
     fn child_context_and_child_result_cannot_replace_invocation_authorization() {
-        let fixture = Fixture::new();
-        let output = fixture.run("auto-drive-to-merge", &["-c", "no_merge=true"], false);
-        assert!(output.status.success(), "{}", details(&output));
-        let result: Json =
-            serde_json::from_slice(&output.stdout).expect("structured runner result");
-        let auth = &result["autodrive_authorization"];
-        assert_eq!(auth["no_merge"], true);
-        assert_eq!(auth["requested_action"], "verify_readiness");
-        assert_ne!(auth["run_id"], "child-forged");
+        isolated_drive_test(
+            "child_context_and_child_result_cannot_replace_invocation_authorization",
+            || {
+                let fixture = Fixture::new();
+                let output = fixture.run(
+                    "auto-drive-to-merge",
+                    &["-c", "merge=handoff", "-c", "no_merge=true"],
+                    false,
+                );
+                assert!(output.status.success(), "{}", details(&output));
+                let result: Json =
+                    serde_json::from_slice(&output.stdout).expect("structured runner result");
+                let auth = &result["autodrive_authorization"];
+                assert_eq!(auth["no_merge"], true);
+                assert_eq!(auth["requested_action"], "handoff");
+                assert_ne!(auth["run_id"], "child-forged");
+            },
+        );
+    }
+
+    #[test]
+    fn issue_2555_explicit_mode_is_captured_before_recipe_defaults_and_recovered_context() {
+        isolated_drive_test(
+            "issue_2555_explicit_mode_is_captured_before_recipe_defaults_and_recovered_context",
+            || {
+                for fresh in [false, true] {
+                    let fixture = Fixture::new();
+                    let mut args = vec!["-c", "merge=handoff", "-c", "requested_action=merge"];
+                    if fresh {
+                        args.push("--fresh");
+                    }
+                    let output = fixture.run_with_defaults(
+                        "auto-drive-to-merge",
+                        &args,
+                        false,
+                        "{merge: 'merge', no_merge: 'false', requested_action: 'merge'}",
+                    );
+                    assert!(output.status.success(), "{}", details(&output));
+                    assert!(fixture.record.exists(), "runner did not execute");
+                    let result: Json = serde_json::from_slice(&output.stdout).unwrap();
+                    assert_eq!(
+                        result["autodrive_authorization"]["requested_action"],
+                        "handoff"
+                    );
+                    assert_ne!(
+                        result["autodrive_outcome"]["action"], "handed_off",
+                        "child success is not durable handoff evidence"
+                    );
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn issue_2555_invalid_explicit_mode_fails_before_runner_launch() {
+        isolated_drive_test(
+            "issue_2555_invalid_explicit_mode_fails_before_runner_launch",
+            || {
+                for mode in ["HANDOFF", "squash", "true", "{{merge}}"] {
+                    let fixture = Fixture::new();
+                    let arg = format!("merge={mode}");
+                    let output = fixture.run("auto-drive-to-merge", &["-c", &arg], false);
+                    assert!(
+                        !output.status.success(),
+                        "accepted {mode}: {}",
+                        details(&output)
+                    );
+                    assert!(!fixture.record.exists(), "invalid mode reached the runner");
+                    assert!(details(&output).contains("merge"), "lost mode diagnostic");
+                }
+            },
+        );
     }
 
     #[test]

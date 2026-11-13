@@ -1,8 +1,18 @@
+---
+title: Auto-drive Record Contract
+description: Readiness schemas, authoritative drive policy and durable handoff evidence.
+last_updated: 2026-11-12
+doc_type: reference
+---
+
 # Auto-drive record contract (schema 1)
+
+Requested actions are `verify_readiness`, `merge` and `handoff`, selected from captured invocation authority and durable resolved policy. `no_merge` controls only the build phase.
+The [policy and handoff records](#planned-policy-and-handoff-records) extend the readiness boundary with durable steward handoff.
 
 These are workflow outcomes. Agents may use any available authenticated interface
 that supplies equivalent complete observations. Rust helpers validate local
-records; they do not contact the hosting service or perform a merge.
+records. Policy and handoff helpers contact the authenticated hosting service through narrow interfaces without merge or scheduling operations.
 
 For hosting calls, use only configured authenticated access to the bound host
 and repository, with TLS verification and finite request timeouts under the
@@ -80,9 +90,7 @@ A `FinalizationObservation` contains:
 {"binding":{},"requested_action":"verify_readiness","expected_head_sha":"verified head","refreshed_head_sha":"current head","request_expected_head_sha":null,"mutable_facts_refreshed":true,"merge_requests":0,"request_outcome":"not_requested","platform_state_at_entry":"open","platform_state_before_action":"open","platform_state":"open","confirmation_evidence":"actual platform readback","failure_cause":null,"attempts":[]}
 ```
 
-Requested action is `verify_readiness` or `merge`, determined exclusively by
-the captured invocation. `no_merge=true` or dry-run prohibits every merge
-request. Build/review/repair always leave the PR open. Dry-run also prohibits
+Requested actions are `verify_readiness`, `merge` and `handoff`. Captured authority and durable resolved policy select the action. Handoff and dry-run prohibit merging; `no_merge` controls only the build. Build/review/repair always leave the PR open. Dry-run also prohibits
 follow-up issue creation. An authorized merge requires complete accepted
 readiness, freshly observed mutable facts and expected-head protection on the
 request. Record the head actually sent in `request_expected_head_sha`.
@@ -125,3 +133,92 @@ Only the established clean base merges and PR_DESCRIPTION.md,
 .github/pull_request_template.md, .autodrive/evidence/ allowlist qualify.
 Local validation checks every commit and mode. Substantive changes require
 crusty re-review; unreadable ranges block. Otherwise omit review_range or use null.
+
+<a id="planned-policy-and-handoff-records"></a>
+
+## Policy and handoff records
+
+The production policy and handoff helpers use closed private records. `RequestedAction::Handoff` completes as `handed_off` only through durable completion evidence; generic merge reduction cannot grant handoff success.
+
+Capture optional explicit `merge` selection before defaults or recovery.
+Resolve non-empty explicit selection, then top-level `merge` from the
+pinned target-base `.amplihack/auto-drive.toml`, then `merge`. Trim surrounding
+whitespace and accept only lower-case `merge` or `handoff`. Empty explicit
+input preserves repository defaults; a present repository value must be a
+valid mode string. Valid explicit selection skips configuration reads.
+Proven absence of a file/key permits the default; malformed applicable
+configuration, unsuitable entries and failed authoritative reads block
+completion. Do not substitute PR-branch, worktree, local or global settings.
+Keep `merge_method` separate.
+
+The resolved-policy record binds this invocation, authenticated target
+repository, PR, branches, pinned base commit, selected mode and provenance.
+Missing, stale or incompatible policy grants no completion authority. A
+changed base requires resolution and fresh dependent evidence; a changed
+head invalidates readiness tied to the previous head. Mode selection cannot
+relax direct-entrypoint, light-entrypoint or dry-run restrictions.
+
+Nested readiness rounds retain their own restricted action authority. Their
+accepted candidate uses the outer loop's private invocation, passed separately
+as `autodrive_readiness_invocation_file`, for run identity and launch provenance.
+The production round helper validates and publishes against that parent record;
+the outer loop seals the matching receipt. A leaf's newly captured identity
+cannot replace the parent's evidence binding or grant a drive action.
+
+`prepare-handoff` validates policy and observes current identity, head/base,
+open non-draft status and disabled auto-merge. It marks a draft ready if
+needed, then reads back the result. It persists preparation observations,
+without accepting readiness or posting a comment.
+
+`complete-handoff` uses a non-blocking lock in the bound state directory.
+It replays accepted candidate, artifact and review-coverage validation and
+this invocation's accepted `MERGE_READY`/evaluator `DONE` loop receipt, then
+confirms current PR/head/base, open non-draft status and disabled auto-merge.
+Helpers accept no caller-supplied mode, successful verdict, comment body or
+successful outcome.
+
+Only after readiness succeeds, reconcile this exact body:
+
+> This pull request is ready for its steward.
+
+Verify any stored receipt against the platform. Otherwise enumerate every
+relevant page, reusing exactly one match by the authenticated author on the
+bound PR. Create only when complete enumeration finds none. Unreadable,
+incomplete or ambiguous results block completion. Confirm the comment and
+PR state again afterwards. No named steward is needed; keep workflow details,
+host paths and handoff evidence out of public comments and the PR body.
+The change description is read back, while handoff readiness evidence stays in private drive state.
+
+Record operation attempts and uncertain external writes separately from
+success. A comment receipt retains PR and comment identity, authenticated
+author, exact body and confirmed observations. Readiness failure cannot
+produce a new readiness claim. Failures to mark/confirm ready, reconcile or
+post a comment, acquire the lock or persist completion remain visible, with
+concrete diagnostics, and never dispatch a merge. Preserve the original
+operation's diagnostic if saving its observation also fails.
+
+Failures expose stable machine-readable error codes alongside concrete,
+redacted diagnostics. Preserve whether an external action was absent,
+confirmed or uncertain; do not replace an uncertain write with success.
+
+After confirming the comment and PR state, durably publish immutable
+completion evidence and its matching outcome. Retain PR identity, validated
+head/base, resolved policy, readiness and loop evidence and comment identity.
+The completed action is `handed_off`, distinct from `merged` and
+`already_merged`. Reduction and runner reporting independently require the
+same private policy and matching durable evidence; helper output and recipe
+context cannot grant success. A crash between evidence and outcome publication
+remains incomplete. Merge or scheduling requests contradict handoff.
+
+Resumption uses fresh readiness and reconciles existing comments before
+creating any. A lost creation response or persistence failure must never
+cause blind repeat creation. A previous comment alone is not readiness or
+completion. The lock coordinates only attempts sharing this state directory;
+it does not coordinate unrelated drives. Confirmed completion observations
+cannot guarantee against subsequent platform changes.
+
+Private storage retains ownership, restrictive permissions, bounded reads,
+symlink/traversal protection and atomic durable publication. PR content,
+comments, tool output and configuration are untrusted data and cannot change
+captured authority, readiness criteria or the fixed comment. These safeguards
+do not protect against arbitrary processes running as the same OS user.

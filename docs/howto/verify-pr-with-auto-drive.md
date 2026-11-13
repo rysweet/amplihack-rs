@@ -1,7 +1,7 @@
 ---
 title: Verify a PR with Auto-drive Without Merging
-description: verify-only usage after invocation-wide authorization is implemented and tested.
-last_updated: 2026-11-11
+description: Complete production readiness and leave an open PR for its steward.
+last_updated: 2026-11-12
 review_schedule: quarterly
 owner: workflow-team
 doc_type: howto
@@ -9,111 +9,91 @@ doc_type: howto
 
 # Verify a PR with Auto-drive Without Merging
 
-The runner captures `no_merge=true` before child execution and preserves it through finalization. Controlled tests cover authorization and zero-request outcomes. Live verify-only execution and the OS/runtime matrix require their own evidence; no live merge is part of validation.
+Use `merge=handoff` to run the normal build, reviews, fixes and all 13 readiness
+criteria, then leave the PR open and ready for its steward. `no_merge` controls
+only the build phase; it does not prevent the outer drive from merging.
 
-Use `no_merge=true` to review, repair, and verify an existing PR while keeping
-it open. This allows commits, pushes, description updates, and required
-follow-up issues. Dry-run additionally suppresses follow-up issue creation;
-it is not a general read-only mode.
+## Select the PR and mode
 
-## Establish the target
-
-Start in the repository's PR branch worktree. You need an installed
-`amplihack`, an available agent runtime, authenticated platform access,
-and the repository's required test tools. Commands shown here use Git to
-identify the branch; the agent may use other available platform clients for
-observations and recovery.
+Use the full composer with authenticated GitHub access and the repository's
+required test tools. Supply the actual PR number; it takes precedence over
+branch discovery. Preserve local work and use the PR's linked worktree.
 
 ```bash
-git branch --show-current
-git status --short
-```
-
-The first command prints the source branch; the second lists local changes
-or prints nothing for a clean worktree. Preserve unrelated local work.
-Ensure that the branch has the PR you intend to verify.
-
-## Run with merging disabled
-
-```bash
-# Explicitly restrict this invocation to readiness verification.
 amplihack recipe run auto-drive-to-merge \
   -c repo_path=. \
-  -c existing_branch="$(git branch --show-current)" \
-  -c no_merge=true
+  -c pr_number=2555 \
+  -c merge=handoff
 ```
 
-Auto-drive reuses the branch's open PR, resolves its linked worktree, runs
-crusty review and repair, and applies all merge-ready criteria. Its final
-report identifies the PR, verified head, criterion evidence, requested action,
-observed platform state, and blockers.
+After readiness passes, expect an open, non-draft PR, exactly one confirmed
+comment saying “This pull request is ready for its steward.” and a durable
+`handed_off` outcome. Handoff never requests or schedules a merge. An enabled
+GitHub auto-merge request blocks handoff; clear it before running again.
 
-Expected successful outcome: merge-ready, no merge requested, PR observed
-open. If evidence or approval is missing, expect the named blocker or
-incomplete stop reason instead. `no_merge=true` never permits a merge,
-including after re-review or light-to-full escalation.
+For a repository default, commit this file on the PR's **target base branch**:
 
-For explicit selection, supply the actual PR number through `-c pr_number`;
-it takes precedence over branch discovery. Do not name a different branch.
+```toml
+# .amplihack/auto-drive.toml
+merge = "handoff"
+```
 
-## Suppress follow-up creation too
+Then omit `-c merge`, or pass an empty value. Explicit non-empty input wins over
+committed base policy; otherwise an absent file or key defaults to `merge`.
+Only lower-case `merge` and `handoff` are valid after surrounding whitespace
+is trimmed. Invalid applicable configuration and failures to read the
+base's committed tree stop completion. PR-branch, worktree and global settings
+do not supply policy. `merge_method` remains independent.
+
+To select the protected merge path explicitly:
 
 ```bash
-# Explicitly restrict this invocation to readiness verification.
-amplihack recipe run auto-drive-to-merge \
-  -c repo_path=. \
-  -c existing_branch="$(git branch --show-current)" \
-  -c no_merge=true \
-  -c autodrive_dry_run=true
+amplihack recipe run auto-drive-to-merge -c pr_number=2555 -c merge=merge
 ```
-
-Expected behavior: zero merge requests and no follow-up issue creation.
-If minor findings need follow-ups that do not already exist, readiness remains
-blocked and the report lists those obligations. Dry-run does not waive them.
 
 ## Resume incomplete work
 
-Correct the reported cause and rerun with `no_merge=true`
-again. The full-composer default is `false`; omitting the restriction
-on a new invocation permits merging once ready. Historical authorization does
-not carry over, including through `recipe run --fresh` or a durable recovery
-resume.
+Correct the named blocker and run again with `merge=handoff`, unless the
+committed base policy already selects it. Every invocation captures fresh
+authority. Stored or recovered context cannot grant a drive action.
 
-Each run keeps its records in its own state directory unless you pass one.
-To continue a run that exhausted its per-loop budget, pass the same absolute
-`autodrive_state_dir` that the exhausted run used:
+Pass the same absolute state directory to retain progress and consumed budgets:
 
 ```bash
-# Explicitly restrict this invocation to readiness verification.
 amplihack recipe run auto-drive-to-merge \
-  -c repo_path=. \
-  -c existing_branch="$(git branch --show-current)" \
-  -c autodrive_state_dir="$HOME/.amplihack/state/auto-drive/pr-2340" \
-  -c no_merge=true \
+  -c pr_number=2555 \
+  -c merge=handoff \
+  -c autodrive_state_dir="$HOME/.amplihack/state/auto-drive/pr-2555" \
   -c autodrive_budget_loop_rounds=20
 ```
 
-Expected behavior: reuse validated progress for the same PR, retain consumed
-usage, and start additional work only if every applicable budget permits it.
-A relative path, or one containing `..` or a control character, stops the run
-at once with `autodrive_state_dir must be an absolute path`. See
-[state directory](../reference/auto-drive-to-merge.md#state-directory).
-Raise another exhausted budget separately; a higher limit is not readiness.
+The state path must be absolute, without `..` or control characters. Do not
+change its permissions to make historical evidence trusted. A changed head
+requires fresh readiness; a changed base also requires fresh policy resolution.
 
-A failed GraphQL command or missing client may be recovered through a complete
-alternative interface. If recovery cannot supply all facts, the run reports
-the cause and stops incomplete. A rate limit is not waited out: the run
-records the status and any `Retry-After` or reset time, stops incomplete, and
-a later invocation continues the work. Pending approvals require the authorized
-reviewer; policy bypasses and hook skipping are prohibited.
+A lost comment-creation response or failed state write can leave a public
+comment without completed handoff. Resume with fresh readiness: reconciliation
+checks every page and reuses the authenticated author's exact existing comment.
+Unreadable pages, duplicate matches, failed ready conversion and persistence
+failures remain visible. A previous comment alone never proves readiness.
+No completion failure falls through to merging.
 
-## Inspect readiness and publish evidence
+## Inspect the result
 
-Check that all 13 criteria have concrete, current evidence, the PR description
-was read back, and the final platform observation says open. Distinguish
-controlled tests, actual agent recovery, live verify-only execution, and
-unavailable OS/runtime coverage in the PR description. Verify-only execution
-does not demonstrate a real merge.
+Readiness evidence stays in private drive state, without being appended to
+the PR body. The change description must still be useful and read back during
+readiness. Check the validated PR/head/base, all criterion evidence, confirmed
+comment identity and the matching durable completion and outcome snapshots.
+A helper's exit status or a public comment alone is insufficient.
+
+`autodrive_dry_run=true` separately suppresses merging and follow-up creation;
+it cannot publish successful handoff. Missing required follow-ups still block
+readiness. Direct and light entrypoints remain restricted through escalation.
+
+Controlled Rust tests validate production actions with isolated hosting
+responses. They do not establish live agent recovery or the complete OS/runtime
+matrix. Report local passes, observed CI results and named unavailable tests
+separately in the delivery PR.
 
 See [workflow options](../reference/auto-drive-to-merge.md),
 [evidence and outcomes](../reference/auto-drive-evidence.md), and

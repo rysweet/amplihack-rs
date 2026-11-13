@@ -60,6 +60,7 @@ pub fn record(auth: &InvocationAuthorization, directory: &Path, round: &str) -> 
     let candidate = basename(Path::new(path), directory)?;
     let bytes = store.read_private(&candidate)?;
     let record: CandidateRecord = serde_json::from_slice(&bytes)?;
+    super::validation::validate_candidate(auth, &record.binding, &record)?;
     ensure!(
         record.readiness == Readiness::MergeReady,
         "loop evidence is incomplete"

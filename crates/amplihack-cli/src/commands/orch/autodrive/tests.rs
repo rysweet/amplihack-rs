@@ -18,6 +18,11 @@ use crate::commands::orch::autodrive::{
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
+// These contracts run inside the library test harness because the drive's
+// authority and hosting interfaces are deliberately crate-private.
+#[path = "tests_handoff.rs"]
+mod issue_2555_autodrive_handoff;
+
 const HEAD: &str = concat!("11111111111111111111", "11111111111111111111");
 const BASE: &str = concat!("22222222222222222222", "22222222222222222222");
 const OTHER: &str = concat!("33333333333333333333", "33333333333333333333");
@@ -37,11 +42,15 @@ const CRITERIA: [&str; 13] = [
     "scope",
 ];
 
-fn authorization(no_merge: &str, dry_run: &str) -> InvocationAuthorization {
+fn authorization(verify_only: &str, dry_run: &str) -> InvocationAuthorization {
     InvocationAuthorization::capture(
-        "auto-drive-to-merge",
+        if verify_only == "true" {
+            "autodrive-finalize"
+        } else {
+            "auto-drive-to-merge"
+        },
         &BTreeMap::from([
-            ("no_merge".into(), no_merge.into()),
+            ("no_merge".into(), verify_only.into()),
             ("autodrive_dry_run".into(), dry_run.into()),
         ]),
     )
@@ -115,11 +124,18 @@ fn completion() -> Value {
 
 fn reduce(auth: &InvocationAuthorization, raw: Value, finish: Value, done: Value) -> Value {
     let expected: Binding = serde_json::from_value(binding(auth)).unwrap();
+    let temp = tempfile::tempdir_in("/var/tmp").unwrap();
+    let mut auth = auth.clone();
+    let store = EvidenceStore::create(&temp.path().join("state")).unwrap();
+    auth.bind_state_dir(store.root().to_owned());
+    auth.bind_policy(expected.policy_provenance.clone());
+    let mut host = issue_2555_autodrive_handoff::hosting::Hosting::new(expected.clone());
+    crate::commands::orch::autodrive::policy::resolve(&auth, &store, &expected, &mut host).unwrap();
     let record: CandidateRecord = serde_json::from_value(raw).unwrap();
-    let accepted = validate_candidate(auth, &expected, &record).expect("valid candidate");
+    let accepted = validate_candidate(&auth, &expected, &record).expect("valid candidate");
     let observed: FinalizationObservation = serde_json::from_value(finish).unwrap();
     let completed: LoopCompletion = serde_json::from_value(done).unwrap();
-    serde_json::to_value(reduce_outcome(auth, &accepted, &observed, &completed).unwrap()).unwrap()
+    serde_json::to_value(reduce_outcome(&auth, &accepted, &observed, &completed).unwrap()).unwrap()
 }
 
 #[test]
@@ -142,8 +158,8 @@ fn invocation_defaults_distinguish_outer_composer_from_direct_consumers() {
     )
     .unwrap();
     assert!(
-        direct.allows_merge(),
-        "explicit authorization can enable direct finalization"
+        !direct.allows_merge(),
+        "a build-phase flag cannot grant direct finalization authority"
     );
 }
 
@@ -171,14 +187,14 @@ fn malformed_flags_fail_before_child_execution_instead_of_granting_authority() {
 }
 
 #[test]
-fn no_merge_and_dry_run_are_independent_restrictions() {
-    for (no_merge, dry_run, merge, followups) in [
+fn restricted_entrypoint_and_dry_run_are_independent_restrictions() {
+    for (verify_only, dry_run, merge, followups) in [
         ("false", "false", true, true),
         ("true", "false", false, true),
         ("false", "true", false, false),
         ("true", "true", false, false),
     ] {
-        let auth = authorization(no_merge, dry_run);
+        let auth = authorization(verify_only, dry_run);
         assert_eq!(
             (auth.allows_merge(), auth.allows_followups()),
             (merge, followups)
@@ -336,7 +352,7 @@ fn verify_only_reports_ready_and_open_without_a_merge_request() {
 }
 
 #[test]
-fn neither_no_merge_nor_dry_run_accepts_an_action_from_candidate_context() {
+fn neither_restricted_entrypoint_nor_dry_run_accepts_an_action_from_candidate_context() {
     for (nm, dry) in [("true", "false"), ("false", "true")] {
         let auth = authorization(nm, dry);
         let mut observed = finalization(&auth);
@@ -409,7 +425,7 @@ fn refused_and_failed_merges_preserve_the_cause_and_open_state() {
 
 #[test]
 fn already_merged_and_unexpected_early_merge_are_distinct() {
-    let auth = authorization("true", "false");
+    let auth = authorization("false", "false");
     for (entry, expected) in [("merged", "already_merged"), ("open", "workflow_violation")] {
         let mut observed = finalization(&auth);
         observed["platform_state_at_entry"] = json!(entry);
@@ -602,7 +618,7 @@ fn permitted_non_applicability_requires_concrete_policy_supported_explanation() 
 #[test]
 fn state_is_private_and_accepted_bytes_are_immutable_after_candidate_changes() {
     use std::os::unix::fs::PermissionsExt;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir_in("/var/tmp").unwrap();
     let root = dir.path().join("state");
     let store = EvidenceStore::create(&root).unwrap();
     let auth = authorization("true", "false");
@@ -634,7 +650,7 @@ fn state_is_private_and_accepted_bytes_are_immutable_after_candidate_changes() {
 #[test]
 fn state_rejects_symlinks_traversal_unsafe_permissions_and_historical_completion() {
     use std::os::unix::{fs::PermissionsExt, fs::symlink};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir_in("/var/tmp").unwrap();
     let root = dir.path().join("state");
     let store = EvidenceStore::create(&root).unwrap();
     let auth = authorization("true", "false");
@@ -676,7 +692,7 @@ fn state_rejects_symlinks_traversal_unsafe_permissions_and_historical_completion
 #[test]
 fn state_rejects_special_files_and_untrusted_existing_directory_modes() {
     use std::os::unix::{fs::PermissionsExt, net::UnixListener};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir_in("/var/tmp").unwrap();
     let root = dir.path().join("state");
     let store = EvidenceStore::create(&root).unwrap();
     let auth = authorization("true", "false");
@@ -718,7 +734,7 @@ fn missing_final_records_cannot_become_ready_from_child_summary() {
 fn altered_or_missing_referenced_artifacts_do_not_establish_readiness() {
     use sha2::{Digest, Sha256};
     use std::os::unix::fs::PermissionsExt;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir_in("/var/tmp").unwrap();
     // tempfile creates 0777 minus the caller's umask; the store requires a
     // private directory whatever the umask.
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -768,7 +784,7 @@ fn unexpected_earlier_merge_cannot_be_hidden_by_later_request() {
 #[test]
 fn completion_receipt_requires_both_signals_and_cannot_be_replayed() {
     use crate::commands::orch::autodrive::completion as receipts;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir_in("/var/tmp").unwrap();
     // tempfile creates 0777 minus the caller's umask; the store requires a
     // private directory whatever the umask.
     #[cfg(unix)]
@@ -805,7 +821,14 @@ fn completion_receipt_requires_both_signals_and_cannot_be_replayed() {
 
 #[test]
 fn already_merged_preparation_requires_fresh_bound_platform_confirmation() {
-    let auth = authorization("true", "false");
+    let temp = tempfile::tempdir_in("/var/tmp").unwrap();
+    let store = EvidenceStore::create(&temp.path().join("state")).unwrap();
+    let mut auth = authorization("false", "false");
+    auth.bind_state_dir(store.root().to_owned());
+    let expected: Binding = serde_json::from_value(binding(&auth)).unwrap();
+    auth.bind_policy(expected.policy_provenance.clone());
+    let mut host = issue_2555_autodrive_handoff::hosting::Hosting::new(expected.clone());
+    crate::commands::orch::autodrive::policy::resolve(&auth, &store, &expected, &mut host).unwrap();
     let mut context = json!({"build_result":{"merged_before_run":true,"pr_state":"MERGED","entry_evidence":"Observed merged=true on exact PR at invocation entry","binding":binding(&auth)}});
     let result = crate::commands::orch::autodrive::report::report(
         &auth,
@@ -866,7 +889,7 @@ fn self_consistent_evidence_cannot_change_captured_operator_selection() {
 
 #[test]
 fn minor_followup_reporting_validates_the_complete_private_mapping() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in("/var/tmp").unwrap();
     let directory = tmp.path().join("state");
     let store = EvidenceStore::create(&directory).unwrap();
     assert!(
@@ -892,7 +915,7 @@ fn malformed_minor_followups_are_reported_instead_of_silently_dropped() {
         "x\t1\t\t2329\n",
         "x\t1\t#2329\t2329\textra\n",
     ] {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir_in("/var/tmp").unwrap();
         let directory = tmp.path().join("state");
         let store = EvidenceStore::create(&directory).unwrap();
         store.write_new("followups.tsv", rows.as_bytes()).unwrap();
@@ -915,7 +938,7 @@ fn allowed_post_review_range_requires_bound_concrete_evidence() {
 #[test]
 fn local_post_review_range_accepts_description_and_rejects_substantive_code() {
     use crate::commands::orch::autodrive::{review, trusted};
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in("/var/tmp").unwrap();
     let repo = tmp.path();
     let git = |args: &[&str]| trusted::git(repo, args).unwrap();
     git(&["init", "-b", "main"]);
@@ -994,7 +1017,7 @@ impl ReportingFixture {
         Self::with_action("true")
     }
     fn with_action(no_merge: &str) -> Self {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir_in("/var/tmp").unwrap();
         let repo = temp.path().join("repo");
         std::fs::create_dir(&repo).unwrap();
         let git =
@@ -1049,6 +1072,12 @@ impl ReportingFixture {
         let store = EvidenceStore::create(&directory).unwrap();
         // The runner, not the child context, assigns and binds the directory.
         auth.bind_state_dir(directory.clone());
+        let expected: Binding =
+            serde_json::from_value(envelope["candidate"]["binding"].clone()).unwrap();
+        auth.bind_policy(expected.policy_provenance.clone());
+        let mut host = issue_2555_autodrive_handoff::hosting::Hosting::new(expected.clone());
+        crate::commands::orch::autodrive::policy::resolve(&auth, &store, &expected, &mut host)
+            .unwrap();
         let accepted = store
             .snapshot(&serde_json::to_vec(&envelope["candidate"]).unwrap())
             .unwrap();
@@ -1283,7 +1312,7 @@ fn explicit_state_directory_must_be_absolute_and_free_of_traversal() {
 
 #[test]
 fn bound_state_directory_is_serialised_and_survives_private_invocation_read() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir_in("/var/tmp").unwrap();
     let store_root = dir.path().join("invocation");
     let store = EvidenceStore::create(&store_root).unwrap();
     let mut auth = authorization("true", "false");

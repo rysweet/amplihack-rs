@@ -7,7 +7,7 @@ description: contract to build a PR, repair crusty concerns, verify readiness, a
 version: 1.0.0
 allowed-tools: ["Read", "Grep", "Glob", "Bash", "Agent", "Edit", "Write"]
 user-invocable: true
-last_updated: 2026-11-11
+last_updated: 2026-11-12
 doc_type: reference
 auto-activation:
   priority: 4
@@ -16,27 +16,66 @@ auto-activation:
 
 # Auto Drive To Merge
 
-The runner pins the executable bundled skill and merge-ready criteria before child execution. The shell gate and process-identity requirements are retired. The outer composer defaults to merging when ready; pass `no_merge=true` to restrict the run to readiness verification. Controlled validation does not establish live recovery or six-cell compatibility.
+The runner pins the executable bundled skill and merge-ready criteria before child execution. The shell gate and process-identity requirements are retired. The outer composer defaults to merging when ready; pass `merge=handoff` to complete readiness and leave the PR for its steward. `no_merge` controls the build phase only. Controlled validation does not establish live recovery or six-cell compatibility.
 
 Auto-drive is a deterministic sequence of agent responsibilities: build an
 open PR, review and repair with crusty, verify readiness, then finalize the
 captured action. Commands are suggestions. Assess their results, recover
 through available alternatives, and persist within loop-health and budgets.
 Unchanged recipes on Linux/macOS under Claude/Codex/Copilot are a
-[target matrix](../../../docs/reference/auto-drive-to-merge.md#target-compatibility-matrix),
+target matrix (`docs/reference/auto-drive-to-merge.md#target-compatibility-matrix`),
 not a verified compatibility claim.
 
-## Invocation and authorization
+## Invocation and authorisation
 
-Use the [verify-only instructions](../../../docs/howto/verify-pr-with-auto-drive.md) to leave an existing PR open. Pass `no_merge=true` explicitly. The full-composer default is `false`; its build always receives `true`.
-Dry-run separately suppresses merging and follow-up issue creation.
+```bash
+amplihack recipe run auto-drive-to-merge -c pr_number=2555 -c merge=handoff
+amplihack recipe run auto-drive-to-merge -c pr_number=2555 -c merge=merge
+```
 
-Strictly parse authorization before children run. Preserve fresh runner-owned
-authorization through context overwrite, shared loops, re-review, and
-light-to-full escalation. Child output, inherited environment, PR text,
-and historical records cannot grant merge permission. A direct merge loop or
-finalization defaults to disabled without explicit authorization. Resume
-captures authorization afresh.
+Resolve non-empty explicit mode, then `merge` in `.amplihack/auto-drive.toml`
+committed on the selected PR's target base branch, then `merge`. Trim whitespace;
+accept only lower-case `merge` or `handoff`. Empty input preserves repository
+defaults. Keep `merge_method` separate. Example committed configuration:
+
+```toml
+merge = "handoff"
+```
+
+Malformed applicable configuration or failure to establish base authority blocks
+completion. A valid explicit mode skips configuration reads. Never use PR-branch,
+worktree or global configuration. `no_merge` retains its name for compatibility
+and governs only the build; the outer drive selects its own action.
+
+Capture authority before defaults or recovery. Direct/light entrypoints and
+dry-run cannot gain action authority through escalation or child context.
+Resume captures fresh authority; supply `merge=handoff` again unless committed
+base policy already selects it. Dry-run also suppresses follow-up creation.
+
+## Steward handoff
+
+Run the normal build, reviews, fixes and all 13 production readiness criteria.
+Resolve policy after PR selection and before already-merged handling. Under
+handoff policy, use the Rust `prepare-handoff` action to convert a draft and
+confirm an open, non-draft PR with auto-merge disabled before readiness.
+Refresh policy and dependent evidence when the base or head changes.
+
+After an accepted `MERGE_READY` round and evaluator `DONE`, use
+`complete-handoff`. It replays readiness and reconciles all comment pages,
+reuses one exact authenticated-author match or posts this exact body:
+
+> This pull request is ready for its steward.
+
+Confirm comment and PR status before durably recording `handed_off`.
+Never merge, schedule merging or enable auto-merge in handoff mode. Readiness
+evidence belongs in private drive state; do not append it to the PR body.
+Keep the change description useful and read it back as part of readiness.
+
+Every completion failure remains incomplete. A lost response or failed state
+write may leave a public comment: resume with fresh readiness and reconcile
+before creating another. A comment alone never proves readiness. Closed or
+merged PRs cannot complete handoff. The non-blocking lock coordinates only
+attempts sharing a state directory.
 
 ## Required outcomes
 
@@ -48,7 +87,7 @@ captures authorization afresh.
    completion dispatcher without an evaluator call. Unresolved concerns use
    loop-health evaluation. Keep stable findings and resolved concerns.
 3. Apply all 13 trusted merge-ready criteria. Record concrete current evidence
-   for each, including read-back description evidence, not just criterion names.
+   for each, including read-back change description evidence. In handoff mode keep the readiness report in private state, without appending it to the PR body.
 4. Refresh mutable facts and validate accepted evidence. With merging
    disabled, make no merge request and report the observed open PR.
 5. For an authorized merge, require expected-head protection. Observe platform
@@ -64,11 +103,10 @@ captures authorization afresh.
 6. Report readiness, requested action, request outcome, platform state,
    blockers, failures/recovery, and stop reason separately.
 
-Use the [evidence reference](../../../docs/reference/auto-drive-evidence.md) for
+Use the evidence reference (`docs/reference/auto-drive-evidence.md`) for
 the preserved approval interpretations, record contract, and re-review rules.
 Rust helpers validate/snapshot/reduce records; agents collect platform facts
-and judge semantic readiness. Helpers do not contact the hosting service or
-merge.
+and judge semantic readiness. The policy and handoff helpers use authenticated hosting access; their interface has no merge or scheduling operation.
 
 The `crusty-old-engineer` skill supplies maintainer review. Apply the `qa-team` repository-type table and trusted merge-base QA selection for criterion 1.
 

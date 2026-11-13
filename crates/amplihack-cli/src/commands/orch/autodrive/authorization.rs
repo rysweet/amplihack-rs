@@ -16,6 +16,8 @@ pub struct InvocationAuthorization {
     run_id: String,
     no_merge: bool,
     dry_run: bool,
+    drive_enabled: bool,
+    explicit_mode: Option<super::policy::DriveMode>,
     requested_action: &'static str,
     /// #2329: the private state directory the runner assigned and created for
     /// this invocation. Bound after admission, never taken from child output.
@@ -54,6 +56,12 @@ impl InvocationAuthorization {
             .cloned();
         let no_merge = flag(inputs, "no_merge", recipe != "auto-drive-to-merge")?;
         let dry_run = flag(inputs, "autodrive_dry_run", false)?;
+        let drive_enabled = recipe == "auto-drive-to-merge";
+        let explicit_mode = inputs
+            .get("merge")
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.parse())
+            .transpose()?;
         if let Some(directory) = inputs.get("autodrive_state_dir") {
             validate_state_dir(directory)?;
         }
@@ -66,8 +74,12 @@ impl InvocationAuthorization {
             run_id: uuid::Uuid::new_v4().to_string(),
             no_merge,
             dry_run,
-            requested_action: if no_merge || dry_run {
+            drive_enabled,
+            explicit_mode,
+            requested_action: if !drive_enabled || dry_run {
                 "verify_readiness"
+            } else if explicit_mode == Some(super::policy::DriveMode::Handoff) {
+                "handoff"
             } else {
                 "merge"
             },
@@ -113,7 +125,20 @@ impl InvocationAuthorization {
         &self.run_id
     }
     pub fn allows_merge(&self) -> bool {
-        !self.no_merge && !self.dry_run
+        self.allows_drive() && self.explicit_mode != Some(super::policy::DriveMode::Handoff)
+    }
+    pub(crate) fn allows_drive(&self) -> bool {
+        self.drive_enabled && !self.dry_run
+    }
+    pub(crate) fn explicit_mode(&self) -> Option<super::policy::DriveMode> {
+        self.explicit_mode
+    }
+    pub(crate) fn mode_input(&self) -> &'static str {
+        match self.explicit_mode {
+            Some(super::policy::DriveMode::Merge) => "merge",
+            Some(super::policy::DriveMode::Handoff) => "handoff",
+            None => "",
+        }
     }
     pub fn allows_followups(&self) -> bool {
         !self.dry_run
@@ -142,6 +167,8 @@ impl InvocationAuthorization {
             run_id: String,
             no_merge: bool,
             dry_run: bool,
+            drive_enabled: bool,
+            explicit_mode: Option<super::policy::DriveMode>,
             requested_action: String,
             #[serde(default)]
             state_dir: Option<PathBuf>,
@@ -169,8 +196,10 @@ impl InvocationAuthorization {
             uuid::Uuid::parse_str(&stored.run_id).is_ok(),
             "invalid invocation run_id"
         );
-        let requested_action = if stored.no_merge || stored.dry_run {
+        let requested_action = if !stored.drive_enabled || stored.dry_run {
             "verify_readiness"
+        } else if stored.explicit_mode == Some(super::policy::DriveMode::Handoff) {
+            "handoff"
         } else {
             "merge"
         };
@@ -187,6 +216,8 @@ impl InvocationAuthorization {
             run_id: stored.run_id,
             no_merge: stored.no_merge,
             dry_run: stored.dry_run,
+            drive_enabled: stored.drive_enabled,
+            explicit_mode: stored.explicit_mode,
             requested_action,
             state_dir: stored.state_dir,
         })
