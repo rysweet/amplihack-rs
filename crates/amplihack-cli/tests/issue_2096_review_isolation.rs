@@ -635,3 +635,373 @@ fn index_check_refuses_an_unstaged_edit_in_the_review_checkout() {
         text(&edited)
     );
 }
+
+// ---------------------------------------------------------------------------
+// Crusty finding 9: `review-next` retires the generation it supersedes.
+//
+// Once the next generation is provisioned and recorded, `advance` removes the
+// superseded checkout and its storage and marks its manifest `retired`. The
+// manifest (beside the checkout, inside the allocation directory) stays, so
+// `review-release` of the root still walks the whole chain. A retired
+// generation is never trusted again: validate, launch, head and next refuse
+// it. Release removes storage only when it is the same directory, never
+// through a symlink or a substitute.
+// ---------------------------------------------------------------------------
+
+/// `amplihack internal <args>` in the fixture's private environment.
+fn internal(f: &Fixture, args: &[&std::ffi::OsStr]) -> Output {
+    let mut command =
+        crate::isolated_amplihack::isolated(crate::support::amplihack_bin::amplihack_bin());
+    f.environment(&mut command);
+    command.arg("internal").args(args).output().unwrap()
+}
+
+fn os(path: &Path) -> &std::ffi::OsStr {
+    path.as_os_str()
+}
+
+fn private_state(f: &Fixture) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let state = f.root.join("retire-state");
+    fs::create_dir(&state).unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+    state
+}
+
+fn allocate(f: &Fixture, pr: &Path, state: &Path) -> PathBuf {
+    let out = internal(f, &["review-allocate".as_ref(), os(pr), os(state)]);
+    succeeds(&out);
+    PathBuf::from(String::from_utf8(out.stdout).unwrap().trim())
+}
+
+fn next(f: &Fixture, pr: &Path, checkout: &Path, state: &Path) -> Output {
+    internal(
+        f,
+        &["review-next".as_ref(), os(pr), os(checkout), os(state)],
+    )
+}
+
+fn advance_pr(f: &Fixture, pr: &Path, name: &str) {
+    fs::write(pr.join(name), format!("{name}\n")).unwrap();
+    f.git_in(pr, &["add", name]);
+    f.git_in(pr, &["commit", "-qm", name]);
+}
+
+fn manifest_of(checkout: &Path) -> PathBuf {
+    let mut name = checkout.file_name().unwrap().to_os_string();
+    name.push(".review-owner.json");
+    checkout.with_file_name(name)
+}
+
+fn manifest(checkout: &Path) -> serde_json::Value {
+    serde_json::from_slice(&fs::read(manifest_of(checkout)).unwrap()).unwrap()
+}
+
+/// The generation's storage directory, from its manifest.
+fn storage_of(checkout: &Path) -> PathBuf {
+    PathBuf::from(manifest(checkout)["repository"].as_str().unwrap())
+        .parent()
+        .unwrap()
+        .to_path_buf()
+}
+
+#[test]
+fn advance_retires_superseded_generation() {
+    let f = Fixture::new();
+    let pr = pr_worktree(&f);
+    let state = private_state(&f);
+    let first = allocate(&f, &pr, &state);
+    let storage = storage_of(&first);
+    assert!(storage.is_dir());
+    assert_ne!(
+        manifest(&first)["retired"],
+        true,
+        "a live generation is not retired"
+    );
+    advance_pr(&f, &pr, "advance");
+    let made = next(&f, &pr, &first, &state);
+    succeeds(&made);
+    let second = PathBuf::from(String::from_utf8(made.stdout).unwrap().trim());
+    assert_ne!(second, first);
+    assert_eq!(
+        f.git_in(&second, &["rev-parse", "HEAD"]),
+        f.git_in(&pr, &["rev-parse", "HEAD"])
+    );
+    assert!(!first.exists(), "the superseded checkout is removed");
+    assert!(!storage.exists(), "the superseded storage is removed");
+    let record = manifest(&first);
+    assert_eq!(
+        record["retired"], true,
+        "the superseded record is marked retired"
+    );
+    assert_eq!(
+        record["children"],
+        serde_json::json!([second]),
+        "the retired record still names its successor"
+    );
+    assert!(storage_of(&second).is_dir());
+    assert_ne!(
+        manifest(&second)["retired"],
+        true,
+        "the new generation is live"
+    );
+}
+
+#[test]
+fn advance_at_the_same_head_retires_nothing() {
+    let f = Fixture::new();
+    let pr = pr_worktree(&f);
+    let state = private_state(&f);
+    let first = allocate(&f, &pr, &state);
+    let made = next(&f, &pr, &first, &state);
+    succeeds(&made);
+    assert_eq!(
+        PathBuf::from(String::from_utf8(made.stdout).unwrap().trim()),
+        first
+    );
+    assert!(first.is_dir() && storage_of(&first).is_dir());
+    assert_ne!(manifest(&first)["retired"], true);
+}
+
+#[test]
+fn retired_generation_is_refused() {
+    let f = Fixture::new();
+    let pr = pr_worktree(&f);
+    let state = private_state(&f);
+    let first = allocate(&f, &pr, &state);
+    advance_pr(&f, &pr, "advance");
+    succeeds(&next(&f, &pr, &first, &state));
+    for args in [
+        vec!["review-validate".as_ref(), os(&pr), os(&first)],
+        vec!["review-launch".as_ref(), os(&first)],
+        vec!["review-head".as_ref(), os(&first)],
+        vec!["review-clean".as_ref(), os(&first)],
+    ] {
+        let out = internal(&f, &args);
+        assert!(
+            !out.status.success(),
+            "{args:?} must refuse a retired generation"
+        );
+        assert!(
+            text(&out).contains("superseded and retired"),
+            "{args:?}: {}",
+            text(&out)
+        );
+    }
+    let again = next(&f, &pr, &first, &state);
+    assert!(
+        !again.status.success(),
+        "review-next must not advance a retired generation"
+    );
+    assert!(
+        text(&again).contains("superseded and retired"),
+        "{}",
+        text(&again)
+    );
+}
+
+#[test]
+fn release_root_after_retirement_removes_everything() {
+    let f = Fixture::new();
+    let pr = pr_worktree(&f);
+    let state = private_state(&f);
+    let first = allocate(&f, &pr, &state);
+    let allocation = first.parent().unwrap().to_path_buf();
+    advance_pr(&f, &pr, "second");
+    let made = next(&f, &pr, &first, &state);
+    succeeds(&made);
+    let second = PathBuf::from(String::from_utf8(made.stdout).unwrap().trim());
+    advance_pr(&f, &pr, "third");
+    let made = next(&f, &pr, &second, &state);
+    succeeds(&made);
+    let third = PathBuf::from(String::from_utf8(made.stdout).unwrap().trim());
+    assert!(
+        !second.exists(),
+        "a chain retires every superseded generation"
+    );
+    assert_eq!(manifest(&second)["retired"], true);
+    let third_storage = storage_of(&third);
+    let before = f.snapshot();
+    succeeds(&internal(&f, &["review-release".as_ref(), os(&first)]));
+    for gone in [&first, &second, &third, &third_storage, &allocation] {
+        assert!(!gone.exists(), "{} must be released", gone.display());
+    }
+    for checkout in [&first, &second, &third] {
+        assert!(!manifest_of(checkout).exists());
+    }
+    assert_eq!(f.snapshot(), before, "the caller's checkout is untouched");
+}
+
+#[test]
+fn release_frees_storage_left_by_failed_retirement() {
+    let f = Fixture::new();
+    let pr = pr_worktree(&f);
+    let state = private_state(&f);
+    let first = allocate(&f, &pr, &state);
+    let storage = storage_of(&first);
+    let repository = storage.join("repository.git");
+    // A locked worktree refuses a single --force removal, so retirement fails.
+    f.git_in(&repository, &["worktree", "lock", first.to_str().unwrap()]);
+    advance_pr(&f, &pr, "advance");
+    let made = next(&f, &pr, &first, &state);
+    succeeds(&made);
+    let second = PathBuf::from(String::from_utf8(made.stdout).unwrap().trim());
+    assert!(
+        second.is_dir(),
+        "a failed retirement still returns the new generation"
+    );
+    assert!(
+        String::from_utf8_lossy(&made.stderr)
+            .contains("amplihack: warning: could not retire superseded review generation"),
+        "{}",
+        String::from_utf8_lossy(&made.stderr)
+    );
+    assert!(
+        first.is_dir() && storage.is_dir(),
+        "nothing is removed on failure"
+    );
+    assert_ne!(
+        manifest(&first)["retired"],
+        true,
+        "a failed retirement is not recorded"
+    );
+    f.git_in(
+        &repository,
+        &["worktree", "unlock", first.to_str().unwrap()],
+    );
+    succeeds(&internal(&f, &["review-release".as_ref(), os(&first)]));
+    assert!(!first.exists() && !storage.exists() && !second.exists());
+    assert!(
+        !first.parent().unwrap().exists(),
+        "the allocation directory is removed"
+    );
+}
+
+#[test]
+fn retired_release_refuses_symlinked_storage() {
+    let f = Fixture::new();
+    let pr = pr_worktree(&f);
+    let state = private_state(&f);
+    let first = allocate(&f, &pr, &state);
+    let storage = storage_of(&first);
+    advance_pr(&f, &pr, "advance");
+    succeeds(&next(&f, &pr, &first, &state));
+    assert!(!storage.exists());
+    let victim = f.root.join("victim");
+    fs::create_dir(&victim).unwrap();
+    fs::write(victim.join("canary"), b"keep me\n").unwrap();
+    std::os::unix::fs::symlink(&victim, &storage).unwrap();
+    let out = internal(&f, &["review-release".as_ref(), os(&first)]);
+    assert!(
+        !out.status.success(),
+        "a symlink at the storage path is not the storage"
+    );
+    assert!(
+        text(&out).contains("review storage identity changed; retained"),
+        "{}",
+        text(&out)
+    );
+    assert_eq!(fs::read(victim.join("canary")).unwrap(), b"keep me\n");
+    assert!(
+        manifest_of(&first).exists(),
+        "the record is retained for recovery"
+    );
+}
+
+#[test]
+fn retired_release_refuses_substituted_storage() {
+    let f = Fixture::new();
+    let pr = pr_worktree(&f);
+    let state = private_state(&f);
+    let first = allocate(&f, &pr, &state);
+    let storage = storage_of(&first);
+    advance_pr(&f, &pr, "advance");
+    succeeds(&next(&f, &pr, &first, &state));
+    fs::create_dir(&storage).unwrap();
+    fs::write(storage.join("canary"), b"another owner\n").unwrap();
+    let out = internal(&f, &["review-release".as_ref(), os(&first)]);
+    assert!(
+        !out.status.success(),
+        "a new directory at the storage path is not the storage"
+    );
+    assert!(
+        text(&out).contains("review storage identity changed; retained"),
+        "{}",
+        text(&out)
+    );
+    assert_eq!(
+        fs::read(storage.join("canary")).unwrap(),
+        b"another owner\n"
+    );
+}
+
+/// Rewrites a live generation's manifest so its storage is `storage`, with
+/// identities that match, as a forger with write access to the manifest
+/// could. Only the confinement rule tells it apart.
+fn forge_storage(checkout: &Path, storage: &Path) {
+    use std::os::unix::fs::MetadataExt;
+    let repository = storage.join("repository.git");
+    let launch = storage.join("launch");
+    fs::create_dir_all(&repository).unwrap();
+    fs::create_dir_all(&launch).unwrap();
+    let id = |p: &Path| {
+        let m = fs::symlink_metadata(p).unwrap();
+        serde_json::json!([m.dev(), m.ino()])
+    };
+    let mut record = manifest(checkout);
+    record["repository"] = serde_json::json!(repository);
+    record["launch"] = serde_json::json!(launch);
+    record["identities"][0] = id(storage);
+    record["identities"][1] = id(&repository);
+    record["identities"][3] = id(&launch);
+    let path = manifest_of(checkout);
+    fs::remove_file(&path).unwrap();
+    fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+}
+
+#[test]
+fn storage_outside_the_allocation_directory_is_refused() {
+    let f = Fixture::new();
+    let pr = pr_worktree(&f);
+    let state = private_state(&f);
+    let first = allocate(&f, &pr, &state);
+    let elsewhere = f.root.join("elsewhere").join("review-generation-forged");
+    forge_storage(&first, &elsewhere);
+    let out = internal(&f, &["review-launch".as_ref(), os(&first)]);
+    assert!(
+        !out.status.success(),
+        "storage outside the checkout's directory must be refused: {}",
+        text(&out)
+    );
+    let out = internal(&f, &["review-release".as_ref(), os(&first)]);
+    assert!(
+        !out.status.success(),
+        "release must not trust forged storage"
+    );
+    assert!(
+        elsewhere.join("repository.git").is_dir(),
+        "forged storage is not removed"
+    );
+}
+
+#[test]
+fn storage_not_named_as_a_review_generation_is_refused() {
+    let f = Fixture::new();
+    let pr = pr_worktree(&f);
+    let state = private_state(&f);
+    let first = allocate(&f, &pr, &state);
+    let misnamed = first.parent().unwrap().join("someone-elses-directory");
+    forge_storage(&first, &misnamed);
+    let out = internal(&f, &["review-launch".as_ref(), os(&first)]);
+    assert!(
+        !out.status.success(),
+        "storage not named review-generation-* must be refused: {}",
+        text(&out)
+    );
+    let out = internal(&f, &["review-release".as_ref(), os(&first)]);
+    assert!(!out.status.success());
+    assert!(
+        misnamed.join("repository.git").is_dir(),
+        "misnamed storage is not removed"
+    );
+}

@@ -77,7 +77,8 @@ run() { # run <case> [loop-script] [extra loop args...]
   shift; [ $# -gt 0 ] && shift
   mkdir -p "${CASE}/stub"
   RC=0
-  ( cd "$MAIN" && STUB_STATE="${CASE}/stub" PATH="${WORK}/bin:${PATH}" AMPLIHACK_BIN="${WORK}/bin/amplihack" \
+  mkdir -p "${WORK}/home"
+  ( cd "$MAIN" && HOME="${WORK}/home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 STUB_STATE="${CASE}/stub" PATH="${WORK}/bin:${PATH}" AMPLIHACK_BIN="${WORK}/bin/amplihack" \
       bash "$loop" --loop-name merge-ready --round-recipe autodrive-merge-round \
         --clean-token MERGE_READY --verdict-field merge_ready_verdict \
         --repo "$WT" --review-dir "$MAIN" --state-dir "${CASE}/state" --task-file "${WORK}/task.txt" "$@" ) \
@@ -104,18 +105,32 @@ review_calls() { local n; n="$(grep -c "^$1\( \|$\)" "${CASE}/stub/review-calls"
 SC="${WORK}/stub-contract"; mkdir -p "$SC"
 sc() { STUB_STATE="$SC" "${WORK}/bin/amplihack" internal "$@"; }
 sc_rc() { local rc=0; sc "$@" >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"; }
-ok STUB-ALLOCATE "review-allocate REPO STATE prints REPO" test "$(sc review-allocate "$WT" "${SC}/state" 2>/dev/null)" = "$WT"
-ok STUB-ALLOCATE-NOT-MAIN "review-allocate never returns the shared main checkout" test "$(sc review-allocate "$WT" "${SC}/state" 2>/dev/null)" != "$MAIN"
-ok STUB-NEXT "review-next REPO CHECKOUT prints CHECKOUT" test "$(sc review-next "$WT" "$WT" 2>/dev/null)" = "$WT"
-ok STUB-LAUNCH "review-launch CHECKOUT prints CHECKOUT" test "$(sc review-launch "$WT" 2>/dev/null)" = "$WT"
-ok STUB-HEAD "review-head CHECKOUT prints its HEAD SHA" \
-  test "$(sc review-head "$WT" 2>/dev/null)" = "$(git -C "$WT" rev-parse --verify HEAD)"
+detached_at() { # detached_at <dir> <sha>: a detached checkout of its own at <sha>
+  [ -d "$1" ] && [ "$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" = "$1" ] \
+    && ! git -C "$1" symbolic-ref -q HEAD >/dev/null 2>&1 \
+    && [ "$(git -C "$1" rev-parse --verify HEAD 2>/dev/null)" = "$2" ]
+}
+WT_HEAD="$(git -C "$WT" rev-parse --verify HEAD)"
+SC_GEN1="$(sc review-allocate "$WT" "${SC}/state" 2>/dev/null)"
+ok STUB-ALLOCATE "review-allocate REPO STATE prints a new generation under STUB_STATE: ${SC_GEN1}" \
+  test "$SC_GEN1" = "${SC}/review-gen-1"
+ok STUB-ALLOCATE-NOT-WT "review-allocate never returns the PR worktree" test "$SC_GEN1" != "$WT"
+ok STUB-ALLOCATE-NOT-MAIN "review-allocate never returns the shared main checkout" test "$SC_GEN1" != "$MAIN"
+ok STUB-ALLOCATE-DETACHED "the allocated generation is a detached worktree at REPO's HEAD" detached_at "$SC_GEN1" "$WT_HEAD"
+SC_GEN2="$(sc review-next "$WT" "$SC_GEN1" 2>/dev/null)"
+ok STUB-NEXT "review-next REPO CHECKOUT prints the next generation: ${SC_GEN2}" test "$SC_GEN2" = "${SC}/review-gen-2"
+ok STUB-NEXT-DETACHED "the next generation is a detached worktree at REPO's HEAD" detached_at "$SC_GEN2" "$WT_HEAD"
+ok STUB-LAUNCH "review-launch CHECKOUT prints CHECKOUT" test "$(sc review-launch "$SC_GEN2" 2>/dev/null)" = "$SC_GEN2"
+ok STUB-HEAD "review-head CHECKOUT prints its HEAD SHA" test "$(sc review-head "$SC_GEN2" 2>/dev/null)" = "$WT_HEAD"
 ok STUB-HEAD-FAILS "review-head on a non-repository passes git's failure through" \
   test "$(sc_rc review-head "${WORK}/no-such-checkout")" -ne 0
 ok STUB-RELEASE-SILENT "review-release CHECKOUT prints nothing and exits 0" \
-  bash -c 'out="$("$@" 2>&1)" && test -z "$out"' _ env STUB_STATE="$SC" "${WORK}/bin/amplihack" internal review-release "$WT"
+  bash -c 'out="$("$@" 2>&1)" && test -z "$out"' _ env STUB_STATE="$SC" "${WORK}/bin/amplihack" internal review-release "$SC_GEN1"
 ok STUB-RELEASE-COUNTS "review-release increments the release count: $(cat "${SC}/review-release" 2>/dev/null)" \
   test "$(cat "${SC}/review-release" 2>/dev/null)" = 1
+ok STUB-RELEASE-REMOVES "review-release removes the stub's generations" test ! -e "$SC_GEN1" -a ! -e "$SC_GEN2"
+ok STUB-RELEASE-UNREGISTERS "review-release leaves no generation registered in the repository" \
+  bash -c '! git -C "$1" worktree list --porcelain | grep -qF "$2/review-gen-"' _ "$MAIN" "$SC"
 ok STUB-LOGS "every review-* call is logged to review-calls" \
   test "$(grep -c '^review-' "${SC}/review-calls" 2>/dev/null || echo 0)" -ge 6
 ok STUB-UNKNOWN-INTERNAL "an unknown internal subcommand is unhandled (3)" test "$(sc_rc review-everything "$WT")" -eq 3
@@ -124,6 +139,12 @@ ok STUB-NEXT-ARGC "review-next with three arguments is unhandled (3)" test "$(sc
 ok STUB-RELEASE-ARGC "review-release with no argument is unhandled (3)" test "$(sc_rc review-release)" -eq 3
 ok STUB-ALLOCATE-KNOB "STUB_REVIEW_ALLOCATE_RC makes review-allocate fail" \
   test "$(STUB_REVIEW_ALLOCATE_RC=1 sc_rc review-allocate "$WT" "${SC}/state")" -eq 1
+ok STUB-NEXT-KNOB "STUB_REVIEW_NEXT_RC makes review-next fail" \
+  test "$(STUB_REVIEW_NEXT_RC=1 sc_rc review-next "$WT" "$WT")" -eq 1
+ok STUB-LAUNCH-KNOB "STUB_REVIEW_LAUNCH_RC makes review-launch fail" \
+  test "$(STUB_REVIEW_LAUNCH_RC=1 sc_rc review-launch "$WT")" -eq 1
+ok STUB-HEAD-KNOB "STUB_REVIEW_HEAD_RC makes review-head fail" \
+  test "$(STUB_REVIEW_HEAD_RC=1 sc_rc review-head "$WT")" -eq 1
 ok STUB-RELEASE-KNOB "STUB_REVIEW_RELEASE_RC makes review-release fail" \
   test "$(STUB_REVIEW_RELEASE_RC=1 sc_rc review-release "$WT")" -eq 1
 
@@ -139,11 +160,22 @@ ok DEFAULT-RELEASE-ONCE "the EXIT trap releases the review checkout exactly once
   test "$(releases)" = 1
 ok DEFAULT-LAUNCH-NOT-MAIN "no round launches from the shared main checkout" \
   bash -c '! grep -qxF "review-launch $1" "$2"' _ "$MAIN" "${CASE}/stub/review-calls"
+ok DEFAULT-LAUNCH-NOT-WT "no round launches from the PR worktree" \
+  bash -c '! grep -qxF "review-launch $1" "$2"' _ "$WT" "${CASE}/stub/review-calls"
+ok DEFAULT-WORKDIRS-LOGGED "every recipe run names its --working-dir: $(cat "${CASE}/stub/round-workdirs" 2>/dev/null | tr '\n' ' ')" \
+  test "$(grep -c '^round-workdir ' "${CASE}/stub/round-workdirs" 2>/dev/null || echo 0)" -ge 2
+ok DEFAULT-NO-ROUND-IN-WT-OR-MAIN "no round or evaluator starts from \$WT or \$MAIN" \
+  bash -c '! grep -qxF -e "round-workdir $1" -e "round-workdir $2" "$3"' _ "$WT" "$MAIN" "${CASE}/stub/round-workdirs"
+ok DEFAULT-ROUNDS-IN-GENERATIONS "every round starts from one of the stub's review generations" \
+  bash -c '! grep -v "^round-workdir $1/review-gen-[0-9][0-9]*\$" "$2"' _ "${CASE}/stub" "${CASE}/stub/round-workdirs"
+ok DEFAULT-GENERATIONS-RELEASED "the release removed every generation of the run" \
+  bash -c '! ls -d "$1"/review-gen-* >/dev/null 2>&1' _ "${CASE}/stub"
 
 # --- 0c. review checkout failures stay fail-closed (#2096) --------------------
 stub STUB_REVIEW_ALLOCATE_RC=1
 run allocate-fails
 ok ALLOCATE-FAILS-RC "rc=${RC}: a failed review-allocate must stop the loop non-zero" test "$RC" -ne 0
+ok ALLOCATE-FAILS-RC1 "rc=${RC}: a failed review-allocate exits 1" test "$RC" -eq 1
 ok ALLOCATE-FAILS-NO-ROUND "no round runs without an owned review checkout" test "$(calls autodrive-merge-round)" -eq 0
 ok ALLOCATE-FAILS-NO-RELEASE "nothing is released that was never allocated" test "$(releases)" = 0
 ok ALLOCATE-FAILS-NOT-DONE "it must not claim DONE" lacks "$OUT" '"loop_result":"DONE"'
@@ -151,6 +183,53 @@ stub STUB_REVIEW_RELEASE_RC=1
 run release-fails
 ok RELEASE-FAILS-RC "rc=${RC}: a failed review-release turns a DONE run into exit 1" test "$RC" -eq 1
 ok RELEASE-FAILS-ATTEMPTED "the release was attempted once" test "$(review_calls review-release)" -eq 1
+ok RELEASE-FAILS-DONE "the loop reached DONE before the release failed: ${OUT}" has "$OUT" '"loop_result":"DONE"'
+ok ALLOCATE-FAILS-NAMED "a failed review-allocate is named on stdout" \
+  bash -c 'printf "%s" "$1" | grep -qF "\"loop_result\":\"REVIEW_COMMAND_FAILED\"" && printf "%s" "$1" | grep -qF "review-allocate"' _ "$(cat "${WORK}/case-allocate-fails/out")"
+
+# A failed release never hides a stronger exit code: 79 and 75 are kept.
+stub STUB_REVIEW_RELEASE_RC=1 STUB_RC_1=79 "STUB_OUT_1=refused"
+run release-fails-79
+ok RELEASE-FAILS-KEEPS-79 "rc=${RC}: a refusal with a failed release still exits 79" test "$RC" -eq 79
+ok RELEASE-FAILS-KEEPS-79-ATTEMPTED "the release was attempted once" test "$(review_calls review-release)" -eq 1
+stub STUB_REVIEW_RELEASE_RC=1 STUB_RC_1=75
+run release-fails-75
+ok RELEASE-FAILS-KEEPS-75 "rc=${RC}: an orphaned run with a failed release still exits 75" test "$RC" -eq 75
+ok RELEASE-FAILS-KEEPS-75-NAMED "it is ORPHANED: ${OUT}" has "$OUT" '"loop_result":"ORPHANED"'
+
+# A failed review command is named once, as REVIEW_COMMAND_FAILED, and the
+# owned generation is still released.
+review_command_fails() { # review_command_fails <ID> <command> <knob>
+  local id="$1" cmd="$2"
+  stub "$3=1"
+  run "$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
+  ok "${id}-RC" "rc=${RC}: a failed ${cmd} stops the loop with exit 1" test "$RC" -eq 1
+  ok "${id}-NAMED" "a failed ${cmd} prints loop_result REVIEW_COMMAND_FAILED: ${OUT}" \
+    has "$OUT" '"loop_result":"REVIEW_COMMAND_FAILED"'
+  ok "${id}-NAMES-COMMAND" "the reason names ${cmd}: ${OUT}" has "$OUT" "$cmd"
+  ok "${id}-NAMES-GENERATION" "the reason names a review generation: ${OUT}" \
+    has "$OUT" "${CASE}/stub/review-gen-"
+  ok "${id}-NOT-DONE" "it must not claim DONE" lacks "$OUT" '"loop_result":"DONE"'
+  ok "${id}-NO-ROUND" "no round runs after a failed ${cmd}" test "$(calls autodrive-merge-round)" -eq 0
+  ok "${id}-RELEASES" "the allocated generation is still released once: $(releases)" test "$(releases)" = 1
+  ok "${id}-JSON" "every stdout line is one JSON object: ${OUT}" json_lines
+}
+review_command_fails REVIEW-NEXT-FAILS review-next STUB_REVIEW_NEXT_RC
+review_command_fails REVIEW-LAUNCH-FAILS review-launch STUB_REVIEW_LAUNCH_RC
+review_command_fails REVIEW-HEAD-FAILS review-head STUB_REVIEW_HEAD_RC
+
+# A round that stages a file in its review generation stops the loop, and the
+# generation's HEAD and status are printed before it is released.
+stub STUB_ROUND_DIRTIES_REVIEW=1
+run review-dir-changed
+ok REVIEW-DIR-CHANGED-RC "rc=${RC}: a changed review generation stops the loop with exit 1" test "$RC" -eq 1
+ok REVIEW-DIR-CHANGED-NAMED "it is REVIEW_DIR_CHANGED: ${OUT}" has "$OUT" '"loop_result":"REVIEW_DIR_CHANGED"'
+ok REVIEW-DIR-CHANGED-PRINTS-STATUS "stderr holds the generation's porcelain status line: $(grep -n 'stub-dirt' "${CASE}/err")" \
+  grep -qxF 'A  stub-dirt.txt' "${CASE}/err"
+ok REVIEW-DIR-CHANGED-PRINTS-HEAD "stderr names the generation and its HEAD" \
+  grep -qE "^review generation ${CASE}/stub/review-gen-[0-9]+ at HEAD [0-9a-f]{40}:\$" "${CASE}/err"
+ok REVIEW-DIR-CHANGED-REASON-NO-FILES "file names stay out of the escalate reason: ${OUT}" lacks "$OUT" stub-dirt.txt
+ok REVIEW-DIR-CHANGED-RELEASES "the changed generation is still released once: $(releases)" test "$(releases)" = 1
 
 MARK='amplihack.recipe.failure_class '
 marker() { # marker <class> <structural> [signal]
@@ -293,6 +372,51 @@ run no-helper "${WORK}/bundle/tools/autodrive_loop.sh"
 ok NO-HELPER "rc=${RC}: without autodrive_refusal.sh the loop must exit 2" test "$RC" -eq 2
 ok NO-HELPER-SAYS "the error must name the missing file: ${ERR}" has "$ERR" autodrive_refusal.sh
 ok NO-HELPER-NO-ROUND "no round may run without the refusal check" test "$(calls autodrive-merge-round)" -eq 0
+
+# --- 11. the guard and record scripts use $AMPLIHACK_BIN (#2096 finding 8) ---------
+# `amplihack` first on PATH refuses and logs; $AMPLIHACK_BIN, under another
+# name, logs and answers. Every call must reach $AMPLIHACK_BIN.
+AB="${WORK}/amplihack-bin"; mkdir -p "${AB}/path" "${AB}/state"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "BARE %s\n" "$*" >> "$AB_LOG"' 'exit 97' > "${AB}/path/amplihack"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "BIN %s\n" "$*" >> "$AB_LOG"' \
+  'case "${1:-} ${2:-}" in' \
+  '  "orch helper") STUB_STATE="$AB_STATE" exec "$AB_STUB" "$@" ;;' \
+  '  "internal review-bind-record") cat -- "$4"; exit 0 ;;' \
+  'esac' 'exit 0' > "${AB}/amplihack-alt"
+chmod 0755 "${AB}/path/amplihack" "${AB}/amplihack-alt"
+ab() { # ab <script> <args...>: run a bundle script with the alternate binary
+  AB_LOG="${AB}/log" AB_STATE="${AB}/state" AB_STUB="${WORK}/bin/amplihack" REAL_AMPLIHACK="" \
+    HOME="${WORK}/home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+    AMPLIHACK_BIN="${AB}/amplihack-alt" PATH="${AB}/path:${PATH}" bash "${TOOLS}/$1" "${@:2}"
+}
+bare_calls() { local n; n="$(grep -c '^BARE ' "${AB}/log" 2>/dev/null)" || true; printf '%s' "${n:-0}"; }
+: > "${AB}/log"
+ab autodrive_worktree_guard.sh release-review-dir "${AB}/no-such-generation" >/dev/null 2>&1
+ok AMPLIHACK-BIN-GUARD-RELEASE "release-review-dir calls \$AMPLIHACK_BIN: $(tr '\n' ';' < "${AB}/log")" \
+  grep -qxF "BIN internal review-release ${AB}/no-such-generation" "${AB}/log"
+ab autodrive_worktree_guard.sh private-review-dir "$WT" "${AB}/review" >/dev/null 2>&1
+ok AMPLIHACK-BIN-GUARD-CHECKOUT "private-review-dir calls \$AMPLIHACK_BIN" \
+  grep -qxF "BIN internal review-checkout ${WT} ${AB}/review" "${AB}/log"
+AB_GEN="${AB}/generation"
+git -C "$WT" worktree add -q --detach "$AB_GEN" HEAD >/dev/null 2>&1 && : > "${AB_GEN}.review-owner.json"
+AB_STAMP="$(ab autodrive_worktree_guard.sh index-stamp "$AB_GEN" 2>/dev/null)"
+ab autodrive_worktree_guard.sh index-check "$AB_GEN" "$AB_STAMP" ab-step >/dev/null 2>&1
+ok AMPLIHACK-BIN-GUARD-CLEAN "index-check of an owned generation calls \$AMPLIHACK_BIN review-clean" \
+  grep -qxF "BIN internal review-clean ${AB_GEN}" "${AB}/log"
+SHA40="$(git -C "$WT" rev-parse --verify HEAD)"
+AUTODRIVE_ROUND_RECORD="${AB}/record.json" REVIEW_DIR="$AB_GEN" AUTODRIVE_ROUND_LABEL=round-1 \
+  RECIPE_VAR_crusty_verdict='{"crusty_verdict":"CLEAN","concern_count":0}' \
+  RECIPE_VAR_crusty_round_context="{\"head_sha\":\"${SHA40}\"}" RECIPE_VAR_crusty_fix_evidence='{"commits":0}' \
+  AUTODRIVE_COMPLETION_STATE="${AB}/completion" ab autodrive_crusty_record.sh >/dev/null 2>"${AB}/record.err"
+ok AMPLIHACK-BIN-RECORD-EXTRACT "the record's field extraction calls \$AMPLIHACK_BIN: $(tail -n 2 "${AB}/record.err")" \
+  grep -qF "BIN orch helper extract-json --require-field crusty_verdict" "${AB}/log"
+ok AMPLIHACK-BIN-RECORD-BIND "the record binding calls \$AMPLIHACK_BIN" \
+  grep -qxF "BIN internal review-bind-record ${AB_GEN} ${AB}/record.json" "${AB}/log"
+ok AMPLIHACK-BIN-RECORD-SEAL "the completion seal calls \$AMPLIHACK_BIN" \
+  grep -qxF "BIN orch helper autodrive-completion-seal --private-state ${AB}/completion" "${AB}/log"
+ok AMPLIHACK-BIN-NO-BARE "no call reached a bare amplihack on PATH: $(grep '^BARE ' "${AB}/log" | tr '\n' ';')" \
+  test "$(bare_calls)" -eq 0
+git -C "$WT" worktree remove --force "$AB_GEN" >/dev/null 2>&1
 
 echo "=== ${PASSED} passed, ${FAILED} failed ==="
 [ "$FAILED" -eq 0 ] || exit 1

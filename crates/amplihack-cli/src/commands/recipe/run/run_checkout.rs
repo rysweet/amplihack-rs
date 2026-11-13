@@ -205,6 +205,7 @@ impl RunCheckout {
         if !removed_origin.status.success() && removed_origin.status.code() != Some(128) {
             bail!("cannot remove clone-local caller destination from isolated configuration");
         }
+        let mut copied_origin = false;
         for key in [
             "user.name",
             "user.email",
@@ -215,6 +216,7 @@ impl RunCheckout {
                 .args(["config", "--local", "--get", key])
                 .output()?;
             if output.status.success() {
+                copied_origin |= key == "remote.origin.url";
                 let value = OsString::from_vec(trim_lf(&output.stdout).to_vec());
                 let output = preparation_command(&repository)
                     .args(["config", "--local", key])
@@ -226,6 +228,14 @@ impl RunCheckout {
             } else if output.status.code() != Some(1) {
                 bail!("cannot inspect caller Git configuration {key}");
             }
+        }
+        if copied_origin {
+            seed_origin(&caller_top, &repository).map_err(|error| {
+                anyhow::anyhow!(
+                    "cannot seed origin refs in the private repository: {error:#}; partial resources retained at {}",
+                    storage.display()
+                )
+            })?;
         }
         let identities = [
             identity(&storage)?,
@@ -463,6 +473,92 @@ fn git(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
         );
     }
     Ok(output.stdout)
+}
+/// Gives the private repository the caller's `origin` view, so recipes that
+/// resolve a base from `origin/HEAD` or `origin/<branch>` find one: the normal
+/// fetch refspec, the caller's `refs/remotes/origin/*` (one local fetch, so
+/// every object they name is present), and `origin/HEAD` when the caller has
+/// it as a symbolic ref to a resolvable `refs/remotes/origin/*` target.
+/// Nothing is fetched over the network, and no remote URL is printed.
+fn seed_origin(caller_top: &Path, repository: &Path) -> Result<()> {
+    let output = preparation_command(repository)
+        .args([
+            "config",
+            "--local",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ])
+        .output()?;
+    if !output.status.success() {
+        bail!("cannot set the origin fetch refspec");
+    }
+    let refs = git(
+        caller_top,
+        &[
+            "for-each-ref",
+            "--count=1",
+            "--format=%(refname)",
+            "refs/remotes/origin/",
+        ],
+    )?;
+    if trim_lf(&refs).is_empty() {
+        // The recipe's own `git fetch origin` fills them through the refspec.
+        return Ok(());
+    }
+    let output = preparation_command(repository)
+        .env("GIT_ALLOW_PROTOCOL", "file")
+        .args(["fetch", "--no-tags", "--quiet", "--"])
+        .arg(caller_top)
+        .arg("+refs/remotes/origin/*:refs/remotes/origin/*")
+        .output()?;
+    if !output.status.success() {
+        bail!(
+            "local fetch failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let head = preparation_command(caller_top)
+        .args(["symbolic-ref", "-q", "refs/remotes/origin/HEAD"])
+        .output()?;
+    let target = match head.status.code() {
+        Some(0) => String::from_utf8(trim_lf(&head.stdout).to_vec())
+            .context("the caller's origin/HEAD target is not UTF-8")?,
+        // Absent, or not a symbolic ref: never invent a default branch.
+        Some(1) => return Ok(()),
+        _ => bail!(
+            "cannot read the caller's origin/HEAD: {}",
+            String::from_utf8_lossy(&head.stderr).trim()
+        ),
+    };
+    let well_formed = target.starts_with("refs/remotes/origin/")
+        && !target.chars().any(|c| c.is_whitespace() || c.is_control())
+        && preparation_command(repository)
+            .args(["check-ref-format", &target])
+            .output()?
+            .status
+            .success();
+    let resolves = well_formed
+        && preparation_command(repository)
+            .args(["rev-parse", "--verify", "--quiet", &target])
+            .output()?
+            .status
+            .success();
+    if !resolves {
+        eprintln!(
+            "amplihack: warning: the caller's origin/HEAD does not name a resolvable refs/remotes/origin/ branch; the private checkout has no origin/HEAD"
+        );
+        return Ok(());
+    }
+    let output = preparation_command(repository)
+        .args(["symbolic-ref", "refs/remotes/origin/HEAD", &target])
+        .output()?;
+    if !output.status.success() {
+        bail!(
+            "cannot set origin/HEAD: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
 }
 /// A caller path inside the checkout must not climb out of it with `..`:
 /// joined onto the private root, it would resolve outside the checkout.

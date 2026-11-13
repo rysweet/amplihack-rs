@@ -22,6 +22,11 @@ struct Generation {
     children: Vec<PathBuf>,
     #[serde(default)]
     allocation: Option<(PathBuf, (u64, u64))>,
+    /// Set once `advance` has removed this superseded generation's checkout
+    /// and storage. Only the record stays, so `release` can walk the chain;
+    /// nothing trusts a retired generation again.
+    #[serde(default)]
+    retired: bool,
 }
 
 fn command(dir: &Path) -> Command {
@@ -187,6 +192,7 @@ pub(crate) fn provision(source: &Path, destination: &Path, head: Option<&str>) -
         launch,
         children: Vec::new(),
         allocation: None,
+        retired: false,
     };
     write(
         &manifest_path(&checkout)?,
@@ -216,26 +222,56 @@ fn read(checkout: &Path) -> Result<Generation> {
     {
         bail!("invalid review generation ownership");
     }
-    let storage = generation.repository.parent().context("review storage")?;
-    for (path, expected) in [
-        (storage, generation.identities[0]),
-        (&generation.repository, generation.identities[1]),
-        (checkout, generation.identities[2]),
-        (&generation.launch, generation.identities[3]),
-    ] {
-        if identity(path)? != expected {
-            bail!("review generation resource identity changed; retained for recovery");
-        }
+    let storage = storage_of(&generation)?;
+    // Storage is always created beside the checkout as review-generation-*,
+    // so a record naming storage anywhere else is never trusted or removed.
+    let confined = storage.parent().is_some() && storage.parent() == checkout.parent();
+    let named = storage
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("review-generation-"));
+    if !confined || !named {
+        bail!("review storage is outside its allocation directory; refusing to trust it");
     }
     if generation.repository != storage.join("repository.git")
         || generation.launch != storage.join("launch")
     {
         bail!("invalid review resource paths");
     }
+    // A retired generation's checkout and storage were removed on purpose;
+    // `release` checks the storage path itself before removing anything.
+    if !generation.retired {
+        for (path, expected) in [
+            (storage, generation.identities[0]),
+            (&generation.repository, generation.identities[1]),
+            (checkout, generation.identities[2]),
+            (&generation.launch, generation.identities[3]),
+        ] {
+            if identity(path)? != expected {
+                bail!("review generation resource identity changed; retained for recovery");
+            }
+        }
+    }
+    Ok(generation)
+}
+fn storage_of(generation: &Generation) -> Result<&Path> {
+    generation.repository.parent().context("review storage")
+}
+/// [`read`] for every caller that trusts or uses the generation: a retired
+/// generation is refused. Only `release`, `release_state` and the child walk
+/// use plain [`read`].
+fn read_live(checkout: &Path) -> Result<Generation> {
+    let generation = read(checkout)?;
+    if generation.retired {
+        bail!(
+            "review generation is superseded and retired: {}; use its successor",
+            checkout.display()
+        );
+    }
     Ok(generation)
 }
 pub(crate) fn validate(source: &Path, checkout: &Path) -> Result<()> {
-    let generation = read(checkout)?;
+    let generation = read_live(checkout)?;
     let common = PathBuf::from(git(
         source,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
@@ -269,7 +305,7 @@ pub(crate) fn validate(source: &Path, checkout: &Path) -> Result<()> {
 /// The owned review checkout at `checkout` still holds exactly its recorded
 /// commit's files: [`refuse_dirty`] after the ownership checks of [`read`].
 pub(crate) fn clean(checkout: &Path) -> Result<()> {
-    read(checkout)?;
+    read_live(checkout)?;
     refuse_dirty(checkout)
 }
 /// Refuses a review checkout whose working tree or index differs from HEAD,
@@ -297,13 +333,13 @@ fn refuse_dirty(checkout: &Path) -> Result<()> {
     Ok(())
 }
 pub(crate) fn launch(checkout: &Path) -> Result<PathBuf> {
-    Ok(read(checkout)?.launch)
+    Ok(read_live(checkout)?.launch)
 }
 pub(crate) fn head(checkout: &Path) -> Result<String> {
-    Ok(read(checkout)?.head)
+    Ok(read_live(checkout)?.head)
 }
 pub(crate) fn bind_record(checkout: &Path, record: &Path) -> Result<()> {
-    let generation = read(checkout)?;
+    let generation = read_live(checkout)?;
     validate(&generation.source_repository, checkout)?;
     if !record.is_absolute()
         || record.starts_with(checkout)
@@ -362,7 +398,7 @@ pub(crate) fn allocate(source: &Path, parent: &Path) -> Result<PathBuf> {
         .tempdir_in(parent)?
         .keep();
     let checkout = provision(source, &directory.join("checkout"), None)?;
-    let mut generation = read(&checkout)?;
+    let mut generation = read_live(&checkout)?;
     generation.allocation = Some((directory.clone(), identity(&directory)?));
     crate::commands::cleanup::run_dir::write_atomic_0600(
         &manifest_path(&checkout)?,
@@ -393,7 +429,7 @@ pub(crate) fn advance(source: &Path, checkout: &Path, state: Option<&Path>) -> R
         );
     }
     validate(source, checkout)?;
-    let mut generation = read(checkout)?;
+    let mut generation = read_live(checkout)?;
     let current = git(source, &["rev-parse", "--verify", "HEAD^{commit}"])?;
     if current == generation.head {
         return Ok(checkout.to_path_buf());
@@ -405,7 +441,68 @@ pub(crate) fn advance(source: &Path, checkout: &Path, state: Option<&Path>) -> R
         &manifest_path(checkout)?,
         &serde_json::to_vec(&generation)?,
     )?;
+    // The successor is recorded, so the superseded generation's files are no
+    // longer needed. Failing to free them never stops the loop: the record
+    // stays live and `release` frees it when the loop ends.
+    if let Err(error) = retire(checkout, generation) {
+        eprintln!(
+            "amplihack: warning: could not retire superseded review generation {}: {error:#}; it is released when the loop ends",
+            checkout.display()
+        );
+    }
     Ok(next)
+}
+/// Removes a superseded generation's checkout and storage and marks its
+/// record `retired`. Order: worktree removal, then the record, then the
+/// storage, so no state leaves live storage without a record naming it.
+fn retire(checkout: &Path, mut generation: Generation) -> Result<()> {
+    let storage = storage_of(&generation)?.to_path_buf();
+    for (path, expected) in [
+        (storage.as_path(), generation.identities[0]),
+        (generation.repository.as_path(), generation.identities[1]),
+        (checkout, generation.identities[2]),
+    ] {
+        if identity(path)? != expected {
+            bail!("review generation resource identity changed; retained for recovery");
+        }
+    }
+    let output = command(&generation.repository)
+        .args(["worktree", "remove", "--force"])
+        .arg(checkout)
+        .output()?;
+    if !output.status.success() {
+        bail!(
+            "git worktree remove failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    generation.retired = true;
+    crate::commands::cleanup::run_dir::write_atomic_0600(
+        &manifest_path(checkout)?,
+        &serde_json::to_vec(&generation)?,
+    )?;
+    remove_storage(&storage, generation.identities[0])
+}
+/// Removes a generation's storage directory only when the path is still that
+/// directory: not a symlink, and with the recorded device and inode. An
+/// absent path is already freed.
+fn remove_storage(storage: &Path, expected: (u64, u64)) -> Result<()> {
+    let metadata = match fs::symlink_metadata(storage) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.file_type().is_symlink()
+        || !metadata.is_dir()
+        || (metadata.dev(), metadata.ino()) != expected
+    {
+        bail!(
+            "review storage identity changed; retained: {}",
+            storage.display()
+        );
+    }
+    fs::remove_dir_all(storage)?;
+    Ok(())
 }
 
 #[derive(Serialize, Deserialize)]
@@ -450,7 +547,7 @@ fn read_state(path: &Path) -> Result<ReviewState> {
 pub(crate) fn register(state: &Path, checkout: &Path) -> Result<()> {
     let path = state_path(state)?;
     let mut record = read_state(&path)?;
-    let generation = read(checkout)?;
+    let generation = read_live(checkout)?;
     if !record
         .generations
         .iter()
@@ -500,14 +597,18 @@ pub(crate) fn release(checkout: &Path) -> Result<()> {
     }
     // Release validates identities, not the reviewed contents: a failed guard
     // can still release its own mutated generation without touching a caller.
-    let output = command(&generation.repository)
-        .args(["worktree", "remove", "--force"])
-        .arg(checkout)
-        .output()?;
-    if !output.status.success() {
-        bail!("cannot release owned review checkout; generation retained");
+    // A retired generation has no checkout left; only storage that a crash
+    // between its record and its removal left behind is freed.
+    if !generation.retired {
+        let output = command(&generation.repository)
+            .args(["worktree", "remove", "--force"])
+            .arg(checkout)
+            .output()?;
+        if !output.status.success() {
+            bail!("cannot release owned review checkout; generation retained");
+        }
     }
-    fs::remove_dir_all(generation.repository.parent().context("review storage")?)?;
+    remove_storage(storage_of(&generation)?, generation.identities[0])?;
     fs::remove_file(manifest_path(checkout)?)?;
     if let Some((parent, expected)) = generation.allocation {
         if checkout.parent() != Some(parent.as_path()) || identity(&parent)? != expected {

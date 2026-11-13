@@ -146,7 +146,7 @@ repo_of() { real "$(git -C "$1" rev-parse --path-format=absolute --git-common-di
 not_main_checkout() {
   local rd="$1" want have top
   if [ -f "${rd}.review-owner.json" ]; then
-    amplihack internal review-validate "$2" "$rd" >/dev/null 2>/dev/null || echo "review generation does not match its recorded PR head or repository"
+    "${AMPLIHACK_BIN:-amplihack}" internal review-validate "$2" "$rd" >/dev/null 2>/dev/null || echo "review generation does not match its recorded PR head or repository"
     return
   fi
   want="$(repo_of "$2")" || want=""
@@ -247,14 +247,14 @@ cmd_loop_preflight() {
 # trusted launch directory for judging; the checkout remains review data.
 # Changes to the caller's index or HEAD do not change this generation's stamp.
 cmd_private_review_dir() {
-  amplihack internal review-checkout "$@"
+  "${AMPLIHACK_BIN:-amplihack}" internal review-checkout "$@"
 }
 
 # Issue #2096: release a native review generation only after validating its
 # ownership manifest and filesystem identities. Detachment alone grants no
 # cleanup authority. A failed mutation guard does not prevent owned cleanup.
 cmd_release_review_dir() {
-  amplihack internal review-release "$@"
+  "${AMPLIHACK_BIN:-amplihack}" internal review-release "$@"
 }
 
 cmd_review_dir() {
@@ -307,7 +307,7 @@ cmd_index_check() {
   # An owned generation must also still hold its commit's files (#2096).
   local rdir; rdir="$(real "$dir")" || rdir=""
   if [ -n "$rdir" ] && [ -f "${rdir}.review-owner.json" ]; then
-    amplihack internal review-clean "$rdir" >/dev/null || stop "${step} left changes in the working tree of the review dir ${dir} (git -C '${dir}' status); a verdict must name the files it reviewed. Release this review dir and run the round again"
+    "${AMPLIHACK_BIN:-amplihack}" internal review-clean "$rdir" >/dev/null || stop "${step} left changes in the working tree of the review dir ${dir} (git -C '${dir}' status); a verdict must name the files it reviewed. Release this review dir and run the round again"
   fi
 }
 

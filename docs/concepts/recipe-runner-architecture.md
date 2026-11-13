@@ -88,7 +88,7 @@ Identity and execution are kept apart. Recovery admission keys on your
 to one attempt: a resumed run prepares a fresh one.
 
 The runner still owns step order and context evaluation. The CLI owns what
-surrounds it, in this order: prepare the checkout, start the Linux observer,
+surrounds it, in this order: prepare the checkout, start the observer (Linux only),
 launch the runner, then remove the checkout, publish the Git record, finish
 the recovery admission and finish the workspace. Each step's error is kept and
 joined to the others, so a failed release cannot hide a failed publication.

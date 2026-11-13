@@ -2,7 +2,7 @@
 title: Recipe Run and Auto-Drive Checkout Isolation
 description: Where recipe runs and auto-drive reviews execute, what they copy from the caller, how they record Git, and how they release what they own.
 doc_type: reference
-last_updated: 2026-11-12
+last_updated: 2026-11-13
 ---
 
 # Recipe run and auto-drive checkout isolation
@@ -19,10 +19,12 @@ head commit it recorded. This is issue #2096.
 - [What the run copies](#what-the-run-copies)
 - [Where each kind of run executes](#where-each-kind-of-run-executes)
 - [Paths and Git configuration](#paths-and-git-configuration)
+  - [The origin remote in the private repository](#the-origin-remote-in-the-private-repository)
 - [Independent, nested and resumed runs](#independent-nested-and-resumed-runs)
 - [Ownership and release](#ownership-and-release)
 - [Required recording](#required-recording)
 - [Private review generations](#private-review-generations)
+  - [Superseded generations are retired](#superseded-generations-are-retired)
 - [Configuration](#configuration)
 - [Rust components](#rust-components)
 - [Failure behavior](#failure-behavior)
@@ -91,6 +93,64 @@ pre-push, run normally inside the execution checkout.
 The private repository is a `git clone --bare --no-local --no-hardlinks` of the
 caller. It has no alternates pointing at the caller's object store, and the
 caller's worktree list does not change.
+
+### The origin remote in the private repository
+
+A bare clone keeps no remote-tracking refs and no fetch refspec. Recipes that
+create a branch need both: `workflow-worktree` resolves its base from
+`origin/HEAD` and `origin/<branch>`, and `workflow_delivery_inputs.sh` reads
+the same refs. Preparation therefore rebuilds the caller's `origin` in the
+private repository, after copying the caller's remote configuration:
+
+| Caller has | Private repository gets |
+| --- | --- |
+| `remote.origin.url` | `remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*`, the normal refspec. |
+| `refs/remotes/origin/*` | The same refs and the objects they need, copied by one local fetch from the caller's top-level directory: `git fetch --no-tags --quiet -- <caller top> '+refs/remotes/origin/*:refs/remotes/origin/*'`. |
+| `refs/remotes/origin/HEAD` as a symbolic ref | The same symbolic ref, after checks (below). |
+| No `origin` remote | No refspec and no `origin/*` refs. Preparation still succeeds. |
+| `remote.origin.url` but no `origin/*` refs | The refspec only. Nothing is fetched over the network during preparation; the recipe's own `workflow_fetch_origin.sh` fills `origin/*` on its first fetch. |
+| `remote.origin.url` but no `origin/HEAD` | No `origin/HEAD`. Preparation never invents a default branch; the recipes use their existing fallback. |
+
+The seeding fetch reads only the caller's local repository. It runs with
+`GIT_ALLOW_PROTOCOL=file`, takes the canonical absolute caller path after
+`--`, and writes only under `refs/remotes/origin/`. Tags are not copied.
+
+`origin/HEAD` is copied only when the caller's
+`git symbolic-ref -q refs/remotes/origin/HEAD` exits `0` and its target:
+
+- starts with `refs/remotes/origin/`;
+- contains no whitespace or control characters;
+- passes `git check-ref-format`;
+- resolves in the private repository after the fetch
+  (`git rev-parse --verify --quiet`).
+
+Exit status `1` (not a symbolic ref, or absent) means the ref is skipped. Any
+other status, including death by a signal, stops preparation.
+
+Each of these Git calls uses the same restricted environment as the rest of
+preparation. A failure stops preparation with the usual wording, for example:
+
+```text
+cannot seed origin refs in the private repository: <git stderr>; partial resources retained at <exec dir>
+```
+
+Remote URLs are never printed, because they can carry credentials. Error text
+contains only git's trimmed standard error from the local fetch.
+
+Steps see the result as an ordinary clone. Inside a run's checkout:
+
+```bash
+git config --get remote.origin.fetch
+# +refs/heads/*:refs/remotes/origin/*
+git symbolic-ref refs/remotes/origin/HEAD
+# refs/remotes/origin/main
+git fetch origin   # updates refs/remotes/origin/* from the real remote
+```
+
+`quick-change` and `auto-drive-light` take their worktree from
+`workflow-worktree`, and `consensus-issue-worktree` and
+`workflow-terminal-state` run the same `resolve_base_ref` logic, so all four
+find their base the same way.
 
 Path inputs are mapped before launch:
 
@@ -229,6 +289,11 @@ journal means the observer ran and saw no Git commands that can write.
 `GitRecord::dry_run()` is the only state with recording switched off, and only
 a dry run reaches it. See the [Git command record](recipe-runner-logging.md#git-command-record).
 
+Off Linux there is no observer. The run still executes in its private
+checkout, without command recording, and says so in `git-recording.json` and
+`run.json` with `"coverage":"unavailable"`. See
+[Platform support](#platform-support).
+
 ## Private review generations
 
 Each auto-drive owns a review generation for one repository, PR number and
@@ -271,6 +336,71 @@ explicit path and SHA. Every verdict records `reviewed_head_sha`.
 ownership rules as [execution release](#ownership-and-release). See
 [Review generations](auto-drive-to-merge.md#review-generations).
 
+### Superseded generations are retired
+
+Each loop's generations live in one allocation directory,
+`<state dir>/review-<random>/`:
+
+| Path | Holds |
+| --- | --- |
+| `<allocation>/checkout`, then `<allocation>/checkout-<uuid>` for each later head | The detached review checkout. |
+| `<checkout>.review-owner.json` beside each checkout | The generation's ownership manifest (`0600`). |
+| `<allocation>/review-generation-<random>/` | Storage: `repository.git` and the trusted launch directory. |
+
+The manifest sits beside the checkout, not inside the storage, so it survives
+when the storage is removed.
+
+When `review-next` finds that the PR head has moved, it provisions the next
+generation, records it in the current generation's `children` and writes the
+manifest. It then retires the generation it replaced:
+
+1. It checks the device and inode of the old storage, repository and checkout
+   again.
+2. It runs `git worktree remove --force` on the old checkout.
+3. It sets `"retired": true` in the old manifest and writes it atomically.
+4. It removes the old storage, only when the path is a directory (not a
+   symlink) whose device and inode still match the manifest.
+
+`review-next` prints the new generation's checkout on success. If the
+identity check or the worktree removal fails, the old generation stays as it
+is (`retired` remains `false`). If only the storage removal fails, the record
+is already `retired` and `review-release` removes the storage later when its
+identity still matches. Either way one warning goes to stderr and
+`review-next` still prints the new generation. The loop continues, and
+`review-release` frees the old generation when the loop exits:
+
+```text
+amplihack: warning: could not retire superseded review generation <checkout>: <error>; it is released when the loop ends
+```
+
+A retired generation keeps its manifest as the record that links the chain,
+so the loop's first generation stays the release anchor. Its rules:
+
+- `review-validate`, `review-clean`, `review-launch`, `review-head`,
+  `review-bind-record`, `review-next` and state registration refuse it:
+  `review generation is superseded and retired`.
+- `review-release` does not run `git worktree remove` for it. It removes the
+  storage if any is left, but only when the identity still matches; a
+  mismatch stops release with `review storage identity changed; retained`.
+  It then removes the manifest and the allocation directory and releases each
+  child, as for a live generation.
+- Nothing sets `retired` back to `false`, and retirement never changes the
+  owner, children or allocation fields.
+- Every manifest, retired or not, must name a storage directory that sits in
+  the same allocation directory as its checkout and whose name starts with
+  `review-generation-`. Retirement skips only the on-disk identity checks for
+  the removed checkout, repository and launch directory; the size bound,
+  `O_NOFOLLOW` read, schema version, owner and path-shape checks still apply.
+
+When every retirement succeeds, a loop keeps one review clone on disk between
+rounds, not one per PR head it has judged.
+
+Generations are not made with `git clone --reference --dissociate`. After
+`--dissociate` repacks, the clone holds a full copy of the objects, so it saves
+no disk compared with `--no-local`, and during the clone it reads the caller's
+object store through alternates, which weakens the isolation this design
+relies on. Retirement gives the disk saving instead.
+
 ## Configuration
 
 Isolation and recording cannot be switched off.
@@ -294,10 +424,10 @@ These are internal modules, not a public API.
 | Component | Responsibility |
 | --- | --- |
 | `run_isolation/input_snapshot.rs` | Captures `HEAD`, index and working tree separately; rejects unsafe inputs. |
-| `commands/recipe/run/run_checkout.rs` | Finds the repository (fails closed), provisions the private checkout, maps paths, releases owned paths. |
-| `commands/recipe/run/git_record.rs` | `GitRecord::begin` starts the Linux observer; `GitRecord::dry_run()` is the disabled state for dry runs; `finish` publishes. |
+| `commands/recipe/run/run_checkout.rs` | Finds the repository (fails closed), provisions the private checkout, rebuilds the `origin` refspec, `origin/*` and `origin/HEAD`, maps paths, releases owned paths. |
+| `commands/recipe/run/git_record.rs` | `GitRecord::begin` delegates to `begin_on(run_dir, RecordingPlatform::current())`. `RecordingPlatform::Linux` starts the observer; `RecordingPlatform::Other` gives the unobserved `Unavailable` state. `GitRecord::dry_run()` is the disabled state for dry runs; `finish` publishes. |
 | `run_isolation/observer/linux.rs` | ptrace observer, built only with `cfg(target_os = "linux")`. |
-| `run_isolation/review_generation.rs` | Review generations: provision, four-part validation (including a clean working tree), release. |
+| `run_isolation/review_generation.rs` | Review generations: provision, four-part validation (including a clean working tree), retirement of superseded generations in `advance`, release. `read_live` refuses retired generations; plain `read` is used only by `release`, `release_state` and the child walk. |
 | `run_isolation/exec_storage.rs` | Claims `<work root>/exec/<identity>/` and decides when it may be reclaimed; used by preparation and by `amplihack cleanup`. |
 | `commands/cleanup/run_dir.rs` | `RunWorkspace::begin_durable` for real runs, `RunWorkspace::dry_runtime` for dry runs; `record_attempt_checked` and `finish_checked` return errors. |
 | `commands/recipe/run/execute.rs` | Order of preparation, launch and release; joins errors. |
@@ -311,11 +441,15 @@ workspace code. None of them is discarded with `.ok()`, `let _ =` or
 | Failure | Result |
 | --- | --- |
 | Unsafe input, unborn `HEAD`, bare or malformed repository | Preparation fails naming the path; no step runs; admission finished as `Failure`. |
-| Observer unavailable or fails to start | The runner never starts. Without a writable work root: `cannot initialize required Git recording; provide a writable absolute AMPLIHACK_WORK_ROOT and retry`. |
+| Observer fails to start on Linux | The runner never starts. Without a writable work root: `cannot initialize required Git recording; provide a writable absolute AMPLIHACK_WORK_ROOT and retry`. |
+| Not Linux | The run proceeds unobserved and records `coverage: "unavailable"`. Without a writable work root it stops with the same message as above. |
+| Seeding `origin/*` or copying `origin/HEAD` fails | Preparation fails with `partial resources retained at <exec dir>`; no step runs. |
 | Observer lost, storage or attribution error | Controlled teardown, partial evidence kept, run fails. |
 | Checkout identity changed at release | Resources kept, run fails. |
 | Review dir fails a check | `REVIEW_DIR_CHANGED` or `REVIEW_DIR_UNSTAMPED`; no judging. |
 | Review checkout has edited or untracked files | `review-validate` and `index-check` refuse it, naming the first changed path. |
+| Retiring a superseded review generation fails | One warning; the new generation is used and the old one is freed by `review-release` at loop exit. |
+| A command is given a retired review generation | Refused: `review generation is superseded and retired`. |
 | Stable execution path still held | The attempt prints the reason and uses a fresh random path. |
 | Git recording trace folder cannot be removed | The error is returned: the folder may contain command lines. |
 | Every step passed but release or publication failed | The run fails. |
@@ -325,15 +459,40 @@ enough for success: recording, release and publication must also succeed.
 
 ## Platform support
 
-Real recipe runs need Linux, because the observer is Linux-only. On macOS a
-real run stops before the runner starts:
+Real recipe runs work on every platform. Checkout isolation is the same
+everywhere; only command recording depends on Linux.
 
-```text
-required recipe process observation is supported on Linux only; run this recipe on Linux
-```
+| Platform | Steps run in | Git command recording |
+| --- | --- | --- |
+| Linux | The private checkout | Required. The ptrace observer runs and its failure fails the run. |
+| macOS and every other non-Linux target | The private checkout | Unavailable. No observer is started and the run is not failed for it. |
+
+Off Linux, `GitRecord` enters its `Unavailable` state:
+
+- It prints one notice to stderr:
+
+  ```text
+  amplihack: Git command recording is unavailable on this platform; the run continues in its private checkout without recording
+  ```
+
+- The runner's environment has `AMPLIHACK_OBSERVER_PID`, the observer's event
+  variables and every caller trace variable (`GIT_TRACE2`, `GIT_TRACE2_EVENT`,
+  `GIT_TRACE2_ENV_VARS`, `GIT_TRACE2_PERF`, `GIT_TRACE2_CONFIG_PARAMS`,
+  `GIT_TRACE2_REDACT`) removed, so no step writes trace output anywhere.
+- `finish` writes `<run dir>/git-recording.json` (`0600`) and `run.json`
+  carries it in `git_recording`. No `git-commands.jsonl` is written. See
+  [When recording is unavailable](recipe-runner-logging.md#when-recording-is-unavailable).
+- A run dir is still required. Without a usable work root the run stops, as on
+  Linux.
+
+The platform is decided once, by `RecordingPlatform::current()`, from the
+build target. There is no environment variable or flag that switches a Linux
+run to the unobserved path.
 
 `--dry-run`, `recipe list`, `recipe show` and `recipe validate` work on every
-platform, and the crate builds on macOS.
+platform, and the crate builds on macOS. Auto-drive still refuses macOS (see
+[#1646](https://github.com/rysweet/amplihack-rs/issues/1646)); that refusal is
+separate from recording.
 
 ## Tests
 
@@ -348,14 +507,18 @@ isolation test cannot pass on empty data.
 | --- | --- |
 | `crates/amplihack-cli/tests/issue_2096_checkout_units.rs` | Snapshot layers, byte paths, symlinks, special files, batch blob query. |
 | `crates/amplihack-cli/tests/issue_2096_execution_isolation.rs` | Caller `HEAD` and index unchanged; dry run makes no checkout, recording or run folder; resumed run gets a fresh `exec dir`; unborn caller finishes admission as `Failure`. |
+| `crates/amplihack-cli/tests/issue_2096_private_base_ref.rs` | Base resolution inside a private checkout made by `RunCheckout::prepare`, whose caller has an origin: the `resolve_base_ref` bodies taken from `workflow-worktree.yaml`, `consensus-issue-worktree.yaml` and `workflow-terminal-state.yaml`, and `workflow_delivery_inputs.sh worktree main false "" ""`, all without a prior fetch; `git fetch origin` in the private repository moves `origin/main`; a caller without an origin gets no refspec; a foreign `origin/HEAD` target is refused. |
 | `crates/amplihack-cli/tests/issue_2096_recording.rs` | Observer coverage and failure cases. |
+| `crates/amplihack-cli/src/commands/recipe/run/tests_git_record.rs` | `begin_on(RecordingPlatform::Other)`: the run is unobserved, no observer or trace variables reach the runner, `git-recording.json` says `unavailable`, and a missing run dir still fails. `begin_on(RecordingPlatform::Linux)` still requires the observer. |
+| `crates/amplihack-cli/tests/issue_2096_review_isolation.rs` | Review generations, including retirement: after `advance` the old checkout and storage are gone and the manifest says `retired`; commands on a retired generation are refused; `release` of the first generation removes everything, including storage a failed retirement left behind. |
 | `crates/amplihack-cli/tests/issue_2096_real_hooks.rs` | Pre-commit and push hooks run in the execution checkout. |
 | `crates/amplihack-git/tests/issue_2096_git_policy.rs` | Git environment and configuration policy. |
 | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` | Review generation checks, `REVIEW_DIR_CHANGED` and `REVIEW_DIR_UNSTAMPED`. |
-| `tests/issue_1437_autodrive_loop.sh` | The #1437 loop contract with review generations in place; the default case (`NOT_READY`, then `MERGE_READY`, ending `DONE`) also checks that `review-release` runs exactly once. |
+| `tests/issue_1437_autodrive_loop.sh` | The #1437 loop contract with review generations in place; the default case (`NOT_READY`, then `MERGE_READY`, ending `DONE`) also checks that `review-release` runs exactly once and that no round starts in the PR worktree or the main checkout. Failure cases are listed below. |
 
 ```bash
-cargo test -p amplihack-cli --test cli_integration issue_2096
+cargo test -p amplihack-cli --test main issue_2096
+cargo test -p amplihack-cli --lib git_record
 cargo test -p amplihack-git --test issue_2096_git_policy
 bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
 bash tests/issue_1437_autodrive_loop.sh
@@ -370,30 +533,48 @@ repository has no origin or PR head for a real `review-allocate` to clone.
 The double accepts exactly these five commands, with exactly these argument
 counts:
 
-| Command | Prints | Exit |
-| --- | --- | --- |
-| `internal review-allocate REPO STATE` | `REPO` | 0 |
-| `internal review-next REPO CHECKOUT` | `CHECKOUT` | 0 |
-| `internal review-launch CHECKOUT` | `CHECKOUT` | 0 |
-| `internal review-head CHECKOUT` | the `HEAD` SHA of `CHECKOUT`, read with `git rev-parse --verify HEAD` | git's status |
-| `internal review-release CHECKOUT` | nothing | 0 |
+| Command | Does | Prints | Exit |
+| --- | --- | --- | --- |
+| `internal review-allocate REPO STATE` | `git -C REPO worktree add --detach $STUB_STATE/review-gen-1` | that path | 0 |
+| `internal review-next REPO CHECKOUT` | Adds the next detached worktree, `$STUB_STATE/review-gen-<n+1>` | the new path | 0 |
+| `internal review-launch CHECKOUT` | Nothing | `CHECKOUT` | 0 |
+| `internal review-head CHECKOUT` | Reads `git rev-parse --verify HEAD` in `CHECKOUT` | the SHA | git's status |
+| `internal review-release CHECKOUT` | `git worktree remove --force` on each `$STUB_STATE/review-gen-*` it created, by literal name | nothing | 0 |
+
+Each review generation is therefore a detached Git worktree, separate from
+both the fixture's PR worktree (`$WT`) and its main checkout (`$MAIN`). The
+stub's `recipe run` branch logs `round-workdir <path>` for each round's
+`--working-dir`. The default case asserts that no `review-launch` argument and
+no `round-workdir` equals `$WT` or `$MAIN`.
 
 Each call appends one line to `$STUB_STATE/review-calls`, so the existing
 counts in `$STUB_STATE/calls` are unchanged. `review-release` also increments
-`$STUB_STATE/review-release` and deletes nothing. Any other `internal`
-command, or a wrong argument count, falls through to `unhandled` and exit 3.
+`$STUB_STATE/review-release`. Any other `internal` command, or a wrong
+argument count, falls through to `unhandled` and exit 3.
 
-Two switches let the test drive the loop's failure paths.
-`STUB_REVIEW_ALLOCATE_RC` makes `review-allocate` exit with that status and
-print nothing. `STUB_REVIEW_RELEASE_RC` makes `review-release` exit with that
-status without counting a release. The test checks that a failed allocation
-stops the loop before any round, and that a failed release turns a `DONE`
-run into exit 1.
+These switches drive the loop's failure paths:
 
-`review-allocate` returns the fixture's PR worktree, never the main checkout,
-so the [#1528 guard](auto-drive-to-merge.md#review-generations) still stamps
-and checks a real Git worktree. `autodrive_loop.sh` stays fail-closed: a
-failing review command still stops the loop with exit 1.
+| Switch | Effect |
+| --- | --- |
+| `STUB_REVIEW_ALLOCATE_RC` | `review-allocate` exits with this status and prints nothing. |
+| `STUB_REVIEW_NEXT_RC` | `review-next` exits with this status and prints nothing. |
+| `STUB_REVIEW_LAUNCH_RC` | `review-launch` exits with this status and prints nothing. |
+| `STUB_REVIEW_HEAD_RC` | `review-head` exits with this status and prints nothing. |
+| `STUB_REVIEW_RELEASE_RC` | `review-release` exits with this status without counting a release. |
+| `STUB_ROUND_DIRTIES_REVIEW=1` | A round writes `stub-dirt.txt` into the `review_dir` it was given, so the next `index-check` fails. |
+
+The cases that use them:
+
+| Case | Asserts |
+| --- | --- |
+| `ALLOCATE-FAILS-*` | No round runs and nothing is released; output has `"loop_result":"REVIEW_COMMAND_FAILED"`; exit 1. |
+| `REVIEW-NEXT-FAILS-*`, `REVIEW-LAUNCH-FAILS-*`, `REVIEW-HEAD-FAILS-*` | `"loop_result":"REVIEW_COMMAND_FAILED"`, with the failing command in its reason; exit 1. |
+| `RELEASE-FAILS-RC`, `RELEASE-FAILS-ATTEMPTED`, `RELEASE-FAILS-DONE` | The release is attempted once; `"loop_result":"DONE"` is still printed; exit 1. |
+| `RELEASE-FAILS-KEEPS-79` | A terminal refusal with a failing release still exits 79. |
+| `RELEASE-FAILS-KEEPS-75` | An orphaned round with a failing release still exits 75. |
+| `REVIEW-DIR-CHANGED-*` | stderr holds the generation's `HEAD` and the porcelain line `?? stub-dirt.txt` before `"loop_result":"REVIEW_DIR_CHANGED"`. |
+
+None of the cases uses a timer or a sleep.
 
 The double cannot detect faults in real review isolation. The
 `issue_2096_*` cargo tests above cover that.
@@ -408,6 +589,14 @@ The double cannot detect faults in real review isolation. The
 - Evidence files are not tamper-proof against the same user.
 - Ignored files other than the recipe file are not copied. A recipe that needs
   one must take its path as a context value outside the checkout.
+- `origin/*` is seeded only from refs the caller already has. A caller with an
+  origin URL but no `origin/*` refs gets an empty `origin/*` until the recipe
+  fetches.
+- A relative `remote.origin.url` in the caller (for example `../upstream.git`)
+  is copied as written and resolves against the private repository, not the
+  caller. Use an absolute path or URL for such remotes.
+- Off Linux, no Git command evidence is produced. `coverage: "unavailable"`
+  records that fact; no gate accepts it as evidence.
 
 ## Related
 

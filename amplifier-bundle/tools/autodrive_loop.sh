@@ -30,7 +30,8 @@
 #   Exit 1  — evaluator STUCK (or unreadable), a missing round record under
 #             DONE, a repeated DONE over an unchanged non-clean round (#1597),
 #             a child that failed on a usage limit (USAGE_LIMIT, #1801), or a
-#             stop decided in code (STUCK, BUDGET_EXHAUSTED; #1743).
+#             stop decided in code (STUCK, BUDGET_EXHAUSTED; #1743), or a failed
+#             review command (REVIEW_COMMAND_FAILED, #2096).
 #   Exit 79 — a child exited 79, or the runner's last failure_class marker said
 #             structural_refusal (#1437; autodrive_refusal.sh). Final; NEVER
 #             retried into. Any other child failure is named and left to the
@@ -149,12 +150,14 @@ stamp_review_dir() { # stamp_review_dir: sets REVIEW_STAMP, or stops as REVIEW_D
   escalate "REVIEW_DIR_UNSTAMPED" "could not stamp the review dir ${REVIEW_REAL} (a lock or git error), so ${ROUND_LABEL} did not run (#1528)"
   exit 1
 }
+# The generation is released on exit, so what changed is printed first; quotePath quotes untrusted names, which stay out of the reason.
+review_status() { echo "review generation ${REVIEW_REAL} at HEAD $(git -C "$REVIEW_REAL" rev-parse HEAD 2>/dev/null || echo unknown):"; git -C "$REVIEW_REAL" -c core.quotePath=true -c core.fsmonitor=false --no-optional-locks status --porcelain=v1 --untracked-files=all || echo "  (git status failed)"; }
 check_review_dir() { # check_review_dir <who>: stops the loop unless REVIEW_STAMP still holds
   bash "${LOOP_HOME}/autodrive_worktree_guard.sh" index-check "$REVIEW_REAL" "$REVIEW_STAMP" "$1"
   case $? in
     0) return 0 ;;
     3) escalate "REVIEW_DIR_UNSTAMPED" "the review dir ${REVIEW_REAL} could not be stamped again after ${1}; nothing was compared (#1528)" ;;
-    *) escalate "REVIEW_DIR_CHANGED" "${1} changed the index or HEAD of the review dir ${REVIEW_REAL}; nothing runs from that state (#1528)" ;;
+    *) review_status >&2; escalate "REVIEW_DIR_CHANGED" "${1} changed the index or HEAD of the review dir ${REVIEW_REAL}; its status is on stderr; nothing runs from that state (#1528)" ;;
   esac
   exit 1
 }
@@ -164,8 +167,9 @@ PRE="$(bash "${LOOP_HOME}/autodrive_worktree_guard.sh" loop-preflight \
   "$LOOP_NAME" "$REPO" "$REVIEW_DIR" "$(basename "$ROUND_RECIPE" .yaml)" "$CTX_REFUSED")" || { printf '%s\n' "$PRE"; exit 1; }
 { read -r REVIEW_REAL; read -r ROUND_RECIPE_PATH; read -r HEALTH_RECIPE_PATH; } <<<"$PRE"
 # Each loop (nested re-reviews too) owns its generation; a child never releases the parent's.
-REVIEW_OWNED="$("$AMPLIHACK_BIN" internal review-allocate "$REPO" "$STATE_DIR")" || exit 1
-trap 'rc=$?; "$AMPLIHACK_BIN" internal review-release "$REVIEW_OWNED" || rc=1; rm -f -- "${TASK_FILE:-}"; exit "$rc"' EXIT # keeps #1570's task-copy removal
+review_command_failed() { escalate "REVIEW_COMMAND_FAILED" "amplihack internal ${1} failed for review generation ${2:-<none>}; ${ROUND_LABEL:-no round} did not run (#2096)"; exit 1; }
+REVIEW_OWNED="$("$AMPLIHACK_BIN" internal review-allocate "$REPO" "$STATE_DIR")" || review_command_failed review-allocate "(none allocated; repository ${REPO})"
+trap 'rc=$?; "$AMPLIHACK_BIN" internal review-release "$REVIEW_OWNED" || { [ "$rc" -ne 0 ] || rc=1; }; rm -f -- "${TASK_FILE:-}"; exit "$rc"' EXIT # a failed release fails only a success (keeps 79, 75); keeps #1570's task-copy removal
 REVIEW_REAL="$REVIEW_OWNED"
 # --- preflight: the terminator must resolve BEFORE round 1 (why: see the ERROR)
 if [ -z "$HEALTH_RECIPE_PATH" ] || ! "$AMPLIHACK_BIN" recipe show "$HEALTH_RECIPE_PATH" >/dev/null 2>&1; then
@@ -233,18 +237,14 @@ while :; do
       exit 1
     fi
   fi
-
-  COMPLETION_CTX=()
-  unset AUTODRIVE_COMPLETION_STATE
-  if [ "$LOOP_NAME" = crusty ]; then
-    . "${LOOP_HOME}/autodrive_completion_context.sh" || exit 2
-  fi
-
   echo "=== auto-drive loop '${LOOP_NAME}': ${ROUND_LABEL} ===" >&2
   check_review_dir before-round
-  REVIEW_REAL="$("$AMPLIHACK_BIN" internal review-next "$REPO" "$REVIEW_REAL")" || exit 1
-  REVIEW_LAUNCH="$("$AMPLIHACK_BIN" internal review-launch "$REVIEW_REAL")" || exit 1
-  REVIEWED_SHA="$("$AMPLIHACK_BIN" internal review-head "$REVIEW_REAL")" || exit 1
+  PREV_REVIEW="$REVIEW_REAL"
+  REVIEW_REAL="$("$AMPLIHACK_BIN" internal review-next "$REPO" "$PREV_REVIEW")" || review_command_failed review-next "$PREV_REVIEW"
+  REVIEW_LAUNCH="$("$AMPLIHACK_BIN" internal review-launch "$REVIEW_REAL")" || review_command_failed review-launch "$REVIEW_REAL"
+  REVIEWED_SHA="$("$AMPLIHACK_BIN" internal review-head "$REVIEW_REAL")" || review_command_failed review-head "$REVIEW_REAL"
+  COMPLETION_CTX=(); unset AUTODRIVE_COMPLETION_STATE # after review-next: guards this round's generation, not a retired one
+  [ "$LOOP_NAME" != crusty ] || . "${LOOP_HOME}/autodrive_completion_context.sh" || exit 2
   stamp_review_dir
   T0=$SECONDS # the log is created under umask 077; the round runs with the caller's umask
   ( umask "$CALLER_UMASK" && AMPLIHACK_USAGE_WAIT_LEDGER="$(wait_ledger round)" AMPLIHACK_AUTODRIVE_STATE_DIR="$STATE_DIR" exec "$AMPLIHACK_BIN" recipe run "$ROUND_RECIPE_PATH" \

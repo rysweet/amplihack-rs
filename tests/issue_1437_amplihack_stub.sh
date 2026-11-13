@@ -24,21 +24,44 @@
 #                 writes $STUB_RECORD_n to the autodrive_round_record file
 #                 (default NOT_READY for n=1, MERGE_READY after), prints $STUB_OUT_n
 #                 and exits $STUB_RC_n (default 0).
+#                 With STUB_ROUND_DIRTIES_REVIEW=1 the round writes
+#                 stub-dirt.txt into the review_dir given as
+#                 `-c review_dir=...` and stages it there. The file name is
+#                 never printed, so it reaches stderr only through the loop.
+#     every recipe run that names --working-dir logs one line
+#                 `round-workdir <path>` to $STUB_STATE/round-workdirs.
 #   internal review-*   (#2096) the loop owns a private review checkout. POSIX
 #                 stand-ins with exact argument counts, each call logged as
-#                 one line to $STUB_STATE/review-calls:
-#     review-allocate REPO STATE   prints REPO; exits $STUB_REVIEW_ALLOCATE_RC
-#                                  (default 0, nothing printed when non-zero).
-#     review-next REPO CHECKOUT    prints CHECKOUT.
-#     review-launch CHECKOUT       prints CHECKOUT.
-#     review-head CHECKOUT         prints `git rev-parse --verify HEAD` there;
-#                                  git's exit status is passed through.
+#                 one line to $STUB_STATE/review-calls. A generation is a real
+#                 detached worktree of REPO at $STUB_STATE/review-gen-<n>,
+#                 never REPO itself or its main checkout:
+#     review-allocate REPO STATE   creates review-gen-<n> and prints it; exits
+#                                  $STUB_REVIEW_ALLOCATE_RC (default 0; nothing
+#                                  is created or printed when non-zero).
+#     review-next REPO CHECKOUT    creates review-gen-<n+1> at REPO's HEAD and
+#                                  prints it; exits $STUB_REVIEW_NEXT_RC.
+#     review-launch CHECKOUT       prints CHECKOUT; exits $STUB_REVIEW_LAUNCH_RC.
+#     review-head CHECKOUT         exits $STUB_REVIEW_HEAD_RC when it is set and
+#                                  non-zero; otherwise prints `git rev-parse
+#                                  --verify HEAD` there, passing git's status.
 #     review-release CHECKOUT      prints nothing; exits $STUB_REVIEW_RELEASE_RC
-#                                  (default 0) and, on success, increments
+#                                  (default 0) and, on success, removes every
+#                                  $STUB_STATE/review-gen-* worktree with
+#                                  `git worktree remove --force` and increments
 #                                  $STUB_STATE/review-release.
 #                 Any other internal command or argument count is unhandled.
 set -u
 STATE="${STUB_STATE:?STUB_STATE is not set}"
+
+# Git for the stand-ins: no global or system configuration, no hooks.
+sgit() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c core.hooksPath=/dev/null "$@"; }
+# new_generation <repo>: a detached worktree of <repo> at its HEAD; prints it.
+new_generation() {
+  local d
+  d="${STATE}/review-gen-$(count review-gen)"
+  sgit -C "$1" worktree add -q --detach "$d" HEAD >/dev/null 2>&1 || return 1
+  printf '%s\n' "$d"
+}
 
 count() { # count <name>: increments and prints $STATE/<name>
   local n
@@ -99,12 +122,14 @@ if [ "${1:-} ${2:-}" = "recipe show" ]; then exit 0; fi
 if [ "${1:-} ${2:-}" = "recipe run" ]; then
   RECIPE="$(basename -- "${3:-}" .yaml)"
   printf '%s\n' "$RECIPE" >> "${STATE}/calls"
-  RECORD=""; HISTORY=""; prev=""
+  RECORD=""; HISTORY=""; REVIEW=""; prev=""
   for a in "$@"; do
+    [ "$prev" = "--working-dir" ] && printf 'round-workdir %s\n' "$a" >> "${STATE}/round-workdirs"
     if [ "$prev" = "-c" ]; then
       case "$a" in
         autodrive_round_record=*) RECORD="${a#*=}" ;;
         loop_history=*) HISTORY="${a#*=}" ;;
+        review_dir=*) REVIEW="${a#*=}" ;;
       esac
       case "$a" in
         loop_*=*)
@@ -154,6 +179,10 @@ if [ "${1:-} ${2:-}" = "recipe run" ]; then
     exit "$(knob STUB_HEALTH_RC_ "$h" 0)"
   fi
   n="$(count rounds)"
+  if [ "${STUB_ROUND_DIRTIES_REVIEW:-}" = 1 ] && [ -n "$REVIEW" ]; then
+    printf 'a round wrote here\n' > "${REVIEW}/stub-dirt.txt"
+    sgit -C "$REVIEW" add -- stub-dirt.txt >/dev/null 2>&1
+  fi
   if [ "$n" = 1 ]; then d='{"merge_ready_verdict":"NOT_READY"}'; else d='{"merge_ready_verdict":"MERGE_READY"}'; fi
   [ -n "$RECORD" ] && { knob STUB_RECORD_ "$n" "$d" > "$RECORD"; : > "${RECORD}.findings"; }
   printf '%s\n' "$(knob STUB_OUT_ "$n" "round ran")"
@@ -168,14 +197,29 @@ if [ "${1:-}" = internal ]; then
         review-allocate)
           rc="${STUB_REVIEW_ALLOCATE_RC:-0}"
           [ "$rc" = 0 ] || exit "$rc"
-          printf '%s\n' "$3"
+          new_generation "$3" || exit 1
           exit 0 ;;
-        review-next) printf '%s\n' "$4"; exit 0 ;;
-        review-launch) printf '%s\n' "$3"; exit 0 ;;
-        review-head) exec git -C "$3" rev-parse --verify HEAD ;;
+        review-next)
+          rc="${STUB_REVIEW_NEXT_RC:-0}"
+          [ "$rc" = 0 ] || exit "$rc"
+          new_generation "$3" || exit 1
+          exit 0 ;;
+        review-launch)
+          rc="${STUB_REVIEW_LAUNCH_RC:-0}"
+          [ "$rc" = 0 ] || exit "$rc"
+          printf '%s\n' "$3"; exit 0 ;;
+        review-head)
+          rc="${STUB_REVIEW_HEAD_RC:-0}"
+          [ "$rc" = 0 ] || exit "$rc"
+          exec git -C "$3" rev-parse --verify HEAD ;;
         review-release)
           rc="${STUB_REVIEW_RELEASE_RC:-0}"
           [ "$rc" = 0 ] || exit "$rc"
+          for d in "${STATE}"/review-gen-*; do
+            [ -d "$d" ] || continue
+            common="$(sgit -C "$d" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || exit 1
+            sgit --git-dir="$common" worktree remove --force "$d" >/dev/null 2>&1 || exit 1
+          done
           count review-release >/dev/null
           exit 0 ;;
       esac ;;

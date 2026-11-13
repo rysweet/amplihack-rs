@@ -2,13 +2,15 @@
 title: Recipe Runner Logging Reference
 description: Progress output, correlation, and the required Git command record.
 doc_type: reference
-last_updated: 2026-11-12
+last_updated: 2026-11-13
 ---
 
 # Recipe Runner Logging Reference
 
-Every real run records the Git commands its runner, steps, agents and hooks
-launch, using a Linux observer. A run whose recording fails does not succeed.
+On Linux, every real run records the Git commands its runner, steps, agents
+and hooks launch, using an observer. A run whose recording fails does not
+succeed. On other platforms the run proceeds without recording and says so
+(see [When recording is unavailable](#when-recording-is-unavailable)).
 Trace2 output is kept for diagnostics only. See
 [required recording](recipe-checkout-isolation.md#required-recording).
 
@@ -27,6 +29,7 @@ snippets, run correlation pointers, and additive JSON fields emitted by
 - [JSON result fields](#json-result-fields)
 - [JSONL log events](#jsonl-log-events)
 - [Git command record](#git-command-record)
+  - [When recording is unavailable](#when-recording-is-unavailable)
 - [Configuration](#configuration)
 - [Examples](#examples)
 
@@ -307,7 +310,7 @@ Output snippet event:
 
 ## Git command record
 
-A real run requires the Linux observer. Each attempt
+On Linux, every recipe run that is not a dry run requires the observer. Each attempt
 writes a private journal under `git-trace2/` (the directory retains its legacy
 name). Successful executable stops provide executable identity, cwd, launch
 routing, run and attempt identity, and UTC time. Repository/index attribution
@@ -331,6 +334,65 @@ The mechanism does not establish observation of preparation/release processes,
 arbitrary non-Git index writes, renamed Git executables, unrelated processes,
 or tamper resistance against the same user. See the
 [isolation limits](recipe-checkout-isolation.md#limits).
+
+### When recording is unavailable
+
+Off Linux (macOS and every other non-Linux target) there is no observer. A
+real run still executes in its private checkout, but no Git command is
+recorded. The run prints one notice to stderr and continues:
+
+```text
+amplihack: Git command recording is unavailable on this platform; the run continues in its private checkout without recording
+```
+
+At the end of the run, `<run dir>/git-recording.json` (mode `0600`) holds:
+
+```json
+{
+  "schema_version": 1,
+  "coverage": "unavailable",
+  "complete": false,
+  "reason": "Git command recording needs the Linux ptrace observer; this platform has none",
+  "backend": null
+}
+```
+
+| Field | Value |
+| --- | --- |
+| `schema_version` | `1` |
+| `coverage` | `"unavailable"`. A Linux run has `"established"`. |
+| `complete` | Always `false`. |
+| `reason` | A fixed sentence naming why. It contains no path, environment value or command line. |
+| `backend` | `null`. A Linux run has `"linux-ptrace-exec"`. |
+
+`run.json` copies this object into its existing `git_recording` field. No
+schema field is added; only the new `coverage` value. There is no
+`git-commands.jsonl` and no `diagnostics/git/commands.jsonl` for such a run.
+
+`coverage: "unavailable"` means no Git audit evidence was produced. It is not
+an empty record, and nothing treats it as one: the receipt check that a
+completed Linux record must pass (`coverage` `established`, `complete` `true`,
+`backend` `linux-ptrace-exec`) rejects it, and no merge or readiness gate
+accepts it as evidence.
+
+The runner's environment is cleaned as on Linux: `AMPLIHACK_OBSERVER_PID`,
+`GIT_TRACE2_EVENT`, `GIT_TRACE2_ENV_VARS` and the caller's `GIT_TRACE2`,
+`GIT_TRACE2_PERF`, `GIT_TRACE2_CONFIG_PARAMS` and `GIT_TRACE2_REDACT` are
+removed. A run still needs a usable work root; without one it stops with
+`cannot initialize required Git recording; provide a writable absolute
+AMPLIHACK_WORK_ROOT and retry`.
+
+Check which kind of record a run has:
+
+```sh
+jq -r '.git_recording.coverage' \
+  ~/.amplihack/work/runs/3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3/run.json
+# established   (Linux)
+# unavailable   (macOS)
+```
+
+The platform is chosen from the build target. No flag or environment variable
+selects the unobserved path on Linux.
 
 ### Diagnostic Trace2 compatibility
 

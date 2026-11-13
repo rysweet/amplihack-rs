@@ -19,7 +19,7 @@
 //! written JSON, not the Rust field types.
 #![cfg(unix)]
 
-use super::git_record::{GitRecord, summarise};
+use super::git_record::{GitRecord, RecordingPlatform, summarise};
 use serde_json::{Value, json};
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -790,4 +790,133 @@ fn a_dry_run_record_is_disabled_strips_trace_targets_and_finishes_without_writin
 #[test]
 fn begin_without_a_run_folder_still_refuses() {
     assert!(GitRecord::begin(None).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Crusty finding 2: off Linux a real run proceeds unobserved and records that
+// command recording is unavailable. The platform is injected through
+// `GitRecord::begin_on`; only `RecordingPlatform::current()` reads the target.
+// ---------------------------------------------------------------------------
+
+const OBSERVER_VARS: &[&str] = &[
+    "AMPLIHACK_OBSERVER_PID",
+    "AMPLIHACK_OBSERVER_JOURNAL",
+    "AMPLIHACK_OBSERVER_RUN",
+    "AMPLIHACK_OBSERVER_ATTEMPT",
+    "AMPLIHACK_OBSERVER_ACK_FD",
+];
+
+#[test]
+fn recording_platform_current_is_linux_on_linux() {
+    assert_eq!(
+        matches!(RecordingPlatform::current(), RecordingPlatform::Linux),
+        cfg!(target_os = "linux")
+    );
+}
+
+#[test]
+fn begin_on_other_runs_unobserved() {
+    let root = tempfile::tempdir().unwrap();
+    let record = GitRecord::begin_on(Some(root.path()), RecordingPlatform::Other)
+        .expect("a real run off Linux proceeds without the observer");
+    #[cfg(target_os = "linux")]
+    assert!(
+        !record.is_required(),
+        "off Linux the runner is spawned without the ptrace observer"
+    );
+    assert!(
+        !root.path().join(TRACE_DIR).exists(),
+        "no trace folder is made for an unobserved run"
+    );
+    record
+        .discard()
+        .expect("discarding an unavailable record succeeds");
+}
+
+#[test]
+fn unavailable_apply_to_sets_no_observer_or_trace() {
+    let root = tempfile::tempdir().unwrap();
+    let record = GitRecord::begin_on(Some(root.path()), RecordingPlatform::Other).unwrap();
+    let mut command = command_with_caller_trace(root.path());
+    for var in OBSERVER_VARS {
+        command.env(var, "inherited");
+    }
+    record.apply_to(&mut command).unwrap();
+    for var in OBSERVER_VARS {
+        assert_eq!(
+            env_of(&command, var),
+            Some(None),
+            "{var} must be removed when no observer runs"
+        );
+    }
+    for var in ["GIT_TRACE2_EVENT", "GIT_TRACE2_ENV_VARS"] {
+        assert_eq!(env_of(&command, var), Some(None), "{var} must be removed");
+    }
+    assert_caller_trace_removed(&command);
+}
+
+#[test]
+fn unavailable_finish_writes_marker() {
+    let root = tempfile::tempdir().unwrap();
+    let record = GitRecord::begin_on(Some(root.path()), RecordingPlatform::Other).unwrap();
+    // No runner was spawned through the record: the marker is still written.
+    record.finish().expect("an unavailable record finishes");
+    let path = root.path().join("git-recording.json");
+    let bytes = fs::read(&path).expect("git-recording.json is written");
+    assert!(
+        bytes.len() <= 4096,
+        "run.json copies the marker through a 4096-byte read"
+    );
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let marker: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(marker["schema_version"], 1);
+    assert_eq!(marker["coverage"], "unavailable");
+    assert_eq!(marker["complete"], false);
+    assert_eq!(marker["backend"], Value::Null);
+    let reason = marker["reason"].as_str().expect("a reason sentence");
+    assert!(!reason.is_empty());
+    assert!(
+        !reason.contains(root.path().to_str().unwrap()),
+        "the marker holds no paths: {reason}"
+    );
+    assert_ne!(
+        marker["coverage"], "established",
+        "an unavailable marker can never pass as a coverage receipt"
+    );
+    assert!(
+        !root.path().join(SUMMARY).exists(),
+        "no command summary is claimed"
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn begin_on_linux_still_requires_observer() {
+    let root = tempfile::tempdir().unwrap();
+    let record = GitRecord::begin_on(Some(root.path()), RecordingPlatform::Linux).unwrap();
+    assert!(record.is_required(), "Linux runs stay under the observer");
+    assert!(root.path().join(TRACE_DIR).is_dir());
+    record.discard().unwrap();
+}
+
+#[test]
+fn begin_on_other_without_run_dir_fails() {
+    let error = GitRecord::begin_on(None, RecordingPlatform::Other)
+        .expect_err("an unavailable record still needs a run folder");
+    assert!(
+        format!("{error:#}").contains("AMPLIHACK_WORK_ROOT"),
+        "{error:#}"
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn begin_delegates_to_the_current_platform() {
+    let root = tempfile::tempdir().unwrap();
+    let record = GitRecord::begin(Some(root.path())).unwrap();
+    assert!(record.is_required());
+    record.discard().unwrap();
 }

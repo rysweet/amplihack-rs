@@ -24,6 +24,8 @@ mod exec_reclaim;
 mod input_preservation;
 #[path = "issue_2096_ownership_lifecycle.rs"]
 mod ownership_lifecycle;
+#[path = "issue_2096_private_base_ref.rs"]
+mod private_base_ref;
 #[path = "issue_2096_real_hooks.rs"]
 mod real_hooks;
 #[path = "issue_2096_recording.rs"]

@@ -101,26 +101,73 @@ pub(crate) struct GitRecord {
 #[derive(Debug)]
 enum State {
     Disabled,
+    /// A real run on a platform with no observer: nothing is recorded, and
+    /// `finish` says so in `<run_dir>/git-recording.json`.
+    Unavailable {
+        run_dir: PathBuf,
+    },
     Enabled {
         run_dir: PathBuf,
         trace_dir: PathBuf,
     },
 }
 
+/// Where a real run executes, for the one recording decision that depends on
+/// it. Only [`RecordingPlatform::current`] reads the build target; tests pass
+/// the other value to [`GitRecord::begin_on`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RecordingPlatform {
+    /// The ptrace observer exists; real runs are recorded.
+    Linux,
+    /// No observer: the run proceeds unobserved and records `unavailable`.
+    Other,
+}
+
+impl RecordingPlatform {
+    pub(crate) fn current() -> Self {
+        if cfg!(target_os = "linux") {
+            Self::Linux
+        } else {
+            Self::Other
+        }
+    }
+}
+
+/// Written to `git-recording.json` when no observer exists. It holds no
+/// path, environment value or command line.
+const UNAVAILABLE_REASON: &str =
+    "Git command recording needs the Linux ptrace observer; this platform has none";
+
 impl GitRecord {
-    /// Production recording is required. Absence of durable storage or a
-    /// supported observer must reject execution before the runner starts.
+    /// Production recording on the build's platform; see [`Self::begin_on`].
     pub(crate) fn begin(run_dir: Option<&Path>) -> Result<Self> {
-        if !cfg!(target_os = "linux") {
-            bail!(
-                "required recipe process observation is supported on Linux only; run this recipe on Linux"
+        Self::begin_on(run_dir, RecordingPlatform::current())
+    }
+
+    /// On Linux, recording is required: absence of durable storage or a
+    /// supported observer rejects execution before the runner starts. On any
+    /// other platform the run proceeds unobserved and `finish` records that
+    /// command recording was unavailable; it still needs a run folder.
+    pub(crate) fn begin_on(run_dir: Option<&Path>, platform: RecordingPlatform) -> Result<Self> {
+        const NO_WORK_ROOT: &str = "cannot initialize required Git recording; provide a writable absolute AMPLIHACK_WORK_ROOT and retry";
+        if platform == RecordingPlatform::Other {
+            let Some(run_dir) = run_dir else {
+                bail!(NO_WORK_ROOT);
+            };
+            eprintln!(
+                "amplihack: Git command recording is unavailable on this platform; the run continues in its private checkout without recording"
             );
+            return Ok(Self {
+                spawned: std::cell::Cell::new(0),
+                required: false,
+                state: State::Unavailable {
+                    run_dir: run_dir.to_path_buf(),
+                },
+            });
         }
         let mut record = Self::prepare(run_dir);
         if matches!(record.state, State::Disabled) {
-            bail!(
-                "cannot initialize required Git recording; provide a writable absolute AMPLIHACK_WORK_ROOT and retry"
-            );
+            bail!(NO_WORK_ROOT);
         }
         record.required = true;
         Ok(record)
@@ -246,6 +293,20 @@ impl GitRecord {
                 command.env_remove(EVENT_VAR);
                 command.env_remove(ENV_VARS_VAR);
             }
+            State::Unavailable { .. } => {
+                // No observer runs, so no inherited observer variable may
+                // tell a nested run that one does.
+                for key in [
+                    "AMPLIHACK_OBSERVER_PID",
+                    "AMPLIHACK_OBSERVER_JOURNAL",
+                    "AMPLIHACK_OBSERVER_RUN",
+                    "AMPLIHACK_OBSERVER_ATTEMPT",
+                    "AMPLIHACK_OBSERVER_ACK_FD",
+                ] {
+                    command.env_remove(key);
+                }
+                command.env_remove(EVENT_VAR).env_remove(ENV_VARS_VAR);
+            }
         }
         Ok(())
     }
@@ -254,8 +315,22 @@ impl GitRecord {
     /// and deletes the raw folder. If the summary cannot be written the raw
     /// folder is kept and a warning says so.
     pub(crate) fn finish(self) -> Result<()> {
-        let State::Enabled { run_dir, trace_dir } = self.state else {
-            return Ok(());
+        let (run_dir, trace_dir) = match self.state {
+            State::Enabled { run_dir, trace_dir } => (run_dir, trace_dir),
+            State::Disabled => return Ok(()),
+            State::Unavailable { run_dir } => {
+                return write_atomic_0600(
+                    &run_dir.join("git-recording.json"),
+                    &serde_json::to_vec(&serde_json::json!({
+                        "schema_version": 1,
+                        "coverage": "unavailable",
+                        "complete": false,
+                        "reason": UNAVAILABLE_REASON,
+                        "backend": null,
+                    }))?,
+                )
+                .context("cannot record that Git command recording was unavailable");
+            }
         };
         if self.required && self.spawned.get() == 0 {
             // The run stopped before any runner started (a refused guard or

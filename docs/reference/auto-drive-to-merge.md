@@ -1,7 +1,7 @@
 ---
 title: Auto Drive To Merge Reference
 description: responsibilities, authorization, recovery, completion outcomes, and target compatibility for auto-drive-to-merge.
-last_updated: 2026-11-11
+last_updated: 2026-11-13
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -196,6 +196,61 @@ the recorded commit, and its working tree holds exactly that commit's files.
 `index-check` repeats the last check after the judging step, and each round
 record is bound to the generation's commit with `review-bind-record`. See
 [checkout isolation](recipe-checkout-isolation.md#private-review-generations).
+
+When the PR head moves, `review-next` makes a generation for the new head and
+retires the one it replaces: the old checkout and its storage are removed, and
+its manifest is kept, marked `retired`, so that `review-release` can still walk
+the chain at loop exit. A loop therefore keeps one review clone on disk
+between rounds. If retirement fails, a warning is printed, the loop continues
+with the new generation, and the old one is freed at loop exit. See
+[superseded generations are retired](recipe-checkout-isolation.md#superseded-generations-are-retired).
+
+#### When a review command fails
+
+`autodrive_loop.sh` stops with a named result when any review command fails,
+instead of exiting silently:
+
+| Failing command | Line on stdout | Exit |
+| --- | --- | --- |
+| `review-allocate` (before any round) | `{"loop":"<loop>","loop_result":"REVIEW_COMMAND_FAILED",...}` | `1` |
+| `review-next`, `review-launch` or `review-head` (each round) | The same verdict; the reason names the command and the generation it was given. | `1` |
+
+`<loop>` is the value of `$LOOP_NAME`: `crusty` or `merge-ready`.
+
+When `index-check` finds the generation changed (`REVIEW_DIR_CHANGED`), the
+loop first writes the generation's `HEAD` and its
+`git status --porcelain=v1 --untracked-files=all` output to stderr, with
+file names quoted (`core.quotePath=true`) and without refreshing the index.
+The verdict's reason does not repeat file names. The generation is then
+released as usual, so the printed status is the record of what changed:
+
+```text
+review generation <state dir>/review-Qx81Lm/checkout-5d0c2f9e-7a41-4c3e-9b0d-2f6e8a1c4b77 at HEAD 60ecbe5736c2f1d0a9b8e7f6a5b4c3d2e1f0a9b8:
+ M src/lib.rs
+?? notes.md
+{"loop":"<loop>","loop_result":"REVIEW_DIR_CHANGED","round_label":"round-2","reason":"after-round changed the index or HEAD of the review dir ...; its status is on stderr; nothing runs from that state (#1528)"}
+```
+
+#### Release at loop exit keeps the loop's exit code
+
+The loop's `EXIT` trap releases the loop's first generation, and with it every
+generation it led to. A failed release never hides the loop's own result:
+
+| Loop exit code | Release | Final exit code |
+| --- | --- | --- |
+| `0` (`DONE`) | fails | `1`, and `"loop_result":"DONE"` is still printed |
+| `79` (terminal refusal) | fails | `79` |
+| `75` (orphaned) | fails | `75` |
+| Any other non-zero code | fails | That code |
+| Any code | succeeds | That code |
+
+#### Which `amplihack` the helpers run
+
+`autodrive_loop.sh`, `autodrive_worktree_guard.sh` and
+`autodrive_crusty_record.sh` all run `"${AMPLIHACK_BIN:-amplihack}"`, so one
+`AMPLIHACK_BIN` setting selects the binary for the loop and both helpers. With
+it unset they use `amplihack` from `PATH`. The value is always quoted and
+never evaluated.
 
 The worktree must belong to the selected repository and branch and match the
 observed PR head. Missing, ambiguous, stale, ahead, or diverged worktrees need

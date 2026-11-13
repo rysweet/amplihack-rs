@@ -3,7 +3,7 @@ use super::*;
 
 #[allow(dead_code)]
 #[path = "../src/commands/recipe/run/run_checkout.rs"]
-mod implementation;
+pub(super) mod implementation;
 
 fn isolated_body(name: &str, body: impl FnOnce(Fixture)) {
     crate::support::quiet_process::in_quiet_process(module_path!(), name, || {

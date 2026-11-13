@@ -159,7 +159,10 @@ change, even when a step runs `git add` or `git commit`.
 - Ignored files are not copied, except the recipe file itself.
 - `--dry-run` prepares no checkout, records nothing and writes no run folder.
 - A resumed run gets a fresh checkout.
-- Real runs need Linux, because Git recording uses a Linux observer.
+- Real runs work on every platform. On Linux the Git commands they run are
+  recorded; elsewhere the run proceeds without recording, and
+  `git_recording.coverage` in `run.json` (copied from `git-recording.json`)
+  is `"unavailable"`.
 
 Commits you want to keep belong in a durable task or PR worktree. Try it in
 [Inspect a local-input snapshot](../tutorials/recipe-checkout-isolation.md);
