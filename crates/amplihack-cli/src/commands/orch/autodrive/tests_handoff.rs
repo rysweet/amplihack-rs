@@ -6,6 +6,7 @@
 //! - handoff::prepare(auth, store, policy, hosting) confirms an open, ready PR;
 //! - handoff::complete(auth, store, policy, repo, accepted, hosting) replays
 //!   production readiness and returns the existing helper-style snapshot envelope.
+//!
 //! The hosting fixture supplies facts and external effects, never a verdict.
 //! These contracts run real production actions with controlled hosting facts.
 
