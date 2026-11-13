@@ -635,13 +635,8 @@ fn prepare_attempt_recreates_tmp_in_a_dry_run_workspace() {
 // test's own. Under root the bug cannot be reproduced (root ignores modes),
 // so the removal tests print a note and still assert.
 
-fn test_euid() -> u32 {
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    unsafe { libc::geteuid() }
-}
-
 fn note_if_root(test: &str) {
-    if test_euid() == 0 {
+    if euid() == 0 {
         eprintln!(
             "{test}: running as root, which ignores folder modes; this run does not exercise #2486"
         );
@@ -796,7 +791,7 @@ fn restore_skips_entries_not_owned() {
     set_mode(&ro, 0o500);
     let root_mode = mode(&rt);
 
-    let skipped = restore_owner_access(&rt, test_euid().wrapping_add(1));
+    let skipped = restore_owner_access(&rt, euid().wrapping_add(1));
 
     assert_eq!(skipped, vec![rt.clone()], "only the root is reported");
     assert_eq!(mode(&ro), 0o500, "nothing below a not-owned root changes");
@@ -826,7 +821,7 @@ fn restore_adds_only_owner_bits() {
     std::fs::create_dir_all(&open).unwrap();
     set_mode(&open, 0o755);
 
-    let skipped = restore_owner_access(&rt, test_euid());
+    let skipped = restore_owner_access(&rt, euid());
 
     assert!(skipped.is_empty(), "everything is owned: {skipped:?}");
     assert_eq!(mode(&ro), 0o700);
@@ -849,7 +844,7 @@ fn restore_neither_enters_nor_reports_symlinks() {
     set_mode(&target, 0o500);
     std::os::unix::fs::symlink(&target, rt.join("tmp/link")).unwrap();
 
-    let skipped = restore_owner_access(&rt, test_euid());
+    let skipped = restore_owner_access(&rt, euid());
 
     assert!(skipped.is_empty(), "{skipped:?}");
     assert_eq!(mode(&target), 0o500);
@@ -860,5 +855,5 @@ fn restore_neither_enters_nor_reports_symlinks() {
 #[test]
 fn restore_on_a_missing_root_reports_nothing() {
     let tmp = tempfile::tempdir().unwrap();
-    assert!(restore_owner_access(&tmp.path().join("gone"), test_euid()).is_empty());
+    assert!(restore_owner_access(&tmp.path().join("gone"), euid()).is_empty());
 }

@@ -193,7 +193,7 @@ fn restore_owner_access(root: &Path, uid: u32) -> Vec<PathBuf> {
             // make the swap. Linux has no working
             // fchmodat(AT_SYMLINK_NOFOLLOW), an O_PATH fd cannot be
             // fchmodded, and a 000 folder cannot be opened to fchmod it.
-            let wanted = fs::Permissions::from_mode((mode | 0o700) & 0o7777);
+            let wanted = fs::Permissions::from_mode(mode | 0o700);
             if let Err(error) = fs::set_permissions(&path, wanted) {
                 tracing::warn!(path = ?path, %error, "cannot give the owner access to a runtime folder");
                 continue;
