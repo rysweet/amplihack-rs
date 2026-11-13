@@ -83,7 +83,7 @@ through `tracing`, and are unchanged.
 
 The blarify banner ends with a flush of stderr. When indexing runs in the
 background, the indexer child process has its stdout and stderr set to
-`Stdio::null()`. Synchronous indexing does not; see
+`Stdio::null()`. Synchronous indexing does not (issue #2609); see
 [Known exceptions](#known-exceptions).
 
 ## Output that stays on stdout
@@ -100,7 +100,8 @@ These are output the user asked for, or are not on the launch path:
 ## Known exceptions
 
 These paths can still write to stdout during a launch, and are outside the
-scope of issue #2585:
+scope of issue #2585. Both are tracked in
+[#2609](https://github.com/rysweet/amplihack-rs/issues/2609):
 
 | Path | What reaches stdout |
 | ---- | ------------------- |
