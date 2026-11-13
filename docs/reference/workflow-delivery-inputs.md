@@ -324,11 +324,22 @@ body back and compares it. Description and report text remain data.
 New report content cannot introduce closing references: `close`, `closes`,
 `closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves` and `resolved`, in any
 case, with bare, cross-repository or issue-URL references are rejected,
-including Markdown formatting and multiple references. Validation applies to
-the new report; existing published `Closes` or `Refs` text is preserved.
-Malformed input or validation failure produces no composed body. A failed
-fetch, parse or composition leaves the platform description untouched; an
-edit is submitted only after successful composition and then read back.
+including Markdown formatting and multiple references. Validation checks the
+original report, link labels and resolved issue destinations. Inline links and
+full, collapsed and shortcut reference links cannot hide a closing keyword.
+Reference definitions in the preserved description also resolve new report
+links; an earlier definition takes priority over a duplicate in the report.
+Ordinary prose such as "fixes pagination" and issue evidence without a closing
+keyword remain valid. The composer uses a CommonMark parser to resolve links
+while retaining labels and reference definitions. Validation applies to the new
+report; existing published `Closes` or `Refs` text is preserved.
+Formatting removal does not expose an ordinary link's hidden destination as a
+closing keyword.
+Malformed input or validation failure produces no composed body. JSON diagnostics
+include only the error category, line and column, never supplied values or report
+excerpts. A failed fetch, parse or composition leaves the platform description
+untouched; an edit is submitted only after successful composition and then read
+back.
 
 The squash body comes from the published description above the report
 boundary, retaining `Refs #N` verbatim. Readiness material is removed, and

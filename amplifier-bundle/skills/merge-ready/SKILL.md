@@ -245,7 +245,12 @@ platform's existing work-item linkage requirements.
 The composer reads required JSON string fields `description` and `report`
 from stdin, buffers the complete body, and emits no body on validation failure.
 It preserves the published prefix verbatim and replaces or appends one report.
-Conflicting boundaries and new closing references are errors. Failed fetch,
+Conflicting boundaries and new closing references are errors, including closing
+keywords in inline link labels or full, collapsed and shortcut reference links.
+The composer checks both labels and resolved issue destinations; ordinary prose
+without a closing issue reference remains valid. Existing published content is
+preserved. JSON errors report only category, line and column without echoing
+private values or report excerpts. Failed fetch,
 parsing or composition leaves the platform description untouched; never fall
 back to a direct edit. Report unavailable composition as `NOT_MERGE_READY`.
 Use conditional updates where the platform supports them; otherwise avoid

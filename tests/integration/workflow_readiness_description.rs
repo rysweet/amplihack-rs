@@ -1,6 +1,8 @@
 //! #2550 composer, fetch-compose-edit and finalisation/squash contracts.
 //! These tests submit actual fake-service edits and inspect platform readback.
-use super::workflow_issue_link_fixture::{Fixture, MARKER, PR, command, describe, root};
+use super::workflow_issue_link_fixture::{
+    Fixture, MARKER, PR, command, describe, executable, root,
+};
 use std::fs;
 
 fn compose(f: &Fixture, description: &str, report: &str) -> std::process::Output {
@@ -165,6 +167,36 @@ fn malformed_requests_and_non_string_fields_never_produce_a_body() {
     }
 }
 
+#[test]
+fn json_diagnostics_contain_only_category_and_location_without_private_values() {
+    let f = Fixture::new();
+    for (input, category) in [
+        (
+            r#"{"description":"PRIVATE-REPORT-2550", "report": invalid}"#,
+            "Syntax",
+        ),
+        (r#""PRIVATE-REPORT-2550""#, "Data"),
+        (
+            r#"{"description":"safe", "report":"PRIVATE-REPORT-2550""#,
+            "Eof",
+        ),
+    ] {
+        let out = f.stdin(&["workflow", "compose-readiness-description"], input);
+        assert!(!out.status.success());
+        assert!(out.stdout.is_empty());
+        let diagnostic = String::from_utf8(out.stderr).unwrap();
+        assert!(!diagnostic.contains("PRIVATE-REPORT-2550"));
+        assert!(
+            diagnostic.contains(&format!("{category} error at line 1, column ")),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("description and report"),
+            "{diagnostic}"
+        );
+    }
+}
+
 /// Use the executable GitHub example maintained in the production skill. The
 /// example's inputs are PR (trusted identity) and REPORT_FILE (private data).
 /// Execute the fetch-compose-edit example; preservation prose alone cannot
@@ -255,6 +287,25 @@ fn production_edit_path_preserves_refs_with_empty_closing_references() {
 }
 
 #[test]
+fn production_edit_preserves_published_markdown_and_accepts_benign_links() {
+    let f = Fixture::new();
+    seed_published_refs(&f);
+    let description = "Published [Fixes #2550](https://github.com/owner/repo/issues/17)\n\n[Fixes][published]\n\n[published]: https://github.com/owner/repo/issues/2550\n\n";
+    let mut pr: serde_json::Value = serde_json::from_str(&f.read("pr.json")).unwrap();
+    pr["body"] = description.into();
+    f.write("pr.json", &pr.to_string());
+    let benign = format!(
+        "{}\nThis fixes pagination and closes the dialog.\n[Fixes](https://example.org) pagination.\n[Notes](https://example.org/fixes) #2550\nRefs [issue][evidence].\n\n[evidence]: https://github.com/owner/repo/issues/2550\n",
+        report("MERGE_READY")
+    );
+    f.write("report.md", &benign);
+    let out = edit(&f);
+    assert!(out.status.success(), "{}", describe(&out));
+    let pr: serde_json::Value = serde_json::from_str(&f.read("pr.json")).unwrap();
+    assert_eq!(pr["body"], format!("{description}\n{benign}"));
+}
+
+#[test]
 fn failed_fetch_parse_or_validation_leaves_platform_description_untouched() {
     for failure in ["fetch", "parse", "closing-reference", "boundary"] {
         let f = Fixture::new();
@@ -289,45 +340,90 @@ fn failed_fetch_parse_or_validation_leaves_platform_description_untouched() {
 }
 
 #[test]
-fn existing_finalisation_and_squash_paths_preserve_an_already_published_refs_link() {
+fn production_edit_rejects_markdown_and_invalid_json_without_output_or_disclosure() {
     let f = Fixture::new();
     seed_published_refs(&f);
-    let before: serde_json::Value = serde_json::from_str(&f.read("pr.json")).unwrap();
-    let out = f
-        .bash(&command("workflow-finalize", "step-21-pr-ready"))
-        .env("RECIPE_VAR_pr_url", PR)
-        .env("RECIPE_VAR_pr_number", "99")
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{}", describe(&out));
-    let after: serde_json::Value = serde_json::from_str(&f.read("pr.json")).unwrap();
-    assert_eq!(after["isDraft"], false);
-    assert_eq!(after["body"], before["body"]);
-    let mut with_report = after;
-    with_report["body"] = format!(
-        "{}\n{}",
-        with_report["body"].as_str().unwrap(),
-        report("NOT_MERGE_READY")
+    let mut pr: serde_json::Value = serde_json::from_str(&f.read("pr.json")).unwrap();
+    pr["body"] = format!(
+        "{}\n[published-issue]: https://github.com/owner/repo/issues/2550\n",
+        pr["body"].as_str().unwrap()
     )
     .into();
-    f.write("pr.json", &with_report.to_string());
-    let out = f
-        .bash(
-            r#"
-set -euo pipefail
-. "$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_message.sh"
-pr_json=$(gh pr view "$PR" --json title,body)
-autodrive_merge_body "$pr_json"
-printf '%s' "$MERGE_BODY"
+    f.write("pr.json", &pr.to_string());
+    // Observe the real composer invoked by the production editing example.
+    // Invalid JSON injection simulates a broken request producer at this boundary.
+    executable(
+        &f.bin.join("amplihack"),
+        r#"#!/bin/bash
+set -eu
+if [ "${1:-} ${2:-}" = 'workflow compose-readiness-description' ]; then
+  if [ -f "$CASE_ROOT/invalid-request" ]; then
+    cat > /dev/null
+    exec 0< "$CASE_ROOT/invalid-request"
+  fi
+  status=0
+  "$REAL_AMPLIHACK" "$@" > "$CASE_ROOT/composer.stdout" 2> "$CASE_ROOT/composer.stderr" || status=$?
+  cat "$CASE_ROOT/composer.stdout"
+  cat "$CASE_ROOT/composer.stderr" >&2
+  exit "$status"
+fi
+exec "$REAL_AMPLIHACK" "$@"
 "#,
-        )
-        .env("PR", PR)
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{}", describe(&out));
-    assert_eq!(
-        String::from_utf8(out.stdout).unwrap(),
-        before["body"].as_str().unwrap().trim_end()
+    );
+    let before = f.read("pr.json");
+    for closing in [
+        "[Fixes](https://github.com/owner/repo/issues/17) #2550",
+        "[Fixes #2550](https://github.com/owner/repo/issues/17)",
+        "[Fixes][issue]\n\n[issue]: https://github.com/owner/repo/issues/2550",
+        "[Fixes][]\n\n[Fixes]: https://github.com/owner/repo/issues/2550",
+        "[Fixes]\n\n[Fixes]: https://github.com/owner/repo/issues/2550",
+        "Fixes [issue][target]\n\n[target]: https://github.com/owner/repo/issues/2550",
+        "Fixes [issue][]\n\n[issue]: https://github.com/owner/repo/issues/2550",
+        "Fixes [issue]\n\n[issue]: https://github.com/owner/repo/issues/2550",
+        "[Fixes][published-issue]",
+        "Fixes [published-issue][]",
+        "Fixes [published-issue]",
+        "Fixes [published-issue]\n\n[published-issue]: https://example.org",
+    ] {
+        f.write(
+            "report.md",
+            &format!(
+                "{}\nPRIVATE-REPORT-2550\n{closing}\n",
+                report("MERGE_READY")
+            ),
+        );
+        assert_private_edit_rejected(&f, &before, "closing issue reference");
+    }
+    for (input, category) in [
+        (
+            r#"{"description":"PRIVATE-REPORT-2550", "report": invalid}"#,
+            "Syntax",
+        ),
+        (r#""PRIVATE-REPORT-2550""#, "Data"),
+    ] {
+        f.write("invalid-request", input);
+        assert_private_edit_rejected(&f, &before, &format!("{category} error at line 1, column "));
+    }
+}
+
+fn assert_private_edit_rejected(f: &Fixture, before: &str, reason: &str) {
+    f.write("operations", "");
+    // Sentinels prove the observer ran, rather than treating absent files as empty.
+    f.write("composer.stdout", "not invoked");
+    f.write("composer.stderr", "not invoked");
+    let out = edit(f);
+    assert!(!out.status.success(), "{}", describe(&out));
+    assert!(out.stdout.is_empty());
+    assert_eq!(f.read("composer.stdout"), "");
+    let diagnostic = f.read("composer.stderr");
+    assert!(diagnostic.contains(reason), "{diagnostic}");
+    assert!(!diagnostic.contains("PRIVATE-REPORT-2550"));
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("PRIVATE-REPORT-2550"));
+    assert_eq!(f.read("pr.json"), before);
+    assert!(
+        !f.read("operations")
+            .lines()
+            .any(|line| line.starts_with("pr edit "))
     );
 }
 

@@ -96,6 +96,14 @@ fn issue_identity_without_a_closing_keyword_is_safe_evidence() {
         "Refs #2550",
         "Issue https://github.com/owner/repo/issues/2550",
         "Fixed-width output is covered.",
+        "This fixes pagination and closes the dialog.",
+        "[Fixes](https://example.org) pagination; [issue](https://github.com/owner/repo/issues/2550)",
+        "[Fixes pagination](https://github.com/owner/repo/issues/2550)",
+        "[Notes](https://example.org/fixes) #2550",
+        "[Notes](https://example.org/closes) <https://github.com/owner/repo/issues/2550>",
+        "Refs [issue][evidence]\n\n[evidence]: https://github.com/owner/repo/issues/2550",
+        "[Fixes][] pagination.\n\n[Fixes]: https://example.org",
+        "[Fixes] pagination.\n\n[Fixes]: https://example.org",
     ] {
         let report = format!("{REPORT}{evidence}\n");
         assert!(
@@ -114,10 +122,28 @@ fn linked_keywords_and_issue_labels_cannot_hide_closing_references() {
         "[Fixes](https://example.org) #2550",
         "Fixes [the issue](https://github.com/owner/repo/issues/2550)",
         "**Resolved**: [the issue](https://github.com/owner/repo/issues/2550 \"title\")",
+        "[Fixes](https://github.com/owner/repo/issues/17) #2550",
+        "[Fixes #2550](https://github.com/owner/repo/issues/17)",
+        "[Fixes][issue]\n\n[issue]: https://github.com/owner/repo/issues/2550",
+        "[Fixes][]\n\n[Fixes]: https://github.com/owner/repo/issues/2550",
+        "[Fixes]\n\n[fixes]: https://github.com/owner/repo/issues/2550",
+        "Fixes [issue][evidence]\n\n[evidence]: <https://github.com/owner/repo/issues/2550> \"title\"",
+        "Fixes [issue][]\n\n[issue]: https://github.com/owner/repo/issues/2550",
+        "Fixes [issue]\n\n[issue]: https://github.com/owner/repo/issues/2550",
+        "[**Fixes**][The Issue] #2550\n\n[the   issue]: https://example.org",
+        "[Fi&#120;es](https://github.com/owner/repo/issues/2550)",
+        "[Fixes](https://example.org) [issue][target]\n\n[target]: https://github.com/owner/repo/issues/2550",
     ] {
         assert!(
             compose_readiness_description("Refs #2550\n", &format!("{REPORT}{closing}\n")).is_err(),
             "accepted {closing}"
+        );
+        let published = format!("Published {closing}\n\n");
+        assert!(
+            compose_readiness_description(&published, REPORT)
+                .unwrap()
+                .starts_with(&published),
+            "published Markdown must remain authoritative: {closing}"
         );
     }
 }
@@ -130,4 +156,28 @@ fn production_template_marker_is_a_removable_report_boundary() {
     let body = compose_readiness_description(description, &report).unwrap();
     assert_eq!(body, format!("{description}\n{report}"));
     assert_eq!(compose_readiness_description(&body, &report).unwrap(), body);
+}
+
+#[test]
+fn only_new_report_links_are_validated_against_published_reference_definitions() {
+    let published =
+        "Published [Fixes][issue]\n\n[issue]: https://github.com/owner/repo/issues/2550\n\n";
+    assert!(
+        compose_readiness_description(published, REPORT)
+            .unwrap()
+            .starts_with(published)
+    );
+    for content in [
+        "[Fixes][issue]",
+        "Fixes [issue][]",
+        "Fixes [issue]",
+        // A duplicate definition in the report cannot override the earlier one.
+        "Fixes [issue]\n\n[issue]: https://example.org",
+    ] {
+        assert!(
+            compose_readiness_description(published, &format!("{REPORT}{content}\n")).is_err(),
+            "accepted {content}"
+        );
+    }
+    assert!(compose_readiness_description(published, &format!("{REPORT}Refs [issue]\n")).is_ok());
 }

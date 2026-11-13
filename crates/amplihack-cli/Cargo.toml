@@ -74,6 +74,7 @@ toml = "0.8"
 toml_edit = "0.22"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 regex = "1"
+pulldown-cmark = { version = "0.13", default-features = false }
 ureq = { version = "2", features = ["json"] }
 lbug = "0.15.3"
 rusqlite = { version = "0.38.0", features = ["bundled"] }
