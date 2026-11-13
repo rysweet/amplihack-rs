@@ -1,8 +1,8 @@
 ---
 title: Keep Tests from Prompting for Git Credentials
 type: howto
-updated: 2026-10-30
-related: issue #1764, issue #1278, issue #1606
+updated: 2026-11-12
+related: issue #1764, issue #1278, issue #1606, issue #2022
 ---
 
 # Keep Tests from Prompting for Git Credentials
@@ -414,28 +414,36 @@ From a terminal, run a long command in a new session that has no controlling
 terminal:
 
 ```bash
-GIT_TERMINAL_PROMPT=0 setsid -w timeout --kill-after=60 5400 cargo test --workspace --locked </dev/null
+GIT_TERMINAL_PROMPT=0 setsid -w cargo test --workspace --locked </dev/null
 echo "exit=$?"
 ```
 
+The run has no time limit (issue #2022). Do not wrap it in `timeout`.
+`timeout` counts the time the run spends stopped, so a host that pauses work
+with `SIGSTOP` gets the run killed when it resumes; see
+[No default time limits on work](../concepts/no-default-time-limits.md#stopped-time).
+
 Ctrl-C does not stop this form. `setsid -w` does not pass signals on, so
-Ctrl-C ends `setsid` and leaves the run going in its own session. To stop the
-run, send `SIGTERM` to its `timeout` process, which ends the command and the
-processes in its group:
+Ctrl-C ends `setsid` and leaves the run going in its own session. The command
+leads that session and its process group, so its process group ID is its own
+PID. To stop the run, send `SIGTERM` to that group, which ends the command and
+the processes it started:
 
 ```bash
-pgrep -fa '^timeout --kill-after=60 5400 cargo test'
-kill -TERM <pid of the run's timeout>
+pgrep -fa 'cargo test --workspace --locked'
+ps -o pid,pgid,lstart,args -p <pid>
+kill -TERM -- -<pgid>
 ```
 
-If `pgrep` lists more than one run, check which is yours with
-`ps -o pid,lstart,args -p <pid>` before you send the signal.
+If `pgrep` lists more than one run, use the start time that `ps` prints to
+find yours. Send the signal only to a group whose PGID equals the PID of the
+run's `cargo`.
 
-If you need to stay in the terminal's session, keep `timeout` in the
-foreground instead. Ctrl-C stops this form as usual:
+If you need to stay in the terminal's session, run the command in the
+foreground without `setsid`. Ctrl-C stops this form as usual:
 
 ```bash
-GIT_TERMINAL_PROMPT=0 timeout --foreground --kill-after=60 5400 cargo test --workspace --locked </dev/null
+GIT_TERMINAL_PROMPT=0 cargo test --workspace --locked </dev/null
 echo "exit=$?"
 ```
 
@@ -444,11 +452,14 @@ echo "exit=$?"
 | `GIT_TERMINAL_PROMPT=0` | Git fails at once instead of prompting. As a prefix, it applies to this command only and does not stay set in your shell. `[env]` covers only processes cargo starts, and other repositories have no such `.cargo/config.toml`. |
 | `setsid` | The command has no controlling terminal, so nothing it starts can read the terminal or be stopped by `SIGTTIN`. |
 | `-w` | In an interactive shell every command leads its own process group. Plain `setsid` then forks and returns at once, while the command runs on, detached. `-w` waits and returns the command's exit status. |
-| `--kill-after=60` | Sends `SIGKILL` if the command is still running 60 s after the deadline's `SIGTERM`. |
-| `--foreground` | `timeout` stays in the terminal's foreground group, so nothing is stopped. Git can then prompt in the foreground and wait for an answer; `GIT_TERMINAL_PROMPT=0` prevents that. With `--foreground`, children of the command are not killed at the deadline. |
+| No `setsid` (foreground form) | The command stays in the terminal's foreground group, so nothing is stopped. Git could then prompt in the foreground and wait for an answer; `GIT_TERMINAL_PROMPT=0` prevents that. OpenSSH can still ask on the terminal, and you can answer or press Ctrl-C. |
+| No `timeout` | Work has no time limit (issue #2022). `timeout` counts stopped time, and plain `timeout` moves the command into a background process group, where a read of the terminal stops it on `SIGTTIN`. |
 | `</dev/null` | Gives a null stdin to programs that read stdin. It does not stop git, which reads `/dev/tty`. |
 
-Do not run plain `timeout <secs> <command>` from a terminal.
+Do not run plain `timeout <secs> <command>` from a terminal. If you choose to
+bound a run yourself, put the limit inside the new session
+(`setsid -w timeout <secs> <command>`) and expect it to count stopped time
+until #2543 is done.
 
 To pause for a fixed time, use `amplihack wait --seconds N` rather than
 `timeout N tail -f /dev/null`; see
@@ -459,9 +470,9 @@ Agents are told the same in the prompts of `step-12-run-precommit` and
 `amplifier-bundle/recipes/workflow-precommit-test.yaml`, and of
 `step-04-address-blockers` in
 `amplifier-bundle/recipes/autodrive-merge-round.yaml`. They export
-`GIT_TERMINAL_PROMPT=0` and use the `setsid -w` form, or
-`timeout --foreground` where `setsid` is missing. In step 12 the wrapper is
-not part of the reported command. The step's JSON still reports
+`GIT_TERMINAL_PROMPT=0` and use the `setsid -w` form, or the foreground form
+where `setsid` is missing, with no `timeout` in either. In step 12 the wrapper
+is not part of the reported command. The step's JSON still reports
 `"workspace_command":"cargo test --workspace --locked"`, which the step's gate
 compares exactly.
 

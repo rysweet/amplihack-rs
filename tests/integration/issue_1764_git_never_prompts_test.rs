@@ -23,8 +23,8 @@
 //!   `GIT_TERMINAL_PROMPT=0` alone (c1) or with all three (c2) exits by itself
 //!   without prompting;
 //! - (d) the three recipe prompts that run long commands tell the agent how to
-//!   run them so that a prompt cannot stop them, and step 12's evidence schema
-//!   is unchanged;
+//!   run them so that a prompt cannot stop them, without a wall-clock
+//!   `timeout` (issue #2022), and step 12's evidence schema is unchanged;
 //! - the how-to is linked and offers no remedy that weakens TLS, host-key or
 //!   credential-storage settings.
 //!
@@ -1087,10 +1087,19 @@ const STEP_12_SCHEMA: [&str; 2] = [
      \"exit_receipt\":\"<actual retained numeric exit receipt>\"}]}",
 ];
 
-/// Each step tells the agent to export `GIT_TERMINAL_PROMPT=0`, to run a long
-/// command as `setsid -w timeout --kill-after=..` or, failing that,
-/// `timeout --foreground`, with stdin from `/dev/null`, and why: plain
-/// `timeout` leaves a prompting git stopped on `SIGTTIN`.
+/// Wall-clock wrappers a long-command step must not offer (issue #2022): a
+/// build or a test has no time limit, and `timeout` counts stopped time.
+const WALL_CLOCK_WRAPPERS: [&str; 4] = [
+    "setsid -w timeout",
+    "timeout --kill-after",
+    "timeout --foreground",
+    "<secs>",
+];
+
+/// Each step tells the agent to export `GIT_TERMINAL_PROMPT=0` and to run a
+/// long command as `setsid -w <cmd> </dev/null`, and why not under `timeout`:
+/// the work has no time limit (issue #2022), and plain `timeout` leaves a
+/// prompting git stopped on `SIGTTIN`. No step offers a wall-clock wrapper.
 #[test]
 fn part_d_recipe_prompts_say_how_to_run_long_commands() {
     for (recipe, id) in LONG_COMMAND_STEPS {
@@ -1104,9 +1113,11 @@ fn part_d_recipe_prompts_say_how_to_run_long_commands() {
         } else {
             vec![
                 "GIT_TERMINAL_PROMPT=0",
-                "setsid -w timeout --kill-after=",
-                "timeout --foreground",
-                "</dev/null",
+                "`setsid -w <cmd> </dev/null`",
+                "`<cmd> </dev/null`",
+                "Do not wrap",
+                "issue #2022",
+                "SIGSTOP",
                 "SIGTTIN",
             ]
         };
@@ -1114,6 +1125,12 @@ fn part_d_recipe_prompts_say_how_to_run_long_commands() {
             assert!(
                 prompt.contains(needle),
                 "{recipe}.yaml step `{id}` must tell the agent about `{needle}`"
+            );
+        }
+        for wrapper in WALL_CLOCK_WRAPPERS {
+            assert!(
+                !prompt.contains(wrapper),
+                "{recipe}.yaml step `{id}` must not tell the agent to run work under `{wrapper}` (issue #2022)"
             );
         }
         for weakening in WEAKENING {

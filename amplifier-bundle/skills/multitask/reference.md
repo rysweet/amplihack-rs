@@ -50,7 +50,7 @@ amplihack multitask / amplihack orch
 | `description`    | string | `"Issue #N"`         | Short description for reports                                               |
 | `recipe`         | string | `"default-workflow"` | Recipe to execute                                                           |
 | `timeout_policy` | string | `"interrupt-preserve"` | What to do when `max_runtime` is exceeded: `"interrupt-preserve"` or `"continue-preserve"` |
-| `max_runtime`    | int    | `7200`               | Per-workstream wall-clock budget in seconds                                 |
+| `max_runtime`    | int    | none: no limit       | Per-workstream wall-clock budget in seconds; unset means no budget (issue #2022) |
 
 ## Orchestrator API
 
@@ -69,7 +69,7 @@ amplihack multitask / amplihack orch
 - `launch(ws)` - Launch single workstream subprocess
 - `launch_all()` - Launch all workstreams in parallel
 - `get_status()` - Returns `{"running": [...], "completed": [...], "failed": [...]}`
-- `monitor(check_interval=60, max_runtime=7200)` - Block until all complete or timeout
+- `monitor(check_interval=60)` - Block until all complete; a workstream times out only if it has a `max_runtime`
 - `report()` - Print and save final report, returns report text
 - `cleanup_running()` - Terminate all running subprocesses
 
@@ -137,7 +137,7 @@ To use classic mode as fallback, specify `--mode classic` when invoking the orch
 | Operation                         | Timeout       |
 | --------------------------------- | ------------- |
 | Git clone                         | 120s          |
-| Orchestrator max runtime          | 7200s (2h)    |
+| Orchestrator max runtime          | none, unless `max_runtime` or `--max-runtime` is set |
 | Subprocess termination grace      | 10s           |
 | Agent step (CLISubprocessAdapter) | 300s per step |
 | Bash step (CLISubprocessAdapter)  | 120s per step |

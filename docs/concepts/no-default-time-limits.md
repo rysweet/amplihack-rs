@@ -20,6 +20,7 @@ builder call.
 - [Upgrading from the 6-hour default](#upgrading-from-the-6-hour-default)
 - [How to stop a run that has no limit](#how-to-stop-a-run-that-has-no-limit)
 - [Timeouts that stay: hang guards on probes](#timeouts-that-stay-hang-guards-on-probes)
+- [Stopped time](#stopped-time)
 - [Hook timeouts in settings.json](#hook-timeouts-in-settingsjson)
 - [Values that look like limits but are not](#values-that-look-like-limits-but-are-not)
 - [Rules for new code](#rules-for-new-code)
@@ -48,13 +49,22 @@ halfway through a large refactor loses that work when the limit fires, and
 the run's state is left `indeterminate`. The owner's rule (issue #2022) is
 that this must never happen by default.
 
-Hangs are handled by other means:
+Nothing ends a hang by default either. A hung agent child, build or test
+runs until someone stops it. These are the ways to end one:
 
-- The [idle watchdog](./idle-watchdog.md) ends an agent child that produces
-  no output for its idle window. It measures silence, not elapsed time.
 - `amplihack recipe stop`, Ctrl-C, `SIGTERM` and `SIGHUP` stop a run at any
   time (#1606).
+- The [idle watchdog](./idle-watchdog.md) ends an agent child that produces
+  no output for its idle window, but only when a window is set. It is off by
+  default. Set it with `AMPLIHACK_IDLE_TIMEOUT_SECS` for Claude agent children,
+  `amplihack remote exec --timeout` for a remote run, or
+  `CopilotCliClient::with_timeout` for a Copilot CLI call. With no window,
+  the watchdog only drains the child's output and collects its exit status.
 - Probes keep their own short timeouts.
+
+A silent, hung agent child therefore runs until someone stops it. On a
+remote session, its Azure VM keeps running, and billing, for that time; see
+[Remote sessions: cost of a run with no limit](../remote-sessions/CLI_REFERENCE.md#cost-of-a-run-with-no-limit).
 
 ## Limits you can set
 
@@ -69,7 +79,9 @@ to that step. The bundled default-workflow agent steps define none.
 | [`AMPLIHACK_STEP_TIMEOUT`](../reference/environment-variables.md#amplihack_step_timeout) / `--step-timeout <SECONDS>` | Each recipe step; overrides each step's YAML `timeout_seconds` | Flag or variable | No limit, even where a step's YAML sets `timeout_seconds` |
 | [`recipe.step_timeout`](../reference/user-config.md#recipestep_timeout) | Each recipe step; overrides each step's YAML `timeout_seconds` | Config key, whole seconds of at least 1 | Rejected as invalid; use `--step-timeout 0` to turn step limits off |
 | [`recipe.usage_limit_max_wait_secs`](../reference/user-config.md#recipeusage_limit_wait) / [`AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS`](../reference/environment-variables.md#amplihack_usage_limit_max_wait_secs) | One wait for a usage limit to reset | Config key or variable | One more attempt with no wait; a capacity wait fails at once as `usage_limit` |
-| `CopilotCliClient::with_timeout` | One Copilot CLI agent call | Builder call in Rust | Not applicable: takes a `Duration` |
+| `CopilotCliClient::with_timeout` | Silence from one Copilot CLI agent call: ended after this long with no output | Builder call in Rust | Not applicable: takes a `Duration` |
+| [`AMPLIHACK_IDLE_TIMEOUT_SECS`](../reference/environment-variables.md#amplihack_idle_timeout_secs) | Silence from one Claude agent child: ended after this many seconds with no output | Environment variable, whole seconds above 0 | No limit |
+| `amplihack remote exec --timeout <MINUTES>` | Silence from one remote run: ended after this many minutes with no output | Command-line flag, 5 to 480 | Rejected as invalid; omit the flag for no limit |
 | `AgentConfig.timeout_secs`, `TaskSpec.timeout_secs`, `SdkAdapterConfig.timeout_secs` | Recorded on agent-core configs; not enforced | Config field or `with_timeout` | Stored as `Some(0)`; never means "unlimited" |
 | `--max-runtime` | One multitask workstream | Command-line flag | Not applicable |
 | [`autodrive_budget_wall_seconds`](../reference/auto-drive-to-merge.md) | Time an auto-drive spends in its children, less usage-limit waits | Recipe context, `-c autodrive_budget_wall_seconds=N` | No limit; `0` or empty is the default in every bundled recipe |
@@ -156,7 +168,38 @@ agent step or a recipe run.
 | Start-up handshakes | Codex app-server and MCP handshakes; the `amplihack-remote` tmux session launch in `execute_remote_tmux` (60 s) | The peer is not answering; the launch limit covers only starting the session, not the agent run inside it |
 | Lock acquisition and pipe draining | Recipe-run lock, child stdout and stderr drain after exit | Prevents a deadlock on a stuck peer |
 | Installer and network setup | `curl`, `tar`, `npm`, `apt` and self-upgrade steps (300 s); `git clone` (120 or 300 s); in the `amplihack-remote` executor, the context archive upload (600 s per attempt, retried with backoff within a 60 s retry budget by default), the remote log archive, the git bundle and the file download after a run (300 s each); remote provisioning | Network hang guard on one setup or transfer step; the remote agent run itself (`execute_remote`, `execute_remote_tmux`) has no limit unless a timeout is configured |
-| Prompt text in bundled recipes | `setsid -w timeout <secs>` guidance in `autodrive-merge-round` and `workflow-precommit-test`; `primary_timeout` and `timeout_seconds` parameters in `cascade-workflow` | Text the agent reads; amplihack does not enforce it |
+| Prompt text in bundled recipes | `primary_timeout` and `timeout_seconds` parameters in `cascade-workflow` | Text the agent reads; amplihack does not enforce it |
+
+The long-command guidance in `workflow-precommit-test` (steps 12 and 13)
+tells the agent to run a build or test as `setsid -w <cmd> </dev/null` and
+not to wrap it in `timeout`. `autodrive-merge-round` asks for noninteractive
+execution and natural completion. Neither puts a time limit on work. The
+test `part_d_recipe_prompts_say_how_to_run_long_commands` in
+`tests/integration/issue_1764_git_never_prompts_test.rs` fails if a
+wall-clock wrapper comes back.
+
+## Stopped time
+
+Every limit that remains counts time in which the guarded process was
+stopped. That covers the probe guards above and the limits you can set. The
+owner's comment of 10 Nov 2026 on #2022 records the failure: a host-wide
+`SIGSTOP`/`SIGCONT` load pause stopped recipe steps that were wrapped in
+`timeout`. When they resumed, their windows had run out, and `timeout`
+killed them.
+
+- GNU `timeout` uses a real-time timer, so every `timeout N` wrapper counts
+  stopped time.
+- The runner limit (`AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS`) and multitask
+  `max_runtime` are measured with Rust's `Instant`. On Linux that is
+  `CLOCK_MONOTONIC`, which keeps advancing while a process is stopped.
+- The idle watchdog counts a stopped child as silent, because a stopped child
+  prints nothing.
+
+#2022 requires that a limit which stays must not count stopped time. #2107
+does not do that part. It is tracked in
+[#2543](https://github.com/rysweet/amplihack-rs/issues/2543). Until #2543 is
+done, the protection is the default itself: a step with no limit set cannot
+be ended by a pause.
 
 ## Hook timeouts in settings.json
 
@@ -194,7 +237,7 @@ below the registered timeout. The margin bounds no work.
 | `SessionManager` 3600 s | Session bookkeeping; it does not end work |
 | `RECIPE_RUNNER_POLL_INTERVAL` (100 ms) | How often the runner wait checks for exit or a stop request; it never ends the wait |
 | `DEFAULT_LATEST_TAG_TTL_MS` (6 h) in `npm/lib/bootstrap.js` | How long the npm launcher caches the latest release tag |
-| `max_runtime` 7200 and 10800 in the multitask skill's `TIMEOUT_LIFECYCLE.md` | Example values for a workstream that sets its own limit; `max_runtime` is optional and has no default |
+| `max_runtime` 7200 and 10800 in the multitask skill's `TIMEOUT_LIFECYCLE.md` and `reference.md` | Example values for a workstream that sets its own limit. `max_runtime` is optional and has no default; both files and the resumable-workstream how-to and reference say so |
 | `LOCK_TIMEOUT` (5 s) in `limit_resume/guard.rs`, passed to `lock_exclusive_timeout` | How long one hook waits to take the resume lock; on expiry that commit fails as an I/O error. It bounds one lock call, not a session or a wait for capacity |
 | `LOCK_TIMEOUT` (1 s) in `limit_resume/log.rs` and (10 s) in `commands/agent/store.rs` | Other constants with the same name. Each bounds one `lock_exclusive_timeout` call: the log append is skipped, and a registry change fails with "try again" |
 | `STOP_SLACK_SECS` (1 s) in `rotator_status::swap_record` | A clock allowance: a login swap counts as "after the stop" if it falls no more than one second before the hook's start. It is a comparison on timestamps and ends nothing |
