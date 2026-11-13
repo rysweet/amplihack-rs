@@ -1,17 +1,13 @@
 ---
-title: Workflow delivery inputs
-description: Base branches and strict delivery for Development workstreams.
-last_updated: 2026-11-12
+title: Workflow delivery inputs reference
+description: Branch, repository and tracking inputs for Development delivery.
+last_updated: 2026-11-13
 review_schedule: quarterly
 owner: amplihack
 doc_type: reference
 ---
 
 # Workflow Delivery Inputs Reference
-
-> **[IMPLEMENTED - Validation Pending]** The issue #2553 mixed-plan and
-> per-leaf routing additions below require implementation and validation.
-> Existing strict-delivery requirements still apply to Development leaves.
 
 > [Home](../index.md) > Reference > Workflow Delivery Inputs
 
@@ -264,7 +260,7 @@ request without `default-workflow`'s publish phase, and one route runs
 | Path | `base_branch`, `forbidden_base_branches` | `strict_delivery` |
 | ---- | ---------------------------------------- | ----------------- |
 | `quick-change`, and `auto-drive-light` for a new change | Cleared in the call to `workflow-worktree`. The `quick/` branch starts from `origin/HEAD`, and the pull request targets the branch `origin/HEAD` names, so the two agree. A `base_branch` from the caller is not used. | Left as inherited. Step-04 refuses to create a branch when it is `"true"`, so a strict run stops before any agent runs. |
-| `smart-orchestrator`, decomposed task | Delivery inputs belong to the relevant Development leaf; Operations does not create branches or implementation PRs. The normalised leaf context preserves the applicable delivery contract. | Executes the same leaves serially, preserving routes, dependencies and per-leaf delivery requirements. It does not collapse a mixed request into one Development task. |
+| `smart-orchestrator`, decomposed plan **[PLANNED]** | Development leaves must retain their applicable delivery inputs; Operations leaves must perform no Development branch or PR setup. | Delivery requirements must remain attached to the affected Development leaves. Sequential execution must preserve every Operations and Development leaf and its dependencies. |
 
 The runner merges a sub-recipe's context back into its caller's. Once
 `quick-change` or `auto-drive-light` has called `workflow-worktree`,
@@ -277,18 +273,28 @@ to `default-workflow` therefore continues the `quick/` branch with no
 (`existing_branch` or `pr_number` set) does not call `workflow-worktree` and
 opens no pull request.
 
-A strict Development leaf uses `default-workflow`, which applies the contract above. `quick-change`
+A strict Development leaf uses `default-workflow`, which applies the contract
+above. Strict delivery does not change Operations routing or discard
+Operations work from a mixed request. `quick-change`
 is not chosen, because strict delivery requires `existing_branch`, which rules
 it out (#1740); a strict run without `existing_branch` is refused by step-03 of
 `default-workflow` or by step-04 under `quick-change`.
 
-To deliver to `base_branch` through `smart-orchestrator`, pass
-`force_single_workstream=true` and `workflow=default-workflow`, which execute
-the leaves serially and keep Development off `quick-change`, or call `default-workflow`
-directly.
+**[PLANNED mixed-plan contract]** To deliver to `base_branch` through `smart-orchestrator`, pass the delivery
+inputs to the affected Development work. `force_single_workstream=true`
+serialises required leaves without merging their tasks or routes;
+`workflow=default-workflow` selects the Development workflow. See the
+[routing configuration](dev-orchestrator-routing.md#configuration).
 
-These controls preserve separate Operations and Development leaves. See the
-[routing contract](dev-orchestrator-routing.md#execution-controls).
+Per-workstream `create_issue` is a JSON Boolean. This differs from the legacy
+recipe-context spellings above: the normalised plan preserves explicit
+tracking intent per leaf and never creates an issue merely because one is
+absent.
+
+The native config does not yet define per-leaf `create_issue` or dependencies,
+and the helper drops that intent. The paragraph above specifies the target
+schema; legacy recipe-context forwarding does not implement it. See the
+[implementation boundary](dev-orchestrator-routing.md#implementation-boundary).
 
 ## Example
 

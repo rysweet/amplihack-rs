@@ -32,7 +32,7 @@ recursion:
   max_total_steps: 100
 
 context:
-  workstream_context_file: ""
+  prerequisite_results: "{}" # Results of completed dependency leaves, keyed by immutable identity.
   task_description: ""
   requirements: ""
   repo_path: "."
@@ -109,11 +109,3 @@ steps:
   - id: "consensus-merge-finalize"
     type: "recipe"
     recipe: "consensus-merge-finalize"
-
-  - id: "capture-workstream-delivery"
-    type: "bash"
-    condition: "workstream_context_file"
-    command: |
-      set -euo pipefail
-      amplihack multitask capture-delivery --context-file "${RECIPE_VAR_workstream_context_file:?context required}" --recipe consensus-workflow
-    output: "workstream_delivery"

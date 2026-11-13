@@ -263,7 +263,7 @@ Proven methodologies for consistent, high-quality results.
 | Your Request | Classified As | Workflow | Steps |
 |--------------|---------------|----------|-------|
 | "What is..." | Q&A | Direct answer | 3 |
-| "Clean up..." | Operations | Direct execution | 1 |
+| "Triage these issues" | Operations | Direct execution or one checklist agent | 1 |
 | "How does X work?" | Investigation | Deep exploration | 6 |
 | "Add feature X" | Development | Full workflow | 23 |
 
@@ -319,11 +319,11 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Recipe Runner Overview](recipes/README.md) - Architecture, YAML format, and creating custom recipes
 - [UltraThink Recipe Runner Integration](recipes/RECIPE_RUNNER_ULTRATHINK_INTEGRATION.md) - How ultrathink uses Recipe Runner for code-enforced workflow execution
 - [Recipe CLI Commands How-To](howto/recipe-cli-commands.md) - Task-oriented guide for using recipe commands
-- [Operations and Project-management Routing](operations-routing.md) - Planned administrative actions, repository edits and mixed requests
-- [Run Operations and Mixed Requests](howto/run-operations-and-mixed-work.md) - Planned usage, explicit tracking and supported reconciliation
-- [Dev-Orchestrator Routing Contract](reference/dev-orchestrator-routing.md) - Planned leaf plans, trusted routes, optional issues and result bindings
-- [Workstream State and Migration](reference/workstream-state.md) - Planned identities, JSON results, tracking attempts and safe resumption
-- [Verify Dev-Orchestrator Routing](howto/verify-dev-orchestrator-routing.md) - Pending acceptance coverage and the implementation/registration gate
+- [Dev-Orchestrator Routing Contract](reference/dev-orchestrator-routing.md) - **Planned:** per-leaf routing, tracking and identity; includes current implementation limits
+- [Operations and Project-Management Routing](operations-routing.md) - **Planned:** why administrative work and repository changes use separate execution paths
+- [Run Operations and Mixed Requests](howto/run-operations-and-mixed-work.md) - **Planned:** administrative work, mixed dependencies and optional tracking
+- [Workstream State and Recovery](reference/workstream-state.md) - **Planned:** canonical-plan location, resume and reconciliation; includes current recovery limits
+- [Verify Dev-Orchestrator Routing](howto/verify-dev-orchestrator-routing.md) - Helper inspection and isolated execution checks for native routing
 - [Quick-Change Recipe](reference/quick-change-recipe.md) - Single-session recipe for small changes: diff limits, hand-over to default-workflow, routing precedence and the `Workflow:` log line, `-c workflow=`
 - [Auto-Drive-Light Recipe](reference/auto-drive-light.md) - Smaller drive-to-merge recipe for small PRs: eligibility rules, escalation to auto-drive-to-merge, the task id its follow-up issues name, and the per-finding follow-up model it shares with auto-drive-to-merge
 - [Correlate Recipe Runs with Logs](howto/correlate-recipe-runs.md) - Match terminal output, final JSON, child process IDs, and runner log paths by run ID

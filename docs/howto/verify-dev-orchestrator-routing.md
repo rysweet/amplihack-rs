@@ -1,7 +1,7 @@
 ---
 title: Verify dev-orchestrator routing
-description: Exercise leaf routing, optional issues, tracking and resumption through isolated Rust fixtures.
-last_updated: 2026-11-12
+description: Inspect helper output and define required behavioural coverage for native routing.
+last_updated: 2026-11-13
 review_schedule: quarterly
 owner: amplihack
 doc_type: howto
@@ -9,146 +9,154 @@ doc_type: howto
 
 # Verify dev-orchestrator routing
 
-> **[IMPLEMENTED - Validation Pending]** Feature acceptance is pending. The five
-> `issue_2553_*` modules listed below are absent from the current tree and are
-> not registered in `crates/amplihack-cli/tests/main.rs`. Their names describe
-> required coverage, not tests that have run or passed.
-
-Use this procedure after implementing and registering the Rust behavioural
-fixtures. They must verify the full path from decomposition through configuration
-to execution. Valid JSON and local links alone do not establish routing behaviour.
+Use helper output to inspect the normalised plan, then run isolated behavioural
+checks to establish execution. Classification, context construction and prompt
+wording alone do not prove completion or correct setup.
 
 ## Prerequisites
 
-Run from the repository root with the pinned Rust toolchain and recipe runner
-available. The fixtures must use temporary repositories, homes, profile roots,
-configuration, runtime and temporary directories. They clear inherited agent
-and issue-specific configuration and use private tmux sockets where needed.
-They must never access the real `~/.claude`, `~/.amplihack`, `~/.codex` or profile root.
+Use the intended amplihack binary and its matching installed recipe bundle.
+For regression tests, work from a checkout with the Rust toolchain installed.
+The required execution fixtures must provide private profiles, state
+directories and repositories, without production GitHub issues or the real
+user profile. The Rust execution fixture and injected tracking adapter run with private
+profiles and record observable service actions and child completion.
 
-## Implement and register coverage first
+## Inspect an Operations-led mixed plan
 
-Implement these proposed integration modules, then register them with `mod`
-declarations and paths in [tests/main.rs](../../crates/amplihack-cli/tests/main.rs).
-Registration is required because `cli_integration` uses that explicit entry point.
+Save the following as `routing-decomposition.json` in a private scratch
+directory:
 
-| Planned module (not yet registered) | Required behaviour |
-| --- | --- |
-| `issue_2553_plan_contract` | Full-plan validation, classification precedence, dependencies, optional issue parsing through `u64::MAX`, serialisation and stable identities |
-| `issue_2553_operations_routing` | Administrative examples, mixed requests, tracked documentation edits, recipe coercion, per-leaf overrides and dirty initial repositories |
-| `issue_2553_tracking_resolution` | Supplied or persisted issue reuse, explicit producer/output bindings, required creation, definite failure, ambiguous outcomes and no unsolicited creation |
-| `issue_2553_dependency_execution` | Readiness, single launch, completion events, log EOF, typed results, hand-over validation, result persistence, blocked dependants and sequential fallback |
-| `issue_2553_state_ownership` | Multiple issue-less leaves, resume, interrupted external mutations, legacy adaptation and cancellation/cleanup ownership |
-
-Include reconciliation success, proven non-application with explicit retry,
-unresolved and partial outcomes, stale revisions, duplicate resolution
-submissions, ownership rejection and failed durable writes in the tracking and
-state modules. Verify that resolving one action cannot replay earlier successful
-actions or release dependants before the whole prerequisite succeeds.
-
-## Run the registered behavioural fixtures
-
-After implementation and registration, inventory the selected tests first:
-
-```bash
-cargo test --locked -p amplihack-cli --test cli_integration issue_2553_ -- --list
+```json
+{
+  "task_type": "Operations",
+  "workstreams": [
+    {
+      "key": "research-routing",
+      "classification": "Project Management",
+      "description": "Research routing requirements",
+      "task": "Read issue #2553 in rysweet/amplihack-rs and return the routing requirements.",
+      "issue": "TBD",
+      "create_issue": false,
+      "recipe": "consensus-workflow"
+    },
+    {
+      "key": "document-routing",
+      "classification": "Development",
+      "description": "Document routing requirements",
+      "branch": "feat/document-operations-routing",
+      "task": "Use the research result to update docs/operations-routing.md.",
+      "depends_on": ["research-routing"],
+      "create_issue": false,
+      "recipe": "investigation-workflow"
+    }
+  ]
+}
 ```
 
-Expected result after registration: fully qualified test names appear under all
-five modules. If no tests are listed or a required module is missing, stop:
-acceptance remains pending. A successful command with zero selected tests is
-not a passing feature check.
-
-Then execute the fixtures:
+Run the helper to inspect output; it prints the generated array's path. Do
+not launch this mixed plan to test dependency handling in the current engine:
 
 ```bash
-cargo test --locked -p amplihack-cli --test cli_integration issue_2553_
+WS_FILE=$(amplihack orch helper build-workstreams-config < routing-decomposition.json)
+jq '[.[] | {key, classification, recipe}]' "$WS_FILE"
+jq '[.[] | has("issue")]' "$WS_FILE"
+amplihack multitask run "$WS_FILE" --dry-run
 ```
 
-Expected result after implementation: the selected applicable tests execute and
-pass. Each execution fixture must record actual runner invocations, child
-contexts, external-adapter calls and owned artefacts. Isolated Rust executables
-stand in for agents and external tools; these tests must not create live GitHub
-issues. This guide records no feature pass result before those fixtures exist.
+**Expected result:** `research-routing` is Operations on `operations-direct`;
+`document-routing` is Development on `default-workflow`. The conflicting
+Operations recipe is replaced. Both issue-presence checks are false, and the
+second leaf retains its dependency on `research-routing`.
 
-## Check the acceptance scenarios
+The helper preserves leaf keys, classifications, tasks, dependencies and tracking
+intent. Dry-run validates the complete plan without launching an agent, cloning
+or contacting tracking services. See
+[Run Operations and mixed requests](run-operations-and-mixed-work.md) for execution.
 
-Use the fixture traces to check these outcomes:
+## Check Development workflow selection
 
-1. Triage, issue creation and assignment, research answers, status and
-   coordination reach `operations-direct` with one scoped task. There are no
-   Development workflow, clone, worktree, branch or implementation-PR calls.
-2. A mixed request executes each leaf once. The motivating programme-name
-   request and cross-repository documentation edits send only file changes
-   through Development; prerequisite results arrive with provenance.
-3. An issue-less decomposition reaches its execution fixture without issue
-   context. Multiple issue-less leaves have separate identity, state, logs,
-   artefact directories and process tracking.
-4. Missing, null and blank issue values, all recognised placeholders with case
-   and whitespace variants, valid positive numbers and malformed values follow
-   the [shared parser contract](../reference/dev-orchestrator-routing.md#optional-issue-parsing).
-5. Required tracking creates a validated fixture issue before downstream execution.
-   Persisted success is reused. Definite failure remains visible, and unknown
-   outcomes do not trigger a second creation attempt. A producer-bound issue
-   resolves only from its declared output with matching UUID and repository.
-6. Sequential mode, depth limits, strict delivery, resume and fallback retain
-   the same leaves, routes and dependencies. Completed Operations are skipped;
-   uncertain external mutations require reconciliation.
-   Supported reconciliation durably records the verified outcome; only an
-   explicitly authorised, proven-safe retry permits a new attempt.
-7. Failed prerequisite persistence or invalid completion evidence prevents
-   dependant launch. Cleanup leaves the Operations repository intact and
-   rejects ambiguous ownership.
-8. Every Development result carries its effective workflow. A `quick-change`
-   hand-over receives `default-workflow` validation in serial and parallel
-   execution; parent context loss cannot skip the gates.
+```bash
+printf '%s' '{"recommended_workflow":"quick-change","workflow_reason":"comment typo"}' \
+  | amplihack orch helper select-workflow --task-type Development --workstream-count 1
+```
 
-Fixture synchronisation must use process completion, events, readiness signals and
-isolation. Sleeps, polling, interval probes, timed retries and wall-clock test
-windows are not used. Source-text compliance scans do not satisfy these checks.
+Expected stdout is `quick-change`. With `--workstream-count 2`, stdout is
+`default-workflow`. The reason is logged on stderr. Leaf routing also requires Operations to retain `operations-direct`
+under either Development selection; this helper check does not prove it. See
+[Quick-change precedence](../reference/quick-change-recipe.md#precedence) for
+existing-branch and override rules.
 
-## Check interpretation separately
+## Run existing focused checks
 
-Run the [calibration requests](../reference/workflow-classifier.md#calibration-cases)
-through the model-backed classifier in an isolated environment. Compare its
-classifications, executable leaves, output destinations and dependencies with
-the expected interpretation. Include the original motivating request.
+Run the focused Rust checks:
 
-Report calibration separately from deterministic fixture routing. A fixture
-that supplies `Operations` as input proves the handling of that label; it
-does not establish that the model recognised an administrative task in prose.
+```bash
+cargo test -p amplihack-workflows classifier
+cargo test -p amplihack-cli --test cli_integration issue_2553_
+cargo test -p amplihack-cli multitask
+```
 
-## Validate on macOS and Linux
+The issue-specific integration modules include `issue_2553_execution`,
+`issue_2553_operations_routing` and `issue_2553_plan_contract`. Execution tests
+call the production entry point with private child environments and Rust
+agent/service fixtures. They record actual completion, Git and GitHub actions,
+dependency results, cancellation, tracking acquisition and resumption. The
+installation test executes the installed Operations recipe through the pinned
+runner. No production issue is created or assigned by these fixtures.
 
-After registration, run the applicable Rust tests on macOS and Linux. Preserve
-platform gating for tests that actually require Linux facilities such as
-`/proc`, pidfd ownership checks or FIFO pools. Do not classify an entire proposed
-module as Linux-only without inspecting its implemented tests.
+Record actual command results, skipped checks and platform limits in CI logs
+or the PR. No runtime pass or completed execution is asserted by this guide.
+JSON parsing, link checks, shell syntax and whitespace validation establish
+document structure only.
 
-Record actual commands, exit statuses and executed/passed/failed counts in the
-implementation PR and CI logs. Compare the macOS and Linux `-- --list`
-inventories and inspect each difference's platform gate. List every Linux-only
-omission by its exact fully qualified Rust test name, gate/reason and Linux CI
-result or pending job. Also record ignored tests, runtime skips and unavailable
-tools; listing a test does not prove its body ran. No exact omission inventory
-can be claimed for the five proposed modules before they exist. Until both
-inventories and actual results are available, platform validation is pending.
+## Execution coverage
 
-Run applicable formatting, Clippy and configured hooks without bypasses,
-including `pre-commit run --all-files`. Do not disable hooks, force-push or
-change versions. The implementation PR includes `Fixes #2553`; candide owns
-the subsequent PR drive and merge.
+Build isolated checks through production normalisation, preparation and
+dispatch paths, with a Rust fixture agent and an injected tracking adapter.
+Exercise installed assets and record observable actions and completion;
+a fixture-only router cannot establish the production contract.
 
-## Diagnose failures
+Required acceptance criteria:
 
-| Observation | Check |
+- Pure Operations completes despite a conflicting recipe, without
+  Development clone, worktree, branch or PR setup.
+- Mixed plans, including Operations-led plans, complete every required leaf
+  in dependency order and transfer prerequisite results by immutable key.
+- Omitted issues and every supported placeholder reach execution; valid
+  positive issue values remain available to tracking consumers.
+- Explicit acquisition succeeds before launch, failure prevents affected
+  execution, and uncertain acquisition is reconciled without duplicate issues.
+- Attaching tracking preserves identities and paths across resume; completed
+  leaves are not repeated.
+- Cancellation and unsuccessful prerequisites block affected dependants;
+  process failure overrides successful agent prose.
+- Invalid plans perform no external actions. Unsafe ownership prevents reuse,
+  signalling or deletion, and Operations cleanup preserves the repository.
+
+Each child must have a private home, application profile, state directory and
+repository fixture. Adapters must reject unexpected external commands. Completion
+must use process exits, channels or readiness signals, with no sleeps, interval
+probes, timed retries, polling or wall-clock test windows.
+
+Where process observation or FIFO coverage requires Linux, run those checks
+in Linux CI once implemented. On macOS, report unavailable Linux checks
+separately in the PR; local results do not establish CI coverage.
+
+## Diagnose a mismatch
+
+| Observation | Action |
 | --- | --- |
-| Operations starts `default-workflow` | Route coercion, fallback handling and bundle/binary agreement |
-| A documentation edit runs directly | Action/destination classification and the leaf's explicit classification |
-| Missing tracking stops execution | Shared issue parser and omitted context at every boundary |
-| A sibling's issue leaks into a child | Inherited variable removal and per-leaf context construction |
-| Issue creation repeats on resume | Stable identity, durable tracking attempt and reconciliation state |
-| A dependant starts before durable success | Completion validation and persistence ordering |
+| Operations keeps a custom recipe | Check the canonical plan and installed assets; Operations overrides every conflicting recipe |
+| Repository edits disappear from an Operations-led plan | Inspect per-leaf classifications, dependencies and dispatch; the top-level label cannot suppress them |
+| `TBD` fails numeric validation | Check the shared optional-issue parser at the failing boundary |
+| Tracking is created without `create_issue: true` | Check leaf tracking intent and inherited context; absence is not a creation request |
+| Dry-run passes but no result completes | Add the required production-path execution fixture; helper output does not demonstrate execution |
+| Resume renames a leaf after issue acquisition | Restore the persisted key and dependency references; tracking must not determine resumed identity |
 
-See the [routing contract](../reference/dev-orchestrator-routing.md) and
-[state reference](../reference/workstream-state.md) for the corresponding invariants.
+## Related
+
+- [Routing contract](../reference/dev-orchestrator-routing.md)
+- [Workstream state and recovery](../reference/workstream-state.md)
+- [Workflow classifier](../reference/workflow-classifier.md)
+- [Run Operations and mixed requests](run-operations-and-mixed-work.md)

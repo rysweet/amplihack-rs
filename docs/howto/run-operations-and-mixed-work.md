@@ -1,7 +1,7 @@
 ---
 title: Run Operations and mixed requests
-description: Route administrative tasks, repository edits and explicitly tracked work.
-last_updated: 2026-11-12
+description: Execute administrative work, repository edits and workstreams without tracking issues.
+last_updated: 2026-11-13
 review_schedule: quarterly
 owner: amplihack
 doc_type: howto
@@ -9,142 +9,177 @@ doc_type: howto
 
 # Run Operations and mixed requests
 
-> **[IMPLEMENTED - Validation Pending]** These prompts and commands describe
-> the intended issue #2553 behaviour. Reconciliation and result binding require
-> implementation and validation before use.
+The native engine supports these Operations and mixed-plan configurations.
+Each leaf retains its task, classification, dependencies and tracking intent.
+Choose a separate private temporary root for each plan and reuse it for resume.
+See the [routing boundary](../reference/dev-orchestrator-routing.md#implementation-boundary).
 
-Use this guide when a request includes issue management, research answers,
-coordination or repository documentation changes.
+Use an installed amplihack session with an authorised execution context for
+each target repository. Issue creation, assignment and comments require an
+authenticated GitHub account with permission for the requested action.
 
-## Prerequisites
+## Request administrative work
 
-Use an installed amplihack session in the intended repository. GitHub actions
-require authenticated `gh` access to that repository and the permissions needed
-for the requested action. Cross-repository requests require trusted repository
-contexts for each target.
-
-The examples below are prompts to enter in the agent chat, not shell commands.
-Their expected results describe the route and delivered output; issue numbers
-and execution UUIDs depend on the run.
-
-## Run an administrative checklist
-
-Ask for an answer with an explicit destination:
+State the action and its destination. Enter this prompt in the agent session:
 
 ```text
-For rysweet/amplihack-rs, read issue #2553 and its comments. Answer in chat:
-1. Which actions are Operations?
-2. Which actions change tracked repository files?
-3. What happens when a workstream has no issue number?
+For rysweet/amplihack-rs, read issue #2553 and all its comments. Answer in
+chat: which actions are Operations, which require repository edits, and
+what happens when a workstream has no issue number?
 ```
 
-Expected result: one Operations leaf returns the answers in chat. It creates no
-worktree, branch or implementation PR. The numbered checklist does not change
-its classification. Reading #2553 as source material does not itself make that
-issue the leaf's tracking issue.
+Expected result: an Operations answer in the session, or one scoped
+checklist agent. Reading the issue does not attach it as tracking. No
+Development clone, worktree, branch or PR is created.
 
-For issue triage, specify the requested scope, for example:
+Triage, issue assignment, research write-ups outside the repository and
+status reports take the same route. Name a concrete repository and assignee
+when asking for an issue to be created or assigned.
+
+## Combine research with a repository edit
+
+Give the outputs separate destinations and state their dependency:
 
 ```text
-Triage issue #2553 in rysweet/amplihack-rs. Report its acceptance criteria and
-suggest an owner in chat.
+For rysweet/amplihack-rs, research the Operations routing requirements in
+issue #2553 and return the answers. Then use those answers to update
+docs/operations-routing.md. Run both parts without creating tracking issues.
 ```
 
-Expected result: direct Operations execution returns a triage report. Requests
-to create an issue and assign a named, authorised owner use the same route.
+Expected result: an Operations leaf produces the answers. A dependent
+Development leaf receives them and edits the repository document through
+`default-workflow`. The top-level classification cannot bypass that
+Development leaf.
 
-## Combine research with a documentation edit
+For a cross-repository wording sweep, name each repository and the wording to
+change. File edits become Development workstreams; research and coordination
+remain Operations. An Operations-led plan preserves all of them.
 
-Separate the answer from the file change and state their dependency:
+## Run an issue-less workstream
 
-```text
-Explain Operations versus Development in chat for rysweet/amplihack-rs.
-Then update docs/operations-routing.md using that explanation.
+Save this configuration as `operations-workstreams.json` outside the
+repository, or in an existing local scratch directory:
+
+```json
+[
+  {
+    "key": "research-routing",
+    "classification": "Operations",
+    "description": "Research Operations routing",
+    "task": "Read issue #2553 and its comments in rysweet/amplihack-rs. Return the Operations and Development boundaries in the result.",
+    "issue": "TBD",
+    "create_issue": false,
+    "recipe": "operations-direct"
+  }
+]
 ```
 
-Expected result: an Operations leaf produces the explanation; a Development
-leaf receives that persisted result and updates the document through the
-Development workflow. The original request is not executed again as a second
-administrative task.
+Preview it, then execute from the intended execution directory:
 
-For wording changes across repositories, name every target repository and file.
-Each repository-editing leaf uses Development, even when the change is a single
-word. Coordination and status reports remain separate Operations leaves.
-
-## Choose whether work needs tracking
-
-To use existing tracking, bind it to the work explicitly:
-
-```text
-Use rysweet/amplihack-rs issue #2553 as tracking for the update to
-docs/operations-routing.md. Explain the routing distinction in that document.
+```bash
+amplihack multitask run operations-workstreams.json --dry-run
+amplihack orch run operations-workstreams.json
 ```
 
-Expected result: the Development leaf reuses #2553 without creating another
-issue.
+The preview identifies `research-routing` and `operations-direct`. Execution
+produces the research result without a tracking issue or Development
+workspace. `TBD` becomes absence before numeric validation. The child context
+omits `issue_number`, and no sibling or parent tracking issue is inherited.
 
-To request new tracking explicitly:
+Omitting `issue` has the same effect. Blank strings, JSON `null`, and the
+[recognised placeholders](../reference/dev-orchestrator-routing.md#optional-tracking-issues)
+also mean absence. Unknown strings and invalid numbers remain errors.
 
-```text
-In rysweet/amplihack-rs, create a tracking issue titled "Clarify Operations
-routing examples" with a body requesting clearer administrative and repository
-edit examples in docs/operations-routing.md. Then make that documentation
-change under the new issue.
+## Preserve a dependency in a mixed plan
+
+Save this array as `mixed-workstreams.json`:
+
+```json
+[
+  {
+    "key": "research-routing",
+    "classification": "Operations",
+    "description": "Research routing requirements",
+    "task": "Read issue #2553 in rysweet/amplihack-rs and return its routing requirements.",
+    "create_issue": false,
+    "recipe": "operations-direct"
+  },
+  {
+    "key": "document-routing",
+    "classification": "Development",
+    "branch": "feat/document-operations-routing",
+    "description": "Document routing requirements",
+    "task": "Use the prerequisite result to update docs/operations-routing.md.",
+    "depends_on": ["research-routing"],
+    "create_issue": false,
+    "recipe": "default-workflow"
+  }
+]
 ```
 
-Expected result: tracking resolution records its attempt, creates one real
-issue, persists its repository-scoped number, then starts the Development
-leaf. A definite creation failure is reported before the edit starts. An
-uncertain outcome requires reconciliation, without an automatic second
-creation attempt.
+```bash
+amplihack multitask run mixed-workstreams.json --dry-run
+amplihack orch run mixed-workstreams.json
+```
 
-If tracking is unnecessary, omit it. Missing values, `null`, blanks and
-recognised placeholders are absent, and execution still proceeds. For complete
-input rules, see [optional issue parsing](../reference/dev-orchestrator-routing.md#optional-issue-parsing).
+The preview preserves both routes. The edit starts only after successful
+research, with the prerequisite result identified by `research-routing`.
+Failed, partial or cancelled research blocks the edit and reports why.
+Sequential execution preserves this dependency and both leaves.
 
-## Resume without repeating administrative actions
+## Supply or request tracking
 
-Continue with the saved normalised configuration and its execution identities.
-Completed leaves are skipped. Sequential execution retains the original leaves
-and routes.
+Set `issue` to `2553`, `"002553"`, `"#2553"`, or
+`"https://github.com/rysweet/amplihack-rs/issues/2553"` to attach that existing
+issue. All four forms normalise to the integer `2553`. Use an existing issue
+only when it actually tracks the work.
 
-When a run reports an uncertain external outcome:
+To require a new tracking issue, set `create_issue` to `true` and omit
+`issue`. The orchestrator acquires and saves a valid issue before executing
+the affected leaf. If `issue` is already present, it is reused. Merely
+omitting an issue never requests one.
 
-1. Stop the affected run and inspect its saved workstream UUID, repository,
-   revision and attempt UUID. Check the declared repository's issue or assignment
-   record against the saved request. Preserve evidence of what actually happened.
-2. Write a resolution file using the [reconciliation JSON contract](../reference/workstream-state.md#reconciliation-and-safe-resume).
-   Record `succeeded` only with verified matching output. Use `not_applied` and
-   `retry_authorized: true` only with proof that the action had no effect and an
-   explicit decision to retry. If evidence is inconclusive, record `unresolved`.
-3. Submit the resolution through the planned supported command. For a saved
-   `workstreams.json` and a resolution saved as `resolution.json`:
+A key allocated before acquisition remains unchanged after attachment.
+Preserve the saved plan and state when resuming; do not replace the key with
+the newly acquired issue number.
 
-   ```bash
-   amplihack multitask reconcile workstreams.json --resolution-file resolution.json
-   ```
+## Recover and inspect safely
 
-   Expected result: a receipt names the same workstream, repository, resolution
-   UUID, new revision and lifecycle. The command records state without launching
-   work. A stale revision, active child, invalid evidence or persistence failure
-   stops it without granting permission to replay.
-4. If resolved, resume the same configuration and original mode/options:
+For a resumable run, keep a separate stable temporary root for each plan.
+Use the same root on initial launch and resume; the canonical plan will be
+`$TMPDIR/amplihack-workstreams/state/canonical-plan.json`. Follow the
+[exact resume invocation and reconciliation procedure](../reference/workstream-state.md#resumption).
+That file is not generated by the current engine.
 
-   ```bash
-   amplihack multitask run workstreams.json
-   ```
+The current `status --base-dir` command can inspect an existing artefact base.
+Current recovery reruns the original, unchanged config with the same `TMPDIR`;
+it does not provide canonical-plan recovery or guarantee completed actions are
+skipped. See [current recovery limits](../reference/workstream-state.md#current-recovery-limits)
+before rerunning work with external effects.
 
-   Expected result: a resolved tracking issue is reused; a fully completed leaf
-   is skipped. For partially completed checklists, recorded successful actions
-   are reused and only remaining work proceeds. Explicitly authorised retries
-   get a new attempt UUID under the same workstream. `unresolved` stays blocked.
+The cleanup preview is:
 
-Do not delete state, edit persisted outcomes by hand, replace UUIDs or remove
-attempts to force replay. An empty issue search is not proof of non-creation.
-If ownership or external outcomes remain ambiguous, keep the barrier in place.
+```bash
+amplihack multitask cleanup operations-workstreams.json --dry-run
+```
+
+Current cleanup requires a merged PR for the configured branch, including
+issue-less work. PR-independent Operations cleanup is pending; an empty
+preview does not establish that Operations artefacts are eligible for removal.
+
+## Diagnose a rejected plan
+
+| Observation | Action |
+| --- | --- |
+| An Operations leaf selects a conflicting recipe | Operations always resolves to `operations-direct`; inspect the canonical plan and installed asset version |
+| A documentation edit runs as Operations | Give the edit its own Development leaf |
+| An issue value is rejected | Correct the named field or omit optional tracking; never invent a number |
+| Duplicate keys or dependency errors | Correct the complete plan before rerunning; validation has launched no work |
+| Explicit tracking acquisition fails | Resolve authentication or the service error; the affected leaf has not executed |
+| Saved ownership or process observation cannot be verified | Preserve the artefacts and resolve the reported conflict; a PID alone is insufficient |
 
 ## Related documentation
 
-- [Operations routing explained](../operations-routing.md)
-- [Routing and configuration reference](../reference/dev-orchestrator-routing.md)
-- [Verify routing behaviour](verify-dev-orchestrator-routing.md)
+- [Routing contract and configuration](../reference/dev-orchestrator-routing.md)
+- [Execution schema](../reference/orch-run-command.md#field-reference)
+- [Verify routing](verify-dev-orchestrator-routing.md)

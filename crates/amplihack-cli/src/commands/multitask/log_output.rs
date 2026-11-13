@@ -9,7 +9,7 @@ use std::thread;
 pub(super) fn spawn_log_output_thread(
     child: Arc<Mutex<Option<Child>>>,
     log_file: PathBuf,
-    issue: i64,
+    label: String,
 ) {
     let max_log_bytes: u64 = std::env::var("AMPLIHACK_MAX_LOG_BYTES")
         .ok()
@@ -22,7 +22,7 @@ pub(super) fn spawn_log_output_thread(
             && let Some(stdout) = child.stdout.take()
         {
             drop(child_guard);
-            tail_output(stdout, &log_file, issue, max_log_bytes);
+            tail_output(stdout, &log_file, &label, max_log_bytes);
         }
     });
 }

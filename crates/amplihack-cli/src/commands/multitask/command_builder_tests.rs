@@ -5,7 +5,7 @@ use super::command_builder::{
     CREATE_ISSUE_ENV, build_resume_context_with, classic_run_script, profile_exports,
     recipe_run_script, sh_single_quote,
 };
-use super::models::Workstream;
+use super::models::{Workstream, WorkstreamKey};
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::Path;
@@ -36,7 +36,8 @@ pub(super) fn no_env(_key: &str) -> Option<OsString> {
 
 pub(super) fn workstream(dir: &Path) -> Workstream {
     Workstream::new(
-        1567,
+        WorkstreamKey::new("1567").unwrap(),
+        Some(1567),
         "fix/1567".to_string(),
         "Pin profile".to_string(),
         "Keep the parent profile".to_string(),

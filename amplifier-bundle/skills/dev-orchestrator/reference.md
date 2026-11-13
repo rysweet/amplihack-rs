@@ -1,116 +1,274 @@
-# Dev orchestrator reference
+# Dev Orchestrator — Execution Reference
 
-The authoritative internal contracts are documented in
-[workstream state](../../../docs/reference/workstream-state.md) and
-[Operations routing](../../../docs/operations-routing.md).
+Extended reference for recipe runner execution modes, environment variables,
+error recovery, and enforcement details. The primary execution instructions
+are in [SKILL.md](./SKILL.md).
 
-## Decomposition
+#### Durable Execution (detached) — optional
 
-```json
-{
-  "task_type": "Operations",
-  "workstreams": [
-    {
-      "name": "research",
-      "classification": "Operations",
-      "description": "Answer the question set in chat.",
-      "depends_on": [],
-      "required_outputs": {"answer": "answer"}
-    },
-    {
-      "name": "docs",
-      "classification": "Development",
-      "description": "Commit the research answers to README.md.",
-      "depends_on": ["research"],
-      "required_outputs": {"delivery": "delivery"}
-    }
-  ]
-}
+Detach **only** when:
+
+- The agent runtime may kill background processes after a timeout (e.g., some
+  Claude Code hosted environments)
+- You need to survive SSH disconnects or terminal closures
+- You want to detach and monitor a long-running recipe interactively
+
+Once per machine, save the settings every run shares
+([User Configuration](../../../docs/reference/user-config.md)):
+
+```bash
+amplihack config set agent.binary claude     # the agent CLI you use
+amplihack config set recipe.verbose true
 ```
 
-Use one leaf per trusted repository for cross-repository edits. Omitted repository
-names use the current checkout. Explicit repository names must match the origins
-of the current checkout or roots in `AMPLIHACK_REPOSITORY_ROOTS`.
+Then, for each run, write the task to a file and start it detached:
 
-Classification precedence is `classification`, then `task_type`, then `type`.
-An invalid explicit value is an error. Legacy homogeneous plans may inherit the
-top-level classification. Mixed plans need explicit classifications on every
-leaf. Empty plans, duplicate keys or identities, invalid outputs, unknown or
-duplicate dependencies, self-edges and cycles are rejected before execution.
+```bash
+TASK_FILE=$(mktemp /tmp/task.XXXXXX.md)
+cat > "$TASK_FILE" <<'TASK'
+TASK_DESCRIPTION_HERE
+TASK
+amplihack recipe run smart-orchestrator --detach \
+  -w /path/to/repo \
+  --context-from-file task_description="$TASK_FILE" \
+  -c repo_path=.
+```
 
-## Normalised configuration
-
-`amplihack orch helper build-workstreams-config` reads decomposition JSON on
-stdin and atomically saves a private JSON configuration. Each leaf has an
-immutable UUID, key, repository, canonical classification, trusted recipe, task,
-resolved dependency UUIDs, required outputs and optional tracking. Operations
-has no generated branch. Unknown issues are omitted, never serialised as zero
-or a placeholder.
-
-`amplihack multitask run <CONFIG>` executes the saved leaves. Use
-`AMPLIHACK_MAX_PARALLEL_WORKSTREAMS=1` for sequential execution; zero retains the
-existing unlimited-capacity setting. Capacity is released by child completion,
-with stdout and stderr drained to EOF before result validation.
-
-## Administrative mutations
-
-`operations-direct` runs one agent. Issue creation and assignment use:
+It prints the tmux session and the log file, then returns:
 
 ```text
-amplihack multitask operation --context-file <CONTEXT> \
-  --output-name <DECLARED_OUTPUT> --request-file <PRIVATE_JSON>
+session: amp-smart-orchestrator-repo-20261020-101500
+log: /home/you/.amplihack/recipe-logs/amp-smart-orchestrator-repo-20261020-101500.log
 ```
 
-Requests have an action and typed arguments. Supported issue actions are
-`create_issue` with title/body and `assign` with issue/assignees. The adapter
-records an attempt before invoking `gh` with direct arguments. Successful
-receipts are reused; unknown outcomes require reconciliation. Other external
-systems need inspectable receipts and the same conservative interruption barrier.
+- `--detach` — amplihack creates the tmux session itself (named from
+  `recipe.tmux_session_pattern`, default `amp-{recipe}-{repo}-{ts}`) and a
+  private log (directory 0700, file 0600, under `recipe.log_dir`, default
+  `~/.amplihack/recipe-logs`). `amplihack config set recipe.detach tmux` makes
+  every `recipe run` detach; `--no-detach` overrides it for one run.
+- No hand-off prefix and no quoting: the agent CLI is resolved in your shell
+  before tmux starts, and handed to the run with every session marker of the
+  tmux server removed. With `agent.binary` set it is your configured CLI,
+  whatever started the tmux server.
+- `--context-from-file task_description=<file>` — the task text is read from
+  the file, so it needs no shell quoting at all.
+- Monitor with: `tail -f <log>` or `tmux attach -t <session>`
 
-## Explicit tracking
+**tmux in tests and sandboxes:** pass `-S <private socket>` (or use `env -u TMUX tmux -S <private socket>`) on every tmux command. When `$TMUX` is set, as it is inside any tmux pane, tmux uses that socket and ignores `TMUX_TMPDIR`, so `TMUX_TMPDIR=… tmux kill-server` kills the user's own server. Never run `kill-server` or `kill-session -a` without `-S`/`-L`; a PreToolUse hook denies them.
 
-Optional tracking is the default. Required tracking reuses a supplied positive
-number, a saved success or an explicit prerequisite binding. Without these,
-creation requires a non-blank title and body. Issue bodies pass literally through
-stdin. A CLI failure cannot establish that the service rejected the mutation;
-ambiguous outcomes remain visible without automatic retry.
+**Stopping a run**: `amplihack recipe stop <session>` ends the whole tree:
+`amplihack recipe run`, the recipe runner and every agent it started, and
+waits for it. Killing the session (`tmux kill-session`) sends `recipe run` the
+same stop, without the wait. For a run started in the foreground,
+`amplihack recipe stop <run_id>` takes the `run_id` from its
+`amplihack.recipe.log_pointer` line. A session name already taken by a live
+session or an earlier run's log moves on to the next free name (`-2`, `-3`,
+...), so a stale session or log never blocks the next run.
 
-A producer binding names a declared issue output and a dependency. The normaliser
-resolves its producer to a UUID and checks the repository. Administrative issue
-outputs never become downstream tracking implicitly.
+**The recipe runner is the required execution path for Development and
+Investigation tasks.** Always try `smart-orchestrator` first.
 
-## Resume and reconciliation
+### Development routing invariant
 
-Saved successes are validated and skipped. An interrupted Operations leaf is
-conservatively fenced until its external outcome is known. Use:
+Development classification routes to `default-workflow`, or to `quick-change` for a small change in a single workstream or when `-c workflow=quick-change` forces it; any recipe value the model gives a workstream is coerced to `default-workflow`.
 
-```text
-amplihack multitask reconcile <CONFIG> --resolution-file <RESOLUTION_JSON>
+The classifier selects `quick-change` only for a single workstream it judges small; `-c workflow=quick-change` or `-c workflow=default-workflow` forces either recipe. In a parallel decomposition every Development workstream runs `default-workflow` unless `-c workflow=` forces a recipe, so the workflow named in the run log is the one the workstreams run.
+
+Hybrid decompositions route each workstream by its own normalized classification.
+
+The invariant is enforced in the native orchestration helper when workstream configuration is materialized. This makes routing deterministic even when an agent omits `recipe`, emits an empty recipe, or incorrectly suggests another recipe for a Development workstream.
+
+### Operations routing invariant
+
+Operations classification routes to `operations-direct`. The same helper selects it, so a model-supplied `recipe` value cannot send an administrative workstream through a Development workflow, and a `-c workflow=` override does not apply to it.
+
+The helper replaces the model's recipe on a non-Development workstream when the field is missing, blank, `default-workflow`, or `quick-change`. Naming `default-workflow` on such a workstream is stating a default rather than making a choice. A deliberately named recipe that is none of those four values is preserved.
+
+`Ops`, `PM`, `Project Management` and `project-management` all normalize to `Operations`.
+
+Classify by the action required and the destination of its result:
+
+- Issue triage, issue creation and assignment, research answers destined for chat or an issue, status reporting and coordination are Operations.
+- Changing a tracked repository file is Development, including a documentation wording change.
+- Reading repository files as research material is not a repository edit.
+
+An Operations workstream gets no worktree, no branch and no pull request. The recipe prompt says so, but the enforcement is `ops-file-change-check` in `smart-execute-routing.yaml`, which opens no PR unless files actually changed.
+
+### Optional tracking issues
+
+A workstream may have no issue number. Omission, `null`, a blank value and the placeholders `TBD`, `TBC`, `TODO`, `N/A`, `none`, `null`, `unknown`, `unassigned` and `pending` all mean absence, compared after trimming and ignoring case. Absence is carried through as absence: the child context omits `issue_number`, and `AMPLIHACK_WORKSTREAM_ISSUE` is not exported.
+
+Never invent an issue number to fill a gap, and never stop a run because one is missing. A value that is neither a placeholder nor a valid issue reference is still an error worth surfacing.
+
+An issue is never created as a side effect of decomposition. Creating one is an explicit administrative task.
+
+**Required environment variables** for the recipe runner:
+
+- `AMPLIHACK_HOME` — Auto-detected from the current working directory by
+  walking parent directories for an `amplifier-bundle/` folder, with fallback
+  to `~/.amplihack`. If auto-detection fails, set manually to the directory
+  containing `amplifier-bundle/`.
+- Preserve `AMPLIHACK_AGENT_BINARY` — nested workflow agents read this env var
+  to stay on the caller's active binary (for example, Copilot in Copilot CLI).
+- Leave `CLAUDECODE` alone — `amplihack recipe run` removes it from the recipe
+  runner's environment so nested Claude Code sessions can launch, but only
+  after reading it (with the other session markers) to pick the agent CLI and
+  export `AMPLIHACK_AGENT_BINARY` to every step. Unsetting it yourself can leave
+  nothing that says which CLI you are in, and the steps then fall back to the
+  `copilot` default (#1481). When that happens recipe run says so on stderr.
+
+**Fallback: Direct recipe invocation when smart-orchestrator fails.**
+
+Always try `smart-orchestrator` first — it handles classification, decomposition,
+and routing automatically. However, if `smart-orchestrator` fails at the
+**infrastructure level** (e.g., 0 workstreams from decomposition, missing env
+vars, Rust binary version mismatch), you MAY invoke the specific workflow
+recipe directly based on your classification:
+
+| Classification | Direct Recipe            | When to Use                             |
+| -------------- | ------------------------ | --------------------------------------- |
+| Investigation  | `investigation-workflow` | smart-orchestrator decomposition failed |
+| Development    | `default-workflow`       | smart-orchestrator decomposition failed |
+| Q&A (complex)  | `qa-workflow`            | Q&A needing multi-step research         |
+| Consensus      | `consensus-workflow`     | Critical decisions needing validation   |
+| Operations     | `operations-direct`      | A dispatched administrative workstream  |
+
+Example:
+
+```bash
+amplihack recipe run amplifier-bundle/recipes/investigation-workflow.yaml \
+  -c task_description="TASK_DESCRIPTION_HERE" \
+  -c repo_path="."
 ```
 
-The command takes the dispatcher lock and records a revision-bound decision
-without launching children or mutating GitHub. Decisions use a unique resolution
-UUID, workstream UUID, repository, current revision, inspectable evidence and a
-reason. Attempt decisions also identify the saved attempt. An identical repeated
-decision returns its saved receipt; conflicting payloads and stale revisions fail.
-Unknown outcomes retain the barrier. `not_applied` requires explicit retry
-authorisation before another attempt can run.
+This is NOT a license to bypass `smart-orchestrator`. Only use direct
+invocation after `smart-orchestrator` has failed at an infrastructure level
+(not because the task seems "too simple" or "too specific").
 
-Legacy issue-keyed state is adopted only after repository, directory and actual
-branch ownership checks. Recorded working, state, log and progress paths remain
-in place. Ambiguous adoption is rejected rather than guessed from an issue
-number or UUID alone.
+**Handling hollow success** (recipe completes but agents produce no findings):
 
-## Delivery and validation
+If a recipe returns SUCCESS but the agent outputs indicate the agents could
+not access the codebase or produced empty/generic results (e.g., "no codebase
+exists", "cannot proceed without a target"), this is a **hollow success**.
+In this case:
 
-Operations requires its declared answer, issue or mutation outputs with evidence.
-Development retains its selected workflow and delivery gates; the completion
-adapter verifies the delivered Git head against the PR. A legitimate no-change
-result needs terminal adjudication evidence. The supported quick-change hand-over
-records `default-workflow` as the effective route. Investigation and Q&A retain
-their reports, and Consensus retains its delivery path.
+1. Check that `repo_path` and `AMPLIHACK_HOME` are correct
+2. Verify the working directory is the repo root
+3. Retry with explicit file paths in the `task_description`
+4. If retries also produce hollow results, report the infrastructure
+   failure to the user with specifics
 
-All state and result writes are atomic. A failed durable write stops dispatch
-before dependants can launch. Cleanup checks identity plus repository, path,
-branch and process-start evidence; Operations cleanup never removes its working
-repository. Runtime budgets no longer drive polling or wall-clock interruption.
+**Common rationalizations that are NOT acceptable:**
+
+- "Let me first understand the codebase" — the recipe does that in Step 0
+- "I'll follow the workflow steps manually" — NO, the recipe enforces them
+- "The recipe runner might not work" — try it first, report errors if it fails
+- "This is a simple task" — simple or complex, the recipe runner handles both
+- "The recipe succeeded but didn't do anything useful, so I'll do it myself"
+  — this is hollow success; retry with better context first
+
+**Q&A and Operations only** may bypass the recipe runner:
+
+- Q&A: Respond directly (analyzer agent)
+- Operations: Builder agent (direct execution, no workflow steps). A whole prompt
+  classified Operations launches no recipe at all; a decomposed Operations
+  workstream runs `operations-direct`.
+
+### Error Recovery: Adaptive Strategy (NOT Degradation)
+
+When `smart-orchestrator` fails, **failures must be visible and surfaced** —
+never swallowed or silently degraded. The recipe handles error recovery
+automatically via its built-in adaptive strategy steps, but if you observe
+a failure outside the recipe, follow this protocol:
+
+**1. Surface the error with full context:**
+
+Report the exact error, the step that failed, and the log output. Never say
+"something went wrong" — always include the specific failure details.
+
+**2. File a bug with reproduction details:**
+
+For infrastructure failures (import errors, missing env vars, binary not found,
+decomposition producing invalid output), file a GitHub issue:
+
+```bash
+gh issue create \
+  --title "smart-orchestrator infrastructure failure: <one-line summary>" \
+  --body "<full error context, reproduction command, env details>" \
+  --label "bug"
+```
+
+**3. Evaluate alternative strategies:**
+
+If `smart-orchestrator` fails at the infrastructure level (not because the task
+is wrong), you MAY invoke the specific workflow recipe directly. This is an
+**adaptive strategy** — it must be announced explicitly, not done silently:
+
+| Classification | Direct Recipe            | When Permitted                                      |
+| -------------- | ------------------------ | --------------------------------------------------- |
+| Investigation  | `investigation-workflow` | smart-orchestrator failed at parse/decompose/launch |
+| Development    | `default-workflow`       | smart-orchestrator failed at parse/decompose/launch |
+
+Example:
+
+```bash
+# ANNOUNCE the strategy change first — never do this silently
+echo "[ADAPTIVE] smart-orchestrator failed at parse-decomposition: <error>"
+echo "[ADAPTIVE] Switching to direct investigation-workflow invocation"
+amplihack recipe run amplifier-bundle/recipes/investigation-workflow.yaml \
+  -c task_description="TASK_DESCRIPTION_HERE" \
+  -c repo_path="."
+```
+
+**This is NOT a license to bypass smart-orchestrator.** Always try it first.
+Direct invocation is only permitted when smart-orchestrator fails at the
+infrastructure level. "The task seems simple" is NOT an infrastructure failure.
+
+**4. Detect hollow success:**
+
+A recipe can complete structurally (all steps exit 0) but produce empty or
+meaningless results — agents reporting "no codebase found" or reflection
+marking ACHIEVED when no work was done. After execution, check that:
+
+- Round results contain actual findings or code changes (not "I could not access...")
+- PR URLs or concrete outputs are present for Development tasks
+- At least one success criterion was verifiably evaluated
+
+If results are hollow, report this to the user with the specific empty outputs.
+Do not declare success when agents produced no meaningful work.
+
+### Required Environment Variables
+
+The recipe runner requires these environment variables to function:
+
+| Variable                   | Purpose                                           | Default         |
+| -------------------------- | ------------------------------------------------- | --------------- |
+| `AMPLIHACK_HOME`           | Root of amplihack installation (for asset lookup) | Auto-detected   |
+| `AMPLIHACK_AGENT_BINARY`   | Which agent binary to use (claude, copilot, etc.) | Set by launcher |
+| `AMPLIHACK_MAX_DEPTH`      | Max recursion depth for nested sessions           | `3`             |
+| `AMPLIHACK_NONINTERACTIVE` | Set to `1` to skip interactive prompts            | Unset           |
+
+If `AMPLIHACK_HOME` is not set and auto-detection fails, `parse-decomposition`
+and `activate-workflow` will fail with asset lookup errors. Set it to
+the directory containing `amplifier-bundle/`.
+
+### After Execution: Reflect and verify
+
+After execution completes, verify the goal was achieved. If not:
+
+- For missing information: ask the user
+- For fixable gaps: re-invoke with the remaining work description
+- For infrastructure failures: file a bug and try adaptive strategy
+
+### Enforcement: PostToolUse Workflow Guard
+
+A PostToolUse hook (`amplihack-hooks`) actively monitors every
+tool call after this skill is invoked. It tracks:
+
+- Whether `/dev` or `dev-orchestrator` was called (sets a flag)
+- Whether the recipe runner was actually executed (clears the flag)
+- How many tool calls have passed without workflow evidence
+
+If 3+ tool calls pass without evidence of recipe runner execution, the hook
+emits a hard WARNING. This is not a suggestion — it means you are violating
+the mandatory workflow. State is stored in `/tmp/amplihack-workflow-state/`.

@@ -1,267 +1,244 @@
-//! Decomposition/configuration contracts through the production Rust builder.
+//! Issue #2553, fault 2 — the plan a decomposition hands to the orchestrator
+//! must never carry a fabricated issue number.
+//!
+//! `build_workstreams_config_*` minted `issue: "TBD"` on every entry, which
+//! `WorkstreamConfig::issue_id()` read back as `0`, which tripped the
+//! `Invalid issue number` bail in `orchestrator.rs`. Absence is now written as
+//! absence: no placeholder string, no zero, no field.
 
-use crate::issue_2553_fixture::{FIRST, Fixture, SECOND, describe, leaf, plan};
+use amplihack_cli::commands::orch::build_workstreams_config_to_tempfile;
 use serde_json::{Value, json};
 
+fn config_for(decomp: &Value) -> Value {
+    let path = build_workstreams_config_to_tempfile(&decomp.to_string())
+        .expect("the helper writes a workstreams-config");
+    let body = std::fs::read_to_string(&path).expect("the config is readable");
+    std::fs::remove_file(&path).ok();
+    serde_json::from_str(&body).expect("the config is JSON")
+}
+
+fn entries(config: &Value) -> &Vec<Value> {
+    config.as_array().expect("the config is an array")
+}
+
 #[test]
-fn absent_issue_forms_are_omitted_from_canonical_configuration() {
-    let f = Fixture::new();
-    let mut forms = vec![Value::Null, json!(""), json!(" \t\n ")];
-    for placeholder in [
-        "TBD",
-        "TBC",
-        "TODO",
-        "N/A",
-        "none",
-        "null",
-        "unknown",
-        "unassigned",
-        "pending",
+fn normalisation_preserves_leaf_identity_task_destination_dependencies_and_tracking_intent() {
+    let config = config_for(&json!({"task_type": "Operations", "workstreams": [
+        {"key": "research", "name": "Research", "description": "Answers for the status issue",
+         "task": "Research the routing question and report in chat.", "classification": "Operations",
+         "dependencies": [], "create_issue": true},
+        {"key": "docs", "name": "Docs", "description": "Commit the agreed wording",
+         "task": "Edit docs/routing.md with the research answers.", "classification": "Development",
+         "dependencies": ["research"], "create_issue": false}
+    ]}));
+    let leaves = entries(&config);
+    assert_eq!(leaves.len(), 2);
+    assert_eq!(leaves[0]["key"], "research");
+    assert_eq!(
+        leaves[0]["task"],
+        "Research the routing question and report in chat."
+    );
+    assert_eq!(leaves[0]["description"], "Answers for the status issue");
+    assert_eq!(leaves[0]["classification"], "Operations");
+    assert_eq!(leaves[0]["create_issue"], true);
+    assert_eq!(leaves[1]["dependencies"], json!(["research"]));
+    assert_eq!(leaves[1]["classification"], "Development");
+    assert_eq!(leaves[1]["create_issue"], false);
+}
+
+#[test]
+fn an_operations_label_cannot_hide_an_explicit_repository_edit_in_the_executable_task() {
+    let config = config_for(&json!({"task_type": "Operations", "workstreams": [
+        {"key": "edit", "name": "Coordinate the wording sweep", "description": "Project coordination",
+         "task": "Correct the wording in tracked docs/routing.md and commit it.",
+         "classification": "Operations", "recipe": "operations-direct"}
+    ]}));
+    assert_eq!(entries(&config)[0]["recipe"], "default-workflow");
+    assert_eq!(entries(&config)[0]["classification"], "Development");
+}
+
+#[test]
+fn invalid_plan_diagnostics_aggregate_independent_errors_with_keys_and_field_paths() {
+    let error = build_workstreams_config_to_tempfile(&json!({"task_type": "Operations", "workstreams": [
+        {"key": "empty-task", "name": "Empty", "task": "  ", "description": "  "},
+        {"key": "bad-issue", "name": "Bad issue", "task": "Report status", "issue": 0},
+        {"key": "missing-parent", "name": "Missing", "task": "Report status", "dependencies": ["absent"]}
+    ]}).to_string()).expect_err("validate the whole plan before publishing it");
+    let diagnostic = format!("{error:#}");
+    for expected in [
+        "empty-task",
+        "task",
+        "bad-issue",
+        "issue",
+        "missing-parent",
+        "dependencies",
     ] {
-        forms.extend([
-            json!(placeholder),
-            json!(format!(" \t{}\n", placeholder.to_ascii_lowercase())),
-            json!(placeholder.to_ascii_uppercase()),
-        ]);
-    }
-    let mut leaves = vec![leaf("omitted", "Operations", "Report status in chat.")];
-    for (i, value) in forms.into_iter().enumerate() {
-        let mut item = leaf(
-            &format!("absent-{i}"),
-            "Operations",
-            "Report status in chat.",
-        );
-        item["issue"] = value;
-        leaves.push(item);
-    }
-    let config = f.normalise(&plan(leaves));
-    for item in config.as_array().unwrap() {
         assert!(
-            item.get("issue").is_none(),
-            "absence must remain absent: {item:#}"
+            diagnostic.contains(expected),
+            "missing {expected:?} in {diagnostic}"
         );
     }
 }
 
 #[test]
-fn positive_issue_boundaries_and_trimmed_decimal_strings_are_preserved() {
-    let f = Fixture::new();
-    let forms = [
-        (json!(1), 1),
-        (json!(2553), 2553),
-        (json!(u64::MAX), u64::MAX),
-        (json!(" 002553 "), 2553),
-        (json!(u64::MAX.to_string()), u64::MAX),
-    ];
-    for (value, expected) in forms {
-        let mut item = leaf("tracked", "Operations", "Report status in chat.");
-        item["issue"] = value.clone();
-        let config = f.normalise(&plan(vec![item]));
-        assert_eq!(config[0]["issue"].as_u64(), Some(expected), "input={value}");
+fn empty_or_malformed_decompositions_are_errors_instead_of_successful_empty_plans() {
+    for input in [
+        "not JSON",
+        "{}",
+        r#"{"workstreams":null}"#,
+        r#"{"workstreams":[]}"#,
+        r#"{"workstreams":[false]}"#,
+    ] {
+        let result = build_workstreams_config_to_tempfile(input);
+        if let Ok(path) = &result {
+            std::fs::remove_file(path).unwrap();
+        }
+        assert!(result.is_err(), "invalid decomposition accepted: {input}");
     }
 }
 
+/// A decomposition does not know issue numbers; nothing downstream may be
+/// told that it does. The field is omitted, not set to a placeholder, so that
+/// a consumer testing for presence cannot be fooled.
 #[test]
-fn malformed_issues_are_errors_with_leaf_and_field_diagnostics() {
-    let f = Fixture::new();
-    for value in [
-        json!(0),
-        json!(-1),
-        json!(1.5),
-        json!(true),
-        json!([]),
-        json!({}),
-        json!("+1"),
-        json!("-1"),
-        json!("1.0"),
-        json!("1e3"),
+fn a_decomposition_without_issues_writes_no_issue_field_at_all() {
+    let config = config_for(&json!({
+        "task_type": "Development",
+        "workstreams": [
+            {"name": "API service", "description": "Implement the REST API"},
+            {"name": "Web UI", "description": "Build the React UI"}
+        ]
+    }));
+
+    for entry in entries(&config) {
+        assert!(
+            entry.get("issue").is_none(),
+            "an absent issue is an absent field, not a placeholder: {entry:#}"
+        );
+    }
+    assert!(
+        !config.to_string().contains("TBD"),
+        "no placeholder string reaches the plan: {config:#}"
+    );
+}
+
+/// The entry still carries everything the orchestrator needs to name and run
+/// the workstream without an issue number.
+#[test]
+fn an_issue_less_entry_still_carries_its_identity_fields() {
+    let config = config_for(&json!({
+        "task_type": "Development",
+        "workstreams": [{"name": "API service", "description": "Implement the REST API"}]
+    }));
+    let entry = &entries(&config)[0];
+
+    assert_eq!(entry["description"], "API service");
+    assert_eq!(entry["task"], "Implement the REST API");
+    assert_eq!(entry["recipe"], "default-workflow");
+    assert_eq!(entry["branch"], "feat/orch-1-api-service");
+}
+
+/// When the model does supply an issue, every accepted form is normalised to
+/// the canonical integer at the point the plan is written, so no downstream
+/// consumer has to re-parse `#N` or a URL.
+#[test]
+fn a_supplied_issue_is_normalised_to_the_canonical_integer() {
+    for supplied in [
+        json!(2553),
+        json!("2553"),
+        json!("002553"),
         json!("#2553"),
-        json!("https://github.com/example/operations/issues/2553"),
-        json!("18446744073709551616"),
-        json!("１２"),
-        json!("25 53"),
-        json!("not assigned yet"),
+        json!("https://github.com/rysweet/amplihack-rs/issues/2553"),
     ] {
-        let mut item = leaf("bad-tracking", "Operations", "Report status in chat.");
-        item["issue"] = value.clone();
-        let out = f.normalise_output(&plan(vec![item]), "");
-        assert!(
-            !out.status.success(),
-            "invalid {value} accepted: {}",
-            describe(&out)
-        );
-        let error = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            error.contains("bad-tracking") && error.contains("issue"),
-            "{error}"
-        );
+        let config = config_for(&json!({
+            "task_type": "Development",
+            "workstreams": [{"name": "x", "description": "Do the thing", "issue": supplied}]
+        }));
+        assert_eq!(entries(&config)[0]["issue"], json!(2553), "{supplied}");
     }
 }
 
+/// Every placeholder the field has been seen to carry reads as absence, not
+/// as an error and not as zero.
 #[test]
-fn independent_ids_are_uuid_strings_preserved_when_tracking_is_added() {
-    let f = Fixture::new();
-    let mut a = leaf("a", "Operations", "Report status in chat.");
-    let mut b = leaf("b", "Operations", "Report status in chat.");
-    a["workstream_id"] = json!(FIRST);
-    b["workstream_id"] = json!(SECOND);
-    let before = f.normalise(&plan(vec![a.clone(), b.clone()]));
-    a["issue"] = json!(2553);
-    b["issue"] = json!(2553);
-    let after = f.normalise(&plan(vec![a, b]));
-    for (i, id) in [FIRST, SECOND].into_iter().enumerate() {
-        assert_eq!(before[i]["workstream_id"], id);
-        assert_eq!(after[i]["workstream_id"], id);
-        uuid::Uuid::parse_str(after[i]["workstream_id"].as_str().unwrap()).unwrap();
-    }
-}
-
-#[test]
-fn new_issue_less_leaves_receive_distinct_non_nil_uuids() {
-    let f = Fixture::new();
-    let config = f.normalise(&plan(vec![
-        leaf("a", "Operations", "Report status in chat."),
-        leaf("b", "Operations", "Answer the questions in chat."),
-    ]));
-    let ids: Vec<_> = config
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|entry| {
-            let id = uuid::Uuid::parse_str(entry["workstream_id"].as_str().expect("UUID field"))
-                .unwrap();
-            assert!(!id.is_nil());
-            id
-        })
-        .collect();
-    assert_ne!(ids[0], ids[1]);
-}
-
-#[test]
-fn dependencies_resolve_keys_to_persisted_execution_identities() {
-    let f = Fixture::new();
-    let mut producer = leaf("research", "Operations", "Answer questions in chat.");
-    let mut consumer = leaf(
-        "report",
-        "Operations",
-        "Report the research result in chat.",
-    );
-    producer["workstream_id"] = json!(FIRST);
-    consumer["workstream_id"] = json!(SECOND);
-    consumer["depends_on"] = json!(["research"]);
-    let config = f.normalise(&plan(vec![consumer, producer]));
-    assert_eq!(config[0]["depends_on"], json!([FIRST]), "{config:#}");
-    assert_eq!(config[1]["depends_on"], json!([]));
-}
-
-#[test]
-fn invalid_complete_plans_are_rejected_before_any_external_action() {
-    let f = Fixture::new();
-    let a = leaf("a", "Operations", "Report status in chat.");
-    let b = leaf("b", "Operations", "Answer questions in chat.");
-    let mut cases = vec![];
-    let mut bad = b.clone();
-    bad["name"] = json!("a");
-    cases.push(plan(vec![a.clone(), bad]));
-    for dependencies in [json!(["missing"]), json!(["b"]), json!(["a", "a"])] {
-        let mut bad = b.clone();
-        bad["depends_on"] = dependencies;
-        cases.push(plan(vec![a.clone(), bad]));
-    }
-    let mut cyclic_a = a.clone();
-    cyclic_a["depends_on"] = json!(["b"]);
-    let mut cyclic_b = b.clone();
-    cyclic_b["depends_on"] = json!(["a"]);
-    cases.push(plan(vec![cyclic_a, cyclic_b]));
-    for (field, value) in [
-        ("description", json!(" \n")),
-        ("name", json!("")),
-        ("workstream_id", json!("../escape")),
-        ("repository", json!("example/unauthorised")),
-        ("classification", json!("invented-route")),
-        ("classification", json!(null)),
-        ("required_outputs", json!({"answer": "unknown-kind"})),
+fn every_placeholder_form_is_written_back_as_absence() {
+    for supplied in [
+        Value::Null,
+        json!(""),
+        json!("   "),
+        json!("TBD"),
+        json!(" tbd "),
+        json!("TBC"),
+        json!("todo"),
+        json!("N/A"),
+        json!("none"),
+        json!("null"),
+        json!("Unknown"),
+        json!("unassigned"),
+        json!("pending"),
     ] {
-        let mut bad = b.clone();
-        bad[field] = value;
-        cases.push(plan(vec![a.clone(), bad]));
-    }
-    let mut duplicate_a = a.clone();
-    duplicate_a["workstream_id"] = json!(FIRST);
-    let mut duplicate_b = b;
-    duplicate_b["workstream_id"] = json!(FIRST);
-    cases.push(plan(vec![duplicate_a, duplicate_b]));
-    cases.extend([
-        json!({}),
-        json!({"workstreams": []}),
-        json!({"workstreams": "invalid"}),
-    ]);
-    for input in cases {
-        let out = f.normalise_output(&input, "");
+        let config = config_for(&json!({
+            "task_type": "Development",
+            "workstreams": [{"name": "x", "description": "Do the thing", "issue": supplied}]
+        }));
         assert!(
-            !out.status.success(),
-            "accepted {input:#}: {}",
-            describe(&out)
-        );
-        assert!(
-            out.stdout.is_empty(),
-            "no usable prefix or config path on failure"
-        );
-        assert!(
-            f.events().is_empty(),
-            "normalisation performs no external actions"
+            entries(&config)[0].get("issue").is_none(),
+            "{supplied} must read as absence"
         );
     }
 }
 
+/// Widening the absent set must not widen the present set. A value that is
+/// neither a placeholder nor a well-formed issue is a producer mistake and
+/// stays a failure, with a diagnostic that names the offending value.
 #[test]
-fn explicit_invalid_classification_cannot_fall_through_to_valid_lower_priority_field() {
-    let f = Fixture::new();
-    let mut item = leaf("bad", "unrecognised", "Report status in chat.");
-    item["task_type"] = json!("Operations");
-    item["type"] = json!("Operations");
-    let out = f.normalise_output(&plan(vec![item]), "");
-    assert!(!out.status.success(), "{}", describe(&out));
+fn a_malformed_issue_is_a_diagnostic_failure_not_a_silent_absence() {
+    for supplied in [
+        json!("abc123"),
+        json!("12x"),
+        json!(-5),
+        json!(0),
+        json!("0"),
+        json!(2.5),
+        json!(true),
+        json!([2553]),
+        json!("https://attacker.example/rysweet/amplihack-rs/issues/1"),
+        json!("https://github.com/rysweet/amplihack-rs/pull/2553"),
+    ] {
+        let decomp = json!({
+            "task_type": "Development",
+            "workstreams": [{"name": "x", "description": "Do the thing", "issue": supplied}]
+        });
+        let err = build_workstreams_config_to_tempfile(&decomp.to_string())
+            .expect_err(&format!("{supplied} must not produce a plan"));
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("issue"),
+            "the diagnostic must name the field: {text}"
+        );
+    }
 }
 
+/// `u64::MAX` is not a realistic issue number, but the type that carries it
+/// is the point: the old path read the field through `i64`, so a value above
+/// `i64::MAX` truncated to a negative number and then to zero.
 #[test]
-fn classification_precedence_and_legacy_homogeneous_fallback_are_retained() {
-    let f = Fixture::new();
-    let mut item = leaf("precedence", "Operations", "Report status in chat.");
-    item["task_type"] = json!("Development");
-    item["type"] = json!("Investigation");
-    assert_eq!(
-        f.normalise(&plan(vec![item.clone()]))[0]["classification"],
-        "Operations"
-    );
-    item.as_object_mut().unwrap().remove("classification");
-    item["task_type"] = json!("Operations");
-    assert_eq!(
-        f.normalise(&plan(vec![item.clone()]))[0]["classification"],
-        "Operations"
-    );
-    item.as_object_mut().unwrap().remove("task_type");
-    item["type"] = json!("Operations");
-    assert_eq!(
-        f.normalise(&plan(vec![item.clone()]))[0]["classification"],
-        "Operations"
-    );
-    item.as_object_mut().unwrap().remove("type");
-    assert_eq!(
-        f.normalise(&plan(vec![item]))[0]["classification"],
-        "Operations"
-    );
+fn the_largest_representable_issue_survives_without_signed_truncation() {
+    let config = config_for(&json!({
+        "task_type": "Development",
+        "workstreams": [{"name": "x", "description": "Do the thing", "issue": u64::MAX}]
+    }));
+    assert_eq!(entries(&config)[0]["issue"], json!(u64::MAX));
 }
 
+/// Issue #1966's `is_critical_code` pass-through is untouched by the issue
+/// change; it shares the entry builder.
 #[test]
-fn mixed_plans_require_explicit_leaf_classifications() {
-    let f = Fixture::new();
-    let mut item = leaf("unspecified", "Operations", "Report status in chat.");
-    item.as_object_mut().unwrap().remove("classification");
-    let input = plan(vec![
-        item,
-        leaf("docs", "Development", "Update README.md in the repository."),
-    ]);
-    let out = f.normalise_output(&input, "");
-    assert!(!out.status.success(), "{}", describe(&out));
+fn criticality_still_passes_through_an_issue_less_entry() {
+    let config = config_for(&json!({
+        "task_type": "Development",
+        "workstreams": [{"name": "x", "description": "Do the thing", "is_critical_code": true}]
+    }));
+    assert_eq!(entries(&config)[0]["is_critical_code"], json!("true"));
+    assert!(entries(&config)[0].get("issue").is_none());
 }

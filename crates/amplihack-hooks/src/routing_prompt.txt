@@ -1,50 +1,68 @@
 <system-reminder source="auto-intent-router">
-Classify the requested action and its destination before responding.
+Before responding, classify this prompt using parallel signal evaluation:
 
-1. Respect explicit instructions to bypass a workflow.
-2. Actual changes to tracked repository files, including documentation wording,
-   are Development. Route their implementation through dev-orchestrator.
-3. Operations is the canonical class for operations and project management.
-   Accept Ops, PM, project management and project-management as equivalent labels.
-   Triage, issue creation and assignment, research answers in chat or issues,
-   status reporting and coordination use direct execution or one agent with a
-   checklist. They do not start default-workflow, create a worktree or create an
-   implementation PR. Complexity and requirement counts do not change this rule.
-4. Mixed requests have separate Operations and Development leaves. Only the
-   repository-editing leaves use Development workflows. Preserve dependencies;
-   execute each leaf once. Never execute the entire mixed request again as Ops.
-5. Investigation of existing code retains investigation-workflow. Questions
-   that only need an answer can be answered directly.
+```mermaid
+flowchart TD
+    MSG[User Message] --> BYPASS{"Bypass?<br/>'just answer' / 'skip workflow'"}
+    BYPASS -->|yes| SKIP[SKIP: respect bypass]
 
-Generic verbs such as write, create and update do not prove repository editing.
-Mentioning source paths, tests, coverage or an existing PR does not request edits.
+    MSG --> EVAL{Detect all signals}
+    EVAL --> S1["UNDERSTAND<br/>explain, how does, why,<br/>analyze, research, explore"]
+    EVAL --> S2["IMPLEMENT<br/>build, fix, add, create,<br/>refactor, update, write"]
+    EVAL --> S3["FILE_EDIT<br/>any code/doc file will be<br/>created / modified / deleted"]
+    EVAL --> S4["SHELL_ONLY<br/>run tests, git status,<br/>check logs, show disk"]
+    EVAL --> S5["QUESTION<br/>what is, how do I,<br/>explain, compare"]
 
-Calibration examples:
-- "triage these issues" → Operations.
-- "open an issue for X and assign Y" → Operations.
-- "create an issue about src/router.rs" → Operations.
-- "write up the answers to these questions in chat" → Operations.
-- "research the question set and answer in an issue" → Operations.
-- "report lane status" or "coordinate review of PR 12" → Operations.
-- "rename term X across docs of repos A and B" → Development in each edited repo.
-- "remove a programme name from code/docs, research questions, open a cross-check
-  issue for a colleague" → Development edits plus Operations research and issue
-  creation. The cross-check leaf depends on the relevant results.
-- "run tests and fix failures" → Operations test run plus Development fixes.
-- "update README" or "fix a typo in tracked documentation" → Development.
-- "what is OAuth?" → Q&A. "why is CI failing?" → Investigation.
-- "CI passed on PR 12" or a PR hand-over → acknowledgement; no new workflow.
-- "PR 134 is merged, retry the install" → Operations.
+    EVAL --> RESOLVE{Resolve by priority}
+    RESOLVE -->|"UNDERSTAND + IMPLEMENT"| HYBRID[HYBRID → dev-orchestrator]
+    RESOLVE -->|"SHELL_ONLY + IMPLEMENT"| HYBRID
+    RESOLVE -->|"FILE_EDIT or IMPLEMENT alone"| DEV[DEV → dev-orchestrator]
+    RESOLVE -->|"UNDERSTAND alone"| INVESTIGATE[INVESTIGATE → dev-orchestrator]
+    RESOLVE -->|"SHELL_ONLY alone"| OPS[OPS: execute directly]
+    RESOLVE -->|"QUESTION alone"| QA[Q&A: answer directly]
+```
+
+Resolution rules — detect all signals, then apply the FIRST matching rule:
+1. BYPASS → SKIP
+2. UNDERSTAND + IMPLEMENT both present → **HYBRID** (even if FILE_EDIT also present)
+3. SHELL_ONLY + IMPLEMENT both present → **HYBRID** (run command then fix)
+4. FILE_EDIT or IMPLEMENT present (no UNDERSTAND) → **DEV**
+5. UNDERSTAND present (no IMPLEMENT) → **INVESTIGATE**
+6. SHELL_ONLY present (no FILE_EDIT) → **OPS**. Administrative work — triage, creating or assigning issues, reporting status, coordinating, and writing up answers for a person rather than into a tracked file — is also **OPS**: these are neither IMPLEMENT nor UNDERSTAND signals, so rules 2 to 5 do not claim them.
+7. QUESTION present (no FILE_EDIT) → **Q&A**
+8. Ambiguous → **DEV** (safe default). A one-line status question, result report, acknowledgement or PR hand-over is not ambiguous: classify it as **Q&A**, or **OPS** when it asks for one direct action such as retrying a command.
+
+Calibration examples (use these to resolve edge cases):
+  "run tests and fix failures" = HYBRID (SHELL_ONLY + IMPLEMENT → both phases)
+  "investigate X then fix Y" = HYBRID
+  "what does this error mean and how do I fix it" = HYBRID (UNDERSTAND + IMPLEMENT)
+  "change the default model" = DEV. "update README" = DEV. "fix a typo" = DEV.
+  "review this PR" = DEV. "make sure it works" = DEV. "write docs" = DEV.
+  "run tests" = OPS. "git status" = OPS.
+  "what is OAuth?" = Q&A. "how does X work?" = Q&A (no fix requested).
+  "what's broken?" = INVESTIGATE. "why is CI failing?" = INVESTIGATE.
+  "research rate limiting then implement it" = HYBRID.
+  "analyze deps and remove circular imports" = HYBRID (UNDERSTAND + IMPLEMENT).
+  "report your lane status" = Q&A. "what's your status?" = Q&A.
+  "CI passed on PR 12" = Q&A.
+  "handing PR 57 over to you" = Q&A (acknowledge, no workflow).
+  "PR 134 is merged, retry the install" = OPS.
+  "build #1740" = DEV. A leading [coord] marker does not change the classification.
+  "triage these issues" = OPS. "open an issue for X and assign Y" = OPS.
+  "research these issues and write up the answers" = OPS (answer directly, no workflow).
+  "rename the config key across crates/" = DEV.
 
 Actions:
-Development and Investigation: announce the classification and invoke
-Skill(skill="dev-orchestrator"). Mixed work: ask dev-orchestrator to dispatch the
-separate classified leaves with dependencies. Operations: execute directly or
-use one scoped agent. Q&A: answer directly.
+  DEV → Say "[auto-routed] DEV → launching dev-orchestrator" then Invoke Skill(skill="dev-orchestrator"). Do not answer inline.
+  INVESTIGATE → Say "[auto-routed] INVESTIGATE → launching dev-orchestrator" then Invoke Skill(skill="dev-orchestrator"). Do not answer inline.
+  HYBRID → Say "[auto-routed] HYBRID → launching dev-orchestrator" then Invoke Skill(skill="dev-orchestrator"). Do not answer inline.
+  Q&A → Answer directly. No workflow needed.
+  OPS → Execute directly. No workflow needed.
+  SKIP → Respect the bypass.
 
-Development uses default-workflow, or quick-change when selected by its trusted
-workflow override. Model-supplied recipe names cannot change Operations routing.
-Tracking issues are optional. Omission, null, blank and recognised placeholders
-(including TBD) mean absence. If new tracking is explicitly required, create the
-real issue before passing its number downstream. Never invent an issue number.
+Downstream invariant: Development classification routes to `default-workflow`, or to `quick-change` for a small change in a single workstream or when `-c workflow=quick-change` forces it; any recipe value the model gives a workstream is coerced to `default-workflow`.
+
+OPS work runs directly, or as one scoped agent when it is part of a larger decomposition: no worktree, no branch and no pull request. Open a tracking issue only when the request asks for one.
+
+When in doubt, choose DEV. False positive costs minutes. False negative costs quality.
 </system-reminder>

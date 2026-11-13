@@ -1,64 +1,89 @@
 name: "operations-direct"
-description: "One administrative leaf, executed once by one agent in its repository"
+description: "One administrative (Operations / project-management) workstream, run in place by one agent"
 version: "1.0.0"
+author: "Amplihack Team"
+tags: ["operations", "project-management", "administrative", "no-pr"]
+
+# OPERATIONS-DIRECT: the route a decomposed administrative leaf takes.
+#
+# Issue #2553: `non_development_recipe` had no Operations arm, so an
+# administrative workstream fell through to `default-workflow`, which clones a
+# worktree, cuts a branch and opens a pull request for work that changes no
+# tracked file. This recipe is that arm's destination.
+#
+# Use this workflow when ALL are true:
+#   - The work is administrative: triage, issue bookkeeping, status reporting,
+#     coordination, or writing up answers for a person.
+#   - No tracked file is created, modified or deleted.
+#   - The answer is delivered in chat or in an issue, not in a commit.
+#
+# If any of those is false, the leaf is Development and belongs on
+# `default-workflow` or `quick-change`.
+#
+# This recipe's prompt is guidance to a model, not an enforcement boundary.
+# The boundary is `ops-file-change-check` in `smart-execute-routing.yaml`,
+# which inspects the working tree and refuses to open a pull request unless
+# files actually changed.
+
 context:
+  # The administrative task, as the decomposition wrote it.
   task_description: ""
+
+  # The repository the agent is already inside. Operations work happens here;
+  # no worktree is created and no branch is cut.
   repo_path: "."
-  repository: ""
-  workstream_id: ""
-  required_outputs: {}
-  prerequisite_results: []
-  operation_attempts: []
-  workstream_result_file: ""
-  workstream_context_file: ""
-recovery:
-  version: 1
-  persist:
-    context: ["workstream_completion", "workstream_id", "repository", "required_outputs"]
-    outputs: ["execute-operation", "store-result"]
+
+  # Issue #2553: present only when the workstream tracks an issue. A
+  # decomposition does not know issue numbers, so absence is normal and is
+  # never a reason to stop.
+  issue_number: ""
+
+  # Issue #1881: the parent run's opt-in, forwarded unchanged. Blank means the
+  # parent did not opt in, and this leaf must not create tracking issues on a
+  # default.
+  create_issue: ""
+
+  # Every remaining key `build_resume_context_with` can supply, declared so a
+  # resumed Operations workstream cannot fail on an unknown context key.
+  workstream_state_file: ""
+  workstream_progress_file: ""
+  prerequisite_results: "{}"
+  resume_checkpoint: ""
+  is_critical_code: ""
+  worktree_setup: "{}"
+
 steps:
   - id: "execute-operation"
-    recovery: {"replay": "never"}
     type: "agent"
     agent: "amplihack:core:builder"
     prompt: |
-      Execute this administrative leaf once, following its checklist.
+      Carry out this administrative task directly, in the repository you are
+      already in. Do it once, completely, and then stop.
+
       Task: {{task_description}}
-      Trusted repository: {{repository}} at {{repo_path}}
+      Repository path: {{repo_path}}
+      Tracked issue (blank when none): {{issue_number}}
+      Tracking-issue opt-in (blank when the parent did not opt in): {{create_issue}}
+
+      Scope:
+        - Do NOT create a git worktree, cut a branch, commit, push, or open a
+          pull request. This leaf changes no tracked file.
+        - Do NOT start another workflow, recipe or orchestration. You are the
+          leaf. Complete this task yourself.
+        - Read-only repository inspection and `gh` commands against issues and
+          pull requests are in scope; so is writing an answer into chat or into
+          an issue comment.
+        - Open a tracking issue only if the task itself asks for one, or the
+          opt-in above is explicitly true and no issue is already attached. Never invent an issue number, and
+          never stop because the tracked issue above is blank.
+
       Prerequisite results: {{prerequisite_results}}
-      Already recorded actions: {{operation_attempts}}
-      Reuse successful recorded actions. If an external outcome is unknown, report
-      reconciliation_required and explain why; do not repeat the mutation.
-      This leaf does not authorise tracked-file edits, a worktree, a branch or an
-      implementation PR. Complete only this leaf, without starting another workflow.
 
-      For issue creation and assignment, use the durable adapter:
-      `amplihack multitask operation --context-file {{workstream_context_file}}
-      --output-name <declared-output> --request-file <private-json-file>`.
-      The request is {"action":"create_issue","arguments":{"title":"...","body":"..."}}
-      or {"action":"assign","arguments":{"issue":123,"assignees":["login"]}}.
-      Use its returned output verbatim. It records attempts before invocation, reuses
-      successful actions and refuses to repeat uncertain outcomes. For other external
-      systems, preserve an inspectable service receipt and report uncertainty rather
-      than replaying an interrupted action.
+      Work through the task's own checklist in order. If one item cannot be
+      completed, finish the rest and say which item you left and why.
 
-      Return a single JSON object: schema_version 1, workstream_id
-      "{{workstream_id}}", repository "{{repository}}", classification "Operations",
-      effective_recipe "operations-direct", outcome (succeeded, failed or
-      reconciliation_required), and outputs matching {{required_outputs}}.
-      Failures and uncertainty require a non-blank diagnostic. Each output has its
-      declared kind and evidence: a non-empty array of source, reference and
-      observation strings. Answers require text and destination (chat or issue).
-      Issue outputs require issue: {repository, number}. Operation outputs require
-      action and a repository-scoped target issue. Evidence must establish the
-      requested external outcome; a narrative assertion is insufficient.
-    output: "workstream_completion"
-  - id: "store-result"
-    recovery: {"replay": "reuse"}
-    type: "bash"
-    condition: "workstream_context_file"
-    command: |
-      set -euo pipefail
-      printf '%s' "${RECIPE_VAR_workstream_completion:?completion required}" |
-        amplihack multitask complete --context-file "${RECIPE_VAR_workstream_context_file:?context required}"
-    output: "stored_result"
+      Finish with a single status line of exactly this shape, on its own line:
+
+      OPERATIONS_RESULT: <completed|partial|failed> — <one sentence on what was
+      done and where the answer is>
+    output: "operations_result"

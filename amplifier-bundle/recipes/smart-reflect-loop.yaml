@@ -18,7 +18,6 @@ recursion:
   max_total_steps: 80
 
 context:
-  leaf_dispatch_complete: ""
   # Issue #1740: set by select-workflow; quick-change runs skip these steps.
   selected_workflow: ""
 
@@ -31,7 +30,7 @@ steps:
   - id: "reflect-round-1"
     type: "agent"
     condition: |
-      'Q&A' not in task_type and 'Operations' not in task_type and leaf_dispatch_complete != 'true' and round_1_result and selected_workflow != 'quick-change'
+      'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result and selected_workflow != 'quick-change'
     agent: "amplihack:core:reviewer"
     prompt: |
       Evaluate goal achievement after round 1.
@@ -205,7 +204,7 @@ steps:
 
   - id: "reflect-final"
     type: "agent"
-    condition: "'Q&A' not in task_type and 'Operations' not in task_type and leaf_dispatch_complete != 'true' and round_1_result and selected_workflow != 'quick-change'"
+    condition: "'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result and selected_workflow != 'quick-change'"
     agent: "amplihack:core:reviewer"
     prompt: |
       Final assessment after all execution rounds.

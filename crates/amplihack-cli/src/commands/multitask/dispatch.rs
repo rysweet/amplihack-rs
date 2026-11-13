@@ -1,419 +1,261 @@
-//! Dependency-aware dispatch using child completion and signal events.
-use super::execution::{Children, Event, launch};
-use super::{
-    completion,
-    models::WorkstreamConfig,
-    plan,
-    runtime::{self, Runtime},
-    tracking,
-};
-use anyhow::{Context, Result, bail, ensure};
-use fs2::FileExt;
+//! Dependency scheduling driven by child exits and cancellation signals.
+use super::{execution, models::Workstream, persistence::persist_state, waves};
+use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs::{self, File, OpenOptions};
+use std::{
+    collections::HashMap,
+    fs,
+    process::Child,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread,
+    time::Instant,
+};
 
-use std::path::{Path, PathBuf};
-
-use std::sync::mpsc;
-use std::thread;
-
-pub(super) fn lock() -> Result<File> {
-    plan::private_directory(&runtime::base_dir())?;
-    let path = runtime::base_dir().join("dispatch.lock");
-    ensure!(!path.is_symlink(), "dispatch lock is a symlink");
-    let mut options = OpenOptions::new();
-    options.create(true).read(true).write(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let file = options.open(path)?;
-    file.try_lock_exclusive()
-        .context("another dispatcher owns this runtime; stop it before resuming or reconciling")?;
-    Ok(file)
+enum Event {
+    Exited(usize, std::io::Result<()>),
+    Cancel,
 }
 
-pub(super) fn configuration(
-    path: &Path,
-    default_recipe: &str,
-    roots: &BTreeMap<String, PathBuf>,
-) -> Result<Vec<WorkstreamConfig>> {
-    let raw: Value = serde_json::from_slice(&fs::read(path)?)?;
-    let array = raw.as_array().context("configuration must be an array")?;
-    let mut leaves = Vec::new();
-    for (index, value) in array.iter().enumerate() {
-        let mut v = value.clone();
-        if v.get("key").is_none() && v.get("name").is_none() {
-            v["key"] = json!(format!("workstream-{}", index + 1));
-        }
-        if v.get("classification").is_none()
-            && v.get("task_type").is_none()
-            && v.get("type").is_none()
-        {
-            let recipe = v
-                .get("recipe")
-                .and_then(Value::as_str)
-                .unwrap_or(default_recipe);
-            v["classification"] = json!(match recipe {
-                "operations-direct" => "Operations",
-                "investigation-workflow" => "Investigation",
-                "qa-workflow" => "Q&A",
-                "consensus-workflow" => "Consensus",
-                _ => "Development",
-            });
-        }
-        leaves.push(v);
-    }
-    let mut input = json!({"workstreams": leaves});
-    plan::allocate_identities(&mut input)?;
-    let mut entries = plan::normalise_plan(&input, &plan::repository_names(roots), default_recipe)?;
-    // A configuration is an operator-selected plan. Preserve a trusted Development
-    // selection already made by the decomposition builder; never trust other names.
-    for (entry, original) in entries.iter_mut().zip(array) {
-        if entry.classification == "Development" {
-            if let Some(recipe @ ("quick-change" | "default-workflow")) =
-                original.get("recipe").and_then(Value::as_str)
-            {
-                entry.recipe = Some(recipe.into());
-            }
+struct Signals {
+    handle: signal_hook::iterator::Handle,
+    thread: Option<thread::JoinHandle<()>>,
+}
+impl Drop for Signals {
+    fn drop(&mut self) {
+        self.handle.close();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
         }
     }
-    // Allocate legacy IDs only once, before any external action. Resume uses this file.
-    if raw != serde_json::to_value(&entries)? {
-        runtime::atomic_json(path, &entries)?;
-    }
-    Ok(entries)
 }
 
-fn prepare_workspace(state: &Runtime, repository: &Path) -> Result<()> {
-    if state.config.classification == "Operations" || state.work_dir.exists() {
-        return Ok(());
-    }
-    let mut cmd = amplihack_git::command();
-    let output = cmd
-        .args(["remote", "get-url", "origin"])
-        .current_dir(repository)
-        .output()?;
-    ensure!(
-        output.status.success(),
-        "cannot resolve Development repository origin"
-    );
-    let remote = String::from_utf8(output.stdout)?;
-    let output = amplihack_git::command()
-        .args(["clone", "--depth=1", "--", remote.trim()])
-        .arg(&state.work_dir)
-        .current_dir(repository)
-        .output()?;
-    ensure!(
-        output.status.success(),
-        "Development clone failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(())
-}
-
-fn prerequisites(state: &Runtime, states: &[Runtime]) -> Result<Vec<Value>> {
-    state
-        .config
-        .depends_on
-        .iter()
-        .map(|id| {
-            let p = states
-                .iter()
-                .find(|s| s.id() == *id && s.lifecycle == "succeeded")
-                .context("prerequisite has not durably succeeded")?;
-            let result = p.result.as_ref().context("prerequisite result missing")?;
-            completion::validate(result, &p.config)?;
-            Ok(
-                json!({"workstream_id": p.id(), "repository": p.config.repository,
-            "result_revision": p.revision, "outcome": "succeeded", "outputs": result["outputs"]}),
-            )
-        })
-        .collect()
-}
-
-fn result_from_output(state: &Runtime, stdout: &[u8]) -> Result<Value> {
-    let path = state.artefact_dir.join("result.json");
-    if path.exists() {
-        runtime::owned(&path, &state.artefact_dir)?;
-        return Ok(serde_json::from_slice(&fs::read(path)?)?);
-    }
-    let text = std::str::from_utf8(stdout).context("child output is not UTF-8")?;
-    // Classic agents and recipe completion markers may include surrounding diagnostics.
-    let result = crate::commands::orch::extract_json_with_field(text, "schema_version")
-        .context("child exited without a completion result")?;
-    Ok(result)
-}
-
-pub fn run(config_path: &Path, mode: &str, default_recipe: &str, dry_run: bool) -> Result<()> {
-    ensure!(
-        ["recipe", "classic"].contains(&mode),
-        "unknown execution mode {mode:?}"
-    );
-    let _lock = lock()?;
-    let roots = plan::repositories()?;
-    let configs = configuration(config_path, default_recipe, &roots)?;
-    if dry_run {
-        for e in configs {
-            println!(
-                "{} {} {}",
-                e.workstream_id.unwrap(),
-                e.classification,
-                e.recipe.unwrap()
-            );
-        }
-        return Ok(());
-    }
-    plan::private_directory(&runtime::base_dir().join("state"))?;
-    // Load and validate every record before creating issues, cloning or launching.
-    let mut states: Vec<Runtime> = configs
-        .into_iter()
-        .map(|c| {
-            let repo = roots
-                .get(&c.repository)
-                .context("unauthorised repository")?;
-            Runtime::load(c, repo)
-        })
-        .collect::<Result<_>>()?;
-    let mut paths = HashSet::new();
-    for state in &states {
-        ensure!(
-            paths.insert(state.state_file.clone()),
-            "ambiguous legacy adoption: two leaves own the same state file"
-        );
-    }
-    for state in &mut states {
-        if ["running", "tracking"].contains(&state.lifecycle.as_str()) {
-            state.lifecycle = "reconciliation_required".into();
-            state.diagnostic =
-                "interrupted execution; inspect external outcomes before resuming".into();
-            state.save()?;
-        }
-        if state.lifecycle == "reconciliation_required" {
-            bail!(
-                "{} requires reconciliation: {}",
-                state.id(),
-                state.diagnostic
-            );
-        }
-        state.save()?;
-    }
-    let concurrency = super::waves::wave_size(states.len(), super::waves::concurrency_limit());
-    let (tx, rx) = mpsc::channel();
+fn signals(tx: mpsc::Sender<Event>) -> Result<Signals> {
     let mut signals = signal_hook::iterator::Signals::new([
         signal_hook::consts::SIGINT,
         signal_hook::consts::SIGTERM,
     ])?;
     let handle = signals.handle();
-    let signal_tx = tx.clone();
-    let signal_waiter = thread::spawn(move || {
+    let thread = thread::spawn(move || {
         if signals.forever().next().is_some() {
-            let _ = signal_tx.send(Event::Interrupted);
+            let _ = tx.send(Event::Cancel);
         }
     });
-    // Closing the signal iterator on every return also joins its waiter.
-    struct SignalGuard(
-        signal_hook::iterator::Handle,
-        Option<thread::JoinHandle<()>>,
-    );
-    impl Drop for SignalGuard {
-        fn drop(&mut self) {
-            self.0.close();
-            if let Some(t) = self.1.take() {
-                if t.join().is_err() {
-                    tracing::error!("signal waiter panicked");
-                }
-            }
+    Ok(Signals {
+        handle,
+        thread: Some(thread),
+    })
+}
+
+// WNOWAIT leaves the PID reserved until the owning scheduler reaps it. This
+// prevents a cancellation signal from targeting a recycled PID after an exit.
+#[cfg(unix)]
+fn observe(pid: u32) -> std::io::Result<()> {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    loop {
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        if result == 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
         }
     }
-    let _signals = SignalGuard(handle, Some(signal_waiter));
-    let mut active = Children(HashMap::new());
-    let mut interrupted = false;
-    loop {
-        let failed: HashSet<_> = states
-            .iter()
-            .filter(|s| {
-                ["failed", "blocked", "reconciliation_required", "abandoned"]
-                    .contains(&s.lifecycle.as_str())
-            })
-            .map(Runtime::id)
-            .collect();
-        for state in &mut states {
-            if ["pending", "ready", "blocked"].contains(&state.lifecycle.as_str()) {
-                let blocked: Vec<_> = state
-                    .config
-                    .depends_on
-                    .iter()
-                    .filter(|id| failed.contains(id))
-                    .copied()
-                    .collect();
-                if !blocked.is_empty() {
-                    state.lifecycle = "blocked".into();
-                    state.blocked_by = blocked;
-                    state.save()?;
-                } else if state.lifecycle == "blocked" {
-                    state.lifecycle = "pending".into();
-                    state.blocked_by.clear();
-                    state.save()?;
-                }
-            }
-        }
-        let succeeded: HashSet<_> = states
-            .iter()
-            .filter(|s| s.lifecycle == "succeeded")
-            .map(Runtime::id)
-            .collect();
-        for index in 0..states.len() {
-            if interrupted || active.0.len() >= concurrency {
-                break;
-            }
-            if !["pending", "ready"].contains(&states[index].lifecycle.as_str())
-                || !states[index]
-                    .config
-                    .depends_on
-                    .iter()
-                    .all(|id| succeeded.contains(id))
-            {
-                continue;
-            }
-            let prerequisites = prerequisites(&states[index], &states)?;
-            let state = &mut states[index];
-            let attempt = (|| {
-                // Required tracking is resolved in the trusted repository, before a Development clone exists.
-                let repo = &roots[&state.config.repository];
-                if state.config.tracking.required && state.config.issue.is_null() {
-                    let working = state.work_dir.clone();
-                    state.work_dir = repo.clone();
-                    let resolved = tracking::resolve(state, &prerequisites);
-                    state.work_dir = working;
-                    resolved?;
-                    state.save()?;
-                }
-                prepare_workspace(state, repo)?;
-                launch(state, mode, &prerequisites, tx.clone())
-            })();
-            match attempt {
-                Ok(child) => {
-                    active.0.insert(state.id(), child);
-                }
-                Err(error) => {
-                    if state.lifecycle != "reconciliation_required" {
-                        state.lifecycle = "failed".into();
-                    }
-                    state.diagnostic = format!("{error:#}");
-                    state.save()?;
-                    eprintln!("{}: {}", state.id(), state.diagnostic);
-                }
-            }
-        }
-        if active.0.is_empty() {
-            if states.iter().all(|s| s.lifecycle == "succeeded") {
-                println!(
-                    "{}",
-                    json!({"outcome": "succeeded", "results": states.iter().map(|s| json!({"workstream_id": s.id(), "repository": s.config.repository, "result_revision": s.revision, "result": s.result})).collect::<Vec<_>>()})
-                );
-                return Ok(());
-            }
-            // One pass propagates each failed edge; keep going until all pending descendants are blocked.
-            if states
+}
+
+fn complete(ws: &mut Workstream, code: i32) -> Result<()> {
+    let progress = match fs::read(&ws.progress_file) {
+        Ok(bytes) => serde_json::from_slice::<Value>(&bytes).context("invalid progress sidecar")?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Value::Null,
+        Err(e) => return Err(e.into()),
+    };
+    let output = fs::read_to_string(ws.artefact_dir.join("output.json"))?;
+    let runner = if output.trim_start().starts_with('{') {
+        serde_json::from_str::<Value>(&output).context("invalid runner result JSON")?
+    } else {
+        Value::Null
+    };
+    let step_output = runner
+        .get("step_results")
+        .and_then(Value::as_array)
+        .and_then(|steps| {
+            steps
                 .iter()
-                .any(|s| s.lifecycle == "pending" || s.lifecycle == "ready")
-                && !interrupted
-            {
-                let terminal: HashSet<_> = states
-                    .iter()
-                    .filter(|s| s.lifecycle != "pending" && s.lifecycle != "ready")
-                    .map(Runtime::id)
-                    .collect();
-                if states.iter().any(|s| {
-                    s.config.depends_on.iter().any(|id| terminal.contains(id))
-                        && (s.lifecycle == "pending" || s.lifecycle == "ready")
-                }) {
+                .find(|step| step["step_id"] == "execute-operation")
+        })
+        .and_then(|step| step.get("output"))
+        .and_then(Value::as_str);
+    let result = progress
+        .get("operations_result")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            step_output.and_then(|text| {
+                text.lines()
+                    .rev()
+                    .map(str::trim)
+                    .find(|line| line.starts_with("OPERATIONS_RESULT:"))
+            })
+        })
+        .or_else(|| {
+            output
+                .lines()
+                .rev()
+                .map(str::trim)
+                .find(|line| line.starts_with("OPERATIONS_RESULT:"))
+        });
+    let code = if runner.get("success") == Some(&json!(false)) {
+        -1
+    } else {
+        code
+    };
+    ws.result = if runner.is_object() {
+        runner.clone()
+    } else {
+        progress.clone()
+    };
+    if let Some(result) = result {
+        if !ws.result.is_object() {
+            ws.result = json!({});
+        }
+        ws.result["operations_result"] = json!(result);
+    }
+    ws.lifecycle_state = if code != 0 {
+        "failed_terminal"
+    } else if ws.classification == "Operations" {
+        match result
+            .and_then(|r| r.strip_prefix("OPERATIONS_RESULT:"))
+            .map(str::trim_start)
+        {
+            Some(r) if r.starts_with("completed — ") => "completed",
+            Some(r) if r.starts_with("partial — ") => "partial",
+            _ => "failed_terminal",
+        }
+    } else {
+        "completed"
+    }
+    .into();
+    ws.exit_code = Some(code);
+    ws.pid = None;
+    ws.end_time = Some(Instant::now());
+    ws.cleanup_eligible = false;
+    persist_state(ws)
+}
+
+fn cancel(children: &mut HashMap<usize, Child>, leaves: &mut [Workstream]) -> Result<()> {
+    for (&index, child) in children.iter_mut() {
+        #[cfg(unix)]
+        {
+            let result = unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+            if result != 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            child.kill()?;
+        }
+        child.wait()?;
+        let ws = &mut leaves[index];
+        ws.lifecycle_state = "interrupted_resumable".into();
+        ws.cleanup_eligible = false;
+        ws.pid = None;
+        ws.exit_code = None;
+        persist_state(ws)?;
+    }
+    children.clear();
+    Ok(())
+}
+
+pub(super) fn execute(
+    leaves: &mut [Workstream],
+    mode: &str,
+    running: Arc<AtomicBool>,
+) -> Result<()> {
+    let (tx, rx) = mpsc::channel();
+    let _signals = signals(tx.clone())?;
+    let limit = waves::wave_size(leaves.len(), waves::concurrency_limit());
+    let mut children = HashMap::new();
+    let result = (|| -> Result<()> {
+        loop {
+            ensure!(
+                running.load(Ordering::Relaxed),
+                "workstream execution cancelled"
+            );
+            for index in 0..leaves.len() {
+                if leaves[index].lifecycle_state == "completed"
+                    || children.contains_key(&index)
+                    || ["blocked", "partial", "failed_terminal"]
+                        .contains(&leaves[index].lifecycle_state.as_str())
+                {
                     continue;
                 }
+                let mut prerequisites = serde_json::Map::new();
+                let mut ready = true;
+                let mut failed = false;
+                for dep in &leaves[index].dependencies {
+                    let other = leaves
+                        .iter()
+                        .find(|leaf| leaf.key.as_str() == dep)
+                        .context("validated dependency disappeared")?;
+                    if other.lifecycle_state == "completed" {
+                        prerequisites.insert(dep.clone(), other.result.clone());
+                    } else {
+                        ready = false;
+                        failed |= ["blocked", "partial", "failed_terminal"]
+                            .contains(&other.lifecycle_state.as_str());
+                    }
+                }
+                if failed {
+                    leaves[index].lifecycle_state = "blocked".into();
+                    persist_state(&leaves[index])?;
+                }
+                if !ready || children.len() >= limit {
+                    continue;
+                }
+                let child =
+                    execution::launch(&mut leaves[index], mode, Value::Object(prerequisites))?;
+                let pid = child.id();
+                children.insert(index, child);
+                let tx = tx.clone();
+                thread::spawn(move || {
+                    let _ = tx.send(Event::Exited(index, observe(pid)));
+                });
             }
-            bail!(
-                "workstream execution incomplete: {}",
-                states
-                    .iter()
-                    .filter(|s| s.lifecycle != "succeeded")
-                    .map(|s| format!("{} {} {}", s.id(), s.lifecycle, s.diagnostic))
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            );
-        }
-        match rx.recv().context("child completion channel closed")? {
-            Event::Interrupted => {
-                interrupted = true;
-                for state in &mut states {
-                    if active.0.contains_key(&state.id()) {
-                        state.lifecycle = "reconciliation_required".into();
-                        state.diagnostic = "interrupted; reconcile before replay".into();
-                        state.save()?;
-                    }
-                }
-                for child in active.0.values() {
-                    child.cancel()?;
-                }
+            if children.is_empty() {
+                break;
             }
-            Event::Completed(id, exit) => {
-                active
-                    .0
-                    .remove(&id)
-                    .context("completion for an unowned child")?;
-                let state = states
-                    .iter_mut()
-                    .find(|s| s.id() == id)
-                    .context("unknown completion identity")?;
-                let completed = (|| {
-                    let (code, bytes) = exit?;
-                    let durable: Runtime = serde_json::from_slice(&fs::read(&state.state_file)?)?;
-                    ensure!(
-                        durable.id() == state.id()
-                            && durable.config.repository == state.config.repository,
-                        "child changed state ownership"
-                    );
-                    state.revision = durable.revision;
-                    state.operation_attempts = durable.operation_attempts;
-                    if durable.lifecycle == "reconciliation_required" {
-                        state.lifecycle = durable.lifecycle;
-                        bail!("an external mutation requires reconciliation");
-                    }
-                    state.last_exit_code = Some(code);
-                    ensure!(code == 0, "child exited with status {code}");
-                    let result = result_from_output(state, &bytes)?;
-                    completion::validate(&result, &state.config)?;
-                    for attempt in &state.operation_attempts {
-                        if attempt["status"] == "not_applied" {
-                            continue;
-                        }
-                        ensure!(
-                            attempt["status"] == "succeeded",
-                            "unresolved operation attempt"
-                        );
-                        let name = attempt["output_name"]
-                            .as_str()
-                            .context("operation output name")?;
-                        ensure!(
-                            result["outputs"][name] == attempt["output"],
-                            "completion does not match the durable operation receipt"
-                        );
-                    }
-                    state.lifecycle = result["outcome"].as_str().unwrap().into();
-                    state.result = Some(result);
-                    Ok(())
-                })();
-                if let Err(error) = completed {
-                    if state.lifecycle != "reconciliation_required" {
-                        state.lifecycle = "failed".into();
-                    }
-                    state.diagnostic = format!("{error:#}");
-                    eprintln!("{id}: {}", state.diagnostic);
+            match rx.recv().context("completion event channel closed")? {
+                Event::Exited(index, status) => {
+                    status.context("observe owned child exit")?;
+                    let mut child = children
+                        .remove(&index)
+                        .context("unexpected completion event")?;
+                    complete(&mut leaves[index], child.wait()?.code().unwrap_or(-1))?;
                 }
-                state.save()?;
+                Event::Cancel => {
+                    anyhow::bail!("workstream execution cancelled; recovery state retained")
+                }
             }
         }
+        ensure!(
+            leaves.iter().all(|ws| ws.lifecycle_state == "completed"),
+            "one or more workstreams failed, were partial or are blocked; see persisted state"
+        );
+        Ok(())
+    })();
+    if result.is_err() {
+        cancel(&mut children, leaves)?;
     }
+    result
 }

@@ -42,19 +42,22 @@ pub(super) fn populate_workstream_scope(ws: &mut Workstream, repo_url: &str, bas
         std::env::var("AMPLIHACK_TREE_ID").unwrap_or_else(|_| format!("{:08x}", rand_u32()));
     let recipe_run_id =
         std::env::var("AMPLIHACK_RECIPE_RUN_ID").unwrap_or_else(|_| tree_id.clone());
-    let issue_id = ws.issue.to_string();
+    // Issue #2553: `issue_id` is the tracked issue, which may be absent;
+    // `work_item_id` is the identity, which never is.
+    let issue_id = ws.issue.map(|n| n.to_string()).unwrap_or_default();
+    let work_item_id = ws.key.to_string();
     ws.workstream_scope = WorkstreamScope {
         repository,
         repo_root: repo_root.clone(),
         workdir: repo_root,
         branch: ws.branch.clone(),
         base_ref: base_ref.to_string(),
-        issue_id: issue_id.clone(),
-        work_item_id: issue_id,
+        issue_id,
+        work_item_id,
         recipe: ws.recipe.clone(),
         recipe_run_id,
         tree_id,
-        workstream_id: format!("ws-{}", ws.issue),
+        workstream_id: format!("ws-{}", ws.key),
         expected_title_prefix: ws.description.clone(),
         started_at: Utc::now().to_rfc3339(),
     };
@@ -89,7 +92,11 @@ pub(super) fn build_resume_context_with(
         "repo_path".to_string(),
         serde_json::Value::String(".".to_string()),
     );
-    ctx.insert("issue_number".to_string(), serde_json::json!(ws.issue));
+    // Omission rather than sentinel (issue #2553): a consumer testing for
+    // presence cannot be fooled, while one comparing against `0` would be.
+    if let Some(issue) = ws.issue {
+        ctx.insert("issue_number".to_string(), serde_json::json!(issue));
+    }
     ctx.insert(
         "workstream_state_file".to_string(),
         serde_json::Value::String(ws.state_file.to_string_lossy().to_string()),
@@ -175,6 +182,13 @@ pub(super) fn recipe_run_script(
 ) -> Result<String> {
     let profile_exports = profile_exports(get, substitute)?;
     let (tree_id, depth, max_depth, max_sessions) = session_tree_env(ws);
+    // No issue, no export. The identity key is deliberately not exported
+    // either: it names a directory on this host and the child has no use for
+    // it (issue #2553, SR3).
+    let issue_export = ws
+        .issue
+        .map(|n| format!("export AMPLIHACK_WORKSTREAM_ISSUE='{n}'\n"))
+        .unwrap_or_default();
     Ok(format!(
         r#"#!/bin/bash
 cd '{work_dir}'
@@ -183,8 +197,7 @@ export AMPLIHACK_SESSION_DEPTH='{depth}'
 export AMPLIHACK_MAX_DEPTH='{max_depth}'
 export AMPLIHACK_MAX_SESSIONS='{max_sessions}'
 export AMPLIHACK_DELEGATE='{delegate}'
-export AMPLIHACK_WORKSTREAM_ISSUE='{issue}'
-export AMPLIHACK_WORKSTREAM_PROGRESS_FILE='{progress_file}'
+{issue_export}export AMPLIHACK_WORKSTREAM_PROGRESS_FILE='{progress_file}'
 export AMPLIHACK_WORKSTREAM_STATE_FILE='{state_file}'
 export AMPLIHACK_WORKTREE_PATH='{worktree_path}'
 {profile_exports}exec bash launcher.sh
@@ -195,7 +208,7 @@ export AMPLIHACK_WORKTREE_PATH='{worktree_path}'
         max_depth = max_depth,
         max_sessions = max_sessions,
         delegate = delegate,
-        issue = ws.issue,
+        issue_export = issue_export,
         progress_file = ws.progress_file.display(),
         state_file = ws.state_file.display(),
         worktree_path = ws.worktree_path,
@@ -204,10 +217,16 @@ export AMPLIHACK_WORKTREE_PATH='{worktree_path}'
 }
 
 pub(super) fn classic_task_markdown(ws: &Workstream) -> String {
+    // The heading names the tracked issue when there is one and the
+    // workstream's own description otherwise; it never invents a number.
+    let heading = match ws.issue {
+        Some(n) => format!("Issue #{n}"),
+        None => ws.description.clone(),
+    };
     format!(
-        "# Issue #{}\n\n{}\n\nUse the canonical {} autonomously via {} and {}. \
+        "# {}\n\n{}\n\nUse the canonical {} autonomously via {} and {}. \
          NO QUESTIONS. Work through all required workflow steps. Create PR when complete.",
-        ws.issue,
+        heading,
         ws.task,
         workflow::DEFAULT_WORKFLOW_SELECTION,
         workflow::DEV_ORCHESTRATOR_SKILL,
@@ -298,7 +317,7 @@ pub(super) fn sh_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 
-fn session_tree_env(ws: &Workstream) -> (String, u32, String, String) {
+pub(super) fn session_tree_env(ws: &Workstream) -> (String, u32, String, String) {
     let depth: u32 = std::env::var("AMPLIHACK_SESSION_DEPTH")
         .ok()
         .and_then(|v| v.parse().ok())

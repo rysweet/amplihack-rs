@@ -1,18 +1,13 @@
 ---
-title: Getting started with /dev
-description: Learn classification and execution for Development, Investigation and Operations workstreams.
-last_updated: 2026-11-12
+title: Getting started with dev-orchestrator
+description: Classify and execute single, mixed and parallel requests with dev-orchestrator.
+last_updated: 2026-11-13
 review_schedule: quarterly
 owner: amplihack
 doc_type: tutorial
 ---
 
 # Getting Started with /dev — The amplihack Dev Orchestrator
-
-> **[IMPLEMENTED - Validation Pending]** The issue #2553 leaf routing, optional
-> tracking and complete-plan validation behaviour in this tutorial describes
-> the intended feature. Its [acceptance coverage](../howto/verify-dev-orchestrator-routing.md)
-> must be implemented and registered before these additions can be verified.
 
 **Time**: ~20 minutes | **Level**: Beginner to Intermediate
 
@@ -31,6 +26,7 @@ and how to interpret what you see during execution.
 - [Part 3: Investigation + Implementation](#part-3-investigation--implementation-5-minutes)
 - [Part 4: The Goal-Seeking Loop](#part-4-the-goal-seeking-loop-5-minutes)
 - [Part 5: Interpreting Output](#part-5-interpreting-output-2-minutes)
+- [Try Operations before a repository edit](#try-operations-before-a-repository-edit)
 - [Common Patterns](#common-patterns)
 - [Auto-Routing: How It Works](#auto-routing-how-it-works)
 - [Troubleshooting](#troubleshooting)
@@ -51,15 +47,16 @@ and how to interpret what you see during execution.
 
 `/dev` is the unified entry point for all development and investigation work. It:
 
-1. **Classifies** your request (Q&A, Operations, Investigation, or Development)
-2. **Decomposes** it into executable leaves, preserving dependencies and separating Operations from repository edits
-3. **Executes** via the recipe runner with a goal-seeking loop (up to 3 rounds)
-4. **Checks results** against each leaf's task, applying Development reflection and review to Development results
-
-Operations covers issue management, research answers, status and coordination.
-It runs directly without a worktree or implementation PR. Tracked documentation
-edits are Development. See [Run Operations and mixed requests](../howto/run-operations-and-mixed-work.md)
-for examples.
+1. **Classifies** your request (Q&A, Operations, Investigation, or Development).
+   Operations covers administration and project management: issue triage,
+   issue creation and assignment, answers destined for chat or an issue, status
+   reporting and coordination. Changing a tracked repository file is
+   Development. See [Operations and Project-Management Routing](../operations-routing.md)
+2. **Decomposes** it into workstreams if it contains independent parallel components (hybrid "investigate then build" requests become multiple workstreams)
+3. **Executes** each required workstream through its resolved route. Pure
+   Operations runs directly or with one checklist agent; Development uses its
+   eligible recipe. Mixed requests preserve every leaf and dependency.
+4. **Reflects** on whether the goal was achieved
 
 ### Try it
 
@@ -116,18 +113,27 @@ them simultaneously.
 
 ### What you will see
 
-The plan contains two Development leaves, each with its own stable execution
-UUID. Each has separate state, logs and an isolated workspace. An issue number
-is optional; no placeholder is needed. When both complete, you get their
-Development delivery results, including their PRs.
+```
+[dev-orchestrator] Classified as: Development | Workstreams: 2 — starting execution...
+Launching parallel workstreams (tree: abc12345, depth: 0):
+[{"branch": "feat/orch-1-rest-api", "recipe": "default-workflow", ...},
+ {"branch": "feat/orch-2-react-webui", "recipe": "default-workflow", ...}]
+---
+[rest-api-1] Launched PID 12345 (recipe mode)
+[react-webui-2] Launched PID 12346 (recipe mode)
+2 workstreams launched in parallel (recipe mode)
+```
+
+Both workstreams run in isolated `/tmp` clones. When they complete, you get two
+PRs — one for the API, one for the webui.
 
 ### When does /dev use parallel workstreams?
 
-The architect agent decides. These decompose into workstreams:
+The architect agent decides. These decompose into parallel workstreams:
 
 - "build X **and** Y" — two independent features
 - "add auth **and** add logging" — independent concerns
-- "investigate X **then** implement Y" — dependent leaves; implementation waits for persisted findings
+- "investigate X **then** implement Y" — two sequential phases
 
 These stay as a single workstream:
 
@@ -136,16 +142,13 @@ These stay as a single workstream:
 
 ### Force single workstream
 
-If you want to prevent parallel execution, set this in your shell before
-launching the agent:
+If you want to prevent parallel execution:
 
 ```bash
 export AMPLIHACK_MAX_DEPTH=0
+/dev build a REST API and a React webui
+# Executes required leaves sequentially, keeping their routes and dependencies
 ```
-
-Then enter `/dev build a REST API and a React webui` in chat. The leaves execute
-serially with their identities and routes retained. Mixed Operations and
-Development leaves also retain their separate routes in sequential mode.
 
 ---
 
@@ -173,16 +176,17 @@ about existing structure.
 
 ### Development routing invariant
 
+The native runtime implements the [per-leaf routing boundary](../reference/dev-orchestrator-routing.md#implementation-boundary).
+
 The orchestrator applies deterministic per-workstream routing from each workstream's
-own normalised classification. A Development leaf runs `default-workflow`
-unless eligible `quick-change` selection applies. A model-provided recipe
-cannot choose an unrelated workflow.
+own normalised classification. Any workstream classified as `Development` will
+run `default-workflow` or eligible `quick-change`, even if the model omitted `recipe`, emitted an empty
+recipe, or emitted another recipe such as `investigation-workflow`.
 
 This rule is per workstream, not per top-level task. In a hybrid request, an
 `Investigation` workstream keeps the investigation route while the `Development`
-workstream uses Development routing. An Operations leaf always runs directly.
-New mixed plans classify every leaf explicitly; top-level classification is
-only a compatible homogeneous fallback.
+workstream runs `default-workflow`. The top-level classification is used only
+when a workstream has no own classification.
 
 For the full contract, see the
 [Dev-Orchestrator Routing Contract](../reference/dev-orchestrator-routing.md).
@@ -235,8 +239,8 @@ faster:
 | Agent output streaming                              | The builder is working                                                |
 | `GOAL_STATUS: PARTIAL -- [reason]`                  | Round N incomplete, round N+1 starting                                |
 | `NOTE: Session registration failed`                 | Tree tracking inactive (non-blocking)                                 |
-| `WARNING: Could not parse decomposition JSON`       | Invalid plan; execution stops before tracking creation or child launch |
-| `NOTE: Parallel workstream spawning is unavailable` | Depth/capacity limit hit; same leaves and dependencies execute serially |
+| `WARNING: Could not parse decomposition JSON`       | Architect output was ambiguous; defaulted to Development/1-workstream |
+| `NOTE: Parallel workstream spawning is unavailable` | Depth/capacity limit hit; running as single session                   |
 
 ### At completion
 
@@ -256,6 +260,44 @@ If you see an empty Summary section for a Q&A or Operations task, that is
 expected — those task types respond directly and do not generate summaries.
 
 ---
+
+## Try Operations before a repository edit
+
+Use a separate private temporary root for these exercises. The same root and
+execution repository are required for resumption.
+
+In the agent session, enter:
+
+```text
+/dev Read issue #2553 and its comments in rysweet/amplihack-rs. Answer in chat
+which actions are Operations and which change repository files. Do not
+create a tracking issue.
+```
+
+Checkpoint: you receive an Operations answer. Reading an issue does not make
+it the tracking issue, and this request creates no Development clone,
+worktree, branch or PR.
+
+Now enter a request with two explicit outputs:
+
+```text
+/dev Research the routing requirements in issue #2553 in rysweet/amplihack-rs
+and return the answers. Then use them to update docs/operations-routing.md.
+Run both parts without creating tracking issues.
+```
+
+Checkpoint: the research uses Operations handling. The repository edit is a
+separate Development leaf which receives the research result after successful
+completion. Both parts execute without a tracking issue. If research fails,
+the dependent edit is visibly blocked.
+
+To require tracking instead, explicitly ask for a tracking issue before the
+affected work starts. The orchestrator records `create_issue: true`, acquires
+the issue and saves it before execution. An existing issue is reused.
+Attaching tracking keeps the same workstream identity.
+
+Continue with [configured mixed plans](../howto/run-operations-and-mixed-work.md)
+for JSON examples and recovery guidance.
 
 ## Common Patterns
 
@@ -321,8 +363,16 @@ Then resolves by priority:
 | FILE_EDIT or IMPLEMENT alone    | **DEV**         | dev-orchestrator                        |
 | UNDERSTAND alone                | **INVESTIGATE** | dev-orchestrator                        |
 | SHELL_ONLY alone                | **OPS**         | Execute directly                        |
+| Administrative work, no repository edit requested | **OPS** | Execute directly, or one scoped agent |
 | QUESTION alone                  | **Q&A**         | Answer directly                         |
 | "just answer" / "skip workflow" | **SKIP**        | Bypass                                  |
+
+Administrative wording is excluded from the IMPLEMENT and UNDERSTAND signal
+lists so that it reaches the administrative row rather than an earlier one:
+"create an issue for X" would otherwise be claimed by IMPLEMENT, and "research
+these issues and write up the answers" by UNDERSTAND. See the
+[Operations calibration](../reference/coordination-messages.md#operations-calibration)
+for the exact prompt text.
 
 The hook itself does NOT classify — it injects the same routing guidance for
 every message. Claude's natural language understanding handles the rest.
@@ -423,12 +473,9 @@ export AMPLIHACK_MAX_DEPTH=5
 
 **"WARNING: Could not parse decomposition JSON"**
 
-The architect agent's response was not parseable. Execution stops before any
-tracking creation or child launch. Correct or regenerate the decomposition,
-then validate the complete plan before starting it. Invalid input must not
-default to Development or collapse a mixed request into one workstream. A
-valid homogeneous plan may use the documented top-level classification
-fallback; that does not make malformed JSON valid.
+The architect agent's response was not parseable. The task will still run as a
+Development/1-workstream default. Re-run for better results or simplify the
+task description.
 
 **"orch helper" or asset resolution failures**
 

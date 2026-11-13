@@ -1,27 +1,43 @@
 //! Utility functions for the parallel workstream orchestrator.
 
-#[cfg(test)]
-use amplihack_utils::idle_watchdog::{IdleConfig, file_idle_since};
-#[cfg(test)]
 use anyhow::{Result, bail};
-#[cfg(test)]
 use std::fs;
+use std::io::Write;
 #[cfg(test)]
-use std::io::{BufRead, BufReader, Write};
-#[cfg(all(test, unix))]
+use std::io::{BufRead, BufReader};
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
-#[cfg(test)]
 use std::path::Path;
-#[cfg(test)]
 use tracing::debug;
 
-/// Issue #867: a past-max_runtime child may be interrupted only if its log file
-/// has stopped growing for the idle window (`AMPLIHACK_IDLE_TIMEOUT_SECS`,
-/// default 300 s). A probe error is treated as "still live" — never interrupt.
-#[cfg(test)]
-pub(super) fn child_is_idle(log_file: &Path) -> bool {
-    let idle = IdleConfig::from_env().idle_timeout;
-    file_idle_since(log_file, idle).unwrap_or(false)
+/// Remove `dir`, but only after confirming it really sits under `base_dir`.
+///
+/// SR2 (issue #2553): the sink is irreversible and the directory name now
+/// carries a string derived in part from model-produced text. Both paths are
+/// canonicalised first so a symbolic link cannot carry the deletion out of the
+/// base directory. Returns whether the removal was attempted.
+pub(super) fn remove_dir_within(base_dir: &Path, dir: &Path) -> bool {
+    let (Ok(base), Ok(target)) = (fs::canonicalize(base_dir), fs::canonicalize(dir)) else {
+        tracing::warn!(
+            base = %base_dir.display(),
+            dir = %dir.display(),
+            "refusing to remove a workstream work directory that cannot be canonicalised"
+        );
+        return false;
+    };
+    if !target.starts_with(&base) || target == base {
+        tracing::warn!(
+            base = %base.display(),
+            dir = %target.display(),
+            "refusing to remove a work directory outside the workstream base directory"
+        );
+        return false;
+    }
+    if let Err(e) = fs::remove_dir_all(&target) {
+        tracing::warn!(dir = %target.display(), error = %e, "failed to remove work directory");
+        return false;
+    }
+    true
 }
 
 /// Default base directory for workstream artifacts.
@@ -37,7 +53,7 @@ pub(super) fn default_base_dir() -> String {
 pub(super) fn tail_output(
     stdout: impl std::io::Read,
     log_file: &Path,
-    issue_id: i64,
+    label: &str,
     max_log_bytes: u64,
 ) {
     let reader = BufReader::new(stdout);
@@ -48,7 +64,7 @@ pub(super) fn tail_output(
     let log_fd = {
         let mut opts = fs::OpenOptions::new();
         opts.write(true).create(true).truncate(true);
-        #[cfg(all(test, unix))]
+        #[cfg(unix)]
         opts.mode(0o600);
         opts.open(log_file)
     };
@@ -70,7 +86,7 @@ pub(super) fn tail_output(
         }
 
         // Prefix output to stdout
-        println!("[ws:{issue_id}] {line}");
+        println!("[ws:{label}] {line}");
     }
 
     if discarded_log_bytes > 0
@@ -85,7 +101,6 @@ pub(super) fn tail_output(
 }
 
 /// Atomically write data to a file (write to tmp, then rename).
-#[cfg(test)]
 pub(super) fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -93,20 +108,19 @@ pub(super) fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     let tmp_path = path.with_extension("tmp");
     let mut file = {
         let mut opts = fs::OpenOptions::new();
-        opts.write(true).create(true).truncate(true);
-        #[cfg(all(test, unix))]
-        opts.mode(0o600);
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
         opts.open(&tmp_path)?
     };
     file.write_all(data)?;
-    file.flush()?;
+    file.sync_all()?;
     fs::rename(&tmp_path, path)?;
     Ok(())
 }
 
 /// Set a file as executable (chmod +x). No-op on Windows.
-#[cfg(all(test, unix))]
-#[cfg(test)]
+#[cfg(unix)]
 pub(super) fn set_executable(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let mut perms = fs::metadata(path)?.permissions();
@@ -116,13 +130,11 @@ pub(super) fn set_executable(path: &Path) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-#[cfg(test)]
 pub(super) fn set_executable(_path: &Path) -> Result<()> {
     Ok(())
 }
 
 /// Calculate total size of a directory tree.
-#[cfg(test)]
 pub(super) fn dir_size_bytes(path: &Path) -> u64 {
     let mut total = 0u64;
     if let Ok(entries) = fs::read_dir(path) {
@@ -139,7 +151,6 @@ pub(super) fn dir_size_bytes(path: &Path) -> u64 {
 }
 
 /// Simple pseudo-random u32 using time-based seed (no external crate needed).
-#[cfg(test)]
 pub(super) fn rand_u32() -> u32 {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -148,9 +159,8 @@ pub(super) fn rand_u32() -> u32 {
 }
 
 /// Check available disk space at the given path.
-#[cfg(test)]
 pub(super) fn check_disk_space(base_dir: &Path, min_free_gb: f64) -> Result<()> {
-    #[cfg(all(test, unix))]
+    #[cfg(unix)]
     {
         // Use statvfs to check available space
         let path_cstr = std::ffi::CString::new(base_dir.to_string_lossy().as_bytes())?;
@@ -201,7 +211,7 @@ mod tests {
         let log_file = temp.path().join("workstream.log");
         let input = std::io::Cursor::new(b"abcdef\nsecond line\n".to_vec());
 
-        tail_output(input, &log_file, 42, 4);
+        tail_output(input, &log_file, "42", 4);
 
         let log = fs::read_to_string(&log_file).unwrap_or_default();
         assert!(

@@ -93,7 +93,7 @@ steps:
          - 2-5 for CLEARLY INDEPENDENT components
            e.g. "build webui + api" -> 2 workstreams
                 "investigate X then implement Y" -> 2 workstreams
-         - recipe: "default-workflow" (dev) | "investigation-workflow" (research)
+         - recipe: "default-workflow" (edits) | "operations-direct" (administration) | "investigation-workflow" (investigation)
       5. no_merge: true | false — set `true` when the request asks NOT to merge
          or to keep the PR open (issue #929/#1062). This replaces the old bash
          prose-regex; you understand intent, so catch ALL phrasings, including
@@ -110,28 +110,33 @@ steps:
          users, or more than one workstream. When in doubt, choose
          "default-workflow".
 
-      **Classification rules — read carefully (#269)**:
-      - Operations is the canonical class for operations and project management (PM).
-        Triage, issue creation and assignment, research answers in chat or issues,
-        status reporting and coordination run directly with one agent and a checklist.
-        Complexity, requirement counts, generic verbs and source-path mentions do not
-        turn administrative work into Development.
-      - Actual changes to tracked repository files, including documentation wording,
-        are Development. Rename term X across docs of repos A and B is Development
-        in each repository whose files change.
-      - Mixed requests MUST have separate explicit Operations and Development leaves.
-        For removing a programme name from code/docs, researching questions and opening
-        a cross-check issue: edits are Development; research and issue creation are
-        Operations. Preserve depends_on edges where a leaf needs another's result.
-      - Every leaf has a unique name, repository, explicit classification, description,
-        depends_on (names) and required_outputs. Output kinds are answer, issue,
-        operation and delivery. Declare every requested external mutation as an output.
-      - issue is optional. Omit unknown tracking; never invent a number or placeholder.
-        Supplied positive numbers are preserved. Explicitly requested new tracking uses
-        tracking: {required: true, title: ..., body: ...}; otherwise it is optional.
-        Administrative created issues remain outputs unless explicitly bound as tracking.
-
-      **Execution capacity**: {{force_single_workstream}} — if "true", execute the same leaves sequentially; preserve mixed routes and dependencies.
+      **Classification rules**:
+      - Operations / project management includes triage, creating and assigning
+        issues, research write-ups delivered in chat or issues, coordination
+        across repositories and status reports. Mentioning source files, tests
+        or documentation does not request an edit.
+      - Development asks for repository-file edits, including documentation
+        wording changes. A report committed into the repository is Development;
+        the same report delivered in chat or an issue is Operations.
+      - Mixed requests retain every required leaf, its explicit classification,
+        destination and dependencies. Use Operations for research and coordination,
+        and Development only for repository edits. A top-level Operations label
+        must not hide Development leaves.
+      - Operations always uses operations-direct, even with a conflicting custom
+        recipe. It runs one checklist agent in the existing execution context,
+        without a development clone, worktree, branch or pull request.
+      - Examples: "triage these issues", "open an issue for X and assign Y",
+        "write up the answers to these questions" are Operations. "Rename term X
+        across the docs of repos A and B" uses Development leaves for file edits.
+        Removing a programme name from code and docs, researching questions and
+        opening a cross-check issue is mixed: repository edits are Development;
+        research and issue coordination are Operations.
+      - Each leaf has key, description, task, classification, dependencies (keys),
+        optional issue and Boolean create_issue. Do not invent issue numbers.
+        Omit an unknown issue; TBD and other supported placeholders mean absence.
+        Set create_issue=true only when the request explicitly asks for tracking.
+      - {{force_single_workstream}} limits concurrency; it cannot discard leaves
+        or merge different destinations. Preserve sequential dependencies.
 
       **Output exactly this JSON**:
       ```json
@@ -141,7 +146,7 @@ steps:
         "success_criteria": ["Criterion 1", "Criterion 2"],
         "no_merge": false,
         "workstreams": [
-          {"name": "slug", "classification": "Development", "description": "full repository edit task", "depends_on": [], "required_outputs": {"delivery": "delivery"}}
+          {"key": "slug", "name": "slug", "description": "label", "task": "full task", "classification": "Development", "dependencies": [], "create_issue": false, "recipe": "default-workflow"}
         ],
         "recommended_workflow": "default-workflow",
         "workflow_reason": "one short sentence"
@@ -181,7 +186,8 @@ steps:
       RAW_TYPE=$(printf '%s' "$RAW_OBJ" | amplihack orch helper extract-field --field task_type --default Development)
       CANONICAL_TYPE=$(printf '%s' "$RAW_TYPE" | amplihack orch helper normalise-type)
       # Deterministic safety net (#269): if the LLM said Operations but the
-      # requested action edits tracked repository files, promote to Development.
+      # task description has strong development signals (file paths, "Add"+
+      # path, PR mention, tests, multi-requirement), promote to Development.
       _TASK_TMPFILE=$(mktemp)
       # FIX (heredoc-bulletproof): use env var — no heredoc needed.
       printf '%s' "$TASK_DESCRIPTION" > "$_TASK_TMPFILE"
@@ -207,7 +213,7 @@ steps:
       FORCE_SINGLE="${RECIPE_VAR_force_single_workstream:-}"
       RAW_COUNT=$(amplihack orch helper count-workstreams < "$_DECOMP_TMPFILE")
       COUNT="$RAW_COUNT"
-      STRICT="${RECIPE_VAR_strict_delivery:-}"
+      # Capacity restrictions are applied at execution; the plan keeps every leaf.
 
       # Set workflow-active semaphore so the hook skips injection during execution.
       # Pure-bash: write JSON matching the Rust hook's expected schema in
@@ -225,12 +231,6 @@ steps:
         '{active: true, task_type: $task_type, workstreams: $workstreams, started_at: $started_at, pid: $pid}' \
         > "$_SEMA_DIR/.workflow_active" 2>/dev/null || true
 
-      if [ "$COUNT" != "$RAW_COUNT" ]; then
-        case "$STRICT" in
-          ''|false) echo "[dev-orchestrator] force_single_workstream=true — overriding $RAW_COUNT workstreams to 1" >&2 ;;
-          *) echo "[dev-orchestrator] strict_delivery is set — overriding $RAW_COUNT workstreams to 1; parallel workstreams do not carry it" >&2 ;;
-        esac
-      fi
       echo "[dev-orchestrator] Classified as: $TASK_TYPE | Workstreams: $COUNT — starting execution..." >&2
 
       # Output workstream count without trailing newline (fix #3570).
@@ -316,8 +316,8 @@ steps:
     type: "bash"
     condition: "'Development' in task_type or 'Investigation' in task_type or task_type == ''"
     command: |
-      # Generate a portable session identity in Rust, including on macOS.
-      SESSION_ID=$(amplihack orch helper new-session-id)
+      # #283: replace scripted uuid with /proc/sys/kernel/random/uuid (POSIX)
+      SESSION_ID=$(tr -d '-' < /proc/sys/kernel/random/uuid | head -c 8)
 
       # #248: native Rust subcommand for session tree registration.
       # Issue #1062 (finding D2): request structured JSON via the additive

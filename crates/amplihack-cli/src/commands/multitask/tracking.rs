@@ -1,89 +1,91 @@
-//! Explicit tracking adapter. A prepared mutation is never automatically replayed.
-use super::{completion, github, identity::WorkstreamId, issue::IssueRef, runtime::Runtime};
-use anyhow::{Context, Result, ensure};
-use serde_json::{Value, json};
+//! Durable intent before the authenticated GitHub CLI boundary.
+use super::{issue, models::Workstream, persistence::persist_state};
+use anyhow::{Context, Result, bail, ensure};
+use serde_json::Value;
+use std::process::Command;
 
-pub fn resolve(state: &mut Runtime, prerequisites: &[Value]) -> Result<()> {
-    if !state.config.issue.is_null() || !state.config.tracking.required {
+pub(super) fn acquire(ws: &mut Workstream) -> Result<()> {
+    if !ws.create_issue || ws.issue.is_some() {
         return Ok(());
     }
-    if let Some(binding) = &state.config.tracking.from_result {
-        let producer = prerequisites
-            .iter()
-            .find(|p| p["workstream_id"] == json!(binding.workstream_id))
-            .context("tracking prerequisite is not ready")?;
-        let issue = completion::issue_ref(
-            &producer["outputs"][&binding.output]["issue"],
-            &state.config.repository,
-        )?;
-        state.config.issue = json!(issue.number);
-        return state.save();
+    let uncertain = !ws.tracking_reference.is_empty();
+    if !uncertain {
+        ws.tracking_reference = format!("amplihack-tracking:{}", uuid::Uuid::new_v4());
+        ws.lifecycle_state = "tracking".into();
+        persist_state(ws)?;
     }
-    ensure!(
-        state.tracking_attempts.is_empty()
-            || state
-                .tracking_attempts
-                .iter()
-                .all(|a| a["status"] == "not_applied"),
-        "tracking attempt already exists; reconciliation is required"
-    );
-    let title = state
-        .config
-        .tracking
-        .title
-        .as_deref()
-        .filter(|v| !v.trim().is_empty())
-        .context("required tracking title is missing")?
-        .to_owned();
-    let body = state
-        .config
-        .tracking
-        .body
-        .as_deref()
-        .filter(|v| !v.trim().is_empty())
-        .context("required tracking body is missing")?
-        .to_owned();
-    state.lifecycle = "tracking".into();
-    state.tracking_attempts.push(json!({"schema_version": 1, "attempt_id": WorkstreamId::new(),
-        "workstream_id": state.id(), "repository": state.config.repository, "revision": state.revision + 1,
-        "purpose": "tracking", "request": {"title": title, "body": body}, "status": "prepared"}));
-    state.save()?;
-    let creation = (|| -> Result<IssueRef> {
-        let mut command = github::command(&state.work_dir);
-        command.args([
-            "issue",
-            "create",
-            "--repo",
-            &state.config.repository,
-            "--title",
-            &title,
-            "--body-file",
-            "-",
-        ]);
-        let output = github::execute(&mut command, Some(&body), &state.artefact_dir)?;
-        github::created_issue(&output, &state.config.repository)
-    })();
-    match creation {
-        Ok(issue) => {
-            state.config.issue = json!(issue.number);
-            let last = state.tracking_attempts.last_mut().unwrap();
-            last["status"] = json!("succeeded");
-            last["issue"] = json!(issue);
-            state.lifecycle = "pending".into();
-            state.save()
-        }
-        Err(error) => {
-            // A CLI failure cannot prove the service did not accept the mutation.
-            state.lifecycle = "reconciliation_required".into();
-            state.diagnostic = format!(
-                "tracking creation for {} requires reconciliation: {error:#}",
-                state.config.repository
+    let number = if uncertain {
+        let output = Command::new("gh")
+            .args([
+                "issue",
+                "list",
+                "--state",
+                "all",
+                "--search",
+                &format!("{} in:body", ws.tracking_reference),
+                "--json",
+                "number,body",
+                "--limit",
+                "100",
+            ])
+            .current_dir(&ws.work_dir)
+            .output()
+            .context("reconcile uncertain issue acquisition")?;
+        ensure!(
+            output.status.success(),
+            "[{}] tracking reconciliation failed: {}",
+            ws.key,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let matches: Vec<Value> = serde_json::from_slice(&output.stdout)?;
+        ensure!(
+            matches.len() == 1,
+            "[{}] unresolved tracking acquisition {}; expected exactly one matching issue, found {}. Reconcile on GitHub before resuming",
+            ws.key,
+            ws.tracking_reference,
+            matches.len()
+        );
+        ensure!(
+            matches[0]
+                .get("body")
+                .and_then(Value::as_str)
+                .is_some_and(|body| body.contains(&format!("<!-- {} -->", ws.tracking_reference))),
+            "[{}] reconciled issue does not carry the exact acquisition reference",
+            ws.key
+        );
+        matches[0]
+            .get("number")
+            .cloned()
+            .context("reconciled issue has no number")?
+    } else {
+        let body = format!("{}\n\n<!-- {} -->", ws.task, ws.tracking_reference);
+        let output = Command::new("gh")
+            .args([
+                "issue",
+                "create",
+                "--title",
+                &ws.description,
+                "--body",
+                &body,
+            ])
+            .current_dir(&ws.work_dir)
+            .output()
+            .context("acquire explicitly requested tracking")?;
+        if !output.status.success() {
+            bail!(
+                "[{}] issue acquisition failed or acknowledgement was lost ({}); intent retained for reconciliation: {}",
+                ws.key,
+                ws.tracking_reference,
+                String::from_utf8_lossy(&output.stderr)
             );
-            let last = state.tracking_attempts.last_mut().unwrap();
-            last["status"] = json!("reconciliation_required");
-            last["diagnostic"] = json!(state.diagnostic);
-            state.save()?;
-            Err(error).context("tracking creation failed; no child launched and no automatic retry")
         }
-    }
+        Value::String(String::from_utf8(output.stdout)?.trim().to_owned())
+    };
+    ws.issue = Some(
+        issue::parse_optional(&number)?
+            .context("tracking service returned no issue number")?
+            .get(),
+    );
+    ws.lifecycle_state = "pending".into();
+    persist_state(ws)
 }

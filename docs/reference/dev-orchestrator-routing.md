@@ -1,7 +1,7 @@
 ---
 title: Dev-orchestrator routing contract
-description: Classification, leaf plans, optional issues and trusted execution routes.
-last_updated: 2026-11-12
+description: Per-workstream routing, optional tracking and plan validation.
+last_updated: 2026-11-13
 review_schedule: quarterly
 owner: amplihack
 doc_type: reference
@@ -9,337 +9,269 @@ doc_type: reference
 
 # Dev-orchestrator routing contract
 
-> **[IMPLEMENTED - Validation Pending]** This describes the intended issue
-> #2553 behaviour. New JSON interfaces are contract examples, pending
-> implementation and the [acceptance checks](../howto/verify-dev-orchestrator-routing.md).
+This reference describes per-workstream classification, routing and tracking.
 
-The hook routing prompt, dev-orchestrator, classification helpers and execution
-recipes use the same action-based rules. The Rust normaliser validates the
-complete plan before tracking creation or child execution.
+## Implementation boundary
+
+The native engine accepts branchless Operations leaves, immutable keys,
+classification, dependencies and Boolean `create_issue`. Both the decomposition
+helper and native execution validate the entire plan. `dependencies` is the
+canonical spelling; `depends_on` is accepted for existing decomposition assets.
+
+Operations runs in the caller's directory. Development uses the existing clone
+and recipe preparation. Each leaf has a separate owned runtime directory.
+Completion and cancellation use events; runtime budgets remain saved metadata
+and do not trigger timed interruption. Completed leaves are preserved on resume.
+A saved live or uncertain launch is rejected for manual reconciliation because
+this engine cannot safely observe a restored child. See
+[state and recovery](workstream-state.md#implementation-boundary).
+
+## Intended contract
+
+Every executable workstream has its own classification, route and immutable
+key. The complete plan is normalised and validated before issue acquisition,
+workspace preparation or agent execution.
 
 ## Contents
 
-- [Classification](#classification)
-- [Route selection](#route-selection)
-- [Decomposition JSON](#decomposition-json)
-- [Normalised configuration](#normalised-configuration)
-- [Optional issue parsing](#optional-issue-parsing)
-- [Explicit tracking](#explicit-tracking)
-- [Administrative-output tracking bindings](#administrative-output-tracking-bindings)
-- [Normalisation API](#normalisation-api)
-- [Execution controls](#execution-controls)
-- [Related documentation](#related-documentation)
+- [Routing invariant](#routing-invariant)
+- [Classification authority](#classification-authority)
+- [Classification labels and aliases](#classification-labels-and-aliases)
+- [Recipe normalisation](#recipe-normalisation)
+- [Operations routing](#operations-routing)
+- [Optional tracking issues](#optional-tracking-issues)
+- [Workstream identity](#workstream-identity)
+- [Workstream JSON API](#workstream-json-api)
+- [Configuration](#configuration)
+- [Validation and execution](#validation-and-execution)
+- [Security contract](#security-contract)
 
-## Classification
+## Routing invariant
 
-`Operations` is the canonical label for operations and project management.
-Classification boundaries accept equivalent labels, including `Ops`, `PM`,
-`Project Management` and `project-management`, ignoring case and surrounding
-whitespace. Stored plans and child contexts use `Operations`.
+Operations always selects `operations-direct`. A conflicting recipe,
+including a custom Operations recipe, cannot override that route.
 
-| Required action and destination | Classification |
+Development selects `default-workflow` or an eligible `quick-change` route.
+Existing Investigation, Q&A and Consensus routes retain their established
+behaviour. See [Quick-change selection](quick-change-recipe.md#precedence).
+
+These rules apply to every leaf, including Development leaves in an
+Operations-led plan. Top-level classification and concurrency settings
+cannot suppress required work.
+
+## Classification authority
+
+| Source | Effect |
 | --- | --- |
-| Triage, create or assign issues | `Operations` |
-| Answer research questions, report status or coordinate work | `Operations` |
-| Write a research answer in chat or an issue | `Operations` |
-| Change tracked source, documentation, recipes or configuration | `Development` |
-| Rename a term in documentation across repositories | `Development` for each repository edit |
-| Investigate the implementation of an existing system | `Investigation` |
-| Answer an ordinary explanation question | Existing `Q&A` route |
-| Resolve a decision through structured consensus | Existing `Consensus` route |
+| Per-workstream `classification`, `task_type`, or `type`, in that order | Determines the leaf's classification |
+| Top-level `task_type` | Fallback when the leaf has no classification |
+| Model-provided `recipe` | Advisory; subject to route validation and the routing invariant |
 
-The action and its destination determine the route. Generic verbs such as
-“write” and “create”, numbered requirements and administrative complexity do
-not promote Operations to Development. Reading repository files as research
-does not make an activity Development; changing those files does.
+Classification follows the requested action and destination. Repository-file
+edits require Development handling, including wording changes in
+documentation. References to source paths, tests or documentation alone do
+not establish edit intent. Research reports and issue comments use Operations
+handling; writing those reports into repository files uses Development.
 
-A mixed request becomes separately executable leaves. Each leaf has one task,
-one repository and one classification. Dependencies connect leaves whose
-inputs require earlier results. Only those leaves execute: the original mixed
-request is never also submitted to a direct Operations step.
+Mixed requests are decomposed before dispatch. Each leaf receives its own
+task and prerequisite results, so an Operations agent is not asked to execute
+the original mixed request again. See [Classifier calibration](workflow-classifier.md#operations-classification).
 
-### Classification precedence
+## Classification labels and aliases
 
-Per-leaf fields have this precedence: `classification`, then `task_type`, then
-`type`. Top-level `task_type` supplies a fallback for compatible homogeneous
-plans and legacy configurations. An invalid explicit classification produces
-a diagnostic rather than falling through to another field.
+Labels are trimmed and compared without case sensitivity. `Ops`,
+`Operations`, `PM`, `Project Management` and `project-management` identify
+Operations. Canonical plans and child contexts use `Operations`.
 
-New mixed plans require explicit per-leaf classifications. A top-level label
-cannot turn their Operations leaves into Development. Aliases are normalised
-before route selection.
+The remaining canonical labels are `Development`, `Investigation`, `Q&A`
+and `Consensus`. The compatibility fields `task_type` and `type` follow the
+same classification rules as `classification`.
 
-## Route selection
+## Recipe normalisation
 
-| Canonical leaf classification | Authoritative route |
+| Leaf classification | Input selection | Resolved route |
+| --- | --- | --- |
+| Operations | Any recipe or override | `operations-direct` |
+| Development | Missing, blank or model-selected recipe | `default-workflow` |
+| Development | Eligible `workflow=quick-change` selection | `quick-change` |
+| Development | `workflow=default-workflow` | `default-workflow` |
+| Investigation | Missing, blank or Development recipe | `investigation-workflow` |
+| Q&A | Missing, blank or Development recipe | `qa-workflow` for a plan leaf; direct answer for top-level Q&A |
+| Consensus | Missing, blank or Development recipe | `consensus-workflow` |
+| Investigation, Q&A or Consensus | Explicit supported non-default route | Existing selection rules apply |
+
+Recipe identifiers must be supported by the runner. Arbitrary task text is
+never interpreted as a recipe identifier or shell command.
+
+## Operations routing
+
+A pure Operations request executes directly or through one scoped checklist
+agent. A decomposed Operations leaf uses `operations-direct` regardless of
+recipe overrides. Routing occurs before branch lookup, clone creation or
+worktree preparation.
+
+Operations executes in the supplied context and stores private runtime
+artefacts separately. It does not run `default-workflow`, create a
+development workspace or open a development PR. A dirty working tree does
+not change the classification or authorise a PR.
+
+The checklist agent reports `completed`, `partial` or `failed`, with the
+result and any unfinished actions. An unsuccessful process or runner exit
+overrides a claim of success in its prose. Partial work is not sufficient to
+release a dependant that requires successful completion.
+
+The route controls orchestration and Development setup. It does not provide
+filesystem confinement.
+
+## Optional tracking issues
+
+One parser normalises issue values before numeric validation or downstream
+use.
+
+| Input | Result |
 | --- | --- |
-| `Operations` | `operations-direct`: one agent following the leaf's checklist |
-| `Development` | `default-workflow`, or eligible `quick-change` selection |
-| `Investigation` | Existing investigation route, normally `investigation-workflow` |
-| `Q&A` | Existing direct answer or recognised Q&A recipe route |
-| `Consensus` | Existing consensus route |
+| Missing field, JSON `null`, empty or whitespace-only string | Absent |
+| `TBD`, `TBC`, `TODO`, `N/A`, `none`, `null`, `unknown`, `unassigned`, `pending` | Absent; trimmed and compared without case sensitivity |
+| Positive JSON integer through `18446744073709551615` | Present |
+| Positive ASCII decimal string, including `"002553"` | Canonical integer `2553` |
+| `"#2553"` | Canonical integer `2553` |
+| `"https://github.com/rysweet/amplihack-rs/issues/2553"` | Canonical integer `2553` |
+| Zero, negative, fraction, overflow, Boolean, container or unknown string | Validation error |
 
-A model-provided `recipe` is advisory. Operations always becomes
-`operations-direct`, including when its recipe says `default-workflow` or
-`quick-change`. Classic mode uses an equivalent direct adapter. Operations
-creates no clone, worktree, branch or implementation PR.
+Issue URLs must use the `github.com` host and an `/issues/<number>` path.
+Parsing is lexical and performs no network request. The number is tracking
+metadata; reading an issue as research material does not attach it as tracking.
 
-Development retains the [quick-change selection rules](quick-change-recipe.md#precedence).
-A model recipe alone cannot select `quick-change` in a decomposition. Valid
-`workflow=quick-change` and `workflow=default-workflow` overrides apply only
-to eligible Development leaves. Existing-branch, named-branch and PR guards
-continue to apply; an override cannot change an Operations leaf's route.
+Absent issues are omitted from generated configuration and child context.
+The child receives neither a fabricated `issue_number` nor an inherited
+`AMPLIHACK_WORKSTREAM_ISSUE` from another leaf. Existing positive numbers
+remain available to downstream tracking consumers.
 
-Investigation, Q&A and Consensus retain their existing behaviour. A supplied
-recipe cannot select an arbitrary executable or evade the trusted route map.
-An inapplicable `quick-change` is replaced by the classification's own route.
+Legacy persisted numeric zero reads as absence. This compatibility applies
+only to saved state: zero in new configuration is invalid.
 
-## Decomposition JSON
+### Explicit tracking acquisition
 
-`amplihack orch helper build-workstreams-config` reads a decomposition object
-from standard input and prints the path of its atomically written configuration.
-The output file has mode `0600` on Unix. Diagnostics go to standard error.
+| `issue` after normalisation | `create_issue` | Behaviour before execution |
+| --- | --- | --- |
+| Present | Missing or false | Use the existing issue |
+| Present | True | Use the existing issue; do not create a duplicate |
+| Absent | Missing or false | Execute without an issue |
+| Absent | True | Acquire and persist a valid issue before executing this leaf |
 
-This complete input describes two issue-less leaves in the current repository:
+`create_issue` is a Boolean. Absence alone never requests creation. Explicit
+requests for tracked work set it on the affected leaves.
+
+The existing authenticated tracking service performs acquisition. Intent and
+a stable reconciliation reference are saved first; the validated result is
+saved before launch. Failed acquisition prevents that leaf from executing.
+An uncertain result is reconciled on resume, or reported as unresolved with
+an actionable error. It is never retried blindly. See [Acquisition recovery](workstream-state.md#tracking-acquisition).
+
+## Workstream identity
+
+The workstream key is independent of optional tracking metadata. Keys contain
+1–64 ASCII letters, digits, hyphens or underscores. Unsafe or duplicate keys
+are rejected before external actions.
+
+Initially tracked work preserves its numeric identity, for example `2553`.
+An issue-less leaf receives a safe unique key during normalisation. The key
+is persisted with the canonical plan before execution and reused on resume.
+Adding an issue never changes its key, artefact paths or dependency references.
+
+Saved identity or ownership conflicts are errors. A mismatched saved key is
+not ignored or replaced with a newly derived identity. See [Workstream state](workstream-state.md).
+
+## Workstream JSON API
+
+The following transformation and schema require implementation.
+
+`amplihack orch helper build-workstreams-config` accepts a decomposition object
+with `task_type` and `workstreams`. `amplihack orch run` consumes the
+normalised workstream array. The transformation preserves each leaf's task,
+description, classification, dependencies and tracking intent.
+
+This is an Operations-led decomposition with a dependent repository edit:
 
 ```json
 {
   "task_type": "Operations",
-  "goal": "Explain routing, then document the distinction",
   "workstreams": [
     {
-      "name": "research-routing",
-      "repository": "rysweet/amplihack-rs",
-      "classification": "Project Management",
-      "description": "Explain in chat how Operations and Development differ.",
-      "issue": " TBD ",
+      "key": "research-routing",
+      "classification": "Operations",
+      "task": "Read issue #2553 in rysweet/amplihack-rs and answer its routing questions in the result.",
+      "description": "Research routing requirements",
+      "issue": "TBD",
+      "create_issue": false,
       "recipe": "default-workflow"
     },
     {
-      "name": "document-routing",
-      "repository": "rysweet/amplihack-rs",
+      "key": "document-routing",
       "classification": "Development",
-      "description": "Update docs/operations-routing.md using the research result.",
-      "depends_on": ["research-routing"]
+      "branch": "feat/document-operations-routing",
+      "task": "Use the prerequisite answers to update docs/operations-routing.md.",
+      "description": "Document routing requirements",
+      "depends_on": ["research-routing"],
+      "create_issue": false
     }
   ]
 }
 ```
 
-| Input field | Contract |
+The first leaf resolves to `operations-direct` and has no tracking issue.
+The second resolves to `default-workflow` and runs after successful research,
+receiving its result under `research-routing`. Both retain their keys.
+
+The [execution schema](orch-run-command.md#field-reference) defines the fields
+used in the normalised array.
+
+## Configuration
+
+| Setting | Routing effect |
 | --- | --- |
-| `name` | Unique, non-blank plan key; dependency names refer to this key |
-| `description` | Non-blank task handed to this leaf's agent |
-| `repository` | Repository identifier authorised by the trusted run context |
-| `classification` | Preferred classification; required on each new mixed-plan leaf |
-| `task_type`, `type` | Compatibility classification fields, in that order |
-| `workstream_id` | Existing UUID when continuing an established plan; otherwise allocated before normalisation |
-| `issue` | Optional positive issue number; see parsing below |
-| `depends_on` | Names of prerequisite leaves; defaults to an empty list |
-| `tracking` | Optional tracking requirement and creation details; defaults to optional |
-| `required_outputs` | Named output kinds validated before success; see the [result contract](workstream-state.md#completion-and-prerequisite-json) for declarations and defaults |
-| `recipe` | Advisory route hint, checked against the canonical classification |
+| `workflow=quick-change` or `workflow=default-workflow` | Applies only to eligible Development work; cannot change Operations routing |
+| Unknown `workflow` override | Warning; does not select an arbitrary recipe |
+| `force_single_workstream=true` | Executes required leaves sequentially; preserves their tasks, routes and dependencies |
+| `strict_delivery` | Preserves delivery requirements on Development leaves without dropping Operations leaves |
+| `AMPLIHACK_MAX_DEPTH=0` | Does not discard leaves; the caller must supply a supported execution context |
+| `AMPLIHACK_AGENT_BINARY` | Selects the agent backend; does not change classification or routing |
+| `AMPLIHACK_HOME` | Locates installed assets; does not change routing |
 
-Omitted repository context is resolved from the trusted current repository for
-compatible single-repository plans. Cross-repository leaves require explicit,
-authorised repositories. A model cannot provide an arbitrary working directory.
+Installed classification prompts, hook guidance and recipe assets follow the
+same boundary as native execution.
 
-## Normalised configuration
+## Validation and execution
 
-The helper emits a JSON array accepted by both `amplihack orch run` and
-`amplihack multitask run`. The first entry above has this shape; generated UUIDs
-vary between new plans and remain stable when the plan is resumed:
+Validation checks non-empty tasks, safe unique keys, issue values, supported
+routes, dependency references and acyclicity across the complete plan.
+Independent errors are reported together with workstream keys and field
+paths. Invalid plans perform no tracking requests, workspace preparation or
+agent execution.
 
-```json
-[
-  {
-    "workstream_id": "8f9f57b5-9232-49df-b985-c2c92ee997c1",
-    "key": "research-routing",
-    "repository": "rysweet/amplihack-rs",
-    "classification": "Operations",
-    "task": "Explain in chat how Operations and Development differ.",
-    "description": "research-routing",
-    "recipe": "operations-direct",
-    "depends_on": [],
-    "required_outputs": {"answer": "answer"},
-    "tracking": {"required": false}
-  }
-]
-```
+Completion and cancellation events drive scheduling. A completed prerequisite
+releases capacity and makes eligible dependants runnable after its result is
+persisted. Failed, partial or cancelled prerequisites visibly block affected
+dependants. Successful prose cannot turn process failure into completion.
+Persistence failure stops additional launches and preserves recovery data.
 
-The second entry retains its own UUID, selects `default-workflow`, and refers
-to the first entry's UUID in `depends_on`. A Development branch is supplied or
-generated without depending on an issue number. Operations has no generated
-branch. Absent issues are omitted from canonical output.
+## Security contract
 
-`key` is the plan-local reference; `workstream_id` is the immutable execution
-identity. Neither an issue number nor an array position is an execution identity.
-The [execution schema](orch-run-command.md#workstreams-json-schema) lists the
-remaining compatible fields.
+Plans, saved state and prerequisite results are untrusted input. Keys and
+routes are validated before use; task and service values travel through
+structured interfaces or separate process arguments. Issue numbers confer
+no additional authority.
 
-## Optional issue parsing
+Private runtime directories and atomic state files use restrictive
+permissions. Ownership and filesystem checks guard reuse and deletion,
+including symlink substitution. A PID alone cannot authorise observation or
+signalling of a restored process. Credentials are excluded from saved plans,
+contexts, reconciliation references and diagnostics.
 
-One shared parser is used by decomposition, configuration, runtime state,
-persistence and launcher context construction.
+## Related
 
-| Input | Result |
-| --- | --- |
-| Omitted, JSON `null`, `""` or whitespace-only string | Absent |
-| `TBD`, `TBC`, `TODO`, `N/A`, `none`, `null`, `unknown`, `unassigned`, `pending` | Absent after trimming and case-insensitive comparison |
-| Positive JSON integer through `18446744073709551615` (`u64::MAX`) | Present, preserved exactly |
-| Trimmed ASCII decimal string in the same range, including `" 002553 "` | Present; canonical integer `2553` |
-| `0`, negative, signed string, fraction, exponent notation, Boolean, object, array, URL, `"#2553"`, overflow or other text | Validation error |
-
-For example, `" tBd "`, `" N/a "` and `"PENDING"` all mean absence. A malformed
-value is diagnosed with its leaf and field; removing an optional issue is a
-valid correction, while replacing it with another invented number is not.
-
-`IssueNumber` holds a validated positive `u64`. `IssueRef` binds that number to
-its repository; its JSON shape is `{"repository":"rysweet/amplihack-rs","number":2553}`.
-The config's `issue` is scoped by its leaf's `repository`. A reference from a
-different repository cannot satisfy this leaf's tracking requirement.
-
-Absence remains absence throughout execution. It does not become `0`, `TBD`,
-an empty environment variable or a requirement to create an issue.
-
-## Explicit tracking
-
-A request for new tracked work sets `tracking.required` to `true`. When there
-is no applicable supplied or persisted issue or explicit producer binding, the
-leaf supplies a non-blank `tracking.title` and `tracking.body`. For example:
-
-```json
-{
-  "required": true,
-  "title": "Document Operations routing in amplihack-rs",
-  "body": "Update docs/operations-routing.md to distinguish administrative actions from tracked repository edits."
-}
-```
-
-Tracking resolution follows this order:
-
-1. Reuse an applicable supplied issue or a persisted successful resolution
-   bound to this workstream and repository.
-2. Resolve an explicit `from_result` binding after its prerequisite succeeds.
-   An unresolved or invalid binding blocks execution; it never falls back to creation.
-3. If tracking is optional, continue without creating an issue.
-4. If tracking is required, validate creation details, persist an attempt,
-   invoke `gh` once, validate the returned issue and persist success before
-   execution.
-
-Conflicting tracking references require reconciliation. A definite creation
-failure is reported as such; the leaf does not run claiming to be tracked.
-An ambiguous external outcome remains unresolved and is not retried
-automatically. See [tracking and resumption](workstream-state.md#tracking-attempts).
-
-“Open an issue for a colleague” is itself an Operations task. Its created issue
-is an administrative result, not automatically the tracking issue for that
-leaf or another leaf. Downstream tracking reuse requires an explicit binding
-to the producer's result, the consuming workstream and the target repository.
-
-## Administrative-output tracking bindings
-
-Use a producer binding when issue creation is an explicit administrative leaf.
-For a simple request to create tracking and then edit a document, tracking
-resolution alone suffices; do not also schedule a duplicate issue-creation task.
-This planned decomposition makes the producer/consumer interface explicit:
-
-```json
-{
-  "workstreams": [
-    {
-      "name": "open-tracking",
-      "repository": "rysweet/amplihack-rs",
-      "classification": "Operations",
-      "description": "Create an issue titled Clarify Operations routing examples, requesting clearer administrative and repository edit examples in docs/operations-routing.md.",
-      "required_outputs": {"created_issue": "issue"}
-    },
-    {
-      "name": "clarify-examples",
-      "repository": "rysweet/amplihack-rs",
-      "classification": "Development",
-      "description": "Clarify the administrative and repository edit examples in docs/operations-routing.md under the created issue.",
-      "depends_on": ["open-tracking"],
-      "tracking": {
-        "required": true,
-        "from_result": {"workstream": "open-tracking", "output": "created_issue"}
-      }
-    }
-  ]
-}
-```
-
-The consuming leaf owns its binding through its own UUID and repository.
-Normalisation resolves `from_result.workstream` to the producer UUID and emits
-`workstream_id` in its place, preserving `output`:
-
-```json
-{
-  "required": true,
-  "from_result": {
-    "workstream_id": "8f9f57b5-9232-49df-b985-c2c92ee997c1",
-    "output": "created_issue"
-  }
-}
-```
-
-`from_result` requires `required: true`, exactly one producer reference, and a
-non-blank output name. It is mutually exclusive with a supplied `issue` or
-creation `title`/`body`. The producer must be an explicit direct dependency
-whose `required_outputs` declares that name as `issue`. Missing producers,
-undeclared outputs, incompatible kinds and repository mismatches invalidate
-the entire plan before any external action. Normalised input uses only the UUID
-form; decomposition uses only the plan-key form.
-
-At dispatch, validate the producer's persisted successful result and its
-repository-scoped `IssueRef`, then atomically save the resolved reference on
-the consumer before launch. Missing or conflicting evidence releases no
-consumer. A producer failure blocks its dependants. Never create a substitute
-issue when a binding cannot be resolved. See [completion and prerequisite
-JSON](workstream-state.md#completion-and-prerequisite-json) for exact result fields.
-
-## Normalisation API
-
-`normalise_plan` is an internal pure Rust boundary, not an agent action or a
-public library API. It receives the full leaf plan and trusted context,
-including preallocated identities and authorised repository resolution.
-It returns a complete normalised plan or typed diagnostics. It performs no
-filesystem writes, UUID allocation, issue creation or process launch.
-
-It validates tasks, repository bindings, keys, UUIDs, issue values, tracking
-details and classifications; rejects duplicate identities, unknown or repeated
-dependency references, self-dependencies and cycles; resolves dependency keys
-to execution identities; and applies the trusted route map. An Operations
-leaf requesting tracked-file edits is rejected for correction or decomposition
-before external actions.
-
-The configuration wrapper allocates identities once, calls the pure boundary
-and atomically persists the complete result. Validation never launches a
-valid prefix of an invalid plan. A failed persistence step prevents dispatch.
-
-## Execution controls
-
-| Setting or condition | Effect |
-| --- | --- |
-| `workflow=quick-change` or `workflow=default-workflow` | Development selection only, subject to existing eligibility guards |
-| Unknown workflow override | Warning; no arbitrary recipe selection |
-| `force_single_workstream=true` | Serial execution of the same leaves and dependencies |
-| Strict delivery, depth limit or sequential fallback | Same leaves and routes; concurrency changes only |
-| Resume | Same identities; completed leaves are skipped and uncertain mutations require reconciliation |
-| Dirty initial repository | Does not promote Operations or trigger Development review, reflection or PR phases |
-| `AMPLIHACK_AGENT_BINARY` | Chooses the agent backend, without changing the leaf's route |
-| `AMPLIHACK_HOME` | Locates assets, without changing classification |
-
-Development reflection, review and delivery validation apply to relevant
-Development results. Operations results are assessed against their own task
-and required outputs. Fallback never sends the entire mixed request through
-Development or through the direct Operations adapter.
-
-## Related documentation
-
-- [Operations routing explained](../operations-routing.md)
 - [Run Operations and mixed requests](../howto/run-operations-and-mixed-work.md)
-- [Workstream state and migration](workstream-state.md)
-- [Verify routing behaviour](../howto/verify-dev-orchestrator-routing.md)
-- [Workflow classifier](workflow-classifier.md)
+- [Operations routing explained](../operations-routing.md)
+- [Workstream state and recovery](workstream-state.md)
+- [Multitask command](multitask-command.md)
 - [Coordination messages](coordination-messages.md)

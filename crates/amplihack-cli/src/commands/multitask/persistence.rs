@@ -11,45 +11,44 @@ use anyhow::Result;
 use chrono::Utc;
 use std::fs;
 use std::path::Path;
-use tracing::{error, warn};
+#[cfg(test)]
+use tracing::error;
+use tracing::warn;
 
-pub(super) fn load_state(state_file: &Path) -> Option<PersistedState> {
-    // Missing != corrupt: an absent state file is the normal first-run
-    // condition and stays silent; a present-but-unreadable/unparseable file is
-    // surfaced so a real failure is never mistaken for "no state".
-    let text = match fs::read_to_string(state_file) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(e) => {
-            warn!(
-                path = %state_file.display(),
-                error = %e,
-                "failed to read workstream state file; treating as absent"
-            );
-            return None;
-        }
-    };
-    match serde_json::from_str(&text) {
-        Ok(state) => Some(state),
-        Err(e) => {
-            error!(
-                path = %state_file.display(),
-                error = %e,
-                "workstream state file is present but corrupt; ignoring it (this is NOT the same as a missing file)"
-            );
-            None
-        }
+pub(super) fn read_state(path: &Path) -> Result<Option<PersistedState>> {
+    use std::io::Read;
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
     }
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(anyhow::anyhow!("read state {}: {error}", path.display())),
+    };
+    anyhow::ensure!(
+        file.metadata()?.is_file(),
+        "state is not a regular file: {}",
+        path.display()
+    );
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(Some(serde_json::from_slice(&bytes).map_err(|error| {
+        anyhow::anyhow!("invalid state {}: {error}", path.display())
+    })?))
 }
 
 pub(super) fn persist_state(ws: &Workstream) -> Result<()> {
     let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let workstream_scope = ws.workstream_scope.clone();
     if workstream_scope.base_ref.is_empty() && !workstream_scope.repository.is_empty() {
-        warn!("[{}] workstream_scope missing base_ref", ws.issue);
+        warn!("[{}] workstream_scope missing base_ref", ws.key);
     }
 
-    let existing = load_state(&ws.state_file);
+    let existing = read_state(&ws.state_file)?;
     let created_at = existing
         .as_ref()
         .and_then(|s| {
@@ -62,7 +61,14 @@ pub(super) fn persist_state(ws: &Workstream) -> Result<()> {
         .unwrap_or_else(|| now.clone());
 
     let state = PersistedState {
-        issue: i128::from(ws.issue),
+        classification: ws.classification.clone(),
+        dependencies: ws.dependencies.clone(),
+        create_issue: ws.create_issue,
+        tracking_reference: ws.tracking_reference.clone(),
+        result: ws.result.clone(),
+
+        key: ws.key.to_string(),
+        issue: ws.issue,
         branch: ws.branch.clone(),
         description: ws.description.clone(),
         task: ws.task.clone(),
@@ -89,7 +95,6 @@ pub(super) fn persist_state(ws: &Workstream) -> Result<()> {
         created_at,
         updated_at: now,
         resume_context: existing.and_then(|s| s.resume_context),
-        ..Default::default()
     };
 
     let json = serde_json::to_string_pretty(&state)?;
@@ -102,10 +107,11 @@ pub(super) fn persist_state(ws: &Workstream) -> Result<()> {
 /// A failed checkpoint write leaves nothing on disk while the caller believes
 /// the workstream is resumable. Logging the failure keeps a lost checkpoint
 /// distinguishable from a genuinely up-to-date one.
+#[cfg(test)]
 pub(super) fn persist_checkpoint(ws: &Workstream) {
     if let Err(e) = persist_state(ws) {
         error!(
-            issue = ws.issue,
+            key = %ws.key,
             path = %ws.state_file.display(),
             error = %e,
             "failed to persist workstream checkpoint; on-disk state is now stale or missing despite the workstream being marked resumable"

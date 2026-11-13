@@ -4,8 +4,8 @@
 //! `error!`, and a FAILED checkpoint write is logged instead of silently
 //! claiming the workstream is resumable.
 
-use super::models::{PersistedState, Workstream};
-use super::persistence::load_state;
+use super::models::{PersistedState, Workstream, WorkstreamKey};
+use super::persistence::read_state;
 use super::state::finalize_workstream;
 use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -69,10 +69,6 @@ fn capture<T>(op: impl FnOnce() -> T) -> (T, Vec<String>) {
     (out, captured)
 }
 
-fn has_level(lines: &[String], level: &str) -> bool {
-    lines.iter().any(|l| l.starts_with(level))
-}
-
 fn joined(lines: &[String]) -> String {
     lines.join("\n")
 }
@@ -81,8 +77,8 @@ fn joined(lines: &[String]) -> String {
 fn load_state_missing_file_is_silent() {
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("ws-does-not-exist.json");
-    let (result, logs) = capture(|| load_state(&missing));
-    assert!(result.is_none(), "missing file must load as None");
+    let (result, logs) = capture(|| read_state(&missing));
+    assert!(result.unwrap().is_none(), "missing file must load as None");
     assert!(
         logs.is_empty(),
         "a missing state file is the normal first-run condition and must \
@@ -95,17 +91,8 @@ fn load_state_corrupt_file_logs_error() {
     let dir = tempfile::tempdir().unwrap();
     let corrupt = dir.path().join("ws-42.json");
     fs::write(&corrupt, b"{ this is not valid json").unwrap();
-    let (result, logs) = capture(|| load_state(&corrupt));
-    assert!(result.is_none(), "corrupt file still loads as None");
-    assert!(
-        has_level(&logs, "ERROR"),
-        "a corrupt state file must be surfaced at error! (distinguishable \
-         from a missing file); got: {logs:?}"
-    );
-    assert!(
-        joined(&logs).contains("ws-42.json"),
-        "the diagnostic must reference the offending path; got: {logs:?}"
-    );
+    let error = read_state(&corrupt).expect_err("corrupt state must stop execution");
+    assert!(error.to_string().contains("ws-42.json"));
 }
 
 #[test]
@@ -113,12 +100,13 @@ fn load_state_valid_file_returns_some_silently() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ws-7.json");
     let state = PersistedState {
-        issue: 7,
+        key: "7".to_string(),
+        issue: Some(7),
         ..Default::default()
     };
     fs::write(&path, serde_json::to_string(&state).unwrap()).unwrap();
-    let (result, logs) = capture(|| load_state(&path));
-    assert_eq!(result.map(|s| s.issue), Some(7));
+    let (result, logs) = capture(|| read_state(&path));
+    assert_eq!(result.unwrap().map(|s| s.issue), Some(Some(7)));
     assert!(
         logs.is_empty(),
         "a valid load must be silent; got: {logs:?}"
@@ -130,7 +118,8 @@ fn persist_state_failure_is_logged() {
     let base = tempfile::tempdir().unwrap();
     let state = tempfile::tempdir().unwrap();
     let mut ws = Workstream::new(
-        792,
+        WorkstreamKey::new("792").unwrap(),
+        Some(792),
         "feature/obs".to_string(),
         "desc".to_string(),
         "task".to_string(),

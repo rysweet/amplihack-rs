@@ -1,17 +1,13 @@
 ---
 title: Multitask command reference
-description: Execute and inspect leaf workstreams with stable identities and optional issues.
-last_updated: 2026-11-12
+description: Native workstream commands and Operations routing.
+last_updated: 2026-11-13
 review_schedule: quarterly
 owner: amplihack
 doc_type: reference
 ---
 
 # amplihack multitask — Command Reference
-
-> **[IMPLEMENTED - Validation Pending]** Per-leaf routing, optional tracking,
-> result bindings and the `reconcile` subcommand describe the issue #2553
-> contract. These additions require implementation and validation before use.
 
 ## Synopsis
 
@@ -21,21 +17,17 @@ amplihack multitask <SUBCOMMAND>
 
 ## Description
 
-Dependency-aware workstream orchestrator. Runs ready leaves concurrently,
-using stable execution UUIDs independently of optional issue tracking.
-Development uses isolated workspaces; Operations executes one scoped task in
-its trusted repository with a separate private artefact directory.
+Runs a validated plan with per-leaf routing and optional issue tracking.
+Operations runs in the supplied execution directory; Development retains clone
+preparation. The engine preserves dependencies, immutable keys and results in
+`<TMPDIR>/amplihack-workstreams/state/canonical-plan.json`. It schedules work
+from child-exit and cancellation events, without interval or settle sleeps.
 
 ## Subcommands
 
 ### run
 
-Launch workstreams from a JSON configuration file. Operations always uses the
-direct adapter in both `recipe` and `classic` modes; neither `--recipe` nor a
-per-entry recipe can send it through Development.
-
-The [workstreams JSON schema](orch-run-command.md#workstreams-json-schema) and
-[routing contract](dev-orchestrator-routing.md) apply to both entry points.
+Launch parallel workstreams from a JSON configuration file.
 
 ```
 amplihack multitask run <CONFIG> [OPTIONS]
@@ -46,31 +38,15 @@ amplihack multitask run <CONFIG> [OPTIONS]
 | `<CONFIG>` | string | — | Path to workstreams JSON config file. Required. |
 | `--mode <MODE>` | string | `recipe` | Execution mode: `recipe` (uses recipe runner) or `classic` (direct execution). |
 | `--recipe <NAME>` | string | `default-workflow` | Recipe name for recipe mode. Ignored in classic mode. |
-| `--max-runtime <SECS>` | integer | — | Override workstream runtime budget in seconds. When reached, the timeout policy applies. |
-| `--timeout-policy <POLICY>` | string | — | What to do when `--max-runtime` is exceeded: `interrupt-preserve` (stop and keep artifacts) or `continue-preserve` (let active work finish, keep artifacts). |
+| `--max-runtime <SECS>` | integer | — | Legacy runtime-budget metadata; the event scheduler does not impose timed interruption. |
+| `--timeout-policy <POLICY>` | string | — | Legacy policy metadata saved for compatibility; no timer is installed. |
 | `--dry-run` | bool | `false` | Show what would be executed without launching any workstreams. |
-
-### reconcile (planned)
-
-Record an externally verified outcome for an uncertain tracking attempt or
-Operations action. This command does not launch work or change GitHub:
-
-```text
-amplihack multitask reconcile <CONFIG> --resolution-file <PATH>
-```
-
-`CONFIG` is the original saved normalised plan; `PATH` contains one resolution
-object. The [reconciliation contract](workstream-state.md#reconciliation-and-safe-resume)
-defines its required identities, revision, evidence, outcome and receipt.
-An exclusive lock, ownership validation and revision check protect the update.
-Unresolved outcomes remain blocked. Resume separately with `run` using the same
-plan and options. See the [resume procedure](../howto/run-operations-and-mixed-work.md#resume-without-repeating-administrative-actions).
 
 ### cleanup
 
-Remove eligible owned workstream artefacts. Development retains its existing
-delivery and merged-PR checks. Operations cleanup never removes its repository
-working directory. Unknown external outcomes are retained for reconciliation.
+Remove workstream directories when the configured branch has a merged PR.
+Completed Operations leaves can remove their owned runtime artefacts without a PR.
+Cleanup preserves the caller's execution repository and unowned directories.
 
 ```
 amplihack multitask cleanup <CONFIG> [OPTIONS]
@@ -83,8 +59,7 @@ amplihack multitask cleanup <CONFIG> [OPTIONS]
 
 ### status
 
-Display the current state of existing workstreams by execution identity,
-including optional tracking, completion and blocked or uncertain outcomes.
+Display the current state of existing workstreams.
 
 ```
 amplihack multitask status [OPTIONS]
@@ -92,7 +67,7 @@ amplihack multitask status [OPTIONS]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--base-dir <PATH>` | string | — | Base directory for workstream artifacts. When omitted, uses the default location. |
+| `--base-dir <PATH>` | string | — | Base directory for workstream artefacts. When omitted, uses the default location. |
 
 ## Examples
 
@@ -123,21 +98,40 @@ amplihack multitask cleanup workstreams.json --dry-run
 | `0` | Success (all workstreams completed, or status/cleanup succeeded) |
 | `1` | Error (config not found, workstream failures, invalid arguments) |
 
+## Workstream identity and tracking
+
+Keys are derived from configuration on every invocation. A tracked workstream
+uses its issue number; an issue-less workstream uses a slug of its description
+(or branch), suffixed with its one-based index. Keys contain 1–64 ASCII
+letters, digits, hyphens or underscores, and duplicate derived keys are
+rejected during registration. Preparation can already have occurred for earlier
+entries before a later registration fails.
+
+Changing issues, descriptions or array order can change keys and paths.
+The canonical plan stores the allocated key. Resume that saved plan to keep keys
+stable when attaching an issue. Conflicting saved ownership or task identity
+stops execution. A per-leaf Boolean `create_issue=true` acquires tracking before
+launch only when no valid issue is already present. Unknown placeholders are
+errors; supported absence values are normalised before any numeric use.
+
+Dry-run validates the whole plan and shows resolved routes without preparing
+workspaces or contacting tracking services. Runtime state and logs use the same
+private temporary root across launch, inspection, resumption and cleanup.
+
 ## Workstream context in recipe mode
 
 In recipe mode each workstream writes its context to `context.json` (mode
-0600). The launcher passes it through `amplihack recipe run` with
-`--context-file` and the trusted leaf route. Operations uses `operations-direct`.
-Classic mode supplies an equivalent scoped context to its direct adapter.
+0600) and its launcher script runs:
+
+```bash
+RECIPE='default-workflow'
+exec amplihack recipe run "$RECIPE" --context-file "$CONTEXT_JSON" --verbose
+```
 
 The context is never expanded into command-line arguments, so a workstream
 with a large task description cannot fail with `Argument list too long`, and
 values containing spaces or quotes are passed unchanged. The recipe name is
 validated before it is quoted into the script.
-
-Absent issues are omitted from context and inherited issue-specific variables
-are cleared. Only relevant prerequisite results are passed, with provenance.
-See [child context and environment](workstream-state.md#child-context-and-environment).
 
 When a workstream entry has an `is_critical_code` field, its value is written
 to `context.json` byte for byte under the same key. The launcher does not
@@ -149,6 +143,8 @@ the [Consensus Criticality Contract](./consensus-criticality-contract.md#workstr
 
 ## Related
 
+- [Dev-Orchestrator Routing Contract](./dev-orchestrator-routing.md) — Route selection, optional issues and workstream identity
+- [Run Operations and Mixed Requests](../howto/run-operations-and-mixed-work.md) — Running work that has no issue number
 - [recipe Command](./recipe-command.md) — Recipes executed by multitask in recipe mode
 - [Recipe context from files](./large-payload-delivery.md#recipe-context-from-files) - How `--context-file` converts JSON values
 - [Environment Variables](./environment-variables.md) — Variables that influence workstream execution

@@ -1,92 +1,380 @@
 ---
 name: dev-orchestrator
-description: Classify actions, separate administrative and repository work, and dispatch validated workstreams.
+description: |
+  Default task orchestrator for all development and investigation work.
+  Classifies tasks, decomposes into parallel workstreams if appropriate,
+  and routes execution through the recipe runner. Replaces ultrathink-orchestrator.
+version: 2.0.0
+auto_activates:
+  - "implement"
+  - "build"
+  - "create"
+  - "add feature"
+  - "fix bug"
+  - "refactor"
+  - "investigate"
+  - "analyze"
+  - "research"
+  - "explore"
+  - "develop"
+  - "make"
+priority: 5
 ---
 
-# Dev orchestrator
+# Dev Orchestrator Skill
 
-Classify the action required and where its result belongs. Use the native
-`smart-orchestrator` recipe for Development and Investigation. Administrative
-work can run directly or with one agent following a checklist.
+## Workflow Graph
 
-## Classification
+```mermaid
+flowchart TD
+    A[User Request] --> B{Classify Task}
+    B -->|Q&A| C[analyzer agent]
+    B -->|Operations| D[direct execution, or operations-direct per leaf]
+    B -->|Development| E{Recursion Guard}
+    B -->|Investigation| E
 
-| Class | Action and destination | Execution |
-| --- | --- | --- |
-| Operations | Issue triage, creation and assignment; research answers in chat or issues; status reporting and coordination | Direct execution or one administrative agent |
-| Development | Changes to tracked repository files, including documentation wording | `default-workflow`, or a trusted `quick-change` selection |
-| Investigation | Examine an existing implementation and produce findings | `investigation-workflow` |
-| Q&A | Answer a question | Direct answer or `qa-workflow` |
-| Consensus | Existing consensus work | `consensus-workflow` |
+    E -->|BLOCKED| F[derive-recursion-guard emits BLOCKED:*]
+    F --> G["execute-single-fallback-blocked-{development,investigation}"]
+    G --> R1_BLOCKED[Round 1 result]
 
-Operations is canonical. Accept Ops, PM, project management and
-project-management as equivalent labels. Complexity, requirement counts,
-generic verbs such as write or create, and mentions of code paths, coverage or
-existing PRs do not turn administration into Development.
+    E -->|ALLOWED| H{Decompose Workstreams}
+    H -->|"1 workstream<br/>(default-workflow or investigation-workflow)"| I[Execute recipe]
+    H -->|N workstreams| J[multitask parallel]
+    I --> R1[Round 1 result]
+    J --> R1
 
-Calibration examples:
+    R1_BLOCKED --> REFLECT
+    R1 --> REFLECT{Reflect on Round 1}
+    REFLECT -->|ACHIEVED| SUM[Summarize]
+    REFLECT -->|PARTIAL / NOT_ACHIEVED| K[Execute Round 2]
+    K --> REFLECT2{Reflect on Round 2}
+    REFLECT2 -->|ACHIEVED| SUM
+    REFLECT2 -->|PARTIAL / NOT_ACHIEVED| L[Execute Round 3 - final]
+    L --> REFLECT_FINAL[Final Reflect]
+    REFLECT_FINAL --> VAL{Outside-In Testing Validation}
+    REFLECT --> VAL
 
-- Triage these issues; open an issue for X and assign Y: Operations.
-- Create an issue about `src/router.rs`: Operations.
-- Write up research answers in chat or an issue: Operations.
-- Report status or coordinate review of an existing PR: Operations.
-- Rename a term across documentation in repositories A and B: Development in
-  each repository whose tracked files change.
-- Remove a programme name from code/docs, research questions and open a
-  cross-check issue for a colleague: Development edits plus Operations research
-  and issue creation. Preserve dependencies on the relevant results.
+    VAL --> SUM
+    SUM --> DONE[Complete Session + Cleanup]
 
-## Executable leaves
+    %% Adaptive error recovery path
+    R1 -.->|empty result| DET[detect-execution-gap]
+    DET --> FILE_BUG[file-routing-bug]
+    FILE_BUG --> ADAPT{Adaptive Recipe}
+    ADAPT -->|Investigation| INV_RECIPE[investigation-workflow]
+    ADAPT -->|Development| DEV_RECIPE[default-workflow]
+    INV_RECIPE --> REFLECT
+    DEV_RECIPE --> REFLECT
 
-Mixed requests require separate leaves with explicit classifications. Each leaf
-has a unique name, repository, task description, dependencies and declared
-outputs. Only repository-editing leaves enter Development workflows. Execute
-each leaf once; never send the entire mixed request to an Operations agent too.
+    C --> DONE
+    D --> DONE
+```
 
-Operations always selects `operations-direct`, regardless of model-supplied
-recipes or Development overrides. It uses the trusted repository directly and
-keeps private artefacts under its execution identity. It creates no clone,
-worktree, branch or implementation PR. A dirty initial checkout does not alter
-this route. Reflection, review and delivery gates belong to applicable leaves.
+## Purpose
 
-Development defaults to `default-workflow`. The classifier can recommend
-`quick-change` for one small workstream; an explicit `workflow=quick-change` or
-`workflow=default-workflow` overrides Development selection. Supplied branch or
-PR constraints continue to rule out an unsuitable quick-change selection.
-Operations, Investigation, Q&A and Consensus retain their own routes.
+This is the **default orchestrator** for all non-trivial development and investigation tasks
+in amplihack. It replaces the `ultrathink-orchestrator` skill.
 
-## Tracking and identity
+## Development Routing Invariant
 
-Tracking is optional. Omitted values, nulls, blanks and recognised placeholders
-mean absence. Ignore surrounding whitespace and letter case for TBD, TBC, TODO,
-N/A, none, null, unknown, unassigned and pending. Preserve positive numbers
-through `u64::MAX`; malformed non-placeholder values require correction.
+Development classification routes to `default-workflow`, or to `quick-change` for a small change in a single workstream or when `-c workflow=quick-change` forces it; any recipe value the model gives a workstream is coerced to `default-workflow`.
 
-Every leaf has a stable execution UUID independent of its issue number. Do not
-create issues merely because tracking is absent. Explicit new tracking requires
-`tracking: {required: true, title: ..., body: ...}` or an explicit binding to a
-declared issue output from a prerequisite. Reuse supplied or durably resolved
-tracking before creation. Failure or uncertainty is reported; never invent a
-number or substitute a placeholder.
+The classifier selects `quick-change` only for a single workstream it judges small; `-c workflow=quick-change` or `-c workflow=default-workflow` forces either recipe. In a parallel decomposition every Development workstream runs `default-workflow` unless `-c workflow=` forces a recipe, so the workflow named in the run log is the one the workstreams run.
 
-## Execution and recovery
+Hybrid decompositions route each workstream by its own normalized classification.
 
-Invoke `amplihack recipe run smart-orchestrator -c task_description="..."`.
-For long runs use the recipe runner's `--detach` facility. Do not start another
-orchestration from inside a recipe-managed step.
+This invariant is enforced by the Rust orchestration helper before workstream execution. Prompt instructions guide the model, but model-emitted `recipe` values are not trusted for Development workstreams.
 
-The Rust normaliser validates the complete plan, resolves dependency names to
-execution identities and selects trusted recipes before external actions.
-Repository authority comes from the current checkout plus operator-provided
-`AMPLIHACK_REPOSITORY_ROOTS`, a path-separated list of roots whose origins are
-verified. Model-supplied paths do not authorise repositories.
+When a user asks you to build, implement, fix, investigate, or create anything non-trivial,
+this skill ensures:
 
-Forced serial mode, strict delivery and depth fallback preserve all leaves,
-routes and dependencies; they change concurrency only. Child completion events
-release capacity. Dependants receive only validated, durably saved prerequisite
-results. Exit status alone does not prove success.
+1. **Task is classified** — Q&A / Operations / Investigation / Development
+2. **Goal is formulated** — clear success criteria identified
+3. **Workstreams detected** — parallel tasks split automatically
+4. **Recipe runner used** — code-enforced workflow execution
+5. **Outcome verified** — reflection confirms goal achievement
 
-Resume the same saved configuration. Successful leaves are skipped. Unknown
-external outcomes require `amplihack multitask reconcile`; state deletion, new
-UUIDs and timed retries are not recovery procedures. See
-[reference.md](reference.md) for JSON contracts and operational details.
+## How It Works
+
+```
+User request
+     │
+     ▼
+[Classify] ──→ Q&A ──────────────────→ analyzer agent (technical/code questions)
+     │
+     ├──────→ Ops ────────────────────→ direct execution; a decomposed leaf runs operations-direct
+     │
+     └──→ Development / Investigation
+             │
+         [Recursion guard] (AMPLIHACK_SESSION_DEPTH vs AMPLIHACK_MAX_DEPTH=3)
+             │         │
+           ALLOWED   BLOCKED → [derive-recursion-guard prints BLOCKED:* to stderr]
+                                    ↓
+                  [execute-single-fallback-blocked-development]
+                  [execute-single-fallback-blocked-investigation]
+                                    ↓
+                           [Execute round 1 (single-session)]
+             │
+         [Decompose]
+             │         │
+             1 ws     N ws ──→ [multitask parallel] + tree context in env
+             │
+         [Execute round 1]
+             │
+         [Reflect] ──→ ACHIEVED ──→ [Summarize]
+             │
+           PARTIAL/NOT_ACHIEVED
+             │
+         [Execute round 2]
+             │
+         [Reflect] ──→ ACHIEVED ──→ [Summarize]
+             │
+           PARTIAL/NOT_ACHIEVED
+             │
+         [Execute round 3 (final)]
+             │
+         [Final reflect + Summarize]
+```
+
+**Session tree enforcement** (prevents infinite recursion):
+
+- Each subprocess inherits `AMPLIHACK_TREE_ID`, `AMPLIHACK_SESSION_DEPTH`, `AMPLIHACK_MAX_DEPTH`
+- Depth >= 3: recursion guard blocks sub-workstream spawning, adapts to single-session
+- Max 10 concurrent sessions per tree; extras queue in FIFO order
+- State tracked in `/tmp/amplihack-session-trees/{tree_id}.json`
+
+## Activation
+
+This skill auto-activates for development and investigation keywords. It is also the
+**default behavior** per CLAUDE.md — invoke it for any non-trivial task.
+
+The `UserPromptSubmit` hook reinforces this by injecting a classification prompt
+that instructs Claude to invoke `Skill(skill="dev-orchestrator")` for dev/investigation tasks.
+
+## Execution Instructions
+
+**YOUR NEXT ACTION after reading this skill MUST include a Bash tool call that
+executes the recipe runner.** If your runtime requires a `report_intent` call
+(e.g. Copilot CLI), emit it **in parallel** with the Bash launch — both tool
+calls in the same response. The constraint is that no
+_other_ substantive action (reading files, calling TodoWrite, invoking Agent,
+or typing a response) may precede or replace the Bash launch.
+
+If you find yourself doing anything else instead of launching the recipe
+runner, you are bypassing the workflow. Stop. Go back. Run the recipe runner.
+
+Development and Investigation tasks have exactly ONE execution path: the
+recipe runner. There is no "Option B." There is no "I'll follow the steps
+manually." There is no "Let me just quickly..." The recipe runner IS the
+workflow. Skipping it means skipping the 23-step process, the recursion
+guards, the goal verification, and the quality gates that exist for a reason.
+
+A PostToolUse hook monitors every tool call after this skill activates. If
+it detects 3 tool calls without recipe runner evidence, it will fire a hard
+WARNING. Do not wait for the warning — run the recipe runner immediately.
+
+When this skill is activated:
+
+### REQUIRED: Execute via Recipe Runner — IMMEDIATELY
+
+Your next tool call(s) must include the recipe runner launch (alongside
+`report_intent` if your runtime requires it).
+
+#### Default: Direct Execution (Rust recipe-runner-rs via CLI)
+
+Use the Rust `recipe-runner-rs` through the `amplihack recipe run` CLI:
+
+```bash
+cd /path/to/repo && AMPLIHACK_HOME=/path/to/amplihack \
+  amplihack recipe run amplifier-bundle/recipes/smart-orchestrator.yaml \
+    -c task_description="TASK_DESCRIPTION_HERE" \
+    -c repo_path="." \
+    --verbose
+```
+
+**Key points:**
+
+- `amplihack recipe run` — invokes Rust `recipe-runner-rs`; no Python runner or wrapper needed
+- `-c key=value` — passes context variables (equivalent to `user_context` dict)
+- `--verbose` — streams recipe-runner stderr live so you see nested step activity
+- Do not `env -u CLAUDECODE` — `amplihack recipe run` reads it to decide which
+  agent CLI the steps use, then removes it from the runner's environment itself.
+  Stripping it first can make every step run under a different CLI (issue #1481).
+  Set `AMPLIHACK_AGENT_BINARY` only to choose a different CLI on purpose.
+- The recipe runner manages its own child processes (agent sessions, bash steps) as direct subprocesses
+
+This is the preferred execution mode for most scenarios. It is simpler, has
+no external dependencies beyond the Rust binary, works on all platforms,
+and makes output capture straightforward.
+
+#### Long runs: detached
+
+Save the shared settings once, then start each long run with `--detach`. It
+creates its own tmux session and private log, hands the agent CLI over itself,
+prints the session and log path, and returns:
+
+```bash
+amplihack config set agent.binary claude     # once: the agent CLI you use
+amplihack config set recipe.verbose true      # once
+amplihack recipe run smart-orchestrator --detach -w /path/to/repo \
+  --context-from-file task_description=/path/to/task.md -c repo_path=.
+```
+
+Stop it, with every agent it started, with `amplihack recipe stop <session>`.
+Do not hand-write the tmux command for a recipe run.
+
+For details of detached runs, environment variables, error recovery
+strategies, fallback recipes, and enforcement, see [reference.md](./reference.md).
+
+## Task Type Classification
+
+| Type          | Keywords                                                       | Action                                              |
+| ------------- | -------------------------------------------------------------- | --------------------------------------------------- |
+| Q&A           | "what is", "explain", "how does", "how do I", "quick question" | Respond directly                                    |
+| Operations    | "clean up", "delete", "git status", "run command", "triage", "open an issue", "answer in chat", "report status", "coordinate" | Direct execution, or one scoped agent; a decomposed leaf runs `operations-direct`. No Development workflow, worktree, branch or PR |
+| Investigation | "investigate", "analyze", "understand", "explore"              | investigation-workflow                              |
+| Development   | "implement", "build", "create", "add", "fix", "refactor"       | `default-workflow` through smart-orchestrator       |
+| Hybrid\*      | Both investigation + development keywords                      | Decomposed into investigation + dev workstreams     |
+
+\* Hybrid is not a distinct task_type — the orchestrator classifies as Development and decomposes into multiple workstreams (one investigation, one development).
+
+## Operations and Project Management
+
+Operations is the canonical label for operations and project management. `Ops`,
+`PM`, `Project Management` and `project-management` all normalize to it.
+
+Classify by the action required and where its result belongs, not by the verb:
+
+- Issue triage, issue creation and assignment, research answers destined for
+  chat or an issue, status reporting and coordination are **Operations**.
+- Changing a tracked repository file is **Development**. Documentation wording,
+  configuration and recipe files are tracked files exactly as source code is.
+- Reading repository files as research material is not a repository edit.
+  Mentioning a source path, a test or an existing PR does not request one.
+
+A long checklist, a high requirement count and a dirty working tree do not
+promote an administrative request to Development.
+
+An Operations task is executed directly, or by one agent working from the
+request's own checklist. It starts no Development workflow, creates no
+worktree or branch, and opens no pull request. A decomposed Operations
+workstream runs the `operations-direct` recipe; the Rust helper selects that
+route, and a model-supplied `recipe` value cannot change it.
+
+A mixed request is decomposed so that only the repository-editing workstreams
+run `default-workflow`. Never resubmit the whole mixed request to an
+Operations agent as well; its leaves have already been dispatched.
+
+A tracking issue is optional. Omission, `null`, a blank value and recognized
+placeholders such as `TBD` all mean the workstream has none, and it still
+runs. Never invent an issue number, and never stop because one is absent.
+
+## Workstream Decomposition Examples
+
+| Request                                  | Workstreams                             |
+| ---------------------------------------- | --------------------------------------- |
+| "implement JWT auth"                     | 1: auth (default-workflow)              |
+| "build a webui and an api"               | 2: api + webui (parallel)               |
+| "add logging and add metrics"            | 2: logging + metrics (parallel)         |
+| "investigate auth system then add OAuth" | 2: investigate + implement (sequential) |
+| "fix bug in payment flow"                | 1: bugfix (default-workflow)            |
+| "triage these issues and open one for the owner" | 1: triage (operations-direct)   |
+| "answer these questions in chat, then record the answer in docs/" | 2: answer (operations-direct) + document (default-workflow, sequential) |
+
+## Override Options
+
+**Single workstream override**: Pass `force_single_workstream: "true"` in the
+recipe user_context to prevent automatic parallel decomposition regardless of
+task structure. This is a programmatic option (not directly settable from `/dev`):
+
+```bash
+amplihack recipe run amplifier-bundle/recipes/smart-orchestrator.yaml \
+  -c task_description="TASK_DESCRIPTION_HERE" \
+  -c repo_path="." \
+  -c force_single_workstream="true"
+```
+
+**To force single-workstream execution without modifying recipe context:**
+Set `AMPLIHACK_MAX_DEPTH=0` before running `/dev`. This causes the recursion guard
+to block parallel spawning and fall back to single-session mode for all tasks:
+
+```bash
+export AMPLIHACK_MAX_DEPTH=0  # set in your shell first
+/dev build a webui and an api  # then invoke /dev in your agent session
+```
+
+Note: The env var must be set in your shell before starting the agent session — it
+cannot be prefixed inline on the `/dev` command. This affects all depth checks, not
+just parallel workstream spawning.
+
+## Canonical Sources
+
+- **Recipe**: `amplifier-bundle/recipes/smart-orchestrator.yaml`
+- **Parallel execution**: native `amplihack orch` / `amplihack multitask` commands
+- **Development workflow**: `amplifier-bundle/recipes/default-workflow.yaml`
+- **Investigation workflow**: `amplifier-bundle/recipes/investigation-workflow.yaml`
+- **Operations route**: `amplifier-bundle/recipes/operations-direct.yaml`
+- **CLAUDE.md**: Defines this as the default orchestrator
+
+## Relationship to Other Skills
+
+| Skill                     | Relationship                                         |
+| ------------------------- | ---------------------------------------------------- |
+| `ultrathink-orchestrator` | Deprecated — redirects here                          |
+| `default-workflow`        | Called by this orchestrator for single dev tasks     |
+| `investigation-workflow`  | Called by this orchestrator for research tasks       |
+| `multitask`               | Called by this orchestrator for parallel workstreams |
+| `work-delegator`          | Orthogonal — for backlog-driven delegation           |
+
+## Entry Points
+
+- **Primary**: `/dev <task description>`
+- **Auto-activation**: Via CLAUDE.md default behavior + hook injection
+- **Legacy**: `/ultrathink <task>` (deprecated alias → redirects to `/dev`)
+
+## Status Signal Reference
+
+The orchestrator uses two status signal formats:
+
+### Execution status (from builder agents)
+
+Appears at the end of round execution steps:
+
+- `STATUS: COMPLETE` — the round's work is fully done
+- `STATUS: CONTINUE` — more work remains after this round
+- `STATUS: PARTIAL` — the final round (round 3) reached partial completion
+- `STATUS: DEPTH_LIMITED` — (legacy, no longer emitted; use BLOCKED path instead)
+
+### Goal status (from reviewer agents)
+
+Appears at the end of reflection steps:
+
+- `GOAL_STATUS: ACHIEVED` — all success criteria met, task is done
+- `GOAL_STATUS: PARTIAL -- [description]` — some criteria met, more work needed
+- `GOAL_STATUS: NOT_ACHIEVED -- [reason]` — goal not met, another round needed
+
+The goal-seeking loop uses GOAL_STATUS signals to decide whether to run round 2 or 3.
+
+**BLOCKED path (recursion guard)**: When multi-workstream spawning is blocked
+by the depth limit, the orchestrator adapts to single-session execution:
+
+1. `derive-recursion-guard` — classifies the guard result and prints the
+   reason to stderr (`BLOCKED:registration_failed`, `BLOCKED:unknown`). There
+   is no separate announcement step; the classification *is* the announcement.
+2. `execute-single-fallback-blocked-development` or
+   `execute-single-fallback-blocked-investigation` — executes the full task as
+   a single builder agent session. The step chosen depends on the workstream's
+   classification, which is why there are two.
+
+Both live in `amplifier-bundle/recipes/smart-execute-routing.yaml`.
+
+Note the scope of this path: it handles a run that is **already executing** and
+is refused when it tries to descend further. It does not apply when
+`amplihack recipe run` is itself invoked at the ceiling — there the guard
+refuses before any recipe starts, and the correct response is to complete the
+work inline rather than to launch a recipe (the refusal message says so).
+
+A leftover `AMPLIHACK_SESSION_DEPTH` in a surviving shell does **not** wedge
+you: an inherited depth that nothing corroborates — no tree id, no live
+orchestrator ancestor — is discarded and the run starts a fresh tree at depth 0
+(issue #1326).

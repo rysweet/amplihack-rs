@@ -216,12 +216,29 @@ impl WorkflowClassifier {
     }
 }
 
-/// Conservative safeguard for explicitly requested tracked-file changes.
-/// Merely mentioning a source path, coverage or an existing PR is insufficient.
+/// True when the request explicitly asks for a tracked repository file to
+/// change (issue #2553).
+///
+/// Conservative by construction: merely mentioning a source path, a coverage
+/// figure or an existing pull request is not enough. A clause must carry an
+/// edit verb as a whole word *and* name an edit destination. The request is
+/// split on `;` and newline so that one administrative clause cannot vouch
+/// for an editing clause, or the reverse.
+///
+/// A clause whose object is administrative — creating or assigning an issue,
+/// reporting coverage, coordinating a review — stays administrative even when
+/// its subject is code, unless the same clause also conjoins an explicit edit
+/// ("and update", "and commit"). "Create an issue about `src/router.rs`" is
+/// therefore not a repository edit, while "... and update it" is.
+///
+/// Shared with `commands::orch::reclassify_task_type`, so the hook-level and
+/// decomposition-level answers cannot drift apart.
 pub fn requires_repository_edit(request: &str) -> bool {
     let lower = request.to_ascii_lowercase();
     let edit = [
         "rename",
+        "change",
+        "fix",
         "correct",
         "remove",
         "replace",
@@ -237,17 +254,25 @@ pub fn requires_repository_edit(request: &str) -> bool {
         "create",
         "port",
     ];
+    // `documentation` on its own is deliberately absent: writing an answer
+    // *about* documentation into chat edits no tracked file. The destinations
+    // here all name a file, a path or an explicit tracked-file scope.
     let destination = [
         "tracked",
         "docs/",
         "readme.md",
-        "documentation",
+        "documentation file",
+        "documentation files",
         "across the docs",
         "src/",
         "crates/",
         "tests/",
         "source files",
         "code and docs",
+        ".rs",
+        ".md",
+        ".yaml",
+        ".toml",
     ];
     // Administrative objects remain administrative even when their subject is code.
     let administration = [
@@ -260,8 +285,29 @@ pub fn requires_repository_edit(request: &str) -> bool {
         "report test coverage",
         "coordinate review",
     ];
-    lower.split([';', '\n']).any(|clause| {
-        let admin = administration.iter().any(|s| clause.contains(s));
+    let clauses = lower.replace(", then ", ";").replace(" then ", ";");
+    clauses.split([';', '\n']).any(|clause| {
+        let report_destination = [
+            "in chat",
+            "in the status issue",
+            "in the coordination issue",
+            "in an issue",
+            "issue comment",
+        ]
+        .iter()
+        .any(|destination| clause.contains(destination));
+        let report_object = [
+            "answers",
+            "findings",
+            "status report",
+            "write up",
+            "write-up",
+            "report about",
+        ]
+        .iter()
+        .any(|object| clause.contains(object));
+        let admin = administration.iter().any(|s| clause.contains(s))
+            || (report_destination && report_object);
         let explicit_edit = [
             "and edit",
             "and update",
@@ -269,6 +315,9 @@ pub fn requires_repository_edit(request: &str) -> bool {
             "and remove",
             "and rename",
             "and replace",
+            "and correct",
+            "and refactor",
+            "and implement",
         ]
         .iter()
         .any(|s| clause.contains(s));
@@ -290,14 +339,26 @@ pub fn requires_repository_edit(request: &str) -> bool {
     .any(|s| lower.contains(s))
 }
 
-fn administrative_action(request: &str) -> bool {
+/// Administrative objects: triage, issue bookkeeping, coordination, and an
+/// answer written for a person rather than into a tracked file.
+///
+/// Fix #269 narrowed the OPS keyword list because a generic word was stealing
+/// development work, and that narrowing is not reopened here: every trigger
+/// below names an administrative object rather than a bare verb or noun. A
+/// bare `assign` would claim "refactor the assignment helper", which assigns a
+/// value to a local, and a bare `status` would claim "fix the status bar
+/// rendering", which is a bug report.
+pub fn administrative_action(request: &str) -> bool {
     let lower = request.to_ascii_lowercase();
     [
         "triage",
         "open an issue",
         "create an issue",
-        "assign",
-        "status",
+        "assign the issue",
+        "assign it to",
+        "status issue",
+        "report status",
+        "status report",
         "coordina",
         "answers",
         "in chat",
@@ -482,38 +543,126 @@ mod tests {
         assert_eq!(WorkflowType::QAndA.recipe_name(), None);
     }
 
+    /// Issue #2553 — the positive calibration set. An administrative request
+    /// that carries no repository-edit signal is OPS, and OPS has no recipe,
+    /// so it starts no workflow, takes no worktree and opens no PR.
+    ///
+    /// The third row is the 13 November request that motivated the issue; it
+    /// exercises the UNDERSTAND path, which rule 2 or rule 5 of the routing
+    /// prompt would otherwise claim.
     #[test]
-    fn issue_2553_administrative_actions_use_ops_despite_generic_development_verbs() {
+    fn issue_2553_administrative_requests_classify_as_ops() {
         let classifier = WorkflowClassifier::default();
         for request in [
             "Triage these issues",
             "Open an issue for X and assign Y",
-            "Create an issue about src/router.rs and assign its owner",
+            "Research these issues and write up the answers",
             "Write up the answers to these questions in chat",
+            "Create an issue about src/router.rs and assign its owner",
             "Research this question set and report the answers in an issue",
             "Update the project status in the coordination issue",
+            "Coordinate review of the open pull requests",
+            "Report unit test coverage in the status issue",
         ] {
+            let result = classifier.classify(request);
+            assert_eq!(result.workflow, WorkflowType::Ops, "{request}");
             assert_eq!(
-                classifier.classify(request).workflow,
-                WorkflowType::Ops,
-                "{request}"
+                result.workflow.recipe_name(),
+                None,
+                "an OPS classification starts no workflow: {request}"
             );
         }
     }
 
+    /// The negative calibration set. Fix #269 narrowed the OPS keywords
+    /// because a generic word stole development work; the new route must not
+    /// reopen that. Each row is a near neighbour of a row above.
     #[test]
-    fn issue_2553_tracked_documentation_changes_use_development() {
+    fn issue_2553_near_neighbour_edit_requests_stay_on_the_default_workflow() {
         let classifier = WorkflowClassifier::default();
         for request in [
             "Rename term X across the tracked docs of repos A and B",
             "Correct the wording in tracked docs/routing.md",
             "Commit the research answers to README.md",
+            "Remove the stale entries from docs/",
+            "Fix the typo in README",
+            "Rename the config key across crates/amplihack-workflows/",
+            "Add tests for the issue parser",
+            "Open a PR for the routing fix",
+            // `assign` as a bare substring used to steal this one.
+            "Refactor the assignment helper",
+            // `status` as a bare substring used to steal this one.
+            "Fix the status bar rendering",
         ] {
             assert_eq!(
                 classifier.classify(request).workflow,
                 WorkflowType::Default,
                 "{request}"
             );
+        }
+    }
+
+    /// `documentation` as a bare destination used to steal this one: writing
+    /// an answer about documentation into chat edits no tracked file.
+    #[test]
+    fn issue_2553_answering_about_documentation_is_not_a_repository_edit() {
+        let classifier = WorkflowClassifier::default();
+        for request in [
+            "Write up the documentation gaps in chat",
+            "Summarise the documentation gaps in the triage issue",
+        ] {
+            assert_eq!(
+                classifier.classify(request).workflow,
+                WorkflowType::Ops,
+                "{request}"
+            );
+            assert!(!requires_repository_edit(request), "{request}");
+        }
+    }
+
+    #[test]
+    fn issue_2553_report_destination_controls_routing_even_when_the_subject_names_a_file() {
+        let classifier = WorkflowClassifier::default();
+        for request in [
+            "Write the research findings about docs/routing.md in the status issue.",
+            "Write up the answers about src/router.rs in chat.",
+            "Create a status report about README.md in the coordination issue.",
+        ] {
+            assert_eq!(
+                classifier.classify(request).workflow,
+                WorkflowType::Ops,
+                "{request}"
+            );
+            assert!(!requires_repository_edit(request), "{request}");
+        }
+    }
+
+    #[test]
+    fn issue_2553_administrative_prefixes_do_not_hide_repository_edit_workstreams() {
+        let classifier = WorkflowClassifier::default();
+        for request in [
+            "Open an issue about src/router.rs, then correct docs/routing.md.",
+            "Create an issue about the wording and correct docs/routing.md.",
+            "Create a triage issue for the wording sweep, then replace the name across tracked documentation files.",
+        ] {
+            assert_eq!(
+                classifier.classify(request).workflow,
+                WorkflowType::Default,
+                "{request}"
+            );
+            assert!(requires_repository_edit(request), "{request}");
+        }
+    }
+
+    /// Blank input keeps its pre-existing answer: DEFAULT at zero confidence,
+    /// decided before either gate runs.
+    #[test]
+    fn issue_2553_blank_input_is_unchanged_by_the_new_gates() {
+        let classifier = WorkflowClassifier::default();
+        for request in ["", "   ", "\n\t"] {
+            let result = classifier.classify(request);
+            assert_eq!(result.workflow, WorkflowType::Default, "{request:?}");
+            assert_eq!(result.confidence, 0.0, "{request:?}");
         }
     }
 }

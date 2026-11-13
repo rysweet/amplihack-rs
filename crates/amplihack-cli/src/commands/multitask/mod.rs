@@ -6,22 +6,13 @@
 //! persistence for resumption, and automatic cleanup of completed workstreams.
 
 mod cleanup;
-// Historic launcher/state adapters are retained for migration regression tests.
-#[cfg(test)]
-#[allow(dead_code)]
 mod command_builder;
 #[cfg(test)]
 mod command_builder_tests;
-mod completion;
-// Historic launcher/state adapters are retained for migration regression tests.
-#[cfg(test)]
-#[allow(dead_code)]
 mod default_branch;
-mod delivery;
 mod dispatch;
 mod execution;
-mod github;
-pub(crate) mod identity;
+mod identity;
 pub(crate) mod issue;
 #[cfg(test)]
 mod issue_1570_launcher;
@@ -32,44 +23,35 @@ mod issue_1966_criticality;
 #[cfg(test)]
 mod issue_2014_launcher_env;
 #[cfg(test)]
-mod issue_2553_contracts;
-// Historic launcher/state adapters are retained for migration regression tests.
+mod issue_2553_delivery;
 #[cfg(test)]
-#[allow(dead_code)]
+mod issue_2553_identity;
+#[cfg(test)]
+mod issue_2553_recovery;
 mod launcher;
 #[cfg(test)]
 mod launcher_tests;
-// Historic launcher/state adapters are retained for migration regression tests.
 #[cfg(test)]
-#[allow(dead_code)]
 mod log_output;
-mod migration;
-pub(crate) mod models;
-mod operations;
-// Historic launcher/state adapters are retained for migration regression tests.
 #[cfg(test)]
-#[allow(dead_code)]
+mod model_tests;
+mod models;
 mod orchestrator;
-// Historic launcher/state adapters are retained for migration regression tests.
-#[cfg(test)]
-#[allow(dead_code)]
+mod ownership;
 mod persistence;
 pub(crate) mod plan;
 mod process_scope;
-mod reconcile;
-mod runtime;
-// Historic launcher/state adapters are retained for migration regression tests.
 #[cfg(test)]
-#[allow(dead_code)]
+mod process_scope_tests;
+mod report;
 mod state;
 #[cfg(test)]
 mod state_tests;
 mod tracking;
-mod trusted;
 mod utils;
 pub(crate) mod waves;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::Path;
 
 /// Run parallel workstreams from a JSON config file.
@@ -81,132 +63,130 @@ pub fn run_multitask(
     timeout_policy: Option<&str>,
     dry_run: bool,
 ) -> Result<()> {
-    // Retained CLI options describe legacy runtime policy; readiness and completion
-    // are event driven and do not create wall-clock probes.
-    let _ = (max_runtime, timeout_policy);
-    dispatch::run(Path::new(config_path), mode, recipe, dry_run)
-}
+    let config_text = std::fs::read_to_string(config_path)
+        .with_context(|| format!("Failed to read config file: {config_path}"))?;
 
-pub fn run_reconcile(config: &str, resolution_file: &str) -> Result<()> {
-    reconcile::run(Path::new(config), Path::new(resolution_file))
-}
+    let input: serde_json::Value = serde_json::from_str(&config_text)
+        .with_context(|| format!("Failed to parse config file: {config_path}"))?;
+    let items = plan::normalise(&input, recipe)?;
 
-pub fn complete(context_file: &str) -> Result<()> {
-    use anyhow::Context;
-    use std::io::Read;
-    let context_path = Path::new(context_file);
-    runtime::owned(context_path, &runtime::base_dir())?;
-    let context: serde_json::Value = serde_json::from_slice(&std::fs::read(context_path)?)?;
-    let state_path = Path::new(
-        context["workstream_state_file"]
-            .as_str()
-            .context("missing state path")?,
-    );
-    runtime::owned(state_path, &runtime::base_dir().join("state"))?;
-    let state: runtime::Runtime = serde_json::from_slice(&std::fs::read(state_path)?)?;
-    anyhow::ensure!(
-        context["workstream_id"] == serde_json::json!(state.id())
-            && context["repository"] == state.config.repository,
-        "completion context ownership mismatch"
-    );
-    let mut text = String::new();
-    std::io::stdin()
-        .take(16 * 1024 * 1024)
-        .read_to_string(&mut text)?;
-    let result = super::orch::extract_json_with_field(&text, "schema_version")
-        .context("missing structured completion")?;
-    completion::validate(&result, &state.config)?;
-    let result_path = state.artefact_dir.join("result.json");
-    runtime::owned(&result_path, &state.artefact_dir)?;
-    runtime::atomic_json(&result_path, &result)
-}
+    let repo_url = detect_repo_url();
 
-pub fn capture_delivery(context_file: &str, recipe: &str) -> Result<()> {
-    delivery::capture(Path::new(context_file), recipe)
-}
+    let mut orch = orchestrator::ParallelOrchestrator::new(&repo_url, mode);
 
-pub fn run_operation(context_file: &str, output_name: &str, request_file: &str) -> Result<()> {
-    operations::run(
-        Path::new(context_file),
-        output_name,
-        Path::new(request_file),
-    )
-}
-
-pub fn capture_answer(context_file: &str) -> Result<()> {
-    use anyhow::Context;
-    use serde_json::json;
-    use std::io::Read;
-    let path = Path::new(context_file);
-    runtime::owned(path, &runtime::base_dir())?;
-    let context: serde_json::Value = serde_json::from_slice(&std::fs::read(path)?)?;
-    let state_file = Path::new(
-        context["workstream_state_file"]
-            .as_str()
-            .context("missing state path")?,
-    );
-    runtime::owned(state_file, &runtime::base_dir().join("state"))?;
-    let state: runtime::Runtime = serde_json::from_slice(&std::fs::read(state_file)?)?;
-    anyhow::ensure!(
-        ["Investigation", "Q&A"].contains(&state.config.classification.as_str()),
-        "answer adapter requires Investigation or Q&A"
-    );
-    let mut text = String::new();
-    std::io::stdin()
-        .take(16 * 1024 * 1024)
-        .read_to_string(&mut text)?;
-    anyhow::ensure!(!text.trim().is_empty(), "workflow produced no answer");
-    let mut outputs = serde_json::Map::new();
-    for (name, kind) in &state.config.required_outputs {
-        anyhow::ensure!(
-            kind == "answer",
-            "answer adapter cannot supply output {name} of kind {kind}"
-        );
-        outputs.insert(name.clone(), json!({"kind": "answer", "text": text, "destination": "chat", "evidence": [{"source": "workflow-report", "reference": state.config.recipe, "observation": "Completed workflow report"}]}));
+    if let Some(max_rt) = max_runtime {
+        orch.set_default_max_runtime(max_rt);
     }
-    let result = json!({"schema_version": 1, "workstream_id": state.id(), "repository": state.config.repository, "classification": state.config.classification, "effective_recipe": state.config.recipe, "outcome": "succeeded", "outputs": outputs});
-    completion::validate(&result, &state.config)?;
-    runtime::atomic_json(&state.artefact_dir.join("result.json"), &result)
+    if let Some(policy) = timeout_policy {
+        orch.set_default_timeout_policy(policy);
+    }
+
+    if dry_run {
+        println!("Dry-run: {} workstreams would be launched", items.len());
+        for (i, item) in items.iter().enumerate() {
+            let key = models::derive_key(item, i + 1)
+                .with_context(|| format!("workstream {} on branch {:?}", i + 1, item.branch))?;
+            println!(
+                "  [{key}] {} (recipe: {})",
+                item.description_or_default(),
+                item.recipe.as_deref().unwrap_or(recipe)
+            );
+        }
+        return Ok(());
+    }
+
+    let _lock = ownership::lock(Path::new(&utils::default_base_dir()))?;
+    orch.setup()?;
+    ownership::persist_plan(&items, &Path::new(&utils::default_base_dir()).join("state"))?;
+    // Validate and claim every identity before any external action.
+    for (i, item) in items.iter().enumerate() {
+        orch.register(i + 1, item, recipe)?;
+    }
+    orch.prepare_all()?;
+    let running = orch.running_flag();
+    orch.monitor(running)?;
+    let report = orch.report();
+    println!("{report}");
+
+    Ok(())
 }
 
 /// Clean up workstreams with merged PRs.
 pub fn run_cleanup(config_path: &str, dry_run: bool) -> Result<()> {
-    let base = runtime::base_dir();
-    cleanup::cleanup_merged(&base, &base.join("state"), config_path, dry_run)
+    let repo_url = detect_repo_url();
+    let orch = orchestrator::ParallelOrchestrator::new(&repo_url, "recipe");
+    orch.cleanup_merged(config_path, dry_run)
 }
 
-/// Display identity, optional tracking and lifecycle from the owned runtime root.
+/// Show status of existing workstreams.
 pub fn run_status(base_dir: Option<&str>) -> Result<()> {
     let base = base_dir
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(runtime::base_dir);
-    let state_dir = base.join("state");
+        .map(|s| s.to_string())
+        .unwrap_or_else(utils::default_base_dir);
+    let state_dir = Path::new(&base).join("state");
+
     if !state_dir.exists() {
-        println!("No workstream state at {}", state_dir.display());
+        println!(
+            "No workstream state directory found at {}",
+            state_dir.display()
+        );
         return Ok(());
     }
+
+    let mut found = false;
     for entry in std::fs::read_dir(&state_dir)? {
-        let path = entry?.path();
-        if path.extension().is_none_or(|s| s != "json")
-            || path
-                .file_name()
-                .is_some_and(|s| s.to_string_lossy().contains(".progress."))
+        let entry = entry?;
+        let path = entry.path();
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if !name.starts_with("ws-")
+            || !name.ends_with(".json")
+            || name.contains(".progress.")
+            || name.contains(".owner.")
         {
             continue;
         }
-        runtime::owned(&path, &state_dir)?;
-        let value: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
-        let id = value["workstream_id"].as_str().unwrap_or("legacy");
-        let lifecycle = value
-            .get("lifecycle")
-            .or_else(|| value.get("lifecycle_state"))
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown");
-        let issue = issue::parse_optional(value.get("issue").unwrap_or(&serde_json::Value::Null))?;
-        let tracking = issue
-            .map(|n| format!(" issue=#{}", n.get()))
-            .unwrap_or_default();
-        println!("[{id}] {lifecycle}{tracking}");
+        if let Some(state) = persistence::read_state(&path)? {
+            let key = if state.key.is_empty() {
+                name.trim_end_matches(".json").to_owned()
+            } else {
+                state.key
+            };
+            let issue = state
+                .issue
+                .map(|number| format!(" issue=#{number}"))
+                .unwrap_or_default();
+            println!(
+                "[{key}]{issue} {:20} step={:30} branch={}",
+                state.lifecycle_state, state.current_step, state.branch
+            );
+            found = true;
+        }
+    }
+    if !found {
+        println!("No workstream state files found.");
     }
     Ok(())
+}
+
+fn detect_repo_url() -> String {
+    let mut cmd = amplihack_git::command();
+    cmd.args(["remote", "get-url", "origin"]);
+    cmd.output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            std::env::var("AMPLIHACK_REPO_PATH").unwrap_or_else(|_| {
+                let cwd = std::env::current_dir()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_else(|error| {
+                        eprintln!("WARNING: cannot resolve execution directory: {error}");
+                        ".".into()
+                    });
+                eprintln!("WARNING: no git remote 'origin'; using local path: {cwd}");
+                cwd
+            })
+        })
 }

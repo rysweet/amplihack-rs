@@ -259,7 +259,7 @@ fn launch_workstream_tolerates_a_non_utf8_variable_and_sets_the_delegate() {
     .expect("a non-UTF-8 variable must not stop the launch");
 
     let child = processes
-        .remove(&ws.issue)
+        .remove(&ws.key)
         .expect("launched child must be recorded");
     let status = child
         .lock()

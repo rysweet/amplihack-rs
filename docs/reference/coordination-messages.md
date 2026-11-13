@@ -1,7 +1,7 @@
 ---
 title: Coordination Messages
 description: The [coord] marker, which stops the workflow classification reminder from routing session-to-session messages into a recipe.
-last_updated: 2026-10-30
+last_updated: 2026-11-13
 review_schedule: quarterly
 owner: amplihack
 doc_type: reference
@@ -22,6 +22,7 @@ The marker is read by code. The hook does not infer coordination traffic from wo
 - [Reports that start with a verb](#reports-that-start-with-a-verb)
 - [The coordination note](#the-coordination-note)
 - [Routing prompt calibration](#routing-prompt-calibration)
+  - [Operations calibration](#operations-calibration)
 - [Gate order](#gate-order)
 - [Outcomes and `last_rule`](#outcomes-and-last_rule)
 - [State file](#state-file)
@@ -244,7 +245,34 @@ The closing line is unchanged:
 When in doubt, choose DEV. False positive costs minutes. False negative costs quality.
 ```
 
-A local override at `.claude/tools/amplihack/hooks/templates/routing_prompt.txt` takes precedence over the built-in prompt and does not receive these lines automatically. Copy them into the override by hand. The marker branch does not read the routing prompt, so marked messages receive the note whether or not the override is updated.
+### Operations calibration
+
+The routing prompt classifies administrative work by its requested action
+and destination. These examples apply equally to marked coordination work
+requests and ordinary user requests:
+
+| Requested action | Handling |
+| --- | --- |
+| Triage issues, create or assign an issue | Operations |
+| Research questions and return a report or issue comment | Operations |
+| Report status or coordinate cross-repository reviews | Operations |
+| Mention source files while asking for an answer | Operations |
+| Rename a term in repository documentation | Development |
+| Research questions and commit the report into repository documentation | Operations research followed by a dependent Development edit |
+
+**[PLANNED execution contract]** Native routing must resolve every Operations leaf to `operations-direct` before
+Development setup, including when a custom recipe conflicts. An Operations-led
+mixed plan retains its Development leaves, dependencies and results. Missing
+tracking does not prevent execution unless tracking was explicitly required.
+
+This calibration describes required routing, not an implemented native
+execution guarantee. Branchless preparation, dependency preservation and
+conflicting-recipe enforcement remain incomplete; see the
+[implementation boundary](dev-orchestrator-routing.md#implementation-boundary).
+
+The route controls orchestration and Development preparation. It does not
+provide filesystem confinement. See the [routing contract](dev-orchestrator-routing.md#operations-routing)
+and [classifier examples](workflow-classifier.md#operations-classification).
 
 ## Gate order
 
@@ -340,3 +368,4 @@ A failed write on a new topic is the exception: the hook does not emit the routi
 - [UserPromptSubmit Hook API](./user-prompt-submit-hook-api.md#workflow-classification-reminder): the other hooks run on each prompt
 - [Dev-Orchestrator Routing Contract](./dev-orchestrator-routing.md): what happens once a prompt is routed to dev-orchestrator
 - [Workflow Classifier](./workflow-classifier.md): how the orchestrator classifies a routed task
+- [Operations and Project-Management Routing](../operations-routing.md): why administrative work does not start a workflow

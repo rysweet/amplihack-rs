@@ -1,7 +1,7 @@
 ---
-title: Native workstream orchestrator
-description: Execute normalised workstream configurations with optional tracking and per-leaf routes.
-last_updated: 2026-11-12
+title: Native workstream orchestrator reference
+description: Workstream plan schema, per-leaf execution and the orch run command.
+last_updated: 2026-11-13
 review_schedule: quarterly
 owner: amplihack
 doc_type: reference
@@ -9,16 +9,12 @@ doc_type: reference
 
 # `amplihack orch run` — Native Workstream Orchestrator
 
-> **[IMPLEMENTED - Validation Pending]** The issue #2553 per-leaf routing,
-> optional tracking and dependency/result contracts below require implementation
-> and behavioural validation. The new JSON examples describe that target.
-
 ## Overview
 
-`amplihack orch run` executes a normalised leaf plan described by a JSON file.
-Independent ready leaves can run concurrently; dependencies preserve ordering.
-Operations leaves run directly, and repository-editing Development leaves use
-their selected Development workflow.
+`amplihack orch run` executes a parallel workstreams plan described by a JSON
+file. It is the native Rust replacement for the legacy
+`python3 -u multitask/orchestrator.py <ws_file>` invocation used by
+`smart-orchestrator.yaml`.
 
 The subcommand is a thin alias over `amplihack multitask run`, providing the
 exact CLI surface and stdout/stderr semantics required by recipe-driven
@@ -42,34 +38,18 @@ it with `--` (the standard end-of-options separator) when invoking — see
 | ----------- | ---- | -------- | -------------------------------------------------- |
 | `<WS_FILE>` | path | yes      | Path to a workstreams JSON file (see schema below) |
 
-## Behavior
+## Behaviour
 
-- Parses and validates the complete workstreams JSON at `<WS_FILE>` before
-  tracking creation or child execution.
-- Dispatches each workstream to the multitask engine using the same defaults
-  as bare `amplihack multitask run` (see [Defaults](#defaults-equivalent-to-multitask-run)).
-- Streams progress and per-workstream output to stdout; diagnostics go to
-  stderr.
-- Exits `0` on success — including the empty-workstreams short-circuit, which
-  emits `No workstreams defined in <WS_FILE>` to stderr and returns cleanly.
-- Returns a non-zero exit on parse or execution failure (see
-  [Exit Codes](#exit-codes)).
-- Uses stable workstream UUIDs for state, progress and processes. Tracking
-  issues are optional and scoped to each leaf's repository.
-- Releases dependants only after prerequisite success is validated and
-  persisted. Child completion events drive dispatch.
-- Does **not** delete `<WS_FILE>`. Cleanup is the caller's responsibility (the
-  smart-orchestrator recipe uses a `trap` for that).
+- Normalises and validates every task, key, classification, issue and dependency
+  before external actions. Empty or malformed plans are errors.
+- Resolves Operations to `operations-direct` before development setup; mixed
+  plans retain every leaf and dependency.
+- Saves the canonical plan, tracking intent and results. Completion and
+  cancellation events drive scheduling without timed probes.
+- Uses the same native engine as `amplihack multitask run`. Non-zero agent or
+  runner exits remain failures even when their prose claims success.
 
-This is functionally equivalent to:
-
-```
-amplihack multitask run <WS_FILE>
-```
-
-with no additional flags.
-
-### Defaults (equivalent to `multitask run`)
+## Defaults (equivalent to `multitask run`)
 
 | Flag                | Effective default     |
 | ------------------- | --------------------- |
@@ -79,9 +59,8 @@ with no additional flags.
 | `--timeout-policy`  | unset (engine default) |
 | `--dry-run`         | `false`               |
 
-To override these settings, use `amplihack multitask run` directly with the
-corresponding flag. Recipe defaults and overrides never change an Operations
-leaf's direct route. `orch run` intentionally exposes no flags.
+To override any of these, use `amplihack multitask run` directly with the
+corresponding flag — `orch run` intentionally exposes no flags.
 
 ## Examples
 
@@ -106,8 +85,9 @@ trap 'rm -f -- "$WS_FILE"' EXIT
 ```
 
 The `tee /dev/stderr` preserves the recipe's `output: round_N_result` stdout
-capture while also mirroring to stderr for live observation. This duplicates
-output across both streams.
+capture while also mirroring to stderr for live observation. Note that this
+duplicates output across both streams — this matches the legacy
+`python3 -u …/orchestrator.py` behaviour and is intentional.
 
 ## Workstreams JSON Schema
 
@@ -123,61 +103,82 @@ The schema is identical to `amplihack multitask run`. The top-level value is a
 An empty array is accepted; the engine logs `No workstreams defined in
 <WS_FILE>` to stderr and exits `0`.
 
-### Issue-less Operations example
+### Issue-less example
 
 ```json
 [
   {
-    "workstream_id": "8f9f57b5-9232-49df-b985-c2c92ee997c1",
-    "key": "routing-answer",
-    "repository": "rysweet/amplihack-rs",
+    "key": "triage",
     "classification": "Operations",
-    "task": "Read issue #2553 and explain its routing requirements in chat.",
-    "description": "Explain Operations routing",
-    "recipe": "operations-direct",
-    "depends_on": [],
-    "required_outputs": {"answer": "answer"},
-    "tracking": {"required": false}
+    "task": "Triage issue #2553 in rysweet/amplihack-rs and report in the result.",
+    "description": "triage",
+    "recipe": "operations-direct"
   }
 ]
 ```
 
-The issue mentioned as source material in `task` is not an implicit tracking
-binding. The example deliberately omits `issue`.
+`issue` is absent, which is valid. The key `triage` identifies execution and
+is saved before launch. Several issue-less leaves retain separate identities
+and runtime artefacts. Operations needs no Development branch or workspace.
+When a key is not supplied, normalisation allocates a safe unique key and
+persists it; attaching an issue later does not change it.
+
+### Single-workstream example
+
+```json
+[
+  {
+    "issue": 2553,
+    "classification": "Development",
+    "branch": "feat/issue-2553-operations-routing",
+    "task": "Implement Operations routing and optional tracking for issue #2553.",
+    "description": "Optional human-readable summary.",
+    "recipe": "default-workflow",
+    "max_runtime": 7200,
+    "timeout_policy": "interrupt-preserve"
+  }
+]
+```
 
 ### Field reference
 
-| Field | Type | Requirement and meaning |
-| --- | --- | --- |
-| `workstream_id` | UUID string | Required in a normalised plan; allocated once during legacy adaptation if absent |
-| `key` | string | Unique plan key; supplied during compatible legacy adaptation if absent |
-| `repository` | string | Authorised repository; compatible single-repository input can inherit trusted context |
-| `classification` | string | Canonical per-leaf class; new mixed plans require it |
-| `issue` | integer, decimal string or null | Optional; positive through `u64::MAX`; blanks and recognised placeholders mean absence |
-| `branch` | string | Development branch, supplied or generated; absent for Operations |
-| `task` | string | Required non-blank leaf task handed to its recipe or agent |
-| `description` | string | Optional human-readable summary |
-| `recipe` | string | Trusted route selected from classification; model input is advisory |
-| `depends_on` | array of UUID strings | Prerequisite identities; defaults to an empty list |
-| `tracking` | object | `required` defaults to false; required tracking uses an applicable issue, an explicit [producer binding](dev-orchestrator-routing.md#administrative-output-tracking-bindings), or creation `title` and `body` |
-| `required_outputs` | object | Non-empty map of output names to kinds; see [completion and prerequisite JSON](workstream-state.md#completion-and-prerequisite-json) for declarations and defaults |
-| `max_runtime` | integer, seconds | Existing per-workstream budget setting; does not define dependency readiness |
-| `timeout_policy` | string | Existing `interrupt-preserve` or `continue-preserve` policy |
-| `is_critical_code` | string | Consensus input, exactly `"true"` or `"false"`; JSON Booleans fail parsing. Copied unchanged into context and validated by the recipe |
+This table describes the execution
+schema. The current `WorkstreamConfig` requires `branch` for every entry and
+does not define `key`, `classification`, `depends_on` or `create_issue`.
+Those fields do not enable their documented semantics in the current binary;
+branchless examples fail deserialisation. `recipe` is currently honoured
+without classification enforcement. The helper also drops the four new
+fields and replaces input `task` with `description`. See the
+[implementation boundary](dev-orchestrator-routing.md#implementation-boundary).
 
-Decomposition input uses `name` keys for dependency references; normalisation
-resolves them into the UUIDs in this execution schema. Canonical serialisation
-omits absent issues. See [optional issue parsing](dev-orchestrator-routing.md#optional-issue-parsing)
-and the [Consensus criticality contract](consensus-criticality-contract.md#workstreams-field).
+The engine accepts the following fields. `dependencies` is the canonical
+spelling; `depends_on` remains an alias. Runtime budgets and timeout policies
+are retained as metadata and do not install a timer.
+
+| Field             | Type            | Required | Notes                                                                        |
+| ----------------- | --------------- | -------- | ---------------------------------------------------------------------------- |
+| `issue`           | number\|string\|null | no  | Tracking issue. A positive integer, a decimal string, `#N`, or a `github.com` issue URL. Omitted, `null`, blank and recognised placeholders such as `TBD` mean the workstream has no tracking issue and still runs. See [Optional tracking issues](./dev-orchestrator-routing.md#optional-tracking-issues) |
+| `key` | string | no on initial input; always saved | Immutable workstream identity. Safe unique keys are allocated when omitted; initially tracked work preserves numeric identities. Reused on resume. |
+| `classification` | string | yes in mixed plans | Leaf classification; Operations always selects `operations-direct`. Decomposition accepts `task_type` and `type` as compatibility fields. |
+| `branch` | string | Development preparation | Git branch for Development; not required or looked up for pure Operations. |
+| `depends_on` | array of strings | no | Prerequisite workstream keys; references must exist and be acyclic. Successful results are passed by key. |
+| `create_issue` | Boolean | no; defaults to false | If true and tracking is absent, acquire and persist an issue before executing this leaf. Existing issues are reused. |
+| `task`            | string          | yes      | Task description handed to the recipe / agent                                |
+| `description`     | string          | no       | Optional human-readable summary                                              |
+| `recipe`          | string          | no       | Advisory recipe selection. Operations always selects `operations-direct`; Development selects `default-workflow` or eligible `quick-change`. Other routes retain their established rules; see [Dev-Orchestrator Routing Contract](./dev-orchestrator-routing.md) |
+| `max_runtime`     | integer (secs)  | no       | Per-workstream runtime budget override                                       |
+| `timeout_policy`  | string          | no       | `interrupt-preserve` or `continue-preserve`                                  |
+| `is_critical_code` | string        | no       | Required input for a `consensus-workflow` workstream: exactly `true` or `false`. Must be a JSON string (`"true"`, not `true`); a Boolean or any other type makes the file fail to parse. Copied unchanged into `context.json`; validated by the recipe. See [Consensus Criticality Contract](./consensus-criticality-contract.md#workstreams-field) |
 
 See [`docs/reference/multitask-command.md`](./multitask-command.md) for the
-full multitask schema and engine-level details.
+engine-level details. [Workstream state and recovery](workstream-state.md)
+defines immutable identity, tracking acquisition and ownership requirements.
 
 ## Exit Codes
 
 | Code     | Meaning                                                                                          |
 | -------- | ------------------------------------------------------------------------------------------------ |
-| `0`      | All workstreams completed successfully (or the workstreams array was empty)                      |
+| `0`      | All workstreams completed successfully                      |
 | non-zero | Argument parsing failure, JSON parse failure, I/O error, or one or more workstreams failed       |
 
 `amplihack orch run` does not distinguish exit codes by failure category
@@ -186,10 +187,10 @@ implementation. If you need finer-grained categorisation, parse stderr.
 
 ## Environment
 
-Variables consumed by the underlying multitask engine, such as `AMPLIHACK_HOME`
-and `AMPLIHACK_AGENT_BINARY`, apply. Child environments are constructed per
-leaf; inherited issue-specific values are cleared and absent tracking is
-omitted. See [child context and environment](workstream-state.md#child-context-and-environment).
+`amplihack orch run` inherits the parent process environment. No
+subcommand-specific variables are read. Variables consumed by the underlying
+multitask engine (e.g. `AMPLIHACK_HOME`, `AMPLIHACK_AGENT_BINARY`) apply
+transparently.
 
 `AMPLIHACK_BIN` is a recipe-level convention (not read by this binary): recipe
 authors use it to override which `amplihack` executable the recipe invokes —
@@ -207,10 +208,23 @@ inside `orch run` itself.
 `orch run` is intentionally minimal — for advanced flags (mode selection,
 concurrency limits, dry-run, etc.) use `multitask run` directly.
 
-## Migration
+## Migration Notes
 
-Existing valid issue-bearing configurations remain accepted. Legacy saved
-state is adapted only after ownership validation, retaining its recorded paths.
-Missing tracking never blocks execution by itself. Read
-[legacy configuration and saved state](workstream-state.md#legacy-configuration-and-saved-state)
-before resuming an older plan.
+Recipes previously invoking:
+
+```bash
+python3 -u "$ORCH_SCRIPT" "$WS_FILE"
+```
+
+should be updated to:
+
+```bash
+"${AMPLIHACK_BIN:-amplihack}" orch run -- "$WS_FILE"
+```
+
+The `ORCH_SCRIPT` candidate-search loop is no longer needed — the native
+binary is resolved through `$PATH` (or the `$AMPLIHACK_BIN` recipe override).
+Python is no longer a runtime dependency for this code path.
+
+Stdout/stderr semantics are preserved: callers using `| tee /dev/stderr` and
+the `output:` capture in recipe YAMLs continue to work without modification.

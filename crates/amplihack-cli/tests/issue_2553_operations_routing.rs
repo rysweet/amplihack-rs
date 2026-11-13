@@ -1,26 +1,74 @@
-//! Deterministic routing evidence; no claim about model interpretation quality.
+//! Issue #2553, fault 1 — an Operations (project-management) request must not
+//! be routed down the Development path.
+//!
+//! Every assertion here is on a returned value or on the contents of a file
+//! the library wrote. Nothing scans a prompt or a recipe for wording, nothing
+//! spawns a process, nothing sleeps, and nothing reads the clock. The route an
+//! Operations workstream takes is read out of the workstreams-config the
+//! orchestrator helper actually produces.
 
-use crate::issue_2553_fixture::{Fixture, describe, leaf, plan};
-use amplihack_cli::commands::orch::{normalise_type, reclassify_task_type};
-use recipe_runner_rs::context::RecipeContext;
+use amplihack_cli::commands::orch::{
+    build_workstreams_config_to_tempfile, build_workstreams_config_with_override, normalise_type,
+    reclassify_task_type,
+};
+use amplihack_workflows::classifier::{WorkflowClassifier, WorkflowType};
 use serde_json::{Value, json};
-use std::collections::HashMap;
 
+/// Build the workstreams-config for `decomp` and return it parsed. The
+/// tempfile is removed before the assertions run, so a failing assertion
+/// cannot leave a file behind.
+fn config_for(decomp: &Value, override_value: &str) -> Value {
+    let path = build_workstreams_config_with_override(&decomp.to_string(), override_value)
+        .expect("the helper writes a workstreams-config");
+    let body = std::fs::read_to_string(&path).expect("the config is readable");
+    std::fs::remove_file(&path).ok();
+    serde_json::from_str(&body).expect("the config is JSON")
+}
+
+fn recipes(config: &Value) -> Vec<&str> {
+    config
+        .as_array()
+        .expect("the config is an array")
+        .iter()
+        .map(|e| e["recipe"].as_str().expect("every entry names a recipe"))
+        .collect()
+}
+
+// ---- the label the decomposition carries ----------------------------------
+
+/// The deputy's wording for this class is "Ops/PM". `Operations` and `Ops`
+/// already normalise; the project-management spellings are what #2553 adds.
+/// `pm` matches as a whole label, not as a substring, so that `compile` and
+/// `pmap` stay Development.
 #[test]
 fn project_management_aliases_normalise_to_operations() {
     for label in [
         "Operations",
         "Ops",
         "PM",
+        "pm",
+        " pM ",
         "Project Management",
         "project-management",
-        " pM ",
         " PROJECT MANAGEMENT ",
     ] {
         assert_eq!(normalise_type(label), "Operations", "label={label:?}");
     }
 }
 
+#[test]
+fn project_management_aliases_do_not_match_inside_other_words() {
+    for label in ["compile", "pmap the process", "impediment"] {
+        assert_eq!(normalise_type(label), "Development", "label={label:?}");
+    }
+}
+
+// ---- promotion to Development only on a real repository edit --------------
+
+/// Fix #269 promotes an Operations label to Development when the task carries
+/// strong development signals. An administrative checklist is not such a
+/// signal: neither its length, nor an enumerated structure, nor a source path
+/// it merely names may promote it.
 #[test]
 fn administrative_checklists_are_not_promoted_by_complexity_or_source_mentions() {
     for task in [
@@ -29,7 +77,7 @@ fn administrative_checklists_are_not_promoted_by_complexity_or_source_mentions()
         "Create an issue about src/router.rs and assign the owner.",
         "Write up the answers to these questions in chat.",
         "(1) Create a triage issue. (2) Assign Y. (3) Report status in chat.",
-        "Research the question set and write the answers in an issue.",
+        "Research these issues and write up the answers in an issue.",
         "Report unit test coverage in the status issue.",
         "Coordinate review of the existing pull request.",
     ] {
@@ -41,13 +89,17 @@ fn administrative_checklists_are_not_promoted_by_complexity_or_source_mentions()
     }
 }
 
+/// The converse, which keeps the Operations route from swallowing real work:
+/// a request to change tracked files is Development whatever verb it uses.
 #[test]
-fn tracked_documentation_edits_are_development_regardless_of_verb() {
+fn tracked_file_edits_are_development_regardless_of_verb() {
     for task in [
-        "Rename term X across the docs of repos A and B.",
+        "Rename term X across the tracked docs of repos A and B.",
         "Correct the wording in tracked docs/routing.md.",
         "Write the research answers into README.md and commit them.",
         "Remove the programme name from tracked documentation files.",
+        "Extend crates/amplihack-cli/src/commands/orch.rs with the new arm.",
+        "Open a PR that drops the stale entries.",
     ] {
         assert_eq!(
             reclassify_task_type("Operations", task),
@@ -57,303 +109,210 @@ fn tracked_documentation_edits_are_development_regardless_of_verb() {
     }
 }
 
+// ---- the route an Operations leaf is given --------------------------------
+
+/// Fault 1 in one line: `non_development_recipe` had no Operations arm, so an
+/// Operations leaf fell through to `default-workflow`, which clones a
+/// worktree, branches and opens a PR for administrative work.
 #[test]
-fn operations_route_is_authoritative_over_recipe_and_development_override() {
-    let f = Fixture::new();
+fn an_operations_leaf_routes_to_operations_direct() {
+    let config = config_for(
+        &json!({
+            "task_type": "Operations",
+            "workstreams": [
+                {"name": "triage", "classification": "Operations",
+                 "description": "Triage the open issues and report in chat."}
+            ]
+        }),
+        "",
+    );
+    assert_eq!(recipes(&config), vec!["operations-direct"]);
+}
+
+/// The leaf's own recipe field must not be able to put administrative work
+/// back on the Development route, whatever the model wrote there and whatever
+/// `-c workflow=` the caller passed.
+#[test]
+fn the_operations_route_is_authoritative_over_recipe_and_override() {
     for supplied in [
-        "default-workflow",
-        "quick-change",
-        "investigation-workflow",
-        "../../untrusted.yaml",
+        Value::Null,
+        json!(""),
+        json!("   "),
+        json!("default-workflow"),
+        json!("quick-change"),
     ] {
-        let mut item = leaf("ops", "PM", "Report status in chat.");
-        item["recipe"] = json!(supplied);
+        let mut leaf = json!({
+            "name": "status",
+            "classification": "Operations",
+            "description": "Report the lane status in chat."
+        });
+        if !supplied.is_null() {
+            leaf["recipe"] = supplied.clone();
+        }
         for override_value in ["", "default-workflow", "quick-change"] {
-            let out = f.normalise_output(&plan(vec![item.clone()]), override_value);
-            assert!(out.status.success(), "{}", describe(&out));
-            let config: Value = serde_json::from_slice(&out.stdout).unwrap();
-            assert_eq!(config[0]["recipe"], "operations-direct", "{config:#}");
-            assert!(
-                config[0].get("branch").is_none(),
-                "Operations has no generated branch"
+            let config = config_for(
+                &json!({"task_type": "Operations", "workstreams": [leaf]}),
+                override_value,
+            );
+            assert_eq!(
+                recipes(&config),
+                vec!["operations-direct"],
+                "recipe={supplied} override={override_value:?}"
             );
         }
     }
 }
 
+/// Operations routing is authoritative even over a custom recipe. Resolving
+/// this after development preparation would already be too late.
 #[test]
-fn mislabelled_repository_edit_is_rejected_before_direct_execution() {
-    let f = Fixture::new();
-    let out = f.normalise_output(
-        &plan(vec![leaf(
-            "mislabelled",
-            "Operations",
-            "Update tracked docs/routing.md and commit the wording correction.",
-        )]),
+fn a_custom_operations_recipe_cannot_bypass_operations_direct() {
+    let config = config_for(
+        &json!({
+            "task_type": "Operations",
+            "workstreams": [
+                {"name": "ops", "classification": "Operations", "description": "Run the sentinel", "recipe": "ops-sentinel-workflow"}
+            ]
+        }),
         "",
     );
-    assert!(!out.status.success(), "{}", describe(&out));
-    assert!(f.events().is_empty());
+    assert_eq!(recipes(&config), vec!["operations-direct"]);
 }
 
+/// Same defect, same fix, one classification over: an Investigation or Q&A
+/// leaf that names no recipe was also being handed `default-workflow`.
 #[test]
-fn motivating_mixed_request_keeps_only_repository_edits_on_development_route() {
-    let f = Fixture::new();
-    let mut cross_check = leaf(
-        "cross-check",
-        "Operations",
-        "Open a cross-check issue for the colleague.",
+fn a_non_development_leaf_without_a_recipe_gets_its_own_workflow() {
+    let config = config_for(
+        &json!({
+            "task_type": "Investigation",
+            "workstreams": [
+                {"name": "research", "classification": "Investigation", "description": "Read the code"},
+                {"name": "answer", "classification": "Q&A", "description": "Answer the question"},
+                {"name": "ops", "classification": "Operations", "description": "Triage the issues"}
+            ]
+        }),
+        "",
     );
-    cross_check["depends_on"] = json!(["edits", "research"]);
-    cross_check["required_outputs"] = json!({"created_issue": "issue"});
-    let input = plan(vec![
-        leaf(
-            "edits",
-            "Development",
-            "Remove the programme name from tracked source and documentation.",
-        ),
-        leaf(
-            "research",
-            "Operations",
-            "Answer the research question set in chat.",
-        ),
-        cross_check,
-    ]);
-    let config = f.normalise(&input);
-    assert_eq!(config.as_array().unwrap().len(), 3);
-    assert_eq!(config[0]["recipe"], "default-workflow");
-    assert_eq!(config[1]["recipe"], "operations-direct");
-    assert_eq!(config[2]["recipe"], "operations-direct");
     assert_eq!(
-        config[2]["depends_on"],
-        json!([config[0]["workstream_id"], config[1]["workstream_id"]])
+        recipes(&config),
+        vec!["investigation-workflow", "qa-workflow", "operations-direct"]
     );
 }
 
+// ---- mixed requests -------------------------------------------------------
+
+/// The 13 November request: three administrative workstreams and one that
+/// genuinely edits tracked files. Only the last may reach `default-workflow`.
 #[test]
-fn issue_less_decomposition_reaches_execution_with_scoped_context_and_no_stale_issue() {
-    let f = Fixture::new();
-    f.normalise(&plan(vec![leaf(
-        "answer",
-        "Operations",
-        "Answer the research questions in chat.",
-    )]));
-    let out = f
-        .command("execute")
-        .arg(&f.config)
-        .arg("recipe")
-        .env("RECIPE_VAR_issue_number", "9999")
-        .env("RECIPE_VAR_issue_url", "https://invalid/9999")
-        .env("AMPLIHACK_WORKSTREAM_ISSUE", "9999")
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{}", describe(&out));
-    f.assert_direct(1);
-    let call = &f.calls("execute")[0];
+fn the_motivating_mixed_request_keeps_only_repository_edits_on_the_development_route() {
+    let config = config_for(
+        &json!({
+            "task_type": "Operations",
+            "workstreams": [
+                {"name": "triage", "classification": "Operations",
+                 "description": "Triage the open issues."},
+                {"name": "research", "classification": "Operations",
+                 "description": "Research these issues and write up the answers in chat."},
+                {"name": "edits", "classification": "Development",
+                 "description": "Remove the programme name from tracked source and documentation."},
+                {"name": "cross-check", "classification": "Operations",
+                 "description": "Open a cross-check issue for the colleague."}
+            ]
+        }),
+        "",
+    );
     assert_eq!(
-        call["context"]["task_description"],
-        "Answer the research questions in chat."
-    );
-    for key in ["issue_number", "issue_url"] {
-        assert!(call["context"].get(key).is_none(), "{call:#}");
-    }
-    for key in ["inherited_issue", "inherited_url", "workstream_issue"] {
-        assert!(call[key].is_null(), "{call:#}");
-    }
-    assert!(
-        f.calls("gh").is_empty(),
-        "missing issues do not opt in to tracking"
+        recipes(&config),
+        vec![
+            "operations-direct",
+            "operations-direct",
+            "default-workflow",
+            "operations-direct",
+        ]
     );
 }
 
+/// `-c workflow=quick-change` is a Development-route override. It must reach
+/// the Development leaf and no other.
 #[test]
-fn maximum_valid_issue_reaches_child_context_without_signed_truncation() {
-    let f = Fixture::new();
-    let mut item = leaf("status", "Operations", "Report project status in chat.");
-    item["issue"] = json!(u64::MAX);
-    f.normalise(&plan(vec![item]));
-    let out = f.execute("recipe");
-    assert!(out.status.success(), "{}", describe(&out));
-    f.assert_direct(1);
-    assert_eq!(
-        f.calls("execute")[0]["context"]["issue_number"].as_u64(),
-        Some(u64::MAX)
+fn the_cli_override_applies_only_to_development_leaves_in_operations_led_work() {
+    let config = config_for(
+        &json!({
+            "task_type": "Operations",
+            "workstreams": [
+                {"name": "triage", "classification": "Operations", "description": "Triage the issues"},
+                {"name": "typo", "classification": "Development", "description": "Fix the typo in src/lib.rs"}
+            ]
+        }),
+        "quick-change",
     );
-    assert!(f.calls("gh").is_empty());
+    assert_eq!(recipes(&config), vec!["operations-direct", "quick-change"]);
 }
 
-#[test]
-fn dirty_initial_repository_still_executes_operations_directly() {
-    let f = Fixture::new();
-    std::fs::write(
-        f.repo.join("README.md"),
-        "# Pre-existing uncommitted wording\n",
-    )
-    .unwrap();
-    let before = f.git(&["diff"]);
-    f.normalise(&plan(vec![leaf(
-        "status",
-        "Operations",
-        "Report project status in chat.",
-    )]));
-    let out = f.execute("recipe");
-    assert!(out.status.success(), "{}", describe(&out));
-    f.assert_direct(1);
-    assert_eq!(f.git(&["diff"]), before);
-}
+// ---- the hook-level classification ----------------------------------------
 
+/// `WorkflowType::Ops` has no recipe, which is what makes a plain
+/// administrative prompt run directly: no recipe launch, so no worktree and
+/// no PR. Fault 1 is the decomposition arm above; this is the layer that
+/// never starts a workflow at all.
 #[test]
-fn classic_operations_launches_one_agent_with_only_its_administrative_task() {
-    let f = Fixture::new();
-    let task = "Report the programme status in chat.";
-    f.normalise(&plan(vec![leaf("status", "Operations", task)]));
-    let out = f.execute("classic");
-    assert!(out.status.success(), "{}", describe(&out));
-    f.assert_direct(1);
-    let input = f.calls("execute")[0]["raw_input"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    assert!(input.contains(task), "{input}");
-    for instruction in [
-        "default-workflow",
-        "smart-orchestrator",
-        "Create PR",
-        "dev-orchestrator",
+fn an_operations_classification_starts_no_workflow() {
+    assert_eq!(WorkflowType::Ops.recipe_name(), None);
+
+    let classifier = WorkflowClassifier::default();
+    for request in [
+        "Triage these issues",
+        "Open an issue for X and assign Y",
+        "Research these issues and write up the answers",
+        "Write up the answers to these questions in chat",
+        "Coordinate review of the open pull requests",
     ] {
-        assert!(
-            !input.contains(instruction),
-            "administrative child received development instruction: {input}"
+        let result = classifier.classify(request);
+        assert_eq!(result.workflow, WorkflowType::Ops, "{request}");
+        assert_eq!(result.workflow.recipe_name(), None, "{request}");
+    }
+}
+
+/// The near neighbours of those requests still reach Development, so the new
+/// route cannot steal work that edits tracked files.
+#[test]
+fn near_neighbour_edit_requests_still_reach_the_development_workflow() {
+    let classifier = WorkflowClassifier::default();
+    for request in [
+        "Remove the stale entries from docs/",
+        "Fix the typo in README",
+        "Rename the config key across crates/amplihack-workflows/",
+        "Add tests for the issue parser",
+        "Open a PR for the routing fix",
+    ] {
+        assert_eq!(
+            classifier.classify(request).workflow,
+            WorkflowType::Default,
+            "{request}"
         );
     }
 }
 
-/// Use the actual pinned evaluator on the actual routing conditions. This is
-/// a condition-boundary test, distinct from the process-launch fixtures above.
+/// A plain Operations decomposition writes one entry per workstream and never
+/// a `branch` that points at the Development route's naming scheme being
+/// reused as evidence of a worktree. The entry count is the contract here.
 #[test]
-fn pinned_runner_does_not_select_the_whole_request_operations_agent_for_mixed_work() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../amplifier-bundle/recipes/smart-execute-routing.yaml");
-    let recipe = recipe_runner_rs::parser::RecipeParser::new()
-        .parse_file(&path)
-        .unwrap();
-    for count in [json!(3), json!("3")] {
-        for serial in [json!(false), json!(true), json!("true")] {
-            let mut values = HashMap::new();
-            for (key, value) in [
-                ("task_type", json!("Operations")),
-                ("workstream_count", count.clone()),
-                ("force_single_workstream", serial),
-                (
-                    "decomposition_json",
-                    json!({"workstreams": [
-                    {"classification": "Operations"}, {"classification": "Development"}, {"classification": "Operations"}]}),
-                ),
-            ] {
-                values.insert(key.to_owned(), value);
-            }
-            let context = RecipeContext::new(values);
-            if let Some(step) = recipe.steps.iter().find(|s| s.id == "handle-ops-agent") {
-                let selected = context
-                    .evaluate(step.condition.as_deref().unwrap_or("true"))
-                    .unwrap();
-                assert!(
-                    !selected,
-                    "mixed work must dispatch leaves, not execute the whole task twice"
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn pinned_runner_executes_operations_leaves_once_even_in_forced_sequential_mode() {
-    for serial in [false, true] {
-        let f = Fixture::new();
-        let leaves = plan(vec![
-            leaf("research", "Operations", "Answer the question set in chat."),
-            leaf("status", "Operations", "Report project status in chat."),
-        ]);
-        let context = json!({"task_type": "Operations", "workstream_count": 2,
-            "force_single_workstream": serial, "decomposition_json": leaves.to_string(),
-            "task_description": "WHOLE REQUEST: research and report status", "repo_path": f.repo,
-            "session_info": "{\"status\":\"ok\"}", "round_1_result": "", "selected_workflow": "none"});
-        let path = f.root.join("phase-context.json");
-        std::fs::write(&path, serde_json::to_vec(&context).unwrap()).unwrap();
-        let out = f
-            .command("phase")
-            .arg(&path)
-            .env("REPO_PATH", &f.repo)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "{}", describe(&out));
-        assert!(
-            f.calls("phase_agent")
-                .iter()
-                .all(|e| !e["prompt"].as_str().unwrap().contains("WHOLE REQUEST")),
-            "the original request must not be executed as well as its leaves: {:?}",
-            f.events()
-        );
-        f.assert_direct(2);
-    }
-}
-
-#[test]
-fn actual_operations_recipe_uses_one_agent_in_the_repository_without_development_actions() {
-    let f = Fixture::new();
-    let task = "Answer the research questions in chat.";
-    let context = json!({"workstream_id": crate::issue_2553_fixture::FIRST,
-        "classification": "Operations", "repository": crate::issue_2553_fixture::REPOSITORY,
-        "task_description": task, "repo_path": f.repo, "required_outputs": {"answer": "answer"},
-        "prerequisite_results": []});
-    let path = f.tmp.join("operations-context.json");
-    std::fs::write(&path, serde_json::to_vec(&context).unwrap()).unwrap();
-    let out = f
-        .command("operations-recipe")
-        .arg(&path)
-        .env("REPO_PATH", &f.repo)
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{}", describe(&out));
-    let agents = f.calls("phase_agent");
-    assert_eq!(
-        agents.len(),
-        1,
-        "one administrative agent: {:?}",
-        f.events()
-    );
-    assert_eq!(agents[0]["cwd"], f.repo.to_str().unwrap());
-    assert!(agents[0]["prompt"].as_str().unwrap().contains(task));
-    for kind in ["forbidden_git", "development", "pr", "gh"] {
-        assert!(
-            f.calls(kind).is_empty(),
-            "read-only Operations recipe invoked {kind}"
-        );
-    }
-}
-
-#[test]
-fn cli_override_applies_only_to_development_leaves_in_operations_led_mixed_work() {
-    let f = Fixture::new();
-    let input = plan(vec![
-        leaf("status", "Operations", "Report status in chat."),
-        leaf("docs", "Development", "Update tracked README.md."),
-    ]);
-    let path = f.root.join("mixed-input.json");
-    std::fs::write(&path, serde_json::to_vec(&input).unwrap()).unwrap();
-    let out = f
-        .command("cli")
-        .args(["orch", "helper", "build-workstreams-config"])
-        .env("RECIPE_VAR_task_type", "Operations")
-        .env("RECIPE_VAR_workflow", "quick-change")
-        .stdin(std::fs::File::open(path).unwrap())
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{}", describe(&out));
-    let config_file = String::from_utf8(out.stdout).unwrap();
-    let config: Value =
-        serde_json::from_slice(&std::fs::read(config_file.trim()).unwrap()).unwrap();
-    assert_eq!(config[0]["recipe"], "operations-direct");
-    assert_eq!(config[1]["recipe"], "quick-change");
-    assert!(f.events().is_empty(), "normalisation must not launch work");
+fn every_decomposition_leaf_produces_exactly_one_config_entry() {
+    let path = build_workstreams_config_to_tempfile(
+        &json!({
+            "task_type": "Operations",
+            "workstreams": [
+                {"name": "a", "classification": "Operations", "description": "Triage"},
+                {"name": "b", "classification": "Operations", "description": "Report status"},
+                {"name": "c", "classification": "Development", "description": "Edit src/lib.rs"}
+            ]
+        })
+        .to_string(),
+    )
+    .expect("the helper writes a workstreams-config");
+    let body = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(&path).ok();
+    let config: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(config.as_array().unwrap().len(), 3);
 }

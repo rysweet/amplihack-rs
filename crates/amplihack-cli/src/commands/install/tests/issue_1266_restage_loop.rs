@@ -60,6 +60,7 @@ fn a_fully_staged_bundle_install_reports_no_gap_and_no_restage() {
         "smart-orchestrator.yaml",
         "default-workflow.yaml",
         "investigation-workflow.yaml",
+        "operations-direct.yaml",
     ] {
         fs::write(recipes.join(recipe), "name: x\n").unwrap();
     }
