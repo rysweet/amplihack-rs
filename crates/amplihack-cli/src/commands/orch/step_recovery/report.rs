@@ -16,6 +16,10 @@ pub struct InitArgs {
     /// Check this directory instead of creating one.
     #[arg(long)]
     pub dir: Option<PathBuf>,
+    /// When it creates the directory, note this recipe as its creator, so
+    /// only that recipe's `report --remove-if-created-by` removes it.
+    #[arg(long)]
+    pub created_by: Option<String>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -36,6 +40,11 @@ pub struct RecordArgs {
 pub struct ReportArgs {
     #[arg(long)]
     pub dir: PathBuf,
+    /// Remove the directory when it holds no record and `init
+    /// --created-by` named this recipe. A directory with any other file is
+    /// kept, and so is a caller's directory.
+    #[arg(long)]
+    pub remove_if_created_by: Option<String>,
 }
 
 /// `$XDG_STATE_HOME` when set and absolute, else `$HOME/.local/state`.
@@ -72,7 +81,13 @@ fn make_private_dir(_: &Path) -> Result<()> {
     anyhow::bail!("step recovery requires Unix")
 }
 
+/// Name of the file in which `init` notes the recipe that created the directory.
+const CREATED_BY: &str = ".created-by";
+
 fn init_dir(args: InitArgs) -> Result<PathBuf> {
+    if let Some(tag) = &args.created_by {
+        validate_caller_step_id(tag)?;
+    }
     let dir = match args.dir {
         Some(dir) => dir,
         None => {
@@ -82,6 +97,9 @@ fn init_dir(args: InitArgs) -> Result<PathBuf> {
                 .join("step-recovery")
                 .join(name);
             make_private_dir(&dir)?;
+            if let Some(tag) = &args.created_by {
+                super::secure_fs::create(&dir.join(CREATED_BY), tag.as_bytes())?;
+            }
             dir
         }
     };
@@ -140,7 +158,15 @@ pub fn record(args: RecordArgs) -> Result<i32> {
 pub fn report(args: ReportArgs) -> Result<i32> {
     check_recovery_dir(&args.dir)?;
     let mut handoffs = Vec::new();
-    for (path, records) in record::read_all(&args.dir)? {
+    let all = record::read_all(&args.dir)?;
+    if let Some(tag) = &args.remove_if_created_by
+        && all.is_empty()
+        && super::secure_fs::read_optional(&args.dir.join(CREATED_BY), 256)?.as_deref()
+            == Some(tag.as_bytes())
+    {
+        remove_clean_dir(&args.dir);
+    }
+    for (path, records) in all {
         for r in records.into_iter().filter(|r| r.choice == Choice::Handoff) {
             eprintln!(
                 "[step-recovery] HANDOFF step={} owner={} needs={} reason={} record={}",
@@ -170,4 +196,24 @@ pub fn report(args: ReportArgs) -> Result<i32> {
         serde_json::json!({ "step_recovery_handoffs": handoffs })
     );
     Ok(code)
+}
+
+/// Removes a directory that holds no record: first the creator note and
+/// the retry branch note (`build-branch.txt`, written by workflow-worktree),
+/// then the directory. Any other file keeps it; the reason goes to stderr.
+fn remove_clean_dir(dir: &Path) {
+    let note = |name: &str| match std::fs::remove_file(dir.join(name)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    };
+    let removed = note("build-branch.txt")
+        .and_then(|()| note(CREATED_BY))
+        .and_then(|()| std::fs::remove_dir(dir));
+    match removed {
+        Ok(()) => eprintln!(
+            "[step-recovery] removed {}: it held no record",
+            dir.display()
+        ),
+        Err(e) => eprintln!("[step-recovery] kept {}: {e}", dir.display()),
+    }
 }

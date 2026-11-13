@@ -108,6 +108,19 @@ fn spool_tail(file: &mut File) -> Result<String> {
     Ok(tail_text(&bytes, start > 0))
 }
 
+/// Runs a step whose run has no recovery directory, as the step ran before
+/// #2539: the command replaces this process, so its output and exit status
+/// are the step's own. A step that already failed has nothing to run.
+pub fn without_recovery(step_id: &str, already_failed: bool, command: &[String]) -> Result<i32> {
+    if already_failed {
+        eprintln!("ERROR: {step_id} failed and this run has no step_recovery_dir");
+        return Ok(1);
+    }
+    use std::os::unix::process::CommandExt;
+    let error = Command::new(&command[0]).args(&command[1..]).exec();
+    Err(error).with_context(|| format!("cannot run {}", command[0]))
+}
+
 /// Runs `command`, the attempt of `step_id`, once.
 pub fn execute(dir: &Path, step_id: &str, command: &[String]) -> Result<Ran> {
     let (program, args) = command.split_first().context("no command after --")?;

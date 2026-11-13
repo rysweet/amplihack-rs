@@ -77,6 +77,8 @@ steps:
   # recovery starts with --already-failed. --essential: a build cannot be
   # skipped, so the only outcome line this step prints is a handoff. A retry or
   # alternative runs the same default-workflow, with the same recovery records.
+  # `not workflow_result` is true only after a failure: the runner sets a
+  # successful recipe step's output to its result summary, never empty.
   - id: "step-02r-default-workflow-recovery"
     type: "bash"
     condition: "build_preflight.should_run == 'true' and not workflow_result"
@@ -101,10 +103,9 @@ steps:
         -c "existing_branch=${BRANCH}" -c "step_recovery_dir=${RECIPE_VAR_step_recovery_dir:-}" \
         -c no_merge=true -c should_merge=false -c finalization_handoff=true
       STEP_RECOVERY_BODY
-      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || { echo "ERROR: step-02-default-workflow failed and this run has no step_recovery_dir" >&2; exit 1; }
       exec amplihack orch helper step-recovery run --already-failed --essential \
         --step-id step-02-default-workflow \
-        --dir "$RECIPE_VAR_step_recovery_dir" \
+        --dir "${RECIPE_VAR_step_recovery_dir:-}" \
         --goal "Build and publish a PR for the run's task and leave it open. A retry continues on the branch the first attempt created, so it reuses that branch's PR." \
         -- bash -c "$STEP_BODY" step-02-default-workflow
     output: "build_recovery"

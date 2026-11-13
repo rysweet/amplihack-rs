@@ -205,3 +205,39 @@ fn a_fixture_handoff_skips_dependent_steps_and_ends_at_the_report() {
     assert_eq!(f.records("step-02-sub")[0]["choice"], "handoff");
     assert_eq!(f.report().status.code(), Some(HANDOFF_EXIT));
 }
+
+/// Review B5: the recovery step after a sub-recipe runs on `not <output>`.
+/// A sub-recipe that succeeds and prints nothing must not trigger it, or a
+/// finalization that merged would run a second time.
+#[test]
+fn a_sub_recipe_that_succeeds_with_no_output_does_not_run_its_recovery_step() {
+    let Some(runner) = real_runner() else {
+        assert!(
+            std::env::var_os("AMPLIHACK_2539_REQUIRE_RECIPE_RUNNER").is_none(),
+            "no recipe-runner-rs found"
+        );
+        eprintln!("recipe-runner-rs unavailable; skipping the recipe run");
+        return;
+    };
+    let f = Fixture::new();
+    let recipes = f.root.join("recipes");
+    crate::support::step_recovery::private_dir(&recipes);
+    let quiet = "name: quiet-child\ndescription: succeeds silently\nversion: 1.0.0\ncontext: {}\nsteps:\n  - id: ok\n    type: bash\n    command: \"true\"\n";
+    let parent = "name: quiet-parent\ndescription: success with no output\nversion: 1.0.0\ncontext:\n  child_result: \"\"\nsteps:\n  - id: step-02-sub\n    type: recipe\n    recipe: quiet-child\n    continue_on_error: true\n    output: child_result\n  - id: step-02r-sub-recovery\n    type: bash\n    condition: \"not child_result\"\n    command: echo RECOVERY-RAN\n  - id: step-03-after\n    type: bash\n    command: echo AFTER-MARK\n";
+    fs::write(recipes.join("quiet-child.yaml"), quiet).unwrap();
+    fs::write(recipes.join("quiet-parent.yaml"), parent).unwrap();
+    let o = f
+        .amplihack()
+        .args(["recipe", "run"])
+        .arg(recipes.join("quiet-parent.yaml"))
+        .env("RECIPE_RUNNER_RS_PATH", runner)
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let all = format!("{}{}", text(&o.stdout), text(&o.stderr));
+    assert!(all.contains("AFTER-MARK"), "{all}");
+    assert!(
+        !all.contains("RECOVERY-RAN"),
+        "a successful sub-recipe step is never treated as failed:\n{all}"
+    );
+}

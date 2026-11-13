@@ -133,9 +133,14 @@ fn each_converted_step_runs_its_command_through_the_driver_with_its_own_id() {
             command.contains(&format!("--step-id {id}")),
             "{name}/{id}: wrong id:\n{command}"
         );
+        // One copy of the no-directory fallback: the driver's empty `--dir`.
         assert!(
-            command.contains("\"$RECIPE_VAR_step_recovery_dir\""),
+            command.contains("--dir \"${RECIPE_VAR_step_recovery_dir:-}\""),
             "{name}/{id}:\n{command}"
+        );
+        assert!(
+            !command.contains("[ -n \"${RECIPE_VAR_step_recovery_dir"),
+            "{name}/{id}: the fallback is the driver's, not the step's:\n{command}"
         );
         let wrapped = command.split_once("step-recovery run").unwrap().1;
         assert!(
@@ -201,7 +206,15 @@ fn each_converted_step_runs_its_command_through_the_driver_with_its_own_id() {
             "{name}/{id}"
         );
         let command = step_command(name, step_id);
-        assert!(command.contains("--already-failed"), "{name}/{step_id}");
+        // A sub-recipe's failure leaves no output to re-run; the crusty
+        // phase check is read-only, so it runs first (an agent step can
+        // succeed with empty output, which also runs this step).
+        let already_failed = original["type"].as_str() == Some("recipe");
+        assert_eq!(
+            command.contains("--already-failed"),
+            already_failed,
+            "{name}/{step_id}"
+        );
         let ids = step_ids(name);
         let pos = |s: &str| ids.iter().position(|x| x == s).unwrap();
         assert_eq!(pos(step_id), pos(id) + 1, "{name}: {step_id} follows {id}");
@@ -263,26 +276,64 @@ fn workflow_finalize_reports_after_validation_and_before_completion() {
     )
     .unwrap();
     let report = step_command("workflow-finalize", "step-recovery-report");
-    let run_report = |f: &Fixture| {
+    let run_as = |f: &Fixture, dir: &std::path::Path| {
         crate::isolated_amplihack::isolated("bash")
             .args(["-c", &report])
             .current_dir(&f.work)
             .env("PATH", format!("{}:/usr/bin:/bin", f.tools.display()))
             .env("HOME", &f.home)
             .env("XDG_STATE_HOME", f.root.join("state"))
-            .env("RECIPE_VAR_step_recovery_dir", &f.dir)
+            .env("RECIPE_VAR_step_recovery_dir", dir)
             .output()
             .unwrap()
     };
+    let run_report = |f: &Fixture| run_as(f, &f.dir);
     assert_eq!(
         run_report(&f).status.code(),
         Some(0),
         "no handoff: the run goes on"
     );
+    assert!(
+        f.dir.is_dir(),
+        "a directory init did not create here is kept"
+    );
+    // Review S3: with recovery off, the report step says so in its output.
+    let off = run_as(&f, std::path::Path::new(""));
+    assert_eq!(off.status.code(), Some(0), "{}", show(&off));
+    assert!(
+        String::from_utf8_lossy(&off.stdout).contains(r#""step_recovery":"disabled""#),
+        "{}",
+        show(&off)
+    );
+    // Review S1: the directory workflow-finalize's own init created is
+    // removed when it holds no record (the retry branch note included).
+    let init = step_command("workflow-finalize", "step-recovery-init");
+    let make_own = || {
+        let made = crate::isolated_amplihack::isolated("bash")
+            .args(["-c", &init])
+            .env("PATH", format!("{}:/usr/bin:/bin", f.tools.display()))
+            .env("HOME", &f.home)
+            .env("XDG_STATE_HOME", f.root.join("state"))
+            .output()
+            .unwrap();
+        let own = std::path::PathBuf::from(String::from_utf8_lossy(&made.stdout).trim());
+        assert!(own.is_dir(), "{}", show(&made));
+        own
+    };
+    let own = make_own();
+    std::fs::write(own.join("build-branch.txt"), "feat/x\n").unwrap();
+    let o = run_as(&f, &own);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert!(
+        !own.exists(),
+        "a clean run leaves no directory:\n{}",
+        show(&o)
+    );
+    let own = make_own();
     let rec = f
         .amplihack()
         .args(["orch", "helper", "step-recovery", "record", "--dir"])
-        .arg(&f.dir)
+        .arg(&own)
         .args([
             "--step-id",
             "step-21-pr-ready",
@@ -296,6 +347,8 @@ fn workflow_finalize_reports_after_validation_and_before_completion() {
         .output()
         .unwrap();
     assert_eq!(rec.status.code(), Some(0), "{}", show(&rec));
-    let o = run_report(&f);
+    // A handed-off run keeps the directory it created, for the operator.
+    let o = run_as(&f, &own);
     assert_eq!(o.status.code(), Some(HANDOFF_EXIT), "{}", show(&o));
+    assert!(own.join("step-21-pr-ready.jsonl").is_file());
 }

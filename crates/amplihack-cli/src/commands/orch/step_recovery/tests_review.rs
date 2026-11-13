@@ -126,10 +126,17 @@ fn redaction_covers_keys_jwts_and_cloud_tokens() {
     let pem =
         "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\nabcdef\n-----END RSA PRIVATE KEY-----";
     let cut = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkq";
-    let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
+    // Built at run time, as the tokens below are, so no scanner reads the
+    // test value in the source as a real token.
+    let jwt = [
+        "eyJhbGciOiJIUzI1NiJ9",
+        "eyJzdWIiOiJ0ZXN0In0",
+        "c2lnbmF0dXJlLWZvci10ZXN0cw",
+    ]
+    .join(".");
     let slack = format!("xoxb-{}", "1234567890-abcdef");
     let google = format!("AIza{}", "SyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q");
-    for secret in [pem, cut, jwt, slack.as_str(), google.as_str()] {
+    for secret in [pem, cut, jwt.as_str(), slack.as_str(), google.as_str()] {
         let out = redact(&format!("before {secret} after"));
         assert!(!out.contains(secret), "{out}");
         assert!(out.contains("[REDACTED]"), "{out}");

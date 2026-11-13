@@ -38,13 +38,15 @@ steps:
   # Issue #2539: one step-recovery directory per drive, passed to every child
   # recipe and loop round, so a failure repaired in one round is a recurrence
   # in a later one. A new drive of the same PR starts with an empty directory.
+  # The drive that creates the directory removes it at the end when it holds
+  # no record; a caller's directory is the caller's.
   - id: "step-recovery-init"
     type: "bash"
     command: |
       if [ -n "${RECIPE_VAR_step_recovery_dir:-}" ]; then
         exec amplihack orch helper step-recovery init --dir "$RECIPE_VAR_step_recovery_dir"
       fi
-      exec amplihack orch helper step-recovery init
+      exec amplihack orch helper step-recovery init --created-by auto-drive-to-merge
     output: "step_recovery_dir"
   - id: "autodrive-prerequisites"
     type: "agent"
@@ -133,10 +135,14 @@ steps:
       # Issue #2539: a recorded handoff ends the drive here, with the report's
       # exit status (81), its owner, reason, needs and record path.
       SRD="${RECIPE_VAR_step_recovery_dir:-}"
-      report() { [ -z "$SRD" ] || amplihack orch helper step-recovery report --dir "$SRD" >&2 || exit $?; }
-      report
+      report() { [ -z "$SRD" ] || amplihack orch helper step-recovery report --dir "$SRD" "$@" >&2 || exit $?; }
+      [ -n "$SRD" ] || echo "[step-recovery] recovery was disabled for this drive; see the step-recovery-init warning" >&2
       VALUE="${RECIPE_VAR_autodrive_finalization:-}"
-      if [ -n "$VALUE" ]; then printf '%s' "$VALUE"; exit 0; fi
+      if [ -n "$VALUE" ]; then
+        report --remove-if-created-by auto-drive-to-merge
+        printf '%s' "$VALUE"; exit 0
+      fi
+      report
       MERGED_BEFORE="$(printf '%s' "${RECIPE_VAR_build_result:-}" | amplihack orch helper extract-field --field merged_before_run --default false)" || exit 1
       if [ "$MERGED_BEFORE" = true ]; then
         printf '%s' '{"readiness":"incomplete","action":"already_merged","platform_state":"merged","stop_reason":"completed"}'
@@ -156,6 +162,7 @@ output:
   format: "markdown"
   template: |
     Auto-drive outcome: {{autodrive_summary}}
+    Step recovery directory (empty: recovery was off): {{step_recovery_dir}}
     Phase 1 terminal state: {{build_result.terminal_state}} (handed off: {{build_result.handed_off}})
     Build: {{build_result}}
     Crusty: {{crusty_loop_result}}

@@ -182,3 +182,51 @@ fn invalid_or_unsafe_record_files_make_report_exit_2() {
         assert_eq!(o.status.code(), Some(2), "{name}:\n{}", show(&o));
     }
 }
+
+/// Review S1: a directory with no record is removed only by the recipe whose
+/// `init --created-by` made it; a caller's directory is the caller's.
+#[test]
+fn remove_if_created_by_removes_only_the_creators_clean_directory() {
+    let f = Fixture::new();
+    let sr = |args: &[&str]| {
+        f.amplihack()
+            .args(["orch", "helper", "step-recovery"])
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let made = sr(&["init", "--created-by", "auto-drive-to-merge"]);
+    assert_eq!(made.status.code(), Some(0), "{}", show(&made));
+    let dir = text(&made.stdout).trim().to_string();
+    assert!(std::path::Path::new(&dir).join(".created-by").is_file());
+    // A nested workflow-finalize given this directory keeps it.
+    let o = sr(&[
+        "report",
+        "--dir",
+        &dir,
+        "--remove-if-created-by",
+        "workflow-finalize",
+    ]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert!(std::path::Path::new(&dir).is_dir(), "{}", show(&o));
+    // The creator removes it.
+    let o = sr(&[
+        "report",
+        "--dir",
+        &dir,
+        "--remove-if-created-by",
+        "auto-drive-to-merge",
+    ]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert!(!std::path::Path::new(&dir).exists(), "{}", show(&o));
+    // A directory init did not create has no creator note and is kept.
+    let o = sr(&[
+        "report",
+        "--dir",
+        f.dir.to_str().unwrap(),
+        "--remove-if-created-by",
+        "x",
+    ]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert!(f.dir.is_dir());
+}
