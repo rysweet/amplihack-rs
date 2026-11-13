@@ -26,7 +26,7 @@ impl From<Settings> for Methods {
     }
 }
 
-/// The two kinds of active ruleset rule on the base branch that limit the
+/// The three kinds of active ruleset rule on the base branch that limit the
 /// merge method. Every other rule type leaves the method alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct BranchRules {
@@ -34,6 +34,13 @@ pub(super) struct BranchRules {
     pub(super) method_rules: usize,
     /// The intersection of those lists; every method when there are none.
     pub(super) listed: Methods,
+    /// How many `merge_queue` rules are active. GitHub merges a queued pull
+    /// request with the queue's own `merge_method`, whatever method the merge
+    /// request names, so each such rule allows that one method only.
+    pub(super) queue_rules: usize,
+    /// The intersection of those rules' methods; every method when there are
+    /// none.
+    pub(super) queued: Methods,
     /// A `required_linear_history` rule is active. GitHub then accepts a pull
     /// request only by squash or rebase, so it refuses `merge`.
     pub(super) linear_history: bool,
@@ -48,16 +55,19 @@ impl BranchRules {
     pub(super) const UNLIMITED: Self = Self {
         method_rules: 0,
         listed: Methods::ALL,
+        queue_rules: 0,
+        queued: Methods::ALL,
         linear_history: false,
     };
 
-    /// What these rules allow: the listed methods, less `merge` under a
-    /// linear-history rule.
+    /// What these rules allow: the methods every `pull_request` rule lists
+    /// and every merge queue uses, less `merge` under a linear-history rule.
     pub(super) fn allowed(self) -> Methods {
+        let allowed = self.listed.and(self.queued);
         if self.linear_history {
-            self.listed.without(MergeMethod::Merge)
+            allowed.without(MergeMethod::Merge)
         } else {
-            self.listed
+            allowed
         }
     }
 
@@ -68,6 +78,12 @@ impl BranchRules {
             parts.push(format!(
                 "pull_request allowed_merge_methods allow {}",
                 self.listed.names()
+            ));
+        }
+        if self.queue_rules > 0 {
+            parts.push(format!(
+                "merge_queue merge_method allows {}",
+                self.queued.names()
             ));
         }
         if self.linear_history {
@@ -84,6 +100,13 @@ impl BranchRules {
                 "{} ruleset pull_request rule(s) on branch {base_ref} allow {}",
                 self.method_rules,
                 self.listed.names()
+            ));
+        }
+        if self.queue_rules > 0 {
+            parts.push(format!(
+                "{} ruleset merge_queue rule(s) on branch {base_ref} allow {}",
+                self.queue_rules,
+                self.queued.names()
             ));
         }
         if self.linear_history {
@@ -219,11 +242,18 @@ pub(super) fn branch_rules(repository: &Repository, base_ref: &str) -> Result<Br
 
 /// The answer to `gh api --paginate rules/branches/<branch>`: one JSON array
 /// per page, written one after another, or one array. Each element is a rule
-/// object with a string `type`. Two types limit the merge method:
+/// object with a string `type`. Three types limit the merge method:
 ///
 /// - `required_linear_history`: GitHub accepts a pull request into the
 ///   branch only by squash or rebase, so `merge` is not allowed. The rule
 ///   has no parameters to read.
+/// - `merge_queue`: `gh pr merge` adds the pull request to the queue, and the
+///   queue merges it with the rule's `merge_method`, whatever method the
+///   request names. So the rule allows that one method. Its `parameters`
+///   object must hold `merge_method` as exactly `MERGE`, `SQUASH` or
+///   `REBASE`, the values GitHub's schema defines; anything else is an
+///   unreadable rule, since guessing the queue's method could record a method
+///   that does not land.
 /// - `pull_request`: it has a `parameters` object; its
 ///   `allowed_merge_methods`, when present and not null, is an array of
 ///   strings. Absent or null, the rule does not limit the method, as for a
@@ -248,6 +278,12 @@ fn parse_branch_rules(body: &[u8]) -> std::result::Result<BranchRules, &'static 
             match kind {
                 "required_linear_history" => {
                     rules.linear_history = true;
+                    continue;
+                }
+                "merge_queue" => {
+                    let method = queue_method(rule)?;
+                    rules.queue_rules += 1;
+                    rules.queued = rules.queued.and(Methods::NONE.with(method));
                     continue;
                 }
                 "pull_request" => {}
@@ -279,6 +315,25 @@ fn parse_branch_rules(body: &[u8]) -> std::result::Result<BranchRules, &'static 
         return Err("no JSON array");
     }
     Ok(rules)
+}
+
+/// The method a `merge_queue` rule merges with: its `parameters.merge_method`.
+fn queue_method(
+    rule: &serde_json::Map<String, Value>,
+) -> std::result::Result<MergeMethod, &'static str> {
+    let method = rule
+        .get("parameters")
+        .and_then(Value::as_object)
+        .ok_or("a merge_queue rule has no parameters object")?
+        .get("merge_method")
+        .and_then(Value::as_str)
+        .ok_or("a merge_queue rule has no string merge_method")?;
+    match method {
+        "MERGE" => Ok(MergeMethod::Merge),
+        "SQUASH" => Ok(MergeMethod::Squash),
+        "REBASE" => Ok(MergeMethod::Rebase),
+        _ => Err("a merge_queue rule's merge_method is not MERGE, SQUASH or REBASE"),
+    }
 }
 
 #[cfg(test)]
@@ -382,6 +437,7 @@ mod tests {
                     method_rules,
                     listed,
                     linear_history,
+                    ..BranchRules::UNLIMITED
                 },
                 "{body}"
             );
@@ -402,6 +458,16 @@ mod tests {
             r#"[{"type":"pull_request","parameters":{"allowed_merge_methods":"merge"}}]"#,
             r#"[{"type":"pull_request","parameters":{"allowed_merge_methods":[1]}}]"#,
             r#"[{"type":"required_linear_history"},{"type":null}]"#,
+            // A merge_queue rule whose method cannot be read is not a rule
+            // that leaves the method alone.
+            r#"[{"type":"merge_queue"}]"#,
+            r#"[{"type":"merge_queue","parameters":[]}]"#,
+            r#"[{"type":"merge_queue","parameters":{}}]"#,
+            r#"[{"type":"merge_queue","parameters":{"merge_method":null}}]"#,
+            r#"[{"type":"merge_queue","parameters":{"merge_method":["SQUASH"]}}]"#,
+            r#"[{"type":"merge_queue","parameters":{"merge_method":"squash"}}]"#,
+            r#"[{"type":"merge_queue","parameters":{"merge_method":" SQUASH"}}]"#,
+            r#"[{"type":"merge_queue","parameters":{"merge_method":"FAST_FORWARD"}}]"#,
             "[] garbage",
             "[]{}",
         ] {
@@ -409,6 +475,125 @@ mod tests {
                 parse_branch_rules(bad.as_bytes()).is_err(),
                 "accepted {bad:?}"
             );
+        }
+    }
+
+    #[test]
+    fn a_merge_queue_rule_allows_its_own_method_only() {
+        let queue = |m: &str| {
+            format!(
+                r#"{{"type":"merge_queue","ruleset_id":9,"parameters":{{"check_response_timeout_minutes":60,"grouping_strategy":"ALLGREEN","max_entries_to_build":5,"max_entries_to_merge":5,"merge_method":"{m}","min_entries_to_merge":1,"min_entries_to_merge_wait_minutes":5}}}}"#
+            )
+        };
+        let rule = |m: &str| {
+            format!(r#"{{"type":"pull_request","parameters":{{"allowed_merge_methods":{m}}}}}"#)
+        };
+        let linear = r#"{"type":"required_linear_history"}"#;
+        // (body, pull_request rules listing methods, their intersection,
+        // merge_queue rules, their intersection, linear history, what the
+        // rules allow)
+        for (body, method_rules, listed, queue_rules, queued, linear_history, allowed) in [
+            (
+                format!("[{}]", queue("MERGE")),
+                0,
+                Methods::ALL,
+                1,
+                methods(true, false, false),
+                false,
+                methods(true, false, false),
+            ),
+            (
+                format!("[{}]", queue("SQUASH")),
+                0,
+                Methods::ALL,
+                1,
+                methods(false, true, false),
+                false,
+                methods(false, true, false),
+            ),
+            (
+                format!("[{}]", queue("REBASE")),
+                0,
+                Methods::ALL,
+                1,
+                methods(false, false, true),
+                false,
+                methods(false, false, true),
+            ),
+            // On the second page, beside a pull_request rule that lists the
+            // queue's method among others: only the queue's method is left.
+            (
+                format!("[{}]\n[{}]", rule(r#"["merge","squash"]"#), queue("SQUASH")),
+                1,
+                methods(true, true, false),
+                1,
+                methods(false, true, false),
+                false,
+                methods(false, true, false),
+            ),
+            // A pull_request rule that does not list the queue's method:
+            // nothing is allowed.
+            (
+                format!("[{},{}]", rule(r#"["rebase"]"#), queue("SQUASH")),
+                1,
+                methods(false, false, true),
+                1,
+                methods(false, true, false),
+                false,
+                Methods::NONE,
+            ),
+            // A MERGE queue on a linear-history branch: nothing is allowed.
+            (
+                format!("[{linear},{}]", queue("MERGE")),
+                0,
+                Methods::ALL,
+                1,
+                methods(true, false, false),
+                true,
+                Methods::NONE,
+            ),
+            (
+                format!("[{linear},{}]", queue("REBASE")),
+                0,
+                Methods::ALL,
+                1,
+                methods(false, false, true),
+                true,
+                methods(false, false, true),
+            ),
+            // Two queues on the branch, from two rulesets, that disagree.
+            (
+                format!("[{},{}]", queue("SQUASH"), queue("MERGE")),
+                0,
+                Methods::ALL,
+                2,
+                Methods::NONE,
+                false,
+                Methods::NONE,
+            ),
+            (
+                format!("[{}][{}]", queue("REBASE"), queue("REBASE")),
+                0,
+                Methods::ALL,
+                2,
+                methods(false, false, true),
+                false,
+                methods(false, false, true),
+            ),
+        ] {
+            let got = parse_branch_rules(body.as_bytes()).unwrap();
+            assert_eq!(
+                got,
+                BranchRules {
+                    method_rules,
+                    listed,
+                    queue_rules,
+                    queued,
+                    linear_history,
+                },
+                "{body}"
+            );
+            assert_eq!(got.allowed(), allowed, "{body}");
         }
     }
 
@@ -426,6 +611,16 @@ mod tests {
         let both = BranchRules {
             linear_history: true,
             ..listed
+        };
+        let queued = BranchRules {
+            queue_rules: 1,
+            queued: methods(false, true, false),
+            ..BranchRules::UNLIMITED
+        };
+        let all = BranchRules {
+            queue_rules: 1,
+            queued: methods(false, false, true),
+            ..both
         };
         for (rules, describe, limits) in [
             (
@@ -448,6 +643,20 @@ mod tests {
                 "2 ruleset pull_request rule(s) on branch main allow merge, rebase; \
                  a required_linear_history rule on branch main forbids merge",
                 "pull_request allowed_merge_methods allow merge, rebase; \
+                 a required_linear_history rule forbids merge",
+            ),
+            (
+                queued,
+                "1 ruleset merge_queue rule(s) on branch main allow squash",
+                "merge_queue merge_method allows squash",
+            ),
+            (
+                all,
+                "2 ruleset pull_request rule(s) on branch main allow merge, rebase; \
+                 1 ruleset merge_queue rule(s) on branch main allow rebase; \
+                 a required_linear_history rule on branch main forbids merge",
+                "pull_request allowed_merge_methods allow merge, rebase; \
+                 merge_queue merge_method allows rebase; \
                  a required_linear_history rule forbids merge",
             ),
         ] {

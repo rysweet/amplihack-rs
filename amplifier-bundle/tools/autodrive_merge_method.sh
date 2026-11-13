@@ -15,9 +15,10 @@
 # branch tip, refusing a pull request whose own changes touch it; else the
 # first of squash, merge and rebase that is allowed. Allowed means the
 # repository settings allow it AND every ruleset pull_request rule on the base
-# branch that lists allowed_merge_methods lists it AND, for merge, no ruleset
-# required_linear_history rule is active on the base branch. A method that is
-# not allowed is never used and nothing falls back. This file runs that
+# branch that lists allowed_merge_methods lists it AND every ruleset
+# merge_queue rule on the base branch merges with it AND, for merge, no
+# ruleset required_linear_history rule is active on the base branch. A method
+# that is not allowed is never used and nothing falls back. This file runs that
 # selector, checks its output and turns the method into arguments; it chooses
 # nothing itself.
 # Contract: docs/reference/auto-drive-to-merge.md, "Choosing the merge method".

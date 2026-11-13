@@ -19,10 +19,12 @@
 //!
 //! A method is allowed when the repository settings (`allow_*`) allow it AND
 //! every active ruleset `pull_request` rule on the base branch that lists
-//! `allowed_merge_methods` lists it AND, for `merge`, no active ruleset
-//! `required_linear_history` rule is on the base branch (GitHub then accepts
-//! only squash or rebase). A method that is not allowed is never used, and no
-//! source falls back to another. The repository whose settings and rules are
+//! `allowed_merge_methods` lists it AND every active ruleset `merge_queue`
+//! rule on the base branch uses it as its `merge_method` (the queue merges
+//! with its own method, whatever the request names) AND, for `merge`, no
+//! active ruleset `required_linear_history` rule is on the base branch
+//! (GitHub then accepts only squash or rebase). A method that is not allowed
+//! is never used, and no source falls back to another. The repository whose settings and rules are
 //! read is the one the pull request URL names, as the accepted readiness
 //! record binds it.
 //! Contract: docs/reference/auto-drive-to-merge.md, "Choosing the merge method".
@@ -330,6 +332,7 @@ mod tests {
                             method_rules: 1,
                             listed,
                             linear_history,
+                            ..BranchRules::UNLIMITED
                         },
                         base_ref: "main",
                     };
@@ -413,6 +416,68 @@ mod tests {
     }
 
     #[test]
+    fn a_merge_queue_allows_only_the_method_it_merges_with() {
+        let queue = |settings, queued| Allowed {
+            settings,
+            rules: BranchRules {
+                queue_rules: 1,
+                queued,
+                ..BranchRules::UNLIMITED
+            },
+            base_ref: "main",
+        };
+        let squash = methods(false, true, false);
+        // The default is the queue's method, even when an earlier method in
+        // squash, merge, rebase order is allowed by the settings.
+        for (queued, want) in [
+            (methods(true, false, false), MergeMethod::Merge),
+            (squash, MergeMethod::Squash),
+            (methods(false, false, true), MergeMethod::Rebase),
+        ] {
+            let (method, source, _) = choose(None, None, &queue(Methods::ALL, queued)).unwrap();
+            assert_eq!((method, source), (want, SelectionSource::Default));
+        }
+        // An explicit or repository method the queue does not use is
+        // refused, not passed on for the queue to replace.
+        for (explicit, configured) in [
+            (Some(MergeMethod::Merge), None),
+            (None, Some(MergeMethod::Merge)),
+            (Some(MergeMethod::Merge), Some(MergeMethod::Squash)),
+        ] {
+            let message = format!(
+                "{:#}",
+                choose(explicit, configured, &queue(Methods::ALL, squash)).unwrap_err()
+            );
+            assert_eq!(
+                message,
+                "selected merge method merge is disallowed by the rulesets on branch main \
+                 (merge_queue merge_method allows squash); no other method is tried"
+            );
+        }
+        // The queue's own method, named explicitly, is allowed.
+        let (method, source, _) = choose(
+            Some(MergeMethod::Squash),
+            None,
+            &queue(Methods::ALL, squash),
+        )
+        .unwrap();
+        assert_eq!(
+            (method, source),
+            (MergeMethod::Squash, SelectionSource::Explicit)
+        );
+        // Settings that do not allow the queue's method leave nothing.
+        let message = format!(
+            "{:#}",
+            choose(None, None, &queue(methods(true, false, true), squash)).unwrap_err()
+        );
+        assert_eq!(
+            message,
+            "the repository settings allow merge, rebase and the rulesets on branch main allow \
+             squash: no merge method is allowed by both (merge_queue merge_method allows squash)"
+        );
+    }
+
+    #[test]
     fn explicit_wins_over_repository_preference() {
         let (method, source, _) = choose(
             Some(MergeMethod::Merge),
@@ -442,7 +507,7 @@ mod tests {
             rules: BranchRules {
                 method_rules: 1,
                 listed: methods(true, false, false),
-                linear_history: false,
+                ..BranchRules::UNLIMITED
             },
             base_ref: "main",
         };

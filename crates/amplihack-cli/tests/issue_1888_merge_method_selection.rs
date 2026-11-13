@@ -812,6 +812,97 @@ fn a_linear_history_ruleset_forbids_merge_from_every_source() {
     );
 }
 
+/// A `merge_queue` rule: `gh pr merge` adds the pull request to the queue,
+/// and the queue merges it with the rule's `merge_method`, whatever method the
+/// request names. The selector allows only that method, so a method the queue
+/// would replace is refused and the recorded selection is the method that
+/// lands.
+#[test]
+fn a_merge_queue_rule_allows_only_its_own_method_from_every_source() {
+    fn queue(method: &str) -> String {
+        json!([{"type":"merge_queue","ruleset_source_type":"Organization",
+            "ruleset_source":"owner","ruleset_id":11,
+            "parameters":{"check_response_timeout_minutes":60,"grouping_strategy":"ALLGREEN",
+                "max_entries_to_build":5,"max_entries_to_merge":5,"merge_method":method,
+                "min_entries_to_merge":1,"min_entries_to_merge_wait_minutes":5}}])
+        .to_string()
+    }
+    let f = Fixture::plain();
+    // Every method allowed: the default is the queue's method, not squash.
+    for (method, name) in [
+        ("MERGE", "merge"),
+        ("SQUASH", "squash"),
+        ("REBASE", "rebase"),
+    ] {
+        let value = success(
+            f.run(Call {
+                rules: queue(method),
+                ..call()
+            }),
+            name,
+            "default",
+        );
+        let rationale = value["rationale"].as_str().unwrap();
+        assert!(
+            rationale.contains(&format!(
+                "1 ruleset merge_queue rule(s) on branch main allow {name}"
+            )),
+            "{rationale}"
+        );
+    }
+    // An explicit merge on a SQUASH queue is refused, not squashed.
+    let why = "selected merge method merge is disallowed by the rulesets on branch main (merge_queue merge_method allows squash); no other method is tried";
+    rejected(
+        f.run(Call {
+            explicit: Some("merge"),
+            rules: queue("SQUASH"),
+            ..call()
+        }),
+        why,
+    );
+    // So is the repository file's.
+    let file = Fixture::with(&[(CONFIG, Some("merge_method = \"merge\"\n"))], &[], &[]);
+    rejected(
+        file.run(Call {
+            rules: queue("SQUASH"),
+            ..call()
+        }),
+        why,
+    );
+    // The queue's own method, from the file, is selected from the file.
+    let file = Fixture::with(&[(CONFIG, Some("merge_method = \"squash\"\n"))], &[], &[]);
+    success(
+        file.run(Call {
+            rules: queue("SQUASH"),
+            ..call()
+        }),
+        "squash",
+        "repository",
+    );
+    // Settings that do not allow the queue's method leave nothing.
+    rejected(
+        f.run(Call {
+            settings: permissions([true, false, true]),
+            rules: queue("SQUASH"),
+            ..call()
+        }),
+        "the repository settings allow merge, rebase and the rulesets on branch main allow squash: no merge method is allowed by both (merge_queue merge_method allows squash)",
+    );
+    // A queue whose method cannot be read blocks the merge, for an explicit
+    // method too.
+    for method in ["squash", "FAST_FORWARD", ""] {
+        for explicit in [None, Some("squash")] {
+            let out = f.run(Call {
+                explicit,
+                rules: queue(method),
+                ..call()
+            });
+            assert_eq!(out.status.code(), Some(1), "{method:?}");
+            rejected(out, "invalid answer for the rulesets on branch main");
+        }
+    }
+}
+
 #[test]
 fn ruleset_read_failures_fail_closed() {
     let f = Fixture::plain();

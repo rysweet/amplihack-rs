@@ -417,11 +417,11 @@ the merge, and nothing falls back to another method. `autodrive_merge_argv`
 turns the method into the arguments listed in [The squash commit
 message](#the-squash-commit-message-2056), with one flag per method:
 
-| Method | Repository setting | Ruleset `allowed_merge_methods` value | Under a `required_linear_history` rule | Flag |
-| --- | --- | --- | --- | --- |
-| `merge` | `allow_merge_commit` | `merge` | Not allowed | `--merge` |
-| `squash` | `allow_squash_merge` | `squash` | Allowed | `--squash` |
-| `rebase` | `allow_rebase_merge` | `rebase` | Allowed | `--rebase` |
+| Method | Repository setting | Ruleset `allowed_merge_methods` value | Ruleset `merge_queue` `merge_method` | Under a `required_linear_history` rule | Flag |
+| --- | --- | --- | --- | --- | --- |
+| `merge` | `allow_merge_commit` | `merge` | `MERGE` | Not allowed | `--merge` |
+| `squash` | `allow_squash_merge` | `squash` | `SQUASH` | Allowed | `--squash` |
+| `rebase` | `allow_rebase_merge` | `rebase` | `REBASE` | Allowed | `--rebase` |
 
 `auto-drive-to-merge`, [`auto-drive-light`](auto-drive-light.md),
 `autodrive-merge-loop` and `autodrive-finalize` each declare
@@ -572,19 +572,35 @@ A method is allowed when both of these allow it:
    `gh api --hostname HOST repos/OWNER/REPO`.
 2. **The rulesets on the base branch.** The active rules in
    `gh api --hostname HOST --paginate repos/OWNER/REPO/rules/branches/<base>`.
-   Two rule types limit the method:
+   Three rule types limit the method:
    - **`pull_request` with `allowed_merge_methods`.** A method must be in
      every such list. Since December 2024 a ruleset can limit the merge
      methods this way without changing the `allow_*` fields
      ([changelog](https://github.blog/changelog/2024-12-04-pull-request-merge-method-rule-public-preview)).
+   - **`merge_queue`.** The rule's required `merge_method` (`MERGE`, `SQUASH`
+     or `REBASE`) is the "Method to use when merging changes from queued pull
+     requests" ([repository rules API](https://docs.github.com/en/rest/repos/rules)).
+     On such a branch `gh pr merge` adds the pull request to the queue, and
+     "no merge strategy is required"
+     ([`gh pr merge`](https://cli.github.com/manual/gh_pr_merge)): the queue
+     merges with its own method, whatever flag the request carries. So a
+     `merge_queue` rule allows only its `merge_method`. Without this, an
+     explicit `merge` on a `SQUASH` queue would be squashed, and the recorded
+     selection would name a method that did not land. The rationale names the
+     rule: `1 ruleset merge_queue rule(s) on branch <base> allow squash`.
    - **`required_linear_history`.** "Any pull requests merged into the branch
      or tag must use a squash merge or a rebase merge"
      ([Require linear history](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets#require-linear-history)),
      so `merge` is not allowed. The rationale and any refusal name the rule:
      `a required_linear_history rule on branch <base> forbids merge`.
 
-   No other rule type limits the method
+   The selector reads no other rule type
    ([available rules](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)).
+   None of the others names a merge method. One can still refuse one: under
+   `required_signatures`, "unsigned commits on the head branch can block a
+   squash merge". That depends on the head's commits, not on a setting the
+   selector can read, so GitHub refuses the merge request and the step
+   reports the refusal without trying another method.
    The endpoint returns only active rules, at the repository, organisation and
    enterprise level, and not rules in `evaluate` or `disabled` rulesets. Every
    page is read, so a rule on the second page counts. `<base>` is the pull
@@ -600,6 +616,9 @@ the rule as the reason; the selector does not pick another.
 
 The response is read strictly. Each page must be a JSON array of objects with
 a string `type`, and a `pull_request` rule must have a `parameters` object.
+A `merge_queue` rule must have a `parameters` object whose `merge_method` is
+exactly `MERGE`, `SQUASH` or `REBASE`; any other value, a lower-case one
+included, is an unreadable rule.
 An `allowed_merge_methods` value must be an array of strings. If it is absent
 or `null`, the rule does not limit the method, as for a ruleset created
 before GitHub added the parameter. An empty list allows nothing. A string
@@ -654,6 +673,10 @@ such gap. Exit 79 from either `gh api` read is a terminal policy refusal.
 | No file; settings allow merge and rebase; a `required_linear_history` ruleset rule | `rebase`, source `default` |
 | No file; settings allow only merge; a `required_linear_history` ruleset rule | Blocked: no merge method is allowed by both |
 | Explicit `merge`, or file says `merge`; a `required_linear_history` ruleset rule | Blocked; no merge is requested |
+| No file; every method allowed; a `merge_queue` rule with `merge_method` `REBASE` | `rebase`, source `default` |
+| Explicit `merge`, or file says `merge`; a `merge_queue` rule with `merge_method` `SQUASH` | Blocked; no merge is requested |
+| No file; settings allow merge and rebase; a `merge_queue` rule with `merge_method` `SQUASH` | Blocked: no merge method is allowed by both |
+| Any source; a `merge_queue` rule with no readable `merge_method` | Blocked: the rule is unreadable |
 | File says `merge`; merge allowed | `merge`, source `repository` |
 | File says `merge` at the base tip, committed after the pull request branched | `merge`, source `repository` |
 | File says `merge`; only squash allowed | Blocked; no merge is requested |
