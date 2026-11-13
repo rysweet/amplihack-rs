@@ -1858,15 +1858,27 @@ it, when:
   `paths-unknown` and `paths-empty` included;
 - the merge base is unknown, or a git read fails;
 - `autodrive_qa_sources.sh` did not load beside `autodrive_trust.sh`;
-- for `scenarios_ci_job` only: the pull request changes `.github/workflows/`
-  or `.amplihack/qa.toml`. A pull request could otherwise rename or rewrite
-  the job it is judged by. `qa_summary` then names
+- for `scenarios_ci_job` only: the pull request changes anything under
+  `.github/`, workflows and local actions (`uses: ./.github/actions/...`)
+  alike, or `.amplihack/qa.toml`. A pull request could otherwise rename or
+  rewrite the job it is judged by. `qa_summary` then names
   `ci-job-workflow-changed`.
 
 Every failure gives `none`, so no fault can lift criterion 1. Environment
 variables can only make the rule stricter. A declaration changes nothing
 where gadugi is already not required: a Rust or Python project, or a
-[documentation-only pull request](#documentation-only-pull-requests).
+[documentation-only pull request](#documentation-only-pull-requests). There
+the evidence records `qa_criterion1_declaration` `none` and the merge gate
+adds no declared job to the expected checks, so a scenarios job with a
+`paths:` filter that did not run cannot block such a pull request. Both read
+`autodrive_qa_lifting_declaration <dir>`, which prints the declaration only
+when the pull request is not documentation-only and detection requires
+gadugi, and `none` otherwise.
+
+A `scenarios_ci_job` declaration trusts the job's own code as it stands in
+the pull request. The job definition under `.github/` cannot change without
+voiding the declaration, but the scripts and test files the job runs can,
+as with any CI job; reviewing those changes is left to the code review.
 
 **Agents do not write declarations or scenarios to meet it.** Merge-round
 step-04 is told:
@@ -4423,8 +4435,12 @@ only and does not decide whether CI is green.
 Before section 5, the gate runs one subshell that sources
 `autodrive_trust.sh` with `AUTODRIVE_QA_BASE` set to its own `baseRefName`
 and `AUTODRIVE_QA_HEAD` to its own `headRefOid`, and prints two lines:
-`autodrive_gadugi_required .` and `autodrive_qa_declaration .`. The second is
-asked only when `_AD_SOURCES_OK` is set and `declare -F` finds the function.
+`autodrive_gadugi_required .` and `autodrive_qa_lifting_declaration .`. The
+second is asked only when `_AD_SOURCES_OK` is set and `declare -F` finds the
+function. It is the declaration only where the declaration is what lifts the
+gadugi requirement, and `none` on a documentation-only pull request or a
+target detection already exempts, so the gate never adds a declared job
+there.
 Each line is read with `IFS= read -r`; a missing line keeps the default,
 `true` and `none`. When `baseRefName` is empty, the subshell is not run and
 both defaults stand. Any first line other than `false` is `true`, and any

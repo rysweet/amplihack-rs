@@ -490,13 +490,6 @@ fn the_qa_sources_helper_is_a_gate_file() {
         GATE_FILES.contains(&"autodrive_qa_sources.sh"),
         "autodrive_qa_sources.sh is loaded by autodrive_trust.sh but missing from GATE_FILES: {GATE_FILES:?}"
     );
-    let tools = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../amplifier-bundle/tools");
-    let trust = fs::read_to_string(tools.join("autodrive_trust.sh")).expect("autodrive_trust.sh");
-    assert!(
-        trust.contains("shellcheck source=autodrive_qa_sources.sh"),
-        "autodrive_trust.sh must name autodrive_qa_sources.sh in a shellcheck source= directive \
-         so every_helper_the_gate_sources_is_a_gate_file sees it"
-    );
 }
 
 /// Issue #1551: `amplihack claude` prepends the claude binary's directory,

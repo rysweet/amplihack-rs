@@ -109,6 +109,30 @@ fn commit(fx: &Fixture, msg: &str) {
 /// file); `pr_qa` is a qa.toml the pull request writes (None: left alone).
 /// `pr_extra` are further paths the pull request changes.
 fn fixture(base_qa: Option<&str>, pr_qa: Option<&str>, pr_extra: &[&str]) -> Fixture {
+    let mut pr: Vec<&str> = vec!["web/a.txt", "api/b.txt", "infra/c.txt"];
+    pr.extend_from_slice(pr_extra);
+    build(NODE_BASE, base_qa, pr_qa, &pr)
+}
+
+/// The base tree of the issue's shape: one Node package, scenarios and three
+/// areas.
+const NODE_BASE: &[(&str, &str)] = &[
+    ("package.json", "{\"name\":\"infra\",\"private\":true}\n"),
+    ("scenarios/smoke.json", "{\"name\":\"smoke\"}\n"),
+    ("scenarios/smoke.ts", "export const smoke = 1;\n"),
+    ("web/a.txt", "1\n"),
+    ("api/b.txt", "1\n"),
+    ("infra/c.txt", "1\n"),
+];
+
+/// A repository with `base_files` (plus `base_qa`) on `main`, and a pull
+/// request commit that rewrites each of `pr_paths` (plus writes `pr_qa`).
+fn build(
+    base_files: &[(&str, &str)],
+    base_qa: Option<&str>,
+    pr_qa: Option<&str>,
+    pr_paths: &[&str],
+) -> Fixture {
     let fx = Fixture {
         tmp: tempfile::tempdir().expect("tempdir"),
     };
@@ -131,25 +155,15 @@ fn fixture(base_qa: Option<&str>, pr_qa: Option<&str>, pr_extra: &[&str]) -> Fix
         }
     }
     git(&fx, &["init", "-q", "."]);
-    put(
-        &fx,
-        "package.json",
-        "{\"name\":\"infra\",\"private\":true}\n",
-    );
-    put(&fx, "scenarios/smoke.json", "{\"name\":\"smoke\"}\n");
-    put(&fx, "scenarios/smoke.ts", "export const smoke = 1;\n");
-    put(&fx, "web/a.txt", "1\n");
-    put(&fx, "api/b.txt", "1\n");
-    put(&fx, "infra/c.txt", "1\n");
+    for (rel, body) in base_files {
+        put(&fx, rel, body);
+    }
     if let Some(q) = base_qa {
         put(&fx, ".amplihack/qa.toml", q);
     }
     commit(&fx, "base");
     git(&fx, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
-    for p in ["web/a.txt", "api/b.txt", "infra/c.txt"]
-        .iter()
-        .chain(pr_extra)
-    {
+    for p in pr_paths {
         put(&fx, p, "2\n");
     }
     if let Some(q) = pr_qa {
@@ -555,6 +569,139 @@ fn a_workflow_change_voids_only_the_ci_job_declaration() {
         helper_line(&fx, "autodrive_qa_declaration", Some("main"), &[]),
         "multi-area-command\n"
     );
+
+    // A local action (`uses: ./.github/actions/qa`) is checked out from the
+    // pull request too, so editing it voids the ci-job declaration as well.
+    let fx = fixture(Some(QA_CI_JOB), None, &[".github/actions/qa/action.yml"]);
+    assert_eq!(
+        helper_line(&fx, "autodrive_qa_declaration", Some("main"), &[]),
+        "none\n"
+    );
+    let ev = evidence(&fx, &[]);
+    expect(
+        &ev,
+        "ci-job with a local action change",
+        &[
+            ("gadugi_required", "true"),
+            ("qa_criterion1_declaration", "none"),
+        ],
+    );
+    assert!(
+        field(&ev, "qa_summary").contains("ci-job-workflow-changed"),
+        "the summary must say why the CI job declaration was not used: {ev}"
+    );
+}
+
+/// D8: a declaration changes nothing where gadugi is already not required.
+/// On a documentation-only pull request the base `scenarios_ci_job` is
+/// neither recorded nor handed to the gate, so a job with a `paths:` filter
+/// that never ran cannot leave the pull request MISSING a check.
+#[cfg(unix)]
+#[test]
+fn a_docs_only_pull_request_ignores_a_base_ci_job_declaration() {
+    let fx = build(NODE_BASE, Some(QA_CI_JOB), None, &["README.md"]);
+    assert_eq!(
+        helper_line(&fx, "autodrive_qa_lifting_declaration", Some("main"), &[]),
+        "none\n"
+    );
+    assert_eq!(
+        helper_line(&fx, "autodrive_gadugi_required", Some("main"), &[]),
+        "false\n"
+    );
+    let ev = evidence(&fx, &[]);
+    expect(
+        &ev,
+        "docs-only with a base ci-job declaration",
+        &[
+            ("gadugi_required", "false"),
+            ("qa_criterion1_declaration", "none"),
+        ],
+    );
+
+    // The same declaration on a Node pull request that needs gadugi is used.
+    let fx = fixture(Some(QA_CI_JOB), None, &[]);
+    assert_eq!(
+        helper_line(&fx, "autodrive_qa_lifting_declaration", Some("main"), &[]),
+        "ci-job:Gadugi scenarios\n"
+    );
+}
+
+/// D8: detection already lifts the requirement for a Rust target, so a base
+/// ci-job declaration is neither recorded nor enforced there.
+#[cfg(unix)]
+#[test]
+fn a_rust_repository_records_no_declaration() {
+    let fx = build(
+        &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"tool\"\nversion = \"0.1.0\"\n",
+            ),
+            ("src/main.rs", "fn main() {}\n"),
+        ],
+        Some(QA_CI_JOB),
+        None,
+        &["src/main.rs"],
+    );
+    assert_eq!(
+        helper_line(&fx, "autodrive_gadugi_required", Some("main"), &[]),
+        "false\n"
+    );
+    assert_eq!(
+        helper_line(&fx, "autodrive_qa_lifting_declaration", Some("main"), &[]),
+        "none\n"
+    );
+    let report = helper_line(&fx, "autodrive_qa_report", Some("main"), &[]);
+    assert!(
+        report.lines().any(|l| l == "decl\tnone"),
+        "a Rust target must record no declaration:\n{report}"
+    );
+}
+
+/// S7: the job name alphabet is ASCII under any locale. A non-ASCII letter,
+/// a full-width letter and a tab are refused by the parser and never reach
+/// the resolver's answer.
+#[cfg(unix)]
+#[test]
+fn declaration_rejects_non_ascii_job_name() {
+    let locale = utf8_locale();
+    for name in ["t\u{e9}st", "\u{ff21}", "Gadugi\tscenarios"] {
+        let qa = format!("command = \"npm test\"\nscenarios_ci_job = \"{name}\"\n");
+        let fx = fixture(Some(&qa), None, &[]);
+        let env = [("LC_ALL", locale.as_str())];
+        let cfg = helper(&fx, "autodrive_qa_config", Some("main"), &env);
+        let cfg = String::from_utf8_lossy(&cfg.stdout);
+        // Non-ASCII bytes fail the file's byte check (syntax); the tab passes
+        // it and fails the job-name alphabet (unknown-value). Either way the
+        // rejected value is never printed.
+        assert!(
+            cfg == "invalid\tsyntax\n" || cfg == "invalid\tunknown-value\n",
+            "job name {name:?} under {locale}: {cfg:?}"
+        );
+        assert_eq!(
+            helper_line(&fx, "autodrive_qa_declaration", Some("main"), &env),
+            "none\n",
+            "job name {name:?} under {locale}"
+        );
+    }
+}
+
+/// A UTF-8 locale present on this host, so the test runs where the parser's
+/// `LC_ALL=C` matters; C.UTF-8 when `locale -a` lists none.
+fn utf8_locale() -> String {
+    let listed = Command::new("locale")
+        .arg("-a")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    listed
+        .lines()
+        .find(|l| {
+            let l = l.to_ascii_lowercase();
+            l != "c.utf8" && l != "c.utf-8" && (l.ends_with(".utf8") || l.ends_with(".utf-8"))
+        })
+        .unwrap_or("C.UTF-8")
+        .to_string()
 }
 
 /// D12 / S5: with no base at all (a preflight), the HEAD tree's declaration

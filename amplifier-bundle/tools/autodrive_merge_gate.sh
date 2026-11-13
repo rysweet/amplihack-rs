@@ -124,7 +124,7 @@ esac
 BASE_REF="$(field "$STATE_JSON" baseRefName "")"; CI_BLOCKED=""; QA_GREQ="true"; QA_DECL="none"; CI_JOB=()
 [ -z "$BASE_REF" ] || { IFS= read -r QA_GREQ || true; IFS= read -r QA_DECL || true; } < <(AUTODRIVE_QA_BASE="$BASE_REF"
   AUTODRIVE_QA_HEAD="$HEAD_SHA"; export AUTODRIVE_QA_BASE AUTODRIVE_QA_HEAD; . "${GATE_HOME:-/nonexistent}/autodrive_trust.sh" 2>/dev/null \
-  && autodrive_gadugi_required . && [ -n "${_AD_SOURCES_OK:-}" ] && declare -F autodrive_qa_declaration >/dev/null && autodrive_qa_declaration .)
+  && autodrive_gadugi_required . && [ -n "${_AD_SOURCES_OK:-}" ] && declare -F autodrive_qa_lifting_declaration >/dev/null && autodrive_qa_lifting_declaration .)
 [ "$QA_GREQ" = "false" ] || QA_GREQ="true"
 case "$QA_DECL" in multi-area-command) ;; ci-job:*) CI_JOB=("${QA_DECL#ci-job:}") ;; *) QA_DECL="none" ;; esac
 CI_OUT="$(/bin/bash -p "${GATE_HOME}/autodrive_expected_checks.sh" "$HEAD_SHA" "$BASE_REF" ${CI_JOB[@]+"${CI_JOB[@]}"} 2>/dev/null)"; CI_RC=$?

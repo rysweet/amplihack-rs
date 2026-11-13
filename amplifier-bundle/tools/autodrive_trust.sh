@@ -339,7 +339,7 @@ autodrive_scenario_results() {
 # autodrive_qa_target says `unknown .` and autodrive_gadugi_required says
 # true; without the sources no declaration counts. A broken install blocks.
 _AD_SCOPE_OK=""; _AD_SOURCES_OK=""
-builtin unset -f autodrive_qa_config autodrive_qa_declaration autodrive_qa_report
+builtin unset -f autodrive_qa_config autodrive_qa_declaration autodrive_qa_lifting_declaration autodrive_qa_report
 _ad_scope="$(unset CDPATH; cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)" || _ad_scope=""
 _ad_src="${_ad_scope:+${_ad_scope}/autodrive_qa_sources.sh}"
 _ad_scope="${_ad_scope:+${_ad_scope}/autodrive_qa_scope.sh}"

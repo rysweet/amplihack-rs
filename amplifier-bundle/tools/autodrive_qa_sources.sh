@@ -179,12 +179,20 @@ autodrive_qa_declaration() {
   printf '%s\n' "${d:-none}"
 }
 
-# _autodrive_qa_workflow_changed: return 0 when the changed paths hold
-# .github, .github/workflows or a file below it, or the qa.toml paths.
+# autodrive_qa_lifting_declaration <dir> -> the declaration only where it lifts the gadugi
+# need (D8): not docs-only, detection needs gadugi (autodrive_gadugi_required's order). Else none.
+autodrive_qa_lifting_declaration() {
+  if { ! declare -F autodrive_qa_docs_only >/dev/null || [ "$(autodrive_qa_docs_only "${1:-.}")" != "true" ]; } \
+     && declare -F _autodrive_qa_needs_gadugi >/dev/null && _autodrive_qa_needs_gadugi "${1:-.}"
+  then autodrive_qa_declaration "${1:-.}"; else printf 'none\n'; fi
+}
+
+# _autodrive_qa_workflow_changed: return 0 when the changed paths hold .github or
+# any file below it (workflows and local actions alike), or the qa.toml paths.
 _autodrive_qa_workflow_changed() {
   local p=""
   for p in ${_AD_PATHS[@]+"${_AD_PATHS[@]}"}; do
-    case "$p" in .github|.github/workflows|.github/workflows/*) return 0 ;; esac
+    case "$p" in .github|.github/*) return 0 ;; esac
   done
   _autodrive_qa_toml_changed
 }
@@ -364,7 +372,7 @@ autodrive_qa_report() {
   printf 'paths\t%s\n' "$(autodrive_qa_changed_paths "$r")"
   printf 'kind\t%s\n' "$(autodrive_repo_type "$r")"
   printf 'greq\t%s\ndocsonly\t%s\n' "$(autodrive_gadugi_required "$r")" "$(autodrive_qa_docs_only "$r")"
-  printf 'decl\t%s\n' "$(autodrive_qa_declaration "$r")"
+  printf 'decl\t%s\n' "$(autodrive_qa_lifting_declaration "$r")"
   printf 'target\t%s\n' "$(autodrive_qa_target "$r")"
   if [ -n "${AUTODRIVE_QA_COMMAND+x}" ] || [ -n "${AUTODRIVE_QA_COMMANDS+x}" ]; then
     return 0
