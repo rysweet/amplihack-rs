@@ -33,6 +33,7 @@ pub(crate) const PARENT_WATCH_ENV: [&str; 3] = [
 /// Field 22 (`starttime`) of a `/proc/<pid>/stat` line. Fields are counted
 /// after the LAST `)`, so a process name holding `)` and spaces cannot shift
 /// them (C-S2).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux callers only
 pub(crate) fn proc_starttime(stat_text: &str) -> Option<u64> {
     let (_, rest) = stat_text.rsplit_once(')')?;
     // After `)`, field 3 (state) comes first, so field 22 is index 19.
@@ -41,6 +42,7 @@ pub(crate) fn proc_starttime(stat_text: &str) -> Option<u64> {
 
 /// The parent variables, parsed strictly (C-S1).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux callers only
 pub(crate) enum ParentEnv {
     /// Neither variable is set: a top-level run.
     Absent,
@@ -50,6 +52,7 @@ pub(crate) enum ParentEnv {
     Invalid(String),
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux callers only
 pub(crate) fn parse_parent_env(pid: Option<&str>, starttime: Option<&str>) -> ParentEnv {
     match (pid, starttime) {
         (None, None) => ParentEnv::Absent,
@@ -76,6 +79,7 @@ pub(crate) fn parse_parent_env(pid: Option<&str>, starttime: Option<&str>) -> Pa
 
 /// What [`inspect_parent`] found.
 #[derive(Debug)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux callers only
 pub(crate) enum ParentState {
     /// The parent lives; the pidfd becomes readable when it exits.
     #[cfg(target_os = "linux")]
@@ -233,6 +237,7 @@ fn watch(pidfd: std::os::fd::OwnedFd, pid: i32) {
     }
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux callers only
 fn warn(message: &str) {
     tracing::warn!("{message}");
     eprintln!("warning: {message}");

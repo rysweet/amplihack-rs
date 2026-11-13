@@ -2,6 +2,9 @@
 //! slot's process is an ancestor; a tree id or parent marker that leaked into
 //! an unrelated environment nests nothing (crusty round 1 on #1831).
 
+// Shared fixtures also serve Linux-only tests; keep the portable tests enabled.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use super::admit::admit_with;
 use super::liveness::start_time;
 use super::model::Slot;

@@ -13,6 +13,9 @@
 //! cycle confirms it (issue #1886). Here M is marked overflow. The stubs
 //! replace only probing; the decision is the real one ([`decide_measured`]).
 
+// Shared fixtures also serve Linux-only tests; keep the portable tests enabled.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
 use super::decide::{Probed, Reading, Windows};
 use super::identify::LiveId;

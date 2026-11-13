@@ -368,17 +368,16 @@ pub(super) fn execute(leaves: &mut [Workstream], mode: &str) -> Result<()> {
         );
         Ok(())
     })();
-    if result.is_err() {
+    if let Err(error) = result {
         if let Err(cleanup) = cancel(&mut children, leaves) {
-            return Err(result
-                .unwrap_err()
-                .context(format!("cleanup also failed: {cleanup:#}")));
+            return Err(error.context(format!("cleanup also failed: {cleanup:#}")));
         }
         if let Err(blocking) = block_dependents(leaves, &children) {
-            return Err(result.unwrap_err().context(format!(
+            return Err(error.context(format!(
                 "saving blocked dependents also failed: {blocking:#}"
             )));
         }
+        return Err(error);
     }
-    result
+    Ok(())
 }

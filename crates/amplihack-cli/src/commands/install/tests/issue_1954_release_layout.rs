@@ -36,6 +36,9 @@
 //!
 //! The install lock has its own file, `issue_1954_install_lock.rs`.
 
+// Shared fixtures also serve Linux-only tests; keep the portable tests enabled.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use super::super::bundle_compat::validate_framework_bundle_compatibility;
 use super::super::release_layout::{
     self, COMPLETE_MARKER, CleanupReport, Exchange, INSTALLED_BY, InUse, InstalledBy, RETIRED_DIR,

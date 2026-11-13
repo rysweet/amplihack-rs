@@ -43,6 +43,9 @@
 //! arguments contain the marker, sends `SIGKILL` through it, waits until the
 //! pidfd reports the exit and scans again until none is left.
 
+// Shared fixtures also serve Linux-only tests; keep the portable tests enabled.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{Read, Write};

@@ -306,14 +306,6 @@ fn steps(recipe: &Value) -> Vec<&Value> {
         .unwrap_or_default()
 }
 
-fn step_command<'a>(recipe: &'a Value, step_id: &str) -> Option<&'a str> {
-    steps(recipe).into_iter().find_map(|step| {
-        (step.get("id").and_then(Value::as_str) == Some(step_id))
-            .then(|| step.get("command").and_then(Value::as_str))
-            .flatten()
-    })
-}
-
 /// `command` without the #1561 checks on a worktree path or branch read from
 /// `worktree_setup`. They need no repository: in a non-git directory
 /// `git -C "$p" rev-parse --show-toplevel` prints nothing, the path is

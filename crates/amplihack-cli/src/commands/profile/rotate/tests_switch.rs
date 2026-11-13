@@ -22,6 +22,9 @@
 //!   pin and the default pointer together under the rotate lock;
 //!   `Released { pin, default }` says which were there.
 
+// Shared fixtures also serve Linux-only tests; keep the portable tests enabled.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use super::Released;
 use super::cycle::Ctx;
 use super::ledger::{Phase, RotateLedger};

@@ -2,6 +2,9 @@
 //!
 //! The reader accepts only fixture roots registered through `body()`, not
 //! every path under `std::env::temp_dir()` (#1946).
+// Shared fixtures also serve Linux-only tests; keep the portable tests enabled.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use super::super::identify::Account;
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};

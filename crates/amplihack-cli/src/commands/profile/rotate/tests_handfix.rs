@@ -23,6 +23,9 @@
 //! - `control::status_alerts(&RotateLedger) -> Vec<String>`: the `alert:`,
 //!   `note:` and `warning:` lines of `rotate status`.
 
+// Shared fixtures also serve Linux-only tests; keep the portable tests enabled.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 use super::backup::{BackupRefusal, fresh_backup, rejected_dir};
 use super::control::status_alerts;
 use super::decide::{Decision, Measured, Reading, decide};

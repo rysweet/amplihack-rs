@@ -8,11 +8,15 @@ use crate::commands::profile::name::ProfileName;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux callers only
 const MAX_ENVIRON: u64 = 16 * 1024 * 1024;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux callers only
 const MAX_SMALL: u64 = 64 * 1024;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux callers only
 const KEY: &[u8] = b"CLAUDE_CONFIG_DIR=";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux callers only
 pub enum Liveness {
     /// Profile names with a live process.
     Known(BTreeSet<String>),
@@ -61,6 +65,7 @@ pub fn scan_system(root: &Path) -> Liveness {
 }
 
 /// `root` must be canonical.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux callers only
 pub fn scan(proc_root: &Path, root: &Path, self_pid: u32, uid: u32) -> Liveness {
     if !matches!(
         fsx::read_bounded_nofollow(&proc_root.join("self/environ"), MAX_ENVIRON),
@@ -116,6 +121,7 @@ pub fn scan(proc_root: &Path, root: &Path, self_pid: u32, uid: u32) -> Liveness 
 /// `proc_root`, or a Claude-like process whose environment or working
 /// directory cannot be read, is an error. Other unreadable processes (such
 /// as a non-dumpable `ssh-agent`) and processes that exited are skipped.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux callers only
 pub(crate) fn claude_config_dirs(
     proc_root: &Path,
     self_pid: u32,
@@ -164,6 +170,7 @@ pub(crate) fn claude_config_dirs(
 }
 
 /// `(state letter, real uid)` from `/proc/<pid>/status`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux callers only
 fn status(dir: &Path) -> Option<(char, u32)> {
     let (raw, _) = fsx::read_bounded_nofollow(&dir.join("status"), MAX_SMALL).ok()??;
     let text = String::from_utf8_lossy(&raw);
@@ -179,6 +186,7 @@ fn status(dir: &Path) -> Option<(char, u32)> {
     Some((state?, uid?))
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux callers only
 fn looks_like_claude(dir: &Path) -> bool {
     match fsx::read_bounded_nofollow(&dir.join("cmdline"), MAX_SMALL) {
         Ok(Some((raw, _))) => {
@@ -191,6 +199,7 @@ fn looks_like_claude(dir: &Path) -> bool {
 
 /// The profile name `value` points at, if it is a directory under `root`.
 /// A path that cannot be resolved falls back to its last component.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux callers only
 fn resolve(dir: &Path, value: &[u8], root: &Path) -> Option<String> {
     use std::os::unix::ffi::OsStrExt;
     let path = Path::new(std::ffi::OsStr::from_bytes(value));
