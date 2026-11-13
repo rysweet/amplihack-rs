@@ -184,7 +184,10 @@ fn a_step_under_the_real_runner_gets_the_parent_variables_and_its_nested_run_sto
         .env("PATH", &path_env)
         .env("HOME", &home)
         .env("RECIPE_RUNNER_RS_PATH", &runner)
-        .env("AMPLIHACK_HOME", home.join(".amplihack"))
+        .env(
+            "AMPLIHACK_HOME",
+            crate::support::installed_bundle::home(home.join(".amplihack")),
+        )
         .env("AMPLIHACK_AGENT_BINARY", "claude")
         .env("AMPLIHACK_NONINTERACTIVE", "1")
         .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")

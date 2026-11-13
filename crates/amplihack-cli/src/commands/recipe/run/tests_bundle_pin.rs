@@ -880,3 +880,111 @@ fn a_marker_in_the_short_runtime_layout_is_reused() {
     .unwrap();
     assert!(!selection.inherited());
 }
+
+// ------------------------------------------------- nested in auto-drive
+
+/// An auto-drive invocation copy of `snapshot`, as `LaunchBundle::prepare`
+/// lays it out: a private folder with `amplifier-bundle` and a source record.
+fn launch_copy(root: &Path, name: &str, source: &Path) -> PathBuf {
+    let launch = root.join(name);
+    fs::create_dir_all(&launch).unwrap();
+    set_mode(&launch, 0o700);
+    write_bundle(&launch, "launch-copy");
+    fs::write(
+        launch.join(crate::commands::orch::autodrive::trusted::LAUNCH_SOURCE_FILE),
+        fs::canonicalize(source).unwrap().to_str().unwrap(),
+    )
+    .unwrap();
+    launch
+}
+
+#[test]
+fn a_run_nested_in_an_auto_drive_step_reuses_the_outer_snapshot() {
+    let (_tmp, root) = scratch();
+    let marker = parent_snapshot(&root);
+    let launch = launch_copy(&root, "autodrive-invocation-a", &marker);
+    let installed = root.join("installed");
+    write_bundle(&installed, "A");
+    let selection = select_from(SelectInputs {
+        amplihack_home: os(&launch),
+        run_bundle: os(&marker),
+        run_bundle_choice: Some(OsStr::new("checkout")),
+        configured_home: Some(&installed),
+        ..inputs(&root)
+    })
+    .unwrap();
+    assert!(selection.inherited(), "{:?}", selection.notes());
+    assert_eq!(selection.choice(), BundleChoice::Checkout);
+    assert_eq!(
+        selection.source(),
+        fs::canonicalize(marker.join("amplifier-bundle")).unwrap()
+    );
+    let runtime = root.join("child-run/runtime");
+    fs::create_dir_all(&runtime).unwrap();
+    let pinned = pin(&selection, &runtime, false).unwrap();
+    assert!(!runtime.join("bundle").exists(), "no second copy");
+    assert_eq!(pinned.record().choice, "checkout");
+}
+
+#[test]
+fn a_launch_copy_of_another_bundle_does_not_vouch_for_the_marker() {
+    let (_tmp, root) = scratch();
+    let marker = parent_snapshot(&root);
+    let installed = root.join("installed");
+    write_bundle(&installed, "A");
+    let launch = launch_copy(&root, "autodrive-invocation-b", &installed);
+    let selection = select_from(SelectInputs {
+        amplihack_home: os(&launch),
+        run_bundle: os(&marker),
+        run_bundle_choice: Some(OsStr::new("installed")),
+        configured_home: Some(&installed),
+        ..inputs(&root)
+    })
+    .unwrap();
+    assert!(!selection.inherited());
+    assert!(!selection.notes().is_empty());
+}
+
+#[test]
+fn an_unreadable_pin_record_is_noted_not_silently_dropped() {
+    let (_tmp, root) = scratch();
+    let marker = parent_snapshot(&root);
+    let select = || {
+        select_from(SelectInputs {
+            amplihack_home: os(&marker),
+            run_bundle: os(&marker),
+            run_bundle_choice: Some(OsStr::new("installed")),
+            ..inputs(&root)
+        })
+        .unwrap()
+    };
+    let missing = select();
+    assert!(missing.inherited());
+    assert_eq!(missing.version(), "unknown");
+    let note = missing.notes().join("\n");
+    assert!(note.contains(".bundle-record.json"), "{note}");
+
+    fs::write(marker.join(".bundle-record.json"), "{not json").unwrap();
+    let malformed = select();
+    assert!(malformed.inherited());
+    assert!(
+        malformed.notes().iter().any(|n| n.contains("pin record")),
+        "{:?}",
+        malformed.notes()
+    );
+}
+
+#[test]
+fn a_state_home_linked_into_the_runtime_folder_is_refused() {
+    let (_tmp, root) = scratch();
+    let (_source, selection) = installed_selection(&root);
+    let runtime = root.join("runs/r/runtime");
+    fs::create_dir_all(&runtime).unwrap();
+    let pinned = pin(&selection, &runtime, false).unwrap();
+    let link = root.join("state-link");
+    symlink(&runtime, &link).unwrap();
+    assert!(check_state_home(&link, &pinned).is_err());
+    // Not created yet: the nearest existing ancestor is resolved.
+    assert!(check_state_home(&link.join("later/state"), &pinned).is_err());
+    assert!(check_state_home(&root.join("state/later"), &pinned).is_ok());
+}

@@ -1,15 +1,17 @@
 //! Issue #2528: runner arguments and environment for a pinned run (D3, D5).
 //!
 //! Contract:
-//! - `execute::build_search_dirs(&PinnedBundle, &RecipeOrigin) -> Vec<PathBuf>`:
+//! - `execute::build_search_dirs(bundle: &Path, &RecipeOrigin) -> Vec<PathBuf>`:
 //!   `<bundle>/recipes` first and, only for `RecipeOrigin::File`, the file's
 //!   parent. Never the repository root, `.claude/recipes` or `~/.amplihack`.
-//! - `execute::runner_bundle_args(&PinnedBundle, &RecipeOrigin) -> Vec<OsString>`:
+//! - `execute::runner_bundle_args(bundle: &Path, &RecipeOrigin) -> Vec<OsString>`:
 //!   one `-R` per search dir, `--agent-dir <bundle>/agents` and
-//!   `--no-default-search`.
-//! - `execute::bundle_env(&PinnedBundle, state_home: &Path)
+//!   `--no-default-search`, for the snapshot or auto-drive's copy alike.
+//! - `execute::bundle_env(&PinnedBundle, state_home: &Path, launch_home)
 //!   -> Vec<(&'static str, OsString)>`: the four variables set on the runner
-//!   process for an executing run. A dry-run pin yields none.
+//!   process for an executing run. A dry-run pin yields none. With an
+//!   auto-drive launch home, `AMPLIHACK_HOME` names it and the marker still
+//!   names the snapshot.
 //! - `take_bundle_key(&mut BTreeMap<String, String>) -> Option<String>` in
 //!   `run/mod.rs` removes the lower-case `bundle` key before export.
 //! - `trusted::clean_retired_environment` leaves the four names in place (I3).
@@ -85,7 +87,7 @@ fn pinned(dry_run: bool) -> Pinned {
 #[test]
 fn search_dirs_for_a_bundle_recipe_are_the_snapshot_only() {
     let p = pinned(false);
-    let dirs = build_search_dirs(&p.pinned, &RecipeOrigin::Bundle);
+    let dirs = build_search_dirs(p.pinned.bundle(), &RecipeOrigin::Bundle);
     assert_eq!(dirs, vec![p.pinned.bundle().join("recipes")]);
     assert!(dirs[0].starts_with(p.root.join("runs/r/runtime/bundle")));
 }
@@ -94,7 +96,7 @@ fn search_dirs_for_a_bundle_recipe_are_the_snapshot_only() {
 fn search_dirs_for_a_file_recipe_add_its_parent_second() {
     let p = pinned(false);
     let file = p.root.join("mine/custom.yaml");
-    let dirs = build_search_dirs(&p.pinned, &RecipeOrigin::File(file.clone()));
+    let dirs = build_search_dirs(p.pinned.bundle(), &RecipeOrigin::File(file.clone()));
     assert_eq!(
         dirs,
         vec![
@@ -108,17 +110,17 @@ fn search_dirs_for_a_file_recipe_add_its_parent_second() {
 fn search_dirs_for_a_file_inside_the_bundle_are_not_duplicated() {
     let p = pinned(false);
     let file = p.pinned.bundle().join("recipes/probe.yaml");
-    let dirs = build_search_dirs(&p.pinned, &RecipeOrigin::File(file));
+    let dirs = build_search_dirs(p.pinned.bundle(), &RecipeOrigin::File(file));
     assert_eq!(dirs, vec![p.pinned.bundle().join("recipes")]);
 }
 
 #[test]
 fn a_dry_run_points_the_runner_at_the_source_bundle() {
     let p = pinned(true);
-    let dirs = build_search_dirs(&p.pinned, &RecipeOrigin::Bundle);
+    let dirs = build_search_dirs(p.pinned.bundle(), &RecipeOrigin::Bundle);
     assert_eq!(dirs, vec![p.pinned.source().join("recipes")]);
     assert!(
-        bundle_env(&p.pinned, &p.root.join("state")).is_empty(),
+        bundle_env(&p.pinned, &p.root.join("state"), None).is_empty(),
         "a dry run sets none of the four variables"
     );
 }
@@ -126,7 +128,7 @@ fn a_dry_run_points_the_runner_at_the_source_bundle() {
 #[test]
 fn runner_arguments_turn_default_search_off_and_name_the_agents_dir() {
     let p = pinned(false);
-    let args = runner_bundle_args(&p.pinned, &RecipeOrigin::Bundle);
+    let args = runner_bundle_args(p.pinned.bundle(), &RecipeOrigin::Bundle);
     let recipes = p.pinned.bundle().join("recipes");
     let agents = p.pinned.bundle().join("agents");
     let expected: Vec<OsString> = vec![
@@ -143,7 +145,7 @@ fn runner_arguments_turn_default_search_off_and_name_the_agents_dir() {
 fn bundle_env_points_steps_at_the_snapshot() {
     let p = pinned(false);
     let state = p.root.join("state");
-    let env: BTreeMap<&str, OsString> = bundle_env(&p.pinned, &state).into_iter().collect();
+    let env: BTreeMap<&str, OsString> = bundle_env(&p.pinned, &state, None).into_iter().collect();
     let home = p.pinned.home().as_os_str();
     assert_eq!(env.len(), 4, "{env:?}");
     assert_eq!(env["AMPLIHACK_HOME"], home);
@@ -243,4 +245,34 @@ fn the_bundle_context_key_is_not_a_removed_key() {
     crate::commands::recipe::reject_removed_context_keys(&["bundle=checkout".into()], &mut out)
         .expect("`-c bundle=` is accepted");
     assert!(out.is_empty());
+}
+
+#[test]
+fn auto_drive_steps_keep_the_launch_home_and_the_snapshot_marker() {
+    let p = pinned(false);
+    let state = p.root.join("state");
+    let launch = p.root.join("autodrive-invocation-x");
+    let env: BTreeMap<&str, OsString> = bundle_env(&p.pinned, &state, Some(&launch))
+        .into_iter()
+        .collect();
+    assert_eq!(env.len(), 4, "{env:?}");
+    assert_eq!(env["AMPLIHACK_HOME"], launch.as_os_str());
+    assert_eq!(env["AMPLIHACK_RUN_BUNDLE"], p.pinned.home().as_os_str());
+    assert_eq!(env["AMPLIHACK_RUN_BUNDLE_CHOICE"], OsStr::new("installed"));
+    assert_eq!(env["AMPLIHACK_STATE_HOME"], state.as_os_str());
+}
+
+#[test]
+fn auto_drive_runner_arguments_name_the_launch_copy_and_turn_default_search_off() {
+    let p = pinned(false);
+    let bundle = p.root.join("autodrive-invocation-x/amplifier-bundle");
+    let args = runner_bundle_args(&bundle, &RecipeOrigin::Bundle);
+    let expected: Vec<OsString> = vec![
+        "-R".into(),
+        bundle.join("recipes").into_os_string(),
+        "--agent-dir".into(),
+        bundle.join("agents").into_os_string(),
+        "--no-default-search".into(),
+    ];
+    assert_eq!(args, expected);
 }

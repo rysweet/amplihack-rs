@@ -343,6 +343,7 @@ fn run_recipe_with_options(
         Some(execute::RunBundle {
             selection: &selection,
             origin: &origin,
+            recipe_name: &recipe.name,
         }),
     ) {
         Ok(result) => result,

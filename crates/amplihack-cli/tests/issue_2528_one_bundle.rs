@@ -682,3 +682,191 @@ fn t6_steps_see_the_real_state_root_not_the_snapshot() {
         "the snapshot is removed when the run ends"
     );
 }
+
+// ------------------------------------------------------- auto-drive (D5, D7)
+
+/// The assets `LaunchBundle::prepare` requires before an auto-drive run.
+const AUTODRIVE_ASSETS: &[&str] = &[
+    "skills/merge-ready/SKILL.md",
+    "skills/crusty-old-engineer/SKILL.md",
+    "skills/merge-ready/pr-description-template.md",
+    "recipes/loop-health-evaluator.yaml",
+    "recipes/autodrive-finalize.yaml",
+    "skills/auto-drive-to-merge/evidence-contract.md",
+    "tools/autodrive_loop.sh",
+    "tools/autodrive_merge_message.sh",
+    "tools/autodrive_expected_checks.sh",
+];
+
+#[test]
+fn autodrive_run_turns_default_search_off_and_nested_runs_inherit_the_snapshot() {
+    let Some(runner) = runner_or_skip("auto-drive") else {
+        return;
+    };
+    let world = World::new();
+    // A wrapper that records the runner's arguments, then runs it.
+    let args_file = world.records.join("runner-args.txt");
+    let wrapper = world.root.join("wrapper/recipe-runner-rs");
+    fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> {}\nexec {} \"$@\"\n",
+            quoted(&args_file),
+            quoted(&runner)
+        ),
+    )
+    .unwrap();
+    set_mode(&wrapper, 0o755);
+
+    let checkout = world.root.join("checkout");
+    git_init(&checkout);
+    let bundle = checkout.join("amplifier-bundle");
+    for asset in AUTODRIVE_ASSETS {
+        let (body, mode) = if asset.ends_with(".sh") {
+            ("#!/bin/sh\n".to_owned(), 0o755)
+        } else if asset.ends_with(".yaml") {
+            let name = Path::new(asset).file_stem().unwrap().to_str().unwrap();
+            (recipe(name, "asset", &[("noop", "true\n".into())]), 0o644)
+        } else {
+            ("# asset\n".to_owned(), 0o644)
+        };
+        put(&bundle, asset, &body, mode);
+    }
+    put(&bundle, "agents/core/builder.md", "# builder\n", 0o644);
+    let out = quoted(&world.out());
+    put(
+        &bundle,
+        "recipes/nested-2528.yaml",
+        &recipe(
+            "nested-2528",
+            "nested",
+            &[("n", format!("echo nested=ran >> {out}\n"))],
+        ),
+        0o644,
+    );
+    let nested_err = quoted(&world.records.join("nested.stderr"));
+    put(
+        &bundle,
+        "recipes/autodrive-2528-probe.yaml",
+        &recipe(
+            "autodrive-2528-probe",
+            "auto-drive",
+            &[(
+                "env",
+                format!(
+                    "echo \"home=$AMPLIHACK_HOME\" >> {out}\n\
+                     echo \"marker=$AMPLIHACK_RUN_BUNDLE\" >> {out}\n\
+                     echo \"choice=$AMPLIHACK_RUN_BUNDLE_CHOICE\" >> {out}\n\
+                     {amp} recipe run nested-2528 -w {root} > /dev/null 2> {nested_err}\n",
+                    amp = quoted(&amplihack_bin()),
+                    root = quoted(&world.root),
+                ),
+            )],
+        ),
+        0o644,
+    );
+
+    let output = world.run(
+        Some(&wrapper),
+        &checkout,
+        &[
+            "autodrive-2528-probe",
+            "--bundle",
+            "checkout",
+            "-w",
+            checkout.to_str().unwrap(),
+        ],
+    );
+    let stderr = text(&output.stderr);
+    let nested = fs::read_to_string(world.records.join("nested.stderr")).unwrap_or_default();
+    assert!(
+        output.status.success(),
+        "run failed:\n{stderr}\nnested:\n{nested}"
+    );
+
+    // The outer runner gets the launch copy's agents and no default search.
+    let args = fs::read_to_string(&args_file).unwrap_or_default();
+    let outer: Vec<&str> = args.lines().collect();
+    assert!(outer.contains(&"--no-default-search"), "{args}");
+    let agent_dir = outer
+        .iter()
+        .position(|a| *a == "--agent-dir")
+        .map(|i| outer[i + 1])
+        .unwrap_or_else(|| panic!("no --agent-dir: {args}"));
+    assert!(
+        agent_dir.contains("autodrive-invocation-")
+            && agent_dir.ends_with("amplifier-bundle/agents"),
+        "{agent_dir}"
+    );
+
+    // Steps: AMPLIHACK_HOME is the launch copy; the marker is the snapshot.
+    let lines = world.lines();
+    let value = |key: &str| {
+        lines
+            .iter()
+            .find_map(|l| l.strip_prefix(&format!("{key}=")).map(str::to_owned))
+            .unwrap_or_else(|| panic!("no {key}: {lines:?}\n{stderr}"))
+    };
+    assert!(value("home").contains("autodrive-invocation-"), "{lines:?}");
+    let snapshot = assert_one_bundle(&stderr, &fs::canonicalize(&bundle).unwrap(), "checkout")
+        .expect("snapshot recorded");
+    assert_eq!(Path::new(&value("marker")), snapshot, "{lines:?}");
+    assert_eq!(value("choice"), "checkout");
+
+    // The nested run reuses the snapshot: no second copy, same choice.
+    assert!(
+        lines.iter().any(|l| l == "nested=ran"),
+        "{lines:?}\n{nested}"
+    );
+    assert!(nested.contains("(inherited)"), "{nested}");
+    for record in records(&nested) {
+        if record["event"] == "early" {
+            assert_eq!(record["recipe_bundle"]["choice"], "checkout", "{record}");
+            assert_eq!(record["recipe_bundle"]["inherited"], true, "{record}");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------- R2
+
+/// The early record's `recipe_bundle` of one attempt.
+fn early_bundle(stderr: &str) -> serde_json::Value {
+    records(stderr)
+        .into_iter()
+        .find(|r| r["event"] == "early")
+        .map(|r| r["recipe_bundle"].clone())
+        .unwrap_or_else(|| panic!("no early record:\n{stderr}"))
+}
+
+#[test]
+fn r2_a_resumed_run_pins_the_same_bundle_with_the_same_choice() {
+    if runner_or_skip("r2").is_none() {
+        return;
+    }
+    // The recovery fixture stops a run at a usage limit in its second step;
+    // the next launch resumes it. No timing is involved.
+    let f = crate::issue_1741_fixture::Fixture::new();
+    let first = f.stop_at("design");
+    f.mode("design", "success");
+    let second = f.run(&[]);
+    assert!(
+        second.output.status.success(),
+        "{}",
+        crate::issue_1741_fixture::describe(&second.output)
+    );
+    second.assert_resumed(&first, "design");
+
+    let before = early_bundle(&text(&first.output.stderr));
+    let after = early_bundle(&text(&second.output.stderr));
+    for key in ["source", "version", "choice"] {
+        assert_eq!(before[key], after[key], "{key}: {before} vs {after}");
+    }
+    assert_eq!(after["choice"], "installed");
+    assert_eq!(after["inherited"], false);
+    // Each launch pins its own copy of that bundle, removed when it ends.
+    for record in [&before, &after] {
+        let snapshot = PathBuf::from(record["snapshot"].as_str().expect("snapshot"));
+        assert!(!snapshot.exists(), "{}", snapshot.display());
+    }
+}

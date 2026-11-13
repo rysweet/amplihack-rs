@@ -16,7 +16,7 @@
 use super::correlation::BundleRecord;
 use crate::commands::cleanup::run_dir::read_capped_nofollow;
 use crate::commands::orch::autodrive::trusted::{
-    LinkPolicy, check_bundle, copy_bundle, pin_bundle, trusted_directory,
+    LAUNCH_SOURCE_FILE, LinkPolicy, check_bundle, copy_bundle, pin_bundle, trusted_directory,
 };
 use anyhow::{Context, Result, bail};
 use std::ffi::OsStr;
@@ -147,6 +147,7 @@ impl Selection {
     }
 
     /// True when this run reuses an outer run's snapshot.
+    #[cfg(test)]
     pub(crate) fn inherited(&self) -> bool {
         self.inherited.is_some()
     }
@@ -263,8 +264,13 @@ fn check_marker(
     let home = amplihack_home
         .filter(|value| !value.is_empty())
         .and_then(|value| fs::canonicalize(value).ok());
-    if home.as_deref() != Some(canonical.as_path()) {
-        return Err("it is not the same directory as AMPLIHACK_HOME".into());
+    let same_home = home.as_deref() == Some(canonical.as_path());
+    if !same_home && !home.is_some_and(|home| is_launch_copy_of(&home, &canonical)) {
+        return Err(
+            "it is neither AMPLIHACK_HOME nor the bundle AMPLIHACK_HOME's auto-drive copy \
+             was made from"
+                .into(),
+        );
     }
     if !is_snapshot_path(&canonical) {
         return Err("it is not a bundle folder inside a run's runtime folder".into());
@@ -277,6 +283,21 @@ fn check_marker(
         .and_then(|value| BundleChoice::parse(value).ok())
         .ok_or_else(|| format!("{RUN_BUNDLE_CHOICE_ENV} is not installed or checkout"))?;
     Ok((canonical, choice))
+}
+
+/// True when `home` is an auto-drive invocation copy (`LaunchBundle`) made
+/// from the snapshot home `marker`: a trusted folder whose source record
+/// names `marker`. Auto-drive steps keep `AMPLIHACK_HOME` at that copy (D7),
+/// so their nested runs still reuse the outer run's snapshot.
+fn is_launch_copy_of(home: &Path, marker: &Path) -> bool {
+    if trusted_directory(home).is_err() {
+        return false;
+    }
+    read_capped_nofollow(&home.join(LAUNCH_SOURCE_FILE), MAX_READ)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .and_then(|text| fs::canonicalize(text.trim_end_matches('\n')).ok())
+        .is_some_and(|source| source == marker)
 }
 
 /// True for `<runtime>/bundle`, where `<runtime>` has one of the two
@@ -301,11 +322,28 @@ fn is_snapshot_path(path: &Path) -> bool {
     }
 }
 
+/// The outer run's snapshot as this run's selection. A pin record that
+/// cannot be read leaves the source as the snapshot and the version
+/// `unknown`, with a note saying why.
 fn inherited_selection(home: PathBuf, choice: BundleChoice) -> Selection {
     let bundle = home.join(BUNDLE_DIR);
-    let record = read_capped_nofollow(&home.join(PIN_RECORD), MAX_READ)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<BundleRecord>(&bytes).ok());
+    let path = home.join(PIN_RECORD);
+    let mut notes = Vec::new();
+    let record = match read_capped_nofollow(&path, MAX_READ)
+        .map_err(|error| format!("{error:#}"))
+        .and_then(|bytes| {
+            serde_json::from_slice::<BundleRecord>(&bytes).map_err(|error| error.to_string())
+        }) {
+        Ok(record) => Some(record),
+        Err(reason) => {
+            notes.push(format!(
+                "recipe bundle: cannot read the outer run's pin record {}: {reason}; \
+                 recording the snapshot as the source and the version as unknown",
+                path.display()
+            ));
+            None
+        }
+    };
     let source = record
         .as_ref()
         .map(|r| PathBuf::from(&r.source))
@@ -320,7 +358,7 @@ fn inherited_selection(home: PathBuf, choice: BundleChoice) -> Selection {
         choice,
         version,
         inherited: Some(Inherited { home, source }),
-        notes: Vec::new(),
+        notes,
     }
 }
 
@@ -509,9 +547,7 @@ pub(crate) fn pin(
         inherited,
         recipe_file: None,
     };
-    if selection.inherited()
-        && let Some(inherited) = &selection.inherited
-    {
+    if let Some(inherited) = &selection.inherited {
         return Ok(PinnedBundle {
             bundle: inherited.home.join(BUNDLE_DIR),
             runtime_dir: inherited.home.parent().map(Path::to_path_buf),
@@ -580,10 +616,12 @@ fn write_pin_record(home: &Path, record: &BundleRecord) -> Result<()> {
 }
 
 /// E8: the settled state home must not lie under the run's `runtime/` folder.
+/// Both paths are compared after resolving symlinks, so a state home that is
+/// a link into `runtime/` is refused too.
 pub(crate) fn check_state_home(state_home: &Path, pinned: &PinnedBundle) -> Result<()> {
     // A dry run sets no bundle variables, so there is nothing to check.
     if let Some(runtime) = pinned.runtime_dir.as_deref()
-        && state_home.starts_with(runtime)
+        && resolved(state_home).starts_with(resolved(runtime))
     {
         bail!(
             "AMPLIHACK_STATE_HOME {} lies under a run's runtime/ folder",
@@ -591,4 +629,23 @@ pub(crate) fn check_state_home(state_home: &Path, pinned: &PinnedBundle) -> Resu
         );
     }
     Ok(())
+}
+
+/// `path` with symlinks resolved. A path that does not exist yet resolves
+/// its nearest existing ancestor and keeps the rest as given.
+fn resolved(path: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut current = path;
+    loop {
+        if let Ok(base) = fs::canonicalize(current) {
+            return rest.iter().rev().fold(base, |acc, part| acc.join(part));
+        }
+        match (current.parent(), current.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                current = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
 }

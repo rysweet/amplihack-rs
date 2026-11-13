@@ -27,6 +27,11 @@ pub const REQUIRED_ASSETS: &[&str] = &[
     "tools/autodrive_expected_checks.sh",
 ];
 
+/// Names, inside a [`LaunchBundle`] home, the canonical home the copy was
+/// made from (#2528). A nested `recipe run` in an auto-drive step uses it to
+/// reuse the outer run's snapshot while `AMPLIHACK_HOME` names this copy.
+pub(crate) const LAUNCH_SOURCE_FILE: &str = "bundle-source";
+
 /// A private invocation copy keeps recipes, skills, evaluator and helpers on one release.
 pub struct LaunchBundle {
     pub home: PathBuf,
@@ -64,6 +69,11 @@ impl LaunchBundle {
         }
         use std::io::Write;
         options.open(&auth_path)?.write_all(invocation.as_bytes())?;
+        let source =
+            fs::canonicalize(home).with_context(|| format!("cannot resolve {}", home.display()))?;
+        options
+            .open(temp.path().join(LAUNCH_SOURCE_FILE))?
+            .write_all(source.as_os_str().as_encoded_bytes())?;
         let recipes = dest.join("recipes");
         for entry in fs::read_dir(&recipes)? {
             let path = entry?.path();
@@ -109,7 +119,7 @@ impl LaunchBundle {
 /// 0644, executables 0755, so the copy passes `trusted_directory()` whatever
 /// the process umask. Symlinks are skipped: compatibility aliases are not
 /// workflow authority.
-pub(crate) fn copy_tree(source: &Path, dest: &Path) -> Result<()> {
+fn copy_tree(source: &Path, dest: &Path) -> Result<()> {
     copy_bundle(source, dest, LinkPolicy::Skip)
 }
 
@@ -134,20 +144,23 @@ const SKIPPED_NAMES: [&str; 2] = ["gh-merge-guard", "autodrive_merge_gate.sh"];
 /// 0755, files 0755 when any execute bit is set and 0644 otherwise; setuid,
 /// setgid and sticky bits are dropped.
 pub(crate) fn copy_bundle(source: &Path, dest: &Path, links: LinkPolicy) -> Result<()> {
-    trusted_directory(source)?;
-    let root = fs::canonicalize(source)
-        .with_context(|| format!("cannot resolve bundle {}", source.display()))?;
-    fs::create_dir(dest).with_context(|| format!("cannot create {}", dest.display()))?;
-    set_mode(dest, 0o755)?;
-    walk_bundle(&root, &root, Some(dest), links)
+    check_and_copy(source, Some(dest), links)
 }
 
 /// The checks of [`copy_bundle`] without copying anything (a dry run, #2528).
 pub(crate) fn check_bundle(source: &Path, links: LinkPolicy) -> Result<()> {
+    check_and_copy(source, None, links)
+}
+
+fn check_and_copy(source: &Path, dest: Option<&Path>, links: LinkPolicy) -> Result<()> {
     trusted_directory(source)?;
     let root = fs::canonicalize(source)
         .with_context(|| format!("cannot resolve bundle {}", source.display()))?;
-    walk_bundle(&root, &root, None, links)
+    if let Some(dest) = dest {
+        fs::create_dir(dest).with_context(|| format!("cannot create {}", dest.display()))?;
+        set_mode(dest, 0o755)?;
+    }
+    walk_bundle(&root, &root, dest, links)
 }
 
 fn walk_bundle(root: &Path, dir: &Path, dest: Option<&Path>, links: LinkPolicy) -> Result<()> {
@@ -208,11 +221,19 @@ fn copy_checked_file(path: &Path, checked: &fs::Metadata, to: &Path) -> Result<(
             path.display()
         )
     };
+    // ELOOP is O_NOFOLLOW meeting a symlink swapped in after the check (E7);
+    // any other failure, such as EACCES on a mode 0000 file, is reported as is.
     let mut input = fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)
-        .map_err(|_| changed())?;
+        .map_err(|error| {
+            if error.raw_os_error() == Some(libc::ELOOP) {
+                changed()
+            } else {
+                anyhow::Error::new(error).context(format!("cannot open {}", path.display()))
+            }
+        })?;
     let opened = input
         .metadata()
         .with_context(|| format!("cannot inspect {}", path.display()))?;
@@ -260,8 +281,14 @@ fn check_entry(path: &Path, metadata: &fs::Metadata) -> Result<()> {
 }
 
 /// The link text of a symlink `link` that [`LinkPolicy::KeepInternal`] keeps:
-/// relative, resolving inside `root`, with a target and intermediate
-/// directories that pass [`check_entry`]. Anything else is E7.
+/// relative, staying inside `root` when read as text, resolving inside
+/// `root`, with a target and intermediate directories that pass
+/// [`check_entry`]. Anything else is E7.
+///
+/// The text is copied verbatim, so it must stay inside the bundle without
+/// following any symlink: `..` steps past `/` stop there, and text such as
+/// `../../../..<root>/x` resolves inside the source but, in the snapshot,
+/// back to the source.
 fn internal_link_text(root: &Path, link: &Path) -> Result<PathBuf> {
     let refuse =
         |reason: &str| anyhow::anyhow!("untrusted bundle entry {}: {reason}", link.display());
@@ -269,6 +296,9 @@ fn internal_link_text(root: &Path, link: &Path) -> Result<PathBuf> {
         fs::read_link(link).with_context(|| format!("cannot read link {}", link.display()))?;
     if text.is_absolute() {
         return Err(refuse("absolute symlink"));
+    }
+    if !text_stays_inside(root, link, &text) {
+        return Err(refuse("symlink leaves the bundle"));
     }
     let target = match fs::canonicalize(link) {
         Ok(target) => target,
@@ -295,6 +325,28 @@ fn internal_link_text(root: &Path, link: &Path) -> Result<PathBuf> {
         check_entry(&current, &metadata)?;
     }
     Ok(text)
+}
+
+/// True when `text`, read from the folder holding `link`, never climbs above
+/// `root` by its own components. No symlink is followed.
+fn text_stays_inside(root: &Path, link: &Path, text: &Path) -> bool {
+    use std::path::Component;
+    let Some(parent) = link.parent().and_then(|p| p.strip_prefix(root).ok()) else {
+        return false;
+    };
+    let mut depth = parent.components().count();
+    for component in text.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(_) => depth += 1,
+            Component::ParentDir => match depth.checked_sub(1) {
+                Some(up) => depth = up,
+                None => return false,
+            },
+            Component::RootDir | Component::Prefix(_) => return false,
+        }
+    }
+    true
 }
 
 fn set_mode(path: &Path, mode: u32) -> Result<()> {

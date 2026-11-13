@@ -294,3 +294,66 @@ fn an_existing_destination_is_refused() {
     fs::create_dir(&dest).unwrap();
     assert!(copy_bundle(&src, &dest, LinkPolicy::KeepInternal).is_err());
 }
+
+#[test]
+fn keep_internal_refuses_dotdot_through_filesystem_root() {
+    // F1: surplus `..` steps stop at `/`, so this text resolves inside the
+    // source bundle, but in the snapshot it still names the source file.
+    let (_tmp, src, dest) = bundle();
+    let link = src.join("tools/back-to-source.yaml");
+    let depth = src.join("tools").components().count();
+    let mut text = PathBuf::new();
+    for _ in 0..depth + 3 {
+        text.push("..");
+    }
+    text.push(src.strip_prefix("/").unwrap());
+    text.push("recipes/a.yaml");
+    symlink(&text, &link).unwrap();
+    assert_eq!(fs::canonicalize(&link).unwrap(), src.join("recipes/a.yaml"));
+    assert_eq!(
+        err_text(copy_bundle(&src, &dest, LinkPolicy::KeepInternal)),
+        format!(
+            "untrusted bundle entry {}: symlink leaves the bundle",
+            link.display()
+        )
+    );
+    assert!(super::check_bundle(&src, LinkPolicy::KeepInternal).is_err());
+}
+
+#[test]
+fn keep_internal_keeps_a_link_to_a_sibling_folder() {
+    let (_tmp, src, dest) = bundle();
+    fs::create_dir(src.join("tools/sibling")).unwrap();
+    set_mode(&src.join("tools/sibling"), 0o755);
+    fs::write(src.join("tools/sibling/file"), "x\n").unwrap();
+    set_mode(&src.join("tools/sibling/file"), 0o644);
+    fs::create_dir(src.join("tools/here")).unwrap();
+    set_mode(&src.join("tools/here"), 0o755);
+    symlink("./../sibling/file", src.join("tools/here/link")).unwrap();
+    copy_bundle(&src, &dest, LinkPolicy::KeepInternal).unwrap();
+    let link = dest.join("tools/here/link");
+    assert_eq!(
+        fs::read_link(&link).unwrap(),
+        PathBuf::from("./../sibling/file")
+    );
+    assert_eq!(fs::read_to_string(&link).unwrap(), "x\n");
+}
+
+#[test]
+fn an_unreadable_file_is_reported_as_unopenable_not_changed() {
+    // SAFETY: geteuid has no failure mode and touches no memory.
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("skipped: root opens a mode 0000 file");
+        return;
+    }
+    let (_tmp, src, dest) = bundle();
+    let locked = src.join("agents/x.md");
+    set_mode(&locked, 0o000);
+    let text = err_text(copy_bundle(&src, &dest, LinkPolicy::KeepInternal));
+    set_mode(&locked, 0o644);
+    assert!(
+        text.starts_with(&format!("cannot open {}", locked.display())),
+        "{text}"
+    );
+    assert!(!text.contains("changed while being copied"), "{text}");
+}

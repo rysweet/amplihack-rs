@@ -129,7 +129,8 @@ another bundle.
 Each entry is checked and copied in one pass. Files are opened with
 `O_NOFOLLOW`, and the device and inode of the open handle must match the
 metadata that was checked, so a file swapped between the check and the copy
-is refused (E7).
+is refused (E7). Any other failure to open a file, such as a file with mode
+`0000`, is reported as `cannot open <path>` with the system error.
 
 Ancestors of the bundle root (for example `$HOME` or `/d0`) are not checked.
 See [Known limits](#known-limits).
@@ -141,11 +142,16 @@ See [Known limits](#known-limits).
 | Relative, target inside the bundle, target passes the per-entry check | Recreated in the snapshot with the same link text |
 | Absolute target | Refused (E7) |
 | Target outside the bundle, including a `../` escape or a sibling directory whose name shares a prefix | Refused (E7) |
+| Link text that climbs above the bundle root when read as text, even if it resolves back inside (for example surplus `..` steps followed by the bundle's own absolute path) | Refused (E7) |
 | Dangling or cyclic | Refused (E7) |
 | Link to a directory | Recreated as a link; the copy never descends through it |
 
-Containment is tested on canonical paths, component by component, so
-`amplifier-bundle-old/` does not count as inside `amplifier-bundle/`.
+Containment is tested twice. The canonical target must lie inside the
+bundle, component by component, so `amplifier-bundle-old/` does not count as
+inside `amplifier-bundle/`. The link text itself, read from the link's folder
+without following any symlink, must also never climb above the bundle root.
+The text is copied verbatim, so text that only resolves inside the source
+bundle would, in the snapshot, point back at the source.
 
 The two merge-guard names that auto-drive skips (`gh-merge-guard`,
 `autodrive_merge_gate.sh`) are skipped here too.
@@ -197,7 +203,10 @@ Order of operations in `recipe run`:
 8. Copy the bundle into `runtime/bundle/amplifier-bundle` and print the
    stderr line. A dry run walks and checks every entry without copying.
 9. Point the recipe path at the same file inside the snapshot. A recipe given
-   as a path outside the bundle keeps its own path.
+   as a path outside the bundle keeps its own path. A bundle recipe that is
+   not inside the selected source is an error, never a fallback to the
+   source. Read the recipe's name again from the file that will run; if it
+   differs from the name read in step 3, refuse the run (E10).
 10. For auto-drive, call `trusted::LaunchBundle::prepare(pinned.home())`.
 11. Settle `AMPLIHACK_STATE_HOME` (E8).
 12. Call `recovery::admit` with the canonical source recipe path, not the
@@ -239,10 +248,12 @@ bundle that supplied the tools.
 |----------|-------|-----------|
 | `-R` | `<run dir>/runtime/bundle/amplifier-bundle/recipes` | Executing run |
 | `-R` | `<source bundle>/recipes` | Dry run |
-| `-R` | Parent directory of the recipe file | Only when the recipe was given as a path |
+| `-R` | `<launch copy>/amplifier-bundle/recipes` | Auto-drive run (see [Auto-drive](#auto-drive)) |
+| `-R` | Parent directory of the recipe file | Only when the recipe was given as a path, and not for auto-drive |
 | `--agent-dir` | `<run dir>/runtime/bundle/amplifier-bundle/agents` | Executing run |
 | `--agent-dir` | `<source bundle>/agents` | Dry run |
-| `--no-default-search` | | Always |
+| `--agent-dir` | `<launch copy>/amplifier-bundle/agents` | Auto-drive run |
+| `--no-default-search` | | Always, auto-drive included |
 
 A dry run has no snapshot, so it points the runner at the canonical source
 bundle. See [Dry runs](#dry-runs).
@@ -262,8 +273,8 @@ them to every bash and agent step. A dry run sets none of them; see
 
 | Variable | Value | Purpose |
 |----------|-------|---------|
-| `AMPLIHACK_HOME` | `<run dir>/runtime/bundle` | Recipes and tools resolve `${AMPLIHACK_HOME}/amplifier-bundle/...` inside the snapshot |
-| `AMPLIHACK_RUN_BUNDLE` | `<run dir>/runtime/bundle` | Marks the run's bundle for [nested runs](#nested-runs) |
+| `AMPLIHACK_HOME` | `<run dir>/runtime/bundle`; for auto-drive, the launch copy | Recipes and tools resolve `${AMPLIHACK_HOME}/amplifier-bundle/...` inside the snapshot or the copy made from it |
+| `AMPLIHACK_RUN_BUNDLE` | `<run dir>/runtime/bundle`, auto-drive included | Marks the run's bundle for [nested runs](#nested-runs) |
 | `AMPLIHACK_RUN_BUNDLE_CHOICE` | `installed` or `checkout` | The choice the outermost run made; a nested run compares its own request with it (E3) |
 | `AMPLIHACK_STATE_HOME` | See [State home](#state-home) | Keeps hook, session and contract state out of the snapshot |
 
@@ -326,7 +337,9 @@ outer run's environment.
 The marker checks, all on canonical paths:
 
 1. `AMPLIHACK_RUN_BUNDLE` names an existing directory.
-2. It equals `AMPLIHACK_HOME`.
+2. It equals `AMPLIHACK_HOME`, or `AMPLIHACK_HOME` is an auto-drive launch
+   copy made from it: a directory that passes the directory check and whose
+   `bundle-source` file names the marker.
 3. It is a `bundle` folder inside a run's runtime folder: it ends in
    `runtime/bundle`, or in `r/<12 hex digits>/bundle` (the short runtime
    path used when `<run dir>/runtime/tmp` would be longer than 80 bytes).
@@ -345,8 +358,9 @@ The outermost run writes `runtime/bundle/.bundle-record.json` beside the
 snapshot, holding its `source`, `version` and `choice`. The record of a
 nested run that reuses the snapshot takes `source` and `version` from that
 file (at most 64 KiB is read, and the version is sanitised again), and sets
-`inherited` to `true`. When the file is missing or unreadable, `source` is
-the snapshot's `amplifier-bundle` and `version` is `unknown`.
+`inherited` to `true`. When the file is missing, unreadable or malformed,
+`source` is the snapshot's `amplifier-bundle`, `version` is `unknown`, and a
+note on stderr names the file and the reason.
 
 When the marker fails a check and `AMPLIHACK_HOME` names the same directory,
 that `AMPLIHACK_HOME` is another run's snapshot, not an install, so it is not
@@ -471,6 +485,22 @@ instead of reading `AMPLIHACK_HOME` again. Its YAML rewrite and policy digest ar
 unchanged. `pin_bundle` accepts a plain directory (no release link) under the
 same ownership and mode checks, which is the form a snapshot takes.
 
+An auto-drive run uses the launch copy the way any other run uses the
+snapshot:
+
+- The runner gets `-R <launch copy>/amplifier-bundle/recipes`,
+  `--agent-dir <launch copy>/amplifier-bundle/agents` and
+  `--no-default-search`.
+- Steps get `AMPLIHACK_HOME=<launch copy>`, as before, and the other three
+  variables as in any executing run. `AMPLIHACK_RUN_BUNDLE` names the
+  snapshot, not the launch copy, because the copy is not under a runtime
+  folder.
+- The launch copy holds `bundle-source` (mode `0600`), naming the canonical
+  home it was copied from. Marker check 2 accepts the launch copy through
+  that file, so a nested `recipe run` in an auto-drive step reuses the
+  snapshot and the outer run's choice instead of copying the launch copy as
+  an installed bundle.
+
 ## Errors
 
 | Code | When | Message |
@@ -482,8 +512,9 @@ same ownership and mode checks, which is the form a snapshot takes.
 | E5 | No checkout bundle | `--bundle checkout: no directory containing both .git and amplifier-bundle/ above <working dir>` |
 | E6 | Ownership or mode check fails | `untrusted bundle entry <path>: mode 0664 (group or other writable); fix with chmod go-w <path>` or `untrusted bundle entry <path>: owned by uid 1001, not the current user` |
 | E7 | Symlink refused, entry changed during copy, or unsupported file type | `untrusted bundle entry <path>: <reason>`, where the reason is `absolute symlink`, `symlink leaves the bundle`, `dangling symlink`, `symlink cycle`, `changed while being copied` or `not a regular file, directory or symlink` |
-| E8 | Settled state home lies under a run's `runtime/` folder | `AMPLIHACK_STATE_HOME <path> lies under a run's runtime/ folder` |
+| E8 | Settled state home lies under a run's `runtime/` folder, compared after resolving symlinks (a path not yet created resolves its nearest existing ancestor) | `AMPLIHACK_STATE_HOME <path> lies under a run's runtime/ folder` |
 | E9 | Bare recipe name not found or outside the bundle | `recipe 'default-workflow' not found in the installed bundle at <path>; to use this checkout's recipes, pass --bundle checkout` or `recipe '<name>' resolves outside <recipes dir>` |
+| E10 | The recipe copied into the snapshot has a different name from the one read before the pin | `recipe changed while the bundle was being pinned: <path> names "<a>", but "<b>" was read before the pin` |
 
 Every error exits with status 1 before the runner starts. No step runs.
 

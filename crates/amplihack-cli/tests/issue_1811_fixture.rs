@@ -207,6 +207,8 @@ impl Fixture {
 
     /// `amplihack <args>` with only the fixture's environment.
     pub fn cmd(&self, args: &[&str]) -> Command {
+        // Issue #2528: `recipe run` needs an installed bundle under $HOME.
+        crate::support::installed_bundle::ensure(&self.home.join(".amplihack"));
         let mut c = crate::isolated_amplihack::isolated(amplihack_bin());
         c.args(args)
             .current_dir(&self.work)
