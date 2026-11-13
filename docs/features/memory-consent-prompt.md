@@ -22,13 +22,13 @@ Ye have 30 seconds to respond. If ye be in an automated environment (CI/CD, scri
 
 ## Where Your Answer Is Saved
 
-Your answer is saved as `node.heap_consent` in `~/.amplihack/config.toml`, and later launches use it without asking. The launcher prints this notice on stderr:
+Your answer is saved as `node.heap_consent` in `~/.amplihack/config.toml`, and later launches use it without asking:
 
 ```text
 ℹ NODE_OPTIONS=--max-old-space-size=32768 (saved preference). To change: amplihack config set node.heap_consent <true|false>
 ```
 
-The notice and the `Memory: ... GB RAM detected` line before the prompt go to stderr, so stdout of `amplihack claude -p ...` carries only the agent's output. See [Launcher Output Streams](../reference/launcher-output-streams.md).
+This notice and the `Memory: ... GB RAM detected` line go to stderr, so stdout of `amplihack claude -p ...` carries only the agent's output. See [Launcher Output Streams](../reference/launcher-output-streams.md).
 
 To pin the limit instead of computing it from RAM, set `node.max_old_space_mb` (8192 to 32768):
 

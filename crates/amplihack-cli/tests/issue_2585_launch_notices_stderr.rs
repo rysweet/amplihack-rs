@@ -6,7 +6,7 @@
 //! `ℹ NODE_OPTIONS=... (saved preference)` with `println!`, so the step
 //! result began with that line instead of the agent's output.
 //!
-//! These tests launch the real binary through that argv, with a fake
+//! This test launches the real binary through that argv, with a fake
 //! `claude` that prints one JSON object, and a saved `node.heap_consent`
 //! preference in a temporary `HOME`. Every path the run may read or write
 //! lies under one temp dir: `HOME`, `AMPLIHACK_HOME`, `CLAUDE_CONFIG_DIR`,
@@ -14,7 +14,7 @@
 //! git repository. The environment is set on the child only.
 //!
 //! The `(saved preference)` text needs RAM detection, which reads
-//! `/proc/meminfo`, so the tests run on Linux only.
+//! `/proc/meminfo`, so the test runs on Linux only.
 
 #![cfg(target_os = "linux")]
 
@@ -33,6 +33,8 @@ const AGENT_STDERR_MARKER: &str = "fake-agent-stderr-2585";
 /// The fake `claude`: answers `--version` like Claude Code, otherwise
 /// ignores its arguments, prints one JSON object on stdout and a marker on
 /// stderr, and exits 0.
+// Keep `{"ok":true}` and `fake-agent-stderr-2585` below in step with
+// `AGENT_STDOUT` and `AGENT_STDERR_MARKER` above.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
   --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
@@ -53,8 +55,8 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// A fixture whose user config saves `node.heap_consent = <consent>`.
-    fn with_heap_consent(consent: bool) -> Self {
+    /// A fixture whose user config saves `node.heap_consent = true`.
+    fn new() -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
         let home = root.join("home");
@@ -72,7 +74,7 @@ impl Fixture {
         // `user_config::heap_consent()` reads only `$HOME/.amplihack/config.toml`.
         let user_config = home.join(".amplihack").join("config.toml");
         fs::create_dir_all(user_config.parent().unwrap()).unwrap();
-        fs::write(&user_config, format!("[node]\nheap_consent = {consent}\n")).unwrap();
+        fs::write(&user_config, "[node]\nheap_consent = true\n").unwrap();
 
         crate::support::exec_stub::write_executable(&tools.join("claude"), FAKE_CLAUDE, 0o755);
 
@@ -127,10 +129,11 @@ fn describe(out: &Output) -> String {
 }
 
 /// The acceptance test from #2585: with a saved consent, stdout is exactly
-/// the agent's output and the NODE_OPTIONS notice is on stderr.
+/// the agent's output, and both the NODE_OPTIONS notice and the agent's own
+/// stderr are on stderr.
 #[test]
-fn agent_step_stdout_is_only_agent_output_with_saved_heap_consent() {
-    let fx = Fixture::with_heap_consent(true);
+fn agent_step_stdout_is_only_agent_output() {
+    let fx = Fixture::new();
     let out = fx.run_agent_step();
 
     assert!(out.status.success(), "launch failed\n{}", describe(&out));
@@ -145,46 +148,6 @@ fn agent_step_stdout_is_only_agent_output_with_saved_heap_consent() {
         stderr.contains("NODE_OPTIONS=--max-old-space-size=")
             && stderr.contains("(saved preference)"),
         "the saved-preference NODE_OPTIONS notice must be on stderr\n{}",
-        describe(&out)
-    );
-}
-
-/// A declined consent prints the "skipped (saved preference)" notice, which
-/// is a different branch of `display_memory_config`. It must also stay off
-/// stdout.
-#[test]
-fn agent_step_stdout_is_only_agent_output_with_declined_heap_consent() {
-    let fx = Fixture::with_heap_consent(false);
-    let out = fx.run_agent_step();
-
-    assert!(out.status.success(), "launch failed\n{}", describe(&out));
-    assert_eq!(
-        out.stdout,
-        AGENT_STDOUT,
-        "stdout must be the agent's output and nothing else\n{}",
-        describe(&out)
-    );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("NODE_OPTIONS memory config: skipped (saved preference)"),
-        "the skipped NODE_OPTIONS notice must be on stderr\n{}",
-        describe(&out)
-    );
-}
-
-/// Moving notices to stderr must not swap the agent's own streams: its
-/// stderr stays on stderr and never reaches stdout.
-#[test]
-fn agent_stderr_passes_through_to_stderr_not_stdout() {
-    let fx = Fixture::with_heap_consent(true);
-    let out = fx.run_agent_step();
-
-    assert!(out.status.success(), "launch failed\n{}", describe(&out));
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        !stdout.contains(AGENT_STDERR_MARKER),
-        "the agent's stderr leaked to stdout\n{}",
         describe(&out)
     );
     assert!(

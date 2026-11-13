@@ -109,33 +109,15 @@ may change.
 
 ## Behaviour test
 
-`crates/amplihack-cli/tests/issue_2585_launch_notices_stderr.rs`, registered in
-`tests/main.rs` and run as part of the `cli_integration` test binary:
+`crates/amplihack-cli/tests/issue_2585_launch_notices_stderr.rs` (Linux only)
+runs `amplihack claude --dangerously-skip-permissions -p step` against a fake
+`claude` with a saved `heap_consent`, all inside one temporary directory. It
+asserts that stdout is exactly `{"ok":true}\n` and that the `NODE_OPTIONS`
+notice is on stderr.
 
 ```bash
 cargo test -p amplihack-cli --test cli_integration issue_2585
 ```
-
-The test runs on Linux only, because the `(saved preference)` text needs
-`/proc/meminfo` for RAM detection. It:
-
-1. Creates a temporary directory holding `HOME`, `AMPLIHACK_HOME`,
-   `CLAUDE_CONFIG_DIR`, `AMPLIHACK_CLAUDE_PROFILE_ROOT` and an empty working
-   directory that is not a git repository.
-2. Writes `[node]` with `heap_consent = true` to
-   `$HOME/.amplihack/config.toml`.
-3. Writes a fake `claude` that prints `{"ok":true}` and exits 0, and points
-   `AMPLIHACK_CLAUDE_BINARY_PATH` at it.
-4. Runs `amplihack claude --dangerously-skip-permissions -p step`, the argv the
-   recipe delegate builds, with `AMPLIHACK_NONINTERACTIVE`,
-   `AMPLIHACK_NO_FRESHNESS_CHECK`, `AMPLIHACK_SKIP_AUTO_INSTALL`,
-   `AMPLIHACK_SKIP_POWER_STEERING`, `AMPLIHACK_SKIP_REFLECTION` and
-   `AMPLIHACK_GOVERNOR=off`. All variables are set on the child command, never
-   on the test process.
-5. Asserts that the run succeeds, that stdout equals `{"ok":true}\n` exactly,
-   and that stderr contains `NODE_OPTIONS=` and `(saved preference)`.
-
-The test never reads the real `~/.claude`, `~/.amplihack` or profile roots.
 
 ## Adding a new notice
 
