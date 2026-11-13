@@ -30,6 +30,9 @@ unsafe_path() { # unsafe_path <path>: true when it could break JSON or look like
 }
 
 case "${AMPLIHACK_HOME:-}" in /*) ;; *) echo "ERROR: trusted AMPLIHACK_HOME is required for merge-ready criteria" >&2; exit 1 ;; esac
+# The repository under review, used only to warn when its copy of the
+# criteria is the trusted one and differs from the base branch.
+TOP="$(git -C "${REPO_PATH:-.}" rev-parse --show-toplevel 2>/dev/null || printf '')"
 CANDIDATES=("${AMPLIHACK_HOME}/amplifier-bundle/skills/merge-ready")
 
 SEARCHED=""
