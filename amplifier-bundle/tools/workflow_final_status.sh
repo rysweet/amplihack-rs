@@ -219,7 +219,9 @@ case "$PUBLISH_STATE" in
       . "$RUNTIME_ARTIFACT_HELPER"
       preflight_known_workflow_runtime_artifacts .
       base_ref=""
-      ! ensure_expected_base || base_ref="origin/$EXPECTED_BASE"
+      if ensure_expected_base; then
+        base_ref="origin/$EXPECTED_BASE"
+      fi
       if [ -n "$base_ref" ] && git rev-parse --verify --quiet "${base_ref}^{commit}" >/dev/null && [ -z "$(git status --porcelain)" ] && git diff --quiet "${base_ref}..HEAD"; then
         if [ "$PUBLISH_STATE" = "no-diff" ]; then
           PUBLISH_STATE="NO_DIFF_SUCCESS"
@@ -244,7 +246,9 @@ validate_final_pr_scope() {
   local_head="$(git rev-parse --verify HEAD 2>/dev/null || true)"
   repo_identity="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" || true)"
   expected_base=""
-  ! ensure_expected_base || expected_base="$EXPECTED_BASE"
+  if ensure_expected_base; then
+    expected_base="$EXPECTED_BASE"
+  fi
   [ -n "$repo_identity" ] && [ -n "$current_branch" ] && [ -n "$local_head" ] && [ -n "$expected_base" ] || {
     echo "ERROR: scoped final PR validation lacks repo, branch, headRefOid, or baseRefName context" >&2
     return 1
