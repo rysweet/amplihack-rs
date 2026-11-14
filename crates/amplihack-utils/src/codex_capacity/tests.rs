@@ -1387,7 +1387,7 @@ fn the_child_gets_codex_home_and_no_api_keys_and_the_parent_env_is_unchanged() {
     let seen = d.path().join("seen-env");
     let mut body = String::from(HANDSHAKE);
     body.push_str(&format!(
-        "env > '{}'\nprintf '%s\\n' '{WEEKLY_ONLY}'\n",
+        "env -0 > '{}'\nprintf '%s\\n' '{WEEKLY_ONLY}'\n",
         seen.display()
     ));
     body.push_str(LINGER);
@@ -1395,8 +1395,11 @@ fn the_child_gets_codex_home_and_no_api_keys_and_the_parent_env_is_unchanged() {
     let acct = account(d.path(), "ggrant");
     ok(read(&bin, &acct, SECS_10));
 
+    // NUL-separated entries: an inherited multi-line value (a recipe
+    // runner's review notes, say) can hold a line that starts with
+    // `OPENAI_API_KEY=` without being that variable.
     let env = fs::read_to_string(&seen).unwrap();
-    let lines: Vec<&str> = env.lines().collect();
+    let lines: Vec<&str> = env.split('\0').collect();
     assert!(
         lines.contains(&format!("CODEX_HOME={}", acct.display()).as_str()),
         "{env}"
