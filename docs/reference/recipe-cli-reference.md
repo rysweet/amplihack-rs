@@ -258,9 +258,9 @@ running agent; the next agent step reads it when it starts.
 
 The target is matched in this order, and the first match is used:
 
-1. **Pull request URL.** A target that starts with `https://github.com/` is
-   read only as a pull request URL. If it is malformed, the command exits 2
-   and tries nothing else.
+1. **Pull request URL.** A target that contains `://` is read only as a
+   pull request URL. If it is not a well-formed GitHub pull request URL, the
+   command exits 2 and tries nothing else.
 2. **Run folder name.** A folder of that name under `<work root>/runs/`.
 3. **Correlation ID.** The `run_id` in a run's `run.json`.
 4. **Session name.** The run pointed to by `<session>.log`.
@@ -282,8 +282,9 @@ the correlation ID of each attempt recorded in each run's `run.json`.
 **Session names.** The command reads `<session>.log` in
 [`recipe.log_dir`](./user-config.md#recipelog_dir) (default
 `~/.amplihack/recipe-logs`), the log that `recipe run --detach` writes. It
-takes the `run_id` from the first `amplihack.recipe.log_pointer` line, reads
-at most 4 KiB, and resolves that ID under `<work root>/runs/` only. A session
+takes the `run_id` from the first `amplihack.recipe.log_pointer` line within
+the first 64 KiB of the log, accepts a pointer line of at most 4 KiB, and
+resolves that ID under `<work root>/runs/` only. A session
 name containing `/` is refused. If the log is missing or has no pointer line
 yet, the command exits 1 and names the log path it tried.
 
@@ -338,9 +339,9 @@ a URL target:
 recipe guide: instruction text is not accepted on the command line; pipe it on stdin (or pass -) or use --file <path>
 ```
 
-The message never repeats the refused argument. An argument that starts with
-`-`, other than `-` itself, is read as an unknown option and gets the argument
-parser's own error instead; it also exits 2 and writes nothing.
+The message never repeats the refused argument. This includes an argument
+that starts with `-`, such as `--force`: anything after `<TARGET>` other than
+`-`, `--file <PATH>` and `--from-step` gets the same refusal.
 
 The rules for the two sources:
 
@@ -562,7 +563,7 @@ guidance.
 
 | Agent CLI | Where the block goes |
 | --- | --- |
-| Claude Code, `launch`, RustyClawd | End of the prompt sent on stdin, after the `-p` text |
+| Claude Code, `launch`, RustyClawd | End of the prompt sent on stdin, after the `-p` text. When input is also piped to `amplihack`, the block comes after that input. |
 | GitHub Copilot CLI | End of the `-p` prompt, before it is written to the private prompt file. An interactive `-i` launch receives no guidance. |
 | Codex | Only for `codex exec … -`, where the prompt is read from stdin and `-` is the last argument: after the caller's stdin closes, the block is written. The stderr line above and the `guidance_injected` record are written after Codex exits, and only if the block was written and flushed to Codex's stdin in full. If Codex closed its stdin first, neither is written. Other Codex forms receive no guidance and the launcher prints one note to stderr. |
 
