@@ -106,7 +106,7 @@ held_by_lines() {
   [ "$n" -le 10 ] || printf '  held by: reported (+%s more)\n' "$((n - 10))"
 }
 
-escalate() { # escalate <verdict> <why> [usage_limit|budget|orphaned]
+escalate() { # escalate <verdict> <why> [usage_limit|budget|orphaned|local_io]
   echo "AUTO_DRIVE_LOOP: ${1} — loop '${LOOP_NAME}' stops at round label '${ROUND_LABEL:-?}'." >&2
   echo "  Reason: ${2}" >&2
   held_by_lines >&2
@@ -115,6 +115,7 @@ escalate() { # escalate <verdict> <why> [usage_limit|budget|orphaned]
     usage_limit) echo "  This is a usage limit, not a judgement about progress. Run again when a login has capacity." >&2 ;;
     orphaned) echo "  This is a lost driver, not a judgement about progress. Relaunch auto-drive to resume from the recorded round." >&2 ;;
     budget) echo "  This is a usage budget set by the operator, not a judgement about progress. Relaunch with a higher budget to resume from the recorded round." >&2 ;;
+    local_io) echo "  This is a local file write failure, not a judgement about progress. Check space and permissions in the state dir, then relaunch to resume from the recorded round." >&2 ;;
     *) echo "  This is a judgement about absence of progress, not an attempt count." >&2 ;;
   esac
   local f=() v # JSON-escaped; control characters become spaces (#1801)

@@ -223,7 +223,8 @@ In `autodrive_loop.sh`, the evaluator's exit status is captured before the
 files are removed, and a failed `rmdir` does not fail the round. If the folder
 or a file cannot be created, the loop stops with the escalation label
 `EVALUATOR_CONTEXT_FAILED` and starts no evaluator; the message names the
-failure, not the values. A loop stopped while the evaluator is running can
+failure, not the values, and says it is a local file write failure, not a
+judgement about progress. A loop stopped while the evaluator is running can
 leave its `-ctx.XXXXXX` folder behind. The folder is private, holds the same
 text as the round log beside it, and its unique name never blocks a later
 round.

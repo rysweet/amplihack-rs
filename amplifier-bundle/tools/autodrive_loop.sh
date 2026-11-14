@@ -301,7 +301,7 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(print
     usage_add evaluator "$T0"
   else
   # #2582: agent output and log text reach the evaluator by file, not argv (eval_ctx_write).
-  eval_ctx_write || { escalate EVALUATOR_CONTEXT_FAILED "could not write the evaluator context"; exit 1; }
+  eval_ctx_write || { escalate EVALUATOR_CONTEXT_FAILED "could not write the evaluator context" local_io; exit 1; }
   ( umask "$CALLER_UMASK" && AMPLIHACK_USAGE_WAIT_LEDGER="$(wait_ledger evaluator)" exec "$AMPLIHACK_BIN" recipe run "$HEALTH_RECIPE_PATH" \
       --working-dir "$REVIEW_REAL" \
       -c "loop_name=auto-drive:${LOOP_NAME}" \
