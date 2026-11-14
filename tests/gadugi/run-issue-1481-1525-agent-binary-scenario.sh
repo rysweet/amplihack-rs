@@ -294,6 +294,12 @@ RECIPE
 recipe_case() {
   local id="$1" want_step="$2" want_err="$3"; shift 3
   local dir; dir="$(new_project "$id")"
+  # Issue #2528: recipe run refuses a run with no installed bundle (E4). The
+  # recipe is given as a path, so an empty, trusted bundle at the default
+  # AMPLIHACK_HOME ($HOME/.amplihack) is enough.
+  local bundle="$dir/home/.amplihack/amplifier-bundle"
+  mkdir -p "$bundle/recipes" "$bundle/agents"
+  chmod 0755 "$dir/home/.amplihack" "$bundle" "$bundle/recipes" "$bundle/agents"
   run_in "$dir" "$@" RECIPE_RUNNER_RS_PATH="$RUNNER" -- recipe run "$WORK/show-agent-binary.yaml" -w "$dir/project"
   local rc=$? problems=()
   [ "$rc" -eq 0 ] || problems+=("exit code $rc")
