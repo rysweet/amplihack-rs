@@ -29,7 +29,7 @@ The `skip_pre_agent_validation` context variable defaults to `"true"` so the age
 If your workflow requires a known-good baseline before the agent starts (for example, a CI-gated codebase where you want to confirm the tree is clean before any modifications):
 
 ```sh
-amplihack recipe run amplifier-bundle/recipes/smart-orchestrator.yaml \
+amplihack recipe run smart-orchestrator \
   -c task_description="refactor auth module" \
   -c repo_path="." \
   -c skip_pre_agent_validation="false"
@@ -44,7 +44,7 @@ The `-c skip_pre_agent_validation="false"` flag tells step-01 to execute the pro
 Dry-run the recipe and check the resolved context:
 
 ```sh
-amplihack recipe show amplifier-bundle/recipes/smart-orchestrator.yaml
+amplihack recipe show ~/.amplihack/amplifier-bundle/recipes/smart-orchestrator.yaml
 ```
 
 Look for `skip_pre_agent_validation` in the context block. The default value is `"true"` (validation skipped).
@@ -52,7 +52,7 @@ Look for `skip_pre_agent_validation` in the context block. The default value is 
 To confirm the variable reaches workflow-prep at runtime, run with `--verbose`:
 
 ```sh
-amplihack recipe run amplifier-bundle/recipes/smart-orchestrator.yaml \
+amplihack recipe run smart-orchestrator \
   -c task_description="test validation flow" \
   -c repo_path="." \
   -c skip_pre_agent_validation="false" \
@@ -74,6 +74,25 @@ context:
 ```
 
 Apply the same change in `default-workflow.yaml` if you run that recipe directly.
+
+A run by name uses the installed bundle, so an edit made in an amplihack-rs
+checkout takes effect only when you start the run with `--bundle checkout`
+from inside that checkout. `--bundle checkout` selects the checkout that holds
+the working directory, as described in
+[Recipe run bundle selection: `checkout`](../reference/recipe-run-bundle.md#checkout),
+so here the checkout is also the repository being worked on:
+
+```sh
+cd ~/src/amplihack-rs
+amplihack recipe run smart-orchestrator --bundle checkout \
+  -c task_description="refactor auth module" \
+  -c repo_path="."
+```
+
+Do not start the run with the path of the edited file. A path into a
+checkout's `amplifier-bundle/recipes/` is refused unless the run uses that
+checkout's bundle; see
+[Run a recipe from a checkout's bundle](./run-a-recipe-from-a-checkout-bundle.md).
 
 **Trade-off:** This runs any configured validation commands before every agent round. On codebases with slow test suites or build steps, expect meaningful overhead per round.
 

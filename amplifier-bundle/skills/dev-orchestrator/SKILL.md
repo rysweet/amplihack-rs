@@ -186,7 +186,7 @@ Use the Rust `recipe-runner-rs` through the `amplihack recipe run` CLI:
 
 ```bash
 cd /path/to/repo && AMPLIHACK_HOME=/path/to/amplihack \
-  amplihack recipe run amplifier-bundle/recipes/smart-orchestrator.yaml \
+  amplihack recipe run smart-orchestrator \
     -c task_description="TASK_DESCRIPTION_HERE" \
     -c repo_path="." \
     --verbose
@@ -195,6 +195,12 @@ cd /path/to/repo && AMPLIHACK_HOME=/path/to/amplihack \
 **Key points:**
 
 - `amplihack recipe run` — invokes Rust `recipe-runner-rs`; no Python runner or wrapper needed
+- `smart-orchestrator`: give the bare recipe name, never a path. The name is
+  looked up in the installed bundle, and the recipe, its sub-recipes and its
+  tools all come from that bundle. A path into a checkout's
+  `amplifier-bundle/recipes/` is refused (E14); to run a checkout's recipes,
+  run from inside that checkout, add `--bundle checkout` and keep the bare
+  name
 - `-c key=value` — passes context variables (equivalent to `user_context` dict)
 - `--verbose` — streams recipe-runner stderr live so you see nested step activity
 - Do not `env -u CLAUDECODE` — `amplihack recipe run` reads it to decide which
@@ -255,7 +261,7 @@ recipe user_context to prevent automatic parallel decomposition regardless of
 task structure. This is a programmatic option (not directly settable from `/dev`):
 
 ```bash
-amplihack recipe run amplifier-bundle/recipes/smart-orchestrator.yaml \
+amplihack recipe run smart-orchestrator \
   -c task_description="TASK_DESCRIPTION_HERE" \
   -c repo_path="." \
   -c force_single_workstream="true"
@@ -276,10 +282,13 @@ just parallel workstream spawning.
 
 ## Canonical Sources
 
-- **Recipe**: `amplifier-bundle/recipes/smart-orchestrator.yaml`
+Run each recipe by its bare name. The file paths are given for reading and
+editing only.
+
+- **Recipe**: `smart-orchestrator` (`amplifier-bundle/recipes/smart-orchestrator.yaml`)
 - **Parallel execution**: native `amplihack orch` / `amplihack multitask` commands
-- **Development workflow**: `amplifier-bundle/recipes/default-workflow.yaml`
-- **Investigation workflow**: `amplifier-bundle/recipes/investigation-workflow.yaml`
+- **Development workflow**: `default-workflow` (`amplifier-bundle/recipes/default-workflow.yaml`)
+- **Investigation workflow**: `investigation-workflow` (`amplifier-bundle/recipes/investigation-workflow.yaml`)
 - **CLAUDE.md**: Defines this as the default orchestrator
 
 ## Relationship to Other Skills

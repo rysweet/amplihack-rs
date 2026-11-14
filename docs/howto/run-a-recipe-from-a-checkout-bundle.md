@@ -2,7 +2,7 @@
 title: Run a recipe from a checkout's bundle
 description: Choose between the installed bundle and a checkout's bundle for a recipe run, check which one a run used, and fix trust errors.
 doc_type: howto
-last_updated: 2026-11-13
+last_updated: 2026-11-14
 related_issues: [2528]
 ---
 
@@ -22,8 +22,10 @@ The rules are in
 - [Run with a checkout's bundle](#run-with-a-checkouts-bundle)
 - [Check which bundle a run used](#check-which-bundle-a-run-used)
 - [Run a recipe file that is not in the bundle](#run-a-recipe-file-that-is-not-in-the-bundle)
+- [Run a bundle recipe by name, not by path](#run-a-bundle-recipe-by-name-not-by-path)
 - [Upgrade while runs are in progress](#upgrade-while-runs-are-in-progress)
 - [Fix an untrusted bundle error](#fix-an-untrusted-bundle-error)
+- [Fix a recipe belongs to bundle error](#fix-a-recipe-belongs-to-bundle-error)
 - [Fix a recipe not found error](#fix-a-recipe-not-found-error)
 
 ## Run with the installed bundle
@@ -129,7 +131,32 @@ amplihack recipe run ./experiments/triage.yaml -c issue_number=2528
 
 The file is loaded from that path. Its sub-recipes, agents and tools come from
 the installed bundle, or from the checkout with `--bundle checkout`. The log
-record keeps the file path in `recipe_file`.
+record keeps the file path in `recipe_file`, and the stderr line names it:
+
+```
+recipe bundle: /home/alice/.amplihack/releases/1.2.151/amplifier-bundle (1.2.151); recipe file: /home/alice/src/app/experiments/triage.yaml; tools: /home/alice/.amplihack/releases/1.2.151/amplifier-bundle
+```
+
+This applies only to files outside every `amplifier-bundle/recipes/`
+directory. A bundle's own recipes are run by name, as described next.
+
+## Run a bundle recipe by name, not by path
+
+Start bundle recipes by their bare name, from a checkout or anywhere else:
+
+```bash
+amplihack recipe run smart-orchestrator -c task_description="fix #2528" -c repo_path="$PWD"
+amplihack recipe run smart-orchestrator --bundle checkout -c task_description="fix #2528" -c repo_path="$PWD"
+```
+
+A path into the bundle that the run uses is accepted and behaves exactly like
+the bare name: the recipe, its sub-recipes and its tools all come from the
+run's copy of that bundle. With `--bundle checkout`, inside the checkout,
+`amplifier-bundle/recipes/smart-orchestrator.yaml` is such a path.
+
+A path into any other bundle is refused before any step runs, because the
+recipe would come from one bundle and its sub-recipes and tools from another.
+See [Fix a recipe belongs to bundle error](#fix-a-recipe-belongs-to-bundle-error).
 
 ## Upgrade while runs are in progress
 
@@ -171,6 +198,42 @@ relative link that stays inside the bundle but points at nothing is not an
 error: it is left out of the snapshot, as `amplihack install` leaves it out of
 the installed bundle.
 
+## Fix a recipe belongs to bundle error
+
+```
+recipe /home/alice/src/amplihack-rs/amplifier-bundle/recipes/smart-orchestrator.yaml belongs to the bundle at /home/alice/src/amplihack-rs/amplifier-bundle, not to this run's installed bundle at /home/alice/.amplihack/releases/1.2.151/amplifier-bundle; to use that bundle, run from inside /home/alice/src/amplihack-rs with --bundle checkout: amplihack recipe run smart-orchestrator --bundle checkout; or run this run's bundle by name: amplihack recipe run smart-orchestrator
+```
+
+The recipe was given as a path into a checkout's bundle while the run uses
+the installed bundle (E14). Either:
+
+- run the installed recipe by name:
+  `amplihack recipe run smart-orchestrator`; or
+- run the checkout's recipe, with the checkout's sub-recipes and tools, from
+  inside the checkout that the message names:
+
+  ```bash
+  cd /home/alice/src/amplihack-rs
+  amplihack recipe run smart-orchestrator --bundle checkout
+  ```
+
+`--bundle checkout` selects the checkout that holds the working directory,
+so a path into a different checkout or worktree needs a `cd` into that
+checkout first.
+
+The same error appears the other way round when a run with
+`--bundle checkout` is given a path into the installed bundle:
+
+```
+recipe /home/alice/.amplihack/releases/1.2.151/amplifier-bundle/recipes/smart-orchestrator.yaml belongs to the bundle at /home/alice/.amplihack/releases/1.2.151/amplifier-bundle, not to this run's checkout bundle at /home/alice/src/amplihack-rs/amplifier-bundle; --bundle checkout cannot select that bundle because it is not in a git checkout; run the recipe by name: amplihack recipe run smart-orchestrator (add --bundle installed for the installed bundle)
+```
+
+Run the installed recipe by name with `--bundle installed`, or drop
+`--bundle checkout`, which has the same effect.
+
+There is no option to run one bundle's recipe file with another bundle's
+sub-recipes and tools.
+
 ## Fix a recipe not found error
 
 ```
@@ -181,7 +244,8 @@ Bare recipe names are looked up only in the selected bundle's `recipes/`
 directory. Either:
 
 - the recipe exists only in your checkout: add `--bundle checkout`; or
-- the recipe is a local file: pass its path, for example
+- the recipe is a standalone local file, outside any
+  `amplifier-bundle/recipes/` directory: pass its path, for example
   `./recipes/my-recipe.yaml`.
 
 ## Related

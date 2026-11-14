@@ -99,10 +99,15 @@ Report: PR numbers, success/failure, runtime
 Each workstream runs `amplihack recipe run` via a launcher script:
 
 ```bash
-amplihack recipe run amplifier-bundle/recipes/default-workflow.yaml \
+amplihack recipe run default-workflow \
   -c task_description="TASK_DESCRIPTION_HERE" \
   -c repo_path="."
 ```
+
+Give the bare recipe name, not a path. The recipe, its sub-recipes and its
+tools then all come from the installed bundle. A path into a clone's
+`amplifier-bundle/recipes/` is refused (E14); to run the clone's recipes, run
+from inside the clone, add `--bundle checkout` and keep the bare name.
 
 
 
@@ -123,7 +128,7 @@ Use `--mode classic` when Recipe Runner is unavailable or for tasks that benefit
 
 ## Available Recipes
 
-Any recipe in `amplifier-bundle/recipes/` can be used per-workstream:
+Any recipe in the bundle's `recipes/` directory can be used per-workstream, by its bare name:
 
 | Recipe                   | Steps | Best For                              |
 | ------------------------ | ----- | ------------------------------------- |
@@ -262,7 +267,7 @@ Continue anyway? (y/N):
 
 **Empty log files**: Process started but exited immediately. Check if `amplihack` package is importable in the clone's environment.
 
-**Recipe not found**: Ensure `amplifier-bundle/recipes/` exists in the cloned branch. The recipe discovery checks this directory first.
+**Recipe not found**: Bare names are looked up only in the selected bundle's `recipes/` directory, which is the installed bundle by default. If the recipe exists only in the cloned branch, add `--bundle checkout`.
 
 **Fallback**: If recipe mode fails, retry with `--mode classic` to use the prompt-based approach.
 

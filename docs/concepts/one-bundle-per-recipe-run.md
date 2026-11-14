@@ -2,7 +2,7 @@
 title: One bundle per recipe run
 description: Why a recipe run pins one checked, content-keyed copy of an amplifier-bundle and uses it for recipes and tools alike.
 doc_type: explanation
-last_updated: 2026-11-13
+last_updated: 2026-11-14
 related_issues: [2528, 1741]
 ---
 
@@ -28,6 +28,7 @@ For the exact rules, see
 - [Why cleanup has no separate process](#why-cleanup-has-no-separate-process)
 - [Why nested runs reuse the copy](#why-nested-runs-reuse-the-copy)
 - [Why state stays outside the copy](#why-state-stays-outside-the-copy)
+- [Why a path into another bundle is refused](#why-a-path-into-another-bundle-is-refused)
 
 ## The problem: two bundles in one run
 
@@ -206,6 +207,38 @@ A nested run passes the inherited value through rather than computing it
 again, since by then `AMPLIHACK_HOME` names the copy. If the state root would
 still fall inside the run's `runtime/` folder or under `bundle-pins/`, the
 run is refused before any step starts.
+
+## Why a path into another bundle is refused
+
+A recipe can be given as a path as well as by name. Previously, a path was
+always treated as a standalone file: the file was loaded from where it was,
+and its sub-recipes and tools came from the selected bundle. Run inside an
+amplihack-rs checkout, `amplihack recipe run
+amplifier-bundle/recipes/smart-orchestrator.yaml` therefore loaded the
+checkout's recipe and the installed bundle's sub-recipes and tools. That is
+the mixture this design exists to prevent, reached by a different route.
+Several skills and how-to guides told agents to start work this way.
+
+A path is therefore classified by where it leads, after `..` and symlinks are
+resolved:
+
+- a path inside the run's own bundle is a bundle recipe and runs from the
+  copy, like a bare name;
+- a path inside another bundle's `recipes/` directory is refused, with a
+  message that gives the bare name and says how to select that bundle:
+  from inside its checkout with `--bundle checkout` when it is in a git
+  checkout, otherwise by name with `--bundle installed`;
+- any other path is a standalone file. A user recipe outside every bundle
+  has no bundle of its own, so the selected bundle supplies its tools.
+
+Refusal was chosen over silently switching to the bundle that holds the file.
+Switching would let the working directory or the form of an argument select
+a bundle, which is how #2528 arose, and the stderr line would no longer
+follow from the flags the user gave. The refusal costs one rerun and names
+the command to use.
+
+Docs and skills now start work by bare name, so the path form is needed only
+for standalone files.
 
 ## Related
 

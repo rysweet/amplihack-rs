@@ -348,7 +348,8 @@ so an upgrade never changes the bundle of a run that has already started.
 2. Check for an inherited snapshot ([Nested runs](#nested-runs)). If there is
    none, select the bundle and run the trust checks on the source (E3 to E7).
 3. Resolve the recipe argument against the source's `recipes/` directory
-   (E9) and parse the recipe.
+   (E9, E14, E15) and parse the recipe. A path into another bundle's `recipes/`
+   is refused here, before anything is parsed, copied or locked.
 4. Run the existing pre-flight checks and the capacity governor admission.
 5. Apply the recursion-depth guard (#964).
 6. Probe the runner binary.
@@ -356,8 +357,9 @@ so an upgrade never changes the bundle of a run that has already started.
 8. Pin the bundle as described in
    [How a launch pins the bundle](#how-a-launch-pins-the-bundle) and print
    the stderr line. A dry run walks and checks every entry without copying.
-9. Point the recipe path at the same file inside the snapshot. A recipe given
-   as a path outside the bundle keeps its own path. A bundle recipe that is
+9. Point the recipe path at the same file inside the snapshot. This applies
+   to a bare name and to a path inside the selected bundle's `recipes/`
+   alike. Only a standalone recipe file keeps its own path. A bundle recipe that is
    not inside the selected source is an error, never a fallback to the
    source. Read the recipe's name again from the file that will run; if it
    differs from the name read in step 3, refuse the run (E10).
@@ -394,11 +396,38 @@ with steps from another.
 
 | Argument form | Example | Recipe file loaded from | Sub-recipes, agents and tools from |
 |---------------|---------|-------------------------|------------------------------------|
-| Bare name | `default-workflow` | `<bundle>/recipes/default-workflow.yaml` only | The selected bundle |
-| Path | `./my-recipe.yaml`, `recipes/x.yml`, `../a/b` | The given path | The selected bundle |
+| Bare name | `default-workflow` | `default-workflow.yaml` in the selected bundle's `recipes/` only (the snapshot copy in an executing run) | The selected bundle |
+| Path inside the selected bundle's `recipes/` | `~/.amplihack/amplifier-bundle/recipes/default-workflow.yaml` with the installed bundle; `amplifier-bundle/recipes/default-workflow.yaml` in a checkout with `--bundle checkout` | The same file inside the snapshot, exactly as for a bare name | The selected bundle |
+| Path inside any other `amplifier-bundle/recipes/` | `amplifier-bundle/recipes/smart-orchestrator.yaml` in a checkout, with the default installed bundle | Nothing: the run is refused (E14) | Nothing |
+| Any other path (a standalone recipe file) | `./experiments/triage.yaml`, `recipes/release.yml` | The given path | The selected bundle |
 
 An argument is treated as a path when it contains `/`, `\`, `..` or a NUL
 byte, or ends in `.yaml` or `.yml`. Everything else is a bare name.
+
+A path is classified as follows:
+
+1. A path with a NUL byte is refused, as before.
+2. The path is resolved against the working directory and canonicalised, so
+   `..` components and symlinks are resolved. If it cannot be canonicalised,
+   for example because the file does not exist, the run fails (E15) with an
+   error that names the path. The raw path is never used instead. If the
+   canonical path is not a regular file, for example a directory, the run
+   also fails (E15). This applies to every path, so steps 3 and 4 only ever
+   see regular files.
+3. The selected bundle's `recipes/` directory is canonicalised as well. If
+   the canonical path lies under it, compared component by component and
+   never as a text prefix, the recipe is a bundle recipe.
+4. Otherwise, if any ancestor of the canonical path is a directory named
+   `amplifier-bundle` whose `recipes/` directory contains the path, the run
+   is refused (E14). Paths under `amplifier-bundle/tools/` or a directory
+   such as `amplifier-bundle/recipes-old/` are not matched.
+5. Any other path is a standalone recipe file.
+
+E14 has no override: no flag, context key or environment variable lets a
+run take its recipe from one bundle and its sub-recipes and tools from
+another. Run the recipe by its bare name with the bundle you want: from
+inside the checkout that holds the file with `--bundle checkout`, or with
+`--bundle installed` for the installed bundle.
 
 For a bare name:
 
@@ -410,8 +439,10 @@ For a bare name:
 - If the name is not found, the run fails with E9, which names the bundle and
   the choice.
 
-For a path, the log record keeps the file path in `recipe_file`, alongside the
-bundle that supplied the tools.
+For a path inside the selected bundle, the run is recorded exactly as a run
+by bare name: `recipe_file` is absent. For a standalone recipe file, the log
+record keeps the file path in `recipe_file`, alongside the bundle that
+supplied the sub-recipes, agents and tools.
 
 ## Runner arguments
 
@@ -422,7 +453,7 @@ bundle that supplied the tools.
 | `-R` | `<work root>/bundle-pins/<key>/amplifier-bundle/recipes` | Executing run |
 | `-R` | `<source bundle>/recipes` | Dry run |
 | `-R` | `<launch copy>/amplifier-bundle/recipes` | Auto-drive run (see [Auto-drive](#auto-drive)) |
-| `-R` | Parent directory of the recipe file | Only when the recipe was given as a path, and not for auto-drive |
+| `-R` | Parent directory of the recipe file | Only for a standalone recipe file, and not for auto-drive. Never for a path inside the selected bundle, which runs from the snapshot |
 | `--agent-dir` | `<work root>/bundle-pins/<key>/amplifier-bundle/agents` | Executing run |
 | `--agent-dir` | `<source bundle>/agents` | Dry run |
 | `--agent-dir` | `<launch copy>/amplifier-bundle/agents` | Auto-drive run |
@@ -505,6 +536,31 @@ run's `runtime/` folder or anywhere under `<work root>/bundle-pins/`,
 including under another run's snapshot. That happens, for example, when a
 nested run finds the inherited value unset or not usable and falls back to a
 root derived from the snapshot's `AMPLIHACK_HOME`.
+
+### Git identity in a pinned run
+
+`amplifier-bundle/tools/git-identity.sh` reads a saved `git_identity` block
+from the first of these JSON files that holds one:
+
+1. `$AMPLIHACK_CONFIG`
+2. `$HOME/.amplihack/config`
+3. `$AMPLIHACK_STATE_HOME/config`
+4. `$AMPLIHACK_STATE_HOME/.amplihack/config`
+5. `$AMPLIHACK_HOME/config`
+6. `$AMPLIHACK_HOME/.amplihack/config`
+
+Inside a pinned run, `AMPLIHACK_HOME` names the snapshot, so entries 5 and 6
+no longer reach the caller's home. Entries 3 and 4 do, because
+`AMPLIHACK_STATE_HOME` holds the state root settled before `AMPLIHACK_HOME`
+was changed. For a caller whose `AMPLIHACK_HOME` is a non-default directory
+that is not a git checkout, that state root is the caller's
+`AMPLIHACK_HOME`, so an identity kept there is still found. An
+`AMPLIHACK_HOME` that is a git checkout is not a state root (#2361), and an
+identity kept in it is not found inside a pinned run; keep it in
+`$HOME/.amplihack/config` or name the file with `AMPLIHACK_CONFIG`.
+
+The files are read as data by the script's parsers; nothing in them is
+sourced or run.
 
 ### Tool lookups in bundled recipes
 
@@ -613,7 +669,7 @@ Each is an object:
 | `snapshot` | string | `<work root>/bundle-pins/<key>`; absent on a dry run |
 | `choice` | string | `installed` or `checkout` |
 | `inherited` | boolean | `true` when a nested run reused its parent's snapshot |
-| `recipe_file` | string | The recipe file path, present only when the recipe was given as a path |
+| `recipe_file` | string | The recipe file path, present only for a standalone recipe file. Absent for a bare name and for a path inside the selected bundle |
 
 Example of an early record, formatted, with unrelated fields left out:
 
@@ -649,6 +705,18 @@ recipe bundle: /home/alice/.amplihack/releases/1.2.151/amplifier-bundle (1.2.151
 
 A nested run that reuses its parent's snapshot prints the parent's source and
 version followed by `(inherited)`.
+
+`tools: same bundle` is printed only when the recipe itself came from the
+bundle, that is for a bare name or a path inside the selected bundle. For a
+standalone recipe file the line names the file and the bundle that supplies
+the tools:
+
+```
+recipe bundle: /home/alice/.amplihack/releases/1.2.151/amplifier-bundle (1.2.151); recipe file: /home/alice/src/app/experiments/triage.yaml; tools: /home/alice/.amplihack/releases/1.2.151/amplifier-bundle
+```
+
+The values in the line come from the pin record, not from the text of the
+recipe argument.
 
 Records, errors and the stderr line contain only paths, octal modes, the
 sanitised version, the choice and booleans. No environment values are logged.
@@ -766,8 +834,43 @@ snapshot:
 | E11 | An existing snapshot with the same key has different contents and another run holds its `<key>.use` (a non-blocking exclusive `flock` on it would block; a missing `<key>.use` never gives E11) | `bundle snapshot <path> is in use by another run and its contents differ from <source>; wait for that run to end` |
 | E12 | `bundle-pins/` fails the directory check, a lock file is not a regular file owned by the effective user, or a lock call fails for any reason other than "would block" | `untrusted bundle snapshot directory <path>: <reason>` or `cannot lock <path>: <system error>` |
 | E13 | A nested run's marker passes its checks but `<key>.use` or `bundle-pins/.lock` does not exist | `inherited bundle snapshot <path> has no lease file <path>.use; the run that pinned it has ended` or `inherited bundle snapshot <path> has no lock file <path>/.lock; the run that pinned it has ended` |
+| E14 | The recipe was given as a path into an `amplifier-bundle/recipes/` directory other than the selected bundle's | `recipe <path> belongs to the bundle at <bundle dir>, not to this run's <choice> bundle at <source>; ` followed by one of two endings: `to use that bundle, run from inside <checkout> with --bundle checkout: amplihack recipe run <name> --bundle checkout; or run this run's bundle by name: amplihack recipe run <name>` when the bundle is in a git checkout, otherwise `--bundle checkout cannot select that bundle because it is not in a git checkout; run the recipe by name: amplihack recipe run <name> (add --bundle installed for the installed bundle)` |
+| E15 | A recipe path cannot be canonicalised, or does not lead to a regular file | `recipe <path> not found: <system error>` or `recipe <path> is not a regular file` |
 
 Every error exits with status 1 before the runner starts. No step runs.
+
+In E14, `<path>` is the canonical recipe path, `<bundle dir>` is the
+`amplifier-bundle` directory that holds it, `<choice>` (`installed` or
+`checkout`) is rendered as in E9, and `<name>` is the file name without
+`.yaml` or `.yml`. The bundle is in a git checkout when the parent of
+`<bundle dir>` contains `.git` (a directory, or a file in a worktree); that
+parent is `<checkout>`. This is the same test `--bundle checkout` uses, so
+the first ending names the directory from which `--bundle checkout` selects
+that bundle. The second ending covers the reverse case: a path into the
+installed bundle, or into an unpacked copy, while the run uses
+`--bundle checkout`.
+
+In E15, `<path>` is the path as given, so that a missing file is named the
+way the user typed it.
+
+For example, run from `/home/alice/src/amplihack-rs` with the default
+bundle:
+
+```console
+$ amplihack recipe run amplifier-bundle/recipes/smart-orchestrator.yaml -c task_description="fix #2528"
+Error: recipe /home/alice/src/amplihack-rs/amplifier-bundle/recipes/smart-orchestrator.yaml belongs to the bundle at /home/alice/src/amplihack-rs/amplifier-bundle, not to this run's installed bundle at /home/alice/.amplihack/releases/1.2.151/amplifier-bundle; to use that bundle, run from inside /home/alice/src/amplihack-rs with --bundle checkout: amplihack recipe run smart-orchestrator --bundle checkout; or run this run's bundle by name: amplihack recipe run smart-orchestrator
+$ echo $?
+1
+```
+
+The reverse case, run from the same checkout with `--bundle checkout`:
+
+```console
+$ amplihack recipe run ~/.amplihack/amplifier-bundle/recipes/smart-orchestrator.yaml --bundle checkout -c task_description="fix #2528"
+Error: recipe /home/alice/.amplihack/releases/1.2.151/amplifier-bundle/recipes/smart-orchestrator.yaml belongs to the bundle at /home/alice/.amplihack/releases/1.2.151/amplifier-bundle, not to this run's checkout bundle at /home/alice/src/amplihack-rs/amplifier-bundle; --bundle checkout cannot select that bundle because it is not in a git checkout; run the recipe by name: amplihack recipe run smart-orchestrator (add --bundle installed for the installed bundle)
+$ echo $?
+1
+```
 
 ## Rust interface
 
@@ -879,10 +982,18 @@ execute bit without the owner bit, so auto-drive's copies keep the same modes.
 In `crates/amplihack-cli/src/commands/recipe/resolve.rs`:
 
 ```rust
+/// Bundle: the recipe lies in the selected bundle's recipes/ directory and
+/// runs from the snapshot. File: a standalone recipe file outside every
+/// amplifier-bundle/recipes/ directory.
 pub(crate) enum RecipeOrigin { Bundle, File(PathBuf) }
 
-/// Bare names resolve only inside selection.recipes_dir();
-/// path-like arguments load from the given path.
+/// Bare names resolve only inside selection.recipes_dir().
+/// A path inside selection.recipes_dir() returns (canonical path, Bundle).
+/// A path that cannot be canonicalised or is not a regular file is
+/// refused (E15) before it is classified.
+/// A path inside another amplifier-bundle/recipes/ is refused (E14); the
+/// advice depends on whether that bundle's parent directory holds .git.
+/// Any other path returns (path, File(path)).
 pub(crate) fn resolve_recipe_in_bundle(
     recipe: &str,
     selection: &Selection,
@@ -896,9 +1007,13 @@ pub(crate) fn resolve_recipe_in_bundle(
   checked. Once the snapshot exists, every read in the run goes through it;
   the source path is used afterwards only to identify the recipe for
   recovery.
-- **Explicit recipe paths.** A recipe given as a path outside the bundle runs
-  with the trusted bundle's tools, because the user named the file. The path
-  is kept in `recipe_file` for audit.
+- **Standalone recipe files.** A recipe file outside every
+  `amplifier-bundle/recipes/` directory runs with the selected bundle's
+  sub-recipes, agents and tools, because the user named the file. The path
+  is kept in `recipe_file` for audit, and the stderr line names it.
+- **Renamed bundle directories.** E14 recognises another bundle only by a
+  directory named `amplifier-bundle`. A copy of a bundle under another name
+  is treated as a standalone recipe file.
 - **Other users.** The work root and `bundle-pins/` are `0700`, so steps that
   switch to another user cannot read the snapshot.
 - **Group-writable installs.** An install made under umask `002` has
