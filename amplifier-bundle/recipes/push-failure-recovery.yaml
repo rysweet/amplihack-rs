@@ -167,10 +167,13 @@ steps:
       those files, then run
       `env -u NAME1 ... GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_EDITOR=true git merge --continue`.
       If you cannot resolve the conflict, run `git merge --abort` and return
-      `CHANGE` with `push_result` `not-attempted`. Hooks stay on. Never use
-      `-s ours`, `-X ours`, `-X theirs`, `--allow-unrelated-histories` or
-      `--no-verify` on the merge, `merge --continue` or a commit, and never
-      merge any other ref. The bans below on credential and token files,
+      `CHANGE` with `push_result` `not-attempted`. If you judge that this
+      branch's tree is meant to win over the remote commits, merge with
+      `git merge --no-edit -s ours origin/<branch_name>` instead: the remote
+      commits stay in history and nothing is rewritten. Say so in `evidence`.
+      Hooks stay on. Never use `-X ours`, `-X theirs`,
+      `--allow-unrelated-histories` or `--no-verify` on the merge,
+      `merge --continue` or a commit, and never merge any other ref. The bans below on credential and token files,
       sign-in variables, git config, remotes and `core.hooksPath` apply to the
       merge commands too. After a clean merge, make the one push below.
 

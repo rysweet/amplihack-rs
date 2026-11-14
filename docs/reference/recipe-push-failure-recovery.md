@@ -372,8 +372,11 @@ holds `remote_before`; otherwise `cause-in-change` from the agent's own
 
 The merge is subject to these limits:
 
-- no `-s ours`, `-X ours` or `-X theirs`: each would silently discard work a
-  collaborator has pushed;
+- `-s ours` only when the agent judges that the branch's tree is meant to
+  win; the remote commits stay in history, nothing is rewritten, and
+  `evidence` says that `-s ours` was used;
+- no `-X ours` or `-X theirs`: each would silently drop one side's hunks
+  inside a merge that looks like an ordinary one;
 - no `--allow-unrelated-histories`;
 - no `--no-verify` on `merge`, `merge --continue` or `commit`;
 - no merge of any ref other than `origin/<branch_name>`;
@@ -1020,6 +1023,7 @@ Cases:
 | quoted repair commands (`step15_repair_commands_quote_branch_with_shell_metacharacters`) | branch ``feat/x;$(touch>pwned)`touch>pwned`\|a&b>pwned`` with the `force` agent: the repair line is split on ` then: `, and bash reads each half back as `git merge <remote_before>` and `git push origin HEAD:refs/heads/<branch>`; no file is created and no force remedy is printed |
 | upstream on another branch | the worktree's upstream is `origin/feat/other`, so step-15 refuses (#1762); a misbehaving fake agent pushes `HEAD:refs/heads/feat/x` and returns `ENVIRONMENT`; the run exits non-zero with `upstream-mismatch` and step-16 does not run |
 | diverged upstream (`step15_diverged_upstream_is_merged_and_pushed`) | the remote branch has a commit HEAD lacks, so step-15 refuses (#978); the `merge` agent merges `origin/feat/x` and pushes; the run exits 0 with `recovered-environment`, the remote equals HEAD, HEAD is a two-parent merge containing both commits, and step-16 runs |
+| `-s ours` merge (`step15_diverged_upstream_merged_with_ours_strategy_keeps_local_tree`) | as above, but the `merge-ours` agent merges with `-s ours`; the run exits 0 with `recovered-environment`, the remote equals HEAD, HEAD's parents are the run's commit and the remote's commit, and HEAD's tree is the run's tree |
 | merge conflict (`step15_unresolvable_merge_conflict_aborts_and_ends_the_run`) | `Conflict` fixture, `merge` agent mode: the merge stops on a conflict, the agent aborts it and returns `CHANGE`; the run exits non-zero, the recovery record has `"cause":"CHANGE"`, the remote and local HEAD are unchanged and no `MERGE_HEAD` is left. The gate reason is not pinned |
 | `NONE` on step-15 | the remote ref already equals HEAD; `commit_result.pushed == "true"` with reason `already-at-head`, and step-16 runs |
 | stale environment | an inherited `RECIPE_VAR_commit_result` of `{"pushed":"true"}` does not skip recovery |

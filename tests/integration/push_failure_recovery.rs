@@ -520,13 +520,14 @@ case "$mode" in
     git remote set-url origin "$T/decoy.git"
     if push_clean; then push_result=pushed; else push_result=failed; fi
     cause=ENVIRONMENT; evidence_last="pushed to a remote of its choosing"; actions=$(jq -nc --arg a "$action" '[$a]') ;;
-  merge)
+  merge|merge-ours)
+    strategy=(); [ "$mode" = merge ] || strategy=(-s ours)
     if env "${{unset_args[@]}}" GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git fetch -q origin > "$T/agent-merge.log" 2>&1 \
       && env "${{unset_args[@]}}" GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_EDITOR=true \
-           git -c user.email=a@example.invalid -c user.name=A -c commit.gpgsign=false merge --no-edit "origin/$BR" >> "$T/agent-merge.log" 2>&1; then
+           git -c user.email=a@example.invalid -c user.name=A -c commit.gpgsign=false merge --no-edit "${{strategy[@]}}" "origin/$BR" >> "$T/agent-merge.log" 2>&1; then
       if push_clean; then push_result=pushed; else push_result=failed; fi
-      cause=ENVIRONMENT; evidence_last="merged origin/$BR at $(git rev-parse HEAD^2) and pushed"
-      actions=$(jq -nc --arg a "git merge --no-edit origin/$BR" --arg b "$action" '[$a, $b]')
+      cause=ENVIRONMENT; evidence_last="merged origin/$BR at $(git rev-parse HEAD^2) ${{strategy[*]}} and pushed"
+      actions=$(jq -nc --arg a "git merge --no-edit ${{strategy[*]}} origin/$BR" --arg b "$action" '[$a, $b]')
     else
       git merge --abort > /dev/null 2>&1
       cause=CHANGE; evidence_last="the merge of origin/$BR conflicted and could not be resolved"
@@ -1108,6 +1109,36 @@ fn step15_diverged_upstream_is_merged_and_pushed() {
         "step-16 must run on the gate's commit_result; {}",
         run.debug()
     );
+    before.assert_held(&f, &run);
+}
+
+/// N1: the agent judges the run's tree is meant to win and merges with
+/// `-s ours`. The remote commit stays in history, HEAD keeps the run's tree,
+/// and the gate accepts the merge and the plain push.
+#[test]
+fn step15_diverged_upstream_merged_with_ours_strategy_keeps_local_tree() {
+    let _ = runner_or_skip!();
+    let f = Fixture::new(Upstream::Diverged);
+    f.set_agent_mode("merge-ours");
+    let before = Untouched::capture(&f);
+    let remote_before = f.remote_ref(BRANCH);
+    let run_head = f.head();
+    let run = f.run(&f.publish_recipe("fixture-publish"), &[], &[]);
+
+    assert_eq!(run.code, 0, "an -s ours merge is pushed; {}", run.debug());
+    let head = f.head();
+    assert_eq!(
+        f.git(&f.wt(), &["rev-list", "--parents", "-n1", "HEAD"]),
+        format!("{head} {run_head} {remote_before}"),
+        "HEAD is one merge of the run's commit and the remote's commit"
+    );
+    assert_eq!(
+        f.git(&f.wt(), &["rev-parse", &format!("{head}^{{tree}}")]),
+        f.git(&f.wt(), &["rev-parse", &format!("{run_head}^{{tree}}")]),
+        "-s ours keeps the run's tree"
+    );
+    assert_recovered(&run, "commit_result", "recovered-environment", &head);
+    assert_eq!(f.ls_remote(BRANCH), head, "the plain push reached origin");
     before.assert_held(&f, &run);
 }
 
