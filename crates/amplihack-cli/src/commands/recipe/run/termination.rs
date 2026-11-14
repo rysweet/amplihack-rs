@@ -7,9 +7,11 @@
 //!
 //! # The envelopes the pinned recipe-runner-rs writes
 //!
-//! These envelopes came in with `90286bc` and are unchanged at the current
-//! pin, `2833a0b`. The pin is in `claude-plugin/recipe-runner.rev` and
-//! `Cargo.toml`.
+//! These envelopes came in with `90286bc`. At the current pin, `2833a0b`,
+//! they are unchanged for a literal `recipe:` name. When the name is a
+//! template expression, the runner leaves `'<name>'` out of the sub-recipe
+//! header, and this decoder returns `None` for it. The pin is in
+//! `claude-plugin/recipe-runner.rev` and `Cargo.toml`.
 //!
 //! - A bash or agent step (`StepExecutionError`, `models.rs`):
 //!   `Step '<id>' failed: bash step failed: Command failed (exit N): <stderr>`
