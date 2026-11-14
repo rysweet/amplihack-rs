@@ -199,9 +199,25 @@ crusty_evidence() {
 # one condition at a time, and asserts they agree on which held the round.
 # Every value passes token(), and the crusty and approval vocabularies stay
 # closed, so nothing an agent wrote reaches a caller as prose.
-MD_QA=""; MD_CI=""; MD_CONFLICT=""; MD_THREADS=""; MD_CRUSTY=""; MD_APPROVAL=""; MD_QH=""; MD_QNOW=""
+# _file_qa_status <file>: qa_status from the qa evidence file qa-record wrote,
+# or MISSING when the file is not a regular file or carries no qa_status.
+_file_qa_status() {
+  if [ -z "${1:-}" ] || [ -L "$1" ] || [ ! -f "$1" ]; then
+    printf 'MISSING'; return 0
+  fi
+  field "$(head -c 1048576 -- "$1" 2>/dev/null)" qa_status MISSING
+}
+
+MD_QA=""; MD_CI=""; MD_CONFLICT="";MD_THREADS=""; MD_CRUSTY=""; MD_APPROVAL=""; MD_QH=""; MD_QNOW=""
 _measured_read() {
   MD_QA="$(token "$(field "${RECIPE_VAR_qa_evidence:-}" qa_status MISSING)")"
+  # Criterion 1 passes only when the step-02 reply AND the hashed file both
+  # say PASS. The hash below proves the file is unchanged, not that the reply
+  # matches it, so an agent that recorded FAIL and returned PASS is held by
+  # what the file says (#2618 review).
+  if [ "$MD_QA" = "PASS" ]; then
+    MD_QA="$(token "$(_file_qa_status "${AUTODRIVE_QA_EVIDENCE:-}")")"
+  fi
   MD_CI="$(token "$(field "${RECIPE_VAR_ci_evidence:-}" ci_status MISSING)")"
   MD_CONFLICT="$(token "$(field "${RECIPE_VAR_merge_sync:-}" conflict unknown)")"
   MD_THREADS="$(token "$(field "${RECIPE_VAR_platform_facts:-}" unresolved_threads unreadable)")"

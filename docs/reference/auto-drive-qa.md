@@ -107,8 +107,11 @@ unresolved or invalid declared command is an input to the judgement.
 `qa-evidence.json`: the path is `${AUTODRIVE_QA_EVIDENCE%/*}/qa-inputs.json`.
 `AUTODRIVE_QA_EVIDENCE` must be an absolute path containing a `/`; otherwise
 the script exits 1. The file is written under `umask 077` to a `mktemp`
-file and moved into place with `mv -f`. The script exits 1 only when it
-cannot write the file; every other condition is recorded inside it.
+file and moved into place with `mv -f`. The script also exits 1, writing
+nothing, when it cannot enter `REPO_PATH`: measuring any other directory
+would record that directory's files and head as the PR's. Otherwise it exits
+1 only when it cannot write the file; every other condition is recorded
+inside it.
 
 Example for a PR that changes two Markdown files in a Node repository:
 
@@ -155,9 +158,12 @@ Example for a PR that changes two Markdown files in a Node repository:
 `log_tail` stays in the inputs file. It is never copied into
 `qa-evidence.json`, because test output can contain secrets.
 
-`qa-record` requires every field above and ignores fields it does not know,
-so a newer inputs script (#2458) does not break an older helper. The strings
-it copies into the evidence (`qa_round` when `--round` is absent,
+`qa-record` requires every field above except the fields inside
+`declared_qa`: each of those may be absent and then defaults to empty (`""`,
+or null for `exit_status`), so `"declared_qa": {}` is accepted and is
+recorded with an empty status. An empty status means no declared command was
+run. `qa-record` ignores fields it does not know, so a newer inputs script
+(#2458) does not break an older helper. The strings it copies into the evidence (`qa_round` when `--round` is absent,
 `repo_type`, `docs_only`, `git_env_cleared`, `run_env_cleared` and the
 `declared_qa` strings except `log_tail`) must meet the judgement's
 [type limits](#type-limits): the inputs file sits in a directory the agent

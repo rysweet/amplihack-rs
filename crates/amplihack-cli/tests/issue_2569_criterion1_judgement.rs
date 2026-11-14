@@ -391,6 +391,19 @@ esac
     /// agreeing, so only criterion 1 can hold the round. step-00d's hash is
     /// taken here, after the agent has finished, as the round does.
     fn gate(&self, args: &[&str], verdict: Option<&str>, stdin: &str) -> Output {
+        self.gate_with_reply(args, verdict, stdin, None)
+    }
+
+    /// As `gate`, but step-02's returned text is `reply` instead of a copy
+    /// of the evidence file, so a reply that disagrees with the file can be
+    /// driven.
+    fn gate_with_reply(
+        &self,
+        args: &[&str],
+        verdict: Option<&str>,
+        stdin: &str,
+        reply: Option<&str>,
+    ) -> Output {
         let tool = bundle_tools().join("autodrive_round_evidence.sh");
         let hash = self
             .cmd("bash")
@@ -401,7 +414,10 @@ esac
             .output()
             .expect("qa-evidence-hash");
         assert!(hash.status.success(), "qa-evidence-hash: {}", show(&hash));
-        let evidence = fs::read_to_string(self.evidence_path()).unwrap_or_default();
+        let evidence = match reply {
+            Some(r) => r.to_string(),
+            None => fs::read_to_string(self.evidence_path()).unwrap_or_default(),
+        };
         let mut c = self.cmd("bash");
         c.arg(&tool)
             .args(args)
@@ -786,6 +802,34 @@ fn gate_harness_agrees_when_every_measurement_agrees() {
     assert_eq!(w.downgrade(), "none");
 }
 
+/// The gate reads criterion 1 from the hashed evidence file, not only from
+/// step-02's reply: an agent that records FAIL and then returns PASS is held
+/// by the file (#2618 review).
+#[test]
+fn gate_holds_a_pass_reply_when_the_recorded_file_says_fail() {
+    let w = World::new();
+    w.node_repo();
+    fs::write(w.evidence_path(), "{\"qa_status\":\"FAIL\"}\n").unwrap();
+    let o = w.gate_with_reply(
+        &["measured-downgrade"],
+        None,
+        "",
+        Some("{\"qa_status\":\"PASS\"}"),
+    );
+    assert!(o.status.success(), "measured-downgrade: {}", show(&o));
+    assert_eq!(text(&o.stdout).trim(), "qa_status=FAIL");
+
+    // And a file with no qa_status at all holds the round too.
+    fs::write(w.evidence_path(), "{}\n").unwrap();
+    let o = w.gate_with_reply(
+        &["measured-downgrade"],
+        None,
+        "",
+        Some("{\"qa_status\":\"PASS\"}"),
+    );
+    assert_eq!(text(&o.stdout).trim(), "qa_status=MISSING", "{}", show(&o));
+}
+
 fn stdout_json(o: &Output) -> Value {
     serde_json::from_slice(&o.stdout)
         .unwrap_or_else(|e| panic!("stdout is not JSON: {e}: {}", show(o)))
@@ -880,6 +924,19 @@ fn inputs_refuse_a_relative_evidence_path() {
     assert_eq!(o.status.code(), Some(1), "{}", show(&o));
     assert!(!w.repo.join("qa-inputs.json").exists());
     assert!(!w.repo.join("qa-evidence.json").exists());
+}
+
+/// A REPO_PATH that cannot be entered stops the script: measuring the
+/// working directory instead would record another tree's files and head.
+#[test]
+fn inputs_refuse_a_repo_path_that_cannot_be_entered() {
+    let w = World::new();
+    w.node_repo();
+    w.docs_pr();
+    let missing = w.state.join("no-such-repo");
+    let o = w.measure(&[("REPO_PATH", missing.to_str().unwrap())]);
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    assert!(!w.inputs_path().exists(), "{}", show(&o));
 }
 
 /// The inputs file is private, and log_tail stays in it (it never reaches

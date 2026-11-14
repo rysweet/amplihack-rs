@@ -30,8 +30,9 @@
 #   AUTODRIVE_QA_COMMAND, AUTODRIVE_QA_DIR, AUTODRIVE_QA_COMMANDS and
 #   AUTODRIVE_QA_SCENARIO_DIR, described where they are read below.
 # Output: the inputs JSON on stdout and in qa-inputs.json (mode 0600). Exit 1
-# only when AUTODRIVE_QA_EVIDENCE is not absolute or the file cannot be
-# written; every other condition is recorded in the file.
+# only when AUTODRIVE_QA_EVIDENCE is not absolute, REPO_PATH cannot be
+# entered, or the file cannot be written; every other condition is recorded
+# in the file.
 # Executed, never sourced; helpers come from beside this file only.
 # NO-TIMEOUT POLICY (issue #439): a test suite is never cut off mid-run.
 set -uo pipefail
@@ -57,7 +58,8 @@ else
   # either could act on another repository (#2033). The file still records why.
   echo "WARNING: autodrive_trust.sh or git-repo-env.sh is missing beside this tool; the command source is recorded as unavailable" >&2
 fi
-cd "${REPO_PATH:-.}" 2>/dev/null || { echo "WARNING: cannot cd to REPO_PATH; measuring the working directory" >&2; }
+# Measuring any other directory would record its files and head as the PR's.
+cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH; nothing written" >&2; exit 1; }
 ROOT="$(pwd -P)"
 # Free text for the log tail: no control bytes or ANSI CSI sequences.
 san() { LC_ALL=C sed "s|$(printf '\033')\[[0-?]*[ -/]*[@-~]||g" | LC_ALL=C tr '\t\r\n' '   ' | LC_ALL=C tr -d '\000-\037\177'; }
