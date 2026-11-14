@@ -407,7 +407,8 @@ earlier one failed, and the final error names every failure.
       [A runtime folder still in use is kept](#a-runtime-folder-still-in-use-is-kept)
       and
       [Locked folders inside the runtime folder](#locked-folders-inside-the-runtime-folder).
-      A folder that was replaced by another one is kept and the run fails.
+      A folder that was replaced by another one is kept and the run fails;
+      see [A replaced runtime folder is refused](#a-replaced-runtime-folder-is-refused).
    2. Finalises `run.json` with the end time, outcome and step summary.
    3. Unless `AMPLIHACK_CLEANUP_ON_EXIT=0` is set, sweeps the whole work root
       for run-owned items that are now eligible (the categories `run-tmp`,
@@ -575,6 +576,52 @@ another user need that user, or root, to change or remove them.
 
 Unverifiable historical records instead cause a logged fresh execution
 after secure admission of the new attempt.
+
+### A replaced runtime folder is refused
+
+While a run lives, the runner holds its runtime folder open. When the run
+starts, it opens the folder with `O_DIRECTORY | O_NOFOLLOW` and records the
+device and inode number of the open folder. A symbolic link or a file at that
+path fails to open, and the run does not start. If the folder at the path
+changes between the check and the open, the run also does not start.
+
+Because the folder stays open, the filesystem cannot free its inode number
+and give it to another folder. On ext4, a new folder made at the same path
+would otherwise often get the number that was just freed and look like the
+original.
+
+Before each step, the runner compares the folder at the path with the one it
+holds:
+
+| Folder at the path | What the runner does |
+| --- | --- |
+| The same folder | Launches the step. |
+| Missing | Creates it again with mode `0700`, opens and records the new folder, then launches the step. |
+| A different folder, a symbolic link or a file | Refuses the step and fails the run. |
+| A new folder that cannot be opened | Refuses the step. The old record stays in place, so at the end of the run the new folder is kept and the run fails. |
+
+A refused step prints:
+
+```text
+amplihack: this run's runtime folder cannot be used: "/home/ryan/.amplihack/work/r/3f0c9a526d1e" is no longer this run's runtime folder; refusing to launch the step
+```
+
+When the run ends, the runner checks the folder again in the same way while
+it still holds it open. It removes only the folder it holds open. If the
+runner created the folder again during the run, that new folder is the one it
+holds and the one it removes. Any other folder at the path is kept, and the
+run fails with:
+
+```text
+runtime resource identity changed; replacement retained at /home/ryan/.amplihack/work/r/3f0c9a526d1e
+```
+
+See step 4.1 in [What happens when a run ends](#what-happens-when-a-run-ends).
+
+The open folder does not count as "in use" when the run ends, because the runner
+skips its own process. Step processes do not inherit it, because it is opened
+close-on-exec. Another amplihack process's sweep sees the open folder and
+keeps it, which is correct while the run lives.
 
 ## When a run is eligible for cleanup
 

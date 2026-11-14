@@ -70,6 +70,26 @@ pub(crate) enum RuntimeRemoval {
 pub(crate) struct RuntimeGuard {
     path: Option<PathBuf>,
     identity: (u64, u64),
+    /// The folder held open for the guard's life, so its inode cannot be
+    /// freed and handed to a folder made again at the same path: on ext4 a
+    /// freed inode number is reused at once, and `(dev, ino)` alone would
+    /// then match a replacement (issue #2096).
+    _anchor: fs::File,
+}
+
+/// Opens the folder at `path` itself, read-only, refusing a symbolic link or
+/// a non-folder at its last component, and returns the handle with the
+/// `(dev, ino)` of what it opened.
+fn open_anchor(path: &Path) -> Result<(fs::File, (u64, u64))> {
+    let anchor = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(path)
+        .with_context(|| format!("cannot open runtime folder {}", path.display()))?;
+    let meta = anchor
+        .metadata()
+        .with_context(|| format!("cannot inspect runtime folder {}", path.display()))?;
+    Ok((anchor, (meta.dev(), meta.ino())))
 }
 
 impl RuntimeGuard {
@@ -78,9 +98,17 @@ impl RuntimeGuard {
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
             bail!("runtime resource is not a private directory");
         }
+        let (anchor, identity) = open_anchor(&path)?;
+        if identity != (metadata.dev(), metadata.ino()) {
+            bail!(
+                "runtime folder {} changed while it was being opened",
+                path.display()
+            );
+        }
         Ok(Self {
             path: Some(path),
-            identity: (metadata.dev(), metadata.ino()),
+            identity,
+            _anchor: anchor,
         })
     }
 
@@ -104,8 +132,9 @@ impl RuntimeGuard {
             Err(error) if error.kind() == ErrorKind::NotFound => {
                 create_private_dir_all(path.parent().context("runtime parent")?)?;
                 fs::DirBuilder::new().mode(0o700).create(path)?;
-                let meta = fs::symlink_metadata(path)?;
-                self.identity = (meta.dev(), meta.ino());
+                let (anchor, identity) = open_anchor(path)?;
+                self._anchor = anchor;
+                self.identity = identity;
                 Ok(())
             }
             Err(error) => Err(error).context(format!("cannot inspect {path:?}")),
