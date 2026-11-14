@@ -7,13 +7,27 @@ use std::io::{BufRead, BufReader, Write};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
+use std::time::Duration;
 use tracing::debug;
 
+/// Quiet period required before a workstream that has passed an explicit
+/// `max_runtime` under `interrupt-preserve` may be interrupted.
+///
+/// This is not a limit (issue #2022): it applies only after the caller opted
+/// into a `max_runtime`, and it only stops a run whose log has already stopped
+/// growing. `AMPLIHACK_IDLE_TIMEOUT_SECS` overrides it.
+const INTERRUPT_IDLE_WINDOW: Duration = Duration::from_secs(300);
+
 /// Issue #867: a past-max_runtime child may be interrupted only if its log file
-/// has stopped growing for the idle window (`AMPLIHACK_IDLE_TIMEOUT_SECS`,
-/// default 300 s). A probe error is treated as "still live" — never interrupt.
+/// has stopped growing for the idle window (`AMPLIHACK_IDLE_TIMEOUT_SECS`, or
+/// [`INTERRUPT_IDLE_WINDOW`] when that is unset, `0` or malformed: the watchdog
+/// warning's "no idle limit" is about killing a child, while this window only
+/// guards an interrupt the caller already opted into). A probe error is
+/// treated as "still live" — never interrupt.
 pub(super) fn child_is_idle(log_file: &Path) -> bool {
-    let idle = IdleConfig::from_env().idle_timeout;
+    let idle = IdleConfig::from_env()
+        .idle_timeout
+        .unwrap_or(INTERRUPT_IDLE_WINDOW);
     file_idle_since(log_file, idle).unwrap_or(false)
 }
 

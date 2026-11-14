@@ -15,6 +15,11 @@
 > stdout/stderr progress for an idle window), never a child that is still
 > producing output.
 
+A second rule (issue #2022) narrows the first: **no time limit applies to work
+unless someone sets one.** The idle window is therefore off by default. It
+applies only when `AMPLIHACK_IDLE_TIMEOUT_SECS` is set above 0, or when a caller
+passes an explicit window, such as `amplihack remote --timeout`.
+
 Everything below follows from this rule.
 
 ## The Problem With Wall-Clock Timeouts
@@ -108,9 +113,11 @@ A stalled network call should time out; a thinking agent should not.
 
 ## Trade-Offs
 
-- **Latency to detect a hang**: a truly hung child survives up to one idle window
-  (default 300 s) before it is reaped. This is deliberate — the cost of a rare,
-  slightly-late kill is far lower than the cost of killing healthy agents.
+- **Latency to detect a hang**: with no idle window set, a hung child is never
+  reaped by the watchdog; it runs until it exits or the run is stopped. With a
+  window set, it survives up to one window before it is reaped. Both are
+  deliberate: the cost of a hang that someone must stop by hand is far lower
+  than the cost of killing healthy agents.
 - **Noisy-but-stuck children**: a child that keeps printing while making no real
   progress is not detected, by design. Idle detection tracks liveness, not
   usefulness; goal/turn completion is the agent's job to signal.
@@ -120,3 +127,4 @@ A stalled network call should time out; a thinking agent should not.
 - [Idle Watchdog Reference](../reference/idle-watchdog.md) — API and configuration.
 - [Use the Idle Watchdog](../howto/use-idle-watchdog.md) — wire up a call site.
 - [Automode Safety](automode-safety.md) — related agent-safety guardrails.
+- [No Default Time Limits on Work](no-default-time-limits.md) — which limits exist only when you set them.

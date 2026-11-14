@@ -7,14 +7,11 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tracing::{debug, info, warn};
 
-use crate::util::run_with_timeout;
-
-const RUST_TRIAL_TIMEOUT: Duration = Duration::from_secs(3600);
+use crate::util::run_untimed;
 
 /// Options for installing the Rust CLI binary.
 #[derive(Debug, Clone)]
@@ -274,7 +271,8 @@ pub fn run_rust_trial(rust_args: &[String], trial_home: &Path) -> i32 {
     );
 
     let command = trial_command(&binary, rust_args, &env);
-    let status = run_with_timeout(command, RUST_TRIAL_TIMEOUT);
+    // Issue #2022: a trial run is an agent session; it has no time limit.
+    let status = run_untimed(command);
 
     match status {
         Ok(s) => s.code().unwrap_or(1),

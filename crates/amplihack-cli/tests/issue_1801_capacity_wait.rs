@@ -128,8 +128,7 @@ fn nested_x(f: &Fixture) -> Command {
     c
 }
 
-/// Runs on the real clock, sped up: a 30 s poll takes 3 s, and the
-/// longest wait here, the default six hours, 36 minutes. Issue #1973: a
+/// Runs on the real clock, sped up: a 30 s poll takes 3 s. Issue #1973: a
 /// faster clock could end a wait at its maximum before a loaded host ran
 /// the test's change; every wait here ends on that change instead. The
 /// scale does not bound a failing run: if the change never ends the wait,
@@ -218,7 +217,9 @@ fn ac1_a_home_step_waits_on_a_weekly_limit_and_the_rotator_ends_the_wait() {
         ev[0].starts_with("start reason=usage_limit wait=capacity harness=claude reset=2"),
         "{ev:?}"
     );
-    assert!(ev[0].ends_with(" bound=max_wait"), "{ev:?}");
+    // Issue #2022: with no maximum set, the weekly capacity wait ends at the
+    // failed login's reset plus the margin, not at a six-hour default.
+    assert!(ev[0].ends_with(" bound=reset+margin"), "{ev:?}");
     assert_eq!(ev[1..], ["end reason=rotator capacity", "resume attempt=2"]);
     assert_eq!(
         f.call("0", 2)["PROFILE"],
@@ -411,17 +412,34 @@ fn ac4_a_config_file_maximum_ends_the_wait_as_a_usage_limit() {
     assert_no_account_detail(&f, &out);
 }
 
+// Issue #2022: there is no default maximum. With the setting unset a capacity
+// wait runs past the former six hours and here ends only at the step timeout
+// (30 000 s less the 60 s lead).
 #[test]
-fn the_default_maximum_is_six_hours() {
+fn an_unset_maximum_does_not_end_a_capacity_wait_at_six_hours() {
     let f = with_profiles();
     x_is_live(&f);
     let _rotator = rotator_running(&f);
-    let out = f.run(&mut home_step(&f));
+    let mut c = home_step(&f);
+    c.env_remove(MAX_WAIT_ENV)
+        .env("AMPLIHACK_STEP_TIMEOUT", "30000");
+    let out = f.run(&mut c);
     assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    let ev = events(&out);
     assert!(
-        events(&out)[0].ends_with("until=2026-10-18 14:00:00 -07:00 bound=max_wait"),
-        "{:?}",
-        events(&out)
+        ev[0].starts_with("start reason=usage_limit wait=capacity "),
+        "{ev:?}"
+    );
+    assert!(
+        ev[0].ends_with("until=2026-10-18 16:19:00 -07:00 bound=step_timeout"),
+        "{ev:?}"
+    );
+    assert_eq!(
+        ev[1..],
+        [
+            "end reason=step timeout",
+            "failed reason=step_timeout: usage limit not lifted",
+        ]
     );
 }
 
@@ -523,54 +541,92 @@ fn ac15_a_retry_that_hits_the_limit_again_gets_no_second_wait() {
 }
 
 // --- what never starts a capacity wait ----------------------------------------
+//
+// Issue #2022: without a login to take over, a far reset is no longer skipped.
+// It is a reset wait on the same login that lasts until the reset plus the
+// margin. Each test here sets an explicit maximum so the virtual-clock run
+// ends at once; `issue_2022_far_reset_wait.rs` covers the unset maximum.
+
+/// The weekly reset as a plain reset wait, ended by a 600 s maximum.
+const FAR_RESET_CAPPED_START: &str = "start reason=usage_limit harness=claude \
+     reset=2027-10-08 00:00:00 -07:00 until=2026-10-18 08:10:00 -07:00 bound=max_wait";
+
+/// Runs `c` with an explicit 600 s maximum.
+fn run_capped(f: &Fixture, c: &mut Command) -> Output {
+    c.env(MAX_WAIT_ENV, "600");
+    f.run(c)
+}
+
+/// A far reset with no login to take over waits on the same login (no
+/// capacity wait), ends at the explicit maximum and retries once.
+fn assert_far_reset_waits(f: &Fixture, out: &Output) {
+    assert!(out.status.success(), "{}", describe(out));
+    assert_eq!(f.count("0"), 2, "one wait, then one retry");
+    assert_eq!(
+        events(out),
+        [
+            FAR_RESET_CAPPED_START,
+            "end reason=max reached",
+            "resume attempt=2"
+        ]
+    );
+}
 
 #[test]
-fn ac3_one_stored_login_skips_even_with_rotator_cycles() {
+fn ac3_one_stored_login_waits_for_a_far_reset_even_with_rotator_cycles() {
     let f = with_profiles();
     fs::remove_dir_all(f.profiles.join("Y")).unwrap();
     x_is_live(&f);
     let _rotator = rotator_running(&f);
-    let out = f.run(&mut home_step(&f));
-    assert_skipped(&f, &out, "reset_too_far");
+    let out = run_capped(&f, &mut home_step(&f));
+    assert_far_reset_waits(&f, &out);
 }
 
-// With no rotator nothing can end a `$HOME/.claude` step's wait but a login
-// change, so a far reset fails at once as it did before #1801.
+// With no rotator nothing but a login change can end a `$HOME/.claude`
+// step's wait early, so a far reset is waited for on the same login.
 #[test]
-fn a_home_step_with_two_logins_and_no_rotator_skips() {
+fn a_home_step_with_two_logins_and_no_rotator_waits_for_the_reset() {
     let f = with_profiles();
     x_is_live(&f);
-    let out = f.run(&mut home_step(&f));
-    assert_skipped(&f, &out, "reset_too_far");
+    let out = run_capped(&f, &mut home_step(&f));
+    assert_far_reset_waits(&f, &out);
 }
 
-// A rotator with auto-switch off keeps running but skips every cycle, so it
-// records no cycle and makes no swap. It cannot end a `$HOME/.claude` step's
-// wait, so it does not count: a far reset fails at once, not after six hours.
+// A rotator with auto-switch off records no cycle and makes no swap, so it
+// cannot end the wait for another login: the far reset is a reset wait.
 #[test]
-fn a_home_step_with_a_running_rotator_and_auto_switch_off_skips() {
+fn a_home_step_with_a_running_rotator_and_auto_switch_off_waits_for_the_reset() {
     let f = with_profiles();
     x_is_live(&f);
     let _rotator = rotator_running(&f);
     let off = f.run(&mut f.cmd(&["profile", "auto-switch", "off"]));
     assert!(off.status.success(), "auto-switch off: {}", describe(&off));
-    let out = f.run(&mut home_step(&f));
-    assert_skipped(&f, &out, "reset_too_far");
+    let out = run_capped(&f, &mut home_step(&f));
+    assert_far_reset_waits(&f, &out);
 }
 
-// The same holds for an inherited-profile step: no `/usage` probe is made, and
-// in an unattended run nothing records a reading without a rotator, so the
-// wait would run to its six-hour maximum. A far reset fails at once instead.
+// An inherited-profile step with no rotator: X, then the auto-switch rerun
+// on Y, are both limited. The far reset is then a reset wait, not a skip.
 #[test]
-fn an_inherited_profile_step_with_two_logins_and_no_rotator_skips() {
+fn an_inherited_profile_step_with_two_logins_and_no_rotator_waits_for_the_reset() {
     let f = with_profiles();
     let mut c = nested_x(&f);
-    // X, then the auto-switch rerun on Y, are both limited.
     c.env("LIMIT_CALLS", "2");
-    let out = f.run(&mut c);
-    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
-    assert_eq!(f.count("0"), 2, "X, then Y, and no retry after them");
-    assert_eq!(events(&out), ["skipped reason=reset_too_far"]);
+    let out = run_capped(&f, &mut c);
+    assert!(out.status.success(), "{}", describe(&out));
+    let ev = events(&out);
+    assert!(
+        ev.first().is_some_and(
+            |l| l.starts_with("start reason=usage_limit harness=claude ")
+                && l.ends_with(" bound=max_wait")
+        ),
+        "a reset wait, not a capacity wait or a skip: {ev:?}"
+    );
+    assert!(!ev.iter().any(|l| l.starts_with("skipped ")), "{ev:?}");
+    assert_eq!(
+        ev.get(1).map(String::as_str),
+        Some("end reason=max reached")
+    );
 }
 
 #[test]
@@ -584,39 +640,49 @@ fn ac3_one_stored_login_with_no_reset_skips() {
     assert_skipped(&f, &out, "no_reset");
 }
 
+// S1: a spend limit never becomes a capacity wait. One that states a weekly
+// reset is a reset wait on the same login; one that states none is skipped.
 #[test]
-fn ac3_a_spend_limit_skips_whatever_it_states_with_a_second_login() {
-    for (message, reason) in [
-        (SPEND_WEEKLY_TEXT, "reset_too_far"),
-        (SPEND_TEXT, "spend_limit"),
-    ] {
-        let f = with_profiles();
-        x_is_live(&f);
-        let _rotator = rotator_running(&f);
-        let mut c = home_step(&f);
-        c.env("LIMIT_MESSAGE", message);
-        let out = f.run(&mut c);
-        assert_skipped(&f, &out, reason);
-    }
+fn ac3_a_spend_limit_never_becomes_a_capacity_wait_with_a_second_login() {
+    let f = with_profiles();
+    x_is_live(&f);
+    let _rotator = rotator_running(&f);
+    let mut c = home_step(&f);
+    c.env("LIMIT_MESSAGE", SPEND_WEEKLY_TEXT);
+    let out = run_capped(&f, &mut c);
+    assert_far_reset_waits(&f, &out);
+    assert!(
+        !events(&out).iter().any(|l| l.contains("wait=capacity")),
+        "{:?}",
+        events(&out)
+    );
+
+    let f = with_profiles();
+    x_is_live(&f);
+    let _rotator = rotator_running(&f);
+    let mut c = home_step(&f);
+    c.env("LIMIT_MESSAGE", SPEND_TEXT);
+    let out = f.run(&mut c);
+    assert_skipped(&f, &out, "spend_limit");
 }
 
 #[test]
-fn ac8_no_profile_root_skips() {
+fn ac8_no_profile_root_waits_for_the_reset() {
     let f = Fixture::new();
     fs::remove_dir_all(&f.profiles).unwrap();
-    let out = f.run(&mut home_step(&f));
-    assert_skipped(&f, &out, "reset_too_far");
+    let out = run_capped(&f, &mut home_step(&f));
+    assert_far_reset_waits(&f, &out);
 }
 
 #[test]
-fn ac8_an_empty_store_skips() {
+fn ac8_an_empty_store_waits_for_the_reset() {
     let f = Fixture::new();
-    let out = f.run(&mut home_step(&f));
-    assert_skipped(&f, &out, "reset_too_far");
+    let out = run_capped(&f, &mut home_step(&f));
+    assert_far_reset_waits(&f, &out);
 }
 
 #[test]
-fn ac8_a_rotate_ledger_others_can_write_skips() {
+fn ac8_a_rotate_ledger_others_can_write_waits_for_the_reset() {
     let f = with_profiles();
     x_is_live(&f);
     fs::set_permissions(
@@ -624,39 +690,39 @@ fn ac8_a_rotate_ledger_others_can_write_skips() {
         fs::Permissions::from_mode(0o622),
     )
     .unwrap();
-    let out = f.run(&mut home_step(&f));
-    assert_skipped(&f, &out, "reset_too_far");
+    let out = run_capped(&f, &mut home_step(&f));
+    assert_far_reset_waits(&f, &out);
 }
 
 #[test]
-fn ac8_an_explicit_config_dir_skips_with_a_second_login() {
+fn ac8_an_explicit_config_dir_waits_for_the_reset_with_a_second_login() {
     let f = with_profiles();
     x_is_live(&f);
     let mut c = f.step();
     c.env("LIMIT_MESSAGE", WEEKLY_TEXT);
-    let out = f.run(&mut c);
-    assert_skipped(&f, &out, "reset_too_far");
+    let out = run_capped(&f, &mut c);
+    assert_far_reset_waits(&f, &out);
 }
 
 #[test]
-fn an_inherited_profile_with_auto_switch_off_skips() {
+fn an_inherited_profile_with_auto_switch_off_waits_for_the_reset() {
     let f = with_profiles();
     let mut c = f.step();
     c.env("AMPLIHACK_CLAUDE_PROFILE", "X")
         .env("CLAUDE_CONFIG_DIR", f.profiles.join("X"))
         .env(TOGGLE_ENV, "0")
         .env("LIMIT_MESSAGE", WEEKLY_TEXT);
-    let out = f.run(&mut c);
-    assert_skipped(&f, &out, "reset_too_far");
+    let out = run_capped(&f, &mut c);
+    assert_far_reset_waits(&f, &out);
 }
 
 #[test]
-fn a_default_pointer_that_is_not_the_live_profile_skips() {
+fn a_default_pointer_that_is_not_the_live_profile_waits_for_the_reset() {
     let f = with_profiles();
     write_cycle(&f.profiles, "Y", OLD_CYCLE);
     set_default(&f.profiles, "X");
-    let out = f.run(&mut home_step(&f));
-    assert_skipped(&f, &out, "reset_too_far");
+    let out = run_capped(&f, &mut home_step(&f));
+    assert_far_reset_waits(&f, &out);
 }
 
 /// A step with no inherited profile and the wait off is not supervised, so

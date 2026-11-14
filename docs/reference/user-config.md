@@ -60,7 +60,7 @@ recipe.detach = "none"  # default
 recipe.tmux_session_pattern = "amp-{recipe}-{repo}-{ts}"  # default
 recipe.log_dir = (unset)  # default
 recipe.usage_limit_wait = true  # default
-recipe.usage_limit_max_wait_secs = 21600  # default
+recipe.usage_limit_max_wait_secs = (unset)  # default
 orchestrator.max_depth = 3  # default
 sessions.daily_archive = true  # default
 sessions.archive_days = 3  # default
@@ -151,7 +151,7 @@ command, so it never prints `flag`.
 | `recipe.tmux_session_pattern` | session-name pattern | `amp-{recipe}-{repo}-{ts}` | — | — | user, project |
 | `recipe.log_dir` | absolute path | (unset: `~/.amplihack/recipe-logs`) | — | — | user only |
 | `recipe.usage_limit_wait` | bool | `true` (`false` in CI) | `AMPLIHACK_USAGE_LIMIT_WAIT` | — | user, project |
-| `recipe.usage_limit_max_wait_secs` | integer seconds, at least 0 | `21600` | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | — | user, project (lower only) |
+| `recipe.usage_limit_max_wait_secs` | integer seconds, at least 0 | (unset: no limit) | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | — | user, project (lower only) |
 | `orchestrator.max_depth` | integer, 0 to 32 | `3` | `AMPLIHACK_MAX_DEPTH` | — | user, project (lower only) |
 | `governor.enabled` | bool | `false` | — | — | user only |
 | `governor.max_concurrency` | integer, 1 to 64 | `4` | — | — | user only |
@@ -347,25 +347,29 @@ in the environment or a file, it is on, except in CI: any `CI` that is
 not, after trimming, empty, `0` or `false` in any case. Setting it in a file or the variable turns it on
 in CI too. The environment variable also accepts `1` and `0`.
 
-`recipe.usage_limit_max_wait_secs` bounds one wait and defaults to `21600`
-(six hours). It shortens a wait for a reset, which never lasts beyond the
-reset plus 120 seconds, and sets how long a
-[capacity wait](./profile-command.md#capacity-wait) for another login lasts.
-`0` means one more attempt with no wait for a reset, and an immediate
-`usage_limit` failure for a capacity wait.
+`recipe.usage_limit_max_wait_secs` is an optional ceiling on one wait. It
+is unset by default, and no limit applies unless one is set: a wait for a
+reset lasts until the reset plus 120 seconds however far away the reset is,
+and a [capacity wait](./profile-command.md#capacity-wait) with no readable
+reset lasts until a login has capacity or the run is stopped. When set, it
+ends any wait that would last longer. `0` means one more attempt with no
+wait for a reset, and an immediate `usage_limit` failure for a capacity
+wait.
 
-The default is not a ceiling. A user file or
-`AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` may set a higher value, and a capacity
-wait honours it. A project file is `lower only`: it can shorten the maximum
-but never raise it above the user or default value, so a repository cannot
-make your runs wait longer.
+`AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` outranks both files: when it is set
+to a valid value, that value applies and neither file is read for this key.
+A project file is `lower only` against the user file. When the user file
+sets a maximum, a project value can shorten it but never raise it, so a
+repository cannot make your runs wait longer than you allow. When the user
+file sets none, a project value applies as written; this is safe because a
+ceiling can only shorten a wait.
 
 A value that is not a whole number of seconds from `0` upwards is handled
 like any other invalid value: `amplihack config set` rejects it with exit
 code `2` and writes nothing, a file value is reported when the file loads
 and ignored, and an invalid `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` is
-reported by name and ignored. In each case the next layer down, ending at
-the default `21600`, applies.
+reported by name and ignored. In each case the next layer down applies,
+ending at no limit.
 
 ```sh
 amplihack config set recipe.usage_limit_wait false

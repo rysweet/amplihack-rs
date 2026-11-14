@@ -155,7 +155,7 @@ and pass the path with `--context-from-file`:
     trap 'rm -f -- "$HISTORY_FILE" "$TASK_FILE"' EXIT
     write_context_value cycle_history "$HISTORY_FILE"
     write_context_value task_description "$TASK_FILE"
-    timeout 900 amplihack recipe run quality-audit-cycle \
+    amplihack recipe run quality-audit-cycle \
       --context-from-file cycle_history="$HISTORY_FILE" \
       --context-from-file task_description="$TASK_FILE" \
       -c repo_path="$(write_context_value repo_path -)" \

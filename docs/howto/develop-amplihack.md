@@ -174,8 +174,9 @@ environment as an argument instead. See
 
 A run under plain `timeout` from a terminal can stop, with its processes in
 state `T`, when git asks for credentials. Run long commands as
-`GIT_TERMINAL_PROMPT=0 setsid -w timeout --kill-after=60 <secs> <command> </dev/null`.
-Ctrl-C does not stop that form; the guide says how to. See
+`GIT_TERMINAL_PROMPT=0 setsid -w <command> </dev/null`, with no `timeout`:
+work has no time limit (issue #2022). Ctrl-C does not stop that form; the
+guide says how to. See
 [Keep Tests from Prompting for Git Credentials](./keep-tests-from-prompting-for-git.md).
 
 ### Pre-commit Hook Issues

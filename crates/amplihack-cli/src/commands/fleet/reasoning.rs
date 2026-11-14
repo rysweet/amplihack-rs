@@ -293,11 +293,9 @@ impl NativeReasonerBackend {
                 env_builder.apply_to_command(&mut cmd);
                 configure(&mut cmd);
                 // Issue #1570: the prompt goes to `claude -p` on stdin, never argv.
-                let output = run_output_with_timeout_stdin(
-                    cmd,
-                    SCOUT_REASONER_TIMEOUT,
-                    Some(prompt.as_bytes().to_vec()),
-                )?;
+                // Issue #2022: a reasoning call is agent work and has no time
+                // limit; it ends when `claude` exits or the scout is stopped.
+                let output = run_output_untimed_stdin(cmd, Some(prompt.as_bytes().to_vec()))?;
                 if !output.status.success() {
                     bail!(
                         "reasoner command failed: {}",

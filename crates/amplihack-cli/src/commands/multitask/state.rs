@@ -69,7 +69,7 @@ pub(super) fn apply_saved_state(ws: &mut Workstream, state: &PersistedState) {
     }
     ws.attempt = state.attempt;
     if let Some(max_rt) = state.max_runtime {
-        ws.max_runtime = max_rt;
+        ws.max_runtime = Some(max_rt);
     }
     if let Some(ref policy) = state.timeout_policy {
         ws.timeout_policy = policy.clone();
@@ -101,9 +101,19 @@ fn process_scope_validation(ws: &Workstream, pid: u32) -> ProcessScopeValidation
         &ws.process_scope,
         &snapshot,
         &ProcessScopeConfig {
-            max_age_seconds: ws.max_runtime as i64 + 3600,
+            max_age_seconds: process_max_age_seconds(ws.max_runtime),
         },
     )
+}
+
+/// How old a recorded process may be and still count as this workstream's.
+/// With no `max_runtime` (issue #2022) the work may run for any length of
+/// time, so age alone never disqualifies it. Saturates instead of overflowing.
+fn process_max_age_seconds(max_runtime: Option<u64>) -> i64 {
+    match max_runtime {
+        Some(secs) => i64::try_from(secs).unwrap_or(i64::MAX).saturating_add(3600),
+        None => i64::MAX,
+    }
 }
 
 fn process_scope_is_authoritative(ws: &Workstream, pid: u32, action: &str) -> bool {
@@ -135,15 +145,16 @@ pub(super) fn enforce_timeouts(
         let Some(start) = ws.start_time else {
             continue;
         };
-        if start.elapsed().as_secs() < ws.max_runtime {
+        // Issue #2022: no runtime limit unless one was set.
+        let Some(max_runtime) = ws.max_runtime else {
+            continue;
+        };
+        if start.elapsed().as_secs() < max_runtime {
             continue;
         }
 
         let issue = ws.issue;
-        println!(
-            "[{issue}] Past max_runtime ({}s), marking timed_out_resumable",
-            ws.max_runtime
-        );
+        println!("[{issue}] Past max_runtime ({max_runtime}s), marking timed_out_resumable");
 
         let mut authoritative_process = true;
         if ws.timeout_policy == INTERRUPT_PRESERVE_TIMEOUT_POLICY

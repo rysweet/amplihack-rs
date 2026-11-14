@@ -944,4 +944,86 @@ mod tests {
             assert!(sessions.find_subcommand(sub).is_some(), "{sub}");
         }
     }
+
+    // ── Issue #2022: no default time limit on remote or live-client work ──
+
+    fn remote_exec(extra: &[&str]) -> Result<Cli, clap::Error> {
+        let mut args = vec!["amplihack", "remote", "exec", "auto", "do the task"];
+        args.extend_from_slice(extra);
+        Cli::try_parse_from(args)
+    }
+
+    fn remote_timeout(cli: Cli) -> Option<u64> {
+        match cli.command {
+            Commands::Remote {
+                command: RemoteCommands::Exec { timeout, .. },
+            } => timeout,
+            other => panic!("expected remote exec, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn remote_exec_has_no_default_timeout() {
+        let cli = remote_exec(&[]).expect("parse");
+        assert_eq!(remote_timeout(cli), None);
+    }
+
+    #[test]
+    fn remote_exec_keeps_an_explicit_timeout_and_its_range() {
+        let cli = remote_exec(&["--timeout", "30"]).expect("parse");
+        assert_eq!(remote_timeout(cli), Some(30));
+        for bad in ["4", "481", "0", "abc"] {
+            assert!(
+                remote_exec(&["--timeout", bad]).is_err(),
+                "--timeout {bad} must still be rejected"
+            );
+        }
+    }
+
+    const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    fn verify_live(extra: &[&str]) -> Result<Cli, clap::Error> {
+        let mut args = vec![
+            "amplihack",
+            "litellm",
+            "verify-live",
+            "--pr",
+            "1",
+            "--expected-head",
+            SHA,
+            "--context",
+            "a.rs",
+            "--context",
+            "b.rs",
+        ];
+        args.extend_from_slice(extra);
+        Cli::try_parse_from(args)
+    }
+
+    fn live_timeout(cli: Cli) -> Option<u64> {
+        match cli.command {
+            Commands::LiteLlm {
+                command: LiteLlmCommands::VerifyLive(args),
+            } => args.timeout_seconds,
+            other => panic!("expected litellm verify-live, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn live_client_verification_has_no_default_timeout() {
+        let cli = verify_live(&[]).expect("parse");
+        assert_eq!(live_timeout(cli), None);
+    }
+
+    #[test]
+    fn live_client_verification_keeps_an_explicit_timeout_and_its_range() {
+        let cli = verify_live(&["--timeout-seconds", "60"]).expect("parse");
+        assert_eq!(live_timeout(cli), Some(60));
+        for bad in ["9", "901"] {
+            assert!(
+                verify_live(&["--timeout-seconds", bad]).is_err(),
+                "--timeout-seconds {bad} must still be rejected"
+            );
+        }
+    }
 }

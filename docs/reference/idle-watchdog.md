@@ -9,9 +9,10 @@
 **Type**: Reference (Information-Oriented)
 
 The idle watchdog supervises long-running child processes (agent runs, cascade
-steps, remote executions) and kills a child **only** when it stops producing
-output for an idle window — never on elapsed wall-clock time while output still
-streams.
+steps, remote executions). It kills a child **only** when an idle window has
+been set and the child stops producing output for that long. It never kills on
+elapsed wall-clock time while output still streams, and with no idle window set
+it never kills at all.
 
 ## Contents
 
@@ -27,8 +28,8 @@ streams.
 Wall-clock, kill-on-expiry timeouts kill healthy agents mid-stream when a task
 legitimately runs longer than a fixed budget. The idle watchdog replaces those
 kills with **idle/liveness detection**: any new byte on `stdout` or `stderr`
-resets a "last progress" timer. The child is terminated only after the idle
-threshold passes with no output.
+resets a "last progress" timer. When an idle threshold is set, the child is
+terminated only after it passes with no output. No threshold is set by default.
 
 See [Idle Watchdog Concept](../concepts/idle-watchdog.md) for the rationale and
 the owner rule that governs it.
@@ -47,20 +48,51 @@ Configures the idle threshold and poll interval.
 ```rust
 pub struct IdleConfig {
     /// No output for this long → the child is considered idle and is killed.
-    pub idle_timeout: Duration,
+    /// `None` (the default) means the child is never killed for being quiet.
+    pub idle_timeout: Option<Duration>,
     /// How often the supervising loop checks for progress and process exit.
     pub poll: Duration,
 }
 
 impl IdleConfig {
-    /// Reads AMPLIHACK_IDLE_TIMEOUT_SECS (default 300) and
+    /// Reads AMPLIHACK_IDLE_TIMEOUT_SECS (unset: no idle limit) and
     /// AMPLIHACK_IDLE_POLL_MS (default 1000).
     pub fn from_env() -> Self;
 
-    /// Override the idle threshold; poll interval comes from env/default.
+    /// Sets an explicit idle threshold; poll interval comes from env/default.
     pub fn with_idle(idle: Duration) -> Self;
+
+    /// No idle threshold; poll interval comes from env/default.
+    pub fn none() -> Self;
 }
+
+/// The shared reader for optional limits given in whole seconds. The value is
+/// trimmed and parsed as a `u64`; unset, empty, `0`, negative, non-numeric and
+/// overflowing values all give `None`. Never panics.
+pub fn parse_positive_secs(raw: Option<&str>) -> Option<Duration>;
 ```
+
+| `parse_positive_secs` input | Result |
+| --------------------------- | ------ |
+| `None`, `""`, `"0"`         | `None` |
+| `"7"`, `" 7 "`, `"7\n"`     | `Some(7 s)` |
+| `"-5"`, `"abc"`, `"+7"`, `"7s"`, `"0x10"`, `"99999999999999999999"` | `None` |
+
+```rust
+use amplihack_utils::idle_watchdog::{IdleConfig, parse_positive_secs};
+use std::time::Duration;
+
+assert_eq!(parse_positive_secs(Some(" 900 ")), Some(Duration::from_secs(900)));
+assert_eq!(parse_positive_secs(Some("0")), None);
+assert_eq!(IdleConfig::none().idle_timeout, None);
+assert_eq!(
+    IdleConfig::with_idle(Duration::from_secs(60)).idle_timeout,
+    Some(Duration::from_secs(60)),
+);
+```
+
+`AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS` is read through the same function, so the
+two variables accept and reject exactly the same values.
 
 ### `IdleOutcome`
 
@@ -159,22 +191,28 @@ child only when it returns `true`.
 
 | Variable                      | Default  | Applies To                | Meaning                                                   |
 | ----------------------------- | -------- | ------------------------- | --------------------------------------------------------- |
-| `AMPLIHACK_IDLE_TIMEOUT_SECS` | `300`    | all watchdog entry points | Kill a child after this many seconds with no output.      |
+| `AMPLIHACK_IDLE_TIMEOUT_SECS` | unset: no idle limit (multitask: 300 s quiet before a `--max-runtime` interrupt) | Claude subprocesses (site 6) and multitask; not the Copilot CLI client or remote runs | When set above 0, kill a child after this many seconds with no output. A malformed value warns once and applies no limit. |
 | `AMPLIHACK_IDLE_POLL_MS`      | `1000`   | async + sync waits        | How often the supervising loop checks progress/exit (ms). |
 
 Notes:
 
 - There is **no absolute wall-clock cap** on agentic runs. A live agent that
   keeps streaming tokens is never killed, regardless of total elapsed time.
-- Set a longer idle window for slow tools:
+- There is **no default idle limit** either. With the variable unset, `0`,
+  empty or unparseable, a quiet child is left running. The watchdog still reaps
+  it when it exits and still stops it on the existing stop path (Ctrl-C,
+  `SIGTERM`, `SIGHUP`, `amplihack recipe stop`).
+- To opt in to an idle limit:
 
   ```bash
-  export AMPLIHACK_IDLE_TIMEOUT_SECS=900   # 15-minute idle tolerance
+  export AMPLIHACK_IDLE_TIMEOUT_SECS=900   # kill after 15 minutes with no output
   ```
 
 - A per-call `Option<Duration>` (e.g. a step's configured timeout) is
   reinterpreted as an **idle-timeout override** via `IdleConfig::with_idle`, not
-  as a wall-clock deadline.
+  as a wall-clock deadline. With `None`, site 6 falls back to `from_env()`;
+  the Copilot CLI client and the remote executor use `IdleConfig::none()`
+  (no idle limit).
 - The Copilot adapter's `f64` timeout (site 5) is no longer a wall-clock cap: the
   `MAX_TIMEOUT` clamp is removed so large values pass through unchanged (only a
   1.0 s lower bound remains). The subprocess is supervised by the site-3 client's
@@ -189,25 +227,39 @@ Notes:
 | 3    | `amplihack-agent-core/src/sdk_adapters/copilot_cli_client.rs` | std::process | `wait_with_idle_watchdog_sync`     | No stdout/stderr for the idle window.            |
 | 5    | `amplihack-agent-core/src/sdk_adapters/copilot.rs`  | n/a            | none — subprocess supervised by site 3 | `MAX_TIMEOUT` clamp removed so the adapter timeout is no longer a wall-clock cap; the site-3 client supervises the subprocess with its own idle watchdog. |
 | 2    | `amplihack-cli/src/commands/multitask/state.rs`     | std::process   | `file_idle_since(ws.log_file, ..)` | Log file mtime idle **and** policy allows a kill. |
-| 4    | `amplihack-remote/src/executor.rs`                  | tokio          | `wait_with_idle_watchdog`          | No stdout/stderr for the idle window.            |
+| 4    | `amplihack-remote/src/executor.rs`                  | tokio          | `wait_with_idle_watchdog`          | No stdout/stderr for the idle window, only when `amplihack remote --timeout` is given. Without it, no idle or wall-clock limit applies. |
 
 ### Site 2: multitask timeout policy
+
+`max_runtime` is optional and unset by default. With no `max_runtime`, a
+workstream is never marked resumable or interrupted for its runtime. It is
+set only by `amplihack multitask --max-runtime <SECONDS>` or by a workstream's
+own `max_runtime` field.
 
 `enforce_timeouts` never kills purely because `elapsed >= max_runtime`.
 
 - Default policy is **`continue-preserve`**: the run continues; elapsed runs are
   marked resumable but are not killed.
-- Under **`interrupt-preserve`**, a child is killed **only** when
-  `file_idle_since(ws.log_file, idle)` is `true` — i.e., its log file has stopped
-  growing for the idle window.
+- Under **`interrupt-preserve`**, a child past an explicit `max_runtime` is
+  killed **only** when `file_idle_since(ws.log_file, INTERRUPT_IDLE_WINDOW)` is
+  `true`, i.e. its log file has stopped growing for 300 seconds. The window is a
+  precondition on a limit you set, not a limit of its own.
 - In **both** policies the run is still marked `timed_out_resumable` once
   `elapsed >= max_runtime`, so state is preserved for resume regardless of
   whether the child is killed.
 
 | Constant                 | Value                | Meaning                                             |
 | ------------------------ | -------------------- | --------------------------------------------------- |
-| `DEFAULT_MAX_RUNTIME`    | `7200`               | Marks a run resumable after this many seconds.      |
+| `INTERRUPT_IDLE_WINDOW`  | `300` s              | Under `interrupt-preserve`, how long the log must be quiet before a child past an explicit `max_runtime` is killed. |
 | `DEFAULT_TIMEOUT_POLICY` | `continue-preserve`  | Non-killing default (flipped from `interrupt-preserve`); preserves state, keeps running.|
+
+State files written with a numeric `max_runtime` still load with that value;
+files without the field load as no limit.
+
+```bash
+# Mark workstreams resumable after two hours, and interrupt quiet ones
+amplihack multitask run workstreams.json --max-runtime 7200 --timeout-policy interrupt-preserve
+```
 
 ### Site 5: adapter timeout propagation
 
@@ -218,10 +270,11 @@ the site-3 Copilot CLI client, whose subprocess is supervised by
 - The `MAX_TIMEOUT` (600 s) clamp on the adapter's configured `timeout` is
   removed. Large values pass through unchanged; only a 1.0 s lower bound remains.
   There is no wall-clock cap on a run.
-- The subprocess idle window is owned by the site-3 `CopilotCliClient`. It
-  defaults to `DEFAULT_CLI_TIMEOUT` (300 s) and can be set explicitly via
-  `CopilotCliClient::with_timeout(..)`, which the client feeds into
-  `IdleConfig::with_idle(..)` for `wait_with_idle_watchdog_sync` — never as a
+- The subprocess idle window is owned by the site-3 `CopilotCliClient`. Its
+  `timeout` is `Option<Duration>` and defaults to `None`, so a Copilot CLI call
+  has no idle or wall-clock limit unless one is set. It can be set explicitly
+  via `CopilotCliClient::with_timeout(..)`, which the client feeds into
+  `IdleConfig::with_idle(..)` for `wait_with_idle_watchdog_sync`, never as a
   kill deadline.
 
 So removing the clamp is observable: the adapter no longer imposes any upper

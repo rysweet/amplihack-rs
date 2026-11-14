@@ -86,7 +86,8 @@ fn remote_exec_flags_defaults_and_trailing_azlin_args_match_python_cli() {
         first_raw(&defaults, "vm_size").as_deref(),
         Some("Standard_D2s_v3")
     );
-    assert_eq!(first_raw(&defaults, "timeout").as_deref(), Some("120"));
+    // #2022: `--timeout` has no default; unset means no limit.
+    assert_eq!(first_raw(&defaults, "timeout").as_deref(), None);
     assert!(!defaults.get_flag("keep_vm"));
     assert!(!defaults.get_flag("no_reuse"));
 

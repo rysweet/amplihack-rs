@@ -250,7 +250,7 @@ pub(crate) fn usage_limited(attempt: &Attempt, now: i64) -> Option<Limited> {
     let message = limit_patterns::limit_message(err, out, now);
     Some(Limited {
         ledger_reset,
-        wait: plan::wait_for_message(message, now),
+        wait: plan::wait_for_message(message),
         seen: message.filter(|m| !m.spend).map(|m| (m.harness, m.reset)),
     })
 }

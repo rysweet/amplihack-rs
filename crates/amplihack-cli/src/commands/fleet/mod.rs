@@ -10,7 +10,8 @@
 use crate::command_error::exit_error;
 use crate::env_builder::EnvBuilder;
 use crate::util::{
-    render_diagnostic_bytes, run_output_with_timeout, run_output_with_timeout_stdin,
+    render_diagnostic_bytes, run_output_untimed_stdin, run_output_with_timeout,
+    run_output_with_timeout_stdin,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Local};

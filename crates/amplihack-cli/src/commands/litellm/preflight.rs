@@ -19,6 +19,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+/// Hang guard for the negative cases, which must fail fast.
+const NEGATIVE_CASE_TIMEOUT_SECS: u64 = 15;
+
 pub(crate) struct VerifyFailure {
     pub exit: u8,
     id: &'static str,
@@ -158,8 +161,14 @@ pub(crate) fn run(args: &VerifyLiveArgs) -> Result<RunSummaryV1, VerifyFailure> 
         )?;
         ensure_repository_unchanged(&repo, client.id, "positive-postcondition")?;
         assert_client_binary_unchanged(client)?;
-        let negative_cases =
-            run_negative_cases(client, &config, &repo, args.timeout_seconds.min(15))?;
+        // The negative cases are expected to fail fast, so they keep a 15 s
+        // hang guard even when the positive run has no limit (issue #2022).
+        let negative_timeout = args
+            .timeout_seconds
+            .map_or(NEGATIVE_CASE_TIMEOUT_SECS, |secs| {
+                secs.min(NEGATIVE_CASE_TIMEOUT_SECS)
+            });
+        let negative_cases = run_negative_cases(client, &config, &repo, negative_timeout)?;
         negative_cases_passed += u16::try_from(negative_cases.len()).map_err(|_| {
             client_failure(
                 client.id,
@@ -364,7 +373,7 @@ fn run_positive(
     repo: &Path,
     context: &str,
     context_digest: &str,
-    timeout_seconds: u64,
+    timeout_seconds: Option<u64>,
 ) -> Result<ClientRun, VerifyFailure> {
     let correlation_id = Uuid::new_v4().to_string();
     let nonce = Uuid::new_v4().to_string();
@@ -872,7 +881,7 @@ fn execute_client(
     config: &LiveConfig,
     repo: &Path,
     prompt: &str,
-    timeout_seconds: u64,
+    timeout_seconds: Option<u64>,
     failure_case: &'static str,
 ) -> Result<String, VerifyFailure> {
     assert_client_binary_unchanged(client)?;
@@ -1061,11 +1070,15 @@ fn execute_client(
             "Install the exact pinned client and ensure its executable is available.",
         )
     })?;
-    let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
+    // `None` (issue #2022): no limit; the client runs until it exits.
+    let deadline =
+        timeout_seconds.and_then(|secs| Instant::now().checked_add(Duration::from_secs(secs)));
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
-            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
+            Ok(None) if deadline.is_none_or(|deadline| Instant::now() < deadline) => {
+                thread::sleep(Duration::from_millis(50))
+            }
             Ok(None) => {
                 terminate_process_tree(&mut child);
                 let _ = child.wait();
@@ -1580,7 +1593,14 @@ fn expect_client_failure(
     timeout_seconds: u64,
     failure_case: &'static str,
 ) -> Result<(), VerifyFailure> {
-    match execute_client(client, config, repo, prompt, timeout_seconds, failure_case) {
+    match execute_client(
+        client,
+        config,
+        repo,
+        prompt,
+        Some(timeout_seconds),
+        failure_case,
+    ) {
         Err(error) if error.exit == 69 && error.stage == failure_case => Ok(()),
         Err(error)
             if matches!(

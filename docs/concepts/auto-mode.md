@@ -86,7 +86,6 @@ be bounded by explicit operator policy, not by hidden magic numbers.
 | Control                   | Default | Where configured                                          | Kind                          |
 | ------------------------- | ------- | --------------------------------------------------------- | ----------------------------- |
 | Max turns                 | 10      | `--max-turns` flag **or** `AMPLIHACK_AUTO_MAX_TURNS` env  | Operator policy               |
-| Subprocess network timeout| 1800 s  | fixed (`QUERY_TIMEOUT`)                                    | I/O liveness backstop         |
 | Injected-content size     | 50 KiB  | fixed (`MAX_INJECTED_CONTENT_SIZE`)                       | Security bound (untrusted in) |
 
 ### Max turns (the turn budget)
@@ -124,13 +123,14 @@ When the turn budget is reached without a verified-complete objective, auto
 mode stops and logs the reason explicitly (`Reached max turns without verified
 completion`). It never stops silently.
 
-### Subprocess network timeout (kept)
+### Subprocess time limit (none)
 
-Each turn waits on the agent subprocess with a fixed `QUERY_TIMEOUT` of 1800
-seconds (30 minutes). This is an **I/O liveness backstop** on a single
-receive — it bounds how long auto mode waits for the subprocess to respond,
-not the total wall-clock duration of a turn or session. It is intentionally
-not configurable and is not an arbitrary resource cap.
+Each turn waits on the agent subprocess until it exits or auto mode is
+stopped (Ctrl-C, `SIGTERM` or `SIGHUP`). There is no per-turn time limit and
+no setting for one: a turn is work, and under issue #2022 work has no
+default time limit. The subprocess still gets its prompt on standard input
+and has its standard output and standard error read concurrently, so a
+large answer cannot fill a pipe and stall the turn.
 
 ### Injected-content size (security bound, kept)
 

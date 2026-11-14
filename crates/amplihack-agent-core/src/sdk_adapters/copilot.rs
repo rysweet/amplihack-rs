@@ -14,14 +14,11 @@ use super::types::{AdapterResult, AgentTool, SdkAdapterConfig, SdkType};
 /// Native tools available through the Copilot SDK.
 pub const NATIVE_TOOLS: &[&str] = &["file_system", "git", "web_requests"];
 
-/// Default timeout for Copilot agent runs (seconds).
-pub const DEFAULT_TIMEOUT: f64 = 300.0;
-
-// Issue #867: there is no upper `MAX_TIMEOUT` clamp on agentic runs. The
-// adapter's configured timeout is reinterpreted downstream as an idle-window
-// override for the CLI client's idle watchdog, not as a wall-clock kill
-// deadline. Only a lower bound (1.0 s) is enforced so a nonsensical/zero
-// timeout can't disable idle supervision entirely.
+// Issue #867 / #2022: there is no default timeout and no upper `MAX_TIMEOUT`
+// clamp on agentic runs. With no timeout configured the adapter has no limit.
+// An explicitly configured timeout is floored at 1.0 s and recorded on the
+// adapter (see `timeout()` and the `create_agent` log); it is never passed to
+// the SDK client, so it does not end a run.
 
 // ---------------------------------------------------------------------------
 // CopilotAdapter
@@ -30,8 +27,8 @@ pub const DEFAULT_TIMEOUT: f64 = 300.0;
 /// SDK adapter for GitHub Copilot.
 ///
 /// Creates a fresh client + session per `run_agent` call to avoid event loop
-/// issues (matching the Python pattern). Enforces bounded timeouts and tracks
-/// tool usage via events.
+/// issues (matching the Python pattern). Tracks tool usage via events. A
+/// timeout is recorded only when one is configured; none is applied by default.
 #[derive(Debug)]
 pub struct CopilotAdapter {
     config: SdkAdapterConfig,
@@ -39,14 +36,16 @@ pub struct CopilotAdapter {
     tools: Vec<AgentTool>,
     system_prompt: String,
     streaming: bool,
-    timeout: f64,
+    /// Explicit timeout in seconds, floored at 1.0. `None` = no limit (#2022).
+    /// Recorded only; never passed to the client.
+    timeout: Option<f64>,
     cli_path: Option<String>,
     tools_used: Vec<String>,
 }
 
 impl CopilotAdapter {
     pub fn new(config: SdkAdapterConfig) -> Self {
-        let timeout = config.timeout_secs.max(1.0);
+        let timeout = config.timeout_secs.map(|t| t.max(1.0));
         Self {
             config,
             client: None,
@@ -70,7 +69,7 @@ impl CopilotAdapter {
     }
 
     pub fn with_timeout(mut self, timeout: f64) -> Self {
-        self.timeout = timeout.max(1.0);
+        self.timeout = Some(timeout.max(1.0));
         self
     }
 
@@ -84,8 +83,9 @@ impl CopilotAdapter {
         &self.tools_used
     }
 
-    /// Returns the effective timeout in seconds.
-    pub fn timeout(&self) -> f64 {
+    /// Returns the configured timeout in seconds, or `None` when no limit is
+    /// set (#2022).
+    pub fn timeout(&self) -> Option<f64> {
         self.timeout
     }
 
@@ -108,9 +108,12 @@ impl SdkAdapter for CopilotAdapter {
 
     fn create_agent(&mut self) -> Result<()> {
         self.system_prompt = self.build_system_prompt();
+        let timeout = self
+            .timeout
+            .map_or_else(|| "none".to_string(), |t| format!("{t}s"));
         info!(
             name = %self.config.name,
-            timeout = self.timeout,
+            timeout = %timeout,
             cli_path = ?self.cli_path,
             "Copilot adapter agent created"
         );
@@ -287,49 +290,45 @@ mod tests {
     }
 
     #[test]
+    fn timeout_unset_is_none() {
+        // #2022: with no timeout set there is no limit at all.
+        assert_eq!(CopilotAdapter::new(test_config()).timeout(), None);
+    }
+
+    #[test]
     fn timeout_no_upper_clamp() {
         // Issue #867: agentic runs must NOT be capped by a wall-clock
-        // MAX_TIMEOUT. The lower bound (1.0 s) is preserved; large values pass
-        // through unchanged so the adapter timeout can drive the site-3 idle
-        // window instead of being an unused wall-clock bound.
-
-        // Lower bound still floors to 1.0 s.
-        assert!(
-            (CopilotAdapter::new(test_config())
+        // MAX_TIMEOUT. An explicit value floors at 1.0 s; large values pass
+        // through unchanged.
+        assert_eq!(
+            CopilotAdapter::new(test_config())
                 .with_timeout(0.0)
-                .timeout()
-                - 1.0)
-                .abs()
-                < f64::EPSILON,
-            "timeouts below 1.0 s must floor to 1.0 s"
+                .timeout(),
+            Some(1.0),
+            "explicit timeouts below 1.0 s must floor to 1.0 s"
         );
-
-        // Previously clamped to MAX_TIMEOUT (600 s) — now preserved.
-        assert!(
-            (CopilotAdapter::new(test_config())
+        assert_eq!(
+            CopilotAdapter::new(test_config())
                 .with_timeout(999.0)
-                .timeout()
-                - 999.0)
-                .abs()
-                < f64::EPSILON,
+                .timeout(),
+            Some(999.0),
             "large timeouts must not be capped at MAX_TIMEOUT"
         );
-
-        // Ordinary values are untouched.
-        assert!(
-            (CopilotAdapter::new(test_config())
+        assert_eq!(
+            CopilotAdapter::new(test_config())
                 .with_timeout(120.0)
-                .timeout()
-                - 120.0)
-                .abs()
-                < f64::EPSILON
+                .timeout(),
+            Some(120.0)
         );
-
-        // new() must likewise preserve a large configured timeout.
-        let cfg = test_config().with_timeout(1200.0);
-        assert!(
-            (CopilotAdapter::new(cfg).timeout() - 1200.0).abs() < f64::EPSILON,
+        // new() must preserve an explicit configured timeout, floored at 1.0.
+        assert_eq!(
+            CopilotAdapter::new(test_config().with_timeout(1200.0)).timeout(),
+            Some(1200.0),
             "new() must not cap large configured timeouts"
+        );
+        assert_eq!(
+            CopilotAdapter::new(test_config().with_timeout(0.5)).timeout(),
+            Some(1.0)
         );
     }
 

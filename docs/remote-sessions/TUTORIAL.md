@@ -66,8 +66,12 @@ amplihack remote exec ultrathink \
   --timeout 240
 ```
 
-`--max-turns` must be between `1` and `50`. `--timeout` must be between `5` and
-`480` minutes.
+`--max-turns` must be between `1` and `50`. `--timeout` is optional; when
+given, it must be between `5` and `480` minutes, and the run is stopped after
+that many minutes with no output. Without it, the remote session has no time
+limit and no idle limit: a run that hangs keeps its Azure VM running, and
+billing, until you stop it. Pass `--timeout` for unattended runs. See
+[Cost of a run with no limit](./CLI_REFERENCE.md#cost-of-a-run-with-no-limit).
 
 ### Step 3: Preserve the VM for debugging
 
@@ -83,7 +87,9 @@ run. Remote non-timeout failures also preserve the VM automatically.
 
 ## Tutorial 2: Start and monitor a detached session
 
-Use `start` when work should continue after your terminal exits.
+Use `start` when work should continue after your terminal exits. A detached
+session has no time limit: it runs, and its VM bills, until the agent exits or
+you kill the session ([Tutorial 5](#tutorial-5-stop-a-stuck-session)).
 
 ### Step 1: Start a detached session
 

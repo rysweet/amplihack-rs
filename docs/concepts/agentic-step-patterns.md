@@ -29,7 +29,7 @@ error conditions vary.
 | Type | Executor | Output | Timeout default |
 |---|---|---|---|
 | `bash` | Shell subprocess | stdout captured to `output` key | 120s |
-| `agent` | Claude/Copilot session | Full response captured to `output` key | `default_step_timeout` (recipe-level) |
+| `agent` | Claude/Copilot session | Full response captured to `output` key | none; a recipe-level `default_step_timeout` or `AMPLIHACK_STEP_TIMEOUT` applies only when set |
 | `recipe` | Nested recipe-runner-rs invocation | Final context from sub-recipe | Inherits from sub-recipe |
 
 ## When to use each type

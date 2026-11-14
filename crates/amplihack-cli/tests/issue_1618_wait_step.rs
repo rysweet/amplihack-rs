@@ -129,10 +129,8 @@ fn limits_a_wait_cannot_outlast_are_passed_up_at_once() {
     let prose = "Done. Note: the usage limit resets 8:30am (America/Los_Angeles).";
     for (message, stdout, reason) in [
         (SPEND_TEXT, "", "spend_limit"),
-        // Single-login (storeless) fixture: no other login can take over, so a
-        // far reset stays reset_too_far rather than becoming a capacity wait.
-        (SPEND_WEEKLY_TEXT, "", "reset_too_far"),
-        (WEEKLY_TEXT, "", "reset_too_far"),
+        // Issue #2022: a far reset (WEEKLY_TEXT, SPEND_WEEKLY_TEXT) is no
+        // longer passed up; see `far_resets_are_waited_for_on_the_same_login`.
         (
             "You've hit your session limit · try again later",
             "",
@@ -272,4 +270,30 @@ fn a_launch_that_is_already_supervised_never_waits() {
         "a nested launch cannot start a second wait"
     );
     assert!(wait_lines(&out).is_empty(), "{:?}", wait_lines(&out));
+}
+
+/// Issue #2022: in the single-login (storeless) fixture no other login can
+/// take over, so a far reset is a reset wait on the same login rather than a
+/// `reset_too_far` skip. An explicit 600 s maximum ends it here.
+#[test]
+fn far_resets_are_waited_for_on_the_same_login() {
+    for message in [WEEKLY_TEXT, SPEND_WEEKLY_TEXT] {
+        let f = Fixture::new();
+        let mut c = f.step();
+        c.env("LIMIT_MESSAGE", message)
+            .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "600");
+        let out = f.run(&mut c);
+        assert!(out.status.success(), "{message}: {}", describe(&out));
+        assert_eq!(f.count("0"), 2, "{message}: one wait, one retry");
+        assert_eq!(
+            events(&out),
+            [
+                "start reason=usage_limit harness=claude reset=2027-10-08 00:00:00 -07:00 \
+                 until=2026-10-18 08:10:00 -07:00 bound=max_wait",
+                "end reason=max reached",
+                "resume attempt=2",
+            ],
+            "{message}"
+        );
+    }
 }

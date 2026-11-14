@@ -197,16 +197,19 @@ Common causes:
 3. **Working directory mismatch** — the fix-agent modified files in a different
    directory than `repo_path`. Verify `repo_path` is correct.
 
-### Recursive cycle times out after 15 minutes
+### Recursive cycle takes a long time
 
-The `run-recursive-cycle` step wraps the subprocess invocation in
-`timeout 900` (15 minutes). If a cycle exceeds this limit:
+The `run-recursive-cycle` step has no time limit. Each nested cycle runs until
+it finishes; recursion stays bounded by `recursion.max_depth` and `max_cycles`.
+If a cycle runs longer than you want:
 
-1. The subprocess receives SIGTERM and the recipe halts.
+1. Stop it with `amplihack recipe stop`, or Ctrl-C in the terminal running it.
 2. Check `eval_results/quality_audit/` for partial output from completed steps.
 3. Consider reducing `max_cycles` or narrowing `target_path` to a smaller scope.
 4. For large codebases, run separate audits per directory instead of one
    monolithic audit.
+5. To put a ceiling on a whole run, set
+   [`AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS`](../reference/environment-variables.md#amplihack_recipe_runner_timeout_secs).
 
 ### Recursive cycle returns empty output
 

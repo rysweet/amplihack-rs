@@ -44,6 +44,11 @@ exit 0
 /// with the usage-limit wait on and the stub `claude` limited once with
 /// `message`.
 fn nested_recipe(f: &Fixture, message: &str) -> (Output, String, u32) {
+    nested_recipe_with(f, message, &[])
+}
+
+/// [`nested_recipe`] with extra environment for the recipe run.
+fn nested_recipe_with(f: &Fixture, message: &str, env: &[(&str, &str)]) -> (Output, String, u32) {
     write_executable(&f.tools.join("claude"), LIMITED_CLAUDE, 0o755);
     f.parent_slot("t-recipe", "recipe");
     let recipe = f.recipe_path();
@@ -59,6 +64,7 @@ fn nested_recipe(f: &Fixture, message: &str) -> (Output, String, u32) {
         .env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "1000000")
         .env("LIMIT_CALLS", "1")
         .env("LIMIT_MESSAGE", message)
+        .envs(env.iter().copied())
         .output()
         .unwrap();
     let steps = fs::read_to_string(f.records.join("runner.out")).unwrap_or_default();
@@ -110,27 +116,50 @@ fn session_exhausted_step_waits_for_the_reset_and_the_recipe_finishes() {
 }
 
 /// Every login weekly-exhausted, the reset months away: the governor admits
-/// the step and the supervisor alone decides. It does not wait (the reset is
-/// too far and no login can take over), so the step fails once with the
-/// provider's exit code, never the governor's 80. This pins that one
+/// the step and the supervisor alone decides. Since issue #2022 it waits for
+/// the far reset on the same login (no login can take over). An explicit
+/// 600 s maximum ends the wait here, the step is rerun once and the recipe
+/// finishes; the governor's exit code 80 never appears. This pins that one
 /// component decides, rather than two that agree only while their
 /// eligibility rules match.
 #[test]
 fn weekly_exhausted_step_is_decided_by_the_supervisor_not_the_governor() {
     let f = Fixture::new();
     f.readings(&[("alpha", 0.0, 100.0), ("beta", 0.0, 100.0)]);
-    let (out, steps, calls) = nested_recipe(&f, WEEKLY_TEXT);
-    assert!(!out.status.success(), "{}", full(&out, &steps));
+    let (out, steps, calls) = nested_recipe_with(
+        &f,
+        WEEKLY_TEXT,
+        &[("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "600")],
+    );
     assert_ne!(out.status.code(), Some(DENIED), "{}", full(&out, &steps));
     assert!(
         !steps.contains("governor: not started") && !text(&out.stderr).contains("not started"),
         "{}",
         full(&out, &steps)
     );
-    assert_eq!(calls, 1, "the step ran once and was not rerun");
     assert!(
-        steps.contains("amplihack.recipe.usage_limit_wait skipped reason=reset_too_far"),
-        "the supervisor declined the wait: {}",
+        !steps.contains("reason=reset_too_far"),
+        "a far reset is no longer skipped: {}",
         full(&out, &steps)
     );
+    let waits: Vec<&str> = steps
+        .lines()
+        .filter_map(|l| l.strip_prefix("amplihack.recipe.usage_limit_wait "))
+        .filter(|l| !l.starts_with("progress"))
+        .collect();
+    assert!(
+        waits.first().is_some_and(
+            |l| l.starts_with("start reason=usage_limit harness=claude ")
+                && l.ends_with(" bound=max_wait")
+        ),
+        "the supervisor waited for the far reset until the explicit maximum: {}",
+        full(&out, &steps)
+    );
+    assert!(
+        waits.contains(&"end reason=max reached") && waits.contains(&"resume attempt=2"),
+        "{}",
+        full(&out, &steps)
+    );
+    assert!(out.status.success(), "{}", full(&out, &steps));
+    assert_eq!(calls, 3, "step 1 twice (limited, then rerun), step 2 once");
 }

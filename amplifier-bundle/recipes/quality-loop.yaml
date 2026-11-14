@@ -14,7 +14,6 @@ tags: ["self-improvement", "automation", "quality", "ci", "iteration"]
 recursion:
   max_depth: 3
   max_total_steps: 60
-default_step_timeout: 1800
 context:
   base_branch: ""  # base for the pull request, passed on to default-workflow; empty: the PR's own base (docs/reference/workflow-delivery-inputs.md)
   repo_path: "."

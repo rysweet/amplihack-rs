@@ -65,7 +65,7 @@ amplihack remote exec <COMMAND> <PROMPT> [OPTIONS] [-- <AZLIN_ARGS>...]
 | `--vm-name <NAME>` | none | Reuse a specific VM. |
 | `--keep-vm` | `false` | Keep the VM after execution. |
 | `--no-reuse` | `false` | Always provision a fresh VM. |
-| `--timeout <MINUTES>` | `120` | Maximum remote execution time. Must be from `5` through `480`. |
+| `--timeout <MINUTES>` | unset: no limit | Optional limit on the remote session: it is stopped after this many minutes with no output. Must be from `5` through `480` when given. Without it, the session runs until it finishes or is stopped, and its VM bills for all of that time, including a hang; see [Cost of a run with no limit](#cost-of-a-run-with-no-limit). |
 | `--region <REGION>` | azlin default | Azure region for provisioning. |
 | `--port <PORT>` | none | Reuse an existing local bastion tunnel port. |
 
@@ -88,6 +88,25 @@ CLI validates this before packaging the repository or provisioning a VM.
 If the remote command exits non-zero without timing out, the VM is preserved for
 debugging even when `--keep-vm` was not passed. Timed-out executions follow the
 normal cleanup rule.
+
+### Cost of a run with no limit
+
+Since issue #2022, `exec` has no default time limit and no default idle limit.
+Without `--timeout`, nothing ends a remote run that hangs: an agent that stops
+printing and never exits keeps `exec` waiting until someone stops it. The Azure
+VM keeps running for that whole time, and Azure bills for it. `exec` removes the
+VM only after the run ends.
+
+- To bound a run, pass `--timeout <MINUTES>`. The run is then stopped after
+  that many minutes with no output, and the VM follows the normal cleanup rule.
+  The window counts time the run spends stopped by `SIGSTOP`
+  ([#2543](https://github.com/rysweet/amplihack-rs/issues/2543)).
+- To end a run without a timeout, interrupt `exec`. Then check `azlin list`
+  for the run's VM and remove it with `azlin kill <VM_NAME>` if it is still
+  there.
+
+Detached sessions from [`amplihack remote start`](#amplihack-remote-start)
+have no time limit either. Their VMs bill until the sessions are killed.
 
 ### Examples
 
@@ -204,6 +223,12 @@ Each detached session receives a 32 GB Node heap by setting
 For each prompt, `start` packages the current repository, allocates a VM with
 available capacity or provisions a new VM, transfers context, launches a tmux
 session, marks the session `running`, and prints the session ID.
+
+A detached session has no time limit and no idle limit. It runs until the agent
+exits or [`amplihack remote kill`](#amplihack-remote-kill) stops it, and its VM
+bills for that whole time, including a hang. Check running sessions with
+[`amplihack remote list`](#amplihack-remote-list). See
+[Cost of a run with no limit](#cost-of-a-run-with-no-limit).
 
 `ANTHROPIC_API_KEY` must be present in the local environment. The key is injected
 into the remote tmux command environment for the detached agent process. The CLI

@@ -88,7 +88,7 @@ fn with_stub_azlin<T>(f: impl FnOnce(&Executor) -> T) -> (T, Recorded) {
     let original = std::env::var("PATH").unwrap_or_default();
     // SAFETY: PATH access is serialised by PATH_GUARD and restored below.
     unsafe { std::env::set_var("PATH", format!("{}:{original}", rec._bin.path().display())) };
-    let executor = Executor::new(vm(), 1, None);
+    let executor = Executor::new(vm(), Some(1), None);
     let result = f(&executor);
     unsafe { std::env::set_var("PATH", original) };
     (result, rec)

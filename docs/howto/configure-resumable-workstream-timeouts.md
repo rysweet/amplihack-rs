@@ -52,7 +52,7 @@ export AMPLIHACK_MAX_RUNTIME=14400
 export AMPLIHACK_TIMEOUT_POLICY=interrupt-preserve
 ```
 
-The default runtime budget is still `7200` seconds, but it becomes only a default. It is no longer a destructive hard-coded path.
+There is no default runtime budget (issue #2022). A workstream with no `max_runtime` from any of these inputs runs until it finishes or is stopped. The former built-in `7200` seconds no longer exists.
 
 ### Precedence
 
@@ -62,7 +62,7 @@ For issue #4032, specific inputs beat general defaults:
 2. Explicit CLI flags win for the whole multitask run when no per-workstream override exists.
 3. Recipe context passed in by `smart-orchestrator` seeds run-wide defaults when CLI flags are absent.
 4. Environment variables provide ambient defaults.
-5. Built-in fallback remains `7200` seconds.
+5. With none of these set, there is no runtime budget.
 
 ---
 

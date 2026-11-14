@@ -32,17 +32,15 @@ fn user_file(home: &Path, body: &str) {
     fs::write(dir.join("config.toml"), body).unwrap();
 }
 
-/// The schema default (issue #1801).
-const SIX_HOURS: u64 = 21_600;
-
+// Issue #2022: the maximum has no default; unset means no ceiling.
 const ON: WaitSettings = WaitSettings {
     enabled: true,
-    max_wait_secs: Some(SIX_HOURS),
+    max_wait_secs: None,
     off_in_ci: false,
 };
 const OFF: WaitSettings = WaitSettings {
     enabled: false,
-    max_wait_secs: Some(SIX_HOURS),
+    max_wait_secs: None,
     off_in_ci: false,
 };
 
@@ -116,7 +114,7 @@ fn an_invalid_variable_falls_back_to_the_file() {
 }
 
 #[test]
-fn a_user_file_or_the_variable_can_go_above_the_default() {
+fn a_user_file_or_the_variable_can_set_any_ceiling() {
     let home = tempfile::tempdir().unwrap();
     user_file(home.path(), "[recipe]\nusage_limit_max_wait_secs = 86400\n");
     assert_eq!(settings(home.path(), &[], None).max_wait_secs, Some(86_400));
@@ -128,10 +126,10 @@ fn a_user_file_or_the_variable_can_go_above_the_default() {
 }
 
 // An invalid maximum in the file or the variable is reported by the loader
-// and ignored; the next setting down applies, ending at the schema default
-// (docs/reference/user-config.md).
+// and ignored; the next setting down applies, ending at no ceiling at all
+// (issue #2022, docs/reference/user-config.md).
 #[test]
-fn an_invalid_maximum_in_the_file_falls_back_to_the_default() {
+fn an_invalid_maximum_in_the_file_falls_back_to_no_ceiling() {
     for body in [
         "[recipe]\nusage_limit_max_wait_secs = -1\n",
         "[recipe]\nusage_limit_max_wait_secs = \"six hours\"\n",
@@ -141,20 +139,20 @@ fn an_invalid_maximum_in_the_file_falls_back_to_the_default() {
         user_file(home.path(), body);
         assert_eq!(
             settings(home.path(), &[], None).max_wait_secs,
-            Some(SIX_HOURS),
+            None,
             "{body:?}"
         );
     }
 }
 
 #[test]
-fn an_invalid_maximum_variable_falls_back_to_the_file_then_the_default() {
+fn an_invalid_maximum_variable_falls_back_to_the_file_then_no_ceiling() {
     let home = tempfile::tempdir().unwrap();
     for bad in ["", "-5", "abc", "1e3", "99999999999999999999999"] {
         let env = [("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", bad)];
         assert_eq!(
             settings(home.path(), &env, None).max_wait_secs,
-            Some(SIX_HOURS),
+            None,
             "{bad:?}"
         );
     }
@@ -164,7 +162,7 @@ fn an_invalid_maximum_variable_falls_back_to_the_file_then_the_default() {
 }
 
 #[test]
-fn a_zero_maximum_is_kept_not_replaced_by_the_default() {
+fn a_zero_maximum_is_kept_not_treated_as_unset() {
     let home = tempfile::tempdir().unwrap();
     user_file(home.path(), "[recipe]\nusage_limit_max_wait_secs = 0\n");
     assert_eq!(settings(home.path(), &[], None).max_wait_secs, Some(0));

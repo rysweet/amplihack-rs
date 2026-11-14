@@ -773,9 +773,10 @@ steps:
       FIXALL_V=$(v fix_all_per_cycle); CAT_V=$(v categories)
       OUT_V=$(v output_dir); NEXT_V=$(v next_cycle)
 
-      # Bug #646: Shell timeout 900s prevents unbounded recursion hangs.
-      # Uses shell `timeout` (not YAML timeout: field) for issue #439 compliance.
-      timeout 900 amplihack recipe run quality-audit-cycle \
+      # Bug #646: recursion stays bounded by recursion.max_depth and by
+      # max_cycles. Issue #2022: the recursive run is work, so no wall-clock
+      # limit wraps it.
+      amplihack recipe run quality-audit-cycle \
         --context-from-file task_description="$_TASK_TMPFILE" \
         --context-from-file cycle_history="$_HISTORY_TMPFILE" \
         -c repo_path="$REPO_V" \

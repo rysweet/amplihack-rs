@@ -21,8 +21,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use amplihack_utils::idle_watchdog::{
-    DEFAULT_IDLE_TIMEOUT_SECS, DEFAULT_POLL_MS, ENV_IDLE_POLL_MS, ENV_IDLE_TIMEOUT_SECS,
-    IdleConfig, file_idle_since, wait_with_idle_watchdog, wait_with_idle_watchdog_sync,
+    DEFAULT_POLL_MS, ENV_IDLE_POLL_MS, ENV_IDLE_TIMEOUT_SECS, IDLE_TIMEOUT_WARNING, IdleConfig,
+    file_idle_since, parse_positive_secs, positive_secs_is_malformed, wait_with_idle_watchdog,
+    wait_with_idle_watchdog_sync,
 };
 
 /// Serializes tests that read or mutate the process environment. Behavioural
@@ -32,7 +33,7 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 /// Build a config directly (env-independent) for deterministic behavioural tests.
 fn cfg(idle: Duration, poll: Duration) -> IdleConfig {
     IdleConfig {
-        idle_timeout: idle,
+        idle_timeout: Some(idle),
         poll,
     }
 }
@@ -41,55 +42,181 @@ fn cfg(idle: Duration, poll: Duration) -> IdleConfig {
 // IdleConfig
 // ---------------------------------------------------------------------------
 
+/// Issue #2022: with the variable unset there is no idle limit at all.
 #[test]
-fn config_from_env_defaults() {
+fn config_from_env_defaults_to_no_idle_limit() {
     let _guard = ENV_LOCK.lock().unwrap();
+    let saved = (
+        std::env::var_os(ENV_IDLE_TIMEOUT_SECS),
+        std::env::var_os(ENV_IDLE_POLL_MS),
+    );
     unsafe {
         std::env::remove_var(ENV_IDLE_TIMEOUT_SECS);
         std::env::remove_var(ENV_IDLE_POLL_MS);
     }
     let c = IdleConfig::from_env();
-    assert_eq!(
-        c.idle_timeout,
-        Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS)
-    );
+    restore(saved);
+    assert_eq!(c.idle_timeout, None);
     assert_eq!(c.poll, Duration::from_millis(DEFAULT_POLL_MS));
 }
 
 #[test]
 fn config_from_env_override() {
     let _guard = ENV_LOCK.lock().unwrap();
+    let saved = (
+        std::env::var_os(ENV_IDLE_TIMEOUT_SECS),
+        std::env::var_os(ENV_IDLE_POLL_MS),
+    );
     unsafe {
         std::env::set_var(ENV_IDLE_TIMEOUT_SECS, "42");
         std::env::set_var(ENV_IDLE_POLL_MS, "250");
     }
     let c = IdleConfig::from_env();
-    unsafe {
-        std::env::remove_var(ENV_IDLE_TIMEOUT_SECS);
-        std::env::remove_var(ENV_IDLE_POLL_MS);
-    }
-    assert_eq!(c.idle_timeout, Duration::from_secs(42));
+    restore(saved);
+    assert_eq!(c.idle_timeout, Some(Duration::from_secs(42)));
     assert_eq!(c.poll, Duration::from_millis(250));
 }
 
+/// Issue #2022: `0`, empty and garbage mean no idle limit, never 0 s and
+/// never a hidden default.
 #[test]
-fn config_from_env_ignores_garbage_and_zero() {
+fn config_from_env_zero_empty_and_garbage_mean_no_idle_limit() {
     let _guard = ENV_LOCK.lock().unwrap();
-    unsafe {
-        std::env::set_var(ENV_IDLE_TIMEOUT_SECS, "not-a-number");
-        std::env::set_var(ENV_IDLE_POLL_MS, "0");
-    }
-    let c = IdleConfig::from_env();
-    unsafe {
-        std::env::remove_var(ENV_IDLE_TIMEOUT_SECS);
-        std::env::remove_var(ENV_IDLE_POLL_MS);
-    }
-    // Non-parsable / zero values must fall back to the defaults, never 0.
-    assert_eq!(
-        c.idle_timeout,
-        Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS)
+    let saved = (
+        std::env::var_os(ENV_IDLE_TIMEOUT_SECS),
+        std::env::var_os(ENV_IDLE_POLL_MS),
     );
+    for raw in ["0", "", "not-a-number", "-5", "99999999999999999999"] {
+        unsafe {
+            std::env::set_var(ENV_IDLE_TIMEOUT_SECS, raw);
+            std::env::set_var(ENV_IDLE_POLL_MS, "0");
+        }
+        let c = IdleConfig::from_env();
+        assert_eq!(c.idle_timeout, None, "{raw:?}");
+        assert_eq!(c.poll, Duration::from_millis(DEFAULT_POLL_MS), "{raw:?}");
+    }
+    restore(saved);
+}
+
+#[test]
+fn config_none_has_no_idle_limit_and_the_default_poll() {
+    // `none()` reads the poll interval from the environment.
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let saved = (
+        std::env::var_os(ENV_IDLE_TIMEOUT_SECS),
+        std::env::var_os(ENV_IDLE_POLL_MS),
+    );
+    unsafe { std::env::remove_var(ENV_IDLE_POLL_MS) };
+    let c = IdleConfig::none();
+    restore(saved);
+    assert_eq!(c.idle_timeout, None);
     assert_eq!(c.poll, Duration::from_millis(DEFAULT_POLL_MS));
+}
+
+fn restore(saved: (Option<std::ffi::OsString>, Option<std::ffi::OsString>)) {
+    for (key, value) in [
+        (ENV_IDLE_TIMEOUT_SECS, saved.0),
+        (ENV_IDLE_POLL_MS, saved.1),
+    ] {
+        match value {
+            Some(v) => unsafe { std::env::set_var(key, v) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// parse_positive_secs: the one digits-only parser (issue #2022, AC2, S24)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_positive_secs_rejects_everything_but_a_positive_whole_number() {
+    for raw in [
+        None,
+        Some(""),
+        Some("  "),
+        Some("0"),
+        Some("00"),
+        Some("abc"),
+        Some("-5"),
+        Some("+7"),
+        Some("7s"),
+        Some("0x10"),
+        Some("7.0"),
+        Some("1e3"),
+        Some("\u{0}7"),
+        Some("7 8"),
+        Some("99999999999999999999"),
+    ] {
+        assert_eq!(parse_positive_secs(raw), None, "{raw:?}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// positive_secs_is_malformed: when a limit variable warns (issue #2022, S5)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn malformed_limit_values_warn() {
+    for raw in [
+        "300s",
+        "+7",
+        "0x10",
+        "-5",
+        "7.0",
+        "abc",
+        "99999999999999999999",
+    ] {
+        assert!(positive_secs_is_malformed(Some(raw)), "{raw:?} must warn");
+    }
+}
+
+#[test]
+fn unset_empty_zero_and_valid_limit_values_do_not_warn() {
+    for raw in [
+        None,
+        Some(""),
+        Some("  "),
+        Some("0"),
+        Some("000"),
+        Some("30"),
+        Some(" 30 "),
+    ] {
+        assert!(!positive_secs_is_malformed(raw), "{raw:?} must not warn");
+    }
+}
+
+#[test]
+fn idle_timeout_warning_names_the_variable_and_no_value() {
+    assert!(IDLE_TIMEOUT_WARNING.contains(ENV_IDLE_TIMEOUT_SECS));
+    // The only digit is the "0" of "above 0": the message is a fixed string
+    // and never echoes the rejected value.
+    let without_rule = IDLE_TIMEOUT_WARNING.replacen("above 0", "", 1);
+    assert!(
+        !without_rule.bytes().any(|b| b.is_ascii_digit()),
+        "the warning must not echo any value"
+    );
+}
+
+#[test]
+fn parse_positive_secs_accepts_trimmed_digits() {
+    assert_eq!(parse_positive_secs(Some("7")), Some(Duration::from_secs(7)));
+    assert_eq!(
+        parse_positive_secs(Some(" 7 ")),
+        Some(Duration::from_secs(7))
+    );
+    assert_eq!(
+        parse_positive_secs(Some("7\n")),
+        Some(Duration::from_secs(7))
+    );
+    assert_eq!(
+        parse_positive_secs(Some("007")),
+        Some(Duration::from_secs(7))
+    );
+    assert_eq!(
+        parse_positive_secs(Some("18446744073709551615")),
+        Some(Duration::from_secs(u64::MAX))
+    );
 }
 
 #[test]
@@ -100,7 +227,7 @@ fn config_with_idle_overrides_idle_keeps_default_poll() {
         std::env::remove_var(ENV_IDLE_POLL_MS);
     }
     let c = IdleConfig::with_idle(Duration::from_secs(7));
-    assert_eq!(c.idle_timeout, Duration::from_secs(7));
+    assert_eq!(c.idle_timeout, Some(Duration::from_secs(7)));
     assert_eq!(c.poll, Duration::from_millis(DEFAULT_POLL_MS));
 }
 
@@ -488,4 +615,81 @@ fn file_idle_since_missing_file_is_error() {
         file_idle_since(&missing, Duration::from_secs(1)).is_err(),
         "probing a nonexistent log file must surface an I/O error, not a bool"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #2022: with no idle limit the watchdog never kills
+// ---------------------------------------------------------------------------
+
+fn no_limit() -> IdleConfig {
+    IdleConfig {
+        idle_timeout: None,
+        poll: Duration::from_millis(100),
+    }
+}
+
+/// With `idle_timeout: None` the watchdog takes the no-kill path; the child
+/// exits only when released over stdin.
+#[test]
+fn sync_silent_child_is_not_killed_without_an_idle_limit() {
+    use std::io::Write as _;
+    let mut child = std::process::Command::new("bash")
+        .args(["-c", "read -r _; echo done"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn silent child");
+    let mut stdin = child.stdin.take().expect("child stdin");
+    let release = std::thread::spawn(move || {
+        // The exit-status asserts below decide the result.
+        let _ = stdin.write_all(b"go\n");
+    });
+    let (out, err) = (child.stdout.take(), child.stderr.take());
+    let outcome = wait_with_idle_watchdog_sync(&mut child, out, err, no_limit());
+    release.join().expect("release thread");
+    assert!(!outcome.killed_for_idle);
+    assert_eq!(outcome.status.unwrap().code(), Some(0));
+    assert!(outcome.stdout.contains("done"), "{:?}", outcome.stdout);
+}
+
+/// With `idle_timeout: None` the watchdog takes the no-kill path; the child
+/// exits only when released over stdin.
+#[tokio::test]
+async fn async_silent_child_is_not_killed_without_an_idle_limit() {
+    use tokio::io::AsyncWriteExt as _;
+    let mut child = tokio::process::Command::new("bash")
+        .args(["-c", "read -r _; echo done"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn silent child");
+    let mut stdin = child.stdin.take().expect("child stdin");
+    drop(tokio::spawn(async move {
+        // The exit-status asserts below decide the result.
+        let _ = stdin.write_all(b"go\n").await;
+    }));
+    let (out, err) = (child.stdout.take(), child.stderr.take());
+    let outcome = wait_with_idle_watchdog(&mut child, out, err, no_limit()).await;
+    assert!(!outcome.killed_for_idle);
+    assert_eq!(outcome.status.unwrap().code(), Some(0));
+    assert!(outcome.stdout.contains("done"), "{:?}", outcome.stdout);
+}
+
+/// The unbounded path still reaps a child that exits with an error.
+#[test]
+fn sync_unbounded_wait_reports_a_failing_exit() {
+    let mut child = std::process::Command::new("bash")
+        .args(["-c", "echo oops >&2; exit 4"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn failing child");
+    let (out, err) = (child.stdout.take(), child.stderr.take());
+    let outcome = wait_with_idle_watchdog_sync(&mut child, out, err, no_limit());
+    assert!(!outcome.killed_for_idle);
+    assert_eq!(outcome.status.unwrap().code(), Some(4));
+    assert!(outcome.stderr.contains("oops"));
 }

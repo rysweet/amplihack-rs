@@ -20,11 +20,21 @@ use std::time::Duration;
 /// Starts a limited step, waits for its `start` line, sends `sig`, and
 /// returns its output with the whole stderr.
 fn signal_during_wait(f: &Fixture, sig: i32) -> Output {
+    let mut c = f.step();
+    c.env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "1");
+    signal_during_wait_with(f, c, sig)
+}
+
+/// [`signal_during_wait`] for a step command the caller has built (issue
+/// #2022 reuses it for a far reset with no maximum).
+pub(crate) fn signal_during_wait_with(
+    f: &Fixture,
+    mut c: std::process::Command,
+    sig: i32,
+) -> Output {
     let input = f.root.join("stdin.bin");
     fs::write(&input, b"prompt for the step\n").unwrap();
-    let mut c = f.step();
-    c.env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "1")
-        .stdin(Stdio::from(fs::File::open(&input).unwrap()))
+    c.stdin(Stdio::from(fs::File::open(&input).unwrap()))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = c.spawn().expect("spawn amplihack");

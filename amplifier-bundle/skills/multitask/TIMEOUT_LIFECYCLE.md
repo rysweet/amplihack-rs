@@ -52,7 +52,7 @@ The multitask orchestrator tracks every workstream through a well-defined lifecy
 
 ## Timeout Policies
 
-Every workstream has a `timeout_policy` that controls what happens when `max_runtime` is exceeded.
+Every workstream has a `timeout_policy` that controls what happens when `max_runtime` is exceeded. A workstream without a `max_runtime` has no runtime budget, so no policy ever fires for it (issue #2022). The examples below assume `max_runtime` was set to `7200`.
 
 ### `interrupt-preserve` (default)
 
@@ -118,15 +118,17 @@ If an unrecognised value is supplied, a `warnings.warn` is emitted and the defau
 
 ## `max_runtime`
 
-Maximum wall-clock seconds a workstream may run before the timeout policy fires.
+Maximum wall-clock seconds a workstream may run before the timeout policy fires. It is optional.
 
 | Setting | Value |
 |---|---|
-| **Default** | `7200` (2 hours) |
+| **Default** | None: no runtime budget. The workstream runs until it finishes or is stopped (issue #2022). |
 | **Minimum** | `0` (fires immediately — useful for testing) |
-| **Override (global)** | `AMPLIHACK_MAX_RUNTIME` env var (seconds) |
-| **Override (per workstream)** | `max_runtime` field in JSON config or `add()` kwarg |
-| **Invalid value** | Falls back to default, warning emitted |
+| **Set for all workstreams** | `amplihack multitask run <config> --max-runtime <SECONDS>` |
+| **Set per workstream** | `max_runtime` field in the JSON config; it wins over `--max-runtime` |
+| **Invalid value** | Rejected: the flag or the config file fails to parse. There is no fallback value. |
+
+The budget counts elapsed time, including time the workstream spends stopped by `SIGSTOP` ([#2543](https://github.com/rysweet/amplihack-rs/issues/2543)).
 
 ---
 

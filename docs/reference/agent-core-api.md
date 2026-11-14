@@ -34,7 +34,7 @@ pub struct AgentConfig {
     pub max_turns: u32,
     pub memory_backend: Backend,
     pub memory_topology: Topology,
-    pub timeout_secs: u64,
+    pub timeout_secs: Option<u64>, // None = no limit (#2022)
     pub working_dir: Option<PathBuf>,
     pub capabilities: Vec<Capability>,
 }
@@ -245,6 +245,55 @@ pub enum AgentError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
+```
+
+## Timeout fields
+
+No agent-core type has a default timeout (#2022). Each timeout field is an
+`Option` that defaults to `None`, meaning no limit. A value exists only when
+config or a builder sets one. See
+[No default time limits on work](../concepts/no-default-time-limits.md).
+
+| Type | Field | Type | Default | Set by | Read back with |
+|---|---|---|---|---|---|
+| `models::AgentConfig` | `timeout_secs` | `Option<u64>` | `None` | `with_timeout(secs)` or `timeout_secs` in config | the field |
+| `models::TaskSpec` | `timeout_secs` | `Option<u64>` | `None` | `with_timeout(secs)` or `timeout_secs` in JSON | `timeout() -> Option<Duration>` |
+| `sdk_adapters::SdkAdapterConfig` | `timeout_secs` | `Option<f64>` | `None` | `with_timeout(secs)` or `timeout_secs` in config | the field |
+| `sdk_adapters::CopilotAdapter` | (private) | `Option<f64>` | `None` | `SdkAdapterConfig.timeout_secs` or `with_timeout(secs)` | `timeout() -> Option<f64>` |
+| `sdk_adapters::CopilotCliClient` | (private) | `Option<Duration>` | `None` | `with_timeout(Duration)` | not exposed |
+
+Rules:
+
+- **Serde.** All three config fields use
+  `#[serde(default, skip_serializing_if = "Option::is_none")]`. JSON or TOML
+  without the key loads as `None`; `{"timeout_secs": 300}` loads as
+  `Some(300)`. A `None` field is left out of serialised output.
+- **No sentinels.** `Some(0)` is stored as given and never means "unlimited".
+- **`CopilotAdapter`** raises a set value below 1 second to 1 second and
+  keeps larger values unchanged; there is no upper clamp (#867). It records
+  the value and logs it as `timeout = None` or `timeout = Some(..)`. It does
+  not pass the value to the client, so it is not enforced.
+- **`CopilotCliClient`** with a timeout set uses it as the idle window of the
+  [idle watchdog](./idle-watchdog.md). With `None` the call has no limit.
+- **`AgentConfig` and `TaskSpec`** values are recorded for callers and are
+  not enforced by agent-core. A caller that enforces one should convert with
+  `Duration::try_from_secs_f64` (for `f64`) or `Duration::from_secs`, and
+  treat `None` as no limit.
+
+```rust
+use std::time::Duration;
+use amplihack_agent_core::models::TaskSpec;
+use amplihack_agent_core::sdk_adapters::types::{SdkAdapterConfig, SdkType};
+
+let task = TaskSpec::new("Summarise the open review threads on PR 2050");
+assert_eq!(task.timeout(), None); // no limit
+
+let task = task.with_timeout(30);
+assert_eq!(task.timeout(), Some(Duration::from_secs(30)));
+
+let cfg = SdkAdapterConfig::new("reviewer", SdkType::Copilot);
+assert_eq!(cfg.timeout_secs, None);
+assert_eq!(cfg.with_timeout(60.0).timeout_secs, Some(60.0));
 ```
 
 ## Feature Flags

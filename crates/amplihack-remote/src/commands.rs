@@ -65,7 +65,7 @@ pub struct ExecOptions {
     pub prompt: String,
     pub max_turns: u32,
     pub vm_options: VMOptions,
-    pub timeout_minutes: u64,
+    pub timeout_minutes: Option<u64>,
     pub skip_secret_scan: bool,
     pub api_key: String,
 }
@@ -204,7 +204,7 @@ pub async fn start_sessions(options: StartOptions) -> Result<StartSummary, Remot
         let session = sessions
             .update_session_vm(&session.session_id, &vm.name)
             .map_err(RemoteError::packaging)?;
-        let executor = Executor::new(vm, 120, options.tunnel_port);
+        let executor = Executor::new(vm, None, options.tunnel_port);
         executor.transfer_context(&archive).await?;
         packager.cleanup();
         executor
@@ -340,8 +340,8 @@ fn validate_max_turns(max_turns: u32) -> Result<(), RemoteError> {
     }
 }
 
-fn validate_timeout(timeout_minutes: u64) -> Result<(), RemoteError> {
-    if (5..=480).contains(&timeout_minutes) {
+fn validate_timeout(timeout_minutes: Option<u64>) -> Result<(), RemoteError> {
+    if timeout_minutes.is_none_or(|minutes| (5..=480).contains(&minutes)) {
         Ok(())
     } else {
         Err(RemoteError::validation(
@@ -477,9 +477,9 @@ mod tests {
         assert!(validate_max_turns(0).is_err());
         assert!(validate_max_turns(25).is_ok());
         assert!(validate_max_turns(51).is_err());
-        assert!(validate_timeout(4).is_err());
-        assert!(validate_timeout(60).is_ok());
-        assert!(validate_timeout(481).is_err());
+        assert!(validate_timeout(Some(4)).is_err());
+        assert!(validate_timeout(None).is_ok() && validate_timeout(Some(60)).is_ok());
+        assert!(validate_timeout(Some(481)).is_err());
         assert!(validate_api_key("").is_err());
         assert!(validate_api_key("sk-123").is_ok());
     }

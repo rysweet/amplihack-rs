@@ -1,13 +1,11 @@
 use super::helpers::augmented_path;
 use super::types::ScipIndexResult;
-use crate::util::run_output_with_timeout;
+use crate::util::run_output_untimed;
 use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-use std::time::{Duration, Instant};
-
-const SCIP_INDEXER_TIMEOUT: Duration = Duration::from_secs(600);
+use std::time::Instant;
 
 pub(super) fn run_indexer_for_language(
     language: &str,
@@ -40,7 +38,8 @@ pub(super) fn run_indexer_for_language(
         .args(&command[1..])
         .current_dir(project_path)
         .env("PATH", augmented_path());
-    let output = run_output_with_timeout(indexer, SCIP_INDEXER_TIMEOUT);
+    // Issue #2022: indexing is a build-type job, so it runs without a limit.
+    let output = run_output_untimed(indexer);
     let elapsed = started.elapsed().as_secs_f64();
 
     if let Some(cleanup) = cleanup {

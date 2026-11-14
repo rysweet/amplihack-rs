@@ -225,8 +225,14 @@ pub struct SdkAdapterConfig {
     pub enable_spawning: bool,
     #[serde(default = "default_max_turns")]
     pub max_turns: u32,
-    #[serde(default = "default_timeout")]
-    pub timeout_secs: f64,
+    /// Per-run time limit in seconds. `None` = no limit (#2022); a limit
+    /// exists only when a caller sets one.
+    ///
+    /// SR-4: this value is recorded only and is not enforced anywhere. If it
+    /// is ever enforced, convert it with `Duration::try_from_secs_f64` so NaN,
+    /// negative and infinite values are rejected instead of panicking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<f64>,
 }
 
 fn default_model() -> String {
@@ -241,10 +247,6 @@ fn default_max_turns() -> u32 {
     10
 }
 
-fn default_timeout() -> f64 {
-    300.0
-}
-
 impl SdkAdapterConfig {
     pub fn new(name: impl Into<String>, sdk_type: SdkType) -> Self {
         Self {
@@ -257,7 +259,7 @@ impl SdkAdapterConfig {
             enable_eval: false,
             enable_spawning: false,
             max_turns: default_max_turns(),
-            timeout_secs: default_timeout(),
+            timeout_secs: None,
         }
     }
 
@@ -271,8 +273,9 @@ impl SdkAdapterConfig {
         self
     }
 
+    /// Sets an explicit per-run time limit in seconds.
     pub fn with_timeout(mut self, secs: f64) -> Self {
-        self.timeout_secs = secs;
+        self.timeout_secs = Some(secs);
         self
     }
 
@@ -383,12 +386,13 @@ mod tests {
             .with_storage_path("/data");
         assert_eq!(cfg.name, "agent-1");
         assert_eq!(cfg.model, "claude-3");
-        assert_eq!(cfg.timeout_secs, 60.0);
+        assert_eq!(cfg.timeout_secs, Some(60.0));
         assert!(cfg.storage_path.is_some());
 
         let d = SdkAdapterConfig::new("a", SdkType::Microsoft);
         assert_eq!(d.max_turns, 10);
-        assert!((d.timeout_secs - 300.0).abs() < f64::EPSILON);
+        // #2022: no default limit; a limit exists only when set.
+        assert_eq!(d.timeout_secs, None);
         assert!(d.enable_memory);
         assert!(!d.enable_eval);
     }
@@ -400,5 +404,31 @@ mod tests {
         let parsed: SdkAdapterConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.name, "test");
         assert_eq!(parsed.sdk_type, SdkType::Copilot);
+        assert_eq!(parsed.timeout_secs, None);
+    }
+
+    #[test]
+    fn config_serde_timeout_absent_is_none_and_explicit_is_kept() {
+        // #2022: a config without the key has no limit; an old config with
+        // an explicit value still loads as that value.
+        let without = r#"{"name":"a","sdk_type":"copilot"}"#;
+        let parsed: SdkAdapterConfig = serde_json::from_str(without).unwrap();
+        assert_eq!(parsed.timeout_secs, None);
+
+        let with = r#"{"name":"a","sdk_type":"copilot","timeout_secs":300}"#;
+        let parsed: SdkAdapterConfig = serde_json::from_str(with).unwrap();
+        assert_eq!(parsed.timeout_secs, Some(300.0));
+    }
+
+    #[test]
+    fn config_serde_omits_unset_timeout() {
+        let cfg = SdkAdapterConfig::new("a", SdkType::Copilot);
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(
+            !json.contains("timeout_secs"),
+            "an unset timeout must not be serialised: {json}"
+        );
+        let json = serde_json::to_string(&cfg.with_timeout(45.0)).unwrap();
+        assert!(json.contains("\"timeout_secs\":45"), "{json}");
     }
 }
