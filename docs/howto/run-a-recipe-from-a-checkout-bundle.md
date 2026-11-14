@@ -84,6 +84,11 @@ Every sub-recipe, agent and tool then comes from the checkout. Before the run
 starts, the checkout's bundle is checked and copied, so you can keep editing
 the checkout while the run continues: the run does not see your edits.
 
+The checks confirm only that you own the checkout's files and that no other
+user can write to them. With `--bundle checkout`, the checkout's recipes and
+tools run with your permissions, so use it only with checkouts whose contents
+you trust, not with a freshly cloned repository you have not read.
+
 To check the bundle without running anything, add `--dry-run`. It runs the
 same checks and reports the same errors, but makes no copy and points the
 runner at the checkout's bundle directly.

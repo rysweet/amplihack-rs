@@ -100,6 +100,16 @@ impl Drop for Scratch {
     }
 }
 
+/// Moves the snapshot folder `from` to `to` in another folder, keeping its
+/// mode. Moving a folder to a new parent needs write permission on the
+/// folder itself, and a placed snapshot is read-only.
+fn move_snapshot(from: &Path, to: &Path) {
+    let mode = mode_of(from);
+    set_mode(from, mode | 0o200);
+    fs::rename(from, to).unwrap();
+    set_mode(to, mode);
+}
+
 fn restore_owner_write(dir: &Path) {
     let Ok(meta) = fs::symlink_metadata(dir) else {
         return;
@@ -1168,12 +1178,16 @@ fn pin_copies_into_a_content_keyed_folder_with_read_only_modes() {
 
     assert_eq!(mode_of(&work), 0o700, "the work root is not widened");
     assert_eq!(mode_of(&pins), 0o700);
-    assert_eq!(mode_of(&home), 0o755);
+    assert_eq!(
+        mode_of(&home),
+        0o555,
+        "the shared snapshot home is read-only"
+    );
     assert_eq!(mode_of(pinned.bundle()), 0o555);
     assert_eq!(mode_of(&pinned.bundle().join("recipes")), 0o555);
     assert_eq!(mode_of(&pinned.bundle().join("tools/identity.sh")), 0o555);
     assert_eq!(mode_of(&pinned.bundle().join("recipes/probe.yaml")), 0o444);
-    assert_eq!(mode_of(&home.join("pin.json")), 0o644);
+    assert_eq!(mode_of(&home.join("pin.json")), 0o444);
     let lease = lease_file(&home);
     let lease_meta = fs::symlink_metadata(&lease).unwrap();
     assert!(lease_meta.file_type().is_file());
@@ -1605,13 +1619,13 @@ fn an_unused_snapshot_whose_files_changed_is_replaced() {
     let home = first.home().to_path_buf();
     // Keep the folder as a killed run would leave it, then change a file.
     let kept = root.join("kept");
-    fs::rename(&home, &kept).unwrap();
+    move_snapshot(&home, &kept);
     drop(first);
     tamper(
         &kept.join("amplifier-bundle/tools/identity.sh"),
         "#!/bin/sh\necho tampered\n",
     );
-    fs::rename(&kept, &home).unwrap();
+    move_snapshot(&kept, &home);
 
     let second = pin(&selection, &work, false).unwrap();
     assert_eq!(second.home(), home, "same key");
@@ -1664,13 +1678,13 @@ fn a_snapshot_with_an_extra_file_is_not_reused() {
     let first = pin(&selection, &work, false).unwrap();
     let home = first.home().to_path_buf();
     let kept = root.join("kept");
-    fs::rename(&home, &kept).unwrap();
+    move_snapshot(&home, &kept);
     drop(first);
     let recipes = kept.join("amplifier-bundle/recipes");
     set_mode(&recipes, 0o755);
     fs::write(recipes.join("planted.yaml"), "name: planted\nsteps: []\n").unwrap();
     set_mode(&recipes, 0o555);
-    fs::rename(&kept, &home).unwrap();
+    move_snapshot(&kept, &home);
 
     let second = pin(&selection, &work, false).unwrap();
     assert_eq!(second.home(), home);
@@ -1688,10 +1702,11 @@ fn unused_snapshot_with(
     let first = pin(selection, work, false).unwrap();
     let home = first.home().to_path_buf();
     let kept = root.join("kept");
-    fs::rename(&home, &kept).unwrap();
+    move_snapshot(&home, &kept);
     drop(first);
+    set_mode(&kept, 0o755);
     plant(&kept);
-    fs::rename(&kept, &home).unwrap();
+    move_snapshot(&kept, &home);
     home
 }
 
@@ -1762,6 +1777,7 @@ fn a_snapshot_in_use_with_a_file_beside_the_bundle_stops_the_launch_with_e11() {
     let first = pin(&selection, &work, false).unwrap();
     let home = first.home().to_path_buf();
     let planted = home.join("config");
+    set_mode(&home, 0o755);
     fs::write(&planted, "git_identity=planted\n").unwrap();
 
     let text = err_text(pin(&selection, &work, false));
@@ -1820,18 +1836,58 @@ fn a_reused_snapshot_made_writable_is_made_read_only_again() {
     let (_source, selection) = installed_selection(&root);
     let work = work_root(&root);
     let first = pin(&selection, &work, false).unwrap();
-    add_owner_write(first.bundle());
-    assert!(!writable_entries(first.bundle()).is_empty());
+    add_owner_write(first.home());
+    assert!(!writable_entries(first.home()).is_empty());
 
     let second = pin(&selection, &work, false).unwrap();
     assert_eq!(second.home(), first.home(), "reused, same key");
     assert_eq!(
-        writable_entries(second.bundle()),
+        writable_entries(second.home()),
         Vec::<PathBuf>::new(),
-        "no write bit is left in the reused bundle"
+        "no write bit is left in the reused snapshot, its home and pin record included"
     );
     drop(second);
     drop(first);
+}
+
+#[test]
+fn a_step_cannot_write_into_a_placed_snapshot_and_its_removal_still_works() {
+    let (_tmp, root) = scratch();
+    let (_source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let pinned = pin(&selection, &work, false).unwrap();
+    let home = pinned.home().to_path_buf();
+    assert_eq!(writable_entries(&home), Vec::<PathBuf>::new());
+    // Root ignores mode bits, so the write refusal is checked only for
+    // other users.
+    // SAFETY: geteuid has no failure mode and touches no memory.
+    if unsafe { libc::geteuid() } != 0 {
+        let error = fs::write(home.join("config"), "planted\n").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(fs::create_dir(home.join(".claude")).is_err());
+        assert!(fs::write(home.join("pin.json"), "{}").is_err());
+    }
+    assert!(!exists_no_follow(&home.join("config")));
+
+    // The last run's release removes the read-only snapshot.
+    drop(pinned);
+    assert!(!exists_no_follow(&home), "released snapshot is removed");
+
+    // A sweep by another launch removes a read-only snapshot no run holds.
+    let first = pin(&selection, &work, false).unwrap();
+    let old = first.home().to_path_buf();
+    let kept = root.join("kept-old");
+    move_snapshot(&old, &kept);
+    drop(first);
+    let stale = pins_dir(&work).join("0".repeat(24));
+    assert_ne!(stale, old, "a key no launch derives");
+    move_snapshot(&kept, &stale);
+    assert_eq!(mode_of(&stale), 0o555);
+    let _second = pin(&selection, &work, false).unwrap();
+    assert!(
+        !exists_no_follow(&stale),
+        "the sweep removed the read-only snapshot"
+    );
 }
 
 // --------------------------------------------------------------- E12

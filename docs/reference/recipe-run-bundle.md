@@ -169,8 +169,8 @@ contents, so every launch of the same bundle gets the same path:
 └── bundle-pins/                     # 0700, checked at every launch
     ├── .lock                        # 0600; held while a launch pins or sweeps
     ├── .tmp-<uuid>/                 # a copy in progress
-    ├── <key>/                       # 0755; AMPLIHACK_HOME and AMPLIHACK_RUN_BUNDLE
-    │   ├── pin.json                 # 0644; source, version and choice
+    ├── <key>/                       # 0555; AMPLIHACK_HOME and AMPLIHACK_RUN_BUNDLE
+    │   ├── pin.json                 # 0444; source, version and choice
     │   └── amplifier-bundle/        # read-only copy of the selected bundle
     │       ├── recipes/
     │       ├── agents/
@@ -237,11 +237,11 @@ copies source modes through, the mask must change with it.
 | Property | Value |
 |----------|-------|
 | `bundle-pins/` | `0700`, owned by the effective user; checked with `trusted_directory` at every launch |
-| `<key>/` | `0755` |
+| `<key>/` | `0555`, so no step can add or change a file in a snapshot that concurrent runs share |
 | Directories under `amplifier-bundle/` | `0555` |
 | Files with any execute bit in the source (`mode & 0o111 != 0`) | `0555` |
 | Other files | `0444` |
-| `pin.json` | `0644` |
+| `pin.json` | `0444` |
 | `.lock`, `<key>.use` | `0600`, regular files owned by the effective user, opened with `O_NOFOLLOW` and `O_CLOEXEC` |
 | setuid, setgid, sticky bits | Dropped |
 | Size | The size of the bundle, about 13 MB for a release |
@@ -277,8 +277,8 @@ involved.
 
    | State of `<key>/` | Action |
    |-------------------|--------|
-   | Missing | Make the copy read-only and rename `.tmp-<uuid>` to `<key>` |
-   | Present, holds only `amplifier-bundle/` and `pin.json`, and its tree digest equals the copy's | Reuse it: clear any write bit in its `amplifier-bundle/` again, then remove the copy |
+   | Missing | Make the whole copy read-only, its top folder and `pin.json` included, and rename `.tmp-<uuid>` to `<key>` |
+   | Present, holds only `amplifier-bundle/` and `pin.json`, and its tree digest equals the copy's | Reuse it: clear any write bit anywhere in `<key>/` again, then remove the copy |
    | Present, anything else (differs) and no other run holds `<key>.use` | Restore the owner write bit on the real directories of the old `<key>/` (symlinks are never followed or changed), remove it, make the copy read-only, rename the copy to `<key>` and print `recipe bundle: replacing <path>: its contents differ from <source> (<version>)` |
    | Present, differs, another run holds `<key>.use` | Refuse the run (E11) |
 
@@ -292,8 +292,9 @@ involved.
    `<key>/` that cannot be read or digested counts as changed.
 
    The digest leaves out write bits, so a snapshot made writable since it
-   was placed still matches. Reuse therefore makes its `amplifier-bundle/`
-   read-only again.
+   was placed still matches. Reuse therefore makes the whole `<key>/`
+   read-only again. Removal, by a sweep or by the last run's release,
+   restores the owner write bit on the real directories first.
 
    Whether another run holds `<key>.use` is tested by opening it without
    creating it and taking a non-blocking exclusive `flock`. If the lock is

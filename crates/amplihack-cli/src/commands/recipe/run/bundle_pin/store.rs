@@ -404,8 +404,11 @@ pub(super) enum Placement {
 }
 
 /// Step 6: puts the copy at `tmp` (holding `amplifier-bundle/` with tree
-/// digest `digest`) in place as `<pins>/<key>`, reusing an identical
-/// snapshot. Must be called with `.lock` held.
+/// digest `digest`, and `pin.json`) in place as `<pins>/<key>`, reusing an
+/// identical snapshot. Must be called with `.lock` held. The placed
+/// `<key>/` folder is read-only throughout, its top folder included, so a
+/// step cannot write into a snapshot that concurrent runs share; removal
+/// goes through [`remove_entry`], which restores the owner's access first.
 pub(super) fn place(
     pins: &Path,
     key: &str,
@@ -414,7 +417,6 @@ pub(super) fn place(
     source: &Path,
 ) -> Result<Placement> {
     let home = pins.join(key);
-    let bundle = tmp.join(super::BUNDLE_DIR);
     let existing = match fs::symlink_metadata(&home) {
         Ok(meta) => Some(meta),
         Err(error) if error.kind() == ErrorKind::NotFound => None,
@@ -423,7 +425,7 @@ pub(super) fn place(
         }
     };
     let Some(existing) = existing else {
-        make_read_only(&bundle)?;
+        make_read_only(tmp)?;
         fs::rename(tmp, &home)
             .with_context(|| format!("cannot rename {} to {}", tmp.display(), home.display()))?;
         return Ok(Placement::Created);
@@ -439,8 +441,9 @@ pub(super) fn place(
             .is_some_and(|found| found == *digest);
     if same {
         // The digest ignores write bits, so a reused tree may have been made
-        // writable since it was placed; it is made read-only again.
-        make_read_only(&home.join(super::BUNDLE_DIR))?;
+        // writable since it was placed; the whole `<key>/` folder is made
+        // read-only again.
+        make_read_only(&home)?;
         return Ok(Placement::Reused);
     }
     let _probe = match probe_lease(pins, &lease_path(pins, key))? {
@@ -453,7 +456,7 @@ pub(super) fn place(
         Probe::Free(handle) => handle,
     };
     remove_entry(&home)?;
-    make_read_only(&bundle)?;
+    make_read_only(tmp)?;
     fs::rename(tmp, &home)
         .with_context(|| format!("cannot rename {} to {}", tmp.display(), home.display()))?;
     Ok(Placement::Replaced)
