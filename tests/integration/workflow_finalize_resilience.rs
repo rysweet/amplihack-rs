@@ -44,31 +44,6 @@ fn workspace_helper_path(name: &str) -> PathBuf {
         .join(name)
 }
 
-fn workflow_pr_ready_command() -> Command {
-    let mut command = Command::new("bash");
-    command.arg(workspace_helper_path("workflow_pr_ready.sh"));
-    for key in [
-        "PR_URL",
-        "RECIPE_VAR_pr_url",
-        "PR_PUBLISH_RESULT_PR_URL",
-        "RECIPE_VAR_pr_publish_result__pr_url",
-        "PR_NUMBER",
-        "RECIPE_VAR_pr_number",
-        "PR_PUBLISH_RESULT_PR_NUMBER",
-        "RECIPE_VAR_pr_publish_result__pr_number",
-        "ISSUE_NUMBER",
-        "RECIPE_VAR_issue_number",
-        "EXPECTED_PR_TITLE_PREFIX",
-        "PR_EXPECTED_TITLE_PREFIX",
-        "WORKFLOW_STARTED_AT",
-        "RECIPE_STARTED_AT",
-        "TASK_STARTED_AT",
-    ] {
-        command.env_remove(key);
-    }
-    command
-}
-
 fn write_file(path: &Path, content: &str) {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).unwrap_or_else(|e| panic!("create {}: {e}", parent.display()));
@@ -438,9 +413,7 @@ exit 99
     );
     make_executable(&gh);
 
-    let old_path = std::env::var("PATH").unwrap_or_default();
-    let output = workflow_pr_ready_command()
-        .env("PATH", format!("{}:{old_path}", bin_dir.display()))
+    let output = private_scope_command(tmp.path(), tmp.path(), "workflow_pr_ready.sh")
         .env("RECIPE_VAR_pr_url", "https://github.com/owner/repo/pull/7")
         .env("PR_URL", "https://github.com/owner/repo/pull/9999") // deliberately stale (#1561)
         .output()
@@ -633,10 +606,7 @@ exit 99
     );
     make_executable(&gh);
 
-    let old_path = std::env::var("PATH").unwrap_or_default();
-    let output = workflow_pr_ready_command()
-        .current_dir(&repo)
-        .env("PATH", format!("{}:{old_path}", bin_dir.display()))
+    let output = private_scope_command(tmp.path(), &repo, "workflow_pr_ready.sh")
         .env("RECIPE_VAR_pr_url", "https://github.com/owner/repo/pull/7")
         .env("PR_URL", "https://github.com/owner/repo/pull/9999") // deliberately stale (#1561)
         .output()
@@ -748,10 +718,7 @@ exit 99
     );
     make_executable(&gh);
 
-    let old_path = std::env::var("PATH").unwrap_or_default();
-    let output = workflow_pr_ready_command()
-        .current_dir(&repo)
-        .env("PATH", format!("{}:{old_path}", bin_dir.display()))
+    let output = private_scope_command(tmp.path(), &repo, "workflow_pr_ready.sh")
         .env("RECIPE_VAR_pr_url", "https://github.com/owner/repo/pull/7")
         .env("PR_URL", "https://github.com/owner/repo/pull/9999") // deliberately stale (#1561)
         .output()
@@ -854,10 +821,7 @@ exit 99
     );
     make_executable(&gh);
 
-    let old_path = std::env::var("PATH").unwrap_or_default();
-    let output = workflow_pr_ready_command()
-        .current_dir(&repo)
-        .env("PATH", format!("{}:{old_path}", bin_dir.display()))
+    let output = private_scope_command(tmp.path(), &repo, "workflow_pr_ready.sh")
         .env("RECIPE_VAR_pr_url", "https://github.com/owner/repo/pull/7")
         .env("PR_URL", "https://github.com/owner/repo/pull/9999") // deliberately stale (#1561)
         .output()

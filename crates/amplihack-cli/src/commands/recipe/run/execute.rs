@@ -799,6 +799,17 @@ pub(super) fn execute_recipe_via_rust_fresh(
     // fault should reuse the same artifact/tmp scratch space it was already
     // given. Issue #2486: its tmp/ and artifacts/ are re-created there if
     // missing, so a step never starts with a TMPDIR that no longer exists.
+    // Issue #2535: the guidance folders this run's agent steps read, computed
+    // once: this run's folder, the per-PR folder and the inherited list.
+    let guidance_dirs = crate::run_guidance::env::runner_env_value(
+        std::env::var_os(crate::run_guidance::GUIDANCE_DIRS_ENV).as_ref(),
+        workspace.borrow().run_dir(),
+        context,
+        working_dir,
+        crate::run_guidance::pr_key::state_root()
+            .as_deref()
+            .map_err(|e| *e),
+    );
     let build_command = |run_id: &str| -> Result<Command> {
         // Issue #1567: no `env_clear` here, so a pinned AMPLIHACK_CLAUDE_PROFILE
         // (and AMPLIHACK_CLAUDE_PROFILE_ROOT) reaches the runner. The runner's
@@ -937,6 +948,9 @@ pub(super) fn execute_recipe_via_rust_fresh(
         // inherited environment and the recipe context, so a step never gets
         // another run's (or a removed) TMPDIR.
         command.envs(workspace.borrow().env());
+        if let Some(dirs) = &guidance_dirs {
+            command.env(crate::run_guidance::GUIDANCE_DIRS_ENV, dirs);
+        }
         if dry_run {
             command.env("AMPLIHACK_RUN_ID", run_id);
         }

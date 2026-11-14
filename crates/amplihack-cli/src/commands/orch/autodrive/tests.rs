@@ -18,9 +18,9 @@ use crate::commands::orch::autodrive::{
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-const HEAD: &str = concat!("11111111111111111111", "11111111111111111111");
-const BASE: &str = concat!("22222222222222222222", "22222222222222222222");
-const OTHER: &str = concat!("33333333333333333333", "33333333333333333333");
+pub(super) const HEAD: &str = concat!("11111111111111111111", "11111111111111111111");
+pub(super) const BASE: &str = concat!("22222222222222222222", "22222222222222222222");
+pub(super) const OTHER: &str = concat!("33333333333333333333", "33333333333333333333");
 const CRITERIA: [&str; 13] = [
     "qa",
     "documentation",
@@ -37,7 +37,7 @@ const CRITERIA: [&str; 13] = [
     "scope",
 ];
 
-fn authorization(no_merge: &str, dry_run: &str) -> InvocationAuthorization {
+pub(super) fn authorization(no_merge: &str, dry_run: &str) -> InvocationAuthorization {
     InvocationAuthorization::capture(
         "auto-drive-to-merge",
         &BTreeMap::from([
@@ -48,7 +48,7 @@ fn authorization(no_merge: &str, dry_run: &str) -> InvocationAuthorization {
     .expect("valid invocation")
 }
 
-fn binding(auth: &InvocationAuthorization) -> Value {
+pub(super) fn binding(auth: &InvocationAuthorization) -> Value {
     json!({
         "run_id": auth.run_id(), "round_id": "merge-1",
         "platform": "github", "host": "github.example.test",
@@ -61,7 +61,7 @@ fn binding(auth: &InvocationAuthorization) -> Value {
     })
 }
 
-fn candidate(auth: &InvocationAuthorization) -> Value {
+pub(super) fn candidate(auth: &InvocationAuthorization) -> Value {
     let observations = [
         "cargo test --locked passed; scenario execution not required for this Rust CLI",
         "Changed command documented in reference/cli.md and linked from docs/index.md",
@@ -1029,19 +1029,19 @@ fn retired_environment_cleanup_respects_explicit_command_configuration() {
 
 /// A real local Git history and private evidence store exercise the same
 /// reduction boundary as the helper, without hosting or workflow execution.
-struct ReportingFixture {
+pub(super) struct ReportingFixture {
     _temp: tempfile::TempDir,
-    repo: std::path::PathBuf,
-    directory: std::path::PathBuf,
-    auth: InvocationAuthorization,
-    envelope: Value,
-    context: Value,
+    pub(super) repo: std::path::PathBuf,
+    pub(super) directory: std::path::PathBuf,
+    pub(super) auth: InvocationAuthorization,
+    pub(super) envelope: Value,
+    pub(super) context: Value,
 }
 impl ReportingFixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self::with_action("true")
     }
-    fn with_action(no_merge: &str) -> Self {
+    pub(super) fn with_action(no_merge: &str) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let repo = temp.path().join("repo");
         std::fs::create_dir(&repo).unwrap();
@@ -1121,7 +1121,9 @@ impl ReportingFixture {
             context,
         }
     }
-    fn reduce(&self) -> anyhow::Result<crate::commands::orch::autodrive::records::Outcome> {
+    pub(super) fn reduce(
+        &self,
+    ) -> anyhow::Result<crate::commands::orch::autodrive::records::Outcome> {
         let store = EvidenceStore::create(&self.directory)?;
         crate::commands::orch::autodrive::helper::validate_reduction(
             &self.auth,
@@ -1147,7 +1149,7 @@ impl ReportingFixture {
             self._temp.path(),
         )
     }
-    fn accept_current(&mut self) {
+    pub(super) fn accept_current(&mut self) {
         let store = EvidenceStore::create(&self.directory).unwrap();
         let path = store
             .snapshot(&serde_json::to_vec(&self.envelope["candidate"]).unwrap())
@@ -1226,7 +1228,75 @@ fn reporting_enforces_local_head_and_post_review_coverage() {
         ],
     )
     .unwrap();
+    // #2556 (D10): final acceptance keeps the strict local_binding message.
     fixture.assert_rejected("evidence head differs from current worktree");
+}
+
+/// #2556: final acceptance must not treat an unreadable worktree HEAD as
+/// current. Deleting the checked-out branch ref leaves HEAD on an unborn
+/// branch with the bound name, so only the HEAD read fails.
+#[test]
+fn reduction_rejects_unreadable_local_head() {
+    let mut fixture = ReportingFixture::new();
+    fixture.accept_current();
+    let branch = fixture.envelope["candidate"]["binding"]["head_branch"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    crate::commands::orch::autodrive::trusted::git(
+        &fixture.repo,
+        &["update-ref", "-d", &format!("refs/heads/{branch}")],
+    )
+    .unwrap();
+    assert!(
+        crate::commands::orch::autodrive::trusted::git(
+            &fixture.repo,
+            &["rev-parse", "--verify", "HEAD"]
+        )
+        .is_err(),
+        "the fixture HEAD must be unreadable"
+    );
+    fixture.assert_rejected("worktree HEAD unreadable");
+}
+
+/// #2556 (D10): the same moved head, seen by `assess` before the action, is a
+/// structured refresh outcome with exit 0, not the rejection above.
+#[test]
+fn assess_reports_moved_local_head_as_refresh_required() {
+    let fixture = ReportingFixture::new();
+    let old_head = fixture.envelope["candidate"]["binding"]["head_sha"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    crate::commands::orch::autodrive::trusted::git(
+        &fixture.repo,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "moved head",
+        ],
+    )
+    .unwrap();
+    let input = serde_json::to_vec(&fixture.envelope["candidate"]).unwrap();
+    let out = crate::commands::orch::autodrive::helper::assess(
+        &fixture.auth,
+        &fixture.directory,
+        &fixture.repo,
+        &input,
+    )
+    .expect("a moved head is a refresh outcome, not an error");
+    assert_eq!(out["status"], "refresh_required", "{out}");
+    assert_eq!(out["refresh_required"], true, "{out}");
+    assert_eq!(out["accepted"], Value::Null, "{out}");
+    assert_eq!(out["readiness"], "incomplete", "{out}");
+    assert_eq!(out["blockers"], json!(["stale-evidence-head"]), "{out}");
+    assert_eq!(out["evidence_head"], old_head, "{out}");
+    assert_ne!(out["current_head"], old_head, "{out}");
 }
 
 #[test]

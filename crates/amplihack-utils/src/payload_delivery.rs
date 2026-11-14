@@ -11,6 +11,8 @@
 use std::borrow::Cow;
 use std::io::{self, Write};
 use std::process::ChildStdin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -24,11 +26,12 @@ pub const TRUNCATION_MARKER: &str = "[... earlier output truncated ...]\n";
 #[derive(Debug)]
 pub struct StdinWriter {
     handle: JoinHandle<io::Result<()>>,
+    delivered: Arc<AtomicBool>,
 }
 
 /// Starts a thread that writes `payload` to `stdin` and then closes it.
 pub fn spawn_stdin_writer(stdin: ChildStdin, payload: Vec<u8>) -> StdinWriter {
-    spawn_writer(stdin, payload, None)
+    spawn_writer(stdin, payload, None, Vec::new())
 }
 
 /// Starts a thread that writes `payload` to `stdin`, then copies `follow`
@@ -44,48 +47,104 @@ pub fn spawn_stdin_forwarder(
     payload: Vec<u8>,
     follow: Box<dyn io::Read + Send>,
 ) -> StdinWriter {
-    spawn_writer(stdin, payload, Some(follow))
+    spawn_writer(stdin, payload, Some(follow), Vec::new())
+}
+
+/// Starts a thread that writes `head`, copies `follow` until it reaches end
+/// of file, writes `tail`, and then closes `stdin`.
+///
+/// Used when the caller's own stdin is the prompt and text must follow it
+/// (issue #2535: operator guidance after a Codex `exec … -` prompt). Like
+/// [`spawn_stdin_forwarder`], nothing of `follow` is buffered beyond the
+/// copy and nothing is timed; a `BrokenPipe` is not an error and errors
+/// never include payload bytes.
+pub fn spawn_stdin_forwarder_with_trailer(
+    stdin: ChildStdin,
+    head: Vec<u8>,
+    follow: Box<dyn io::Read + Send>,
+    tail: Vec<u8>,
+) -> StdinWriter {
+    spawn_writer(stdin, head, Some(follow), tail)
 }
 
 fn spawn_writer(
     stdin: ChildStdin,
     payload: Vec<u8>,
     follow: Option<Box<dyn io::Read + Send>>,
+    tail: Vec<u8>,
 ) -> StdinWriter {
+    let delivered = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&delivered);
     let handle = std::thread::spawn(move || {
         let mut stdin = stdin;
-        let result = stdin
-            .write_all(&payload)
-            .and_then(|()| match follow {
-                Some(mut source) => io::copy(&mut source, &mut stdin).map(drop),
-                None => Ok(()),
-            })
-            .and_then(|()| stdin.flush());
-        // Dropping `stdin` closes the pipe, which gives the child EOF.
+        let mut follow = follow;
+        let result = write_all_parts(
+            &mut stdin,
+            &payload,
+            follow.as_mut().map(|source| source as &mut dyn io::Read),
+            &tail,
+            &flag,
+        );
+        // Dropping `stdin` closes the pipe, which gives the child EOF. The
+        // delivery flag, when set, was stored before this point.
         drop(stdin);
-        match result {
-            // The child exited or closed stdin without reading everything.
-            // Its exit status, not the write, decides the outcome.
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
-                ) =>
-            {
-                Ok(())
-            }
-            // Never include payload bytes in the error.
-            Err(e) => Err(io::Error::new(
-                e.kind(),
-                format!("writing payload to child stdin failed: {e}"),
-            )),
-            Ok(()) => Ok(()),
-        }
+        map_result(result)
     });
-    StdinWriter { handle }
+    StdinWriter { handle, delivered }
+}
+
+/// Writes `head`, copies `follow` to end of file, writes `tail` and flushes
+/// `out`. Only when every step returned `Ok` is `delivered` set (Release).
+fn write_all_parts<W: Write>(
+    out: &mut W,
+    head: &[u8],
+    follow: Option<&mut dyn io::Read>,
+    tail: &[u8],
+    delivered: &AtomicBool,
+) -> io::Result<()> {
+    out.write_all(head)?;
+    if let Some(source) = follow {
+        io::copy(source, &mut *out)?;
+    }
+    out.write_all(tail)?;
+    out.flush()?;
+    delivered.store(true, Ordering::Release);
+    Ok(())
+}
+
+/// Maps a reader that went away (`BrokenPipe`, `ConnectionReset`) to `Ok`:
+/// the child's exit status, not the write, decides the outcome. Any other
+/// error keeps its kind and is re-worded without payload bytes.
+fn map_result(result: io::Result<()>) -> io::Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+            ) =>
+        {
+            Ok(())
+        }
+        Err(e) => Err(io::Error::new(
+            e.kind(),
+            format!("writing payload to child stdin failed: {e}"),
+        )),
+    }
 }
 
 impl StdinWriter {
+    /// Whether every byte (head, follow and tail) was written and flushed
+    /// to the child's stdin without error.
+    ///
+    /// The flag is set before stdin is closed, so once the child has seen
+    /// EOF and exited, the value read here is final. `true` means the pipe
+    /// accepted the bytes, not that the child read them. A reader that went
+    /// away early (`BrokenPipe`) leaves it `false`.
+    pub fn delivered(&self) -> bool {
+        self.delivered.load(Ordering::Acquire)
+    }
+
     /// Joins the writer thread.
     ///
     /// Returns `Ok` when every byte was written or the child closed stdin
@@ -232,5 +291,233 @@ mod tests {
         let kept = truncate_tail_with_marker(&long, 100);
         assert!(kept.starts_with(TRUNCATION_MARKER));
         assert_eq!(kept.len(), 100);
+    }
+
+    // Issue #2535: the Codex `exec … -` form gets operator guidance after the
+    // caller's stdin closes. `spawn_stdin_forwarder_with_trailer` writes the
+    // head, copies `follow` to end of file, then writes the trailer.
+
+    fn cat_child() -> std::process::Child {
+        std::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("start cat")
+    }
+
+    #[test]
+    fn issue_2535_trailer_follows_head_and_caller_stdin() {
+        let mut child = cat_child();
+        let stdin = child.stdin.take().unwrap();
+        let writer = spawn_stdin_forwarder_with_trailer(
+            stdin,
+            b"HEAD|".to_vec(),
+            Box::new(io::Cursor::new(b"FOLLOW|".to_vec())),
+            b"TAIL".to_vec(),
+        );
+        writer.finish().expect("write succeeds");
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(String::from_utf8(out.stdout).unwrap(), "HEAD|FOLLOW|TAIL");
+    }
+
+    #[test]
+    fn issue_2535_empty_head_and_follow_give_the_trailer_only() {
+        let mut child = cat_child();
+        let stdin = child.stdin.take().unwrap();
+        let writer = spawn_stdin_forwarder_with_trailer(
+            stdin,
+            Vec::new(),
+            Box::new(io::empty()),
+            b"TRAILER ONLY".to_vec(),
+        );
+        writer.finish().expect("write succeeds");
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(String::from_utf8(out.stdout).unwrap(), "TRAILER ONLY");
+    }
+
+    #[test]
+    fn issue_2535_empty_trailer_matches_the_plain_forwarder() {
+        let mut child = cat_child();
+        let stdin = child.stdin.take().unwrap();
+        let writer = spawn_stdin_forwarder_with_trailer(
+            stdin,
+            b"prompt\n".to_vec(),
+            Box::new(io::Cursor::new(b"piped\n".to_vec())),
+            Vec::new(),
+        );
+        writer.finish().unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(out.stdout, b"prompt\npiped\n");
+    }
+
+    #[test]
+    fn issue_2535_trailer_broken_pipe_is_not_an_error_and_names_no_payload() {
+        // The child exits without reading: the trailer write hits EPIPE.
+        let mut child = std::process::Command::new("true")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        child.wait().unwrap();
+        let big = vec![b'x'; 1 << 20];
+        let writer =
+            spawn_stdin_forwarder_with_trailer(stdin, Vec::new(), Box::new(io::empty()), big);
+        // BrokenPipe means the child stopped reading; its exit status decides.
+        if let Err(e) = writer.finish() {
+            assert!(!e.to_string().contains("xxxx"), "payload bytes in error");
+            panic!("a broken pipe must not be an error: {e}");
+        }
+    }
+
+    // PR #2567 M2: `delivered()` is set only after the tail and the flush
+    // return `Ok`; a broken pipe maps to `Ok` but never sets it.
+
+    /// Accepts `room` bytes, then fails every write with `kind`; flushing
+    /// fails with `flush_kind` when set.
+    struct Limited {
+        got: Vec<u8>,
+        room: usize,
+        kind: io::ErrorKind,
+        flush_kind: Option<io::ErrorKind>,
+    }
+
+    impl Limited {
+        fn new(room: usize, kind: io::ErrorKind) -> Self {
+            Self {
+                got: Vec::new(),
+                room,
+                kind,
+                flush_kind: None,
+            }
+        }
+    }
+
+    impl Write for Limited {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if self.got.len() >= self.room {
+                return Err(io::Error::from(self.kind));
+            }
+            let n = buf.len().min(self.room - self.got.len());
+            self.got.extend_from_slice(&buf[..n]);
+            Ok(n)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            match self.flush_kind {
+                Some(kind) => Err(io::Error::from(kind)),
+                None => Ok(()),
+            }
+        }
+    }
+
+    #[test]
+    fn pr2567_m2_full_write_and_flush_set_the_flag_in_order() {
+        let delivered = AtomicBool::new(false);
+        let mut out: Vec<u8> = Vec::new();
+        let mut follow = io::Cursor::new(b"FOLLOW|".to_vec());
+        write_all_parts(
+            &mut out,
+            b"HEAD|",
+            Some(&mut follow as &mut dyn io::Read),
+            b"TAIL",
+            &delivered,
+        )
+        .expect("every part is written");
+        assert_eq!(out, b"HEAD|FOLLOW|TAIL");
+        assert!(delivered.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn pr2567_m2_broken_pipe_on_the_tail_leaves_the_flag_clear_and_maps_to_ok() {
+        for kind in [io::ErrorKind::BrokenPipe, io::ErrorKind::ConnectionReset] {
+            let delivered = AtomicBool::new(false);
+            // Head and follow fit; the reader goes away during the tail.
+            let mut out = Limited::new(b"HEAD|FOLLOW|".len(), kind);
+            let mut follow = io::Cursor::new(b"FOLLOW|".to_vec());
+            let result = write_all_parts(
+                &mut out,
+                b"HEAD|",
+                Some(&mut follow as &mut dyn io::Read),
+                b"TAIL-SECRET-2567",
+                &delivered,
+            );
+            let err = result.expect_err("the tail write fails");
+            assert_eq!(err.kind(), kind);
+            assert!(!delivered.load(Ordering::Acquire), "{kind:?}");
+            assert!(map_result(Err(err)).is_ok(), "{kind:?} is not an error");
+        }
+    }
+
+    #[test]
+    fn pr2567_m2_broken_pipe_on_the_head_leaves_the_flag_clear() {
+        let delivered = AtomicBool::new(false);
+        let mut out = Limited::new(0, io::ErrorKind::BrokenPipe);
+        let result = write_all_parts(&mut out, b"HEAD", None, b"TAIL", &delivered);
+        assert!(result.is_err());
+        assert!(!delivered.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn pr2567_m2_a_failed_flush_leaves_the_flag_clear() {
+        let delivered = AtomicBool::new(false);
+        let mut out = Limited::new(usize::MAX, io::ErrorKind::BrokenPipe);
+        out.flush_kind = Some(io::ErrorKind::BrokenPipe);
+        let result = write_all_parts(&mut out, b"HEAD", None, b"TAIL", &delivered);
+        assert!(result.is_err());
+        assert_eq!(out.got, b"HEADTAIL", "the bytes were accepted");
+        assert!(
+            !delivered.load(Ordering::Acquire),
+            "accepted but not flushed is not delivered"
+        );
+    }
+
+    #[test]
+    fn pr2567_m2_other_errors_are_rewrapped_with_their_kind() {
+        let e = map_result(Err(io::Error::from(io::ErrorKind::PermissionDenied)))
+            .expect_err("a real error stays an error");
+        assert_eq!(e.kind(), io::ErrorKind::PermissionDenied);
+        assert!(
+            e.to_string()
+                .starts_with("writing payload to child stdin failed: "),
+            "{e}"
+        );
+        assert!(map_result(Ok(())).is_ok());
+    }
+
+    #[test]
+    fn pr2567_m2_writer_reports_delivered_once_the_child_has_read_to_eof() {
+        // `cat` exits only after EOF, which follows the drop of stdin, which
+        // follows the flag: once `cat` has exited the flag is visible.
+        let mut child = cat_child();
+        let stdin = child.stdin.take().unwrap();
+        let writer = spawn_stdin_forwarder_with_trailer(
+            stdin,
+            b"HEAD|".to_vec(),
+            Box::new(io::Cursor::new(b"FOLLOW|".to_vec())),
+            b"TAIL".to_vec(),
+        );
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(out.stdout, b"HEAD|FOLLOW|TAIL");
+        assert!(writer.delivered());
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    fn pr2567_m2_every_constructor_sets_the_flag_on_success() {
+        let mut child = cat_child();
+        let writer = spawn_stdin_writer(child.stdin.take().unwrap(), b"plain".to_vec());
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(out.stdout, b"plain");
+        assert!(writer.delivered());
+
+        let mut child = cat_child();
+        let writer = spawn_stdin_forwarder(
+            child.stdin.take().unwrap(),
+            b"prompt|".to_vec(),
+            Box::new(io::Cursor::new(b"piped".to_vec())),
+        );
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(out.stdout, b"prompt|piped");
+        assert!(writer.delivered());
     }
 }

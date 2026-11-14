@@ -198,11 +198,13 @@ steps:
     recovery: {"replay": "never"}
     type: "recipe"
     recipe: "workflow-publish"
+    context: { commit_result: "" }  # #2471: a caller's stale value must not skip push recovery
 
   - id: "workflow-pr-review"
     recovery: {"replay": "never"}
     type: "recipe"
     recipe: "workflow-pr-review"
+    context: { feedback_push_result: "" }
 
   - id: "workflow-finalize"
     recovery: {"replay": "never"}

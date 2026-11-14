@@ -1,6 +1,6 @@
 ---
 title: Step Failure Recovery Reference
-last_updated: 2026-11-13
+last_updated: 2026-11-14
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -80,6 +80,31 @@ Report steps: `workflow-finalize` `step-recovery-report` (before
 `workflow-worktree` `step-04-setup-worktree` writes the build's branch to
 `build-branch.txt` in the recovery directory. A retried build passes it as
 `existing_branch`, so the retry continues the first attempt's branch and PR.
+
+### Steps owned by push failure recovery
+
+Each step has one recovery owner. The two push steps below are not wrapped
+by this driver; a failed push there goes to the `push-failure-recovery`
+sub-recipe instead:
+
+| Recipe | Push step | Recovered by |
+|---|---|---|
+| `workflow-publish` | `step-15-commit-push` | `step-15-push-recovery` |
+| `workflow-pr-review` | `step-18c-push-feedback-changes` | `step-18c-push-recovery` |
+
+`step-20b-push-cleanup` also pushes, but it belongs to this driver (see the
+table above), not to push failure recovery. The recovery call steps
+themselves (`step-15-push-recovery`, `step-18c-push-recovery`) are not
+wrapped by this driver either. See
+[Recipe Push Failure Recovery](./recipe-push-failure-recovery.md).
+
+To check that no step has two owners:
+
+```bash
+grep -l STEP_BODY amplifier-bundle/recipes/*.yaml       # no workflow-publish or workflow-pr-review
+grep -n 'recipe: "push-failure-recovery"' amplifier-bundle/recipes/*.yaml
+# expected: one line in workflow-publish.yaml (step 15) and one in workflow-pr-review.yaml (step 18c)
+```
 
 ## The four choices
 
@@ -357,6 +382,7 @@ cargo test -p amplihack-cli --lib step_recovery
 ## Related references
 
 - [Recipe Commit Hook Repair](./recipe-commit-hook-repair.md)
+- [Recipe Push Failure Recovery](./recipe-push-failure-recovery.md)
 - [Recipe Check Exit Status](./recipe-check-exit-status.md)
 - [Auto Drive To Merge](./auto-drive-to-merge.md)
 - [Default Workflow Agentic Finalization](./default-workflow-agentic-finalization.md)

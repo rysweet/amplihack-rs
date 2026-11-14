@@ -477,6 +477,10 @@ mod issue_1510_collector_agent_prose;
 #[path = "auto_drive_to_merge_test.rs"]
 mod auto_drive_to_merge;
 
+// Issue #2458: the base qa.toml declares how merge-ready criterion 1 is met.
+#[path = "issue_2458_qa_declaration_test.rs"]
+mod issue_2458_qa_declaration;
+
 // Issue #1641: a resumed run whose branch already has an open, same-repo PR
 // with green checks (or pending/no CI plus this run's typed precommit evidence)
 // finalizes as EXISTING_OPEN_PR instead of FAILED_IMPLEMENTATION; a failing
@@ -503,6 +507,14 @@ mod issue_1642_github_origin_parsing;
 // a fake gh, all through `isolated(..)`.
 #[path = "issue_1762_caller_branch_alias_test.rs"]
 mod issue_1762_caller_branch_alias;
+
+// Issue #2471 (first slice of #2472): a failed push step (15, 18c) gets
+// an agentic recovery. The real steps, taken by id, run through
+// recipe-runner-rs against a bare remote whose pre-receive hook rejects an
+// inherited RECIPE_VAR_issue_number, with a fake agent. Skipped without the
+// runner; CI installs it.
+#[path = "push_failure_recovery.rs"]
+mod push_failure_recovery;
 
 // Issue #1697: bundled journalistic-writing-style skill — content, trigger
 // separation from documentation-writing, registration, isolated install.

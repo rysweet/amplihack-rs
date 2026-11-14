@@ -34,6 +34,13 @@ mod workflow_log_inventory;
 #[cfg(test)]
 #[path = "orch/autodrive/tests.rs"]
 mod autodrive_contract_tests;
+// #2556: null or missing evidence strings and stale evidence are named blockers.
+#[cfg(test)]
+#[path = "orch/autodrive/tests_2556_helper.rs"]
+mod autodrive_issue_2556_helper_tests;
+#[cfg(test)]
+#[path = "orch/autodrive/tests_2556_reader.rs"]
+mod autodrive_issue_2556_reader_tests;
 
 #[derive(Subcommand, Debug)]
 pub enum OrchCommands {
