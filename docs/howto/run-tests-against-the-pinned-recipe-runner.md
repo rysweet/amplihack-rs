@@ -144,7 +144,8 @@ write to `~/.cargo/bin` or share the outer build's target directory and lock.
 Builds happen at most once per pin and target directory:
 
 - Inside one test binary, the result is kept in a `OnceLock`, so test threads
-  call cargo at most once.
+  call cargo at most once. A failed build is kept too: the other tests in that
+  binary fail with the same message without running cargo again.
 - Across test binaries, the helper holds a blocking `File::lock` on
   `<pin>.lock` while it checks the cache, builds, renames `<pin>.partial` to
   `<pin>` and checks the receipt. When the pre-push hook runs both targets at

@@ -36,10 +36,31 @@ const INVALID_PIN: &str = "recipe-runner.rev is not a 40-character lowercase rev
 /// Absolute path to a receipt-checked `recipe-runner-rs` at the pinned
 /// revision read from `<repo_root>/claude-plugin/recipe-runner.rev`.
 ///
-/// Resolved once per test process; later calls return the same path.
+/// Resolved once per test process; later calls return the same path, or
+/// repeat the first failure without running cargo again.
 pub(crate) fn pinned_runner(repo_root: &Path) -> PathBuf {
-    static RUNNER: OnceLock<PathBuf> = OnceLock::new();
-    RUNNER.get_or_init(|| resolve(repo_root)).clone()
+    static RUNNER: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+    resolve_once(&RUNNER, || resolve(repo_root))
+}
+
+/// Run `init` at most once per `cell`. A panic in `init` is stored, so later
+/// callers panic with the same message instead of retrying the build
+/// (`OnceLock` alone leaves the cell empty after a panic).
+fn resolve_once(
+    cell: &OnceLock<Result<PathBuf, String>>,
+    init: impl FnOnce() -> PathBuf,
+) -> PathBuf {
+    cell.get_or_init(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(init)).map_err(|payload| {
+            payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+                .unwrap_or_else(|| "pinned recipe-runner-rs resolution panicked".to_owned())
+        })
+    })
+    .clone()
+    .unwrap_or_else(|message| panic!("{message}"))
 }
 
 fn resolve(repo_root: &Path) -> PathBuf {
@@ -692,6 +713,45 @@ mod tests {
                 target.display()
             );
         }
+    }
+
+    // ---- resolve_once ----------------------------------------------------
+
+    #[test]
+    fn resolve_once_repeats_a_failure_without_running_init_again() {
+        let cell = OnceLock::new();
+        let calls = std::cell::Cell::new(0);
+        let fail = || -> PathBuf {
+            calls.set(calls.get() + 1);
+            panic!("cargo install of recipe-runner-rs failed");
+        };
+        let first = panic_message(|| {
+            resolve_once(&cell, fail);
+        });
+        let second = panic_message(|| {
+            resolve_once(&cell, fail);
+        });
+        assert_eq!(
+            calls.get(),
+            1,
+            "a failed resolution must not run cargo again"
+        );
+        assert!(
+            first.contains("cargo install of recipe-runner-rs failed"),
+            "{first:?}"
+        );
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn resolve_once_returns_the_first_success() {
+        let cell = OnceLock::new();
+        let path = PathBuf::from("/runner/bin/recipe-runner-rs");
+        assert_eq!(resolve_once(&cell, || path.clone()), path);
+        assert_eq!(
+            resolve_once(&cell, || panic!("init must not run twice")),
+            path
+        );
     }
 
     // ---- pinned_runner (builds or reuses the pinned runner) -------------
