@@ -335,8 +335,7 @@ Each record has schema version `1` and `run_id`, `attempt_id`, `executable`,
 Failure to start the observer, losing it during the run, a storage or
 attribution error, or a failed publication makes the run fail. The one
 exception is an observer that could not attach to the runner at all (the
-kernel refused `PTRACE_TRACEME`, or the observer exited before handoff): the
-run continues unobserved and records `"coverage":"unavailable"`, as off Linux.
+kernel refused `PTRACE_TRACEME`): the run continues unobserved and records `"coverage":"unavailable"`, as off Linux.
 See [The Linux observer could not attach](recipe-runner-logging.md#the-linux-observer-could-not-attach). An empty
 journal means the observer ran and saw no Git commands that can write.
 `GitRecord::dry_run()` is the only state with recording switched off, and only
@@ -494,10 +493,10 @@ workspace code. None of them is discarded with `.ok()`, `let _ =` or
 | Failure | Result |
 | --- | --- |
 | Unsafe input, unborn `HEAD`, bare or malformed repository | Preparation fails naming the path; no step runs; admission finished as `Failure`. |
-| Observer could not attach on Linux (`PTRACE_TRACEME` refused, or observer exited before handoff) | One notice on stderr; the runner starts once unobserved; `coverage: "unavailable"` is recorded. |
+| Observer could not attach on Linux (`PTRACE_TRACEME` refused) | One notice on stderr; the runner starts once unobserved; `coverage: "unavailable"` is recorded. |
 | Observer fails to start on Linux for any other reason | The runner never starts. Without a writable work root: `cannot initialize required Git recording; provide a writable absolute AMPLIHACK_WORK_ROOT and retry`. |
 | Not Linux | The run proceeds unobserved and records `coverage: "unavailable"`. Without a writable work root it stops with the same message as above. |
-| Seeding `origin/*` (for example an `origin` URL that cannot be fetched) or copying `origin/HEAD` fails | Preparation fails with `cannot seed origin refs` and `partial resources retained at <exec dir>`; no step runs. |
+| Seeding `origin/*` (for example an `origin/*` ref whose objects are missing from the caller's repository) or copying `origin/HEAD` fails | Preparation fails with `cannot seed origin refs` and `partial resources retained at <exec dir>`; no step runs. |
 | Observer lost, storage or attribution error | Controlled teardown, partial evidence kept, run fails. |
 | Checkout identity changed at release | Resources kept, run fails. |
 | Review dir fails a check | `REVIEW_DIR_CHANGED` or `REVIEW_DIR_UNSTAMPED`; no judging. |

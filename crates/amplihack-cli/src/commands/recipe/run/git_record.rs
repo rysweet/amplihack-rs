@@ -255,11 +255,7 @@ impl GitRecord {
     /// folder owned by this user; any entry besides this attempt's journal;
     /// or a journal that is not an empty regular file with one link.
     #[cfg(target_os = "linux")]
-    pub(crate) fn attempt_not_established(
-        &self,
-        attempt_id: &str,
-        cause: &anyhow::Error,
-    ) -> Result<()> {
+    pub(crate) fn attempt_not_established(&self, attempt_id: &str) -> Result<()> {
         use std::os::unix::fs::MetadataExt;
         const KEPT: &str = "partial evidence retained";
         let Ok(mut state) = self.state.try_borrow_mut() else {
@@ -323,27 +319,18 @@ impl GitRecord {
             }
         }
         // Every check passed: only now does the record change.
-        let refused_traceme = cause
-            .chain()
-            .filter_map(|e| e.downcast_ref::<std::io::Error>())
-            .any(|e| matches!(e.raw_os_error(), Some(libc::EPERM) | Some(libc::ENOSYS)));
         *state = State::Unavailable {
             run_dir: run_dir.clone(),
             reason: LINUX_UNAVAILABLE_REASON,
             trace_dir: Some(trace_dir.clone()),
         };
         self.required.set(false);
-        // A fixed cause chosen by error kind: the error text itself is not
-        // printed, so no path or command line reaches the notice.
-        let fixed_cause = if refused_traceme {
-            "nested tracing is unsupported"
-        } else {
-            "observer exited before runner handoff"
-        };
+        // Fixed text only: the error itself is not printed, so no path or
+        // command line reaches the notice.
         eprintln!(
             "amplihack: Git command recording is unavailable for this run: the Linux ptrace \
-             observer could not attach ({fixed_cause}); the run continues in its private \
-             checkout without recording"
+             observer could not attach (nested tracing is unsupported); the run continues in \
+             its private checkout without recording"
         );
         Ok(())
     }

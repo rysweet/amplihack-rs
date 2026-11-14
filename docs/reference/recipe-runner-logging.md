@@ -405,15 +405,16 @@ any step runs, amplihack then:
    with one link, and `git-trace2/` (mode `0700`, owned by the user) holds
    nothing else.
 2. Deletes that empty journal.
-3. Prints one notice to stderr, naming a fixed cause:
+3. Prints one notice to stderr, with fixed text:
 
    ```text
    amplihack: Git command recording is unavailable for this run: the Linux ptrace observer could not attach (nested tracing is unsupported); the run continues in its private checkout without recording
    ```
 
-   The cause in brackets is `nested tracing is unsupported` when the kernel
-   refused `PTRACE_TRACEME` (`EPERM` or `ENOSYS`, as under another tracer or a
-   strict `ptrace_scope`), or `observer exited before runner handoff`.
+   The cause in brackets is always `nested tracing is unsupported`: the
+   kernel refused `PTRACE_TRACEME` (`EPERM` or `ENOSYS`, as under another
+   tracer or a strict `ptrace_scope`). That refusal is the only case that
+   takes this path.
 4. Starts the runner once, unobserved, with the same command and the clean
    environment described [above](#when-recording-is-unavailable). This is a
    single fallback chosen by what happened, not a retry: if the runner itself

@@ -43,10 +43,9 @@ pub(crate) fn parent_observer() -> Result<Option<u32>> {
 
 /// The observer could not be set up for this attempt, so nothing about the
 /// runner was observed: `PTRACE_TRACEME` was refused (the spawn failed with
-/// exactly `EPERM` or `ENOSYS`), or the tracing thread ended before handing
-/// the runner over. Issue #2677: the caller may then run the attempt once
-/// unobserved and record coverage as unavailable. Every other observer
-/// failure stays a plain error and fails closed.
+/// exactly `EPERM` or `ENOSYS`). Issue #2677: the caller may then run the
+/// attempt once unobserved and record coverage as unavailable. Every other
+/// observer failure stays a plain error and fails closed.
 #[derive(Debug)]
 pub(crate) struct ObserverNotEstablished(anyhow::Error);
 
@@ -171,12 +170,14 @@ impl Observer {
                 return Err(error);
             }
             Err(_) => {
+                // The thread sends on every path except a panic, so a
+                // dropped sender means it panicked, which the join reports.
                 // A panicked thread may have spawned the runner before it
-                // died, so a panic stays a plain error and fails closed.
+                // died, so this stays a plain error and fails closed.
                 join_tracing_thread(thread)?;
-                return Err(anyhow::Error::new(ObserverNotEstablished(anyhow::anyhow!(
-                    "observer exited before runner handoff"
-                ))));
+                return Err(anyhow::anyhow!(
+                    "required observer exited before runner handoff"
+                ));
             }
         };
         Ok((

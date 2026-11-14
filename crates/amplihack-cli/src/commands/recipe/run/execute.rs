@@ -1480,9 +1480,10 @@ fn spawn_with_streaming_stderr(
     rebuild: &dyn Fn() -> Result<Command>,
 ) -> Result<RecipeRunResult> {
     arm_runner(&mut command);
-    // A required record (every real run) is spawned under the native
-    // observer. Only a dry run's record is not required, and it never
-    // reaches `GitRecord::spawn`: it spawns the runner plainly.
+    // A required record is spawned under the native observer. A dry run's
+    // record is not required and never reaches `GitRecord::spawn`: it spawns
+    // the runner plainly. A record downgraded by #2677 is also not required,
+    // so later attempts in the same run start unobserved.
     #[cfg(target_os = "linux")]
     let (spawned, mut observer) = if git_record.is_required() {
         match git_record.spawn(command, correlation.run_id()) {
@@ -1498,7 +1499,7 @@ fn spawn_with_streaming_stderr(
                 // and it happens at most once because the downgrade makes
                 // the record not required. If the record refuses (evidence
                 // may exist), the run fails closed with both errors.
-                match git_record.attempt_not_established(correlation.run_id(), &error) {
+                match git_record.attempt_not_established(correlation.run_id()) {
                     Ok(()) => {
                         // Built again after the downgrade, so `apply_to`
                         // removes every observer and trace variable.
