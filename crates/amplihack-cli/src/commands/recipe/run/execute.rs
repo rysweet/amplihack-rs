@@ -795,8 +795,21 @@ pub(super) fn execute_recipe_via_rust_fresh(
     // Issue #1267: a `std::process::Command` is consumed by `spawn`, and every
     // attempt needs its own correlation run id, so command construction is a
     // closure invoked once per attempt rather than hoisted state. The runtime
-    // dir is deliberately NOT rebuilt: a retry of a transient transport fault
-    // should reuse the same artifact/tmp scratch space it was already given.
+    // dir path is deliberately NOT rebuilt: a retry of a transient transport
+    // fault should reuse the same artifact/tmp scratch space it was already
+    // given. Issue #2486: its tmp/ and artifacts/ are re-created there if
+    // missing, so a step never starts with a TMPDIR that no longer exists.
+    // Issue #2535: the guidance folders this run's agent steps read, computed
+    // once: this run's folder, the per-PR folder and the inherited list.
+    let guidance_dirs = crate::run_guidance::env::runner_env_value(
+        std::env::var_os(crate::run_guidance::GUIDANCE_DIRS_ENV).as_ref(),
+        workspace.borrow().run_dir(),
+        context,
+        working_dir,
+        crate::run_guidance::pr_key::state_root()
+            .as_deref()
+            .map_err(|e| *e),
+    );
     let build_command = |run_id: &str| -> Result<Command> {
         // Issue #1567: no `env_clear` here, so a pinned AMPLIHACK_CLAUDE_PROFILE
         // (and AMPLIHACK_CLAUDE_PROFILE_ROOT) reaches the runner. The runner's
@@ -929,7 +942,15 @@ pub(super) fn execute_recipe_via_rust_fresh(
         command.env(SESSION_DEPTH_ENV, guard.child_depth.to_string());
         command.env(MAX_DEPTH_ENV, guard.max_depth.to_string());
         command.env("AMPLIHACK_RECIPE_RUN_ID", run_id);
+        // Issue #2486: this run's own TMPDIR must exist before the step starts.
+        workspace.borrow().prepare_attempt()?;
+        // Must stay last among the TMPDIR/TMP/TEMP setters: it overrides the
+        // inherited environment and the recipe context, so a step never gets
+        // another run's (or a removed) TMPDIR.
         command.envs(workspace.borrow().env());
+        if let Some(dirs) = &guidance_dirs {
+            command.env(crate::run_guidance::GUIDANCE_DIRS_ENV, dirs);
+        }
         if dry_run {
             command.env("AMPLIHACK_RUN_ID", run_id);
         }

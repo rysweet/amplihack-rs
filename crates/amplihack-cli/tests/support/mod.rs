@@ -11,6 +11,7 @@ pub mod profile_default;
 pub mod profile_rotate;
 pub mod quick_change_repo;
 pub mod quiet_process;
+pub mod recipe_guide;
 /// The crate-private bounded capability probe, compiled into this binary once
 /// for `runner_probe_cleanup` and `runner_probe_lifecycle` (a file may be a
 /// module only once per crate). Both run their tests in a quiet process, so

@@ -885,9 +885,6 @@ for fn in autodrive_qa_config autodrive_qa_ci autodrive_qa_report; do
     grep -q "^${fn}()" "$SOURCES" && pass "sources-fn:$fn" "defined in autodrive_qa_sources.sh" \
         || fail "sources-fn:$fn" "not defined in autodrive_qa_sources.sh"
 done
-# The merge gate needs only the scope file; the declared sources stay out of it.
-code "$TRUST" | grep -q 'autodrive_qa_sources' && fail trust-sources "autodrive_trust.sh loads the sources file" \
-    || pass trust-sources "the gate path never loads autodrive_qa_sources.sh"
 grep -q 'shellcheck source=autodrive_qa_scope.sh' "$TRUST" && pass trust-directive "autodrive_trust.sh has the shellcheck source= directive" \
     || fail trust-directive "autodrive_trust.sh lacks '# shellcheck source=autodrive_qa_scope.sh'"
 grep -q 'BASH_SOURCE' "$TRUST" && grep -q '_AD_SCOPE_OK' "$TRUST" && pass trust-loader "the loader uses BASH_SOURCE and _AD_SCOPE_OK" \

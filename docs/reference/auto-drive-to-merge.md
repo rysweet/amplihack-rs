@@ -1,7 +1,7 @@
 ---
 title: Auto Drive To Merge Reference
 description: responsibilities, authorization, recovery, completion outcomes, and target compatibility for auto-drive-to-merge.
-last_updated: 2026-11-11
+last_updated: 2026-11-13
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -56,6 +56,8 @@ cycles, continuing until clean. The description template's three cycle rows
 apply to that standalone audit; auto-drive records its actual accepted crusty
 rounds, reviewed head, verdict, and follow-up evidence instead of inventing
 cycles. See [all criterion interpretations](auto-drive-evidence.md#authority-and-criteria).
+The round finds the skill's files with the
+[merge-ready files resolver](autodrive-merge-ready-files.md).
 
 ## Responsibilities
 
@@ -247,6 +249,9 @@ read-only `/bin/bash -p "$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_expect
 from the launch bundle, never from the pull request's worktree. `MISSING`,
 `PENDING`, `RED` and `UNREADABLE` all block; a job that was never created is
 not a pass. See [Expected checks at the head](autodrive-expected-checks.md).
+When the base branch's `.amplihack/qa.toml` declares a scenarios CI job, the
+step passes its name as a third argument; see
+[Declaring how criterion 1 is met](auto-drive-qa.md#declaring-how-criterion-1-is-met).
 
 ### Limits of the expected set
 
@@ -548,3 +553,4 @@ runtime compatibility.
 - [Crusty completion contract](autodrive-crusty-completion.md)
 - [Git repository environment helper](git-repo-env-helper.md)
 - [Expected checks at the head](autodrive-expected-checks.md)
+- [Merge-ready files resolver](autodrive-merge-ready-files.md)

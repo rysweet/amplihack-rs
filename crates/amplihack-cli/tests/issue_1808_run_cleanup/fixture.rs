@@ -300,6 +300,18 @@ impl Fx {
 
     /// `amplihack recipe run` with `runner_body` as the recipe runner.
     pub fn recipe_run(&self, runner_body: &str, tweak: impl FnOnce(&mut Command)) -> Output {
+        self.recipe_run_command(runner_body, tweak)
+            .output()
+            .expect("run amplihack recipe run")
+    }
+
+    /// The `amplihack recipe run` command [`Fx::recipe_run`] runs, built but
+    /// not started, for a test that must act while the run is in progress.
+    pub fn recipe_run_command(
+        &self,
+        runner_body: &str,
+        tweak: impl FnOnce(&mut Command),
+    ) -> Command {
         let runner = self.bin.join("recipe-runner-rs");
         let capability = r#"case "$1" in --capabilities) printf '%s\n' '{"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]}'; exit 0 ;; esac"#;
         let body = runner_body.replacen('\n', &format!("\n{capability}\n"), 1);
@@ -314,7 +326,7 @@ impl Fx {
             .env("RECIPE_RUNNER_RS_PATH", &runner)
             .env("AMPLIHACK_SOURCE_ROOT", repo_root());
         tweak(&mut c);
-        c.output().expect("run amplihack recipe run")
+        c
     }
 
     /// The `KEY=VALUE` lines a runner stub wrote with [`record_env_snippet`].

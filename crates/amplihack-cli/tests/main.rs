@@ -30,6 +30,10 @@ mod support;
 mod issue_2329_autodrive_outcomes;
 #[path = "issue_2545_autodrive_repo_context.rs"]
 mod issue_2545_autodrive_repo_context;
+#[path = "issue_2556_autodrive_evidence.rs"]
+mod issue_2556_autodrive_evidence;
+#[path = "issue_2585_launch_notices_stderr.rs"]
+mod issue_2585_launch_notices_stderr;
 
 #[path = "issue_1753_expired_live.rs"]
 mod issue_1753_expired_live;
@@ -352,6 +356,12 @@ mod issue_2218_excluded;
 mod issue_2317_codex_step_commits_in_worktree;
 #[path = "issue_2336_autodrive_completion.rs"]
 mod issue_2336_autodrive_completion;
+#[path = "issue_2535_recipe_guide_cli.rs"]
+mod issue_2535_recipe_guide_cli;
+#[path = "issue_2535_recipe_guide_injection.rs"]
+mod issue_2535_recipe_guide_injection;
+#[path = "issue_2535_recipe_guide_publish.rs"]
+mod issue_2535_recipe_guide_publish;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]
@@ -436,3 +446,5 @@ mod issue_2279_doctor;
 
 #[path = "issue_2297_codex_installation.rs"]
 mod issue_2297_codex_installation;
+#[path = "issue_2552_build_preflight_decision.rs"]
+mod issue_2552_build_preflight_decision;
