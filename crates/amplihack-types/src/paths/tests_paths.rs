@@ -683,7 +683,10 @@ mod state_home_2528 {
         let _lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         let _env = Restore::set(&[
             ("AMPLIHACK_STATE_HOME", state_home),
-            ("AMPLIHACK_HOME", Some("/runs/r/runtime/bundle")),
+            (
+                "AMPLIHACK_HOME",
+                Some("/work/bundle-pins/0123456789abcdef01234567"),
+            ),
             ("HOME", Some("/home/alice")),
         ]);
         amplihack_state_root()
@@ -702,7 +705,7 @@ mod state_home_2528 {
         for value in ["", "relative/state", "/home/alice/../bob/.amplihack"] {
             assert_eq!(
                 root_with(Some(value)),
-                Some(PathBuf::from("/runs/r/runtime/bundle")),
+                Some(PathBuf::from("/work/bundle-pins/0123456789abcdef01234567")),
                 "{value:?} is not usable; the usual rules apply"
             );
         }
@@ -712,7 +715,7 @@ mod state_home_2528 {
     fn unset_state_home_keeps_the_usual_rules() {
         assert_eq!(
             root_with(None),
-            Some(PathBuf::from("/runs/r/runtime/bundle"))
+            Some(PathBuf::from("/work/bundle-pins/0123456789abcdef01234567"))
         );
     }
 }

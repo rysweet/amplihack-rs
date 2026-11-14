@@ -562,7 +562,10 @@ mod contract_home_state_home_2528 {
         let _lock = home_env_lock().lock().unwrap_or_else(|e| e.into_inner());
         let _unset = EnvGuard::unset(["AMPLIHACK_STATE_HOME"]);
         let _env = EnvGuard::set([
-            ("AMPLIHACK_HOME", "/runs/r/runtime/bundle"),
+            (
+                "AMPLIHACK_HOME",
+                "/work/bundle-pins/0123456789abcdef01234567",
+            ),
             ("HOME", "/home/alice"),
         ]);
         let _state = state_home.map(|v| EnvGuard::set([("AMPLIHACK_STATE_HOME", v)]));
@@ -582,13 +585,13 @@ mod contract_home_state_home_2528 {
         for value in ["", "rel/state", "/a/../b"] {
             assert_eq!(
                 contract_home_with(Some(value)),
-                PathBuf::from("/runs/r/runtime/bundle"),
+                PathBuf::from("/work/bundle-pins/0123456789abcdef01234567"),
                 "{value:?}"
             );
         }
         assert_eq!(
             contract_home_with(None),
-            PathBuf::from("/runs/r/runtime/bundle")
+            PathBuf::from("/work/bundle-pins/0123456789abcdef01234567")
         );
     }
 }
