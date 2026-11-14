@@ -2102,6 +2102,91 @@ fn merge_ready_files_resolver_is_read_only_and_set_u_safe() {
     }
 }
 
+/// #2536: the resolver reads `$TOP` under `set -u`; #2340 dropped its
+/// assignment and every merge-readiness step failed "TOP: unbound variable".
+/// Run it, as step-00 does, in a temporary git repository: once with the
+/// install inside that repository (the `"$TOP"/*` match path) and once
+/// with the install outside it.
+#[test]
+fn merge_ready_files_resolver_runs_under_set_u_in_a_git_repository() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = fs::canonicalize(tmp.path()).expect("canonical tempdir");
+    let repo = root.join("repo");
+    let home = root.join("home");
+    fs::create_dir_all(&home).expect("home dir");
+    // Hooks export GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE; left in place they
+    // would send the fixture's commit to the real worktree. BASH_ENV would run
+    // host code in these shells, and the real HOME holds the user's git files.
+    let isolate = |cmd: &mut Command| {
+        for var in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_COMMON_DIR",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_PREFIX",
+            "BASH_ENV",
+        ] {
+            cmd.env_remove(var);
+        }
+        cmd.env("HOME", &home)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1");
+    };
+    let install_skill = |base: &Path| -> PathBuf {
+        let dir = base.join("amplifier-bundle/skills/merge-ready");
+        fs::create_dir_all(&dir).expect("skill dir");
+        fs::write(dir.join("SKILL.md"), "---\nname: merge-ready\n---\n").expect("SKILL.md");
+        fs::write(dir.join("pr-description-template.md"), "# template\n").expect("template");
+        dir
+    };
+    let inside = install_skill(&repo);
+    let outside = install_skill(&root.join("install"));
+    let mut setup = Command::new("bash");
+    setup
+        .arg("-c")
+        .arg(
+            "git init -q . && git add -A && git -c user.name=t -c user.email=t@example.invalid \
+             commit -q --no-verify -m init",
+        )
+        .current_dir(&repo);
+    isolate(&mut setup);
+    let git = setup.output().expect("run git");
+    assert!(git.status.success(), "commit the fixture: {git:?}");
+
+    for (amplihack_home, dir) in [(&repo, &inside), (&root.join("install"), &outside)] {
+        let mut resolver = Command::new("bash");
+        resolver
+            .arg("-u")
+            .arg(tool_path("autodrive_merge_ready_files.sh"))
+            .current_dir(&repo)
+            .env("AMPLIHACK_HOME", amplihack_home)
+            .env("REPO_PATH", &repo);
+        isolate(&mut resolver);
+        let out = resolver.output().expect("run the resolver");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success() && !stderr.contains("unbound variable"),
+            "AMPLIHACK_HOME={}: {out:?}",
+            amplihack_home.display()
+        );
+        let json: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("one line of JSON on stdout");
+        let dir = dir.display().to_string();
+        assert_eq!(json["skill_dir"], dir.as_str());
+        assert_eq!(json["skill_md"], format!("{dir}/SKILL.md").as_str());
+        assert_eq!(
+            json["template"],
+            format!("{dir}/pr-description-template.md").as_str()
+        );
+        assert!(
+            json["skill_md_sha"].as_str().is_some_and(|s| s.len() == 40),
+            "skill_md_sha must be a git blob hash: {json}"
+        );
+    }
+}
+
 #[test]
 fn merge_loop_passes_the_state_dir_to_rounds() {
     let text = recipe_text("autodrive-merge-loop");
