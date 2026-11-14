@@ -14,6 +14,8 @@ mod failure_class;
 mod failure_evidence;
 mod failure_markers;
 mod format;
+/// Issue #2096 — the record of index-writing git commands a run's steps ran.
+pub(crate) mod git_record;
 /// Issue #1618: the usage-limit patterns of every agent harness, in one place.
 pub(crate) mod limit_patterns;
 mod limit_reset;
@@ -25,6 +27,8 @@ mod recovery;
 pub(crate) mod removed_keys;
 /// Issue #1267 — bounded mechanical retry for transient transport faults.
 mod retry;
+/// Issue #2096 — each recipe run works in a checkout of its own.
+pub(crate) mod run_checkout;
 /// Issue #1606: SIGHUP/SIGINT/SIGTERM stop the whole recipe tree.
 pub(crate) mod stop_signal;
 /// Issue #1437 — a failed step's terminating exit status, from the runner's envelope.
@@ -517,10 +521,15 @@ mod tests_failure_class;
 mod tests_failure_class_1437;
 #[cfg(test)]
 mod tests_format;
+#[cfg(all(test, unix))]
+mod tests_git_record;
 #[cfg(test)]
 mod tests_limit_patterns;
 #[cfg(test)]
 mod tests_limit_reset;
+/// Issues #2528 and #2096: pinned-run runner arguments go through the execution checkout.
+#[cfg(all(test, unix))]
+mod tests_map_search_args;
 #[cfg(all(test, unix))]
 mod tests_merge_guard_pin;
 #[cfg(test)]

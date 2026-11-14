@@ -62,7 +62,7 @@ steps:
       # work root, else <main>/worktrees (#1134), so `base` (absent from older helpers) is only asked then.
       WT_BASE="${MAIN_REPO_PATH}/worktrees"
       if [ -f "$ROOT_HELPER" ] && [ "${AMPLIHACK_WORK_ROOT_EXPLICIT:-0}" = 1 ] && [ -n "${AMPLIHACK_WORK_ROOT:-}" ]; then
-        WT_BASE="$(bash "$ROOT_HELPER" base "$MAIN_REPO_PATH")" || exit 1
+        WT_BASE="$(bash "$ROOT_HELPER" base "$REPO_PATH")" || exit 1
       fi
       [ "$MAIN_REPO_PATH" = "$REPO_PATH" ] || echo "INFO: caller checkout '$REPO_PATH' is a linked worktree — anchoring new worktrees at main repository '$MAIN_REPO_PATH' (issue #1134)." >&2
       # Self-healing orphan sweep (#840): best-effort prune of worktrees/branches

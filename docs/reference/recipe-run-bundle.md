@@ -2,8 +2,8 @@
 title: Recipe run bundle selection and pinning
 description: How amplihack recipe run chooses one amplifier-bundle, checks it, pins a content-keyed copy under the work root and hands it to every step.
 doc_type: reference
-last_updated: 2026-11-13
-related_issues: [2528, 1551, 2340, 2537, 1741]
+last_updated: 2026-11-14
+related_issues: [2528, 1551, 2340, 2537, 1741, 2096]
 ---
 
 # Recipe run bundle selection and pinning
@@ -431,6 +431,35 @@ bundle that supplied the tools.
 A dry run has no snapshot, so it points the runner at the canonical source
 bundle. See [Dry runs](#dry-runs).
 
+### Paths inside the caller's checkout
+
+A real run executes in a private checkout, not in the caller's checkout (see
+[Recipe run and auto-drive checkout isolation](recipe-checkout-isolation.md)).
+Before the runner starts, `recipe run` passes every `-R` value and every
+`--agent-dir` value through the run checkout's `map_path`:
+
+| Value | What the runner gets |
+|-------|----------------------|
+| A path under the caller's checkout, for example `/home/alice/src/app/recipes` when the recipe was given as `recipes/release.yaml` | The same relative path under the private checkout |
+| A path outside the caller's checkout, for example `<work root>/bundle-pins/<key>/amplifier-bundle/recipes` or the auto-drive launch copy | The path unchanged |
+
+Rules:
+
+- Every argument that is not the value of `-R` or `--agent-dir` is passed
+  unchanged. `--no-default-search` is always kept.
+- A value that is itself the text `-R` or `--agent-dir` is treated as a value
+  and is not read as a new flag.
+- If mapping a value fails, the run fails before the runner starts. The
+  unmapped path is never passed instead. The recovery admission is still
+  finished with `Failure`, so the next launch does not resume the run.
+- `map_path` compares paths as text. A symlink inside the caller's checkout
+  that points elsewhere is not followed.
+
+The pinned runs (executing and auto-drive) pass only the arguments from
+`runner_bundle_args`, after mapping. Runs without a pinned bundle pass the
+mapped `-R` search directories themselves. In both cases the runner gets each
+search directory once.
+
 With default search off, a sub-recipe or agent that is missing from the
 selected bundle fails the step. It is never taken from another bundle on the
 host.
@@ -648,6 +677,17 @@ snapshot. The detaching command makes no copy.
 Each run that uses a snapshot holds a shared lock on `<key>.use` through a
 lease. The lease is released after the run workspace is finished, on every
 exit path. The last run to release a snapshot removes it.
+
+At the end of a real run, `recipe run` performs the release steps listed in
+[Ownership and release](recipe-checkout-isolation.md#ownership-and-release),
+in the order given there. The bundle lease is released only after the last of
+those steps, `finish_workspace`, has written `run.json`, because the run report
+still reads the snapshot.
+
+The run's exit status is the run's own result with any release-step failures
+added; every step runs even if an earlier one failed. A release step that
+fails after a successful run therefore still fails the run. Releasing the
+lease afterwards never changes that status.
 
 When a lease created by a launch (not a nested run) is released:
 

@@ -188,18 +188,12 @@ impl World {
     }
 }
 
-/// Initialises a git checkout at `dir` (needed only for its `.git`).
+/// Initialises a git checkout at `dir` with one empty commit. Issue #2096
+/// (PR #2290): a run clones the caller's checkout, and it refuses one whose
+/// HEAD is unborn. The bundle files written after this stay uncommitted; the
+/// run reads them from its pinned snapshot, never from the clone.
 pub(crate) fn git_init(dir: &Path) {
-    fs::create_dir_all(dir).unwrap();
-    let status = amplihack_git::command()
-        .args(["init", "-q"])
-        .arg(dir)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .stdin(Stdio::null())
-        .status()
-        .expect("git init");
-    assert!(status.success());
+    crate::support::git_fixture::init_with_commit(dir);
 }
 
 /// The log-pointer records on stderr, as JSON.

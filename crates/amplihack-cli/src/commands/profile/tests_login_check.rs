@@ -517,6 +517,43 @@ fn the_duplicate_check_fails_closed_when_the_profiles_cannot_be_listed() {
 }
 
 #[test]
+fn a_claude_json_that_cannot_be_rewritten_stops_before_claude_runs_and_keeps_everything() {
+    // Removing the key fails (read-only profile directory, so the atomic
+    // write fails before its rename). The shared undo finds the key still
+    // there, removes the pending directory, and nothing has moved. A failure
+    // after the rename takes the same undo, which writes the block back.
+    if super::auto_switch::euid() == 0 {
+        return;
+    }
+    let e = env();
+    let json = e.dir("work").join(".claude.json");
+    let before = fs::read(&json).unwrap();
+    // Restores the permissions when dropped, so a panic in the check still
+    // leaves a directory the temporary-directory cleanup can remove.
+    struct Writable(PathBuf);
+    impl Drop for Writable {
+        fn drop(&mut self) {
+            let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o700));
+        }
+    }
+    fs::set_permissions(e.dir("work"), fs::Permissions::from_mode(0o500)).unwrap();
+    let writable = Writable(e.dir("work"));
+    let ran = Cell::new(false);
+    let result = e.check("work", || {
+        ran.set(true);
+        Ok(())
+    });
+    drop(writable);
+    let err = result.unwrap_err().to_string();
+    assert!(!ran.get(), "claude must not start");
+    assert!(err.contains("nothing was moved"), "{err}");
+    assert_eq!(fs::read(&json).unwrap(), before);
+    assert_eq!(ino(&e.dir("work").join(CREDS)), Some(e.work_ino));
+    assert!(!e.entries().iter().any(|x| x.starts_with(".pending-")));
+    assert_no_secrets(&err);
+}
+
+#[test]
 fn without_home_only_profiles_are_compared() {
     let e = env();
     login_checked(&e.store, &n("fresh"), None, || {
@@ -583,21 +620,12 @@ fn a_failed_child_does_not_run_the_duplicate_check() {
 
 #[test]
 fn no_new_login_after_a_previous_one_restores_everything_and_refuses() {
-    // D2/C3: with a previous login file, the platform writes login files,
-    // so a missing one is a failed login: the login and `oauthAccount`
-    // both go back, so they describe the same account.
+    // #2571 case 3: a held login file, and Claude exits 0 having written
+    // neither a login file nor an `oauthAccount`. The login and the block
+    // set aside in phase A both go back.
     let e = env();
     let before = e.oauth("work");
-    let err = e
-        .check("work", || {
-            let path = e.dir("work").join(".claude.json");
-            let mut v = read_json(&path);
-            v["oauthAccount"] = block("user-SENTINEL-new", "org-SENTINEL-1");
-            private(&path, &v.to_string());
-            Ok(())
-        })
-        .unwrap_err()
-        .to_string();
+    let err = e.check("work", || Ok(())).unwrap_err().to_string();
     assert!(
         err.starts_with(
             "Claude exited without writing a login file; the previous login of profile \
@@ -1095,16 +1123,10 @@ fn a_failed_child_records_nothing() {
 
 #[test]
 fn a_restored_login_records_nothing() {
-    // Exit 0 with no new login file after a previous one: restored.
+    // Exit 0 with neither a new login file nor a new account after a
+    // previous one: restored, and nothing recorded.
     let e = env();
-    e.check("work", || {
-        let path = e.dir("work").join(".claude.json");
-        let mut v = read_json(&path);
-        v["oauthAccount"] = block("user-SENTINEL-new", "org-SENTINEL-1");
-        private(&path, &v.to_string());
-        Ok(())
-    })
-    .unwrap_err();
+    e.check("work", || Ok(())).unwrap_err();
     assert_eq!(recorded(&e, "work"), None);
 }
 
@@ -1249,4 +1271,299 @@ fn only_login_check_and_swap_expect_write_records() {
         ],
         "files that write or name the record store"
     );
+}
+
+// --- Keychain login after a previous login file (#2571) ---------------------
+//
+// On macOS Claude keeps the login in the Keychain and writes no login file;
+// its only trace in the profile is the `oauthAccount` block it writes to
+// `.claude.json`. Phase A sets the previous block aside (the key is removed
+// from `.claude.json`), so a block present after Claude exits 0 is a new
+// login. These tests never touch a Keychain: the fake Claude writes only
+// account metadata.
+
+/// What Claude does on a Keychain `/login`: an `oauthAccount` block in
+/// `.claude.json` and an unrelated key it changes, but no login file.
+fn keychain_writes(e: &Env, p: &str, account: serde_json::Value) {
+    let path = e.dir(p).join(".claude.json");
+    let text = fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("test setup: cannot read {}: {err}", path.display()));
+    let mut v: serde_json::Value = serde_json::from_str(&text)
+        .unwrap_or_else(|err| panic!("test setup: {} is not JSON: {err}", path.display()));
+    v["oauthAccount"] = account;
+    v["projects"] = serde_json::json!({"/tmp/x": {"allowedTools": []}});
+    private(&path, &v.to_string());
+}
+
+fn keychain_login(e: &Env, p: &str, uuid: &str, org: &str) {
+    keychain_writes(e, p, block(uuid, org));
+}
+
+fn no_pending(e: &Env) -> bool {
+    !e.entries().iter().any(|x| x.starts_with(".pending-"))
+}
+
+#[test]
+fn the_previous_oauth_account_is_set_aside_while_claude_runs() {
+    // Phase A: the block is saved in the pending directory and the key is
+    // removed from `.claude.json`, so a block present afterwards is new.
+    let e = env();
+    let seen = Cell::new(None);
+    let saved = Cell::new(None);
+    e.check("work", || {
+        seen.set(Some(e.oauth("work")));
+        let pending = e.entry(".pending-work-", "");
+        saved.set(Some(read_json(&pending.join("oauthAccount.json"))));
+        e.claude_logs_in("work", "user-SENTINEL-new", "org-SENTINEL-1");
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(seen.take(), Some(None), "the key is gone while Claude runs");
+    assert_eq!(
+        saved.take(),
+        Some(block("user-SENTINEL-work", "org-SENTINEL-1"))
+    );
+    let cj = read_json(&e.dir("work").join(".claude.json"));
+    assert_eq!(cj["numStartups"], 1, "other keys are kept");
+}
+
+#[test]
+fn a_keychain_login_after_a_previous_file_is_accepted_and_the_file_replaced() {
+    // #2571 case 1.
+    let e = env();
+    e.check("work", || {
+        keychain_login(&e, "work", "user-SENTINEL-new", "org-SENTINEL-1");
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(ino(&e.dir("work").join(CREDS)), None, "nothing restored");
+    let replaced = e.entry("work-", "-replaced");
+    assert_eq!(
+        ino(&replaced.join(CREDS)),
+        Some(e.work_ino),
+        "moved, not copied"
+    );
+    assert_eq!(mode(&replaced), 0o700);
+    assert_eq!(
+        read_json(&replaced.join("oauthAccount.json")),
+        block("user-SENTINEL-work", "org-SENTINEL-1")
+    );
+    assert!(no_pending(&e), "{:?}", e.entries());
+    assert_eq!(
+        e.oauth("work"),
+        Some(block("user-SENTINEL-new", "org-SENTINEL-1"))
+    );
+    assert_eq!(recorded(&e, "work").as_deref(), Some("user-SENTINEL-new"));
+}
+
+#[test]
+fn a_keychain_login_after_a_previous_file_that_duplicates_is_refused_and_restored() {
+    // #2571 case 2.
+    let e = env();
+    let before = e.oauth("work");
+    let err = e
+        .check("work", || {
+            keychain_login(&e, "work", "user-SENTINEL-other", "org-SENTINEL-1");
+            Ok(())
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("profile 'other'"), "{err}");
+    assert!(
+        err.contains("previous login file and oauthAccount of 'work' were put back"),
+        "{err}"
+    );
+    assert!(
+        err.contains("the macOS Keychain may still hold the refused account"),
+        "S-14: the profile is not claimed to be fully restored: {err}"
+    );
+    assert!(err.contains(&refusal_hint("work")), "{err}");
+    assert!(
+        !err.contains("was moved to"),
+        "no new login file was moved: {err}"
+    );
+    assert_eq!(ino(&e.dir("work").join(CREDS)), Some(e.work_ino));
+    assert_eq!(e.oauth("work"), before);
+    let cj = read_json(&e.dir("work").join(".claude.json"));
+    assert!(
+        cj.get("projects").is_some(),
+        "Claude's other keys stay: {cj}"
+    );
+    assert!(e.entries().is_empty(), "{:?}", e.entries());
+    assert_eq!(recorded(&e, "work"), None);
+    assert_no_secrets(&err);
+    assert_eq!(
+        e.oauth("other"),
+        Some(block("user-SENTINEL-other", "org-SENTINEL-1"))
+    );
+}
+
+#[test]
+fn a_keychain_relogin_to_the_same_account_after_a_previous_file_is_accepted() {
+    // The field case: the same account signs in again through the Keychain.
+    let e = env();
+    let before = e.oauth("work");
+    e.check("work", || {
+        keychain_login(&e, "work", "user-SENTINEL-work", "org-SENTINEL-1");
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(ino(&e.dir("work").join(CREDS)), None);
+    let replaced = e.entry("work-", "-replaced");
+    assert_eq!(ino(&replaced.join(CREDS)), Some(e.work_ino));
+    assert!(no_pending(&e), "{:?}", e.entries());
+    assert_eq!(e.oauth("work"), before);
+    assert_eq!(recorded(&e, "work").as_deref(), Some("user-SENTINEL-work"));
+}
+
+#[test]
+fn a_keychain_login_with_an_unidentifiable_account_restores_and_refuses() {
+    // S-1: an empty or unsafe block is no login, so the working login file
+    // is never moved to `-replaced` without a duplicate check.
+    for account in [
+        serde_json::json!({}),
+        serde_json::json!({"accountUuid": "user-SENTINEL-\u{7}bad"}),
+        serde_json::Value::Null,
+    ] {
+        let e = env();
+        let before = e.oauth("work");
+        let err = e
+            .check("work", || {
+                keychain_writes(&e, "work", account.clone());
+                Ok(())
+            })
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.starts_with(
+                "Claude exited without writing a login file; the previous login of profile \
+                 'work' was restored"
+            ),
+            "{account}: {err}"
+        );
+        assert_eq!(ino(&e.dir("work").join(CREDS)), Some(e.work_ino));
+        assert_eq!(e.oauth("work"), before, "{account}");
+        assert!(e.entries().is_empty(), "{:?}", e.entries());
+        assert_eq!(recorded(&e, "work"), None);
+        assert_no_secrets(&err);
+    }
+}
+
+#[test]
+fn no_new_login_without_a_previous_file_puts_the_earlier_block_back() {
+    // D6: phase A removed the key even with no login file to hold; when
+    // Claude writes no account, the earlier block goes back and nothing is
+    // recorded.
+    let e = env();
+    private(
+        &e.dir("fresh").join(".claude.json"),
+        &serde_json::json!({
+            "oauthAccount": block("user-SENTINEL-fresh", "org-SENTINEL-2"),
+            "numStartups": 4
+        })
+        .to_string(),
+    );
+    e.check("fresh", || Ok(())).unwrap();
+    assert_eq!(ino(&e.dir("fresh").join(CREDS)), None);
+    assert_eq!(
+        e.oauth("fresh"),
+        Some(block("user-SENTINEL-fresh", "org-SENTINEL-2"))
+    );
+    assert_eq!(
+        read_json(&e.dir("fresh").join(".claude.json"))["numStartups"],
+        4
+    );
+    assert!(e.entries().is_empty(), "{:?}", e.entries());
+    assert_eq!(recorded(&e, "fresh"), None);
+}
+
+#[test]
+fn a_keychain_profile_swapped_in_while_claude_runs_names_the_saved_block() {
+    // D7: after the rotator swaps the profile in, nothing is written to it,
+    // so the earlier block stays in the pending directory, and the message
+    // must say where, even though there was no login file to hold.
+    let e = env();
+    private(
+        &e.dir("fresh").join(".claude.json"),
+        &serde_json::json!({"oauthAccount": block("user-SENTINEL-fresh", "org-SENTINEL-2")})
+            .to_string(),
+    );
+    let err = e
+        .check("fresh", || {
+            keychain_login(&e, "fresh", "user-SENTINEL-new", "org-SENTINEL-1");
+            make_live(&e, "fresh");
+            Ok(())
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("swapped in as the rotator's live profile"),
+        "{err}"
+    );
+    let pending = e.entry(".pending-fresh-", "");
+    assert!(err.contains(&pending.display().to_string()), "{err}");
+    assert_eq!(
+        read_json(&pending.join("oauthAccount.json")),
+        block("user-SENTINEL-fresh", "org-SENTINEL-2")
+    );
+    assert_eq!(ino(&e.dir("fresh").join(CREDS)), None);
+    assert!(e.entries().iter().all(|x| !x.starts_with("fresh-")));
+    assert_eq!(recorded(&e, "fresh"), None);
+    assert_no_secrets(&err);
+}
+
+#[test]
+fn a_login_file_without_an_oauth_account_leaves_none_and_keeps_the_saved_block() {
+    // Claude writes a login file but no `oauthAccount`: the login is
+    // accepted, the profile ends with no `oauthAccount` and nothing is
+    // recorded, and the earlier block goes to `-replaced/` with the
+    // previous login (the place the note names).
+    let e = env();
+    let before = e.oauth("work");
+    let mut new_ino = 0;
+    e.check("work", || {
+        new_ino = login(&e.dir("work").join(CREDS));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(ino(&e.dir("work").join(CREDS)), Some(new_ino));
+    assert_eq!(e.oauth("work"), None, "no oauthAccount after the login");
+    assert_eq!(
+        read_json(&e.dir("work").join(".claude.json"))["numStartups"],
+        1,
+        "other keys are kept"
+    );
+    let replaced = e.entry("work-", "-replaced");
+    assert_eq!(ino(&replaced.join(CREDS)), Some(e.work_ino));
+    assert_eq!(Some(read_json(&replaced.join("oauthAccount.json"))), before);
+    assert!(no_pending(&e), "{:?}", e.entries());
+    assert_eq!(recorded(&e, "work"), None);
+}
+
+#[test]
+fn a_keychain_duplicate_check_that_cannot_list_the_profiles_restores_and_refuses() {
+    // Fail closed on the Keychain path: mode 0300 stops the listing of the
+    // root but not the renames inside it.
+    if super::auto_switch::euid() == 0 {
+        return;
+    }
+    let e = env();
+    let before = e.oauth("work");
+    let result = e.check("work", || {
+        keychain_login(&e, "work", "user-SENTINEL-other", "org-SENTINEL-1");
+        fs::set_permissions(e.store.root(), fs::Permissions::from_mode(0o300)).unwrap();
+        Ok(())
+    });
+    fs::set_permissions(e.store.root(), fs::Permissions::from_mode(0o700)).unwrap();
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("could not check profile 'work' for duplicate logins"),
+        "{err}"
+    );
+    assert!(err.contains("its oauthAccount was restored"), "{err}");
+    assert_eq!(ino(&e.dir("work").join(CREDS)), Some(e.work_ino));
+    assert_eq!(e.oauth("work"), before);
+    assert!(e.entries().is_empty(), "{:?}", e.entries());
+    assert_eq!(recorded(&e, "work"), None);
+    assert_no_secrets(&err);
 }

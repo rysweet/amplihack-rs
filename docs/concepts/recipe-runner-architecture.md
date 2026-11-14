@@ -2,7 +2,7 @@
 title: Recipe runner architecture
 description: Execution, supervision, and durable recovery ownership across Amplihack and the Rust runner.
 doc_type: explanation
-last_updated: 2026-11-11
+last_updated: 2026-11-12
 ---
 
 # Recipe Runner Architecture
@@ -15,6 +15,7 @@ it, and how recipe execution stays predictable.
 - [Why external](#why-external)
 - [Binary resolution](#binary-resolution)
 - [Invocation contract](#invocation-contract)
+- [The run's own checkout](#the-runs-own-checkout)
 - [Data flow](#data-flow)
 - [Logging responsibility split](#logging-responsibility-split)
 - [Durable recovery ownership](#durable-recovery-ownership)
@@ -66,6 +67,40 @@ The runner:
 4. Streams live progress, heartbeat, and failure diagnostics to stderr
 5. Writes the final structured result to stdout
 6. Returns exit code 0 on success, 1 on failure
+
+## The run's own checkout
+
+A recipe step is often a full-tool agent. If it ran in your checkout, one
+`git add -A` or a pre-commit hook could change your index while you work.
+So the CLI, not the runner, owns where steps run.
+
+For a Git working directory, Rust copies `HEAD`, the index and the working
+tree separately into a private repository and a detached checkout before the
+runner starts. The runner gets `-C <exec dir>`. Every independent launch,
+including one nested inside another run, gets its own checkout and index.
+Nothing registers a worktree in your repository, and no step writes to your
+work tree, index, `HEAD`, refs or configuration. That is why the old
+`CallerGitState` repair of `core.bare` (#964) is gone: there is nothing in
+the caller's checkout to repair.
+
+Identity and execution are kept apart. Recovery admission keys on your
+`--working-dir`, because that is the run you asked for. The `exec dir` belongs
+to one attempt: a resumed run prepares a fresh one.
+
+The runner still owns step order and context evaluation. The CLI owns what
+surrounds it, in this order: prepare the checkout, start the observer (Linux only),
+launch the runner, then remove the checkout, publish the Git record, finish
+the recovery admission and finish the workspace. Each step's error is kept and
+joined to the others, so a failed release cannot hide a failed publication.
+
+A dry run plans only. It uses the caller's directory, prepares no checkout,
+records nothing and writes no run folder.
+
+Private Git state is not an OS sandbox. See the
+[checkout isolation reference](../reference/recipe-checkout-isolation.md)
+and the [Git command record](../reference/recipe-runner-logging.md#git-command-record).
+
+---
 
 ## Data flow
 

@@ -10,7 +10,7 @@
 #[path = "issue_2336_autodrive_completion_failures.rs"]
 mod failures;
 #[path = "support/autodrive_completion.rs"]
-mod fixture;
+pub(crate) mod fixture;
 #[path = "issue_2336_autodrive_completion_live.rs"]
 mod live;
 #[path = "issue_2336_autodrive_completion_regressions.rs"]

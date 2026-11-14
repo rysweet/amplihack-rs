@@ -673,8 +673,8 @@ fn crusty_round_has_no_light_branch_in_any_step() {
     );
     assert_eq!(
         round["context"].as_mapping().unwrap().len(),
-        13,
-        "completion state, shared authorization and dry-run context reach the crusty round"
+        15,
+        "completion state, shared authorization and dry-run context, and the review generation's launch dir and commit (#2096), reach the crusty round"
     );
 }
 
