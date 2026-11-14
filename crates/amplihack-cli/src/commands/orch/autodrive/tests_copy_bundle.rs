@@ -232,21 +232,42 @@ fn keep_internal_refuses_sibling_prefix_escape() {
     assert!(text.ends_with("symlink leaves the bundle"), "{text}");
 }
 
+/// The repository's own bundle has dangling links
+/// (`skills/outside-in-testing/{scripts,tests}`), so a dangling link whose
+/// text stays inside the bundle is left out of the copy, not refused.
 #[test]
-fn keep_internal_refuses_dangling_and_cyclic_links() {
+fn keep_internal_leaves_out_dangling_internal_links() {
     let (_tmp, src, dest) = bundle();
-    let dangling = src.join("tools/gone");
-    symlink("missing.sh", &dangling).unwrap();
-    assert_eq!(
-        err_text(copy_bundle(&src, &dest, LinkPolicy::KeepInternal)),
-        format!(
-            "untrusted bundle entry {}: dangling symlink",
-            dangling.display()
-        )
-    );
-    fs::remove_file(&dangling).unwrap();
+    symlink("missing.sh", src.join("tools/gone")).unwrap();
+    symlink("../tools/missing-dir", src.join("recipes/gone-dir")).unwrap();
+    copy_bundle(&src, &dest, LinkPolicy::KeepInternal).unwrap();
+    assert!(fs::symlink_metadata(dest.join("tools/gone")).is_err());
+    assert!(fs::symlink_metadata(dest.join("recipes/gone-dir")).is_err());
+    assert!(dest.join("tools").is_dir());
+    let _ = fs::remove_dir_all(&dest);
+    super::check_bundle(&src, LinkPolicy::KeepInternal).unwrap();
+}
+
+/// A dangling link is still refused when its text is absolute or leaves the
+/// bundle: the text checks come before the target is resolved.
+#[test]
+fn keep_internal_refuses_dangling_links_whose_text_leaves_the_bundle() {
+    let (_tmp, src, dest) = bundle();
+    let absolute = src.join("tools/abs-gone");
+    symlink("/nonexistent/amplihack-2528", &absolute).unwrap();
+    let text = err_text(copy_bundle(&src, &dest, LinkPolicy::KeepInternal));
+    assert!(text.ends_with(": absolute symlink"), "{text}");
+    fs::remove_file(&absolute).unwrap();
     let _ = fs::remove_dir_all(&dest);
 
+    symlink("../../../nonexistent-2528", src.join("tools/up-gone")).unwrap();
+    let text = err_text(copy_bundle(&src, &dest, LinkPolicy::KeepInternal));
+    assert!(text.ends_with(": symlink leaves the bundle"), "{text}");
+}
+
+#[test]
+fn keep_internal_refuses_cyclic_links() {
+    let (_tmp, src, dest) = bundle();
     let a = src.join("tools/loop-a");
     symlink("loop-b", &a).unwrap();
     symlink("loop-a", src.join("tools/loop-b")).unwrap();

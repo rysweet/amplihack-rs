@@ -160,9 +160,11 @@ chmod -R go-w ~/.amplihack/releases/1.2.151
 ```
 
 Errors that name a symlink (`absolute symlink`, `symlink leaves the bundle`,
-`dangling symlink`, `symlink cycle`) mean a link inside the bundle points
-outside it or nowhere. Replace it with a relative link to a file inside the
-bundle, or remove it.
+`symlink cycle`) mean a link inside the bundle points outside it or loops.
+Replace it with a relative link to a file inside the bundle, or remove it. A
+relative link that stays inside the bundle but points at nothing is not an
+error: it is left out of the snapshot, as `amplihack install` leaves it out of
+the installed bundle.
 
 ## Fix a recipe not found error
 

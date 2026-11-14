@@ -183,7 +183,9 @@ fn walk_bundle(root: &Path, dir: &Path, dest: Option<&Path>, links: LinkPolicy) 
                 continue;
             }
             check_owner(&path, &metadata)?;
-            let text = internal_link_text(root, &path)?;
+            let Some(text) = internal_link_text(root, &path)? else {
+                continue;
+            };
             if let Some(to) = &to {
                 std::os::unix::fs::symlink(&text, to)
                     .with_context(|| format!("cannot create link {}", to.display()))?;
@@ -283,13 +285,17 @@ fn check_entry(path: &Path, metadata: &fs::Metadata) -> Result<()> {
 /// The link text of a symlink `link` that [`LinkPolicy::KeepInternal`] keeps:
 /// relative, staying inside `root` when read as text, resolving inside
 /// `root`, with a target and intermediate directories that pass
-/// [`check_entry`]. Anything else is E7.
+/// [`check_entry`]. Anything else is E7, except a dangling link whose text
+/// passes those text checks: it gives `None` and is left out of the copy, as
+/// `amplihack install` leaves it out of the staged bundle. The repository's
+/// own bundle has two such links (`skills/outside-in-testing/{scripts,tests}`),
+/// so refusing them would refuse every `--bundle checkout` run.
 ///
 /// The text is copied verbatim, so it must stay inside the bundle without
 /// following any symlink: `..` steps past `/` stop there, and text such as
 /// `../../../..<root>/x` resolves inside the source but, in the snapshot,
 /// back to the source.
-fn internal_link_text(root: &Path, link: &Path) -> Result<PathBuf> {
+fn internal_link_text(root: &Path, link: &Path) -> Result<Option<PathBuf>> {
     let refuse =
         |reason: &str| anyhow::anyhow!("untrusted bundle entry {}: {reason}", link.display());
     let text =
@@ -302,9 +308,7 @@ fn internal_link_text(root: &Path, link: &Path) -> Result<PathBuf> {
     }
     let target = match fs::canonicalize(link) {
         Ok(target) => target,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(refuse("dangling symlink"));
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) if error.raw_os_error() == Some(libc::ELOOP) => {
             return Err(refuse("symlink cycle"));
         }
@@ -324,7 +328,7 @@ fn internal_link_text(root: &Path, link: &Path) -> Result<PathBuf> {
             .with_context(|| format!("cannot inspect {}", current.display()))?;
         check_entry(&current, &metadata)?;
     }
-    Ok(text)
+    Ok(Some(text))
 }
 
 /// True when `text`, read from the folder holding `link`, never climbs above

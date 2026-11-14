@@ -143,7 +143,8 @@ See [Known limits](#known-limits).
 | Absolute target | Refused (E7) |
 | Target outside the bundle, including a `../` escape or a sibling directory whose name shares a prefix | Refused (E7) |
 | Link text that climbs above the bundle root when read as text, even if it resolves back inside (for example surplus `..` steps followed by the bundle's own absolute path) | Refused (E7) |
-| Dangling or cyclic | Refused (E7) |
+| Dangling, with relative link text that stays inside the bundle | Left out of the snapshot, as `amplihack install` leaves it out of the installed bundle. The repository's own bundle has two such links, `skills/outside-in-testing/scripts` and `skills/outside-in-testing/tests` |
+| Cyclic | Refused (E7) |
 | Link to a directory | Recreated as a link; the copy never descends through it |
 
 Containment is tested twice. The canonical target must lie inside the
@@ -717,7 +718,7 @@ snapshot:
 | E4 | No installed bundle | `no installed amplifier-bundle found; searched: <path> (git checkout, skipped), <path>, <path>. To use this checkout's bundle, pass --bundle checkout` |
 | E5 | No checkout bundle | `--bundle checkout: no directory containing both .git and amplifier-bundle/ above <working dir>` |
 | E6 | Ownership or mode check fails | `untrusted bundle entry <path>: mode 0664 (group or other writable); fix with chmod go-w <path>` or `untrusted bundle entry <path>: owned by uid 1001, not the current user` |
-| E7 | Symlink refused, entry changed during copy, or unsupported file type | `untrusted bundle entry <path>: <reason>`, where the reason is `absolute symlink`, `symlink leaves the bundle`, `dangling symlink`, `symlink cycle`, `changed while being copied` or `not a regular file, directory or symlink` |
+| E7 | Symlink refused, entry changed during copy, or unsupported file type | `untrusted bundle entry <path>: <reason>`, where the reason is `absolute symlink`, `symlink leaves the bundle`, `symlink cycle`, `changed while being copied` or `not a regular file, directory or symlink` |
 | E8 | Settled state home lies under the run's `runtime/` folder or under `<work root>/bundle-pins/`, compared after resolving symlinks (a path not yet created resolves its nearest existing ancestor) | `AMPLIHACK_STATE_HOME <path> lies under a run's runtime/ folder` or `AMPLIHACK_STATE_HOME <path> lies under the bundle snapshots in <work root>/bundle-pins` |
 | E9 | Bare recipe name not found or outside the bundle | `recipe 'default-workflow' not found in the installed bundle at <path>; to use this checkout's recipes, pass --bundle checkout` or `recipe '<name>' resolves outside <recipes dir>` |
 | E10 | The recipe copied into the snapshot has a different name from the one read before the pin | `recipe changed while the bundle was being pinned: <path> names "<a>", but "<b>" was read before the pin` |
