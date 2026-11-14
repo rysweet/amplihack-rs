@@ -85,9 +85,24 @@ pub(crate) fn report(
         .and_then(Value::as_str)
         .map(str::to_owned);
 
+    // #2663: the tool wrote `merged` only after GitHub read the PR MERGED at
+    // the expected head, so a merge recorded with its PR and head is
+    // `completed` whatever the loop line says. A step that failed after the
+    // merge, or a loop result lost with it, does not undo the merge.
+    let merged_at_head = merge.as_ref().is_some_and(|m| {
+        m.get("result").and_then(Value::as_str) == Some("merged")
+            && m.contains_key("pr")
+            && m.contains_key("expected_head")
+    });
     // #2663 M1: `completed` (a success) means merged. #2575 B2: a WAITING loop
     // goes to finalisation like DONE, and a pending check is a wait.
     let stop_reason = match loop_result.as_deref() {
+        _ if merged_at_head => {
+            if !matches!(loop_result.as_deref(), Some("DONE" | "WAITING")) || crusty {
+                notes.push("finalize_merge: merged; loop_result not consulted");
+            }
+            "completed"
+        }
         Some("TERMINAL_REFUSAL" | "TERMINAL_POLICY_REFUSAL") => "terminal_refusal",
         Some("DONE" | "WAITING") if crusty => {
             notes.push("merge_loop_result: missing or unreadable");
@@ -190,7 +205,8 @@ enum MergeRead {
     Known(Map<String, Value>),
     /// A string `result` that is not a documented one: never `completed`.
     Unknown,
-    /// No readable object, no string `result`, or another PR's result.
+    /// No readable object, no string `result`, another PR's result, or no
+    /// `pr` when one is expected.
     Missing,
 }
 
@@ -203,8 +219,10 @@ fn merge_result(raw: Option<&Value>, expected_pr: Option<&str>) -> MergeRead {
         return MergeRead::Missing;
     };
     let pr = map.get("pr").and_then(Value::as_u64);
-    if let (Some(expected), Some(pr)) = (expected_pr.filter(|p| !p.is_empty()), pr)
-        && expected.parse::<u64>().ok() != Some(pr)
+    // A record must name the expected PR; one with no readable `pr` is not
+    // trusted when a PR is expected.
+    if let Some(expected) = expected_pr.filter(|p| !p.is_empty())
+        && (pr.is_none() || expected.parse::<u64>().ok() != pr)
     {
         return MergeRead::Missing;
     }

@@ -41,20 +41,17 @@
 
 autodrive_merge() {
   local -x LC_ALL=C
-  local pr="${1:-}" sha="${2:-}" mm state rc out json subject ms
+  local pr="${1:-}" sha="${2:-}" mm state rc vrc out errf json subject ms
   _autodrive_merge_emit() { # <result> <reason>
     jq -cn --arg r "$1" --argjson pr "$pr" --arg sha "$sha" --arg why "$2" \
       '{result:$r,pr:$pr,expected_head:$sha,reason:$why}'
   }
-  # _autodrive_merge_pending <gh pr checks output>: the pending check names,
-  # control characters removed and cut at 300 bytes.
-  _autodrive_merge_pending() {
-    printf '%s\n' "$1" | awk -F '\t' '$2 == "pending" { print $1 }' \
-      | tr '\n' ',' | tr -d '\000-\037\177' | sed 's/,$//; s/,/, /g' | head -c 300
-  }
-  _autodrive_merge_wait() { # <gh pr checks output>
+  # _autodrive_merge_wait <gh pr checks output>: checks-pending, naming the
+  # pending checks with control characters removed and cut at 300 bytes.
+  _autodrive_merge_wait() {
     local names
-    names="$(_autodrive_merge_pending "$1")"
+    names="$(printf '%s\n' "$1" | awk -F '\t' '$2 == "pending" { print $1 }' \
+      | tr '\n' ',' | tr -d '\000-\037\177' | sed 's/,$//; s/,/, /g' | head -c 300)"
     _autodrive_merge_emit checks-pending "waiting for ${names:-required checks} at ${sha}"
   }
   if [ "$#" -ne 2 ] || ! [[ "$pr" =~ ^[1-9][0-9]{0,9}$ ]] || ! [[ "$sha" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
@@ -95,15 +92,20 @@ autodrive_merge() {
   # Checks are read once; a pending check is a wait for the next wake, never
   # a poll here (#2575 B2). A PR with no checks at all is not refused for
   # that reason: GitHub's branch protection decides (#2575 minor 3).
-  out="$(gh pr checks "$pr" --required 2>&1)"; rc=$?
-  [ "$rc" -eq 79 ] && return 79
-  if [ "$rc" -ne 0 ] && [ "$rc" -ne 8 ] && [[ "$out" == *"no required checks reported"* ]]; then
-    out="$(gh pr checks "$pr" 2>&1)"; rc=$?
-    [ "$rc" -eq 79 ] && return 79
-    if [ "$rc" -ne 0 ] && [ "$rc" -ne 8 ] && [[ "$out" == *"no checks reported"* ]]; then
+  # gh's "no checks" message is read from stderr only, and only when stdout
+  # lists no checks: check names come from the PR's own workflows, so a
+  # failing check named "no checks reported" must stay a failing check.
+  errf="$(mktemp)" || { _autodrive_merge_emit checks-not-green "the checks could not be read (no temporary file)"; return 3; }
+  out="$(gh pr checks "$pr" --required 2>"$errf")"; rc=$?
+  [ "$rc" -eq 79 ] && { rm -f "$errf"; return 79; }
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 8 ] && [ -z "$out" ] && grep -qF 'no required checks reported' "$errf"; then
+    out="$(gh pr checks "$pr" 2>"$errf")"; rc=$?
+    [ "$rc" -eq 79 ] && { rm -f "$errf"; return 79; }
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 8 ] && [ -z "$out" ] && grep -qF 'no checks reported' "$errf"; then
       rc=0
     fi
   fi
+  rm -f "$errf"
   case "$rc" in
     0) ;;
     8) _autodrive_merge_wait "$out"; return 7 ;;
@@ -111,12 +113,10 @@ autodrive_merge() {
   esac
 
   ms="$(printf '%s' "$json" | jq -r '.mergeStateStatus // empty | strings' 2>/dev/null)"
-  case "$ms" in
-    DIRTY)
-      _autodrive_merge_emit base-behind "the branch conflicts with its base (mergeStateStatus DIRTY); the base must be merged in first"
-      return 8 ;;
-    *) ;;
-  esac
+  if [ "$ms" = DIRTY ]; then
+    _autodrive_merge_emit base-behind "the branch conflicts with its base (mergeStateStatus DIRTY); the base must be merged in first"
+    return 8
+  fi
 
   if ! subject="$(autodrive_merge_subject "$json" "$pr")" || ! autodrive_merge_body "$json"; then
     _autodrive_merge_emit message-unavailable "the PR title or body could not be read into a squash message (#2056)"
@@ -131,10 +131,10 @@ autodrive_merge() {
     # non-zero; merged at the expected head is merged, whatever the base now
     # reads (#2663). Otherwise an out-of-date or conflicting branch is
     # base-behind (the merge loop syncs the base); anything else is refused.
-    json="$(gh pr view "$pr" --json state,headRefOid,mergeStateStatus)"; out=$?
-    [ "$out" -eq 79 ] && return 79
+    json="$(gh pr view "$pr" --json state,headRefOid,mergeStateStatus)"; vrc=$?
+    [ "$vrc" -eq 79 ] && return 79
     ms=""
-    if [ "$out" -eq 0 ]; then
+    if [ "$vrc" -eq 0 ]; then
       if _autodrive_merge_at_head "$json"; then
         _autodrive_merge_emit merged "GitHub reads the PR merged at the expected head although gh exited ${rc}; report cut from the squash body: ${MERGE_REPORT_CUT:-no}"
         return 0

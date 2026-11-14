@@ -366,7 +366,7 @@ cause a merge.
 | --- | --- |
 | Exit `0`: required checks all passed | Merge is attempted. |
 | Exit `8`: a required check is still running | `checks-pending` (tool exit `7`); no merge attempt, no draft, no hand-off. The reason names the pending checks. |
-| `gh` reports `no required checks reported` | Falls back to `gh pr checks <pr>` (all checks): exit `0` continues, exit `8` is `checks-pending`, `no checks reported` continues, anything else is `checks-not-green`. |
+| `gh` reports `no required checks reported` on stderr, with nothing on stdout | Falls back to `gh pr checks <pr>` (all checks): exit `0` continues, exit `8` is `checks-pending`, `no checks reported` on stderr with nothing on stdout continues, anything else is `checks-not-green`. The message is never matched in stdout, where check names from the PR's own workflows appear. |
 | Any other non-zero exit, including a failing check | `checks-not-green` (tool exit `3`); no merge attempt. |
 
 **Pending checks wait for the next wake, not a timer.** A `checks-pending`
@@ -450,7 +450,7 @@ in sequence, each run once; there is no loop and no counter.
 | `step-03c-sync-round` | bash | `synced == 'true'` | Runs `autodrive_merge_loop_run.sh 1`: the merge-ready loop for one more round (see [the round budget](#autodrive_merge_loop_runsh)). |
 | `step-03d-sync-outcome` | bash | after `step-03c` | Maps the loop result as `step-02a` does, giving `sync_loop_outcome`. |
 | `step-03e-finalize-again` | sub-recipe | `sync_loop_outcome.finalise == 'true'` | Runs `autodrive-finalize.yaml` once more. |
-| `step-03f-sync-handoff` | sub-recipe | `synced == 'false'` or `sync_loop_outcome.outcome == 'handoff'` | Runs [`autodrive-handoff.yaml`](#hand-off). |
+| `step-03f-sync-handoff` | sub-recipe | `finalize_merge.result == 'base-behind'` and `synced != 'true'` (including a base sync that returned no JSON), or `sync_loop_outcome.outcome == 'handoff'` | Runs [`autodrive-handoff.yaml`](#hand-off). |
 
 After the second finalisation, any result other than `merged` ends the drive
 with `not merged: <reason>` or a hand-off. A second `base-behind` is not
@@ -544,6 +544,7 @@ The first matching row applies.
 
 | Loop result | Merge result | `stop_reason` |
 | --- | --- | --- |
+| any value, missing or unreadable | `merged`, with `pr` and `expected_head` | `completed`; when `loop_result` is not `DONE` or `WAITING`, the `note` says `loop_result not consulted` |
 | `TERMINAL_REFUSAL` or `TERMINAL_POLICY_REFUSAL` | | `terminal_refusal` |
 | `DONE` or `WAITING` | `merged` | `completed` |
 | `DONE` or `WAITING` | `not-authorised` | `not_merged` |
@@ -571,6 +572,8 @@ before #2575 (crusty endings are not handed off), and a crusty `DONE` alone is
 
 When the runner bound a state directory and the context or the build result
 names a different one, `merge` is ignored (`null`) and the `note` says so.
+When a PR is expected, a `finalize_merge` record without a numeric `pr`, or
+with another PR's number, is also ignored.
 
 A PR already merged at entry is still reported through the `already_merged`
 path, which keeps its binding, selection, `run_id`, provenance and PR checks.
@@ -599,9 +602,23 @@ whatever `gh` printed or exited.
 | `completed` | ✓ Success |
 | `not_merged`, `waiting_for_checks`, `handoff`, `unreadable`, `budget_exhausted`, anything else | not successful |
 
-The runner sets `success=false` after `report()` adds `autodrive_outcome`,
-which is after `run_with_transient_retry` has returned, so a run that did not
-merge never starts the whole-run re-attempt (#1267).
+After `report()` adds `autodrive_outcome`, the runner sets `success` to
+`autodrive_run_succeeded(autodrive_outcome)` in both directions
+(`apply_autodrive_outcome` in `execute.rs`):
+
+- A run the runner reported as a success, but which did not merge, becomes a
+  failure.
+- A run that merged, and then failed at a later step (the state-outcome
+  agent, the hand-off, the base-sync steps or the report agent), becomes a
+  success. It carries no failure class, and admission records it as a
+  success. Only a `merged` record with the expected PR, a valid
+  `expected_head` and the runner-assigned state directory raises the status;
+  exit `79` and other terminal refusals end the run with an error and are
+  never raised.
+
+This happens after `run_with_transient_retry` has returned, so a run that
+did not merge never starts the whole-run re-attempt (#1267). The runner
+prints one `INFO` line whenever it changes the status.
 
 Verify-only runs (`no_merge=true` or `autodrive_dry_run=true`) and runs whose
 captured invocation does not allow a merge end `not_merged`, so they are not

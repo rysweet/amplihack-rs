@@ -222,6 +222,30 @@ fn pending_check_after_the_fallback_is_checks_pending() {
     assert_no_merge_attempt(&fx);
 }
 
+/// A check name comes from the PR's own workflows. A failing check named like
+/// gh's "no checks" message, printed on stdout, is still a failing check: the
+/// message counts only from stderr with nothing on stdout.
+#[test]
+fn a_failing_check_named_no_checks_reported_is_checks_not_green() {
+    for (required, all, name) in [
+        ("none", "fail", "no checks reported"),
+        ("fail", "pass", "no required checks reported"),
+    ] {
+        let Some(fx) = Fx::new() else { return };
+        fx.set("required", required);
+        fx.set("all", all);
+        fx.set("check_name", name);
+        let out = fx.merge_tool(PR, SHA_A);
+        assert_eq!(out.status.code(), Some(3), "{name}: {}", show(&out));
+        assert_eq!(
+            last_json(&out, "result")["result"],
+            json!("checks-not-green"),
+            "{name}"
+        );
+        assert_no_merge_attempt(&fx);
+    }
+}
+
 #[test]
 fn pending_check_names_are_cleaned_and_capped() {
     let Some(fx) = Fx::new() else { return };

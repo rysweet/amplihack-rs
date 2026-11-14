@@ -212,7 +212,7 @@ steps:
       build_result: "{{build_result}}"
     output: "autodrive_finalization"
   - id: "step-03f-sync-handoff"
-    condition: "base_sync.synced == 'false' or sync_loop_outcome.outcome == 'handoff'"
+    condition: "(finalize_merge.result == 'base-behind' and base_sync.synced != 'true') or sync_loop_outcome.outcome == 'handoff'"
     type: "recipe"
     recipe: "autodrive-handoff"
     context:

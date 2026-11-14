@@ -66,7 +66,7 @@ if [ "$LOOP_NAME" = merge-ready ]; then
   CI_RAW="$(field "$RAW" ci_signal "")"
   if ! [[ "$CI_RAW" =~ ^(pass|pending|fail|none)@([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
     [ -z "$CI_RAW" ] || { echo "WARNING: ${ROUND_LABEL} wrote a malformed ci_signal; it is dropped." >&2
-      RAW="$(printf '%s' "$RAW" | jq -c 'del(.ci_signal)' 2>/dev/null)"; }
+      if stripped="$(printf '%s' "$RAW" | jq -c 'del(.ci_signal)')"; then RAW="$stripped"; else echo "ERROR: ${ROUND_LABEL}: could not drop ci_signal; round data kept" >&2; fi; }
     CI_RAW=""
   fi
   if [ "$ROUND_VERDICT" = WAITING ]; then

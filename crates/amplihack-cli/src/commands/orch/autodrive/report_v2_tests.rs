@@ -509,3 +509,19 @@ fn report_v2_only_merged_completes_a_done_loop() {
         );
     }
 }
+
+#[test]
+fn report_v2_merged_record_without_pr_is_not_trusted() {
+    // The tool always writes `pr`; a record without one, read while a PR is
+    // expected, is treated as missing and never completes the run.
+    let auth = authorization("false", "false");
+    let merged = json!({"result":"merged","expected_head":HEAD,"handoff":"false"}).to_string();
+    let ctx = context(&[
+        ("merge_loop_result", loop_line("DONE")),
+        ("finalize_merge", Value::String(merged)),
+    ]);
+    let report = run(&auth, &ctx);
+    assert_v2_shape(&report);
+    assert_ne!(report["stop_reason"], json!("completed"), "{report}");
+    assert!(report["merge"].is_null(), "{report}");
+}
