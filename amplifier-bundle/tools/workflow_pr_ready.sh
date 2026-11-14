@@ -125,7 +125,7 @@ validate_pr_identity_before_mutation() {
   pr_head_oid=$(printf '%s' "$pr_json" | jq -r '.headRefOid // ""')
   pr_head_owner=$(printf '%s' "$pr_json" | jq -r '.headRepositoryOwner.login // .headRepositoryOwner.name // .headRepositoryOwner // ""')
   pr_head_repo=$(printf '%s' "$pr_json" | jq -r '.headRepository.name // ((.headRepository.nameWithOwner // "") | split("/") | .[-1]) // ""')
-  pr_cross_repo=$(printf '%s' "$pr_json" | jq -r '.isCrossRepository // false')
+  if printf '%s' "$pr_json" | jq -e '.isCrossRepository == false' >/dev/null 2>&1; then pr_cross_repo=false; else pr_cross_repo=true; fi
 
   if [ -z "$pr_head_ref" ] || [ -z "$pr_base_ref" ] || [ -z "$pr_head_oid" ] || [ -z "$pr_head_owner" ] || [ -z "$pr_head_repo" ]; then
     echo "ERROR: refusing to mutate PR '$pr_url'; PR metadata is incomplete" >&2
@@ -139,7 +139,11 @@ validate_pr_identity_before_mutation() {
     echo "ERROR: refusing to mutate PR '$pr_url'; headRefOid '$pr_head_oid' does not match local HEAD '$local_head'" >&2
     return 1
   fi
-  if [ "$pr_cross_repo" = "true" ] || [ "$pr_head_owner/$pr_head_repo" != "$repo_identity" ]; then
+  if [ "$pr_cross_repo" != "false" ]; then
+    echo "ERROR: refusing to mutate PR '$pr_url'; isCrossRepository is not exactly false, so the PR is not a same-repository PR" >&2
+    return 1
+  fi
+  if [ "$pr_head_owner/$pr_head_repo" != "$repo_identity" ]; then
     echo "ERROR: refusing to mutate PR '$pr_url'; PR head repo '$pr_head_owner/$pr_head_repo' does not match current repo '$repo_identity'" >&2
     return 1
   fi

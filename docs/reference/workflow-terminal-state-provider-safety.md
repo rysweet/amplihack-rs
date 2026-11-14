@@ -103,7 +103,7 @@ GitHub metadata must match the local repository and branch:
 - PR base branch equals normalized `base_ref`.
 - PR head SHA equals local `HEAD`.
 - PR head and base repositories match the current GitHub remote.
-- Cross-repository PRs are rejected by the terminal-state proof.
+- Cross-repository PRs are rejected by the terminal-state proof. A PR counts as same-repository only when `isCrossRepository` is exactly `false`; a missing or `null` value is rejected (see [Same-Repository PR Rule](same-repository-pr-rule.md)).
 
 If a GitHub metadata command fails, returns ambiguous data, or cannot prove the
 requested GitHub PR identity, terminal-state validation fails closed when the

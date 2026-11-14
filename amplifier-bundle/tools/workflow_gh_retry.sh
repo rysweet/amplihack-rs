@@ -240,7 +240,7 @@ gh_pr_exists_rest() {
         headRefOid: (.head.sha // ""),
         headRepositoryOwner: { login: (.head.repo.owner.login // "") },
         headRepository: { name: (.head.repo.name // "") },
-        isCrossRepository: (((.head.repo.full_name // "") != (.base.repo.full_name // "")))
+        isCrossRepository: ((.head.repo.full_name // "") as $h | (.base.repo.full_name // "") as $b | (($h | type) != "string" or $h == "" or $h != $b))
       })' 2>/dev/null || return 1
 }
 
@@ -269,7 +269,7 @@ gh_pr_view_rest() {
       headRefOid: (.head.sha // ""),
       headRepositoryOwner: { login: (.head.repo.owner.login // "") },
       headRepository: { name: (.head.repo.name // "") },
-      isCrossRepository: (((.head.repo.full_name // "") != (.base.repo.full_name // "")))
+      isCrossRepository: ((.head.repo.full_name // "") as $h | (.base.repo.full_name // "") as $b | (($h | type) != "string" or $h == "" or $h != $b))
     }' 2>/dev/null || return 1
 }
 

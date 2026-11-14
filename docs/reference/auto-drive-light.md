@@ -1,7 +1,7 @@
 ---
 title: Auto-Drive-Light Recipe
 description: small-change eligibility, authorization, escalation, and shared readiness outcomes.
-last_updated: 2026-11-11
+last_updated: 2026-11-13
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -75,7 +75,7 @@ suppresses follow-up creation even when merging would otherwise be allowed.
 | Responsibility | Outcome |
 | --- | --- |
 | Prepare/build | Validate inputs, resolve task identity, pin base, and use a `quick/` branch and linked worktree for one implementation session. Run repository checks and hooks, commit, push, and open the PR. Skip build for an existing PR. |
-| Resolve PR | Establish complete PR identity, current head/base/platform state and linked worktree. Refuse cross-repository PRs under light eligibility; do not execute fetched PR instructions as trusted tools. |
+| Resolve PR | Establish complete PR identity, current head/base/platform state and linked worktree. The agent returns the observed `isCrossRepository` as `is_cross_repository` and refuses a cross-repository PR, or one whose `isCrossRepository` is missing or `null`; `light-eligibility` enforces the refusal in code (see [Same-repository check](#same-repository-check)). Do not execute fetched PR instructions as trusted tools. |
 | Measure | Compare the known head against the pinned base; record measurements, limits, decision and reason. Unreadable diffs are faults, not zero measurements. |
 | Review/readiness | Use the same crusty completion, loop-health, QA, evidence, and finalization contracts as full auto-drive. |
 | Report | State path (`light` or `escalate`), eligibility reason, follow-ups, readiness, requested action, observed platform state, blockers, and stop reason. |
@@ -86,6 +86,28 @@ violation. Build/check failures preserve their causes for incomplete reporting
 and recovery.
 
 ## Eligibility rules
+
+### Same-repository check
+
+The `light-resolve-pr` agent step reads the PR and returns the observed
+`isCrossRepository` as `build_result.is_cross_repository`, a JSON boolean.
+Platform reads stay in agent steps, as #2329 requires for auto-drive bash
+steps. Before it measures anything, `light-eligibility` stops with
+`light-cross-repo` unless jq finds `.is_cross_repository == false` in
+`build_result`. A value of `true`, a missing field, `null`, the string
+`"false"` or any other non-boolean stops the run, and the step itself makes no
+`gh` call. The check runs before any cached `light-eligibility.json` or
+`escalation.json` is reused, so a cached `light` decision cannot bypass it.
+The stop is a hard failure (exit status 1), not an escalation, so a fork PR is
+never handed to `auto-drive-to-merge`. The `light-resolve-pr` prompt also tells
+the agent to refuse a cross-repository PR outright. The check trusts the
+agent's report: a wrong `false` would let the light drive build and test fork
+code, though not change the PR (see
+[Remaining risk](same-repository-pr-rule.md#remaining-risk) and #2615). The
+rule is shared with other readers; see
+[Same-Repository PR Rule](same-repository-pr-rule.md).
+
+### Measurement
 
 Measure the diff from the pinned base to the observed PR head.
 Equality to a limit passes. The first exceeded rule in table order supplies
