@@ -120,6 +120,19 @@ written only by the validated `symbolic-ref` step. Automatic maintenance is
 off for the fetch, so no detached repack is still writing to the run's
 storage when the run releases it.
 
+Preparation needs Git 2.29 or later: the `^refs/remotes/origin/HEAD` negative
+refspec and `--no-auto-maintenance` were both added in 2.29. With an older Git
+the fetch fails and preparation stops; it does not fall back to a fetch that
+would copy `origin/HEAD`. The worktree sweep already needs Git 2.31
+(`rev-parse --path-format=absolute`).
+
+Only one of the two cases in the table above prints a warning. A plain
+`origin/HEAD` in the caller is dropped silently: a plain ref is never a valid
+default-branch pointer, and the recipes already handle a missing
+`origin/HEAD`. A symbolic `origin/HEAD` whose target
+is outside `refs/remotes/origin/` gets a warning, because only the caller's
+own configuration can produce it and the caller should fix it.
+
 `origin/HEAD` is copied only when the caller's
 `git symbolic-ref -q refs/remotes/origin/HEAD` exits `0` and its target:
 
@@ -520,7 +533,7 @@ isolation test cannot pass on empty data.
 | --- | --- |
 | `crates/amplihack-cli/tests/issue_2096_checkout_units.rs` | Snapshot layers, byte paths, symlinks, special files, batch blob query. |
 | `crates/amplihack-cli/tests/issue_2096_execution_isolation.rs` | Caller `HEAD` and index unchanged; dry run makes no checkout, recording or run folder; resumed run gets a fresh `exec dir`; unborn caller finishes admission as `Failure`. |
-| `crates/amplihack-cli/tests/issue_2096_private_base_ref.rs` | Base resolution inside a private checkout made by `RunCheckout::prepare`, whose caller has an origin: the `resolve_base_ref` bodies taken from `workflow-worktree.yaml`, `consensus-issue-worktree.yaml` and `workflow-terminal-state.yaml`, and `workflow_delivery_inputs.sh worktree main false "" ""`, all without a prior fetch; `git fetch origin` in the private repository moves `origin/main`; a caller without an origin gets no refspec; a foreign `origin/HEAD` target is refused. |
+| `crates/amplihack-cli/tests/issue_2096_private_base_ref.rs` | Base resolution inside a private checkout made by `RunCheckout::prepare`, whose caller has an origin: the `resolve_base_ref` bodies taken from `workflow-worktree.yaml`, `consensus-issue-worktree.yaml` and `workflow-terminal-state.yaml`, and `workflow_delivery_inputs.sh worktree main false "" ""`, all without a prior fetch; `git fetch origin` in the private repository moves `origin/main`; a caller without an origin gets no refspec; a foreign `origin/HEAD` target is refused while preparation still succeeds; a plain caller `origin/HEAD` is not copied. |
 | `crates/amplihack-cli/tests/issue_2096_recording.rs` | Observer coverage and failure cases. |
 | `crates/amplihack-cli/src/commands/recipe/run/tests_git_record.rs` | `begin_on(RecordingPlatform::Other)`: the run is unobserved, no observer or trace variables reach the runner, `git-recording.json` says `unavailable`, and a missing run dir still fails. `begin_on(RecordingPlatform::Linux)` still requires the observer. |
 | `crates/amplihack-cli/tests/issue_2096_review_isolation.rs` | Review generations, including retirement: after `advance` the old checkout and storage are gone and the manifest says `retired`; commands on a retired generation are refused; `release` of the first generation removes everything, including storage a failed retirement left behind. |

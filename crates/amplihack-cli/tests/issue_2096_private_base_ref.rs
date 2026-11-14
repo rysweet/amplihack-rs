@@ -316,31 +316,20 @@ fn private_checkout_rejects_foreign_origin_head() {
             "refs/remotes/origin/HEAD",
             "refs/heads/main",
         ]);
-        match implementation::RunCheckout::prepare(&f.repo, &scratch(&f), false) {
-            Ok(checkout) => {
-                let dir = checkout.exec_dir();
-                let (code, target) =
-                    git_status(&f, dir, &["symbolic-ref", "-q", "refs/remotes/origin/HEAD"]);
-                assert!(
-                    code != Some(0) || target.starts_with("refs/remotes/origin/"),
-                    "a foreign origin/HEAD target must not be copied: {target}"
-                );
-                let (code, leaked) = git_status(
-                    &f,
-                    dir,
-                    &["rev-parse", "--verify", "-q", "refs/remotes/origin/HEAD"],
-                );
-                assert_ne!(
-                    code,
-                    Some(0),
-                    "a rejected origin/HEAD must not arrive as a plain ref: {leaked}"
-                );
-            }
-            Err(error) => assert!(
-                format!("{error:#}").contains("cannot seed origin refs in the private repository"),
-                "{error:#}"
-            ),
-        }
+        // D4: a foreign target warns and preparation carries on, so it must
+        // succeed. The rev-parse check below also covers a symbolic copy.
+        let checkout = implementation::RunCheckout::prepare(&f.repo, &scratch(&f), false).unwrap();
+        let dir = checkout.exec_dir();
+        let (code, leaked) = git_status(
+            &f,
+            dir,
+            &["rev-parse", "--verify", "-q", "refs/remotes/origin/HEAD"],
+        );
+        assert_ne!(
+            code,
+            Some(0),
+            "a rejected origin/HEAD must not arrive in the private repository: {leaked}"
+        );
     });
 }
 
