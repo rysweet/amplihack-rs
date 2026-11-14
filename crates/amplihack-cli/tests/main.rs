@@ -350,6 +350,8 @@ mod issue_2190_recipe_steps_report_real_exit_status;
 mod issue_2211_live_freshness;
 #[path = "issue_2218_excluded.rs"]
 mod issue_2218_excluded;
+#[path = "issue_2240_quick_change_continuation.rs"]
+mod issue_2240_quick_change_continuation;
 #[path = "issue_2317_codex_step_commits_in_worktree.rs"]
 mod issue_2317_codex_step_commits_in_worktree;
 #[path = "issue_2336_autodrive_completion.rs"]

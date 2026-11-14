@@ -364,12 +364,12 @@ See [current behavior and authority](../reference/auto-drive-to-merge.md#current
 | | `quick-change` | `auto-drive-light` | `auto-drive-to-merge` |
 | --- | --- | --- | --- |
 | Build | One agent session | One agent session | `default-workflow`, including design and architect steps |
-| Ends at | An open PR | Verified open PR when merging disabled; confirmed merge when authorized | Verified open PR when merging disabled; confirmed merge when authorized |
-| Size check | Diff limits (3 files, 150 lines by default), hands over to `default-workflow` | Eligibility rules (300 lines, no new modules, public API, schema or recipe contract changes by default), escalates to `auto-drive-to-merge` | None |
+| Ends at | An open PR, or verified publication to an existing PR branch | Verified open PR when merging disabled; confirmed merge when authorised | Verified open PR when merging disabled; confirmed merge when authorised |
+| Size check | Diff limits (3 files, 150 lines by default). New-branch runs hand over to `default-workflow` when the exact branch exists on origin; continuation saves recovery files and stops. See [setup-push recovery](../reference/quick-change-recipe.md#when-the-setup-push-failed) | Eligibility rules (300 lines, no new modules, public API, schema or recipe contract changes by default), escalates to `auto-drive-to-merge` | None |
 | Crusty review loop | No | Yes. A round whose findings are all minor ends the loop, and each finding is filed as its own follow-up issue linked to the task before merge | Yes, the same per-finding model |
 | Readiness and finalization | No | Shared agent steps and accepted evidence | Agent steps; all 13 criteria, captured authorization, expected-head protection, and platform confirmation |
 | Selected by smart-orchestrator | Yes, for small single-workstream tasks | No, run by name | No, run by name or skill |
-| Existing PR | Not supported | `pr_number` or `existing_branch` | `pr_number` or `existing_branch` |
+| Existing PR | Direct recipe call with `existing_branch`; publishes to that exact origin branch with no `gh` calls. [Oversized continuation](../reference/quick-change-recipe.md#hand-over-to-default-workflow) stops before delegation | `pr_number` or `existing_branch` | `pr_number` or `existing_branch` |
 
 After implementation and validation, `no_merge=true` will keep a driven PR
 open. The planned defaults are `false` for full and `true` for light, with

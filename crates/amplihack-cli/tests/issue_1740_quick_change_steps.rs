@@ -121,10 +121,11 @@ fn allow_no_op_is_declared_forwarded_and_read_by_the_diff_limits_step() {
         .as_str()
         .unwrap()
         .to_string();
-    assert!(
-        cmd.contains("\"${RECIPE_VAR_allow_no_op:-}\" = true"),
-        "{cmd}"
-    );
+    assert!(cmd.contains("qc_diff_verdict"), "{cmd}");
+    let common =
+        std::fs::read_to_string(repo_root().join("amplifier-bundle/tools/quick_change_common.sh"))
+            .unwrap();
+    assert!(common.contains("\"${RECIPE_VAR_allow_no_op:-}\" = true"));
 
     let routing = recipe("smart-execute-routing");
     let forwarded = step(&routing, "execute-single-round-1-quick-change")["context"]["allow_no_op"]
@@ -429,13 +430,13 @@ fn record_base_sweeps_only_old_state_directories() {
         d
     };
     let (old, recent, other) = (dir("123"), dir("456"), dir("not-a-cksum"));
+    let timestamp =
+        std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 24 * 60 * 60);
     for d in [&old, &other] {
-        let o = std::process::Command::new("touch")
-            .args(["-d", "30 days ago"])
-            .arg(d)
-            .output()
+        std::fs::File::open(d)
+            .unwrap()
+            .set_modified(timestamp)
             .unwrap();
-        assert!(o.status.success());
     }
     record_base(&r);
     assert!(!old.exists(), "a directory idle for 30 days is swept");

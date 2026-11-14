@@ -322,7 +322,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Recipe CLI Commands How-To](howto/recipe-cli-commands.md) - Task-oriented guide for using recipe commands
 - [Dev-Orchestrator Routing Contract](reference/dev-orchestrator-routing.md) - Issue #749 target rules for Development and hybrid workstream routing
 - [Verify Dev-Orchestrator Routing](howto/verify-dev-orchestrator-routing.md) - Check deterministic Development-to-default-workflow routing from the CLI
-- [Quick-Change Recipe](reference/quick-change-recipe.md) - Single-session recipe for small changes: diff limits, hand-over to default-workflow, routing precedence and the `Workflow:` log line, `-c workflow=`
+- [Quick-Change Recipe](reference/quick-change-recipe.md) - Small changes on new or existing branches, pinned diff limits, change-based titles, hand-over and routing
 - [Auto-Drive-Light Recipe](reference/auto-drive-light.md) - Smaller drive-to-merge recipe for small PRs: eligibility rules, escalation to auto-drive-to-merge, the task id its follow-up issues name, and the per-finding follow-up model it shares with auto-drive-to-merge
 - [Correlate Recipe Runs with Logs](howto/correlate-recipe-runs.md) - Match terminal output, final JSON, child process IDs, and runner log paths by run ID
 - [Recipe Executor Environment](reference/recipe-executor-environment.md) - Step-level variables plus subprocess environment contract for forced non-interactive recipe execution

@@ -298,7 +298,7 @@ hook_repair_snapshot() {
     printf 'git-config-worktree\t%s\n' "$(git config --worktree --list 2>&1 | cksum)"
     # Filtered so unrelated global changes, such as a credential helper set by
     # another session, do not refuse. --show-origin puts a tab before each key.
-    # The grep finding nothing is fine: the snapshot's status is sort's.
+    # The grep finding nothing is fine: sort supplies the snapshot status.
     printf 'git-config-hooks\t%s\n' "$(git config --show-origin --list 2>&1 \
       | LC_ALL=C grep -iE $'\t''(core\.hookspath|core\.fsmonitor|hook\.|include\.path|includeif\..*\.path|push\.)' | cksum)"
     printf 'HEAD\t%s\n' "$(git rev-parse -q --verify HEAD 2>/dev/null || echo none)"
@@ -312,7 +312,7 @@ hook_repair_snapshot() {
       git rev-parse -q --verify '@{upstream}' 2>/dev/null || true
       git rev-parse -q --verify '@{push}' 2>/dev/null || true; } | cksum)"
     # The stash is shared by every worktree. Only entries whose first parent
-    # is this worktree's HEAD at the start of the round are recorded, so a
+    # is HEAD in this worktree at the start of the round are recorded, so a
     # stash made in another worktree during the round does not refuse it.
     printf 'git-stash\t%s\n' "$( { git stash list --format='%H %P' 2>/dev/null || true; } \
       | LC_ALL=C awk -v b="$2" 'b != "" && $2 == b { print $1 }' | cksum)"

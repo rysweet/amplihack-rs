@@ -225,26 +225,18 @@ fn publish_steps_use_files_retries_and_verification() {
     }
 
     let pr = command(&r, "quick-change-create-pr");
-    for needle in [
-        "--body-file",
-        "workflow_gh_retry.sh",
-        "--draft",
-        "gh pr create",
-    ] {
+    for needle in ["--body-file", "--draft", "gh pr create"] {
         assert!(pr.contains(needle), "create-pr must contain {needle:?}");
     }
     assert!(
         !pr.contains("--auto"),
         "create-pr must not enable auto-merge"
     );
-    for tool in ["verify_pushed_ref.sh", "workflow_gh_retry.sh"] {
-        assert!(
-            repo_root()
-                .join("amplifier-bundle/tools")
-                .join(tool)
-                .is_file()
-        );
-    }
+    assert!(
+        repo_root()
+            .join("amplifier-bundle/tools/verify_pushed_ref.sh")
+            .is_file()
+    );
 }
 
 #[test]
@@ -296,7 +288,7 @@ fn common_preamble_never_resolves_tools_from_the_worktree() {
 }
 
 #[test]
-fn commit_and_push_re_measure_after_hook_repair() {
+fn commit_and_push_measure_at_publication_boundaries() {
     let r = recipe();
     for (id, output) in [
         ("quick-change-commit", "quick_change_commit_repaired"),
@@ -307,11 +299,11 @@ fn commit_and_push_re_measure_after_hook_repair() {
             .find("hook_repair_run")
             .unwrap_or_else(|| panic!("{id} must use hook_repair_run"));
         let measure = cmd
-            .find("--committed")
-            .unwrap_or_else(|| panic!("{id} must re-measure with --committed"));
+            .rfind("qc_measure_committed")
+            .unwrap_or_else(|| panic!("{id} must measure the complete committed change"));
         assert!(
             repair < measure,
-            "{id}: --committed must follow hook_repair_run"
+            "{id}: measurement must follow hook_repair_run"
         );
         assert!(
             cmd.contains("BASE=\"$(qc_base)\""),
@@ -329,9 +321,15 @@ fn commit_and_push_re_measure_after_hook_repair() {
     }
     let push = command(&r, "quick-change-push");
     assert!(
-        push.find("--committed").unwrap() < push.rfind("verify_pushed_ref.sh").unwrap(),
+        push.rfind("qc_measure_committed").unwrap() < push.rfind("verify_pushed_ref.sh").unwrap(),
         "the push step re-measures before verifying the remote ref"
     );
+    assert!(
+        push.find("qc_measure_committed").unwrap() < push.find("git push -u").unwrap(),
+        "continuation must measure before its single push"
+    );
+    let common = read("amplifier-bundle/tools/quick_change_common.sh");
+    assert!(common.contains("--committed") && common.contains("--base \"$BASE\""));
     let commit = command(&r, "quick-change-commit");
     let add = commit.find("git add -A").unwrap();
     let guard = |from: usize| commit[from..].find("artifact-guard").map(|i| i + from);
@@ -353,30 +351,15 @@ fn create_pr_reads_both_repair_outputs_from_the_runner() {
     assert!(pr.contains("## Request") && !pr.contains("## Summary"));
 }
 
-#[test]
-fn title_strips_leading_markdown_from_the_task() {
-    let r = crate::support::quick_change_repo::Repo::new();
-    for (task, want) in [
-        (
-            "# Fix issue #1742 on main\n\nDetails",
-            "Fix issue #1742 on main Details",
-        ),
-        ("> **`Fix`** the link", "Fix ** the link"),
-        ("###", "quick change"),
-    ] {
-        let o = r.common("qc_title", &[("RECIPE_VAR_task_description", task)]);
-        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-        let title = String::from_utf8_lossy(&o.stdout);
-        assert_eq!(title, want, "task {task:?}");
-    }
-}
+// Title behaviour is exercised through the live commit and PR commands in
+// issue_2240_quick_change_continuation; task-derived titles are no longer valid.
 
 #[test]
-fn worktree_step_ignores_inherited_branch_targets_and_branch_is_checked_before_the_agent() {
+fn worktree_step_preserves_existing_branch_and_checks_it_before_the_agent() {
     let r = recipe();
     let ctx = &step(&r, "quick-change-worktree")["context"];
     assert_eq!(ctx["branch_prefix"].as_str(), Some("quick"));
-    assert_eq!(ctx["existing_branch"].as_str(), Some(""));
+    assert_eq!(ctx["existing_branch"].as_str(), Some("{{existing_branch}}"));
     assert_eq!(ctx["pr_number"].as_str(), Some(""));
     let cmd = command(&r, "quick-change-record-base");
     let check = cmd
