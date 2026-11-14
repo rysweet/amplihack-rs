@@ -53,7 +53,23 @@
 //! Anything else decodes to `None`, which is never a refusal. Keep this
 //! compatibility decoder until the runner exposes a numeric exit-code field.
 
-use super::super::RecipeRunStepResult;
+use super::super::{RecipeRunResult, RecipeRunStepResult};
+use crate::commands::orch::STEP_RECOVERY_HANDOFF_EXIT;
+
+/// The exit status of a failed run: 81 when a failed step ended with a
+/// recorded step-recovery handoff (issue #2539), so the handoff reaches the
+/// caller instead of a plain 1; otherwise 1.
+pub(crate) fn failed_run_exit_code(result: &RecipeRunResult) -> i32 {
+    let handed_off = result.step_results.iter().any(|step| {
+        !super::failure_evidence::is_completed_status(&step.status)
+            && step.termination_exit_code() == Some(STEP_RECOVERY_HANDOFF_EXIT)
+    });
+    if handed_off {
+        STEP_RECOVERY_HANDOFF_EXIT
+    } else {
+        1
+    }
+}
 
 impl RecipeRunStepResult {
     /// Decode the terminating process status from the runner's error envelope.
