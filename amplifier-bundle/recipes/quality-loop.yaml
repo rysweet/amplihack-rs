@@ -16,6 +16,7 @@ recursion:
   max_total_steps: 60
 default_step_timeout: 1800
 context:
+  base_branch: ""  # base for the pull request, passed on to default-workflow; empty: the PR's own base (docs/reference/workflow-delivery-inputs.md)
   repo_path: "."
   admin_merge: "false"
   session_id: ""
@@ -301,6 +302,7 @@ steps:
     condition: "task_description != ''"
     recipe: "default-workflow"
     context:
+      base_branch: "{{base_branch}}"
       task_description: "{{task_description}}"
       repo_path: "{{repo_path}}"
     output: "implement_result"

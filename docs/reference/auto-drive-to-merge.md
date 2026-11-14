@@ -100,6 +100,7 @@ commands and expected outcomes.
 | `pr_url` | empty | PR URL, validated against the platform, repository, and number. |
 | `existing_branch` | empty | Source branch; must match the selected PR when supplied. |
 | `branch_prefix` | `feat` | Branch prefix for a new build. |
+| `base_branch` | empty | Branch a new build starts from and its PR targets. Passed to `autodrive-build` and from there to `default-workflow`; see [`base_branch`](workflow-delivery-inputs.md#base_branch). Empty keeps the remote default branch, and finalize takes the base from the PR the build opened ([How finalize finds the base](workflow-delivery-inputs.md#how-finalize-finds-the-base)). |
 | `plan_task_id` | empty | Follow-up task: issue `N` or `#N`, or 1–64 characters from `A-Za-z0-9._:/-`. Otherwise resolve `Closes #N`, `Fixes #N`, or `Resolves #N` from the PR body, then task description. |
 | `no_merge` | `false` in the full composer | Prevent merging throughout the invocation when `true`. Build always receives `true`, independently of this outer value. |
 | `autodrive_dry_run` | `false` | Prevent merging and follow-up issue creation. Still assesses readiness and reports missing obligations. |

@@ -71,6 +71,12 @@ DELIVERY_INPUTS_HELPER="${WORKFLOW_DELIVERY_INPUTS_HELPER:-${SCRIPT_DIR}/workflo
 # shellcheck source=workflow_delivery_inputs.sh
 . "$DELIVERY_INPUTS_HELPER"
 
+# base_branch in the publish result (#2520): the base this step checked and
+# gave the pull request, so finalize can find a pull request on a base other
+# than origin/HEAD. Set only from a checked value: the --base given to
+# gh pr create, or the base of a matched pull request that passed the scoped
+# lookup. Every other exit, and a create that let GitHub choose, records "".
+BASE_BRANCH_RESULT=""
 emit_publish_result() {
   jq -nc \
     --arg state "$PUBLISH_STATE" \
@@ -80,7 +86,8 @@ emit_publish_result() {
     --arg pr_number "$PR_NUMBER_RESULT" \
     --arg branch_diff_status "$BRANCH_DIFF_STATUS" \
     --arg message "$MESSAGE" \
-    '{state:$state,legacy_state:$legacy_state,terminal_status:$terminal_status,pr_url:$pr_url,pr_number:$pr_number,branch_diff_status:$branch_diff_status,message:$message}'
+    --arg base_branch "$BASE_BRANCH_RESULT" \
+    '{state:$state,legacy_state:$legacy_state,terminal_status:$terminal_status,pr_url:$pr_url,pr_number:$pr_number,branch_diff_status:$branch_diff_status,message:$message,base_branch:$base_branch}'
 }
 
 # Best-effort: apply caller-configured labels to the GitHub PR that was just
@@ -131,6 +138,7 @@ finish_publish() {
     apply_pr_labels_best_effort
   fi
   if [ "$terminal_status" != "success" ]; then
+    BASE_BRANCH_RESULT=""
     printf 'ERROR: %s (exit %s): %s\n' "$state" "$exit_code" "$message" >&2
     PUBLISH_DIAGNOSED=true
   fi
@@ -826,6 +834,8 @@ PR_JSON="$(scoped_pr_lookup)"
 load_pr_fields "$PR_JSON"
 
 if [ -n "$PR_URL_RESULT" ]; then
+  # The scoped lookup matched this pull request with --base "$BASE_BRANCH".
+  BASE_BRANCH_RESULT="$BASE_BRANCH"
   if [ -z "$PR_STATE" ]; then
     VIEW_JSON="$(gh_pr_view_with_retry "$PR_URL_RESULT" --json url,number,state,mergedAt,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,isCrossRepository)"
     load_pr_fields "$VIEW_JSON"
@@ -1104,6 +1114,7 @@ else
   if RECOVERY_JSON="$(scoped_pr_lookup)"; then
     load_pr_fields "$RECOVERY_JSON"
     if [ -n "$PR_URL_RESULT" ] && [ "$PR_STATE" = "OPEN" ]; then
+      BASE_BRANCH_RESULT="$BASE_BRANCH"
       finish_publish "existing-open-pr" "existing-open-pr" "success" "adopted existing open PR after create collision"
     fi
   else
@@ -1127,4 +1138,6 @@ esac
 if PR_NUMBER_RESULT="$(gh_pr_number_from_url "$PR_URL_RESULT")"; then :; else
   finish_publish "FAILED_PR_IDENTITY" "pr-identity-failed" failure "gh pr create succeeded but result parsing could not resolve PR identity" 1
 fi
+# Only a base this step passed with --base; without it GitHub chose the base.
+[ -z "${RECIPE_VAR_base_branch:-}" ] || BASE_BRANCH_RESULT="$BASE_BRANCH"
 finish_publish "$PUBLISH_STATE" "$LEGACY_PUBLISH_STATE" "success" "draft PR created"
