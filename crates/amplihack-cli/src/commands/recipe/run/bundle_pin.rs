@@ -634,7 +634,12 @@ pub(crate) fn pin(selection: &Selection, work_root: &Path, dry_run: bool) -> Res
         .with_context(|| format!("cannot open {}/.lock", pins.display()))?;
     store::clean_stale_copies(&pins);
     let tmp = pins.join(store::new_tmp_name());
-    let pinned = pin_locked(selection, &pins, &tmp);
+    let pinned = pin_locked(
+        selection,
+        &record(&selection.source, None, false),
+        &pins,
+        &tmp,
+    );
     // The copy is renamed into place on success; anything left is removed.
     if let Err(error) = store::remove_entry(&tmp) {
         eprintln!(
@@ -658,9 +663,14 @@ pub(crate) fn pin(selection: &Selection, work_root: &Path, dry_run: bool) -> Res
 }
 
 /// Steps 4 to 6 of a launch, with `.lock` held: copies and checks the
-/// source into `tmp`, derives the key and puts the snapshot in place.
-/// Returns the key and `<pins>/<key>`.
-fn pin_locked(selection: &Selection, pins: &Path, tmp: &Path) -> Result<(String, PathBuf)> {
+/// source into `tmp`, writes `pin_record` beside it, derives the key and
+/// puts the snapshot in place. Returns the key and `<pins>/<key>`.
+fn pin_locked(
+    selection: &Selection,
+    pin_record: &BundleRecord,
+    pins: &Path,
+    tmp: &Path,
+) -> Result<(String, PathBuf)> {
     {
         use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
         fs::DirBuilder::new()
@@ -679,17 +689,7 @@ fn pin_locked(selection: &Selection, pins: &Path, tmp: &Path) -> Result<(String,
         &selection.version,
         &digest,
     );
-    write_pin_record(
-        tmp,
-        &BundleRecord {
-            source: selection.source.display().to_string(),
-            version: selection.version.clone(),
-            snapshot: None,
-            choice: selection.choice.as_str().to_string(),
-            inherited: false,
-            recipe_file: None,
-        },
-    )?;
+    write_pin_record(tmp, pin_record)?;
     let home = pins.join(&key);
     match store::place(pins, &key, tmp, &digest, &selection.source)? {
         Placement::Created | Placement::Reused => {}

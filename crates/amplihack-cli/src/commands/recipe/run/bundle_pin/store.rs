@@ -193,7 +193,7 @@ fn digest_file(hasher: &mut Sha256, path: &Path, checked: &fs::Metadata) -> Resu
 }
 
 /// Clears every write bit in the tree at `root`; symlinks are left alone.
-pub(super) fn make_read_only(root: &Path) -> Result<()> {
+fn make_read_only(root: &Path) -> Result<()> {
     let meta =
         fs::symlink_metadata(root).with_context(|| format!("cannot inspect {}", root.display()))?;
     if meta.file_type().is_symlink() {
