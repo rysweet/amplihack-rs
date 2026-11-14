@@ -15,27 +15,37 @@ const REPLY: &str = r#"{"step_recovery":{"choice":"continue_recorded","reason":"
 
 #[test]
 fn redaction_covers_prefixed_quoted_and_header_keys() {
+    // Key-shaped values are built at run time so no scanner reads a test
+    // value as a real key.
+    let openai_short = format!("sk-{}-{}", "proj", "abcdef123456");
+    let openai_long = format!("sk-{}-{}", "proj", "0123456789abcdefghij");
+    let aws_secret = format!("wJalr{}", "XUtnFEMI");
     let cases = [
-        ("GITHUB_TOKEN=abc123secretvalue", "abc123secretvalue"),
         (
-            "OPENAI_API_KEY=sk-proj-abcdef123456",
-            "sk-proj-abcdef123456",
+            "GITHUB_TOKEN=abc123secretvalue".to_string(),
+            "abc123secretvalue".to_string(),
         ),
-        ("AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI", "wJalrXUtnFEMI"),
-        (r#"{"token": "s3cr3tvalue"}"#, "s3cr3tvalue"),
-        ("x-api-key: abcdefgh", "abcdefgh"),
-        ("password=hunter2", "hunter2"),
         (
-            "using sk-proj-0123456789abcdefghijXYZ now",
-            "sk-proj-0123456789abcdefghij",
+            format!("OPENAI_API_KEY={openai_short}"),
+            openai_short.clone(),
         ),
+        (
+            format!("AWS_SECRET_ACCESS_KEY={aws_secret}"),
+            aws_secret.clone(),
+        ),
+        (
+            r#"{"token": "s3cr3tvalue"}"#.to_string(),
+            "s3cr3tvalue".to_string(),
+        ),
+        ("x-api-key: abcdefgh".to_string(), "abcdefgh".to_string()),
+        ("password=hunter2".to_string(), "hunter2".to_string()),
+        (format!("using {openai_long}XYZ now"), openai_long.clone()),
     ];
-    for (line, secret) in cases {
+    for (line, secret) in &cases {
         let out = redact(line);
-        assert!(!out.contains(secret), "{line} -> {out}");
+        assert!(!out.contains(secret.as_str()), "{line} -> {out}");
         assert!(out.contains("[REDACTED]"), "{line} -> {out}");
     }
-    // Built at run time so no scanner reads the test value as a real key.
     let aws = format!("AKIA{}", "ABCDEFGHIJKLMNOP");
     let out = redact(&format!("key id {aws} in use"));
     assert!(!out.contains(&aws), "{out}");
