@@ -236,8 +236,10 @@ fn quality_loop_copilot_sites_use_a_private_prompt_dir_and_trap() {
             .unwrap();
     let sites = text.matches("amplihack copilot -p").count();
     assert_eq!(sites, 3, "the three Copilot steps");
+    // Count only the Copilot prompt folders; other steps (such as the #2582
+    // context file in drive-red-prs-to-fix) make their own private folders.
     assert_eq!(
-        text.matches("mktemp -d").count(),
+        text.matches("PROMPT_DIR=$(umask 077; mktemp -d)").count(),
         3,
         "one private dir per step"
     );
