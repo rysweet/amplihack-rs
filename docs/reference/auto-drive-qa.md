@@ -26,6 +26,7 @@ recovered; selecting a different client cannot waive required tests.
 - [Operator environment](#operator-environment)
 - [Repository configuration](#repository-configuration)
   - [Declaring how criterion 1 is met](#declaring-how-criterion-1-is-met)
+    - [How merge-ready agents use the declaration](#how-merge-ready-agents-use-the-declaration)
 - [CI selection](#ci-selection)
 - [Manifest detection and scope](#manifest-detection-and-scope)
 - [Scenario requirements](#scenario-requirements)
@@ -67,9 +68,13 @@ An explicitly empty command override records source `env` and blocks with
 `qa-command-missing`; it does not fall back. Sources other than the single
 environment command choose their own directory.
 
-`AUTODRIVE_QA_BASE` and `AUTODRIVE_QA_HEAD` are internal observation inputs,
-replaced with the selected PR's actual base and verified head. Inherited
-values cannot redirect evidence to another revision.
+`AUTODRIVE_QA_BASE` and `AUTODRIVE_QA_HEAD` are internal observation inputs.
+The merge evidence step must set them to the selected PR's actual base branch
+and verified head before it runs `autodrive_qa_evidence.sh`; the script uses
+whatever values it is given. With `AUTODRIVE_QA_BASE` unset the script
+measures a preflight of the head commit (see
+[Declaring how criterion 1 is met](#declaring-how-criterion-1-is-met)), and that
+record cannot authorise a merge.
 
 ## Repository configuration
 
@@ -147,19 +152,33 @@ With `command = "npm test"` alone at the merge base (no `multi_area` line),
 the same PR records `qa_status` `FAIL`, `qa_reason` `no-scenarios`,
 `gadugi_status` `NO_SCENARIOS` and `qa_criterion1_declaration` `none`.
 
-**Read from the merge base only.** The declaration is read from the same
-merge-base blob as `command`, never from the PR head or the working tree. A
-PR that changes `.amplihack/qa.toml` is refused with `changed-in-pr`, so a PR
-cannot declare the rule it is judged by. A new declaration first applies to
-the PR after the one that adds it.
+**Read from the merge base.** When `AUTODRIVE_QA_BASE` is set, the
+declaration is read from the same merge-base blob as `command`, never from
+the PR head or the working tree. A PR that changes `.amplihack/qa.toml` is
+refused with `changed-in-pr`, so a PR cannot declare the rule it is judged
+by. A new declaration first applies to the PR after the one that adds it.
+
+**A preflight reads the PR head.** Only when `AUTODRIVE_QA_BASE` is unset
+does the declaration come from the head commit's `.amplihack/qa.toml`, read
+in `decl-only` mode. The `changed-in-pr` refusal cannot apply, because there
+is no base to compare with. The head declaration has one effect:
+`autodrive_gadugi_required` can report `false`, so the preflight skips the
+`gadugi-test` install check. `autodrive_qa_report` still refuses with
+`invalid` `paths-unknown` and chooses no command, so a preflight never
+authorises a merge. An `AUTODRIVE_QA_BASE` that is set but empty, or names a
+base whose merge base cannot be resolved, does not fall back to the head; the
+declaration is then `none`. Merge evidence must run with `AUTODRIVE_QA_BASE`
+set to the PR's actual base. A record measured without it describes the head
+commit only, and its declaration does not count for a merge.
 
 **Fails closed.** The declaration is `none`, and gadugi stays required
 wherever detection requires it, when `AUTODRIVE_QA_SCENARIO_DIR`,
 `AUTODRIVE_QA_COMMAND` or `AUTODRIVE_QA_COMMANDS` is set (even to empty);
-qa.toml is absent or invalid; the merge base is unknown or a git read fails;
-or, for `scenarios_ci_job` only, the PR changes anything under `.github/`
-(`qa_summary` names `ci-job-workflow-changed`). Where gadugi is not required
-anyway, such as a Rust or Python project or a
+qa.toml is absent or invalid; `AUTODRIVE_QA_BASE` is set but empty, or the
+merge base cannot be resolved, or a git read fails; or, for `scenarios_ci_job`
+only, the PR changes anything under `.github/` (`qa_summary` names
+`ci-job-workflow-changed`). Where gadugi is not required anyway, such as a
+Rust or Python project or a
 [documentation-only change](#documentation-only-changes), the evidence also
 records `none`.
 
@@ -169,9 +188,49 @@ evidence step passes `<name>` as the third argument to
 taking it from the measured QA evidence record, never from an agent's
 summary. Only `GREEN` meets criterion 1.
 
-The declaration is an input to the merge round's judgement, not a waiver an
-agent can write: the merge-round agent uses `qa_criterion1_declaration` from
-the evidence and never adds or edits a qa.toml declaration.
+#### How merge-ready agents use the declaration
+
+The agents that judge criterion 1 are told about the declaration in two
+places: the criterion 1 row of the
+[merge-ready skill](../../amplifier-bundle/skills/merge-ready/SKILL.md) and the
+criterion 1 bullet of `amplifier-bundle/recipes/autodrive-merge-round.yaml`.
+The criterion 1 prompt of `autodrive-merge-evidence.yaml` tells the evidence
+agent to run `autodrive_qa_evidence.sh` with `AUTODRIVE_QA_BASE` set to the
+selected PR's base branch. The guidance is agent judgement; no script checks
+the agent's reading.
+
+Both texts give the same rules:
+
+| `qa_criterion1_declaration` | Criterion 1 is judged as |
+| --- | --- |
+| `multi-area-command` | Met when the declared `command` passed. No missing-scenario blocker is raised and no gadugi scenario is searched for, written or run. |
+| `ci-job:<name>` | Met when the declared `command` passed **and** criterion 8's CI measurement shows every check-run named `<name>` at the head passed. A missing check-run is `MISSING`, not met. |
+| `none` | The existing detection rules apply unchanged. `none` alone is not a gap and not a blocker. |
+
+- **Source.** The agent takes the value only from the measured record at
+  `{{autodrive_qa_evidence}}`. It never takes it from the step-02 summary, the
+  PR description, or a qa.toml read from the PR head or the worktree.
+- **Base binding.** A declaration counts only in evidence measured with
+  `AUTODRIVE_QA_BASE` set to the PR's actual base. Otherwise the agent treats
+  it as `none`.
+- **Exclusions.** The declaration does not apply when the PR changes
+  `.amplihack/qa.toml`; when the operator sets `AUTODRIVE_QA_SCENARIO_DIR`,
+  `AUTODRIVE_QA_COMMAND` or `AUTODRIVE_QA_COMMANDS`, even to an empty value;
+  when qa.toml is absent or invalid; when the merge base is unknown while
+  `AUTODRIVE_QA_BASE` is set, or a git read fails; and, for
+  `scenarios_ci_job` only, when the PR changes anything under `.github/`.
+  The evidence then records `none`.
+- **Not a waiver.** The rule that evidence cannot waive the gadugi
+  requirement still holds. A declaration committed at the merge base is the
+  base branch's own rule for how the requirement is met, not a waiver.
+- **No self-declaration.** No agent adds, edits or suggests a qa.toml
+  declaration in the PR under review, including during repair and
+  blocker-clearing.
+
+Applied to #2458: a repository with a root `package.json`, a multi-area PR, a
+merge-base qa.toml with `multi_area = "command"`, a passing `command`, and
+evidence measured against the PR's base recording `multi-area-command`. An
+agent following either text judges criterion 1 met.
 
 ## CI selection
 

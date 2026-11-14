@@ -12,12 +12,13 @@
 //! so a pull request never sets the rule it is judged by (#2439). With no
 //! declaration, today's fail-closed behaviour stays.
 //!
-//! Most cases run the real tools on a temporary git repository shaped like the
-//! mistt-infra drives: a root package.json, a `scenarios/` folder holding JSON
-//! and TypeScript scenarios (not gadugi YAML), a pull request that touches
-//! three top-level folders, and a qa.toml command that exits 0. The tools run
-//! under `env -i` with HOME, TMPDIR and git config inside the temporary
-//! directory, so nothing reads the real ~/.claude, ~/.amplihack or profiles.
+//! Most cases run the real tools on a temporary git repository shaped like a
+//! multi-area Node repository: a root package.json, a `scenarios/` folder
+//! holding JSON and TypeScript scenarios (not gadugi YAML), a pull request
+//! that touches three top-level folders, and a qa.toml command that exits 0.
+//! The tools run under `env -i` with HOME, TMPDIR and git config inside the
+//! temporary directory, so nothing reads the real ~/.claude, ~/.amplihack or
+//! profiles.
 //! There are no timers and no network: `gh` is a fixture-serving fake.
 
 use serde_json::Value;
@@ -627,6 +628,26 @@ fn an_empty_merge_base_gives_no_declaration() {
         helper_line(&fx, "autodrive_gadugi_required", Some(""), &[]),
         "true\n"
     );
+}
+
+/// S2: a base that cannot be resolved (no such origin branch, or a name the
+/// ref checks refuse) also gives `none`; it never falls back to the head.
+#[cfg(unix)]
+#[test]
+fn an_unresolvable_merge_base_gives_no_declaration() {
+    let fx = fixture(Some(QA_MULTI), None, &[]);
+    for base in ["no-such-branch", "-main", "main..x"] {
+        assert_eq!(
+            helper_line(&fx, "autodrive_qa_declaration", Some(base), &[]),
+            "none\n",
+            "{base}"
+        );
+        assert_eq!(
+            helper_line(&fx, "autodrive_gadugi_required", Some(base), &[]),
+            "true\n",
+            "{base}"
+        );
+    }
 }
 
 /// S3: a pull request that changes a workflow cannot rely on the CI job

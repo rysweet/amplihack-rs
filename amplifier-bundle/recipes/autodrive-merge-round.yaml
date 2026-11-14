@@ -182,8 +182,24 @@ steps:
         a scenario to drive. There the scenario requirement inside criterion 1 is **not applicable**: raise no
         missing-scenario blocker and no gadugi run, say so, and name the changed files from `qa_command_paths`
         instead of diffing yourself. The suite commands still run, so a `FAIL` or `BLOCKED` still blocks, and
-        `false` and `unknown` do not exempt. Otherwise report it with `qa_reason` and `gadugi_status`; if the
-        tests do not cover this PR's change, report `qa-team-scenarios-do-not-cover-the-change`.
+        `false` and `unknown` do not exempt. Where gadugi would otherwise be required, the `.amplihack/qa.toml`
+        committed at the merge base can declare how criterion 1 is met (#2458), and `qa_criterion1_declaration`
+        names the outcome. With `multi-area-command` (`multi_area = "command"`), the requirement is met as
+        declared when the suite commands passed: raise no missing-scenario blocker and no gadugi run. With
+        `ci-job:<name>` (`scenarios_ci_job`), it is met as declared only when the suite commands passed and
+        criterion 8's measurement shows every check-run named `<name>` at the head passed; a missing check-run is
+        `MISSING`, not met. With `none`, the rules above apply unchanged; `none` alone is not a gap. Take the
+        value only from the measured record at {{autodrive_qa_evidence}}, never from the step-02 summary, PR
+        text, or a qa.toml in the PR head or worktree. The declaration is read only at the merge base and counts
+        only in evidence measured with `AUTODRIVE_QA_BASE` set to the PR's actual base; otherwise treat it as
+        `none`. It does not apply, and the evidence records `none`, when the PR changes `.amplihack/qa.toml`;
+        when the operator sets `AUTODRIVE_QA_SCENARIO_DIR`, `AUTODRIVE_QA_COMMAND` or `AUTODRIVE_QA_COMMANDS`,
+        even to an empty value; when qa.toml is absent or invalid; when the merge base is unknown while
+        `AUTODRIVE_QA_BASE` is set, or a git read fails; and, for `ci-job` only, when the PR changes anything
+        under `.github/`. A merge-base declaration is the base branch's own rule, not a waiver. Never add, edit
+        or suggest a qa.toml declaration in the PR under review, including during repair and blocker-clearing.
+        Otherwise report it with `qa_reason` and `gadugi_status`; if the tests do not cover this PR's change,
+        report `qa-team-scenarios-do-not-cover-the-change`.
       - **Criterion 3:** met when `crusty_status` is `DONE_CLEAN`: this run's
         crusty-old-engineer loop ended DONE with a CLEAN loop-written record,
         and the range evidence verifies that every commit after `crusty_reviewed_head_sha`
