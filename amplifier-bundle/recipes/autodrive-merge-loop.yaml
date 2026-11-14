@@ -178,7 +178,12 @@ steps:
       REPO="$(printf '%s' "${RECIPE_VAR_merge_loop_preflight:-}" | amplihack orch helper extract-json --require-field repo \
               | amplihack orch helper extract-field --field repo --default '')"
       HEAD_SHA=""
-      [ -n "$REPO" ] && HEAD_SHA="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git -C "$REPO" rev-parse HEAD 2>/dev/null)"
+      # The head is optional in the hand-off: a missing repo leaves it empty, visibly.
+      if [ -n "$REPO" ] && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git -C "$REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        HEAD_SHA="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git -C "$REPO" rev-parse HEAD 2>/dev/null)"
+      else
+        echo "[skip] not a git repo at ${REPO:-<unset>}; the hand-off head is left empty [autodrive-merge-loop/step-02a]" >&2
+      fi
       [[ "$HEAD_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || HEAD_SHA=""
       jq -cn --arg o "$OUTCOME" --arg r "$REASON" --arg l "$R" --arg p "$POSTED" --arg h "$HEAD_SHA" \
         '{outcome:$o,reason:$r,loop_result:$l,stop_comment_posted:$p,head_sha:$h}'
