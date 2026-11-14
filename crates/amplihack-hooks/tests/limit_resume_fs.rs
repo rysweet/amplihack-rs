@@ -1265,3 +1265,21 @@ fn the_prompted_dir_prepare_makes_can_be_watched() {
     FsGuard::new(r.path()).prepare(NOW).unwrap();
     assert!(check_watch_dir(&resume_dir(r.path()).join("prompted")).is_ok());
 }
+
+#[test]
+fn issue_1932_error_observation_retains_only_recognized_codes() {
+    use amplihack_hooks::limit_resume::log::ErrorObservation;
+    for code in ["rate_limit", "authentication_failed", "overloaded"] {
+        assert_eq!(
+            ErrorObservation::from_value(Some(&serde_json::json!(code))),
+            ErrorObservation::Value(code.to_string())
+        );
+    }
+    for value in ["Bearer PRIVATE_TOKEN", "OPAQUE_CREDENTIAL", "a %=\n界"] {
+        // Only the length is kept: no text and no hash.
+        assert_eq!(
+            ErrorObservation::from_value(Some(&serde_json::json!(value))),
+            ErrorObservation::Unrecognized { bytes: value.len() }
+        );
+    }
+}

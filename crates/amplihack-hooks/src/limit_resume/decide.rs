@@ -113,3 +113,33 @@ pub fn gate(f: &Facts) -> Gate {
         Gate::Proceed
     }
 }
+
+/// The `filtered` disposition written once when auto-switch is off. The
+/// gate's [`Gate::Disabled`] and the logged name share this definition.
+pub const DISABLED: &str = "disabled-auto-switch";
+
+/// The fixed `filtered` disposition logged when [`gate`] stops the stop
+/// before any ledger or guard work, or `None` otherwise. [`Gate::Disabled`]
+/// gives [`DISABLED`]: with auto-switch off the hook appends a receipt and
+/// that one line to an existing `resume.log`, and creates nothing.
+///
+/// It is derived from the same [`Facts`] and the same [`gate`] call that
+/// decide the outcome, so the log cannot name a reason the gate did not
+/// use. `error_present` and `session_present` only split
+/// [`Gate::NotLimit`] into a missing or an unusable field; an `error` of
+/// the wrong type parses as absent and is reported as `missing-error`, with
+/// the receipt line recording `error_kind=invalid-type`.
+pub fn filter_disposition(
+    f: &Facts,
+    error_present: bool,
+    session_present: bool,
+) -> Option<&'static str> {
+    match gate(f) {
+        Gate::NotLimit if !f.limit && !error_present => Some("missing-error"),
+        Gate::NotLimit if !f.limit => Some("non-limit-error"),
+        Gate::NotLimit if !session_present => Some("missing-session"),
+        Gate::NotLimit => Some("invalid-session"),
+        Gate::Disabled => Some(DISABLED),
+        Gate::StopHookActive | Gate::Duplicate | Gate::Cap | Gate::Proceed => None,
+    }
+}

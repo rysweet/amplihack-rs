@@ -46,10 +46,13 @@ use amplihack_utils::rotator_status::swap_record::{
 };
 use amplihack_utils::rotator_status::{self, CycleStatus, MAX_WAIT};
 use amplihack_utils::secure_files::{euid, read_bounded};
-use decide::{Facts, Gate, event_key, gate, is_limit, session_id_ok, session_key};
+use decide::{
+    DISABLED, Facts, Gate, event_key, filter_disposition, gate, is_limit, session_id_ok,
+    session_key,
+};
 use guard::{CommitError, FsGuard, GuardStore};
 use keys::{Key, Pane, RESUME_KEYS};
-use log::LogEntry;
+use log::{Diagnostic, ErrorObservation, LogEntry, Stage};
 use std::io::{self, Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -109,10 +112,11 @@ pub enum Outcome {
     RotatorDown,
     /// The resume state could not be read or written safely.
     GuardFailed,
-    /// Auto-switch is off. Logged only when it was turned off while
+    /// Auto-switch is off. Outcome records are written when turned off while
     /// waiting.
     Disabled,
-    /// Not a usage-limit stop, or no usable session id. Not logged.
+    /// Not a usage-limit stop, or no usable session id. Recorded on receipt and
+    /// filter lines only; never written after a decision.
     NotLimit,
 }
 
@@ -171,6 +175,14 @@ pub trait Deps {
     fn guard(&mut self) -> &mut dyn GuardStore;
     /// Records a decision; must never fail or print.
     fn log(&mut self, now: i64, entry: &LogEntry);
+    /// Best-effort receipt and lifecycle diagnostics; must never fail or
+    /// print. Called only while auto-switch is on; may create the resume
+    /// directory.
+    fn diagnostic(&mut self, _now: i64, _entry: &Diagnostic) {}
+    /// Best-effort diagnostics while auto-switch is off: appended only to an
+    /// existing `resume.log` under an existing lock. Creates nothing, must
+    /// never fail or print.
+    fn diagnostic_existing(&mut self, _now: i64, _entry: &Diagnostic) {}
     /// Whether no rotator can record a cycle (see
     /// [`rotator_status::rotator_down`]).
     fn rotator_down(&mut self, now: i64) -> bool;
@@ -217,7 +229,8 @@ impl SendFailed {
 }
 
 /// Sends [`RESUME_KEYS`] to `pane` in order, checking before each that the
-/// session still runs and is not suspended (S4). Stops at the first failure
+/// session still runs and is not suspended (S4), and that the same pane still
+/// belongs to the session. Stops at the first failure
 /// (D8); nothing is retried and there is no other way to wake the session.
 pub fn send_resume<D: Deps + ?Sized>(deps: &mut D, pane: &Pane) -> Result<(), SendFailed> {
     send_resume_affinity(deps, pane, None)
@@ -241,6 +254,13 @@ fn send_resume_affinity<D: Deps + ?Sized>(
                 sent,
                 err: io::Error::other(SESSION_GONE),
                 session_gone: true,
+            });
+        }
+        if deps.pane().as_ref() != Some(pane) {
+            return Err(SendFailed {
+                sent,
+                err: io::Error::new(io::ErrorKind::PermissionDenied, "pane ownership changed"),
+                session_gone: false,
             });
         }
         if let Err(err) = deps.send_keys(pane, key) {
@@ -272,20 +292,154 @@ fn swap(r: &SwapRecord) -> Note<'_> {
     }
 }
 
-/// Decides one hook invocation.
+/// Decides one hook invocation. Writes the same receipt and `filtered`
+/// diagnostics as [`run_with_io`], from the same gate.
 pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
     run_with_affinity(input, deps, &mut None)
 }
 
 /// [`run_with`], also setting `affinity` to the organisation outcome of the
 /// swap record this resume follows. Only a resume reads it; every other
-/// outcome leaves it `None`.
+/// outcome leaves it `None`. The clock is read once, before any
+/// diagnostic, so log latency never moves the stop bound.
 fn run_with_affinity<D: Deps + ?Sized>(
     input: &HookInput,
     deps: &mut D,
     affinity: &mut Option<Affinity>,
 ) -> Outcome {
+    let start = deps.now();
+    let invocation = invocation_key();
     let enabled = deps.auto_switch_on();
+    let (error, session) = match input {
+        HookInput::StopFailure {
+            error, session_id, ..
+        } => (error.as_deref(), session_hash(session_id.as_deref())),
+        _ => (None, None),
+    };
+    let receipt = Receipt {
+        start,
+        invocation: &invocation,
+        enabled,
+        session,
+    };
+    receipt.write(deps, ErrorObservation::from_parsed(error));
+    if let Some(outcome) = receipt.stop_if_disabled(deps) {
+        return outcome;
+    }
+    run_started(input, deps, &receipt, affinity)
+}
+
+// Independent of payload data; the counter distinguishes calls within one process,
+// and pid/time distinguish separate hook processes and process-id reuse.
+fn invocation_key() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!(
+        "{:x}-{:x}-{:x}",
+        std::process::id(),
+        nanos,
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// The logged session prefix: the first [`LOG_KEY_CHARS`] of
+/// [`session_key`], or `None` when `id` is absent or fails
+/// [`session_id_ok`]. The one function behind the receipt and every later
+/// line, so they always agree.
+fn session_hash(id: Option<&str>) -> Option<String> {
+    match id {
+        Some(id) if session_id_ok(Some(id)) => Some(session_key(id)[..LOG_KEY_CHARS].to_string()),
+        _ => None,
+    }
+}
+
+/// The raw session ID of a JSON object, with the parser's precedence: the
+/// first of `session_id` and `sessionId` that is present. A present value
+/// that is not a string (including `null`) gives `None` and never falls
+/// back to the second name. Used only to correlate log lines; decisions
+/// read the parsed input.
+fn raw_session(value: &serde_json::Value) -> Option<&str> {
+    ["session_id", "sessionId"]
+        .iter()
+        .find_map(|name| value.get(*name))
+        .and_then(serde_json::Value::as_str)
+}
+
+/// What every diagnostic of one invocation shares. `enabled` is the single
+/// read of the auto-switch toggle that the gate also uses. While it is on,
+/// lines go through [`Deps::diagnostic`]; while it is off, through
+/// [`Deps::diagnostic_existing`], which only appends to an existing log.
+struct Receipt<'a> {
+    start: i64,
+    invocation: &'a str,
+    enabled: bool,
+    session: Option<String>,
+}
+
+impl Receipt<'_> {
+    fn emit<D: Deps + ?Sized>(
+        &self,
+        deps: &mut D,
+        stage: Stage,
+        disposition: &'static str,
+        error: Option<ErrorObservation>,
+    ) {
+        let entry = Diagnostic {
+            invocation: self.invocation.to_string(),
+            session: self.session.clone(),
+            event: None,
+            stage,
+            disposition,
+            error,
+        };
+        if self.enabled {
+            deps.diagnostic(self.start, &entry);
+        } else {
+            deps.diagnostic_existing(self.start, &entry);
+        }
+    }
+
+    fn write<D: Deps + ?Sized>(&self, deps: &mut D, error: ErrorObservation) {
+        self.emit(deps, Stage::Receipt, "received", Some(error));
+    }
+
+    fn filtered<D: Deps + ?Sized>(&self, deps: &mut D, disposition: &'static str) {
+        self.emit(deps, Stage::Filtered, disposition, None);
+    }
+
+    /// A `filtered` line for input refused before any receipt exists:
+    /// written only while auto-switch is on, as there is no receipt to
+    /// correlate it with when off.
+    fn input_rejected<D: Deps + ?Sized>(&self, deps: &mut D, disposition: &'static str) {
+        if self.enabled {
+            self.filtered(deps, disposition);
+        }
+    }
+
+    /// With auto-switch off, writes the one [`DISABLED`] line and returns
+    /// [`Outcome::Disabled`]; off is final for this run.
+    fn stop_if_disabled<D: Deps + ?Sized>(&self, deps: &mut D) -> Option<Outcome> {
+        if self.enabled {
+            return None;
+        }
+        self.filtered(deps, DISABLED);
+        Some(Outcome::Disabled)
+    }
+}
+
+fn run_started<D: Deps + ?Sized>(
+    input: &HookInput,
+    deps: &mut D,
+    receipt: &Receipt<'_>,
+    affinity: &mut Option<Affinity>,
+) -> Outcome {
+    // Off mode has already written its line and stopped in `stop_if_disabled`.
+    debug_assert!(receipt.enabled);
+    let (start, invocation, enabled) = (receipt.start, receipt.invocation, receipt.enabled);
     let HookInput::StopFailure {
         session_id,
         error,
@@ -296,11 +450,8 @@ fn run_with_affinity<D: Deps + ?Sized>(
         ..
     } = input
     else {
-        return if enabled {
-            Outcome::NotLimit
-        } else {
-            Outcome::Disabled
-        };
+        receipt.filtered(deps, "not-stop-failure");
+        return Outcome::NotLimit;
     };
     let (error, details, message) = (
         error.as_deref(),
@@ -315,14 +466,17 @@ fn run_with_affinity<D: Deps + ?Sized>(
         duplicate: false,
         capped: false,
     };
-    match gate(&facts) {
-        Gate::Disabled => return Outcome::Disabled,
-        Gate::NotLimit => return Outcome::NotLimit,
-        _ => {}
+    if matches!(gate(&facts), Gate::Disabled) {
+        // Unreachable in practice (see the assertion above); writes nothing,
+        // so a second disabled line is impossible.
+        return Outcome::Disabled;
+    }
+    if let Some(disposition) = filter_disposition(&facts, error.is_some(), session_id.is_some()) {
+        receipt.filtered(deps, disposition);
+        return Outcome::NotLimit;
     }
 
     let session_id = session_id.as_deref().unwrap_or_default();
-    let start = deps.now();
     let first = deps.read_cycle(start);
     let live_at_start = first.as_ref().and_then(|s| s.live.as_deref());
     let session = session_key(session_id);
@@ -355,6 +509,19 @@ fn run_with_affinity<D: Deps + ?Sized>(
         _ => live_at_start,
     };
     let event = event_key(session_id, error, details, message, key_login);
+    let lifecycle = |deps: &mut D, now: i64, stage: Stage, disposition: &'static str| {
+        deps.diagnostic(
+            now,
+            &Diagnostic {
+                invocation: invocation.to_string(),
+                session: Some(session[..LOG_KEY_CHARS].to_string()),
+                event: Some(event[..LOG_KEY_CHARS].to_string()),
+                stage,
+                disposition,
+                error: None,
+            },
+        );
+    };
     let note = |deps: &mut D, now: i64, outcome: Outcome, n: Note<'_>| {
         let entry = LogEntry {
             session: session[..LOG_KEY_CHARS].to_string(),
@@ -420,6 +587,7 @@ fn run_with_affinity<D: Deps + ?Sized>(
         };
         return note(deps, start, Outcome::WatchLost, n);
     }
+    lifecycle(deps, start, Stage::WaitingArmed, "armed");
     let deadline = start.saturating_add(MAX_WAIT.as_secs() as i64);
     // The last record logged as stale or full, so a rewrite of it is not
     // logged again.
@@ -432,7 +600,19 @@ fn run_with_affinity<D: Deps + ?Sized>(
         match woke {
             Event::Swap => {
                 if let Some(r) = deps.read_swap(now) {
-                    let skipped = match judge_at(snapshot.as_ref(), &r, start, stop, resumed_at) {
+                    let judgement = judge_at(snapshot.as_ref(), &r, start, stop, resumed_at);
+                    lifecycle(
+                        deps,
+                        now,
+                        Stage::SwapJudged,
+                        match judgement {
+                            Judgement::Resume => "eligible",
+                            Judgement::Same => "same",
+                            Judgement::Stale => "stale",
+                            Judgement::NoRoom => "no-room",
+                        },
+                    );
+                    let skipped = match judgement {
                         Judgement::Resume => break (now, r),
                         Judgement::Same => None,
                         Judgement::Stale => Some(Outcome::SwapStale),
@@ -480,10 +660,17 @@ fn run_with_affinity<D: Deps + ?Sized>(
             return note(deps, now, outcome, swap(&record));
         }
     }
+    lifecycle(
+        deps,
+        now,
+        Stage::ContinuationAttempt,
+        if pane.is_some() { "keys" } else { "exit-two" },
+    );
     // The swap that woke this wait carries its own organisation outcome
     // (#2136). Nothing else is consulted: there is no per-session state.
     *affinity = record.affinity.filter(|a| a.warning().is_some());
     let Some(pane) = pane else {
+        lifecycle(deps, now, Stage::ContinuationResult, "exit-two-selected");
         return note(deps, now, Outcome::Resumed, swap(&record));
     };
     let (outcome, keys_sent, detail) = match send_resume_affinity(deps, &pane, *affinity) {
@@ -497,6 +684,7 @@ fn run_with_affinity<D: Deps + ?Sized>(
         detail,
     };
     let now = deps.now();
+    lifecycle(deps, now, Stage::ContinuationResult, outcome.as_str());
     note(deps, now, outcome, n)
 }
 
@@ -513,12 +701,49 @@ pub fn run_with_io<D: Deps + ?Sized>(
 ) -> i32 {
     let mut affinity = None;
     let decided = catch_unwind(AssertUnwindSafe(|| {
-        let raw = read_bounded(stdin, MAX_STDIN_BYTES).ok()?;
+        // Capture before any diagnostics: log latency must not shift the stop.
+        let start = deps.now();
+        let invocation = invocation_key();
+        // The one toggle read the gate uses; see `Receipt`.
+        let enabled = deps.auto_switch_on();
+        let mut receipt = Receipt {
+            start,
+            invocation: &invocation,
+            enabled,
+            session: None,
+        };
+        let raw = match read_bounded(stdin, MAX_STDIN_BYTES) {
+            Ok(raw) => raw,
+            Err(_) => {
+                receipt.input_rejected(deps, "input-read-failed");
+                return None;
+            }
+        };
         if raw.len() as u64 > MAX_STDIN_BYTES {
+            receipt.input_rejected(deps, "oversized-input");
             return None;
         }
-        let input: HookInput = serde_json::from_slice(&raw).ok()?;
-        Some(run_with_affinity(&input, deps, &mut affinity))
+        let value = match serde_json::from_slice::<serde_json::Value>(&raw) {
+            Ok(value) if value.is_object() => value,
+            _ => {
+                receipt.input_rejected(deps, "malformed-input");
+                return None;
+            }
+        };
+        // Only the raw type of `error` is read here, for the receipt; every
+        // decision is taken by `run_started` from the parsed input.
+        // The session hash comes from the raw object, so the receipt and a
+        // later `malformed-input` line agree even when the typed parse fails.
+        receipt.session = session_hash(raw_session(&value));
+        receipt.write(deps, ErrorObservation::from_value(value.get("error")));
+        if let Some(outcome) = receipt.stop_if_disabled(deps) {
+            return Some(outcome);
+        }
+        let Ok(input) = serde_json::from_value::<HookInput>(value) else {
+            receipt.filtered(deps, "malformed-input");
+            return None;
+        };
+        Some(run_started(&input, deps, &receipt, &mut affinity))
     }));
     match decided {
         Ok(Some(Outcome::Resumed)) => {
@@ -598,6 +823,20 @@ impl Deps for SystemDeps {
         if let Ok(dir) = self.guard.ensure_resume_dir() {
             log::append(&dir, &log::format_line(now, entry));
         }
+    }
+
+    fn diagnostic(&mut self, now: i64, entry: &Diagnostic) {
+        if let Ok(dir) = self.guard.ensure_resume_dir() {
+            log::append(&dir, &log::format_diagnostic(now, entry));
+        }
+    }
+
+    fn diagnostic_existing(&mut self, now: i64, entry: &Diagnostic) {
+        // Never `ensure_resume_dir`: off mode creates nothing.
+        log::append_existing(
+            &self.guard.resume_dir(),
+            &log::format_diagnostic(now, entry),
+        );
     }
 
     fn rotator_down(&mut self, now: i64) -> bool {

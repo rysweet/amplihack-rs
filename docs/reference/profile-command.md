@@ -10224,11 +10224,14 @@ never writes to stdout and never exits with any other status. A panic exits
 amplihack: the login rotator reports a login with capacity. Continue the task you were working on; if the usage limit is still in place, stop and wait.
 ```
 
-Claude Code shows it to the model as a system reminder and starts a new turn.
+On the historically verified interactive path below, Claude Code shows it
+to the model as a system reminder and starts a new turn. The hook does not
+observe whether a new turn starts on the current host.
 The message does not claim the limit is gone: the rotator's reading can be
 wrong, so the model is told to stop again if it is not.
 
-The hook relies on Claude Code behaviours that a live check against Claude
+The following historical checks cover only the versions and states named,
+not every later release or the timed wait. A live check against Claude
 Code 2.1.306 confirmed. It used a stub `StopFailure` hook with
 `asyncRewake: true`, triggered by an invalid API key (matcher
 `authentication_failed`):
@@ -10270,9 +10273,9 @@ The checks run in this order. The first one that fails decides the outcome.
 
 | Step | Check | When it fails |
 |------|-------|---------------|
-| 1 | The [profile root](#profile-root) resolves (`AMPLIHACK_CLAUDE_PROFILE_ROOT`, then `~/.amplihack/profile-root`, then `~/.amplihack/claude-profiles`) to an absolute path with no `..` component. The pointer file must not be writable by group or others, and auto-switch is on by the same rule as `auto-switch status`. The pointer file is read with no-follow and at most 4 KiB. | Exit `0`. Nothing under the root is created or written, and nothing but the toggle and the pointer file is read. Nothing is logged. |
-| 2 | The stop was a usage limit (see [Limit detection](#limit-detection)), and `session_id` is present and at most 256 bytes. | Exit `0`. Nothing is logged. |
-| 3 | `stop_hook_active` is absent, `null` or `false` (any other non-boolean value counts as `true`). Before this check the hook reads the ledger once, for its `live` profile. When the check passes, it reads the [stop time](#stop-time), notes the current swap record and the session's last resume, and works out the login the session stopped on for the [event key](#resume-state-directory). When it fails, none of the transcript, the swap record or the resume state is read. | Exit `0`, outcome `stop-hook-active`. |
+| 1 | The [profile root](#profile-root) resolves (`AMPLIHACK_CLAUDE_PROFILE_ROOT`, then `~/.amplihack/profile-root`, then `~/.amplihack/claude-profiles`) to an absolute path with no `..` component. The pointer file must not be writable by group or others, and auto-switch is on by the same rule as `auto-switch status`. The pointer file is read with no-follow and at most 4 KiB. | Exit `0`. An unresolved or unsafe root prevents logging. With auto-switch off nothing is created: for a JSON object, one receipt and one `disabled-auto-switch` line are appended to an existing `resume/resume.log`, and input that is not a JSON object writes nothing. No resume is authorized. See [Resume diagnostic stages](#resume-diagnostic-stages). |
+| 2 | The stop was a usage limit (see [Limit detection](#limit-detection)), and `session_id` is present and at most 256 bytes. | Exit `0`; record receipt and the filtering disposition when safe logging is available. |
+| 3 | `stop_hook_active` is absent, `null` or `false` (any other non-boolean value counts as `true`). Before this check the hook reads the ledger once, for its `live` profile. When the check passes, it reads the [stop time](#stop-time), notes the current swap record and the session's last resume, and works out the login the session stopped on for the [event key](#resume-state-directory). When it fails, none of the transcript, the swap record or the resume state is read. The receipt line is already written at this point. | Exit `0`, outcome `stop-hook-active`. The receipt and the `stop-hook-active` decision line are logged; no `filtered` line is. |
 | 4 | No marker exists for this limit event. | Exit `0`, outcome `duplicate`, or `guard-failed` if `resume/` or one of its subdirectories is unsafe (see [Resume state directory](#resume-state-directory)). |
 | 5 | This session has resumed fewer than 3 times in the last 24 hours. | Exit `0`, outcome `cap`, or `guard-failed` if `resume/` or one of its subdirectories is unsafe. |
 | 6 | The rotator is running: `<root>/.auto-switch.d/rotate/rotate.pid` names a running `amplihack profile rotate watch` process of yours (checked in `/proc`; skipped where there is none), and the ledger, if present, can be read by the trust rules in [Rotator capacity rule](#rotator-capacity-rule). | Exit `0` without waiting, outcome `rotator-down`. |
@@ -10326,7 +10329,9 @@ limit, whatever `last_assistant_message` or `error_details` say; message text
 is never matched.
 
 Standard input is read up to 1 MiB; a larger payload or one that is not a
-JSON object exits `0` with nothing logged. A known field of an unexpected
+JSON object exits `0`; only a fixed malformed-input or oversized-input
+diagnostic is recorded when safe logging is available. Raw input is never
+logged. A known field of an unexpected
 type (for example `error_details` sent as an object) is read as absent, so it
 neither stops the hook nor reaches the event key; an `error` that is not a
 string is therefore not a limit.
@@ -10372,10 +10377,13 @@ second is therefore not woken twice on one swap; it waits for the next one.
 
 `seq` is never compared for order. A record that differs from the noted one
 in any field and passes the time checks counts, so a rotator whose `seq`
-started again at 1, for example after `swap.json` was deleted, still
-resumes sessions, and a record rewritten unchanged never does.
+started again at 1, for example after `swap.json` was deleted, can still
+authorize continuation. Rewriting an unchanged record does not make it
+fresh, but the initial snapshot can still qualify within the whole-second
+allowance described above.
 
-So a record written before the stop never resumes a session. A session that
+Except for the whole-second allowance described above, a record written
+before the stop never resumes a session. A session that
 stops on the login the rotator has just swapped to waits for the next swap.
 A stay, an ALERT, a [`profile switch`](#rotate-switch) and the passing of
 time never resume a session, because none of them writes a swap record. The
@@ -10396,7 +10404,7 @@ rounded down. It is read once, after the `stop_hook_active` check in step 3 of
 | File | A regular file owned by you and not writable by group or others (`mode & 0o022 == 0`), checked on the open file. A transcript need not be `0600` or have a single link. |
 | Size | At most the last 65 536 bytes (`STOP_TAIL_BYTES`) are read. A partial last line is ignored, and so is a partial first line when the read did not start at the beginning of the file. A last entry longer than 65 536 bytes gives no stop time. |
 | Entry | Only the `timestamp` field of the last non-empty complete line is read. It must be an RFC 3339 string; a number, a missing field or a line that is not JSON gives no stop time. |
-| Range | Accepted only when it is after 1970 and not after the hook's start (`0 < stop <= start`). |
+| Range | Accepted only when it is after 1970 and not after the hook's start (`0 < stop <= start`). The start is the single clock reading the hook takes before it writes the receipt; the same value bounds the [swap judgement](#capacity-for-a-resume), so time spent logging never moves either bound. |
 
 When `transcript_path` is absent, or any rule fails, there is no stop time
 and the hook decides exactly as it would without one. The stop time is
@@ -10520,19 +10528,24 @@ status before the next:
 
 | Order | Command | Purpose |
 |-------|---------|---------|
-| 1 | `tmux send-keys -t %N Escape` | Leave the timed wait, or close the limit menu. |
+| 1 | `tmux send-keys -t %N Escape` | Attempt to leave the timed wait or close the limit menu. The effect depends on the Claude Code version and state and remains pending host verification. |
 | 2 | `tmux send-keys -t %N C-u` | Clear the input box, including a dimmed predicted prompt. |
 | 3 | `tmux send-keys -t %N -l continue` | Type `continue` as literal text. |
 | 4 | `tmux send-keys -t %N Enter` | Send it. |
 
-Before each key the hook checks, without blocking, that the session's
-process is still running and that `/proc/<parent>/stat` still shows it as
-the terminal's foreground process group, so a session suspended with
-Ctrl-Z gets no more keys. A key whose `tmux` run exits non-zero, or a
-session found gone or suspended, stops the sequence: the remaining keys are not sent,
-and the outcome is `resume-keys-failed` with `keys_sent` set to the number
-sent and `detail` naming the cause (`session-gone` for a session that
-exited or was suspended, or the error kind). The hook never falls back to
+Before each key the hook checks, without blocking and in this order, that the
+session's process is still running and that `/proc/<parent>/stat` still shows
+it as the terminal's foreground process group, so a session suspended with
+Ctrl-Z gets no more keys; then that the hook's own pane is still the pane it
+verified, so keys never reach a pane that now belongs to another process.
+The checks are the same when an
+[organisation-affinity warning](profile-organisation-affinity.md) replaces
+the typed `continue`. A key whose `tmux` run exits non-zero, a session found
+gone or suspended, or a pane that changed stops the sequence: the remaining
+keys are not sent, and the outcome is `resume-keys-failed` with `keys_sent`
+set to the number sent and `detail` naming the cause (`session-gone` for a
+session that exited or was suspended, `PermissionDenied` for a changed pane,
+or the error kind of a failed `tmux` run). The hook never falls back to
 exit `2` after the commit. If the session exits or is suspended in
 the instant between the check and a key, that one key may reach whatever
 then reads the pane.
@@ -10656,8 +10669,95 @@ and epoch seconds. No pane id is stored.
 | `events/<sha256 hex>` | One empty marker per limit event. The name is the SHA-256 of a fixed prefix followed by `session_id`, `error`, `error_details`, `last_assistant_message` and the login the session stopped on, each written with its length, so no two different payloads share a name. The login the session stopped on is the noted swap record's `from_login` when the swap falls between one second before the [stop time](#stop-time) and the hook's start (`stop - 1 <= swapped_at <= start`). The bound depends on the stop alone, not on when the hook started or on the session's past resumes, so every run of the hook for one stop gets the same name, whatever second it starts in and before and after that stop is resumed; a repeat run is `duplicate` and never resumes the session a second time. The second before the stop is the allowance [Capacity for a resume](#capacity-for-a-resume) gives a hook that starts in the stop's second, so a session resumed through it has its event named for that record's `from_login`. A hook that starts two or more seconds after the stop does not resume on a swap in the second before the stop, but its event is still named for that swap's `from_login`. The cost: a session resumed on that swap in the second before its next stop, which stops again with the same text and whose hook starts two or more seconds late, gets the earlier event's name and is `duplicate`, so it is left stopped rather than sent keys twice. Without a stop time it is `from_login` when the record is after the stop by the rule in [Capacity for a resume](#capacity-for-a-resume) and not later than the hook's start. Otherwise it is the ledger's `live` profile when the hook started. A session that stops on the outgoing login while the rotator swaps, is resumed, and stops again on the new login therefore gets a new event, not `duplicate`. The same login hitting its limit again is the same event; a limit after the rotator swapped to another login is a new one. Markers older than 7 days are removed. |
 | `sessions/<sha256 hex>` | One file per session, named by the SHA-256 of a different fixed prefix and its `session_id`, with one epoch-seconds line per resume in the last 24 hours. A file that cannot be parsed counts as the cap being reached and is left unchanged. |
 | `prompted/<sha256 hex>` | One file per session, named like `sessions/`, holding the epoch seconds of your last prompt in it. Written by the `UserPromptSubmit` hook, replaced atomically. Removed after 7 days and 1 hour (the longest wait plus 1 hour) when a hook starts waiting or commits. A file that cannot be parsed or is not private makes a waiting hook end as `guard-failed`. |
-| `resume.log` | One line per decision from step 3 on, and one per swap record judged stale or without room. |
+| `resume.log` | Best-effort receipt and lifecycle records (filtered, waiting armed, swap judged, continuation attempt and result), plus decisions from step 3 on and swap records judged stale or without room. See [Resume diagnostic stages](#resume-diagnostic-stages) for meanings and logging gaps. |
 | `resume.log.1` | The previous log. `resume.log` is renamed to it when it passes 64 KiB. |
+
+#### Resume diagnostic stages
+
+Diagnostics distinguish receipt from processing and from observed host behavior.
+The invocation start is captured before logging and remains the timestamp used
+for swap eligibility. Receipt requires neither a readable ledger nor an event
+identity. With auto-switch on, a rejected invocation can therefore create
+`resume/` and `resume.log` in a safely resolved private root; this is how a
+host shows whether Claude Code ran the hook at all. With auto-switch off the
+hook creates nothing and appends only to an existing `resume/` directory.
+The `filtered` disposition is derived from the same gate call that decides
+the outcome, so the log cannot name a reason the gate did not use.
+
+Every stage carries an `invocation` identifier, made once per call from the
+process id, the time and a counter (`<pid hex>-<nanoseconds hex>-<counter hex>`).
+It holds no payload data. Use it to join interleaved records, including
+repeated calls for one session; compare it only for equality, never for order.
+
+The `session` field on receipt and filtered lines is the same 12-character
+hash used by decision records. It is taken from the raw JSON object before the
+typed parse (`session_id`, else `sessionId`; a string of 1 to 256 bytes), so a
+`malformed-input` line after a typed parse failure has the same `session` as its
+receipt. This hash only joins log lines; decisions use the parsed input alone.
+
+**Processing order.** The hook writes at most one receipt and one filtered
+line per call, in this order:
+
+| Order | Stage | Auto-switch on | Auto-switch off |
+|-------|-------|----------------|-----------------|
+| 1 | Input read: `input-read-failed`, `oversized-input`, or `malformed-input` when the input is not a JSON object. No receipt exists yet. | One filtered line. | Nothing written. |
+| 2 | Receipt (`stage=receipt disposition=received`), for every JSON object. | Written; may create `resume/`. | Appended only to an existing `resume.log`. |
+| 3 | `disabled-auto-switch`. | Skipped. | One filtered line, then exit `0`. Takes precedence over every later reason. |
+| 4 | `malformed-input` when a field has the wrong type for the typed parse. | One filtered line. | Not reached. |
+| 5 | Gate reasons: `not-stop-failure`, `missing-error`, `non-limit-error`, `missing-session`, `invalid-session`. | One filtered line. | Not reached. |
+
+**Appending while auto-switch is off.** The hook opens `resume/lock` and
+`resume/resume.log` only if both already exist and pass the same private-file
+checks as on-mode logging (no-follow, owner, link count, mode). It never
+creates `resume/`, the lock, the log or `resume.log.1`, and never rotates: a
+line that would take `resume.log` past 64 KiB is dropped. With auto-switch off
+the hook reads no ledger, takes no guard, sends no keys and prints nothing.
+
+```
+2026-11-09T03:02:44Z resume stage=receipt disposition=received invocation=1f3a2-1879c4e0a6b31c40-0 session=8e21c04b7d93 error_kind=unrecognized error_bytes=27
+2026-11-09T03:02:44Z resume stage=filtered disposition=disabled-auto-switch invocation=1f3a2-1879c4e0a6b31c40-0 session=8e21c04b7d93
+```
+
+| Stage | Meaning |
+|-------|---------|
+| Receipt | The hook received input. Records whether `error` is missing, has an invalid type, is a recognized code, or is an unrecognized string, recorded only by its length (`error_bytes`). This is not an eligible-limit decision. |
+| Filtered | Processing stopped: disabled auto-switch, missing error (also an `error` of the wrong type, which the receipt shows as `error_kind=invalid-type`), non-limit error, not a `StopFailure`, missing or invalid session, malformed input, or oversized input. Dispositions are fixed names, never payload text. |
+| Waiting armed | Event watches are established; the hook can now wait for swap or cancellation events. |
+| Swap judged | The shared judgement accepted capacity or rejected a stale or full target. Acceptance alone does not authorize continuation. |
+| Continuation attempt | Durable event/session guard commit succeeded and authorized the selected keys or wake action. |
+| Continuation result | The action completed or failed. Existing outcomes such as `resumed`, `resumed-keys` and `resume-keys-failed` retain their meaning. |
+
+Only the exact original string `rate_limit` qualifies. What the log records
+never changes matching or event identity. Receipts preserve the actual values
+`rate_limit`, `authentication_failed` and `overloaded`. Every other string is
+recorded as `error_kind=unrecognized` with `error_bytes`, its length in bytes.
+No text and no hash of it is kept: such a string may hold a credential, and a
+hash of a short or guessable token lets a reader of `resume.log` confirm a
+guess.
+Invalid-type observations never serialize arbitrary objects or arrays.
+
+Raw payloads, `error_details`, prompts, assistant messages, transcripts,
+credentials and environment dumps are excluded. `error_bytes` shows only how
+long an unrecognized error string was.
+Session and pane identifiers are hashed; hashes remain
+correlatable and should still be treated as private. Logging retains private
+directory checks, restrictive file permissions, symlink protections and bounded
+rotation. It is silent and best effort, with no retries or fallback paths and
+no effect on eligibility or processing outcomes.
+
+A missing record can reflect root resolution, parsing, path safety, rotation
+or write failure. Report **no invocation observed** for a stopped session with
+no matching receipt, rather than claiming Claude omitted the hook. A receipt
+can exist without later stages. A committed guard can consume authorization
+before a crash or delivery failure, without starting a turn; it is not retried.
+
+Neither successful tmux command delivery nor selecting exit `2` establishes
+that Claude resumed. A new turn must be independently observed on the exact
+released amplihack and Claude versions. Timed-wait invocation, its `error`,
+exit-two continuation and safe input each require separate host evidence.
+Use the [host verification checklist](../howto/claude-profile-rotation.md#check-it-on-your-host)
+and [manual continuation procedure](../howto/claude-profile-rotation.md#continue-a-session-yourself).
+Binary strings and isolated tests do not verify these behaviors.
 
 #### Resume log
 
@@ -10683,9 +10783,10 @@ after `cycle` appear only when they apply:
 | `keys_sent` | How many of the four keys were sent (0–4). |
 | `detail` | Why a watch or key failed: `session-gone` (the session exited, or was suspended while keys were sent), or the name of the I/O error kind, such as `NotFound` or `PermissionDenied`. |
 
-Every field holds only `A-Z`, `a-z`, `0-9`, `.`, `_`, `:` and `-`; any other
-character is written as `-`. The log never holds message text, error text,
-pane ids, account IDs or tokens. A log written by an earlier version, without
+In these existing decision records, fields hold only `A-Z`, `a-z`, `0-9`,
+`.`, `_`, `:` and `-`; other characters become `-`. Additive receipt records
+use the recognised-code and length-only policy for other strings described above. The log excludes
+assistant message text, raw pane ids, account IDs and tokens. A log written by an earlier version, without
 the new fields, is still valid. Failing to write it does not change the
 outcome.
 

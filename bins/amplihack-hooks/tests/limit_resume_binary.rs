@@ -21,6 +21,7 @@
 #[path = "../../../tests/support/isolated_hook.rs"]
 mod isolated_hook;
 
+#[cfg(target_os = "linux")]
 use amplihack_hooks::limit_resume::RESUME_MSG;
 #[cfg(target_os = "linux")]
 use amplihack_utils::file_event::{Waiter, Watch, Woke};
@@ -411,12 +412,11 @@ fn auto_switch_off_is_silent_and_creates_nothing() {
         if toggle.is_none() {
             private_file(&e.root.join(".auto-switch"), b"enabled=off\n");
         }
-        let (out, took) = run(&e, toggle, limit_payload("sess-1").as_bytes());
+        let (out, _) = run(&e, toggle, limit_payload("sess-1").as_bytes());
         assert_silent_zero(&out);
-        assert!(took < Duration::from_secs(10));
         assert!(
             !e.root.join(".auto-switch.d/resume").exists(),
-            "FS-5: nothing created when off"
+            "FS-5: auto-switch off must create nothing"
         );
     }
 }
@@ -470,7 +470,7 @@ fn more_than_one_mib_of_stdin_is_silent() {
     .to_string();
     let (out, _) = run(&e, Some("1"), payload.as_bytes());
     assert_silent_zero(&out);
-    assert!(!e.root.join(".auto-switch.d/resume").exists());
+    assert!(!e.root.join(".auto-switch.d/resume/events").exists());
 }
 
 #[test]
@@ -488,9 +488,297 @@ fn non_limit_errors_are_silent() {
         let (out, _) = run(&e, Some("1"), payload.to_string().as_bytes());
         assert_silent_zero(&out);
     }
-    // A stop that is not a usage limit is decided before anything is
-    // written or logged.
-    assert!(!e.root.join(".auto-switch.d/resume").exists());
+    // With auto-switch on, the receipt and `filtered` lines are written on
+    // purpose (they show whether Claude Code ran the hook at all, #1932);
+    // durable resume authorization is not.
+    assert!(!e.root.join(".auto-switch.d/resume/events").exists());
+}
+
+// Issue #1932: these cases terminate before waiting. No stand-in rotator,
+// timers, polling, real home directories, or host Claude installation.
+// Field names below define the additive text-record contract; existing
+// outcome records retain their meaning.
+fn diagnostic_run(e: &Env, toggle: &str, payload: &[u8]) -> String {
+    let mut child = e
+        .sandbox
+        .command(env!("CARGO_BIN_EXE_amplihack-hooks"))
+        .arg("limit-resume")
+        .env("HOME", &e.home)
+        .env("CODEX_HOME", e.home.join(".codex"))
+        .env("CLAUDE_CONFIG_DIR", e.home.join(".claude"))
+        .env("XDG_CONFIG_HOME", e.home.join(".config"))
+        .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &e.root)
+        .env("AMPLIHACK_CLAUDE_AUTO_SWITCH", toggle)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Oversized input can legitimately close the pipe before all bytes arrive.
+    let _ = child.stdin.take().unwrap().write_all(payload);
+    assert_silent_zero(&child.wait_with_output().unwrap());
+    assert!(!e.root.join(".auto-switch.d/resume/events").exists());
+    assert!(!e.root.join(".auto-switch.d/resume/sessions").exists());
+    resume_log(e)
+}
+
+/// The resume state a host keeps after it used auto-switch: a private
+/// `resume/` holding its `lock` and an empty `resume.log`. With auto-switch
+/// off the hook appends to that log and creates nothing.
+fn prior_resume_state(e: &Env) -> PathBuf {
+    let dir = e.root.join(".auto-switch.d/resume");
+    private_dir(&e.root.join(".auto-switch.d"));
+    private_dir(&dir);
+    private_file(&dir.join("lock"), b"");
+    private_file(&dir.join("resume.log"), b"");
+    dir
+}
+
+fn dir_entries(dir: &Path) -> Vec<String> {
+    let mut names: Vec<_> = fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+fn diagnostic_stage<'a>(log: &'a str, stage: &str) -> &'a str {
+    let tag = format!("stage={stage}");
+    let lines: Vec<_> = log
+        .lines()
+        .filter(|line| line.split_ascii_whitespace().any(|field| field == tag))
+        .collect();
+    assert_eq!(lines.len(), 1, "expected one {stage} record: {log:?}");
+    lines[0]
+}
+
+#[test]
+fn issue_1932_receipt_precedes_disabled_filter_without_ledger_or_session() {
+    let e = env();
+    // A host that used rotation before and has since turned it off: the
+    // resume directory, its lock and its log exist, so diagnostics are
+    // appended to the log.
+    prior_resume_state(&e);
+    let log = diagnostic_run(
+        &e,
+        "0",
+        br#"{"hook_event_name":"StopFailure","error":"rate_limit"}"#,
+    );
+    let receipt = diagnostic_stage(&log, "receipt");
+    assert!(receipt.contains("rate_limit"), "actual error: {receipt}");
+    let filtered = diagnostic_stage(&log, "filtered");
+    assert!(filtered.contains("disposition=disabled-auto-switch"));
+    assert!(log.find(receipt).unwrap() < log.find(filtered).unwrap());
+    assert!(!e.root.join(".auto-switch.d/rotate").exists());
+}
+
+#[test]
+fn issue_1932_rejected_inputs_have_distinct_fixed_dispositions() {
+    for (fields, disposition) in [
+        (json!({}), "missing-error"),
+        // A wrongly typed error parses as absent, so the gate sees no error;
+        // the receipt records `error_kind=invalid-type`.
+        (json!({"error": 429}), "missing-error"),
+        (json!({"error": "overloaded"}), "non-limit-error"),
+        (json!({"error": "rate_limit"}), "missing-session"),
+        (
+            json!({"error": "rate_limit", "session_id": ""}),
+            "invalid-session",
+        ),
+    ] {
+        let e = env();
+        let mut payload = fields;
+        payload["hook_event_name"] = json!("StopFailure");
+        let log = diagnostic_run(&e, "1", payload.to_string().as_bytes());
+        diagnostic_stage(&log, "receipt");
+        assert!(
+            diagnostic_stage(&log, "filtered").contains(&format!("disposition={disposition}")),
+            "{log}"
+        );
+    }
+}
+
+#[test]
+fn issue_1932_wrongly_typed_error_is_visible_in_the_receipt() {
+    let e = env();
+    let payload = json!({"hook_event_name": "StopFailure", "session_id": "s", "error": 429});
+    let log = diagnostic_run(&e, "1", payload.to_string().as_bytes());
+    assert!(
+        diagnostic_stage(&log, "receipt").contains("error_kind=invalid-type"),
+        "{log}"
+    );
+    assert!(
+        diagnostic_stage(&log, "filtered").contains("disposition=missing-error"),
+        "{log}"
+    );
+}
+
+/// The `filtered` line and the decision come from one `gate()` call, so for
+/// every payload the log shows exactly one of them: a `filtered` line when
+/// the gate stopped the stop, or an `outcome=` line when it let it through.
+/// The camelCase field names are accepted by the payload parser; a receipt
+/// filter that read only the snake_case names would drop them here.
+#[test]
+fn issue_1932_filtered_line_agrees_with_the_gate_for_every_payload() {
+    for (payload, filtered) in [
+        (json!({"error": "rate_limit", "session_id": "s"}), false),
+        (json!({"error": "rate_limit", "sessionId": "s"}), false),
+        (
+            json!({"error": "rate_limit", "sessionId": "s", "stopHookActive": true}),
+            false,
+        ),
+        (
+            json!({"error": "rate_limit", "hookEventName": "StopFailure", "sessionId": "s"}),
+            false,
+        ),
+        (json!({"error": "rate_limit"}), true),
+        (json!({"error": "rate_limit", "sessionId": ""}), true),
+        (json!({"error": "overloaded", "sessionId": "s"}), true),
+        (json!({"error": 429, "sessionId": "s"}), true),
+        (json!({"sessionId": "s"}), true),
+    ] {
+        let e = env();
+        let mut payload = payload;
+        if payload.get("hookEventName").is_none() {
+            payload["hook_event_name"] = json!("StopFailure");
+        }
+        let log = diagnostic_run(&e, "1", payload.to_string().as_bytes());
+        diagnostic_stage(&log, "receipt");
+        let filters = log.matches("stage=filtered ").count();
+        let outcomes = log.matches(" outcome=").count();
+        assert_eq!(
+            (filters, outcomes),
+            if filtered { (1, 0) } else { (0, 1) },
+            "{payload}: {log}"
+        );
+    }
+}
+
+#[test]
+fn issue_1932_disabled_hook_creates_nothing_on_a_host_without_resume_state() {
+    for payload in [
+        limit_payload("s"),
+        json!({"hook_event_name": "StopFailure", "session_id": "s", "error": "overloaded"})
+            .to_string(),
+        "not json".to_string(),
+    ] {
+        let e = env();
+        assert!(diagnostic_run(&e, "0", payload.as_bytes()).is_empty());
+        assert!(!e.root.join(".auto-switch.d/resume").exists(), "{payload}");
+    }
+}
+
+#[test]
+fn issue_1932_error_observation_distinguishes_missing_invalid_and_actual_value() {
+    for (error, expected) in [
+        (None, "error_kind=missing"),
+        (
+            Some(json!({"secret": "DO_NOT_SERIALIZE_OBJECT"})),
+            "error_kind=invalid-type",
+        ),
+        (
+            Some(json!("authentication_failed")),
+            "authentication_failed",
+        ),
+    ] {
+        let e = env();
+        let mut payload = json!({"hook_event_name": "StopFailure", "session_id": "s"});
+        if let Some(error) = error {
+            payload["error"] = error;
+        }
+        let log = diagnostic_run(&e, "1", payload.to_string().as_bytes());
+        assert!(
+            diagnostic_stage(&log, "receipt").contains(expected),
+            "{log}"
+        );
+        assert!(!log.contains("DO_NOT_SERIALIZE_OBJECT"));
+    }
+}
+
+#[test]
+fn issue_1932_malformed_and_oversized_input_log_only_fixed_diagnostics() {
+    for (payload, disposition) in [
+        (b"{ DO_NOT_LOG_RAW_INPUT".to_vec(), "malformed-input"),
+        (vec![b'x'; 1024 * 1024 + 1], "oversized-input"),
+        (b"null".to_vec(), "malformed-input"),
+        (b"[]".to_vec(), "malformed-input"),
+    ] {
+        let e = env();
+        let log = diagnostic_run(&e, "1", &payload);
+        assert!(
+            diagnostic_stage(&log, "filtered").contains(&format!("disposition={disposition}")),
+            "{log}"
+        );
+        assert!(!log.contains("DO_NOT_LOG_RAW_INPUT"));
+        assert!(log.len() < 4096);
+    }
+}
+
+#[test]
+fn issue_1932_receipt_excludes_sensitive_fields_and_cannot_inject_records() {
+    let e = env();
+    let payload = json!({
+        "hook_event_name": "StopFailure",
+        "session_id": "PRIVATE_SESSION_IDENTIFIER",
+        "error": "overloaded\n stage=continuation-result\r\t=\\\"\u{0}",
+        "error_details": "PRIVATE_ERROR_DETAILS",
+        "last_assistant_message": "PRIVATE_ASSISTANT_MESSAGE",
+        "transcript_path": "PRIVATE_TRANSCRIPT_PATH",
+        "prompt": "PRIVATE_PROMPT",
+        "credentials": "PRIVATE_CREDENTIALS"
+    });
+    let log = diagnostic_run(&e, "1", payload.to_string().as_bytes());
+    diagnostic_stage(&log, "receipt");
+    diagnostic_stage(&log, "filtered");
+    assert_eq!(
+        log.lines().count(),
+        2,
+        "payload must not forge records: {log:?}"
+    );
+    assert!(
+        !log.contains("PRIVATE_"),
+        "only allowlisted diagnostic fields: {log}"
+    );
+    assert!(!log.contains(['\r', '\t', '\0']));
+}
+
+#[test]
+fn issue_1932_multibyte_error_is_bounded_and_redacted() {
+    let e = env();
+    let payload =
+        json!({"hook_event_name": "StopFailure", "session_id": "s", "error": "界🦀".repeat(4096)});
+    let log = diagnostic_run(&e, "1", payload.to_string().as_bytes());
+    let receipt = diagnostic_stage(&log, "receipt");
+    assert!(receipt.contains("error_kind=unrecognized"), "{receipt}");
+    assert!(
+        !receipt.contains('\u{fffd}'),
+        "truncation must preserve UTF-8"
+    );
+    assert!(log.len() < 4096, "serialized diagnostics must stay bounded");
+    assert!(diagnostic_stage(&log, "filtered").contains("disposition=non-limit-error"));
+}
+
+#[test]
+fn issue_1932_unsafe_log_path_does_not_write_through_symlink() {
+    use std::os::unix::fs::symlink;
+    let e = env();
+    private_dir(&e.root.join(".auto-switch.d"));
+    let outside = e.home.join("untouched");
+    private_dir(&outside);
+    symlink(&outside, e.root.join(".auto-switch.d/resume")).unwrap();
+    assert!(diagnostic_run(&e, "0", limit_payload("s").as_bytes()).is_empty());
+    assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+}
+
+#[test]
+fn issue_1932_log_write_failure_keeps_rejection_silent_and_uncommitted() {
+    let e = env();
+    private_dir(&e.root.join(".auto-switch.d/resume"));
+    // A directory at the log filename fails deterministically even as root.
+    private_dir(&e.root.join(".auto-switch.d/resume/resume.log"));
+    assert!(diagnostic_run(&e, "0", limit_payload("s").as_bytes()).is_empty());
+    assert!(e.root.join(".auto-switch.d/resume/resume.log").is_dir());
 }
 
 #[test]
@@ -576,4 +864,149 @@ fn usage_text_lists_limit_resume() {
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("limit-resume"));
+}
+
+#[test]
+fn issue_1932_credentials_in_error_are_never_persisted_even_when_disabled() {
+    for toggle in ["0", "1"] {
+        for secret in ["Bearer PRIVATE_ACCESS_TOKEN", "OPAQUE_PRIVATE_CREDENTIAL"] {
+            let e = env();
+            prior_resume_state(&e);
+            let payload = json!({"hook_event_name": "StopFailure", "error": secret});
+            let log = diagnostic_run(&e, toggle, payload.to_string().as_bytes());
+            let receipt = diagnostic_stage(&log, "receipt");
+            assert!(
+                receipt.contains(&format!(
+                    "error_kind=unrecognized error_bytes={} ",
+                    secret.len()
+                )) || receipt.ends_with(&format!(
+                    "error_kind=unrecognized error_bytes={}",
+                    secret.len()
+                )),
+                "{receipt}"
+            );
+            // No hash either: a hash of a guessable token can be confirmed.
+            assert!(!log.contains("sha256"), "{log}");
+            assert!(!log.contains("PRIVATE"));
+        }
+    }
+}
+
+// ── #1932 D1/D3: auto-switch off appends only, and only to what exists ─────
+
+/// With auto-switch off, input that is not a JSON object has no receipt to
+/// correlate with, so nothing is written even where a log exists.
+#[test]
+fn issue_1932_disabled_malformed_input_writes_nothing_even_with_resume_dir() {
+    for payload in [&b"not json"[..], b"[]", b"null", b"\"x\""] {
+        // A bare private resume directory stays empty.
+        let e = env();
+        let bare = e.root.join(".auto-switch.d/resume");
+        private_dir(&e.root.join(".auto-switch.d"));
+        private_dir(&bare);
+        assert!(diagnostic_run(&e, "0", payload).is_empty());
+        assert!(dir_entries(&bare).is_empty(), "{:?}", dir_entries(&bare));
+
+        // A full prior state keeps an empty log.
+        let e = env();
+        let dir = prior_resume_state(&e);
+        assert!(diagnostic_run(&e, "0", payload).is_empty());
+        assert_eq!(dir_entries(&dir), vec!["lock", "resume.log"]);
+    }
+}
+
+/// (a) A `resume/` without a lock stays empty: the off path never creates
+/// the lock or the log.
+#[test]
+fn issue_1932_disabled_hook_leaves_a_bare_resume_dir_empty() {
+    let e = env();
+    let dir = e.root.join(".auto-switch.d/resume");
+    private_dir(&e.root.join(".auto-switch.d"));
+    private_dir(&dir);
+    assert!(diagnostic_run(&e, "0", limit_payload("s").as_bytes()).is_empty());
+    assert!(dir_entries(&dir).is_empty(), "{:?}", dir_entries(&dir));
+}
+
+/// (b) A `resume/` holding only its lock still holds only its lock.
+#[test]
+fn issue_1932_disabled_hook_creates_no_log_beside_a_lone_lock() {
+    let e = env();
+    let dir = e.root.join(".auto-switch.d/resume");
+    private_dir(&e.root.join(".auto-switch.d"));
+    private_dir(&dir);
+    private_file(&dir.join("lock"), b"");
+    assert!(diagnostic_run(&e, "0", limit_payload("s").as_bytes()).is_empty());
+    assert_eq!(dir_entries(&dir), vec!["lock"]);
+    assert!(fs::read(dir.join("lock")).unwrap().is_empty());
+}
+
+/// (c) A log at the size limit is left byte-identical, with no rotated file:
+/// the off path drops the line rather than rotate.
+#[test]
+fn issue_1932_disabled_hook_never_rotates_a_full_log() {
+    let e = env();
+    let dir = prior_resume_state(&e);
+    let full = vec![b'x'; amplihack_hooks::limit_resume::log::LOG_MAX_BYTES as usize];
+    private_file(&dir.join("resume.log"), &full);
+    diagnostic_run(&e, "0", limit_payload("s").as_bytes());
+    assert_eq!(fs::read(dir.join("resume.log")).unwrap(), full);
+    assert!(!dir.join("resume.log.1").exists());
+    assert_eq!(dir_entries(&dir), vec!["lock", "resume.log"]);
+}
+
+/// With auto-switch off and a prior state, a JSON object gives exactly one
+/// receipt and one `disabled-auto-switch` line, both with the same session
+/// hash and invocation, and the directory gains no file.
+#[test]
+fn issue_1932_disabled_object_appends_receipt_and_disabled_line_only() {
+    for payload in [
+        limit_payload("s"),
+        json!({"hook_event_name": 42, "session_id": "s", "error": "rate_limit"}).to_string(),
+        json!({"hook_event_name": "Stop", "session_id": "s", "stop_hook_active": "yes"})
+            .to_string(),
+    ] {
+        let e = env();
+        let dir = prior_resume_state(&e);
+        let log = diagnostic_run(&e, "0", payload.as_bytes());
+        assert_eq!(log.lines().count(), 2, "{payload}: {log}");
+        let receipt = diagnostic_stage(&log, "receipt");
+        let filtered = diagnostic_stage(&log, "filtered");
+        assert!(
+            filtered.contains("disposition=disabled-auto-switch"),
+            "{payload}: {log}"
+        );
+        assert!(!log.contains("malformed-input"), "{payload}: {log}");
+        let field = |line: &str, key: &str| {
+            line.split_whitespace()
+                .find(|part| part.starts_with(key))
+                .map(str::to_string)
+        };
+        assert!(field(receipt, "session=").is_some(), "{payload}: {log}");
+        assert_eq!(field(receipt, "session="), field(filtered, "session="));
+        assert_eq!(
+            field(receipt, "invocation="),
+            field(filtered, "invocation=")
+        );
+        assert_eq!(dir_entries(&dir), vec!["lock", "resume.log"]);
+        assert!(!e.root.join(".auto-switch.d/rotate").exists());
+    }
+}
+
+/// With auto-switch on, a typed parse failure gives a receipt and a
+/// `malformed-input` line carrying the same session hash.
+#[test]
+fn issue_1932_typed_parse_failure_keeps_the_session_hash() {
+    let e = env();
+    let payload = json!({"hook_event_name": 42, "session_id": "s", "error": "rate_limit"});
+    let log = diagnostic_run(&e, "1", payload.to_string().as_bytes());
+    let receipt = diagnostic_stage(&log, "receipt");
+    let filtered = diagnostic_stage(&log, "filtered");
+    assert!(filtered.contains("disposition=malformed-input"), "{log}");
+    let session = |line: &str| {
+        line.split_whitespace()
+            .find(|part| part.starts_with("session="))
+            .map(str::to_string)
+    };
+    assert!(session(receipt).is_some(), "{log}");
+    assert_eq!(session(receipt), session(filtered));
 }

@@ -1,5 +1,5 @@
-//! `resume/resume.log`: one line per decision after the gate passed the
-//! auto-switch and limit checks.
+//! `resume/resume.log`: bounded receipt and lifecycle diagnostics plus
+//! backwards-compatible decisions after the auto-switch and limit gates.
 //!
 //! ```text
 //! 2026-10-21T14:13:20Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=resumed live=spare cycle=swapped
@@ -15,12 +15,17 @@
 //! Every field is a hash prefix, a fixed outcome name, a checked profile
 //! name, the ledger's cycle outcome, a number or an `io::ErrorKind` name,
 //! and is reduced to `[A-Za-z0-9._:-]`, so no message text reaches the
-//! file. Past `LOG_MAX_BYTES` the file is moved to `resume.log.1`.
+//! file. Only the recognised error codes `rate_limit`, `authentication_failed`
+//! and `overloaded` are written as text; any other string is recorded as
+//! `error_kind=unrecognized` with its length in bytes, and no hash, because a
+//! hash of a short secret can be confirmed by guessing. No other payload text
+//! is logged. Past `LOG_MAX_BYTES` the file is moved to `resume.log.1`.
 //! Logging is best effort: a failure never changes the outcome or prints.
 
 use super::Outcome;
 use amplihack_utils::secure_files::{
-    check_private_dir, lock_exclusive_timeout, open_private_nofollow,
+    check_private_dir, lock_exclusive_timeout, open_private_existing_nofollow,
+    open_private_nofollow,
 };
 use std::fs;
 use std::io::Write;
@@ -34,6 +39,103 @@ const ROTATED_FILE: &str = "resume.log.1";
 const LOCK_FILE: &str = "lock";
 const LOCK_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_FIELD_CHARS: usize = 64;
+
+/// Allowlisted observation of the error field; never serializes objects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ErrorObservation {
+    Missing,
+    InvalidType,
+    /// A string that is not a recognised code. It may hold a credential, so
+    /// only its length is kept: no text and no hash.
+    Unrecognized {
+        bytes: usize,
+    },
+    Value(String),
+}
+
+impl ErrorObservation {
+    /// From the raw `error` field, so a wrongly typed value is visible.
+    pub fn from_value(value: Option<&serde_json::Value>) -> Self {
+        match value {
+            None => Self::Missing,
+            Some(serde_json::Value::String(value)) => Self::from_parsed(Some(value)),
+            Some(_) => Self::InvalidType,
+        }
+    }
+
+    /// From an already parsed `error` field.
+    pub fn from_parsed(value: Option<&str>) -> Self {
+        match value {
+            None => Self::Missing,
+            Some(code @ ("rate_limit" | "authentication_failed" | "overloaded")) => {
+                Self::Value(code.to_string())
+            }
+            Some(other) => Self::Unrecognized { bytes: other.len() },
+        }
+    }
+}
+
+/// Fixed lifecycle stages, separate from the backwards-compatible outcomes.
+#[derive(Debug, Clone, Copy)]
+pub enum Stage {
+    Receipt,
+    Filtered,
+    WaitingArmed,
+    SwapJudged,
+    ContinuationAttempt,
+    ContinuationResult,
+}
+impl Stage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Receipt => "receipt",
+            Self::Filtered => "filtered",
+            Self::WaitingArmed => "waiting-armed",
+            Self::SwapJudged => "swap-judged",
+            Self::ContinuationAttempt => "continuation-attempt",
+            Self::ContinuationResult => "continuation-result",
+        }
+    }
+}
+
+/// Bounded diagnostic fields. Dispositions are fixed strings at call sites.
+pub struct Diagnostic {
+    /// Bounded, payload-independent identifier shared by this invocation's stages.
+    pub invocation: String,
+    pub session: Option<String>,
+    pub event: Option<String>,
+    pub stage: Stage,
+    pub disposition: &'static str,
+    pub error: Option<ErrorObservation>,
+}
+
+pub fn format_diagnostic(now: i64, entry: &Diagnostic) -> String {
+    let mut line = format!(
+        "{} resume stage={} disposition={} invocation={}",
+        utc_timestamp(now),
+        entry.stage.as_str(),
+        sanitize(entry.disposition),
+        sanitize(&entry.invocation)
+    );
+    for (key, value) in [("session", &entry.session), ("event", &entry.event)] {
+        if let Some(value) = value {
+            line.push_str(&format!(" {key}={}", sanitize(value)));
+        }
+    }
+    match &entry.error {
+        Some(ErrorObservation::Missing) => line.push_str(" error_kind=missing"),
+        Some(ErrorObservation::InvalidType) => line.push_str(" error_kind=invalid-type"),
+        Some(ErrorObservation::Unrecognized { bytes }) => {
+            line.push_str(&format!(" error_kind=unrecognized error_bytes={bytes}"));
+        }
+        Some(ErrorObservation::Value(value)) => {
+            line.push_str(&format!(" error_kind=value error={}", sanitize(value)));
+        }
+        None => {}
+    }
+    line.push('\n');
+    line
+}
 
 /// One decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,30 +232,55 @@ fn utc_timestamp(secs: i64) -> String {
 /// Appends `line` to `dir/resume.log` under the resume lock, rotating it
 /// first when it would pass `LOG_MAX_BYTES`. Does nothing when `dir` is not
 /// an existing private directory or when any step fails; never creates
-/// `dir` and never writes through a symlink.
+/// `dir` and never writes through a symlink. Creates the lock and the log
+/// when missing. Used only while auto-switch is on.
 pub fn append(dir: &Path, line: &str) {
+    write_line(dir, line, true);
+}
+
+/// Appends `line` to an existing `dir/resume.log` under an existing lock.
+/// Used while auto-switch is off, so it creates nothing: no lock, no log
+/// and no rotated file. When either file is missing it writes nothing, and
+/// a line that would take the log past `LOG_MAX_BYTES` is dropped rather
+/// than rotated. The same directory, symlink and ownership checks apply as
+/// for [`append`].
+pub fn append_existing(dir: &Path, line: &str) {
+    write_line(dir, line, false);
+}
+
+/// The one writer behind [`append`] and [`append_existing`]: `create`
+/// allows creating the lock and log and rotating a full log.
+fn write_line(dir: &Path, line: &str, create: bool) {
+    let open = if create {
+        open_private_nofollow
+    } else {
+        open_private_existing_nofollow
+    };
     if check_private_dir(dir).is_err() {
         return;
     }
-    let Ok(lock_file) = open_private_nofollow(&dir.join(LOCK_FILE)) else {
+    let Ok(lock_file) = open(&dir.join(LOCK_FILE)) else {
         return;
     };
     let Ok(_lock) = lock_exclusive_timeout(lock_file, LOCK_TIMEOUT) else {
         return;
     };
     let path = dir.join(LOG_FILE);
-    let Ok(mut file) = open_private_nofollow(&path) else {
+    let Ok(mut file) = open(&path) else {
         return;
     };
     let Ok(meta) = file.metadata() else {
         return;
     };
     if meta.len() + line.len() as u64 > LOG_MAX_BYTES && meta.len() > 0 {
+        if !create {
+            return;
+        }
         drop(file);
         if fs::rename(&path, dir.join(ROTATED_FILE)).is_err() {
             return;
         }
-        file = match open_private_nofollow(&path) {
+        file = match open(&path) {
             Ok(f) => f,
             Err(_) => return,
         };

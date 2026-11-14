@@ -1386,7 +1386,9 @@ rotator puts them back at the end of its next cycle, and sessions started with
    - **The session has a pane:** it types into it, as a person would, and
      exits `0`. Outcome `resumed-keys`.
    - **No pane** (not in tmux, or the pane check failed): it exits `2`, and
-     the session gets this message and starts a new turn. Outcome `resumed`.
+     the hook returns this message to request a new turn. Whether Claude Code
+     starts that turn depends on its version and state and remains pending host
+     verification. Outcome `resumed` records the action, not an observed turn.
      ```
      amplihack: the login rotator reports a login with capacity. Continue the task you were working on; if the usage limit is still in place, stop and wait.
      ```
@@ -1436,7 +1438,8 @@ A waiting hook resumes on a record only when all of these hold:
 swaps, so a session that stops between the two stopped on the login being
 swapped away from, and the swap resumes it.
 
-A record written before the stop never resumes a session. So a session that
+Except for the whole-second allowance above, a record written before the
+stop never resumes a session. So a session that
 stops on the login the rotator has just swapped to waits for the **next**
 swap: the login it stopped on is the one out of room.
 
@@ -1452,7 +1455,7 @@ tmux send-keys -t %17 -l continue
 tmux send-keys -t %17 Enter
 ```
 
-- **Esc** leaves the timed wait or closes the limit menu. Claude Code
+- **Esc** requests cancellation of the timed wait or closes the limit menu. Claude Code
   2.1.319's own text for the wait ends `· Esc to cancel`.
 - **Ctrl+U** clears the input box. Text shown dimmed there is Claude Code's
   predicted next prompt, and Enter would send it.
@@ -1465,10 +1468,12 @@ The keys go only to the pane the hook noted for this session, never to a
 pane found by name or pattern.
 
 Each key is a separate command so that tmux cannot read Esc and Ctrl+U as
-one Meta key. If a command fails, or the session exits part way through, the
-remaining keys are not sent and the hook logs `resume-keys-failed` with the
-number already sent. It does not fall back to the exit `2` wake. Finish by
-hand as in [Continue a session yourself](#continue-a-session-yourself).
+one Meta key. Immediately before each key, the hook reverifies that the same
+pane still belongs to the session. If that check fails, a command fails, or
+the session exits part way through, the remaining keys are not sent and the
+hook logs `resume-keys-failed` with the number already sent. It does not fall
+back to the exit `2` wake. Finish by hand as in
+[Continue a session yourself](#continue-a-session-yourself).
 
 Typing `continue` is a prompt, so any other hook waiting for the same
 session ends as `moved-on`.
@@ -1498,22 +1503,50 @@ it does not.
 
 ### Check it on your host
 
-After upgrading, confirm both paths once:
+Verify the released binaries on the host that owns resumes. Keep the evidence
+in [#1932](https://github.com/rysweet/amplihack-rs/issues/1932) or the PR,
+not in this guide. Repeat separately for a verified tmux pane and a session
+outside tmux; success on one path does not verify the other.
 
-1. In tmux, let a session hit its limit and reach the timed wait. After the
-   rotator's next swap to a login with room, the session continues and
-   `resume.log` shows `outcome=resumed-keys keys_sent=4`.
-2. Outside tmux, the same sequence shows `outcome=resumed`, and the session
-   starts a new turn with the message above.
+- Record `amplihack --version`, `claude --version`, the released binary
+  paths, and the hook binary's release identity. An installed binary's strings
+  or an isolated test do not establish live behavior.
+- Confirm the effective `StopFailure` registration, matcher `rate_limit`,
+  `asyncRewake: true`, resolved profile root and enabled auto-switch toggle.
+  Record which component owns resumes. A legacy hook with
+  `limit-nudger.service` owning resumes does not verify this hook.
+- Record the stopped session's state: ordinary limit menu or Claude's timed
+  wait. Correlate it with the receipt record and its actual `error` value.
+  Establish separately whether entering the timed wait invokes `StopFailure`
+  and whether that invocation reports `rate_limit`.
+- Record the successful A-to-B swap, swap sequence, completion time and B's
+  session/week capacity reading with its measurement time. Apply the
+  [shared swap rules](../reference/profile-command.md#capacity-for-a-resume);
+  the measurement may precede the stop.
+- Record the selected action and result: keys, partial delivery failure, or
+  exit `2`. Independently observe a new Claude turn after that action.
+  `resumed-keys keys_sent=4` proves command delivery, and `resumed` proves
+  selection of the wake path; neither alone proves a new turn.
+- Compare every observed stopped session with invocation records, including
+  limits during an existing wait and immediately after continuation. Write
+  **no invocation observed** when no matching record exists. Do not infer
+  that Claude omitted the hook.
+- For a timed wait, verify whether exit `2` ends the wait and starts a turn,
+  and which input safely restores an editable prompt. If automation fails,
+  verify [manual continuation](#continue-a-session-yourself) on that exact
+  Claude version before reporting it as supported.
 
-If the timed wait does not end in step 1, report it on
-[#1932](https://github.com/rysweet/amplihack-rs/issues/1932) with the
-`resume.log` line and your `claude --version`, and continue the session by
-hand.
+Mark each behavior **verified**, **failed**, or **unverified**, with the exact
+versions and credential-free evidence. Unverified timed-wait behavior remains
+an explicit host-verification requirement; macOS checks and isolated Rust
+regressions do not satisfy it. Linux `/proc`, pidfd, inotify and FIFO-dependent
+checks run in CI; list exact locally omitted checks in the PR and hand host
+verification to a Linux host with the rotator installed. Do not include
+credentials, raw hook payloads, prompts, transcripts or environment dumps.
 
 ### See what it did
 
-Each decision is one line in `<root>/.auto-switch.d/resume/resume.log`:
+Receipt, lifecycle and decision records are written to `<root>/.auto-switch.d/resume/resume.log`:
 
 ```bash
 tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
@@ -1538,9 +1571,10 @@ of the pane id, not the id. The other outcomes are listed in the
 - **One record per swap.** Only a swap writes `swap.json`. Stays, ALERTs
   and the passing of time never do, and the hook acts only when the file
   changes.
-- **Newer than the stop.** The record must differ from the one the hook
-  noted at the stop and be measured after it, so an old record, or one
-  rewritten unchanged, resumes nothing.
+- **Fresh swap, not necessarily a later measurement.** The shared judgement
+  checks swap completion against invocation start (with its whole-second
+  allowance) and the session's last resume. A consumed swap never resumes
+  the session again. The target reading may precede the stop.
 - **Room by a fresh reading.** A swap onto a login at 100% on either window
   logs `swap-no-room` and resumes nothing.
 - **Recorded before acting.** The resume is on disk under the lock before
@@ -1561,12 +1595,32 @@ resume.
 ### Limits during a wait and after a resume
 
 The hook acts only when Claude Code runs it, on a `StopFailure` event with
-`error: "rate_limit"`. Every run it gets writes at least one line to
-`resume.log`, including `duplicate`. A limit stop with no line in
-`resume.log` is one for which Claude Code did not run the hook.
+`error: "rate_limit"`. Receipt is logged before filtering whenever a safe logging root is available,
+including disabled auto-switch and rejected errors or sessions. With
+auto-switch off the receipt is only appended to an existing log, as
+described under [Turn it off](#turn-it-off). The order is: input checks,
+receipt, `disabled-auto-switch`, typed-parse `malformed-input`, then the
+gate's reason. Each line carries an `invocation` id that joins the lines of
+one call. Lines written after the receipt carry the same `session` hash as
+the receipt, even after a typed parse failure; a line from the input checks
+comes before any receipt, so there is no receipt to match. An error string other than `rate_limit`,
+`authentication_failed` or `overloaded` is recorded only by its length:
 
-- **A limit while a hook for the same session is waiting.** Claude Code
-  starts a second hook. Its event differs in the error text or the live
+```
+2026-11-09T03:02:44Z resume stage=receipt disposition=received invocation=1f3a2-1879c4e0a6b31c40-0 session=8e21c04b7d93 error_kind=unrecognized error_bytes=27
+2026-11-09T03:02:44Z resume stage=filtered disposition=non-limit-error invocation=1f3a2-1879c4e0a6b31c40-0 session=8e21c04b7d93
+```
+
+Logging is
+best effort: unsafe paths, unavailable roots, rotation or write failures can
+leave gaps. Logging failure does not authorize a resume, retry continuation,
+or select a fallback; the guard and delivery checks still decide the action.
+A stopped session with no matching record is **no invocation
+observed**, not proof that Claude omitted the hook. See the
+[diagnostic stages](../reference/profile-command.md#resume-diagnostic-stages).
+
+- **A limit while a hook for the same session is waiting.** If Claude Code
+  invokes a second hook, its event may differ in the error text or the live
   login, so it waits as well. The first to act resumes the session; the
   other logs `duplicate` or `moved-on`.
 - **A limit just after a resume.** The same text on the same live login is
@@ -1584,7 +1638,9 @@ The hook acts only when Claude Code runs it, on a `StopFailure` event with
 If the hook did not resume a session (no rotator, no swap, `watch-lost`,
 `resume-keys-failed`), continue it by hand:
 
-1. Press Esc.
+1. Press Esc. Confirm that the wait or menu closes and an editable prompt
+   returns. If it does not, stop: this procedure is unverified for that state
+   and Claude version. Do not send the remaining input blindly.
 2. Check that the input box is empty. Text drawn dimmed is Claude Code's
    predicted next prompt, not yours; clear it with Ctrl+U.
 3. Type `continue` and press Enter.
@@ -1619,7 +1675,12 @@ short turn, bounded by the per-session cap.
 
 `amplihack profile auto-switch off` turns the hook off together with
 background rotation and auto-switch. A new limit then exits at once, prints
-nothing, and reads only the saved root and the toggle. A hook already
+nothing, and creates nothing on disk. If `<root>/.auto-switch.d/resume/`
+already holds a `lock` and a `resume.log` from earlier use, the receipt and
+one `filtered` line (`disabled-auto-switch`) are appended to that log. The
+hook never creates the directory, the lock or the log while auto-switch is
+off, and never rotates the log: a line that would take it past 64 KiB is
+dropped. Input that is not a JSON object writes nothing. A hook already
 waiting notices at the next swap record and ends as `disabled` without
 resuming. To keep rotation but not the resume, delete the `StopFailure`
 entry from `~/.claude/settings.json`. `amplihack install` adds it again.
