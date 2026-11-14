@@ -50,6 +50,7 @@ recipe name when the change is eligible.
 | `repo_path` | `.` | Repository. |
 | `pr_number` | empty | Existing PR; explicit selection takes precedence. |
 | `existing_branch` | empty | Existing source branch with an open PR; must match explicit PR input. |
+| `base_branch` | empty | Passed to `auto-drive-to-merge` on escalation. A new change clears it in `light-worktree`, because the `quick/` branch starts from `origin/HEAD`, so escalation then sees an empty base. Only the existing-PR path (`pr_number` or `existing_branch` set) keeps the caller's value. See [Where the inputs apply](workflow-delivery-inputs.md#where-the-inputs-apply). |
 | `issue_number` | empty | Issue reference used by the branch/PR and task fallback. A positive issue number, up to 10 digits. |
 | `plan_task_id` | empty | Explicit task for follow-ups. Otherwise use `#<issue_number>`, then the shared PR-body/task-description fallback. |
 | `qa_command` | empty | Operator-supplied build check command; otherwise repository quick-change checks. This does not replace final QA selection. |
@@ -126,6 +127,10 @@ branch or PR. Because the PR exists, the nested full build is skipped.
 
 Forward dry-run and `no_merge` restrictions explicitly. Child context
 overwrite cannot relax them. Skip subsequent light-path work after escalation.
+`light-escalate` passes `base_branch` as well: the caller's value on the
+existing-PR path, empty after `light-worktree` cleared it. With an empty base,
+finalize takes the base from the PR itself
+([How finalize finds the base](workflow-delivery-inputs.md#how-finalize-finds-the-base)).
 Exit `79` propagates and is never retried at a greater depth.
 
 ## Minor findings and follow-up issues

@@ -27,6 +27,7 @@ recursion:
   max_total_steps: 120
 
 context:
+  base_branch: ""  # base for the pull request, passed on to default-workflow; empty: the PR's own base (docs/reference/workflow-delivery-inputs.md)
   # Required inputs
   task_description: ""
   repo_path: "."
@@ -206,7 +207,8 @@ steps:
     type: "recipe"
     recipe: "default-workflow"
     condition: "test_coverage_sufficient == 'false'"
-    sub_context:
+    context:
+      base_branch: "{{base_branch}}"
       task_description: |
         MANDATORY: Write missing Python tests before the Oxidizer migration can proceed.
 
@@ -260,7 +262,8 @@ steps:
   - id: "phase-2-scaffold"
     type: "recipe"
     recipe: "default-workflow"
-    sub_context:
+    context:
+      base_branch: "{{base_branch}}"
       task_description: |
         Create a Rust Cargo workspace for the project '{{rust_repo_name}}'.
 
@@ -295,7 +298,8 @@ steps:
   - id: "phase-3-extract-tests"
     type: "recipe"
     recipe: "default-workflow"
-    sub_context:
+    context:
+      base_branch: "{{base_branch}}"
       task_description: |
         Extract and convert ALL tests from the Python codebase to Rust for the
         '{{rust_repo_name}}' migration. Tests must exist BEFORE implementation.
@@ -394,7 +398,8 @@ steps:
     type: "recipe"
     recipe: "default-workflow"
     condition: "convergence_status != 'CONVERGED'"
-    sub_context:
+    context:
+      base_branch: "{{base_branch}}"
       task_description: |
         Port the Python module '{{current_module}}' to Rust as part of the
         {{rust_repo_name}} migration. Iteration {{iteration_number}}.
@@ -643,7 +648,8 @@ steps:
     type: "recipe"
     recipe: "default-workflow"
     condition: "convergence_status != 'CONVERGED'"
-    sub_context:
+    context:
+      base_branch: "{{base_branch}}"
       task_description: |
         FIX all silent degradation findings in the Rust code at {{rust_target_path}}.
 
@@ -753,7 +759,8 @@ steps:
     type: "recipe"
     recipe: "default-workflow"
     condition: "convergence_status == 'NOT_CONVERGED'"
-    sub_context:
+    context:
+      base_branch: "{{base_branch}}"
       task_description: |
         Oxidizer iteration {{iteration_number}}: Port/fix '{{current_module}}'.
         Python: {{python_package_path}}/{{current_module}}
@@ -809,7 +816,8 @@ steps:
     type: "recipe"
     recipe: "default-workflow"
     condition: "convergence_status == 'NOT_CONVERGED'"
-    sub_context:
+    context:
+      base_branch: "{{base_branch}}"
       task_description: |
         Fix silent degradation findings in {{rust_target_path}}:
         {{silent_degradation_result}}
@@ -867,7 +875,8 @@ steps:
     type: "recipe"
     recipe: "default-workflow"
     condition: "convergence_status == 'NOT_CONVERGED'"
-    sub_context:
+    context:
+      base_branch: "{{base_branch}}"
       task_description: |
         Oxidizer iteration {{iteration_number}}: Port/fix '{{current_module}}'.
         Python: {{python_package_path}}/{{current_module}}, Rust: {{rust_target_path}}
@@ -919,7 +928,8 @@ steps:
     type: "recipe"
     recipe: "default-workflow"
     condition: "convergence_status == 'NOT_CONVERGED'"
-    sub_context:
+    context:
+      base_branch: "{{base_branch}}"
       task_description: |
         Fix degradation in {{rust_target_path}}: {{silent_degradation_result}}
         Add regression tests. cargo test.
@@ -974,7 +984,8 @@ steps:
     type: "recipe"
     recipe: "default-workflow"
     condition: "convergence_status == 'NOT_CONVERGED'"
-    sub_context:
+    context:
+      base_branch: "{{base_branch}}"
       task_description: |
         Oxidizer iteration {{iteration_number}}: Port/fix '{{current_module}}'.
         Python: {{python_package_path}}/{{current_module}}, Rust: {{rust_target_path}}
@@ -1026,7 +1037,8 @@ steps:
     type: "recipe"
     recipe: "default-workflow"
     condition: "convergence_status == 'NOT_CONVERGED'"
-    sub_context:
+    context:
+      base_branch: "{{base_branch}}"
       task_description: |
         Fix degradation in {{rust_target_path}}: {{silent_degradation_result}}
         Regression tests. cargo test.
@@ -1081,7 +1093,8 @@ steps:
     type: "recipe"
     recipe: "default-workflow"
     condition: "convergence_status == 'NOT_CONVERGED'"
-    sub_context:
+    context:
+      base_branch: "{{base_branch}}"
       task_description: |
         Oxidizer iteration {{iteration_number}}: FINAL PUSH on '{{current_module}}'.
         Python: {{python_package_path}}/{{current_module}}, Rust: {{rust_target_path}}
@@ -1133,7 +1146,8 @@ steps:
     type: "recipe"
     recipe: "default-workflow"
     condition: "convergence_status == 'NOT_CONVERGED'"
-    sub_context:
+    context:
+      base_branch: "{{base_branch}}"
       task_description: |
         Fix degradation in {{rust_target_path}}: {{silent_degradation_result}}
         Regression tests. cargo test.
