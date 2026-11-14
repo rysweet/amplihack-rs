@@ -258,11 +258,12 @@ involved.
 1. Check `bundle-pins/` with `trusted_directory`: a real directory, owned by
    the effective user, no group or other write bit. It is created `0700` if
    missing and checked even when it already exists.
-2. Try to take `.lock` exclusively without blocking. If another launch holds
-   it, print one line to stderr and then wait for it:
+2. Try to take `.lock` exclusively without blocking. If another run holds
+   it (to pin, to release its lease or to sweep), print one line to stderr
+   and then wait for it:
 
    ```
-   recipe bundle: waiting for /home/alice/.amplihack/work/bundle-pins/.lock (another launch is pinning a bundle)
+   recipe bundle: waiting for /home/alice/.amplihack/work/bundle-pins/.lock (another run holds the bundle snapshot lock)
    ```
 
 3. Remove any `.tmp-<uuid>` folder left by a launch that was killed.
@@ -276,12 +277,22 @@ involved.
    | State of `<key>/` | Action |
    |-------------------|--------|
    | Missing | Make the copy read-only and rename `.tmp-<uuid>` to `<key>` |
-   | Present, and its tree digest equals the copy's | Reuse it; remove the copy |
-   | Present, digest differs, no other run holds `<key>.use` | Restore the owner write bit on the real directories of the old `<key>/` (symlinks are never followed or changed), remove it, make the copy read-only, rename the copy to `<key>` and print `recipe bundle: replacing <path>: its contents differ from <source> (<version>)` |
-   | Present, digest differs, another run holds `<key>.use` | Refuse the run (E11) |
+   | Present, holds only `amplifier-bundle/` and `pin.json`, and its tree digest equals the copy's | Reuse it: clear any write bit in its `amplifier-bundle/` again, then remove the copy |
+   | Present, anything else (differs) and no other run holds `<key>.use` | Restore the owner write bit on the real directories of the old `<key>/` (symlinks are never followed or changed), remove it, make the copy read-only, rename the copy to `<key>` and print `recipe bundle: replacing <path>: its contents differ from <source> (<version>)` |
+   | Present, differs, another run holds `<key>.use` | Refuse the run (E11) |
 
-   The digest of an existing `<key>/` is always computed again from its
-   files. `pin.json` is never used to decide.
+   The whole `<key>/` folder is checked before it is reused. It must hold
+   exactly a real `amplifier-bundle/` directory and a regular `pin.json`,
+   neither of them a symlink. Steps read files directly under
+   `AMPLIHACK_HOME`, such as `config` or `.claude/`, so a snapshot holding
+   anything else counts as changed, even when the bundle's digest matches.
+   The digest of the existing `amplifier-bundle/` is always computed again
+   from its files. The contents of `pin.json` are never used to decide. A
+   `<key>/` that cannot be read or digested counts as changed.
+
+   The digest leaves out write bits, so a snapshot made writable since it
+   was placed still matches. Reuse therefore makes its `amplifier-bundle/`
+   read-only again.
 
    Whether another run holds `<key>.use` is tested by opening it without
    creating it and taking a non-blocking exclusive `flock`. If the lock is
@@ -493,7 +504,7 @@ outer run's environment.
 | `AMPLIHACK_RUN_BUNDLE` is set, passes the marker checks below, and the nested run gives no `--bundle` or `-c bundle=` | Reuses the outer snapshot and takes a shared lease on it; no selection, no copy, no removal |
 | Marker passes and the nested run asks for a choice other than `AMPLIHACK_RUN_BUNDLE_CHOICE` | Refused (E3) |
 | Marker passes and the nested run asks for the choice in `AMPLIHACK_RUN_BUNDLE_CHOICE` | Reuses the outer snapshot |
-| Marker passes, but `<key>.use` is missing | Refused (E13) |
+| Marker passes, but `<key>.use` or `bundle-pins/.lock` is missing | Refused (E13) |
 | Marker fails any check | Ignored with a note on stderr; the nested run selects and pins normally |
 
 The marker checks, all on canonical paths:
@@ -513,9 +524,9 @@ Check 3 ties the marker to the folder whose lock files the nested run is
 about to open. A marker under some other `bundle-pins` folder, for example
 one under a different work root, fails the check.
 
-When the marker passes, the nested run takes `.lock`, opens the existing
-`<key>.use` without creating it, takes a shared lock on it and releases
-`.lock`. If `<key>.use` is missing, the outer run has ended or the folder was
+When the marker passes, the nested run takes the existing `.lock` and opens
+the existing `<key>.use`, creating neither, takes a shared lock on
+`<key>.use` and releases `.lock`. If either file is missing, the outer run has ended or the folder was
 tampered with, and the nested run is refused (E13) rather than run from a
 snapshot that no lease protects. A nested run never copies, removes or
 changes the mode of anything under `bundle-pins/`.
@@ -712,7 +723,7 @@ snapshot:
 | E10 | The recipe copied into the snapshot has a different name from the one read before the pin | `recipe changed while the bundle was being pinned: <path> names "<a>", but "<b>" was read before the pin` |
 | E11 | An existing snapshot with the same key has different contents and another run holds its `<key>.use` (a non-blocking exclusive `flock` on it would block; a missing `<key>.use` never gives E11) | `bundle snapshot <path> is in use by another run and its contents differ from <source>; wait for that run to end` |
 | E12 | `bundle-pins/` fails the directory check, a lock file is not a regular file owned by the effective user, or a lock call fails for any reason other than "would block" | `untrusted bundle snapshot directory <path>: <reason>` or `cannot lock <path>: <system error>` |
-| E13 | A nested run's marker passes its checks but `<key>.use` does not exist | `inherited bundle snapshot <path> has no lease file <path>.use; the run that pinned it has ended` |
+| E13 | A nested run's marker passes its checks but `<key>.use` or `bundle-pins/.lock` does not exist | `inherited bundle snapshot <path> has no lease file <path>.use; the run that pinned it has ended` or `inherited bundle snapshot <path> has no lock file <path>/.lock; the run that pinned it has ended` |
 
 Every error exits with status 1 before the runner starts. No step runs.
 

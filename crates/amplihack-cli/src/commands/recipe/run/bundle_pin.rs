@@ -247,9 +247,14 @@ pub(crate) fn select_from(inputs: SelectInputs<'_>) -> Result<Selection> {
                     Path::new(marker).display()
                 ));
                 // An AMPLIHACK_HOME that names the refused marker is another
-                // run's snapshot, not an install: it is not a candidate.
-                let same =
-                    |value: &OsStr| fs::canonicalize(value).ok() == fs::canonicalize(marker).ok();
+                // run's snapshot, not an install: it is not a candidate. Two
+                // paths that cannot be resolved do not name the same folder.
+                let same = |value: &OsStr| {
+                    matches!(
+                        (fs::canonicalize(value), fs::canonicalize(marker)),
+                        (Ok(a), Ok(b)) if a == b
+                    )
+                };
                 if inputs.amplihack_home.is_some_and(same) {
                     notes.push(format!(
                         "recipe bundle: skipping AMPLIHACK_HOME={}: it names the ignored \

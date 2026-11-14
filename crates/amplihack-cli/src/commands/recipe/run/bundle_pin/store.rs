@@ -348,7 +348,7 @@ impl StoreLock {
         };
         if !try_exclusive(&file, &path)? {
             eprintln!(
-                "recipe bundle: waiting for {} (another launch is pinning a bundle)",
+                "recipe bundle: waiting for {} (another run holds the bundle snapshot lock)",
                 path.display()
             );
             FileExt::lock_exclusive(&file).map_err(|error| lock_error(&path, error))?;
@@ -428,13 +428,19 @@ pub(super) fn place(
             .with_context(|| format!("cannot rename {} to {}", tmp.display(), home.display()))?;
         return Ok(Placement::Created);
     };
-    // The digest of an existing snapshot is always computed again from its
-    // files (S1); one that cannot be digested counts as different.
+    // The whole `<key>/` folder is checked again before reuse (S1): it must
+    // hold nothing but the bundle and its pin record, and the bundle's digest
+    // is computed again from its files. One that cannot be read or digested
+    // counts as different.
     let same = existing.is_dir()
+        && holds_only_bundle(&home)
         && tree_digest(&home.join(super::BUNDLE_DIR))
             .ok()
             .is_some_and(|found| found == *digest);
     if same {
+        // The digest ignores write bits, so a reused tree may have been made
+        // writable since it was placed; it is made read-only again.
+        make_read_only(&home.join(super::BUNDLE_DIR))?;
         return Ok(Placement::Reused);
     }
     let _probe = match probe_lease(pins, &lease_path(pins, key))? {
@@ -451,6 +457,36 @@ pub(super) fn place(
     fs::rename(tmp, &home)
         .with_context(|| format!("cannot rename {} to {}", tmp.display(), home.display()))?;
     Ok(Placement::Replaced)
+}
+
+/// True when `home` holds exactly a real `amplifier-bundle/` folder and a
+/// regular `pin.json`, neither a symlink. Steps read files directly under
+/// `AMPLIHACK_HOME` (such as `config` or `.claude/`), so a snapshot holding
+/// anything else is not the snapshot that was placed. A folder that cannot
+/// be read gives false.
+fn holds_only_bundle(home: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(home) else {
+        return false;
+    };
+    let mut found = 0;
+    for entry in entries {
+        // `DirEntry::file_type` does not follow symlinks.
+        let Ok((name, kind)) = entry.and_then(|e| Ok((e.file_name(), e.file_type()?))) else {
+            return false;
+        };
+        let expected = if name == super::BUNDLE_DIR {
+            kind.is_dir()
+        } else if name == super::PIN_RECORD {
+            kind.is_file()
+        } else {
+            false
+        };
+        if !expected {
+            return false;
+        }
+        found += 1;
+    }
+    found == 2
 }
 
 /// Step 3: removes copies in progress left by killed launches. Must be
@@ -573,9 +609,10 @@ impl PinLease {
         })
     }
 
-    /// A nested run's lease on the outer run's snapshot `home`: takes
-    /// `.lock`, opens the existing `<key>.use` without creating it (E13 when
-    /// missing), takes a shared lock and releases `.lock`.
+    /// A nested run's lease on the outer run's snapshot `home`: takes the
+    /// existing `.lock` and opens the existing `<key>.use`, creating neither
+    /// (E13 when either is missing), takes a shared lock and releases
+    /// `.lock`.
     pub(super) fn join(home: &Path) -> Result<Self> {
         let (Some(pins), Some(key)) = (home.parent(), home.file_name().and_then(|n| n.to_str()))
         else {
@@ -589,7 +626,13 @@ impl PinLease {
                 path.display()
             )
         };
-        let _lock = StoreLock::acquire(pins, false)?;
+        let _lock = StoreLock::acquire(pins, false)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "inherited bundle snapshot {} has no lock file {}; the run that pinned it has ended",
+                home.display(),
+                pins.join(LOCK_FILE).display()
+            )
+        })?;
         let file = match open_lock_file(pins, &path, false) {
             Ok(file) => file,
             Err(error) if error.kind() == ErrorKind::NotFound => return Err(ended()),

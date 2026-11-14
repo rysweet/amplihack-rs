@@ -652,7 +652,8 @@ fn exists_no_follow(path: &Path) -> bool {
 }
 
 /// A snapshot as `pin` lays it out, built by hand:
-/// `<work>/bundle-pins/<KEY>/amplifier-bundle` and an empty `<KEY>.use`.
+/// `<work>/bundle-pins/<KEY>/amplifier-bundle`, an empty `<KEY>.use` and the
+/// store's `.lock`.
 /// Returns the work root and the snapshot home (the marker).
 fn parent_snapshot(root: &Path) -> (PathBuf, PathBuf) {
     let work = work_root(root);
@@ -660,9 +661,11 @@ fn parent_snapshot(root: &Path) -> (PathBuf, PathBuf) {
     let marker = pins.join(KEY);
     fs::create_dir(&marker).unwrap();
     write_bundle(&marker, "parent-A");
-    let lease = pins.join(format!("{KEY}.use"));
-    fs::write(&lease, "").unwrap();
-    set_mode(&lease, 0o600);
+    for name in [format!("{KEY}.use"), ".lock".to_string()] {
+        let path = pins.join(name);
+        fs::write(&path, "").unwrap();
+        set_mode(&path, 0o600);
+    }
     (work, marker)
 }
 
@@ -833,6 +836,39 @@ fn a_marker_under_another_work_roots_bundle_pins_is_refused() {
             .iter()
             .any(|n| n.contains(&foreign.display().to_string())),
         "the note names the refused marker: {:?}",
+        selection.notes()
+    );
+    assert_eq!(
+        selection.source(),
+        fs::canonicalize(&installed_bundle).unwrap()
+    );
+}
+
+#[test]
+fn an_ignored_marker_and_amplihack_home_that_both_cannot_be_resolved_are_not_the_same() {
+    let (_tmp, root) = scratch();
+    let work = work_root(&root);
+    private_pins(&work);
+    let installed = root.join("installed");
+    let installed_bundle = write_bundle(&installed, "A");
+    let marker = pins_dir(&work).join(KEY);
+    let missing_home = root.join("no-such-home");
+    let selection = select_from(SelectInputs {
+        amplihack_home: os(&missing_home),
+        run_bundle: os(&marker),
+        run_bundle_choice: Some(OsStr::new("installed")),
+        configured_home: Some(&installed),
+        work_root: Some(&work),
+        ..inputs(&root)
+    })
+    .unwrap();
+    assert!(!selection.inherited());
+    assert!(
+        !selection
+            .notes()
+            .iter()
+            .any(|n| n.contains("names the ignored")),
+        "two paths that cannot be resolved are not one folder: {:?}",
         selection.notes()
     );
     assert_eq!(
@@ -1026,6 +1062,30 @@ fn a_nested_run_without_a_lease_file_is_refused_with_e13() {
         !exists_no_follow(&lease),
         "a nested run never creates the lease file"
     );
+    assert!(marker.join("amplifier-bundle/recipes/probe.yaml").exists());
+}
+
+#[test]
+fn a_nested_run_without_the_store_lock_file_is_refused_with_e13() {
+    let (_tmp, root) = scratch();
+    let (work, marker) = parent_snapshot(&root);
+    let lock = pins_dir(&work).join(".lock");
+    fs::remove_file(&lock).unwrap();
+    let lease = lease_file(&marker);
+    let selection = select_from(nested_inputs(&root, &work, &marker, "installed")).unwrap();
+    assert!(selection.inherited());
+    let text = err_text(pin(&selection, &work, false));
+    assert!(
+        text.contains(&format!(
+            "inherited bundle snapshot {} has no lock file {}; \
+             the run that pinned it has ended",
+            marker.display(),
+            lock.display()
+        )),
+        "{text}"
+    );
+    assert!(!exists_no_follow(&lock), "a nested run never creates .lock");
+    assert!(!held(&lease), "no lease is taken");
     assert!(marker.join("amplifier-bundle/recipes/probe.yaml").exists());
 }
 
@@ -1615,6 +1675,163 @@ fn a_snapshot_with_an_extra_file_is_not_reused() {
     let second = pin(&selection, &work, false).unwrap();
     assert_eq!(second.home(), home);
     assert!(!second.bundle().join("recipes/planted.yaml").exists());
+}
+
+/// Pins `selection`, then leaves the snapshot as a killed run would (no run
+/// holds it) with `plant` applied to its `<key>/` folder. Returns the home.
+fn unused_snapshot_with(
+    root: &Path,
+    work: &Path,
+    selection: &super::bundle_pin::Selection,
+    plant: impl FnOnce(&Path),
+) -> PathBuf {
+    let first = pin(selection, work, false).unwrap();
+    let home = first.home().to_path_buf();
+    let kept = root.join("kept");
+    fs::rename(&home, &kept).unwrap();
+    drop(first);
+    plant(&kept);
+    fs::rename(&kept, &home).unwrap();
+    home
+}
+
+#[test]
+fn an_unused_snapshot_with_a_file_beside_the_bundle_is_replaced() {
+    let (_tmp, root) = scratch();
+    let (_source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let home = unused_snapshot_with(&root, &work, &selection, |home| {
+        fs::write(home.join("config"), "git_identity=planted\n").unwrap();
+    });
+
+    let second = pin(&selection, &work, false).unwrap();
+    assert_eq!(second.home(), home, "same key");
+    assert!(
+        !exists_no_follow(&home.join("config")),
+        "the planted file is gone"
+    );
+    assert!(home.join("pin.json").is_file());
+    assert!(second.bundle().join("recipes/probe.yaml").is_file());
+}
+
+#[test]
+fn an_unused_snapshot_with_a_folder_beside_the_bundle_is_replaced() {
+    let (_tmp, root) = scratch();
+    let (_source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let home = unused_snapshot_with(&root, &work, &selection, |home| {
+        fs::create_dir(home.join(".claude")).unwrap();
+        fs::write(home.join(".claude/x"), "planted\n").unwrap();
+    });
+
+    let second = pin(&selection, &work, false).unwrap();
+    assert_eq!(second.home(), home, "same key");
+    assert!(
+        !exists_no_follow(&home.join(".claude")),
+        "the planted folder is gone"
+    );
+}
+
+#[test]
+fn an_unused_snapshot_whose_pin_record_is_a_symlink_is_replaced() {
+    let (_tmp, root) = scratch();
+    let (_source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let elsewhere = root.join("elsewhere.json");
+    fs::write(&elsewhere, "{}").unwrap();
+    let home = unused_snapshot_with(&root, &work, &selection, |home| {
+        fs::remove_file(home.join("pin.json")).unwrap();
+        symlink(&elsewhere, home.join("pin.json")).unwrap();
+    });
+
+    let _second = pin(&selection, &work, false).unwrap();
+    let meta = fs::symlink_metadata(home.join("pin.json")).unwrap();
+    assert!(meta.is_file(), "a fresh pin record replaced the symlink");
+    assert_eq!(
+        fs::read_to_string(&elsewhere).unwrap(),
+        "{}",
+        "target left alone"
+    );
+}
+
+#[test]
+fn a_snapshot_in_use_with_a_file_beside_the_bundle_stops_the_launch_with_e11() {
+    let (_tmp, root) = scratch();
+    let (source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let first = pin(&selection, &work, false).unwrap();
+    let home = first.home().to_path_buf();
+    let planted = home.join("config");
+    fs::write(&planted, "git_identity=planted\n").unwrap();
+
+    let text = err_text(pin(&selection, &work, false));
+    assert!(
+        text.contains(&format!(
+            "bundle snapshot {} is in use by another run and its contents differ from {}",
+            home.display(),
+            fs::canonicalize(&source).unwrap().display()
+        )),
+        "{text}"
+    );
+    assert!(
+        planted.exists(),
+        "nothing is removed while the snapshot is in use"
+    );
+    assert!(first.bundle().join("recipes/probe.yaml").exists());
+    assert!(held(&lease_file(&home)), "the first run keeps its lease");
+    drop(first);
+}
+
+/// Every path in the tree at `root` (symlinks not followed) with a write bit.
+fn writable_entries(root: &Path) -> Vec<PathBuf> {
+    let meta = fs::symlink_metadata(root).unwrap();
+    let mut found = Vec::new();
+    if meta.file_type().is_symlink() {
+        return found;
+    }
+    if meta.permissions().mode() & 0o222 != 0 {
+        found.push(root.to_path_buf());
+    }
+    if meta.is_dir() {
+        for entry in fs::read_dir(root).unwrap() {
+            found.extend(writable_entries(&entry.unwrap().path()));
+        }
+    }
+    found
+}
+
+/// `chmod -R u+w` on the tree at `root`, never through a symlink.
+fn add_owner_write(root: &Path) {
+    let meta = fs::symlink_metadata(root).unwrap();
+    if meta.file_type().is_symlink() {
+        return;
+    }
+    set_mode(root, (meta.permissions().mode() & 0o7777) | 0o200);
+    if meta.is_dir() {
+        for entry in fs::read_dir(root).unwrap() {
+            add_owner_write(&entry.unwrap().path());
+        }
+    }
+}
+
+#[test]
+fn a_reused_snapshot_made_writable_is_made_read_only_again() {
+    let (_tmp, root) = scratch();
+    let (_source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let first = pin(&selection, &work, false).unwrap();
+    add_owner_write(first.bundle());
+    assert!(!writable_entries(first.bundle()).is_empty());
+
+    let second = pin(&selection, &work, false).unwrap();
+    assert_eq!(second.home(), first.home(), "reused, same key");
+    assert_eq!(
+        writable_entries(second.bundle()),
+        Vec::<PathBuf>::new(),
+        "no write bit is left in the reused bundle"
+    );
+    drop(second);
+    drop(first);
 }
 
 // --------------------------------------------------------------- E12
