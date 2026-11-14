@@ -23,7 +23,7 @@
 
 #![cfg(target_os = "linux")]
 
-use crate::issue_2528_one_bundle::{World, put, recipe, records, runner_or_skip};
+use crate::issue_2528_one_bundle::{World, put, recipe, records, runner};
 use std::fs;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -143,9 +143,7 @@ fn world_with(name: &str, body: &str) -> World {
 
 #[test]
 fn t5_a_successful_run_leaves_no_cleanup_child_and_no_snapshot() {
-    let Some(runner) = runner_or_skip("t5 success") else {
-        return;
-    };
+    let runner = runner("t5 success");
     let world = world_with(
         "t5-ok",
         "\"$AMPLIHACK_HOME/amplifier-bundle/tools/identity.sh\" > /dev/null\n",
@@ -155,9 +153,7 @@ fn t5_a_successful_run_leaves_no_cleanup_child_and_no_snapshot() {
 
 #[test]
 fn t5_a_failed_run_leaves_no_cleanup_child_and_no_snapshot() {
-    let Some(runner) = runner_or_skip("t5 failure") else {
-        return;
-    };
+    let runner = runner("t5 failure");
     let world = world_with("t5-fail", "exit 3\n");
     run_and_check(&world, &runner, "t5-fail", false);
 }

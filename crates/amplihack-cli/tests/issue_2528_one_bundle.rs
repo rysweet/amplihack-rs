@@ -20,9 +20,14 @@
 //! child is joined with `wait()` (through `output()`); there are no sleeps,
 //! polls or timeouts. Linux only, like the other real-runner tests.
 //!
+//! - B1: a recipe given as a path runs from the run's bundle when it lies in
+//!   that bundle, and is refused (E14) when it lies in another bundle.
+//! - T6b: steps of a pinned run find a git identity kept under a
+//!   non-default `AMPLIHACK_HOME`.
+//!
 //! The real runner is `RECIPE_RUNNER_QA_BINARY`, else `recipe-runner-rs` on
-//! `PATH`. Without one, tests that need a step to run say so and return,
-//! unless `AMPLIHACK_2528_REQUIRE_RECIPE_RUNNER` is set, when they fail.
+//! `PATH`. Tests that need a step to run fail without one, as the #1741
+//! tests do; they never skip.
 
 #![cfg(target_os = "linux")]
 
@@ -32,7 +37,6 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-const REQUIRE_ENV: &str = "AMPLIHACK_2528_REQUIRE_RECIPE_RUNNER";
 const POINTER: &str = "amplihack.recipe.log_pointer ";
 
 pub(crate) fn real_runner() -> Option<PathBuf> {
@@ -53,17 +57,11 @@ pub(crate) fn real_runner() -> Option<PathBuf> {
         })
 }
 
-/// The runner, or `None` after saying why the test is skipped.
-pub(crate) fn runner_or_skip(test: &str) -> Option<PathBuf> {
-    let runner = real_runner();
-    if runner.is_none() {
-        assert!(
-            std::env::var_os(REQUIRE_ENV).is_none(),
-            "{REQUIRE_ENV} is set but no recipe-runner-rs was found"
-        );
-        eprintln!("recipe-runner-rs unavailable; skipping {test}");
-    }
-    runner
+/// The real runner; a test that needs a step to run fails without one.
+pub(crate) fn runner(test: &str) -> PathBuf {
+    real_runner().unwrap_or_else(|| {
+        panic!("{test}: install the pinned real runner or set RECIPE_RUNNER_RS_PATH; no stub/skip")
+    })
 }
 
 pub(crate) fn quoted(path: &Path) -> String {
@@ -290,9 +288,7 @@ fn split_world() -> (World, PathBuf) {
 
 #[test]
 fn t1_default_run_inside_a_newer_checkout_uses_the_installed_recipe_and_tool() {
-    let Some(runner) = runner_or_skip("t1 default") else {
-        return;
-    };
+    let runner = runner("t1 default");
     let (world, checkout) = split_world();
     let output = world.run(
         Some(&runner),
@@ -316,9 +312,7 @@ fn t1_default_run_inside_a_newer_checkout_uses_the_installed_recipe_and_tool() {
 
 #[test]
 fn t1_checkout_choice_uses_the_checkout_recipe_and_tool() {
-    let Some(runner) = runner_or_skip("t1 checkout") else {
-        return;
-    };
+    let runner = runner("t1 checkout");
     for how in [["--bundle", "checkout"], ["-c", "bundle=checkout"]] {
         let (world, checkout) = split_world();
         let mut args = vec!["split-probe", "-w", checkout.to_str().unwrap()];
@@ -431,9 +425,7 @@ fn t2_a_group_writable_checkout_bundle_is_refused_before_any_step() {
 
 #[test]
 fn t2_a_group_writable_file_names_the_file_and_its_mode() {
-    let Some(runner) = runner_or_skip("t2 file") else {
-        return;
-    };
+    let runner = runner("t2 file");
     let (world, checkout) = split_world();
     let bad = checkout.join("amplifier-bundle/tools/split_tool.sh");
     set_mode(&bad, 0o775);
@@ -540,9 +532,7 @@ fn assert_upgrade_did_not_reach_the_run(world: &World, stderr: &str) {
 
 #[test]
 fn t3_replacing_a_flat_installed_bundle_mid_run_does_not_change_the_run() {
-    let Some(runner) = runner_or_skip("t3") else {
-        return;
-    };
+    let runner = runner("t3");
     let world = World::new();
     let staged = world.root.join("staged/amplifier-bundle");
     let installed_bundle = world.installed.join("amplifier-bundle");
@@ -572,9 +562,7 @@ fn t3_replacing_a_flat_installed_bundle_mid_run_does_not_change_the_run() {
 
 #[test]
 fn t4_re_pointing_the_release_link_mid_run_does_not_change_the_run() {
-    let Some(runner) = runner_or_skip("t4") else {
-        return;
-    };
+    let runner = runner("t4");
     let world = World::new();
     let releases = world.installed.join("releases");
     for (version, label) in [("1.0.0", "A"), ("2.0.0", "B")] {
@@ -634,9 +622,7 @@ fn t4_re_pointing_the_release_link_mid_run_does_not_change_the_run() {
 
 #[test]
 fn t6_steps_see_the_real_state_root_not_the_snapshot() {
-    let Some(runner) = runner_or_skip("t6") else {
-        return;
-    };
+    let runner = runner("t6");
     let world = World::new();
     let bundle = world.installed.join("amplifier-bundle");
     upgrade_bundle(&world, &bundle, "A", "true\n");
@@ -702,9 +688,7 @@ const AUTODRIVE_ASSETS: &[&str] = &[
 
 #[test]
 fn autodrive_run_turns_default_search_off_and_nested_runs_inherit_the_snapshot() {
-    let Some(runner) = runner_or_skip("auto-drive") else {
-        return;
-    };
+    let runner = runner("auto-drive");
     let world = World::new();
     // A wrapper that records the runner's arguments, then runs it.
     let args_file = world.records.join("runner-args.txt");
@@ -843,9 +827,7 @@ fn early_bundle(stderr: &str) -> serde_json::Value {
 
 #[test]
 fn r2_a_resumed_run_pins_the_same_bundle_with_the_same_choice() {
-    if runner_or_skip("r2").is_none() {
-        return;
-    }
+    runner("r2");
     // The recovery fixture stops a run at a usage limit in its second step;
     // the next launch resumes it. No timing is involved.
     let f = crate::issue_1741_fixture::Fixture::new();
@@ -881,4 +863,209 @@ fn r2_a_resumed_run_pins_the_same_bundle_with_the_same_choice() {
         snapshot.display()
     );
     assert!(!snapshot.exists(), "{}", snapshot.display());
+}
+
+// ---------------------------------------------------------------------- B1
+
+/// `split_world()` plus, in both bundles, `split-parent` (writes
+/// `recipe=<X>`, then calls sub-recipe `split-sub`) and `split-sub` (writes
+/// `sub=<X>`, then runs that bundle's `split_tool.sh` the way only that
+/// bundle's tool accepts). A run that mixes bundles writes both letters or
+/// fails at the tool.
+fn path_world() -> (World, PathBuf) {
+    let (world, checkout) = split_world();
+    let out = quoted(&world.out());
+    let tool = "\"$AMPLIHACK_HOME/amplifier-bundle/tools/split_tool.sh\"";
+    for (bundle, label, tool_args) in [
+        (world.installed.join("amplifier-bundle"), "A", ""),
+        (
+            checkout.join("amplifier-bundle"),
+            "B",
+            " --invocation probe",
+        ),
+    ] {
+        let mut parent = recipe(
+            "split-parent",
+            label,
+            &[("parent", format!("echo recipe={label} >> {out}\n"))],
+        );
+        parent.push_str("  - id: sub\n    type: recipe\n    recipe: split-sub\n");
+        put(&bundle, "recipes/split-parent.yaml", &parent, 0o644);
+        put(
+            &bundle,
+            "recipes/split-sub.yaml",
+            &recipe(
+                "split-sub",
+                label,
+                &[(
+                    "sub",
+                    format!("echo sub={label} >> {out}\n{tool}{tool_args} >> {out} 2>&1\n"),
+                )],
+            ),
+            0o644,
+        );
+    }
+    (world, checkout)
+}
+
+#[test]
+fn b1_path_recipe_runs_from_one_bundle_or_is_refused() {
+    let runner = runner("b1 path");
+    let rel = "amplifier-bundle/recipes/split-parent.yaml";
+
+    // (a) A checkout path with the default (installed) bundle: refused
+    // before any step, with advice that names --bundle checkout and the name.
+    let (world, checkout) = path_world();
+    let output = world.run(
+        Some(&runner),
+        &checkout,
+        &[rel, "-w", checkout.to_str().unwrap()],
+    );
+    let stderr = text(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(world.lines().is_empty(), "no step ran: {:?}", world.lines());
+    assert!(stderr.contains("belongs to the bundle at"), "{stderr}");
+    assert!(stderr.contains("--bundle checkout"), "{stderr}");
+    assert!(
+        stderr.contains("amplihack recipe run split-parent"),
+        "{stderr}"
+    );
+
+    // (b) The same path with --bundle checkout: recipe, sub-recipe and tool
+    // all come from the checkout bundle.
+    let (world, checkout) = path_world();
+    let output = world.run(
+        Some(&runner),
+        &checkout,
+        &[
+            rel,
+            "--bundle",
+            "checkout",
+            "-w",
+            checkout.to_str().unwrap(),
+        ],
+    );
+    let stderr = text(&output.stderr);
+    assert!(output.status.success(), "checkout path failed:\n{stderr}");
+    assert_eq!(
+        world.lines(),
+        ["recipe=B", "sub=B", "tool=B"],
+        "stderr:\n{stderr}"
+    );
+    assert!(!stderr.contains("unknown argument"), "{stderr}");
+    let source = checkout.join("amplifier-bundle");
+    assert_one_bundle(&stderr, &source, "checkout");
+    assert!(stderr.contains("; tools: same bundle"), "{stderr}");
+
+    // (c) A path into the installed bundle, run from inside the checkout:
+    // everything comes from the installed bundle.
+    let (world, checkout) = path_world();
+    let installed_path = world
+        .installed
+        .join("amplifier-bundle/recipes/split-parent.yaml");
+    let output = world.run(
+        Some(&runner),
+        &checkout,
+        &[
+            installed_path.to_str().unwrap(),
+            "-w",
+            checkout.to_str().unwrap(),
+        ],
+    );
+    let stderr = text(&output.stderr);
+    assert!(output.status.success(), "installed path failed:\n{stderr}");
+    assert_eq!(
+        world.lines(),
+        ["recipe=A", "sub=A", "tool=A"],
+        "stderr:\n{stderr}"
+    );
+    assert_one_bundle(
+        &stderr,
+        &world.installed.join("amplifier-bundle"),
+        "installed",
+    );
+}
+
+#[test]
+fn b1_a_missing_recipe_path_is_e15_and_exits_1_before_the_runner() {
+    // No runner: the path is checked before the runner is probed.
+    let (world, checkout) = split_world();
+    let given = "amplifier-bundle/recipes/absent.yaml";
+    let output = world.run(None, &checkout, &[given, "-w", checkout.to_str().unwrap()]);
+    let stderr = text(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains(&format!("recipe {given} not found: ")),
+        "{stderr}"
+    );
+    assert!(world.lines().is_empty(), "no step ran");
+}
+
+// --------------------------------------------------------------------- T6b
+
+#[test]
+fn t6b_steps_find_the_git_identity_under_a_non_default_amplihack_home() {
+    let runner = runner("t6b");
+    let world = World::new();
+    let bundle = world.installed.join("amplifier-bundle");
+    let helper =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../amplifier-bundle/tools/git-identity.sh");
+    put(
+        &bundle,
+        "tools/git-identity.sh",
+        &fs::read_to_string(&helper).expect("read the shipped git-identity.sh"),
+        0o755,
+    );
+    // The identity lives under the caller's AMPLIHACK_HOME, which is not a
+    // checkout and so is the state root. HOME has no config.
+    let config = world.installed.join("config");
+    fs::write(
+        &config,
+        "[git_identity]\nauthor_name = State Home Tester\nauthor_email = state-home@example.com\n",
+    )
+    .unwrap();
+    set_mode(&config, 0o644);
+    let out = quoted(&world.out());
+    put(
+        &bundle,
+        "recipes/identity-probe.yaml",
+        &recipe(
+            "identity-probe",
+            "t6b",
+            &[(
+                "identity",
+                format!(
+                    "echo \"home=$AMPLIHACK_HOME\" >> {out}\n\
+                     . \"$AMPLIHACK_HOME/amplifier-bundle/tools/git-identity.sh\"\n\
+                     amplihack_resolve_git_identity >> {out} || echo identity=failed >> {out}\n"
+                ),
+            )],
+        ),
+        0o644,
+    );
+    // A project with no repo-local identity and no remote, so the lookup
+    // can only succeed from the config file; any git command the helper runs
+    // on the way is in a repository the run can attribute.
+    let project = world.root.join("project");
+    git_init(&project);
+    let output = world.run(
+        Some(&runner),
+        &project,
+        &["identity-probe", "-w", project.to_str().unwrap()],
+    );
+    let stderr = text(&output.stderr);
+    assert!(output.status.success(), "run failed:\n{stderr}");
+    let lines = world.lines();
+    // The step ran from the snapshot, so AMPLIHACK_HOME/config is not where
+    // the identity is.
+    let home = lines
+        .iter()
+        .find_map(|l| l.strip_prefix("home="))
+        .unwrap_or_else(|| panic!("no home line: {lines:?}\n{stderr}"));
+    assert_ne!(Path::new(home), world.installed, "{lines:?}");
+    assert!(
+        lines.iter().any(|l| l
+            == "State Home Tester\tstate-home@example.com\tState Home Tester\tstate-home@example.com"),
+        "identity not found under the state home: {lines:?}\n{stderr}"
+    );
 }
