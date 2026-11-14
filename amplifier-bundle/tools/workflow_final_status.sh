@@ -113,6 +113,8 @@ resolve_expected_base_branch() {
 # helper still compares that base with the live baseRefName, so a wrong base
 # is a miss that the #1268 adjudication decides. A refused base (exit 1) is
 # never replaced. Step-21 and the terminal-state probe stay fail-closed.
+# The no-diff/obsolete confirmation requires state `ok`; a fallback base never
+# confirms a terminal no-diff (#2520).
 EXPECTED_BASE=""
 EXPECTED_BASE_STATE=""
 ensure_expected_base() {
@@ -243,7 +245,7 @@ case "$PUBLISH_STATE" in
       . "$RUNTIME_ARTIFACT_HELPER"
       preflight_known_workflow_runtime_artifacts .
       base_ref=""
-      if ensure_expected_base; then
+      if ensure_expected_base && [ "$EXPECTED_BASE_STATE" = "ok" ]; then
         base_ref="origin/$EXPECTED_BASE"
       fi
       if [ -n "$base_ref" ] && git rev-parse --verify --quiet "${base_ref}^{commit}" >/dev/null && [ -z "$(git status --porcelain)" ] && git diff --quiet "${base_ref}..HEAD"; then
@@ -309,9 +311,13 @@ validate_final_pr_scope() {
     scoped_number="$(printf '%s' "$scoped_json" | jq -r '(.number // "") | tostring' 2>/dev/null || true)"
     if [[ "$scoped_url" =~ ^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/[1-9][0-9]{0,9}$ ]]; then
       PR_URL="$scoped_url"
+    elif [ -n "$scoped_url" ]; then
+      echo "WARNING: workflow_pr_scope.sh returned an invalid url; keeping the run's PR identity" >&2
     fi
     if [[ "$scoped_number" =~ ^[1-9][0-9]{0,9}$ ]]; then
       PR_NUMBER="$scoped_number"
+    elif [ -n "$scoped_number" ]; then
+      echo "WARNING: workflow_pr_scope.sh returned an invalid number; keeping the run's PR identity" >&2
     fi
     return 0
   fi

@@ -288,6 +288,8 @@ emulate_runner() {
 }
 
 case_no=0
+# FINAL_STATUS_ARGS: script arguments (e.g. --base main) for the next call.
+FINAL_STATUS_ARGS=()
 run_final_status() {
     local repo="$1"; shift
     emulate_runner "$@"
@@ -316,7 +318,7 @@ run_final_status() {
             TASK_DESCRIPTION="issue 1596 regression" \
             RECIPE_VAR_issue_number=1596 \
             "${EMU_ARGS[@]+"${EMU_ARGS[@]}"}" \
-            bash "$FINAL_STATUS"
+            bash "$FINAL_STATUS" "${FINAL_STATUS_ARGS[@]+"${FINAL_STATUS_ARGS[@]}"}"
     ) >"$OUT" 2>"$ERR"
     RC=$?
 }
@@ -1030,6 +1032,35 @@ if grep -qF -- "--base main" "$SCOPE_LOG" && [ "$(fallback_warnings)" = "0" ]; t
 else
     record_fail "22b-explicit-base: explicit base_branch used as-is, no fallback WARNING"
     dump; echo "    scope log:"; sed 's/^/    | /' "$SCOPE_LOG"
+fi
+
+# H. A fallback base is for the report only: it never confirms a terminal
+# no-diff. HEAD has no diff against origin/main, gh gives no baseRefName and
+# the run recorded no base, so the confirmation fails as it did before #2520.
+NO_DIFF_ERROR="final clean-worktree diff could not confirm that state"
+repo="$(make_repo c22b-no-diff-fallback)"
+git -C "$repo" update-ref refs/remotes/origin/main "$(git -C "$repo" rev-parse HEAD)"
+run_final_status "$repo" FAKE_GH_MODE=empty FAKE_GH_NO_BASE=1 \
+    RECIPE_VAR_pr_url="$PR_URL_OK" RECIPE_VAR_pr_number="$PR_NUM" \
+    RECIPE_VAR_pr_publish_result__state=no-diff
+if [ "$RC" -ne 0 ] && grep -qF -- "$NO_DIFF_ERROR" "$ERR" \
+    && ! grep -qF -- "NO_DIFF_SUCCESS" "$OUT" "$ERR"; then
+    record_pass "22b-no-diff-fallback: a fallback base never confirms a terminal no-diff"
+else
+    record_fail "22b-no-diff-fallback: a fallback base never confirms a terminal no-diff"; dump
+fi
+
+# H'. Control: the same set-up with --base main (state ok) still confirms it,
+# so H fails because of the fallback and not because of the set-up.
+FINAL_STATUS_ARGS=(--base main)
+run_final_status "$repo" FAKE_GH_MODE=empty FAKE_GH_NO_BASE=1 \
+    RECIPE_VAR_pr_url="$PR_URL_OK" RECIPE_VAR_pr_number="$PR_NUM" \
+    RECIPE_VAR_pr_publish_result__state=no-diff
+FINAL_STATUS_ARGS=()
+if ! grep -qF -- "$NO_DIFF_ERROR" "$ERR" && grep -qF -- "NO_DIFF_SUCCESS" "$OUT"; then
+    record_pass "22b-no-diff-explicit-base: an explicit --base still confirms a terminal no-diff"
+else
+    record_fail "22b-no-diff-explicit-base: an explicit --base still confirms a terminal no-diff"; dump
 fi
 
 # --- 14. lookup does not depend on caller credentials -----------------------

@@ -197,11 +197,15 @@ branch name quoted by `printf '%q'`:
 WARNING: workflow_final_status.sh: the pull request's base could not be read; reporting against the default branch main
 ```
 
-The fallback base is used for two things only: the scoped match
-(`workflow_pr_scope.sh --base`) and the no-diff check. The scope helper still
-compares `--base` with the live pull request's `baseRefName`. A wrong guess
-therefore gives a miss, never a false match, and the #1268 adjudication then
-decides the terminal state.
+The fallback base is used for one thing only: the scoped match
+(`workflow_pr_scope.sh --base`). The scope helper still compares `--base` with
+the live pull request's `baseRefName`. A wrong guess therefore gives a miss,
+never a false match, and the #1268 adjudication then decides the terminal
+state. The no-diff check for a `no-diff`, `NO_DIFF_SUCCESS` or
+`CLOSED_OBSOLETE` publish state needs a base read from the run or the pull
+request itself: with a fallback base it fails with "could not confirm that
+state", as it did before #2520, and never promotes `no-diff` to
+`NO_DIFF_SUCCESS`.
 
 A fallback base never creates a success state. The terminal state, for example
 `EXISTING_OPEN_PR`, comes from the publish evidence before the scoped match
@@ -575,7 +579,9 @@ check that an unreadable base gives one warning and `--base main` for the
 scope helper, that a sparse reply still prints `#4242` and the pull request
 URL, and that a pull request in another repository, a forbidden default
 branch, or a live `baseRefName` in `forbidden_base_branches` gets no fallback
-and no fallback warning. A unit case checks that `delivery_run_base` returns 2
+and no fallback warning. Two cases check that a fallback base never confirms
+a terminal no-diff, and that the same set-up with `--base main` still does.
+A unit case checks that `delivery_run_base` returns 2
 for an unreadable base and 1 for a refused one. None of them may print `#0`, `#null` or
 `null — null`.
 
