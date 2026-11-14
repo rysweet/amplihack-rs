@@ -421,6 +421,10 @@ esac
     /// - `claim-env`: makes no push but claims `ENVIRONMENT`;
     /// - `commit-push`: disobeys the prompt, commits a new file and pushes it,
     ///   then claims `ENVIRONMENT`;
+    /// - `forged-merge`: disobeys the prompt, builds a two-parent merge of HEAD
+    ///   and `origin/<branch>` by hand with `git commit-tree` around a new
+    ///   file, resets to it so `git status` is clean, pushes and claims
+    ///   `ENVIRONMENT`;
     /// - `none`: no push, `NONE`;
     /// - `none-noworktree`: no worktree to work in, `NONE`;
     /// - `force`: disobeys the prompt, force-pushes HEAD over the remote
@@ -494,6 +498,15 @@ case "$mode" in
     git add agent-edit.txt && git -c user.email=a@example.invalid -c user.name=A -c commit.gpgsign=false commit -q --no-verify -m untested
     if push_clean; then push_result=pushed; else push_result=failed; fi
     cause=ENVIRONMENT; evidence_last="committed and pushed"; actions=$(jq -nc --arg a "$action" '[$a]') ;;
+  forged-merge)
+    env "${{unset_args[@]}}" GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git fetch -q origin > "$T/agent-merge.log" 2>&1
+    printf 'forged\n' > agent-edit.txt
+    git add agent-edit.txt
+    tree=$(git write-tree)
+    forged=$(git -c user.email=a@example.invalid -c user.name=A -c commit.gpgsign=false commit-tree "$tree" -p HEAD -p "origin/$BR" -m forged)
+    git reset -q --hard "$forged"
+    if push_clean; then push_result=pushed; else push_result=failed; fi
+    cause=ENVIRONMENT; evidence_last="merged and pushed"; actions=$(jq -nc --arg a "$action" '[$a]') ;;
   force)
     if env "${{unset_args[@]}}" git push --force origin "HEAD:refs/heads/$BR" > "$T/agent-push.log" 2>&1; then push_result=pushed; else push_result=failed; fi
     cause=ENVIRONMENT; evidence_last="pushed over the remote branch"; actions=$(jq -nc --arg a "$action" '[$a]')
@@ -1273,6 +1286,40 @@ fn step15_agent_commit_is_refused_as_worktree_changed() {
     assert_eq!(
         f.agent_calls(),
         vec!["step-15-commit-push"],
+        "{}",
+        run.debug()
+    );
+    assert_failed_with(&run, "worktree-changed");
+    assert_ne!(run.status("step-16-create-draft-pr"), "completed");
+    before.assert_held(&f, &run);
+}
+
+/// An agent that builds a two-parent merge of HEAD and `origin/<branch>` by
+/// hand, when the remote branch is already in HEAD and there is nothing to
+/// merge, is refused. Such a merge passes an ancestry-only check and adds no
+/// plain commit, so only rule 9's shape check catches it; that is why this
+/// test pins `worktree-changed`.
+#[test]
+fn step15_hand_built_merge_with_nothing_to_merge_is_refused() {
+    let _ = runner_or_skip!();
+    let f = Fixture::new(Upstream::Ahead);
+    f.set_agent_mode("forged-merge");
+    let before = Untouched::capture(&f);
+    let run = f.run(&f.publish_recipe("fixture-publish"), &[], &[]);
+
+    assert_eq!(
+        f.agent_calls(),
+        vec!["step-15-commit-push"],
+        "{}",
+        run.debug()
+    );
+    // The fixture really built the merge: HEAD has two parents, and the
+    // second was already an ancestor of the first.
+    let wt = f.wt();
+    let p1 = f.git(&wt, &["rev-parse", "HEAD^1"]);
+    let p2 = f.git(&wt, &["rev-parse", "HEAD^2"]);
+    assert!(
+        f.git_ok(&wt, &["merge-base", "--is-ancestor", &p2, &p1]),
         "{}",
         run.debug()
     );

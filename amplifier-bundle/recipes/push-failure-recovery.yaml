@@ -176,9 +176,9 @@ steps:
 
       ## The one push
 
-      Otherwise, if the branch is not already at HEAD on origin, run exactly
-      one push, with hooks on, removing each `RECIPE_VAR_*` and `WORKFLOW_*`
-      name you found:
+      If no refusal above applies (after any merge above), and the branch is
+      not already at HEAD on origin, run exactly one push, with hooks on,
+      removing each `RECIPE_VAR_*` and `WORKFLOW_*` name you found:
 
           env -u NAME1 -u NAME2 ... git push origin HEAD:refs/heads/<branch_name>
 
@@ -271,6 +271,7 @@ steps:
         type == "object" and (.linked | IN("true", "false"))
         and (.linked == "false" or (
           ([.path, .head, .status, .local_branch] | all(type == "string"))
+          and (.head | test("^[0-9a-f]{40}$"))
           and ([.origin_url_sha256, .origin_pushurl_sha256] | all(type == "string" and test("^[0-9a-f]{64}$")))
           and (.tracked_dirty | IN("true", "false"))
           and (.remote_before | type == "string" and (. == "absent" or test("^[0-9a-f]{40}$")))
@@ -325,17 +326,28 @@ steps:
       ! is_protected "$LOCAL" || fail unsafe-ref "$STEP: local branch '$LOCAL' is protected"
       [ "$LOCAL" = "$BRANCH" ] || [ "$UP" = "origin/$BRANCH" ] || fail branch-mismatch "$STEP: local branch '$LOCAL' neither is nor tracks '$BRANCH'"
       # Rule 9: nothing tracked changed since the snapshot, and the step's commit happened.
-      # HEAD may move only by merging origin/$BRANCH as it was in the snapshot ($RB): the snapshot HEAD and $RB are
-      # both ancestors of the new HEAD, and every commit it adds is a merge commit. A plain commit fails here.
-      # The merge commits' trees are not inspected (see the reference doc's limits).
+      # HEAD may move only by merging origin/$BRANCH as it was in the snapshot ($RB), in one of two shapes:
+      # - a fast-forward: HEAD is $RB, and the snapshot HEAD is an ancestor of $RB;
+      # - one two-parent merge: HEAD^1 is the snapshot HEAD, HEAD^2 is $RB, there is no HEAD^3, and $RB was not
+      #   already in the snapshot HEAD (so there was something to merge).
+      # Anything else, including a plain commit or a merge built by hand, fails here. The tree of the single merge
+      # is not inspected (see the reference doc's limits).
       SH="$(snap head)"
       if [ "$HEAD_SHA" != "$SH" ]; then
         MOVED="$STEP: HEAD moved while the agent ran, other than by merging origin/$BRANCH"
         [ "$RB" != absent ] || fail worktree-changed "$MOVED"
-        git merge-base --is-ancestor "$SH" "$HEAD_SHA" >/dev/null 2>&1 || fail worktree-changed "$MOVED"
-        git merge-base --is-ancestor "$RB" "$HEAD_SHA" >/dev/null 2>&1 || fail worktree-changed "$MOVED"
-        # An assignment, then a test: a failed rev-list fails closed instead of reading as an empty list.
-        EXTRA="$(git rev-list --no-merges "$HEAD_SHA" "^$SH" "^$RB" 2>/dev/null)" && [ -z "$EXTRA" ] || fail worktree-changed "$MOVED"
+        if [ "$HEAD_SHA" = "$RB" ]; then
+          # Fast-forward: the run's commits must still be in HEAD.
+          git merge-base --is-ancestor "$SH" "$RB" >/dev/null 2>&1 || fail worktree-changed "$MOVED"
+        else
+          # merge-base exits 1 for "not an ancestor"; any other non-zero exit is an error and fails closed.
+          RB_IN_SH=0; git merge-base --is-ancestor "$RB" "$SH" >/dev/null 2>&1 || RB_IN_SH=$?
+          [ "$RB_IN_SH" = 1 ] || fail worktree-changed "$MOVED"
+          P1="$(git rev-parse -q --verify "$HEAD_SHA^1")" || P1=""
+          P2="$(git rev-parse -q --verify "$HEAD_SHA^2")" || P2=""
+          { [ "$P1" = "$SH" ] && [ "$P2" = "$RB" ]; } || fail worktree-changed "$MOVED"
+          ! git rev-parse -q --verify "$HEAD_SHA^3" >/dev/null 2>&1 || fail worktree-changed "$MOVED"
+        fi
       fi
       ! git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 || fail worktree-changed "$STEP: a merge was left unfinished"
       STATUS_NOW="$(git -c core.fsmonitor=false status --porcelain --untracked-files=no)" || fail push-unverified "$STEP: git status failed"
@@ -382,7 +394,7 @@ steps:
             if [ "$(printf '%s' "$REPAIR" | redact)" = "$REPAIR" ] && [ "$(printf '%s To repair without rewriting history: %s' "$MSG" "$REPAIR" | wc -c)" -le 1000 ]; then
               MSG="$MSG To repair without rewriting history: $REPAIR"
             else
-              MSG="$MSG Merge $RB into HEAD $HEAD_SHA, then push with a plain fast-forward push: merge, never force; the command is too long to print whole."
+              MSG="$MSG Merge $RB into HEAD $HEAD_SHA, then make a plain fast-forward push; the command is too long to print whole."
             fi
             fail remote-history-rewritten "$MSG" ;;
           *) fail push-unverified "$STEP ($CAUSE): cannot check that $RB, origin/$BRANCH before the agent ran, is an ancestor of HEAD $HEAD_SHA (git merge-base exit $ANC_RC)" ;;

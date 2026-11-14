@@ -383,7 +383,7 @@ The merge is subject to these limits:
 After a successful merge the agent makes the push in step 5 and returns
 `ENVIRONMENT` with `push_result: "pushed"`. `evidence` names the merged
 remote commit by SHA only and never quotes its message or content. The gate
-accepts the merge commit through rule 9.
+accepts the fast-forward or the merge commit through rule 9.
 
 ### What the agent must not do
 
@@ -530,15 +530,20 @@ reason shown:
    rule 5 or have `origin/<branch>` as its upstream (the #1762 alias).
 9. **Snapshot** (`worktree-changed`, `uncommitted-changes`). HEAD must equal
    the snapshot's `head` (SH), or differ from it only by a merge of the
-   remote branch. When HEAD differs from SH, the gate passes this check only
-   when all of the following hold, where RB is the snapshot's
-   `remote_before`:
-   - RB is not `absent` (tested before any git call that uses RB);
-   - `git merge-base --is-ancestor SH HEAD` succeeds;
-   - `git merge-base --is-ancestor RB HEAD` succeeds;
-   - `EXTRA=$(git rev-list --no-merges HEAD ^SH ^RB) && [ -z "$EXTRA" ]`
-     succeeds, so HEAD adds no commit other than merges. Written as an
-     assignment followed by a test, a failed `rev-list` fails closed.
+   remote branch. When HEAD differs from SH, RB (the snapshot's
+   `remote_before`) must not be `absent`; this is tested before any git call
+   that uses RB. HEAD must then have one of two shapes, which are exactly
+   what the agent's own `git merge --no-edit origin/<branch>` produces:
+   - **Fast-forward:** HEAD equals RB, and
+     `git merge-base --is-ancestor SH RB` succeeds, so the run's tested
+     commits are still in HEAD.
+   - **One real merge:** `git merge-base --is-ancestor RB SH` exits with
+     exactly 1 (RB was not already in SH, so there was something to merge;
+     any other non-zero exit is an error and fails closed), `HEAD^1` is SH,
+     `HEAD^2` is RB, and `HEAD^3` does not exist.
+
+   A plain commit, a chain of merges, or a merge built by hand when there
+   was nothing to merge matches neither shape.
 
    Otherwise the gate fails with `worktree-changed` and
    `HEAD moved while the agent ran, other than by merging origin/<branch>`.
@@ -549,8 +554,8 @@ reason shown:
    RB comes from the snapshot, never from the remote as read after the push.
    After a correct merge and push the remote equals HEAD, so a comparison
    with it would let a plain agent commit through. If someone pushed again
-   between the snapshot and the agent's merge, the merge brings in non-merge
-   commits outside SH and RB, and the gate fails closed with
+   between the snapshot and the agent's merge, the merge's second parent is
+   not RB, and the gate fails closed with
    `worktree-changed`. Nothing is lost; the next run merges again.
 
    `git status --porcelain --untracked-files=no` must equal the snapshot's
@@ -645,7 +650,7 @@ and `|` in branch names. A branch named `feat/a;b` appears as
 `HEAD:refs/heads/feat/a\;b`. The commands are printed only when they fit
 whole inside the 1,000-byte message limit and redaction leaves them
 unchanged. Otherwise the message ends with
-`Merge <remote_before> into HEAD <HEAD>, then push with a plain fast-forward push: merge, never force; the command is too long to print whole.`
+`Merge <remote_before> into HEAD <HEAD>, then make a plain fast-forward push; the command is too long to print whole.`
 
 ### Gate reasons
 
@@ -895,8 +900,9 @@ budget; the next step added to either of them needs a split.
   steps do, so `continue_on_error` does not turn those refusals into a push.
 - No bash command contains a `{{...}}` placeholder.
 - The only push allowed is `HEAD:refs/heads/<branch>` to `origin`, with hooks
-  on. The only commit allowed is a merge of `origin/<branch>`, with hooks on,
-  and rule 9 rejects any other new commit.
+  on. The only commit allowed is one two-parent merge of the snapshot HEAD
+  and `origin/<branch>` as it was in the snapshot, with hooks on, and rule 9
+  rejects any other new commit.
 - The merge commands run with `GIT_TERMINAL_PROMPT=0` and
   `GCM_INTERACTIVE=never`, and `merge --continue` with `GIT_EDITOR=true`, so
   none of them can wait for input.
@@ -927,10 +933,11 @@ budget; the next step added to either of them needs a split.
   preventing it needs server-side branch protection on the task branch.
 - If origin moves again after the gate prints the repair, the plain push is
   refused as not a fast-forward, and the person merges that tip too.
-- Rule 9 proves that a merge added no plain commit. It does not inspect the
-  merge commit's own tree, so conflict edits, or content added in the merge
-  itself, are not checked by the gate. Pre-push tests, CI and review cover
-  them.
+- The only content not inspected is the tree of one two-parent merge whose
+  parents are exactly the snapshot HEAD and `remote_before`. The merge is
+  accepted only when `remote_before` was not already in the snapshot HEAD.
+  Conflict edits, or content added in that merge itself, are therefore not
+  checked by the gate. Pre-push tests, CI and review cover them.
 - If the remote moves between the snapshot and the agent's merge, rule 9
   fails closed with `worktree-changed`. Nothing is destroyed.
 - Hooks that run during the merge and the push may read config files the
@@ -1021,6 +1028,7 @@ Cases:
 | step-18c | the same harness runs step-18c's call step |
 | failed commit | a `pre-commit` hook rejects step-15's commit, origin already equals the old HEAD, the fake agent returns `NONE`; the run fails with `uncommitted-changes` and step-16 does not run |
 | agent commits | the fake agent commits a new file, pushes it and returns `ENVIRONMENT`; the run fails with `worktree-changed` |
+| hand-built merge | the remote branch is already in HEAD, so there is nothing to merge; the fake agent builds a two-parent merge of HEAD and `origin/feat/x` with `git commit-tree`, resets to it, pushes and returns `ENVIRONMENT`; the run fails with `worktree-changed` |
 | protected local branch | the worktree is on `master`, so step-15 refuses; the fake agent pushes `HEAD:refs/heads/feat/x` anyway; the run fails with `unsafe-ref` |
 | step-18c without a worktree | the fake agent returns `NONE`; the snapshot holds only `linked`, passes rule 2, and the run fails with `not-linked-worktree`, not `push-unverified` |
 | step-18c detached HEAD | step-18c refuses; the fake agent pushes anyway; the run fails with `unsafe-ref` |
