@@ -198,7 +198,7 @@ impl Fixture {
         let start = Instant::now();
         let left = || CEILING.saturating_sub(start.elapsed()).max(POLL);
         c.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut child = wait::spawn_retrying("the step", c);
+        let mut child = wait::spawn_once("the step", c);
         let mut stdout_pipe = child.stdout.take().expect("piped stdout");
         let stdout_reader = std::thread::spawn(move || {
             let mut buf = Vec::new();

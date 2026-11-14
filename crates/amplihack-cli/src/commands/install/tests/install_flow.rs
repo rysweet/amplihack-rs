@@ -1689,13 +1689,18 @@ fn run_install_force_refresh_true_skips_bundled_root() {
 fn fixture_environment() -> crate::test_support::EnvGuard {
     let saved = crate::test_support::EnvGuard::capture(&[
         "AMPLIHACK_AGENT_BINARY",
+        "AMPLIHACK_SKIP_MMDC",
         "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
         "AMPLIHACK_HOME",
         "HOME",
         "PATH",
     ]);
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
-    unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+    unsafe {
+        std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude");
+        // Optional Mermaid delivery has dedicated fake-command tests.
+        std::env::set_var("AMPLIHACK_SKIP_MMDC", "1");
+    };
     // A session's own AMPLIHACK_HOME is a source install would now refuse (#1955).
     unsafe { std::env::remove_var("AMPLIHACK_HOME") };
     saved

@@ -45,6 +45,8 @@
 //!   filter that stops amplihack executing its own broken install. Anyone who
 //!   can plant a binary on your `$PATH` can already run code as you.
 
+#[cfg(debug_assertions)]
+use crate::binary_finder::run_capped_output_to_exit;
 use crate::binary_finder::{
     PROBE_CAPTURE_LIMIT, run_capped_output_with_timeout, strip_ansi, truncate_chars_with_notice,
 };
@@ -386,6 +388,62 @@ pub const PER_CANDIDATE_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Total probe budget across every candidate (SEC-4).
 pub const TOTAL_PROBE_BUDGET: Duration = Duration::from_secs(10);
 
+/// What ends one `--version` probe (issue #2019).
+///
+/// Production always uses [`ProbeWait::Deadline`]: the 3 s per-candidate and
+/// 10 s total limits above. [`ProbeWait::Exit`] exists for tests only and is
+/// reachable only in debug builds, through `AMPLIHACK_TEST_PROBE_WAIT=exit`:
+/// a test's `--version` stub is then waited on until it exits, so a busy host
+/// cannot turn a healthy stub into `ProbeTimedOut`. It replaces the deadline
+/// with the event the deadline stood in for; it never means a longer deadline.
+///
+/// Release builds have no `Exit` variant, so the only capture path they
+/// contain is [`run_capped_output_with_timeout`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProbeWait {
+    /// Bounded by [`PER_CANDIDATE_PROBE_TIMEOUT`] and [`TOTAL_PROBE_BUDGET`].
+    Deadline,
+    /// Wait for the candidate to exit; the total budget is not checked.
+    #[cfg(debug_assertions)]
+    Exit,
+}
+
+/// The debug-only test knob that selects [`ProbeWait::Exit`]. Removing it,
+/// with the second capture path it selects, is tracked in issue #2194.
+#[cfg(debug_assertions)]
+pub(crate) const PROBE_WAIT_ENV: &str = "AMPLIHACK_TEST_PROBE_WAIT";
+
+/// `Exit` for exactly `"exit"`, `Deadline` for anything else or nothing.
+#[cfg(debug_assertions)]
+pub(crate) fn probe_wait_mode_from(raw: Option<&str>) -> ProbeWait {
+    match raw {
+        Some("exit") => ProbeWait::Exit,
+        _ => ProbeWait::Deadline,
+    }
+}
+
+/// Reads the knob once per call; nothing caches it.
+#[cfg(debug_assertions)]
+fn probe_wait_mode() -> ProbeWait {
+    let probe_wait_raw = std::env::var(PROBE_WAIT_ENV).ok();
+    probe_wait_mode_from(probe_wait_raw.as_deref())
+}
+
+/// Release builds never read the knob.
+#[cfg(not(debug_assertions))]
+fn probe_wait_mode() -> ProbeWait {
+    ProbeWait::Deadline
+}
+
+/// The wait one probe gets: `None` means "until the candidate exits".
+pub(crate) fn probe_limit(mode: ProbeWait, budget: Duration) -> Option<Duration> {
+    match mode {
+        ProbeWait::Deadline => Some(PER_CANDIDATE_PROBE_TIMEOUT.min(budget)),
+        #[cfg(debug_assertions)]
+        ProbeWait::Exit => None,
+    }
+}
+
 /// Second-chance budget for a binary the user named explicitly (issue #1325).
 ///
 /// A timeout is evidence about the machine, not the file. `Missing` and
@@ -630,6 +688,18 @@ fn record_unexamined(
 /// [`MAX_PROBE_CANDIDATES`], [`PER_CANDIDATE_PROBE_TIMEOUT`], and
 /// [`TOTAL_PROBE_BUDGET`].
 pub fn resolve_from_candidates(tool: &str, candidates: &[(PathBuf, TargetSource)]) -> Resolution {
+    resolve_from_candidates_with(tool, candidates, probe_wait_mode())
+}
+
+/// [`resolve_from_candidates`] with the probe-wait mode as a parameter, so
+/// tests can pin both modes without touching the environment. Under
+/// [`ProbeWait::Exit`] the total budget is not checked; the candidate limit,
+/// byte cap and rejection reasons still apply.
+pub(crate) fn resolve_from_candidates_with(
+    tool: &str,
+    candidates: &[(PathBuf, TargetSource)],
+    mode: ProbeWait,
+) -> Resolution {
     let mut resolution = Resolution::default();
     let started = Instant::now();
     let mut probes = 0usize;
@@ -650,7 +720,12 @@ pub fn resolve_from_candidates(tool: &str, candidates: &[(PathBuf, TargetSource)
                     record_unexamined(&mut resolution, candidates, index);
                     break;
                 }
-                let Some(budget) = TOTAL_PROBE_BUDGET.checked_sub(started.elapsed()) else {
+                let remaining = match mode {
+                    ProbeWait::Deadline => TOTAL_PROBE_BUDGET.checked_sub(started.elapsed()),
+                    #[cfg(debug_assertions)]
+                    ProbeWait::Exit => Some(TOTAL_PROBE_BUDGET),
+                };
+                let Some(budget) = remaining else {
                     tracing::warn!(
                         tool,
                         budget = ?TOTAL_PROBE_BUDGET,
@@ -660,7 +735,7 @@ pub fn resolve_from_candidates(tool: &str, candidates: &[(PathBuf, TargetSource)
                     break;
                 };
                 probes += 1;
-                let first = probe_version(path, PER_CANDIDATE_PROBE_TIMEOUT.min(budget));
+                let first = probe_version(path, probe_limit(mode, budget));
                 let attempt = match (&first, source) {
                     // Only the user's own instruction earns a second chance, and
                     // only for a non-answer (issue #1325).
@@ -680,7 +755,7 @@ pub fn resolve_from_candidates(tool: &str, candidates: &[(PathBuf, TargetSource)
                              (issue #1325). A timeout is evidence about the machine, \
                              not the file."
                         );
-                        probe_version(path, EXPLICIT_OVERRIDE_RETRY_BUDGET)
+                        probe_version(path, Some(EXPLICIT_OVERRIDE_RETRY_BUDGET))
                     }
                     _ => first,
                 };
@@ -875,7 +950,9 @@ fn is_executable(_metadata: &std::fs::Metadata) -> bool {
 }
 
 /// Run `<path> --version` and require a parseable semver from a clean exit.
-fn probe_version(path: &Path, timeout: Duration) -> Result<String, Rejection> {
+///
+/// `timeout` of `None` waits for the candidate to exit ([`ProbeWait::Exit`]).
+fn probe_version(path: &Path, timeout: Option<Duration>) -> Result<String, Rejection> {
     let mut cmd = Command::new(path);
     cmd.arg("--version");
     crate::litellm_proxy::scrub_inference_environment(&mut cmd);
@@ -885,7 +962,18 @@ fn probe_version(path: &Path, timeout: Duration) -> Result<String, Rejection> {
     {
         cmd.env_remove(name);
     }
-    match run_capped_output_with_timeout(cmd, timeout, PROBE_CAPTURE_LIMIT) {
+    let run = match timeout {
+        Some(timeout) => run_capped_output_with_timeout(cmd, timeout, PROBE_CAPTURE_LIMIT),
+        #[cfg(debug_assertions)]
+        None => run_capped_output_to_exit(cmd, PROBE_CAPTURE_LIMIT).map(Some),
+        // Release builds have no `ProbeWait::Exit`, so `probe_limit` never
+        // returns `None`. Should that change, the production bound applies.
+        #[cfg(not(debug_assertions))]
+        None => {
+            run_capped_output_with_timeout(cmd, PER_CANDIDATE_PROBE_TIMEOUT, PROBE_CAPTURE_LIMIT)
+        }
+    };
+    match run {
         Ok(Some(output)) if output.status.success() => {
             // SEC-3: stdout here is whatever an arbitrary binary chose to
             // print. It is capped above and ANSI-stripped inside
@@ -1605,6 +1693,10 @@ impl Resolution {
     }
 }
 
+#[cfg(all(test, debug_assertions))]
+#[path = "launch_target_probe_wait_tests.rs"]
+mod probe_wait_tests;
+
 #[cfg(test)]
 mod tests {
 
@@ -1665,7 +1757,7 @@ mod tests {
             ("ANTHROPIC_API_KEY", "provider-secret"),
         ]);
 
-        let result = probe_version(&binary, Duration::from_secs(1));
+        let result = probe_version(&binary, Some(Duration::from_secs(1)));
 
         assert_eq!(result.as_deref(), Ok("2.1.83"));
         assert_eq!(std::fs::read_to_string(observation).unwrap(), "scrubbed");

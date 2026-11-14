@@ -60,7 +60,7 @@ fn rotate(f: &Fixture, probe: Option<&str>) -> String {
     if let Some(v) = probe {
         c.env("AMPLIHACK_PROFILE_USAGE_PROBE", v);
     }
-    let out = c.output().unwrap();
+    let out = crate::support::wait::output_within("amplihack profile rotate", &mut c);
     assert_no_secrets(&out);
     assert!(
         out.status.success(),
@@ -128,12 +128,12 @@ fn unset_a_failed_direct_reread_falls_back_to_claude() {
 fn a_bad_probe_variable_warns_once_per_cycle_even_with_a_reread() {
     let f = damped_spare();
     let probes_before = f.usage_probes("spare");
-    let out = f
-        .cmd(&["profile", "rotate"])
-        .env("AMPLIHACK_PROFILE_USAGE_PROBE", "bogus")
-        .env("AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS", "bogus")
-        .output()
-        .unwrap();
+    let out = crate::support::wait::output_within(
+        "amplihack profile rotate",
+        f.cmd(&["profile", "rotate"])
+            .env("AMPLIHACK_PROFILE_USAGE_PROBE", "bogus")
+            .env("AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS", "bogus"),
+    );
     assert_no_secrets(&out);
     let stderr = text(&out.stderr);
     assert!(out.status.success(), "rotate failed: {stderr}");

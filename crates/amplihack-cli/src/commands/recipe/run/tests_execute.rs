@@ -89,52 +89,37 @@ fn test_execute_recipe_via_rust_propagates_asset_resolver_env() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let resolver = temp.path().join("amplihack-asset-resolver");
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"resolver\":\"$AMPLIHACK_ASSET_RESOLVER\",\"home\":\"$AMPLIHACK_HOME\",\"graph\":\"$AMPLIHACK_GRAPH_DB_PATH\",\"legacy_graph_alias\":\"$AMPLIHACK_KUZU_DB_PATH\"}}\nEOF\n",
-    )
-    .expect("failed to write runner stub");
-    std::fs::write(&resolver, "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nexit 0\n").expect("failed to write resolver stub");
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-            .expect("failed to chmod runner");
-        std::fs::set_permissions(&resolver, std::fs::Permissions::from_mode(0o755))
-            .expect("failed to chmod resolver");
-    }
+    );
+    crate::test_support::write_executable(
+        &resolver,
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nexit 0\n",
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: env-probe\nsteps: []\n").expect("failed to write recipe");
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    let prev_path = std::env::var_os("PATH");
-    let prev_home = std::env::var_os("AMPLIHACK_HOME");
-    let prev_resolver = std::env::var_os("AMPLIHACK_ASSET_RESOLVER");
-    let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
-    let prev_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
-    let new_path = match &prev_path {
+    let new_path = match std::env::var_os("PATH") {
         Some(value) if !value.is_empty() => {
             format!("{}:{}", temp.path().display(), value.to_string_lossy())
         }
         _ => temp.path().display().to_string(),
     };
-    unsafe {
-        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
-        std::env::set_var("PATH", &new_path);
-        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
-        std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", "/custom/graph");
-        std::env::set_var("AMPLIHACK_KUZU_DB_PATH", "/custom/legacy");
-        std::env::remove_var("AMPLIHACK_ASSET_RESOLVER");
-    }
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+    fixture_env.assign("PATH", &new_path);
+    fixture_env.assign("AMPLIHACK_HOME", &amplihack_home);
+    fixture_env.assign("AMPLIHACK_GRAPH_DB_PATH", "/custom/graph");
+    fixture_env.assign("AMPLIHACK_KUZU_DB_PATH", "/custom/legacy");
+    fixture_env.clear("AMPLIHACK_ASSET_RESOLVER");
 
     let result = execute::execute_recipe_via_rust(
         &recipe,
@@ -146,31 +131,6 @@ fn test_execute_recipe_via_rust_propagates_asset_resolver_env() {
         None,
     )
     .expect("recipe run must succeed");
-
-    match prev_runner {
-        Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
-        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
-    }
-    match prev_path {
-        Some(value) => unsafe { std::env::set_var("PATH", value) },
-        None => unsafe { std::env::remove_var("PATH") },
-    }
-    match prev_home {
-        Some(value) => unsafe { std::env::set_var("AMPLIHACK_HOME", value) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
-    }
-    match prev_resolver {
-        Some(value) => unsafe { std::env::set_var("AMPLIHACK_ASSET_RESOLVER", value) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_ASSET_RESOLVER") },
-    }
-    match prev_graph {
-        Some(value) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", value) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
-    }
-    match prev_kuzu {
-        Some(value) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", value) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
-    }
 
     assert_eq!(
         result.context.get("resolver"),
@@ -201,7 +161,7 @@ fn test_execute_recipe_via_rust_sets_home_from_working_dir_bundle_root() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let repo = temp.path().join("repo");
@@ -210,47 +170,21 @@ fn test_execute_recipe_via_rust_sets_home_from_working_dir_bundle_root() {
     std::fs::create_dir_all(&bundle).expect("failed to create bundle root");
     std::fs::create_dir_all(&home).expect("failed to create home");
 
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"home-probe\",\"success\":true,\"step_results\":[],\"context\":{\"home\":\"$AMPLIHACK_HOME\"}}\nEOF\n",
-    )
-    .expect("failed to write runner stub");
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-            .expect("failed to chmod runner");
-    }
+    );
 
     let recipe = repo.join("recipe.yaml");
     std::fs::write(&recipe, "name: home-probe\nsteps: []\n").expect("failed to write recipe");
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    let prev_home = std::env::var_os("HOME");
-    let prev_amplihack_home = std::env::var_os("AMPLIHACK_HOME");
-    unsafe {
-        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
-        std::env::set_var("HOME", &home);
-        std::env::remove_var("AMPLIHACK_HOME");
-    }
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+    fixture_env.assign("HOME", &home);
+    fixture_env.clear("AMPLIHACK_HOME");
 
     let result =
         execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, false, &repo, &[], None)
             .expect("recipe run must succeed");
-
-    match prev_runner {
-        Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
-        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
-    }
-    match prev_home {
-        Some(value) => unsafe { std::env::set_var("HOME", value) },
-        None => unsafe { std::env::remove_var("HOME") },
-    }
-    match prev_amplihack_home {
-        Some(value) => unsafe { std::env::set_var("AMPLIHACK_HOME", value) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
-    }
 
     let expected_home = repo.canonicalize().expect("repo should canonicalize");
     assert_eq!(
@@ -267,37 +201,25 @@ fn test_execute_recipe_via_rust_propagates_agent_binary_env() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"agent_binary\":\"$AMPLIHACK_AGENT_BINARY\"}}\nEOF\n",
-    )
-    .expect("failed to write runner stub");
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-            .expect("failed to chmod runner");
-    }
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: env-probe\nsteps: []\n").expect("failed to write recipe");
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    let prev_home = std::env::var_os("AMPLIHACK_HOME");
     // No inherited `default:<binary>` tag (issue #1481): a recipe step running
     // this suite can carry one, and it would make the resolver skip the value.
     let agent_env = crate::test_support::AgentBinaryEnv::set(Some("copilot"), None);
-    unsafe {
-        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
-        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
-    }
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+    fixture_env.assign("AMPLIHACK_HOME", &amplihack_home);
 
     let result = execute::execute_recipe_via_rust(
         &recipe,
@@ -310,14 +232,6 @@ fn test_execute_recipe_via_rust_propagates_agent_binary_env() {
     )
     .expect("recipe run must succeed");
 
-    match prev_runner {
-        Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
-        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
-    }
-    match prev_home {
-        Some(value) => unsafe { std::env::set_var("AMPLIHACK_HOME", value) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
-    }
     drop(agent_env);
 
     assert_eq!(
@@ -332,39 +246,26 @@ fn test_execute_recipe_via_rust_sets_pager_safe_env() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"pager-probe\",\"success\":true,\"step_results\":[],\"context\":{\"git_pager\":\"$GIT_PAGER\",\"gh_pager\":\"$GH_PAGER\",\"pager\":\"$PAGER\",\"less\":\"$LESS\"}}\nEOF\n",
-    )
-    .expect("failed to write runner stub");
-
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-        .expect("failed to chmod runner");
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: pager-probe\nsteps: []\n").expect("failed to write recipe");
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    let prev_home = std::env::var_os("AMPLIHACK_HOME");
-    let prev_git_pager = std::env::var_os("GIT_PAGER");
-    let prev_gh_pager = std::env::var_os("GH_PAGER");
-    let prev_pager = std::env::var_os("PAGER");
-    let prev_less = std::env::var_os("LESS");
-    unsafe {
-        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
-        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
-        std::env::remove_var("GIT_PAGER");
-        std::env::remove_var("GH_PAGER");
-        std::env::remove_var("PAGER");
-        std::env::remove_var("LESS");
-    }
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+    fixture_env.assign("AMPLIHACK_HOME", &amplihack_home);
+    fixture_env.clear("GIT_PAGER");
+    fixture_env.clear("GH_PAGER");
+    fixture_env.clear("PAGER");
+    fixture_env.clear("LESS");
 
     let result = execute::execute_recipe_via_rust(
         &recipe,
@@ -376,31 +277,6 @@ fn test_execute_recipe_via_rust_sets_pager_safe_env() {
         None,
     )
     .expect("recipe run must succeed");
-
-    match prev_runner {
-        Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
-        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
-    }
-    match prev_home {
-        Some(value) => unsafe { std::env::set_var("AMPLIHACK_HOME", value) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
-    }
-    match prev_git_pager {
-        Some(value) => unsafe { std::env::set_var("GIT_PAGER", value) },
-        None => unsafe { std::env::remove_var("GIT_PAGER") },
-    }
-    match prev_gh_pager {
-        Some(value) => unsafe { std::env::set_var("GH_PAGER", value) },
-        None => unsafe { std::env::remove_var("GH_PAGER") },
-    }
-    match prev_pager {
-        Some(value) => unsafe { std::env::set_var("PAGER", value) },
-        None => unsafe { std::env::remove_var("PAGER") },
-    }
-    match prev_less {
-        Some(value) => unsafe { std::env::set_var("LESS", value) },
-        None => unsafe { std::env::remove_var("LESS") },
-    }
 
     assert_eq!(
         result.context.get("git_pager"),
@@ -430,36 +306,25 @@ fn test_execute_recipe_via_rust_forces_noninteractive_and_strips_claudecode() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"subprocess-env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"noninteractive\":\"$AMPLIHACK_NONINTERACTIVE\",\"claudecode\":\"${CLAUDECODE+present}\"}}\nEOF\n",
-    )
-    .expect("failed to write runner stub");
-
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-        .expect("failed to chmod runner");
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: subprocess-env-probe\nsteps: []\n")
         .expect("failed to write recipe");
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    let prev_home = std::env::var_os("AMPLIHACK_HOME");
-    let prev_noninteractive = std::env::var_os("AMPLIHACK_NONINTERACTIVE");
-    let prev_claudecode = std::env::var_os("CLAUDECODE");
-    unsafe {
-        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
-        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
-        std::env::set_var("AMPLIHACK_NONINTERACTIVE", "0");
-        std::env::set_var("CLAUDECODE", "1");
-    }
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+    fixture_env.assign("AMPLIHACK_HOME", &amplihack_home);
+    fixture_env.assign("AMPLIHACK_NONINTERACTIVE", "0");
+    fixture_env.assign("CLAUDECODE", "1");
 
     let result = execute::execute_recipe_via_rust(
         &recipe,
@@ -471,23 +336,6 @@ fn test_execute_recipe_via_rust_forces_noninteractive_and_strips_claudecode() {
         None,
     )
     .expect("recipe run must succeed");
-
-    match prev_runner {
-        Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
-        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
-    }
-    match prev_home {
-        Some(value) => unsafe { std::env::set_var("AMPLIHACK_HOME", value) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
-    }
-    match prev_noninteractive {
-        Some(value) => unsafe { std::env::set_var("AMPLIHACK_NONINTERACTIVE", value) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_NONINTERACTIVE") },
-    }
-    match prev_claudecode {
-        Some(value) => unsafe { std::env::set_var("CLAUDECODE", value) },
-        None => unsafe { std::env::remove_var("CLAUDECODE") },
-    }
 
     assert_eq!(
         result.context.get("noninteractive"),
@@ -506,24 +354,18 @@ fn test_execute_recipe_via_rust_reports_nonzero_exit_with_stderr() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
-    std::fs::write(&runner, "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\necho \"runner exploded\" >&2\nexit 2\n")
-        .expect("failed to write runner stub");
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-            .expect("failed to chmod runner");
-    }
+    crate::test_support::write_executable(
+        &runner,
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\necho \"runner exploded\" >&2\nexit 2\n",
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: env-probe\nsteps: []\n").expect("failed to write recipe");
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
 
     let result = execute::execute_recipe_via_rust(
         &recipe,
@@ -534,11 +376,6 @@ fn test_execute_recipe_via_rust_reports_nonzero_exit_with_stderr() {
         &[],
         None,
     );
-
-    match prev_runner {
-        Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
-        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
-    }
 
     let error = result.expect_err("nonzero runner exit must return an error");
     let chain = format!("{error:?}");
@@ -558,20 +395,18 @@ fn test_execute_recipe_via_rust_reports_signal_kill_clearly() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
-    std::fs::write(&runner, "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nkill -TERM $$\n").expect("failed to write runner stub");
-
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-        .expect("failed to chmod runner");
+    crate::test_support::write_executable(
+        &runner,
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nkill -TERM $$\n",
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: env-probe\nsteps: []\n").expect("failed to write recipe");
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
 
     let result = execute::execute_recipe_via_rust(
         &recipe,
@@ -582,11 +417,6 @@ fn test_execute_recipe_via_rust_reports_signal_kill_clearly() {
         &[],
         None,
     );
-
-    match prev_runner {
-        Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
-        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
-    }
 
     let error = result.expect_err("signal-killed runner must return an error");
     assert!(
@@ -605,29 +435,23 @@ fn test_execute_recipe_via_rust_sets_stable_run_id_env_and_result_metadata() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"correlation-probe\",\"success\":true,\"step_results\":[],\"context\":{\"env_run_id\":\"$AMPLIHACK_RECIPE_RUN_ID\"}}\nEOF\n",
-    )
-    .expect("failed to write runner stub");
-    make_executable(&runner);
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: correlation-probe\nsteps: []\n")
         .expect("failed to write recipe");
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    let prev_home = std::env::var_os("AMPLIHACK_HOME");
-    unsafe {
-        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
-        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
-    }
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+    fixture_env.assign("AMPLIHACK_HOME", &amplihack_home);
 
     let result = execute::execute_recipe_via_rust(
         &recipe,
@@ -639,9 +463,6 @@ fn test_execute_recipe_via_rust_sets_stable_run_id_env_and_result_metadata() {
         None,
     )
     .expect("recipe run must succeed");
-
-    restore_env_var("RECIPE_RUNNER_RS_PATH", prev_runner);
-    restore_env_var("AMPLIHACK_HOME", prev_home);
 
     let result_json = serde_json::to_value(&result).expect("result must serialize");
     let run_id = result_json
@@ -662,29 +483,23 @@ fn test_execute_recipe_via_rust_emits_early_and_final_success_log_pointers() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"correlation-probe\",\"success\":true,\"step_results\":[],\"context\":{}}\nEOF\n",
-    )
-    .expect("failed to write runner stub");
-    make_executable(&runner);
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: correlation-probe\nsteps: []\n")
         .expect("failed to write recipe");
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    let prev_home = std::env::var_os("AMPLIHACK_HOME");
-    unsafe {
-        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
-        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
-    }
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+    fixture_env.assign("AMPLIHACK_HOME", &amplihack_home);
 
     let mut context = BTreeMap::new();
     context.insert(
@@ -700,9 +515,6 @@ fn test_execute_recipe_via_rust_emits_early_and_final_success_log_pointers() {
     let (result, stderr) = capture_stderr_during(|| {
         execute::execute_recipe_via_rust(&recipe, &context, false, false, temp.path(), &[], None)
     });
-
-    restore_env_var("RECIPE_RUNNER_RS_PATH", prev_runner);
-    restore_env_var("AMPLIHACK_HOME", prev_home);
 
     result.expect("recipe run must succeed");
     let pointers = parse_log_pointers(&stderr);
@@ -769,29 +581,23 @@ fn test_execute_recipe_via_rust_nonzero_exit_emits_failure_pointer_and_result_su
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"correlation-probe\",\"success\":false,\"step_results\":[],\"context\":{}}\nEOF\nexit 7\n",
-    )
-    .expect("failed to write runner stub");
-    make_executable(&runner);
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: correlation-probe\nsteps: []\n")
         .expect("failed to write recipe");
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    let prev_home = std::env::var_os("AMPLIHACK_HOME");
-    unsafe {
-        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
-        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
-    }
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+    fixture_env.assign("AMPLIHACK_HOME", &amplihack_home);
 
     let (result, stderr) = capture_stderr_during(|| {
         execute::execute_recipe_via_rust(
@@ -804,9 +610,6 @@ fn test_execute_recipe_via_rust_nonzero_exit_emits_failure_pointer_and_result_su
             None,
         )
     });
-
-    restore_env_var("RECIPE_RUNNER_RS_PATH", prev_runner);
-    restore_env_var("AMPLIHACK_HOME", prev_home);
 
     let result = result.expect("parseable nonzero runner result should be returned");
     let final_pointer = only_final_pointer(&stderr);
@@ -833,26 +636,23 @@ fn test_execute_recipe_via_rust_parse_failure_emits_final_pointer() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(&runner, "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\necho 'not-json'\nexit 0\n")
-        .expect("failed to write runner stub");
-    make_executable(&runner);
+    crate::test_support::write_executable(
+        &runner,
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\necho 'not-json'\nexit 0\n",
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: parse-failure-probe\nsteps: []\n")
         .expect("failed to write recipe");
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    let prev_home = std::env::var_os("AMPLIHACK_HOME");
-    unsafe {
-        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
-        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
-    }
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+    fixture_env.assign("AMPLIHACK_HOME", &amplihack_home);
 
     let (result, stderr) = capture_stderr_during(|| {
         execute::execute_recipe_via_rust(
@@ -865,9 +665,6 @@ fn test_execute_recipe_via_rust_parse_failure_emits_final_pointer() {
             None,
         )
     });
-
-    restore_env_var("RECIPE_RUNNER_RS_PATH", prev_runner);
-    restore_env_var("AMPLIHACK_HOME", prev_home);
 
     result.expect_err("invalid runner stdout must still fail parsing");
     let final_pointer = only_final_pointer(&stderr);
@@ -887,7 +684,7 @@ fn test_execute_recipe_via_rust_spawn_failure_emits_final_pointer_without_child_
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
@@ -898,12 +695,8 @@ fn test_execute_recipe_via_rust_spawn_failure_emits_final_pointer_without_child_
     std::fs::write(&recipe, "name: spawn-failure-probe\nsteps: []\n")
         .expect("failed to write recipe");
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    let prev_home = std::env::var_os("AMPLIHACK_HOME");
-    unsafe {
-        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
-        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
-    }
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+    fixture_env.assign("AMPLIHACK_HOME", &amplihack_home);
 
     let (result, stderr) = capture_stderr_during(|| {
         execute::execute_recipe_via_rust(
@@ -916,9 +709,6 @@ fn test_execute_recipe_via_rust_spawn_failure_emits_final_pointer_without_child_
             None,
         )
     });
-
-    restore_env_var("RECIPE_RUNNER_RS_PATH", prev_runner);
-    restore_env_var("AMPLIHACK_HOME", prev_home);
 
     result.expect_err("non-executable runner must fail to spawn");
     let final_pointer = only_final_pointer(&stderr);
@@ -1125,13 +915,13 @@ fn test_large_context_does_not_hit_e2big() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
 
     // Stub: reject --context-file like the real runner, else report the
     // number of --set arguments and their total size.
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         r#"#!/bin/sh
 case "$1" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
@@ -1145,14 +935,7 @@ for arg in "$@"; do
 done
 echo "{\"recipe_name\":\"large-ctx\",\"success\":true,\"step_results\":[],\"context\":{\"sets\":\"$sets\",\"bytes\":\"$bytes\"}}"
 "#,
-    )
-    .expect("failed to write runner stub");
-
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-            .expect("failed to chmod runner");
-    }
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: large-ctx\nsteps: []\n").expect("failed to write recipe");
@@ -1160,10 +943,8 @@ echo "{\"recipe_name\":\"large-ctx\",\"success\":true,\"step_results\":[],\"cont
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).unwrap();
 
-    unsafe {
-        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
-        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
-    }
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+    fixture_env.assign("AMPLIHACK_HOME", &amplihack_home);
 
     let mut context = BTreeMap::new();
     context.insert("task_description".to_string(), "x".repeat(100 * 1024));
@@ -1202,38 +983,25 @@ fn test_step_timeout_propagated_as_env_var() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
     // Stub captures the AMPLIHACK_STEP_TIMEOUT env var and returns it in context.
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"timeout-probe\",\"success\":true,\"step_results\":[],\"context\":{\"step_timeout\":\"$AMPLIHACK_STEP_TIMEOUT\"}}\nEOF\n",
-    )
-    .expect("failed to write runner stub");
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-            .expect("failed to chmod runner");
-    }
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: timeout-probe\nsteps: []\n").expect("failed to write recipe");
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    let prev_home = std::env::var_os("AMPLIHACK_HOME");
-    let prev_timeout = std::env::var_os("AMPLIHACK_STEP_TIMEOUT");
-    unsafe {
-        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
-        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
-        // Ensure no inherited value interferes
-        std::env::remove_var("AMPLIHACK_STEP_TIMEOUT");
-    }
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+    fixture_env.assign("AMPLIHACK_HOME", &amplihack_home);
+    // Ensure no inherited value interferes
+    fixture_env.clear("AMPLIHACK_STEP_TIMEOUT");
 
     let result = execute::execute_recipe_via_rust(
         &recipe,
@@ -1247,18 +1015,6 @@ fn test_step_timeout_propagated_as_env_var() {
     .expect("recipe run must succeed");
 
     // Restore env
-    match prev_runner {
-        Some(v) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", v) },
-        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
-    }
-    match prev_home {
-        Some(v) => unsafe { std::env::set_var("AMPLIHACK_HOME", v) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
-    }
-    match prev_timeout {
-        Some(v) => unsafe { std::env::set_var("AMPLIHACK_STEP_TIMEOUT", v) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_STEP_TIMEOUT") },
-    }
 
     assert_eq!(
         result.context.get("step_timeout"),
@@ -1275,36 +1031,23 @@ fn test_step_timeout_zero_disables_timeouts() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"timeout-probe\",\"success\":true,\"step_results\":[],\"context\":{\"step_timeout\":\"$AMPLIHACK_STEP_TIMEOUT\"}}\nEOF\n",
-    )
-    .expect("failed to write runner stub");
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-            .expect("failed to chmod runner");
-    }
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: timeout-probe\nsteps: []\n").expect("failed to write recipe");
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    let prev_home = std::env::var_os("AMPLIHACK_HOME");
-    let prev_timeout = std::env::var_os("AMPLIHACK_STEP_TIMEOUT");
-    unsafe {
-        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
-        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
-        std::env::remove_var("AMPLIHACK_STEP_TIMEOUT");
-    }
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+    fixture_env.assign("AMPLIHACK_HOME", &amplihack_home);
+    fixture_env.clear("AMPLIHACK_STEP_TIMEOUT");
 
     let result = execute::execute_recipe_via_rust(
         &recipe,
@@ -1316,19 +1059,6 @@ fn test_step_timeout_zero_disables_timeouts() {
         Some(0), // step_timeout = 0 means disable timeouts
     )
     .expect("recipe run must succeed");
-
-    match prev_runner {
-        Some(v) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", v) },
-        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
-    }
-    match prev_home {
-        Some(v) => unsafe { std::env::set_var("AMPLIHACK_HOME", v) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
-    }
-    match prev_timeout {
-        Some(v) => unsafe { std::env::set_var("AMPLIHACK_STEP_TIMEOUT", v) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_STEP_TIMEOUT") },
-    }
 
     assert_eq!(
         result.context.get("step_timeout"),
@@ -1346,38 +1076,25 @@ fn test_step_timeout_none_does_not_set_env_var() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
     // Stub captures env var; if unset, shell expands $VAR to empty string.
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"timeout-probe\",\"success\":true,\"step_results\":[],\"context\":{\"step_timeout\":\"$AMPLIHACK_STEP_TIMEOUT\"}}\nEOF\n",
-    )
-    .expect("failed to write runner stub");
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-            .expect("failed to chmod runner");
-    }
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: timeout-probe\nsteps: []\n").expect("failed to write recipe");
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    let prev_home = std::env::var_os("AMPLIHACK_HOME");
-    let prev_timeout = std::env::var_os("AMPLIHACK_STEP_TIMEOUT");
-    unsafe {
-        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
-        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
-        // Ensure no inherited value
-        std::env::remove_var("AMPLIHACK_STEP_TIMEOUT");
-    }
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+    fixture_env.assign("AMPLIHACK_HOME", &amplihack_home);
+    // Ensure no inherited value
+    fixture_env.clear("AMPLIHACK_STEP_TIMEOUT");
 
     let result = execute::execute_recipe_via_rust(
         &recipe,
@@ -1390,19 +1107,6 @@ fn test_step_timeout_none_does_not_set_env_var() {
     )
     .expect("recipe run must succeed");
 
-    match prev_runner {
-        Some(v) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", v) },
-        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
-    }
-    match prev_home {
-        Some(v) => unsafe { std::env::set_var("AMPLIHACK_HOME", v) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
-    }
-    match prev_timeout {
-        Some(v) => unsafe { std::env::set_var("AMPLIHACK_STEP_TIMEOUT", v) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_STEP_TIMEOUT") },
-    }
-
     // When no parent env var is set AND step_timeout=None, the child sees empty string.
     assert_eq!(
         result.context.get("step_timeout"),
@@ -1414,20 +1118,6 @@ fn test_step_timeout_none_does_not_set_env_var() {
 /// Returns true if recipe-runner-rs appears to be available on this system.
 fn which_recipe_runner_available() -> bool {
     crate::rust_toolchain::find_recipe_runner().is_some()
-}
-
-#[cfg(unix)]
-fn make_executable(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
-        .expect("failed to chmod runner");
-}
-
-fn restore_env_var(key: &str, previous: Option<std::ffi::OsString>) {
-    match previous {
-        Some(value) => unsafe { std::env::set_var(key, value) },
-        None => unsafe { std::env::remove_var(key) },
-    }
 }
 
 #[cfg(unix)]
@@ -1790,7 +1480,7 @@ fn test_execute_recipe_via_rust_sets_isolated_runtime_directories() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let repo = temp.path().join("repo");
     let runner = temp.path().join("recipe-runner-rs");
@@ -1799,38 +1489,24 @@ fn test_execute_recipe_via_rust_sets_isolated_runtime_directories() {
     std::fs::create_dir_all(&repo).expect("failed to create repo dir");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"runtime-isolation-probe\",\"success\":true,\"step_results\":[],\"context\":{\"runtime_dir\":\"$AMPLIHACK_WORKFLOW_RUNTIME_DIR\",\"artifact_dir\":\"$AMPLIHACK_WORKFLOW_ARTIFACT_DIR\",\"tmpdir\":\"$TMPDIR\",\"tmp\":\"$TMP\",\"temp\":\"$TEMP\",\"run_id\":\"$AMPLIHACK_RUN_ID\",\"run_dir\":\"$AMPLIHACK_RUN_DIR\",\"tmpdir_exists\":\"$(test -d \"$TMPDIR\" && echo yes)\"}}\nEOF\n",
-    )
-    .expect("failed to write runner stub");
-    make_executable(&runner);
+    );
 
     let recipe = repo.join("recipe.yaml");
     std::fs::write(&recipe, "name: runtime-isolation-probe\nsteps: []\n")
         .expect("failed to write recipe");
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    let prev_home = std::env::var_os("AMPLIHACK_HOME");
-    let prev_work_root = std::env::var_os("AMPLIHACK_WORK_ROOT");
-    let prev_explicit = std::env::var_os("AMPLIHACK_WORK_ROOT_EXPLICIT");
-    let prev_on_exit = std::env::var_os("AMPLIHACK_CLEANUP_ON_EXIT");
-    unsafe {
-        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
-        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
-        std::env::set_var("AMPLIHACK_WORK_ROOT", &work_root);
-        std::env::remove_var("AMPLIHACK_WORK_ROOT_EXPLICIT");
-        std::env::set_var("AMPLIHACK_CLEANUP_ON_EXIT", "0");
-    }
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+    fixture_env.assign("AMPLIHACK_HOME", &amplihack_home);
+    fixture_env.assign("AMPLIHACK_WORK_ROOT", &work_root);
+    fixture_env.clear("AMPLIHACK_WORK_ROOT_EXPLICIT");
+    fixture_env.assign("AMPLIHACK_CLEANUP_ON_EXIT", "0");
 
     let result =
         execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), false, false, &repo, &[], None);
 
-    restore_env_var("RECIPE_RUNNER_RS_PATH", prev_runner);
-    restore_env_var("AMPLIHACK_HOME", prev_home);
-    restore_env_var("AMPLIHACK_WORK_ROOT", prev_work_root);
-    restore_env_var("AMPLIHACK_WORK_ROOT_EXPLICIT", prev_explicit);
-    restore_env_var("AMPLIHACK_CLEANUP_ON_EXIT", prev_on_exit);
     let result = result.expect("recipe run must succeed");
 
     let ctx = |key: &str| {
@@ -1890,29 +1566,23 @@ fn test_execute_recipe_via_rust_verbose_does_not_pass_progress_flag_to_child() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let arg_log = temp.path().join("args.log");
     // Stub records its argv and exits 0 with empty stdout (parser treats as success).
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
-        format!(
+        &format!(
             "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nfor a in \"$@\"; do echo \"$a\" >> {log}; done\nexit 0\n",
             log = arg_log.display()
         ),
-    )
-    .expect("failed to write runner stub");
-
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-        .expect("failed to chmod runner");
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: probe\nsteps: []\n").expect("failed to write recipe");
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
 
     let result = execute::execute_recipe_via_rust(
         &recipe,
@@ -1923,11 +1593,6 @@ fn test_execute_recipe_via_rust_verbose_does_not_pass_progress_flag_to_child() {
         &[],
         None, // step_timeout
     );
-
-    match prev_runner {
-        Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
-        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
-    }
 
     result.expect("verbose mode with empty stdout success must not error");
     let logged = std::fs::read_to_string(&arg_log).expect("argv log must exist");
@@ -1943,28 +1608,22 @@ fn test_execute_recipe_via_rust_non_verbose_does_not_pass_progress() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let arg_log = temp.path().join("args.log");
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
-        format!(
+        &format!(
             "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nfor a in \"$@\"; do echo \"$a\" >> {log}; done\nexit 0\n",
             log = arg_log.display()
         ),
-    )
-    .expect("failed to write runner stub");
-
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-        .expect("failed to chmod runner");
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: probe\nsteps: []\n").expect("failed to write recipe");
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
 
     let _ = execute::execute_recipe_via_rust(
         &recipe,
@@ -1976,11 +1635,6 @@ fn test_execute_recipe_via_rust_non_verbose_does_not_pass_progress() {
         None, // step_timeout
     );
 
-    match prev_runner {
-        Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
-        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
-    }
-
     let logged = std::fs::read_to_string(&arg_log).expect("argv log must exist");
     assert!(
         !logged.lines().any(|l| l == "--progress"),
@@ -1991,73 +1645,168 @@ fn test_execute_recipe_via_rust_non_verbose_does_not_pass_progress() {
 // Issue #366 (COE feedback): when child writes non-UTF-8 bytes to stderr,
 // the pump must NOT terminate (would risk a stalled-pipe hang on the child).
 // We use a stub that emits raw 0xFF bytes followed by valid UTF-8 lines and
-// then exits 0 with empty stdout. If the pump dies on the bad bytes, the
-// trailing UTF-8 lines won't be captured AND the child can't progress past
-// a full pipe.
+// then exits 1 so its captured stderr is available in the error. If the
+// pump dies on the bad bytes, the trailing lines will not be captured and
+// the child cannot progress past a full pipe.
 #[test]
 #[cfg(unix)]
 fn test_execute_recipe_via_rust_verbose_survives_non_utf8_stderr() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     // The stub writes 0xFF (invalid UTF-8 start byte), then a valid line,
-    // then enough valid lines to fill a typical pipe buffer (~64KB on Linux).
-    std::fs::write(
+    // then over 1 MiB of valid lines to exceed a typical pipe buffer.
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\n\
-         printf '\\xff\\n' >&2\n\
+         printf '\\377\\n' >&2\n\
          echo 'after-bad-bytes' >&2\n\
-         i=0; while [ $i -lt 200 ]; do echo \"flood-line-$i\" >&2; i=$((i+1)); done\n\
-         exit 0\n",
-    )
-    .expect("failed to write runner stub");
+         i=0; while [ $i -lt 16384 ]; do echo \"flood-line-$i-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\" >&2; i=$((i+1)); done\n\
+         echo 'after-flood-marker' >&2\n\
+         exit 1\n",
+    );
 
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-        .expect("failed to chmod runner");
+    // Verify the actual /bin/sh fixture, including the invalid byte and
+    // flood size, before relying on it to exercise the production pump.
+    let raw = crate::test_support::wait::output_within(
+        "the non-UTF-8 fixture",
+        &mut std::process::Command::new(&runner),
+    );
+    assert_eq!(raw.status.code(), Some(1));
+    assert!(raw.stderr.starts_with(&[0xff, b'\n']));
+    assert!(std::str::from_utf8(&raw.stderr).is_err());
+    assert!(raw.stderr.len() > 1024 * 1024);
+    assert!(raw.stderr.ends_with(b"after-flood-marker\n"));
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: probe\nsteps: []\n").expect("failed to write recipe");
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
 
     // The real assertion is that this does not hang. If the pump dies, the
-    // child's stderr pipe fills (~64KB) and SIGPIPE/blocking-write hangs the
-    // child. With a 30s test timeout, that hang would manifest as the test
-    // being killed by the runner — but locally just observed via wall-clock.
-    let start = std::time::Instant::now();
-    let result = execute::execute_recipe_via_rust(
-        &recipe,
-        &BTreeMap::new(),
-        false, // dry_run
-        true,  // verbose
-        temp.path(),
-        &[],
-        None, // step_timeout
-    );
-    let elapsed = start.elapsed();
+    // child's stderr pipe fills (~64KB) and the child blocks on its write
+    // forever. The run happens on a worker thread; its answer is awaited for
+    // at most `CEILING`, a hang guard that never decides a pass (#1998).
+    let (recipe, dir) = (recipe.clone(), temp.path().to_path_buf());
+    let mut worker = super::test_runner::RunnerWorker::spawn(None, false, move || {
+        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), false, true, &dir, &[], None)
+            .map(|_| ())
+            .map_err(|e| format!("{e:#}"))
+    });
+    let result = worker.wait();
 
-    match prev_runner {
-        Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
-        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
-    }
-
-    result.expect("non-UTF-8 stderr must NOT abort the pump or hang the child");
-    // This is a hang-detector, not a performance assertion. A healthy run is
-    // sub-second, but the meaningful failure is a *pipe-hang* where the pump
-    // dies and the child blocks on a full ~64KB stderr pipe until the 30s test
-    // harness kills it. The ceiling is deliberately loose (25s, well under the
-    // 30s harness timeout) so CPU contention on a saturated nextest run cannot
-    // flake it, while a genuine hang still trips it.
+    let error = result.expect_err("the fixture deliberately exits 1");
     assert!(
-        elapsed < std::time::Duration::from_secs(25),
-        "non-UTF-8 stderr caused suspiciously slow run ({elapsed:?}) — \
-         pump likely died and child blocked on full stderr pipe"
+        error.contains("after-flood-marker"),
+        "the pump did not capture stderr after invalid UTF-8 and the flood: {error}"
     );
+}
+
+// Exercise cleanup with the real six-hour default still in force. A test
+// ceiling (or any intervening assertion panic) must kill the runner group
+// and join its worker before environment restoration and tempdir removal.
+#[test]
+#[cfg(target_os = "linux")]
+fn runner_worker_failure_kills_group_and_joins_before_fixture_teardown() {
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut fixture_env = fixture_environment();
+    fixture_env.clear("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS");
+    let temp = tempfile::tempdir().unwrap();
+    let runner = temp.path().join("recipe-runner-rs");
+    let ready = temp.path().join("ready");
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: cancellation-probe\nsteps: []\n").unwrap();
+    // Park the descendant on a builtin read, retaining the writer through
+    // every cancellation assertion. No data or EOF can release it normally.
+    let hold = temp.path().join("hold");
+    mkfifo(&hold);
+    let _hold_reader = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&hold)
+        .unwrap();
+    let _hold_writer = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&hold)
+        .unwrap();
+    crate::test_support::write_executable(
+        &runner,
+        &format!(
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nexec 3< '{}'\n(read _hold <&3) &\n{}echo ready > '{}'\nwait\n",
+            hold.display(),
+            write_tree_pids(temp.path()),
+            ready.display(),
+        ),
+    );
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+
+    for panic_before_receive in [false, true] {
+        let _ = std::fs::remove_file(&ready);
+        let mut tree = Vec::new();
+        let joined = Arc::new(AtomicBool::new(false));
+        let finished = joined.clone();
+        let (recipe, dir) = (recipe.clone(), temp.path().to_path_buf());
+        let failure = catch_unwind(AssertUnwindSafe(|| {
+            let mut worker = super::test_runner::RunnerWorker::spawn(None, false, move || {
+                let result = execute::execute_recipe_via_rust(
+                    &recipe,
+                    &BTreeMap::new(),
+                    false,
+                    true,
+                    &dir,
+                    &[],
+                    None,
+                );
+                finished.store(true, Ordering::SeqCst);
+                result.is_err()
+            });
+            crate::test_support::wait::wait_until("the cancellation fixture tree", || {
+                ready.exists()
+            });
+            tree.extend(runner_tree(temp.path()));
+            assert!(!panic_before_receive, "fixture readiness assertion failed");
+            worker.wait_with_ceiling(std::time::Duration::ZERO);
+        }));
+        let message = failure.unwrap_err();
+        let message = message
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| message.downcast_ref::<&str>().copied())
+            .unwrap();
+        assert!(
+            message.contains(if panic_before_receive {
+                "fixture readiness assertion failed"
+            } else {
+                "hung: fixture worker"
+            }),
+            "{message}"
+        );
+        assert!(
+            joined.load(Ordering::SeqCst),
+            "worker must finish before unwinding returns"
+        );
+        // A survivor of the group kill fails this wait as hung at CEILING.
+        for (process, what) in tree.iter().zip(["the runner", "its descendant"]) {
+            crate::test_support::pidfd_wait::wait_pid_gone(&process.0, what);
+        }
+        assert!(
+            temp.path().exists(),
+            "fixture is still owned during cleanup checks"
+        );
+    }
 }
 
 #[test]
@@ -2066,45 +1815,30 @@ fn test_execute_recipe_via_rust_times_out_hung_runner() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
-    std::fs::write(&runner, "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\n/bin/sleep 5\n").expect("failed to write runner stub");
-
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-        .expect("failed to chmod runner");
+    // The runner blocks on a FIFO read: the supervisor writes only on drop,
+    // so only the 1 s product timeout can make the test pass, however slow the
+    // host is (#1998: a `sleep 5` could finish first on a loaded host).
+    let hold = temp.path().join("hold");
+    mkfifo(&hold);
+    crate::test_support::write_executable(
+        &runner,
+        &format!(
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nread _hold < '{}'\n",
+            hold.display()
+        ),
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: timeout-probe\nsteps: []\n").expect("failed to write recipe");
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    let prev_timeout = std::env::var_os("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS");
-    unsafe {
-        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
-        std::env::set_var("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS", "1");
-    }
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+    fixture_env.assign("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS", "1");
 
-    let start = std::time::Instant::now();
-    let result = execute::execute_recipe_via_rust(
-        &recipe,
-        &BTreeMap::new(),
-        false,
-        true,
-        temp.path(),
-        &[],
-        None,
-    );
-    let elapsed = start.elapsed();
-
-    match prev_runner {
-        Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
-        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
-    }
-    match prev_timeout {
-        Some(value) => unsafe { std::env::set_var("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS", value) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS") },
-    }
+    let mut worker = timeout_fixture_worker(&recipe, temp.path(), &hold);
+    let result = worker.wait();
 
     let err = result.expect_err("hung recipe-runner must time out");
     let msg = format!("{err:#}");
@@ -2113,81 +1847,128 @@ fn test_execute_recipe_via_rust_times_out_hung_runner() {
         "error should report timeout: {msg}"
     );
     // The parent timeout (1s, set above) firing is proven by the "timed out"
-    // error assertion — that is the real intent of this test. This elapsed
-    // ceiling is a hang-detector, not a performance assertion: it guards against
-    // the pathological case where the timeout path fails to kill the runner and
-    // the child runs until the 30s test harness kills it. The ceiling is
-    // deliberately loose (25s, well under the 30s harness) because process
-    // spawn, timeout polling, the tree-kill, and stderr-pump teardown can add
-    // several seconds of overhead under a saturated nextest run — keying it
-    // tightly to the runner's own sleep flakes because that cleanup overhead is
-    // comparable to the timeout-vs-natural-completion gap.
-    assert!(
-        elapsed < std::time::Duration::from_secs(25),
-        "parent timeout should bound hung runner well under the harness limit, \
-         elapsed {elapsed:?}"
-    );
+    // error: the runner never ends on its own, so returning at all means the
+    // timeout path killed and reaped it. The independent CEILING above only
+    // fails hangs (#1998).
 }
 
 #[test]
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn test_execute_recipe_via_rust_timeout_kills_runner_process_tree() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let marker = temp.path().join("orphan-marker");
-    std::fs::write(
+    let hold = temp.path().join("hold");
+    mkfifo(&hold);
+    let ready = temp.path().join("descendant-ready");
+    // The runner and its descendant write their pids, then both block on
+    // builtin FIFO reads. The supervisor writes only on drop, after the
+    // assertions (or on failure), so only the 1 s virtual product timeout
+    // ends the run (#1998: no sleeps).
+    crate::test_support::write_executable(
         &runner,
-        format!(
-            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\n(/bin/sleep 2; echo orphan > '{}') &\n/bin/sleep 5\n",
-            marker.display()
+        &format!(
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\n\
+             exec 3< '{hold}'\n\
+             (read _hold <&3; echo orphan > '{marker}') &\n\
+             {pids}echo ready > '{ready}'\n\
+             read _hold <&3\n",
+            hold = hold.display(),
+            pids = write_tree_pids(temp.path()),
+            ready = ready.display(),
+            marker = marker.display(),
         ),
-    )
-    .expect("failed to write runner stub");
-
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-        .expect("failed to chmod runner");
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: timeout-tree-probe\nsteps: []\n")
         .expect("failed to write recipe");
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    let prev_timeout = std::env::var_os("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS");
-    unsafe {
-        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
-        std::env::set_var("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS", "1");
-    }
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+    fixture_env.assign("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS", "1");
 
-    let result = execute::execute_recipe_via_rust(
-        &recipe,
-        &BTreeMap::new(),
-        false,
-        true,
-        temp.path(),
-        &[],
-        None,
-    );
+    let dir = temp.path().to_path_buf();
+    let mut worker = super::test_runner::RunnerWorker::spawn(Some((&hold, 2)), true, move || {
+        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), false, true, &dir, &[], None)
+            .map(|_| ())
+            .map_err(|err| format!("{err:#}"))
+    });
+    // Virtual time stands still until the advance below, so the executor
+    // cannot time out before both pidfds are open.
+    crate::test_support::wait::wait_until("the runner descendant to start", || ready.exists());
+    let tree = runner_tree(temp.path());
+    worker.time_out_after_ready("the executor's first clock read", || true);
+    let result = worker.wait();
 
-    match prev_runner {
-        Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
-        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+    let err = result.expect_err("hung recipe-runner must time out");
+    assert!(format!("{err:#}").contains("timed out"), "{err:#}");
+    // A process of the tree that survived the kill fails this wait as hung
+    // at `CEILING`.
+    for (process, what) in tree.iter().zip(["the runner", "its descendant"]) {
+        crate::test_support::pidfd_wait::wait_pid_gone(&process.0, what);
     }
-    match prev_timeout {
-        Some(value) => unsafe { std::env::set_var("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS", value) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS") },
-    }
-
-    result.expect_err("hung recipe-runner must time out");
-    std::thread::sleep(std::time::Duration::from_millis(2_300));
     assert!(
         !marker.exists(),
         "timeout cleanup must terminate recipe-runner descendants"
     );
+}
+
+/// Keep the FIFO supervisor alive through the descendant assertions: releasing
+/// it earlier would hide a process-tree teardown regression.
+#[cfg(unix)]
+fn timeout_fixture_worker(
+    recipe: &Path,
+    dir: &Path,
+    hold: &Path,
+) -> crate::test_support::unix_process::FifoWorker<Result<(), String>> {
+    let (recipe, dir) = (recipe.to_path_buf(), dir.to_path_buf());
+    crate::test_support::unix_process::FifoWorker::spawn(hold, 2, move || {
+        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), false, true, &dir, &[], None)
+            .map(|_| ())
+            .map_err(|err| format!("{err:#}"))
+    })
+}
+
+/// Shell lines for a runner fixture that record its own pid and the pid of
+/// the job it last started in the background, in `dir`. They go before the
+/// fixture's `ready` line, so both files are complete once `ready` exists.
+#[cfg(target_os = "linux")]
+fn write_tree_pids(dir: &Path) -> String {
+    format!(
+        "printf '%s\\n' \"$$\" > '{}'\nprintf '%s\\n' \"$!\" > '{}'\n",
+        dir.join("runner.pid").display(),
+        dir.join("descendant.pid").display(),
+    )
+}
+
+/// Pidfds for the runner and its descendant, from the files
+/// `write_tree_pids` wrote. Call it once `ready` exists and before the
+/// executor can end the tree: both processes are blocked on a FIFO the test
+/// holds, so each pid still names the fixture's process, and the pidfd keeps
+/// naming it after it exits. No process table is read (issue #2196). A
+/// failed test kills both on drop.
+#[cfg(target_os = "linux")]
+fn runner_tree(dir: &Path) -> [crate::test_support::pidfd_wait::KillOnDrop; 2] {
+    use crate::test_support::pidfd_wait::{KillOnDrop, PidFd, parse_pid};
+    ["runner.pid", "descendant.pid"].map(|name| {
+        let raw = std::fs::read_to_string(dir.join(name)).expect("read a fixture pid file");
+        let pid = parse_pid(&raw).unwrap_or_else(|e| panic!("{name}: {e}"));
+        KillOnDrop(PidFd::open(pid).unwrap_or_else(|e| panic!("pidfd for {name}: {e}")))
+    })
+}
+
+/// Makes a FIFO at `path`.
+#[cfg(unix)]
+fn mkfifo(path: &Path) {
+    let status = std::process::Command::new("mkfifo")
+        .arg(path)
+        .status()
+        .expect("failed to run mkfifo");
+    assert!(status.success(), "mkfifo {} failed", path.display());
 }
 
 // -------------------------------------------------------------------------
@@ -2198,17 +1979,13 @@ fn test_execute_recipe_via_rust_timeout_kills_runner_process_tree() {
 /// (one per line) to `arg_log` and exits 0 with empty stdout.
 #[cfg(unix)]
 fn write_argv_logging_stub(runner: &Path, arg_log: &Path) {
-    std::fs::write(
+    crate::test_support::write_executable(
         runner,
-        format!(
+        &format!(
             "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nfor a in \"$@\"; do echo \"$a\" >> {log}; done\nexit 0\n",
             log = arg_log.display()
         ),
-    )
-    .expect("failed to write runner stub");
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(runner, std::fs::Permissions::from_mode(0o755))
-        .expect("failed to chmod runner");
+    );
 }
 
 #[test]
@@ -2217,7 +1994,7 @@ fn test_execute_recipe_via_rust_emits_dash_r_per_search_dir() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let arg_log = temp.path().join("args.log");
@@ -2231,8 +2008,7 @@ fn test_execute_recipe_via_rust_emits_dash_r_per_search_dir() {
     let dir_c = temp.path().join("recipes-c");
     let search_dirs: Vec<PathBuf> = vec![dir_a.clone(), dir_b.clone(), dir_c.clone()];
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
 
     let result = execute::execute_recipe_via_rust(
         &recipe,
@@ -2243,11 +2019,6 @@ fn test_execute_recipe_via_rust_emits_dash_r_per_search_dir() {
         &search_dirs,
         None,
     );
-
-    match prev_runner {
-        Some(v) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", v) },
-        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
-    }
 
     result.expect("execute_recipe_via_rust must succeed with search_dirs");
 
@@ -2282,7 +2053,7 @@ fn test_execute_recipe_via_rust_no_search_dirs_emits_no_dash_r() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let arg_log = temp.path().join("args.log");
@@ -2291,8 +2062,7 @@ fn test_execute_recipe_via_rust_no_search_dirs_emits_no_dash_r() {
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: probe\nsteps: []\n").expect("failed to write recipe");
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
 
     let result = execute::execute_recipe_via_rust(
         &recipe,
@@ -2303,11 +2073,6 @@ fn test_execute_recipe_via_rust_no_search_dirs_emits_no_dash_r() {
         &[],
         None,
     );
-
-    match prev_runner {
-        Some(v) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", v) },
-        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
-    }
 
     result.expect("empty search_dirs must still succeed");
 
@@ -2324,7 +2089,7 @@ fn test_execute_recipe_via_rust_skips_empty_path_strings() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let arg_log = temp.path().join("args.log");
@@ -2336,8 +2101,7 @@ fn test_execute_recipe_via_rust_skips_empty_path_strings() {
     let valid = temp.path().join("recipes");
     let search_dirs: Vec<PathBuf> = vec![PathBuf::new(), valid.clone(), PathBuf::new()];
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
 
     let result = execute::execute_recipe_via_rust(
         &recipe,
@@ -2348,11 +2112,6 @@ fn test_execute_recipe_via_rust_skips_empty_path_strings() {
         &search_dirs,
         None,
     );
-
-    match prev_runner {
-        Some(v) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", v) },
-        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
-    }
 
     result.expect("partially-empty search_dirs must still succeed");
 
@@ -2389,7 +2148,7 @@ fn test_execute_recipe_via_rust_dash_r_position_in_argv() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let arg_log = temp.path().join("args.log");
@@ -2404,8 +2163,7 @@ fn test_execute_recipe_via_rust_dash_r_position_in_argv() {
     let dir_a = temp.path().join("recipes-a");
     let search_dirs: Vec<PathBuf> = vec![dir_a];
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
 
     let result = execute::execute_recipe_via_rust(
         &recipe,
@@ -2416,11 +2174,6 @@ fn test_execute_recipe_via_rust_dash_r_position_in_argv() {
         &search_dirs,
         None,
     );
-
-    match prev_runner {
-        Some(v) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", v) },
-        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
-    }
 
     result.expect("execution must succeed");
 
@@ -2502,23 +2255,19 @@ fn test_run_recipe_forwards_recipe_parent_as_dash_r() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let arg_log = temp.path().join("args.log");
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
-        format!(
+        &format!(
             "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nfor a in \"$@\"; do echo \"$a\" >> {log}; done\n\
              echo '{{\"recipe_name\":\"probe\",\"success\":true,\"step_results\":[],\"context\":{{}}}}'\n\
              exit 0\n",
             log = arg_log.display()
         ),
-    )
-    .expect("failed to write runner stub");
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-        .expect("failed to chmod runner");
+    );
 
     let recipe_dir = temp.path().join("co-located");
     std::fs::create_dir_all(&recipe_dir).unwrap();
@@ -2529,9 +2278,16 @@ fn test_run_recipe_forwards_recipe_parent_as_dash_r() {
     )
     .expect("failed to write recipe");
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
-    let orchestration_env = crate::test_support::clear_outer_run_env();
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+    for key in [
+        "AMPLIHACK_SESSION_TREE_DIR",
+        "AMPLIHACK_TREE_ID",
+        "AMPLIHACK_SESSION_DEPTH",
+        "AMPLIHACK_MAX_DEPTH",
+        "AMPLIHACK_RECIPE_RUN_ID",
+    ] {
+        fixture_env.clear(key);
+    }
 
     let result = super::run_recipe(
         recipe.to_str().unwrap(),
@@ -2543,12 +2299,6 @@ fn test_run_recipe_forwards_recipe_parent_as_dash_r() {
         None,
         &crate::commands::governor::GovernorArgs::default(),
     );
-
-    match prev_runner {
-        Some(v) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", v) },
-        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
-    }
-    drop(orchestration_env);
 
     result.expect("run_recipe must succeed");
 
@@ -2807,18 +2557,16 @@ fn test_execute_recipe_via_rust_exports_context_as_env_under_set_u() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nset -u\nprintf '{\"recipe_name\":\"ctx-env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"task\":\"%s\",\"repo\":\"%s\"}}' \"$TASK_DESCRIPTION\" \"$REPO_PATH\"\n",
-    )
-    .expect("failed to write runner stub");
-    make_executable(&runner);
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: ctx-env-probe\nsteps: []\n").expect("failed to write recipe");
@@ -2828,25 +2576,14 @@ fn test_execute_recipe_via_rust_exports_context_as_env_under_set_u() {
         ("repo_path", "/work/repo"),
     ]);
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    let prev_home = std::env::var_os("AMPLIHACK_HOME");
-    let prev_task = std::env::var_os("TASK_DESCRIPTION");
-    let prev_repo = std::env::var_os("REPO_PATH");
-    unsafe {
-        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
-        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
-        // Ensure no inherited values mask the bug.
-        std::env::remove_var("TASK_DESCRIPTION");
-        std::env::remove_var("REPO_PATH");
-    }
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+    fixture_env.assign("AMPLIHACK_HOME", &amplihack_home);
+    // Ensure no inherited values mask the bug.
+    fixture_env.clear("TASK_DESCRIPTION");
+    fixture_env.clear("REPO_PATH");
 
     let result =
         execute::execute_recipe_via_rust(&recipe, &context, true, false, temp.path(), &[], None);
-
-    restore_env_var("RECIPE_RUNNER_RS_PATH", prev_runner);
-    restore_env_var("AMPLIHACK_HOME", prev_home);
-    restore_env_var("TASK_DESCRIPTION", prev_task);
-    restore_env_var("REPO_PATH", prev_repo);
 
     let result = result.expect(
         "recipe run must succeed: recipe context must be exported as env so a \
@@ -2882,18 +2619,16 @@ fn test_execute_recipe_via_rust_exports_context_to_nested_subprocess() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nset -u\nNESTED_TASK=$(sh -c 'set -u; printf %s \"$TASK_DESCRIPTION\"')\nNESTED_REPO=$(sh -c 'set -u; printf %s \"$REPO_PATH\"')\nprintf '{\"recipe_name\":\"nested-ctx-probe\",\"success\":true,\"step_results\":[],\"context\":{\"nested_task\":\"%s\",\"nested_repo\":\"%s\"}}' \"$NESTED_TASK\" \"$NESTED_REPO\"\n",
-    )
-    .expect("failed to write runner stub");
-    make_executable(&runner);
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: nested-ctx-probe\nsteps: []\n").expect("failed to write recipe");
@@ -2903,24 +2638,13 @@ fn test_execute_recipe_via_rust_exports_context_to_nested_subprocess() {
         ("repo_path", "/work/nested/repo"),
     ]);
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    let prev_home = std::env::var_os("AMPLIHACK_HOME");
-    let prev_task = std::env::var_os("TASK_DESCRIPTION");
-    let prev_repo = std::env::var_os("REPO_PATH");
-    unsafe {
-        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
-        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
-        std::env::remove_var("TASK_DESCRIPTION");
-        std::env::remove_var("REPO_PATH");
-    }
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+    fixture_env.assign("AMPLIHACK_HOME", &amplihack_home);
+    fixture_env.clear("TASK_DESCRIPTION");
+    fixture_env.clear("REPO_PATH");
 
     let result =
         execute::execute_recipe_via_rust(&recipe, &context, true, false, temp.path(), &[], None);
-
-    restore_env_var("RECIPE_RUNNER_RS_PATH", prev_runner);
-    restore_env_var("AMPLIHACK_HOME", prev_home);
-    restore_env_var("TASK_DESCRIPTION", prev_task);
-    restore_env_var("REPO_PATH", prev_repo);
 
     let result = result.expect(
         "nested recipe run must succeed: context env must propagate to a \
@@ -2956,7 +2680,7 @@ fn test_execute_recipe_via_rust_context_cannot_clobber_reserved_or_builder_env()
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
@@ -2964,12 +2688,10 @@ fn test_execute_recipe_via_rust_context_cannot_clobber_reserved_or_builder_env()
 
     // No `set -u` here: LD_PRELOAD is legitimately unset, so we read it with a
     // `:-` default to distinguish "unset" (safe) from "attacker value" (bug).
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nprintf '{\"recipe_name\":\"sec-probe\",\"success\":true,\"step_results\":[],\"context\":{\"task\":\"%s\",\"path\":\"%s\",\"preload\":\"%s\",\"ahome\":\"%s\"}}' \"${TASK_DESCRIPTION:-MISSING}\" \"$PATH\" \"${LD_PRELOAD:-}\" \"${AMPLIHACK_HOME:-}\"\n",
-    )
-    .expect("failed to write runner stub");
-    make_executable(&runner);
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: sec-probe\nsteps: []\n").expect("failed to write recipe");
@@ -2980,16 +2702,10 @@ fn test_execute_recipe_via_rust_context_cannot_clobber_reserved_or_builder_env()
         ("ld_preload", "/evil.so"),
     ]);
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    let prev_home = std::env::var_os("AMPLIHACK_HOME");
-    let prev_task = std::env::var_os("TASK_DESCRIPTION");
-    let prev_preload = std::env::var_os("LD_PRELOAD");
-    unsafe {
-        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
-        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
-        std::env::remove_var("TASK_DESCRIPTION");
-        std::env::remove_var("LD_PRELOAD");
-    }
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+    fixture_env.assign("AMPLIHACK_HOME", &amplihack_home);
+    fixture_env.clear("TASK_DESCRIPTION");
+    fixture_env.clear("LD_PRELOAD");
 
     let result =
         execute::execute_recipe_via_rust(&recipe, &context, true, false, temp.path(), &[], None);
@@ -3002,11 +2718,6 @@ fn test_execute_recipe_via_rust_context_cannot_clobber_reserved_or_builder_env()
         &[],
         None,
     );
-
-    restore_env_var("RECIPE_RUNNER_RS_PATH", prev_runner);
-    restore_env_var("AMPLIHACK_HOME", prev_home);
-    restore_env_var("TASK_DESCRIPTION", prev_task);
-    restore_env_var("LD_PRELOAD", prev_preload);
 
     let result = result.expect("recipe run must succeed");
     let refused = refused.expect_err("an amplihack_home context key must be refused");
@@ -3128,13 +2839,12 @@ fn test_resolve_context_env_budget_honors_operator_override() {
     let _guard = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
+    let mut fixture_env = fixture_environment();
 
     let name = execute::CONTEXT_ENV_BUDGET_OVERRIDE_ENV;
-    let previous = std::env::var_os(name);
 
     // Valid small value wins exactly.
-    unsafe { std::env::set_var(name, "4096") };
+    fixture_env.assign(name, "4096");
     assert_eq!(
         execute::resolve_context_env_budget(),
         4096,
@@ -3142,7 +2852,7 @@ fn test_resolve_context_env_budget_honors_operator_override() {
     );
 
     // `0` is a valid override meaning "mirror essentials only".
-    unsafe { std::env::set_var(name, "0") };
+    fixture_env.assign(name, "0");
     assert_eq!(
         execute::resolve_context_env_budget(),
         0,
@@ -3151,7 +2861,7 @@ fn test_resolve_context_env_budget_honors_operator_override() {
 
     // A very large override wins even over the (smaller) derived budget,
     // proving the override — not the derivation — is authoritative.
-    unsafe { std::env::set_var(name, "1073741824") };
+    fixture_env.assign(name, "1073741824");
     assert_eq!(
         execute::resolve_context_env_budget(),
         1_073_741_824,
@@ -3162,19 +2872,14 @@ fn test_resolve_context_env_budget_honors_operator_override() {
     // derived budget, not on the (unparseable) override content. Two
     // equal-length non-numeric strings inject identical inherited-env bytes,
     // so a correct fallback yields identical derived budgets.
-    unsafe { std::env::set_var(name, "abc") };
+    fixture_env.assign(name, "abc");
     let derived_a = execute::resolve_context_env_budget();
-    unsafe { std::env::set_var(name, "xyz") };
+    fixture_env.assign(name, "xyz");
     let derived_b = execute::resolve_context_env_budget();
     assert_eq!(
         derived_a, derived_b,
         "an invalid override must be ignored, falling back to the derived budget"
     );
-
-    match previous {
-        Some(v) => unsafe { std::env::set_var(name, v) },
-        None => unsafe { std::env::remove_var(name) },
-    }
 }
 
 // -------------------------------------------------------------------------
@@ -3373,49 +3078,48 @@ fn test_budget_dropped_values_still_delivered_via_set_args() {
     assert!(args.contains(&"task_description=fix".to_string()));
 }
 
-/// The caller holds the shared environment lock through restoration.
+/// The environment a recipe fixture runs in. Tests change further variables
+/// through `EnvGuard::assign` and `EnvGuard::clear` (reached through `Deref`),
+/// so every variable a test touches is restored on drop, panics included.
 ///
-/// Each run gets a private work root and no end-of-run sweep, so these tests
-/// neither create run folders in nor sweep the caller's work root, normally
-/// the real `~/.amplihack/work` (issue #2067; see
-/// `test_support::IsolatedWorkRoot`). The work root guard is the second
-/// element and drops last.
-fn fixture_environment() -> (
-    crate::test_support::EnvGuard,
-    crate::test_support::IsolatedWorkRoot,
-) {
-    let mut keys = vec![
-        "AMPLIHACK_AGENT_BINARY",
-        "AMPLIHACK_ASSET_RESOLVER",
-        "AMPLIHACK_GRAPH_DB_PATH",
-        "AMPLIHACK_HOME",
-        "AMPLIHACK_KUZU_DB_PATH",
-        "AMPLIHACK_NONINTERACTIVE",
-        "AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS",
-        "AMPLIHACK_STEP_TIMEOUT",
-        "CLAUDECODE",
-        "GH_PAGER",
-        "GIT_PAGER",
-        "HOME",
-        "LD_PRELOAD",
-        "LESS",
-        "PAGER",
-        "PATH",
-        "RECIPE_RUNNER_RS_PATH",
-        "REPO_PATH",
-        "TASK_DESCRIPTION",
-    ];
-    keys.extend(crate::test_support::OUTER_RUN_IDENTITY_VARS);
-    let saved = crate::test_support::EnvGuard::capture(&keys);
-    // These assertions exercise generic runner/Claude staging, without a Codex stub.
-    unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
-    // Issue #1984: inside a recipe-run session the outer run's identity and
-    // depth would reach the runner, which then joins or is refused by the outer
-    // tree. Tests that need a value set it after this fixture.
-    for key in crate::test_support::OUTER_RUN_IDENTITY_VARS {
-        unsafe { std::env::remove_var(key) };
+/// Each run also gets a private work root and no end-of-run sweep, so these
+/// tests neither create run folders in nor sweep the caller's work root,
+/// normally the real `~/.amplihack/work` (issue #2067; see
+/// `test_support::IsolatedWorkRoot`). Field order is drop order: the test's
+/// variables are restored first, then the work root guard restores its own
+/// variables and removes the folder.
+///
+/// The caller holds the shared environment lock until the fixture drops.
+struct FixtureEnvironment {
+    env: crate::test_support::EnvGuard,
+    work_root: crate::test_support::IsolatedWorkRoot,
+}
+
+impl std::ops::Deref for FixtureEnvironment {
+    type Target = crate::test_support::EnvGuard;
+    fn deref(&self) -> &Self::Target {
+        &self.env
     }
-    (saved, crate::test_support::IsolatedWorkRoot::new())
+}
+
+impl std::ops::DerefMut for FixtureEnvironment {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.env
+    }
+}
+
+fn fixture_environment() -> FixtureEnvironment {
+    // The work root guard owns AMPLIHACK_WORK_ROOT, AMPLIHACK_WORK_ROOT_EXPLICIT
+    // and AMPLIHACK_CLEANUP_ON_EXIT; the EnvGuard must not also capture them.
+    let work_root = crate::test_support::IsolatedWorkRoot::new();
+    let mut env = crate::test_support::EnvGuard::capture(&[]);
+    // These assertions exercise generic runner/Claude staging, without a Codex stub.
+    env.assign("AMPLIHACK_AGENT_BINARY", "claude");
+    // A fixture starts its own run even inside an active recipe session (#1984).
+    for key in crate::test_support::OUTER_RUN_IDENTITY_VARS {
+        env.clear(key);
+    }
+    FixtureEnvironment { env, work_root }
 }
 
 #[test]
@@ -3442,25 +3146,21 @@ fn fixture_environment_keeps_runs_out_of_the_inherited_work_root() {
     }
 
     let private_root = {
-        let fixture = fixture_environment();
+        let mut fixture = fixture_environment();
         let repo = temp.path().join("repo");
         let amplihack_home = temp.path().join("amplihack-home");
         let runner = temp.path().join("recipe-runner-rs");
         std::fs::create_dir_all(&repo).expect("failed to create repo dir");
         std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
-        std::fs::write(
+        crate::test_support::write_executable(
             &runner,
             "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"work-root-probe\",\"success\":true,\"step_results\":[],\"context\":{\"run_dir\":\"$AMPLIHACK_RUN_DIR\"}}\nEOF\n",
-        )
-        .expect("failed to write runner stub");
-        make_executable(&runner);
+        );
         let recipe = repo.join("recipe.yaml");
         std::fs::write(&recipe, "name: work-root-probe\nsteps: []\n")
             .expect("failed to write recipe");
-        unsafe {
-            std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
-            std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
-        }
+        fixture.assign("RECIPE_RUNNER_RS_PATH", &runner);
+        fixture.assign("AMPLIHACK_HOME", &amplihack_home);
         assert!(!crate::commands::cleanup::cleanup_on_exit_enabled());
 
         let result = execute::execute_recipe_via_rust(
@@ -3480,7 +3180,7 @@ fn fixture_environment_keeps_runs_out_of_the_inherited_work_root() {
                 .and_then(JsonValue::as_str)
                 .unwrap_or_default(),
         );
-        let private_root = fixture.1.path();
+        let private_root = fixture.work_root.path();
         assert!(
             run_dir.starts_with(private_root.join("runs")) && run_dir.join("run.json").is_file(),
             "the run folder {} must be under the fixture's work root {}",
@@ -3640,28 +3340,13 @@ mod issue_1570_nested_environment {
         assert!(!is_stripped_inherited_name("MY-KEY", &inherited));
     }
 
-    /// Names this module sets in the process environment.
-    const TOUCHED: &[&str] = &[
-        "RECIPE_VAR_issue1570_parent",
-        "ISSUE1570_PARENT",
-        "RECIPE_VAR_issue1570__nested",
-        "ISSUE1570__NESTED",
-        "RECIPE_VAR_issue1570_own",
-        "ISSUE1570_OWN",
-        "RECIPE_VAR_path",
-        "RECIPE_VAR_home",
-        "AMPLIHACK_CONTEXT_FILE",
-        "AMPLIHACK_ISSUE1570_KEEP",
-    ];
-
     #[test]
     #[cfg(unix)]
     fn nested_run_strips_inherited_context_but_keeps_reserved_names() {
         let _guard = crate::test_support::home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _fixture_environment = super::fixture_environment();
-        let _touched = crate::test_support::EnvGuard::capture(TOUCHED);
+        let mut fixture_env = super::fixture_environment();
         let temp = tempfile::tempdir().expect("failed to create temp dir");
         let runner = temp.path().join("recipe-runner-rs");
         let amplihack_home = temp.path().join("amplihack-home");
@@ -3686,17 +3371,12 @@ mod issue_1570_nested_environment {
             .map(|(label, var)| format!("\"{label}\":\"${{{var}-<unset>}}\""))
             .collect::<Vec<_>>()
             .join(",");
-        std::fs::write(
+        crate::test_support::write_executable(
             &runner,
-            format!(
+            &format!(
                 "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{{\"recipe_name\":\"nested-env\",\"success\":true,\"step_results\":[],\"context\":{{{fields}}}}}\nEOF\n"
             ),
-        )
-        .unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        );
         let recipe = temp.path().join("recipe.yaml");
         std::fs::write(&recipe, "name: nested-env\nsteps: []\n").unwrap();
 
@@ -3715,20 +3395,18 @@ mod issue_1570_nested_environment {
             })
             .unwrap_or_default();
         let parent_home = std::env::var("HOME").unwrap_or_default();
-        unsafe {
-            std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
-            std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
-            std::env::set_var("RECIPE_VAR_issue1570_parent", "parent");
-            std::env::set_var("ISSUE1570_PARENT", "parent");
-            std::env::set_var("RECIPE_VAR_issue1570__nested", "parent");
-            std::env::set_var("ISSUE1570__NESTED", "parent");
-            std::env::set_var("RECIPE_VAR_issue1570_own", "parent");
-            std::env::set_var("ISSUE1570_OWN", "parent");
-            std::env::set_var("RECIPE_VAR_path", "/x");
-            std::env::set_var("RECIPE_VAR_home", "/y");
-            std::env::set_var("AMPLIHACK_CONTEXT_FILE", "/tmp/parent-context.json");
-            std::env::set_var("AMPLIHACK_ISSUE1570_KEEP", "kept");
-        }
+        fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+        fixture_env.assign("AMPLIHACK_HOME", &amplihack_home);
+        fixture_env.assign("RECIPE_VAR_issue1570_parent", "parent");
+        fixture_env.assign("ISSUE1570_PARENT", "parent");
+        fixture_env.assign("RECIPE_VAR_issue1570__nested", "parent");
+        fixture_env.assign("ISSUE1570__NESTED", "parent");
+        fixture_env.assign("RECIPE_VAR_issue1570_own", "parent");
+        fixture_env.assign("ISSUE1570_OWN", "parent");
+        fixture_env.assign("RECIPE_VAR_path", "/x");
+        fixture_env.assign("RECIPE_VAR_home", "/y");
+        fixture_env.assign("AMPLIHACK_CONTEXT_FILE", "/tmp/parent-context.json");
+        fixture_env.assign("AMPLIHACK_ISSUE1570_KEEP", "kept");
 
         // This run's own context re-adds its alias after the strip.
         let mut context = BTreeMap::new();
@@ -3936,16 +3614,14 @@ fn test_execute_recipe_via_rust_child_sees_no_outer_run_identity() {
         std::fs::create_dir_all(dir).expect("create fixture dir");
     }
     let runner = temp.path().join("recipe-runner-rs");
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"outer-identity-probe\",\"success\":true,\"step_results\":[],\"context\":{\
 \"session_depth\":\"$AMPLIHACK_SESSION_DEPTH\",\"max_depth\":\"$AMPLIHACK_MAX_DEPTH\",\
 \"run_dir\":\"$AMPLIHACK_RUN_DIR\",\"run_id\":\"$AMPLIHACK_RUN_ID\",\
 \"recipe_run_id\":\"$AMPLIHACK_RECIPE_RUN_ID\",\"session_tree_dir\":\"$AMPLIHACK_SESSION_TREE_DIR\",\
 \"tree_id\":\"$AMPLIHACK_TREE_ID\"}}\nEOF\n",
-    )
-    .expect("failed to write runner stub");
-    make_executable(&runner);
+    );
     let recipe = repo.join("recipe.yaml");
     std::fs::write(&recipe, "name: outer-identity-probe\nsteps: []\n").expect("write recipe");
 

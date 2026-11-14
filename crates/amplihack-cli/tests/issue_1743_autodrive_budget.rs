@@ -1011,29 +1011,104 @@ fn usage_rows(fx: &Fixture) -> Vec<Vec<String>> {
         .collect()
 }
 
+/// Issue #1977: the wall budget leaves usage-limit waits out. Both rows are
+/// driven through `autodrive_budget.sh` with the child's duration and the
+/// ledger given explicitly, so nothing here depends on how long anything
+/// took on this host: the same 5 s child reaches a 3 s wall limit with no
+/// wait, and stays under it once a 3 s wait is taken out. Dropping the
+/// subtraction in `add` makes the first half fail.
 #[test]
 fn a_usage_limit_wait_does_not_spend_the_wall_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let wall = &["autodrive_budget_wall_seconds=3"];
+
+    // A 5 s child that waited 3 s leaves 2 s of wall time, under the limit.
+    let waited = dir.path().join("waited");
+    private_dir(&waited);
+    let ledger = waited.join(".wait-crusty-round-1-round");
+    std::fs::write(&ledger, "3\n").unwrap();
+    let (w, l) = (waited.display().to_string(), ledger.display().to_string());
+    let o = helper(
+        "autodrive_budget.sh",
+        &["add", &w, "crusty", "round-1", "round", "5", "--waited", &l],
+    );
+    assert!(o.status.success(), "{}", show(&o));
+    assert_eq!(
+        std::fs::read_to_string(waited.join("autodrive-usage.tsv")).unwrap(),
+        "crusty\tround-1\tround\t1\t2\tunknown\n\
+         crusty\tround-1\twait\t0\t3\tunknown\n"
+    );
+    let o = helper(
+        "autodrive_budget.sh",
+        &[&["check", &w, "crusty", "post", "round-1", "7"][..], wall].concat(),
+    );
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "2 s of wall time is under the 3 s limit: {}",
+        show(&o)
+    );
+    assert!(
+        !waited.join("autodrive-budget-summary.md").exists(),
+        "no limit was reached, so no summary is written"
+    );
+
+    // The control: the same child with no wait spends all 5 s and reaches it.
+    let spent = dir.path().join("spent");
+    private_dir(&spent);
+    let s = spent.display().to_string();
+    let o = helper(
+        "autodrive_budget.sh",
+        &["add", &s, "crusty", "round-1", "round", "5"],
+    );
+    assert!(o.status.success(), "{}", show(&o));
+    assert_eq!(
+        std::fs::read_to_string(spent.join("autodrive-usage.tsv")).unwrap(),
+        "crusty\tround-1\tround\t1\t5\tunknown\n"
+    );
+    let o = helper(
+        "autodrive_budget.sh",
+        &[&["check", &s, "crusty", "post", "round-1", "7"][..], wall].concat(),
+    );
+    assert_eq!(o.status.code(), Some(10), "{}", show(&o));
+    let summary = std::fs::read_to_string(spent.join("autodrive-budget-summary.md")).unwrap();
+    assert!(
+        summary.contains("Limits reached: autodrive_budget_wall_seconds\n"),
+        "{summary}"
+    );
+    assert!(summary.contains("| wall seconds | 5 | 3 |"), "{summary}");
+    assert!(
+        summary.contains("| usage-limit wait seconds | 0 | not counted |"),
+        "{summary}"
+    );
+}
+
+/// The loop itself hands the ledger to `add` and clears it afterwards: one
+/// `wait` row of the waited seconds, the rounds limit the only one reached
+/// (the wall limit is far out of reach, whatever this host's speed), and no
+/// ledger left behind. What the wall budget does with that row is settled by
+/// `a_usage_limit_wait_does_not_spend_the_wall_budget` above.
+#[test]
+fn a_usage_limit_wait_is_recorded_as_its_own_row_and_the_ledger_is_cleared() {
     let Some(fx) = Fixture::new() else { return };
-    // The round waits 3 s for a limit and works for well under 3 s. Without
-    // the wait taken out, the 3 s wall limit would be reached.
     fx.plan(&["CONCERNS|1|0|0|a|3"]);
     let o = run_with(
         &fx,
         "crusty",
-        &[(BUDGET_KEYS[0], "1"), (BUDGET_KEYS[2], "3")],
+        &[(BUDGET_KEYS[0], "1"), (BUDGET_KEYS[2], "3600")],
     );
     let r = result(&o);
     assert_eq!(r["loop_result"], "BUDGET_EXHAUSTED", "{}", show(&o));
     let summary = fx.state_file("autodrive-budget-summary.md").unwrap();
+    let rows = usage_rows(&fx);
     assert!(
         summary.contains("Limits reached: autodrive_budget_loop_rounds\n"),
-        "the wait spent the wall budget:\n{summary}"
+        "the rounds limit is the only one reached:\n{summary}"
     );
     assert!(
         summary.contains("| usage-limit wait seconds | 3 | not counted |"),
         "{summary}"
     );
-    let rows = usage_rows(&fx);
     let wait: Vec<_> = rows.iter().filter(|r| r[2] == "wait").collect();
     assert_eq!(wait.len(), 1, "{rows:?}");
     assert_eq!(
@@ -1041,8 +1116,13 @@ fn a_usage_limit_wait_does_not_spend_the_wall_budget() {
         ["crusty", "round-1", "wait", "0", "3"],
         "{rows:?}"
     );
+    // The summary's wall seconds are the round row alone: the wait row is
+    // reported apart and never added to it.
     let round = rows.iter().find(|r| r[2] == "round").expect("round row");
-    assert!(round[4].parse::<u64>().unwrap() < 3, "{rows:?}");
+    assert!(
+        summary.contains(&format!("| wall seconds | {} | 3600 |", round[4])),
+        "{summary}\n{rows:?}"
+    );
     let json: serde_json::Value =
         serde_json::from_str(&fx.state_file("autodrive-usage.json").unwrap()).unwrap();
     assert_eq!(json["total"]["wait_seconds"], 3);
@@ -1060,30 +1140,38 @@ fn a_usage_limit_wait_does_not_spend_the_wall_budget() {
 
 #[test]
 fn a_wait_ledger_never_takes_out_more_than_the_child_ran() {
-    let Some(fx) = Fixture::new() else { return };
-    fx.set("wait_claim", "999999\nnot-a-number\n");
-    fx.plan(&["CONCERNS|1|1|0|a"]);
-    let o = run_with(&fx, "crusty", &[(BUDGET_KEYS[0], "1")]);
-    assert_eq!(
-        result(&o)["loop_result"],
-        "BUDGET_EXHAUSTED",
-        "{}",
-        show(&o)
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    private_dir(&state);
+    let ledger = state.join(".wait-crusty-round-1-round");
+    std::fs::write(&ledger, "999999\nnot-a-number\n").unwrap();
+    let st = state.display().to_string();
+    let l = ledger.display().to_string();
+    // Supply the child's measured duration explicitly so the credit must
+    // equal that duration, independent of scheduling or clock granularity.
+    let o = helper(
+        "autodrive_budget.sh",
+        &[
+            "add", &st, "crusty", "round-1", "round", "7", "--waited", &l,
+        ],
     );
+    assert!(o.status.success(), "{}", show(&o));
     assert!(
         stderr(&o).contains("malformed line(s) in the usage-limit wait ledger"),
         "{}",
         show(&o)
     );
-    let rows = usage_rows(&fx);
-    let round = rows.iter().find(|r| r[2] == "round").expect("round row");
-    let wait = rows.iter().find(|r| r[2] == "wait").expect("wait row");
-    assert_eq!(round[4], "0", "{rows:?}");
-    let w: u64 = wait[4].parse().unwrap();
-    assert!(
-        (1..=3).contains(&w),
-        "the wait is capped at the round's own time: {rows:?}"
+    let tsv = std::fs::read_to_string(state.join("autodrive-usage.tsv")).unwrap();
+    assert_eq!(
+        tsv,
+        "crusty\tround-1\tround\t1\t0\tunknown\n\
+         crusty\tround-1\twait\t0\t7\tunknown\n"
     );
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(state.join("autodrive-usage.json")).unwrap())
+            .unwrap();
+    assert_eq!(json["total"]["seconds"], 0);
+    assert_eq!(json["total"]["wait_seconds"], 7);
 }
 
 #[test]

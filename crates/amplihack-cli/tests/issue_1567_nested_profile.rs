@@ -92,6 +92,8 @@ impl Fixture {
             .current_dir(&self.work)
             .env_clear()
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            // `env_clear` dropped the probe knob `isolated` set (issue #2019).
+            .env(crate::isolated_amplihack::PROBE_WAIT_ENV, "exit")
             .env(
                 crate::isolated_amplihack::PROC_ROOT_ENV,
                 crate::isolated_amplihack::shared_empty_proc_root(),

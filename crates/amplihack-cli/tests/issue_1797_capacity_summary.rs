@@ -135,6 +135,15 @@ fn seed_history(f: &Fixture, body: &str, mode: u32) {
     fs::set_permissions(history(f), fs::Permissions::from_mode(mode)).unwrap();
 }
 
+/// The table row for profile `p`: the line whose first field is its name.
+/// The live profile's label is `<name> (live)`, so the name is still the
+/// first field.
+fn row<'a>(out: &'a str, p: &str) -> &'a str {
+    out.lines()
+        .find(|l| l.split_whitespace().next() == Some(p))
+        .unwrap_or_else(|| panic!("no row for {p}:\n{out}"))
+}
+
 fn summary_lines(stdout: &str) -> Vec<&str> {
     let (_, block) = stdout
         .split_once("\n\nweekly headroom")
@@ -213,17 +222,69 @@ fn json_has_no_summary_and_summary_json_holds_the_same_array() {
     assert!(s["runway_hours"].is_null());
 }
 
+/// Issue #2019: only `extra` is probed here. `work` and `spare` are
+/// answered from fresh passive readings, which take no child process and
+/// no socket, so neither of them races the 2 s deadline this test sets:
+/// the one thing left on the clock is `extra`'s 30 s sleep against that
+/// deadline, and a busy host can only make a sleep longer. The deadline is
+/// the trigger, and the assertions are on the outcome, as
+/// `docs/howto/keep-tests-passing-under-host-load.md` ("Test that a timeout
+/// fires") requires.
+///
+/// Every assertion below is therefore one a slower host can only make
+/// surer: the two passive profiles start no probe, and `extra`'s row is
+/// the parent's own `timeout`. Nothing here counts `extra`'s record file,
+/// which its stub writes only once it has spawned, inside the window the
+/// deadline is cutting.
 #[test]
 fn a_timed_out_profile_is_unknown_never_zero_or_one_hundred() {
     let f = Fixture::new();
+    f.passive(&[("work", 90, 40), ("spare", 10, 20)]);
     fs::write(f.canned.join(format!("{}.slow", email("extra"))), "").unwrap();
-    let out = usage_ok(&f, &[], &[("AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS", "2")]);
+    let out = usage_ok(
+        &f,
+        &[],
+        &[
+            ("AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS", "300"),
+            ("AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS", "2"),
+        ],
+    );
     // work 60 + spare 80 of 200; extra is out of every figure.
     assert!(
         out.contains("\nweekly headroom      1.40 login-weeks of 2 (70%)\n"),
         "{out}"
     );
     assert!(out.contains("\nunknown              1 profile ("), "{out}");
+    // The passive rows kept their two profiles off the clock entirely. A
+    // probe that never starts leaves no record, so a slower host only makes
+    // these two more certainly 0.
+    for p in ["work", "spare"] {
+        assert_eq!(
+            f.usage_probes(p),
+            0,
+            "{p} was read passively and must start no probe:\n{out}"
+        );
+    }
+    // That `extra` was probed is read from its row rather than from the
+    // stub's record file. `no reading (timeout)` is the parent's own
+    // account of having started a probe and reached the deadline without an
+    // answer, and it distinguishes `extra` from a profile that was never
+    // probed at all, which is what the record file was here to rule out.
+    // The record (`usage_probes("extra")`) is written by the child only
+    // after it spawns, finds its e-mail address and redirects, all inside
+    // the same 2 s window, so any assertion on that count, exactly one or
+    // at least one alike, would reinstate the race this test exists to
+    // remove.
+    assert!(
+        row(&out, "extra").contains("no reading (timeout)"),
+        "extra is the row the deadline cut:\n{out}"
+    );
+    for p in ["work", "spare"] {
+        assert!(
+            !row(&out, p).contains("no reading"),
+            "{p} was answered passively:\n{out}"
+        );
+    }
 }
 
 #[test]

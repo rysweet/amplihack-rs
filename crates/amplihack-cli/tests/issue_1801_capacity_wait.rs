@@ -135,7 +135,7 @@ fn nested_x(f: &Fixture) -> Command {
 /// scale does not bound a failing run: if the change never ends the wait,
 /// `run_watching` kills the step at the shared 10-minute ceiling and the
 /// test fails there.
-fn real_clock(c: &mut Command) {
+pub(crate) fn real_clock(c: &mut Command) {
     c.env_remove("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_NOW")
         .env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "10");
 }
@@ -172,7 +172,7 @@ fn run_during_wait(f: &Fixture, c: &mut Command, then: impl FnOnce() + Send + 's
     out
 }
 
-fn run_with_rotator_cycle_during_wait(f: &Fixture, c: &mut Command) -> Output {
+pub(crate) fn run_with_rotator_cycle_during_wait(f: &Fixture, c: &mut Command) -> Output {
     let profiles = f.profiles.clone();
     run_during_wait(f, c, move || {
         write_cycle(&profiles, "Y", real_now());

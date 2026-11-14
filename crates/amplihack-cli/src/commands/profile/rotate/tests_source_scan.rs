@@ -657,7 +657,11 @@ fn live_refresh_only_refreshes_an_expired_login() {
     }
     let direct =
         fs::read_to_string(rotate_dir().parent().unwrap().join("usage_direct.rs")).unwrap();
-    let body = body_of(&direct, "refresh_expired");
+    // Issue #2019: `refresh_expired` delegates to `refresh_expired_with`,
+    // which takes an injected clock; the expiry check lives there.
+    let wrapper = body_of(&direct, "refresh_expired");
+    assert!(wrapper.contains("refresh_expired_with("));
+    let body = body_of(&direct, "refresh_expired_with");
     assert!(body.contains("at <= req.now_ms"), "only an expired token");
     assert!(!body.contains("get_usage") && !body.contains("profile_url"));
 }

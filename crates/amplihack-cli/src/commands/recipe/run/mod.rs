@@ -509,3 +509,6 @@ mod tests_terminal_record;
 mod tests_termination;
 #[cfg(test)]
 mod tests_termination_contract;
+
+#[cfg(all(test, unix))]
+mod test_runner;

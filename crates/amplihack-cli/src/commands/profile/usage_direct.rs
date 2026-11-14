@@ -19,6 +19,7 @@ use super::auto_switch::kit::{
 use super::rotate::identify::Account;
 use super::usage_parse::UsageReport;
 use super::usage_request::{ExtraUsageShape, Limits, parse_limits};
+use amplihack_utils::clock::{Clock, SystemClock};
 use amplihack_utils::secure_files::PrivateTemp;
 use serde_json::{Value, json};
 use std::ffi::{OsStr, OsString};
@@ -518,6 +519,9 @@ pub(super) fn refresh_status(code: u16) -> &'static str {
 /// `TimedOut` error, which `ureq` reports as `ErrorKind::Dns`, and no byte
 /// of the request is sent. A lookup given up on keeps its thread until the
 /// system resolver returns; its answer is dropped.
+///
+/// `until` must be a real [`Instant`] (from `Instant::now()`), never one from
+/// an injected [`Clock`]: the wait is measured against the real clock.
 pub(super) fn bounded_lookup<L>(
     until: Instant,
     lookup: L,
@@ -589,27 +593,136 @@ pub(super) struct Request<'a> {
     pub(super) now_ms: i64,
 }
 
+/// What a read takes from its surroundings (issue #2019): the clock its
+/// deadline is measured on and the count of refreshes holding a lock.
+/// [`read`] and [`refresh_expired`] use [`Ctx::system`]; tests pass their own
+/// clock and counter to [`read_with`] and [`refresh_expired_with`]. Real
+/// socket timeouts stay real in production. Tests can supply an independent
+/// transport guard or an in-process transport so virtual budgets never become
+/// short real socket deadlines.
+pub(super) struct Ctx<'a> {
+    clock: &'a dyn Clock,
+    refreshing: &'a AtomicUsize,
+    #[cfg(test)]
+    transport_guard: Option<Duration>,
+    #[cfg(test)]
+    transport: Option<&'a dyn TestTransport>,
+}
+
+#[cfg(test)]
+pub(super) trait TestTransport {
+    fn send(
+        &self,
+        request: ureq::Request,
+        payload: Option<&str>,
+    ) -> Result<ureq::Response, Box<HttpError>>;
+}
+
+impl<'a> Ctx<'a> {
+    /// A context with `clock` and the counter `refreshing`.
+    #[cfg(test)]
+    pub(super) fn new(clock: &'a dyn Clock, refreshing: &'a AtomicUsize, guard: Duration) -> Self {
+        Self {
+            clock,
+            refreshing,
+            transport_guard: Some(guard),
+            transport: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_transport(mut self, transport: &'a dyn TestTransport) -> Self {
+        self.transport = Some(transport);
+        self
+    }
+
+    fn send(
+        &self,
+        request: ureq::Request,
+        payload: Option<&str>,
+    ) -> Result<ureq::Response, Box<HttpError>> {
+        #[cfg(test)]
+        if let Some(transport) = self.transport {
+            return transport.send(request, payload);
+        }
+        match payload {
+            Some(payload) => request.send_string(payload),
+            None => request.call(),
+        }
+        .map_err(Box::new)
+    }
+
+    fn deadline(&self, timeout: Duration) -> Deadline<'a> {
+        let deadline = Deadline::after(timeout, self.clock);
+        #[cfg(test)]
+        let deadline = Deadline {
+            transport_guard: self.transport_guard,
+            ..deadline
+        };
+        deadline
+    }
+
+    /// The real clock and the process-wide counter that
+    /// `refreshes_in_progress` and [`wait_for_refreshes`] read (SR-9).
+    pub(super) fn system() -> Ctx<'static> {
+        Ctx {
+            clock: &SystemClock,
+            refreshing: &REFRESHING,
+            #[cfg(test)]
+            transport_guard: None,
+            #[cfg(test)]
+            transport: None,
+        }
+    }
+}
+
 /// The end of one read, fixed when it starts. ureq's own `timeout` starts
 /// again on every request, so each request is given only the time left:
 /// the GET, the refresh POST and the second GET together take at most the
 /// read's one deadline, not one deadline each.
-#[derive(Debug, Clone, Copy)]
-struct Deadline(Instant);
+#[derive(Clone, Copy)]
+struct Deadline<'a> {
+    end: Instant,
+    clock: &'a dyn Clock,
+    #[cfg(test)]
+    transport_guard: Option<Duration>,
+}
 
-impl Deadline {
-    fn after(timeout: Duration) -> Self {
-        let now = Instant::now();
-        Self(now.checked_add(timeout).unwrap_or(now))
+impl<'a> Deadline<'a> {
+    /// Fails closed: a timeout too large to add ends the read at once.
+    fn after(timeout: Duration, clock: &'a dyn Clock) -> Self {
+        let now = clock.now();
+        Self {
+            end: now.checked_add(timeout).unwrap_or(now),
+            clock,
+            #[cfg(test)]
+            transport_guard: None,
+        }
     }
 
     /// The time left, or `timeout` once none is: no request starts then.
     fn left(self) -> Result<Duration, &'static str> {
-        let left = self.0.saturating_duration_since(Instant::now());
+        let left = self.end.saturating_duration_since(self.clock.now());
         if left.is_zero() {
             Err(reason::TIMEOUT)
         } else {
             Ok(left)
         }
+    }
+
+    /// Check the logical deadline even when a test gives blocking I/O a
+    /// separate hang guard. Production always uses the remaining budget.
+    fn transport_timeout(self) -> Result<Duration, &'static str> {
+        let left = self.left()?;
+        Ok(self.transport_step(left))
+    }
+
+    fn transport_step(self, step: Duration) -> Duration {
+        #[cfg(test)]
+        if let Some(guard) = self.transport_guard {
+            return guard;
+        }
+        step
     }
 }
 
@@ -631,7 +744,17 @@ pub(super) struct Direct {
 /// that verdict (`no oauth token`, `no credentials file`, `no refresh token`)
 /// even when the endpoints are unusable. Nothing is sent for any of them.
 pub(super) fn read(ep: &Endpoints, req: &Request<'_>) -> Result<Direct, &'static str> {
-    let deadline = Deadline::after(req.timeout);
+    read_with(ep, req, &Ctx::system())
+}
+
+/// [`read`] with the deadline measured on `ctx.clock` and the refresh
+/// counted in `ctx.refreshing`.
+pub(super) fn read_with(
+    ep: &Endpoints,
+    req: &Request<'_>,
+    ctx: &Ctx<'_>,
+) -> Result<Direct, &'static str> {
+    let deadline = ctx.deadline(req.timeout);
     let creds = load(req.creds_dir)?;
     // A plain comparison: a missing or non-integer `expiresAt` is `None` and
     // never counts as expired here.
@@ -655,17 +778,17 @@ pub(super) fn read(ep: &Endpoints, req: &Request<'_>) -> Result<Direct, &'static
         .is_some_and(|at| at <= req.now_ms.saturating_add(margin_ms));
     if due {
         if req.allow_refresh {
-            let fresh = refresh(ep, req, &creds.access, deadline)?;
-            return get_usage(&agent, ep, &fresh, now_s, deadline);
+            let fresh = refresh(ep, req, ctx, &creds.access, deadline)?;
+            return get_usage(&agent, ep, &fresh, now_s, deadline, ctx);
         }
         if creds.expires_at_ms.is_some_and(|at| at <= req.now_ms) {
             return Err(reason::EXPIRED);
         }
     }
-    match get_usage(&agent, ep, &creds.access, now_s, deadline) {
+    match get_usage(&agent, ep, &creds.access, now_s, deadline, ctx) {
         Err(r) if r == reason::HTTP_401 && req.allow_refresh => {
-            let fresh = refresh(ep, req, &creds.access, deadline)?;
-            get_usage(&agent, ep, &fresh, now_s, deadline)
+            let fresh = refresh(ep, req, ctx, &creds.access, deadline)?;
+            get_usage(&agent, ep, &fresh, now_s, deadline, ctx)
         }
         other => other,
     }
@@ -682,7 +805,7 @@ pub(super) fn account(
     timeout: Duration,
     now_ms: i64,
 ) -> Result<Account, &'static str> {
-    let deadline = Deadline::after(timeout);
+    let deadline = Deadline::after(timeout, &SystemClock);
     if !ep.usable() {
         return Err(reason::TRANSPORT);
     }
@@ -722,7 +845,17 @@ pub(super) fn account(
 /// refresh budget left. No usage or identity request is made here; the
 /// caller reads the refreshed login's identity afresh.
 pub(super) fn refresh_expired(ep: &Endpoints, req: &Request<'_>) -> Result<bool, &'static str> {
-    let deadline = Deadline::after(req.timeout);
+    refresh_expired_with(ep, req, &Ctx::system())
+}
+
+/// [`refresh_expired`] with the deadline measured on `ctx.clock` and the
+/// refresh counted in `ctx.refreshing`.
+pub(super) fn refresh_expired_with(
+    ep: &Endpoints,
+    req: &Request<'_>,
+    ctx: &Ctx<'_>,
+) -> Result<bool, &'static str> {
+    let deadline = ctx.deadline(req.timeout);
     let creds = load(req.creds_dir)?;
     // Expiry first: a token that has not expired needs no endpoint, so
     // unusable endpoints must not be reported as a failed refresh.
@@ -735,7 +868,7 @@ pub(super) fn refresh_expired(ep: &Endpoints, req: &Request<'_>) -> Result<bool,
     if !req.allow_refresh {
         return Err(reason::EXPIRED);
     }
-    refresh(ep, req, &creds.access, deadline).map(|_| true)
+    refresh(ep, req, ctx, &creds.access, deadline).map(|_| true)
 }
 
 /// Issue #1962: whether the token in `creds_dir` is at or past its expiry, so a
@@ -744,14 +877,37 @@ pub(super) fn expired(creds_dir: &Path, now_ms: i64) -> bool {
     load(creds_dir).is_ok_and(|c| c.expires_at_ms.is_some_and(|at| at <= now_ms))
 }
 
-/// The agent for the `GET`s. Its DNS lookups end at the read's deadline.
-fn agent(ep: &Endpoints, timeout: Duration, deadline: Deadline) -> ureq::Agent {
-    let step = MAX_STEP
+/// The connect and read step of the `GET` agent for a read of `timeout`:
+/// a second under the timeout, from [`MIN_STEP`] to [`MAX_STEP`].
+pub(super) fn get_step(timeout: Duration) -> Duration {
+    MAX_STEP
         .min(timeout.saturating_sub(Duration::from_secs(1)))
-        .max(MIN_STEP);
-    agent_builder(ep, timeout, step)
-        .resolver(bounded_lookup(deadline.0, system_lookup))
-        .build()
+        .max(MIN_STEP)
+}
+
+/// The connect and read step of a refresh POST sent with `left` of the read
+/// to go: all of it, up to [`MAX_STEP`]. Never cut down to [`get_step`], so a
+/// short probe deadline does not abandon a refresh the budget admitted.
+pub(super) fn post_step(left: Duration) -> Duration {
+    left.min(MAX_STEP)
+}
+
+/// The agent for the `GET`s. Its DNS lookups end once the time left on the
+/// read's deadline has passed in real time; with none left they end at once,
+/// and the caller's own check of [`Deadline::left`] sends no request then.
+fn agent(ep: &Endpoints, timeout: Duration, deadline: Deadline<'_>) -> ureq::Agent {
+    let left = deadline.transport_timeout().unwrap_or_default();
+    let now = Instant::now();
+    agent_builder(
+        ep,
+        deadline.transport_step(timeout),
+        deadline.transport_step(get_step(timeout)),
+    )
+    .resolver(bounded_lookup(
+        now.checked_add(left).unwrap_or(now),
+        system_lookup,
+    ))
+    .build()
 }
 
 fn agent_builder(ep: &Endpoints, timeout: Duration, step: Duration) -> ureq::AgentBuilder {
@@ -781,19 +937,20 @@ fn get_usage(
     ep: &Endpoints,
     token: &Token,
     now_s: i64,
-    deadline: Deadline,
+    deadline: Deadline<'_>,
+    ctx: &Ctx<'_>,
 ) -> Result<Direct, &'static str> {
     let url = ep.usage_url();
     let req = agent
         .get(&url)
-        .timeout(deadline.left()?)
+        .timeout(deadline.transport_timeout()?)
         .set("Authorization", &token.header())
         .set("anthropic-beta", BETA)
         .set("Accept", "application/json");
     if !parsed_agrees(&req, &url) {
         return Err(reason::TRANSPORT);
     }
-    let resp = match req.call() {
+    let resp = match ctx.send(req, None) {
         Ok(resp) => resp,
         Err(e) => return Err(map_err(&e)),
     };
@@ -814,45 +971,77 @@ fn get_usage(
 // ---------------------------------------------------------------------------
 
 /// Refreshes holding or about to take a lock right now, in this process.
+#[cfg(test)]
 pub(super) fn refreshes_in_progress() -> usize {
     REFRESHING.load(Ordering::SeqCst)
+}
+
+/// The process-wide refresh count itself, for a test that waits on it with a
+/// clock of its own (issue #2019).
+#[cfg(test)]
+pub(super) fn refresh_counter() -> &'static AtomicUsize {
+    &REFRESHING
 }
 
 /// Waits up to `limit` for every refresh in progress to release its lock;
 /// whether none is left.
 pub(super) fn wait_for_refreshes(limit: Duration) -> bool {
-    let start = Instant::now();
-    while refreshes_in_progress() > 0 {
-        if start.elapsed() >= limit {
+    wait_for_refreshes_on(&REFRESHING, limit, &SystemClock)
+}
+
+/// [`wait_for_refreshes`] on any counter and clock (issue #2019): `true` once
+/// `counter` is 0, `false` once `limit` has passed on `clock` with refreshes
+/// still running. A counter already at 0 returns without sleeping. Between
+/// checks it sleeps [`POLL`] on `clock`. A `limit` too large to add to the
+/// clock's present has no end.
+pub(crate) fn wait_for_refreshes_on(
+    counter: &AtomicUsize,
+    limit: Duration,
+    clock: &dyn Clock,
+) -> bool {
+    let deadline = clock.now().checked_add(limit);
+    while counter.load(Ordering::SeqCst) > 0 {
+        if deadline.is_some_and(|end| clock.now() >= end) {
             return false;
         }
-        std::thread::sleep(POLL);
+        clock.sleep(POLL);
     }
     true
 }
 
 /// Claude's refresh lock in one directory, taken by this process. Dropping
-/// it removes the lock, only if it is still the one created here.
+/// it removes the lock, only if it is still the one created here, and takes
+/// the refresh off the counter it was added to.
 struct Held<'a> {
     dir: &'a Path,
     ino: u64,
+    refreshing: &'a AtomicUsize,
 }
 
 impl<'a> Held<'a> {
     /// SR-9: the count goes up before `cancel` is read, and a stopping
     /// rotator sets `cancel` before it waits for the count to reach zero
     /// (both `SeqCst`). Either the rotator sees this refresh and waits for
-    /// it, or this refresh sees the stop and takes no lock.
-    fn take(dir: &'a Path, cancel: &AtomicBool) -> Result<Self, &'static str> {
-        REFRESHING.fetch_add(1, Ordering::SeqCst);
+    /// it, or this refresh sees the stop and takes no lock. Every change to
+    /// the count is made on `refreshing`, the one counter of this read.
+    fn take(
+        dir: &'a Path,
+        cancel: &AtomicBool,
+        refreshing: &'a AtomicUsize,
+    ) -> Result<Self, &'static str> {
+        refreshing.fetch_add(1, Ordering::SeqCst);
         if cancel.load(Ordering::SeqCst) {
-            REFRESHING.fetch_sub(1, Ordering::SeqCst);
+            refreshing.fetch_sub(1, Ordering::SeqCst);
             return Err(reason::REFRESH_BUSY);
         }
         match take_refresh_lock_at(dir) {
-            Ok(ino) => Ok(Self { dir, ino }),
+            Ok(ino) => Ok(Self {
+                dir,
+                ino,
+                refreshing,
+            }),
             Err(e) => {
-                REFRESHING.fetch_sub(1, Ordering::SeqCst);
+                refreshing.fetch_sub(1, Ordering::SeqCst);
                 Err(if e.kind() == std::io::ErrorKind::AlreadyExists {
                     reason::REFRESH_BUSY
                 } else {
@@ -868,7 +1057,7 @@ impl Drop for Held<'_> {
         // A lock that is no longer ours is left alone; one that is ours
         // but cannot be removed is reported by the release itself.
         release_refresh_lock_at(self.dir, self.ino);
-        REFRESHING.fetch_sub(1, Ordering::SeqCst);
+        self.refreshing.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -891,8 +1080,9 @@ fn journal_present(journals: &[PathBuf]) -> bool {
 fn refresh(
     ep: &Endpoints,
     req: &Request<'_>,
+    ctx: &Ctx<'_>,
     used: &Token,
-    deadline: Deadline,
+    deadline: Deadline<'_>,
 ) -> Result<Token, &'static str> {
     if !dir_private(req.creds_dir) {
         return Err(reason::REFRESH_REFUSED);
@@ -900,7 +1090,7 @@ fn refresh(
     if journal_present(req.journals) {
         return Err(reason::REFRESH_BUSY);
     }
-    let _held = Held::take(req.creds_dir, req.cancel)?;
+    let _held = Held::take(req.creds_dir, req.cancel, ctx.refreshing)?;
     // Both checks again under the lock: the first pair only saves a
     // `mkdir` in a directory that would be refused anyway (SR-6).
     if !dir_private(req.creds_dir) {
@@ -934,16 +1124,17 @@ fn refresh(
     // which `ureq` fixes before the lookup starts, so a slow lookup is
     // `ErrorKind::Dns` (`refresh failed`, nothing sent) and never the
     // connect deadline's I/O timeout.
-    let step = left.min(MAX_STEP);
+    let step = deadline.transport_step(post_step(left));
     let dns = bounded_lookup(
         Instant::now() + step.saturating_sub(MIN_STEP),
         system_lookup,
     );
-    let post = agent_builder(ep, left, step)
+    let transport_timeout = deadline.transport_step(left);
+    let post = agent_builder(ep, transport_timeout, step)
         .resolver(dns)
         .build()
         .post(url)
-        .timeout(left)
+        .timeout(transport_timeout)
         .set("Content-Type", "application/json")
         .set("Accept", "application/json")
         .set("anthropic-beta", BETA);
@@ -962,8 +1153,8 @@ fn refresh(
     // `refresh not saved`, which tells the user to log in again; only a
     // failure that provably came before the request was written, or a 3xx or
     // 4xx status the server turned it away with, is `refresh failed`.
-    let resp = post
-        .send_string(&payload.to_string())
+    let resp = ctx
+        .send(post, Some(&payload.to_string()))
         .map_err(|e| post_failure(&e))?;
     if resp.status() != 200 {
         return Err(refresh_status(resp.status()));
@@ -1009,4 +1200,49 @@ fn refresh(
     let bytes = serde_json::to_vec_pretty(&whole).map_err(|_| reason::REFRESH_NOT_SAVED)?;
     temp.commit(&bytes).map_err(|_| reason::REFRESH_NOT_SAVED)?;
     Ok(fresh)
+}
+
+#[cfg(test)]
+mod transport_deadline_tests {
+    use super::*;
+    use crate::test_support::virtual_clock::VirtualClock;
+
+    #[test]
+    fn transport_guard_is_independent_but_never_admits_a_spent_logical_budget() {
+        let clock = VirtualClock::new();
+        let counter = AtomicUsize::new(0);
+        let budget = Duration::from_secs(5);
+        let guard = Duration::from_secs(120);
+        let deadline = Ctx::new(&clock, &counter, guard).deadline(budget);
+        assert_eq!(deadline.transport_timeout(), Ok(guard));
+        assert_eq!(deadline.transport_step(get_step(budget)), guard);
+        assert_eq!(deadline.transport_step(post_step(budget)), guard);
+        clock.advance(Duration::from_secs(4));
+        assert_eq!(deadline.left(), Ok(Duration::from_secs(1)));
+        assert_eq!(deadline.transport_timeout(), Ok(guard));
+        clock.advance(Duration::from_secs(1));
+        assert_eq!(deadline.transport_timeout(), Err(reason::TIMEOUT));
+    }
+
+    #[test]
+    fn system_transport_keeps_production_steps_and_remaining_budget() {
+        let clock = VirtualClock::new();
+        let budget = Duration::from_secs(5);
+        // No test override: the same Deadline constructor account() and the
+        // system context use, with a controlled clock for exact assertions.
+        let deadline = Deadline::after(budget, &clock);
+        assert_eq!(Ctx::system().transport_guard, None);
+        assert_eq!(
+            deadline.transport_step(get_step(budget)),
+            Duration::from_secs(4)
+        );
+        assert_eq!(deadline.transport_step(post_step(budget)), budget);
+        clock.advance(Duration::from_secs(4));
+        assert_eq!(deadline.transport_timeout(), Ok(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn system_context_uses_the_process_wide_refresh_counter() {
+        assert!(std::ptr::eq(Ctx::system().refreshing, refresh_counter()));
+    }
 }

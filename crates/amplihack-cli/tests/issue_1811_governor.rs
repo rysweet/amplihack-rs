@@ -9,6 +9,10 @@ use std::fs;
 
 const DENIED: i32 = 80;
 
+#[path = "issue_1811_governor/child.rs"]
+mod child;
+use child::GovernedChild;
+
 #[test]
 fn no_readings_fails_open_and_status_names_the_reason() {
     let f = Fixture::new();
@@ -85,24 +89,52 @@ fn concurrent_starts_never_exceed_the_limit() {
     let f = Fixture::new();
     f.readings(&[("alpha", 10.0, 20.0)]);
     f.governor_config("max_concurrency = 2");
-    let children: Vec<_> = (0..4)
+    // Every admitted stub is held until the test releases it, so the runs
+    // overlap for real however slow the host is (issue #1977: no sleep).
+    let mut children: Vec<_> = (0..4)
         .map(|i| {
-            f.cmd(&[
-                "claude",
-                "--workstream",
-                &format!("ws-{i}"),
-                "--",
-                "-p",
-                "x",
-            ])
-            .env("AMPLIHACK_GOVERNOR_WAIT", "120")
-            .env("STUB_SLEEP", "2")
-            .spawn()
-            .unwrap()
+            GovernedChild::spawn(
+                f.cmd(&[
+                    "claude",
+                    "--workstream",
+                    &format!("ws-{i}"),
+                    "--",
+                    "-p",
+                    "x",
+                ])
+                .env("AMPLIHACK_GOVERNOR_WAIT", "120")
+                .env("STUB_HOLD", "1"),
+            )
         })
         .collect();
-    for c in children {
-        let out = c.wait_with_output().unwrap();
+    let mut released = std::collections::HashSet::new();
+    let mut outputs = Vec::new();
+    while released.len() < 4 {
+        // Wait until as many stubs are held as the limit allows; release
+        // them only then, so a governor that admitted more is seen.
+        let want = (4 - released.len()).min(2);
+        crate::support::wait::wait_until("the admitted stubs to be held", || {
+            // A slot release may miss its lock on a loaded host. Reap
+            // exited wrappers so their PIDs cannot keep those slots live.
+            children.retain_mut(|child| {
+                if let Some(output) = child.try_output() {
+                    outputs.push(output);
+                    false
+                } else {
+                    true
+                }
+            });
+            f.held(&released).len() >= want
+        });
+        let held = f.held(&released);
+        assert!(held.len() <= 2, "admitted {} at once: {held:?}", held.len());
+        for pid in held {
+            f.release(&pid);
+            released.insert(pid);
+        }
+    }
+    outputs.extend(children.into_iter().map(GovernedChild::output));
+    for out in outputs {
         assert!(out.status.success(), "{}", describe(&out));
     }
     assert_eq!(f.claude_runs(), 4);

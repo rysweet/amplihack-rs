@@ -871,6 +871,18 @@ jobs:
           -p amplihack -p amplihack-hooks-bin
           --features amplihack-hooks-bin/signal
 
+      # The release build compiles neither cfg(test) nor debug_assertions
+      # code. Check the Unix tests of the crates with injected clocks and FIFO
+      # fixtures, and amplihack-utils' debug-only probe capture path
+      # (binary_finder::to_exit: poll, fcntl, FIONREAD), on macOS too, where
+      # Linux-only pidfds are unavailable. The dev profile, not --release,
+      # keeps debug_assertions on.
+      - name: Check test compilation (macOS)
+        if: runner.os == 'macOS'
+        run: >
+          cargo check --locked --tests --target ${{ matrix.target }}
+          -p amplihack-cli -p amplihack-utils -p amplihack-hooks
+
       # Outside-in: drive the real hooks binary through session-stop and
       # user-prompt-submit, as Claude Code does (issue #1483).
       - name: Outside-in — memory injection via the real hooks binary (issue #1483)

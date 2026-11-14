@@ -168,6 +168,26 @@ impl EnvGuard {
         }
         Self { previous }
     }
+
+    /// Set `key` to `value` until the guard is dropped. The value `key` had
+    /// before the guard first touched it is restored on drop, panics included.
+    pub(crate) fn assign(&mut self, key: &str, value: impl AsRef<OsStr>) {
+        self.remember(key);
+        unsafe { std::env::set_var(key, value) };
+    }
+
+    /// Remove `key` until the guard is dropped, restoring it on drop.
+    pub(crate) fn clear(&mut self, key: &str) {
+        self.remember(key);
+        unsafe { std::env::remove_var(key) };
+    }
+
+    fn remember(&mut self, key: &str) {
+        if !self.previous.iter().any(|(name, _)| name == key) {
+            self.previous
+                .push((OsString::from(key), std::env::var_os(key)));
+        }
+    }
 }
 
 /// The variables that name an outer recipe run (#1984): the shell helper's five
@@ -472,3 +492,30 @@ pub(crate) fn write_executable(path: &Path, body: &str) {
 
 #[path = "test_support_proc_guard.rs"]
 mod proc_guard;
+
+/// The one hang guard of `tests/support/wait.rs`, for lib tests (issue #2019).
+#[path = "../tests/support/wait.rs"]
+pub(crate) mod wait;
+
+/// The fake clocks shared by every test crate (issue #2019).
+#[path = "../tests/support/virtual_clock.rs"]
+pub(crate) mod virtual_clock;
+
+#[cfg(unix)]
+#[path = "../tests/support/unix_process.rs"]
+pub(crate) mod unix_process;
+
+/// A gate that holds one side of a test at a known point (issue #2019).
+#[path = "test_support/test_gate.rs"]
+pub(crate) mod test_gate;
+
+/// Wait on and kill a process through a pidfd (issue #2019).
+#[cfg(target_os = "linux")]
+#[path = "test_support/pidfd_wait.rs"]
+pub(crate) mod pidfd_wait;
+
+// Issue #2019: contracts of the event-wait helpers (`test_gate`, `wait`,
+// `pidfd_wait`) and of the stub writer's mode check.
+#[cfg(unix)]
+#[path = "test_support/tests_2019_helpers.rs"]
+mod tests_2019_helpers;

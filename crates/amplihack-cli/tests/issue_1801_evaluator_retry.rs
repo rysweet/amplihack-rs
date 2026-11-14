@@ -26,13 +26,12 @@
 use crate::issue_1618_fixture::{Fixture, WEEKLY_TEXT, describe, events, executable, text};
 use crate::issue_1618_wait_profiles::with_profiles;
 use crate::issue_1801_capacity_wait::{
-    assert_no_account_detail, real_now, rotator_running, write_cycle, x_is_live,
+    assert_no_account_detail, real_clock, rotator_running, run_with_rotator_cycle_during_wait,
+    x_is_live,
 };
 use crate::support::quiet_process::in_quiet_process;
 use std::fs;
-use std::process::Output;
-use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::process::{Command, Output};
 
 const VERDICT: &str = "LOOP_HEALTH: CONTINUE — the round made progress";
 const STEP: &str = "2";
@@ -71,7 +70,8 @@ steps:
     command: "true"
 "#;
 
-fn run_evaluator(f: &Fixture, real_clock: bool, env: &[(&str, &str)]) -> Output {
+/// The `recipe run` command for the evaluator recipe, with `env` set.
+fn evaluator_cmd(f: &Fixture, env: &[(&str, &str)]) -> Command {
     let runner = f.tools.join("recipe-runner-rs");
     executable(&runner, STUB_RUNNER);
     let recipe = f.root.join("loop-health-evaluator.yaml");
@@ -90,37 +90,23 @@ fn run_evaluator(f: &Fixture, real_clock: bool, env: &[(&str, &str)]) -> Output 
         .env("LIMIT_STEP", STEP)
         .env("LIMIT_MESSAGE", WEEKLY_TEXT)
         .env("VERDICT", VERDICT);
-    if real_clock {
-        // The fixture's virtual clock would put the wait's start before any
-        // real-time cycle. Sped up as in `issue_1801_capacity_wait`.
-        c.env_remove("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_NOW")
-            .env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "1000");
-    }
     for (k, v) in env {
         c.env(k, v);
     }
-    f.run(&mut c)
+    c
 }
 
-/// Writes a fresh rotator cycle once step-02 has made its first call and
-/// the second has turned over.
-fn rotator_cycle_during_wait(f: &Fixture) -> JoinHandle<()> {
-    let count = f.records.join(format!("count.{STEP}"));
-    let profiles = f.profiles.clone();
-    std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while Instant::now() < deadline {
-            let seen = fs::read_to_string(&count)
-                .ok()
-                .and_then(|s| s.trim().parse::<u32>().ok());
-            if seen == Some(1) {
-                std::thread::sleep(Duration::from_millis(1200));
-                write_cycle(&profiles, "Y", real_now());
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    })
+/// Runs the evaluator on the real clock, sped up as in
+/// `issue_1801_capacity_wait` (the fixture's virtual clock would put the
+/// wait's start before any real-time cycle), and writes a fresh rotator
+/// cycle once the step's wait has printed its `start` line. Issue #2019: the
+/// cycle used to be written a fixed 1.2 s after step-02's first call, which
+/// on a loaded host could come before the wait started, so the cycle was not
+/// fresh and the wait ran to its maximum.
+fn run_evaluator_with_cycle_during_wait(f: &Fixture) -> Output {
+    let mut c = evaluator_cmd(f, &[]);
+    real_clock(&mut c);
+    run_with_rotator_cycle_during_wait(f, &mut c)
 }
 
 fn usage_limit_class_lines(out: &Output) -> Vec<String> {
@@ -149,9 +135,7 @@ fn g1_a_limited_evaluator_step_is_retried_and_returns_its_verdict() {
             let f = with_profiles();
             x_is_live(&f);
             let _rotator = rotator_running(&f);
-            let writer = rotator_cycle_during_wait(&f);
-            let out = run_evaluator(&f, true, &[]);
-            writer.join().unwrap();
+            let out = run_evaluator_with_cycle_during_wait(&f);
 
             assert!(out.status.success(), "{}", describe(&out));
             assert_eq!(f.count(STEP), 2, "one limited call, one retry");
@@ -190,7 +174,10 @@ fn g1_an_evaluator_wait_that_expires_fails_the_step_as_usage_limit() {
             let f = with_profiles();
             x_is_live(&f);
             let _rotator = rotator_running(&f);
-            let out = run_evaluator(&f, false, &[("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "0")]);
+            let out = f.run(&mut evaluator_cmd(
+                &f,
+                &[("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "0")],
+            ));
 
             assert!(!out.status.success(), "{}", describe(&out));
             assert_eq!(f.count(STEP), 1, "no retry once the wait expired");

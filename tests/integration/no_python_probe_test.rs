@@ -1,3 +1,4 @@
+use amplihack_utils::clock::{Clock, SystemClock};
 /// Integration tests: AC9 no-Python probe — extended coverage (Issue #77).
 ///
 /// These tests validate that the amplihack binary handles code-graph subcommands
@@ -20,8 +21,9 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::sync::mpsc;
+
+use crate::wait::{CEILING, wait_child};
 
 /// Returns the path to the compiled `amplihack` binary.
 fn amplihack_bin() -> PathBuf {
@@ -130,113 +132,197 @@ fn strip_ansi(input: &str) -> String {
     String::from_utf8_lossy(&output).into_owned()
 }
 
-fn read_until_quiet(master: &mut fs::File, buffer: &mut Vec<u8>, duration: Duration) {
-    let deadline = Instant::now() + duration;
-    let mut chunk = [0u8; 4096];
-
-    loop {
-        match master.read(&mut chunk) {
-            Ok(0) => {
-                if Instant::now() >= deadline {
-                    break;
-                }
-                sleep(Duration::from_millis(20));
-            }
-            Ok(read) => {
-                buffer.extend_from_slice(&chunk[..read]);
-            }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                if Instant::now() >= deadline {
-                    break;
-                }
-                sleep(Duration::from_millis(20));
-            }
-            Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
-            Err(error) => panic!("failed to read PTY output: {error}"),
-        }
-    }
+/// The text a terminal would show for `bytes`, without escape sequences.
+fn screen(bytes: &[u8]) -> String {
+    strip_ansi(&String::from_utf8_lossy(bytes))
 }
 
-/// Poll the PTY master until `needle` appears somewhere in the accumulated
-/// buffer, or the wall-clock deadline is reached.
-///
-/// Unlike `read_until_quiet`, this does not exit as soon as the deadline
-/// passes — it keeps reading until the expected content arrives or time is
-/// truly up.  It is the correct primitive to use when the test needs to
-/// *observe* a specific string rather than merely wait a fixed amount of time.
-///
-/// Returns `true` if the needle was found, `false` on timeout.
-fn poll_until_output_contains(
-    master: &mut fs::File,
-    buffer: &mut Vec<u8>,
-    needle: &str,
-    timeout: Duration,
-) -> bool {
-    let deadline = Instant::now() + timeout;
-    let mut chunk = [0u8; 4096];
-
-    loop {
-        // Check the current accumulated buffer first.
-        let current = strip_ansi(&String::from_utf8_lossy(buffer));
-        if current.contains(needle) {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        match master.read(&mut chunk) {
-            Ok(0) => {
-                sleep(Duration::from_millis(20));
-            }
-            Ok(read) => {
-                buffer.extend_from_slice(&chunk[..read]);
-            }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                sleep(Duration::from_millis(20));
-            }
-            Err(error) if error.raw_os_error() == Some(libc::EIO) => return false,
-            Err(error) => panic!("failed to read PTY output: {error}"),
-        }
-    }
+/// The frames drawn in `text` that have ended, because a later frame has
+/// begun. Every fleet TUI frame starts with its top-left corner `╔`; the
+/// fragment before the first corner belongs to an earlier frame and is left
+/// out, as is the last frame, which may still be arriving.
+fn complete_frames(text: &str) -> Vec<&str> {
+    let mut frames: Vec<&str> = text.split('╔').skip(1).collect();
+    frames.pop();
+    frames
 }
 
-/// Poll a file path until its contents contain `needle`, or a deadline is
-/// reached.  Used to verify side-effects (e.g. log files written by shims)
-/// that are produced asynchronously by a background thread.
+/// One message from the pty reader thread.
+enum PtyEvent {
+    /// Bytes the child wrote to the terminal.
+    Data(Vec<u8>),
+    /// The stream ended: EOF, or EIO once every holder of the pty's child
+    /// side has closed it.
+    End,
+}
+
+/// The pty stream ended before the awaited screen text appeared.
+#[derive(Debug)]
+struct Closed {
+    /// Everything the child wrote, without escape sequences.
+    output: String,
+}
+
+/// Owns the pty master. A dedicated thread reads it, blocking, and passes
+/// each chunk over a channel; [`PtyReader::wait_for`] blocks on that channel.
 ///
-/// Returns the file contents on success, or panics with a descriptive message
-/// on timeout.
-fn poll_file_for_content(path: &Path, needle: &str, timeout: Duration) -> String {
-    let deadline = Instant::now() + timeout;
-    loop {
-        let contents = fs::read_to_string(path).unwrap_or_default();
-        if contents.contains(needle) {
-            return contents;
+/// Success depends on screen events; the shared hang guard bounds a missing
+/// event even when the child stays alive. Unwinding triggers [`KillOnDrop`].
+struct PtyReader {
+    events: mpsc::Receiver<PtyEvent>,
+    output: Vec<u8>,
+    ended: bool,
+}
+
+impl PtyReader {
+    fn spawn(mut master: fs::File) -> Self {
+        let (tx, events) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 4096];
+            loop {
+                match master.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(read) => {
+                        if tx.send(PtyEvent::Data(chunk[..read].to_vec())).is_err() {
+                            return;
+                        }
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    // EIO is how Linux reports that the child side is closed;
+                    // any other error also ends the stream.
+                    Err(_) => break,
+                }
+            }
+            let _ = tx.send(PtyEvent::End);
+        });
+        Self {
+            events,
+            output: Vec::new(),
+            ended: false,
         }
-        if Instant::now() >= deadline {
-            panic!(
-                "timed out after {timeout:?} waiting for {path:?} to contain {needle:?}; \
-                 got:\n{contents}"
+    }
+
+    /// Blocks until the output so far satisfies `predicate` and returns it,
+    /// or returns [`Closed`] with the captured output once the stream ends.
+    fn wait_for(&mut self, mut predicate: impl FnMut(&[u8]) -> bool) -> Result<&[u8], Closed> {
+        self.wait_for_with(CEILING, &SystemClock, &mut predicate)
+    }
+
+    fn wait_for_with(
+        &mut self,
+        ceiling: std::time::Duration,
+        clock: &dyn Clock,
+        mut predicate: impl FnMut(&[u8]) -> bool,
+    ) -> Result<&[u8], Closed> {
+        let deadline = clock.now() + ceiling;
+        loop {
+            if predicate(&self.output) {
+                return Ok(&self.output);
+            }
+            if self.ended {
+                return Err(Closed {
+                    output: screen(&self.output),
+                });
+            }
+            let now = clock.now();
+            assert!(
+                now < deadline,
+                "hung: waiting for PTY output or EOF for {ceiling:?}; output tail:\n{}",
+                crate::wait::tail_of(&self.output)
             );
+            match self
+                .events
+                .recv_timeout(deadline.saturating_duration_since(now))
+            {
+                Ok(PtyEvent::Data(bytes)) => self.output.extend_from_slice(&bytes),
+                Ok(PtyEvent::End) | Err(mpsc::RecvTimeoutError::Disconnected) => self.ended = true,
+                Err(mpsc::RecvTimeoutError::Timeout) => panic!(
+                    "hung: waiting for PTY output or EOF for {ceiling:?}; output tail:\n{}",
+                    crate::wait::tail_of(&self.output)
+                ),
+            }
         }
-        sleep(Duration::from_millis(50));
+    }
+
+    /// Reads to the end of the stream.
+    fn read_to_end(&mut self) {
+        let _ = self.wait_for(|_| false);
     }
 }
 
-fn wait_for_exit(child: &mut std::process::Child, timeout: Duration) -> std::process::ExitStatus {
-    let deadline = Instant::now() + timeout;
-    loop {
-        if let Some(status) = child
-            .try_wait()
-            .unwrap_or_else(|error| panic!("failed to poll child process: {error}"))
-        {
-            return status;
+#[test]
+fn pty_wait_returns_on_matching_output_and_reports_eof() {
+    let (sender, events) = mpsc::channel();
+    sender.send(PtyEvent::Data(b"ready".to_vec())).unwrap();
+    sender.send(PtyEvent::End).unwrap();
+    let mut reader = PtyReader {
+        events,
+        output: Vec::new(),
+        ended: false,
+    };
+    assert_eq!(
+        reader.wait_for(|bytes| bytes == b"ready").unwrap(),
+        b"ready"
+    );
+    assert_eq!(reader.wait_for(|_| false).unwrap_err().output, "ready");
+}
+
+#[test]
+#[should_panic(expected = "hung: waiting for PTY output or EOF")]
+fn pty_wait_bounds_a_live_silent_stream() {
+    let (_sender, events) = mpsc::channel();
+    let mut reader = PtyReader {
+        events,
+        output: Vec::new(),
+        ended: false,
+    };
+    let _ = reader.wait_for_with(std::time::Duration::ZERO, &SystemClock, |_| false);
+}
+
+#[test]
+#[should_panic(expected = "hung: waiting for PTY output or EOF")]
+fn pty_redraws_do_not_reset_the_wait_ceiling() {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    struct TickingClock(Mutex<Instant>);
+    impl Clock for TickingClock {
+        fn now(&self) -> Instant {
+            let mut now = self.0.lock().unwrap();
+            let result = *now;
+            *now += Duration::from_secs(1);
+            result
         }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            panic!("child process did not exit within {timeout:?}");
+        fn sleep(&self, _: Duration) {
+            panic!("PTY waits receive events instead of sleeping");
         }
-        sleep(Duration::from_millis(20));
+    }
+    let (sender, events) = mpsc::channel();
+    for _ in 0..10 {
+        sender.send(PtyEvent::Data(b"redraw".to_vec())).unwrap();
+    }
+    // Keep the sender alive: the wait must reach its original deadline while
+    // redraws are still queued, rather than ending through a disconnected EOF.
+    let mut reader = PtyReader {
+        events,
+        output: Vec::new(),
+        ended: false,
+    };
+    let clock = TickingClock(Mutex::new(Instant::now()));
+    let _ = reader.wait_for_with(Duration::from_secs(5), &clock, |_| false);
+}
+
+/// Kills and reaps the child if it is still running when the test drops it,
+/// so a failed test leaves nothing behind and the reader thread sees the end
+/// of the stream.
+struct KillOnDrop(Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if let Ok(None) = self.0.try_wait() {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
     }
 }
 
@@ -946,19 +1032,20 @@ fn probe_script_exits_zero_and_covers_tc04_through_tc08() {
 
 struct FleetTuiProbe {
     _temp_dir: tempfile::TempDir,
-    master: fs::File,
-    child: Child,
+    /// A second handle on the pty master, for keystrokes.
+    input: fs::File,
+    reader: PtyReader,
+    child: KillOnDrop,
     python_log: PathBuf,
     send_log: PathBuf,
     create_log: PathBuf,
     queue_path: PathBuf,
     dashboard_path: PathBuf,
-    output: Vec<u8>,
 }
 
 impl FleetTuiProbe {
     fn new(bin: &Path, reasoner_json: Option<&str>) -> Self {
-        Self::new_with_fixture(bin, reasoner_json, None, None, None, None)
+        Self::new_with_fixture(bin, reasoner_json, None, None, None)
     }
 
     fn new_with_existing_vms(
@@ -966,27 +1053,11 @@ impl FleetTuiProbe {
         reasoner_json: Option<&str>,
         existing_vms: Option<&str>,
     ) -> Self {
-        Self::new_with_fixture(bin, reasoner_json, existing_vms, None, None, None)
-    }
-
-    fn new_with_existing_vms_and_vm2_delay(
-        bin: &Path,
-        reasoner_json: Option<&str>,
-        existing_vms: Option<&str>,
-        vm2_delay_seconds: Option<f32>,
-    ) -> Self {
-        Self::new_with_fixture(
-            bin,
-            reasoner_json,
-            existing_vms,
-            vm2_delay_seconds,
-            None,
-            None,
-        )
+        Self::new_with_fixture(bin, reasoner_json, existing_vms, None, None)
     }
 
     fn new_with_reasoner_script(bin: &Path, reasoner_script: &str) -> Self {
-        Self::new_with_fixture(bin, None, None, None, Some(reasoner_script), None)
+        Self::new_with_fixture(bin, None, None, Some(reasoner_script), None)
     }
 
     fn new_with_custom_azlin_script(
@@ -994,14 +1065,13 @@ impl FleetTuiProbe {
         reasoner_json: Option<&str>,
         azlin_script: &str,
     ) -> Self {
-        Self::new_with_fixture(bin, reasoner_json, None, None, None, Some(azlin_script))
+        Self::new_with_fixture(bin, reasoner_json, None, None, Some(azlin_script))
     }
 
     fn new_with_fixture(
         bin: &Path,
         reasoner_json: Option<&str>,
         existing_vms: Option<&str>,
-        vm2_delay_seconds: Option<f32>,
         reasoner_script: Option<&str>,
         azlin_script_override: Option<&str>,
     ) -> Self {
@@ -1020,16 +1090,11 @@ impl FleetTuiProbe {
         } else {
             r#"[{"name":"vm-1","status":"Running","region":"westus2","session_name":"vm-1"}]"#
         };
-        let vm2_delay = vm2_delay_seconds
-            .map(|seconds| format!("sleep {seconds}\n"))
-            .unwrap_or_default();
         let vm2_block = if existing_vms.is_some() {
-            format!(
-                r#"
+            r#"
 if [ "$1" = "connect" ] && [ "$2" = "vm-2" ]; then
   case "$*" in
     *"PANE_START"*)
-      {vm2_delay}\
       printf '%s\n' \
         '===SESSION:copilot-9===' \
         'CWD:/tmp/excluded' \
@@ -1041,12 +1106,10 @@ if [ "$1" = "connect" ] && [ "$2" = "vm-2" ]; then
       exit 0
       ;;
     *"tmux list-sessions"*)
-      {vm2_delay}\
       printf '%s\n' 'copilot-9|||1|||0'
       exit 0
       ;;
     *"===TMUX==="*)
-      {vm2_delay}\
       cat <<'EOF'
 ===TMUX===
 Working outside fleet
@@ -1069,16 +1132,14 @@ EOF
       exit 0
       ;;
     *"tmux capture-pane"*)
-      {vm2_delay}\
       printf '%s\n' 'Working outside fleet'
       exit 0
       ;;
   esac
 fi
  "#
-            )
         } else {
-            String::new()
+            ""
         };
 
         write_executable(
@@ -1190,11 +1251,6 @@ exit 1
         };
         assert_eq!(rc, 0, "failed to allocate PTY");
 
-        let flags = unsafe { libc::fcntl(master_fd, libc::F_GETFL) };
-        assert!(flags >= 0, "failed to get PTY flags");
-        let set_rc = unsafe { libc::fcntl(master_fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
-        assert_eq!(set_rc, 0, "failed to make PTY non-blocking");
-
         let master = unsafe { fs::File::from_raw_fd(master_fd) };
         let stdin_file = unsafe { fs::File::from_raw_fd(slave_fd) };
         let stdout_fd = unsafe { libc::dup(stdin_file.as_raw_fd()) };
@@ -1235,111 +1291,150 @@ exit 1
             .env("AMPLIHACK_FLEET_REASONER_BINARY_PATH", &reasoner)
             .env("AMPLIHACK_CLAUDE_BINARY_PATH", reasoner);
 
-        let child = command.spawn().expect("failed to spawn fleet tui");
+        let child = KillOnDrop(command.spawn().expect("failed to spawn fleet tui"));
+        // The child holds its own copies of the pty's child side; the parent's
+        // went with `command`, so the stream ends when the child's do.
+        drop(command);
+        let input = master.try_clone().expect("failed to clone the PTY master");
 
         Self {
             _temp_dir: temp_dir,
-            master,
+            input,
+            reader: PtyReader::spawn(master),
             child,
             python_log,
             send_log,
             create_log,
             queue_path,
             dashboard_path,
-            output: Vec::new(),
         }
     }
 
-    fn drain(&mut self, duration: Duration) {
-        read_until_quiet(&mut self.master, &mut self.output, duration);
+    /// Where the next output will start; waits that take it look only at
+    /// what the TUI draws after this point.
+    fn mark(&self) -> usize {
+        self.reader.output.len()
     }
 
-    /// Block until `needle` appears somewhere in the accumulated PTY output,
-    /// or `timeout` elapses.  Returns `true` on success, `false` on timeout.
-    ///
-    /// This is the correct primitive to use instead of `drain(fixed_duration)`
-    /// when the test needs to synchronise on a specific piece of TUI output
-    /// rather than guess how long the binary will take to render it.
-    fn wait_for_output_containing(&mut self, needle: &str, timeout: Duration) -> bool {
-        poll_until_output_contains(&mut self.master, &mut self.output, needle, timeout)
+    /// Blocks until the screen text drawn since `mark` satisfies `cond`, and
+    /// returns that text. Panics with everything captured if the TUI closes
+    /// its terminal first.
+    fn wait_since(
+        &mut self,
+        mark: usize,
+        what: &str,
+        mut cond: impl FnMut(&str) -> bool,
+    ) -> String {
+        match self
+            .reader
+            .wait_for(|out| cond(&screen(&out[mark.min(out.len())..])))
+        {
+            Ok(out) => screen(&out[mark..]),
+            Err(closed) => panic!(
+                "the fleet TUI closed its terminal before {what} appeared:\n{}",
+                closed.output
+            ),
+        }
     }
 
-    fn send(&mut self, bytes: &[u8], wait: Duration) {
-        self.master
+    /// Blocks until `needle` is anywhere in the output so far.
+    fn wait_for_text(&mut self, needle: &str) -> String {
+        self.wait_since(0, needle, |text| text.contains(needle))
+    }
+
+    fn send(&mut self, bytes: &[u8]) {
+        self.input
             .write_all(bytes)
             .unwrap_or_else(|error| panic!("failed to send PTY input {bytes:?}: {error}"));
-        self.drain(wait);
     }
 
-    /// Send bytes and then wait until `needle` appears in the accumulated PTY
-    /// output.  Panics if `timeout` expires before the expected string arrives.
-    fn send_and_wait_for(&mut self, bytes: &[u8], needle: &str, timeout: Duration) {
-        self.master
-            .write_all(bytes)
-            .unwrap_or_else(|error| panic!("failed to send PTY input {bytes:?}: {error}"));
-        assert!(
-            self.wait_for_output_containing(needle, timeout),
-            "timed out after {timeout:?} waiting for PTY output to contain {needle:?}"
-        );
+    /// Sends `bytes`, then blocks until the TUI draws `needle`.
+    fn send_and_wait_for(&mut self, bytes: &[u8], needle: &str) -> String {
+        self.send_and_wait_until(bytes, needle, |text| text.contains(needle))
     }
 
-    /// Poll `create_log` until it contains `needle`, or panic after `timeout`.
-    fn wait_for_create_hits_containing(&self, needle: &str, timeout: Duration) -> String {
-        poll_file_for_content(&self.create_log, needle, timeout)
+    /// Sends `bytes`, then blocks until the text drawn after them satisfies
+    /// `cond`.
+    fn send_and_wait_until(
+        &mut self,
+        bytes: &[u8],
+        what: &str,
+        cond: impl FnMut(&str) -> bool,
+    ) -> String {
+        let mark = self.mark();
+        self.send(bytes);
+        self.wait_since(mark, what, cond)
     }
 
-    /// Poll `send_log` until it contains `needle`, or panic after `timeout`.
-    fn wait_for_send_hits_containing(&self, needle: &str, timeout: Duration) -> String {
-        poll_file_for_content(&self.send_log, needle, timeout)
+    /// Sends `bytes`, then blocks until a whole frame drawn after them
+    /// satisfies `cond`; returns that frame. For a change that removes text
+    /// from the screen, where only a complete frame can show the absence.
+    fn send_and_wait_for_frame(
+        &mut self,
+        bytes: &[u8],
+        what: &str,
+        cond: impl Fn(&str) -> bool,
+    ) -> String {
+        let tail = self.send_and_wait_until(bytes, what, |text| {
+            complete_frames(text).into_iter().any(&cond)
+        });
+        complete_frames(&tail)
+            .into_iter()
+            .find(|frame| cond(frame))
+            .expect("the wait returned on this frame")
+            .to_string()
     }
 
-    /// Poll `task_queue.json` until it contains `needle`, or panic after
-    /// `timeout`.
-    fn wait_for_queue_contents_containing(&self, needle: &str, timeout: Duration) -> String {
-        poll_file_for_content(&self.queue_path, needle, timeout)
+    /// Everything drawn so far, without escape sequences.
+    fn text(&self) -> String {
+        screen(&self.reader.output)
     }
 
     fn dashboard_contents(&self) -> String {
         fs::read_to_string(&self.dashboard_path).unwrap_or_default()
     }
 
-    fn finish(mut self) -> String {
-        let status = wait_for_exit(&mut self.child, Duration::from_secs(10));
-        self.drain(Duration::from_millis(300));
-        assert!(status.success(), "fleet tui exited with {status:?}");
-
-        let cleaned = strip_ansi(&String::from_utf8_lossy(&self.output));
+    /// Presses `q`, reads the terminal to its end and waits for the exit.
+    fn quit(&mut self) -> String {
+        self.send(b"q");
+        self.reader.read_to_end();
+        let status = wait_child("fleet tui exit", &mut self.child.0);
+        let cleaned = self.text();
+        assert!(
+            status.success(),
+            "fleet tui exited with {status:?}:\n{cleaned}"
+        );
 
         let python_hits = fs::read_to_string(&self.python_log).unwrap_or_default();
         assert!(
             python_hits.trim().is_empty(),
             "fleet tui touched python unexpectedly:\n{python_hits}"
         );
+        cleaned
+    }
 
+    fn finish(mut self) -> String {
+        let cleaned = self.quit();
         let send_hits = fs::read_to_string(&self.send_log).unwrap_or_default();
         assert!(
             send_hits.trim().is_empty(),
             "fleet tui sent tmux input unexpectedly:\n{send_hits}"
         );
-
         cleaned
     }
 
     fn finish_allowing_tmux_input(mut self) -> String {
-        let status = wait_for_exit(&mut self.child, Duration::from_secs(10));
-        self.drain(Duration::from_millis(300));
-        assert!(status.success(), "fleet tui exited with {status:?}");
-
-        let cleaned = strip_ansi(&String::from_utf8_lossy(&self.output));
-
-        let python_hits = fs::read_to_string(&self.python_log).unwrap_or_default();
-        assert!(
-            python_hits.trim().is_empty(),
-            "fleet tui touched python unexpectedly:\n{python_hits}"
-        );
-
-        cleaned
+        self.quit()
     }
+}
+
+/// The text after the last frame corner: the final frame drawn.
+fn last_frame(cleaned: &str) -> String {
+    let body = cleaned
+        .rsplit_once('╔')
+        .map(|(_, tail)| tail)
+        .unwrap_or(cleaned);
+    format!("╔{body}")
 }
 
 /// TC-08: `amplihack fleet tui` should handle a real PTY session without any
@@ -1349,17 +1444,21 @@ exit 1
 /// suite: a fake `azlin` shell script serves fleet data while fake `python` and
 /// `python3` binaries would leave a breadcrumb if the Rust binary ever tried to
 /// invoke them.
+///
+/// Every step below waits for the screen text its key produces, never for a
+/// length of time (issue #1977).
 #[test]
 fn tc08_fleet_tui_virtual_tty_stays_python_free() {
     let bin = amplihack_bin();
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new(&bin, None);
-    probe.drain(Duration::from_millis(1200));
-    probe.send(b"?", Duration::from_millis(1200));
-    probe.send(b"?", Duration::from_millis(1200));
-    probe.send(b"\x1b[C", Duration::from_millis(1200));
-    probe.send(b"q", Duration::from_millis(200));
+    probe.wait_for_text("q quit");
+    probe.send_and_wait_for(b"?", "KEYBINDING HELP");
+    probe.send_and_wait_for_frame(b"?", "the help overlay to close", |frame| {
+        !frame.contains("KEYBINDING HELP")
+    });
+    probe.send_and_wait_for(b"\x1b[C", "[detail]");
 
     let cleaned = probe.finish();
     assert!(
@@ -1380,17 +1479,17 @@ fn tc09_fleet_tui_editor_apply_blocks_dangerous_input_without_python() {
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new(&bin, None);
-    probe.drain(Duration::from_millis(1200));
-    probe.send(b"d", Duration::from_millis(1500));
-    probe.send(b"e", Duration::from_millis(1200));
-    probe.send(b"t", Duration::from_millis(300));
-    probe.send(b"t", Duration::from_millis(300));
-    probe.send(b"t", Duration::from_millis(300));
-    probe.send(b"t", Duration::from_millis(300));
-    probe.send(b"i", Duration::from_millis(300));
-    probe.send(b"rm -rf /", Duration::from_millis(1200));
-    probe.send(b"A", Duration::from_millis(2200));
-    probe.send(b"q", Duration::from_millis(200));
+    probe.wait_for_text("q quit");
+    probe.send_and_wait_for(b"d", "Prepared proposal for vm-1/claude-1:");
+    probe.send_and_wait_for(b"e", "Loaded proposal into editor for vm-1/claude-1.");
+    // The proposal is `wait`; four presses cycle it to `send_input`.
+    probe.send_and_wait_for(b"t", "Editor action set to escalate");
+    probe.send_and_wait_for(b"t", "Editor action set to mark_complete");
+    probe.send_and_wait_for(b"t", "Editor action set to restart");
+    probe.send_and_wait_for(b"t", "Editor action set to send_input");
+    probe.send_and_wait_for(b"i", "Typing mode");
+    probe.send_and_wait_for(b"rm -rf /", "rm -rf /");
+    probe.send_and_wait_for(b"A", "dangerous-input policy");
 
     let cleaned = probe.finish();
     assert!(
@@ -1411,60 +1510,25 @@ fn tc09_fleet_tui_editor_apply_blocks_dangerous_input_without_python() {
 /// TC-10: the native TUI new-session flow should create a session over azlin
 /// without touching Python or sending tmux input to an existing session.
 ///
-/// # Why polling instead of fixed sleeps
-///
-/// Session creation is dispatched to a background thread (via `bg_tx`) and the
-/// azlin shim writes to `create_log` only after that thread processes the
-/// `CreateSession` command.  Under CI parallel load the background thread can
-/// be delayed well beyond any fixed margin.  Doubling the margins only reduces
-/// flake frequency; it cannot eliminate the race.
-///
-/// The fix uses two polling primitives:
-/// - `send_and_wait_for` waits until expected TUI output appears instead of
-///   sleeping a fixed duration after each key press.
-/// - `wait_for_create_hits_containing` retries reading `create_log` until the
-///   expected content arrives or a hard deadline (10 s) is reached.
+/// Session creation is dispatched to a background thread (via `bg_tx`), and
+/// the azlin shim writes `create_log` before that thread reports
+/// `SessionCreated`. So once the TUI has drawn "Created session …" the log is
+/// complete and is read once, without polling.
 #[test]
 fn tc10_fleet_tui_new_session_launches_without_python() {
     let bin = amplihack_bin();
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new(&bin, None);
-
-    // Wait for the TUI to render its initial Fleet view before sending keys.
-    // A fixed drain here races against a slow binary start on a loaded CI host;
-    // polling for a known string eliminates that.  "q quit" is part of the
-    // controls line that appears in every frame, making it a stable sentinel.
-    assert!(
-        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
-        "timed out waiting for initial Fleet view to render"
-    );
-
-    // Press 'n' to open the New Session dialog and wait for it to appear.
-    probe.send_and_wait_for(b"n", "New Session", Duration::from_secs(5));
-
-    // Press 't' to cycle the agent type.  The default is "claude"; after one
-    // press it becomes "copilot".  Wait for the updated label to confirm the
-    // keypress was actually processed and re-rendered.
-    probe.send_and_wait_for(b"t", "Agent type: copilot", Duration::from_secs(3));
-
-    // Submit the form with Enter.  The TUI dispatches CreateSession to the
-    // background thread, which calls azlin and then sends SessionCreated back.
-    // Wait until the TUI has rendered the confirmation message.
-    probe.send_and_wait_for(b"\n", "Created session 'copilot-", Duration::from_secs(10));
-
-    // Quit.
-    probe.send(b"q", Duration::from_millis(400));
-
-    // The azlin shim writes to create_log inside the background thread.  The
-    // TUI has already rendered "Created session …" at this point, but the file
-    // write is a side-effect of the same shell invocation so it must be present
-    // by now — poll with a short timeout as a safety net.
-    let create_hits =
-        probe.wait_for_create_hits_containing("tmux new-session -d -s", Duration::from_secs(5));
+    // "q quit" is part of the controls line in every frame.
+    probe.wait_for_text("q quit");
+    probe.send_and_wait_for(b"n", "[new]");
+    // The default agent is "claude"; one press makes it "copilot".
+    probe.send_and_wait_for(b"t", "Agent type: copilot");
+    probe.send_and_wait_for(b"\n", "Created session 'copilot-");
+    let create_hits = fs::read_to_string(&probe.create_log).unwrap_or_default();
 
     let cleaned = probe.finish();
-
     assert!(
         cleaned.contains("New Session") && cleaned.contains("Agent type: copilot"),
         "expected new-session tab output in PTY flow:\n{cleaned}"
@@ -1481,20 +1545,20 @@ fn tc10_fleet_tui_new_session_launches_without_python() {
 
 /// TC-11: the native TUI adopt flow should add the selected live session to the
 /// fleet queue without touching Python.
+///
+/// The queue is saved before the status line is set, so it is read once after
+/// the status appears.
 #[test]
 fn tc11_fleet_tui_adopts_selected_session_without_python() {
     let bin = amplihack_bin();
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new(&bin, None);
-    probe.drain(Duration::from_millis(1200));
-    probe.send(b"A", Duration::from_millis(1500));
-    let queue = probe
-        .wait_for_queue_contents_containing("\"assigned_vm\": \"vm-1\"", Duration::from_secs(5));
-    probe.send(b"q", Duration::from_millis(200));
+    probe.wait_for_text("q quit");
+    probe.send_and_wait_for(b"A", "Adopted vm-1/claude-1 into the fleet queue.");
+    let queue = fs::read_to_string(&probe.queue_path).unwrap_or_default();
 
     let cleaned = probe.finish();
-
     assert!(
         cleaned.contains("Adopted vm-1/claude-1 into the fleet queue."),
         "expected adopt success status in PTY output:\n{cleaned}"
@@ -1514,10 +1578,9 @@ fn tc12_fleet_tui_all_sessions_subview_stays_python_free() {
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new_with_existing_vms(&bin, None, Some("vm-2"));
-    probe.drain(Duration::from_millis(1200));
-    probe.send(b"t", Duration::from_millis(1200));
-    probe.send(b"j", Duration::from_millis(800));
-    probe.send(b"q", Duration::from_millis(200));
+    probe.wait_for_text("q quit");
+    probe.send_and_wait_for(b"t", "All Sessions");
+    probe.send_and_wait_for(b"j", "Selected session: vm-2/copilot-9");
 
     let cleaned = probe.finish();
     assert!(
@@ -1538,10 +1601,9 @@ fn tc13_fleet_tui_selected_preview_tracks_visible_selection_without_python() {
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new_with_existing_vms(&bin, None, Some("vm-2"));
-    probe.drain(Duration::from_millis(1200));
-    probe.send(b"t", Duration::from_millis(1200));
-    probe.send(b"j", Duration::from_millis(800));
-    probe.send(b"q", Duration::from_millis(200));
+    probe.wait_for_text("q quit");
+    probe.send_and_wait_for(b"t", "All Sessions");
+    probe.send_and_wait_for(b"j", "Selected session: vm-2/copilot-9");
 
     let cleaned = probe.finish();
     assert!(
@@ -1565,9 +1627,8 @@ fn tc14_fleet_tui_detail_view_shows_session_metadata_without_python() {
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new(&bin, None);
-    probe.drain(Duration::from_millis(1200));
-    probe.send(b"\x1b[C", Duration::from_millis(1200));
-    probe.send(b"q", Duration::from_millis(200));
+    probe.wait_for_text("q quit");
+    probe.send_and_wait_for(b"\x1b[C", "Session Detail");
 
     let cleaned = probe.finish();
     assert!(
@@ -1591,20 +1652,15 @@ fn tc15_fleet_tui_projects_tab_adds_and_removes_projects_without_python() {
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new(&bin, None);
-    probe.drain(Duration::from_millis(1200));
-    probe.send(b"p", Duration::from_millis(800));
-    probe.send(b"i", Duration::from_millis(300));
+    probe.wait_for_text("q quit");
+    probe.send_and_wait_for(b"p", "No projects registered.");
+    // `i` opens the inline repo prompt; the keys after it are read by that
+    // prompt in order, so they go in one write.
     probe.send_and_wait_for(
-        b"https://github.com/org/new-repo\n",
+        b"ihttps://github.com/org/new-repo\n",
         "Added project 'new-repo' to the dashboard.",
-        Duration::from_secs(5),
     );
-    probe.send_and_wait_for(
-        b"x",
-        "Removed project 'new-repo' from the dashboard.",
-        Duration::from_secs(5),
-    );
-    probe.send(b"q", Duration::from_millis(200));
+    probe.send_and_wait_for(b"x", "Removed project 'new-repo' from the dashboard.");
 
     let dashboard = probe.dashboard_contents();
     let cleaned = probe.finish();
@@ -1626,9 +1682,8 @@ fn tc16_fleet_tui_dry_run_shows_proposal_without_python() {
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new(&bin, None);
-    probe.drain(Duration::from_millis(1200));
-    probe.send(b"d", Duration::from_millis(1500));
-    probe.send(b"q", Duration::from_millis(200));
+    probe.wait_for_text("q quit");
+    probe.send_and_wait_for(b"d", "Prepared proposal for vm-1/claude-1:");
 
     let cleaned = probe.finish();
     assert!(
@@ -1653,10 +1708,9 @@ fn tc17_fleet_tui_numeric_tab_hotkeys_follow_python_order_without_python() {
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new(&bin, None);
-    probe.drain(Duration::from_millis(1200));
-    probe.send(b"3", Duration::from_millis(800));
-    probe.send(b"4", Duration::from_millis(800));
-    probe.send(b"q", Duration::from_millis(200));
+    probe.wait_for_text("q quit");
+    probe.send_and_wait_for(b"3", "[editor]");
+    probe.send_and_wait_for(b"4", "No projects registered.");
 
     let cleaned = probe.finish();
     assert!(
@@ -1677,13 +1731,14 @@ fn tc24_fleet_tui_editor_cancel_returns_to_detail_without_python() {
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new(&bin, None);
-    probe.drain(Duration::from_millis(1200));
-    probe.send(b"d", Duration::from_millis(1500));
-    probe.send(b"e", Duration::from_millis(1200));
-    probe.send(b"i", Duration::from_millis(300));
-    probe.send(b"scratch", Duration::from_millis(800));
-    probe.send(b"\x1b", Duration::from_millis(1200));
-    probe.send(b"q", Duration::from_millis(200));
+    probe.wait_for_text("q quit");
+    probe.send_and_wait_for(b"d", "Prepared proposal for vm-1/claude-1:");
+    probe.send_and_wait_for(b"e", "Loaded proposal into editor for vm-1/claude-1.");
+    probe.send_and_wait_for(b"i", "Typing mode");
+    probe.send_and_wait_for(b"scratch", "scratch");
+    // A lone Esc: nothing is sent after it until its effect is drawn, so the
+    // TUI cannot read it as the start of an escape sequence.
+    probe.send_and_wait_for(b"\x1b", "Editor changes discarded.");
 
     let cleaned = probe.finish();
     assert!(
@@ -1704,9 +1759,8 @@ fn tc18_fleet_tui_detail_tab_fetches_fresh_tmux_capture_without_python() {
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new(&bin, None);
-    probe.drain(Duration::from_millis(1200));
-    probe.send(b"2", Duration::from_millis(1200));
-    probe.send(b"q", Duration::from_millis(200));
+    probe.wait_for_text("q quit");
+    probe.send_and_wait_for(b"2", "FULL DETAIL: deployment checklist open");
 
     let cleaned = probe.finish();
     assert!(
@@ -1728,20 +1782,17 @@ fn tc19_fleet_tui_logo_toggle_hides_logo_without_python() {
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new(&bin, None);
-    probe.drain(Duration::from_millis(1200));
-    probe.send(b"l", Duration::from_millis(800));
-    probe.send(b"q", Duration::from_millis(200));
+    probe.wait_for_text("A M P L I H A C K   F L E E T");
+    probe.send_and_wait_for_frame(b"l", "a frame without the logo", |frame| {
+        !frame.contains("A M P L I H A C K   F L E E T")
+    });
 
     let cleaned = probe.finish();
     assert!(
         cleaned.contains("A M P L I H A C K   F L E E T"),
         "expected logo in initial PTY output:\n{cleaned}"
     );
-    let last_frame_body = cleaned
-        .rsplit_once('╔')
-        .map(|(_, tail)| tail)
-        .unwrap_or(cleaned.as_str());
-    let last_frame = format!("╔{last_frame_body}");
+    let last_frame = last_frame(&cleaned);
     assert!(
         !last_frame.contains("A M P L I H A C K   F L E E T") && !last_frame.contains("|  ☠  |"),
         "expected logo to be hidden after pressing l:\n{last_frame}"
@@ -1756,11 +1807,10 @@ fn tc20_fleet_tui_session_search_filters_by_vm_without_python() {
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new_with_existing_vms(&bin, None, Some("vm-2"));
-    probe.drain(Duration::from_millis(1200));
-    probe.send(b"t", Duration::from_millis(1200));
-    probe.send(b"/", Duration::from_millis(300));
-    probe.send(b"vm-2\n", Duration::from_millis(1200));
-    probe.send(b"q", Duration::from_millis(200));
+    probe.wait_for_text("q quit");
+    probe.send_and_wait_for(b"t", "All Sessions");
+    // `/` opens the inline search, which reads the keys after it in order.
+    probe.send_and_wait_for(b"/vm-2\n", "Selected session: vm-2/copilot-9");
 
     let cleaned = probe.finish();
     assert!(
@@ -1776,26 +1826,32 @@ fn tc20_fleet_tui_session_search_filters_by_vm_without_python() {
 
 /// TC-21: the native fleet TUI should stream partial refresh progress instead of
 /// waiting for every VM poll to finish before the first repaint.
+///
+/// The frame drawn while vm-2 is being polled must already show vm-1's
+/// session. That frame is captured whatever vm-2's poll costs, so the fixture
+/// no longer slows vm-2 down.
 #[test]
 fn tc21_fleet_tui_refresh_streams_partial_results_without_python() {
     let bin = amplihack_bin();
     require_binary!(bin);
 
-    let mut probe =
-        FleetTuiProbe::new_with_existing_vms_and_vm2_delay(&bin, None, Some("vm-2"), Some(2.0));
-    probe.drain(Duration::from_millis(1200));
-
-    let partial = strip_ansi(&String::from_utf8_lossy(&probe.output));
-    assert!(
-        partial.contains("refresh: 1/2 polling vm-2"),
-        "expected in-flight refresh progress before vm-2 finished:\n{partial}"
-    );
+    let mut probe = FleetTuiProbe::new_with_existing_vms(&bin, None, Some("vm-2"));
+    let partial = probe.wait_since(0, "a frame polling vm-2", |text| {
+        complete_frames(text)
+            .into_iter()
+            .any(|frame| frame.contains("refresh: 1/2 polling vm-2"))
+    });
+    let partial = complete_frames(&partial)
+        .into_iter()
+        .find(|frame| frame.contains("refresh: 1/2 polling vm-2"))
+        .expect("the wait returned on this frame")
+        .to_string();
     assert!(
         partial.contains("vm-1") && partial.contains("claude-1"),
-        "expected first VM to render before the slow second VM completed:\n{partial}"
+        "expected first VM to render before the second VM completed:\n{partial}"
     );
+    probe.wait_for_text("refresh: 2/2 complete");
 
-    probe.send(b"q", Duration::from_millis(2500));
     let cleaned = probe.finish();
     assert!(
         cleaned.contains("refresh: 2/2 complete") || cleaned.contains("claude-1"),
@@ -1811,10 +1867,11 @@ fn tc22_fleet_tui_skip_keeps_detail_feedback_without_python() {
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new(&bin, None);
-    probe.drain(Duration::from_millis(1200));
-    probe.send(b"d", Duration::from_millis(1500));
-    probe.send(b"x", Duration::from_millis(1200));
-    probe.send(b"q", Duration::from_millis(200));
+    probe.wait_for_text("q quit");
+    probe.send_and_wait_for(b"d", "Prepared proposal for vm-1/claude-1:");
+    probe.send_and_wait_until(b"x", "the skip notice", |text| {
+        text.contains("Proposal status") && text.contains("Skipped.")
+    });
 
     let cleaned = probe.finish();
     assert!(
@@ -1834,9 +1891,12 @@ fn tc23_fleet_tui_reasoner_failure_is_visible_without_python() {
         &bin,
         "#!/bin/sh\necho 'ANTHROPIC_API_KEY missing' >&2\nexit 1\n",
     );
-    probe.drain(Duration::from_millis(1200));
-    probe.send(b"d", Duration::from_millis(1500));
-    probe.send(b"q", Duration::from_millis(200));
+    probe.wait_for_text("q quit");
+    probe.send_and_wait_until(b"d", "the reasoner failure notice", |text| {
+        text.contains("Reasoner status")
+            && text.contains("ANTHROPIC_API_KEY missing")
+            && text.contains("heuristic proposal")
+    });
 
     let cleaned = probe.finish();
     assert!(
@@ -1856,10 +1916,11 @@ fn tc25_fleet_tui_enter_opens_detail_and_escape_returns_to_fleet_without_python(
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new(&bin, None);
-    probe.drain(Duration::from_millis(1200));
-    probe.send(b"\n", Duration::from_millis(1200));
-    probe.send(b"\x1b", Duration::from_millis(1200));
-    probe.send(b"q", Duration::from_millis(200));
+    probe.wait_for_text("q quit");
+    probe.send_and_wait_until(b"\n", "the detail actions", |text| {
+        text.contains("Detail actions") && text.contains("d prepare proposal")
+    });
+    probe.send_and_wait_for(b"\x1b", "[fleet]");
 
     let cleaned = probe.finish();
     assert!(
@@ -1870,14 +1931,9 @@ fn tc25_fleet_tui_enter_opens_detail_and_escape_returns_to_fleet_without_python(
         cleaned.contains("Detail actions") && cleaned.contains("d prepare proposal"),
         "expected visible detail action hints after pressing Enter in PTY output:\n{cleaned}"
     );
-
-    let last_frame_body = cleaned
-        .rsplit_once('╔')
-        .map(|(_, tail)| tail)
-        .unwrap_or(cleaned.as_str());
-    let last_frame = format!("╔{last_frame_body}");
+    let last_frame = last_frame(&cleaned);
     assert!(
-        last_frame.contains("Fleet Overview") || last_frame.contains("[fleet]"),
+        last_frame.contains("[fleet]"),
         "expected fleet tab after pressing Esc in PTY output:\n{last_frame}"
     );
 }
@@ -1890,20 +1946,19 @@ fn tc26_fleet_tui_force_refresh_restarts_visible_polling_without_python() {
     let bin = amplihack_bin();
     require_binary!(bin);
 
-    let mut probe =
-        FleetTuiProbe::new_with_existing_vms_and_vm2_delay(&bin, None, Some("vm-2"), Some(2.0));
-    assert!(
-        probe.wait_for_output_containing("refresh: 2/2 complete", Duration::from_secs(8)),
-        "timed out waiting for initial refresh to settle before force-refresh test"
-    );
+    let mut probe = FleetTuiProbe::new_with_existing_vms(&bin, None, Some("vm-2"));
+    // The initial refresh settles before the force-refresh.
+    probe.wait_for_text("refresh: 2/2 complete");
 
-    probe.output.clear();
-    probe.send_and_wait_for(b"r", "refresh: 1/2 polling vm-2", Duration::from_secs(3));
-    probe.send(b"q", Duration::from_millis(2500));
+    let polling = probe.send_and_wait_for(b"r", "refresh: 1/2 polling vm-2");
+    let mark = probe.mark();
+    probe.wait_since(mark, "refresh: 2/2 complete", |text| {
+        text.contains("refresh: 2/2 complete")
+    });
 
     let cleaned = probe.finish();
     assert!(
-        cleaned.contains("refresh: 1/2 polling vm-2"),
+        polling.contains("refresh: 1/2 polling vm-2"),
         "expected fresh in-flight refresh progress after pressing r:\n{cleaned}"
     );
     assert!(
@@ -1914,6 +1969,9 @@ fn tc26_fleet_tui_force_refresh_restarts_visible_polling_without_python() {
 
 /// TC-27: a successful native apply should stay Python-free, surface visible
 /// success feedback, and send the expected tmux input through azlin.
+///
+/// The azlin shim logs the send-keys call before `apply` returns and sets its
+/// status, so the log is read once after the status appears.
 #[test]
 fn tc27_fleet_tui_apply_prepared_proposal_sends_tmux_input_without_python() {
     let bin = amplihack_bin();
@@ -1925,22 +1983,10 @@ fn tc27_fleet_tui_apply_prepared_proposal_sends_tmux_input_without_python() {
             r#"{"action":"send_input","confidence":0.85,"reasoning":"Need operator confirmation","input_text":"y"}"#,
         ),
     );
-    assert!(
-        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
-        "timed out waiting for initial Fleet view to render"
-    );
-
-    probe.send_and_wait_for(
-        b"d",
-        "Prepared proposal for vm-1/claude-1:",
-        Duration::from_secs(5),
-    );
-    probe.send(b"a", Duration::from_millis(1500));
-    let send_hits = probe.wait_for_send_hits_containing(
-        "tmux send-keys -t 'claude-1' 'y' Enter",
-        Duration::from_secs(5),
-    );
-    probe.send(b"q", Duration::from_millis(200));
+    probe.wait_for_text("q quit");
+    probe.send_and_wait_for(b"d", "Prepared proposal for vm-1/claude-1:");
+    probe.send_and_wait_for(b"a", "Applied send_input to vm-1/claude-1.");
+    let send_hits = fs::read_to_string(&probe.send_log).unwrap_or_default();
 
     let cleaned = probe.finish_allowing_tmux_input();
     assert!(
@@ -1963,15 +2009,10 @@ fn tc28_fleet_tui_letter_tab_hotkeys_follow_python_order_without_python() {
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new(&bin, None);
-    assert!(
-        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
-        "timed out waiting for initial Fleet view to render"
-    );
-
-    probe.send(b"p", Duration::from_millis(900));
-    probe.send(b"f", Duration::from_millis(900));
-    probe.send(b"s", Duration::from_millis(900));
-    probe.send(b"q", Duration::from_millis(200));
+    probe.wait_for_text("q quit");
+    probe.send_and_wait_for(b"p", "No projects registered.");
+    probe.send_and_wait_for(b"f", "[fleet]");
+    probe.send_and_wait_for(b"s", "Session Detail");
 
     let cleaned = probe.finish();
     assert!(
@@ -1979,7 +2020,7 @@ fn tc28_fleet_tui_letter_tab_hotkeys_follow_python_order_without_python() {
         "expected projects tab after pressing p:\n{cleaned}"
     );
     assert!(
-        cleaned.contains("Fleet Overview") || cleaned.contains("[fleet]"),
+        cleaned.contains("[fleet]"),
         "expected fleet tab after pressing f:\n{cleaned}"
     );
     assert!(
@@ -2002,23 +2043,11 @@ fn tc29_fleet_tui_apply_edited_proposal_sends_tmux_input_without_python() {
             r#"{"action":"send_input","confidence":0.85,"reasoning":"Need operator confirmation","input_text":"y"}"#,
         ),
     );
-    assert!(
-        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
-        "timed out waiting for initial Fleet view to render"
-    );
-
-    probe.send_and_wait_for(
-        b"d",
-        "Prepared proposal for vm-1/claude-1:",
-        Duration::from_secs(5),
-    );
-    probe.send_and_wait_for(b"e", "Action Editor", Duration::from_secs(5));
-    probe.send(b"A", Duration::from_millis(1500));
-    let send_hits = probe.wait_for_send_hits_containing(
-        "tmux send-keys -t 'claude-1' 'y' Enter",
-        Duration::from_secs(5),
-    );
-    probe.send(b"q", Duration::from_millis(200));
+    probe.wait_for_text("q quit");
+    probe.send_and_wait_for(b"d", "Prepared proposal for vm-1/claude-1:");
+    probe.send_and_wait_for(b"e", "Loaded proposal into editor for vm-1/claude-1.");
+    probe.send_and_wait_for(b"A", "Applied edited send_input to vm-1/claude-1.");
+    let send_hits = fs::read_to_string(&probe.send_log).unwrap_or_default();
 
     let cleaned = probe.finish_allowing_tmux_input();
     assert!(
@@ -2040,33 +2069,24 @@ fn tc30_fleet_tui_arrow_tab_navigation_wraps_without_python() {
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new(&bin, None);
-    assert!(
-        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
-        "timed out waiting for initial Fleet view to render"
-    );
+    probe.wait_for_text("q quit");
 
-    probe.output.clear();
-    probe.send_and_wait_for(b"\x1b[D", "New Session", Duration::from_secs(3));
-    probe.output.clear();
-    probe.send_and_wait_for(
-        b"\x1b[C",
-        "Selected session: vm-1/claude-1",
-        Duration::from_secs(3),
-    );
-    probe.output.clear();
-    probe.send_and_wait_for(b"\x1b[C", "Session Detail", Duration::from_secs(3));
-    probe.output.clear();
-    probe.send_and_wait_for(b"\x1b[C", "Action Editor", Duration::from_secs(3));
-    probe.output.clear();
-    probe.send_and_wait_for(b"\x1b[C", "[projects]", Duration::from_secs(3));
-    probe.output.clear();
-    probe.send_and_wait_for(b"\x1b[C", "New Session", Duration::from_secs(3));
-    probe.send(b"q", Duration::from_millis(200));
+    // Each wait looks only at what is drawn after its key, and names the
+    // active tab, so every step proves its own move.
+    probe.send_and_wait_for(b"\x1b[D", "[new]");
+    probe.send_and_wait_for(b"\x1b[C", "[fleet]");
+    probe.send_and_wait_for(b"\x1b[C", "[detail]");
+    probe.send_and_wait_for(b"\x1b[C", "[editor]");
+    probe.send_and_wait_for(b"\x1b[C", "[projects]");
+    // The body follows the tab bar, so it is checked in a complete frame.
+    let wrapped = probe.send_and_wait_for_frame(b"\x1b[C", "a frame on the New tab", |frame| {
+        frame.contains("[new]")
+    });
 
-    let cleaned = probe.finish();
+    probe.finish();
     assert!(
-        cleaned.contains("New Session"),
-        "expected final wrapped arrow traversal to land on New Session:\n{cleaned}"
+        wrapped.contains("New Session"),
+        "expected final wrapped arrow traversal to land on New Session:\n{wrapped}"
     );
 }
 
@@ -2079,19 +2099,12 @@ fn tc31_fleet_tui_enter_with_no_visible_selection_shows_detail_notice_without_py
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new_with_existing_vms(&bin, None, Some("vm-2"));
-    assert!(
-        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
-        "timed out waiting for initial Fleet view to render"
-    );
-
-    probe.send(b"/", Duration::from_millis(300));
+    probe.wait_for_text("q quit");
     probe.send_and_wait_for(
-        b"missing-session\n",
+        b"/missing-session\n",
         "No sessions match the current search. Press Esc to clear.",
-        Duration::from_secs(5),
     );
-    probe.send_and_wait_for(b"\n", "No session selected.", Duration::from_secs(3));
-    probe.send(b"q", Duration::from_millis(200));
+    probe.send_and_wait_for(b"\n", "No session selected.");
 
     let cleaned = probe.finish();
     assert!(
@@ -2118,21 +2131,14 @@ fn tc32_fleet_tui_up_down_cursor_navigation_updates_preview_without_python() {
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new_with_existing_vms(&bin, None, Some("vm-2"));
-    assert!(
-        probe
-            .wait_for_output_containing("Selected session: vm-1/claude-1", Duration::from_secs(10)),
-        "timed out waiting for initial Fleet selection to render"
-    );
+    probe.wait_for_text("Selected session: vm-1/claude-1");
 
-    probe.output.clear();
-    probe.send_and_wait_for(b"t", "vm-2", Duration::from_secs(3));
-    probe.output.clear();
-    probe.send_and_wait_for(
-        b"\x1b[B",
-        "Selected session: vm-2/copilot-9",
-        Duration::from_secs(3),
-    );
-    let down_frame = strip_ansi(&String::from_utf8_lossy(&probe.output));
+    probe.send_and_wait_for(b"t", "All Sessions");
+    // The preview lines follow the selection line, so each move is checked
+    // in a complete frame.
+    let down_frame = probe.send_and_wait_for_frame(b"\x1b[B", "vm-2/copilot-9 selected", |frame| {
+        frame.contains("Selected session: vm-2/copilot-9")
+    });
     assert!(
         down_frame.contains("Working outside fleet")
             && down_frame.contains("branch: side-quest")
@@ -2140,14 +2146,9 @@ fn tc32_fleet_tui_up_down_cursor_navigation_updates_preview_without_python() {
         "expected down-arrow preview update for vm-2/copilot-9:\n{down_frame}"
     );
 
-    probe.output.clear();
-    probe.send_and_wait_for(
-        b"\x1b[A",
-        "Selected session: vm-1/claude-1",
-        Duration::from_secs(3),
-    );
-    let up_frame = strip_ansi(&String::from_utf8_lossy(&probe.output));
-    probe.send(b"q", Duration::from_millis(200));
+    let up_frame = probe.send_and_wait_for_frame(b"\x1b[A", "vm-1/claude-1 selected", |frame| {
+        frame.contains("Selected session: vm-1/claude-1")
+    });
 
     let cleaned = probe.finish();
     assert!(
@@ -2171,29 +2172,15 @@ fn tc33_fleet_tui_stale_proposal_does_not_apply_when_selection_disappears_withou
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new_with_existing_vms(&bin, None, Some("vm-2"));
-    assert!(
-        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
-        "timed out waiting for initial Fleet view to render"
-    );
-
+    probe.wait_for_text("q quit");
+    // The dry-run moves to the detail tab; Esc returns to the fleet tab.
+    probe.send_and_wait_for(b"d", "Prepared proposal for vm-1/claude-1:");
+    probe.send_and_wait_for(b"\x1b", "[fleet]");
     probe.send_and_wait_for(
-        b"d",
-        "Prepared proposal for vm-1/claude-1:",
-        Duration::from_secs(5),
-    );
-    probe.send(b"\x1b", Duration::from_millis(1200));
-    probe.send(b"/", Duration::from_millis(300));
-    probe.send_and_wait_for(
-        b"missing-session\n",
+        b"/missing-session\n",
         "No sessions match the current search. Press Esc to clear.",
-        Duration::from_secs(5),
     );
-    probe.send_and_wait_for(
-        b"a",
-        "No session selected to apply.",
-        Duration::from_secs(3),
-    );
-    probe.send(b"q", Duration::from_millis(200));
+    probe.send_and_wait_for(b"a", "No session selected to apply.");
 
     let cleaned = probe.finish();
     assert!(
@@ -2212,26 +2199,13 @@ fn tc34_fleet_tui_edit_without_proposal_stays_out_of_editor_without_python() {
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new(&bin, None);
-    assert!(
-        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
-        "timed out waiting for initial Fleet view to render"
-    );
-
-    probe.send_and_wait_for(
-        b"e",
-        "No prepared proposal for the selected session.",
-        Duration::from_secs(3),
-    );
-    probe.send(b"q", Duration::from_millis(200));
+    probe.wait_for_text("q quit");
+    probe.send_and_wait_for(b"e", "No prepared proposal for the selected session.");
 
     let cleaned = probe.finish();
-    let last_frame_body = cleaned
-        .rsplit_once('╔')
-        .map(|(_, tail)| tail)
-        .unwrap_or(cleaned.as_str());
-    let last_frame = format!("╔{last_frame_body}");
+    let last_frame = last_frame(&cleaned);
     assert!(
-        last_frame.contains("Fleet Overview") || last_frame.contains("[fleet]"),
+        last_frame.contains("[fleet]"),
         "expected to remain on the fleet tab after pressing e without a proposal:\n{last_frame}"
     );
     assert!(
@@ -2264,11 +2238,7 @@ exit 1
 "#;
 
     let mut probe = FleetTuiProbe::new_with_custom_azlin_script(&bin, None, azlin_script);
-    assert!(
-        probe.wait_for_output_containing("empty-vm/(no sessions)", Duration::from_secs(10)),
-        "timed out waiting for placeholder row to render"
-    );
-    probe.send(b"q", Duration::from_millis(200));
+    probe.wait_for_text("empty-vm/(no sessions)");
 
     let cleaned = probe.finish();
     assert!(
@@ -2286,23 +2256,12 @@ fn tc36_fleet_tui_apply_without_selection_shows_warning_without_python() {
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new_with_existing_vms(&bin, None, Some("vm-2"));
-    assert!(
-        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
-        "timed out waiting for initial Fleet view to render"
-    );
-
-    probe.send(b"/", Duration::from_millis(300));
+    probe.wait_for_text("q quit");
     probe.send_and_wait_for(
-        b"missing-session\n",
+        b"/missing-session\n",
         "No sessions match the current search. Press Esc to clear.",
-        Duration::from_secs(5),
     );
-    probe.send_and_wait_for(
-        b"a",
-        "No session selected to apply.",
-        Duration::from_secs(3),
-    );
-    probe.send(b"q", Duration::from_millis(200));
+    probe.send_and_wait_for(b"a", "No session selected to apply.");
 
     let cleaned = probe.finish();
     assert!(
@@ -2323,11 +2282,7 @@ fn tc37_fleet_tui_shows_status_summary_bar_without_python() {
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new_with_existing_vms(&bin, None, Some("vm-2"));
-    assert!(
-        probe.wait_for_output_containing("active:", Duration::from_secs(10)),
-        "timed out waiting for summary bar to render"
-    );
-    probe.send(b"q", Duration::from_millis(200));
+    probe.wait_for_text("active:");
 
     let cleaned = probe.finish();
     assert!(
@@ -2347,11 +2302,7 @@ fn tc38_fleet_tui_shows_footer_keybindings_without_python() {
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new(&bin, None);
-    assert!(
-        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
-        "timed out waiting for footer keybindings to render"
-    );
-    probe.send(b"q", Duration::from_millis(200));
+    probe.wait_for_text("q quit");
 
     let cleaned = probe.finish();
     assert!(
@@ -2369,11 +2320,7 @@ fn tc39_fleet_tui_shows_managed_subview_header_without_python() {
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new(&bin, None);
-    assert!(
-        probe.wait_for_output_containing("Managed Sessions", Duration::from_secs(10)),
-        "timed out waiting for managed subview header to render"
-    );
-    probe.send(b"q", Duration::from_millis(200));
+    probe.wait_for_text("Managed Sessions");
 
     let cleaned = probe.finish();
     assert!(

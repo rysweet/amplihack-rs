@@ -2821,7 +2821,12 @@ fn a_recipe_run_from_a_round_step_is_refused_by_the_real_guard() {
     let log = tmp.path().join("runner.log");
     fs::write(
         &runner,
-        "#!/bin/sh\nif [ \"$1\" = --capabilities ]; then printf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}'; exit 0; fi\nprintf 'depth=%s\\n' \"${AMPLIHACK_SESSION_DEPTH:-}\" >> \"$RUNNER_LOG\"\nprintf '{}\\n'\n",
+        "#!/bin/sh\n\
+         case \"${1:-}\" in\n\
+         --capabilities) printf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}'; exit 0 ;;\n\
+         --version) echo fixture; exit 0 ;;\n\
+         esac\n\
+         printf 'depth=%s\\n' \"${AMPLIHACK_SESSION_DEPTH:-}\" >> \"$RUNNER_LOG\"\nprintf '{}\\n'\n",
     )
     .expect("write the runner stub");
     #[cfg(unix)]
@@ -2837,6 +2842,8 @@ fn a_recipe_run_from_a_round_step_is_refused_by_the_real_guard() {
             .current_dir(tmp.path())
             .env_clear()
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            // `env_clear` dropped the probe knob `isolated` set (issue #2019).
+            .env(crate::isolated_amplihack::PROBE_WAIT_ENV, "exit")
             .env("TMPDIR", std::env::temp_dir())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &home)

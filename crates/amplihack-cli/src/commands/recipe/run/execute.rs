@@ -11,6 +11,7 @@ use crate::env_builder::EnvBuilder;
 #[cfg(windows)]
 use crate::util::run_with_timeout;
 use crate::util::truncate_chars_with_notice;
+use amplihack_utils::clock::{Clock, SystemClock};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ffi::OsString;
@@ -18,7 +19,7 @@ use std::io::{BufRead, BufReader, Write as IoWrite};
 use std::process::{Child, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const STDERR_TAIL_LINES: usize = 5;
 const CAPTURED_STDERR_LINES: usize = 200;
@@ -1831,7 +1832,7 @@ pub(super) fn meaningful_stderr_tail_with_prior_drops(
     tail
 }
 
-fn recipe_runner_timeout() -> Duration {
+pub(super) fn recipe_runner_timeout() -> Duration {
     std::env::var(RECIPE_RUNNER_TIMEOUT_ENV)
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -1849,8 +1850,20 @@ enum RunnerWait {
 }
 
 fn wait_for_recipe_runner(child: &mut Child, timeout: Duration) -> std::io::Result<RunnerWait> {
-    let started = Instant::now();
+    #[cfg(all(test, unix))]
+    let control = super::test_runner::current();
+    let clock: &dyn Clock = &SystemClock;
+    #[cfg(all(test, unix))]
+    let clock = control.as_deref().map_or(clock, |c| c as &dyn Clock);
+    let started = clock.now();
     loop {
+        #[cfg(all(test, unix))]
+        if control.as_ref().is_some_and(|c| c.cancelled()) {
+            // SAFETY: the worker owns the unreaped child, reserving its pid.
+            // Cancel only its runner group before joining the test worker.
+            unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
+            return Ok(RunnerWait::TimedOut);
+        }
         if let Some(status) = child.try_wait()? {
             return Ok(RunnerWait::Exited(status));
         }
@@ -1860,11 +1873,11 @@ fn wait_for_recipe_runner(child: &mut Child, timeout: Duration) -> std::io::Resu
         // Single clock read per poll: derive the remaining budget once and reuse
         // it for both the deadline check and the sleep cap. A zero (or elapsed)
         // remaining is the timeout.
-        let remaining = match timeout.checked_sub(started.elapsed()) {
+        let remaining = match timeout.checked_sub(clock.now().saturating_duration_since(started)) {
             Some(remaining) if !remaining.is_zero() => remaining,
             _ => return Ok(RunnerWait::TimedOut),
         };
-        thread::sleep(RECIPE_RUNNER_POLL_INTERVAL.min(remaining));
+        clock.sleep(RECIPE_RUNNER_POLL_INTERVAL.min(remaining));
     }
 }
 
@@ -1883,11 +1896,25 @@ fn terminate_recipe_runner(child: &mut Child) -> Result<()> {
         //      a runner that ignored SIGTERM and any lingering descendants.
         // The signal target is `-pgid`, so this is scoped strictly to the
         // runner's own session and never touches unrelated / parent processes.
-        let grace = recipe_runner_teardown_grace();
         let pgid = pid as libc::pid_t;
-        signal_process_group(pgid, libc::SIGTERM);
-        wait_until_exited(grace, || matches!(child.try_wait(), Ok(None)));
-        signal_process_group(pgid, libc::SIGKILL);
+        let clock: &dyn Clock = &SystemClock;
+        #[cfg(test)]
+        let control = super::test_runner::current();
+        #[cfg(test)]
+        let clock = control.as_deref().map_or(clock, |c| c as &dyn Clock);
+        terminate_recipe_runner_with(
+            clock,
+            || {
+                // A test's virtual grace may be frozen while it awaits the
+                // TERM handler. Unwinding must still cancel and join it.
+                #[cfg(test)]
+                if control.as_ref().is_some_and(|c| c.cancelled()) {
+                    return false;
+                }
+                matches!(child.try_wait(), Ok(None))
+            },
+            |signal| signal_process_group(pgid, signal),
+        );
     }
     #[cfg(windows)]
     {
@@ -1913,6 +1940,20 @@ fn terminate_recipe_runner(child: &mut Child) -> Result<()> {
     Ok(())
 }
 
+/// Apply the configured timeout teardown policy with injectable clock and
+/// process operations, so tests observe signals without real-time races.
+#[cfg(unix)]
+pub(super) fn terminate_recipe_runner_with(
+    clock: &dyn Clock,
+    still_running: impl FnMut() -> bool,
+    mut signal: impl FnMut(libc::c_int),
+) {
+    let grace = recipe_runner_teardown_grace();
+    signal(libc::SIGTERM);
+    wait_until_exited(grace, clock, still_running);
+    signal(libc::SIGKILL);
+}
+
 /// Resolve the SIGTERM -> SIGKILL grace window for recipe-runner teardown.
 ///
 /// Honors `AMPLIHACK_TEARDOWN_GRACE_SECS` (whole seconds, `0` allowed to mean
@@ -1929,23 +1970,23 @@ fn recipe_runner_teardown_grace() -> Duration {
 
 /// Poll `still_running` until it reports the target has exited or `grace`
 /// elapses; returns `true` if it exited within the window. Sleeps in short
-/// `RECIPE_RUNNER_POLL_INTERVAL` steps (floored at 1ms, never past the remaining
-/// grace) so a zero grace escalates almost immediately. Shared by both teardown
+/// `RECIPE_RUNNER_POLL_INTERVAL` steps (never past the remaining grace), so a
+/// zero grace escalates immediately. Shared by both teardown
 /// paths so the SIGTERM -> grace -> SIGKILL timing policy lives in one place.
 #[cfg(unix)]
-fn wait_until_exited(grace: Duration, mut still_running: impl FnMut() -> bool) -> bool {
-    let started = Instant::now();
+fn wait_until_exited(
+    grace: Duration,
+    clock: &dyn Clock,
+    mut still_running: impl FnMut() -> bool,
+) -> bool {
+    let started = clock.now();
     while still_running() {
-        let elapsed = started.elapsed();
+        let elapsed = clock.now().saturating_duration_since(started);
         if elapsed >= grace {
             return false;
         }
         let remaining = grace.saturating_sub(elapsed);
-        thread::sleep(
-            RECIPE_RUNNER_POLL_INTERVAL
-                .min(remaining)
-                .max(Duration::from_millis(1)),
-        );
+        clock.sleep(RECIPE_RUNNER_POLL_INTERVAL.min(remaining));
     }
     true
 }
@@ -1978,7 +2019,7 @@ fn reap_recipe_runner_group(pgid_pid: u32, grace: Duration) {
         return;
     }
     signal_process_group(pgid, libc::SIGTERM);
-    if !wait_until_exited(grace, group_alive) {
+    if !wait_until_exited(grace, &SystemClock, group_alive) {
         signal_process_group(pgid, libc::SIGKILL);
     }
 }

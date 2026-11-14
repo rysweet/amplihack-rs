@@ -246,11 +246,16 @@ fn local_install_wires_settings_json_to_native_binary_subcommands() {
 fn fixture_environment() -> crate::test_support::EnvGuard {
     let saved = crate::test_support::EnvGuard::capture(&[
         "AMPLIHACK_AGENT_BINARY",
+        "AMPLIHACK_SKIP_MMDC",
         "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
         "HOME",
         "PATH",
     ]);
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
-    unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+    unsafe {
+        std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude");
+        // Optional Mermaid delivery has dedicated fake-command tests.
+        std::env::set_var("AMPLIHACK_SKIP_MMDC", "1");
+    };
     saved
 }

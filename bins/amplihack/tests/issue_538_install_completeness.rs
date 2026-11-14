@@ -175,6 +175,8 @@ fn amplihack_install_command_with_binary(
             "PATH",
             format!("{}:/usr/bin:/bin", hooks_bin.parent().unwrap().display()),
         )
+        // Nor may it install the mermaid CLI through a host `npm`.
+        .env("AMPLIHACK_SKIP_MMDC", "1")
         .env("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", hooks_bin)
         .env("RECIPE_RUNNER_RS_PATH", recipe_runner)
         // This contract checks staged framework assets. Keep provider discovery

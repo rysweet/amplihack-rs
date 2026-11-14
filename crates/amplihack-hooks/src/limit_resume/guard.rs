@@ -17,9 +17,10 @@
 //! or followed. Only hashes and integers are written.
 
 use super::MAX_RESUMES_PER_SESSION;
+use amplihack_utils::clock::{Clock, SystemClock};
 use amplihack_utils::rotator_status::MAX_WAIT;
 use amplihack_utils::secure_files::{
-    check_private_dir, ensure_private_dir, fsync_dir, lock_exclusive_timeout,
+    check_private_dir, ensure_private_dir, fsync_dir, lock_exclusive_timeout_with,
     open_private_nofollow, owned_by_euid, read_bounded_nofollow, writable_by_others,
     write_private_atomic, write_private_atomic_nosync,
 };
@@ -27,6 +28,7 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// How long a commit waits for the lock.
@@ -89,10 +91,20 @@ pub trait GuardStore {
 }
 
 /// The on-disk guard for a profile root. Creating one touches nothing.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct FsGuard {
     root: PathBuf,
     lock_timeout: Duration,
+    clock: Arc<dyn Clock>,
+}
+
+impl std::fmt::Debug for FsGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FsGuard")
+            .field("root", &self.root)
+            .field("lock_timeout", &self.lock_timeout)
+            .finish_non_exhaustive()
+    }
 }
 
 impl FsGuard {
@@ -101,10 +113,25 @@ impl FsGuard {
     }
 
     pub fn with_lock_timeout(root: &Path, lock_timeout: Duration) -> Self {
+        Self::with_clock(root, lock_timeout, Arc::new(SystemClock))
+    }
+
+    /// A guard whose commit lock wait is timed on `clock`. For tests only:
+    /// a clock whose time never moves forward makes the wait unbounded
+    /// while another commit holds the lock.
+    #[doc(hidden)]
+    pub fn with_clock(root: &Path, lock_timeout: Duration, clock: Arc<dyn Clock>) -> Self {
         Self {
             root: root.to_path_buf(),
             lock_timeout,
+            clock,
         }
+    }
+
+    /// How long a commit waits for the lock. It exists so that tests can
+    /// check the defaults.
+    pub fn lock_timeout(&self) -> Duration {
+        self.lock_timeout
     }
 
     fn state_dir(&self) -> PathBuf {
@@ -340,8 +367,11 @@ impl GuardStore for FsGuard {
         let (events, sessions) = (dir.join("events"), dir.join("sessions"));
         ensure_private_dir(&events)?;
         ensure_private_dir(&sessions)?;
-        let _lock =
-            lock_exclusive_timeout(open_private_nofollow(&dir.join("lock"))?, self.lock_timeout)?;
+        let _lock = lock_exclusive_timeout_with(
+            open_private_nofollow(&dir.join("lock"))?,
+            self.lock_timeout,
+            &*self.clock,
+        )?;
 
         self.prune(&events, now, MARKER_RETENTION_SECS);
         self.prune(&dir.join("prompted"), now, PROMPTED_RETENTION_SECS);

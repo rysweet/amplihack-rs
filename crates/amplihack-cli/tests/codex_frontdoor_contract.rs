@@ -37,47 +37,38 @@ esac
         )
         .unwrap();
     }
-    let cli = std::env::var_os("AMPLIHACK_TEST_BINARY")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::current_exe()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join("amplihack")
-        });
-    let out = crate::isolated_amplihack::isolated(cli)
-        .args(["codex", "--no-reflection", "--", "exec", "-"])
-        .env("HOME", home.path())
-        .env("CODEX_HOME", home.path().join(".codex"))
-        .env("PATH", &tools)
-        .env("AMPLIHACK_AGENT_BINARY", "codex")
-        .env(
-            "AMPLIHACK_SOURCE_ROOT",
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap(),
-        )
-        .env_remove("AMPLIHACK_ORCHESTRATION_BOOTSTRAP")
-        .env_remove("AMPLIHACK_DEFAULT_MODEL")
-        .env_remove("AMPLIHACK_HOME")
-        .env_remove("AMPLIHACK_ASSET_RESOLVER")
-        .env_remove("AMPLIHACK_SESSION_ID")
-        .env_remove("AMPLIHACK_SESSION_DEPTH")
-        .env_remove("AMPLIHACK_SKIP_AUTO_INSTALL")
-        .env_remove("AMPLIHACK_CODEX_BINARY_PATH")
-        .env_remove("CODEX_BINARY_PATH")
-        .env_remove("AMPLIHACK_NONINTERACTIVE")
-        .env_remove("CI")
-        .env_remove("CODEX_THREAD_ID")
-        .env_remove("RECIPE_RUNNER_RS_PATH")
-        .current_dir(home.path())
-        .output()
-        .unwrap();
+    let cli = crate::support::amplihack_bin::amplihack_bin();
+    let out = crate::support::wait::output_within(
+        "amplihack codex",
+        crate::isolated_amplihack::isolated(cli)
+            .args(["codex", "--no-reflection", "--", "exec", "-"])
+            .env("HOME", home.path())
+            .env("CODEX_HOME", home.path().join(".codex"))
+            .env("PATH", &tools)
+            .env("AMPLIHACK_AGENT_BINARY", "codex")
+            .env(
+                "AMPLIHACK_SOURCE_ROOT",
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap(),
+            )
+            .env_remove("AMPLIHACK_ORCHESTRATION_BOOTSTRAP")
+            .env_remove("AMPLIHACK_DEFAULT_MODEL")
+            .env_remove("AMPLIHACK_HOME")
+            .env_remove("AMPLIHACK_ASSET_RESOLVER")
+            .env_remove("AMPLIHACK_SESSION_ID")
+            .env_remove("AMPLIHACK_SESSION_DEPTH")
+            .env_remove("AMPLIHACK_SKIP_AUTO_INSTALL")
+            .env_remove("AMPLIHACK_CODEX_BINARY_PATH")
+            .env_remove("CODEX_BINARY_PATH")
+            .env_remove("AMPLIHACK_NONINTERACTIVE")
+            .env_remove("CI")
+            .env_remove("CODEX_THREAD_ID")
+            .env_remove("RECIPE_RUNNER_RS_PATH")
+            .current_dir(home.path()),
+    );
     assert!(!out.status.success(), "fake npm deliberately fails install");
     let attempt =
         fs::read_to_string(home.path().join("client-install-attempt")).unwrap_or_else(|_| {

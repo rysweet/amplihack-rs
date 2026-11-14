@@ -97,6 +97,7 @@ impl Fixture {
         create_source_repo(&repo);
 
         let mut env = IsolatedHome::new(&home);
+        env.set("AMPLIHACK_SKIP_MMDC", "1");
         env.set("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
         env.set("RECIPE_RUNNER_RS_PATH", &runner_stub);
         env.set("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", "1");

@@ -42,6 +42,8 @@ pub mod claude_md;
 /// `@anthropic-ai/claude-code`. See issue #1266.
 pub mod claude_native;
 pub mod cleanup;
+/// Injectable clock for timed waits (issue #2019).
+pub mod clock;
 /// Live Codex rate-limit readings through `codex app-server` (issue #2001).
 pub mod codex_capacity;
 /// Local Codex executable, npm layout, and required-helper validation.
