@@ -217,7 +217,7 @@ already worked this way; the two callers below now do the same.
 | Caller | Nested recipe | Keys passed by file | Private folder |
 | --- | --- | --- | --- |
 | `amplifier-bundle/tools/autodrive_loop.sh`, loop-health evaluator | the loop's health recipe | `loop_history`, `loop_last_round_output`, `loop_findings_current`, `loop_findings_previous`, `loop_test_signal`, `loop_test_signal_previous`, `loop_ci_signal`, `loop_ci_signal_previous` | `mktemp -d "${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}-ctx.XXXXXX"`, created under the script's `umask 077` |
-| `amplifier-bundle/recipes/quality-loop.yaml`, `drive-red-prs-to-fix` dispatch | `default-workflow` | `task_description` | `mktemp -d` under `$TMPDIR`, created in a subshell under `umask 077`, one per dispatched PR |
+| `amplifier-bundle/recipes/quality-loop.yaml`, `drive-red-prs-to-fix` dispatch | `default-workflow` | `task_description` | `mktemp -d` under `$TMPDIR` (mode 0700), one per dispatched PR; the file is written in a subshell under `umask 077` |
 
 In `autodrive_loop.sh`, the evaluator's exit status is captured before the
 files are removed, and a failed `rmdir` does not fail the round. If the folder
