@@ -9,22 +9,19 @@
 # evidence, which an agent step running as the same user could edit after it
 # was measured; the merge-ready agent reads it as evidence for its write-up,
 # and nothing here accepts it as a merge condition (#2575).
-# autodrive_gadugi_required says whether criterion 1 needs gadugi-test in a
-# repository at all; it follows qa-team's repo-type table. The QA target and
-# command sources (autodrive_qa_target and friends, #1763) live in
-# autodrive_qa_scope.sh, which this file loads from its own directory.
+# autodrive_gadugi_required says whether criterion 1 needs gadugi-test at all.
+# The QA target (#1763) lives in autodrive_qa_scope.sh and the qa.toml reader
+# (#2458) in autodrive_qa_sources.sh, both loaded from this file's directory.
 #
 # Every function here prints only a fixed token, a hex SHA, or a JSON line
 # built from those. Commit subjects, paths and file contents are never
 # printed, so nothing from the branch under review reaches a log or a prompt
 # through here; autodrive_qa_scope.sh documents its own sanitised output.
-#
 # Callers source autodrive_state.sh first: autodrive_blob_hash,
 # autodrive_manifest_row, autodrive_crusty_final and autodrive_clear_phase live
 # there. This file only DEFINES functions, two read-only variables,
-# AUTODRIVE_TRUST_GIT_UNSET_VARS and the _AD_SCOPE_OK flag; sourcing it has no
-# other side effect. Needs bash 3.2 or later, git and coreutils.
-#
+# AUTODRIVE_TRUST_GIT_UNSET_VARS and the _AD_SCOPE_OK and _AD_SOURCES_OK flags;
+# sourcing it has no other side effect. Needs bash 3.2 or later, git and coreutils.
 # Same-user limit: these checks catch an agent following instructions found in
 # branch text, an accidental edit, and the replay of an older record. They are
 # not a boundary against a deliberate forger running as the same user; the
@@ -288,35 +285,36 @@ autodrive_scenario_results() {
 }
 
 # --- criterion 1: where gadugi-test is required ----------------------------
-#
-# Criterion 1 follows qa-team's repo-type table
-# (amplifier-bundle/skills/qa-team/SKILL.md, "Repo-Type Detection"). Only a
-# Node repository runs its scenarios with gadugi-agentic-test. A Rust CLI
-# repository substitutes `cargo test` and does not require gadugi, and a
-# Python repository, including a root that also has package.json (#1516),
-# runs `pytest`. #1517 asked for this rule. Every auto-drive step that
-# decides whether gadugi-test is needed asks the functions below and nothing
-# else: auto-drive's first step, merge round step-00, the qa evidence tool
-# and the merge gate. None needs autodrive_state.sh.
+# qa-team's repo-type table (skills/qa-team/SKILL.md, "Repo-Type Detection",
+# #1517): only Node runs gadugi-agentic-test; Rust CLI substitutes `cargo
+# test`, Python (even beside package.json, #1516) `pytest`. Every step that
+# asks whether gadugi-test is needed (auto-drive's first step, merge round
+# step-00, the evidence tool) asks the functions below only.
 
-# The QA target lives in autodrive_qa_scope.sh, loaded only from the physical
-# directory of this file, only when it is a regular file and not a symlink.
-# _AD_SCOPE_OK is set only when it loaded. Without it autodrive_qa_target says
-# `unknown .` and autodrive_gadugi_required says true, so a broken install
-# blocks and never passes.
-_AD_SCOPE_OK=""
+# The QA target lives in autodrive_qa_scope.sh, then the qa.toml reader in
+# autodrive_qa_sources.sh, each loaded only from the physical directory of this
+# file and only when it is a regular file and not a symlink. _AD_SCOPE_OK and
+# _AD_SOURCES_OK are set only when they loaded; functions a caller defined
+# under the sources' names are dropped first (S6). Without the scope file
+# autodrive_qa_target says `unknown .` and autodrive_gadugi_required says
+# true; without the sources no declaration counts. A broken install blocks.
+_AD_SCOPE_OK=""; _AD_SOURCES_OK=""
+builtin unset -f autodrive_qa_config autodrive_qa_declaration autodrive_qa_lifting_declaration autodrive_qa_report
 _ad_scope="$(unset CDPATH; cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)" || _ad_scope=""
+_ad_src="${_ad_scope:+${_ad_scope}/autodrive_qa_sources.sh}"
 _ad_scope="${_ad_scope:+${_ad_scope}/autodrive_qa_scope.sh}"
 # shellcheck source=autodrive_qa_scope.sh
 if [ -n "$_ad_scope" ] && [ -f "$_ad_scope" ] && [ ! -L "$_ad_scope" ] && . "$_ad_scope"; then
   _AD_SCOPE_OK="1"
+  # shellcheck source=autodrive_qa_sources.sh
+  if [ -n "$_ad_src" ] && [ -f "$_ad_src" ] && [ ! -L "$_ad_src" ] && . "$_ad_src"; then _AD_SOURCES_OK="1"; fi
 else
   autodrive_qa_target() { printf 'unknown\t.\n'; }
   # Nothing was measured, so nothing is documentation-only: `unknown` is not
   # `true`, and autodrive_gadugi_required refuses before it asks in any case.
   autodrive_qa_docs_only() { printf 'unknown\n'; }
 fi
-unset _ad_scope
+unset _ad_scope _ad_src
 
 # autodrive_repo_type <dir> -> rust-cli, node, python or unknown: the type
 # autodrive_qa_target chose, with unresolved reported as unknown.
@@ -329,22 +327,21 @@ autodrive_repo_type() {
 # autodrive_gadugi_required <dir> -> true or false. The result is true when
 # the operator sets AUTODRIVE_QA_SCENARIO_DIR in the environment (gadugi
 # scenarios in any repository type), when the scope helper did not load, when
-# the chosen project is Node, and when the choice is unresolved and any
-# candidate directory is a Node project (_autodrive_qa_needs_gadugi).
-# Otherwise it is false.
+# the merge base is unknown, when the chosen project is Node, and when the
+# choice is unresolved and any candidate directory is a Node project
+# (_autodrive_qa_needs_gadugi). Otherwise it is false.
 #
-# One exception, issue #2219: a pull request that changes documentation and
-# nothing else does not need a gadugi scenario, because it changes no
-# user-facing surface for one to drive. autodrive_qa_docs_only decides that,
-# so the answer is a measurement and not an agent's reading of the diff
-# (#1517, #1518), and the merge round and the merge gate read the same
-# function and cannot disagree.
+# Two exceptions. #2219: a pull request that changes documentation and nothing
+# else changes no user-facing surface for a scenario to drive
+# (autodrive_qa_docs_only, a measurement, not an agent's reading of the diff).
+# #2458: where detection says true, a declaration other than `none` from the
+# base branch's qa.toml (autodrive_qa_declaration) says how criterion 1 is met
+# instead. The merge round reads these same functions.
 #
-# Precedence, all fail-closed. The operator's AUTODRIVE_QA_SCENARIO_DIR and a
-# scope helper that did not load are both tested FIRST and both still force
-# true; `unknown` is not `true`. The exemption narrows what evidence criterion
-# 1 requires and nothing else: the repository's own suite, CI, crusty review
-# and every other criterion still apply.
+# Precedence, all fail-closed: the scenario directory and a missing scope
+# helper first (true); then docs-only (false); then detection; then the
+# declaration, which only counts when autodrive_qa_sources.sh loaded here.
+# The exemptions narrow what evidence criterion 1 requires and nothing else.
 autodrive_gadugi_required() {
   if [ -n "${AUTODRIVE_QA_SCENARIO_DIR:-}" ] || [ -z "${_AD_SCOPE_OK:-}" ] \
      || ! declare -F _autodrive_qa_needs_gadugi >/dev/null; then
@@ -352,9 +349,12 @@ autodrive_gadugi_required() {
   elif declare -F autodrive_qa_docs_only >/dev/null \
        && [ "$(autodrive_qa_docs_only "${1:-.}")" = "true" ]; then
     printf 'false\n'
-  elif _autodrive_qa_needs_gadugi "${1:-.}"; then
-    printf 'true\n'
-  else
+  elif ! _autodrive_qa_needs_gadugi "${1:-.}"; then
     printf 'false\n'
+  elif [ -n "${_AD_SOURCES_OK:-}" ] && declare -F autodrive_qa_declaration >/dev/null \
+       && case "$(autodrive_qa_declaration "${1:-.}")" in multi-area-command|ci-job:?*) true ;; *) false ;; esac; then
+    printf 'false\n'
+  else
+    printf 'true\n'
   fi
 }

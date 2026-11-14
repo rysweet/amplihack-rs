@@ -54,6 +54,8 @@ pub(crate) mod path_conflicts;
 #[cfg(test)]
 mod remote_cli_tests;
 pub mod resolve_bundle_asset;
+/// Issue #2535: operator guidance for recipe runs (`recipe guide`).
+pub(crate) mod run_guidance;
 pub mod runtime_assets;
 pub(crate) mod rust_toolchain;
 pub mod rust_trial;

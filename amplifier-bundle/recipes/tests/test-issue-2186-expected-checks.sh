@@ -198,7 +198,7 @@ bad_arg lock-base "$HEAD" 'main.lock'
 bad_arg space-base "$HEAD" 'ma in'
 bad_arg dollar-base "$HEAD" 'ma$(id)'
 bad_arg empty-base "$HEAD" ''
-bad_arg three-args "$HEAD" main extra
+bad_arg four-args "$HEAD" main job extra  # #2458: a third argument is the optional JOB
 # A good nested base passes validation (and reads branches/release/1.x).
 FXR="$(new_fx)"
 run_helper "$FXR" "$HEAD" release/1.x
