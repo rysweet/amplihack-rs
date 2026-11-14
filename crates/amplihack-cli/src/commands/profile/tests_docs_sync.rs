@@ -872,6 +872,56 @@ fn docs_describe_credential_identity_and_display_only_claude_json() {
     assert!(ROTATE_HOWTO.contains("```bash\namplihack profile rotate\n```"));
 }
 
+/// Issue #2040: the run lock's error, hint and skip line, and the
+/// running-session snapshot, appear in the docs as the code prints them.
+#[cfg(unix)]
+#[test]
+fn docs_quote_the_run_lock_error_and_skip_line_word_for_word() {
+    use super::ProfileError as E;
+    // `rotate::log::msg::RUN_BUSY`; `tests_run_lock.rs` pins the constant.
+    const RUN_BUSY: &str = "skip: another profile rotate run holds the run lock";
+    let running = E::RotateRunning(Some(41822));
+    let line = format!("error: {running}\nhint: {}", running.hint());
+    assert!(
+        ROTATE_HOWTO.contains(&line),
+        "rotate how-to is missing:\n{line}"
+    );
+    let unknown = E::RotateRunning(None).to_string();
+    assert!(
+        REFERENCE.contains(&format!("`{unknown}`")),
+        "reference is missing `{unknown}`"
+    );
+    let shown = E::RotateRunning(Some(1))
+        .to_string()
+        .replace("(pid 1)", "(pid <N>)");
+    assert!(
+        REFERENCE.contains(&format!("`{shown}`")),
+        "reference is missing `{shown}`"
+    );
+    let hint = running.hint().replace('`', "");
+    assert!(
+        REFERENCE.replace('`', "").contains(&hint),
+        "reference is missing the hint: {hint}"
+    );
+    assert!(!running.to_string().contains('\n'));
+    for (name, doc) in [("reference", REFERENCE), ("rotate how-to", ROTATE_HOWTO)] {
+        assert!(doc.contains(RUN_BUSY), "{name} is missing `{RUN_BUSY}`");
+        assert!(
+            doc.contains("rotate run lock <reason>; nothing was read"),
+            "{name} is missing the run lock refusal"
+        );
+        assert!(
+            doc.contains("skip: rotate run lock <reason>"),
+            "{name} is missing the run lock skip line"
+        );
+        assert!(
+            doc.contains("proc-snapshot-"),
+            "{name} does not name the snapshot files"
+        );
+    }
+    assert!(REFERENCE.contains("RotateRunning"));
+}
+
 // ---------------------------------------------------------------------------
 // Issue #2001: the Codex block of `profile usage`
 // ---------------------------------------------------------------------------

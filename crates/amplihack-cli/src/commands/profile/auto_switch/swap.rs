@@ -6,7 +6,7 @@
 use super::candidate::{self, Pool};
 use super::config::Config;
 use super::fsx;
-use super::liveness::{self, Liveness};
+use super::liveness::Liveness;
 use super::mv::{self, MoveError, abort_point};
 use super::overflow_inputs::OverflowInputs;
 use super::per_token;
@@ -17,6 +17,7 @@ use super::state::{
 use super::usage::{self, Attribution, RateLimits};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::proc_snapshot::{Fresh, ProcSource};
 use crate::commands::profile::rotate::CheckNote;
 use crate::commands::profile::rotate::identify::Account;
 use std::fs;
@@ -262,6 +263,52 @@ pub fn recover(state: &State) -> Result<Option<Liveness>, ProfileError> {
 
 /// `recover`, plus one line for each thing it did, for `repair`.
 pub fn recover_reporting(state: &State) -> Result<(Option<Liveness>, Vec<String>), ProfileError> {
+    recover_reporting_with(state, &ProcSource::system())
+}
+
+/// [`recover_reporting`] reading running sessions from `procs`. The read is
+/// confirmed (issue #2040): when a hosted directory looks ended in the
+/// cached answer, a fresh read decides before any login is returned.
+pub fn recover_reporting_with(
+    state: &State,
+    procs: &ProcSource,
+) -> Result<(Option<Liveness>, Vec<String>), ProfileError> {
+    let (live, done) = recover_fresh(state, procs)?;
+    Ok((live.map(|(live, _)| live), done))
+}
+
+/// A read of the running sessions, and whether it was forced.
+type Read = (Liveness, Fresh);
+
+/// [`recover_reporting_with`], also saying whether its read was forced.
+fn recover_fresh(
+    state: &State,
+    procs: &ProcSource,
+) -> Result<(Option<Read>, Vec<String>), ProfileError> {
+    let mut fresh = Fresh::Cached;
+    let (live, done) = recover_reading(state, |root, hosted| {
+        let (live, f) = procs.confirmed_fresh(root, |l| hosted.iter().any(|n| !l.is_live(n)));
+        fresh = f;
+        live
+    })?;
+    Ok((live.map(|live| (live, fresh)), done))
+}
+
+/// [`recover`] for the launcher once its Claude has exited: the running
+/// sessions are read afresh. A cached snapshot written during the session
+/// still holds that session's own processes for up to 30 seconds, which
+/// would keep its borrowed login away until a later recovery.
+pub fn recover_after_session(state: &State) -> Result<Option<Liveness>, ProfileError> {
+    let procs = ProcSource::system();
+    recover_reading(state, |root, _| procs.liveness(root, Fresh::Forced)).map(|(live, _)| live)
+}
+
+/// Recovery with `read` giving the running sessions, asked only when a
+/// directory hosts a borrowed login, with the hosted directories' names.
+fn recover_reading(
+    state: &State,
+    read: impl FnOnce(&Path, &[ProfileName]) -> Liveness,
+) -> Result<(Option<Liveness>, Vec<String>), ProfileError> {
     let mut done = Vec::new();
     let mut ledger = state.load_ledger()?;
     if let Some(j) = state.load_journal()? {
@@ -276,7 +323,12 @@ pub fn recover_reporting(state: &State) -> Result<(Option<Liveness>, Vec<String>
         cleanup_rerun(state);
         return Ok((None, done));
     }
-    let live = liveness::scan_system(&state.root);
+    let hosted_names: Vec<ProfileName> = ledger
+        .hosts
+        .keys()
+        .filter_map(|d| ProfileName::parse(d).ok())
+        .collect();
+    let live = read(&state.root, &hosted_names);
     let hosted: Vec<(String, HostEntry)> = ledger
         .hosts
         .iter()
@@ -472,6 +524,18 @@ pub fn swap_check(
     rl: &RateLimits,
     cfg: &Config,
 ) -> Result<(), ProfileError> {
+    swap_check_with(state, profiles, owner, rl, cfg, &ProcSource::system())
+}
+
+/// [`swap_check`] reading running sessions from `procs`.
+pub(super) fn swap_check_with(
+    state: &State,
+    profiles: &[ProfileName],
+    owner: &ProfileName,
+    rl: &RateLimits,
+    cfg: &Config,
+    procs: &ProcSource,
+) -> Result<(), ProfileError> {
     let now = fsx::now();
     // Most updates need no move: decide that cheaply, before recovery and
     // the `/proc` scan. The status-line wrapper ran recovery moments ago in
@@ -485,9 +549,9 @@ pub fn swap_check(
     if !worth_checking {
         return Ok(());
     }
-    let live = match recover(state)? {
-        Some(live) => live,
-        None => liveness::scan_system(&state.root),
+    let (live, fresh) = match recover_fresh(state, procs)?.0 {
+        Some(read) => read,
+        None => (procs.liveness(&state.root, Fresh::Cached), Fresh::Cached),
     };
     if !swap_allowed(state, &live, owner) {
         return Ok(());
@@ -520,33 +584,59 @@ pub fn swap_check(
     // directory, no running process may be using the directory. An API-key
     // profile is never swapped into a running session: its `.credentials.json`
     // is no login on its own, so the session would be logged out (#1804).
-    let eligible = |c: &ProfileName| {
-        let n = c.as_str();
-        !overflow.not_plan.contains(c)
-            && ledger.leased_to(n).is_none()
-            && fsx::movable_login(&slot(state, &ledger, owner.as_str(), n))
-            && (ledger.hosts.contains_key(n) || n == owner.as_str() || !live.is_live(c))
+    //
+    // The organisation-affinity restriction (#2136) is worked out from the
+    // same liveness reading as the eligibility it narrows, and the target
+    // and its restriction always travel together: a swap never pairs a
+    // target picked from one reading with a restriction from another.
+    let pick = |live: &Liveness| {
+        let eligible = |c: &ProfileName| {
+            let n = c.as_str();
+            !overflow.not_plan.contains(c)
+                && ledger.leased_to(n).is_none()
+                && fsx::movable_login(&slot(state, &ledger, owner.as_str(), n))
+                && (ledger.hosts.contains_key(n) || n == owner.as_str() || !live.is_live(c))
+        };
+        let restriction = super::affinity::restrict(
+            state,
+            &ledger,
+            &pool,
+            &overflow,
+            owner.as_str(),
+            &current,
+            need,
+            eligible,
+        );
+        let target = candidate::select_restricted(
+            &pool,
+            &overflow.pool(),
+            &current,
+            |p| eligible(p) && restriction.allowed.contains(p),
+            |p| restriction.plan_room.contains(p),
+        )
+        .cloned()?;
+        Some((target, restriction))
     };
-    let restriction = super::affinity::restrict(
-        state,
-        &ledger,
-        &pool,
-        &overflow,
-        owner.as_str(),
-        &current,
-        need,
-        eligible,
-    );
-    let Some(target) = candidate::select_restricted(
-        &pool,
-        &overflow.pool(),
-        &current,
-        |p| eligible(p) && restriction.allowed.contains(p),
-        |p| restriction.plan_room.contains(p),
-    )
-    .cloned() else {
+    // The cached read picks the target, so an update with nothing to swap to
+    // costs no `/proc` scan. Issue #2040: when the pick rests on the cache
+    // saying no session runs in the target's directory, `/proc` is read
+    // afresh and the target is picked again from that read. A read that
+    // recovery forced in this check is already fresh and is not repeated.
+    let Some((mut target, mut restriction)) = pick(&live) else {
         return Ok(());
     };
+    let t = target.as_str();
+    if fresh == Fresh::Cached && !ledger.hosts.contains_key(t) && t != owner.as_str() {
+        let forced = procs.liveness(&state.root, Fresh::Forced);
+        if !swap_allowed(state, &forced, owner) {
+            return Ok(());
+        }
+        let Some((confirmed, confirmed_restriction)) = pick(&forced) else {
+            return Ok(());
+        };
+        target = confirmed;
+        restriction = confirmed_restriction;
+    }
     if !ledger.hosts.contains_key(target.as_str()) {
         snapshot_account(state, target.as_str());
     }

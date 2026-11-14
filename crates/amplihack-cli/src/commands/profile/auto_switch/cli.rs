@@ -3,13 +3,14 @@
 
 use super::config::{self, ReadMode};
 use super::fsx;
-use super::liveness::{self, Liveness};
+use super::liveness::Liveness;
 use super::state::{CREDS, Ledger, PHASE_INCONSISTENT, State};
 use super::statusline;
 use super::swap;
 use super::usage::{Reading, Window};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::proc_snapshot::{Fresh, ProcSource};
 use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::{default_live, duplicates, usage_cmd};
 use anyhow::Result;
@@ -332,7 +333,7 @@ fn status(store: &ProfileStore) -> Result<String> {
         return Ok(out);
     };
     let now = fsx::now();
-    let live = liveness::scan_system(&state.root);
+    let live = ProcSource::system().liveness(&state.root, Fresh::Cached);
     writeln!(out, "in-session swap: {}", swaps_label(&live))?;
     // Missing files read as empty, so this works before the first `on`.
     let ledger = state.load_ledger();

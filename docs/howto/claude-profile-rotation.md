@@ -120,8 +120,12 @@ cycle live=work work:s=88%,w=41% personal:s=20%,w=35% spare:s=0%,w=12%
 would swap work->spare live s=88% w=41% target s=0% w=12% reason=threshold
 ```
 
-A dry run probes every profile and prints what it would do. It takes no lock,
-writes no rotate state, moves nothing and logs nothing. It never refreshes a
+A dry run probes every profile and prints what it would do. It takes the
+[run lock](#when-another-rotate-run-is-in-progress), which on a root that has never rotated
+creates `.auto-switch.d/rotate/` and `rotate-run.lock` and writes its own pid into that file.
+Apart from that lock it writes no rotate state, moves nothing and logs nothing.
+Its check for running sessions may refresh the shared
+[snapshot](#checks-for-running-sessions), which is not rotate state. It never refreshes a
 token or starts `claude`, so an expired login shows as unmeasured with its
 cause, and the target can differ from a real run's. It also does not finish an
 interrupted swap: if one is pending it prints
@@ -159,6 +163,33 @@ A running `claude` picks up the new login when it next reads its credentials;
 start new sessions to be sure.
 
 The one-shot command runs whether the auto-switch toggle is on or off.
+
+### When another rotate run is in progress
+
+Only one rotate run measures at a time. A one-shot `rotate` or a
+`--dry-run` started while another one-shot run, dry run or background cycle
+is under way stops at once, reads nothing and exits with status 1:
+
+```
+error: another profile rotate is running (pid 41822); not starting a second scan
+hint: wait for that run to finish, or stop the rotator with `amplihack profile rotate stop`
+```
+
+When the pid cannot be read, the message says `pid unknown`. A background
+rotator is busy for most of each cycle while it measures, so a dry run may
+need to wait for the cycle to end; run it again afterwards, or stop the
+rotator first. A background cycle that finds another run in progress logs
+`skip: another profile rotate run holds the run lock` and tries again at
+its next interval. `rotate status`, `rotate stop` and `profile switch` are
+never refused by this lock.
+
+If the lock file itself is unsafe, for example a symlink or a file another
+user owns, a one-shot run or dry run exits with status 1 and
+`rotate run lock <reason>; nothing was read`, and each background cycle logs
+`skip: rotate run lock <reason>` and moves nothing. Stop the rotator, remove
+`~/.claude-profiles/.auto-switch.d/rotate/rotate-run.lock`, and start it
+again. See
+[Rotate run lock](../reference/profile-command.md#rotate-run-lock).
 
 ## Switch to a login by hand
 
@@ -1123,6 +1154,61 @@ amplihack profile rotate start --interval 120 --session-at 70
 A value just under `--interval` makes every cycle ask each login again, at
 the cost of one direct read per login per cycle; `0` does the same and also
 ignores the status line's own readings.
+
+### Checks for running sessions
+
+The rotator, launches, the status line and `profile switch` all check which
+profiles have a running `claude` session, by reading `/proc`. Each check
+reads files for every one of your processes, so amplihack keeps the result
+in a snapshot file and shares it: however many sessions and commands run,
+`/proc` is read for this purpose at most once every 30 seconds for each
+profile root. The snapshot is in `$XDG_RUNTIME_DIR/amplihack/`, or in
+`~/.amplihack/runtime/amplihack/` when `XDG_RUNTIME_DIR` is unset or not
+private. amplihack creates `runtime/` and `amplihack/` with mode `0700` when
+they are missing, but never changes ones that already exist:
+
+```bash
+ls -l "${XDG_RUNTIME_DIR:-$HOME/.amplihack/runtime}/amplihack/"
+```
+
+```
+-rw------- 1 ryan ryan 2961 Nov  8 10:14 proc-snapshot-3f9a6c0e1b2d4a57.json
+-rw------- 1 ryan ryan    0 Nov  8 10:14 proc-snapshot-3f9a6c0e1b2d4a57.lock
+```
+
+Each process record holds its pid, optional profile name, and flags for
+whether it is a zombie, looks like Claude or amplihack, or has an unreadable
+environment. The file also holds a format version, user id, profile-root
+hash, scan time, writer pid and scan outcome; it holds no paths, command
+lines or environment contents.
+
+A damaged snapshot in a regular file you own is ignored and replaced on
+the next refresh, provided the directory and lock can be used and the
+write succeeds. Symlinks, nonregular entries and files owned by another
+user are ignored but never replaced: you must correct or remove those
+entries yourself. These entries cause repeated `/proc` scans and failed
+snapshot writes until corrected. If the directory cannot be used, every
+check reads `/proc` itself, as it did before.
+
+A snapshot only ever answers questions that lead to no action, such as what
+`auto-switch status` shows or which profiles the rotator measures. Before
+the rotator swaps a login, and before a launch or the status line moves a
+login or merges a profile's session directories, amplihack reads `/proc`
+again. If another process is refreshing the snapshot at that moment, it
+treats every profile as having a running session and moves nothing; a
+rotator cycle then logs
+`skip: state changed during measurement (target eligibility: session running)`
+and the next cycle tries again. A process that keeps the snapshot lock held
+therefore stops rotation without moving anything, until it ends.
+
+Only processes that look like Claude Code or amplihack are examined:
+those whose program path contains `claude` or `amplihack`, those whose
+program cannot be identified, and `node`, `bun` or `deno` running something
+with `claude` or `amplihack` in its command line. A shell, editor or other
+program you start from inside a session no longer counts as a session on
+its own, even though it inherited `CLAUDE_CONFIG_DIR`; the session's own
+`claude` process still does. The details are in
+[Running-session snapshot](../reference/profile-command.md#running-session-snapshot).
 
 ## Remove logs left by old usage probes
 

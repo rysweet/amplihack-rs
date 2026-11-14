@@ -4,8 +4,33 @@ use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{CREDS, Liveness, State};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{PLATFORM_TIER, tiers_detail};
+use crate::commands::profile::proc_snapshot::Fresh;
 
-pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
+/// How a snapshot reads running sessions (issue #2040).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Read {
+    /// The shared snapshot may answer: for reports and the first look.
+    Cached,
+    /// A cached read, then a fresh one when the cached answer is `Known`,
+    /// the only answer that permits an action.
+    Confirmed,
+    /// `/proc` afresh; a busy snapshot lock counts every profile as running.
+    Forced,
+}
+
+impl Read {
+    fn liveness(self, ctx: &Ctx, root: &std::path::Path) -> Liveness {
+        match self {
+            Self::Cached => ctx.procs.liveness(root, Fresh::Cached),
+            Self::Forced => ctx.procs.liveness(root, Fresh::Forced),
+            Self::Confirmed => ctx
+                .procs
+                .confirmed(root, |l| matches!(l, Liveness::Known(_))),
+        }
+    }
+}
+
+pub fn snapshot(ctx: &Ctx, state: &State, read: Read) -> Result<Snap, ProfileError> {
     let root = ctx.store.root();
     let live_read = ctx.identity_reader().oauth(&ctx.home.join(".claude"));
     let identity_cause = live_read.as_ref().err().copied();
@@ -28,7 +53,7 @@ pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
         };
     }
     let (live, proto) = identify::live_with(&ctx.store, &ctx.rs, &ctx.home, trusted_live.as_ref())?;
-    let liveness = (ctx.scan)(root);
+    let liveness = read.liveness(ctx, root);
     let sees_sessions = matches!(liveness, Liveness::Known(_));
     let live_name = match &live {
         LiveId::Known(n) => Some(n.clone()),

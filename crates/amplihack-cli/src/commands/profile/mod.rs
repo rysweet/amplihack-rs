@@ -35,6 +35,8 @@ mod pointer;
 mod probe_limits;
 mod probe_logs;
 mod probe_sandbox;
+#[cfg(unix)]
+mod proc_snapshot;
 mod root_cmd;
 mod root_config;
 mod rotate;
@@ -170,6 +172,11 @@ pub use supervise_gate::maybe_supervise;
 /// profile even if the default pointer changes (issue #1567).
 pub const PROFILE_ENV: &str = "AMPLIHACK_CLAUDE_PROFILE";
 
+/// `pid N`, or `pid unknown` when the run lock held no usable pid.
+fn pid_text(pid: Option<u32>) -> String {
+    pid.map_or_else(|| "pid unknown".to_string(), |p| format!("pid {p}"))
+}
+
 /// The hint of [`ProfileError::AutoSwitchConfig`] (issue #2218).
 pub(crate) const AUTO_SWITCH_CONFIG_HINT: &str = "fix what the message names and retry; do not \
      remove <root>/.auto-switch, which holds the exclude list (see \"Settings file\" in \
@@ -260,6 +267,13 @@ pub enum ProfileError {
     RotateUnsupported,
     #[error("rotate: {0}")]
     RotateDaemon(String),
+    /// Issue #2040 (D10): another rotate run holds the run lock. The pid is
+    /// the one that run wrote, for display only.
+    #[error(
+        "another profile rotate is running ({}); not starting a second scan",
+        pid_text(*.0)
+    )]
+    RotateRunning(Option<u32>),
     #[error(
         "profile {0} is a subscription profile with no login of its own; launching it would bill the Claude Platform API key per token. Run 'amplihack profile login {0}', or run 'amplihack profile kind set {0} api-key' if per-token billing is intended."
     )]
@@ -356,6 +370,9 @@ impl ProfileError {
             Self::RotateUnsupported => "rotate needs Linux or another Unix",
             Self::GateUnsettled => "nothing was moved; the next cycle decides again",
             Self::RotateDaemon(_) => "run `amplihack profile rotate status`",
+            Self::RotateRunning(_) => {
+                "wait for that run to finish, or stop the rotator with `amplihack profile rotate stop`"
+            }
             Self::SubscriptionNoLogin(_) => {
                 "amplihack profile login <name>, or: amplihack profile kind set <name> api-key"
             }

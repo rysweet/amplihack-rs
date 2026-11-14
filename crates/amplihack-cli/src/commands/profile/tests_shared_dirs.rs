@@ -1744,3 +1744,124 @@ fn the_migration_notice_names_the_shared_store_with_a_tilde() {
         )
     );
 }
+
+// --- Issue #2040: migration is decided on a fresh read ------------------------
+//
+// `shared_dirs::live_mode_with(&procs, root, name)` reads through the
+// running-session snapshot with `confirmed`: a cached answer of `Migrate`
+// is checked with a forced read before anything is merged, and only the
+// forced answer decides. Scans are synthetic and counted; the clock is
+// fixed, so the cached read never goes stale here.
+
+mod issue_2040 {
+    use super::super::auto_switch::kit::Liveness;
+    use super::super::proc_snapshot::{Collected, ProcRecord, ProcSource, SourceDeps};
+    use super::super::shared_dirs::{Deferred, Mode, live_mode_with, mode_from_liveness};
+    use super::{chmod, n};
+    use amplihack_utils::secure_files::euid;
+    use std::collections::BTreeSet;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const T: i64 = 1_793_634_000;
+
+    fn on(profiles: &[&str]) -> Collected {
+        Collected::Procs(
+            profiles
+                .iter()
+                .enumerate()
+                .map(|(i, p)| ProcRecord {
+                    pid: 5151 + i as u32,
+                    zombie: false,
+                    claude_like: true,
+                    profile: Some(p.to_string()),
+                    environ_unreadable: false,
+                })
+                .collect(),
+        )
+    }
+
+    struct Fx {
+        _tmp: tempfile::TempDir,
+        root: PathBuf,
+        scans: Arc<AtomicUsize>,
+        procs: ProcSource,
+    }
+
+    fn fx(answers: Vec<Collected>) -> Fx {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        chmod(&base, 0o700);
+        let root = base.join("root");
+        let rt = base.join("rt");
+        let proc_root = base.join("proc");
+        for d in [root.join("work"), rt.clone(), proc_root.clone()] {
+            fs::create_dir_all(&d).unwrap();
+            chmod(&d, 0o700);
+        }
+        chmod(&root, 0o700);
+        let scans = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&scans);
+        let procs = ProcSource::with(SourceDeps {
+            proc_root,
+            runtime_dir: Some(rt),
+            clock: Arc::new(|| T),
+            uid: euid(),
+            pid: std::process::id(),
+            collect: Arc::new(move |_: &Path, _: &Path, _: u32| {
+                let i = c.fetch_add(1, Ordering::SeqCst);
+                answers[i.min(answers.len() - 1)].clone()
+            }),
+            // Synthetic pids: every recorded process is still running.
+            may_be_running: Arc::new(|_: &Path, _: u32, _: u32| true),
+        });
+        Fx {
+            _tmp: tmp,
+            root,
+            scans,
+            procs,
+        }
+    }
+
+    #[test]
+    fn a_cached_live_answer_links_only_without_a_forced_read() {
+        let f = fx(vec![on(&["work"])]);
+        assert_eq!(
+            live_mode_with(&f.procs, &f.root, &n("work")),
+            Mode::LinkOnly(Deferred::LiveSession)
+        );
+        assert_eq!(f.scans.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_cached_migrate_answer_is_checked_with_a_forced_read_that_decides() {
+        // The cached read sees no session; a session starts before the
+        // forced read, which must stop the migration.
+        let f = fx(vec![on(&[]), on(&["work"])]);
+        assert_eq!(
+            live_mode_with(&f.procs, &f.root, &n("work")),
+            Mode::LinkOnly(Deferred::LiveSession)
+        );
+        assert_eq!(f.scans.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn migrate_needs_both_reads_to_agree() {
+        let f = fx(vec![on(&["other"])]);
+        assert_eq!(live_mode_with(&f.procs, &f.root, &n("work")), Mode::Migrate);
+        assert_eq!(f.scans.load(Ordering::SeqCst), 2, "cached, then forced");
+    }
+
+    #[test]
+    fn everything_and_unsupported_never_migrate() {
+        for l in [Liveness::Everything, Liveness::Unsupported] {
+            assert_ne!(mode_from_liveness(&l, &n("work")), Mode::Migrate, "{l:?}");
+        }
+        assert_eq!(
+            mode_from_liveness(&Liveness::Known(BTreeSet::new()), &n("work")),
+            Mode::Migrate
+        );
+    }
+}

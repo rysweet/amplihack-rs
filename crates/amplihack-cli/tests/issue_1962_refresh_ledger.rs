@@ -166,6 +166,7 @@ fn barred_profile_folder_is_never_refreshed() {
     // A session in `spare`: a static entry in a fake process table (#2042).
     let fake = FakeProc::new();
     fake.process(FAKE_PID_BASE)
+        .claude_session()
         .cmdline(&["sleep", "600"])
         .status('S')
         .environ(&[(

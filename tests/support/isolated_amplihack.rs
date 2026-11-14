@@ -24,6 +24,9 @@
 //! - no `AMPLIHACK_CLAUDE_PROFILE_ROOT` (issue #1699), so an install under the
 //!   temp `HOME` cannot refresh the developer's real profiles. `env_clear()`
 //!   already drops it; the explicit removal holds if the kept list changes.
+//! - `XDG_RUNTIME_DIR` set to a private (`0700`) directory under that temp
+//!   `HOME` (issue #2040), so the running-session snapshot a child keeps is
+//!   never written to the developer's real runtime directory;
 //! - `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=true` and `SSH_ASKPASS=true`
 //!   ([`NO_GIT_PROMPT_ENV`], issue #1764) and a null stdin, through
 //!   [`no_git_prompt`], so no git the child starts can wait on a credential
@@ -118,6 +121,26 @@ pub fn shared_temp_home() -> &'static Path {
     })
 }
 
+/// A private runtime directory for the child (issue #2040): `run` under
+/// [`shared_temp_home`], mode `0700`, created once per test process and
+/// removed with the home.
+pub fn shared_temp_runtime_dir() -> &'static Path {
+    static RUNTIME: OnceLock<PathBuf> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let dir = shared_temp_home().join("run");
+        match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => panic!("create the test XDG_RUNTIME_DIR {}: {e}", dir.display()),
+        }
+        // The umask cannot add bits, but an existing directory might have them.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .expect("make the test XDG_RUNTIME_DIR private");
+        dir
+    })
+}
+
 #[path = "proc_tree_seed.rs"]
 // `cli_integration` loads this file twice, here and through the other of
 // `isolated_amplihack.rs` / `fake_proc.rs`: one source, the same constants,
@@ -194,6 +217,7 @@ pub fn isolated(bin: impl AsRef<OsStr>) -> Command {
     }
     command
         .env("HOME", shared_temp_home())
+        .env("XDG_RUNTIME_DIR", shared_temp_runtime_dir())
         .env(HOME_GUARD_ENV, "1")
         .env(ROTATE_AUTOSTART_ENV, "0");
     reapply_proc_root(&mut command);

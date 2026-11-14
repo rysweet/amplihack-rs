@@ -29,7 +29,7 @@ pub use super::precheck::Env;
 use super::swap::{self, LOGIN_NOT_MOVABLE};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
-    CREDS, MoveError, State, abort_point, movable_login, move_login,
+    CREDS, Liveness, MoveError, State, abort_point, movable_login, move_login,
 };
 use crate::commands::profile::login_check::REJECTED_DIR;
 use crate::commands::profile::name::ProfileName;
@@ -227,9 +227,17 @@ pub fn min_gap(ctx: &Ctx) -> i64 {
 }
 
 /// [`step_with`] on this host: `/proc` and the auto-switch ledger are read
-/// only for a confirmed suspicion; the readings are `ctx.identity`'s.
+/// only for a confirmed suspicion; the readings are `ctx.identity`'s. The
+/// running sessions are a confirmed read (issue #2040): a cached answer that
+/// would permit recovery is checked with a fresh one.
 pub fn step(ctx: &Ctx, state: &State, out: &mut Sink, t: i64) -> Result<Step, ProfileError> {
-    let env_for = || Env::system(ctx.store.root(), state, ctx.scan);
+    let env_for = || {
+        let root = ctx.store.root();
+        let live = ctx
+            .procs
+            .confirmed(root, |l| matches!(l, Liveness::Known(_)));
+        Env::system(state, live)
+    };
     let read = |p: &Path| ctx.identity_reader().oauth(p);
     let (store, rs, home) = (&ctx.store, &ctx.rs, &ctx.home);
     step_with(store, rs, home, out, env_for, &read, min_gap(ctx), t)

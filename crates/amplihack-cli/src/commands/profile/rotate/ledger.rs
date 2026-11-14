@@ -213,6 +213,8 @@ pub struct RotateState {
     pub log1: PathBuf,
     /// The background process's own stdout and stderr.
     pub err: PathBuf,
+    /// The whole-run lock (issue #2040, D10): one rotate run at a time.
+    pub run_lock: PathBuf,
 }
 
 /// A state file amplihack may act on: this user's, and not writable by the
@@ -274,6 +276,7 @@ impl RotateState {
             log: dir.join("rotate.log"),
             log1: dir.join("rotate.log.1"),
             err: dir.join("rotate.err"),
+            run_lock: dir.join("rotate-run.lock"),
             dir,
             root,
         }

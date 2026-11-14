@@ -760,7 +760,8 @@ mod evidence {
         CLOCK.set(now());
         ANSWERS.with_borrow_mut(VecDeque::clear);
         CALLS.with_borrow_mut(Vec::clear);
-        let snap = observe::snapshot(&c, &State::new(&e.root).unwrap()).unwrap();
+        let snap =
+            observe::snapshot(&c, &State::new(&e.root).unwrap(), observe::Read::Cached).unwrap();
         (e, c, snap)
     }
 
@@ -1293,7 +1294,8 @@ mod evidence {
     fn locked_reselection_checks_non_previous_use_without_external_reads() {
         let (e, mut c, _) = fixture();
         super::super::super::tests_revalidate_cause::add_stored(&e, "spare2");
-        let snap = observe::snapshot(&c, &State::new(&e.root).unwrap()).unwrap();
+        let snap =
+            observe::snapshot(&c, &State::new(&e.root).unwrap(), observe::Read::Cached).unwrap();
         let t = clock();
         c.reread = Some(no_read);
         c.reread_live = Some(no_read);
@@ -1359,7 +1361,8 @@ mod evidence {
     fn unchanged_snapshot_stale_target_with_a_fresh_alternative_is_reconsidered() {
         let (e, mut c, _) = fixture();
         super::super::super::tests_revalidate_cause::add_stored(&e, "spare2");
-        let snap = observe::snapshot(&c, &State::new(&e.root).unwrap()).unwrap();
+        let snap =
+            observe::snapshot(&c, &State::new(&e.root).unwrap(), observe::Read::Cached).unwrap();
         let t = clock();
         c.reread = Some(no_read);
         c.reread_live = Some(no_read);
@@ -1689,7 +1692,8 @@ mod production_reader {
         credentials(&e.live(), true, false);
         assert!(!e.slot("work").exists());
         isolated(&e, &server, |c| {
-            let snap = observe::snapshot(c, &State::new(&e.root).unwrap()).unwrap();
+            let snap =
+                observe::snapshot(c, &State::new(&e.root).unwrap(), observe::Read::Cached).unwrap();
             let at = now();
             let mut old = rd(63.0, 20.0, Some(at - 121));
             old.passive = true;

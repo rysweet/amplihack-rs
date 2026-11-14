@@ -30,6 +30,7 @@ use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Liveness, State, now};
 use crate::commands::profile::expected::{record, recorded};
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::proc_snapshot::ProcSource;
 use crate::commands::profile::rotate::identify::Account;
 use crate::commands::profile::store::ProfileStore;
 use std::collections::BTreeSet;
@@ -165,7 +166,7 @@ impl Fx {
     fn ctx(&self) -> Ctx {
         let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
         let mut ctx = Ctx::new(self.store.clone(), self.home.clone(), s);
-        ctx.scan = |_| Liveness::Known(BTreeSet::new());
+        ctx.procs = ProcSource::from_fn(|_| Liveness::Known(BTreeSet::new()));
         ctx.measure = Some(work_out_spare_free);
         ctx
     }

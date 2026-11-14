@@ -21,6 +21,7 @@ use crate::commands::profile::auto_switch::{
 use crate::commands::profile::kind;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{Gate, OverflowEntry};
+use crate::commands::profile::proc_snapshot::ProcSource;
 use crate::commands::profile::rotate::candidates::login_unusable;
 use crate::commands::profile::rotate::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
 use crate::commands::profile::rotate::decide::{Probed, Reading, Win, Windows};
@@ -173,7 +174,7 @@ impl Fx {
         )
         .unwrap();
         let mut ctx = Ctx::new(self.store.clone(), self.home.clone(), s);
-        ctx.scan = |_| Liveness::Known(BTreeSet::new());
+        ctx.procs = ProcSource::from_fn(|_| Liveness::Known(BTreeSet::new()));
         ctx.measure = Some(measure);
         ctx.key_check = check;
         run_cycle(&mut ctx, Mode::Watch).unwrap()

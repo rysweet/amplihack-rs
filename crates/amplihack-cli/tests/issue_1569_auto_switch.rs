@@ -7,8 +7,9 @@
 //! amplihack prints.
 //!
 //! The swap tests need `/proc`, so they are Linux-only. A "holder" process
-//! (`sleep` with `CLAUDE_CONFIG_DIR` set) stands in for a running Claude
-//! session, which is how auto-switch decides a directory is live.
+//! (a copy of `sleep` under `claude-session/`, with `CLAUDE_CONFIG_DIR` set)
+//! stands in for a running Claude session, which is how auto-switch decides
+//! a directory is live. Since issue #2040 a plain `sleep` no longer counts.
 
 #![cfg(unix)]
 
@@ -304,8 +305,9 @@ impl Fixture {
     }
 
     /// A static entry standing in for a Claude session running in `name`:
-    /// not a zombie, owned by this user, with `CLAUDE_CONFIG_DIR` set to the
-    /// profile's absolute directory. No process is started.
+    /// not a zombie, owned by this user, its `exe` naming Claude (the D9
+    /// rule of issue #2040), with `CLAUDE_CONFIG_DIR` set to the profile's
+    /// absolute directory. No process is started.
     #[cfg(target_os = "linux")]
     fn hold(&self, name: &str) -> Holder {
         let pid = self.next_pid.get();
@@ -313,6 +315,7 @@ impl Fixture {
         let dir = self.dir(name);
         self.proc
             .process(pid)
+            .claude_session()
             .cmdline(&["sleep", "120"])
             .status('S')
             .environ(&[("CLAUDE_CONFIG_DIR", dir.to_str().unwrap())]);

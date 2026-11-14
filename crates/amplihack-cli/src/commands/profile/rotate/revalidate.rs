@@ -12,7 +12,7 @@ use super::cycle::Ctx;
 use super::decide::Decision;
 use super::fresh::{self, Reread};
 use super::identify::{Account, Skip};
-use super::observe::{Measurement, Snap, decide_measured, snapshot};
+use super::observe::{Measurement, Read, Snap, decide_measured, snapshot};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{State, exists};
 use crate::commands::profile::name::ProfileName;
@@ -223,7 +223,7 @@ fn compare(
     decision: &Decision,
 ) -> Result<(Snap, Vec<Changed>), ProfileError> {
     let journal = exists(&ctx.rs.journal);
-    let fresh = snapshot(ctx, state)?;
+    let fresh = snapshot(ctx, state, Read::Forced)?;
     let why = changed(first, &fresh, decision, journal);
     Ok((fresh, why))
 }

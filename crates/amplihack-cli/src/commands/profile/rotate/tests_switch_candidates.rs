@@ -29,6 +29,7 @@ use super::tests_swap::{CREDS, Env, env, ino_at, n, private};
 use super::tests_switch::assert_refused;
 use crate::commands::profile::auto_switch::kit::Liveness;
 use crate::commands::profile::pointer;
+use crate::commands::profile::proc_snapshot::ProcSource;
 use crate::test_support::proc::FAKE_PID_BASE;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -318,11 +319,11 @@ fn a_profile_with_no_recorded_skip_is_a_candidate() {
 // --- the default for new launches survives a refused live move ---------------
 
 /// The whole switch with `/proc` unscannable: `Liveness::Unsupported`, what
-/// `scan_system` returns on macOS and every other non-Linux system.
+/// `ProcSource::system()` gives on macOS and every other non-Linux system.
 fn switch_without_liveness(e: &Env, name: &str) -> Switched {
     let s = settings::resolve(&TuneFlags::default(), None, &|_| None).unwrap();
     let mut ctx = Ctx::new(e.store.clone(), e.home.clone(), s);
-    ctx.scan = |_| Liveness::Unsupported;
+    ctx.procs = ProcSource::from_fn(|_| Liveness::Unsupported);
     match switch_in(ctx, &n(name)) {
         Ok(Ok(s)) => s,
         Ok(Err(f)) => panic!("unexpected partial failure: {}", f.what),

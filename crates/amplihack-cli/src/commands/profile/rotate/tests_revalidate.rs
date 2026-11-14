@@ -42,6 +42,7 @@ use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::config::{self, ReadMode};
 use crate::commands::profile::auto_switch::kit::{Liveness, now};
 use crate::commands::profile::overflow::OverflowEntry;
+use crate::commands::profile::proc_snapshot::ProcSource;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
@@ -131,7 +132,7 @@ fn spare_busy_while_measuring_3(ctx: &Ctx, snap: &Snap) -> Result<Measurement, P
 fn a_busy_target_is_reconsidered_once_and_the_next_candidate_gets_the_swap() {
     let (e, s2, _) = env3();
     let mut ctx = ctx_with(&e, spare_busy_while_measuring_3);
-    ctx.scan = |_| sessions(&SPARE_SESSION_3, &["spare"]);
+    ctx.procs = ProcSource::from_fn(|_| sessions(&SPARE_SESSION_3, &["spare"]));
     let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
     let log = log_of(&e);
     assert_eq!(outcome, CycleOutcome::Swapped, "{log}");
@@ -167,7 +168,7 @@ fn spare_busy_while_measuring_4(ctx: &Ctx, snap: &Snap) -> Result<Measurement, P
 fn a_busy_target_with_no_other_candidate_skips() {
     let e = env();
     let mut ctx = ctx_with(&e, spare_busy_while_measuring_4);
-    ctx.scan = |_| sessions(&SPARE_SESSION_4, &["spare"]);
+    ctx.procs = ProcSource::from_fn(|_| sessions(&SPARE_SESSION_4, &["spare"]));
     let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
     let log = log_of(&e);
     assert_eq!(outcome, CycleOutcome::Skipped, "{log}");
@@ -349,7 +350,7 @@ fn both_targets_busy(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError
 fn a_reconsideration_that_finds_no_fresh_target_skips_once() {
     let (e, s2, th) = env3();
     let mut ctx = ctx_with(&e, both_targets_busy);
-    ctx.scan = |_| sessions(&BOTH_BUSY_8, &["spare", "spare2"]);
+    ctx.procs = ProcSource::from_fn(|_| sessions(&BOTH_BUSY_8, &["spare", "spare2"]));
     let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
     let log = log_of(&e);
     assert_eq!(outcome, CycleOutcome::Skipped, "{log}");
@@ -446,7 +447,7 @@ fn spare_busy_spare2_not_oauth(ctx: &Ctx, snap: &Snap) -> Result<Measurement, Pr
 fn the_retry_never_swaps_to_a_profile_that_lost_oauth() {
     let (e, _, _) = env3();
     let mut ctx = ctx_with(&e, spare_busy_spare2_not_oauth);
-    ctx.scan = |_| sessions(&SPARE_SESSION_R1, &["spare"]);
+    ctx.procs = ProcSource::from_fn(|_| sessions(&SPARE_SESSION_R1, &["spare"]));
     let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
     let log = log_of(&e);
     assert_eq!(outcome, CycleOutcome::Skipped, "{log}");
@@ -486,7 +487,7 @@ fn a_skipped_retry_counts_the_failed_live_probe_once() {
     let e = env();
     take_key_from_home(&e);
     let mut ctx = ctx_with(&e, |c, s| live_failed(&SPARE_SESSION_F1, c, s));
-    ctx.scan = |_| sessions(&SPARE_SESSION_F1, &["spare"]);
+    ctx.procs = ProcSource::from_fn(|_| sessions(&SPARE_SESSION_F1, &["spare"]));
     ctx.failed_live = FAILED_PROBE_LIMIT - 1;
     let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
     assert_eq!(outcome, CycleOutcome::Skipped, "{}", log_of(&e));
@@ -503,7 +504,7 @@ fn a_retry_after_failed_live_probes_still_swaps() {
     let (e, s2, _) = env3();
     take_key_from_home(&e);
     let mut ctx = ctx_with(&e, |c, s| live_failed(&SPARE_SESSION_F2, c, s));
-    ctx.scan = |_| sessions(&SPARE_SESSION_F2, &["spare"]);
+    ctx.procs = ProcSource::from_fn(|_| sessions(&SPARE_SESSION_F2, &["spare"]));
     ctx.failed_live = FAILED_PROBE_LIMIT - 1;
     let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
     let log = log_of(&e);
@@ -840,7 +841,7 @@ fn home_cut_short_and_spare_busy(ctx: &Ctx, snap: &Snap) -> Result<Measurement, 
 fn after_a_reread_a_target_change_is_still_reconsidered_once() {
     let (e, s2, _) = env3();
     let mut ctx = ctx_with(&e, home_cut_short_and_spare_busy);
-    ctx.scan = |_| sessions(&SPARE_SESSION_RR, &["spare"]);
+    ctx.procs = ProcSource::from_fn(|_| sessions(&SPARE_SESSION_RR, &["spare"]));
     ctx.pause = |ctx| put_home_back(&ctx.home);
     let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
     let log = log_of(&e);

@@ -428,6 +428,7 @@ fn a_profile_open_in_a_session_still_becomes_the_default() {
     f.ok(&["profile", "switch", "work"]);
     let fake = FakeProc::new();
     fake.process(FAKE_PID_BASE)
+        .claude_session()
         .cmdline(&["sleep", "600"])
         .status('S')
         .environ(&[("CLAUDE_CONFIG_DIR", f.root.join("spare").to_str().unwrap())]);
@@ -437,6 +438,29 @@ fn a_profile_open_in_a_session_still_becomes_the_default() {
 }
 
 // --- D5: a failure after the swap is reported truthfully --------------------
+
+#[test]
+fn a_non_claude_process_with_the_profile_dir_does_not_hold_it() {
+    // Issue #2040 (D9): only a process whose program path names Claude or
+    // amplihack can hold a profile. A plain `sleep` with CLAUDE_CONFIG_DIR
+    // set to spare is not a session, so the live login still moves.
+    let f = Fixture::new();
+    let fake = FakeProc::new();
+    fake.process(FAKE_PID_BASE)
+        .exe_link("/usr/bin/sleep")
+        .cmdline(&["sleep", "600"])
+        .status('S')
+        .environ(&[("CLAUDE_CONFIG_DIR", f.root.join("spare").to_str().unwrap())]);
+    f.with_proc(&fake);
+    let out = f.ok(&["profile", "switch", "spare"]);
+    assert!(
+        text(&out.stdout).starts_with("Live login moved: work -> spare\n"),
+        "{}",
+        text(&out.stdout)
+    );
+    assert_eq!(ino(&f.home_login()), Some(f.spare_ino));
+    f.assert_each_login_once();
+}
 
 #[test]
 fn a_failed_pin_write_after_the_swap_says_the_login_moved() {

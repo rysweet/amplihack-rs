@@ -33,6 +33,13 @@ use std::path::{Path, PathBuf};
 /// One above the largest Linux `pid_max` (2^22).
 pub const FAKE_PID_BASE: u32 = 4_194_305;
 
+/// The program path [`FakeEntry::claude_session`] links `exe` to. The
+/// profile liveness scan (issue #2040, D9) reads a process's environment
+/// only when its `exe` names Claude or amplihack, so an entry standing in
+/// for a running Claude session needs a path like this one. Only the link
+/// text is read; the path never has to exist.
+pub const CLAUDE_SESSION_EXE: &str = "/opt/claude-session/claude";
+
 #[path = "../../../../tests/support/proc_tree_seed.rs"]
 // `cli_integration` loads this file twice, here and through the other of
 // `isolated_amplihack.rs` / `fake_proc.rs`: one source, the same constants,
@@ -193,6 +200,12 @@ impl FakeEntry {
         }
         private_file(&self.dir.join("environ"), &raw);
         self
+    }
+
+    /// `exe` -> [`CLAUDE_SESSION_EXE`]: this entry is a running Claude
+    /// session as the profile liveness scan's D9 rule sees it.
+    pub fn claude_session(&self) -> &Self {
+        self.exe_link(CLAUDE_SESSION_EXE)
     }
 
     /// `exe` as a symlink to `target`.

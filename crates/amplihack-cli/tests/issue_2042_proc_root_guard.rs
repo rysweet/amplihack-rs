@@ -126,7 +126,9 @@ fn procfs_reads_the_variable_by_this_name_and_names_its_exceptions() {
 
 /// Files that read the process table and must do it through `proc_root()`.
 const ROUTED: [&str; 10] = [
-    "src/commands/profile/auto_switch/liveness.rs",
+    // Issue #2040 moved the system scan into the shared snapshot: liveness.rs
+    // takes the proc root as an argument and proc_snapshot names it.
+    "src/commands/profile/proc_snapshot/mod.rs",
     "src/commands/profile/rotate/control.rs",
     "src/commands/profile/rotate/owner.rs",
     "src/commands/profile/rotate/daemon.rs",

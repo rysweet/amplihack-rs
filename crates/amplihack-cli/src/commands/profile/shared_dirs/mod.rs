@@ -243,7 +243,22 @@ fn print(r: &Report, name: &ProfileName, canonical_root: &Path, add: bool) {
 
 #[cfg(unix)]
 fn live_mode(root: &Path, name: &ProfileName) -> Mode {
-    mode_from_liveness(&super::auto_switch::kit::scan_system(root), name)
+    live_mode_with(&super::proc_snapshot::ProcSource::system(), root, name)
+}
+
+/// The migration decision on sessions read from `procs`. A cached answer
+/// that would migrate is checked with a fresh read, which decides
+/// (issue #2040).
+#[cfg(unix)]
+pub(super) fn live_mode_with(
+    procs: &super::proc_snapshot::ProcSource,
+    root: &Path,
+    name: &ProfileName,
+) -> Mode {
+    let live = procs.confirmed(root, |l| {
+        matches!(mode_from_liveness(l, name), Mode::Migrate)
+    });
+    mode_from_liveness(&live, name)
 }
 
 #[cfg(not(unix))]

@@ -164,6 +164,7 @@ fn lease_barred_live_login_is_still_refreshed_and_the_cycle_goes_on() {
     // The session is a static entry in a fake process table (#2042).
     let fake = FakeProc::new();
     fake.process(FAKE_PID_BASE)
+        .claude_session()
         .cmdline(&["sleep", "600"])
         .status('S')
         .environ(&[("CLAUDE_CONFIG_DIR", f.root.join("work").to_str().unwrap())]);

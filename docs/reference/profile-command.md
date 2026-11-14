@@ -3813,7 +3813,11 @@ pub(super) fn ensure_for(store: &ProfileStore, name: &ProfileName);
   unchanged.
 
 Liveness comes from the auto-switch `/proc` scan for a process with
-`CLAUDE_CONFIG_DIR=<root>/<name>`. In doubt nothing is migrated:
+`CLAUDE_CONFIG_DIR=<root>/<name>`, read through the
+[running-session snapshot](#running-session-snapshot). A cached answer of
+`Migrate` is checked with a fresh scan before anything is merged, and a
+fresh scan that cannot take the snapshot lock counts as a matching process.
+In doubt nothing is migrated:
 
 | Scan result | Mode |
 |-------------|------|
@@ -4994,6 +4998,16 @@ account is exhausted. The target must be eligible and, in addition, its login
 must be in its home slot, and if that home slot is its own profile directory,
 no running process may be using that directory.
 
+The target is picked twice. The first pick uses a cached
+[process-table reading](#cached-and-fresh-reads). When that pick finds a
+target, a forced reading follows and the target is picked again from it,
+with every eligibility check and the
+[organisation affinity](profile-organisation-affinity.md) restriction
+worked out from the forced reading alone. The swap uses only the second
+pick: its target, and the organisation restriction that came with it.
+Nothing from the first pick is reused. If the second pick finds no
+target, there is no swap.
+
 The *home slot* of account `X` is `<root>/X/.credentials.json` when directory
 `X` holds `X`'s own login, and `<root>/.auto-switch.d/parked/X/.credentials.json`
 when directory `X` is hosting another account. At any moment each account's
@@ -5075,9 +5089,12 @@ the moved login. Other cached account fields are left alone.
 A directory is *live* when a process of yours, other than amplihack itself
 and not a zombie, has a `CLAUDE_CONFIG_DIR` in `/proc/<pid>/environ` that
 resolves to it. Relative values are resolved against that process's working
-directory. A process whose environment cannot be read but whose command line
-mentions `claude` or `amplihack` makes every hosted directory count as live.
-Any doubt counts as live.
+directory. Only processes that look like Claude Code or amplihack are
+looked at; see [Which processes are read](#which-processes-are-read). Such a
+process whose environment cannot be read makes every hosted directory count
+as live. Any doubt counts as live. Most readers take the answer from the
+[running-session snapshot](#running-session-snapshot), and every path that
+would move a login reads `/proc` afresh first.
 
 Account `X` is *leased* to directory `Y` when `Y` is not `X` and the ledger
 says `X` is live in `Y`. These are refused before `claude` is spawned:
@@ -5109,6 +5126,238 @@ the global lock and again just before spawn.
 
 Leases are interlocks against accidents. They are not a security boundary
 against other processes running as you.
+
+### Running-session snapshot
+
+Launches, `profile switch`, `profile login`, the status-line wrapper,
+`auto-switch status`, `auto-switch repair` and every rotate cycle need to
+know which profile directories have a running session. The answer comes from
+a scan of `/proc`, as described in [Leases](#leases). A scan reads several
+files for each of your processes, so on a busy host the result is kept in a
+snapshot file and shared, instead of every caller scanning for itself. A
+snapshot is never enough on its own to move a login: every path that acts
+reads `/proc` afresh first, as set out in
+[Commands that read afresh](#commands-that-read-afresh).
+
+A snapshot can list a session that has since ended. Before a snapshot
+answers, each process it lists in a profile directory, and each Claude-like
+process whose environment could not be read, is checked against
+`/proc/<pid>/status`. A process with no `/proc` entry, a zombie, or a pid
+that now belongs to another user is dropped from the answer. So when a
+session ends, `auto-switch repair`, `auto-switch status` and the next launch
+see it at once, not up to 30 seconds later. A pid that the same user reuses
+still counts as a running session, which errs towards live.
+
+The snapshot is used on Linux only. On every other Unix the answer is
+`Unsupported`, as before, and no snapshot file is read or written.
+
+#### Where the snapshot is kept
+
+| Directory | Used when |
+|-----------|-----------|
+| `$XDG_RUNTIME_DIR/amplihack/` | `XDG_RUNTIME_DIR` is set, is an absolute path, and names a directory (not a symlink) that you own and that is not open to group or other users (`mode & 0o077 == 0`). |
+| `~/.amplihack/runtime/amplihack/` | Otherwise. `~/.amplihack` must exist and must not be writable by group or others, and `~/.amplihack/runtime` must pass the same checks as `XDG_RUNTIME_DIR`. |
+
+On a host without a private `XDG_RUNTIME_DIR`, `~/.amplihack/runtime` is
+created with mode `0700` when it is missing; `~/.amplihack` itself is never
+created for this. The `amplihack/` directory is likewise created with mode
+`0700` when it is missing. The owner and mode of each directory are checked,
+without following symlinks, every time it is used, including one that was
+just created. A directory that already exists and fails a check is never
+repaired, whether it is `~/.amplihack/runtime` or `amplihack/`; no snapshot is
+used, and every reader scans `/proc` itself, as it did before snapshots
+existed.
+
+When no snapshot can be kept at all (no usable runtime directory, or the
+`amplihack/` directory or the snapshot lock cannot be created or used, or
+the snapshot cannot be written),
+amplihack logs one warning per process, naming the directory:
+`proc snapshot cache unusable at <dir>: <why>; every read scans /proc`. The
+answers are still correct. A snapshot file that cannot be read or parsed, or
+that fails a safety check, is logged at debug level; the log line gives its
+path and the reason, never its contents. A snapshot whose version, user id or
+profile-root hash does not match, that names an invalid profile, or whose
+`taken_at` is in the future, is treated as missing and is not logged. A stale
+snapshot is not logged either; it is kept for the cases described in
+[Cached and fresh reads](#cached-and-fresh-reads).
+
+There is one pair of files for each profile root:
+
+| File | Contents |
+|------|----------|
+| `proc-snapshot-<h>.json` | The snapshot. Mode `0600`, written atomically. |
+| `proc-snapshot-<h>.lock` | The lock held by whoever is refreshing the snapshot. Mode `0600`, empty. |
+
+`<h>` is the first 16 hexadecimal characters of the SHA-256 of the
+canonical `/proc` path, a zero byte, and the raw bytes of the canonical
+profile root. Commands run with different `--root` values therefore keep
+separate snapshots, and a test that simulates `/proc` under a temporary
+directory never shares a snapshot with the real one.
+
+#### Snapshot file format
+
+```json
+{
+  "version": 1,
+  "uid": 1000,
+  "root_hash": "3f9a6c0e1b2d4a57",
+  "taken_at": 1793634010,
+  "writer_pid": 41822,
+  "outcome": "ok",
+  "procs": [
+    { "pid": 40211, "zombie": false, "claude_like": true, "profile": "work", "environ_unreadable": false },
+    { "pid": 41822, "zombie": false, "claude_like": true, "environ_unreadable": false }
+  ]
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `version` | Always `1`. |
+| `uid` | The effective uid of the writer. |
+| `root_hash` | `<h>` from the file name. |
+| `taken_at` | When the scan was made, in Unix seconds. |
+| `writer_pid` | The pid of the process that wrote the file. Display only. |
+| `outcome` | `ok`, or `unsupported` when `/proc` could not be used for the scan. |
+| `procs` | One record for each of your processes that the scan saw, including the writer itself. |
+| `procs[].pid` | The process id. |
+| `procs[].zombie` | `true` for a process in state `Z`. |
+| `procs[].claude_like` | `true` when the process looks like Claude Code or amplihack; see [Which processes are read](#which-processes-are-read). |
+| `procs[].profile` | The profile whose directory the process's `CLAUDE_CONFIG_DIR` resolves to. Absent, or `null`, when it names none. |
+| `procs[].environ_unreadable` | `true` for a `claude_like` process whose environment could not be read. A process that exits between its `exe` read and its `environ` read (the read fails with `ESRCH`) has exited, not refused the read: it is left out of the snapshot, as a process that has exited before its `status` is read is. |
+
+The file holds no paths, command lines, environment contents or
+`CLAUDE_CONFIG_DIR` values. It names the profile root only through its hash,
+and each process only through the fields above. Unknown fields are ignored,
+so a newer writer can add one without breaking an older reader.
+
+A snapshot is treated as missing when any of these holds:
+
+- it is a symlink or not a regular file (it is opened without following
+  symlinks);
+- it is not owned by you, is open to group or other users, or has more than
+  one hard link;
+- it is larger than 4 MiB;
+- it is not valid JSON of the shape above;
+- its `version`, `uid` or `root_hash` does not match the reader's;
+- any `profile` value fails the [name rules](#name-rules), such as `../x`,
+  `a/b` or the empty string;
+- its `taken_at` is later than the reader's clock, or the age cannot be
+  computed without overflow.
+
+#### Freshness
+
+A valid snapshot is *fresh* while its age, the reader's clock minus
+`taken_at`, is at least 0 and under 30 seconds, and *stale* from 30 seconds
+on. However many commands run, `/proc` is scanned for a cached reading at
+most once in each 30 seconds for each profile root. The period is fixed and
+has no setting.
+
+#### How an answer is worked out
+
+The reader turns the snapshot into the same answer the scan gave before:
+
+1. If `outcome` is `unsupported`, the answer is `Unsupported`.
+2. Otherwise, if any record other than the reader's own pid has both
+   `claude_like` and `environ_unreadable`, the answer is that every hosted
+   directory counts as live.
+3. Otherwise the live profiles are the `profile` values of the records that
+   are not zombies and are not the reader's own pid.
+
+A process never counts itself. Before step 2 and step 3 are applied, each
+record that could change the answer (one with a `profile`, or one with both
+`claude_like` and `environ_unreadable`) is checked against
+`/proc/<pid>/status` and dropped when the process has gone, is a zombie or
+now belongs to another user. Records that cannot change the answer, such as
+a writer with no profile, are not checked and stay in the snapshot until the
+next refresh.
+
+#### Cached and fresh reads
+
+A reading is taken in one of three ways. None of them waits for a lock,
+sleeps or retries.
+
+| Read | Steps |
+|------|-------|
+| Cached | A fresh snapshot is used as it is. Otherwise the reader tries the lock file once. If it gets the lock, it reads the snapshot again and uses it if another reader wrote a fresh one in the meantime; otherwise it scans `/proc`, writes the snapshot and uses the result. If the lock is held, someone else is refreshing: it uses the stale snapshot whatever its age, or, when there is no valid snapshot, counts every hosted directory as live. |
+| Forced | The snapshot file is not read at all. The reader tries the lock file once. If it gets the lock, it scans `/proc`, writes the snapshot and uses the result. If the lock is held, it counts every hosted directory as live, so the command does not act. |
+| Confirmed | A cached read. If its answer would let the command act, a forced read follows and the command decides on that answer instead. |
+
+A forced read writes its result, so the next cached reader does not scan
+again. When the snapshot cannot be written, for example because the
+directory is read-only, the reader still uses its scan, and the next reader
+scans again. A problem with the snapshot, its directory or its lock is never
+reported as an error, never shown on the status line, and never makes a
+command fail; at worst a command scans `/proc` as it did before. What is
+logged is set out in [Where the snapshot is kept](#where-the-snapshot-is-kept).
+
+`Unsupported` from a scan is written to the snapshot like any other result,
+so on a host where `/proc` cannot be used, shared-directory migration stays
+deferred for up to 30 seconds after `/proc` becomes usable. A profile root
+that cannot be canonicalised gives `Unsupported` without a scan and is never
+written.
+
+The snapshot lock is only ever tried, never waited for, and it is never
+held while another lock is being taken. Where several locks are involved,
+the order is the one given in [Rotate run lock](#rotate-lock-order): the
+run lock, then the global state lock, then Claude's refresh locks, then the
+snapshot lock. Both lock files are opened with
+`O_CLOEXEC`, so a `claude` or other child process started while a lock is
+held does not keep it. Each lock is unlocked explicitly when it is released,
+so a child forked just before then does not hold it until that child execs.
+
+#### Commands that read afresh
+
+A command reads `/proc` afresh only when the snapshot's answer would let it
+move a login or migrate a directory. Display and dry-run paths never do.
+
+| Command or step | Read |
+|-----------------|------|
+| [Rotate revalidation](#rotate-revalidation) (step 6 of a cycle) | Forced, always. If the lock is held, every profile is skipped as `session running`, so a swap ends with `target eligibility: session running`. |
+| The launcher returning logins after its `claude` exits ([Session end and recovery](#session-end-and-recovery)) | Forced, when a directory hosts a borrowed login. A snapshot written during the session still lists that session's own processes, so a cached answer could keep the login away for up to 30 seconds. |
+| [Session end and recovery](#session-end-and-recovery), run by launches before `claude` starts, `profile login`, `auto-switch repair` and the status-line wrapper | Confirmed: forced only when a hosted directory looks not live, before its login is returned. |
+| The [in-session swap](#in-session-swap) check of the status-line wrapper | Confirmed: forced only when the cached answer would allow the swap, and the swap goes ahead only if the forced answer allows it too. |
+| [Shared session directories](#shared-session-directories), run by `profile switch`, `profile login` and launches | Confirmed: forced only when the cached answer is `Migrate`. |
+| [Rotate switch](#rotate-switch) (`profile switch NAME`), just before NAME's login is moved | Forced, when the cached answer let NAME through as a candidate. A session in NAME refuses the switch as `session running`; if the snapshot lock is held, the switch is refused as `session running` with `running sessions cannot be seen here, so its login may be in use`. |
+| The held-cycle and hand-change checks of a rotate cycle that is not a dry run | Confirmed: forced only when the cached answer would permit the action. |
+| Rotate step 3 (candidates), `rotate --dry-run`, `auto-switch status`, the status line's display | Cached. |
+| `rotate status`, `start`, `stop` and the other control actions | No reading. |
+
+#### Which processes are read
+
+For each numbered entry in `/proc`, the scan reads, in this order:
+
+1. `status`, for the uid and state. A process with another uid
+   is skipped and nothing more is read.
+2. The `exe` link, to decide whether the process is a candidate.
+3. `environ`, only for candidates.
+
+`stat` is not read.
+
+A process of yours is a candidate when any of these holds:
+
+- a component of its `exe` path contains `claude` or `amplihack`, ignoring
+  ASCII case. Native installs such as `~/.local/share/claude/versions/2.1.3`
+  match on the directory name. A trailing ` (deleted)` and bytes that are
+  not UTF-8 do not prevent a match;
+- its `exe` link cannot be read;
+- the base name of its `exe` is `node`, `bun` or `deno`, and its `cmdline`
+  contains `claude` or `amplihack`, or cannot be read. `cmdline` is read
+  only in this case.
+
+The `status` and `cmdline` reads are each limited to 64 KiB, and
+`environ` to the existing environment limit. A process that is not a
+candidate never has its environment read. `claude_like` uses the same two
+markers as before.
+
+This narrows one case. A process whose `exe` shows it is something else,
+such as `/usr/bin/bash` or `/usr/bin/python3`, no longer makes a directory
+live even when it inherited that directory's `CLAUDE_CONFIG_DIR`. The
+`claude` process that started it still does, so a directory with a running
+session is still live.
+
+The scan still first checks that it can read its own `/proc/self/environ`.
+When it cannot, as under `hidepid`, the outcome is `unsupported`.
 
 ### Session end and recovery
 
@@ -5596,7 +5845,7 @@ amplihack profile rotate owner [clear]
 | Command | Behaviour |
 |---------|-----------|
 | `rotate` | Runs one [cycle](#rotate-cycle): recover, measure, decide, and swap if needed. Prints its log lines to stdout and appends them to the log. Runs whether the toggle is on or off. |
-| `rotate --dry-run` | Measures and decides, then prints `would ...` lines and the `cycle` line to stdout. Takes no lock, writes no rotate state, moves nothing, and never refreshes a token or starts `claude`: every read is a direct read with refresh off, so an expired login shows as unmeasured with its [cause](#identity-read-causes), and the dry run can pick a different target than a real cycle that would have refreshed that login. It prints `would refresh: expired login in ~/.claude` when a real cycle would refresh the live login, and the `would` lines of [seeding](#seeding-a-record) for a live profile with no record. It skips both the [prototype check](#rotate-prototype-coexistence) and [journal recovery](#rotate-recovery). Reports a pending journal as `would recover an interrupted swap (phase <phase>)` and decides as if it were not there. Reads the [pin](#rotate-pin): a pin in force prints `would stay (held by switch to <name>)`, or `would stay (pin unreadable)`, and measures nothing. Makes the same [hand-change](#rotate-hand-change-recovery) identity reads as a real cycle, never writes `hand_suspect`, and reports the result as `would recover: <recovered line>`, `would note: <note>`, or `would alert: <ALERT line>` with its `fix` lines; see the dry-run table there. An inconsistent journal is reported as `would alert: rotate recovery is inconsistent`, and a damaged one as `would alert: the rotate journal is damaged`. |
+| `rotate --dry-run` | Measures and decides, then prints `would ...` lines and the `cycle` line to stdout. Takes the [run lock](#rotate-run-lock), and fails with `RotateRunning` while another rotate run holds it. Writes no rotate state apart from the [run lock](#rotate-run-lock): on a root that has never rotated it creates `.auto-switch.d/rotate/` and `rotate-run.lock`, writes its own pid into that file, and refuses a profile root that is not private. Its running-session check may also refresh the shared [running-session snapshot](#running-session-snapshot), which is not rotate state. It moves nothing, and never refreshes a token or starts `claude`: every read is a direct read with refresh off, so an expired login shows as unmeasured with its [cause](#identity-read-causes), and the dry run can pick a different target than a real cycle that would have refreshed that login. It prints `would refresh: expired login in ~/.claude` when a real cycle would refresh the live login, and the `would` lines of [seeding](#seeding-a-record) for a live profile with no record. It skips both the [prototype check](#rotate-prototype-coexistence) and [journal recovery](#rotate-recovery). Reports a pending journal as `would recover an interrupted swap (phase <phase>)` and decides as if it were not there. Reads the [pin](#rotate-pin): a pin in force prints `would stay (held by switch to <name>)`, or `would stay (pin unreadable)`, and measures nothing. Makes the same [hand-change](#rotate-hand-change-recovery) identity reads as a real cycle, never writes `hand_suspect`, and reports the result as `would recover: <recovered line>`, `would note: <note>`, or `would alert: <ALERT line>` with its `fix` lines; see the dry-run table there. An inconsistent journal is reported as `would alert: rotate recovery is inconsistent`, and a damaged one as `would alert: the rotate journal is damaged`. |
 | `rotate start` | Checks for the prototype, runs recovery under the lock, warns on stderr if auto-switch has been turned off, refuses if a verified rotator is already running, then starts `rotate watch` as a detached process and writes the pid file. The check, the start and the pid file all happen under the state lock, so two `start`s cannot both start one. Fails with `rotate: lock busy` when the lock stays held for 2 seconds, and with the auto-switch error when auto-switch recovery is inconsistent. Pins the child to its root and records that root; see [Rotate root record](#rotate-root-record). Prints `rotate: started (pid <pid>), checking every <interval>s`, `log: <path>` and `root: <path>`, and returns at once. |
 | `rotate watch` | Runs a cycle every `--interval` seconds in the foreground until `SIGTERM` or `SIGINT`. A signal is never acted on during a swap; see [Signals](#rotate-signals). Refuses if another verified rotator is running. Writes only to the log, apart from the [owner marker](#rotate-owner) when it runs supervised. |
 | `rotate watch --supervised[=UNIT]` | As `rotate watch`, and records itself as the [rotation owner](#rotate-owner) so that launches do not start a second rotator. `UNIT` names the service manager unit, for example `--supervised=amplihack-rotator.service`; the `=` is required. Without `UNIT` the name is found as described in [Owner unit name](#owner-unit-name). A `watch` that systemd runs as a service records itself without the flag: `INVOCATION_ID` is set and the unit is found in `/proc/self/cgroup` as in step 2 of [Owner unit name](#owner-unit-name). Like any `watch`, it refuses with status 1 when another verified rotator is running, and then writes no marker; stop that rotator with `rotate stop` before starting the unit. `rotate start --supervised` is refused with `RotateRefused` (`--supervised applies to rotate watch only`, status 1). |
@@ -5770,7 +6019,13 @@ The auto-switch `exclude` list applies to rotation, and so does the
 
 ### Rotate cycle
 
-Every non-dry-run cycle runs these steps in order:
+Every run of the one-shot command, `--dry-run` and every `watch` cycle first
+takes the [run lock](#rotate-run-lock). A one-shot or dry run that finds it
+held fails with `RotateRunning` before reading anything; a `watch` cycle
+logs `skip: another profile rotate run holds the run lock` and waits for
+its next interval.
+
+Every non-dry-run cycle then runs these steps in order:
 
 1. **Prototype check.** See [Prototype coexistence](#rotate-prototype-coexistence).
 2. **Toggle.** `watch` only: if auto-switch has been turned off, by
@@ -5897,7 +6152,11 @@ cannot retain an earlier authorization.
 
 For the target, `<reason>` is the [skip reason](#rotate-candidates) it now
 has, such as `no login`, `excluded`, `session running`, `parked` or
-`not oauth`, or `gone` when the profile no longer exists. When `/proc` can no
+`not oauth`, or `gone` when the profile no longer exists. Step 6 always scans
+`/proc` afresh and never uses the
+[running-session snapshot](#running-session-snapshot), even a fresh one; when
+another process holds the snapshot lock at that moment, the step counts every
+profile as running. When `/proc` can no
 longer be scanned, every profile is skipped as `session running`, so a swap
 ends with `target eligibility: session running` and a stay or ALERT goes
 ahead. Whether `/proc` can be scanned is not compared in its own right: a
@@ -7923,7 +8182,7 @@ set of skipped profiles changes, and by the one-shot command on every run.
 | `directory refused` | The profile directory fails the ownership and mode check: it is a symlink, not a directory, not owned by you, or open to group or other users. A profile in the auto-switch `exclude` list is skipped as `excluded` instead. While a plan profile has this reason, the rotator does not move onto an overflow profile (see [Overflow decision](#overflow-decision)). |
 | `no login` | `<root>/<name>/.credentials.json` is missing, a symlink, not a regular file, not owned by you, readable by other users, or has more than one link. |
 | `excluded` | It is in the auto-switch `exclude` list. It is not probed and no request is sent with its token. Its `.credentials.json` is read only for the byte comparison of [rule 3](#local-proof-of-an-excluded-live-login), and written only by the [write-back](#write-back-into-an-excluded-folder). It never reaches the `no account` check or the unbound set. |
-| `session running` | A running process has `CLAUDE_CONFIG_DIR=<root>/<name>` (the same `/proc` scan auto-switch uses). If `/proc` cannot be scanned, every profile is skipped and `skip: cannot see running sessions; no candidates` is logged once. |
+| `session running` | A running process has `CLAUDE_CONFIG_DIR=<root>/<name>` (the same `/proc` scan auto-switch uses, read from the [running-session snapshot](#running-session-snapshot) in step 3 and afresh in step 6). If `/proc` cannot be scanned, every profile is skipped and `skip: cannot see running sessions; no candidates` is logged once. |
 | `leased` | Its login is on loan to another profile's session in the auto-switch ledger. |
 | `hosting` | Its directory hosts another account's login in the auto-switch ledger. |
 | `parked` | `<root>/.auto-switch.d/parked/<name>` exists. |
@@ -8932,6 +9191,11 @@ changes nothing but `.default`.
    lock in step 6. A profile with any skip reason is refused, the same
    profiles the rotator never swaps to, so a switch never moves a login out
    from under a running session, an auto-switch lease or a hosted login.
+   That list's running sessions may come from the cached
+   [running-session snapshot](#running-session-snapshot), so when it lets
+   `<name>` through, `/proc` is read afresh before the swap; a session in
+   `<name>`, or a held snapshot lock, refuses the switch as
+   `session running` (see [Commands that read afresh](#commands-that-read-afresh)).
    The refusal is [default only](#default-only): `<name>` still becomes the
    default for new launches.
    The refusal is
@@ -9152,6 +9416,72 @@ upgrading. The ledger format did not change, so an older rotator can still
 read the ledger a `switch` writes; it reads `switched` as an outcome it does
 not count as capacity.
 
+### Rotate run lock
+
+Only one rotate run scans and measures at a time for each profile root. The
+run lock is `<root>/.auto-switch.d/rotate/rotate-run.lock`, beside the rest
+of the [rotate state](#rotate-state-directory).
+
+| Run | Takes the run lock | When it is held by another run |
+|-----|--------------------|--------------------------------|
+| `amplihack profile rotate` | Yes, as its first step | Fails with `RotateRunning`, status 1. Nothing is read or changed. |
+| `amplihack profile rotate --dry-run` | Yes, as its first step | Fails with `RotateRunning`, status 1. Nothing is read. |
+| Each `watch` cycle (`rotate start`, `rotate watch`) | Yes, at the start of the cycle, for the whole cycle | Logs `skip: another profile rotate run holds the run lock` and ends the cycle as skipped. The rotator keeps running and tries again at its next interval. |
+| `rotate status`, `start`, `stop`, `owner`, `overflow`, `profile switch` | No | Not affected. |
+
+The lock is taken before the [prototype check](#rotate-prototype-coexistence)
+and before anything else is read, with a single non-blocking attempt; no run
+waits for it. It is held until the run or cycle ends, and the kernel releases
+it when the process exits, so a crashed run never leaves it held. The file
+is opened with `O_CREAT`, `O_NOFOLLOW` and `O_CLOEXEC` and mode `0600`; a
+`claude` probe or other child started during the run does not inherit it. A
+lock file that is a symlink, not a regular file, not owned by you, open to
+group or other users, or has more than one hard link is refused. A refused
+lock file is never repaired, and the run reads and changes nothing:
+
+| Run | When the run lock file is refused |
+|-----|-----------------------------------|
+| `amplihack profile rotate`, `--dry-run` | Fails with `RotateRefused` (`rotate run lock <reason>; nothing was read`), status 1. |
+| Each `watch` cycle | Logs `skip: rotate run lock <reason>` and ends the cycle as skipped. The rotator keeps running and checks the file again at its next interval, so the line is written on every cycle until the file is fixed. |
+
+`<reason>` is one of `is a symlink`, `is not a regular file`,
+`is not owned by you`, `is open to group or other users` and
+`has more than one link`. To fix it, stop the rotator and remove the file;
+the next run creates it again.
+
+The run that takes the lock writes its pid into the file. A run that finds
+the lock held reads at most 32 bytes of it, and uses the pid only in its
+message. Anything other than a decimal number from 1 to 4294967295, such as
+an empty file, `0`, `abc` or a longer number, is reported as `pid unknown`,
+and the file's bytes never appear in a message or the log. No command sends
+a signal to that pid; `rotate stop` uses `rotate.pid`, not this file.
+
+```console
+$ amplihack profile rotate
+error: another profile rotate is running (pid 41822); not starting a second scan
+hint: wait for that run to finish, or stop the rotator with `amplihack profile rotate stop`
+```
+
+<a id="rotate-lock-order"></a>
+
+A real cycle takes its locks in this order,
+and no command takes them in any other:
+
+1. The run lock, `<root>/.auto-switch.d/rotate/rotate-run.lock`, for the
+   whole run or cycle.
+2. The global state lock, `<root>/.auto-switch.d/lock`, in
+   [step 3](#rotate-cycle). This is the lock auto-switch,
+   `profile switch` and `overflow clear` also take; it is called the rotate
+   state lock elsewhere on this page.
+3. Claude's refresh locks, `.oauth_refresh.lock` in `~/.claude` and in the
+   target profile, during a [swap](#rotate-swap), under the global state
+   lock.
+4. The [snapshot lock](#cached-and-fresh-reads), only ever tried, never
+   waited for, and released before any other lock is taken.
+
+A dry run takes only the run lock and, when it refreshes the snapshot, the
+snapshot lock.
+
 ### Rotate state directory
 
 Everything is under `<root>/.auto-switch.d/rotate/` (directory `0700`, files
@@ -9166,6 +9496,7 @@ fails to parse is left unchanged and reported as `RotateInconsistent`.
 | `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the de-duplication key, `<kind>:<live profile or ->`, of a hard ALERT), `advisory_alert` (the same key for an [advisory ALERT](#rotate-advisory-alert); never set together with `alert`), `last_cycle` (`at`, when the cycle was recorded; `measured_at`, when the usage it relied on was read, which for `stayed` is when the live reading was taken (see [Stays and capacity](#rotate-stays-and-capacity)) and for every other rotate outcome is when the cycle started measuring, absent for a cycle that measured nothing; `outcome`; and, for an [overflow](#rotate-overflow) cycle, `overflow`), and `overflow_blocked` (the [spend blocks](#overflow-spend-limit-block)). `account` is the validated incoming account key after a swap. It is display only for recovery: no recovery decision treats that key alone as identity proof, and a hand-change recovery records its independently verified account. Optionally `hand_suspect`, an open [hand-change suspicion](#two-readings): `profile` (a valid profile name) and `first_seen` (epoch seconds, greater than 0). It holds no account data, is omitted when there is none, and a ledger without it loads as before; one that breaks these rules is `RotateInconsistent`. Optionally `guidance`, the current [hand-change](#rotate-hand-change-recovery) note, or ALERT and `fix` lines (at most 16, each at most 1024 bytes, with no control or bidirectional-override characters), and `lost_login`, the profiles that lost their login to a manual `/login` (at most 64 distinct valid names). Both are omitted when empty, and a ledger that breaks these limits is `RotateInconsistent`. Optionally the legacy `home_unreadable_since` timestamp; retained for format compatibility, never as ownership evidence (see [Stuck `~/.claude.json`](#stuck-claudejson)). Optionally `swapped_away`, the logins the rotator left while they were full, each mapped to the epoch seconds of that swap; see [Swap-back damping](#swap-back-damping). While a rotator from an older amplihack binary runs, `measured_at`, `overflow`, `overflow_blocked`, `guidance`, `lost_login`, `home_unreadable_since`, `hand_suspect`, `swapped_away` and `advisory_alert` are left out so that rotator can read the file. A ledger whose `alert` or `advisory_alert` is not a valid key, or that sets both, is `RotateInconsistent`. |
 | `journal.json` | The swap in progress: `from`, `to`, `adopt`, `phase` (`checking`, `j0`, `s1`, `s2`, `s3`, `s4` or `inconsistent`), `home`, `live_ino`, `target_ino`, `home_lock_ino` and `to_lock_ino` (each present once that refresh lock is taken), `started_at`, `pid`, and optional `identity` containing sanitized full incoming/outgoing accounts authorized before exchange. |
 | `rotate.pid` | The background process's pid, as ASCII decimal. |
+| `rotate-run.lock` | The [run lock](#rotate-run-lock): the pid of the run holding it, as ASCII decimal and a newline. Display only. |
 | `gate.json` | Written by `rotate watch` when it starts: `version`, `pid`, and the [overflow](#rotate-overflow) gate it resolved from its flags (`overflow_wait`, `overflow_unknown_reset`, `session_at`, `week_at`). [Auto-switch](#auto-switch-and-overflow-profiles) uses it only while the rotator with that pid runs. If it cannot be written, the log says `overflow: gate not recorded, auto-switch will not use overflow (<error>)` and auto-switch uses no overflow profile. |
 | `rotate.log` | The log. |
 | `rotate.log.1` | The previous log, after rotation. |
@@ -9311,7 +9642,9 @@ run and prints their `reread:` lines; see
 | `ALERT: rotate recovery is inconsistent: <reason>; no swap until it is resolved` | See [Rotate recovery](#rotate-recovery). |
 | `ALERT: auto-switch recovery is inconsistent; no swap` | Auto-switch state needs `auto-switch repair`. |
 | `recovery: rolled back an interrupted swap <from>-><to>` / `recovery: finished an interrupted swap <from>-><to>` | Recovery acted. |
-| `skip: state lock busy` / `skip: <name> (<reason>)` / `skip: cannot see running sessions; no candidates` | The cycle or a candidate was skipped. |
+| `skip: state lock busy` / `skip: <name> (<reason>)` / `skip: cannot see running sessions; no candidates` | The cycle or a candidate was skipped. `cannot see running sessions` is also written when the [running-session snapshot](#running-session-snapshot) is being refreshed by another process and no earlier snapshot is valid. |
+| `skip: rotate run lock <reason>` | `watch` only: the [run lock](#rotate-run-lock) file failed a check. The cycle read nothing and changed nothing; the rotator carries on and checks again next cycle. |
+| `skip: another profile rotate run holds the run lock` | `watch` only: another one-shot `rotate`, `--dry-run` or `watch` holds the [run lock](#rotate-run-lock). The cycle read nothing and changed nothing; the rotator carries on. |
 | `skip: state changed during measurement (<labels>)` | Step 6 found a change that affects the decision; see [Rotate revalidation](#rotate-revalidation). `<labels>` lists one or more of `journal`, `live`, `pin`, `overflow`, `target eligibility: <reason>` and `target identity`, separated by `, `. The labels are fixed text and [skip reasons](#rotate-candidates) only. Older readers that match the prefix `skip: state changed during measurement` still match. The bare form, with no labels, is also written when nothing in the snapshot changed but the target's reading went stale under the lock and no fresh target remains. |
 | `revalidate: target <name> no longer eligible (<reason>); reconsidered` | The swap target became ineligible, or its account changed, while the cycle measured, and the cycle decided again under the lock. `<reason>` is the target's bare [skip reason](#rotate-candidates), such as `session running`, `gone`, or `account changed`, or `stale reading` when the snapshot is unchanged and the target's reading went stale under the lock; it never begins with `target eligibility: `. The next line is the new `swap` line, or `ALERT: swap refused: <reason>` when a [pre-swap check](#rotate-swap) refuses the new target. |
 | `revalidate: ~/.claude.json held no account; read again` | Retained diagnostic wording for the bounded retry of trusted credential identity. Session JSON supplies no identity evidence. |
@@ -10190,7 +10523,7 @@ once; the check holds the lock only for the length of two system calls.
 | Status | When |
 |--------|------|
 | `0` | No swap, a swap, a held cycle, a dry run, an ALERT, `status`, a `stop` of a stopped or stale rotator, a successful `profile switch`. |
-| `1` | `RotateConfig`, `RotatePrototypeRunning`, `RotateInconsistent`, `RotateRefused`, `RotateUnsupported`, `RotateDaemon`, or any other [error](#errors). |
+| `1` | `RotateConfig`, `RotatePrototypeRunning`, `RotateRunning`, `RotateInconsistent`, `RotateRefused`, `RotateUnsupported`, `RotateDaemon`, or any other [error](#errors). |
 | `2` | A usage error from argument parsing, such as a tuning flag before `start`. |
 
 ### Rotate session resume
@@ -11320,7 +11653,8 @@ failures use this format.
 | `AutoSwitchInstall`: a profile's `settings.json` is a symlink, owned by someone else, not a JSON object, or cannot be written | `` fix or remove the reported file, then run `amplihack profile auto-switch repair` `` |
 | `RotateConfig`: a rotate flag or `AMPLIHACK_ROTATE_*` value is not a whole number in range | `` run `amplihack profile rotate --help` for the accepted values `` |
 | `RotatePrototypeRunning`: the external rotator holds `<root>/.rotator/lock` | `stop the external rotator (tmux session claude-rotator) first` |
-| `RotateRefused`: a check before the swap failed, or the atomic exchange failed; nothing was moved. Also every [`profile switch`](#rotate-switch) refusal (no stored login, lock busy, recovery inconsistent, live login unusable) and a `switch --none` that found the lock busy | `nothing was moved; see "Swap refused" in docs/howto/claude-profile-rotation.md` |
+| `RotateRunning`: a one-shot `rotate` or `--dry-run` found the [run lock](#rotate-run-lock) held. The message is `another profile rotate is running (pid <N>); not starting a second scan`, or `another profile rotate is running (pid unknown); not starting a second scan` when the pid cannot be read | `` wait for that run to finish, or stop the rotator with `amplihack profile rotate stop` `` |
+| `RotateRefused`: a check before the swap failed, or the atomic exchange failed; nothing was moved. Also every [`profile switch`](#rotate-switch) refusal (no stored login, lock busy, recovery inconsistent, live login unusable) and a `switch --none` that found the lock busy. Also a one-shot `rotate` or `--dry-run` whose [run lock](#rotate-run-lock) file failed a check (`rotate run lock <reason>; nothing was read`) | `nothing was moved; see "Swap refused" in docs/howto/claude-profile-rotation.md` |
 | `profile switch` moved the live login, then could not write the pin or the default pointer. Not a `RotateRefused`: the login did move | The message itself says to run `amplihack profile switch <name>` again; see [Rotate switch](#rotate-switch) |
 | `RotateInconsistent`: the rotate ledger or journal is damaged, or recovery cannot tell which way is safe | `see the Recovery section of docs/howto/claude-profile-rotation.md` |
 | `RotateUnsupported`: `profile rotate` on a platform without Unix file semantics | `rotate needs Linux or another Unix` |

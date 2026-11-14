@@ -431,3 +431,137 @@ mod overflow_precheck {
         ));
     }
 }
+
+// --- Issue #2040: recovery returns a login only on a fresh read ---------------
+//
+// `recover_reporting_with(state, &procs)` reads through the running-session
+// snapshot with `confirmed`: when a hosted directory looks not live in the
+// cached answer, a forced read decides before `return_dir` runs. These
+// cases never reach `return_dir`, so no login is moved.
+
+mod issue_2040 {
+    use super::super::super::state::{HostEntry, Ledger};
+    use super::super::recover_reporting_with;
+    use super::{Liveness, root};
+    use crate::commands::profile::name::ProfileName;
+    use crate::commands::profile::proc_snapshot::{Collected, ProcRecord, ProcSource, SourceDeps};
+    use amplihack_utils::secure_files::euid;
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const T: i64 = 1_793_634_000;
+
+    fn on(profiles: &[&str]) -> Collected {
+        Collected::Procs(
+            profiles
+                .iter()
+                .enumerate()
+                .map(|(i, p)| ProcRecord {
+                    pid: 5151 + i as u32,
+                    zombie: false,
+                    claude_like: true,
+                    profile: Some(p.to_string()),
+                    environ_unreadable: false,
+                })
+                .collect(),
+        )
+    }
+
+    fn source(base: &Path, answers: Vec<Collected>) -> (ProcSource, Arc<AtomicUsize>) {
+        let rt = base.join("rt");
+        let proc_root = base.join("fake-proc");
+        for d in [&rt, &proc_root] {
+            fs::create_dir_all(d).unwrap();
+            fs::set_permissions(d, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let scans = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&scans);
+        let s = ProcSource::with(SourceDeps {
+            proc_root,
+            runtime_dir: Some(rt),
+            clock: Arc::new(|| T),
+            uid: euid(),
+            pid: std::process::id(),
+            collect: Arc::new(move |_: &Path, _: &Path, _: u32| {
+                let i = c.fetch_add(1, Ordering::SeqCst);
+                answers[i.min(answers.len() - 1)].clone()
+            }),
+            // Synthetic pids: every recorded process is still running.
+            may_be_running: Arc::new(|_: &Path, _: u32, _: u32| true),
+        });
+        (s, scans)
+    }
+
+    /// `Y`'s login is hosted in directory `X`.
+    fn hosting(r: &super::Root) {
+        let mut hosts = BTreeMap::new();
+        hosts.insert(
+            "X".to_string(),
+            HostEntry {
+                live: "Y".into(),
+                swapped_at: 1,
+                pre_swap_fingerprint: None,
+            },
+        );
+        r.state
+            .save_ledger(&Ledger {
+                version: r.state.load_ledger().unwrap().version,
+                hosts,
+            })
+            .unwrap();
+    }
+
+    fn base_of(r: &super::Root) -> std::path::PathBuf {
+        r._tmp.path().canonicalize().unwrap()
+    }
+
+    #[test]
+    fn a_hosted_directory_that_looks_live_is_kept_without_a_forced_read() {
+        let r = root();
+        hosting(&r);
+        let (procs, scans) = source(&base_of(&r), vec![on(&["X"])]);
+        let (live, done) = recover_reporting_with(&r.state, &procs).unwrap();
+        assert!(done.is_empty(), "{done:?}");
+        assert!(live.unwrap().is_live(&ProfileName::parse("X").unwrap()));
+        assert_eq!(scans.load(Ordering::SeqCst), 1);
+        assert!(r.state.load_ledger().unwrap().hosts.contains_key("X"));
+    }
+
+    #[test]
+    fn a_hosted_directory_that_looks_ended_is_checked_with_a_forced_read() {
+        // Cached: no session. Forced: the session on X is still running.
+        let r = root();
+        hosting(&r);
+        let (procs, scans) = source(&base_of(&r), vec![on(&[]), on(&["X"])]);
+        let (live, done) = recover_reporting_with(&r.state, &procs).unwrap();
+        assert!(done.is_empty(), "nothing returned: {done:?}");
+        assert_eq!(scans.load(Ordering::SeqCst), 2);
+        let live = live.unwrap();
+        assert!(
+            live.is_live(&ProfileName::parse("X").unwrap()),
+            "the forced answer is the one returned: {live:?}"
+        );
+        assert!(r.state.load_ledger().unwrap().hosts.contains_key("X"));
+    }
+
+    #[test]
+    fn no_hosted_directory_means_no_read_at_all() {
+        let r = root();
+        let (procs, scans) = source(&base_of(&r), vec![on(&[])]);
+        let (live, _) = recover_reporting_with(&r.state, &procs).unwrap();
+        assert!(live.is_none());
+        assert_eq!(scans.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn everything_and_unsupported_never_return_a_login() {
+        let hosted = [ProfileName::parse("X").unwrap()];
+        for l in [Liveness::Everything, Liveness::Unsupported] {
+            assert!(!hosted.iter().any(|n| !l.is_live(n)), "{l:?}");
+        }
+    }
+}
