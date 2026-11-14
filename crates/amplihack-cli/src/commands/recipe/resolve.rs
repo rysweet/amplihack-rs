@@ -308,10 +308,13 @@ pub(crate) fn resolve_recipe_path(input: &str, working_dir: impl AsRef<Path>) ->
 /// Issue #2528: where `recipe run` loaded its recipe file from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RecipeOrigin {
-    /// A bare name, found in the selected bundle's `recipes/`.
+    /// The recipe lies in the selected bundle's `recipes/` (a bare name, or a
+    /// path that canonicalises there) and runs from the snapshot, with its
+    /// sub-recipes and tools (B1).
     Bundle,
-    /// A path the user gave; sub-recipes and tools still come from the
-    /// selected bundle (D6).
+    /// A standalone recipe file outside every `amplifier-bundle/recipes/`
+    /// directory; its sub-recipes and tools come from the selected bundle
+    /// (D6).
     File(PathBuf),
 }
 
@@ -325,10 +328,17 @@ pub(crate) fn is_path_like_recipe(input: &str) -> bool {
             .any(|ext| input.ends_with(&format!(".{ext}")))
 }
 
-/// Issue #2528 (D6, E9): resolves the `recipe run` argument against one
-/// bundle. A bare name is looked up only in `selection.recipes_dir()`, and
-/// its canonical result must stay inside that directory. A path-like
-/// argument loads from the given path, with the usual relative-path roots.
+/// Issue #2528 (D6, E9, B1): resolves the `recipe run` argument against one
+/// bundle.
+///
+/// A bare name is looked up only in `selection.recipes_dir()`, and its
+/// canonical result must stay inside that directory. A path-like argument is
+/// resolved with the usual relative-path roots and canonicalised; a path that
+/// cannot be, or that is not a regular file, is refused (E15). Then:
+/// - under the canonical selected `recipes/`: `(canonical, Bundle)`;
+/// - under any other `amplifier-bundle/recipes/`: refused (E14), with advice
+///   that depends on whether that bundle's parent directory holds `.git`;
+/// - anywhere else: `(path, File(path))`, a standalone recipe file.
 pub(crate) fn resolve_recipe_in_bundle(
     recipe: &str,
     selection: &super::run::bundle_pin::Selection,
@@ -340,7 +350,7 @@ pub(crate) fn resolve_recipe_in_bundle(
             "recipe path {recipe:?} contains a NUL byte"
         );
         let path = resolve_recipe_path(recipe, working_dir)?;
-        return Ok((path.clone(), RecipeOrigin::File(path)));
+        return classify_recipe_path(recipe, path, selection);
     }
     let recipes = selection.recipes_dir();
     for extension in RECIPE_FILE_EXTENSIONS {
@@ -369,4 +379,77 @@ pub(crate) fn resolve_recipe_in_bundle(
         choice.as_str(),
         selection.source().display()
     )
+}
+
+/// Issue #2528 (B1, E14, E15): classifies a resolved recipe path against the
+/// selected bundle by its canonical form, compared component by component.
+fn classify_recipe_path(
+    given: &str,
+    path: PathBuf,
+    selection: &super::run::bundle_pin::Selection,
+) -> Result<(PathBuf, RecipeOrigin)> {
+    let canonical = std::fs::canonicalize(&path)
+        .map_err(|e| anyhow::anyhow!("recipe {given} not found: {e}"))?;
+    anyhow::ensure!(canonical.is_file(), "recipe {given} is not a regular file");
+    // A recipes dir that cannot be canonicalised is compared as it is, so
+    // only an identical canonical path can match it (fails closed).
+    let recipes = std::fs::canonicalize(selection.recipes_dir())
+        .unwrap_or_else(|_| selection.recipes_dir().to_path_buf());
+    if canonical.starts_with(&recipes) {
+        return Ok((canonical, RecipeOrigin::Bundle));
+    }
+    if let Some(bundle_dir) = foreign_bundle_dir(&canonical) {
+        anyhow::bail!(foreign_bundle_message(&canonical, bundle_dir, selection));
+    }
+    Ok((path.clone(), RecipeOrigin::File(path)))
+}
+
+/// The nearest ancestor named `amplifier-bundle` whose `recipes/` contains
+/// `canonical`. Pure: `recipes-old/` and `tools/` paths do not match.
+fn foreign_bundle_dir(canonical: &Path) -> Option<&Path> {
+    canonical.ancestors().skip(1).find(|dir| {
+        dir.file_name() == Some(std::ffi::OsStr::new("amplifier-bundle"))
+            && canonical.starts_with(dir.join("recipes"))
+    })
+}
+
+/// E14. The advice names `--bundle checkout` only when the other bundle sits
+/// in a git checkout (its parent holds `.git`, the test `--bundle checkout`
+/// uses), since that is the only way to select it.
+fn foreign_bundle_message(
+    canonical: &Path,
+    bundle_dir: &Path,
+    selection: &super::run::bundle_pin::Selection,
+) -> String {
+    let file_name = canonical
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let name = RECIPE_FILE_EXTENSIONS
+        .iter()
+        .find_map(|ext| file_name.strip_suffix(&format!(".{ext}")))
+        .unwrap_or(&file_name);
+    let head = format!(
+        "recipe {} belongs to the bundle at {}, not to this run's {} bundle at {}; ",
+        canonical.display(),
+        bundle_dir.display(),
+        selection.choice().as_str(),
+        selection.source().display()
+    );
+    match bundle_dir
+        .parent()
+        .filter(|checkout| std::fs::symlink_metadata(checkout.join(".git")).is_ok())
+    {
+        Some(checkout) => format!(
+            "{head}to use that bundle, run from inside {} with --bundle checkout: \
+             amplihack recipe run {name} --bundle checkout; \
+             or run this run's bundle by name: amplihack recipe run {name}",
+            checkout.display()
+        ),
+        None => format!(
+            "{head}--bundle checkout cannot select that bundle because it is not in a git \
+             checkout; run the recipe by name: amplihack recipe run {name} \
+             (add --bundle installed for the installed bundle)"
+        ),
+    }
 }

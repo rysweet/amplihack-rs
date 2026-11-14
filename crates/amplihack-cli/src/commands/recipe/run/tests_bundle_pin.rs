@@ -2104,3 +2104,52 @@ fn bundle_record_serialises_optional_fields_only_when_present() {
     );
     assert_eq!(json["recipe_file"], "/work/x.yaml");
 }
+
+// ------------------------------------------------- run-start line (B1, R3)
+
+#[test]
+fn stderr_line_for_a_bundle_recipe_says_tools_come_from_the_same_bundle() {
+    let (_tmp, root) = scratch();
+    let installed = root.join("installed");
+    write_bundle(&installed, "A");
+    let pinned = pin(
+        &select_installed(&root, &installed),
+        &work_root(&root),
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        pinned.stderr_line(),
+        format!(
+            "recipe bundle: {} ({}); tools: same bundle",
+            pinned.source().display(),
+            pinned.record().version
+        )
+    );
+}
+
+#[test]
+fn stderr_line_for_a_standalone_file_names_the_file_and_the_tool_bundle() {
+    let (_tmp, root) = scratch();
+    let installed = root.join("installed");
+    write_bundle(&installed, "A");
+    let mut pinned = pin(
+        &select_installed(&root, &installed),
+        &work_root(&root),
+        true,
+    )
+    .unwrap();
+    let file = root.join("mine/custom.yaml");
+    pinned.set_recipe_file(&file);
+    let line = pinned.stderr_line();
+    assert_eq!(
+        line,
+        format!(
+            "recipe bundle: {source} ({version}); recipe file: {file}; tools: {source}",
+            source = pinned.source().display(),
+            version = pinned.record().version,
+            file = file.display()
+        )
+    );
+    assert!(!line.contains("same bundle"), "{line}");
+}

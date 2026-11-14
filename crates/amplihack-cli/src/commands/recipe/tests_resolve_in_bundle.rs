@@ -8,8 +8,14 @@
 //! - A bare name resolves only in `selection.recipes_dir()`; the canonical
 //!   result must stay inside it. Origin is `RecipeOrigin::Bundle`.
 //! - An argument containing `/`, `\`, `..` or NUL, or ending in `.yaml` or
-//!   `.yml`, is a path. Origin is `RecipeOrigin::File(<path>)`; it is never
-//!   looked up in the bundle by name.
+//!   `.yml`, is a path; it is never looked up in the bundle by name. It is
+//!   canonicalised first: a path that cannot be, or that is not a regular
+//!   file, is E15. Then (B1):
+//!   - under the selected bundle's `recipes/`: `(canonical, Bundle)`, so the
+//!     run takes the recipe, its sub-recipes and its tools from one bundle;
+//!   - under any other `amplifier-bundle/recipes/`: E14, whose advice depends
+//!     on whether that bundle sits in a git checkout;
+//!   - anywhere else: `(path, File(path))`, a standalone recipe.
 //! - E9 names the recipe, the bundle and the choice.
 //!
 //! These replace the repo-root-first expectations of the bare-name tests in
@@ -188,12 +194,260 @@ fn path_like_arguments_are_never_looked_up_by_name() {
         "sub\\probe",
         "probe\0",
     ] {
-        // Not found as a path is fine; a lookup by name is not.
+        // Not found as a path is fine (E15); a lookup by name is not. None
+        // of these names a file under the selected bundle's recipes/, so a
+        // success can only be a standalone file.
         if let Ok((_, origin)) = resolve_recipe_in_bundle(arg, &s, &f.checkout) {
             assert!(
                 matches!(origin, RecipeOrigin::File(_)),
                 "{arg:?} is a path, not a bundle name: {origin:?}"
             );
         }
+    }
+}
+
+// ------------------------------------------------------ paths (B1, E14, E15)
+
+fn err(recipe: &str, s: &Selection, working_dir: &Path) -> String {
+    format!(
+        "{:#}",
+        resolve_recipe_in_bundle(recipe, s, working_dir).expect_err("expected an error")
+    )
+}
+
+fn arg(path: &Path) -> &str {
+    path.to_str().unwrap()
+}
+
+/// E14 when the other bundle sits in a git checkout at `checkout`.
+fn e14_checkout(path: &Path, checkout: &Path, s: &Selection, name: &str) -> String {
+    format!(
+        "recipe {} belongs to the bundle at {}, not to this run's {} bundle at {}; \
+         to use that bundle, run from inside {} with --bundle checkout: \
+         amplihack recipe run {name} --bundle checkout; \
+         or run this run's bundle by name: amplihack recipe run {name}",
+        path.display(),
+        checkout.join("amplifier-bundle").display(),
+        s.choice().as_str(),
+        s.source().display(),
+        checkout.display(),
+    )
+}
+
+#[test]
+fn a_path_into_the_selected_installed_bundle_runs_from_that_bundle() {
+    let f = fixture();
+    let s = selection(&f, None);
+    let file = f.installed.join("amplifier-bundle/recipes/probe.yaml");
+    let (path, origin) = resolve_recipe_in_bundle(arg(&file), &s, &f.checkout).unwrap();
+    assert_eq!(path, fs::canonicalize(&file).unwrap());
+    assert_eq!(origin, RecipeOrigin::Bundle);
+}
+
+#[test]
+fn a_relative_path_into_the_selected_checkout_bundle_runs_from_that_bundle() {
+    let f = fixture();
+    let s = selection(&f, Some(BundleChoice::Checkout));
+    let (path, origin) =
+        resolve_recipe_in_bundle("amplifier-bundle/recipes/probe.yaml", &s, &f.checkout).unwrap();
+    assert_eq!(
+        path,
+        fs::canonicalize(f.checkout.join("amplifier-bundle/recipes/probe.yaml")).unwrap()
+    );
+    assert_eq!(origin, RecipeOrigin::Bundle);
+}
+
+#[test]
+fn a_checkout_path_with_the_installed_bundle_is_e14_naming_both_bundles() {
+    let f = fixture();
+    let s = selection(&f, None);
+    let text = err("amplifier-bundle/recipes/probe.yaml", &s, &f.checkout);
+    let canonical =
+        fs::canonicalize(f.checkout.join("amplifier-bundle/recipes/probe.yaml")).unwrap();
+    assert_eq!(text, e14_checkout(&canonical, &f.checkout, &s, "probe"));
+}
+
+#[test]
+fn a_dot_dot_path_that_canonicalises_into_the_other_bundle_is_e14() {
+    let f = fixture();
+    let s = selection(&f, None);
+    // Starts in the installed bundle, then climbs into the checkout's.
+    let sneaky = f
+        .installed
+        .join("amplifier-bundle/recipes/../../../checkout/amplifier-bundle/recipes/probe.yaml");
+    let text = err(arg(&sneaky), &s, &f.checkout);
+    let canonical =
+        fs::canonicalize(f.checkout.join("amplifier-bundle/recipes/probe.yaml")).unwrap();
+    assert_eq!(text, e14_checkout(&canonical, &f.checkout, &s, "probe"));
+}
+
+#[test]
+fn a_symlinked_recipe_in_the_selected_bundle_pointing_at_the_other_is_e14() {
+    let f = fixture();
+    let s = selection(&f, None);
+    let link = f.installed.join("amplifier-bundle/recipes/borrowed.yaml");
+    symlink(
+        f.checkout.join("amplifier-bundle/recipes/probe.yaml"),
+        &link,
+    )
+    .unwrap();
+    let text = err(arg(&link), &s, &f.checkout);
+    assert!(text.contains("belongs to the bundle at"), "{text}");
+    assert!(
+        text.contains(&format!(
+            "{}, not to this run's",
+            f.checkout.join("amplifier-bundle").display()
+        )),
+        "{text}"
+    );
+}
+
+#[test]
+fn e14_names_a_yml_recipe_by_its_stem() {
+    let f = fixture();
+    let other = f.checkout.join("amplifier-bundle/recipes/other.yml");
+    fs::write(&other, "name: other\nsteps: []\n").unwrap();
+    let s = selection(&f, None);
+    let text = err(arg(&other), &s, &f.checkout);
+    let canonical = fs::canonicalize(&other).unwrap();
+    assert_eq!(text, e14_checkout(&canonical, &f.checkout, &s, "other"));
+}
+
+#[test]
+fn a_path_into_another_worktree_is_e14_and_says_to_run_from_that_worktree() {
+    let f = fixture();
+    // A linked worktree: `.git` is a file, which is not parsed.
+    let worktree = f.root.join("worktree");
+    fs::create_dir_all(&worktree).unwrap();
+    fs::write(worktree.join(".git"), "gitdir: /nowhere\n").unwrap();
+    write_bundle(&worktree, "worktree");
+    for choice in [None, Some(BundleChoice::Checkout)] {
+        let s = selection(&f, choice);
+        let file = worktree.join("amplifier-bundle/recipes/probe.yaml");
+        let text = err(arg(&file), &s, &f.checkout);
+        assert_eq!(
+            text,
+            e14_checkout(&fs::canonicalize(&file).unwrap(), &worktree, &s, "probe"),
+            "{choice:?}"
+        );
+    }
+}
+
+#[test]
+fn a_path_into_the_installed_bundle_with_the_checkout_choice_is_e14_without_checkout_advice() {
+    let f = fixture();
+    let s = selection(&f, Some(BundleChoice::Checkout));
+    let file = f.installed.join("amplifier-bundle/recipes/probe.yaml");
+    let text = err(arg(&file), &s, &f.checkout);
+    assert_eq!(
+        text,
+        format!(
+            "recipe {} belongs to the bundle at {}, not to this run's checkout bundle at {}; \
+             --bundle checkout cannot select that bundle because it is not in a git checkout; \
+             run the recipe by name: amplihack recipe run probe \
+             (add --bundle installed for the installed bundle)",
+            fs::canonicalize(&file).unwrap().display(),
+            f.installed.join("amplifier-bundle").display(),
+            s.source().display(),
+        )
+    );
+}
+
+#[test]
+fn a_missing_path_is_e15_naming_the_path_as_given() {
+    let f = fixture();
+    let s = selection(&f, None);
+    for given in ["amplifier-bundle/recipes/absent.yaml", "mine/absent.yaml"] {
+        let text = err(given, &s, &f.checkout);
+        assert!(
+            text.starts_with(&format!("recipe {given} not found: ")),
+            "{given}: {text}"
+        );
+    }
+    let absolute = f.root.join("nowhere/absent.yaml");
+    let text = err(arg(&absolute), &s, &f.checkout);
+    assert!(
+        text.starts_with(&format!("recipe {} not found: ", absolute.display())),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_directory_is_e15_even_under_the_selected_recipes_dir() {
+    let f = fixture();
+    let s = selection(&f, None);
+    let dir = f.installed.join("amplifier-bundle/recipes/nested.yaml");
+    fs::create_dir_all(&dir).unwrap();
+    let text = err(arg(&dir), &s, &f.checkout);
+    assert_eq!(
+        text,
+        format!("recipe {} is not a regular file", dir.display())
+    );
+    // The same in another bundle: E15, not E14.
+    let other = f.checkout.join("amplifier-bundle/recipes");
+    let text = err(arg(&other), &s, &f.checkout);
+    assert_eq!(
+        text,
+        format!("recipe {} is not a regular file", other.display())
+    );
+}
+
+#[test]
+fn paths_outside_any_bundle_recipes_dir_stay_standalone_files() {
+    let f = fixture();
+    let s = selection(&f, None);
+    for rel in [
+        "recipes/x.yaml",
+        "amplifier-bundle/recipes-old/x.yaml",
+        "amplifier-bundle/tools/x.yaml",
+        "not-amplifier-bundle/recipes/x.yaml",
+    ] {
+        let file = f.root.join("standalone").join(rel);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, "name: x\nsteps: []\n").unwrap();
+        let (path, origin) = resolve_recipe_in_bundle(arg(&file), &s, &f.checkout)
+            .unwrap_or_else(|e| panic!("{rel}: {e:#}"));
+        assert_eq!(path, file, "{rel}");
+        assert_eq!(origin, RecipeOrigin::File(file.clone()), "{rel}");
+    }
+}
+
+#[test]
+fn a_path_reached_through_a_symlinked_directory_is_classified_by_its_target() {
+    let f = fixture();
+    let s = selection(&f, None);
+    let alias = f.root.join("alias");
+    symlink(&f.installed, &alias).unwrap();
+    let file = alias.join("amplifier-bundle/recipes/probe.yaml");
+    let (path, origin) = resolve_recipe_in_bundle(arg(&file), &s, &f.checkout).unwrap();
+    assert_eq!(path, fs::canonicalize(&file).unwrap());
+    assert_eq!(origin, RecipeOrigin::Bundle);
+}
+
+#[test]
+fn a_release_link_install_accepts_paths_through_the_link_and_the_target() {
+    // `<root>/release -> versions/1`, the layout `amplihack install` uses.
+    let f = fixture();
+    let real = f.root.join("versions/1");
+    write_bundle(&real, "release");
+    let link = f.root.join("release");
+    symlink(&real, &link).unwrap();
+    let s = select_from(SelectInputs {
+        choice: None,
+        working_dir: &f.checkout,
+        amplihack_home: Some(link.as_os_str()),
+        configured_home: None,
+        user_home: None,
+        run_bundle: None,
+        run_bundle_choice: None,
+        work_root: None,
+    })
+    .unwrap();
+    for home in [&link, &real] {
+        let file = home.join("amplifier-bundle/recipes/probe.yaml");
+        let (path, origin) = resolve_recipe_in_bundle(arg(&file), &s, &f.checkout)
+            .unwrap_or_else(|e| panic!("{}: {e:#}", file.display()));
+        assert_eq!(path, fs::canonicalize(&file).unwrap());
+        assert_eq!(origin, RecipeOrigin::Bundle, "{}", file.display());
     }
 }

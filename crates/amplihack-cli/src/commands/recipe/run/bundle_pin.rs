@@ -568,18 +568,27 @@ impl PinnedBundle {
         self.record.recipe_file = Some(file.display().to_string());
     }
 
-    /// The one stderr line printed at run start (D9).
+    /// The one stderr line printed at run start (D9). "tools: same bundle"
+    /// is claimed only for a bundle recipe; a standalone recipe file is named,
+    /// with the bundle its tools come from (B1).
     pub(crate) fn stderr_line(&self) -> String {
         let inherited = if self.record.inherited {
             " (inherited)"
         } else {
             ""
         };
-        format!(
-            "recipe bundle: {} ({}){inherited}; tools: same bundle",
+        let head = format!(
+            "recipe bundle: {} ({}){inherited}",
             self.source().display(),
             self.record.version
-        )
+        );
+        match &self.record.recipe_file {
+            None => format!("{head}; tools: same bundle"),
+            Some(file) => format!(
+                "{head}; recipe file: {file}; tools: {}",
+                self.source().display()
+            ),
+        }
     }
 }
 
