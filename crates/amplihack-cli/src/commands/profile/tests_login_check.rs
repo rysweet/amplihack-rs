@@ -528,13 +528,22 @@ fn a_claude_json_that_cannot_be_rewritten_stops_before_claude_runs_and_keeps_eve
     let e = env();
     let json = e.dir("work").join(".claude.json");
     let before = fs::read(&json).unwrap();
+    // Restores the permissions when dropped, so a panic in the check still
+    // leaves a directory the temporary-directory cleanup can remove.
+    struct Writable(PathBuf);
+    impl Drop for Writable {
+        fn drop(&mut self) {
+            let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o700));
+        }
+    }
     fs::set_permissions(e.dir("work"), fs::Permissions::from_mode(0o500)).unwrap();
+    let writable = Writable(e.dir("work"));
     let ran = Cell::new(false);
     let result = e.check("work", || {
         ran.set(true);
         Ok(())
     });
-    fs::set_permissions(e.dir("work"), fs::Permissions::from_mode(0o700)).unwrap();
+    drop(writable);
     let err = result.unwrap_err().to_string();
     assert!(!ran.get(), "claude must not start");
     assert!(err.contains("nothing was moved"), "{err}");
