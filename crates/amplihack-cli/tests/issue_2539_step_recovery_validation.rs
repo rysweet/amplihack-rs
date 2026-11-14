@@ -319,7 +319,12 @@ fn secrets_in_the_failed_output_never_reach_records_evidence_or_output() {
         format!("ghp_{}", "A1b2C3d4E5".repeat(4)),
         format!("github_pat_{}", "11ABCDEFG0".repeat(5)),
         format!("sk-ant-api03-{}", "Zz9Yy8Xx7W".repeat(4)),
-        "Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig".to_string(),
+        format!(
+            "Bearer eyJ{}.{}.{}",
+            "Ab1Cd2Ef3G".repeat(2),
+            "Pq7Rs8Tu9V".repeat(2),
+            "Xy4Zw5Mn6K".repeat(2)
+        ),
         "hunter2-password-value".to_string(),
         "s3cr3t-userinfo".to_string(),
     ];
