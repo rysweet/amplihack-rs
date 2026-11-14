@@ -29,6 +29,329 @@ fn fixture() -> (tempfile::TempDir, PathBuf, ProfileStore) {
     (d, source, store)
 }
 
+fn numbered_files(dir: &Path, count: usize) {
+    fs::create_dir_all(dir).unwrap();
+    for i in 0..count {
+        fs::write(dir.join(format!("{i}.md")), format!("skill {i}\n")).unwrap();
+    }
+}
+
+/// Includes hidden entries and directories, but never follows session links.
+fn inventory(root: &Path) -> Vec<PathBuf> {
+    fn visit(root: &Path, dir: &Path, paths: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            paths.push(entry.path().strip_prefix(root).unwrap().to_path_buf());
+            if entry.file_type().unwrap().is_dir() {
+                visit(root, &entry.path(), paths);
+            }
+        }
+    }
+    let mut paths = Vec::new();
+    visit(root, root, &mut paths);
+    paths.sort();
+    paths
+}
+
+#[test]
+fn issue_2522_oversized_account_skill_caches_are_omitted_and_sources_preserved() {
+    let (_d, source, store) = fixture();
+    numbered_files(&source.join("skills/synced"), 5_001);
+    numbered_files(&source.join("skills/.trash"), 3);
+    let skills = [
+        ("skills/review/SKILL.md", b"review\n\0original".as_slice()),
+        ("skills/build/SKILL.md", b"build\n".as_slice()),
+        ("skills/test/SKILL.md", b"test\n".as_slice()),
+    ];
+    for (relative, bytes) in skills {
+        fs::create_dir_all(source.join(relative).parent().unwrap()).unwrap();
+        fs::write(source.join(relative), bytes).unwrap();
+    }
+
+    let profile = store
+        .add(&n("work"))
+        .expect("excluded caches use no copy budget");
+
+    for (relative, bytes) in skills {
+        assert_eq!(fs::read(profile.join(relative)).unwrap(), bytes);
+        assert_eq!(fs::read(source.join(relative)).unwrap(), bytes);
+    }
+    for (relative, count) in [("skills/synced", 5_001), ("skills/.trash", 3)] {
+        assert_eq!(
+            fs::symlink_metadata(profile.join(relative))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::NotFound,
+            "excluded path {relative} must not be created"
+        );
+        let dir = source.join(relative);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), count);
+        for i in 0..count {
+            assert_eq!(
+                fs::read(dir.join(format!("{i}.md"))).unwrap(),
+                format!("skill {i}\n").as_bytes()
+            );
+        }
+    }
+}
+
+#[test]
+fn issue_2522_exclusions_match_only_the_two_exact_skill_paths() {
+    let (_d, source, store) = fixture();
+    let included = [
+        "agents/synced/agent.md",
+        "agents/.trash/agent.md",
+        "commands/synced/command.md",
+        "output-styles/.trash/style.md",
+        "rules/synced/rule.md",
+        "skills/custom/.trash/SKILL.md",
+        "skills/custom/synced/SKILL.md",
+        "skills/synced-custom/SKILL.md",
+        "skills/.trash-custom/SKILL.md",
+    ];
+    for relative in included {
+        fs::create_dir_all(source.join(relative).parent().unwrap()).unwrap();
+        fs::write(source.join(relative), relative).unwrap();
+    }
+    for relative in ["skills/synced", "skills/.trash"] {
+        fs::create_dir_all(source.join(relative)).unwrap();
+    }
+
+    let profile = store.add(&n("work")).unwrap();
+
+    for relative in included {
+        assert_eq!(
+            fs::read(profile.join(relative)).unwrap(),
+            relative.as_bytes()
+        );
+    }
+    for relative in ["skills/synced", "skills/.trash"] {
+        assert!(fs::symlink_metadata(profile.join(relative)).is_err());
+        assert!(source.join(relative).is_dir());
+    }
+}
+
+#[test]
+fn issue_2522_case_distinct_skill_names_are_still_copied() {
+    let (_d, source, store) = fixture();
+    // Keep lower-case counterparts absent so this also works on macOS
+    // volumes whose filesystem is case-insensitive.
+    for relative in ["skills/Synced/SKILL.md", "skills/.Trash/SKILL.md"] {
+        fs::create_dir_all(source.join(relative).parent().unwrap()).unwrap();
+        fs::write(source.join(relative), relative).unwrap();
+    }
+
+    let profile = store.add(&n("work")).unwrap();
+
+    for relative in ["skills/Synced/SKILL.md", "skills/.Trash/SKILL.md"] {
+        assert_eq!(
+            fs::read(profile.join(relative)).unwrap(),
+            relative.as_bytes()
+        );
+    }
+}
+
+#[test]
+fn issue_2522_excluded_paths_are_omitted_even_when_regular_files() {
+    let (_d, source, store) = fixture();
+    fs::create_dir(source.join("skills")).unwrap();
+    for relative in ["skills/synced", "skills/.trash"] {
+        fs::write(source.join(relative), b"account state").unwrap();
+    }
+
+    let profile = store.add(&n("work")).unwrap();
+
+    for relative in ["skills/synced", "skills/.trash"] {
+        assert!(fs::symlink_metadata(profile.join(relative)).is_err());
+        assert_eq!(fs::read(source.join(relative)).unwrap(), b"account state");
+    }
+}
+
+#[test]
+fn issue_2522_excluded_descendants_do_not_trigger_depth_or_file_size_limits() {
+    let (_d, source, store) = fixture();
+    for relative in ["skills/synced", "skills/.trash"] {
+        let dir = source.join(relative);
+        fs::create_dir_all(&dir).unwrap();
+        fs::File::create(dir.join("oversized"))
+            .unwrap()
+            .set_len(64 * 1024 * 1024 + 1)
+            .unwrap();
+        let deep = (0..18).fold(dir, |path, i| path.join(format!("d{i}")));
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("keep"), "untouched").unwrap();
+    }
+
+    let profile = store
+        .add(&n("work"))
+        .expect("excluded trees are never traversed");
+
+    for relative in ["skills/synced", "skills/.trash"] {
+        assert!(fs::symlink_metadata(profile.join(relative)).is_err());
+        assert_eq!(
+            fs::metadata(source.join(relative).join("oversized"))
+                .unwrap()
+                .len(),
+            64 * 1024 * 1024 + 1
+        );
+        let deep = (0..18).fold(source.join(relative), |path, i| path.join(format!("d{i}")));
+        assert_eq!(fs::read(deep.join("keep")).unwrap(), b"untouched");
+    }
+}
+
+#[test]
+fn issue_2522_excluded_directory_entries_do_not_consume_the_exact_5000_budget() {
+    let (_d, source, store) = fixture();
+    // 2,499 agent files + the custom directory entry + 2,500 skill files.
+    numbered_files(&source.join("agents"), 2_499);
+    numbered_files(&source.join("skills/custom"), 2_500);
+    for relative in ["skills/synced", "skills/.trash"] {
+        fs::create_dir_all(source.join(relative)).unwrap();
+    }
+
+    let profile = store
+        .add(&n("work"))
+        .expect("exactly 5,000 included entries fit");
+
+    assert_eq!(fs::read_dir(profile.join("agents")).unwrap().count(), 2_499);
+    assert_eq!(
+        fs::read_dir(profile.join("skills/custom")).unwrap().count(),
+        2_500
+    );
+    assert_eq!(fs::read_dir(profile.join("skills")).unwrap().count(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn issue_2522_unreadable_excluded_directories_are_never_opened() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_d, source, store) = fixture();
+    let excluded = [source.join("skills/synced"), source.join("skills/.trash")];
+    for dir in &excluded {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join("keep"), "account state").unwrap();
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o000)).unwrap();
+    }
+
+    let result = store.add(&n("work"));
+
+    // Restore access before asserting, including on the expected red run,
+    // so TempDir can remove every fixture entry.
+    for dir in &excluded {
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let profile = result.expect("excluded directories must not be opened");
+    for dir in &excluded {
+        assert_eq!(fs::read(dir.join("keep")).unwrap(), b"account state");
+        assert!(fs::symlink_metadata(profile.join(dir.strip_prefix(&source).unwrap())).is_err());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn issue_2522_excluded_symlink_and_fifo_entries_do_not_consume_the_budget() {
+    use std::os::unix::fs::{FileTypeExt, symlink};
+    let (d, source, store) = fixture();
+    numbered_files(&source.join("agents"), 5_000);
+    fs::create_dir(source.join("skills")).unwrap();
+    let outside = d.path().join("outside");
+    fs::write(&outside, "private").unwrap();
+    symlink(&outside, source.join("skills/synced")).unwrap();
+    let fifo = std::ffi::CString::new(source.join("skills/.trash").as_os_str().as_encoded_bytes())
+        .unwrap();
+    // SAFETY: a valid NUL-terminated path in this test's temporary source.
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+
+    let profile = store
+        .add(&n("work"))
+        .expect("excluded special entries use no budget");
+
+    assert_eq!(fs::read_dir(profile.join("agents")).unwrap().count(), 5_000);
+    for relative in ["skills/synced", "skills/.trash"] {
+        assert!(fs::symlink_metadata(profile.join(relative)).is_err());
+    }
+    assert_eq!(
+        fs::read_link(source.join("skills/synced")).unwrap(),
+        outside
+    );
+    assert_eq!(fs::read(&outside).unwrap(), b"private");
+    assert!(
+        fs::symlink_metadata(source.join("skills/.trash"))
+            .unwrap()
+            .file_type()
+            .is_fifo()
+    );
+}
+
+#[test]
+fn issue_2522_entry_limit_is_aggregate_across_shared_folders() {
+    let (_d, source, store) = fixture();
+    numbered_files(&source.join("agents"), 2_501);
+    numbered_files(&source.join("commands"), 2_500);
+
+    let error = store.add(&n("work")).unwrap_err();
+
+    let ProfileError::SharedAssetLimit(detail) = error else {
+        panic!("expected an entry-limit error, got {error:?}");
+    };
+    assert!(detail.contains("more than 5000 entries"), "{detail}");
+    let folder = detail
+        .split_once("while copying shared folder ")
+        .expect("limit error must identify its source-relative folder")
+        .1;
+    assert!(["\"agents\"", "\"commands\""].contains(&folder), "{detail}");
+    assert!(!store.root().join("work").exists());
+}
+
+// Windows disallows ASCII controls in filenames, but permits C1 controls.
+// Exercise the native walker through profile publication and rollback.
+#[test]
+fn issue_2522_entry_limit_escapes_folder_controls_and_rolls_back() {
+    for (name, escaped) in [
+        #[cfg(not(windows))]
+        ("custom\nforged", r"custom\nforged"),
+        #[cfg(not(windows))]
+        ("custom\u{1b}[31m", r"custom\u{1b}[31m"),
+        ("custom\u{85}forged", r"custom\u{85}forged"),
+        ("custom\u{9b}31m", r"custom\u{9b}31m"),
+    ] {
+        let (_d, source, store) = fixture();
+        let existing = store.add(&n("existing")).unwrap();
+        fs::write(existing.join(".sentinel"), b"existing profile bytes").unwrap();
+        let before = inventory(store.root());
+        let relative = Path::new("skills").join(name);
+        numbered_files(&source.join(&relative), 5_000);
+
+        let error = store.add(&n("work")).unwrap_err();
+
+        // Check the full error too: this is what callers render on stderr.
+        let rendered = error.to_string();
+        assert!(rendered.contains(escaped), "{rendered:?}");
+        assert!(!rendered.chars().any(char::is_control), "{rendered:?}");
+        let ProfileError::SharedAssetLimit(detail) = error else {
+            panic!("expected an entry-limit error, got {error:?}");
+        };
+        assert_eq!(
+            detail,
+            format!("more than 5000 entries while copying shared folder {relative:?}")
+        );
+        assert_eq!(
+            inventory(store.root()),
+            before,
+            "failed add left staging or partial profile entries"
+        );
+        assert_eq!(
+            fs::read(existing.join(".sentinel")).unwrap(),
+            b"existing profile bytes"
+        );
+        assert_eq!(fs::read_dir(source.join(&relative)).unwrap().count(), 5_000);
+        assert_eq!(
+            fs::read(source.join(relative).join("0.md")).unwrap(),
+            b"skill 0\n"
+        );
+    }
+}
+
 #[test]
 fn credentials_history_and_state_are_never_copied() {
     let (_d, source, store) = fixture();
@@ -237,15 +560,42 @@ fn excessive_depth_fails_closed_and_rolls_back() {
 #[test]
 fn excessive_entry_count_fails_closed_and_rolls_back() {
     let (_d, source, store) = fixture();
-    fs::create_dir_all(source.join("commands")).unwrap();
-    for i in 0..5_100 {
-        fs::write(source.join(format!("commands/c{i}.md")), "x").unwrap();
-    }
-    assert!(matches!(
-        store.add(&n("work")),
-        Err(ProfileError::SharedAssetLimit(_))
-    ));
+    let existing = store.add(&n("existing")).unwrap();
+    fs::write(existing.join(".sentinel"), "existing profile bytes").unwrap();
+    let before = inventory(store.root());
+    numbered_files(&source.join("skills/custom"), 5_001);
+
+    let error = store.add(&n("work")).unwrap_err();
+
+    assert_eq!(
+        inventory(store.root()),
+        before,
+        "failed add left staging or partial profile entries"
+    );
+    assert_eq!(
+        fs::read(existing.join(".sentinel")).unwrap(),
+        b"existing profile bytes"
+    );
     assert!(!store.root().join("work").exists());
+    assert_eq!(
+        fs::read_dir(source.join("skills/custom")).unwrap().count(),
+        5_001
+    );
+    let ProfileError::SharedAssetLimit(detail) = error else {
+        panic!("expected an entry-limit error, got {error:?}");
+    };
+    assert!(detail.contains("more than 5000 entries"), "{detail}");
+    assert!(
+        detail.contains(&format!(
+            "while copying shared folder {:?}",
+            Path::new("skills").join("custom")
+        )),
+        "{detail}"
+    );
+    assert!(
+        !detail.contains(&source.display().to_string()),
+        "diagnostic must be source-relative: {detail}"
+    );
 }
 
 #[test]

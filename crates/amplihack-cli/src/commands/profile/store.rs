@@ -568,6 +568,11 @@ pub(super) fn renameat_noreplace(
     }
 }
 
+/// Claude Code owns these account caches; never inspect or copy their entries.
+fn is_excluded_shared_path(relative: &Path) -> bool {
+    relative == Path::new("skills/synced") || relative == Path::new("skills/.trash")
+}
+
 /// Unix: the source root is opened once with no-follow and every later open is
 /// relative to that descriptor, so a root swapped for a symlink afterwards is
 /// never followed. Only the final component of `source` is no-follow; symlinked
@@ -613,7 +618,13 @@ fn seed_shared_assets(source: &Path, destination: &Path) -> Result<(), ProfileEr
 
     let mut entries = 0usize;
     for name in SHARED_ASSET_DIRS {
-        copy_allowlisted_tree(&source.join(name), &destination.join(name), 0, &mut entries)?;
+        copy_allowlisted_tree(
+            &source.join(name),
+            &destination.join(name),
+            Path::new(name),
+            0,
+            &mut entries,
+        )?;
     }
     for name in SHARED_ASSET_FILES {
         copy_regular_file(&source.join(name), &destination.join(name))?;
@@ -630,6 +641,7 @@ fn seed_shared_assets(source: &Path, destination: &Path) -> Result<(), ProfileEr
 fn copy_allowlisted_tree(
     source: &Path,
     destination: &Path,
+    shown: &Path,
     depth: usize,
     entries: &mut usize,
 ) -> Result<(), ProfileError> {
@@ -647,17 +659,22 @@ fn copy_allowlisted_tree(
     private_dir_builder().create(destination)?;
     for entry in fs::read_dir(source)? {
         let entry = entry?;
+        let name = entry.file_name();
+        let path = shown.join(&name);
+        if is_excluded_shared_path(&path) {
+            continue;
+        }
         *entries += 1;
         if *entries > MAX_COPY_ENTRIES {
             return Err(ProfileError::SharedAssetLimit(format!(
-                "more than {MAX_COPY_ENTRIES} entries"
+                "more than {MAX_COPY_ENTRIES} entries while copying shared folder {shown:?}"
             )));
         }
         let source_path = entry.path();
-        let destination_path = destination.join(entry.file_name());
+        let destination_path = destination.join(&name);
         let kind = entry.file_type()?;
         if kind.is_dir() {
-            copy_allowlisted_tree(&source_path, &destination_path, depth + 1, entries)?;
+            copy_allowlisted_tree(&source_path, &destination_path, &path, depth + 1, entries)?;
         } else if kind.is_file() {
             copy_regular_file(&source_path, &destination_path)?;
         }
@@ -927,13 +944,16 @@ pub(super) mod fdwalk {
             )));
         }
         for name in list(src)? {
+            let path = shown.join(&name);
+            if super::is_excluded_shared_path(&path) {
+                continue;
+            }
             *entries += 1;
             if *entries > MAX_COPY_ENTRIES {
                 return Err(ProfileError::SharedAssetLimit(format!(
-                    "more than {MAX_COPY_ENTRIES} entries"
+                    "more than {MAX_COPY_ENTRIES} entries while copying shared folder {shown:?}"
                 )));
             }
-            let path = shown.join(&name);
             let kind = match file_type(src.as_raw_fd(), &name) {
                 Ok(k) => k,
                 Err(e) if skippable(&e) => continue,

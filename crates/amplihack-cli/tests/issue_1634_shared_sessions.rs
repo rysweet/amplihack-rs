@@ -20,6 +20,62 @@ use std::process::{Command, Output};
 
 const SHARED: [&str; 3] = ["projects", "file-history", "session-env"];
 
+/// Issue #2522: exercise `profile add` through the isolated binary harness.
+#[test]
+fn profile_add_omits_oversized_account_skill_caches_issue_2522() {
+    let f = Fixture::new(&[]);
+    for (relative, count) in [("skills/synced", 5_001), ("skills/.trash", 3)] {
+        let dir = f.canon.join(relative);
+        fs::create_dir_all(&dir).unwrap();
+        for i in 0..count {
+            fs::write(dir.join(format!("{i}.md")), format!("cached {i}\n")).unwrap();
+        }
+    }
+    let included = [
+        "skills/review/SKILL.md",
+        "skills/build/SKILL.md",
+        "skills/test/SKILL.md",
+        "agents/synced/agent.md",
+        "skills/custom/.trash/SKILL.md",
+    ];
+    for relative in included {
+        fs::create_dir_all(f.canon.join(relative).parent().unwrap()).unwrap();
+        fs::write(f.canon.join(relative), relative).unwrap();
+    }
+
+    // Use one execution, with no retry loop or timed window.
+    let out = f.cmd(&["profile", "add", "work"]).output().unwrap();
+    assert!(out.status.success(), "profile add failed: {out:?}");
+
+    for relative in included {
+        assert_eq!(
+            fs::read(f.dir("work").join(relative)).unwrap(),
+            relative.as_bytes()
+        );
+        assert_eq!(
+            fs::read(f.canon.join(relative)).unwrap(),
+            relative.as_bytes()
+        );
+    }
+    for (relative, count) in [("skills/synced", 5_001), ("skills/.trash", 3)] {
+        assert_eq!(
+            fs::symlink_metadata(f.dir("work").join(relative))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
+        let dir = f.canon.join(relative);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), count);
+        for i in 0..count {
+            assert_eq!(
+                fs::read(dir.join(format!("{i}.md"))).unwrap(),
+                format!("cached {i}\n").as_bytes()
+            );
+        }
+    }
+    f.assert_isolated();
+}
+
 /// The fake `claude`:
 /// - `--version` answers like Claude Code;
 /// - records in `$RECORD_DIR/seen.<profile>` whether `projects` is a link and
