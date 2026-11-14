@@ -384,6 +384,24 @@ fn a_forged_wait_target_never_reaches_the_result() {
     }
 }
 
+#[test]
+fn a_64_hex_wait_target_is_outside_the_closed_set() {
+    let Some(l) = Loop::new() else { return };
+    let long = "a".repeat(64);
+    l.plan(&[&format!(
+        r#"NOT_MERGE_READY||["ci-pending"]|ci@{long}|true|0|"#
+    )]);
+    let o = l.run("merge-ready");
+    assert!(
+        !stdout(&o).contains(&long),
+        "only 40-hex SHAs match, as in Rust and jq: {}",
+        show(&o)
+    );
+    if let Some(saved) = l.state_file("merge-ready-result.json") {
+        assert!(!saved.contains(&long), "{saved}");
+    }
+}
+
 // ── D11: the evaluator is told about waits on mixed rounds ──────────────────
 
 #[test]

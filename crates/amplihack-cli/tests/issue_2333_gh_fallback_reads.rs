@@ -113,6 +113,36 @@ fn pr_read_maps_rest_merged_closed_draft_and_unknown_mergeability() {
 }
 
 #[test]
+fn pr_read_never_defaults_a_missing_draft_flag_to_not_draft() {
+    let g = GhRepo::new();
+    let load = |n: &str| -> Value {
+        serde_json::from_str(&std::fs::read_to_string(g.fix.join(n)).unwrap()).unwrap()
+    };
+    let mut gql = load("gql-pr.json");
+    gql.as_object_mut().unwrap().remove("isDraft");
+    g.fixture("gql-pr.json", &gql);
+    let mut rest = load("rest-pr.json");
+    rest["draft"] = json!(true);
+    g.fixture("rest-pr.json", &rest);
+    let v = ok(&g.read(&["pr", "7"]));
+    assert_eq!(
+        v["source"], "rest",
+        "GraphQL without isDraft falls through: {v}"
+    );
+    assert_eq!(v["is_draft"], true, "{v}");
+
+    rest.as_object_mut().unwrap().remove("draft");
+    g.fixture("rest-pr.json", &rest);
+    let o = g.read(&["pr", "7"]);
+    unavailable(&o);
+    assert!(
+        !String::from_utf8_lossy(&o.stdout).contains("is_draft"),
+        "no draft flag is ever invented: {}",
+        show(&o)
+    );
+}
+
+#[test]
 fn head_read_falls_back_to_rest() {
     let g = GhRepo::new();
     g.mode("gql", "refuse");

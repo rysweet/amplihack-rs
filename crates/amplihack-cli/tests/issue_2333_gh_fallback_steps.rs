@@ -513,6 +513,22 @@ fn update_branch_first_read_cases_make_no_gh_call() {
         "symlink",
     );
 
+    // A FIFO with no writer would block a plain open forever; the reader
+    // opens it non-blocking and refuses it as not a regular file.
+    let g = GhRepo::new();
+    let head = g.head();
+    let fifo = g.prior_wait(&head).with_file_name("fifo.json.wait");
+    let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+    // SAFETY: `c` is a valid NUL-terminated path.
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo");
+    assert_first_read(
+        &g,
+        &head,
+        fifo.to_str().unwrap(),
+        "prior wait: invalid",
+        "fifo",
+    );
+
     let g = GhRepo::new();
     let head = g.head();
     let mut big = crate::support::autodrive_gh_fake::unknown_sidecar(&head);

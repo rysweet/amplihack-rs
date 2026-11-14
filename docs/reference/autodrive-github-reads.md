@@ -283,7 +283,7 @@ the helper's JSON line in its result, not raw `gh` output.
 | Step | What the prompt requires |
 | --- | --- |
 | `autodrive-crusty-round.yaml` step-01-round-context | Read the head with `amplihack orch helper autodrive-gh-read head <n>`. Exit `3` (head unavailable) is a wait: write the [`.wait` sidecar](#the-wait-sidecar) next to `RECIPE_VAR_autodrive_round_record` and report the round incomplete. A head that answers with another SHA than the local head is a refusal, as before. The two are never confused. |
-| `autodrive-merge-evidence.yaml` step-01-sync-with-base | Read merge state, mergeable and base with `autodrive-gh-read pr <n>`. An unavailable base is `base-unavailable`; never merge a guessed base. On an `UNKNOWN` merge state, when the branch is not behind locally, call `autodrive-gh-update-branch <n> --expected-head-sha <head read this round> --prior-wait "$RECIPE_VAR_autodrive_prior_wait"` and record its JSON line, then write this round's [`.wait` sidecar](#the-wait-sidecar). The prompt never reads the previous sidecar itself and never decides whether the write is allowed; the helper does. See [Recomputing an UNKNOWN merge state](#recomputing-an-unknown-merge-state). |
+| `autodrive-merge-evidence.yaml` step-01-sync-with-base | Read merge state, mergeable and base with `autodrive-gh-read pr <n>`. An unavailable base is `base-unavailable`; never merge a guessed base. On an `UNKNOWN` merge state, read the head with `autodrive-gh-read head <n>`, call `autodrive-gh-update-branch <n> --expected-head-sha <that head> --prior-wait "{{autodrive_prior_wait}}"` and record its JSON line, then write this round's [`.wait` sidecar](#the-wait-sidecar). The prompt never reads the previous sidecar itself and never decides whether the write is allowed; the helper does. See [Recomputing an UNKNOWN merge state](#recomputing-an-unknown-merge-state). |
 | `autodrive-merge-evidence.yaml` step-03-wait-for-ci | Read the checks once with `autodrive-gh-read checks <head sha>`. Pending or queued checks at the head are a wait on that SHA (`ci_status` `PENDING`). Never sleep, never read the checks again in the same step. A `GREEN` rollup is still confirmed with `autodrive_expected_checks.sh`, as before (#2186). |
 | `autodrive-merge-loop.yaml` step-01-merge-loop-preflight | Reads `<state dir>/crusty-result.json`. A crusty result of `WAITING` is passed up as `should_run` `"false"` and `crusty_waiting` `"true"`; the merge loop does not run. Step-02b runs only when `'WAITING' not in merge_loop_result`, and step-03 (finalize) only when that holds and `crusty_waiting` is not `"true"`. |
 
@@ -556,7 +556,7 @@ merge state, writes the shape `--prior-wait` reads in the next round:
 | Writing | To a temporary file in the same directory, then renamed over `<round record>.wait`, under `RECIPE_VAR_autodrive_state_dir`, with umask `022` or stricter. |
 | Clearing | `autodrive_loop.sh` runs `rm -f -- "${RECORD}.wait"` at the start of each round. This removes only the **current** round's sidecar, left by an earlier drive that used the same label, so it cannot stop this round. The previous round's sidecar is kept; it is what `autodrive_prior_wait` names. |
 | Content | Only the keys of one of the two shapes above. It holds SHAs, state names and closed wait targets, nothing else. |
-| Reading | Untrusted, and read by code only; no agent prompt opens a sidecar. `wait_stop` in `autodrive_escalate.sh` reads the **current** round's sidecar: a regular file owned by the user, not a symlink, at most 4096 bytes, with `round_waiting` true and `wait_target` and `wait_reason` checked by `wait_valid`; the merge-evidence shape has no `round_waiting`, so it never stops a loop there. `autodrive-gh-update-branch --prior-wait` reads the **previous** round's sidecar with the strict reader in `autodrive_waits.rs`: a regular file, not a symlink, at most 4 KiB, only the three keys above, and a `head_sha` of 40 lowercase hex characters. Anything else is treated as if there were no previous read. |
+| Reading | Untrusted, and read by code only; no agent prompt opens a sidecar. `wait_stop` in `autodrive_escalate.sh` reads the **current** round's sidecar: a regular file owned by the user, not a symlink, at most 4096 bytes, with `round_waiting` true and `wait_target` and `wait_reason` checked by `wait_valid`; the merge-evidence shape has no `round_waiting`, so it never stops a loop there. `autodrive-gh-update-branch --prior-wait` reads the **previous** round's sidecar with the strict reader in `autodrive_waits.rs`: opened without following a symlink and without blocking on a FIFO, then checked on the open file: a regular file owned by the user, at most 4 KiB, only the three keys above, and a `head_sha` of 40 lowercase hex characters. Anything else is treated as if there were no previous read. |
 | Effect | It can stop a loop as `WAITING`. It can never complete a round, is never sealed and is never read by the completion dispatch. |
 
 ## Recomputing an UNKNOWN merge state
@@ -568,19 +568,20 @@ the prompt.
 
 On an `UNKNOWN` merge state, step-01 does the following:
 
-1. **If the branch is behind its base locally**, step-01's existing
-   merge-and-push runs, as on main. `recompute_action` is `merge-push`.
-2. **Otherwise** it calls
-   `autodrive-gh-update-branch <n> --expected-head-sha <head read this round>
-   --prior-wait "$RECIPE_VAR_autodrive_prior_wait"`. The helper reads the
-   previous round's sidecar with the strict reader and makes the write only
-   when the sidecar is valid, records `merge_state` `UNKNOWN`, and has a
-   `head_sha` equal to `--expected-head-sha`. In every other case (no
-   previous round, no file, a refused file, another merge state, another
-   head) it answers `first-read` and makes no `gh` call.
-3. In both cases step-01 then writes this round's sidecar with
-   `merge_state` `UNKNOWN` and the head read this round, so the next round
-   can qualify.
+1. It reads the head with `autodrive-gh-read head <n>`.
+2. It calls
+   `autodrive-gh-update-branch <n> --expected-head-sha <that head>
+   --prior-wait "{{autodrive_prior_wait}}"` and records the JSON line. The
+   helper reads the previous round's sidecar with the strict reader and
+   makes the write only when the sidecar is valid, records `merge_state`
+   `UNKNOWN`, and has a `head_sha` equal to `--expected-head-sha`. In every
+   other case (no previous round, no file, a refused file, another merge
+   state, another head) it answers `first-read` and makes no `gh` call.
+3. It then writes this round's sidecar with `merge_state` `UNKNOWN` and the
+   head read this round, so the next round can qualify.
+
+A branch that is behind its base locally is still merged and pushed by
+step-01's existing sync, as on main (`recompute_action` `merge-push`).
 
 The first `UNKNOWN` at a head is therefore always a wait with no write, and
 the second at the same head is the earliest point a write can happen.
@@ -617,6 +618,9 @@ amplihack orch helper autodrive-gh-update-branch 2333 \
   --expected-head-sha 3f9c2d1e8b7a6c5d4e3f2a1b0c9d8e7f6a5b4c3d \
   --prior-wait "$RECIPE_VAR_autodrive_prior_wait"
 ```
+
+(A bash step passes `$RECIPE_VAR_autodrive_prior_wait`; the merge-evidence
+agent prompt passes the template value `"{{autodrive_prior_wait}}"`.)
 
 ```json
 {"pr":2333,"action":"update-branch","result":"ok","expected_head_sha":"3f9c2d1e8b7a6c5d4e3f2a1b0c9d8e7f6a5b4c3d"}
@@ -712,7 +716,7 @@ outcome costs no GitHub request and is not affected by rate limits.
 | A read failing over GraphQL and REST reports unavailable, with text distinct from a finding | `crates/amplihack-cli/tests/issue_2333_gh_fallback.rs` |
 | `autodrive-gh-read pr <n>` returns base and merge state over REST when GraphQL is refused | `crates/amplihack-cli/tests/issue_2333_gh_fallback_steps.rs` |
 | `autodrive-gh-update-branch` with `--base`, or without `--prior-wait`, exits `2` and makes no `gh` call; a GitHub 422 for a mismatched `--expected-head-sha` gives `refused` | `crates/amplihack-cli/tests/issue_2333_gh_fallback_steps.rs` |
-| `autodrive-gh-update-branch --prior-wait` gives `first-read` and makes no `gh` call when the path is empty, the file is missing, a symlink, over 4 KiB, has an unknown key, has an invalid `head_sha`, records a merge state other than `UNKNOWN`, or records another head; a valid `UNKNOWN` sidecar at the same head makes exactly one `PUT` | `crates/amplihack-cli/tests/issue_2333_gh_fallback_steps.rs` |
+| `autodrive-gh-update-branch --prior-wait` gives `first-read` and makes no `gh` call when the path is empty, the file is missing, a symlink, a FIFO, over 4 KiB, has an unknown key, has an invalid `head_sha`, records a merge state other than `UNKNOWN`, or records another head; a valid `UNKNOWN` sidecar at the same head makes exactly one `PUT` | `crates/amplihack-cli/tests/issue_2333_gh_fallback_steps.rs` |
 | `autodrive_loop.sh` passes `autodrive_prior_wait` naming round `N-1` (empty for round `1`, and the last round of the earlier drive after a resume), and the round-start `rm -f` leaves the previous round's sidecar in place | `crates/amplihack-cli/tests/issue_2333_gh_fallback_loops.rs` |
 | `autodrive-gh-read checks <sha>` makes exactly one `gh` call and returns `pending` | `crates/amplihack-cli/tests/issue_2333_gh_fallback_steps.rs` |
 | `head <n>` unavailable is a wait; a differing head is a refusal | `crates/amplihack-cli/tests/issue_2333_gh_fallback_steps.rs` |

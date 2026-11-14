@@ -299,15 +299,15 @@ impl<'a> Gh<'a> {
             if bytes > MAX_BYTES {
                 return Err("answer over 8 MiB".into());
             }
-            let v: Value = serde_json::from_slice(&o.stdout)
+            let mut v: Value = serde_json::from_slice(&o.stdout)
                 .map_err(|e| format!("answer is not JSON ({e})"))?;
             let list = match key {
-                Some(k) => v.get(k).and_then(Value::as_array),
-                None => v.as_array(),
+                Some(k) => v.get_mut(k).and_then(Value::as_array_mut),
+                None => v.as_array_mut(),
             }
             .ok_or("answer holds no list")?;
             let n = list.len();
-            all.extend(list.iter().cloned());
+            all.append(list);
             if n < PER_PAGE {
                 return Ok(all);
             }

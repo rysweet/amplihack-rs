@@ -37,7 +37,7 @@ fn pr_from_graphql(v: &Value) -> Result<Map<String, Value>, String> {
         .ok_or("answer has no valid state")?;
     Ok(fields(json!({
         "state": state,
-        "is_draft": v["isDraft"].as_bool().unwrap_or(false),
+        "is_draft": v["isDraft"].as_bool().ok_or("answer has no draft flag")?,
         "head_sha": sha_of(&v["headRefOid"])?,
         "head_ref": branch_of(&v["headRefName"], "head ref")?,
         "base_ref": branch_of(&v["baseRefName"], "base ref")?,
@@ -51,7 +51,7 @@ fn pr_from_rest(v: &Value) -> Result<Map<String, Value>, String> {
     let state = v["state"].as_str().ok_or("answer has no state")?;
     Ok(fields(json!({
         "state": rest_map::pr_state(state, &merged_at(&v["merged_at"])),
-        "is_draft": v["draft"].as_bool().unwrap_or(false),
+        "is_draft": v["draft"].as_bool().ok_or("answer has no draft flag")?,
         "head_sha": sha_of(&v["head"]["sha"])?,
         "head_ref": branch_of(&v["head"]["ref"], "head ref")?,
         "base_ref": branch_of(&v["base"]["ref"], "base ref")?,

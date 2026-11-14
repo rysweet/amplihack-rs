@@ -329,26 +329,58 @@ pub struct PriorWait {
     pub merge_state: String,
 }
 
-/// Reads the sidecar strictly. `None` unless `path` is a regular file (never
-/// followed through a symlink) of at most 4 KiB holding a JSON object with
-/// exactly the string keys `wait`, `head_sha` and `merge_state`, and a
-/// `head_sha` of 40 lowercase hex characters. The file is untrusted.
+/// Reads the sidecar strictly. `None` unless `path` is a regular file owned
+/// by this user (opened without following a symlink and without blocking on
+/// a FIFO) of at most 4 KiB holding a JSON object with exactly the string
+/// keys `wait`, `head_sha` and `merge_state`, and a `head_sha` of 40
+/// lowercase hex characters. The file is untrusted; every check is made on
+/// the open handle, so a swap after the checks changes nothing.
 pub fn read_prior_wait(path: &std::path::Path) -> Option<PriorWait> {
-    let meta = std::fs::symlink_metadata(path).ok()?;
-    if !meta.file_type().is_file() || meta.len() > PRIOR_WAIT_MAX {
+    let f = open_prior_wait(path)?;
+    let meta = f.metadata().ok()?;
+    if !meta.file_type().is_file() || meta.len() > PRIOR_WAIT_MAX || !owned_by_me(&meta) {
         return None;
     }
     let mut raw = Vec::new();
-    std::fs::File::open(path)
-        .ok()?
-        .take(PRIOR_WAIT_MAX + 1)
-        .read_to_end(&mut raw)
-        .ok()?;
+    f.take(PRIOR_WAIT_MAX + 1).read_to_end(&mut raw).ok()?;
     if raw.len() as u64 > PRIOR_WAIT_MAX {
         return None;
     }
     let w: PriorWait = serde_json::from_slice(&raw).ok()?;
     valid_sha(&w.head_sha).then_some(w)
+}
+
+#[cfg(unix)]
+fn open_prior_wait(path: &std::path::Path) -> Option<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    // O_NOFOLLOW refuses a symlink at the path; O_NONBLOCK keeps a FIFO from
+    // blocking the open. A regular file reads the same either way.
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .ok()
+}
+
+#[cfg(not(unix))]
+fn open_prior_wait(path: &std::path::Path) -> Option<std::fs::File> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    meta.file_type()
+        .is_file()
+        .then(|| std::fs::File::open(path).ok())
+        .flatten()
+}
+
+#[cfg(unix)]
+fn owned_by_me(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    meta.uid() == unsafe { libc::geteuid() }
+}
+
+#[cfg(not(unix))]
+fn owned_by_me(_meta: &std::fs::Metadata) -> bool {
+    true
 }
 
 /// Whether update-branch may write: only when the previous round's sidecar

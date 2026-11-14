@@ -207,7 +207,7 @@ wait_valid() {
   case "$1" in
     ratelimit-reset@unknown|read@pr|read@pr-head|read@pr-number|read@checks|read@reviews|read@threads) ;;
     ratelimit-reset@*) case "$s" in ''|*[!0-9]*) return 1 ;; esac; [ "${#s}" -le 12 ] || return 1 ;;
-    ci@*|mergeability@*) case "$s" in *[!0-9a-f]*) return 1 ;; esac; [ "${#s}" -eq 40 ] || [ "${#s}" -eq 64 ] || return 1 ;;
+    ci@*|mergeability@*) case "$s" in *[!0-9a-f]*) return 1 ;; esac; [ "${#s}" -eq 40 ] || return 1 ;;
     *) return 1 ;;
   esac
   case "$2" in ''|,*|*,|*[!a-z0-9,-]*) return 1 ;; esac

@@ -37,7 +37,8 @@ tags: ["loop", "convergence", "evaluation", "verdict", "agentic", "issue-1337"]
 # so every step-output read below uses that name alone (#1561); a bare name
 # would be inherited from whatever launched the runner, never this run's output.
 #
-# No step declares a timeout (#439): the recipe runner owns the ceiling.
+# No step here declares a timeout: per issue #439 the recipe runner owns the
+# ceiling, so no step has a seconds-scale or single-digit-minute bound.
 
 recursion:
   max_depth: 6
@@ -48,7 +49,8 @@ context:
   # report: never compared against a limit, and nothing here branches on it.
   loop_name: "unnamed-loop"
   loop_round_label: ""
-  # Every round's structured verdicts so far (newest last), and the last round's raw output.
+  # Accumulated structured verdicts from every round so far (concatenated JSON
+  # records, newest last) and the raw output of the round just finished.
   loop_history: ""
   loop_last_round_output: ""
   # Machine-checkable progress evidence.
@@ -66,8 +68,10 @@ context:
   loop_round_verdict: ""  # #1597: the reviewer's verdict for the round just finished
   loop_round_waits: "[]"         # #2472: this round's waits (JSON list); waits are not lack of progress
   loop_round_wait_only: "false"  # #2472: "true" when the round's only blockers were waits
-  loop_health_enforce: "true"  # "false": step-04 reports STUCK loudly but exits 0; the caller's `condition:` owns the stop
-  loop_evidence: ""  # #1561: declared so a nested run never reads an inherited RECIPE_VAR_<key>
+  # "false": step-04 reports STUCK loudly but exits 0; the caller's `condition:` owns the stop.
+  loop_health_enforce: "true"
+  # Issue #1561: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
+  loop_evidence: ""
   loop_health_assessment: ""
 
 steps:
