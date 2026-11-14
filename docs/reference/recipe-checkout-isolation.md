@@ -157,6 +157,14 @@ git fetch origin   # updates refs/remotes/origin/* from the real remote
 `workflow-terminal-state` run the same `resolve_base_ref` logic, so all four
 find their base the same way.
 
+The private repository is bare, so `workflow_worktree_root.sh root` gives the
+folder beside it (the run's storage folder) as the main root, and that folder
+is not a repository. The worktree helpers therefore ask Git through the
+checkout, which shares the same refs, configuration and worktree list:
+`workflow_worktree_root.sh base` is given the checkout, `assert-not-nested`
+lists worktrees from the current repository when the main root is not one, and
+`workflow_caller_branch_alias.sh` runs its Git commands in the caller path.
+
 Path inputs are mapped before launch:
 
 - `-w` selects the source and the matching subdirectory of the checkout.

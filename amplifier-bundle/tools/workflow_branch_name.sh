@@ -86,15 +86,17 @@ real_dir() { (cd "$1" 2>/dev/null && pwd -P); }
 
 ROOT_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/workflow_worktree_root.sh"
 
-# worktree_base MAIN — the folder this repository's worktrees go under. The
-# one source is `workflow_worktree_root.sh base` (issue #1808), so a re-run
-# under an explicit work root recognises its own worktree.
+# worktree_base REPO MAIN — the folder this repository's worktrees go under.
+# The one source is `workflow_worktree_root.sh base` (issue #1808), so a re-run
+# under an explicit work root recognises its own worktree. `base` is given
+# REPO and finds MAIN itself: MAIN is not a work tree when the repository is
+# bare, as in a private recipe-run checkout (issue #2096).
 worktree_base() {
   local base
   if [ -f "$ROOT_HELPER" ]; then
     base="$(bash "$ROOT_HELPER" base "$1")" || return 1
   else
-    base="$(real_dir "$1")/worktrees"
+    base="$(real_dir "$2")/worktrees"
   fi
   real_dir "$base" || printf '%s' "$base"
 }
@@ -108,7 +110,7 @@ decide() {
   if [ -n "$holder" ]; then
     holder_real="$(real_dir "$holder" || printf '%s' "$holder")"
     repo_real="$(real_dir "$repo")"
-    intended="$(worktree_base "$main")" || {
+    intended="$(worktree_base "$repo" "$main")" || {
       echo "ERROR: cannot work out where worktrees go (see above; issue #1808)." >&2
       exit 2
     }

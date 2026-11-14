@@ -387,3 +387,99 @@ fn private_checkout_does_not_copy_plain_origin_head() {
         );
     });
 }
+
+/// Runs `amplifier-bundle/tools/<tool>` with bash in `dir`.
+fn tool_in(f: &Fixture, dir: &Path, tool: &str, args: &[&str]) -> Output {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../amplifier-bundle/tools")
+        .join(tool);
+    let mut c = Command::new("bash");
+    f.environment(&mut c);
+    c.current_dir(dir).arg(path).args(args).output().unwrap()
+}
+
+/// Found by outside-in testing of PR #2290: the main root of the private
+/// checkout's bare repository is the folder beside it, which is not a
+/// repository. `base` must still work when given the checkout (step-04 and
+/// `workflow_branch_name.sh` pass it), and `assert-not-nested` with that main
+/// root must still see the repository's worktrees and refuse a nested path,
+/// not list nothing and pass.
+#[test]
+fn private_checkout_worktree_root_helpers_work_beside_a_bare_repository() {
+    isolated_body(
+        "private_checkout_worktree_root_helpers_work_beside_a_bare_repository",
+        |f| {
+            with_origin(&f);
+            let checkout =
+                implementation::RunCheckout::prepare(&f.repo, &scratch(&f), false).unwrap();
+            let dir = checkout.exec_dir();
+            let root = tool_in(&f, dir, "workflow_worktree_root.sh", &["root", "."]);
+            assert!(
+                root.status.success(),
+                "root: {}",
+                String::from_utf8_lossy(&root.stderr)
+            );
+            let main = PathBuf::from(text(root.stdout));
+            let (code, _) = git_status(&f, &main, &["rev-parse", "--git-dir"]);
+            assert_ne!(
+                code,
+                Some(0),
+                "the main root of a bare repository is not a repository"
+            );
+
+            let base = tool_in(&f, dir, "workflow_worktree_root.sh", &["base", "."]);
+            assert!(
+                base.status.success(),
+                "base: {}",
+                String::from_utf8_lossy(&base.stderr)
+            );
+            assert!(!text(base.stdout).is_empty());
+
+            let outer = f.root.join("outer-wt");
+            f.git_in(
+                dir,
+                &[
+                    "worktree",
+                    "add",
+                    "-q",
+                    "-b",
+                    "qa-outer",
+                    outer.to_str().unwrap(),
+                    "HEAD",
+                ],
+            );
+            let nested = outer.join("inner");
+            let refused = tool_in(
+                &f,
+                dir,
+                "workflow_worktree_root.sh",
+                &[
+                    "assert-not-nested",
+                    nested.to_str().unwrap(),
+                    main.to_str().unwrap(),
+                ],
+            );
+            assert!(
+                !refused.status.success(),
+                "a path inside another worktree must be refused beside a bare repository"
+            );
+            assert!(String::from_utf8_lossy(&refused.stderr).contains("nested inside"));
+            let free = f.root.join("free-wt");
+            let allowed = tool_in(
+                &f,
+                dir,
+                "workflow_worktree_root.sh",
+                &[
+                    "assert-not-nested",
+                    free.to_str().unwrap(),
+                    main.to_str().unwrap(),
+                ],
+            );
+            assert!(
+                allowed.status.success(),
+                "{}",
+                String::from_utf8_lossy(&allowed.stderr)
+            );
+        },
+    );
+}
