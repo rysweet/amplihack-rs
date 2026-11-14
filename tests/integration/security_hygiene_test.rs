@@ -909,6 +909,8 @@ fn tc_sec_20_no_hardcoded_high_entropy_secrets_in_fleet_source() {
         // Made-up, obviously non-secret commit ids used by runner pin tests.
         "0123456789abcdef0123456789abcdef01234567",
         "b4a82e7000000000000000000000000000000000",
+        // Made-up head SHA of the #2333/#2472 waits and run-report tests.
+        "3f9c2d1e8b7a6c5d4e3f2a1b0c9d8e7f6a5b4c3d",
         // Made-up `launch_id` fixtures of the `amplihack agent` tests (#1760).
         "6f1c0d8e2a4b4f0e9c7d3b5a1e2f4c6d",
         "0000000000000000000000000000000",

@@ -420,9 +420,6 @@ fn no_short_timeouts_anywhere() {
             }
         }
     }
-    // The only wait in the workflow is the CI poll, and its interval is 60s.
-    let evidence = recipe_text("autodrive-merge-evidence");
-    assert!(evidence.contains("Poll pending work to its natural terminal state"));
     for path in control_path_files() {
         let text = read(&path);
         for (n, line) in text.lines().enumerate() {

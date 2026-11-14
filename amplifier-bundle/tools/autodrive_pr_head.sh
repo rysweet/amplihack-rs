@@ -5,7 +5,7 @@
 #
 #   autodrive_pr_head.sh --pr N [--branch B] [--repo R]
 #
-# The head comes from the platform (gh pr view headRefOid/headRefName). B,
+# The head comes from the platform (autodrive-gh-read pr: GraphQL, then REST). B,
 # when given, must equal headRefName: a different B would measure (and the
 # round would push from) a tree on the wrong branch, so the tool refuses. The
 # worktree for headRefName is searched in this order:
@@ -35,7 +35,7 @@
 #   Exit 0 — resolved.
 #   Exit 2 — usage error.
 #   Exit 3 — no-pr-worktree or ambiguous-pr-worktree.
-#   Exit 4 — pr-lookup-failed: gh pr view failed or returned an unusable head.
+#   Exit 4 — pr-lookup-failed: every read path (GraphQL, REST) was unavailable, or the head is unusable.
 #   Exit 5 — branch-mismatch: --branch is not the PR's headRefName.
 
 set -uo pipefail
@@ -77,11 +77,15 @@ ROOT="$(cd "$ROOT" && pwd -P)" || die 3 no-pr-worktree "cannot enter '${ROOT}'"
 COMMON="$(cd "$ROOT" && cd "$(git rev-parse --git-common-dir)" 2>/dev/null && pwd -P)" \
   || die 3 no-pr-worktree "cannot read the git common dir of '${ROOT}'"
 
-# --- the PR head, from the platform ------------------------------------------
+# --- the PR head, from the platform: GraphQL, then REST (#2333) ---------------
 LINE="$(cd "$ROOT" && gh pr view "$PR" --json headRefOid,headRefName,state \
   --jq '[.headRefOid, .headRefName, .state] | @tsv' 2>/dev/null)"
-RC=$?
-[ "$RC" -eq 0 ] || die 4 pr-lookup-failed "gh pr view failed (rc=${RC}) for PR #${PR}"
+if [ $? -ne 0 ]; then
+  J="$(cd "$ROOT" && "${AMPLIHACK_BIN:-amplihack}" orch helper autodrive-gh-read pr "$PR" 2>/dev/null)"; RC=$?
+  [ "$RC" -ne 3 ] || die 4 pr-lookup-failed "PR #${PR} head unavailable on every read path: $(printf '%s' "$J" | jq -r 'if .unavailable.rate_limited then .unavailable.reason else "no read path answered (not a rate limit)" end' 2>/dev/null)"
+  [ "$RC" -eq 0 ] || die 4 pr-lookup-failed "gh pr view and autodrive-gh-read failed (rc=${RC}) for PR #${PR}"
+  LINE="$(printf '%s' "$J" | jq -r '[.head_sha, .head_ref, .state] | map(. // "") | @tsv' 2>/dev/null)"
+fi
 IFS=$'\t' read -r HEAD_SHA HEAD_REF _STATE <<<"$LINE"
 [[ "${HEAD_SHA:-}" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
   || die 4 pr-lookup-failed "PR #${PR} headRefOid is not a 40- or 64-hex commit id"

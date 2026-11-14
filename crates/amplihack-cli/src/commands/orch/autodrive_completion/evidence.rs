@@ -1,3 +1,4 @@
+use super::super::autodrive_gh as gh;
 use super::{private_state::State, secure_fs};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -138,15 +139,6 @@ pub fn validate(state: &State, expected: &Snapshot) -> Result<serde_json::Value>
         record["crusty_verdict"].as_str(),
         Some("CLEAN" | "MINOR_ONLY")
     ) {
-        let remote = Command::new("gh")
-            .current_dir(&state.repo)
-            .env_remove("GH_REPO")
-            .args(["pr", "view", "--json", "headRefOid", "--jq", ".headRefOid"])
-            .output()?;
-        ensure!(
-            remote.status.success() && String::from_utf8(remote.stdout)?.trim() == head.trim(),
-            "current PR head differs from reviewed evidence or is unavailable"
-        );
         ensure!(
             record["reviewed_head_sha"].as_str() == Some(head.trim()),
             "completion must cover the current reviewed head"
@@ -168,4 +160,69 @@ pub fn validate(state: &State, expected: &Snapshot) -> Result<serde_json::Value>
         }
     }
     Ok(record)
+}
+
+/// The PR head on GitHub against the reviewed local head (#2333). Three
+/// outcomes, kept apart: a difference is a finding and fails closed; an
+/// unavailable read is a wait and never completes.
+pub enum HeadCheck {
+    Matches,
+    Differs,
+    Unavailable(gh::Unavailable),
+}
+
+/// Reads the PR head through GraphQL, REST, then `git ls-remote`. The PR
+/// number comes from the state, else from the branch's open PR. Run only
+/// after [`validate`] has accepted the record, so a rate limit can never turn
+/// an invalid record into a wait.
+pub fn head_check(state: &State) -> Result<HeadCheck> {
+    let local = amplihack_git::command_in(&state.repo)
+        .args(["rev-parse", "HEAD"])
+        .output()?;
+    ensure!(local.status.success(), "cannot read current PR head");
+    let local = String::from_utf8(local.stdout)?.trim().to_string();
+    let reader = gh::Gh::new(&state.repo, None);
+    let pr = match state.pr.filter(|n| *n > 0) {
+        Some(n) => n,
+        // Older state files: the current branch's PR first, as before #2333.
+        None if gh::current_branch_head(&reader).is_some_and(|h| h == local) => {
+            return Ok(HeadCheck::Matches);
+        }
+        None => {
+            let branch = amplihack_git::command_in(&state.repo)
+                .args(["symbolic-ref", "--short", "-q", "HEAD"])
+                .output()?;
+            let branch = String::from_utf8(branch.stdout)?.trim().to_string();
+            if !gh::valid_branch(&branch) {
+                return Ok(HeadCheck::Unavailable(gh::Unavailable {
+                    reason: "pr-number-unresolved: the PR worktree is not on a branch".into(),
+                    rate_limited: false,
+                    reset_epoch: None,
+                }));
+            }
+            match gh::pr_for_branch(&reader, &branch) {
+                gh::Read::Answer { fields, .. } => match fields["number"].as_u64() {
+                    Some(n) => n,
+                    None => {
+                        return Ok(HeadCheck::Unavailable(gh::Unavailable {
+                            reason: "pr-number-unresolved: no open PR for the branch".into(),
+                            rate_limited: false,
+                            reset_epoch: None,
+                        }));
+                    }
+                },
+                gh::Read::Unavailable(mut u) => {
+                    u.reason = format!("pr-number-unresolved: {}", u.reason);
+                    return Ok(HeadCheck::Unavailable(u));
+                }
+            }
+        }
+    };
+    Ok(match gh::head(&reader, pr) {
+        gh::Read::Answer { fields, .. } if fields["head_sha"].as_str() == Some(local.as_str()) => {
+            HeadCheck::Matches
+        }
+        gh::Read::Answer { .. } => HeadCheck::Differs,
+        gh::Read::Unavailable(u) => HeadCheck::Unavailable(u),
+    })
 }

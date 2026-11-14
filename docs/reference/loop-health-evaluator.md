@@ -1,6 +1,6 @@
 ---
 title: Loop-Health Evaluator Reference
-last_updated: 2026-11-11
+last_updated: 2026-11-12
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -35,6 +35,7 @@ It is deliberately **not** an iteration counter. See
 - [Using it from a recipe](#using-it-from-a-recipe)
 - [Exit code 79 is terminal](#exit-code-79-is-terminal)
   - [Round text never decides a refusal](#round-text-never-decides-a-refusal)
+- [Waits are not lack of progress](#waits-are-not-lack-of-progress)
 - [A usage limit is not a verdict](#a-usage-limit-is-not-a-verdict)
   - [Retry inside the step](#retry-inside-the-step)
 - [Fail-safe guarantees](#fail-safe-guarantees)
@@ -632,6 +633,8 @@ caller that wants the numbers alone can invoke the collector directly. Its
 | `loop_ci_signal` / `loop_ci_signal_previous` | `""` | CI result summaries for the last two rounds. |
 | `loop_clean_token` | `""` | The verdict that makes a round clean for this loop: `CLEAN` (crusty) or `MERGE_READY` (merge-ready). `DONE` is legal only when `loop_round_verdict` equals it. Empty means: use the reviewer verdict for this round in `loop_history` if there is one, otherwise decide as before. |
 | `loop_round_verdict` | `""` | The reviewer's verdict for the round just finished, for example `CONCERNS` or `MERGE_READY`, or `MISSING` when the round wrote no record. `autodrive_loop.sh` passes it with every character outside `A-Za-z0-9_` removed; a non-clean verdict that would then equal the clean token (`CLEAN!`) arrives as `CLEAN_NONCANONICAL`. |
+| `loop_round_waits` | `"[]"` | JSON list of this round's wait ids, for example `["ci-pending"]`, from the round record. `autodrive_loop.sh` passes it with `-c`. |
+| `loop_round_wait_only` | `"false"` | `"true"` when every blocker this round is a wait. See [Waits are not lack of progress](#waits-are-not-lack-of-progress). |
 | `loop_health_enforce` | `"true"` | When `"false"`, `STUCK` is reported loudly but exits `0`, leaving the stop entirely to the caller's `condition:`. |
 
 ## Outputs
@@ -792,6 +795,27 @@ The duration, still-running and repetition checks still read the unfiltered
 history and last round output. `autodrive_round_tail.sh` still prints whole
 lines only, and the final marker, being the log's last line, is always inside
 its 20000-byte tail.
+
+## Waits are not lack of progress
+
+Some blockers are not the work's to fix: CI pending or queued at the head, a
+GitHub read that is unavailable or rate-limited, and a merge state of
+`UNKNOWN`. Auto-drive classes these as **waits** in code
+([Waits and fixable findings](autodrive-github-reads.md#waits-and-fixable-findings))
+and tells the evaluator through `loop_round_waits` and `loop_round_wait_only`.
+
+The step-02 prompt states three rules:
+
+- Waits are not lack of progress. A wait id repeated across rounds is not a
+  recurring finding.
+- A round that is only waiting (`loop_round_wait_only` is `true`) must not be
+  judged `STUCK`.
+- `waiting_on_output` in the measured evidence is about agent output that
+  never arrives. It does not apply to GitHub or CI waits.
+
+In auto-drive a wait-only round ends as `WAITING` before the evaluator runs.
+The evaluator still runs on mixed rounds and judges the fixable part. The
+inputs make both cases explicit for any caller that reaches the evaluator.
 
 ## A usage limit is not a verdict
 

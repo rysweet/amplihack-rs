@@ -119,7 +119,7 @@ oneof() { # oneof <value> <default> <allowed>...: the value if allowed, else the
 }
 
 PR="${1:-}"
-case "$PR" in '' | *[!0-9]*) PR="$(gh pr view --json number --jq .number 2>/dev/null || printf '')" ;; esac
+case "$PR" in '' | *[!0-9]*) PR="$(gh pr view --json number --jq .number 2>/dev/null || "${AMPLIHACK_BIN:-amplihack}" orch helper autodrive-gh-read pr-for-branch "$(git symbolic-ref --short -q HEAD)" 2>/dev/null | jq -r ".number // empty" 2>/dev/null || printf '')" ;; esac
 digits "$PR" || PR=""
 
 # One read of the pull request. gh's own jq joins the fields with `|`, so no
@@ -138,6 +138,24 @@ VIEW_JQ='[.state, (.isDraft | tostring), .mergeable, .mergeStateStatus, (.review
   .baseRefName] | map(. // "" | tostring) | join("|")'
 if [ -n "$PR" ] && LINE="$(gh pr view "$PR" --json "$VIEW_FIELDS" --jq "$VIEW_JQ" 2>/dev/null)"; then
   IFS='|' read -r STATE DRAFT MERGEABLE MSTATE DECISION HEAD CHECKS BASE <<<"$LINE"
+  [ -n "$STATE" ] && [ -n "$HEAD" ] && VIEW_OK="true"
+fi
+# #2333: a refused or failed GraphQL read falls back to REST through
+# autodrive-gh-read. A read unavailable on every path joins UNAV, the
+# `unavailable` list autodrive-round-waits classes as a wait, never a finding.
+UNAV=""; GH_OUT=""
+gh_read() { # gh_read <read> <arg>...: the helper's JSON line in GH_OUT; status 0 answered, 3 unavailable
+  local rc
+  GH_OUT="$("${AMPLIHACK_BIN:-amplihack}" orch helper autodrive-gh-read "$@" 2>/dev/null)"; rc=$?
+  [ "$rc" -ne 3 ] || UNAV="${UNAV}${UNAV:+,}$(printf '%s' "$GH_OUT" | jq -c --arg r "$1" '{read:$r,rate_limited:(.unavailable.rate_limited==true),reset_epoch:(.unavailable.reset_epoch//null)}' 2>/dev/null \
+    || printf '{"read":"%s","rate_limited":false,"reset_epoch":null}' "$1")"
+  return "$rc"
+}
+# checks at the HEAD just read: REST only, no second GraphQL try or pulls/{n} read
+if [ "$VIEW_OK" != "true" ] && [ -n "$PR" ] && gh_read pr "$PR"; then
+  IFS='|' read -r STATE DRAFT MERGEABLE MSTATE HEAD BASE <<<"$(printf '%s' "$GH_OUT" | jq -r '[.state,(.is_draft|tostring),.mergeable,.merge_state,.head_sha,.base_ref]|map(. // "" | tostring)|join("|")')"
+  gh_read reviews "$PR" && DECISION="$(printf '%s' "$GH_OUT" | jq -r '.review_decision // ""')"
+  CHECKS="unreadable"; gh_read checks "${HEAD:-$PR}" && CHECKS="$(printf '%s' "$GH_OUT" | jq -r 'if (.checks|length)==0 then "none" elif all(.checks[]; .bucket=="pass" or .bucket=="skipping") then "pass" else "not-passed" end')"
   [ -n "$STATE" ] && [ -n "$HEAD" ] && VIEW_OK="true"
 fi
 CHECKS="$(oneof "$CHECKS" unreadable pass not-passed none)"
@@ -268,5 +286,5 @@ SHOWN_R="${RULES:-unreadable}"; [ -z "$RULES_RULE" ] || SHOWN_R="unknown(${RULES
 echo "INFO: approval: status=${APPROVAL} source=${SOURCE} blocker=${BLOCKER:-none} required=${REQ:-unknown} classic=${SHOWN_C}" \
   "rulesets=${SHOWN_R} review_decision=${DECISION:-<empty>} merge_state=${MSTATE} mergeable=${MERGEABLE} checks=${CHECKS} threads=${THREADS}" >&2
 
-printf '{"pr":"%s","state":"%s","is_draft":"%s","mergeable":"%s","merge_state":"%s","review_decision":"%s","head_sha":"%s","base_ref":"%s","unresolved_threads":"%s","required_approvals":"%s","approval_blocker":"%s","approval_status":"%s","approval_source":"%s"}\n' \
-  "$PR" "$STATE" "$DRAFT" "$MERGEABLE" "$MSTATE" "$DECISION" "$HEAD" "$BASE" "$THREADS" "$REQ" "$BLOCKER" "$APPROVAL" "$SOURCE"
+printf '{"pr":"%s","state":"%s","is_draft":"%s","mergeable":"%s","merge_state":"%s","review_decision":"%s","head_sha":"%s","base_ref":"%s","unresolved_threads":"%s","required_approvals":"%s","approval_blocker":"%s","approval_status":"%s","approval_source":"%s"%s}\n' \
+  "$PR" "$STATE" "$DRAFT" "$MERGEABLE" "$MSTATE" "$DECISION" "$HEAD" "$BASE" "$THREADS" "$REQ" "$BLOCKER" "$APPROVAL" "$SOURCE" "${UNAV:+,\"unavailable\":[${UNAV}]}"

@@ -3,7 +3,8 @@
 # escalate writes the stop to stderr and its JSON record to stdout, and
 # usage_limit_stop tells a child that failed on a Claude usage limit from any
 # other failure, so the loop stops as USAGE_LIMIT and never as STUCK (#1801).
-# progress_stop and budget_stop are the two stops decided in code (#1743).
+# progress_stop and budget_stop are the two stops decided in code (#1743);
+# wait_stop ends a round whose only blockers are waits as WAITING (#2472).
 # docs/reference/auto-drive-to-merge.md. Defines functions only; the caller
 # sets LOOP_NAME, ROUND_LABEL and RECORD, and for #1743 STATE_DIR, LOOP_HOME,
 # AD_PR and BUDGET_CTX.
@@ -105,7 +106,7 @@ held_by_lines() {
   [ "$n" -le 10 ] || printf '  held by: reported (+%s more)\n' "$((n - 10))"
 }
 
-escalate() { # escalate <verdict> <why> [usage_limit|budget|orphaned]
+escalate() { # escalate <verdict> <why> [usage_limit|budget|orphaned|waiting <wait_reason> <wait_target>]
   echo "AUTO_DRIVE_LOOP: ${1} — loop '${LOOP_NAME}' stops at round label '${ROUND_LABEL:-?}'." >&2
   echo "  Reason: ${2}" >&2
   held_by_lines >&2
@@ -114,11 +115,14 @@ escalate() { # escalate <verdict> <why> [usage_limit|budget|orphaned]
     usage_limit) echo "  This is a usage limit, not a judgement about progress. Run again when a login has capacity." >&2 ;;
     orphaned) echo "  This is a lost driver, not a judgement about progress. Relaunch auto-drive to resume from the recorded round." >&2 ;;
     budget) echo "  This is a usage budget set by the operator, not a judgement about progress. Relaunch with a higher budget to resume from the recorded round." >&2 ;;
+    waiting) echo "  This is a wait, not a judgement about progress. Resume the drive after ${5}." >&2 ;;
     *) echo "  This is a judgement about absence of progress, not an attempt count." >&2 ;;
   esac
-  local f=() v # JSON-escaped; control characters become spaces (#1801)
+  local f=() v w="" # JSON-escaped; control characters become spaces (#1801)
   for v in "$LOOP_NAME" "$1" "${ROUND_LABEL:-?}" "$2"; do f+=("$(printf '%s' "$v" | tr '\001-\037' ' ' | sed 's/\\/\\\\/g; s/"/\\"/g')"); done
-  record_result "$(printf '{"loop":"%s","loop_result":"%s","round_label":"%s","reason":"%s"}' "${f[@]}")"
+  # wait_reason and wait_target passed wait_valid, so they hold no quote (#2333).
+  [ "${3:-}" != waiting ] || w="$(printf ',"wait_reason":"%s","wait_target":"%s"' "$4" "$5")"
+  record_result "$(printf '{"loop":"%s","loop_result":"%s","round_label":"%s","reason":"%s"' "${f[@]}")${w}}"
 }
 
 # record_result <json>: prints the loop's result line and writes the same line
@@ -166,7 +170,7 @@ stops_preflight() {
 progress_stop() {
   local why rc
   [ -z "${PROGRESS_OFF:-}" ] || return 0
-  why="$(bash "${LOOP_HOME}/autodrive_progress.sh" check "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$1" "${RECORD}.findings" "${2:-}")"
+  why="$(bash "${LOOP_HOME}/autodrive_progress.sh" check "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$1" "${RECORD}.findings" "${2:-}" "$(field "${RAW:-}" round_waiting false)")"
   rc=$?
   [ "$rc" -eq 10 ] || { [ "$rc" -eq 0 ] || echo "WARNING: the no-progress check exited ${rc}; the evaluator decides." >&2; return 0; }
   # Record the stopped round too, so a resumed run's summary names it.
@@ -194,4 +198,55 @@ budget_stop() {
   [ "${2:-}" = --force ] || post_stop "${STATE_DIR}/autodrive-budget-summary.md"
   escalate "BUDGET_EXHAUSTED" "usage budget reached (${hit}); see autodrive-budget-summary.md in the state directory" budget
   exit 1
+}
+
+# wait_valid <wait_target> <wait_reason>: both match the closed patterns of
+# docs/reference/autodrive-github-reads.md#waits-and-fixable-findings (#2333).
+wait_valid() {
+  local s="${1#*@}"
+  case "$1" in
+    ratelimit-reset@unknown|read@pr|read@pr-head|read@pr-number|read@checks|read@reviews|read@threads) ;;
+    ratelimit-reset@*) case "$s" in ''|*[!0-9]*) return 1 ;; esac; [ "${#s}" -le 12 ] || return 1 ;;
+    ci@*|mergeability@*) case "$s" in *[!0-9a-f]*) return 1 ;; esac; [ "${#s}" -eq 40 ] || return 1 ;;
+    *) return 1 ;;
+  esac
+  case "$2" in ''|,*|*,|*[!a-z0-9,-]*) return 1 ;; esac
+  [ "${#2}" -le 200 ]
+}
+
+# wait_stop: WAITING when every blocker of the round is a wait (#2472), read
+# from the round record, or from the ${RECORD}.wait sidecar crusty step-01
+# writes when no read of the PR head answered. Never STUCK and never DONE:
+# loop_result WAITING, exit 0, resumable. A target or reason outside the
+# closed patterns is ignored with a WARNING, so the round goes on to the
+# no-progress rule and the evaluator. AUTODRIVE_EXIT_WAITING is the
+# completion dispatch's exit when the PR head is unavailable; the loop maps it
+# to WAITING and never exits with it.
+
+AUTODRIVE_EXIT_WAITING=76
+wait_stop() {
+  local src="" t r
+  if [ -f "$RECORD" ] && [ ! -L "$RECORD" ]; then src="${RAW:-}"
+  elif [ -f "${RECORD}.wait" ] && [ ! -L "${RECORD}.wait" ] && [ -O "${RECORD}.wait" ]; then src="$(head -c 4096 -- "${RECORD}.wait")"; fi
+  [ -n "$src" ] && [ "$(field "$src" round_waiting false)" = true ] || return 0
+  t="$(field "$src" wait_target '')"
+  r="$(field "$src" wait_reason '')"
+  [ -n "$r" ] || r="$(field "$src" waits '[]' | tr -d '[]" ' | LC_ALL=C tr -cd 'a-z0-9,-')"
+  if ! wait_valid "$t" "$r"; then
+    echo "WARNING: ${ROUND_LABEL} says it is waiting, but its wait target or reason is not in the closed set; the round is judged as usual." >&2
+    return 0
+  fi
+  escalate "WAITING" "every blocker this round is a wait (${r})" waiting "$r" "$t"
+  exit 0
+}
+
+# dispatch_wait_stop <rc> <evaluator_invoked> <dispatch json>: the completion
+# dispatch found the PR head unavailable on every read path (exit 76, #2333).
+# The round is WAITING: the dispatch's own line is the result, the loop exits
+# 0, and 76 is never re-exited. Anything else returns to the caller.
+dispatch_wait_stop() {
+  [ "${1:-}" = "$AUTODRIVE_EXIT_WAITING" ] && [ "${2:-}" = false ] && [ "$(field "${3:-}" loop_result '')" = WAITING ] || return 0
+  echo "AUTO_DRIVE_LOOP: WAITING — loop '${LOOP_NAME}' stops at round label '${ROUND_LABEL:-?}': the PR head is unavailable on every read path; resume the drive later." >&2
+  record_result "$3"
+  exit 0
 }

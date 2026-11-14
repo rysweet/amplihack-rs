@@ -24,6 +24,7 @@ context:
   task_description: ""
   autodrive_round_record: ""
   autodrive_round_label: "round"
+  autodrive_prior_wait: ""  # #2333: the previous round's .wait sidecar, from the loop driver
   autodrive_qa_evidence: ""
   autodrive_resolved_concerns_file: ""
   autodrive_state_dir: ""
@@ -98,6 +99,8 @@ steps:
       pr_number: "{{pr_number}}"
       autodrive_qa_evidence: "{{autodrive_qa_evidence}}"
       autodrive_round_label: "{{autodrive_round_label}}"
+      autodrive_round_record: "{{autodrive_round_record}}"
+      autodrive_prior_wait: "{{autodrive_prior_wait}}"
       no_merge: "{{no_merge}}"
       autodrive_dry_run: "{{autodrive_dry_run}}"
       autodrive_tools_dir: "{{autodrive_tools_dir}}"

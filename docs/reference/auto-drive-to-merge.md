@@ -378,6 +378,25 @@ with CI no longer pending, produces `STUCK`. Budget exhaustion is separate,
 checked before starting more work. Budgets limit cost, not convergence.
 A completed crusty objective is exempt; it does not reach these checks.
 
+### Waits are not STUCK
+
+CI pending or queued at the head, a GitHub read that is unavailable or
+rate-limited, and a merge state GitHub has not computed yet (`UNKNOWN`) are
+waits, not lack of progress (#2333, #2472).
+
+- Rounds read GitHub through `amplihack orch helper autodrive-gh-read`, which
+  falls back from GraphQL to REST, and to `git ls-remote` for the head. A
+  read that fails on every path reports `unavailable`, never a finding.
+- Each round's blockers are sorted in code into waits and fixable findings.
+  Only fixable findings reach the no-progress check and the evaluator.
+- A round whose only blockers are waits ends its loop with `loop_result`
+  `WAITING` and records `wait_target`. It never moves the `STUCK` count and
+  never merges. The run report shows readiness `incomplete` with the blocker
+  `waiting: <wait_target>`.
+- Nothing sleeps or polls. Run the drive again after the recorded event.
+
+See [Auto-drive GitHub Reads and Waits](autodrive-github-reads.md).
+
 ### Budget keys and defaults
 
 | Key | Default | Counts |

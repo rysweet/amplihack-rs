@@ -49,8 +49,14 @@ pub(crate) fn report(
                             "ORPHANED" => "orphaned",
                             "TERMINAL_POLICY_REFUSAL" => "terminal_refusal",
                             "STUCK" => "no_progress",
+                            "WAITING" => "waiting",
                             _ => stop_reason,
                         };
+                        if result == "WAITING"
+                            && let Some(blocker) = waiting_blocker(&parsed)
+                        {
+                            blockers.push(blocker);
+                        }
                     }
                 }
             }
@@ -58,6 +64,27 @@ pub(crate) fn report(
         }
     }
 }
+/// The closed `wait_target` forms, as `autodrive_round_evidence.sh` checks
+/// them (#2472): a CI or mergeability wait at a full SHA, a rate-limit reset,
+/// or a named read.
+static WAIT_TARGET: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r"^((ci|mergeability)@[0-9a-f]{40}|ratelimit-reset@([0-9]{1,12}|unknown)|read@(pr|pr-head|pr-number|checks|reviews|threads))$",
+    )
+    .expect("static pattern")
+});
+
+/// `waiting: <wait_target>` for a WAITING loop result. A present but
+/// invalid target is named invalid and never repeated; an absent one adds
+/// nothing.
+fn waiting_blocker(result: &Value) -> Option<String> {
+    let target = result.get("wait_target")?;
+    Some(match target.as_str() {
+        Some(t) if WAIT_TARGET.is_match(t) => format!("waiting: {t}"),
+        _ => "waiting: <invalid target>".to_string(),
+    })
+}
+
 fn accepted_outcome(
     auth: &InvocationAuthorization,
     context: &serde_json::Map<String, Value>,
@@ -253,3 +280,7 @@ fn require_assigned_state_dir(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "report_waiting_tests.rs"]
+mod waiting_tests;
