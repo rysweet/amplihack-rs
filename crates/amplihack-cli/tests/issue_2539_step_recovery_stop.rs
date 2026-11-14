@@ -79,10 +79,17 @@ fn run_recipe_in(
     fs::write(&path, serde_yaml::to_string(&doc).unwrap()).unwrap();
     // The real wrappers start `step-failure-recovery` by name: give the
     // working tree the bundle's recipes (and no tools, so steps still fail).
-    let bundle = f.work.join("amplifier-bundle");
-    if !bundle.exists() {
-        fs::create_dir_all(&bundle).unwrap();
-        std::os::unix::fs::symlink(bundle_recipes(), bundle.join("recipes")).unwrap();
+    // A copy, not a symlink: a run refuses an input that links outside the
+    // repository (#2096).
+    let bundle_dir = f.work.join("amplifier-bundle").join("recipes");
+    if !bundle_dir.exists() {
+        fs::create_dir_all(&bundle_dir).unwrap();
+        for entry in fs::read_dir(bundle_recipes()).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_file() {
+                fs::copy(entry.path(), bundle_dir.join(entry.file_name())).unwrap();
+            }
+        }
     }
     let link = f.tools.join("amplihack");
     if !link.exists() {

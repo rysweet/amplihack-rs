@@ -23,6 +23,8 @@ set -u
 S="$STUB_STATE"
 case "${1:-} ${2:-}" in
   "recipe show") exit 0 ;;
+  # #2096: the loop owns private review generations; the real binary makes them.
+  internal\ review-*) exec "$REAL_AMPLIHACK" "$@" ;;
   "orch helper")
     case "${3:-}" in step-recovery|autodrive-completion-*) exec "$REAL_AMPLIHACK" "$@" ;; esac
     in="$(cat)"
@@ -52,9 +54,8 @@ if [ "$name" = "loop-health-evaluator" ]; then
   printf '  \342\234\223 step-04-enforce-loop-verdict: completed\n    Output: LOOP_HEALTH: CONTINUE\n'
   exit 0
 fi
-record=""; label=""; wd=""; srd=""; prev=""
+record=""; label=""; srd=""; prev=""
 for a in "$@"; do
-  [ "$prev" = "--working-dir" ] && wd="$a"
   if [ "$prev" = "-c" ]; then
     case "$a" in
       autodrive_round_record=*) record="${a#autodrive_round_record=}" ;;
@@ -65,6 +66,9 @@ for a in "$@"; do
   prev=$a
 done
 printf '%s\t%s\n' "$label" "$srd" >> "$S/round-calls"
+# The round commits on the PR branch (the loop's --repo); the next round's
+# review generation is made at that head (#2096).
+wd="$STUB_REPO"
 t="$(git -C "$wd" write-tree)"
 c="$(git -C "$wd" -c user.name=t -c user.email=t@t commit-tree "$t" -p HEAD -m "stub $label")"
 git -C "$wd" update-ref HEAD "$c"

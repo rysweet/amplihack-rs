@@ -88,11 +88,9 @@ impl Fixture {
         private_dir(&f.root.join("state"));
         private_dir(&f.dir);
         write_executable(&f.tools.join("recipe-runner-rs"), STUB_RUNNER, 0o755);
-        let git = amplihack_git::command_in(&f.work)
-            .args(["init", "-q"])
-            .status()
-            .unwrap();
-        assert!(git.success());
+        // A recipe run refuses an unborn HEAD (#2096), so the work tree
+        // gets one empty commit.
+        crate::support::git_fixture::init_with_commit(&f.work);
         f
     }
 
