@@ -1,3 +1,10 @@
+---
+title: Post-update installation with the new binary
+description: Release executable publication, lock handover and post-update repair behaviour.
+doc_type: explanation
+review_schedule: as-needed
+---
+
 # Post-Update Install: Re-exec New Binary
 
 > [Home](../index.md) > [Features](README.md) > Post-Update Install Re-exec
@@ -8,13 +15,22 @@ binary's compiled-in install code. This ensures that binary precedence repair,
 stale wrapper quarantine, asset refresh, and configuration migrations shipped
 in the new version take effect immediately.
 
+Before taking the installation lock or allocating a persistent release, update
+runs both downloaded executables with `--version`. Each must exit successfully
+and report its own product name and the exact selected release version. An
+invalid executable image, failed probe, malformed response or version mismatch
+fails the update without switching active links. The staged copies are probed
+again before either is activated, so validation applies to the artifacts that
+will run. Success messages are emitted only after publication.
+
 ## Problem
 
 Issue [#683](https://github.com/rysweet/amplihack-rs/issues/683).
 
 `amplihack update` performs two major steps:
 
-1. **Binary swap** — downloads and atomically replaces the on-disk binary.
+1. **Binary publication** — downloads release binaries and publishes their
+   user-level links under the installation lock, then releases the lock.
 2. **Post-update repair install** — runs the new binary's
    `amplihack install --force-refresh` path.
 
@@ -47,9 +63,23 @@ process image remains the old executable regardless of filesystem changes.
 
 ## How it works
 
-After `run_update()` selects a safe replacement target and
-`download_and_replace()` atomically installs the new binary, it spawns the new
-binary as a child process instead of calling `run_install` in-process:
+After `run_update()` selects a safe replacement target,
+`download_and_replace()` publishes the downloaded binaries. For the user-level
+target, the parent stages a new release and switches the `amplihack-hooks` and
+`amplihack` links. It returns the installed CLI path after releasing the lock.
+The parent then spawns that path as a child instead of calling `run_install`
+in-process.
+
+The publication lock is released before the child starts; the child takes its
+own installation lock. Explicit update publishes the selected release's
+downloaded executables. It never substitutes the running checkout executable,
+even when invoked from a checkout or with `AMPLIHACK_SKIP_AUTO_INSTALL=1`.
+
+The child resolves its required executables from an eligible installed release of
+the selected version or that exact published platform archive. This uses the
+[private resolved-binaries contract](../reference/install-command.md#release-binary-staging-internal).
+Framework source selection
+remains separate from executable provenance.
 
 ```
 amplihack update
@@ -60,7 +90,10 @@ amplihack update
   │    -> classify stale wrappers, unknown executables, and inaccessible paths
   │
   ├─ download_and_replace(&release)
-  │    → downloads, verifies SHA-256, atomic rename
+  │    → downloads and extracts; verifies SHA-256 when a checksum is published
+  │    → takes the installation lock
+  │    → stages a binary release; atomically switches each planned binary link
+  │    → releases the lock before returning
   │    → returns Result<PathBuf> with the installed binary path
   │
   ├─ write version cache
@@ -87,12 +120,10 @@ amplihack update
 
 ### Key design decisions
 
-1. **Explicit path, not `current_exe()`** — `download_and_replace()` returns
-   the destination `PathBuf` — the same path as `current_exe()`, resolved
-   before the atomic rename overwrites it — so the caller has a valid
-   filesystem path to the new binary without needing to re-resolve
-   `current_exe()` (which would point to a deleted inode on Linux). This path
-   is passed directly to `Command::new()`.
+1. **Explicit executable path** — `download_and_replace()` returns the installed
+   destination `PathBuf`. That path is passed directly to `Command::new()`;
+   the old running process's `current_exe()` does not select the child or
+   supply executable bytes for publication.
 
 2. **`--force-refresh` hidden flag** - The subprocess runs with
    `amplihack install --force-refresh`, a hidden CLI flag that bypasses the
@@ -134,31 +165,41 @@ amplihack update
 
 ### Which binary re-stages the bundle
 
-The new binary does. The old binary only replaces the two files in
-`~/.local/bin` by rename, which leaves running processes on their old inode,
-and then starts the new binary as a child. All bundle staging, link switching
-and cleanup run in that child.
+The new child binary stages the framework bundle. With the versioned layout,
+the parent first publishes a binary-only release under
+`~/.amplihack/releases/`, switching the two user-level binary links while
+holding `~/.amplihack/.install.lock`. The existing bundle and asset-resolver
+links remain on their earlier release. After the parent releases the lock,
+the child acquires its own lock, stages framework assets and binaries, and
+publishes the links it planned. Cleanup runs in the child. Running processes
+retain their earlier binary and bundle.
 
-So the first update from 1.2.107 to a release with the
-[versioned install layout](../concepts/versioned-install-layout.md#the-first-update-to-this-release)
-is safe for live recipe runs and needs no quiet window. The same hand-off has
-been in `amplihack update` since 0.9.69 (#690), so updates from 0.9.69 to
-1.2.106 should behave the same way, but only the 1.2.107 hand-off is tested.
-Installs older than 0.9.69 run the install in-process with their own code
-and re-stage the bundle in place; stop recipe runs before updating them.
+Each link switch is atomic; the set of switches and the parent-to-child
+sequence are not one atomic transaction. A partial publication leaves
+successful switches in place. A child failure does not roll back the parent's
+binary publication, and links may temporarily name different complete
+releases. Retry the failed explicit operation to finish installation.
+
+The first update from 1.2.107 uses the older parent's rename-based replacement
+before handing off to the new child. That historical parent behavior differs
+from current release-link publication. See
+[the first update to the versioned layout](../concepts/versioned-install-layout.md#the-first-update-to-this-release).
+Installs older than 0.9.69 run installation in-process with their own code;
+stop recipe runs before updating them.
 
 Each release records the process that committed it in `.installed-by`
-(`version`, `exe`, `pid`, `post_update`). After an update, `post_update=1`
-and the new version show that the new binary did the work. On the first
-update `exe` is `$HOME/.local/bin/amplihack`, the regular file the old
-binary renamed into place:
+(`version`, `exe`, `pid`, `post_update`). In the child-installed bundle's
+release, `post_update=1` and the new version identify the child that installed
+the assets. Its `exe` can resolve into the parent's binary release. On the
+first update from an older layout it can instead name the regular file
+`$HOME/.local/bin/amplihack` renamed into place by that older parent:
 
 ```bash
 amplihack update
 grep -E '^(version|exe|post_update)=' \
   "$(readlink -f ~/.amplihack/amplifier-bundle)/../.installed-by"
 # version=<version>
-# exe=$HOME/.local/bin/amplihack
+# exe=<new child executable path>
 # post_update=1
 ```
 
@@ -183,9 +224,10 @@ the skipped repair later with:
 amplihack install --force-refresh
 ```
 
-The [self-heal](self-heal-asset-restage.md) mechanism will also catch the
-version mismatch on the next launch and trigger an automatic re-install when
-the version stamp still indicates the framework was not staged successfully.
+The [self-heal](self-heal-asset-restage.md) mechanism can repair the mismatch on
+a later launch only when the running executable is an eligible installed
+release and automatic installation is enabled. A standalone downloaded binary
+outside the releases tree does not gain implicit installation authority.
 
 ## Failure modes
 
@@ -199,8 +241,23 @@ Error: post-update install subprocess /home/user/.local/bin/amplihack exited wit
 
 The binary update itself has already succeeded, and `amplihack update` exits
 non-zero. The user can re-run `amplihack install` manually. The self-heal
-mechanism will also retry automatically on the next `amplihack` invocation when
-the version stamp still requires an install.
+mechanism may repair it on a later invocation only if executable eligibility,
+automatic-install suppression and version policy permit it. A post-publication
+asset-installation failure does not imply rollback of the binary publication.
+The error identifies the failed phase; there is no checkout-executable fallback.
+
+### Release executables unavailable
+
+Under the exact-release resolution contract, if required
+executables cannot be obtained or validated before publication,
+the active release is not switched. A checkout build, local framework tree,
+sibling executable or `PATH` helper cannot substitute for the selected release.
+Restore access to a supported published release, then run explicit `install`
+or `update` again.
+
+This pre-publication guarantee concerns the operation resolving those
+executables. If resolution fails in the child, the parent's binary publication
+has already happened and remains in place.
 
 ### Release tag can't be fetched
 
@@ -225,6 +282,10 @@ AMPLIHACK_HOME=~/src/amplihack-v1.2.99 amplihack update
 The child install prints the worktree path and version and stages from it.
 Update itself still needs the network to download the binary, and the worktree
 must have the version of the binary being installed.
+
+`--local` recovery and `AMPLIHACK_HOME` address framework assets only. Under
+the exact-release contract, neither can supply unavailable release
+executables to the child.
 
 ### New binary missing or not executable
 
@@ -267,7 +328,7 @@ include the unrecognized flag name.
 |------|------|
 | `crates/amplihack-cli/src/path_conflicts.rs` | Shared side-effect-free PATH analysis, candidate classification, warning formatting, and install target decision logic. |
 | `crates/amplihack-cli/src/update/mod.rs` | Exposes update submodules so resolver-backed target selection is part of the update flow without leaking file layout. |
-| `crates/amplihack-cli/src/update/install.rs` | `download_and_replace()` returns `Result<PathBuf>` with the installed binary path (captured before atomic rename). |
+| `crates/amplihack-cli/src/update/install.rs` | `download_and_replace()` stages downloaded binaries, publishes user-level release links under the installation lock, releases the lock, and returns the installed CLI path. Other selected targets use individual atomic file replacements. |
 | `crates/amplihack-cli/src/update/check.rs` | `run_update()` captures the returned path, passes it to `build_install_command()`. The closure given to `run_post_update_install` spawns the subprocess and checks its exit status. |
 | `crates/amplihack-cli/src/update/check.rs` | `build_install_command(installed_exe: &Path) -> Command` — constructs the subprocess command with args and env vars. Visibility: `pub(super)` for testability. |
 | `crates/amplihack-cli/src/commands/install/binary.rs` | Deploys user-local binaries and invokes PATH conflict analysis. |
@@ -307,15 +368,21 @@ No new crate dependencies introduced.
 ### Self-heal asset re-stage
 
 The [self-heal](self-heal-asset-restage.md) mechanism acts as a safety net.
-If the post-update subprocess install fails for any reason, the next
-`amplihack` launch will detect the version-stamp mismatch and re-run install
-automatically. The self-heal path calls `run_install` **in-process** (not
-via subprocess), which is correct because there is no binary replacement in
-flight — the running binary IS the new binary by that point.
+If the post-update subprocess install fails, a later launch can retry through
+self-heal when its command runs the startup check. Self-heal assesses both the
+version stamp and installed-bundle compatibility, including when the stamp
+matches. Automatic retry requires the running executable to belong to a
+complete, non-retired installed release, `AMPLIHACK_SKIP_AUTO_INSTALL` to be
+unset or empty, and the downgrade guard to permit repair. Checkout and Cargo
+builds cannot retry automatically. Ineligible or opted-out executions use
+uncached, read-only assessment without changing installation state.
 
-Self-heal does not perform a separate startup-time framework compatibility
-scan. When it re-runs install, that install run uses the same source and staged
-bundle compatibility validation as an explicit `amplihack install`.
+The self-heal path calls `run_install` **in-process**, because no binary
+replacement is in flight. That install uses the same source and staged-bundle
+compatibility validation as an explicit `amplihack install`. Run
+`amplihack install` to retry explicitly; explicit install and update remain
+available regardless of the automatic-installation opt-out or executable origin,
+subject to their existing source validation and publication safeguards.
 
 The post-update install subprocess still passes `--force-refresh`, so update
 continues to bypass installed-bundle reuse and validate the release source and
@@ -327,10 +394,13 @@ staged destination.
 `~/.amplihack/releases/`, checks the release binary's version, then switches
 only the links it planned: `~/.local/bin/amplihack` and `amplihack-hooks`.
 `amplihack-asset-resolver` and `~/.amplihack/amplifier-bundle` stay on their
-earlier release. The post-install child then switches `amplifier-bundle`, and
-`amplihack-asset-resolver` only if it has a resolver binary to deploy. It holds `~/.amplihack/.install.lock` while it does
-this and releases it before it starts the post-install child, which takes the
-lock again. Runs already alive keep their old binary and bundle. See
+earlier release. The parent holds `~/.amplihack/.install.lock` through binary
+publication, then releases it before starting the post-install child. The
+child takes the lock again and publishes its staged bundle and binaries.
+The child stages `amplihack-asset-resolver` when the selected executable source
+includes it. Every supplied executable is validated before staging. Link switches are individually
+atomic, without rollback across the whole operation. Runs already alive keep
+their old binary and bundle. See
 [Versioned Install Layout](../concepts/versioned-install-layout.md#self-heal-and-update).
 
 ### Startup self-update prompt

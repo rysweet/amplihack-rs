@@ -474,6 +474,7 @@ pub(super) fn copy_amplifier_bundle(repo_root: &Path, claude_dir: &Path) -> Resu
     let mut txn = ReleaseTxn::allocate(amplihack_dir, crate::VERSION)?;
     copy_amplifier_bundle_into(repo_root, claude_dir, &mut txn)?;
     let root = txn.root().to_path_buf();
+    retire_bundle_leftovers(claude_dir)?;
     let report = txn.commit()?;
     if let Some((link, reason)) = report.failed {
         anyhow::bail!(
@@ -532,15 +533,6 @@ pub(super) fn copy_amplifier_bundle_into(
         .parent()
         .context("staging .claude dir missing parent")?;
     let published = amplihack_dir.join("amplifier-bundle");
-    // Leftovers of the pre-#1954 rename-aside swap are retired, not deleted:
-    // a run may still have its working directory in one of them.
-    for leftover in [
-        published.with_extension("staging"),
-        published.with_extension("old"),
-    ] {
-        release_layout::retire_leftover(amplihack_dir, &leftover, "amplifier-bundle")?;
-    }
-
     let release_bundle = txn.bundle_dir();
     let staging_temp = release_bundle.with_extension("staging");
     // Inside a release no link names yet; the release is removed whole if
@@ -701,6 +693,24 @@ pub(super) fn create_runtime_dirs(claude_dir: &Path) -> Result<()> {
         }
         println!("  ✅ Runtime directory {dir} ready");
     }
+    Ok(())
+}
+
+/// Retire legacy temporary trees only after staging and publication authorization.
+pub(super) fn retire_bundle_leftovers(claude_dir: &Path) -> Result<()> {
+    let amplihack_dir = claude_dir
+        .parent()
+        .context("staging .claude dir missing parent")?;
+    let published = amplihack_dir.join("amplifier-bundle");
+    // Leftovers of the pre-#1954 rename-aside swap are retired, not deleted:
+    // a run may still have its working directory in one of them.
+    for leftover in [
+        published.with_extension("staging"),
+        published.with_extension("old"),
+    ] {
+        release_layout::retire_leftover(amplihack_dir, &leftover, "amplifier-bundle")?;
+    }
+
     Ok(())
 }
 

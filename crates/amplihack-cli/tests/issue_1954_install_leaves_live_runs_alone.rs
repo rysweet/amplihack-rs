@@ -45,7 +45,7 @@
 
 use crate::support::amplihack_bin::amplihack_bin;
 use crate::support::events::{SCRIPT_PREAMBLE, await_line, mkfifo, open_ready, release};
-use crate::support::exec_stub::write_executable;
+use crate::support::exec_stub::{copy_executable, write_executable};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
@@ -184,6 +184,15 @@ impl Host {
             tree,
             work,
         };
+        // Supply native release executables independently of the checkout's
+        // framework assets. These live-run tests must never download releases
+        // or rely on a published archive matching the workspace version.
+        let binary = amplihack_bin();
+        let installed = crate::isolated_amplihack::installed_release_binary(&binary, &host.home);
+        copy_executable(
+            &binary.with_file_name("amplihack-hooks"),
+            &installed.with_file_name("amplihack-hooks"),
+        );
         host.assert_contained();
         host
     }
@@ -217,6 +226,7 @@ impl Host {
     /// through a script, besides `HOME`.
     pub(crate) fn install_env(&self) -> Vec<(&'static str, std::ffi::OsString)> {
         vec![
+            ("AMPLIHACK_SKIP_AUTO_INSTALL", "1".into()),
             ("AMPLIHACK_HOME", self.tree.clone().into_os_string()),
             (
                 "PATH",
@@ -239,7 +249,15 @@ impl Host {
     }
 
     pub(crate) fn amplihack(&self, args: &[&str]) -> Command {
-        let mut command = crate::isolated_amplihack::isolated(amplihack_bin());
+        // The concurrency regression deliberately exercises implicit repair.
+        // Use the release installed by this fixture, never the checkout binary.
+        let self_heal = args.first() == Some(&"recipe");
+        let executable = if self_heal {
+            fs::canonicalize(self.home.join(".local/bin/amplihack")).unwrap()
+        } else {
+            amplihack_bin()
+        };
+        let mut command = crate::isolated_amplihack::isolated(executable);
         command
             .args(args)
             .current_dir(self.temp.path())
@@ -248,6 +266,9 @@ impl Host {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if self_heal {
+            command.env_remove("AMPLIHACK_SKIP_AUTO_INSTALL");
+        }
         command
     }
 
@@ -287,6 +308,7 @@ impl Host {
             .arg(&ready)
             .arg(&go)
             .env_clear()
+            .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
             .env("HOME", &self.home)
             .env("TMPDIR", self.temp.path())
             .env("PATH", format!("{}:/usr/bin:/bin", self.stubs.display()))
@@ -344,7 +366,7 @@ pass() {
   test "$ISSUE_1954_PROBE" = ok
   cat "$bundle/recipes/smart-orchestrator.yaml" > /dev/null
   "$HOME/.local/bin/amplihack" --version > /dev/null
-  "$HOME/.local/bin/amplihack-hooks" > /dev/null
+  "$HOME/.local/bin/amplihack-hooks" --version > /dev/null
 }
 for i in 1 2 3; do pass; done
 echo "ready $$ $(pwd -P)" >&9

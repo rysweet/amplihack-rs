@@ -68,10 +68,10 @@ fn printed_at_warn<T>(f: impl FnOnce() -> T) -> (T, String) {
 /// itself: once, and not at all under the bypass.
 #[test]
 fn bootstrap_with_a_newer_stamp_stages_nothing() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::test_support::tempdir_outside_framework_roots();
     let home = tmp.path();
-    let fixture = tempfile::tempdir().unwrap();
-    let mut env = IsolatedHome::new(home);
+    let fixture = crate::test_support::tempdir_outside_framework_roots();
+    let mut env = IsolatedHome::installed(home);
     env.set(
         "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
         fixture.path().join("no-such-amplihack-hooks"),
@@ -134,11 +134,11 @@ fn bootstrap_with_a_newer_stamp_stages_nothing() {
 /// first, then the bootstrap refuses without a second warning.
 #[test]
 fn bootstrap_with_a_newer_stamp_leaves_settings_without_hooks_untouched() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::test_support::tempdir_outside_framework_roots();
     let home = tmp.path();
-    let fixture = tempfile::tempdir().unwrap();
+    let fixture = crate::test_support::tempdir_outside_framework_roots();
     let hooks_stub = create_exe_stub(&fixture.path().join("stub_bin"), "amplihack-hooks");
-    let mut env = IsolatedHome::new(home);
+    let mut env = IsolatedHome::installed(home);
     env.set("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
     env.set("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", "1");
 
@@ -185,11 +185,11 @@ fn bootstrap_with_a_newer_stamp_leaves_settings_without_hooks_untouched() {
 /// and leave the file byte-identical, with no backup beside it.
 #[test]
 fn bootstrap_leaves_unparseable_settings_untouched() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::test_support::tempdir_outside_framework_roots();
     let home = tmp.path();
-    let fixture = tempfile::tempdir().unwrap();
+    let fixture = crate::test_support::tempdir_outside_framework_roots();
     let hooks_stub = create_exe_stub(&fixture.path().join("stub_bin"), "amplihack-hooks");
-    let mut env = IsolatedHome::new(home);
+    let mut env = IsolatedHome::installed(home);
     env.set("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
     env.set("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", "1");
 
@@ -234,9 +234,9 @@ fn bootstrap_leaves_unparseable_settings_untouched() {
 /// `~/.codex` or the ledger under a newer stamp.
 #[test]
 fn newer_stamp_with_codex_selected_never_runs_codex() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::test_support::tempdir_outside_framework_roots();
     let home = tmp.path();
-    let fixture = tempfile::tempdir().unwrap();
+    let fixture = crate::test_support::tempdir_outside_framework_roots();
     let hooks_stub = create_exe_stub(&fixture.path().join("stub_bin"), "amplihack-hooks");
     let marker = fixture.path().join("codex-ran");
     let codex_bin = fixture.path().join("codex_bin");
@@ -252,7 +252,7 @@ fn newer_stamp_with_codex_selected_never_runs_codex() {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&codex, fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let mut env = IsolatedHome::new(home);
+    let mut env = IsolatedHome::installed(home);
     env.set("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
     env.set("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", "1");
     let mut path_dirs = vec![codex_bin];

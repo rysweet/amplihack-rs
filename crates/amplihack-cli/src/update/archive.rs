@@ -24,7 +24,12 @@ pub(crate) fn extract_archive(archive_bytes: &[u8], destination: &Path) -> Resul
     Ok(())
 }
 
-pub(super) fn find_binary(root: &Path, binary_name: &str) -> Result<PathBuf> {
+pub(crate) fn find_binary(root: &Path, binary_name: &str) -> Result<PathBuf> {
+    find_optional_binary(root, binary_name)?
+        .ok_or_else(|| anyhow!("binary '{binary_name}' not found in downloaded archive"))
+}
+
+pub(crate) fn find_optional_binary(root: &Path, binary_name: &str) -> Result<Option<PathBuf>> {
     fn search(root: &Path, binary_name: &str, depth: usize) -> Result<Option<PathBuf>> {
         if depth > 3 {
             return Ok(None);
@@ -51,6 +56,9 @@ pub(super) fn find_binary(root: &Path, binary_name: &str) -> Result<PathBuf> {
                 )
             })?;
             if file_type.is_symlink() {
+                if path.file_name() == Some(OsStr::new(binary_name)) {
+                    bail!("release executable is a symbolic link: {}", path.display());
+                }
                 continue;
             }
             if file_type.is_file() && path.file_name() == Some(OsStr::new(binary_name)) {
@@ -65,6 +73,5 @@ pub(super) fn find_binary(root: &Path, binary_name: &str) -> Result<PathBuf> {
         Ok(None)
     }
 
-    search(root, binary_name, 0)?
-        .ok_or_else(|| anyhow!("binary '{binary_name}' not found in downloaded archive"))
+    search(root, binary_name, 0)
 }

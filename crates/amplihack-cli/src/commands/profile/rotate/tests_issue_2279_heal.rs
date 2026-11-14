@@ -170,7 +170,7 @@ fn ctx<'a>(p: &'a Paths, t: Option<&'a HookTarget>) -> HealCtx<'a> {
         live_profile_dir: Some(&p.live),
         read_only: false,
         target: t,
-        newer_stamp: false,
+        publication_refused: false,
         live_refusal: None,
     }
 }
@@ -267,11 +267,11 @@ fn heal_skips_read_only() {
 }
 
 #[test]
-fn heal_skips_on_a_newer_install_stamp() {
+fn heal_skips_when_implicit_publication_is_refused() {
     let t = target();
     let p = paths(&stripped(), Some(&stripped()));
     let mut c = ctx(&p, Some(&t));
-    c.newer_stamp = true;
+    c.publication_refused = true;
     assert!(hook_heal::heal(CycleOutcome::Swapped, &c).is_empty());
     assert_eq!(fs::read(&p.home_settings).unwrap(), stripped());
     assert_eq!(fs::read(p.live.join("settings.json")).unwrap(), stripped());

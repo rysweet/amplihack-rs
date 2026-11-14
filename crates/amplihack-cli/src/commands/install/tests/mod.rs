@@ -43,6 +43,11 @@ mod issue_1955_support;
 mod issue_1955_tag_fetch;
 #[cfg(unix)]
 mod issue_2279_launch_repair;
+mod issue_2496_publication_gate;
+#[cfg(unix)]
+mod issue_2496_release_binaries;
+#[cfg(unix)]
+pub(crate) mod issue_2496_self_heal_origin;
 mod issue_527_tests;
 mod issue_911_durable_hooks_path;
 #[cfg(unix)]

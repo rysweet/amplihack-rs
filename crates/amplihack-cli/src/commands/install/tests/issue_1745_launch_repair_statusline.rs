@@ -25,9 +25,9 @@ fn expected_command() -> String {
 /// Stage a complete framework under `home`, write `settings` (no amplihack
 /// hooks) and run the launch repair. Returns the settings file afterwards.
 fn repair(home: &Path, settings: Value) -> Value {
-    let fixture = tempfile::tempdir().unwrap();
+    let fixture = crate::test_support::tempdir_outside_framework_roots();
     let hooks_stub = create_exe_stub(&fixture.path().join("stub_bin"), "amplihack-hooks");
-    let mut env = IsolatedHome::new(home);
+    let mut env = IsolatedHome::installed(home);
     env.set("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
     env.set("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", "1");
 
@@ -61,7 +61,7 @@ fn repair(home: &Path, settings: Value) -> Value {
 
 #[test]
 fn the_launch_repair_writes_the_status_line_when_absent() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::test_support::tempdir_outside_framework_roots();
     let after = repair(tmp.path(), json!({"model": "opus"}));
     assert_eq!(
         after["statusLine"],
@@ -121,7 +121,7 @@ fn a_build_output_is_warned_about_and_a_deployed_path_is_not() {
 
 #[test]
 fn the_launch_repair_keeps_a_users_own_status_line() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::test_support::tempdir_outside_framework_roots();
     let mine = json!({"type": "command", "command": "printf 'mine'", "padding": 0});
     let after = repair(tmp.path(), json!({"statusLine": mine.clone()}));
     assert_eq!(after["statusLine"], mine, "{after}");

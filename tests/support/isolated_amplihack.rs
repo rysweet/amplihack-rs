@@ -21,6 +21,9 @@
 //!   detached `profile rotate watch --spawned` daemon that outlives the test.
 //!   The guard above is the stop that still holds when a test clears the
 //!   environment and sets only the guard again.
+//! - `AMPLIHACK_SKIP_AUTO_INSTALL=1` (issue #2496), so ordinary checkout
+//!   subprocesses cannot repair installation assets. Origin regressions remove
+//!   it deliberately after supplying their own disposable home and configuration.
 //! - no `AMPLIHACK_CLAUDE_PROFILE_ROOT` (issue #1699), so an install under the
 //!   temp `HOME` cannot refresh the developer's real profiles. `env_clear()`
 //!   already drops it; the explicit removal holds if the kept list changes.
@@ -56,6 +59,23 @@ const KEPT_VARS: &[&str] = &[
 
 /// The variable the user-config loader checks.
 pub const HOME_GUARD_ENV: &str = "AMPLIHACK_TEST_HOME_GUARD";
+
+/// A disposable installed executable for tests that deliberately exercise
+/// implicit repair or startup updates. The caller owns and retains `home`.
+pub fn installed_release_binary(binary: &Path, home: &Path) -> PathBuf {
+    let release = home.join(".amplihack/releases/client-fixture");
+    std::fs::create_dir_all(release.join("bin")).unwrap();
+    let executable = release.join("bin/amplihack");
+    let status = Command::new("/bin/cp")
+        .arg("--")
+        .arg(binary)
+        .arg(&executable)
+        .status()
+        .expect("copy the disposable installed executable");
+    assert!(status.success(), "copying {} failed", binary.display());
+    std::fs::write(release.join(".complete"), b"").unwrap();
+    executable
+}
 
 /// The variable that turns the rotator's launch autostart off.
 pub const ROTATE_AUTOSTART_ENV: &str = "AMPLIHACK_ROTATE_AUTOSTART";
@@ -194,6 +214,7 @@ pub fn isolated(bin: impl AsRef<OsStr>) -> Command {
     }
     command
         .env("HOME", shared_temp_home())
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .env(HOME_GUARD_ENV, "1")
         .env(ROTATE_AUTOSTART_ENV, "0");
     reapply_proc_root(&mut command);

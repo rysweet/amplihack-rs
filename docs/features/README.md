@@ -27,7 +27,7 @@ Intelligent guidance system that prevents common mistakes and ensures work compl
 
 ## Self-Heal
 
-- [Auto-Restage Framework Assets on Version Change](self-heal-asset-restage.md) — startup-time version-stamp check that re-runs `amplihack install` automatically when the binary version no longer matches `~/.amplihack/.installed-version`.
+- [Self-heal framework assets](self-heal-asset-restage.md): automatic repair for eligible installed executables, checkout safeguards and installation opt-out behaviour.
 
 ## Update Check
 

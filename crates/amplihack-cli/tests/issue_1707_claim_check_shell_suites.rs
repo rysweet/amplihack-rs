@@ -154,7 +154,7 @@ fn run_suite(script: &str) {
 /// The suites' environment is the shared [`isolated`] helper's, so it carries
 /// nothing from the developer's or an auto-drive shell beyond that helper's
 /// keep-list: no `BASH_ENV` (which would source the merge guard's `gh` shim
-/// into every bash child), no `AMPLIHACK_*` other than the helper's two
+/// into every bash child), no `AMPLIHACK_*` other than the helper's three
 /// safeguards and its empty fake process table (issue #2042), no
 /// `CLAUDE_CONFIG_DIR`, no `GH_*`, no `GIT_*` beyond the helper's prompt
 /// suppressors, no `PR_NUMBER`, and a `HOME` under the test's temp dir. The
@@ -180,6 +180,7 @@ fn issue_1707_suite_environment_is_isolated() {
             (!name.starts_with("AMPLIHACK_")
                 || *name == HOME_GUARD_ENV
                 || *name == ROTATE_AUTOSTART_ENV
+                || *name == "AMPLIHACK_SKIP_AUTO_INSTALL"
                 || *name == PROC_ROOT_ENV)
                 && (!name.starts_with("GIT_")
                     || NO_GIT_PROMPT_ENV.iter().any(|(allowed, _)| allowed == name))
@@ -195,6 +196,7 @@ fn issue_1707_suite_environment_is_isolated() {
         env.lines()
             .find_map(|line| line.strip_prefix(name)?.strip_prefix('='))
     };
+    assert_eq!(value_of("AMPLIHACK_SKIP_AUTO_INSTALL"), Some("1"), "{env}");
     assert_eq!(value_of(HOME_GUARD_ENV), Some("1"), "{env}");
     assert_eq!(value_of(ROTATE_AUTOSTART_ENV), Some("0"), "{env}");
     let proc_root = shared_empty_proc_root().to_str().unwrap();

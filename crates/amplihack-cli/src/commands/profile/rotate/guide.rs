@@ -29,6 +29,7 @@ pub enum Fix {
     DotClaude,
     Root,
     /// A session runs on `M`.
+    #[cfg(any(target_os = "linux", test))]
     Close,
     /// Sessions cannot be seen.
     CloseThenMove,
@@ -201,6 +202,7 @@ fn refused_fix(m: &ProfileName, fix: Fix, p: &Paths) -> FixLine {
         Fix::Root => with_paths(&copy, std::slice::from_ref(&p.root), |q| {
             format!("make {0} owned by you and run: chmod 700 {0}", q[0])
         }),
+        #[cfg(any(target_os = "linux", test))]
         Fix::Close => plain(format!(
             "close the claude sessions that use {m}; the next cycle retries"
         )),

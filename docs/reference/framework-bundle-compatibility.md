@@ -136,6 +136,7 @@ Source behavior:
 | `amplihack install --local <PATH>` | Uses the explicit local source only if it passes compatibility validation. Its version may differ, with a warning. |
 | `amplihack install --force-refresh` | Bypasses the installed bundle and the current directory as sources. Uses a same-version `AMPLIHACK_HOME` or fetches the release tag. |
 | `amplihack update` | Installs the new Rust binary, then runs that binary's `install --force-refresh` repair path. |
+| Startup self-heal | Repairs an incompatible installed bundle only when the running executable belongs to a complete, non-retired release under `~/.amplihack/releases` and the automatic-install opt-out is unset or empty. Otherwise it assesses compatibility read-only and continues dispatch. |
 
 The installed `~/.amplihack/amplifier-bundle` is never trusted as an
 authoritative source for `--force-refresh`.
@@ -175,10 +176,10 @@ No new user configuration is required.
 
 | Input | Effect |
 | --- | --- |
-| `AMPLIHACK_HOME` | The first framework source tried. It doesn't change where install stages, which is always `$HOME/.amplihack`. |
+| `AMPLIHACK_HOME` | The first framework source tried. It doesn't change where install stages, which is always `$HOME/.amplihack`, and it does not confer eligibility for implicit installation: that is derived from `HOME` alone. See [Executable eligibility](../features/self-heal-asset-restage.md#executable-eligibility). |
 | `--local <PATH>` | Uses a caller-provided source path after compatibility validation, whatever its version. |
 | `--force-refresh` | Hidden install flag used by update repair and direct stale-bundle repair; bypasses the installed bundle as a source. |
-| `AMPLIHACK_SKIP_AUTO_INSTALL` | Suppresses startup self-heal. It does not disable explicit install/update compatibility validation. |
+| `AMPLIHACK_SKIP_AUTO_INSTALL` | Any non-empty value suppresses implicit installation, including startup self-heal, launch hook and provider reconciliation and host-client acquisition. The installed bundle is still assessed, through the uncached path, so `~/.amplihack/.bundle-compat-cache.json` is neither created nor refreshed. It does not disable explicit install/update compatibility validation. |
 
 ## Contributor API
 
@@ -275,6 +276,7 @@ cargo test -p amplihack-cli install_flow
 ## See also
 
 - [Framework source selection](framework-source-selection.md)
+- [Self-heal framework assets](../features/self-heal-asset-restage.md)
 - [Repair a stale framework bundle](../howto/repair-stale-framework-bundle.md)
 - [Install/update PATH conflict reference](install-update-path-conflicts.md)
 - [Install completeness verification](install-completeness.md)

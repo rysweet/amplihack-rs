@@ -26,7 +26,7 @@
 //! confined with [`is_release_path`] before it is used (S7, S8).
 
 use anyhow::{Context, Result, anyhow, bail};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -42,9 +42,6 @@ pub const INSTALLED_BY: &str = ".installed-by";
 /// Temporary name the provenance record is written under, then renamed.
 const INSTALLED_BY_TMP: &str = ".installed-by.tmp";
 /// The largest provenance record the reader accepts (S-V6).
-// Production code never reads the record (it is not a trust input); only
-// tests read it back.
-#[cfg_attr(not(test), allow(dead_code))]
 const INSTALLED_BY_MAX_BYTES: u64 = 4 * 1024;
 
 /// The longest accepted version string (S6).
@@ -153,6 +150,295 @@ pub fn is_complete_release_path(releases: &Path, path: &Path) -> bool {
     release_root_of(releases, path).is_some_and(|root| {
         fs::symlink_metadata(root.join(COMPLETE_MARKER)).is_ok_and(|m| m.is_file())
     })
+}
+
+// --------------------------------------------- implicit install origin (#2496)
+
+/// Stable slugs naming the check that refused an origin. They are what the
+/// `debug` diagnostic prints, and each corresponds to a row of the
+/// "Diagnosing a refusal" table in
+/// `docs/features/self-heal-asset-restage.md`. Treat them as a published
+/// vocabulary rather than free text: users paste them into issues.
+mod refusal {
+    pub(super) const HOME_UNRESOLVED: &str = "home-directory-unresolved";
+    pub(super) const EXECUTABLE_PATH_UNKNOWN: &str = "executable-path-unknown";
+    #[cfg(unix)]
+    pub(super) const EXECUTABLE_PATH_UNRESOLVED: &str = "executable-path-unresolved";
+    #[cfg(unix)]
+    pub(super) const EXECUTABLE_OUTSIDE_RELEASE: &str = "executable-outside-installed-release";
+    #[cfg(unix)]
+    pub(super) const EXECUTABLE_NOT_IN_RELEASE_BIN: &str = "executable-not-in-release-bin";
+    #[cfg(unix)]
+    pub(super) const EXECUTABLE_NOT_A_REGULAR_FILE: &str = "executable-not-a-regular-file";
+    #[cfg(unix)]
+    pub(super) const EXECUTABLE_NOT_OWNED: &str = "executable-not-owned-by-this-user";
+    #[cfg(unix)]
+    pub(super) const EXECUTABLE_WRITABLE: &str = "executable-writable-by-group-or-others";
+    #[cfg(unix)]
+    pub(super) const DIRECTORY_UNREADABLE: &str = "directory-missing-or-unreadable";
+    #[cfg(unix)]
+    pub(super) const DIRECTORY_IS_A_SYMLINK: &str = "directory-is-a-symlink";
+    #[cfg(unix)]
+    pub(super) const DIRECTORY_NOT_OWNED: &str = "directory-not-owned-by-this-user";
+    #[cfg(unix)]
+    pub(super) const DIRECTORY_WRITABLE: &str = "directory-writable-by-group-or-others";
+    #[cfg(unix)]
+    pub(super) const RELEASE_INCOMPLETE: &str = "release-incomplete";
+    #[cfg(unix)]
+    pub(super) const RELEASE_RETIRED: &str = "release-retired";
+    #[cfg(not(unix))]
+    pub(super) const UNSUPPORTED_PLATFORM: &str = "unsupported-platform";
+}
+
+/// Why an executable may not install, re-stage or publish implicitly.
+///
+/// [`OriginRefusal::check`] names the rule that refused and
+/// [`OriginRefusal::subject`] the path it was applied to, so one `debug`
+/// record tells a user which of the documented causes they have hit. The
+/// path is raw here; everything that prints it passes it through
+/// [`super::paths::sanitize_path`] first.
+#[derive(Debug, Clone)]
+pub(crate) struct OriginRefusal {
+    check: &'static str,
+    subject: Option<PathBuf>,
+}
+
+impl OriginRefusal {
+    /// Every path-bearing cause comes from a Unix ownership or mode check.
+    #[cfg(unix)]
+    fn of(check: &'static str, subject: &Path) -> Self {
+        Self {
+            check,
+            subject: Some(subject.to_path_buf()),
+        }
+    }
+
+    /// For causes that have no path to name: no `HOME`, no `current_exe()`,
+    /// or a platform whose confinement cannot be assessed at all.
+    fn pathless(check: &'static str) -> Self {
+        Self {
+            check,
+            subject: None,
+        }
+    }
+
+    pub(crate) fn check(&self) -> &'static str {
+        self.check
+    }
+
+    pub(crate) fn subject(&self) -> Option<&Path> {
+        self.subject.as_deref()
+    }
+}
+
+/// Causes already recorded by this process, so a run that consults the oracle
+/// at several boundaries reports each distinct cause once. This memoises the
+/// *diagnostic*, never the verdict: every boundary still recomputes
+/// [`installed_executable`] against the tree as it stands (S4).
+static REPORTED_CAUSES: std::sync::Mutex<BTreeSet<String>> = std::sync::Mutex::new(BTreeSet::new());
+
+fn report_origin_refusal(refusal: &OriginRefusal) {
+    let subject = refusal
+        .subject()
+        .map_or_else(|| "<unknown>".to_owned(), super::paths::sanitize_path);
+    let fresh = REPORTED_CAUSES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(format!("{} at {subject}", refusal.check()));
+    if fresh {
+        tracing::debug!(
+            check = %refusal.check(),
+            path = %subject,
+            "implicit installation refused by executable-origin check"
+        );
+    }
+}
+
+/// [`installed_executable`] with the single observability point attached: on
+/// refusal it records the specific cause at `debug`, which is what
+/// `RUST_LOG=amplihack_cli=debug` surfaces. Eligibility is silent.
+pub(crate) fn assess_implicit_install_origin(
+    home: &Path,
+    executable: &Path,
+) -> Result<(), OriginRefusal> {
+    match installed_executable(home, executable) {
+        Ok(()) => Ok(()),
+        Err(refusal) => {
+            report_origin_refusal(&refusal);
+            Err(refusal)
+        }
+    }
+}
+
+/// Only an executable in a complete installed release may repair the host
+/// implicitly. This assessment is read-only and deliberately ignores source
+/// selection overrides such as `AMPLIHACK_HOME`.
+///
+/// Eligibility is derived from `HOME` alone and may only ever be *subtracted*
+/// from. No environment variable, flag, configuration key or argument may be
+/// wired in here to grant it: a caller-supplied trust anchor would let any
+/// process declare itself an installed release, which is the defect #2496
+/// exists to close. The automatic-install opt-out is a separate, advisory
+/// control that can only refuse further.
+pub(crate) fn executable_allows_implicit_install() -> bool {
+    #[cfg(test)]
+    if let Some(eligible) = TEST_ELIGIBILITY.with_borrow(Clone::clone) {
+        return match eligible {
+            TestOrigin::Installed => true,
+            TestOrigin::Executable(path) => super::paths::home_dir()
+                .is_ok_and(|home| assess_implicit_install_origin(&home, &path).is_ok()),
+        };
+    }
+    let Ok(home) = super::paths::home_dir() else {
+        report_origin_refusal(&OriginRefusal::pathless(refusal::HOME_UNRESOLVED));
+        return false;
+    };
+    let Ok(executable) = std::env::current_exe() else {
+        report_origin_refusal(&OriginRefusal::pathless(refusal::EXECUTABLE_PATH_UNKNOWN));
+        return false;
+    };
+    assess_implicit_install_origin(&home, &executable).is_ok()
+}
+
+// Unit tests of installation behaviour can supply eligibility without moving
+// their running harness. Process-level origin regressions use current_exe().
+#[cfg(test)]
+thread_local! {
+    static TEST_ELIGIBILITY: std::cell::RefCell<Option<TestOrigin>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+enum TestOrigin {
+    Installed,
+    Executable(PathBuf),
+}
+
+#[cfg(test)]
+pub(crate) struct TestEligibility(Option<TestOrigin>);
+
+#[cfg(test)]
+impl TestEligibility {
+    pub(crate) fn installed() -> Self {
+        Self(TEST_ELIGIBILITY.replace(Some(TestOrigin::Installed)))
+    }
+
+    pub(crate) fn executable(path: PathBuf) -> Self {
+        Self(TEST_ELIGIBILITY.replace(Some(TestOrigin::Executable(path))))
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestEligibility {
+    fn drop(&mut self) {
+        TEST_ELIGIBILITY.replace(self.0.take());
+    }
+}
+
+/// Issue #2496: the checks that make an origin trustworthy are the Unix
+/// ownership and file-mode ones. Where they do not exist, path, confinement
+/// and completeness checks alone would let any writable tree pass, so the
+/// oracle refuses outright and explicit `amplihack install` is the only
+/// route. This is deliberately not a silent degradation.
+#[cfg(not(unix))]
+fn installed_executable(_home: &Path, _executable: &Path) -> Result<(), OriginRefusal> {
+    Err(OriginRefusal::pathless(refusal::UNSUPPORTED_PLATFORM))
+}
+
+/// A directory on the trusted path: a real directory, owned by this user and
+/// not writable by group or others. Mirrors [`check_private_dir`] but reports
+/// a typed cause instead of an `anyhow` message holding an unsanitised path.
+#[cfg(unix)]
+fn private_dir_for_origin(dir: &Path) -> Result<(), OriginRefusal> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = fs::symlink_metadata(dir)
+        .map_err(|_| OriginRefusal::of(refusal::DIRECTORY_UNREADABLE, dir))?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Err(OriginRefusal::of(refusal::DIRECTORY_IS_A_SYMLINK, dir));
+    }
+    if !owned_by_euid(&meta) {
+        return Err(OriginRefusal::of(refusal::DIRECTORY_NOT_OWNED, dir));
+    }
+    if meta.permissions().mode() & 0o022 != 0 {
+        return Err(OriginRefusal::of(refusal::DIRECTORY_WRITABLE, dir));
+    }
+    Ok(())
+}
+
+/// Whether `canonical` sits under `releases/.retired/`, which
+/// [`release_root_of`] reports the same way as "outside the tree". A
+/// superseded binary must not be able to resurrect itself (S9), and saying so
+/// is more useful than calling it a checkout.
+#[cfg(unix)]
+fn resolves_into_retired(releases: &Path, canonical: &Path) -> bool {
+    let Ok(canonical_releases) = fs::canonicalize(releases) else {
+        return false;
+    };
+    let Ok(suffix) = canonical.strip_prefix(&canonical_releases) else {
+        return false;
+    };
+    matches!(
+        suffix.components().next(),
+        Some(Component::Normal(name)) if name == RETIRED_DIR
+    )
+}
+
+/// Whether `executable` is an installed release binary of the install tree
+/// under `home`, with the specific cause when it is not.
+///
+/// Every step is deny-by-default: a failure to stat, canonicalise or confine
+/// a path is a refusal, never a permissive default.
+#[cfg(unix)]
+fn installed_executable(home: &Path, executable: &Path) -> Result<(), OriginRefusal> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let install = home.join(".amplihack");
+    let releases = releases_dir(&install);
+    // Canonical confinement alone would accept redirected installation roots.
+    for dir in [&install, &releases] {
+        private_dir_for_origin(dir)?;
+    }
+    let canonical = fs::canonicalize(executable)
+        .map_err(|_| OriginRefusal::of(refusal::EXECUTABLE_PATH_UNRESOLVED, executable))?;
+    let Some(root) = release_root_of(&releases, executable) else {
+        return Err(OriginRefusal::of(
+            if resolves_into_retired(&releases, &canonical) {
+                refusal::RELEASE_RETIRED
+            } else {
+                refusal::EXECUTABLE_OUTSIDE_RELEASE
+            },
+            executable,
+        ));
+    };
+    private_dir_for_origin(&root)?;
+    if !is_complete_release_path(&releases, executable) {
+        return Err(OriginRefusal::of(refusal::RELEASE_INCOMPLETE, &root));
+    }
+    let bin = root.join("bin");
+    private_dir_for_origin(&bin)?;
+    let canonical_bin = fs::canonicalize(&bin)
+        .map_err(|_| OriginRefusal::of(refusal::DIRECTORY_UNREADABLE, &bin))?;
+    if canonical.parent() != Some(canonical_bin.as_path()) {
+        return Err(OriginRefusal::of(
+            refusal::EXECUTABLE_NOT_IN_RELEASE_BIN,
+            executable,
+        ));
+    }
+    let metadata = fs::symlink_metadata(&canonical)
+        .map_err(|_| OriginRefusal::of(refusal::EXECUTABLE_PATH_UNRESOLVED, executable))?;
+    if !metadata.is_file() {
+        return Err(OriginRefusal::of(
+            refusal::EXECUTABLE_NOT_A_REGULAR_FILE,
+            executable,
+        ));
+    }
+    if !owned_by_euid(&metadata) {
+        return Err(OriginRefusal::of(refusal::EXECUTABLE_NOT_OWNED, executable));
+    }
+    if metadata.permissions().mode() & 0o022 != 0 {
+        return Err(OriginRefusal::of(refusal::EXECUTABLE_WRITABLE, executable));
+    }
+    Ok(())
 }
 
 /// For a published link at `link` (`<amp>/amplifier-bundle` or similar): the
@@ -560,9 +846,6 @@ fn write_new_file_0644(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// at most 4 KiB of UTF-8 with a non-empty `version` and a numeric `pid`.
 /// The first occurrence of each key wins; unknown keys are ignored. Never
 /// panics. Not a trust input: see [`InstalledBy`].
-// Production code never reads the record (it is not a trust input); only
-// tests read it back.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn read_installed_by(release_root: &Path) -> Option<InstalledBy> {
     use std::io::Read;
     let path = release_root.join(INSTALLED_BY);
@@ -603,9 +886,6 @@ pub fn read_installed_by(release_root: &Path) -> Option<InstalledBy> {
     })
 }
 
-// Production code never reads the record (it is not a trust input); only
-// tests read it back.
-#[cfg_attr(not(test), allow(dead_code))]
 #[cfg(unix)]
 fn open_no_follow(path: &Path) -> io::Result<fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
@@ -615,9 +895,6 @@ fn open_no_follow(path: &Path) -> io::Result<fs::File> {
         .open(path)
 }
 
-// Production code never reads the record (it is not a trust input); only
-// tests read it back.
-#[cfg_attr(not(test), allow(dead_code))]
 #[cfg(not(unix))]
 fn open_no_follow(path: &Path) -> io::Result<fs::File> {
     if fs::symlink_metadata(path)?.file_type().is_symlink() {
@@ -1140,8 +1417,10 @@ pub fn keep_set(releases: &Path, links: &[PathBuf], previous: &[PathBuf]) -> Vec
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InUse {
     /// The scan completed: each used candidate with the pids using it.
+    #[cfg(any(target_os = "linux", test))]
     Known(BTreeMap<PathBuf, Vec<u32>>),
     /// A same-user process could not be inspected; nothing may be removed.
+    #[cfg(any(target_os = "linux", test))]
     Unknown,
     /// No process scan on this platform; nothing may be removed.
     #[cfg_attr(target_os = "linux", allow(dead_code))]
@@ -1196,6 +1475,7 @@ pub fn in_use_paths(candidates: &[PathBuf]) -> InUse {
 /// started (at boot with lingering on) would be kept for good.
 ///
 /// When the start time cannot be read, the result is [`InUse::Unknown`].
+#[cfg(target_os = "linux")]
 pub fn scan_pids(candidates: &[PathBuf], pids: &[u32]) -> InUse {
     #[cfg(target_os = "linux")]
     {
@@ -1641,33 +1921,42 @@ pub fn cleanup_unused_with(
         return Ok(report);
     }
 
-    let used = match scan(&candidates) {
-        InUse::Known(map) => map,
-        InUse::Unknown => {
-            report.unknown = true;
-            return Ok(report);
+    #[cfg(any(target_os = "linux", test))]
+    {
+        let used = match scan(&candidates) {
+            InUse::Known(map) => map,
+            InUse::Unknown => {
+                report.unknown = true;
+                return Ok(report);
+            }
+            InUse::Unsupported => {
+                report.unsupported = true;
+                return Ok(report);
+            }
+        };
+        for candidate in candidates {
+            if let Some(pids) = used.get(&candidate) {
+                report.kept_in_use.push((candidate, pids.clone()));
+                continue;
+            }
+            // Checked again right before deletion (S13).
+            let is_dir = candidate.parent() == Some(releases.as_path());
+            if !is_removable_candidate(&candidate, is_dir) {
+                continue;
+            }
+            match remove_tree(&candidate) {
+                Ok(()) => report.removed.push(candidate),
+                Err(e) => report.failed.push((candidate, format!("{e:#}"))),
+            }
         }
-        InUse::Unsupported => {
-            report.unsupported = true;
-            return Ok(report);
-        }
-    };
-    for candidate in candidates {
-        if let Some(pids) = used.get(&candidate) {
-            report.kept_in_use.push((candidate, pids.clone()));
-            continue;
-        }
-        // Checked again right before deletion (S13).
-        let is_dir = candidate.parent() == Some(releases.as_path());
-        if !is_removable_candidate(&candidate, is_dir) {
-            continue;
-        }
-        match remove_tree(&candidate) {
-            Ok(()) => report.removed.push(candidate),
-            Err(e) => report.failed.push((candidate, format!("{e:#}"))),
-        }
+        Ok(report)
     }
-    Ok(report)
+    #[cfg(not(any(target_os = "linux", test)))]
+    {
+        let InUse::Unsupported = scan(&candidates);
+        report.unsupported = true;
+        Ok(report)
+    }
 }
 
 /// A direct child that is a real directory (or, in `.retired/`, a real file)
@@ -1822,5 +2111,350 @@ pub fn report_cleanup(report: &CleanupReport) {
             "amplihack: warning: could not remove unused {}: {reason}",
             path.display()
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod origin_tests {
+    use super::*;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    fn release(home: &Path, name: &str) -> PathBuf {
+        let root = home.join(".amplihack/releases").join(name);
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::write(root.join(COMPLETE_MARKER), b"complete\n").unwrap();
+        let exe = root.join("bin/amplihack");
+        fs::write(&exe, b"private fixture executable\n").unwrap();
+        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        exe
+    }
+
+    /// The refusal a fixture must produce, with its cause.
+    fn refusal(home: &Path, executable: &Path) -> OriginRefusal {
+        installed_executable(home, executable).expect_err("this fixture must be refused")
+    }
+
+    #[test]
+    fn canonical_installed_origin_accepts_published_links_but_refuses_escapes() {
+        let temp = crate::test_support::tempdir_outside_framework_roots();
+        let home = temp.path();
+        let executable = release(home, "fixture");
+        let link = home.join("published");
+        symlink(&executable, &link).unwrap();
+        assert!(installed_executable(home, &executable).is_ok());
+        assert!(installed_executable(home, &link).is_ok());
+
+        let outside = home.join("checkout");
+        fs::write(&outside, b"checkout\n").unwrap();
+        fs::remove_file(&executable).unwrap();
+        symlink(&outside, &executable).unwrap();
+        assert_eq!(
+            refusal(home, &executable).check(),
+            "executable-outside-installed-release"
+        );
+        assert_eq!(
+            refusal(home, &home.join("missing")).check(),
+            "executable-path-unresolved"
+        );
+        assert_eq!(fs::read(&outside).unwrap(), b"checkout\n");
+    }
+
+    /// Every cause named in the "Diagnosing a refusal" table of
+    /// `docs/features/self-heal-asset-restage.md` must be reported
+    /// distinguishably, so that one `RUST_LOG` run tells a user which check
+    /// failed and on which path. Ownership causes need a second account and
+    /// are exercised only by `check_private_dir`'s own path.
+    #[test]
+    fn each_documented_refusal_cause_is_reported_distinguishably() {
+        // (fixture mutation, expected check slug, expected subject)
+        #[derive(Clone, Copy)]
+        enum Subject {
+            Framework,
+            Releases,
+            Root,
+            Bin,
+            Executable,
+        }
+
+        for (case, expected_check, expected_subject) in [
+            (
+                "checkout",
+                "executable-outside-installed-release",
+                Subject::Executable,
+            ),
+            ("missing", "executable-path-unresolved", Subject::Executable),
+            (
+                "framework-symlink",
+                "directory-is-a-symlink",
+                Subject::Framework,
+            ),
+            (
+                "releases-symlink",
+                "directory-is-a-symlink",
+                Subject::Releases,
+            ),
+            (
+                "framework-writable",
+                "directory-writable-by-group-or-others",
+                Subject::Framework,
+            ),
+            (
+                "releases-writable",
+                "directory-writable-by-group-or-others",
+                Subject::Releases,
+            ),
+            (
+                "root-writable",
+                "directory-writable-by-group-or-others",
+                Subject::Root,
+            ),
+            (
+                "bin-writable",
+                "directory-writable-by-group-or-others",
+                Subject::Bin,
+            ),
+            ("incomplete", "release-incomplete", Subject::Root),
+            ("marker-link", "release-incomplete", Subject::Root),
+            ("retired", "release-retired", Subject::Executable),
+            // A symlinked release root or `bin` resolves outside the trusted
+            // tree, so confinement rejects it before any directory check.
+            (
+                "root-symlink",
+                "executable-outside-installed-release",
+                Subject::Executable,
+            ),
+            (
+                "bin-symlink",
+                "executable-outside-installed-release",
+                Subject::Executable,
+            ),
+            (
+                "sibling-link",
+                "executable-not-in-release-bin",
+                Subject::Executable,
+            ),
+            (
+                "directory",
+                "executable-not-a-regular-file",
+                Subject::Executable,
+            ),
+            (
+                "writable-binary",
+                "executable-writable-by-group-or-others",
+                Subject::Executable,
+            ),
+        ] {
+            let temp = crate::test_support::tempdir_outside_framework_roots();
+            let home = temp.path();
+            let mut executable = release(
+                home,
+                if case == "retired" {
+                    ".retired/old"
+                } else {
+                    "current"
+                },
+            );
+            let root = executable.parent().unwrap().parent().unwrap().to_path_buf();
+            let bin = root.join("bin");
+            let framework = home.join(".amplihack");
+            let releases = framework.join(RELEASES_DIR);
+            match case {
+                "checkout" => {
+                    let outside = home.join("target/debug");
+                    fs::create_dir_all(&outside).unwrap();
+                    executable = outside.join("amplihack");
+                    fs::write(&executable, b"cargo build\n").unwrap();
+                }
+                "missing" => executable = home.join("no/such/amplihack"),
+                "framework-symlink" => {
+                    let moved = home.join("elsewhere-amplihack");
+                    fs::rename(&framework, &moved).unwrap();
+                    symlink(&moved, &framework).unwrap();
+                }
+                "releases-symlink" => {
+                    let moved = home.join("elsewhere-releases");
+                    fs::rename(&releases, &moved).unwrap();
+                    symlink(&moved, &releases).unwrap();
+                }
+                "framework-writable" => {
+                    fs::set_permissions(&framework, fs::Permissions::from_mode(0o777)).unwrap();
+                }
+                "releases-writable" => {
+                    fs::set_permissions(&releases, fs::Permissions::from_mode(0o775)).unwrap();
+                }
+                "root-writable" => {
+                    fs::set_permissions(&root, fs::Permissions::from_mode(0o707)).unwrap();
+                }
+                "bin-writable" => {
+                    fs::set_permissions(&bin, fs::Permissions::from_mode(0o770)).unwrap();
+                }
+                "incomplete" => fs::remove_file(root.join(COMPLETE_MARKER)).unwrap(),
+                "marker-link" => {
+                    fs::remove_file(root.join(COMPLETE_MARKER)).unwrap();
+                    symlink(&executable, root.join(COMPLETE_MARKER)).unwrap();
+                }
+                "retired" => {}
+                "root-symlink" => {
+                    let moved = home.join("elsewhere-release");
+                    fs::rename(&root, &moved).unwrap();
+                    symlink(&moved, &root).unwrap();
+                }
+                "bin-symlink" => {
+                    let moved = home.join("elsewhere-bin");
+                    fs::rename(&bin, &moved).unwrap();
+                    symlink(&moved, &bin).unwrap();
+                }
+                "sibling-link" => {
+                    // Inside the release, but not inside its `bin`.
+                    let sibling = root.join("amplihack");
+                    fs::write(&sibling, b"staged beside bin\n").unwrap();
+                    fs::set_permissions(&sibling, fs::Permissions::from_mode(0o755)).unwrap();
+                    fs::remove_file(&executable).unwrap();
+                    symlink(&sibling, &executable).unwrap();
+                }
+                "directory" => {
+                    fs::remove_file(&executable).unwrap();
+                    fs::create_dir(&executable).unwrap();
+                }
+                "writable-binary" => {
+                    fs::set_permissions(&executable, fs::Permissions::from_mode(0o777)).unwrap();
+                }
+                _ => unreachable!(),
+            }
+
+            let refusal = refusal(home, &executable);
+            assert_eq!(refusal.check(), expected_check, "{case}");
+            let want = match expected_subject {
+                Subject::Framework => framework.clone(),
+                Subject::Releases => releases.clone(),
+                Subject::Root => root.clone(),
+                Subject::Bin => bin.clone(),
+                Subject::Executable => executable.clone(),
+            };
+            let actual = refusal
+                .subject()
+                .unwrap_or_else(|| panic!("{case}: the cause must name the path it checked"));
+            assert_eq!(
+                fs::canonicalize(actual).unwrap_or_else(|_| actual.to_path_buf()),
+                fs::canonicalize(&want).unwrap_or(want),
+                "{case}: cause names the wrong path"
+            );
+            // Restore modes the fixture loosened, so the tempdir can be
+            // removed without surprising the next case.
+            for dir in [&framework, &releases, &root, &bin] {
+                let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+            }
+        }
+    }
+
+    /// The cause is observable without a second run: one `debug` record per
+    /// assessment, naming the check and a sanitised path.
+    #[test]
+    fn the_refusal_cause_is_logged_at_debug_with_a_sanitised_path() {
+        let temp = crate::test_support::tempdir_outside_framework_roots();
+        let home = temp.path();
+        // A release name carrying a control character: whatever reaches the
+        // log must have been through `sanitize_path`, as the refusal line is.
+        let executable = release(home, "fix\u{1}ture");
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o777)).unwrap();
+
+        let (result, logged) =
+            captured_at_debug(|| assess_implicit_install_origin(home, &executable));
+
+        let refusal = result.expect_err("a group-writable binary is refused");
+        assert_eq!(refusal.check(), "executable-writable-by-group-or-others");
+        let lines: Vec<_> = logged
+            .lines()
+            .filter(|line| line.contains("executable-writable-by-group-or-others"))
+            .collect();
+        assert_eq!(lines.len(), 1, "exactly one cause record: {logged:?}");
+        assert!(
+            !lines[0].chars().any(char::is_control),
+            "the cause must be sanitised: {lines:?}"
+        );
+        assert!(
+            lines[0].contains("fix?ture"),
+            "the cause names the sanitised path: {lines:?}"
+        );
+        assert!(
+            !lines[0].contains('\u{1}'),
+            "a raw control character reached the log: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn an_eligible_release_logs_no_refusal_cause() {
+        let temp = crate::test_support::tempdir_outside_framework_roots();
+        let home = temp.path();
+        let executable = release(home, "fixture");
+
+        let (result, logged) =
+            captured_at_debug(|| assess_implicit_install_origin(home, &executable));
+
+        result.expect("a complete private release is eligible");
+        assert!(
+            logged.is_empty(),
+            "eligibility is not a diagnostic: {logged:?}"
+        );
+    }
+
+    /// Run `f` under a `debug`-level subscriber scoped to this crate and
+    /// return what it recorded.
+    fn captured_at_debug<T>(f: impl FnOnce() -> T) -> (T, String) {
+        use std::sync::{Arc, Mutex};
+        use tracing_subscriber::fmt::MakeWriter;
+
+        #[derive(Clone, Default)]
+        struct Buffer(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Buffer {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> MakeWriter<'a> for Buffer {
+            type Writer = Buffer;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let buffer = Buffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buffer.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .finish();
+        let out = tracing::subscriber::with_default(subscriber, f);
+        let logged = String::from_utf8_lossy(&buffer.0.lock().unwrap()).into_owned();
+        (out, logged)
+    }
+}
+
+/// Issue #2496: the confinement checks that make an origin trustworthy are
+/// Unix file-mode and ownership checks. Where they do not exist, the oracle
+/// refuses outright rather than accepting a tree it cannot assess. Runs on
+/// Windows CI only.
+#[cfg(all(test, not(unix)))]
+mod origin_tests_other_platforms {
+    use super::*;
+
+    #[test]
+    fn implicit_installation_is_refused_where_confinement_cannot_be_assessed() {
+        let temp = crate::test_support::tempdir_outside_framework_roots();
+        let home = temp.path();
+        let root = home.join(".amplihack/releases/current");
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::write(root.join(COMPLETE_MARKER), b"complete\n").unwrap();
+        let executable = root.join("bin/amplihack.exe");
+        fs::write(&executable, b"fixture executable\n").unwrap();
+
+        let refusal = installed_executable(home, &executable)
+            .expect_err("an unassessable platform must not be eligible");
+        assert_eq!(refusal.check(), "unsupported-platform");
+        assert!(!executable_allows_implicit_install());
     }
 }

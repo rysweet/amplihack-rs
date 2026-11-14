@@ -6,7 +6,7 @@
 //! API this file pins (in `launch::hook_settings` unless noted):
 //! - `LAUNCH_FILE = "runtime/launch-hooks-settings.json"` (relative to AMPLIHACK_HOME)
 //! - `enum Inject { Path(PathBuf), NotPrivate, Skip(&'static str) }`
-//! - `struct Inputs<'a> { binary_name, extra_args, proxy, newer_stamp,
+//! - `struct Inputs<'a> { binary_name, extra_args, proxy, publication_refused,
 //!    target: Option<&HookTarget>, amplihack_home: &Path }`
 //! - `prepare_with(&Inputs) -> Inject` (pure apart from the file write);
 //!   production `prepare(binary_name, extra_args)` fills `Inputs` from the
@@ -35,7 +35,7 @@ fn target() -> HookTarget {
 }
 
 fn private_home() -> tempfile::TempDir {
-    let d = tempfile::tempdir().unwrap();
+    let d = crate::test_support::tempdir_outside_framework_roots();
     fs::set_permissions(d.path(), fs::Permissions::from_mode(0o700)).unwrap();
     d
 }
@@ -49,7 +49,7 @@ fn inputs<'a>(home: &'a Path, extra: &'a [String], t: &'a HookTarget) -> Inputs<
         binary_name: "claude",
         extra_args: extra,
         proxy: false,
-        newer_stamp: false,
+        publication_refused: false,
         target: Some(t),
         amplihack_home: home,
     }
@@ -161,12 +161,43 @@ fn a_newer_install_stamp_is_skipped_as_an_older_binary() {
     let t = target();
     let extra = args(&[]);
     let mut i = inputs(home.path(), &extra, &t);
-    i.newer_stamp = true;
+    i.publication_refused = true;
     let Inject::Skip(reason) = prepare_with(&i) else {
         panic!("expected Skip");
     };
-    assert!(reason.contains("older binary"), "{reason}");
+    assert!(reason.contains("not eligible"), "{reason}");
     assert!(!home.path().join(LAUNCH_FILE).exists());
+}
+
+#[test]
+fn issue_2496_checkout_cannot_publish_launch_hook_settings() {
+    let home = private_home();
+    let install = home.path().join(".amplihack");
+    fs::create_dir(&install).unwrap();
+    let hooks = home.path().join("amplihack-hooks");
+    crate::test_support::copy_executable(&std::env::current_exe().unwrap(), &hooks);
+    crate::test_support::with_env(
+        &[
+            ("HOME", Some(home.path().as_os_str())),
+            ("AMPLIHACK_HOME", Some(install.as_os_str())),
+            ("AMPLIHACK_SKIP_AUTO_INSTALL", None),
+            (
+                "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
+                Some(hooks.as_os_str()),
+            ),
+            ("PATH", Some(OsStr::new("/usr/bin:/bin"))),
+            ("AMPLIHACK_LITELLM_ENDPOINT", None),
+            ("AMPLIHACK_LITELLM_API_KEY", None),
+            ("AMPLIHACK_LITELLM_MODEL", None),
+        ],
+        || {
+            assert!(matches!(
+                super::hook_settings::prepare("claude", &[]),
+                Inject::Skip(_)
+            ));
+            assert_eq!(fs::read_dir(&install).unwrap().count(), 0);
+        },
+    );
 }
 
 #[test]

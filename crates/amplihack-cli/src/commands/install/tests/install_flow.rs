@@ -565,7 +565,9 @@ fn run_install_with_local_path_skips_git_clone() {
     fs::create_dir_all(&local_repo).unwrap();
     create_source_repo(&local_repo);
 
-    let result = run_install(Some(local_repo), false, false);
+    let result = crate::test_support::release_fixture::with_release(crate::VERSION, || {
+        run_install(Some(local_repo), false, false)
+    });
 
     if let Some(v) = prev_hooks {
         unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };
@@ -1095,7 +1097,8 @@ fn issue_734_run_install_skips_stale_amplihack_home_and_stages_compatible_cwd_bu
 // source layout. They specify the contract for the fix.
 
 /// Helper: stage env (HOME, hooks binary, PATH) like the existing install
-/// tests do, run `f`, restore env. Avoids ~50 lines of boilerplate per test.
+/// tests do, run `f` with an isolated release transport, and restore env.
+/// Avoids ~50 lines of boilerplate per test.
 fn with_install_env<R>(f: impl FnOnce(&Path) -> R) -> R {
     let _guard = crate::test_support::home_env_lock()
         .lock()
@@ -1124,7 +1127,8 @@ fn with_install_env<R>(f: impl FnOnce(&Path) -> R) -> R {
         std::env::set_var("PATH", &new_path);
     }
 
-    let result = f(temp.path());
+    let result =
+        crate::test_support::release_fixture::with_release(crate::VERSION, || f(temp.path()));
 
     if let Some(v) = prev_hooks {
         unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };

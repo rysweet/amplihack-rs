@@ -325,13 +325,27 @@ pub(super) fn acquire_framework_source(
     fetcher: &dyn TagFetcher,
     validate: &dyn Fn(&Path) -> Result<(), String>,
 ) -> Result<AcquiredSource> {
+    if let Some(source) = available_framework_source(policy, query, binary, validate)? {
+        return Ok(source);
+    }
+    fetch_release_tag(policy, binary, fetcher, validate)
+}
+
+/// Assess local assets without fetching, caching or changing installation state.
+/// The coordinator resolves release executables before acquiring missing assets.
+pub(super) fn available_framework_source(
+    policy: &SourcePolicy,
+    query: &FrameworkRootQuery,
+    binary: &BinaryIdentity,
+    validate: &dyn Fn(&Path) -> Result<(), String>,
+) -> Result<Option<AcquiredSource>> {
     if let Some(local) = &policy.local {
-        return Ok(AcquiredSource {
+        return Ok(Some(AcquiredSource {
             root: local.clone(),
             origin: SourceOrigin::Local,
             version: read_source_version(local),
             _fetched_dir: None,
-        });
+        }));
     }
 
     let resolution = resolve_for_policy(policy, query, &binary.version, validate);
@@ -342,15 +356,15 @@ pub(super) fn acquire_framework_source(
         return Err(refused.into());
     }
     if let Some(found) = resolution.resolved {
-        return Ok(AcquiredSource {
+        return Ok(Some(AcquiredSource {
             root: found.root,
             origin: SourceOrigin::Resolved(found.origin),
             version: resolution.version.unwrap_or(SourceVersion::Unknown),
             _fetched_dir: None,
-        });
+        }));
     }
 
-    fetch_release_tag(policy, binary, fetcher, validate)
+    Ok(None)
 }
 
 /// Resolve the local candidates a policy without `--local` consults, with the
