@@ -292,9 +292,9 @@ round_findings() {
         --argjson u "$(field "${RECIPE_VAR_platform_facts:-}" unavailable '[]' | jq -c 'if type == "array" then . else [] end' 2>/dev/null || echo '[]')" \
         '{head_sha:$h, ci_signal:(($ci|ascii_upcase|split(":")[0]) // ""), merge_state:$ms, mergeable:$mg, unavailable:$u, findings:$f, measured_downgrade:($d|split(" ")|map(select(length>0))), recompute:$r}' 2>/dev/null)"
       t="$(mktemp "${record}.findings.XXXXXX")" || exit 1
-      if out="$(printf '%s' "$in" | "${AMPLIHACK_BIN:-amplihack}" orch helper autodrive-round-waits)" && [ -n "$out" ]; then
-        printf '%s' "$out" | jq -r '.fixable[]' > "$t" && w="$(mktemp "${record}.waits.XXXXXX")" \
-          && printf '%s\n' "$out" > "$w" && mv -f -- "$w" "${record}.waits"
+      if out="$(printf '%s' "$in" | "${AMPLIHACK_BIN:-amplihack}" orch helper autodrive-round-waits)" && [ -n "$out" ] \
+        && printf '%s' "$out" | jq -r '.fixable[]' > "$t"; then
+        w="$(mktemp "${record}.waits.XXXXXX")" && printf '%s\n' "$out" > "$w" && mv -f -- "$w" "${record}.waits"
       else
         echo "WARNING: the round's blockers could not be classed into waits and fixable findings; every id counts as fixable." >&2
         printf '%s' "$ids" | jq -r '.[]' > "$t" 2>/dev/null; rm -f -- "${record}.waits"
@@ -371,7 +371,7 @@ round_record() {
   waits='{"waits":[],"wait_target":"","round_waiting":false}'
   [ ! -f "${record}.waits" ] || [ -L "${record}.waits" ] || waits="$(jq -c '{waits:[.waits[] | strings | select(test("^[a-z0-9-]{1,64}$"))],
     wait_target:(.wait_target | if test("^((ci|mergeability)@[0-9a-f]{40}|ratelimit-reset@([0-9]{1,12}|unknown)|read@(pr|pr-head|pr-number|checks|reviews|threads))?$") then . else "" end),
-    round_waiting:(.round_waiting == true)}' "${record}.waits" 2>/dev/null)" || waits='{"waits":[],"wait_target":"","round_waiting":false}'
+    round_waiting:(.round_waiting == true)}' "${record}.waits" 2>/dev/null)" || waits=""; [ -n "$waits" ] || waits='{"waits":[],"wait_target":"","round_waiting":false}' # unreadable or empty
   # The record and its findings file are private: the state dir must stay private.
   ( umask 077
     [ -f "${record}.findings" ] || : > "${record}.findings"

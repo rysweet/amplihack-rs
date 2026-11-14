@@ -148,13 +148,45 @@ pub fn run(op: Operations) -> Result<()> {
             store.snapshot_references(accepted.record())?;
             let evidence = store.snapshot(&serde_json::to_vec(accepted.record())?)?;
             let ready = accepted.record().readiness == Readiness::MergeReady;
-            let result = serde_json::json!({"merge_ready_verdict":if ready {"MERGE_READY"} else {"NOT_MERGE_READY"}, "blocker_count":candidate.blockers.len(), "head_sha":candidate.binding.head_sha, "round_label":candidate.binding.round_id, "accepted_evidence":evidence, "test_signal":if ready {"PASS"} else {"BLOCKED"}, "ci_signal":if ready {"GREEN"} else {"UNVERIFIED"}});
+            let mut result = serde_json::json!({"merge_ready_verdict":if ready {"MERGE_READY"} else {"NOT_MERGE_READY"}, "blocker_count":candidate.blockers.len(), "head_sha":candidate.binding.head_sha, "round_label":candidate.binding.round_id, "accepted_evidence":evidence, "test_signal":if ready {"PASS"} else {"BLOCKED"}, "ci_signal":if ready {"GREEN"} else {"UNVERIFIED"}});
+            let blocked: Vec<&str> = candidate
+                .criteria
+                .iter()
+                .filter(|c| !c.blockers.is_empty())
+                .map(|c| c.id.as_str())
+                .collect();
+            // #2472: class the blocked criteria against the round's measured
+            // facts, so `.findings` (the no-progress input) holds fixable ids
+            // only and a wait-only round ends WAITING in the loop.
             let mut findings = String::new();
-            for c in &candidate.criteria {
-                if !c.blockers.is_empty() {
-                    findings.push_str(&c.id);
+            if ready {
+                for c in &blocked {
+                    findings.push_str(c);
                     findings.push('\n');
                 }
+            } else {
+                let fact = |k: &str| {
+                    std::env::var(format!("RECIPE_VAR_{k}"))
+                        .ok()
+                        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                        .unwrap_or_default()
+                };
+                let input = super::super::autodrive_waits::round_input(
+                    &candidate.binding.head_sha,
+                    &blocked,
+                    &fact("platform_facts"),
+                    &fact("ci_evidence"),
+                    &fact("merge_sync"),
+                );
+                let out = super::super::autodrive_waits::classify(&input);
+                for c in &out.fixable {
+                    findings.push_str(c);
+                    findings.push('\n');
+                }
+                result["merge_state"] = serde_json::json!(input.merge_state);
+                result["waits"] = serde_json::json!(out.waits);
+                result["wait_target"] = serde_json::json!(out.wait_target);
+                result["round_waiting"] = serde_json::json!(out.round_waiting);
             }
             write_new_private(&record.with_extension("json.findings"), findings.as_bytes())?;
             write_new_private(&record, &serde_json::to_vec(&result)?)?;

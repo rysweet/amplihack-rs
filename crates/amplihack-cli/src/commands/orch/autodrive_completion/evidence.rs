@@ -198,7 +198,8 @@ pub fn head_check(state: &State) -> Result<HeadCheck> {
                     reason: "pr-number-unresolved: the PR worktree is not on a branch".into(),
                     rate_limited: false,
                     reset_epoch: None,
-                    refused: false,
+                    // Definite answers, not read faults: waiting will not clear them.
+                    refused: true,
                 }));
             }
             match gh::pr_for_branch(&reader, &branch) {
@@ -209,7 +210,7 @@ pub fn head_check(state: &State) -> Result<HeadCheck> {
                             reason: "pr-number-unresolved: no open PR for the branch".into(),
                             rate_limited: false,
                             reset_epoch: None,
-                            refused: false,
+                            refused: true,
                         }));
                     }
                 },

@@ -62,6 +62,9 @@
 #                                refusal; exit 79, never retried
 #   crusty-rereview-unavailable  the range could not be measured, or a tool is
 #                                missing; exit 1
+#   crusty-rereview-waiting      the crusty loop ended WAITING (#2333/#2472); the
+#                                line also has wait_reason and wait_target;
+#                                exit 76, and autodrive_loop.sh stops WAITING
 # Exit 2 is a usage error.
 #
 # Executed, never sourced. Every tool it uses is taken from beside this file
@@ -163,6 +166,14 @@ fi
 if [ "$LOOP_RESULT" = "BUDGET_EXHAUSTED" ]; then
   echo "ERROR: the crusty re-review stopped as BUDGET_EXHAUSTED (rc=${RC}); the crusty-loop marker stays absent. Relaunch with a higher budget (autodrive-budget-summary.md in the state dir)." >&2
   result crusty-rereview-budget-exhausted "$RANGE" BUDGET_EXHAUSTED 1
+fi
+if [ "$LOOP_RESULT" = "WAITING" ]; then # #2333/#2472: a wait is resumable, never a failed before-round step
+  wfield() { printf '%s' "$OUT" | "${AMPLIHACK_BIN:-amplihack}" orch helper extract-json --require-field loop_result \
+    | "${AMPLIHACK_BIN:-amplihack}" orch helper extract-field --field "$1" --default '' | LC_ALL=C tr -cd 'a-z0-9@,-'; }
+  echo "INFO: the crusty re-review is WAITING (rc=${RC}); the merge loop stops as WAITING and resumes on a later drive." >&2
+  printf '{"before_round_result":"crusty-rereview-waiting","range":"%s","crusty_loop_result":"WAITING","wait_reason":"%s","wait_target":"%s"}\n' \
+    "$RANGE" "$(wfield wait_reason)" "$(wfield wait_target)"
+  exit 76
 fi
 if [ "$RC" -ne 0 ] || [ "$LOOP_RESULT" != "DONE" ]; then
   echo "ERROR: the crusty re-review ended '${LOOP_RESULT:-unknown}' (rc=${RC}); the crusty-loop marker stays absent and criterion 3 is not met." >&2

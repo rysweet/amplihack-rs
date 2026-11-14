@@ -360,3 +360,41 @@ fn refusals_are_failures_that_waiting_will_not_clear() {
         assert!(!ratelimit::is_refusal(text), "{text:?}");
     }
 }
+
+#[test]
+fn numbers_gh_copies_from_the_request_are_not_classed() {
+    // PR #429 and #403, and a SHA holding `e401f`, in the URL gh appends or
+    // in GraphQL's "number of N": none is a rate limit, a 403 or a 401.
+    let cases = [
+        (
+            "HTTP 404: Not Found (https://api.github.com/repos/o/r/pulls/429)",
+            Class::Other,
+            true,
+        ),
+        (
+            "HTTP 422: expected head sha didn't match current head ref. (https://api.github.com/repos/o/r/pulls/403/update-branch)",
+            Class::Other,
+            false,
+        ),
+        (
+            "HTTP 502: Bad Gateway (https://api.github.com/repos/o/r/commits/0e401f0000000000000000000000000000000000/check-runs)",
+            Class::Transient,
+            false,
+        ),
+        (
+            "GraphQL: Could not resolve to a PullRequest with the number of 429. (repository.pullRequest)",
+            Class::Other,
+            true,
+        ),
+    ];
+    for (text, class, refusal) in cases {
+        let t = ratelimit::without_request(text);
+        assert_eq!(ratelimit::classify(&t), class, "{text:?}");
+        assert_eq!(ratelimit::is_refusal(&t), refusal, "{text:?}");
+    }
+    // The rate-limit message itself survives.
+    let t = ratelimit::without_request(
+        "HTTP 403: API rate limit exceeded (https://api.github.com/repos/o/r/pulls/7)",
+    );
+    assert_eq!(ratelimit::classify(&t), Class::RateLimit);
+}

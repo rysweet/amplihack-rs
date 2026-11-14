@@ -231,6 +231,20 @@ fn an_unresolvable_pr_number_is_waiting_too() {
 }
 
 #[test]
+fn no_open_pr_for_the_branch_is_an_error_not_a_wait() {
+    // A definite "no open PR" (merged or closed between rounds) never clears
+    // by waiting, so the dispatch fails rather than WAITING on every drive.
+    let c = Case::new(None);
+    c.mode("gql", "refuse");
+    std::fs::write(c.fix.join("rest-pulls.json"), "[]").unwrap();
+    let o = c.dispatch(0);
+    assert!(!o.status.success(), "{}", show(&o));
+    assert_ne!(o.status.code(), Some(EXIT_WAITING), "{}", show(&o));
+    assert!(stderr(&o).contains("not a wait"), "{}", show(&o));
+    assert!(!c.dispatched_marker() && !c.d.marked());
+}
+
+#[test]
 fn a_non_rate_limited_head_failure_waits_on_read_pr_head() {
     let c = Case::new(Some("7"));
     c.mode("gql", "fail");

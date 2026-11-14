@@ -34,7 +34,8 @@ use std::sync::LazyLock;
 pub const EXIT_UNAVAILABLE: i32 = 3;
 /// Exit code of a usage error; nothing was run.
 pub const EXIT_USAGE: i32 = 2;
-/// Largest answer read from one source, across its pages.
+/// Largest answer accepted from one source, across its pages. It bounds what
+/// is parsed and kept, not what one `gh` call buffers before the check.
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 const MAX_PAGES: u32 = 10;
 const PER_PAGE: usize = 100;
@@ -155,14 +156,15 @@ struct Trail {
 
 impl Trail {
     fn fail(&mut self, path: &'static str, text: &str) {
-        if ratelimit::classify(text) == ratelimit::Class::RateLimit {
+        let class_text = ratelimit::without_request(text);
+        if ratelimit::classify(&class_text) == ratelimit::Class::RateLimit {
             match path {
                 "graphql" => self.graphql_limited = true,
                 _ => self.rest_limited = true,
             }
             self.limited_texts.push(text.to_string());
         }
-        if !ratelimit::is_refusal(text) {
+        if !ratelimit::is_refusal(&class_text) {
             self.not_refused = true;
         }
         self.parts.push(format!("{path}: {}", excerpt(text)));
@@ -415,10 +417,13 @@ fn ls_remote(dir: &Path, n: u64) -> Result<String, String> {
     match lines.as_slice() {
         [one] => match one.split_once('\t') {
             Some((sha, name)) if name == refname && valid_sha(sha) => Ok(sha.to_string()),
-            _ => Err(format!("unexpected answer for {refname}")),
+            _ => Err("unexpected answer for the PR's pull ref".into()),
         },
-        [] => Err(format!("no {refname} on origin")),
-        _ => Err(format!("more than one line for {refname}")),
+        // No number or SHA in these messages: the rate-limit and refusal
+        // rules match bare 401, 403 and 429, and a PR number could be one.
+        // An empty answer is "not found", so it counts as a refusal.
+        [] => Err("pull ref not found on origin".into()),
+        _ => Err("more than one line for the PR's pull ref".into()),
     }
 }
 

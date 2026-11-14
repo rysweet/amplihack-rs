@@ -118,16 +118,40 @@ oneof() { # oneof <value> <default> <allowed>...: the value if allowed, else the
   printf '%s' "$d"
 }
 
+# #2333: a refused or failed GraphQL read falls back to REST through
+# autodrive-gh-read. A read unavailable on every path joins UNAV, the
+# `unavailable` list autodrive-round-waits classes as a wait, or as the
+# finding gh-read-refused when every path refused it (`refused`, #2333).
+UNAV=""; GH_OUT=""
+# unav_refused <read>: a failure waiting will not clear (no PR for the
+# branch, a detached HEAD, a missing helper): the finding gh-read-refused.
+unav_refused() { UNAV="${UNAV}${UNAV:+,}$(printf '{"read":"%s","rate_limited":false,"reset_epoch":null,"refused":true}' "$1")"; }
+gh_read() { # gh_read <read> <arg>...: the helper's JSON line in GH_OUT; status 0 answered, 3 unavailable
+  local rc
+  GH_OUT="$("${AMPLIHACK_BIN:-amplihack}" orch helper autodrive-gh-read "$@")"; rc=$?
+  [ "$rc" -eq 0 ] || echo "WARN: autodrive_platform_facts: autodrive-gh-read $1 exited $rc" >&2
+  [ "$rc" -ne 3 ] || UNAV="${UNAV}${UNAV:+,}$(printf '%s' "$GH_OUT" | jq -c --arg r "$1" '{read:$r,rate_limited:(.unavailable.rate_limited==true),reset_epoch:(.unavailable.reset_epoch//null),refused:(.unavailable.refused==true)}' 2>/dev/null \
+    || printf '{"read":"%s","rate_limited":false,"reset_epoch":null,"refused":false}' "$1")"
+  # Any other failure (a missing helper, a usage error) will not clear by waiting.
+  [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || unav_refused "$1"
+  return "$rc"
+}
+
 PR="${1:-}"
 # No usable number: the current branch's PR, through GraphQL then the REST
-# fallback. The helper's own error goes to stderr; a PR that neither finds is
-# said so, and the facts below are then facts-unreadable.
+# fallback. The helper's own error goes to stderr. An unavailable read is a
+# wait; a branch with no open PR, or no branch, is a finding (#2333).
 case "$PR" in '' | *[!0-9]*)
   PR="$(gh pr view --json number --jq .number 2>/dev/null)" || PR=""
   if ! digits "$PR"; then
     BRANCH="$(git symbolic-ref --short -q HEAD)" || BRANCH=""
     PR=""
-    [ -z "$BRANCH" ] || PR="$("${AMPLIHACK_BIN:-amplihack}" orch helper autodrive-gh-read pr-for-branch "$BRANCH" | jq -r '.number // empty')" || PR=""
+    if [ -z "$BRANCH" ]; then
+      unav_refused pr-for-branch
+    elif gh_read pr-for-branch "$BRANCH"; then
+      PR="$(printf '%s' "$GH_OUT" | jq -r '.number // empty' 2>/dev/null)" || PR=""
+      digits "$PR" || unav_refused pr-for-branch
+    fi
   fi ;;
 esac
 digits "$PR" || { echo "WARN: autodrive_platform_facts: no pull request number for this branch; facts unreadable" >&2; PR=""; }
@@ -139,6 +163,7 @@ digits "$PR" || { echo "WARN: autodrive_platform_facts: no pull request number f
 # CHECKS sums up the rollup as pass, not-passed or none (see the header).
 # CHECKS is advisory (approval and other-blockers advice); CI green is decided by autodrive_expected_checks.sh (#2186).
 VIEW_OK="false"
+DECISION_REST="false" # #2333: REST has no review decision; see the required count below
 STATE=""; DRAFT=""; MERGEABLE=""; MSTATE=""; DECISION=""; HEAD=""; CHECKS=""; BASE=""
 VIEW_FIELDS="state,isDraft,mergeable,mergeStateStatus,reviewDecision,headRefOid,statusCheckRollup,baseRefName"
 VIEW_JQ='[.state, (.isDraft | tostring), .mergeable, .mergeStateStatus, (.reviewDecision // ""), .headRefOid,
@@ -150,25 +175,14 @@ if [ -n "$PR" ] && LINE="$(gh pr view "$PR" --json "$VIEW_FIELDS" --jq "$VIEW_JQ
   IFS='|' read -r STATE DRAFT MERGEABLE MSTATE DECISION HEAD CHECKS BASE <<<"$LINE"
   [ -n "$STATE" ] && [ -n "$HEAD" ] && VIEW_OK="true"
 fi
-# #2333: a refused or failed GraphQL read falls back to REST through
-# autodrive-gh-read. A read unavailable on every path joins UNAV, the
-# `unavailable` list autodrive-round-waits classes as a wait, or as the
-# finding gh-read-refused when every path refused it (`refused`, #2333).
-UNAV=""; GH_OUT=""
-gh_read() { # gh_read <read> <arg>...: the helper's JSON line in GH_OUT; status 0 answered, 3 unavailable
-  local rc
-  GH_OUT="$("${AMPLIHACK_BIN:-amplihack}" orch helper autodrive-gh-read "$@")"; rc=$?
-  [ "$rc" -eq 0 ] || echo "WARN: autodrive_platform_facts: autodrive-gh-read $1 exited $rc" >&2
-  [ "$rc" -ne 3 ] || UNAV="${UNAV}${UNAV:+,}$(printf '%s' "$GH_OUT" | jq -c --arg r "$1" '{read:$r,rate_limited:(.unavailable.rate_limited==true),reset_epoch:(.unavailable.reset_epoch//null),refused:(.unavailable.refused==true)}' 2>/dev/null \
-    || printf '{"read":"%s","rate_limited":false,"reset_epoch":null,"refused":false}' "$1")"
-  return "$rc"
-}
 # checks at the HEAD just read: REST only, no second GraphQL try or pulls/{n} read
 if [ "$VIEW_OK" != "true" ] && [ -n "$PR" ] && gh_read pr "$PR"; then
   IFS='|' read -r STATE DRAFT MERGEABLE MSTATE HEAD BASE <<<"$(printf '%s' "$GH_OUT" | jq -r '[.state,(.is_draft|tostring),.mergeable,.merge_state,.head_sha,.base_ref]|map(. // "" | tostring)|join("|")')"
   # GitHub's own decision or "" (REST has none); an empty one is decided by
-  # the required count below, never assumed (#2333).
+  # the required count below, never assumed; with reviews required, an empty
+  # REST decision is unreadable, not missing approval (#2333).
   gh_read reviews "$PR" && DECISION="$(printf '%s' "$GH_OUT" | jq -r '.review_decision // ""')"
+  DECISION_REST="true" # this branch read the PR through the fallback; see the required count below
   # Checks only at the head just read: with no head there is no SHA to pin
   # them to, so they stay unreadable rather than read by PR number.
   CHECKS="unreadable"
@@ -261,8 +275,14 @@ else
       SOURCE="facts-unreadable" ;;
     '')
       if [ -n "$REQ" ]; then
-        SOURCE="required-count"
-        if [ "$REQ" = "0" ]; then APPROVAL="MET"; else APPROVAL="NOT_MET"; fi
+        if [ "$REQ" != "0" ] && [ "$DECISION_REST" = "true" ]; then
+          # REST gives no decision, so an empty one says nothing about the
+          # approvals: unreadable (a wait), never required-approval-missing.
+          SOURCE="facts-unreadable"
+        else
+          SOURCE="required-count"
+          if [ "$REQ" = "0" ]; then APPROVAL="MET"; else APPROVAL="NOT_MET"; fi
+        fi
       else
         # Another blocker an agent can clear (see other-blockers above).
         OTHER="false"

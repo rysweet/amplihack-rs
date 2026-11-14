@@ -213,7 +213,7 @@ wait_valid() {
     *) return 1 ;;
   esac
   case "$2" in ''|,*|*,|*[!a-z0-9,-]*) return 1 ;; esac
-  [ "${#2}" -le 200 ]
+  [ "${#2}" -le 400 ] # every closed wait id joined fits
 }
 
 # wait_stop: WAITING when every blocker of the round is a wait (#2472), read
@@ -227,9 +227,9 @@ wait_valid() {
 # exits with it.
 
 AUTODRIVE_EXIT_WAITING=76
-wait_stop() {
+wait_stop() { # wait_stop <RF>: RF 2 (a failed round) is WAITING only through the sidecar
   local src="" t r
-  if [ -f "$RECORD" ] && [ ! -L "$RECORD" ]; then src="${RAW:-}"
+  if [ -f "$RECORD" ] && [ ! -L "$RECORD" ]; then [ "${1:-0}" = 2 ] || src="${RAW:-}"
   elif [ -f "${RECORD}.wait" ] && [ ! -L "${RECORD}.wait" ] && [ -O "${RECORD}.wait" ]; then src="$(head -c 4096 -- "${RECORD}.wait")"; fi
   [ -n "$src" ] && [ "$(field "$src" round_waiting false)" = true ] || return 0
   t="$(field "$src" wait_target '')"
@@ -252,5 +252,23 @@ dispatch_wait_stop() {
   [ "${1:-}" = "$AUTODRIVE_EXIT_WAITING" ] && [ "${2:-}" = false ] && [ "$(field "${3:-}" loop_result '')" = WAITING ] || return 0
   echo "AUTO_DRIVE_LOOP: WAITING — loop '${LOOP_NAME}' stops at round label '${ROUND_LABEL:-?}': the PR head is unavailable on every read path; resume the drive later." >&2
   record_result "$3"
+  exit 0
+}
+
+# before_wait_stop <rc> <before_round_result> <stdout file>: the crusty
+# re-review before a merge round ended WAITING (exit 76, #2333/#2472), for
+# example because the PR head was unavailable on every path. The merge loop
+# stops WAITING, resumable, never BEFORE_ROUND_FAILED. A target or reason
+# outside the closed set returns, so the step counts as failed.
+before_wait_stop() {
+  local out t r
+  [ "${1:-}" = "$AUTODRIVE_EXIT_WAITING" ] && [ "${2:-}" = crusty-rereview-waiting ] || return 0
+  out="$(cat -- "${3:-}" 2>/dev/null)"
+  t="$(field "$out" wait_target '')"; r="$(field "$out" wait_reason '')"; r="${r:-crusty-rereview-waiting}"
+  if ! wait_valid "$t" "$r"; then
+    echo "WARNING: the crusty re-review says it is waiting, but its wait target or reason is not in the closed set; the before-round step counts as failed." >&2
+    return 0
+  fi
+  escalate "WAITING" "the crusty re-review before ${ROUND_LABEL} is waiting (${r})" waiting "$r" "$t"
   exit 0
 }

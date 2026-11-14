@@ -160,7 +160,8 @@ has three outcomes, matched explicitly in `dispatch.rs`:
 | --- | --- | --- |
 | `head-matches` | A source answered with the reviewed head SHA. | Dispatch continues. |
 | `head-differs` | A source answered with another SHA. | Refused: `current PR head differs from reviewed evidence`. A real finding; fails closed as before. |
-| `head-unavailable` | Every source failed, or the PR number could not be resolved (`pr-number-unresolved`). | `complete` becomes `WAITING`, exit `76`. |
+| `head-unavailable` | Every source failed, or the PR number read was unavailable (`pr-number-unresolved`). | `complete` becomes `WAITING`, exit `76`. |
+| refused | Every source refused the read (bad credentials, no permission, not found), the branch has no open PR, or the worktree is not on a branch. | An error, not a wait: `the PR head read was refused on every path (…); not a wait`. Waiting would not clear it. |
 
 The record, manifest and sidecar checks run **before** the head read. An
 invalid record is still refused as `INVALID_DECISION` when the head is also
@@ -169,11 +170,12 @@ unavailable, so a rate limit cannot turn a bad record into a wait.
 A `head-unavailable` dispatch prints one JSON line and exits `76`:
 
 ```json
-{"source":"head-check","loop_result":"WAITING","evaluator_invoked":false,"wait_reason":"head-unavailable","wait_target":"ratelimit-reset@1794528000"}
+{"loop":"crusty","loop_result":"WAITING","round_label":"round-1","reason":"the PR head could not be read on any path","wait_reason":"head-unavailable","wait_target":"ratelimit-reset@1794528000","evaluator_invoked":false}
 ```
 
 `wait_target` is `ratelimit-reset@<epoch>` or `ratelimit-reset@unknown` when a
-rate limit refused the read, otherwise `read@pr-head`. On `WAITING` dispatch
+rate limit refused the read, `read@pr-number` when the PR number read was
+unavailable, otherwise `read@pr-head`. On `WAITING` dispatch
 creates no `.dispatched` receipt, does not run the evaluator and does not
 write the sealed record, so the same decision can be dispatched again when the
 drive resumes. `autodrive_loop.sh` maps exit `76` to `record_result WAITING`

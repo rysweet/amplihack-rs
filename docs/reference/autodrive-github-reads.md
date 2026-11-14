@@ -205,7 +205,12 @@ rule on the base requires an approving review). No decision is ever worked
 out from the approval count: only GitHub knows the branch's review rules
 (required count, code owners, last push, who may approve). An empty decision
 sends `autodrive_platform_facts.sh` to its required-count, merge-state and
-review-rule logic, exactly as an empty GraphQL decision does.
+review-rule logic, with one difference: when the base requires approving
+reviews, an empty REST decision says nothing about them, so the approval is
+`UNREADABLE` with source `facts-unreadable` (the wait
+`approval-facts-unreadable`, target `read@reviews`). It is never
+`required-approval-missing`, which is fixable and would count toward `STUCK`
+while GraphQL is refused.
 
 **Checks**, from `commits/{sha}/check-runs` plus the legacy contexts in
 `commits/{sha}/status`. Results are read up to 10 pages and 8 MiB; a larger
@@ -257,8 +262,7 @@ from, in order:
 A value more than one day before or after now becomes `null`. Only the
 numeric value is kept; no other header text is stored.
 
-A `null` reset gives `wait_target` `ratelimit-reset@unknown` and
-`wait_reason` `rate-limited-reset-unknown`. Nothing sleeps until the reset.
+A `null` reset gives `wait_target` `ratelimit-reset@unknown`. Nothing sleeps until the reset.
 The loop ends `WAITING` and names the reset time, and the next drive run
 resumes from there.
 
@@ -271,13 +275,15 @@ resumes from there.
 | Checks at the head | `autodrive_platform_facts.sh` | `checks` | `read@checks` wait |
 | Reviews and approvals | `autodrive_platform_facts.sh` | `reviews` | `approval-facts-unreadable` wait |
 | Review threads | `autodrive_platform_facts.sh` | GraphQL only | `unresolved_threads: "unavailable"`, `read@threads` wait |
-| PR head | `autodrive_pr_head.sh`, completion dispatch | `head` | `crusty-pr-head-unreadable` wait; dispatch `head-unavailable` |
+| PR head | `autodrive_pr_head.sh` | `pr` (GraphQL, then REST; no `ls-remote`) | exit `4` (`pr-lookup-failed`); the caller reports it |
+| PR head | completion dispatch | `head` | dispatch `head-unavailable` wait, or an error when every path refused |
 | PR head (agent step) | `autodrive-crusty-round.yaml` step-01-round-context | `head` | Wait recorded in the round's `.wait` sidecar; see [What the agent steps are told](#what-the-agent-steps-are-told) |
 | Merge state and base (agent step) | `autodrive-merge-evidence.yaml` step-01-sync-with-base | `pr` | `base-unavailable`; a wait, and no merge from a guessed `main` |
 | Checks at the head (agent step) | `autodrive-merge-evidence.yaml` step-03-wait-for-ci | `checks <sha>` | `ci_status` `UNREADABLE`, `read@checks` wait |
 
-`autodrive_pr_head.sh` exits `4` only when every path is unavailable, and
-prints the helper's reason. `gh` state values from REST are upper-cased
+`autodrive_pr_head.sh` exits `4` when every path is unavailable or the head
+it read is unusable; its message names the helper's reason when the read
+was rate-limited. `gh` state values from REST are upper-cased
 before use.
 
 Finalize (`autodrive-finalize.yaml`) keeps its own checks before it merges.
@@ -295,8 +301,8 @@ the helper's JSON line in its result, not raw `gh` output.
 | Step | What the prompt requires |
 | --- | --- |
 | `autodrive-crusty-round.yaml` step-01-round-context | Read the head with `amplihack orch helper autodrive-gh-read head <n>`. Exit `3` (head unavailable) is a wait: write the [`.wait` sidecar](#the-wait-sidecar) next to `RECIPE_VAR_autodrive_round_record` and report the round incomplete. A head that answers with another SHA than the local head is a refusal, as before. The two are never confused. |
-| `autodrive-merge-evidence.yaml` step-01-sync-with-base | Read merge state, mergeable and base with `autodrive-gh-read pr <n>`. An unavailable base is `base-unavailable`; never merge a guessed base. On an `UNKNOWN` merge state, read the head with `autodrive-gh-read head <n>`, call `autodrive-gh-update-branch <n> --expected-head-sha <that head> --prior-wait "{{autodrive_prior_wait}}"` and record its JSON line, then write this round's [`.wait` sidecar](#the-wait-sidecar). The prompt never reads the previous sidecar itself and never decides whether the write is allowed; the helper does. See [Recomputing an UNKNOWN merge state](#recomputing-an-unknown-merge-state). |
-| `autodrive-merge-evidence.yaml` step-03-wait-for-ci | Read the checks once with `autodrive-gh-read checks <head sha>`. Pending or queued checks at the head are a wait on that SHA (`ci_status` `PENDING`). Never sleep, never read the checks again in the same step. A `GREEN` rollup is still confirmed with `autodrive_expected_checks.sh`, as before (#2186). |
+| `autodrive-merge-evidence.yaml` step-01-sync-with-base | Read merge state, mergeable and base with `autodrive-gh-read pr <n>`. An unavailable base is the wait `base-unavailable`; a read refused on every path is the finding `gh-read-refused`. Never merge a guessed base. On an `UNKNOWN` merge state, read the head with `autodrive-gh-read head <n>`, call `autodrive-gh-update-branch <n> --expected-head-sha <that head> --prior-wait "{{autodrive_prior_wait}}"` and record its JSON line, then write this round's [`.wait` sidecar](#the-wait-sidecar). The prompt never reads the previous sidecar itself and never decides whether the write is allowed; the helper does. See [Recomputing an UNKNOWN merge state](#recomputing-an-unknown-merge-state). |
+| `autodrive-merge-evidence.yaml` step-03-wait-for-ci | Read the checks once with `autodrive-gh-read checks <head sha>`. Pending or queued checks at the head are a wait on that SHA (`ci_status` `PENDING`). Exit `3` is `UNREADABLE` (a wait), or the finding `gh-read-refused` when every path refused. Never sleep, never read the checks again in the same step. A `GREEN` rollup is still confirmed with `autodrive_expected_checks.sh`, as before (#2186). |
 | `autodrive-merge-loop.yaml` step-01-merge-loop-preflight | Reads `<state dir>/crusty-result.json`. A crusty result of `WAITING` is passed up as `should_run` `"false"` and `crusty_waiting` `"true"`; the merge loop does not run. Step-02b runs only when `'WAITING' not in merge_loop_result`, and step-03 (finalize) only when that holds and `crusty_waiting` is not `"true"`. |
 
 Step-03 replaces main's earlier instruction to "poll pending work to its
@@ -326,10 +332,14 @@ fixable findings count toward `STUCK`.
 | **Fixable** | Required checks `MISSING` at the head |
 | **Fixable** | QA failures |
 | **Fixable** | Any id the classifier does not recognise |
+| **Fixable** | An `unavailable` entry with an unknown `read` name (`gh-read-unknown`) |
+| **Fixable** | A read refused on every path (`gh-read-refused`) or a refused update-branch (`update-branch-refused`) |
 
 Waits come from measured facts in the round evidence. A finding id written
-by an agent becomes a wait only when its whole id ends with one of the fixed
-wait ids above; anything else stays fixable. Errors in classing therefore
+by an agent becomes a wait only when the whole id equals one of the fixed
+wait ids: `ci-pending`, `approval-facts-unreadable`,
+`expected-checks-unreadable`, `crusty-pr-head-unreadable` and
+`base-unavailable`; anything else stays fixable. Errors in classing therefore
 lean toward `STUCK`, never toward a silent wait.
 
 ### The measured-evidence downgrade
@@ -370,6 +380,39 @@ dropped and the round is wait-only. A round with
 The `ci_signal` input of `autodrive-round-waits` follows the same rule:
 `PENDING` and `QUEUED` give `ci@<head_sha>`, `UNREADABLE` gives
 `read@checks`, and every other value adds no wait.
+
+### The merge round's record
+
+Since #2340 the merge round's step-03 writes its record with
+`amplihack orch helper autodrive round`, not with the shell `round_record`.
+That helper classes the round too. When the assessment is not merge-ready,
+it reads the round's measured facts from its recipe context
+(`RECIPE_VAR_platform_facts`, `RECIPE_VAR_ci_evidence`,
+`RECIPE_VAR_merge_sync`) and builds the classifier input with
+`round_input` in `autodrive_waits.rs`. A blocked criterion is left out of
+the fixable ids only when a measured wait explains it:
+
+| Criterion | Explained by |
+| --- | --- |
+| `checks` | CI `PENDING`, `QUEUED` or `UNREADABLE`, or an unavailable `checks` read when CI was not measured at all, but never while a check is failing (`ci_failing` above 0 or `ci_signal` `RED`) |
+| `conflicts` | merge state or mergeable `UNKNOWN`, or an unavailable `pr` read, but never beside `DIRTY` or `CONFLICTING` |
+| `approvals` | approval source `facts-unreadable` (the wait `approval-facts-unreadable`), an unavailable `reviews` read, or approval `PENDING` beside a CI or mergeability wait |
+| `conversations` | `unresolved_threads` `unavailable` or `unreadable` (the threads wait) |
+
+Every other blocked criterion is a fixable id, and so is
+`wait-facts-unparsed` when `unavailable` or `recompute` does not parse.
+`recompute` may be the update-branch helper's whole JSON line, as an object
+or as text; only `action`, `result`, `pushed_sha`, `rate_limited` and
+`reset_epoch` are read. The ids `gh-read-refused` (fixable) and
+`base-unavailable` (a wait) are also taken from the `blockers` of
+`ci_evidence` and `merge_sync`. With
+no measured facts at all, every blocked criterion stays fixable, as before.
+The helper writes the fixable ids to `.findings` and adds `merge_state`,
+`waits`, `wait_target` and `round_waiting` to the record, which is what
+`wait_stop` reads.
+
+The shell `round_record` below describes the same fields for the
+`autodrive_round_evidence.sh` subcommands.
 
 `round_record` (in `autodrive_round_evidence.sh`) gains these fields:
 
@@ -468,7 +511,7 @@ How a loop reaches it:
 | Recipe | Behaviour |
 | --- | --- |
 | `autodrive-merge-loop.yaml` step-02-merge-ready-loop | `autodrive_loop.sh` exits `0` on `WAITING` as it does on `DONE`, so the step reads `loop_result` from the output, never the exit code. |
-| `autodrive-merge-loop.yaml` step-02b-file-followups, step-03-finalize | Each has the condition `merge_loop_preflight.should_run == 'true' and 'WAITING' not in merge_loop_result`. On `WAITING` no follow-up issue is filed and finalize does not run, so nothing merges. |
+| `autodrive-merge-loop.yaml` step-02b-file-followups, step-03-finalize | Step-02b has the condition `merge_loop_preflight.should_run == 'true' and 'WAITING' not in merge_loop_result`; step-03 has `'WAITING' not in merge_loop_result and merge_loop_preflight.crusty_waiting != 'true'`. On `WAITING` no follow-up issue is filed and finalize does not run, so nothing merges. |
 | `autodrive-merge-loop.yaml` step-01-merge-loop-preflight | A crusty `WAITING` is passed up; the merge loop is skipped. |
 | `auto-drive-to-merge.yaml` | Unchanged. The run report comes from the reducer; see [How the run report shows WAITING](#how-the-run-report-shows-waiting). |
 
@@ -597,21 +640,21 @@ On an `UNKNOWN` merge state, step-01 does the following:
    head read this round, so the next round can qualify.
 
 A branch that is behind its base locally is still merged and pushed by
-step-01's existing sync, as on main (`recompute_action` `merge-push`).
+step-01's existing sync, as on main (`recompute.action` `merge-push`).
 
 The first `UNKNOWN` at a head is therefore always a wait with no write, and
 the second at the same head is the earliest point a write can happen.
 
 The outcome is recorded in `merge_sync`:
 
-| `merge_sync.recompute_action` | When |
+| `merge_sync.recompute.action` | When |
 | --- | --- |
 | `merge-push` | The branch was behind; base merged locally and pushed. |
 | `none` | The helper answered `first-read`; no write was made. |
 | `update-branch` | The helper sent the update-branch request. |
 | `noop-up-to-date` | GitHub answered 422 "no new commits"; the branch is already up to date. |
 
-`merge_sync.recompute_result` holds `ok`, `refused`, `unavailable` or
+`merge_sync.recompute.result` holds `ok`, `refused`, `unavailable` or
 `first-read`. When the round also waits on a rate-limit reset or on pending
 CI, that target ranks higher and stays. Otherwise the round's `wait_target`
 comes from `recompute_target` in `autodrive_waits.rs`:
@@ -623,9 +666,9 @@ comes from `recompute_target` in `autodrive_waits.rs`:
 | `update-branch` / `ok` | `mergeability@<expected_head_sha>`. GitHub answers `202` and makes the new head later, so its SHA is not known in this round. |
 | `noop-up-to-date` / `ok` | `mergeability@<expected_head_sha>`. |
 | any action / `unavailable` | `ratelimit-reset@<epoch>` or `ratelimit-reset@unknown` when the call was rate-limited, otherwise `read@pr`. |
-| `update-branch` / `refused` | `read@pr-head`. The head has probably moved, so the next round reads it again and starts the two-round count from the new head. |
+| `update-branch` / `refused` | Not a wait: the round has the fixable finding `update-branch-refused`. A 403 would otherwise repeat the forbidden write on every drive; after a 422 for a moved head, the next round sees a new head, which is progress, not `STUCK`. |
 
-None of these is `STUCK`. The recompute runs at most once per round, is
+Only `refused` is a fixable finding; none of the others counts toward `STUCK`. The recompute runs at most once per round, is
 never retried and never merges.
 
 ## `amplihack orch helper autodrive-gh-update-branch`
@@ -659,7 +702,7 @@ auto-drive makes through these helpers, and it is made only after the
 | `none` / `first-read` | The previous sidecar is missing, empty-path, refused by the strict reader, not `UNKNOWN`, or at another head. No `gh` call was made. `reason` is one of `prior wait: none`, `prior wait: invalid`, `prior wait: not unknown`, `prior wait: head differs`. |
 | `update-branch` / `ok` | GitHub accepted the request (202). |
 | `noop-up-to-date` / `ok` | GitHub answered 422 with no new commits. |
-| `update-branch` / `refused` | GitHub refused: a 403, a 422 for an expected SHA mismatch, or any other error that is not transient. Never turned into a wait, so a forbidden write is never repeated. |
+| `update-branch` / `refused` | GitHub refused: a 403, a 422 for an expected SHA mismatch, or any other error that is not transient. Never turned into a wait: the classifier records the fixable finding `update-branch-refused`, so a forbidden write is not repeated on every drive. |
 | `update-branch` / `unavailable` | Network failure or rate limit; `reset_epoch` is included. |
 
 | Argument | Rule |

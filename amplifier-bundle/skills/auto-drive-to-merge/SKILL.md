@@ -124,13 +124,14 @@ See the Crusty completion contract in `docs/reference/autodrive-crusty-completio
 
 ## Waits end a run as WAITING
 
-CI pending or queued at the head, a GitHub read refused or rate-limited, and
-a merge state of `UNKNOWN` are waits, not lack of progress. Read GitHub
+CI pending or queued at the head, a GitHub read unavailable or rate-limited,
+and a merge state of `UNKNOWN` are waits, not lack of progress. Read GitHub
 through `amplihack orch helper autodrive-gh-read` (`pr`, `head`, `checks`,
 `reviews`), which falls back from GraphQL to REST, and to `git ls-remote`
 for the head, so a GraphQL secondary limit alone does not stop a drive. A
-read that fails on every path is `unavailable`, which is a wait; "head
-differs" is still a refusal.
+read that fails on every path is `unavailable`, which is a wait, unless
+every path refused it (bad credentials, no permission, not found): that is
+the fixable finding `gh-read-refused`. "Head differs" is still a refusal.
 
 A round whose only blockers are waits ends its loop with `loop_result`
 `WAITING`: resumable, not a failure, not `DONE`, and it never merges. The

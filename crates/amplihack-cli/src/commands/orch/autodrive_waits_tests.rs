@@ -14,6 +14,7 @@
 
 use super::{
     Input, Output, PriorWait, classify, prior_wait_gate, read_prior_wait, recompute_target,
+    round_input,
 };
 use serde_json::{Value, json};
 
@@ -281,6 +282,23 @@ fn precedence_is_ratelimit_ci_mergeability_read() {
 }
 
 // ── R7 recompute wait targets ────────────────────────────────────────────────
+
+#[test]
+fn a_refused_update_branch_is_fixable_not_a_wait() {
+    // A 403 would otherwise repeat the forbidden write every drive and never
+    // count toward STUCK.
+    let out = run(json!({
+        "merge_state": "UNKNOWN", "mergeable": "UNKNOWN",
+        "recompute": {"action": "update-branch", "result": "refused"}
+    }));
+    assert_eq!(out.fixable, vec!["update-branch-refused".to_string()]);
+    assert!(!out.round_waiting, "{out:?}");
+    let ok = run(json!({
+        "merge_state": "UNKNOWN", "mergeable": "UNKNOWN",
+        "recompute": {"action": "update-branch", "result": "ok"}
+    }));
+    assert!(ok.fixable.is_empty() && ok.round_waiting, "{ok:?}");
+}
 
 #[test]
 fn recompute_targets_follow_the_documented_table() {
@@ -559,4 +577,199 @@ fn pending_ci_stays_the_target_over_a_merge_state_recompute() {
         "recompute": {"action": "merge-push", "result": "ok", "pushed_sha": PUSHED}
     }));
     assert_eq!(o.wait_target, format!("mergeability@{PUSHED}"), "{o:?}");
+}
+
+#[test]
+fn an_unknown_read_name_is_fixable_not_dropped() {
+    let out = run(json!({
+        "unavailable": [{"read": "base", "rate_limited": false, "reset_epoch": null}]
+    }));
+    assert_eq!(out.fixable, vec!["gh-read-unknown".to_string()]);
+    assert!(!out.round_waiting, "{out:?}");
+}
+
+// ── round_input: the merge round's blocked criteria against measured facts ──
+
+fn merge_round(blocked: &[&str], facts: Value, ci: Value, sync: Value) -> Output {
+    classify(&round_input(SHA, blocked, &facts, &ci, &sync))
+}
+
+#[test]
+fn a_merge_round_blocked_only_by_pending_ci_is_waiting_on_the_head() {
+    let out = merge_round(
+        &["checks"],
+        json!({"merge_state": "BLOCKED", "mergeable": "MERGEABLE"}),
+        json!({"ci_status": "PENDING", "ci_signal": "PENDING"}),
+        Value::Null,
+    );
+    assert!(out.round_waiting && out.fixable.is_empty(), "{out:?}");
+    assert_eq!(out.wait_target, format!("ci@{SHA}"));
+}
+
+#[test]
+fn a_merge_round_with_unknown_mergeability_and_a_recompute_waits_on_mergeability() {
+    let out = merge_round(
+        &["conflicts"],
+        json!({"merge_state": "UNKNOWN", "mergeable": "UNKNOWN"}),
+        json!({"ci_signal": "GREEN"}),
+        json!({"recompute": {"action": "none", "result": "first-read"}}),
+    );
+    assert!(out.round_waiting, "{out:?}");
+    assert_eq!(out.wait_target, format!("mergeability@{SHA}"));
+}
+
+#[test]
+fn a_blocker_no_measured_wait_explains_stays_fixable() {
+    // Failing checks, a real conflict and an unrelated criterion: no waits.
+    let out = merge_round(
+        &["checks", "conflicts", "documentation"],
+        json!({"merge_state": "DIRTY", "mergeable": "CONFLICTING"}),
+        json!({"ci_signal": "RED"}),
+        Value::Null,
+    );
+    assert_eq!(out.fixable, ["checks", "conflicts", "documentation"]);
+    assert!(!out.round_waiting);
+}
+
+#[test]
+fn a_mixed_merge_round_keeps_only_its_fixable_criteria() {
+    let out = merge_round(
+        &["checks", "documentation"],
+        json!({}),
+        json!({"ci_signal": "PENDING"}),
+        Value::Null,
+    );
+    assert_eq!(out.fixable, ["documentation"]);
+    assert_eq!(out.waits, ["ci-pending"]);
+    assert!(!out.round_waiting);
+}
+
+#[test]
+fn unreadable_approval_facts_and_threads_are_waits_and_refused_reads_are_not() {
+    let out = merge_round(
+        &["approvals", "conversations"],
+        json!({"approval_source": "facts-unreadable", "unresolved_threads": "unavailable"}),
+        json!({"ci_signal": "GREEN"}),
+        Value::Null,
+    );
+    assert!(out.round_waiting && out.fixable.is_empty(), "{out:?}");
+    let refused = merge_round(
+        &["approvals"],
+        json!({"approval_source": "facts-unreadable", "unavailable": [
+            {"read": "pr", "rate_limited": false, "reset_epoch": null, "refused": true}
+        ]}),
+        json!({}),
+        Value::Null,
+    );
+    assert!(
+        refused.fixable.contains(&"gh-read-refused".to_string()),
+        "{refused:?}"
+    );
+    assert!(!refused.round_waiting);
+}
+
+#[test]
+fn measured_facts_that_do_not_parse_lean_toward_stuck() {
+    let out = merge_round(
+        &["checks"],
+        json!({"unavailable": "not a list"}),
+        json!({"ci_signal": "PENDING"}),
+        json!({"recompute": {"action": "update_branch", "result": "ok"}}),
+    );
+    assert_eq!(out.fixable, ["wait-facts-unparsed"]);
+    assert!(!out.round_waiting);
+}
+
+#[test]
+fn a_round_with_no_measured_facts_keeps_every_blocked_criterion() {
+    let out = merge_round(
+        &["checks", "approvals"],
+        Value::Null,
+        Value::Null,
+        Value::Null,
+    );
+    assert_eq!(out.fixable, ["checks", "approvals"]);
+}
+
+#[test]
+fn the_update_branch_helpers_own_line_is_accepted_as_the_recompute() {
+    // The prompt records the helper's JSON line, which carries pr,
+    // expected_head_sha and reason too; as an object or as text.
+    let line = json!({"pr": 7, "action": "none", "result": "first-read",
+        "expected_head_sha": SHA, "reason": "prior wait: none"});
+    for recompute in [line.clone(), json!(line.to_string())] {
+        let out = merge_round(
+            &["conflicts"],
+            json!({"merge_state": "UNKNOWN", "mergeable": "UNKNOWN"}),
+            json!({"ci_signal": "GREEN"}),
+            json!({"recompute": recompute}),
+        );
+        assert!(out.round_waiting && out.fixable.is_empty(), "{out:?}");
+        assert_eq!(out.wait_target, format!("mergeability@{SHA}"));
+    }
+    let refused = merge_round(
+        &["conflicts"],
+        json!({"merge_state": "UNKNOWN", "mergeable": "UNKNOWN"}),
+        json!({}),
+        json!({"recompute": {"pr": 7, "action": "update-branch", "result": "refused",
+            "expected_head_sha": SHA, "reason": "HTTP 403"}}),
+    );
+    assert_eq!(refused.fixable, ["update-branch-refused"]);
+}
+
+#[test]
+fn prompt_reported_refusals_are_fixable_and_an_unavailable_base_is_a_wait() {
+    let refused = merge_round(
+        &["checks"],
+        json!({}),
+        json!({"ci_signal": "UNREADABLE", "blockers": ["gh-read-refused"]}),
+        Value::Null,
+    );
+    assert_eq!(refused.fixable, ["gh-read-refused"]);
+    let base = merge_round(
+        &["conflicts"],
+        json!({"merge_state": "UNKNOWN", "mergeable": "UNKNOWN"}),
+        json!({}),
+        json!({"synced": "false", "blockers": [{"id": "base-unavailable"}]}),
+    );
+    assert!(base.round_waiting && base.fixable.is_empty(), "{base:?}");
+}
+
+#[test]
+fn a_failing_check_or_a_known_conflict_is_never_explained_by_a_wait() {
+    let failing = merge_round(
+        &["checks"],
+        json!({}),
+        json!({"ci_signal": "PENDING", "ci_failing": 1}),
+        Value::Null,
+    );
+    assert_eq!(failing.fixable, ["checks"]);
+    let dirty = merge_round(
+        &["conflicts"],
+        json!({"merge_state": "DIRTY", "mergeable": "UNKNOWN"}),
+        json!({"ci_signal": "GREEN"}),
+        Value::Null,
+    );
+    assert_eq!(dirty.fixable, ["conflicts"]);
+    assert!(!dirty.round_waiting);
+}
+
+#[test]
+fn an_unavailable_checks_read_explains_checks_only_when_ci_was_not_measured() {
+    let facts = json!({"unavailable": [
+        {"read": "checks", "rate_limited": true, "reset_epoch": null}
+    ]});
+    let missing = merge_round(
+        &["checks"],
+        facts.clone(),
+        json!({"ci_signal": "MISSING"}),
+        Value::Null,
+    );
+    assert_eq!(missing.fixable, ["checks"], "{missing:?}");
+    let unmeasured = merge_round(&["checks"], facts, Value::Null, Value::Null);
+    assert!(
+        unmeasured.round_waiting && unmeasured.fixable.is_empty(),
+        "{unmeasured:?}"
+    );
+    assert_eq!(unmeasured.wait_target, "ratelimit-reset@unknown");
 }

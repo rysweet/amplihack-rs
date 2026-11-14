@@ -384,7 +384,9 @@ waits, not lack of progress (#2333, #2472).
 
 - Rounds read GitHub through `amplihack orch helper autodrive-gh-read`, which
   falls back from GraphQL to REST, and to `git ls-remote` for the head. A
-  read that fails on every path reports `unavailable`, never a finding.
+  read that fails on every path reports `unavailable`, a wait, never a
+  finding; a read every path refused (bad credentials, no permission, not
+  found) is the fixable finding `gh-read-refused`.
 - Each round's blockers are sorted in code into waits and fixable findings.
   Only fixable findings reach the no-progress check and the evaluator.
 - A round whose only blockers are waits ends its loop with `loop_result`

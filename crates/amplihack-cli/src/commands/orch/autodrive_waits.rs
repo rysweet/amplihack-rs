@@ -17,6 +17,7 @@ const WAIT_IDS: &[&str] = &[
     "approval-facts-unreadable",
     "expected-checks-unreadable",
     "crusty-pr-head-unreadable",
+    "base-unavailable",
 ];
 const MEAD: &str = "measured-evidence-disagrees";
 
@@ -34,6 +35,10 @@ pub struct UnavailableRead {
 
 /// Finding id for a read that every path refused.
 const READ_REFUSED: &str = "gh-read-refused";
+/// Finding id for an update-branch GitHub refused (a 403, or a 422 because the
+/// head moved). Waiting will not clear a forbidden write, and a moved head is
+/// a new head next round, so neither is a wait.
+const UPDATE_BRANCH_REFUSED: &str = "update-branch-refused";
 
 /// The outcome of an R7 merge-state recompute, when step-01 ran one.
 #[derive(Debug, Deserialize)]
@@ -115,8 +120,8 @@ fn at_sha(kind: &str, sha: &str) -> String {
     }
 }
 
-/// The wait id and `read@…` target for a helper read name; unknown names
-/// are not waits.
+/// The wait id and `read@…` target for a helper read name; an unknown name
+/// is not a wait (the caller records it as fixable).
 fn read_wait(read: &str) -> Option<(&'static str, &'static str)> {
     Some(match read {
         "pr" => ("pr-unavailable", "read@pr"),
@@ -194,6 +199,8 @@ pub fn classify(input: &Input) -> Output {
     }
     for u in &input.unavailable {
         let Some((id, target)) = read_wait(&u.read) else {
+            // An unknown read name is a classing error: fixable, never dropped.
+            push(&mut fixable, "gh-read-unknown");
             continue;
         };
         if u.refused {
@@ -221,6 +228,7 @@ pub fn classify(input: &Input) -> Output {
                 }
                 "approval-facts-unreadable" => t.read("read@reviews"),
                 "expected-checks-unreadable" => t.read("read@checks"),
+                "base-unavailable" => t.read("read@pr"),
                 _ => t.read("read@pr-head"),
             }
         } else {
@@ -274,6 +282,13 @@ pub fn classify(input: &Input) -> Output {
     }
     if mead && !all_wait {
         push(&mut fixable, MEAD);
+    }
+    if input
+        .recompute
+        .as_ref()
+        .is_some_and(|r| r.result == "refused")
+    {
+        push(&mut fixable, UPDATE_BRANCH_REFUSED);
     }
 
     let mut wait_target = if waits.is_empty() {
@@ -416,6 +431,146 @@ pub fn prior_wait_gate(path: &str, expected_head_sha: &str) -> Result<(), &'stat
         return Err("prior wait: head differs");
     }
     Ok(())
+}
+
+// ── The merge round's own classing (`orch helper autodrive round`) ────────
+
+/// Finding id when a measured input the classifier needs cannot be parsed.
+const FACTS_UNPARSED: &str = "wait-facts-unparsed";
+
+/// An upper-case signal token: the text before any `:`, `A`–`Z` and `_` only.
+fn token(v: &serde_json::Value) -> String {
+    v.as_str()
+        .unwrap_or_default()
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase()
+        .chars()
+        .filter(|c| c.is_ascii_uppercase() || *c == '_')
+        .collect()
+}
+
+/// The classifier input for one merge round, built from the criteria the
+/// assessment left blocked and the round's measured facts: `platform_facts`
+/// (merge state, approval, threads, unavailable reads), `ci_evidence` (the CI
+/// signal) and `merge_sync` (the recompute). A blocked criterion is dropped
+/// only when a measured wait explains it; every other one stays a fixable
+/// id, and a measured input that does not parse is a fixable id too.
+pub fn round_input(
+    head_sha: &str,
+    blocked: &[&str],
+    facts: &serde_json::Value,
+    ci: &serde_json::Value,
+    sync: &serde_json::Value,
+) -> Input {
+    let mut findings = Vec::new();
+    let mut measured_downgrade = Vec::new();
+    let ci_signal = match token(&ci["ci_signal"]) {
+        s if s.is_empty() => token(&ci["ci_status"]),
+        s => s,
+    };
+    let merge_state = token(&facts["merge_state"]);
+    let mergeable = token(&facts["mergeable"]);
+    let unavailable = match &facts["unavailable"] {
+        serde_json::Value::Null => Vec::new(),
+        v => serde_json::from_value::<Vec<UnavailableRead>>(v.clone()).unwrap_or_else(|_| {
+            push(&mut findings, FACTS_UNPARSED);
+            Vec::new()
+        }),
+    };
+    // The helper's own line (with `pr`, `expected_head_sha`, `reason`), as an
+    // object or as JSON text: only the fields the classifier reads are kept.
+    let recompute = match &sync["recompute"] {
+        serde_json::Value::Null => None,
+        v => {
+            let v = match v {
+                serde_json::Value::String(t) => serde_json::from_str(t).unwrap_or_default(),
+                v => v.clone(),
+            };
+            let mut kept = serde_json::Map::new();
+            for k in [
+                "action",
+                "result",
+                "pushed_sha",
+                "rate_limited",
+                "reset_epoch",
+            ] {
+                if let Some(x) = v.get(k).filter(|x| !x.is_null()) {
+                    kept.insert(k.to_string(), x.clone());
+                }
+            }
+            serde_json::from_value::<Recompute>(serde_json::Value::Object(kept))
+                .map_err(|_| push(&mut findings, FACTS_UNPARSED))
+                .ok()
+        }
+    };
+    // The ids the merge-evidence prompts name for a refused read and an
+    // unavailable base; any other agent text is left to the criteria.
+    for list in [&ci["blockers"], &sync["blockers"]] {
+        for b in list.as_array().into_iter().flatten() {
+            let id = b.as_str().or_else(|| b["id"].as_str()).unwrap_or_default();
+            if matches!(id, "gh-read-refused" | "base-unavailable") {
+                push(&mut findings, id);
+            }
+        }
+    }
+    let ci_failed = ci["ci_failing"].as_u64().is_some_and(|n| n > 0)
+        || ci["ci_failing"]
+            .as_str()
+            .and_then(|s| s.parse::<u64>().ok())
+            .is_some_and(|n| n > 0)
+        || ci_signal == "RED";
+    let ci_wait = matches!(ci_signal.as_str(), "PENDING" | "QUEUED") && !ci_failed;
+    // A known conflict is never explained by an UNKNOWN beside it.
+    let merge_wait = (merge_state == "UNKNOWN" || mergeable == "UNKNOWN")
+        && merge_state != "DIRTY"
+        && mergeable != "CONFLICTING";
+    let read_wait = |r: &str| unavailable.iter().any(|u| u.read == r && !u.refused);
+    let approval_source = facts["approval_source"].as_str().unwrap_or_default();
+    let approval_status = token(&facts["approval_status"]);
+    let threads = facts["unresolved_threads"].as_str().unwrap_or_default();
+    for c in blocked {
+        let explained = match *c {
+            "checks" => {
+                // The facts' own checks read counts only when CI was not measured:
+                // a MISSING or GREEN signal is a measurement.
+                ci_wait
+                    || (!ci_failed
+                        && (ci_signal == "UNREADABLE"
+                            || (ci_signal.is_empty() && read_wait("checks"))))
+            }
+            "conflicts" => {
+                merge_wait
+                    || (read_wait("pr") && merge_state != "DIRTY" && mergeable != "CONFLICTING")
+            }
+            "approvals" => {
+                approval_source == "facts-unreadable"
+                    || read_wait("reviews")
+                    || (approval_status == "PENDING" && (ci_wait || merge_wait))
+            }
+            "conversations" => matches!(threads, "unavailable" | "unreadable"),
+            _ => false,
+        };
+        if !explained {
+            push(&mut findings, c);
+        } else if *c == "approvals" && approval_source == "facts-unreadable" {
+            push(&mut findings, "approval-facts-unreadable");
+        } else if *c == "conversations" {
+            // The classifier turns this token into the threads wait.
+            measured_downgrade.push("unresolved_threads=unreadable".to_string());
+        }
+    }
+    Input {
+        head_sha: head_sha.to_string(),
+        ci_signal,
+        merge_state,
+        mergeable,
+        unavailable,
+        findings,
+        measured_downgrade,
+        recompute,
+    }
 }
 
 /// `amplihack orch helper autodrive-round-waits`: JSON on stdin, one JSON

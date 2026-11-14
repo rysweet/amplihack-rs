@@ -697,6 +697,9 @@ fn rest_fallback_with_no_review_rule_and_no_reviews_is_not_a_missing_approval() 
 
 #[test]
 fn rest_fallback_never_calls_one_approval_enough_when_two_are_required() {
+    // REST has no review decision, so with reviews required the approval is
+    // unreadable (a wait on read@reviews): never MET, and never the fixable
+    // required-approval-missing, which would count toward STUCK in an outage.
     let g = GhRepo::new();
     g.mode("gql", "refuse");
     g.fixture(
@@ -707,9 +710,9 @@ fn rest_fallback_never_calls_one_approval_enough_when_two_are_required() {
     let v = platform_facts(&g);
     assert_eq!(v["review_decision"], "", "{v}");
     assert_eq!(v["required_approvals"], "2", "{v}");
-    assert_eq!(v["approval_status"], "NOT_MET", "{v}");
-    assert_eq!(v["approval_source"], "required-count", "{v}");
-    assert_eq!(v["approval_blocker"], "required-approval-missing", "{v}");
+    assert_eq!(v["approval_status"], "UNREADABLE", "{v}");
+    assert_eq!(v["approval_source"], "facts-unreadable", "{v}");
+    assert_eq!(v["approval_blocker"], "approval-facts-unreadable", "{v}");
 }
 
 #[test]
@@ -725,6 +728,24 @@ fn bad_credentials_on_every_path_reach_the_waits_classifier_as_refused() {
     assert!(
         u.iter()
             .all(|r| r["refused"] == true && r["rate_limited"] == false),
+        "{v}"
+    );
+}
+
+#[test]
+fn no_open_pr_for_the_branch_is_a_refused_read_not_a_wait() {
+    // A definite "no open PR" never clears by waiting: the facts carry a
+    // refused pr-for-branch entry, which the classifier makes gh-read-refused.
+    let g = GhRepo::new();
+    g.mode("gql", "refuse");
+    g.fixture("rest-pulls.json", &json!([]));
+    let o = tool(&g, "autodrive_platform_facts.sh", &[]);
+    assert!(o.status.success(), "{}", show(&o));
+    let v = last_json(&o);
+    let u = v["unavailable"].as_array().unwrap_or_else(|| panic!("{v}"));
+    assert!(
+        u.iter()
+            .any(|r| r["read"] == "pr-for-branch" && r["refused"] == true),
         "{v}"
     );
 }

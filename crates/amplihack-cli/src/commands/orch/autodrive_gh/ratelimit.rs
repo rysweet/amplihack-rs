@@ -102,3 +102,16 @@ pub fn is_refusal(text: &str) -> bool {
         }
     }
 }
+
+static REQUEST_URL: LazyLock<Regex> = LazyLock::new(|| re(r"\(?https?://[^\s)]*\)?"));
+static GRAPHQL_NUMBER: LazyLock<Regex> = LazyLock::new(|| re(r"number of [0-9]+"));
+
+/// `text` without the parts gh copies from the request: the URL it appends
+/// (`HTTP 404: Not Found (https://api.github.com/repos/o/r/pulls/429)`) and
+/// GraphQL's `number of <n>`. A PR number or a SHA there must not match the
+/// bare 401, 403 or 429 rules. Used before [`classify`] and [`is_refusal`];
+/// [`reset_from_text`] still reads the whole text.
+pub fn without_request(text: &str) -> String {
+    let t = REQUEST_URL.replace_all(text, "");
+    GRAPHQL_NUMBER.replace_all(&t, "number").into_owned()
+}

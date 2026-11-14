@@ -227,7 +227,7 @@ while :; do
       escalate "TERMINAL_POLICY_REFUSAL" "the before-round step returned a policy refusal (${TERMINAL_WHY})"
       exit "$AUTODRIVE_EXIT_POLICY_REFUSAL"
     fi
-    usage_limit_stop "$BEFORE_RC" "$BEFORE_LOG" "the before-round step failed on a Claude usage limit that no login lifted"
+    usage_limit_stop "$BEFORE_RC" "$BEFORE_LOG" "the before-round step failed on a Claude usage limit that no login lifted"; before_wait_stop "$BEFORE_RC" "$BEFORE_RESULT" "${BEFORE_LOG}.out"
     if [ "$BEFORE_RC" -ne 0 ]; then # a nested BUDGET_EXHAUSTED, or a limit reached, is reported as such
       [ "$BEFORE_RESULT" = "crusty-rereview-budget-exhausted" ] && budget_stop before --force; budget_stop before
       escalate "BEFORE_ROUND_FAILED" "the before-round step ${BEFORE_ROUND##*/} exited ${BEFORE_RC} (${BEFORE_RESULT:-no before_round_result}; $(child_failure_summary "$BEFORE_RC" "$BEFORE_LOG")); ${ROUND_LABEL} did not run"
@@ -270,8 +270,8 @@ while :; do
   # #1743, decided in code before the evaluator: no progress, then the budget. RF: 1 clean, 2 failed (rc!=0 or no verdict; the evaluator judges faults), 0 otherwise.
   HEAD_NOW="$(git -C "$REPO" rev-parse HEAD || printf '')"; CI_SIGNAL="$(field "$RAW" ci_signal "")"
   RF=0; [ "$ROUND_CLEAN" = "true" ] && RF=1 || { [ "$ROUND_RC" -eq 0 ] && [ "$ROUND_VERDICT" != "MISSING" ]; } || RF=2
-  WAIT_REJECTED=""; [ "$RF" = 1 ] || wait_stop # #2472: a round whose only blockers are waits ends WAITING, before any no-progress count
-  ROUND_WAITS="$(field "$RAW" waits "[]" | LC_ALL=C tr -cd 'A-Za-z0-9_.:,"[]-')"; ROUND_WAIT_ONLY="$(field "$RAW" round_waiting false)"; [ "$ROUND_WAIT_ONLY" = true ] || ROUND_WAIT_ONLY=false; [ -z "$WAIT_REJECTED" ] || ROUND_WAIT_ONLY=false
+  WAIT_REJECTED=""; [ "$RF" = 1 ] || wait_stop "$RF" # #2472: a round whose only blockers are waits ends WAITING, before any no-progress count
+  ROUND_WAITS="$(field "$RAW" waits "[]" | LC_ALL=C tr -cd 'A-Za-z0-9_.:,"[]-')"; ROUND_WAIT_ONLY="$(field "$RAW" round_waiting false)"; [ "$ROUND_WAIT_ONLY" = true ] && [ "$RF" != 2 ] || ROUND_WAIT_ONLY=false; [ -z "$WAIT_REJECTED" ] || ROUND_WAIT_ONLY=false
   [ "$RF" != 0 ] || progress_stop "$HEAD_NOW" "$CI_SIGNAL"
   bash "${LOOP_HOME}/autodrive_progress.sh" record "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$HEAD_NOW" "$RF" "${RECORD}.findings" "$CI_SIGNAL"
   [ "$ROUND_CLEAN" = "true" ] || budget_stop post

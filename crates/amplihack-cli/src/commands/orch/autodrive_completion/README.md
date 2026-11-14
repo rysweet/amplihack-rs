@@ -25,8 +25,9 @@ The public CLI is `amplihack orch helper autodrive-completion-{prepare,seal,writ
 - The completion claim also compares the PR head on GitHub with the reviewed
   head, through `autodrive_gh` (GraphQL, then REST, then `git ls-remote`; issue
   #2333). The PR number comes from `prepare --pr`, else from the branch's open
-  PR. A different head fails closed as before. A head unavailable on every path
-  returns `WAITING` with exit 76: no receipt, no evaluator, the sealed evidence
+  PR. A different head fails closed as before. A head refused on every path, or a branch
+  with no open PR, is an error. A head unavailable on every path returns
+  `WAITING` with exit 76: no receipt, no evaluator, the sealed evidence
   unchanged, so the same round dispatches again once a read answers.
 
 `evaluate` requires an unresolved review. The evaluator runs with typed process

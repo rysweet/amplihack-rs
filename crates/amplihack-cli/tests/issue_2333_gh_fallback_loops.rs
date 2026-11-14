@@ -199,6 +199,10 @@ impl Loop {
     }
 
     fn run(&self, loop_name: &str) -> Output {
+        self.run_with(loop_name, &[])
+    }
+
+    fn run_with(&self, loop_name: &str, extra: &[&str]) -> Output {
         let (recipe, token, field) = match loop_name {
             "crusty" => ("autodrive-crusty-round", "CLEAN", "crusty_verdict"),
             _ => (
@@ -223,6 +227,7 @@ impl Loop {
             .arg("--task-file")
             .arg(&self.task)
             .args(["--context", "repo_path=.", "--context", "pr_number=7"])
+            .args(extra)
             .env("PATH", path)
             .env("STUB_LOG", &self.log)
             .env("STUB_STATE", &self.stub)
@@ -647,4 +652,42 @@ fn a_rejected_wait_target_is_counted_by_the_no_progress_rule() {
     assert_ne!(r["loop_result"], "WAITING", "{}", show(&o));
     assert_eq!(r["loop_result"], "STUCK", "{}", show(&o));
     assert!(r["reason"].as_str().unwrap().contains(DECIDED), "{r}");
+}
+
+// ── A waiting crusty re-review before a merge round ─────────────────────────
+
+fn before_script(l: &Loop, body: &str) -> String {
+    let p = l.tmp.path().join("before.sh");
+    std::fs::write(&p, body).unwrap();
+    p.display().to_string()
+}
+
+#[test]
+fn a_waiting_crusty_rereview_ends_the_merge_loop_waiting_not_before_round_failed() {
+    let Some(l) = Loop::new() else { return };
+    let b = before_script(
+        &l,
+        "echo '{\"before_round_result\":\"crusty-rereview-waiting\",\"range\":\"r\",\"crusty_loop_result\":\"WAITING\",\"wait_reason\":\"head-unavailable\",\"wait_target\":\"read@pr-head\"}'\nexit 76\n",
+    );
+    let o = l.run_with("merge-ready", &["--before-round", &b]);
+    assert_waiting(&l, &o, "merge-ready", "read@pr-head");
+    assert!(!stdout(&o).contains("BEFORE_ROUND_FAILED"), "{}", show(&o));
+    assert!(l.lines("round-calls").is_empty(), "no merge round runs");
+}
+
+#[test]
+fn a_waiting_crusty_rereview_with_a_forged_target_still_fails_the_step() {
+    let Some(l) = Loop::new() else { return };
+    let b = before_script(
+        &l,
+        "echo '{\"before_round_result\":\"crusty-rereview-waiting\",\"wait_reason\":\"head-unavailable\",\"wait_target\":\"read@anything\"}'\nexit 76\n",
+    );
+    let o = l.run_with("merge-ready", &["--before-round", &b]);
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    assert_eq!(
+        result(&o)["loop_result"],
+        "BEFORE_ROUND_FAILED",
+        "{}",
+        show(&o)
+    );
 }

@@ -165,13 +165,21 @@ pub fn head(gh: &Gh, n: u64) -> Read {
 fn rest_checks(gh: &Gh, sha: &str) -> Result<Map<String, Value>, String> {
     let runs = gh.rest_pages(&format!("commits/{sha}/check-runs"), Some("check_runs"))?;
     let statuses = gh.rest_pages(&format!("commits/{sha}/status"), Some("statuses"))?;
-    let mut seen = std::collections::BTreeSet::new();
-    let mut checks = Vec::new();
-    let mut push = |name: Option<&str>, bucket: &str| {
-        if let Some(name) = name
-            && seen.insert(name.to_string())
-        {
-            checks.push(json!({"name": name, "bucket": bucket}));
+    // One entry per name, keeping the worst bucket: two workflows with a job
+    // of the same name must not let a pass hide a failure.
+    let rank = |b: &str| match b {
+        "fail" => 3,
+        "pending" => 2,
+        "pass" => 1,
+        _ => 0,
+    };
+    let mut by_name: Vec<(String, &'static str)> = Vec::new();
+    let mut push = |name: Option<&str>, bucket: &'static str| {
+        let Some(name) = name else { return };
+        match by_name.iter_mut().find(|(n, _)| n == name) {
+            Some(e) if rank(bucket) > rank(e.1) => e.1 = bucket,
+            Some(_) => {}
+            None => by_name.push((name.to_string(), bucket)),
         }
     };
     for r in &runs {
@@ -187,6 +195,10 @@ fn rest_checks(gh: &Gh, sha: &str) -> Result<Map<String, Value>, String> {
             rest_map::status_bucket(s["state"].as_str().unwrap_or("")),
         );
     }
+    let checks: Vec<Value> = by_name
+        .into_iter()
+        .map(|(name, bucket)| json!({"name": name, "bucket": bucket}))
+        .collect();
     Ok(fields(json!({"head_sha": sha, "checks": checks})))
 }
 
@@ -244,9 +256,9 @@ pub fn checks(gh: &Gh, target: &Target) -> Read {
                         // falls to REST, which reads checks at one SHA.
                         let after = sha_of(&gh.view(n, "headRefOid")?["headRefOid"])?;
                         if after != head {
-                            return Err(format!(
-                                "the head moved from {head} to {after} during the checks read"
-                            ));
+                            // No SHAs in the message: a hex run such as
+                            // `c429e` would match the rate-limit rule.
+                            return Err("the head moved during the checks read".into());
                         }
                         Ok(fields(json!({"head_sha": head, "checks": checks})))
                     }),
@@ -424,7 +436,7 @@ pub fn update_branch(gh: &Gh, n: u64, expected: &str) -> Value {
         v["action"] = json!("noop-up-to-date");
         return v;
     }
-    match ratelimit::classify(&o.err) {
+    match ratelimit::classify(&ratelimit::without_request(&o.err)) {
         c @ (ratelimit::Class::RateLimit | ratelimit::Class::Transient) => {
             let limited = c == ratelimit::Class::RateLimit;
             let now = now();

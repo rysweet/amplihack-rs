@@ -235,6 +235,31 @@ fn checks_read_by_sha_uses_rest_directly() {
 }
 
 #[test]
+fn rest_checks_keep_the_worst_bucket_when_two_checks_share_a_name() {
+    // Two workflows each with a `build` job: a pass listed first must not
+    // hide the failure listed second.
+    let g = GhRepo::new();
+    g.mode("gql", "refuse");
+    g.fixture(
+        "rest-check-runs.json",
+        &json!({"total_count": 3, "check_runs": [
+            {"name": "build", "status": "completed", "conclusion": "success"},
+            {"name": "build", "status": "completed", "conclusion": "failure"},
+            {"name": "build", "status": "in_progress", "conclusion": null}
+        ]}),
+    );
+    let v = ok(&g.read(&["checks", "7"]));
+    let build: Vec<&Value> = v["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["name"] == "build")
+        .collect();
+    assert_eq!(build.len(), 1, "{v}");
+    assert_eq!(build[0]["bucket"], "fail", "{v}");
+}
+
+#[test]
 fn reviews_read_falls_back_to_rest_with_latest_review_per_user() {
     let g = GhRepo::new();
     let via_graphql = ok(&g.read(&["reviews", "7"]));
