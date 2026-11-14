@@ -33,7 +33,41 @@ fn amplihack_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_amplihack"))
 }
 
-fn run_recipe_from(cwd: &Path, recipe: &Path, extra_args: &[&str]) -> Output {
+/// Copies `src` to `dst`: directories 0755, files 0755 when executable and
+/// 0644 otherwise, symlinks recreated with the same target.
+fn copy_tree(src: &Path, dst: &Path) {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    fs::create_dir_all(dst).expect("create bundle copy dir");
+    fs::set_permissions(dst, fs::Permissions::from_mode(0o755)).expect("chmod dir");
+    for entry in fs::read_dir(src).expect("read bundle dir") {
+        let entry = entry.expect("bundle entry");
+        let (from, to) = (entry.path(), dst.join(entry.file_name()));
+        let kind = entry.file_type().expect("bundle entry type");
+        if kind.is_symlink() {
+            symlink(fs::read_link(&from).expect("read link"), &to).expect("copy link");
+        } else if kind.is_dir() {
+            copy_tree(&from, &to);
+        } else {
+            fs::copy(&from, &to).expect("copy bundle file");
+            let exec = fs::metadata(&from).expect("stat").permissions().mode() & 0o111 != 0;
+            let mode = if exec { 0o755 } else { 0o644 };
+            fs::set_permissions(&to, fs::Permissions::from_mode(mode)).expect("chmod file");
+        }
+    }
+}
+
+/// Issue #2528: a run takes its recipe, sub-recipes and tools from one
+/// bundle, and the workspace is a git checkout, which the installed choice
+/// skips. So each run gets its own installed home (not a checkout) holding a
+/// copy of this checkout's bundle, and names the recipe by its path inside
+/// that copy.
+fn run_recipe_from(cwd: &Path, recipe: &str, extra_args: &[&str]) -> Output {
+    let home = tempfile::tempdir().expect("create installed home");
+    copy_tree(
+        &workspace_root().join("amplifier-bundle"),
+        &home.path().join("amplifier-bundle"),
+    );
+    let recipe = home.path().join("amplifier-bundle/recipes").join(recipe);
     let mut command = crate::isolated_amplihack::isolated(amplihack_bin());
     for key in [
         "AMPLIHACK_SESSION_TREE_DIR",
@@ -46,12 +80,12 @@ fn run_recipe_from(cwd: &Path, recipe: &Path, extra_args: &[&str]) -> Output {
     }
     command
         .current_dir(cwd)
-        .env("AMPLIHACK_HOME", workspace_root())
+        .env("AMPLIHACK_HOME", home.path())
         .env("AMPLIHACK_NONINTERACTIVE", "1")
         .env_remove("CLAUDECODE")
         .arg("recipe")
         .arg("run")
-        .arg(recipe)
+        .arg(&recipe)
         .args(extra_args);
 
     command.output().expect("failed to run amplihack binary")
@@ -82,7 +116,7 @@ fn smart_orchestrator_dry_run_from_non_git_dir_succeeds_or_reports_structured_gi
 
     let output = run_recipe_from(
         non_git.path(),
-        &recipe_path("smart-orchestrator.yaml"),
+        "smart-orchestrator.yaml",
         &[
             "--dry-run",
             "-c",
@@ -124,7 +158,7 @@ fn smart_orchestrator_dry_run_from_git_dir_succeeds() {
 
     let output = run_recipe_from(
         git_dir.path(),
-        &recipe_path("smart-orchestrator.yaml"),
+        "smart-orchestrator.yaml",
         &[
             "--dry-run",
             "-c",
@@ -147,7 +181,7 @@ fn investigation_workflow_dry_run_from_non_git_dir_succeeds() {
 
     let output = run_recipe_from(
         non_git.path(),
-        &recipe_path("investigation-workflow.yaml"),
+        "investigation-workflow.yaml",
         &[
             "--dry-run",
             "-c",
