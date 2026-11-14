@@ -147,11 +147,17 @@ fn redaction_removes_every_documented_secret_form() {
             "{out}"
         );
     }
+    // Built at run time so no scanner reads the test value as a real token.
+    let jwt = format!(
+        "{}J{}.{}.{}",
+        "ey",
+        "Hd1Re2Ad3E".repeat(2),
+        "Bo4Dy5Pa6R".repeat(2),
+        "Si7Gn8At9U".repeat(2)
+    );
+    let bearer = format!("Authorization: Bearer {jwt}");
     let pairs = [
-        (
-            "Authorization: Bearer eyJhbGc.payload.sig",
-            "eyJhbGc.payload.sig",
-        ),
+        (bearer.as_str(), jwt.as_str()),
         ("authorization: token abcdef123456", "abcdef123456"),
         ("token=tok-value-1", "tok-value-1"),
         ("password=hunter2", "hunter2"),

@@ -319,8 +319,12 @@ fn secrets_in_the_failed_output_never_reach_records_evidence_or_output() {
         format!("ghp_{}", "A1b2C3d4E5".repeat(4)),
         format!("github_pat_{}", "11ABCDEFG0".repeat(5)),
         format!("sk-ant-api03-{}", "Zz9Yy8Xx7W".repeat(4)),
+        // The token alone, not `Bearer <token>`: the check must fail if
+        // redaction drops only the `Bearer ` prefix. Built at run time so no
+        // scanner reads the test value as a real token.
         format!(
-            "Bearer eyJ{}.{}.{}",
+            "{}J{}.{}.{}",
+            "ey",
             "Ab1Cd2Ef3G".repeat(2),
             "Pq7Rs8Tu9V".repeat(2),
             "Xy4Zw5Mn6K".repeat(2)
@@ -331,7 +335,7 @@ fn secrets_in_the_failed_output_never_reach_records_evidence_or_output() {
     let tool = f.tool(
         "leaky",
         &format!(
-            "#!/bin/sh\necho 'push failed for {0}'\necho 'github_pat: {1}' >&2\necho 'key {2}' >&2\necho 'Authorization: {3}' >&2\necho 'password={4}' >&2\necho 'remote https://bot:{5}@example.invalid/r.git' >&2\nexit 1\n",
+            "#!/bin/sh\necho 'push failed for {0}'\necho 'github_pat: {1}' >&2\necho 'key {2}' >&2\necho 'Authorization: Bearer {3}' >&2\necho 'password={4}' >&2\necho 'remote https://bot:{5}@example.invalid/r.git' >&2\nexit 1\n",
             secrets[0], secrets[1], secrets[2], secrets[3], secrets[4], secrets[5]
         ),
     );

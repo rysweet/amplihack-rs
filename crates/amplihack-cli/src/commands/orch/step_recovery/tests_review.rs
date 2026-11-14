@@ -128,12 +128,13 @@ fn redaction_covers_keys_jwts_and_cloud_tokens() {
     let cut = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkq";
     // Built at run time, as the tokens below are, so no scanner reads the
     // test value in the source as a real token.
-    let jwt = [
-        "eyJhbGciOiJIUzI1NiJ9",
-        "eyJzdWIiOiJ0ZXN0In0",
-        "c2lnbmF0dXJlLWZvci10ZXN0cw",
-    ]
-    .join(".");
+    let jwt = format!(
+        "{}J{}.{}.{}",
+        "ey",
+        "Hd1Re2Ad3E".repeat(2),
+        "Bo4Dy5Pa6R".repeat(2),
+        "Si7Gn8At9U".repeat(2)
+    );
     let slack = format!("xoxb-{}", "1234567890-abcdef");
     let google = format!("AIza{}", "SyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q");
     for secret in [pem, cut, jwt.as_str(), slack.as_str(), google.as_str()] {
