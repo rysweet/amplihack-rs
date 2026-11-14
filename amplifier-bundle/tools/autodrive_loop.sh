@@ -273,8 +273,7 @@ while :; do
   if [ "$LOOP_NAME" = merge-ready ]; then PRIOR_FROM="${STATE_DIR}/merge-ready-latest.writeup"
     [ "$ROUND_VERDICT" != HANDOFF ] || { escalate "HANDOFF" "the merge-ready assessment of ${ROUND_LABEL} handed the PR off; the blocker is named in merge-ready-latest.writeup"; exit 1; }; fi
   # #1743, decided in code before the evaluator: no progress, then the budget. RF: 1 clean, 2 failed (rc!=0 or no verdict; the evaluator judges faults), 0 otherwise.
-  # #2575: the merge-ready round file holds only the verdict, so CI_SIGNAL and findings read empty
-  # for it. The no-progress rule therefore does not apply to merge-ready; the budget stop bounds it.
+  # #2575: merge-ready round files hold only the verdict (no CI_SIGNAL/findings), so no-progress skips it; the budget bounds it.
   HEAD_NOW="$(git -C "$REPO" rev-parse HEAD || printf '')"; CI_SIGNAL="$(field "$RAW" ci_signal "")"
   RF=0; [ "$ROUND_CLEAN" = "true" ] && RF=1 || { [ "$ROUND_RC" -eq 0 ] && [ "$ROUND_VERDICT" != "MISSING" ]; } || RF=2
   [ "$RF" != 0 ] || [ "$LOOP_NAME" = merge-ready ] || progress_stop "$HEAD_NOW" "$CI_SIGNAL"
