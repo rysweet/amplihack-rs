@@ -90,6 +90,7 @@ impl Fx {
     }
 
     pub(crate) fn cmd(&self, args: &[&str], env: &[(&str, &str)]) -> Command {
+        crate::support::installed_bundle::ensure(&self.home.join(".amplihack"));
         let mut c = crate::isolated_amplihack::isolated(amplihack_bin());
         c.args(args)
             .current_dir(&self.project)

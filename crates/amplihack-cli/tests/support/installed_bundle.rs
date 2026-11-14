@@ -1,6 +1,7 @@
 //! Issue #2528: `recipe run` selects one installed bundle and refuses a run
 //! with none (E4). Fixtures whose recipes are given as paths need only an
 //! empty, trusted bundle at the home they name.
+#![cfg(unix)]
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
