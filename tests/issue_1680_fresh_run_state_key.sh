@@ -7,16 +7,16 @@
 # Issue #2329 retired the bash bodies of autodrive-build's step-01 and step-03:
 # both are agent steps now and the keying duty is stated in their prompts.
 # This test pins that prompt contract:
-#   1. Shape: step-01 and step-03 are agent steps; their parsed JSON carries
-#      state_dir; neither carries a command body.
+#   1. Shape: step-01 and step-03 are agent steps with outputs build_preflight
+#      and build_result; neither carries a command body; build_result carries state_dir.
 #   2. State is keyed by full host/repository/PR identity, never by a branch
 #      name alone (two fresh runs that open different PRs therefore get
 #      different directories).
-#   3. A fresh run's preflight, which knows no PR yet, does not create
-#      branch-keyed state; step-03 keys it once the PR exists, at the directory
-#      a later run given that PR number resolves to.
+#   3. Step-03 keys a fresh run's state by the PR it resolved, the directory a
+#      later run given that PR number resolves to. The fresh-run build decision
+#      is covered by crates/amplihack-cli/tests/issue_2552_build_preflight_decision.rs.
 #   4. An explicit autodrive_state_dir is kept.
-#   5. State is private and outside the worktree; historical state never
+#   5. State is private and outside the worktree (step-03); historical state never
 #      establishes current readiness.
 #
 # Run: bash tests/issue_1680_fresh_run_state_key.sh
@@ -65,7 +65,6 @@ for pair in "step-01:build_preflight" "step-03:build_result"; do
     bad "$label shape" "expected type: agent, output: $out, no command:"
   fi
 done
-has "the returned JSON carries state_dir" step-01 "$S01" '"state_dir":"absolute private directory"'
 has "build_result carries state_dir" step-03 "$S03" 'Return build_result as JSON with pr, pr_url, branch, state_dir'
 
 # 2. Keyed by host, repository and PR; never a branch alone.
@@ -74,9 +73,7 @@ both "state is keyed by full host/repository/PR identity" \
 both "state is never keyed by a branch name alone" \
   "never a key made from a branch name alone such as the launch checkout's main (issue #1680)"
 
-# 3. Fresh run: the preflight defers, step-03 keys by the PR it resolved.
-has "a fresh preflight does not create branch-keyed state" step-01 "$S01" \
-  "the PR is not known yet, so do not create state keyed by the branch: step-03 keys the state once phase 1 has opened the PR (issue #1680)"
+# 3. Fresh run: step-03 keys state by the PR it resolved.
 has "a fresh run's state is keyed by the PR step-03 resolved" step-03 "$S03" \
   "State for such a fresh run is keyed by the PR this step resolved, the same directory a later run given that PR number resolves to, never the preflight's branch-keyed location (issue #1680)"
 
@@ -85,7 +82,7 @@ both "an explicit autodrive_state_dir is kept" \
   "Prefer the provided state dir {{autodrive_state_dir}}"
 
 # 5. Private, outside the worktree, never evidence of readiness.
-both "state is private and outside the worktree" \
+has "state is private and outside the worktree" step-03 "$S03" \
   'Create private state outside the worktree using `amplihack orch helper autodrive state --directory <absolute-path>`'
 both "historical state never establishes readiness" \
   "Existing historical evidence never establishes current readiness."

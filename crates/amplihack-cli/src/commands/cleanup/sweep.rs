@@ -186,13 +186,11 @@ impl Item {
 
 #[path = "execute.rs"]
 mod execute;
-#[path = "procs.rs"]
-mod procs;
 #[path = "target_remove.rs"]
 mod target_remove;
 
+use super::procs::ProcScan;
 use execute::{Refusal, execute, other_live_owner};
-use procs::ProcScan;
 use target_remove::{LinkRoots, Shape};
 
 // ----- filesystem helpers ---------------------------------------------------
