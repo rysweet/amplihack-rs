@@ -151,6 +151,10 @@ fn run_final_status(repo: &Path, bin_dir: &Path, stub: &Path, issue_env: &[(&str
         .env("WORKFLOW_PR_SCOPE_HELPER", stub)
         .env("REMOTE_HOST_TYPE", "github")
         .env("RECIPE_VAR_pr_url", "https://github.com/owner/repo/pull/7")
+        // With a PR recorded and no base, the base is read from the PR (#2520),
+        // which the no-op gh cannot answer; the recorded base keeps the run on
+        // the scope lookup this test checks.
+        .env("RECIPE_VAR_pr_publish_result", r#"{"base_branch":"main"}"#)
         .env("TASK_DESCRIPTION", "test task");
     for (k, v) in issue_env {
         cmd.env(k, v);

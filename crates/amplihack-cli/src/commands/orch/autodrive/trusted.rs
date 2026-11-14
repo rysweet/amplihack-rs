@@ -53,9 +53,17 @@ impl LaunchBundle {
                 path.display()
             );
         }
-        let temp = tempfile::Builder::new()
-            .prefix("autodrive-invocation-")
-            .tempdir()?;
+        // tempfile applies a mode only when one is set; otherwise the folder
+        // is 0777 minus the umask (0755 under 022), and the private read in
+        // `orch helper autodrive authorization` refuses it (#2656).
+        let mut builder = tempfile::Builder::new();
+        builder.prefix("autodrive-invocation-");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(fs::Permissions::from_mode(0o700));
+        }
+        let temp = builder.tempdir()?;
         let dest = temp.path().join("amplifier-bundle");
         copy_tree(&bundle, &dest)?;
         auth.bind_policy(bundle_digest(&dest)?);
@@ -346,9 +354,13 @@ mod umask_tests {
     const UMASK_CHILD: &str = "AMPLIHACK_ISSUE_2537_UMASK_CHILD";
 
     fn under_umask_002(test: &str, body: impl FnOnce()) {
+        under_umask(0o002, test, body)
+    }
+
+    fn under_umask(mask: libc::mode_t, test: &str, body: impl FnOnce()) {
         if std::env::var_os(UMASK_CHILD).is_some() {
             // SAFETY: umask has no failure mode, and this child runs only this test.
-            let previous = unsafe { libc::umask(0o002) };
+            let previous = unsafe { libc::umask(mask) };
             body();
             unsafe { libc::umask(previous) };
             return;
@@ -362,7 +374,7 @@ mod umask_tests {
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
             output.status.success(),
-            "{name} failed under umask 002:\n{stdout}\n{}",
+            "{name} failed under umask {mask:03o}:\n{stdout}\n{}",
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(
@@ -428,6 +440,34 @@ mod umask_tests {
             // The invocation proceeds: a nested launch from the copy is accepted.
             LaunchBundle::prepare(&launch.home, &mut authorization()).unwrap();
         });
+    }
+
+    /// #2656: the invocation folder is 0700 whatever the umask, so the
+    /// invocation record in it passes the private read that
+    /// `orch helper autodrive authorization` performs at finalize.
+    fn invocation_folder_is_private_and_passes_evidence_check() {
+        let (_temp, home) = fake_home();
+        let launch = LaunchBundle::prepare(&home, &mut authorization()).unwrap();
+        assert_eq!(mode_of(&launch.home), 0o700);
+        InvocationAuthorization::read_private(&launch.home.join("invocation.json"))
+            .expect("the finalize authorization read must accept the invocation folder");
+    }
+
+    #[test]
+    fn invocation_folder_is_0700_under_umask_022() {
+        under_umask(
+            0o022,
+            "invocation_folder_is_0700_under_umask_022",
+            invocation_folder_is_private_and_passes_evidence_check,
+        );
+    }
+
+    #[test]
+    fn invocation_folder_is_0700_under_umask_002() {
+        under_umask_002(
+            "invocation_folder_is_0700_under_umask_002",
+            invocation_folder_is_private_and_passes_evidence_check,
+        );
     }
 
     #[test]

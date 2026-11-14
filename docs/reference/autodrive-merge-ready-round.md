@@ -1,7 +1,7 @@
 ---
 title: Auto-drive Merge-ready Round, Merge and Hand-off
 description: how the merge-ready agent writes up the 13 criteria in the PR, how the loop reads its outcome, the GitHub-only merge conditions, the hand-off recipe and the run report (#2575).
-last_updated: 2026-11-13
+last_updated: 2026-11-14
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -413,6 +413,15 @@ is the one selected at launch (always `true` when none was selected). The
 head branch selection (`existing_branch`) is not checked here. Any error exits `2` and prints nothing on
 standard output; on a merge run the merge step reports that as
 `authorization-unreadable` and hands the PR off.
+
+The launcher writes the invocation to `invocation.json` inside a fresh
+`autodrive-invocation-*` folder. It creates the folder with mode `0700` and
+the file with mode `0600` (`create_new`), whatever the caller's umask. The
+private read requires a folder outside the auto-drive state root to have no
+group or other permission bits (mode `0700`). The default folder mode under
+`umask 022` (`0755`) or `umask 002` (`0775`) would make this check fail and
+leave the drive `STUCK` (#2656). The tests
+`autodrive::trusted::umask_tests` cover both umasks.
 
 ## Security properties
 
