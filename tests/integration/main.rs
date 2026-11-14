@@ -477,6 +477,10 @@ mod issue_1510_collector_agent_prose;
 #[path = "auto_drive_to_merge_test.rs"]
 mod auto_drive_to_merge;
 
+// Issue #2458: the base qa.toml declares how merge-ready criterion 1 is met.
+#[path = "issue_2458_qa_declaration_test.rs"]
+mod issue_2458_qa_declaration;
+
 // Issue #1641: a resumed run whose branch already has an open, same-repo PR
 // with green checks (or pending/no CI plus this run's typed precommit evidence)
 // finalizes as EXISTING_OPEN_PR instead of FAILED_IMPLEMENTATION; a failing

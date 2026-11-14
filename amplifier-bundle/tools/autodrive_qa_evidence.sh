@@ -3,16 +3,14 @@
 # the auto-drive-to-merge merge loop. step-02-qa-team-scenarios of
 # autodrive-merge-evidence.yaml runs this file (moved out of the step, PR #1520).
 #
-# Criterion 1 follows qa-team's repo-type table: one or two measurements,
-# both always run so the evidence lists every cause at once. (1) The suite
-# command from the first source present (#1763): env, .amplihack/qa.toml, one
-# clean CI step, or `cargo test`, `npm test` or `pytest` detected in the
-# project the changed paths pick (QA_UNRESOLVED when they pick none, and
-# nothing runs). (2) Only where autodrive_gadugi_required says true (a Node
-# project, or AUTODRIVE_QA_SCENARIO_DIR set): the qa-team scenarios, validated
-# with `gadugi-test validate` and run one `gadugi-test run --scenario` per
-# file. Elsewhere gadugi_status is NOT_REQUIRED and gadugi-test is never
-# called: qa-team's Rust CLI rule substitutes `cargo test`, and a measured docs_only drops (2) in a Node project too (#2219).
+# Criterion 1 follows qa-team's repo-type table: one or two measurements, both always run so the
+# evidence lists every cause at once. (1) The suite command from the first source present (#1763):
+# env, .amplihack/qa.toml, one clean CI step, or `cargo test`, `npm test` or `pytest` detected in the
+# project the changed paths pick (QA_UNRESOLVED when they pick none, and nothing runs). (2) Only where
+# autodrive_gadugi_required says true (a Node project, or AUTODRIVE_QA_SCENARIO_DIR set): the qa-team
+# scenarios, validated with `gadugi-test validate` and run one `gadugi-test run --scenario` per file.
+# Elsewhere gadugi_status is NOT_REQUIRED and gadugi-test is never called: Rust CLI substitutes `cargo
+# test`, a measured docs_only (#2219) or a base qa.toml declaration (#2458) drops (2) in Node too.
 #
 # Input comes from the environment only:
 #   REPO_PATH              the repository to measure (default: the working directory)
@@ -41,23 +39,19 @@ amplihack_clear_git_repo_env; amplihack_clear_run_identity_env; GCLR="$AMPLIHACK
 cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
 ROOT="$(pwd -P)"
 EVIDENCE="${AUTODRIVE_QA_EVIDENCE:-}"
-# One shell asks every scope question (autodrive_qa_report), so the diff and the tree walk
-# run once (#1763). Without autodrive_qa_sources.sh or the scope file the evidence is BLOCKED.
+# One shell asks every scope question (autodrive_qa_report), so the diff and the tree walk run once
+# (#1763). autodrive_trust.sh loads the scope and sources files; without them the evidence is BLOCKED.
 SCAN="$(. "$H/autodrive_trust.sh" || exit 1
-  S="$H/autodrive_qa_sources.sh"
-  # shellcheck source=autodrive_qa_sources.sh # a regular file beside this tool, never a symlink
-  if [ -n "${_AD_SCOPE_OK:-}" ] && [ -f "$S" ] && [ ! -L "$S" ] && . "$S" \
-     && declare -F autodrive_qa_report >/dev/null; then
-    autodrive_qa_report "$ROOT"
-  else
-    printf 'noscope\t1\nkind\t%s\ngreq\t%s\ndocsonly\t%s\ntarget\t%s\n' "$(autodrive_repo_type "$ROOT")" \
-      "$(autodrive_gadugi_required "$ROOT")" "$(autodrive_qa_docs_only "$ROOT")" "$(autodrive_qa_target "$ROOT")"
-  fi)" || SCAN=""
-KIND=""; GREQ=""; DOCSONLY="unknown"; NOSCOPE=""; TARGET=""; PATHS="(unknown)"; DSRC=""; DDIR=""; DCMD=""; DBAD=""; CISKIP=""
+  if [ -n "${_AD_SOURCES_OK:-}" ] && declare -F autodrive_qa_report >/dev/null; then autodrive_qa_report "$ROOT"
+  else printf 'noscope\t1\nkind\t%s\ngreq\t%s\ndocsonly\t%s\ntarget\t%s\ndecl\tnone\n' "$(autodrive_repo_type "$ROOT")" \
+      "$(autodrive_gadugi_required "$ROOT")" "$(autodrive_qa_docs_only "$ROOT")" "$(autodrive_qa_target "$ROOT")"; fi)" || SCAN=""
+KIND=""; GREQ=""; DOCSONLY="unknown"; NOSCOPE=""; TARGET=""; PATHS="(unknown)"; DSRC=""; DDIR=""; DCMD=""; DBAD=""; CISKIP=""; DECL="none"; DECLSKIP=""
 while IFS=$'\t' read -r key val; do
   case "$key" in
     kind) KIND="$val" ;;
     greq) GREQ="$val" ;;
+    decl) DECL="$val" ;;
+    declskip) [ "$val" != "ci-job-workflow-changed" ] || DECLSKIP="$val" ;;
     docsonly) case "$val" in true|false) DOCSONLY="$val" ;; *) DOCSONLY="unknown" ;; esac ;;
     noscope) NOSCOPE="1" ;;
     target) TARGET="$val" ;;
@@ -69,7 +63,12 @@ while IFS=$'\t' read -r key val; do
     ciskip) CISKIP="$val" ;;
   esac
 done <<< "$SCAN"
-case "${KIND}:${GREQ}:${DOCSONLY}" in # node:false is legal only beside docs_only=true (#2219); anything else is a broken install, and gives no evidence
+# The criterion-1 declaration (#2458), checked again: anything outside the whitelist is none.
+DECL="$(export LC_ALL=C; case "$DECL" in multi-area-command) ;; ci-job:*) J="${DECL#ci-job:}"
+  case "$J" in ''|-*|*[!A-Za-z0-9\ ._/\(\)+:,@%-]*) DECL="none" ;; esac; [ "${#J}" -le 128 ] || DECL="none" ;; *) DECL="none" ;; esac
+  printf '%s' "$DECL")"
+X="$DOCSONLY"; [ "$DECL" = "none" ] || X="true"
+case "${KIND}:${GREQ}:${X}" in # node:false is legal only beside docs_only=true (#2219) or a declaration (#2458); anything else is a broken install, and gives no evidence
   rust-cli:true:*|rust-cli:false:*|node:true:*|node:false:true|python:true:*|python:false:*|unknown:true:*|unknown:false:*) ;;
   *) echo "ERROR: autodrive-qa-helpers-not-found: no repository type (${KIND:-none}:${GREQ:-none}:${DOCSONLY:-none})" >&2
      exit 1 ;;
@@ -139,8 +138,8 @@ else
   if [ -n "$DBAD" ]; then
     TYPE="configured"; CFGBAD="$DBAD"
     case "$CFGBAD" in
-      symlink|not-regular|too-large|syntax|unknown-key|duplicate-key|missing-command|unsafe-command) ;;
-      unsafe-dir|dir-not-found|changed-in-pr|paths-empty|paths-unknown) ;;
+      symlink|not-regular|too-large|syntax|unknown-key|duplicate-key|declaration-conflict|unknown-value) ;;
+      missing-command|unsafe-command|unsafe-dir|dir-not-found|changed-in-pr|paths-empty|paths-unknown) ;;
       *) CFGBAD="syntax" ;;
     esac
     cause ".amplihack/qa.toml: ${CFGBAD}"
@@ -262,7 +261,7 @@ G_STATUS=""; G_VRC=""; G_RRC=""; RUN_NZ=""; VALIDATED=0; RUNS=0; PASSED=0; FAILE
 UNNAMED=""; RUNFAIL=""; STAGEFAIL=""; SYMFAIL=""
 if [ "$GREQ" = "false" ]; then
   G_STATUS="NOT_REQUIRED"
-  echo "INFO: gadugi-test is not part of criterion 1 in a ${KIND} repository (qa-team's repo-type table); AUTODRIVE_QA_SCENARIO_DIR asks for it" >&2
+  echo "INFO: gadugi-test is not part of criterion 1 in a ${KIND} repository (qa-team's repo-type table, declaration ${DECL}); AUTODRIVE_QA_SCENARIO_DIR asks for it" >&2
 elif ! command -v gadugi-test >/dev/null 2>&1; then
   G_STATUS="NOT_INSTALLED"; cause "gadugi-test not installed"
 elif [ "$COUNT" = "0" ]; then
@@ -337,6 +336,7 @@ else
   rm -f "$GLOG"
   for d in $NEW_DIRS; do [ -d "$d" ] && [ ! -L "$d" ] && rm -rf -- "./${d}"; done
 fi
+[ -z "$DECLSKIP" ] || cause ".amplihack/qa.toml: scenarios_ci_job not used: ${DECLSKIP}"
 [ -n "$SYMLINKED" ] && cause "symlinked scenario not run: ${SYMLINKED}"
 [ -n "$NONREG" ] && cause "non-regular scenario entry not run: ${NONREG}"
 RESULTS="$(. "$H/autodrive_state.sh" && . "$H/autodrive_trust.sh" && autodrive_scenario_results "$RES")" || RESULTS=""
@@ -378,7 +378,7 @@ esac
 SUMMARY="$(printf '%s' "${CAUSES}${CAUSES:+${TAIL:+: }}${TAIL}" | san)"
 # The evidence format: every field a string, so a reader never has to guess a type.
 F='{"qa_status":"%s","qa_reason":"%s","qa_repo_type":"%s","qa_dir":"%s","qa_command":"%s",'
-F="${F}"'"qa_command_source":"%s","qa_command_paths":"%s","qa_candidates":"%s","qa_ci_skip":"%s",'
+F="${F}"'"qa_command_source":"%s","qa_criterion1_declaration":"%s","qa_command_paths":"%s","qa_candidates":"%s","qa_ci_skip":"%s",'
 F="${F}"'"qa_suite_commands_count":"%s","qa_scenarios":"%s","qa_exit_code":"%s","qa_summary":"%s",'
 F="${F}"'"qa_round":"%s","head_sha":"%s","docs_only":"%s","gadugi_required":"%s","gadugi_status":"%s",'
 F="${F}"'"gadugi_validate_exit_code":"%s","gadugi_run_exit_code":"%s","gadugi_scenario_count":"%s",'
@@ -388,7 +388,7 @@ F="${F}"'"gadugi_scenario_results":"%s","git_env_cleared":"%s","run_env_cleared"
 # shellcheck disable=SC2059 # F is the fixed format above, never input
 OUT="$(printf "$F" \
   "$STATUS" "$REASON" "$TYPE" "$(printf '%s' "$QD" | san | ascii | cut -c1-200)" "$(printf '%s' "$CMDTEXT" | san | ascii | cut -c1-500)" \
-  "$SRC" "$(printf '%s' "$PATHS" | san | ascii)" "$(printf '%s' "$QUNRES" | san | ascii)" \
+  "$SRC" "$(printf '%s' "$DECL" | san | ascii)" "$(printf '%s' "$PATHS" | san | ascii)" "$(printf '%s' "$QUNRES" | san | ascii)" \
   "$(printf '%s' "$CISKIP" | san | ascii | cut -c1-40)" "$RAN" \
   "$(printf '%s' "$SCEN" | san)" "$RC" "$SUMMARY" "$(printf '%s' "${AUTODRIVE_ROUND_LABEL:-round}" | san)" "$HEAD_SHA" \
   "$DOCSONLY" "$GREQ" "$G_STATUS" "$G_VRC" "$G_RRC" "$COUNT" "$(printf '%s' "$SREL" | san)" \
