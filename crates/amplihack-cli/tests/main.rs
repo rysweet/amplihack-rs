@@ -30,6 +30,10 @@ mod support;
 mod issue_2096_execution_isolation;
 #[path = "issue_2329_autodrive_outcomes.rs"]
 mod issue_2329_autodrive_outcomes;
+#[path = "issue_2545_autodrive_repo_context.rs"]
+mod issue_2545_autodrive_repo_context;
+#[path = "issue_2585_launch_notices_stderr.rs"]
+mod issue_2585_launch_notices_stderr;
 
 #[path = "issue_1753_expired_live.rs"]
 mod issue_1753_expired_live;
@@ -436,3 +440,5 @@ mod issue_2279_doctor;
 
 #[path = "issue_2297_codex_installation.rs"]
 mod issue_2297_codex_installation;
+#[path = "issue_2552_build_preflight_decision.rs"]
+mod issue_2552_build_preflight_decision;
