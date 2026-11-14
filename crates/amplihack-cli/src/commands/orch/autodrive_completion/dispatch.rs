@@ -51,6 +51,13 @@ pub fn run(args: Dispatch) -> Result<i32> {
                     decision.action == Action::Complete && args.child_exit_code == 0,
                     "current PR head is unavailable and the decision cannot complete"
                 );
+                // A refusal (bad credentials, no permission, not found) does
+                // not clear by waiting: an error, so the round is not WAITING.
+                ensure!(
+                    !u.refused,
+                    "the PR head read was refused on every path ({}); not a wait",
+                    u.reason
+                );
                 return Ok(waiting(&state, &u));
             }
         }

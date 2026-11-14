@@ -81,7 +81,7 @@ pr_base_ref() {
   local pr="${PR_NUMBER:-}"
   case "$pr" in *[!0-9]*) pr="" ;; esac
   gh pr view ${pr:+"$pr"} --json baseRefName --jq .baseRefName 2>/dev/null \
-    || { [ -n "$pr" ] && amplihack orch helper autodrive-gh-read pr "$pr" 2>/dev/null | jq -r ".base_ref // empty"; } || printf '' # REST fallback (#2333)
+    || { [ -n "$pr" ] && "${AMPLIHACK_BIN:-amplihack}" orch helper autodrive-gh-read pr "$pr" | jq -r ".base_ref // empty"; } || printf '' # REST fallback (#2333)
 }
 
 # field <json> <name> <default>: the canonical structured read
@@ -292,7 +292,7 @@ round_findings() {
         --argjson u "$(field "${RECIPE_VAR_platform_facts:-}" unavailable '[]' | jq -c 'if type == "array" then . else [] end' 2>/dev/null || echo '[]')" \
         '{head_sha:$h, ci_signal:(($ci|ascii_upcase|split(":")[0]) // ""), merge_state:$ms, mergeable:$mg, unavailable:$u, findings:$f, measured_downgrade:($d|split(" ")|map(select(length>0))), recompute:$r}' 2>/dev/null)"
       t="$(mktemp "${record}.findings.XXXXXX")" || exit 1
-      if out="$(printf '%s' "$in" | amplihack orch helper autodrive-round-waits 2>/dev/null)" && [ -n "$out" ]; then
+      if out="$(printf '%s' "$in" | "${AMPLIHACK_BIN:-amplihack}" orch helper autodrive-round-waits)" && [ -n "$out" ]; then
         printf '%s' "$out" | jq -r '.fixable[]' > "$t" && w="$(mktemp "${record}.waits.XXXXXX")" \
           && printf '%s\n' "$out" > "$w" && mv -f -- "$w" "${record}.waits"
       else

@@ -711,3 +711,20 @@ fn rest_fallback_never_calls_one_approval_enough_when_two_are_required() {
     assert_eq!(v["approval_source"], "required-count", "{v}");
     assert_eq!(v["approval_blocker"], "required-approval-missing", "{v}");
 }
+
+#[test]
+fn bad_credentials_on_every_path_reach_the_waits_classifier_as_refused() {
+    // Review round 17: a 401 everywhere was a wait, so the drive never
+    // reached STUCK. The unavailable entry now says refused.
+    let g = GhRepo::new();
+    g.mode("gql", "auth");
+    g.mode("rest", "auth");
+    let v = platform_facts(&g);
+    let u = v["unavailable"].as_array().unwrap_or_else(|| panic!("{v}"));
+    assert!(!u.is_empty(), "{v}");
+    assert!(
+        u.iter()
+            .all(|r| r["refused"] == true && r["rate_limited"] == false),
+        "{v}"
+    );
+}

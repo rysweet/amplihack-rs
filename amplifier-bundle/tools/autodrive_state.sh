@@ -369,7 +369,7 @@ autodrive_use_task_file() {
 autodrive_pr_state() {
   local pr="${1:-}" out
   case "$pr" in ''|*[!0-9]*) printf 'UNKNOWN\n'; return 0 ;; esac
-  out="$(gh pr view "$pr" --json state,mergedAt 2>/dev/null || amplihack orch helper autodrive-gh-read pr "$pr" 2>/dev/null | jq -c '{state, mergedAt: .merged_at}')" && [ -n "$out" ] || { printf 'UNKNOWN\n'; return 0; } # REST fallback (#2333)
+  out="$(gh pr view "$pr" --json state,mergedAt 2>/dev/null || "${AMPLIHACK_BIN:-amplihack}" orch helper autodrive-gh-read pr "$pr" | jq -c '{state, mergedAt: .merged_at}')" && [ -n "$out" ] || { printf 'UNKNOWN\n'; return 0; } # REST fallback (#2333)
   local state merged
   state="$(printf '%s' "$out" | amplihack orch helper extract-field --field state --default '')"
   merged="$(printf '%s' "$out" | amplihack orch helper extract-field --field mergedAt --default '')"

@@ -335,3 +335,28 @@ fn excerpt_redacts_token_values() {
         }
     }
 }
+
+#[test]
+fn refusals_are_failures_that_waiting_will_not_clear() {
+    for text in [
+        "HTTP 401: Bad credentials (https://api.github.com/graphql)",
+        "To get started with GitHub CLI, please run:  gh auth login",
+        "HTTP 403: Resource not accessible by integration",
+        "HTTP 404: Not Found (https://api.github.com/repos/o/r/pulls/7)",
+        "GraphQL: Could not resolve to a Repository with the name 'o/r'.",
+        "exit 128: remote: Repository not found.",
+    ] {
+        assert!(ratelimit::is_refusal(text), "{text:?}");
+    }
+    for text in [
+        "GraphQL: You have exceeded a secondary rate limit.",
+        "HTTP 403: API rate limit exceeded",
+        "HTTP 403: Forbidden",
+        "HTTP 502: Bad Gateway",
+        "answer is not a list",
+        "exit 128: fatal: couldn't find remote ref refs/pull/7/head",
+        "",
+    ] {
+        assert!(!ratelimit::is_refusal(text), "{text:?}");
+    }
+}

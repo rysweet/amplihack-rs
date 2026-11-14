@@ -3,7 +3,10 @@
 //! Each read tries GraphQL (`gh pr view`, `gh pr checks`, `gh pr list`), then
 //! REST (`gh api repos/{owner}/{repo}/…`), then, for the head only,
 //! `git ls-remote origin refs/pull/{n}/head`. A read that fails on every path
-//! is **unavailable**: a wait, never a finding such as "head differs".
+//! is **unavailable**: a wait, never a finding such as "head differs". When
+//! every path was **refused** (bad credentials, no permission, not found) the
+//! read says so with `refused: true`, and callers report a finding instead,
+//! because waiting will not clear it.
 //!
 //! Nothing here sleeps, retries on a timer or polls: each source is tried
 //! once. The bash tools call `amplihack orch helper autodrive-gh-read`; the
@@ -124,6 +127,9 @@ pub struct Unavailable {
     pub reason: String,
     pub rate_limited: bool,
     pub reset_epoch: Option<i64>,
+    /// Every path failed with a refusal (bad credentials, no permission, not
+    /// found): waiting will not clear it, so callers report a finding.
+    pub refused: bool,
 }
 
 /// The outcome of one read.
@@ -143,6 +149,8 @@ struct Trail {
     limited_texts: Vec<String>,
     graphql_limited: bool,
     rest_limited: bool,
+    /// A path failed with something other than a refusal.
+    not_refused: bool,
 }
 
 impl Trail {
@@ -153,6 +161,9 @@ impl Trail {
                 _ => self.rest_limited = true,
             }
             self.limited_texts.push(text.to_string());
+        }
+        if !ratelimit::is_refusal(text) {
+            self.not_refused = true;
         }
         self.parts.push(format!("{path}: {}", excerpt(text)));
     }
@@ -172,6 +183,7 @@ impl Trail {
             reason: self.parts.join("; "),
             rate_limited,
             reset_epoch,
+            refused: !self.parts.is_empty() && !self.not_refused,
         }
     }
 }
@@ -358,16 +370,45 @@ fn origin_is(dir: &Path, repo: &str) -> Result<(), String> {
     }
 }
 
+/// The ssh command git would use in `dir`, with `-o BatchMode=yes` added so
+/// a passphrase or host-key question fails instead of waiting on the
+/// terminal (`GIT_TERMINAL_PROMPT` does not reach OpenSSH).
+fn batch_ssh_command(dir: &Path) -> String {
+    let configured = std::env::var("GIT_SSH_COMMAND")
+        .ok()
+        .filter(|c| !c.trim().is_empty())
+        .or_else(|| {
+            let o = amplihack_git::command_in(dir)
+                .args(["config", "--get", "core.sshCommand"])
+                .stdin(Stdio::null())
+                .output()
+                .ok()?;
+            let c = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            (o.status.success() && !c.is_empty()).then_some(c)
+        });
+    format!(
+        "{} -o BatchMode=yes",
+        configured.as_deref().unwrap_or("ssh")
+    )
+}
+
 fn ls_remote(dir: &Path, n: u64) -> Result<String, String> {
     let refname = format!("refs/pull/{n}/head");
     let o = amplihack_git::command_in(dir)
         .args(["ls-remote", "origin", &refname])
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_SSH_COMMAND", batch_ssh_command(dir))
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format!("git could not run: {e}"))?;
     if !o.status.success() {
-        return Err(format!("exit {}", o.status.code().unwrap_or(-1)));
+        // git's own message (e.g. "Repository not found") lets the trail
+        // tell a refusal from a fault; the excerpt redacts tokens.
+        return Err(format!(
+            "exit {}: {}",
+            o.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&o.stderr).trim()
+        ));
     }
     let text = String::from_utf8_lossy(&o.stdout);
     let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();

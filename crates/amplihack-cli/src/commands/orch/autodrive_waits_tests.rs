@@ -516,3 +516,47 @@ fn recompute_accepts_only_the_documented_values() {
         );
     }
 }
+
+// ── Review round 17: refusals, and pending CI over a recompute ──────────────
+
+#[test]
+fn a_read_refused_on_every_path_is_a_fixable_finding_not_a_wait() {
+    let o = run(json!({"unavailable": [
+        {"read": "reviews", "rate_limited": false, "reset_epoch": null, "refused": true}
+    ]}));
+    assert_eq!(o.fixable, vec!["gh-read-refused".to_string()]);
+    assert!(o.waits.is_empty(), "{o:?}");
+    assert!(
+        !o.round_waiting,
+        "bad credentials or a 404 never wait: {o:?}"
+    );
+    assert_eq!(o.wait_target, "");
+}
+
+#[test]
+fn a_rate_limited_read_still_waits_and_refused_defaults_to_false() {
+    let o = run(json!({"unavailable": [
+        {"read": "reviews", "rate_limited": true, "reset_epoch": 1_800_000_000}
+    ]}));
+    assert_eq!(o.waits, vec!["reviews-unavailable".to_string()]);
+    assert!(o.fixable.is_empty() && o.round_waiting, "{o:?}");
+    assert_eq!(o.wait_target, "ratelimit-reset@1800000000");
+}
+
+#[test]
+fn pending_ci_stays_the_target_over_a_merge_state_recompute() {
+    let o = run(json!({
+        "ci_signal": "PENDING", "merge_state": "UNKNOWN",
+        "recompute": {"action": "merge-push", "result": "ok", "pushed_sha": PUSHED}
+    }));
+    assert_eq!(
+        o.wait_target,
+        format!("ci@{SHA}"),
+        "CI ranks above mergeability, recompute or not: {o:?}"
+    );
+    let o = run(json!({
+        "merge_state": "UNKNOWN",
+        "recompute": {"action": "merge-push", "result": "ok", "pushed_sha": PUSHED}
+    }));
+    assert_eq!(o.wait_target, format!("mergeability@{PUSHED}"), "{o:?}");
+}

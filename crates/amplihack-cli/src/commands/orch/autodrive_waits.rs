@@ -26,7 +26,14 @@ pub struct UnavailableRead {
     pub read: String,
     pub rate_limited: bool,
     pub reset_epoch: Option<i64>,
+    /// Every path refused the read (bad credentials, no permission, not
+    /// found): a fixable finding, because waiting will not clear it.
+    #[serde(default)]
+    pub refused: bool,
 }
+
+/// Finding id for a read that every path refused.
+const READ_REFUSED: &str = "gh-read-refused";
 
 /// The outcome of an R7 merge-state recompute, when step-01 ran one.
 #[derive(Debug, Deserialize)]
@@ -189,6 +196,10 @@ pub fn classify(input: &Input) -> Output {
         let Some((id, target)) = read_wait(&u.read) else {
             continue;
         };
+        if u.refused {
+            push(&mut fixable, READ_REFUSED);
+            continue;
+        }
         push(&mut waits, id);
         if u.rate_limited {
             t.reset(u.reset_epoch);
@@ -270,9 +281,12 @@ pub fn classify(input: &Input) -> Output {
     } else {
         t.first()
     };
+    // The recompute replaces only the mergeability target: a rate-limit reset
+    // or pending CI ranks above it and stays the target.
     if let Some(r) = &input.recompute
         && t.mergeability.is_some()
         && t.reset.is_none()
+        && t.ci.is_none()
     {
         wait_target = recompute_target(
             &r.action,

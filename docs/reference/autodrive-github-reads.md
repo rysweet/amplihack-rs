@@ -21,7 +21,9 @@ was reported as a finding, such as `crusty-pr-head-unreadable` or a head that
 Every auto-drive read of GitHub now goes through one Rust helper, which tries
 GraphQL, then REST, then (for the head only) `git ls-remote`. A read that
 fails on every path is reported as **unavailable**, which is a **wait** and
-never a finding. A round whose only blockers are waits ends with the
+never a finding, unless every path **refused** it (bad credentials, no
+permission, not found): waiting will not clear that, so it is the fixable
+finding `gh-read-refused` and counts toward `STUCK`. A round whose only blockers are waits ends with the
 resumable loop result `WAITING` (issue #2472, waits slice). At the top level
 the run reports `readiness: incomplete` with the blocker `waiting: <target>`.
 
@@ -57,7 +59,10 @@ Each read tries these sources in order and stops at the first that answers:
 
 The fallback runs on **any** GraphQL failure, not only on a recognised
 rate-limit message. A GraphQL answer that fails validation (for example a
-head SHA that is not 40 hex characters) also falls through.
+head SHA that is not 40 hex characters) also falls through. The GraphQL
+checks read reads the head before and after `gh pr checks`; when the head
+moved in between, it falls through to REST, which reads the checks at one
+SHA, so a push never pins one head's checks to another head.
 
 The `ls-remote` route reads `origin`, whatever `--repo` says. It is therefore
 used only when `--repo` is not given, or when `origin` resolves to the same
@@ -66,7 +71,10 @@ used only when `--repo` is not given, or when `origin` resolves to the same
 call, so a pull request with the same number in another repository is never
 read as the head. The comparison resolves `origin` with
 `git remote get-url origin`, which reads the local configuration and contacts
-no server.
+no server. `git ls-remote` runs with `GIT_TERMINAL_PROMPT=0` and an ssh
+command with `-o BatchMode=yes` added (to `GIT_SSH_COMMAND`, else
+`core.sshCommand`, else `ssh`), so a passphrase or host-key question fails
+the route instead of waiting on the terminal.
 
 Review threads have no REST path. When the GraphQL thread read fails,
 `unresolved_threads` is `"unavailable"`, which is a wait. It is never read as
@@ -133,6 +141,7 @@ A read that failed on every path carries `unavailable` and no values:
 | `source` | `graphql`, `rest`, `ls-remote`, or `null` when unavailable. |
 | `unavailable.reason` | One short line per path tried. Each excerpt is the first stderr line, at most 200 bytes, printable ASCII only, with token values redacted. |
 | `unavailable.rate_limited` | `true` when any path was refused by a rate limit. |
+| `unavailable.refused` | `true` when every path failed with a refusal: class "auth", an `HTTP 403` with a permission phrase, or `HTTP 404`, `not found`, `could not resolve to a` or `no pull request found`. A rate limit or transient fault on any path makes it `false`. `autodrive-round-waits` classes a refused read as the fixable finding `gh-read-refused`, and the completion dispatch fails instead of ending `WAITING`. |
 | `unavailable.reset_epoch` | Unix time GitHub gave for the limit's reset, or `null` when unknown. See [Rate limits and the reset time](#rate-limits-and-the-reset-time). |
 
 ## Exit codes
@@ -140,7 +149,7 @@ A read that failed on every path carries `unavailable` and no values:
 | Code | Meaning |
 | --- | --- |
 | `0` | A source answered. The JSON holds the values. |
-| `3` | Unavailable on every path. The JSON holds `unavailable`. This is a wait, never a finding. |
+| `3` | Unavailable on every path. The JSON holds `unavailable`. This is a wait, unless `unavailable.refused` is `true`, which is the finding `gh-read-refused`. |
 | `2` | Usage error: unknown subcommand or flag, a PR number that is not `1`–`9999999999`, a SHA that is not 40 hex characters, a `--repo` that is not `owner/name`, or a branch name that fails the branch rules. Nothing is run. |
 
 `autodrive-gh-read pr-for-branch` exits `0` with `"number":null` when the
@@ -409,10 +418,10 @@ printf '%s' '{"head_sha":"3f9c2d1e8b7a6c5d4e3f2a1b0c9d8e7f6a5b4c3d","ci_signal":
 | `head_sha` | Head SHA measured this round. |
 | `ci_signal` | `PASS`, `FAIL`, `PENDING`, `QUEUED`, `UNREADABLE` or empty. `PENDING` and `QUEUED` give `ci@<head_sha>`; `UNREADABLE` gives `read@checks`. |
 | `merge_state`, `mergeable` | As read this round. |
-| `unavailable` | List of `{read, rate_limited, reset_epoch}` from helper reads that exited `3`. |
+| `unavailable` | List of `{read, rate_limited, reset_epoch, refused}` from helper reads that exited `3`. `refused` is optional (default `false`); a refused read is the fixable finding `gh-read-refused`, not a wait. |
 | `findings` | All finding ids the round produced. |
 | `measured_downgrade` | The `measured_downgrade` tokens as a list, for example `["ci_status=PENDING","approval_status=PENDING"]`. See [The measured-evidence downgrade](#the-measured-evidence-downgrade). |
-| `recompute` | Optional. The step-01 recompute outcome, `{action, result, pushed_sha, rate_limited, reset_epoch}`, when one ran this round. `action` is `merge-push`, `update-branch`, `noop-up-to-date` or `none`; `result` is `ok`, `refused`, `unavailable` or `first-read`. It sets `wait_target` by the table in [Recomputing an UNKNOWN merge state](#recomputing-an-unknown-merge-state) when the round waits on mergeability and no read was rate-limited. Any other `action` or `result` value is refused with exit `2`. |
+| `recompute` | Optional. The step-01 recompute outcome, `{action, result, pushed_sha, rate_limited, reset_epoch}`, when one ran this round. `action` is `merge-push`, `update-branch`, `noop-up-to-date` or `none`; `result` is `ok`, `refused`, `unavailable` or `first-read`. It sets `wait_target` by the table in [Recomputing an UNKNOWN merge state](#recomputing-an-unknown-merge-state) when the round waits on mergeability, no read was rate-limited and CI is not pending; a rate-limit reset or a `ci@` target ranks above it and stays the target. Any other `action` or `result` value is refused with exit `2`. |
 
 Exit `0` on success, `2` on input that is not valid JSON or has the wrong
 shape. Unknown input fields are refused with exit `2`, so a renamed field
@@ -442,7 +451,10 @@ How a loop reaches it:
    `progress_stop`. `wait_stop` reads `round_waiting`, `wait_target` and
    `wait_reason` from the round record, or from the round's `.wait` sidecar
    when crusty step-01 could not read the head. When `round_waiting` is
-   `true`, it calls `escalate WAITING` and the loop exits `0`.
+   `true`, it calls `escalate WAITING` and the loop exits `0`. When the
+   target or reason fails `wait_valid`, it prints a WARNING and sets
+   `WAIT_REJECTED`; `progress_stop` then passes `round_waiting` `false`, so
+   the no-progress rule counts that round like any other.
 2. `autodrive_progress.sh check` takes `round_waiting` as an optional 7th
    argument and returns "no stop" when it is `true`. This covers `QUEUED`,
    `UNREADABLE` and `UNKNOWN` as well as `PENDING`. Callers that pass five or
@@ -600,8 +612,9 @@ The outcome is recorded in `merge_sync`:
 | `noop-up-to-date` | GitHub answered 422 "no new commits"; the branch is already up to date. |
 
 `merge_sync.recompute_result` holds `ok`, `refused`, `unavailable` or
-`first-read`. The round's `wait_target` comes from `recompute_target` in
-`autodrive_waits.rs`:
+`first-read`. When the round also waits on a rate-limit reset or on pending
+CI, that target ranks higher and stays. Otherwise the round's `wait_target`
+comes from `recompute_target` in `autodrive_waits.rs`:
 
 | Action / result | `wait_target` |
 | --- | --- |
@@ -730,6 +743,8 @@ outcome costs no GitHub request and is not affected by rate limits.
 | A `CLEAN` dispatch with GraphQL refused and a matching REST head is accepted; a head unavailable on every path gives `WAITING`, exit `76`, not `INVALID_DECISION` | `crates/amplihack-cli/tests/issue_2333_gh_fallback_dispatch.rs` |
 | REST mapping rows, rate-limit classing (same answer as `classify_gh_error` on every sample), reset bounds, argument rejection and redaction | `crates/amplihack-cli/src/commands/orch/autodrive_gh_tests.rs` |
 | Wait classing, every downgrade token row, the `ci_signal` mapping, `wait_target` order, recompute targets and the pinned `autodrive-round-waits` field names | `crates/amplihack-cli/src/commands/orch/autodrive_waits_tests.rs` |
+| A read refused on every path (401 everywhere, or 401 then 404) says `refused: true`; a rate limit or 502 on any path does not; the waits classifier makes a refused read the fixable `gh-read-refused`; pending CI stays the target over a recompute; a push during the GraphQL checks read falls to REST | `crates/amplihack-cli/tests/issue_2333_gh_fallback_reads.rs`, `issue_2333_gh_fallback_steps.rs`, `autodrive_waits_tests.rs` |
+| A wait target outside the closed set is counted by the no-progress rule (ends `STUCK` in code) | `crates/amplihack-cli/tests/issue_2333_gh_fallback_loops.rs` |
 | Strict sidecar reader: a valid sidecar at the same head qualifies; a different head, a file over 4 KiB, an unknown key or an invalid `head_sha` each count as a first read; the `none`/`first-read` recompute target is `mergeability@<expected_head_sha>` | `crates/amplihack-cli/src/commands/orch/autodrive_waits_tests.rs` |
 | `WAITING` with a valid target gives `readiness` `incomplete`, `stop_reason` `blockers` and the blocker `waiting: ci@<sha>`; a missing target adds no waiting blocker; an invalid target adds `waiting: <invalid target>` without the value; `unresolved_threads: "unavailable"` blocks readiness and is never read as `0` | unit tests in `crates/amplihack-cli/src/commands/orch/autodrive/report.rs` |
 

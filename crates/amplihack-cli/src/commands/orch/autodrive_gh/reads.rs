@@ -238,6 +238,16 @@ pub fn checks(gh: &Gh, target: &Target) -> Read {
                                     }))
                                 })
                                 .collect();
+                        // `gh pr checks` reads the head at its own moment: a
+                        // push in between would pin the new head's checks to
+                        // the old SHA. The head is read again, and a move
+                        // falls to REST, which reads checks at one SHA.
+                        let after = sha_of(&gh.view(n, "headRefOid")?["headRefOid"])?;
+                        if after != head {
+                            return Err(format!(
+                                "the head moved from {head} to {after} during the checks read"
+                            ));
+                        }
                         Ok(fields(json!({"head_sha": head, "checks": checks})))
                     }),
                     src("rest", move || {

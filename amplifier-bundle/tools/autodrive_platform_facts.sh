@@ -152,14 +152,15 @@ if [ -n "$PR" ] && LINE="$(gh pr view "$PR" --json "$VIEW_FIELDS" --jq "$VIEW_JQ
 fi
 # #2333: a refused or failed GraphQL read falls back to REST through
 # autodrive-gh-read. A read unavailable on every path joins UNAV, the
-# `unavailable` list autodrive-round-waits classes as a wait, never a finding.
+# `unavailable` list autodrive-round-waits classes as a wait, or as the
+# finding gh-read-refused when every path refused it (`refused`, #2333).
 UNAV=""; GH_OUT=""
 gh_read() { # gh_read <read> <arg>...: the helper's JSON line in GH_OUT; status 0 answered, 3 unavailable
   local rc
   GH_OUT="$("${AMPLIHACK_BIN:-amplihack}" orch helper autodrive-gh-read "$@")"; rc=$?
   [ "$rc" -eq 0 ] || echo "WARN: autodrive_platform_facts: autodrive-gh-read $1 exited $rc" >&2
-  [ "$rc" -ne 3 ] || UNAV="${UNAV}${UNAV:+,}$(printf '%s' "$GH_OUT" | jq -c --arg r "$1" '{read:$r,rate_limited:(.unavailable.rate_limited==true),reset_epoch:(.unavailable.reset_epoch//null)}' 2>/dev/null \
-    || printf '{"read":"%s","rate_limited":false,"reset_epoch":null}' "$1")"
+  [ "$rc" -ne 3 ] || UNAV="${UNAV}${UNAV:+,}$(printf '%s' "$GH_OUT" | jq -c --arg r "$1" '{read:$r,rate_limited:(.unavailable.rate_limited==true),reset_epoch:(.unavailable.reset_epoch//null),refused:(.unavailable.refused==true)}' 2>/dev/null \
+    || printf '{"read":"%s","rate_limited":false,"reset_epoch":null,"refused":false}' "$1")"
   return "$rc"
 }
 # checks at the HEAD just read: REST only, no second GraphQL try or pulls/{n} read

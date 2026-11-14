@@ -270,8 +270,8 @@ while :; do
   # #1743, decided in code before the evaluator: no progress, then the budget. RF: 1 clean, 2 failed (rc!=0 or no verdict; the evaluator judges faults), 0 otherwise.
   HEAD_NOW="$(git -C "$REPO" rev-parse HEAD || printf '')"; CI_SIGNAL="$(field "$RAW" ci_signal "")"
   RF=0; [ "$ROUND_CLEAN" = "true" ] && RF=1 || { [ "$ROUND_RC" -eq 0 ] && [ "$ROUND_VERDICT" != "MISSING" ]; } || RF=2
-  [ "$RF" = 1 ] || wait_stop # #2472: a round whose only blockers are waits ends WAITING, before any no-progress count
-  ROUND_WAITS="$(field "$RAW" waits "[]" | LC_ALL=C tr -cd 'A-Za-z0-9_.:,"[]-')"; ROUND_WAIT_ONLY="$(field "$RAW" round_waiting false)"; [ "$ROUND_WAIT_ONLY" = true ] || ROUND_WAIT_ONLY=false
+  WAIT_REJECTED=""; [ "$RF" = 1 ] || wait_stop # #2472: a round whose only blockers are waits ends WAITING, before any no-progress count
+  ROUND_WAITS="$(field "$RAW" waits "[]" | LC_ALL=C tr -cd 'A-Za-z0-9_.:,"[]-')"; ROUND_WAIT_ONLY="$(field "$RAW" round_waiting false)"; [ "$ROUND_WAIT_ONLY" = true ] || ROUND_WAIT_ONLY=false; [ -z "$WAIT_REJECTED" ] || ROUND_WAIT_ONLY=false
   [ "$RF" != 0 ] || progress_stop "$HEAD_NOW" "$CI_SIGNAL"
   bash "${LOOP_HOME}/autodrive_progress.sh" record "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$HEAD_NOW" "$RF" "${RECORD}.findings" "$CI_SIGNAL"
   [ "$ROUND_CLEAN" = "true" ] || budget_stop post

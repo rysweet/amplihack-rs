@@ -170,7 +170,9 @@ stops_preflight() {
 progress_stop() {
   local why rc
   [ -z "${PROGRESS_OFF:-}" ] || return 0
-  why="$(bash "${LOOP_HOME}/autodrive_progress.sh" check "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$1" "${RECORD}.findings" "${2:-}" "$(field "${RAW:-}" round_waiting false)")"
+  local waiting; waiting="$(field "${RAW:-}" round_waiting false)"
+  [ -z "${WAIT_REJECTED:-}" ] || waiting=false # a wait wait_stop refused is not skipped (#2472)
+  why="$(bash "${LOOP_HOME}/autodrive_progress.sh" check "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$1" "${RECORD}.findings" "${2:-}" "$waiting")"
   rc=$?
   [ "$rc" -eq 10 ] || { [ "$rc" -eq 0 ] || echo "WARNING: the no-progress check exited ${rc}; the evaluator decides." >&2; return 0; }
   # Record the stopped round too, so a resumed run's summary names it.
@@ -218,10 +220,11 @@ wait_valid() {
 # from the round record, or from the ${RECORD}.wait sidecar crusty step-01
 # writes when no read of the PR head answered. Never STUCK and never DONE:
 # loop_result WAITING, exit 0, resumable. A target or reason outside the
-# closed patterns is ignored with a WARNING, so the round goes on to the
-# no-progress rule and the evaluator. AUTODRIVE_EXIT_WAITING is the
-# completion dispatch's exit when the PR head is unavailable; the loop maps it
-# to WAITING and never exits with it.
+# closed patterns is ignored with a WARNING and sets WAIT_REJECTED, so the
+# no-progress rule counts the round (it is not skipped as waiting) and the
+# evaluator judges it. AUTODRIVE_EXIT_WAITING is the completion dispatch's exit
+# when the PR head is unavailable; the loop maps it to WAITING and never
+# exits with it.
 
 AUTODRIVE_EXIT_WAITING=76
 wait_stop() {
@@ -234,6 +237,7 @@ wait_stop() {
   [ -n "$r" ] || r="$(field "$src" waits '[]' | tr -d '[]" ' | LC_ALL=C tr -cd 'a-z0-9,-')"
   if ! wait_valid "$t" "$r"; then
     echo "WARNING: ${ROUND_LABEL} says it is waiting, but its wait target or reason is not in the closed set; the round is judged as usual." >&2
+    WAIT_REJECTED=1 # progress_stop then counts this round like any other
     return 0
   fi
   escalate "WAITING" "every blocker this round is a wait (${r})" waiting "$r" "$t"

@@ -85,3 +85,20 @@ pub fn reset_from_text(text: &str, now: i64) -> Option<i64> {
     }
     num(&RESET).and_then(|e| bounded(e, now))
 }
+
+static NOT_FOUND: LazyLock<Regex> = LazyLock::new(|| {
+    re(r"HTTP 404|(^|[^0-9])404([^0-9]|$)|not found|could not resolve to a|no pull requests? found")
+});
+
+/// True when a failed call will not clear by waiting: bad or missing
+/// credentials, a refused permission, or a repository or pull request that
+/// does not exist. A rate limit or a transient fault is never a refusal.
+pub fn is_refusal(text: &str) -> bool {
+    match classify(text) {
+        Class::Auth => true,
+        Class::RateLimit | Class::Transient => false,
+        Class::Other => {
+            (FORBIDDEN.is_match(text) && PERMISSION.is_match(text)) || NOT_FOUND.is_match(text)
+        }
+    }
+}

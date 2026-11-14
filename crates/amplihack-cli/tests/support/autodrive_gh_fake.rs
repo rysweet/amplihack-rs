@@ -13,8 +13,9 @@
 //!
 //! | file        | values                                  | default |
 //! |-------------|-----------------------------------------|---------|
-//! | `gql`       | `ok`, `refuse` (secondary limit), `fail` (HTTP 502) | `ok` |
-//! | `rest`      | `ok`, `refuse` (secondary limit), `fail` (HTTP 404) | `ok` |
+//! | `gql`       | `ok`, `refuse` (secondary limit), `fail` (HTTP 502), `auth` (HTTP 401) | `ok` |
+//! | `rest`      | `ok`, `refuse` (secondary limit), `fail` (HTTP 404), `auth` (HTTP 401) | `ok` |
+//! | `push-during-checks` | a `gql-pr.json` that replaces it after `pr checks` answers | absent |
 //! | `ub`        | `202`, `422-noop`, `422-moved`, `refuse` | `202`  |
 //! | `reset-abs` | an absolute epoch for `gh api rate_limit` | now + 600 |
 //! | `extra`     | text appended to every refusal's stderr  | empty   |
@@ -65,11 +66,15 @@ graphql() {
   case "$(mode gql ok)" in
     refuse) refuse "GraphQL" ;;
     fail) echo "HTTP 502: Bad Gateway (https://api.github.com/graphql)" >&2; exit 1 ;;
+    auth) echo "HTTP 401: Bad credentials (https://api.github.com/graphql)" >&2; exit 1 ;;
   esac
 }
 case "${1:-} ${2:-}" in
   "pr view") graphql; emit_file gql-pr.json; exit 0 ;;
-  "pr checks") graphql; emit_file gql-checks.json; exit 0 ;;
+  "pr checks") graphql; emit_file gql-checks.json
+    # push-during-checks: a push lands while gh reads the checks.
+    [ ! -f "$fix/push-during-checks" ] || cp -- "$fix/push-during-checks" "$fix/gql-pr.json"
+    exit 0 ;;
   "pr list") graphql; emit_file gql-pr-list.json; exit 0 ;;
   "repo view") graphql; printf '{"nameWithOwner":"o/r","owner":{"login":"o"},"name":"r"}\n'; exit 0 ;;
   "api graphql") graphql; emit_file gql-threads.json; exit 0 ;;
@@ -96,6 +101,7 @@ esac
 case "$(mode rest ok)" in
   refuse) refuse "HTTP 403" ;;
   fail) echo "HTTP 404: Not Found (https://api.github.com/$path)" >&2; exit 1 ;;
+  auth) echo "HTTP 401: Bad credentials (https://api.github.com/$path)" >&2; exit 1 ;;
 esac
 case "$path" in
   */merge|*/merges) echo "fake gh: a merge was attempted" >> "$log/merge-attempt"; exit 1 ;;

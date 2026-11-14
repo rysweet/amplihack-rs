@@ -632,3 +632,19 @@ fn a_resumed_drive_names_the_last_round_of_the_earlier_drive_and_keeps_its_sidec
         "the round-start rm removes only the current round's sidecar"
     );
 }
+
+#[test]
+fn a_rejected_wait_target_is_counted_by_the_no_progress_rule() {
+    // Review round 17 (S6): wait_stop said "judged as usual" but the
+    // no-progress check still skipped the round as waiting, so a forged
+    // target held the loop out of STUCK.
+    // A merge-state wait, so CI is PASS and the PENDING exception is not
+    // what lets the round through.
+    let Some(l) = Loop::new() else { return };
+    l.plan(&[r#"NOT_MERGE_READY||["merge-state-unknown"]|mergeability@$(touch pwned)|true|0|"#]);
+    let o = l.run("merge-ready");
+    let r = result(&o);
+    assert_ne!(r["loop_result"], "WAITING", "{}", show(&o));
+    assert_eq!(r["loop_result"], "STUCK", "{}", show(&o));
+    assert!(r["reason"].as_str().unwrap().contains(DECIDED), "{r}");
+}

@@ -705,3 +705,53 @@ fn a_head_answered_by_graphql_never_runs_ls_remote() {
     assert_eq!(v["source"], "graphql", "{v}");
     assert_eq!(ls_remote_calls(&g), 0, "{:?}", g.git_calls());
 }
+
+// ── Review round 17: refusals and the checks race ───────────────────────────
+
+#[test]
+fn a_read_refused_on_every_path_says_refused() {
+    let g = GhRepo::new();
+    g.mode("gql", "auth");
+    g.mode("rest", "auth");
+    for args in [&["pr", "7"][..], &["reviews", "7"], &["checks", "7"]] {
+        let v = unavailable(&g.read(args));
+        assert_eq!(v["unavailable"]["refused"], true, "{args:?}: {v}");
+        assert_eq!(v["unavailable"]["rate_limited"], false, "{args:?}: {v}");
+    }
+    // A 404 on REST after a 401 on GraphQL: still nothing a wait clears.
+    g.mode("rest", "fail");
+    let v = unavailable(&g.read(&["reviews", "7"]));
+    assert_eq!(v["unavailable"]["refused"], true, "{v}");
+}
+
+#[test]
+fn a_rate_limit_on_any_path_is_not_a_refusal() {
+    let g = GhRepo::new();
+    g.mode("gql", "refuse");
+    g.mode("rest", "fail");
+    let v = unavailable(&g.read(&["reviews", "7"]));
+    assert_eq!(v["unavailable"]["refused"], false, "{v}");
+    g.mode("gql", "fail");
+    g.mode("rest", "auth");
+    let v = unavailable(&g.read(&["reviews", "7"]));
+    assert_eq!(v["unavailable"]["refused"], false, "a 502 may clear: {v}");
+}
+
+#[test]
+fn a_push_during_the_graphql_checks_read_falls_to_rest_at_one_sha() {
+    let g = GhRepo::new();
+    let pr = std::fs::read_to_string(g.fix.join("gql-pr.json")).unwrap();
+    let moved = "0123456789abcdef0123456789abcdef01234567";
+    std::fs::write(
+        g.fix.join("push-during-checks"),
+        pr.replace(&g.head(), moved),
+    )
+    .unwrap();
+    let v = ok(&g.read(&["checks", "7"]));
+    assert_eq!(
+        v["source"], "rest",
+        "checks read while the head moved are not pinned to either SHA: {v}"
+    );
+    assert_eq!(v["head_sha"], g.head().as_str(), "{v}");
+    assert_ne!(v["head_sha"], moved, "{v}");
+}
