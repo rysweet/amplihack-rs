@@ -1,7 +1,7 @@
 ---
 title: "Why Prompt Text Stays Out of argv"
 description: "Why amplihack never puts the operating contract, a task prompt or a recipe brief in an agent process's command line, and the threat model behind the rule."
-last_updated: 2026-11-08
+last_updated: 2026-11-13
 review_schedule: quarterly
 owner: rysweet
 doc_type: explanation
@@ -10,6 +10,7 @@ related:
   - ../howto/check-agent-argv-for-prompt-text.md
   - ../SYSTEM_PROMPT_APPEND.md
   - ./large-payload-delivery.md
+  - ../reference/recipe-context-transport.md
 ---
 
 # Why Prompt Text Stays Out of argv
@@ -154,8 +155,41 @@ repository with its own review, and takes effect when amplihack's pinned
 runner revision moves. The two are tracked as separate steps so that the
 agent processes are clean without waiting for the runner.
 
+## Recipe context on the runner's argv
+
+On 13 November an agent in a live auto-drive ran `pkill -f "vitest.mjs"` to
+stop a hung test run. `amplihack recipe run` was passing every recipe context
+value to `recipe-runner-rs` as `--set key=value`: 153 argv entries and
+12,397 bytes, including the task text. The task text contained "vitest", so the
+pattern matched the runner and ended the drive
+([#2582](https://github.com/rysweet/amplihack-rs/issues/2582)). This is the
+#2030 failure one level up the process tree.
+
+The same rule now applies to recipe context. When the runner reports the
+`context_file_v1` capability, amplihack writes the context to a 0600 file in
+the run's private runtime folder and passes only `--context-file <path>`.
+When it does not, amplihack keeps the `--set` arguments unchanged, because a
+runner without the option has no other way to receive the context.
+
+The fallback is a compatibility path, not a quiet weakening. The choice
+between the two is made from the capability report alone, and a run that
+should use the file and cannot write it fails rather than putting the values
+on argv, for the same reason as in [Why fail instead of falling back](#why-fail-instead-of-falling-back).
+
+The pinned runner does not yet report `context_file_v1`, and it still passes
+each agent step's prompt to the agent launcher with `-p`. Both are runner
+changes, tracked in `rysweet/amplihack-recipe-runner`. Until they are released
+and the pin moves, context values and task text remain in some argv on a host.
+Agents are therefore also told to stop their own jobs by PID and never by
+pattern; see [Stop Background Jobs by PID](../howto/stop-background-jobs-by-pid.md).
+
+Rules, file locations and errors are in the
+[Recipe Context Transport Reference](../reference/recipe-context-transport.md).
+
 ## Related
 
+- [Recipe Context Transport Reference](../reference/recipe-context-transport.md) - How recipe context reaches the runner without argv (#2582)
+- [Stop Background Jobs by PID](../howto/stop-background-jobs-by-pid.md) - The agent guidance against pattern kills
 - [Agent Prompt Channels Reference](../reference/agent-prompt-channels.md) - Channels, files, the version gate and errors
 - [Check Agent Processes for Prompt Text](../howto/check-agent-argv-for-prompt-text.md) - Run the `/proc` check
 - [System Prompt Append](../SYSTEM_PROMPT_APPEND.md) - What the contract is for

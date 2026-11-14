@@ -4,6 +4,8 @@ use crate::commands::governor::{self, AdmitRequest, Denied, GovernorArgs};
 mod binary;
 /// Issue #1570: `--context-file` and `--context-from-file`.
 pub(crate) mod context_sources;
+/// Issue #2582: recipe context reaches the runner in a 0600 file when it can.
+mod context_transport;
 mod correlation;
 pub(crate) mod execute;
 /// Issue #1267 — transient vs terminal classification of a failed run.

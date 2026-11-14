@@ -446,7 +446,6 @@ into every session, so every line costs context on every launch.
      so edit this file in the repo and rebuild. Every session on every install
      gets these bytes. Never place credentials, tokens, paths to secrets, or
      private context in this file. -->
-
 # Amplihack operating contract
 
 This session was launched by amplihack. Amplihack's routing contract is authoritative.
@@ -466,6 +465,7 @@ This session was launched by amplihack. Amplihack's routing contract is authorit
 - To wait, run `amplihack wait --seconds N`, or start the work with `cmd & pid=$!` and
   run `wait $pid`. Never use `tail -f /dev/null` or `timeout N tail -f /dev/null` as a
   sleep: it is left running as an orphan, and the PreToolUse hook denies it.
+- Stop a background job you started by the PID you recorded with `$!`, or by its process group with `kill -- -PGID`. Never use `pkill -f`, `pgrep -f` with `kill` or `xargs kill`, or `killall <name>`: a pattern matches every process whose command line contains the same words, including the recipe runner and other agents. Time-box test runs with the test runner's own options (for example nextest `slow-timeout` with `terminate-after`, or vitest `--testTimeout`) instead of killing the run afterwards.
 ```
 
 Four properties make it work, and each is there for a reason:

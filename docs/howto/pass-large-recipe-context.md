@@ -1,7 +1,7 @@
 ---
 title: "Pass Large Recipe Context and Agent Text"
 description: "Pass large recipe context with --context-file and --context-from-file, and publish agent-generated text with --body-file and git commit -F, without hitting Argument list too long."
-last_updated: 2026-10-16
+last_updated: 2026-11-13
 review_schedule: quarterly
 owner: rysweet
 doc_type: howto
@@ -45,16 +45,24 @@ amplihack recipe run default-workflow \
 
 The option can be repeated, once per key.
 
-The value stays out of `amplihack`'s own argv at any size. The recipe runner
-takes context only as `--set KEY=VALUE` arguments, so each value handed to it
-must fit in one argument (128 KiB, `MAX_ARG_STRLEN`); several such values may
-together exceed 128 KiB, up to the host's `ARG_MAX` less the inherited
-environment. See [Troubleshooting](#troubleshooting).
+The value stays out of `amplihack`'s own argv at any size. How it reaches the
+recipe runner depends on the runner:
 
-Because the runner's `--set` arguments are on its command line, other local
-users can read the context through `ps` or `/proc/<pid>/cmdline` while the run
-lasts. Do not use recipe context to carry secrets; let the step read them from
-its own environment or a credential helper instead.
+- A runner that reports the `context_file_v1` capability receives the whole
+  context in a 0600 file under the run's private runtime folder, and its argv
+  holds only `--context-file <path>`. There is no per-value size limit.
+- An older runner, including the currently pinned revision, takes context only
+  as `--set KEY=VALUE` arguments. Each value must then fit in one argument
+  (128 KiB, `MAX_ARG_STRLEN`); several such values may together exceed
+  128 KiB, up to the host's `ARG_MAX` less the inherited environment. See
+  [Troubleshooting](#troubleshooting).
+
+On the `--set` path, other local users can read the context through `ps` or
+`/proc/<pid>/cmdline` while the run lasts. Even with the file, the runner
+still passes agent prompts, which contain the task text, on its agent
+launcher's argv. Do not use recipe context to carry secrets; let the step read
+them from its own environment or a credential helper instead. See
+[Recipe Context Transport Reference](../reference/recipe-context-transport.md).
 
 ## Pass a whole context as JSON
 
@@ -287,7 +295,8 @@ for `--ultrathink`, `--analyze` or `--fix`.
 | `--context-from-file: key 'AMPLIHACK_HOME' is reserved` | File sources cannot set `AMPLIHACK_*` keys | Use a recipe context key instead |
 | `--context-from-file: expected KEY=PATH` | The `=` is missing | Write `task_description=/tmp/issue.md` |
 | A nested recipe fails with `unbound variable` | It relied on an inherited parent alias | Pass the key with `-c` or `--context-from-file` |
-| `recipe context value for key "<KEY>" is <N> bytes; ... cannot exceed 131072 bytes` | One context value is larger than a single argument may be, and the runner reads context only from `--set` arguments | Pass a file path in the context and read the file in the step, or produce the value inside the run, for example as a step output |
+| `recipe context value for key "<KEY>" is <N> bytes; ... cannot exceed 131072 bytes` | One context value is larger than a single argument may be, and the runner does not report `context_file_v1`, so amplihack falls back to `--set` arguments | Pass a file path in the context and read the file in the step, or produce the value inside the run, for example as a step output |
+| `failed to write recipe context file <path>: <io error>` | The runner supports `--context-file`, but amplihack could not write the file in the run's runtime folder (disk full, read-only folder, or an existing `context` entry) | Free space or fix the runtime folder's permissions. The run does not fall back to `--set`. |
 | `error: unexpected argument '--prompt-file' found` | The amplihack release on this machine or VM predates `--prompt-file` | Update amplihack there |
 | `remote command 'ultrathink' is not supported: only 'auto' accepts --prompt-file` | Only auto mode can take a prompt file | Run the remote command as `auto` |
 
@@ -295,5 +304,6 @@ for `--ultrathink`, `--analyze` or `--fix`.
 
 - [Large Payload Delivery Reference](../reference/large-payload-delivery.md) - Options, validation and constants
 - [Large Payload Delivery to Child Processes](../concepts/large-payload-delivery.md) - Background and design
+- [Recipe Context Transport Reference](../reference/recipe-context-transport.md) - `--context-file` to the runner, the `--set` fallback, and cleanup
 - [Recipe CLI Reference](../reference/recipe-cli-reference.md) - All `amplihack recipe run` options
 - [Quality Audit Cycle Recipe](../reference/quality-audit-cycle-recipe.md) - The `run-recursive-cycle` step

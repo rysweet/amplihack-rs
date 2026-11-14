@@ -3997,3 +3997,152 @@ fn test_execute_recipe_via_rust_child_sees_no_outer_run_identity() {
         "the child must get the depth of a fresh top-level run's child"
     );
 }
+
+// -------------------------------------------------------------------------
+// Issue #2582: the runner's argv carries no recipe context value when the
+// runner reports `context_file_v1`; without it the `--set` path is unchanged.
+// -------------------------------------------------------------------------
+
+/// A runner stub that records its argv (NUL-separated), copies the file named
+/// by `--context-file` with the file's and folder's modes, and reports
+/// success. `$1` is `CAPS`, a JSON array of capability names.
+#[cfg(unix)]
+fn context_2582_runner(dir: &Path, caps: &str) -> PathBuf {
+    let runner = dir.join("recipe-runner-rs");
+    let body = format!(
+        r#"#!/bin/sh
+case "$1" in --capabilities) printf '%s\n' '{{"schema_version":1,"version":"fixture","capabilities":{caps}}}'; exit 0 ;; esac
+rec="$RECORD_2582"
+: > "$rec/argv.bin"
+for a in "$@"; do printf '%s\0' "$a" >> "$rec/argv.bin"; done
+prev=
+for a in "$@"; do
+  if [ "$prev" = "--context-file" ]; then
+    cp "$a" "$rec/context.copy.json"
+    printf '%s' "$a" > "$rec/context.path"
+    stat -c %a "$a" > "$rec/file.mode"
+    stat -c %a "$(dirname "$a")" > "$rec/dir.mode"
+  fi
+  prev=$a
+done
+printf '%s\n' '{{"recipe_name":"ctx-2582","success":true,"step_results":[],"context":{{}}}}'
+"#
+    );
+    crate::test_support::write_executable(&runner, &body);
+    runner
+}
+
+#[cfg(unix)]
+fn run_2582(caps: &str) -> (tempfile::TempDir, Vec<String>, PathBuf) {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let records = temp.path().join("records");
+    let home = temp.path().join("home");
+    let repo = temp.path().join("repo");
+    for d in [&records, &home, &repo] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let runner = context_2582_runner(temp.path(), caps);
+    let recipe = repo.join("recipe.yaml");
+    std::fs::write(&recipe, "name: ctx-2582\nsteps: []\n").unwrap();
+    let _env = crate::test_support::EnvGuard::set([
+        ("RECIPE_RUNNER_RS_PATH", runner.to_str().unwrap()),
+        ("RECORD_2582", records.to_str().unwrap()),
+        ("HOME", home.to_str().unwrap()),
+    ]);
+    let context = BTreeMap::from([
+        (
+            "task_description".to_string(),
+            "ZQXV2582TASKWORD fix the widget".to_string(),
+        ),
+        (
+            "pr_body".to_string(),
+            "ZQXV2582BODYWORD {\"k\": [1]}".to_string(),
+        ),
+    ]);
+    let result =
+        execute::execute_recipe_via_rust(&recipe, &context, false, false, &repo, &[], None)
+            .expect("recipe run must succeed");
+    assert!(result.success);
+    let raw = std::fs::read(records.join("argv.bin")).expect("the stub runner was not started");
+    let argv = raw
+        .split(|b| *b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect();
+    (temp, argv, records)
+}
+
+#[test]
+#[cfg(unix)]
+fn test_2582_capability_puts_context_in_a_private_file_not_argv() {
+    let (_temp, argv, records) =
+        run_2582(r#"["codex_exec","durable_recovery_v1","context_file_v1"]"#);
+    assert!(
+        !argv.iter().any(|a| a.contains("ZQXV2582")),
+        "a context value reached the runner's argv: {argv:?}"
+    );
+    assert!(!argv.iter().any(|a| a == "--set"), "{argv:?}");
+    let flag = argv
+        .iter()
+        .position(|a| a == "--context-file")
+        .expect("the runner must get --context-file");
+    let path = PathBuf::from(&argv[flag + 1]);
+    assert_eq!(path.file_name().unwrap(), "context.json");
+    assert_eq!(path.parent().unwrap().file_name().unwrap(), "context");
+    // The run's runtime folder is the context folder's parent; its `tmp/`
+    // is exported to every step as TMPDIR, so the file must not be there.
+    let runtime = path.parent().unwrap().parent().unwrap();
+    assert!(
+        !path.starts_with(runtime.join("tmp")) && runtime.file_name().unwrap() != "tmp",
+        "the context file must not be under the exported TMPDIR: {}",
+        path.display()
+    );
+
+    let copied: serde_json::Map<String, JsonValue> =
+        serde_json::from_slice(&std::fs::read(records.join("context.copy.json")).unwrap()).unwrap();
+    assert_eq!(
+        copied.get("task_description").and_then(JsonValue::as_str),
+        Some("ZQXV2582TASKWORD fix the widget")
+    );
+    assert_eq!(
+        copied.get("pr_body").and_then(JsonValue::as_str),
+        Some("ZQXV2582BODYWORD {\"k\": [1]}")
+    );
+    let read = |n: &str| std::fs::read_to_string(records.join(n)).unwrap();
+    assert_eq!(read("file.mode").trim(), "600");
+    assert_eq!(read("dir.mode").trim(), "700");
+
+    assert!(
+        !path.exists(),
+        "the context file must be removed once the runner has been reaped"
+    );
+    assert!(!path.parent().unwrap().exists(), "and its folder too");
+}
+
+#[test]
+#[cfg(unix)]
+fn test_2582_without_capability_keeps_set_arguments() {
+    let (_temp, argv, records) = run_2582(r#"["codex_exec","durable_recovery_v1"]"#);
+    assert!(!argv.iter().any(|a| a == "--context-file"), "{argv:?}");
+    assert!(!records.join("context.copy.json").exists());
+    let sets: Vec<&str> = argv
+        .windows(2)
+        .filter(|w| w[0] == "--set")
+        .map(|w| w[1].as_str())
+        .collect();
+    assert!(sets.contains(&"task_description=ZQXV2582TASKWORD fix the widget"));
+    assert!(sets.contains(&"pr_body=ZQXV2582BODYWORD {\"k\": [1]}"));
+}
+
+#[test]
+#[cfg(unix)]
+fn test_2582_capability_match_is_exact_at_run_level() {
+    let (_temp, argv, _records) =
+        run_2582(r#"["durable_recovery_v1","context_file_v10","context_file"]"#);
+    assert!(!argv.iter().any(|a| a == "--context-file"), "{argv:?}");
+    assert!(argv.iter().any(|a| a == "--set"), "{argv:?}");
+}
