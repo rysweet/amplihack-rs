@@ -63,8 +63,8 @@ const AUTODRIVE_TOOLS: [&str; 31] = [
     "autodrive_crusty_record.sh",
     "autodrive_crusty_finalize.sh",
     "autodrive_completion_context.sh",
+    "autodrive_merge.sh",
     "autodrive_merge_message.sh",
-    "autodrive_merge_ready_files.sh",
     "autodrive_platform_facts.sh",
     "autodrive_pr_head.sh",
     "autodrive_progress.sh",
@@ -535,13 +535,12 @@ fn advancing_a_phase_requires_both_the_round_verdict_and_the_loop_verdict() {
         driver.contains("treated as NOT clean"),
         "a missing or unparseable round record must never be read as clean"
     );
+    // #2575: the round verdict is the outcome reader's one word, mapped by
+    // autodrive_round_word; the write-up itself is never parsed.
     let round = recipe_yaml("autodrive-merge-round");
-    let merge = field(
-        step(&round, "step-03-extract-merge-ready-verdict"),
-        "command",
-    );
-    assert!(merge.contains("orch helper autodrive round"));
-    assert!(merge.contains("RECIPE_VAR_merge_ready_review"));
+    let word = field(step(&round, "step-05a-outcome-word"), "command");
+    assert!(word.contains("autodrive_round_word"));
+    assert!(word.contains("RECIPE_VAR_merge_ready_outcome"));
 }
 
 #[test]
@@ -708,10 +707,11 @@ fn forbidden_flags_never_appear_in_an_executable_position() {
             }
         }
     }
-    let finalizer = recipe_yaml("autodrive-finalize");
-    let prompt = field(step(&finalizer, "finalize-observed-action"), "prompt");
-    assert!(prompt.contains("expected-head protection"));
-    assert!(prompt.contains("never bypass branch protections"));
+    // #2575: the only merge request is autodrive_merge.sh, with expected-head
+    // protection and no bypass flag.
+    let merge = read(&tool_path("autodrive_merge.sh"));
+    assert!(merge.contains("--match-head-commit \"$sha\""));
+    assert!(!merge.contains("--admin"));
 }
 
 // ── No silent merge ──────────────────────────────────────────────────────────
@@ -896,11 +896,12 @@ fn every_verdict_gate_selects_the_last_object_carrying_its_field() {
         crusty.contains("extract-json --require-field crusty_verdict"),
         "the crusty gate must select the LAST object carrying `crusty_verdict`"
     );
+    // #2575: the merge-ready verdict is an agent's one word, never a JSON
+    // object extracted from the write-up.
     let merge = recipe_text("autodrive-merge-round");
     assert!(
-        merge.contains("orch helper autodrive round"),
-        "the merge-ready gate must select the LAST object carrying \
-         `merge_ready_verdict`"
+        merge.contains("autodrive_round_word") && !merge.contains("extract-json"),
+        "the merge-ready round reads its outcome word, never JSON from the write-up"
     );
     // The verdict shapes the reviewer is shown must not be quotable back into
     // the parser as a verdict.
@@ -1589,57 +1590,13 @@ fn squash(text: &str) -> String {
 // auto-drive recipes and the loop-health evaluator both loops call.
 
 #[test]
-fn merge_ready_files_are_resolved_by_a_bash_step_before_the_round() {
-    // D1-D3: the lookup is deterministic bash, not agent prose. A missing
-    // install fails the step with a named error instead of becoming a
-    // NOT_MERGE_READY blocker that repeats every round until STUCK.
-    let recipe = recipe_yaml("autodrive-merge-round");
-    let s = step(&recipe, "step-00-merge-ready-files");
-    assert_eq!(
-        s.get("type").and_then(Value::as_str),
-        Some("bash"),
-        "step-00 must be a bash step"
-    );
-    assert_eq!(s.get("parse_json").and_then(Value::as_bool), Some(true));
-    assert_eq!(
-        s.get("output").and_then(Value::as_str),
-        Some("merge_ready_files")
-    );
-    assert!(
-        step_index(&recipe, "step-00-merge-ready-files") < step_index(&recipe, "merge-evidence"),
-        "step-00 must run before the merge evidence, so a missing install costs no test run"
-    );
-    let cmd = field(s, "command");
-    assert!(
-        !reads_the_bare_name(cmd, "AUTODRIVE_TOOLS_DIR"),
-        "step-00 must not read an inherited AUTODRIVE_TOOLS_DIR (#1607)"
-    );
-    for needle in [
-        "autodrive_merge_ready_files.sh",
-        "${RECIPE_VAR_autodrive_tools_dir:-}",
-    ] {
-        assert!(cmd.contains(needle), "missing trusted lookup: {needle}");
-    }
-    // The resolver is executed, never sourced or evaluated.
-    assert!(
-        cmd.contains("bash \"$"),
-        "step-00 must run the resolver as `bash \"$R\"`"
-    );
-    let sourced = regex::Regex::new(r#"(^|[;&|\s])(\.|source)\s+"?\$\{?R\b"#).unwrap();
-    assert!(
-        !sourced.is_match(cmd) && !cmd.contains("eval "),
-        "step-00 must never source or eval the resolver"
-    );
-}
-
-#[test]
 fn merge_ready_assessment_reads_the_resolved_skill_files() {
     let recipe = recipe_yaml("autodrive-merge-round");
     let prompt = field(step(&recipe, "step-02-merge-ready-assessment"), "prompt");
 
     for needle in [
-        "{{merge_ready_files.skill_md}}",
-        "{{merge_ready_files.template}}",
+        "{{autodrive_tools_dir}}/../skills/merge-ready/SKILL.md",
+        "{{autodrive_tools_dir}}/../skills/merge-ready/pr-description-template.md",
         "merge-ready",
         "disable-model-invocation",
         "{{crusty_evidence}}",
@@ -2054,203 +2011,11 @@ fn no_round_minimum_in_any_recipe_or_tool() {
     );
 }
 
-#[test]
-fn merge_ready_files_resolver_is_read_only_and_set_u_safe() {
-    let path = tool_path("autodrive_merge_ready_files.sh");
-    let text = read(&path);
-    for needle in [
-        "set -u",
-        "${AMPLIHACK_HOME:-}",
-        "pwd -P",
-        "hash-object --no-filters --stdin",
-        "merge-ready-template-not-found",
-        "merge-ready-skill-files-not-found: searched",
-        "INFO: merge-ready criteria from",
-        "\"skill_dir\":\"%s\"",
-        "\"skill_md\":\"%s\"",
-        "\"template\":\"%s\"",
-        "\"skill_md_sha\":\"%s\"",
-        "skills/merge-ready",
-    ] {
-        assert!(
-            text.contains(needle),
-            "autodrive_merge_ready_files.sh must contain `{needle}`"
-        );
-    }
-    // Read-only: no command that writes, moves or deletes, and no redirection
-    // into a file. Redirection to stderr or /dev/null is fine.
-    let command = regex::Regex::new(
-        r"(^|[;&|(]\s*|\b(then|do|else)\s+)(rm|mv|cp|mkdir|touch|tee|ln|chmod|install)\b",
-    )
-    .unwrap();
-    let redirect = regex::Regex::new(r#"(^|[^0-9&<>])>>?\s*["$~/A-Za-z]"#).unwrap();
-    for (n, line) in text.lines().enumerate() {
-        let code = line.trim_start();
-        if code.starts_with('#') {
-            continue;
-        }
-        let code = code
-            .replace("2>&1", "")
-            .replace(">&2", "")
-            .replace("2>/dev/null", "")
-            .replace(">/dev/null", "");
-        assert!(
-            !command.is_match(&code) && !redirect.is_match(&code),
-            "autodrive_merge_ready_files.sh:{} writes to the filesystem; it must be read-only:\n  {line}",
-            n + 1
-        );
-    }
-}
-
 /// #2536: the resolver reads `$TOP` under `set -u`; #2340 dropped its
 /// assignment and every merge-readiness step failed "TOP: unbound variable".
 /// Run it, as step-00 does, in a temporary git repository: once with the
 /// install inside that repository (the `"$TOP"/*` match path) and once
 /// with the install outside it.
-///
-/// #2561: `origin/main` points at the fixture commit and the in-repository
-/// SKILL.md then changes, so the branch-criteria warning appears only when
-/// `TOP` is the repository root; an empty or unset `TOP` loses it.
-#[test]
-fn merge_ready_files_resolver_runs_under_set_u_in_a_git_repository() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let root = fs::canonicalize(tmp.path()).expect("canonical tempdir");
-    let repo = root.join("repo");
-    let home = root.join("home");
-    fs::create_dir_all(&home).expect("home dir");
-    // Hooks export GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE; left in place they
-    // would send the fixture's commit to the real worktree. BASH_ENV would run
-    // host code in these shells, and the real HOME holds the user's git files.
-    let isolate = |cmd: &mut Command| {
-        for var in [
-            "GIT_DIR",
-            "GIT_WORK_TREE",
-            "GIT_INDEX_FILE",
-            "GIT_COMMON_DIR",
-            "GIT_OBJECT_DIRECTORY",
-            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-            "GIT_PREFIX",
-            "BASH_ENV",
-        ] {
-            cmd.env_remove(var);
-        }
-        cmd.env("HOME", &home)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1");
-    };
-    let install_skill = |base: &Path| -> PathBuf {
-        let dir = base.join("amplifier-bundle/skills/merge-ready");
-        fs::create_dir_all(&dir).expect("skill dir");
-        fs::write(dir.join("SKILL.md"), "---\nname: merge-ready\n---\n").expect("SKILL.md");
-        fs::write(dir.join("pr-description-template.md"), "# template\n").expect("template");
-        dir
-    };
-    let inside = install_skill(&repo);
-    let outside = install_skill(&root.join("install"));
-    // The base branch is the fixture commit. There is no origin/HEAD, so the
-    // resolver compares against origin/main.
-    let mut setup = Command::new("bash");
-    setup
-        .arg("-c")
-        .arg(
-            "git init -q . && git add -A && git -c user.name=t -c user.email=t@example.invalid \
-             commit -q --no-verify -m init && git update-ref refs/remotes/origin/main HEAD",
-        )
-        .current_dir(&repo);
-    isolate(&mut setup);
-    let git = setup.output().expect("run git");
-    assert!(
-        git.status.success(),
-        "commit the fixture and set origin/main: {git:?}"
-    );
-    // The branch under review changes its copy of the criteria; the warning
-    // compares the working tree, so the edit stays uncommitted.
-    {
-        use std::io::Write as _;
-        let mut skill = fs::OpenOptions::new()
-            .append(true)
-            .open(inside.join("SKILL.md"))
-            .expect("open the in-repository SKILL.md");
-        writeln!(skill, "changed on the branch under review").expect("edit SKILL.md");
-    }
-    const BRANCH_WARNING: &str =
-        "merge-ready criteria come from the branch under review and differ from origin/main";
-
-    for (amplihack_home, dir, expect_warning) in [
-        (&repo, &inside, true),
-        (&root.join("install"), &outside, false),
-    ] {
-        let mut resolver = Command::new("bash");
-        resolver
-            .arg("-u")
-            .arg(tool_path("autodrive_merge_ready_files.sh"))
-            .current_dir(&repo)
-            .env("AMPLIHACK_HOME", amplihack_home)
-            .env("REPO_PATH", &repo);
-        isolate(&mut resolver);
-        let out = resolver.output().expect("run the resolver");
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            out.status.success() && !stderr.contains("unbound variable"),
-            "AMPLIHACK_HOME={}: {out:?}",
-            amplihack_home.display()
-        );
-        assert_eq!(
-            stderr.contains(BRANCH_WARNING),
-            expect_warning,
-            "AMPLIHACK_HOME={}: the branch-criteria warning must appear only when the \
-             criteria lie under the repository root (TOP):\n{stderr}",
-            amplihack_home.display()
-        );
-        let json: serde_json::Value =
-            serde_json::from_slice(&out.stdout).expect("one line of JSON on stdout");
-        let dir = dir.display().to_string();
-        assert_eq!(json["skill_dir"], dir.as_str());
-        assert_eq!(json["skill_md"], format!("{dir}/SKILL.md").as_str());
-        assert_eq!(
-            json["template"],
-            format!("{dir}/pr-description-template.md").as_str()
-        );
-        assert!(
-            json["skill_md_sha"].as_str().is_some_and(|s| s.len() == 40),
-            "skill_md_sha must be a git blob hash: {json}"
-        );
-    }
-}
-
-/// #2561: the not-found message prints the searched paths, which come from
-/// `AMPLIHACK_HOME` and have not been checked by `unsafe_path`. It must strip
-/// control bytes, so a crafted path cannot start a new log line such as a
-/// GitHub `::error::` workflow command.
-#[test]
-fn merge_ready_files_not_found_message_strips_control_bytes() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let root = fs::canonicalize(tmp.path()).expect("canonical tempdir");
-    let crafted = root.join("x\n::error::injected");
-    let out = Command::new("bash")
-        .arg("-u")
-        .arg(tool_path("autodrive_merge_ready_files.sh"))
-        .current_dir(&root)
-        .env("AMPLIHACK_HOME", &crafted)
-        .env("REPO_PATH", &root)
-        .env_remove("BASH_ENV")
-        .output()
-        .expect("run the resolver");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(out.status.code(), Some(1), "not found must exit 1: {out:?}");
-    assert!(out.stdout.is_empty(), "stdout must stay empty: {out:?}");
-    let lines: Vec<&str> = stderr.lines().collect();
-    assert_eq!(lines.len(), 1, "exactly one stderr line:\n{stderr}");
-    assert!(
-        lines[0].starts_with("ERROR: merge-ready-skill-files-not-found: searched "),
-        "unexpected message:\n{stderr}"
-    );
-    assert!(
-        lines.iter().all(|l| !l.starts_with("::")),
-        "no stderr line may start a workflow command:\n{stderr}"
-    );
-}
-
 #[test]
 fn merge_loop_passes_the_state_dir_to_rounds() {
     let text = recipe_text("autodrive-merge-loop");
@@ -2520,8 +2285,6 @@ fn autodrive_recipes_are_registered_in_the_recipe_manifest() {
 
 // What `autodrive_crusty_range` prints, besides `ok`.
 
-// What `autodrive_qa_trusted` prints, besides `ok`.
-
 // The search order every auto-drive bash step uses to find a bundle tool.
 
 fn step_command<'a>(recipe: &'a Value, id: &str) -> &'a str {
@@ -2561,7 +2324,7 @@ fn crusty_rereview_runs_between_merge_rounds_at_the_loop_depth() {
         );
     }
     let order = [
-        "step-00-merge-ready-files",
+        "step-00-tools-dir",
         "merge-evidence",
         "step-00d-qa-evidence-hash",
         "step-01-platform-facts",
@@ -3052,7 +2815,6 @@ fn autodrive_trust_is_a_side_effect_free_library() {
         "autodrive_crusty_range",
         "autodrive_rereview_decision",
         "autodrive_qa_evidence_sha",
-        "autodrive_qa_trusted",
         "autodrive_scenario_results",
     ] {
         assert!(
@@ -3062,7 +2824,7 @@ fn autodrive_trust_is_a_side_effect_free_library() {
             "autodrive_trust.sh must define `{func}()`"
         );
     }
-    for token in RANGE_TOKENS.iter().chain(QA_TRUSTED_TOKENS.iter()) {
+    for token in RANGE_TOKENS.iter() {
         assert!(
             trust.contains(token),
             "autodrive_trust.sh must print the token `{token}`"
@@ -3248,8 +3010,10 @@ fn round_recipes_read_step_outputs_through_recipe_var() {
             }
         }
     }
+    // #2575 removed the record-only reads (round-record, merge-ready-verdict),
+    // so the floor counts what remains.
     assert!(
-        reads >= 18,
+        reads >= 10,
         "found only {reads} step-output reads in the round recipes; the scan is broken"
     );
     bad.dedup();
@@ -3267,7 +3031,7 @@ fn round_recipes_read_step_outputs_through_recipe_var() {
 // these scenarios with the real gadugi-test, so the harnesses read the
 // shipped step body with `tests/gadugi/recipe-step-command.sh` (awk) rather
 // than python3 and PyYAML.
-const HARNESS_STEPS: [(&str, &str, &str); 3] = [
+const HARNESS_STEPS: [(&str, &str, &str); 2] = [
     (
         "run-step-03b.sh",
         "workflow-prep",
@@ -3277,11 +3041,6 @@ const HARNESS_STEPS: [(&str, &str, &str); 3] = [
         "run-merge-validations.sh",
         "quality-audit-cycle",
         "merge-validations",
-    ),
-    (
-        "run-autodrive-merge-ready-files-scenario.sh",
-        "autodrive-merge-round",
-        "step-00-merge-ready-files",
     ),
 ];
 
@@ -4010,23 +3769,24 @@ fn the_squash_message_suite_passes_and_keeps_its_named_cases() {
 
 #[test]
 fn finalize_supplies_the_squash_message_instead_of_the_platform_default() {
+    // #2575: the finalize `merge` step sources autodrive_merge.sh, which
+    // sources the trusted squash-message helper (#2056).
     let finalizer = recipe_yaml("autodrive-finalize");
-    let prompt = field(step(&finalizer, "finalize-observed-action"), "prompt");
+    let command = field(step(&finalizer, "merge"), "command");
+    assert!(command.contains("amplifier-bundle/tools/autodrive_merge.sh"));
+    assert!(command.contains("[ ! -L \"$M\" ]"));
+    let tool = read(&tool_path("autodrive_merge.sh"));
     for needle in [
-        "issue #2056",
-        "autodrive_merge_message.sh",
-        "never a copy from the PR's tree",
-        // An absolute launch-bundle path: the step runs in the PR worktree,
-        // so a repo-relative path would source the PR's own copy.
-        "MM=\"$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_message.sh\"",
-        "[ ! -L \"$MM\" ] && . \"$MM\"",
-        "case \"${AMPLIHACK_HOME:-}\" in /*) ;;",
+        "#2056",
+        "mm=\"${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_merge_message.sh\"",
+        "if [ ! -f \"$mm\" ] || [ -L \"$mm\" ]; then",
+        "case \"${AMPLIHACK_HOME:-}\" in",
         "--subject \"$subject\" --body-file -",
         "printf '%s' \"$MERGE_BODY\" | gh pr merge",
     ] {
         assert!(
-            prompt.contains(needle),
-            "finalize-observed-action must say `{needle}` (#2056)"
+            tool.contains(needle),
+            "autodrive_merge.sh must say `{needle}` (#2056)"
         );
     }
 }
@@ -4327,13 +4087,6 @@ fn the_composer_tells_both_loops_whether_pr_number_was_supplied() {
 // child `Command`, never with `std::env::set_var`.
 
 const RANGE_TOKENS: [&str; 2] = ["crusty-unreviewed-commits", "crusty-range-unreadable"];
-
-const QA_TRUSTED_TOKENS: [&str; 4] = [
-    "qa-manifest-missing",
-    "qa-record-modified",
-    "qa-evidence-modified",
-    "qa-evidence-stale",
-];
 
 // ── Issue #2033: repository commands run with the git and run-identity env cleared ──
 

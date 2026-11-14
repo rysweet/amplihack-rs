@@ -9,8 +9,9 @@
 //! - After a round that is not clean, and before the evaluator, the driver
 //!   compares the PR head SHA and the normalised open items with the last row
 //!   of `<loop>-progress.tsv`. When the previous row is not clean and both
-//!   match, the loop stops as `STUCK` (decided in code), exit 1, and the
-//!   evaluator does not run for that round.
+//!   match, the loop stops as `STUCK`, decided in code, exit 1, and the
+//!   evaluator does not run for that round. Since #2575 the merge-ready loop
+//!   is exempt: its round file holds only the verdict, so the budget bounds it.
 //! - Three limits (`autodrive_budget_loop_rounds`, `_total_rounds`,
 //!   `_wall_seconds`), cumulative across runs on the same state directory,
 //!   stop the loop as `BUDGET_EXHAUSTED`, exit 1. Clean rounds are never
@@ -514,7 +515,7 @@ fn a_new_commit_every_round_is_never_stopped_by_the_rule() {
 fn changed_open_items_count_as_progress_and_the_next_repeat_stops() {
     let Some(fx) = Fixture::new() else { return };
     fx.plan(&["CONCERNS|0|0|0|a", "CONCERNS|0|0|0|b"]);
-    let o = fx.run("merge-ready", &[]);
+    let o = fx.run("crusty", &[]);
     let r = result(&o);
     assert_eq!(r["loop_result"], "STUCK", "{}", show(&o));
     assert_eq!(r["round_label"], "round-3");
@@ -523,7 +524,7 @@ fn changed_open_items_count_as_progress_and_the_next_repeat_stops() {
         "{r}"
     );
     assert_eq!(fx.evaluator_calls(), ["round-1", "round-2"]);
-    assert!(fx.state_file("merge-ready-stuck-reason.txt").is_some());
+    assert!(fx.state_file("crusty-stuck-reason.txt").is_some());
 }
 
 #[test]
@@ -550,19 +551,33 @@ fn open_items_are_compared_after_normalisation() {
 
 #[test]
 fn a_clean_previous_round_never_matches_and_an_empty_set_reads_none() {
-    let Some(fx) = Fixture::new() else { return };
-    fx.plan(&["MERGE_READY|0|0|0|", "CONCERNS|0|0|0|"]);
-    let o = fx.run("merge-ready", &[]);
+    // An empty open-item set reads `none` in the decided-in-code reason.
+    let Some(empty) = Fixture::new() else { return };
+    empty.plan(&["CONCERNS|0|0|0|"]);
+    let o = empty.run("crusty", &[]);
     let r = result(&o);
-    assert_eq!(r["round_label"], "round-3", "{}", show(&o));
     assert!(
         r["reason"]
             .as_str()
             .unwrap()
-            .ends_with("since round-2: none"),
-        "{r}"
+            .ends_with("since round-1: none"),
+        "{}",
+        show(&o)
     );
-    assert_eq!(fx.evaluator_calls(), ["round-1", "round-2"]);
+    // #2575: merge-ready is exempt from the rule, so the repeated round-3 still
+    // reaches the evaluator; its rows are recorded all the same.
+    let Some(fx) = Fixture::new() else { return };
+    fx.plan(&["MERGE_READY|0|0|0|", "CONCERNS|0|0|0|"]);
+    let o = fx.run("merge-ready", &[]);
+    let r = result(&o);
+    assert!(
+        !r["reason"].as_str().unwrap().contains(DECIDED),
+        "{}",
+        show(&o)
+    );
+    assert!(fx.state_file("merge-ready-stuck-reason.txt").is_none());
+    let calls = fx.evaluator_calls();
+    assert!(calls.iter().any(|c| c == "round-3"), "{calls:?}");
     let rows = fx.state_file("merge-ready-progress.tsv").unwrap();
     let first: Vec<&str> = rows.lines().next().unwrap().split('\t').collect();
     assert_eq!(

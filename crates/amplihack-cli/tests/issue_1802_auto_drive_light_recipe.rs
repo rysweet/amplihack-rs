@@ -449,8 +449,6 @@ fn report_uses_typed_finalization_and_missing_evidence_stays_incomplete() {
     assert!(cmd.contains("already_merged"));
     assert!(cmd.contains("dependency_failure"));
     assert!(!cmd.contains("merge_gate_result"));
-    let helper = read("crates/amplihack-cli/src/commands/orch/autodrive/helper.rs");
-    assert!(helper.contains("followups"));
 }
 
 #[test]

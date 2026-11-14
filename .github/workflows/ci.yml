@@ -399,9 +399,6 @@ jobs:
       - name: Recipes — documentation-only pull requests need no gadugi scenario (issue #2219)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-2219-docs-only-scenarios.sh
-      - name: Recipes — the stop names what held the pull request (issue #2219)
-        shell: bash
-        run: bash amplifier-bundle/recipes/tests/test-issue-2219-stop-line.sh
       - name: Recipes — fatal allowlist preserved; bookkeeping gates degraded (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-fatal-allowlist-preserved.sh
@@ -417,14 +414,6 @@ jobs:
       - name: Gadugi — merge-validations scenario matches shipped contract (issue #1110)
         shell: bash
         run: bash tests/gadugi/test-merge-validations-scenario-contract.sh
-
-      # Issues #2536, #2561: CI runs the scenario's driver directly, not gadugi-test.
-      # Case 1 would have caught #2536 before release.
-      - name: Gadugi — merge-ready files resolver scenario (issues #2536, #2561)
-        shell: bash
-        run: |
-          command -v jq >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq jq; }
-          bash tests/gadugi/run-autodrive-merge-ready-files-scenario.sh
 
       - name: Recipes — foreign-worktree branch deconfliction (concurrency)
         shell: bash

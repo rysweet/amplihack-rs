@@ -32,13 +32,15 @@ mod workflow_log_inventory;
 #[cfg(test)]
 #[path = "orch/autodrive/tests.rs"]
 mod autodrive_contract_tests;
-// #2556: null or missing evidence strings and stale evidence are named blockers.
+// #2546: repair of the drive's own state written under a loose umask.
 #[cfg(test)]
-#[path = "orch/autodrive/tests_2556_helper.rs"]
-mod autodrive_issue_2556_helper_tests;
+#[path = "orch/autodrive/tests_2546_state.rs"]
+mod autodrive_issue_2546_state_tests;
+
+// TDD contracts for #2575: the tolerant schema-version-2 run report.
 #[cfg(test)]
-#[path = "orch/autodrive/tests_2556_reader.rs"]
-mod autodrive_issue_2556_reader_tests;
+#[path = "orch/autodrive/report_v2_tests.rs"]
+mod autodrive_report_v2_tests;
 
 #[derive(Subcommand, Debug)]
 pub enum OrchCommands {
@@ -62,7 +64,7 @@ pub enum OrchCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum OrchHelperCommands {
-    /// Portable auto-drive record, state, and local Git operations.
+    /// Portable auto-drive state, authorization and local Git operations.
     Autodrive {
         #[command(subcommand)]
         operation: autodrive::helper::Operations,

@@ -1131,7 +1131,6 @@ pub(super) fn execute_recipe_via_rust_fresh(
                     auth,
                     &run_result.context,
                     context.get("pr_number").map(String::as_str),
-                    working_dir,
                 );
                 run_result
                     .extra

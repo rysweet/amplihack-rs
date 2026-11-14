@@ -850,9 +850,13 @@ expect_helper gate-head-empty autodrive_gadugi_required "true" "$B" AUTODRIVE_QA
 repo Cargo.toml web/package.json web/src/app.ts; base; change web/src/app.ts
 PRH="$(git -C "$REPO" rev-parse HEAD)"; git -C "$REPO" update-ref HEAD refs/remotes/origin/main
 expect_helper gate-head-web autodrive_gadugi_required "true" "$B" AUTODRIVE_QA_HEAD="$PRH"
-# Finalization must refresh trusted policy against the actual head and base.
-if grep -q 'Refresh mutable checks' "$RECIPES/autodrive-finalize.yaml" && grep -q 'merge-base QA configuration' "$RECIPES/autodrive-merge-evidence.yaml"; then
-    pass finalization-policy "agent responsibilities retain current head/base QA policy"
+# QA policy is measured at the merge base, and finalization merges only the
+# head the merge-ready round assessed (#2575): a moved local head is refused
+# and GitHub enforces the same head with --match-head-commit.
+if grep -q "the PR worktree head moved after the merge-ready assessment" "$RECIPES/autodrive-finalize.yaml" \
+   && grep -q -- "--match-head-commit" "$TOOLS/autodrive_merge.sh" \
+   && grep -q "merge-base QA configuration" "$RECIPES/autodrive-merge-evidence.yaml"; then
+    pass finalization-policy "finalization merges only the assessed head; QA policy comes from the merge base"
 else fail finalization-policy "missing current QA policy responsibility"; fi
 
 echo "== #1763 static constraints =="

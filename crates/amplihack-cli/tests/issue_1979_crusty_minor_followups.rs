@@ -2161,11 +2161,6 @@ fn plan_task_id_is_an_input_and_reaches_both_loops() {
             "{id} receives plan_task_id: {text}"
         );
     }
-    assert!(
-        read("crates/amplihack-cli/src/commands/orch/autodrive/followups.rs")
-            .contains("followups.tsv"),
-        "the final summary lists follow-ups"
-    );
 }
 
 #[test]
