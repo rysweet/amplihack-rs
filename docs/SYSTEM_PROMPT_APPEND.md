@@ -446,7 +446,6 @@ into every session, so every line costs context on every launch.
      so edit this file in the repo and rebuild. Every session on every install
      gets these bytes. Never place credentials, tokens, paths to secrets, or
      private context in this file. -->
-
 # Amplihack operating contract
 
 This session was launched by amplihack. Amplihack's routing contract is authoritative.
