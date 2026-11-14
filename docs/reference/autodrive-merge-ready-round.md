@@ -116,7 +116,8 @@ the driver's exit status itself, so that exit `79` is never hidden by
 | `0` | `DONE` | `0` |
 | `1` | `USAGE_LIMIT` | `1`: the run stops; a later run continues the work. |
 | `1` | `STUCK`, `BUDGET_EXHAUSTED`, `HANDOFF` | `0`, with the loop line printed. |
-| `1` | result file missing or unreadable | `0`, with loop result `UNREADABLE`. |
+| `1` | result file missing or unreadable, or `DONE` (the driver writes `DONE` only when it exits `0`) | `0`, with loop result `UNREADABLE`. |
+| `0` | anything other than `DONE`, or no readable result | `0`, with loop result `UNREADABLE`. |
 | `75` | `ORPHANED` | `75` |
 | `79` | `TERMINAL_REFUSAL`, set by the step; the result file is not consulted | `79` |
 | `2` or any other value | | passed through unchanged |
@@ -172,7 +173,10 @@ The `merge` step requests a merge only when every condition holds, checked in
 this order:
 
 1. `amplihack orch helper autodrive authorization` succeeds for this run's
-   captured invocation and state directory and prints `"allows_merge":true`.
+   captured invocation and state directory and prints `"allows_merge":true`
+   and, for `--pr <pr_number>`, `"pr_selected":true`: when the operator
+   selected a PR at launch by number (`pr_number`) or URL (`pr_url`), only that
+   PR is merged. Any other PR gives `refused` and is handed off.
 2. The context values `no_merge` and `autodrive_dry_run` are both exactly
    `false`. They can narrow the captured permission, never grant it.
 3. `merge-ready-latest.head` holds a well-formed SHA and the PR worktree's
@@ -397,19 +401,23 @@ merge, PR state after the merge. It adds no retries or waits.
 ```bash
 amplihack orch helper autodrive authorization \
   --invocation "$RECIPE_VAR_autodrive_invocation_file" \
-  --directory "$RECIPE_VAR_autodrive_state_dir"
-# {"allows_merge":true,"run_id":"a3f9c2e1-7b44-4d0e-9a51-2c6f0e8d1b37"}
+  --directory "$RECIPE_VAR_autodrive_state_dir" \
+  --pr "$RECIPE_VAR_pr_number"
+# {"allows_merge":true,"run_id":"a3f9c2e1-7b44-4d0e-9a51-2c6f0e8d1b37","pr_selected":true}
 ```
 
 Reads the captured invocation with `InvocationAuthorization::read_private`,
 checks that `--directory` is the bound state directory, and prints whether
-the invocation allows a merge. Any error exits `2` and prints nothing on
+the invocation allows a merge. With `--pr`, `pr_selected` says whether that PR
+is the one selected at launch (always `true` when none was selected). The
+head branch selection (`existing_branch`) is not checked here. Any error exits `2` and prints nothing on
 standard output; on a merge run the merge step reports that as
 `authorization-unreadable` and hands the PR off.
 
 ## Security properties
 
-- A merge requires the captured `allows_merge()`, the head the `DONE` round
+- A merge requires the captured `allows_merge()`, the PR selected at launch
+  (when one was), the head the `DONE` round
   assessed (captured before the assessment and format-checked), green checks and
   GitHub's acceptance of `--match-head-commit`.
 - Merge permission comes only from the captured invocation. Recipe context

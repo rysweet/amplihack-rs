@@ -22,14 +22,19 @@ pub enum Operations {
     },
     /// Report whether the captured invocation allows a merge (#2575).
     ///
-    /// Prints `{"allows_merge":bool,"run_id":"..."}`. Any error exits 2 and
-    /// prints nothing on standard output, which the finalize merge step reads
-    /// as not authorised.
+    /// Prints `{"allows_merge":bool,"run_id":"..."}`, plus `"pr_selected":bool`
+    /// when `--pr` is given: false when the operator selected another PR by
+    /// number or URL at launch. Any error exits 2 and
+    /// prints nothing on standard output; the finalize merge step then reports
+    /// `authorization-unreadable`, does not merge and hands the PR off.
     Authorization {
         #[arg(long)]
         invocation: PathBuf,
         #[arg(long)]
         directory: PathBuf,
+        /// The PR finalisation would merge.
+        #[arg(long)]
+        pr: Option<u64>,
     },
 }
 
@@ -42,7 +47,8 @@ pub fn run(op: Operations) -> Result<()> {
         Operations::Authorization {
             invocation,
             directory,
-        } => match authorization(&invocation, &directory) {
+            pr,
+        } => match authorization(&invocation, &directory, pr) {
             Ok(line) => println!("{line}"),
             Err(error) => {
                 eprintln!("ERROR: auto-drive authorization unavailable: {error:#}");
@@ -94,7 +100,11 @@ pub fn run(op: Operations) -> Result<()> {
 /// Reads the captured private invocation and checks that `directory` is the
 /// state directory the runner bound to it. Recipe context cannot grant a
 /// merge: only this captured record can.
-fn authorization(invocation: &Path, directory: &Path) -> Result<serde_json::Value> {
+fn authorization(
+    invocation: &Path,
+    directory: &Path,
+    pr: Option<u64>,
+) -> Result<serde_json::Value> {
     let auth = InvocationAuthorization::read_private(invocation)?;
     let bound = auth
         .state_dir()
@@ -104,5 +114,9 @@ fn authorization(invocation: &Path, directory: &Path) -> Result<serde_json::Valu
         "--directory is not the invocation's runner-bound state directory"
     );
     EvidenceStore::create(directory)?;
-    Ok(serde_json::json!({"allows_merge": auth.allows_merge(), "run_id": auth.run_id()}))
+    let mut out = serde_json::json!({"allows_merge": auth.allows_merge(), "run_id": auth.run_id()});
+    if let Some(pr) = pr {
+        out["pr_selected"] = auth.selects_pr(pr).into();
+    }
+    Ok(out)
 }

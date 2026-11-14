@@ -64,9 +64,9 @@ nothing here parses that write-up. The merge is requested by the bundled
   directory or canonicalised.
 - `helper`: local CLI operations under `amplihack orch helper autodrive`:
   the `State` and `Worktree` operations, and `authorization --invocation F
-  --directory D`, which reads the captured invocation, checks the bound state
-  directory and prints `{"allows_merge":bool,"run_id":...}`, exiting `2` on
-  any error.
+  --directory D [--pr N]`, which reads the captured invocation, checks the
+  bound state directory and prints `{"allows_merge":bool,"run_id":...}`, plus
+  `"pr_selected":bool` with `--pr`, exiting `2` on any error.
 
 The parsed readiness record, its strict validation, the finalization observation,
 the loop receipt and the `records`, `validation`, `completion`, `outcome`,

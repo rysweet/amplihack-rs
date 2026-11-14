@@ -58,7 +58,7 @@ steps:
         emit not-authorised false "" "this run is verify-only"
         exit 0
       fi
-      AUTH="$("${AMPLIHACK_BIN:-amplihack}" orch helper autodrive authorization --invocation "$INV" --directory "$DIR")"
+      AUTH="$("${AMPLIHACK_BIN:-amplihack}" orch helper autodrive authorization --invocation "$INV" --directory "$DIR" --pr "$PR")"
       AUTH_RC=$?
       [ "$AUTH_RC" -ne 79 ] || { echo "ERROR: exit 79 terminal refusal while reading the captured authorization; final, never retried [autodrive-finalize/merge]" >&2; exit 79; }
       ALLOWS="$(printf '%s\n' "$AUTH" | jq -R -r 'fromjson? | select(type == "object") | select(.allows_merge | type == "boolean") | .allows_merge | tostring' 2>/dev/null | tail -n 1)"
@@ -70,6 +70,13 @@ steps:
       fi
       if [ "$ALLOWS" != true ]; then
         emit not-authorised false "" "the captured invocation does not allow a merge"
+        exit 0
+      fi
+      # The merge is bound to the PR the operator selected at launch, by number
+      # or URL; a PR the preflight resolved to anything else is never merged.
+      SELECTED="$(printf '%s\n' "$AUTH" | jq -R -r 'fromjson? | select(type == "object") | .pr_selected | select(type == "boolean") | tostring' 2>/dev/null | tail -n 1)"
+      if [ "$SELECTED" != true ]; then
+        emit refused true "" "PR #${PR} is not the PR this run was launched for"
         exit 0
       fi
       # 2. The head the DONE merge-ready round assessed, written by autodrive_round_file.

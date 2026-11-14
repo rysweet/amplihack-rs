@@ -30,6 +30,7 @@ loop's own evaluator and completion policy are unchanged.
 - [Dispatch validation](#dispatch-validation)
 - [Results and accounting](#results-and-accounting)
 - [Follow-up finalization](#follow-up-finalization)
+- [Readiness assessment outcomes](#readiness-assessment-outcomes)
 - [Behavior examples](#behavior-examples)
 - [Configuration and failures](#configuration-and-failures)
 
@@ -236,6 +237,95 @@ available for recovery without duplicate issues. Later merge-loop filing
 remains idempotent, and finalization refuses to report readiness while a
 required follow-up is unrecorded.
 
+## Readiness assessment outcomes
+
+`amplihack orch helper autodrive assess` and `round` read the agent's
+`CandidateRecord`. A parse fault, an unknown value in a tolerant string field
+or stale evidence is reported as a recoverable, named blocker with exit 0 and
+never produces readiness. The record rules are in the skill's
+`evidence-contract.md`.
+
+Faults found by `validate_candidate` after these checks remain hard errors
+and exit non-zero, for example a criterion that is incomplete and has no
+cause. Making those recoverable is tracked separately in #2539.
+
+| Fault | Blocker |
+| --- | --- |
+| `null`, missing or `"unknown"` value in a tolerant string field | `unknown-field:<path>`, for example `unknown-field:attempts[0].cause` |
+| Any other parse failure, such as a bad enum value or an unknown key | `evidence-parse-error:<class> at line <n> column <n>` |
+| Evidence head differs from the worktree `HEAD` | `stale-evidence-head` |
+| Evidence base differs from the current base | `stale-evidence-base` |
+| Evidence merge-base differs from the current merge-base | `stale-evidence-merge-base` |
+| The worktree `HEAD` cannot be read, for example in a repository with no commits | `current-head-unreadable` |
+
+The field at line 1 column 26 in the failure reported in #2556 is
+`attempts[0].cause`: in `{"attempts":[{"cause":null` the `null` token ends at
+column 26. The writer rule in `evidence-contract.md` and in the refresh,
+remeasure and merge-round prompts is `"cause":"none"` for an attempt that
+succeeded and `"unknown"` for any value that could not be observed. The
+reader treats `null`, a missing key and `"unknown"` the same way, so a writer
+that breaks the rule produces a blocker, not a parse failure that ends the
+round. No output ever contains serde's message text, such as
+`invalid type: null, expected a string`.
+
+Unknown-field and parse blockers come first, followed by drift or
+`current-head-unreadable` blockers.
+
+The merge-base is compared only when the head and base match. Once the head
+or base has drifted, the merge-base check is skipped and only the drift
+blockers are reported. When the worktree `HEAD` cannot be read, no
+comparison is made: the only drift blocker is `current-head-unreadable`, and
+both `current_head` and `current_base` are printed as `""`.
+
+Integrity faults stay hard errors and exit non-zero, because refreshing the
+evidence cannot fix them: oversize input, an invalid binding, an invalid
+branch name, a head branch that does not match, grafts, and every Git
+failure other than reading `HEAD`.
+
+For any of these faults, `assess` prints the following, writes no snapshot
+and changes nothing in the state directory:
+
+```json
+{"status":"refresh_required","accepted":null,"readiness":"incomplete","refresh_required":true,"evidence_head":"<40 or 64 hex, or empty>","current_head":"<40 or 64 hex, or empty>","current_base":"<40 or 64 hex, or empty>","blockers":["stale-evidence-head"]}
+```
+
+Each SHA field holds 40 or 64 hexadecimal characters, or `""` when the value
+does not have that form.
+
+An accepted candidate prints the existing result with `"status":"accepted"`
+and `"refresh_required":false` added.
+
+For the same faults, `round` writes a round record with
+`merge_ready_verdict` `NOT_MERGE_READY`, `test_signal` `BLOCKED`,
+`ci_signal` `UNVERIFIED`, `accepted_evidence` null and the `blockers`
+array, and writes the blockers one per line to `<record>.findings`. The
+loop's progress check reads that file, so a writer fault that repeats at the
+same head stops the loop as no progress with the blocker named.
+Authorisation, the state directory, a record path whose parent is not the
+state directory and an existing record path remain hard errors, checked
+before anything is written.
+
+`autodrive-finalize.yaml` measures stale evidence again once:
+
+1. `accept-refreshed-readiness` assesses the refreshed candidate.
+2. When its `status` is `refresh_required`, `remeasure-readiness` builds a
+   new `CandidateRecord` at the current head, base and merge-base, and
+   `accept-remeasured-readiness` assesses it through the full pipeline. The
+   second result replaces `accepted_readiness`.
+3. `finalize-observed-action` and `reduce-observed-outcome` run only when
+   `status` is `accepted`.
+4. Otherwise `report-unaccepted-readiness` reports
+   `{"outcome":{"readiness":"incomplete","blockers":[...]},"accepted_snapshot":null}`.
+
+There is no further loop and no timer. A remeasured candidate gains no trust
+from the first assessment. `validate_reduction` still requires the evidence
+head to equal the worktree head, so a merge is never reduced against a head
+that moved after acceptance; an unreadable worktree `HEAD` also fails
+reduction. Evidence measured at a newer head still needs a Crusty
+review covering that head: `review::verify` reports `crusty-review-required`
+for substantive commits after `reviewed_head_sha`, and `completion::verify`
+rejects a receipt bound to another head.
+
 ## Behavior examples
 
 | Input and evidence | Observable result |
@@ -249,6 +339,12 @@ required follow-up is unrecorded.
 | Completion decision from another run, altered sidecar, changed reviewed head, or failed child | Reject completion; no phase marker. |
 | Open PR, worktree behind the PR head, no complete round at that head | Preflight fast-forwards the worktree; `should_run="true"`, `skip_reason=""`; the Crusty loop runs. |
 | Open PR, worktree diverged from the PR head | `should_run="false"`, `skip_reason="worktree-diverged"`; the worktree is left unchanged. |
+| Merge-ready verdict with `"cause":null` in an attempt that did not succeed | `round` exits 0 with `NOT_MERGE_READY` and `unknown-field:attempts[0].cause`. |
+| Merge-ready verdict with the `cause` key removed from an attempt that did not succeed | `assess` exits 0 with `status=refresh_required` and `unknown-field:attempts[0].cause`. |
+| Refreshed candidate bound to commit A while the worktree is at commit B | `assess` exits 0 with `status=refresh_required`, `stale-evidence-head` and `current_head` B; finalize remeasures once. The candidate re-bound to B is `accepted` with `binding.head_sha` B, and only then does `finalize-observed-action` run. |
+| Remeasured candidate still refused | `report-unaccepted-readiness` records `readiness: incomplete` with the blockers and exits 0; recovery takes over. |
+| Repository with no commits, where the binding names the unborn current branch | `assess` exits 0 with `status=refresh_required`, `current_head` and `current_base` `""`, and `current-head-unreadable`. |
+| Candidate whose binding names another head branch | Hard error, non-zero exit; no refresh is attempted. |
 
 ## Configuration and failures
 

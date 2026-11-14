@@ -149,7 +149,8 @@ steps:
           exit 79 ;;
         75) [ -n "$LINE" ] && printf '%s\n' "$LINE"; exit 75 ;;
         0|1)
-          if [ -z "$RESULT" ] || { [ "$RC" -eq 0 ] && [ "$RESULT" != DONE ]; }; then
+          # The driver writes DONE only on its exit-0 path, so DONE is read only with exit 0.
+          if [ -z "$RESULT" ] || { [ "$RC" -eq 0 ] && [ "$RESULT" != DONE ]; } || { [ "$RC" -ne 0 ] && [ "$RESULT" = DONE ]; }; then
             line UNREADABLE "the loop driver exited ${RC} without a readable merge-ready-result.json"
             exit 0
           fi

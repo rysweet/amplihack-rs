@@ -864,7 +864,7 @@ fn finalize_fixture() -> Option<(Fx, String)> {
     );
     fx.set(
         "auth_out",
-        &json!({"allows_merge": true, "run_id": RUN_ID}).to_string(),
+        &json!({"allows_merge": true, "run_id": RUN_ID, "pr_selected": true}).to_string(),
     );
     Some((fx, head))
 }
@@ -959,6 +959,40 @@ fn merge_refused_without_captured_authorization() {
     assert_eq!(v["result"], json!("not-authorised"), "{v}");
     assert_eq!(v["handoff"], json!("false"), "{v}");
     assert_no_merge_attempt(&fx);
+}
+
+#[test]
+fn merge_refused_for_a_pr_other_than_the_selected_one() {
+    let Some((fx, _)) = finalize_fixture() else {
+        return;
+    };
+    // The helper says the PR is not the one the operator selected, or (an
+    // older helper) says nothing about the selection: never merged.
+    for auth in [
+        json!({"allows_merge": true, "run_id": RUN_ID, "pr_selected": false}),
+        json!({"allows_merge": true, "run_id": RUN_ID}),
+    ] {
+        fx.set("auth_out", &auth.to_string());
+        let out = finalize_merge(&fx, &AUTHORISED);
+        assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+        let v = finalize_result(&out);
+        assert_eq!(v["result"], json!("refused"), "{v}");
+        assert_eq!(v["handoff"], json!("true"), "{v}");
+        assert_no_merge_attempt(&fx);
+    }
+    let auth = fx
+        .log("amplihack.log")
+        .into_iter()
+        .find(|c| {
+            c.join(" ")
+                .starts_with("orch helper autodrive authorization")
+        })
+        .expect("the captured invocation is consulted");
+    let i = auth
+        .iter()
+        .position(|a| a == "--pr")
+        .expect("--pr is passed");
+    assert_eq!(auth[i + 1], PR);
 }
 
 #[test]
@@ -1135,6 +1169,15 @@ fn write_invocation(dir: &Path, state_dir: &Path, no_merge: bool, dry_run: bool)
 }
 
 fn authorization_helper(fx: &Fx, invocation: &Path, directory: &Path) -> Output {
+    authorization_helper_for(fx, invocation, directory, None)
+}
+
+fn authorization_helper_for(
+    fx: &Fx,
+    invocation: &Path,
+    directory: &Path,
+    pr: Option<&str>,
+) -> Output {
     let mut c = crate::isolated_amplihack::isolated(crate::support::amplihack_bin::amplihack_bin());
     c.args([
         "orch",
@@ -1146,6 +1189,7 @@ fn authorization_helper(fx: &Fx, invocation: &Path, directory: &Path) -> Output 
     .arg(invocation)
     .arg("--directory")
     .arg(directory)
+    .args(pr.map(|p| ["--pr", p]).into_iter().flatten())
     .env("HOME", &fx.home)
     .env("CLAUDE_CONFIG_DIR", fx.root.join("claude-config"))
     .env("AMPLIHACK_HOME", &fx.ah)
@@ -1173,6 +1217,34 @@ fn authorization_helper_reports_captured_merge_permission() {
         assert_eq!(
             last_json(&out, "allows_merge"),
             json!({"allows_merge": allows, "run_id": RUN_ID})
+        );
+    }
+}
+
+#[test]
+fn authorization_helper_reports_whether_the_pr_was_selected() {
+    let Some(fx) = Fx::new() else { return };
+    // write_invocation selects PR 2575.
+    let inv = write_invocation(&fx.root.join("inv"), &fx.state, false, false);
+    for (pr, selected) in [("2575", true), ("2576", false)] {
+        let out = authorization_helper_for(&fx, &inv, &fx.state, Some(pr));
+        assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+        assert_eq!(
+            last_json(&out, "allows_merge"),
+            json!({"allows_merge": true, "run_id": RUN_ID, "pr_selected": selected})
+        );
+    }
+    // A selection by URL binds the merge too.
+    let mut doc: Value = serde_json::from_slice(&std::fs::read(&inv).unwrap()).unwrap();
+    doc["selected_pr"] = Value::Null;
+    doc["selected_url"] = json!("https://github.com/o/r/pull/2575");
+    private_file(&inv, &doc.to_string());
+    for (pr, selected) in [("2575", true), ("25", false)] {
+        let out = authorization_helper_for(&fx, &inv, &fx.state, Some(pr));
+        assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+        assert_eq!(
+            last_json(&out, "pr_selected")["pr_selected"],
+            json!(selected)
         );
     }
 }
@@ -1355,6 +1427,25 @@ fn step02_done_leads_to_finalisation() {
     assert_eq!(out.status.code(), Some(0), "{}", show(&out));
     let v = last_json(&classified.unwrap(), "outcome");
     assert_eq!(v["outcome"], json!("done"), "{v}");
+}
+
+#[test]
+fn done_result_with_a_failed_driver_exit_is_handed_off() {
+    // The driver writes DONE only on its exit-0 path; a DONE result file left
+    // behind by an exit-1 path is never finalised.
+    let Some(fx) = loop_fixture() else { return };
+    let (out, classified) = loop_step(
+        &fx,
+        &LoopCase {
+            rc: "1",
+            result: Some("DONE"),
+            printed: None,
+        },
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    assert!(stdout(&out).contains("UNREADABLE"), "{}", show(&out));
+    let v = last_json(&classified.unwrap(), "outcome");
+    assert_eq!(v["outcome"], json!("handoff"), "{v}");
 }
 
 #[test]
