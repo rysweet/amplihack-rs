@@ -26,6 +26,8 @@
 mod isolated_amplihack;
 mod support;
 
+#[path = "issue_2096_execution_isolation.rs"]
+mod issue_2096_execution_isolation;
 #[path = "issue_2329_autodrive_outcomes.rs"]
 mod issue_2329_autodrive_outcomes;
 #[path = "issue_2545_autodrive_repo_context.rs"]

@@ -113,6 +113,25 @@ pub fn scrub<C: Scrubbable>(command: &mut C) -> &mut C {
     for var in REPOSITORY_ENV_VARS {
         command.remove_env_var(var);
     }
+    // These settings can inject core.worktree and bypass directory-based
+    // repository selection just as GIT_DIR can. Remove the whole indexed
+    // namespace, including entries beyond an inconsistent COUNT.
+    for var in [
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG",
+        "GIT_EXEC_PATH",
+        "GIT_TEMPLATE_DIR",
+    ] {
+        command.remove_env_var(var);
+    }
+    for (name, _) in std::env::vars_os() {
+        if let Some(name) = name.to_str()
+            && (name.starts_with("GIT_CONFIG_KEY_") || name.starts_with("GIT_CONFIG_VALUE_"))
+        {
+            command.remove_env_var(name);
+        }
+    }
     command
 }
 

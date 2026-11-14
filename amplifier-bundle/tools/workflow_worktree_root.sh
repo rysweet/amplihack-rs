@@ -31,6 +31,9 @@
 #
 #   workflow_worktree_root.sh base [repo_path]                  (issue #1808)
 #     stdout : the folder new worktrees of this repository go under.
+#              Give it a checkout, not the output of `root`: for a bare
+#              repository (a private recipe-run checkout, issue #2096)
+#              `root` prints a folder that is not a repository.
 #              With AMPLIHACK_WORK_ROOT_EXPLICIT=1 and an absolute
 #              AMPLIHACK_WORK_ROOT: <work root>/worktrees/<name>-<hash8>, where
 #              <name> is the main checkout's basename reduced to [A-Za-z0-9._-]
@@ -198,7 +201,12 @@ cmd_base() {
 # silently point the check at a different checkout.
 worktree_paths() {
     local repo="${1:-}"
-    if [ -n "$repo" ] && [ -d "$repo" ]; then
+    # The main root of a bare repository (a private recipe-run checkout,
+    # issue #2096) is the folder beside it, not a repository: listing there
+    # would print nothing and pass every check, so list from the current
+    # repository, which shares the same worktree list.
+    if [ -n "$repo" ] && [ -d "$repo" ] \
+        && git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
         git -C "$repo" worktree list --porcelain 2>/dev/null || true
     else
         git worktree list --porcelain 2>/dev/null || true

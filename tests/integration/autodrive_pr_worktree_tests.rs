@@ -1438,6 +1438,8 @@ fn run_loop_step_02_from(
            *'extract-field --field state_dir'*) printf '%s' /stub/state ;;\n\
            *'extract-field --field pr'*) printf '%s' 7 ;;\n\
            *'extract-field --field repo'*) printf '%s' \"$STUB_PRE_REPO\" ;;\n\
+           'internal review-allocate '*) printf '%s\\n' \"$@\" > \"$STUB_LOGS/allocate.argv\"; printf '%s\\n' \"$STUB_LOGS/review-generation\" ;;\n\
+           'internal review-release '*) printf '%s\\n' \"$@\" > \"$STUB_LOGS/release.argv\" ;;\n\
            *'extract-field --field review_dir'*) printf '%s' \"$STUB_REVIEW_DIR\" ;;\n\
            *'extract-field --field base_branch'*) printf '%s' main ;;\n\
            *) printf 'stub amplihack: unexpected: %s\\n' \"$*\" >&2; exit 97 ;;\n\
@@ -1502,14 +1504,26 @@ fn loop_step_02_refuses_before_the_loop_when_resolution_fails() {
             !tmp.path().join("logs/resolver.argv").exists(),
             "agent preparation must not be repeated through a mandatory hosting CLI"
         );
+        // The review dir is a private generation Rust allocates from the PR
+        // worktree (#2096); the main checkout the preflight names is not used.
+        assert!(
+            argv.contains("/logs/review-generation"),
+            "{recipe}: the review dir is the allocated generation: {argv}"
+        );
+        assert_eq!(
+            read(&tmp.path().join("logs/allocate.argv")),
+            "internal\nreview-allocate\n/stub/wt\n/stub/state\n",
+            "{recipe}: the generation is allocated from the PR worktree"
+        );
     }
 }
 
 /// Crusty round 1 on PR #1586: with `repo_path` set to the PR's linked
 /// worktree, step-02 used to take the review dir from `pwd` after entering
 /// `repo_path`, so the review dir WAS the PR worktree and the loop preflight
-/// refused UNTRUSTED_REVIEW_DIR before round 1. The review dir is now the
-/// main checkout, and the real preflight accepts it.
+/// refused UNTRUSTED_REVIEW_DIR before round 1. The review dir is now a private
+/// generation allocated from the PR worktree (#2096), never the PR worktree
+/// itself and never the launch checkout.
 #[test]
 fn loop_step_02_with_repo_path_set_to_the_pr_worktree_reviews_from_the_main_checkout() {
     for (recipe, step, preflight_var) in LOOPS {
@@ -1534,14 +1548,24 @@ fn loop_step_02_with_repo_path_set_to_the_pr_worktree_reviews_from_the_main_chec
                 .unwrap_or_else(|| panic!("{recipe}: loop gets {flag}: {argv:?}"));
             argv[at + 1].clone()
         };
-        assert_eq!(after("--review-dir"), main, "{recipe}: {argv:?}");
+        let review = after("--review-dir");
+        assert!(
+            review.ends_with("/logs/review-generation") && review != worktree && review != main,
+            "{recipe}: the review dir is the allocated generation: {argv:?}"
+        );
+        assert_eq!(
+            read(&root.join("logs/allocate.argv")),
+            format!("internal\nreview-allocate\n{worktree}\n/stub/state\n"),
+            "{recipe}: the generation is allocated from the PR worktree"
+        );
         assert_eq!(after("--repo"), worktree, "{recipe}: {argv:?}");
         assert!(
             !root.join("logs/resolver.argv").exists(),
             "the agent-prepared worktree is reused"
         );
 
-        // The loop's own check, with exactly what step-02 handed the loop.
+        // The loop's own preflight still accepts the main checkout as legacy
+        // review input (the loop converts it to an owned generation).
         let preflight = Command::new("bash")
             .arg(tools_dir().join("autodrive_worktree_guard.sh"))
             .args([
@@ -1814,9 +1838,10 @@ fn agent_steps(recipe: &str) -> Vec<(String, String)> {
 
 /// The agent CLI loads AGENTS.md, CLAUDE.md and .claude hooks from its
 /// working directory. Only the commit step (step-04) may start in the PR
-/// worktree; the review, merge-ready assessment and loop-health analyzer start
-/// in the launch-side review dir, so the branch under review never instructs
-/// the agent that decides whether it passes or when the loop stops.
+/// worktree; the review, merge-ready assessment and next-action agents start
+/// in the review generation's trusted launch dir (#2096), so the branch under
+/// review never instructs the agent that decides whether it passes or when the
+/// loop stops.
 #[test]
 fn judging_agents_do_not_take_working_dir_from_the_pr_worktree() {
     for (recipe, commit_step) in ROUNDS {
@@ -1833,8 +1858,8 @@ fn judging_agents_do_not_take_working_dir_from_the_pr_worktree() {
                 );
             } else {
                 assert_eq!(
-                    wd, "{{review_dir}}",
-                    "{recipe}: judging agent `{id}` must start in review_dir, not the PR worktree"
+                    wd, "{{review_launch_dir}}",
+                    "{recipe}: judging agent `{id}` must start in the trusted review_launch_dir, not the PR worktree"
                 );
             }
         }
@@ -1847,6 +1872,15 @@ fn judging_agents_do_not_take_working_dir_from_the_pr_worktree() {
             .and_then(Value::as_str)
             .unwrap_or_else(|| panic!("{recipe}: context must declare review_dir"));
         assert_eq!(default, "", "{recipe}: review_dir has no default");
+        let launch_default = ctx
+            .get("context")
+            .and_then(|c| c.get("review_launch_dir"))
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("{recipe}: context must declare review_launch_dir"));
+        assert_eq!(
+            launch_default, "",
+            "{recipe}: review_launch_dir has no default"
+        );
         // The guard runs before any agent and before any sub-recipe. The
         // merge round finds its tools first (step-00-tools-dir, #1517); that
         // step starts no agent.

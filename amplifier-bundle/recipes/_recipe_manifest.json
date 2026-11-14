@@ -3,12 +3,12 @@
   "auto-drive-to-merge": "9d985564f71c03e9",
   "auto-workflow": "3baaee4ed35b2381",
   "autodrive-build": "d822f5f4b2205a15",
-  "autodrive-crusty-loop": "954cd5f091c61f39",
-  "autodrive-crusty-round": "47b91618122bb278",
+  "autodrive-crusty-loop": "5f28ae1a1cc70aab",
+  "autodrive-crusty-round": "2e734440cd9dbf08",
   "autodrive-finalize": "4d27567a64ace592",
   "autodrive-merge-evidence": "b1a3ed02e7fc1e7b",
-  "autodrive-merge-loop": "aba21682a3a8bbe2",
-  "autodrive-merge-round": "f6f1b9c667aebdf5",
+  "autodrive-merge-loop": "3791257d9460afaf",
+  "autodrive-merge-round": "25a16065ccab0f12",
   "cascade-workflow": "ee2ce111ae5d88ef",
   "code-atlas": "086c4299a3fd331d",
   "code-philosophy-audit": "a1b7c3d9e5f24680",
@@ -58,5 +58,5 @@
   "workflow-publish": "51c4822a260642ec",
   "workflow-refactor-review": "ad94b72c16cecd5d",
   "workflow-tdd": "4a8574462bc30532",
-  "workflow-worktree": "f8e31f236b68039a"
+  "workflow-worktree": "e7229e29adfe1cc5"
 }
