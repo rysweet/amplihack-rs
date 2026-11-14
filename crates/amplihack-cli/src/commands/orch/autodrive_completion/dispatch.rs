@@ -19,8 +19,11 @@ pub fn run(args: Dispatch) -> Result<i32> {
         );
         return Ok(args.child_exit_code);
     }
-    let decision: Decision =
-        serde_json::from_slice(&secure_fs::read(&state.decision_file, 16 * 1024)?)?;
+    let decision: Decision = serde_json::from_slice(&secure_fs::read(
+        secure_fs::Scope::of(&state.state_dir),
+        &state.decision_file,
+        16 * 1024,
+    )?)?;
     decision.validate()?;
     let snapshot = private_state::snapshot(&args.private_state)?;
     ensure!(
@@ -60,6 +63,7 @@ pub fn run(args: Dispatch) -> Result<i32> {
             );
             ensure!(complete, "completion claim has unresolved concerns");
             secure_fs::create(
+                secure_fs::Scope::of(&state.state_dir),
                 &args.private_state.with_extension("dispatched"),
                 state.run_id.as_bytes(),
             )?;
@@ -75,6 +79,7 @@ pub fn run(args: Dispatch) -> Result<i32> {
                 "completed objective must select complete before convergence evaluation"
             );
             secure_fs::create(
+                secure_fs::Scope::of(&state.state_dir),
                 &args.private_state.with_extension("dispatched"),
                 state.run_id.as_bytes(),
             )?;
