@@ -1,7 +1,7 @@
 ---
 title: Auto-drive Crusty Completion Contract
 description: Completion-first dispatch, decision integrity, and follow-up finalization for Crusty reviews.
-last_updated: 2026-11-11
+last_updated: 2026-11-12
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -23,6 +23,7 @@ loop's own evaluator and completion policy are unchanged.
 
 ## Contents
 
+- [Crusty loop preflight](#crusty-loop-preflight)
 - [Next-action judgment](#next-action-judgment)
 - [Rust helper operations](#rust-helper-operations)
 - [Decision format](#decision-format)
@@ -32,16 +33,79 @@ loop's own evaluator and completion policy are unchanged.
 - [Behavior examples](#behavior-examples)
 - [Configuration and failures](#configuration-and-failures)
 
+## Crusty loop preflight
+
+Step `step-01-crusty-loop-preflight` in `autodrive-crusty-loop.yaml` decides
+whether the Crusty loop runs. `should_run` is the string `"true"` or
+`"false"`. Steps `step-02-crusty-loop` and `step-03-record-crusty-phase` run
+only when it is `"true"`. An open PR with a verified worktree at the PR head,
+valid private state and no complete Crusty round at that head always runs the
+loop.
+
+`should_run` is `"false"` only in these cases, each with named blockers:
+
+| `skip_reason` | Observation |
+| --- | --- |
+| `merged` | The PR is merged. |
+| `closed` | The PR is closed without merging. |
+| `complete-at-head` | An evidence-valid `CLEAN` or `MINOR_ONLY` round already exists at the current PR head. |
+| `no-access` | The PR cannot be read, or cannot be identified unambiguously, through any configured authenticated interface. |
+| `no-worktree` | No linked worktree for the PR head branch can be found or verified. |
+| `no-state` | The private state directory cannot be created, or existing state is unsafe. `state_dir` is then `""`. |
+| `worktree-diverged` | The worktree and the PR head have diverged and cannot be reconciled without losing commits. |
+
+`skip_reason` is `""` if and only if `should_run` is `"true"`. It is
+informational: the step conditions compare only `should_run`.
+
+The preflight agent decides whether a round is complete at the head, using
+the rule from #2345: a `CLEAN` round, or a `MINOR_ONLY` round whose follow-up
+obligations are met. No Rust function makes that judgement. An existing open
+PR whose round at the current head is incomplete, missing or recorded at an
+older head is not `complete-at-head`, so step-02 and step-03 run.
+
+The worktree position relative to the PR head affects the result as follows:
+
+- A worktree behind the PR head is repaired with `git fetch` and
+  `git merge --ff-only`, then checked again with
+  `amplihack orch helper autodrive worktree`. The loop then runs.
+- A worktree that has diverged is reported as `worktree-diverged` and the
+  loop does not run. Reset, force and branch switches are not used.
+- A worktree ahead of the PR head is treated as the head under review, and a
+  review receipt for that local head does not count as merge readiness at a
+  different remote PR head: `completion::verify` rejects a receipt bound to
+  another head
+  (`receipt_for_a_local_ahead_head_is_not_readiness_at_another_pr_head`).
+
 ## Next-action judgment
 
-After the round record is written, an agent selects the next action:
+After the round record is written, an agent reads the record and its
+`.findings`, `.minor` and `.severity` sidecars, then selects the next action:
 
 | Current review state | Action | Next step |
 | --- | --- | --- |
-| Successful, evidence-valid `CLEAN` | `complete` | Finalize required follow-ups, then record phase completion. |
-| Successful, evidence-valid `MINOR_ONLY` | `complete` | File or verify every minor follow-up before recording phase completion. |
-| Blocking or major concerns remain | `evaluate` | Retain remediation, progress and budget checks, then evaluate convergence where applicable. |
-| Missing or invalid evidence, unsuccessful child, or terminal refusal | Cannot authorize completion | Fail visibly or preserve the applicable failure handling. |
+| `CLEAN`, and `reviewed_head_sha` equals `head_sha` | `complete` | Finalize required follow-ups, then record phase completion. |
+| `MINOR_ONLY`, and `reviewed_head_sha` equals `head_sha` | `complete` | File or verify every minor follow-up before recording phase completion. |
+| `CONCERNS` (blocking or major concerns open), including after a round with commits when the heads differ | `evaluate` | Retain remediation, progress and budget checks, then evaluate convergence where applicable. |
+| `CLEAN` or `MINOR_ONLY`, but `reviewed_head_sha` differs from `head_sha` | `evaluate`, with the head mismatch as the reason | The new head is not reviewed yet, so `complete` is not allowed. Dispatch currently refuses this decision too, so the round stops with a dispatch error. It fails closed and grants no merge authority; changing dispatch is a follow-up under #2472. |
+| Invalid evidence: missing or unreadable record, no verdict, or a failed or refused round (rc not 0, exit `79`) | `evaluate`, with the fault as the reason | Never `complete`. Dispatch keeps its own failure handling: exits `79` and `75` return before the decision is read, a missing or unreadable record fails dispatch validation, and a record with no verdict goes to the evaluator as `MISSING`. |
+
+The PR head is the round record's `head_sha`. The agent compares
+`reviewed_head_sha` only with that field. Step-07 runs in the base checkout,
+so `git rev-parse HEAD` in its working directory gives the base branch, not
+the PR head, and must never be used for this comparison.
+
+`CONCERNS` always means `evaluate`, whatever the head SHAs or sidecars say.
+After a round with commits, `reviewed_head_sha` differing from `head_sha` is
+expected and is not invalid evidence; it only means the new head has not been
+reviewed. The `.minor` sidecar is required only for `MINOR_ONLY`. Dispatch
+checks the sidecars itself: every round needs a `.findings` sidecar, `CLEAN`
+and `MINOR_ONLY` need it empty, and `MINOR_ONLY` also needs a non-empty
+`.minor` and a `.severity` sidecar.
+
+The agent always runs the Rust writer and records a decision. It stops
+without a decision only when the writer itself fails. It writes the reason in
+its own words and never copies text from the record, sidecars or review prose
+into it.
 
 Completed reviews repeated in persisted history or within the same run are
 still complete. An unchanged `MINOR_ONLY` verdict is not evidence of
@@ -183,6 +247,8 @@ required follow-up is unrecorded.
 | Major findings recur with no measured progress | Existing no-progress detection or evaluator judgment stops as `STUCK`. |
 | Unresolved `CONCERNS`, evaluator says `DONE` | No phase advancement; require re-review and retain inconsistent-`DONE` safeguards. |
 | Completion decision from another run, altered sidecar, changed reviewed head, or failed child | Reject completion; no phase marker. |
+| Open PR, worktree behind the PR head, no complete round at that head | Preflight fast-forwards the worktree; `should_run="true"`, `skip_reason=""`; the Crusty loop runs. |
+| Open PR, worktree diverged from the PR head | `should_run="false"`, `skip_reason="worktree-diverged"`; the worktree is left unchanged. |
 
 ## Configuration and failures
 

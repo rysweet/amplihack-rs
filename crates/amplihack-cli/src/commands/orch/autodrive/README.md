@@ -24,7 +24,17 @@ nothing here parses that write-up. The merge is requested by the bundled
   (`bind_state_dir` / `state_dir`). An explicit `autodrive_state_dir` must be
   non-empty, absolute, free of `..` components and free of control
   characters; otherwise capture fails with
-  `autodrive_state_dir must be an absolute path`. Without one, the runner uses
+  `autodrive_state_dir must be an absolute path`. It must also be `0700`
+  unless it sits directly under the auto-drive state root
+  (`${AMPLIHACK_STATE_DIR:-${HOME:-/tmp}/.amplihack/state}/auto-drive`, the
+  root `autodrive_state.sh` uses) and that root is private and owned by this
+  user: only such slug folders, or a folder `EvidenceStore::create` has just
+  created, have their group and other bits removed automatically. A file
+  this user owns, read from a private state folder (`0700`, owned by this
+  user), is also repaired to `0600` wherever the folder is, because no other
+  user can create or change entries in such a folder. The
+  folder's name plays no part (#2546, see
+  `docs/reference/auto-drive-state-permissions.md`). Without one, the runner uses
   `<durable run folder>/autodrive-state`, or `autodrive-state` in the launch
   bundle for dry runs. The bound path is the absolute path passed to
   `EvidenceStore::create`, before canonicalisation. Round history and budgets
@@ -38,6 +48,11 @@ nothing here parses that write-up. The merge is requested by the bundled
 - `state`: create private directories, reject unsafe historical modes,
   links, traversal and special files, and read private files with a size
   bound (`EvidenceStore::create`, `read_private`).
+- `private_mode`: the one permission rule `state` and the completion checker
+  share (#2546). `access` decides; `make_private` removes extra group and
+  other bits with `fchmod` on the checked descriptor and logs each repair.
+  World-writable entries, other owners or groups, symlinks and hard links
+  stay refused.
 - `report`: build the run's `autodrive_outcome` (`schema_version` 2). It
   never fails and never panics. `merge` and `stop_reason` come only from
   tool-written JSON (`finalize_merge`, `merge_loop_result`); `summary` is the

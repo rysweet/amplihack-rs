@@ -32,6 +32,10 @@ mod workflow_log_inventory;
 #[cfg(test)]
 #[path = "orch/autodrive/tests.rs"]
 mod autodrive_contract_tests;
+// #2546: repair of the drive's own state written under a loose umask.
+#[cfg(test)]
+#[path = "orch/autodrive/tests_2546_state.rs"]
+mod autodrive_issue_2546_state_tests;
 
 // TDD contracts for #2575: the tolerant schema-version-2 run report.
 #[cfg(test)]

@@ -233,7 +233,7 @@ fn state_is_private_and_existing_files_are_never_overwritten() {
 fn state_rejects_symlinks_traversal_and_unsafe_permissions() {
     use std::os::unix::{fs::PermissionsExt, fs::symlink};
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("state");
+    let root = dir.path().join("autodrive-state");
     let store = EvidenceStore::create(&root).unwrap();
     let outside = dir.path().join("secret.json");
     std::fs::write(&outside, b"{}").unwrap();
@@ -252,7 +252,21 @@ fn state_rejects_symlinks_traversal_and_unsafe_permissions() {
     let unsafe_file = root.join("unsafe.json");
     std::fs::write(&unsafe_file, b"{}").unwrap();
     std::fs::set_permissions(&unsafe_file, std::fs::Permissions::from_mode(0o666)).unwrap();
-    assert!(store.read_private("unsafe.json").is_err());
+    // #2546: a world-writable file is refused and left unchanged.
+    assert!(
+        store.read_private("unsafe.json").is_err(),
+        "a world-writable state file is refused"
+    );
+    assert_eq!(mode(&unsafe_file), 0o666);
+    // #2546: our own file with group bits only is repaired, not refused.
+    std::fs::set_permissions(&unsafe_file, std::fs::Permissions::from_mode(0o664)).unwrap();
+    store.read_private("unsafe.json").unwrap();
+    assert_eq!(mode(&unsafe_file), 0o600);
+    std::fs::hard_link(&unsafe_file, dir.path().join("second-name.json")).unwrap();
+    assert!(
+        store.read_private("unsafe.json").is_err(),
+        "a hard-linked state file is still refused"
+    );
     let alias = dir.path().join("alias");
     symlink(&root, &alias).unwrap();
     assert!(EvidenceStore::create(&alias).is_err());
@@ -263,15 +277,37 @@ fn state_rejects_symlinks_traversal_and_unsafe_permissions() {
 fn state_rejects_special_files_and_untrusted_existing_directory_modes() {
     use std::os::unix::{fs::PermissionsExt, net::UnixListener};
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("state");
+    let root = dir.path().join("autodrive-state");
     let store = EvidenceStore::create(&root).unwrap();
-    let _socket = UnixListener::bind(root.join("socket")).unwrap();
-    assert!(store.read_private("socket").is_err());
+    // A one-letter name keeps the socket path within the sun_path limit
+    // under a long TMPDIR.
+    let _socket = UnixListener::bind(root.join("s")).unwrap();
+    assert!(store.read_private("s").is_err());
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o777)).unwrap();
+    // #2546: a world-writable state folder is refused and left unchanged.
+    assert!(EvidenceStore::create(&root).is_err());
+    assert_eq!(mode(&root), 0o777);
+    // #2546 B1: the folder name allows no repair. This `autodrive-state`
+    // folder is not directly under the auto-drive state root, so an existing
+    // 0775 folder is refused and left as it was. Repair under the root is
+    // covered by issue_2546_state_folder_0775_is_repaired_and_logged.
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o775)).unwrap();
+    let error = match EvidenceStore::create(&root) {
+        Ok(_) => panic!("a 0775 autodrive-state folder outside the state root was accepted"),
+        Err(error) => error,
+    };
     assert!(
-        EvidenceStore::create(&root).is_err(),
-        "permission repair cannot grant provenance to an unsafe historical directory"
+        format!("{error:#}")
+            .contains("outside the auto-drive state tree has group or other access"),
+        "{error:#}"
     );
+    assert_eq!(mode(&root), 0o775);
+}
+
+#[cfg(unix)]
+fn mode(path: &std::path::Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).unwrap().permissions().mode() & 0o777
 }
 
 #[test]

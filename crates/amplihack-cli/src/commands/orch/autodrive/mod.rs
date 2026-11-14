@@ -4,6 +4,7 @@
 pub mod authorization;
 pub mod helper;
 pub mod identity;
+pub(crate) mod private_mode;
 pub(crate) mod report;
 pub mod state;
 pub(crate) mod trusted;

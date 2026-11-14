@@ -1195,10 +1195,20 @@ fn authorization_helper_refuses_unbound_or_unreadable_invocations() {
             show(&out)
         );
     }
-    // A group-readable invocation is not private evidence.
-    std::fs::set_permissions(&inv, std::fs::Permissions::from_mode(0o644)).unwrap();
+    // A world-writable invocation is not private evidence and is never
+    // repaired (#2546).
+    std::fs::set_permissions(&inv, std::fs::Permissions::from_mode(0o666)).unwrap();
     let out = authorization_helper(&fx, &inv, &fx.state);
     assert_eq!(out.status.code(), Some(2), "{}", show(&out));
+    // #2546: this user's group-readable file in a private folder is repaired
+    // to 0600 and read, not refused.
+    std::fs::set_permissions(&inv, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let out = authorization_helper(&fx, &inv, &fx.state);
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    assert_eq!(
+        std::fs::metadata(&inv).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
 }
 
 // ===========================================================================

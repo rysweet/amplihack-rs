@@ -96,7 +96,9 @@ with the PR worktree's head and passes it to `--match-head-commit`, so a later
 push refuses the merge. Matching the head alone does not refresh approvals,
 conversations or policy; GitHub enforces those when it accepts the merge.
 
-Private directories are created with mode `0700` and files with `0600`.
+Private directories are created with mode `0700` and files with `0600`,
+whatever the umask; see [Auto-drive State Permissions](./auto-drive-state-permissions.md)
+for when the check repairs an entry this user owns and when it refuses.
 Round files are written to a temporary file in the same directory and moved
 into place, never through an existing path; round labels are checked and `.`
 and `..` are refused. Write-ups are cut at 256 KiB and never passed on a
