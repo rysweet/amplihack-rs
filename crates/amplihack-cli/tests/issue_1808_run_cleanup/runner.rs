@@ -444,13 +444,22 @@ printf 'WT=%s\nTGT=%s\n' "$wt" "$tgt" >> "$RECORD_DIR/env"
         names.contains("run.json") && names.contains("cleanup-record.json"),
         "{names:?}"
     );
-    let allowed: BTreeSet<String> = ["run.json", "cleanup-record.json", "recovery"]
-        .into_iter()
-        .map(String::from)
-        .collect();
+    // Issue #2096 adds the run's Git record: its summary, its finalization
+    // marker and the diagnostics copy. The trace folder itself is removed.
+    let allowed: BTreeSet<String> = [
+        "run.json",
+        "cleanup-record.json",
+        "recovery",
+        "git-commands.jsonl",
+        "git-recording.json",
+        "diagnostics",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
     assert!(
         names.is_subset(&allowed),
-        "only the reports and durable recovery state remain: {names:?}"
+        "only the reports, the Git record and durable recovery state remain: {names:?}"
     );
 
     let recovery: serde_json::Value = serde_json::from_slice(

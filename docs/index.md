@@ -328,6 +328,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Recipe Executor Environment](reference/recipe-executor-environment.md) - Step-level variables plus subprocess environment contract for forced non-interactive recipe execution
 - [Recipe Commit Hook Repair](reference/recipe-commit-hook-repair.md) - How checkpoint and publish steps hand a rejected git `pre-commit` or `pre-push` hook to a fixing agent, retry under loop-health evaluation, and refuse changes to hook configuration
 - [Recipe Push Failure Recovery](reference/recipe-push-failure-recovery.md) - How a failed step-15 or step-18c push is judged as a change or environment fault, merged with the remote branch when it is ahead, retried once from a clean environment, and checked by a gate (including a fast-forward check) before the run continues
+- [Step Failure Recovery](reference/step-failure-recovery.md) - How an opted-in recipe step sends its failure to a recovery agent that retries after a repair, runs a declared alternative, continues with a record, or hands off to a named owner; record format, recurrence rule and exit 81 (issue #2539)
 - [Recipe Check Exit Status](reference/recipe-check-exit-status.md) - How test, hook and CI check steps report the real exit status, keep stderr in the step log, and route failures to fix or diagnosis steps (issue #2190)
 - [Structured Verdict & Intent Parsing Reference](reference/structured-verdict-parsing.md) - `normalise-verdict` helper, `session-tree register --json`, and the `verdict`/`no_merge`/`goal_status`/`status` fields that replace brittle agent-prose scraping
 - [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - Planned responsibilities, invocation-wide authorization, gate retirement, and target compatibility matrix
@@ -402,6 +403,9 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [AppendHandler](reference/append-handler.md) - `AppendResult` class, timestamp filename format, atomic file writes
 - [Rust Runner Execution Reference](reference/rust-runner-execution.md) - Wrapper contract, stderr/stdout streams, JSONL events, environment variables, and security model
 - [Rust Runner Execution Architecture](concepts/rust-runner-execution-architecture.md) - CLI/runner responsibility split, stream ownership, progress events, and additive JSON preservation
+- [Recipe Run and Auto-Drive Checkout Isolation](reference/recipe-checkout-isolation.md) - What a run copies from your checkout, where steps and reviews run, Git recording, and owned release
+- [Inspect a Local-Input Snapshot](tutorials/recipe-checkout-isolation.md) - Run a recipe against staged, unstaged and untracked changes and confirm your index is untouched
+- [Trace2 Recording Investigation](operations/issue-2096-recording-probe.md) - Retained diagnostic evidence and the limits of cooperative recording
 - [Recipe Runner Logging Reference](reference/recipe-runner-logging.md) - stderr progress, heartbeats, bounded snippets, JSONL events, and additive result fields
 - [Recipe Run Correlation Reference](reference/recipe-run-correlation.md) - Stable run IDs, `AMPLIHACK_RECIPE_RUN_ID`, pointer event schema, and final result fields
 - [Observe Recipe Progress Tutorial](tutorials/recipe-progress-transparency.md) - Watch live workflow progress, capture JSON, and debug failed steps

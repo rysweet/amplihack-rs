@@ -87,18 +87,19 @@ if [ -z "${AMPLIHACK_HOME:-}" ]; then
   export AMPLIHACK_HOME
 fi
 
-# The review dir is the main checkout of the repository that holds the
-# preflight's repo ($REPO, #1543): the PR head's worktree when a PR
-# number was supplied, else repo_path. The read-only judging agents
-# (review, merge-ready assessment, loop-health analyzer) start there,
-# never in the PR worktree, so the branch under review does not supply
-# their AGENTS.md, CLAUDE.md or .claude hooks; it is never `pwd`, which
-# may be the PR worktree. The PR worktree is resolved from the same
-# $REPO: the #1528 resolver refuses the main checkout and returns the
-# PR's one linked worktree, where only each round's commit step works.
-REVIEW_DIR="$(g review_dir)"
+# The PR worktree is the preflight's repo ($REPO, #1543): the PR head's
+# linked worktree, where only each round's commit step works. Rust then
+# allocates a private review generation at that PR commit; reviewed
+# instruction files remain data and judging starts from separate trusted
+# launch material (#1528/#2096). The loop owns its generation, including
+# nested re-reviews, and releases it on exit.
 PR_WORKTREE="$REPO"
-[ -n "$REVIEW_DIR" ] && [ -n "$PR_WORKTREE" ] || { echo "ERROR: prepared PR worktree and review directory are required (#1528)" >&2; exit 1; }
+[ -n "$PR_WORKTREE" ] || { echo "ERROR: prepared PR worktree is required (#1528)" >&2; exit 1; }
+REVIEW_DIR="$(amplihack internal review-allocate "$PR_WORKTREE" "$DIR")" || exit 1
+release_review_dir() { amplihack internal review-release "$REVIEW_DIR"; }
+# Replaces the task-file trap above: the checkout is released and the task file removed on every exit from here.
+on_exit() { local rc=$?; release_review_dir || rc=1; rm -f -- "${TASK_IN:-}"; exit "$rc"; }
+trap on_exit EXIT
 
 # #2575 M1: <rounds> more rounds is a loop budget of the merge-ready rounds
 # already recorded in this state directory plus <rounds>, capped by the
@@ -133,6 +134,7 @@ bash "$LOOP_HELPER" --task-file "$TASK_IN" \
   --review-dir "$REVIEW_DIR" \
   --state-dir "$DIR" \
   --context "repo_path=$PR_WORKTREE" \
+  --context "step_recovery_dir=${RECIPE_VAR_step_recovery_dir:-}" \
   --context "pr_number=${PR}" \
   --context "plan_task_id=${RECIPE_VAR_plan_task_id:-}" \
   --context "pr_url=${PR_URL:-}" \

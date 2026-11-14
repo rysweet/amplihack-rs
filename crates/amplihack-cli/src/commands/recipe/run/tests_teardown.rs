@@ -613,6 +613,24 @@ fn init_git_repo(repo: &Path) -> bool {
     // Deterministic identity so any future commit-based assertions are stable.
     let _ = git_in(repo, &["config", "user.email", "t@example.com"]);
     let _ = git_in(repo, &["config", "user.name", "Teardown Test"]);
+    // A born HEAD: a recipe run refuses to prepare its private checkout from
+    // an unborn one (#2096), so the runner would never start.
+    assert!(
+        git_in(
+            repo,
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "init",
+            ],
+        )
+        .is_some(),
+        "git init worked but the initial commit failed in {}",
+        repo.display()
+    );
     // Confirm we start from the healthy, non-bare state.
     matches!(
         git_in(repo, &["config", "--get", "core.bare"]).as_deref(),

@@ -291,6 +291,10 @@ fn guard_command_uses_structured_cli_arguments_not_shell_interpolation() {
                 command.contains("--mode pre-publish"),
                 "{recipe_name} guard must use pre-publish mode before PR/finalize publication; command was:\n{command}"
             );
+            // Issue #2539: the step-recovery wrapper runs the unchanged step
+            // body, held in a quoted variable, as `bash -c "$STEP_BODY"`; no
+            // value is spliced into it. Any other eval or sh -c still fails.
+            let command = command.replace("bash -c \"$STEP_BODY\"", "");
             assert!(
                 !command.contains("eval ") && !command.contains("sh -c"),
                 "{recipe_name} guard must not be invoked through eval/sh -c; command was:\n{command}"
