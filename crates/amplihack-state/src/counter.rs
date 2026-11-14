@@ -79,6 +79,16 @@ impl AtomicCounter {
         }
     }
 
+    /// Wait for the companion lock without a timeout or polling.
+    ///
+    /// On Unix, each mutation blocks until the previous writer releases its
+    /// lock. Other platforms retain best-effort locking.
+    #[must_use]
+    pub fn with_blocking_lock(mut self) -> Self {
+        self.file = self.file.with_blocking_lock();
+        self
+    }
+
     /// Read the current counter value. Returns 0 if file doesn't exist.
     pub fn get(&self) -> Result<u64, CounterError> {
         let data: CounterData = self.file.read_or_default()?;

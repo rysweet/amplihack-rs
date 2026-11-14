@@ -102,7 +102,7 @@ Please provide the filled-out template now.
 
 pub(crate) fn build_reflection_prompt(
     dirs: &ProjectDirs,
-    session_dir: &Path,
+    redirects_dir: &Path,
     conversation: &[ReflectionMessage],
 ) -> Result<String> {
     let mut prompt = load_prompt_template(dirs);
@@ -120,7 +120,7 @@ pub(crate) fn build_reflection_prompt(
         ),
         (
             "{redirects_context}",
-            format_redirects_context(load_power_steering_redirects(session_dir)),
+            format_redirects_context(load_power_steering_redirects(redirects_dir)),
         ),
         ("{template}", load_feedback_template(dirs)),
     ] {
@@ -272,15 +272,16 @@ fn run_claude_reflection_with(
 mod tests {
     use super::*;
     use crate::test_support::env_lock;
-    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn reflection_templates_use_amplihack_root_override() {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let project = tempfile::tempdir().unwrap();
-        let framework = tempfile::tempdir().unwrap();
+        let home = crate::test_support::isolated_tempdir();
+        let _state = crate::test_support::isolate_state_home(home.path());
+        let project = crate::test_support::isolated_tempdir();
+        let framework = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(project.path());
         fs::create_dir_all(
             framework
@@ -323,32 +324,27 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let dir = tempfile::tempdir().unwrap();
+        let fixture = crate::stop::issue_2053_tests::reflection_fixture();
+        let _environment = crate::stop::issue_2053_tests::Environment::new();
+        let dir = crate::test_support::isolated_tempdir();
+        let _cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
         let fake_cli = dir.path().join("copilot");
-        fs::write(
-            &fake_cli,
-            "#!/bin/sh\n/bin/cat >/dev/null\nprintf '## Task Summary\\nReflected via agent binary\\n'\n",
-        )
-        .unwrap();
-        let mut perms = fs::metadata(&fake_cli).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&fake_cli, perms).unwrap();
+        fs::copy(fixture, &fake_cli).unwrap();
+        let _project = crate::test_support::EnvVarGuard::set("STOP_FIXTURE_PROJECT", dir.path());
+        let _findings = crate::test_support::EnvVarGuard::set(
+            "STOP_FIXTURE_UNIT_FINDINGS",
+            "## Task Summary\nReflected via agent binary\n",
+        );
 
-        let previous_agent_binary = std::env::var_os("AMPLIHACK_AGENT_BINARY");
         // Issue #1481: a recipe step can inherit a `default:copilot` tag, which
         // would make the resolver skip the value this test sets.
-        let previous_agent_source = std::env::var_os("AMPLIHACK_AGENT_BINARY_SOURCE");
-        let previous_reflection_binary = std::env::var_os("AMPLIHACK_REFLECTION_BINARY");
-        unsafe {
-            std::env::set_var("AMPLIHACK_AGENT_BINARY", "copilot");
-            std::env::remove_var("AMPLIHACK_AGENT_BINARY_SOURCE");
-            std::env::remove_var("AMPLIHACK_REFLECTION_BINARY");
-        }
+        let _agent = crate::test_support::EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "copilot");
+        let _source = crate::test_support::EnvVarGuard::unset("AMPLIHACK_AGENT_BINARY_SOURCE");
+        let _override = crate::test_support::EnvVarGuard::unset("AMPLIHACK_REFLECTION_BINARY");
 
         // Issue #1765: the fake `copilot` is reached through the child's PATH
         // alone, with no parent entries after it, so a missing fake fails to
-        // spawn instead of running an installed agent CLI. The process PATH
-        // and HOME are never changed.
+        // spawn instead of running an installed agent CLI.
         let result =
             run_claude_reflection_with(dir.path(), "reflect now", &|command: &mut Command| {
                 command
@@ -357,18 +353,6 @@ mod tests {
                     .env_remove(amplihack_utils::rotator_status::ROOT_ENV);
             })
             .unwrap();
-
-        match previous_agent_binary {
-            Some(value) => unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", value) },
-            None => unsafe { std::env::remove_var("AMPLIHACK_AGENT_BINARY") },
-        }
-        if let Some(value) = previous_agent_source {
-            unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY_SOURCE", value) };
-        }
-        match previous_reflection_binary {
-            Some(value) => unsafe { std::env::set_var("AMPLIHACK_REFLECTION_BINARY", value) },
-            None => unsafe { std::env::remove_var("AMPLIHACK_REFLECTION_BINARY") },
-        }
 
         assert_eq!(
             result.as_deref(),

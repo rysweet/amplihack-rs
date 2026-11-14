@@ -46,6 +46,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "../../crates/amplihack-cli/tests/support/scratch_base.rs"]
+mod scratch_base;
+
 /// Variables a hook child keeps from the test process, by exact name. The
 /// same names as `KEPT_VARS` in `tests/support/isolated_amplihack.rs`.
 pub const KEPT_VARS: &[&str] = &[
@@ -77,7 +80,8 @@ pub struct HookSandbox {
 
 impl HookSandbox {
     pub fn new() -> Self {
-        let root = tempfile::tempdir().expect("hook sandbox temp dir");
+        let root = tempfile::tempdir_in(scratch_base::scratch_base())
+            .expect("hook sandbox outside framework ancestors");
         for dir in ["home", "amplihack-home", "profiles", "project"] {
             fs::create_dir_all(root.path().join(dir)).expect("hook sandbox subdirectory");
         }
