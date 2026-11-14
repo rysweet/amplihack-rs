@@ -160,6 +160,11 @@ fn claude(_: &std::path::Path) -> amplihack_utils::agent_binary::Resolution {
 
 #[test]
 fn recipe_run_stops_before_the_runner_when_claude_would_refuse() {
+    let _guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    // Issue #2528: every run selects a bundle; give it a private installed one.
+    let (_installed, _installed_env) = crate::test_support::installed_bundle_home();
     let dir = tempfile::tempdir().unwrap();
     let recipe_path = agent_recipe_file(dir.path());
     for decision in [
@@ -233,6 +238,8 @@ fn run_as_root_outside_a_sandbox(
     // refuse, and the runner stub would never start, whatever the pre-flight
     // had decided.
     let _orchestration_env = crate::test_support::clear_outer_run_env();
+    // Issue #2528: every run selects a bundle; give it a private installed one.
+    let (_installed, _installed_env) = crate::test_support::installed_bundle_home();
     let stub_dir = tempfile::tempdir().unwrap();
     let handed = stub_dir.path().join("handed");
     let runner = stub_dir.path().join("recipe-runner-rs");

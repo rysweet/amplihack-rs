@@ -292,7 +292,10 @@ printf '%s\n' '{{"label":"saved-output","enabled":true,"count":7,"empty":null,"i
             .current_dir(repo)
             .env("HOME", &self.home)
             .env("PATH", "/usr/local/bin:/usr/bin:/bin")
-            .env("AMPLIHACK_HOME", self.home.join(".amplihack"))
+            .env(
+                "AMPLIHACK_HOME",
+                crate::support::installed_bundle::home(self.home.join(".amplihack")),
+            )
             .env("AMPLIHACK_WORK_ROOT", &self.work_root)
             .env("RECIPE_RUNNER_RS_PATH", &self.runner)
             .env("RECIPE_RUNNER_NO_UPDATE_CHECK", "1")

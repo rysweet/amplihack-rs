@@ -2444,58 +2444,6 @@ fn test_execute_recipe_via_rust_dash_r_position_in_argv() {
     );
 }
 
-// -------------------------------------------------------------------------
-// build_search_dirs — pure helper unit tests
-// -------------------------------------------------------------------------
-
-#[test]
-fn test_build_search_dirs_recipe_parent_first() {
-    let temp = tempfile::tempdir().expect("failed to create temp dir");
-    let recipe = temp.path().join("co-located").join("recipe.yaml");
-    std::fs::create_dir_all(recipe.parent().unwrap()).unwrap();
-    std::fs::write(&recipe, "name: x\nsteps: []\n").unwrap();
-
-    let dirs = super::build_search_dirs(&recipe, temp.path())
-        .expect("build_search_dirs must not error on valid inputs");
-
-    assert!(!dirs.is_empty(), "must return at least the recipe parent");
-    assert_eq!(
-        dirs[0],
-        recipe.parent().unwrap().to_path_buf(),
-        "recipe parent must be FIRST entry; got dirs={dirs:?}"
-    );
-}
-
-#[test]
-fn test_build_search_dirs_dedups_paths() {
-    let temp = tempfile::tempdir().expect("failed to create temp dir");
-    let recipes_dir = temp.path().join("amplifier-bundle").join("recipes");
-    std::fs::create_dir_all(&recipes_dir).unwrap();
-    let recipe = recipes_dir.join("dup.yaml");
-    std::fs::write(&recipe, "name: dup\nsteps: []\n").unwrap();
-
-    let dirs =
-        super::build_search_dirs(&recipe, temp.path()).expect("build_search_dirs must not error");
-
-    let occurrences = dirs.iter().filter(|p| *p == &recipes_dir).count();
-    assert_eq!(
-        occurrences, 1,
-        "recipe-parent must appear EXACTLY once after dedup; got dirs={dirs:?}"
-    );
-}
-
-#[test]
-fn test_build_search_dirs_handles_no_parent_gracefully() {
-    let temp = tempfile::tempdir().expect("failed to create temp dir");
-    let recipe = PathBuf::from("/");
-
-    let result = super::build_search_dirs(&recipe, temp.path());
-    assert!(
-        result.is_ok(),
-        "build_search_dirs must handle root-as-recipe gracefully: {result:?}"
-    );
-}
-
 #[test]
 #[cfg(unix)]
 fn test_run_recipe_forwards_recipe_parent_as_dash_r() {
@@ -2532,6 +2480,8 @@ fn test_run_recipe_forwards_recipe_parent_as_dash_r() {
     let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
     unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
     let orchestration_env = crate::test_support::clear_outer_run_env();
+    // Issue #2528: every run selects a bundle; give it a private installed one.
+    let (_installed, _installed_env) = crate::test_support::installed_bundle_home();
 
     let result = super::run_recipe(
         recipe.to_str().unwrap(),

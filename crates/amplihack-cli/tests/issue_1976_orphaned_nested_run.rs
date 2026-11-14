@@ -121,7 +121,10 @@ impl Fx {
             .env("RECORD_DIR", &self.records)
             .env("RECIPE_RUNNER_RS_PATH", self.tools.join("recipe-runner-rs"))
             .env("AMPLIHACK_AUTODRIVE_STATE_DIR", &self.state)
-            .env("AMPLIHACK_HOME", self.home.join(".amplihack"))
+            .env(
+                "AMPLIHACK_HOME",
+                crate::support::installed_bundle::home(self.home.join(".amplihack")),
+            )
             .env("AMPLIHACK_AGENT_BINARY", "claude")
             .env("AMPLIHACK_NONINTERACTIVE", "1")
             .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")

@@ -39,7 +39,10 @@ pub use show_validate::{run_show, run_validate};
 #[cfg(test)]
 pub(crate) use parse::parse_recipe_text;
 pub(crate) use parse::{parse_recipe_from_input, parse_recipe_from_path, validate_path};
-pub(crate) use resolve::{push_unique_path, recipe_search_dirs, resolve_recipe_path};
+pub(crate) use resolve::{
+    RecipeOrigin, push_unique_path, recipe_search_dirs, resolve_recipe_in_bundle,
+    resolve_recipe_path,
+};
 
 pub(crate) const MAX_YAML_SIZE_BYTES: usize = 1_000_000;
 const RECIPE_FILE_EXTENSIONS: &[&str] = &["yaml", "yml"];
@@ -235,3 +238,6 @@ pub(crate) fn home_dir() -> Result<PathBuf> {
 
 #[cfg(test)]
 mod recipe_tests;
+/// Issue #2528: bare names resolve only in the selected bundle.
+#[cfg(all(test, unix))]
+mod tests_resolve_in_bundle;

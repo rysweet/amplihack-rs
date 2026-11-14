@@ -110,7 +110,10 @@ impl Fixture {
             .env("RECORD_DIR", &self.records)
             .env("RECIPE_RUNNER_RS_PATH", runner)
             .env("AMPLIHACK_AGENT_BINARY", "claude")
-            .env("AMPLIHACK_HOME", self.home.join(".amplihack"))
+            .env(
+                "AMPLIHACK_HOME",
+                crate::support::installed_bundle::home(self.home.join(".amplihack")),
+            )
             .env("AMPLIHACK_NONINTERACTIVE", "1")
             .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
             .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")

@@ -546,3 +546,49 @@ mod contract_home_choice {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Issue #2528 (D3): inside a pinned recipe run AMPLIHACK_HOME names the
+// bundle snapshot, so the contract home comes from AMPLIHACK_STATE_HOME
+// first when it is usable (absolute, no `..`).
+// ---------------------------------------------------------------------------
+
+mod contract_home_state_home_2528 {
+    use super::super::contract_file::contract_home;
+    use crate::test_support::{EnvGuard, home_env_lock};
+    use std::path::PathBuf;
+
+    fn contract_home_with(state_home: Option<&str>) -> PathBuf {
+        let _lock = home_env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _unset = EnvGuard::unset(["AMPLIHACK_STATE_HOME"]);
+        let _env = EnvGuard::set([
+            ("AMPLIHACK_HOME", "/runs/r/runtime/bundle"),
+            ("HOME", "/home/alice"),
+        ]);
+        let _state = state_home.map(|v| EnvGuard::set([("AMPLIHACK_STATE_HOME", v)]));
+        contract_home().expect("a contract home resolves")
+    }
+
+    #[test]
+    fn state_home_is_read_first() {
+        assert_eq!(
+            contract_home_with(Some("/home/alice/.amplihack")),
+            PathBuf::from("/home/alice/.amplihack")
+        );
+    }
+
+    #[test]
+    fn unusable_state_home_falls_back_without_error() {
+        for value in ["", "rel/state", "/a/../b"] {
+            assert_eq!(
+                contract_home_with(Some(value)),
+                PathBuf::from("/runs/r/runtime/bundle"),
+                "{value:?}"
+            );
+        }
+        assert_eq!(
+            contract_home_with(None),
+            PathBuf::from("/runs/r/runtime/bundle")
+        );
+    }
+}

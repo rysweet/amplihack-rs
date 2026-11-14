@@ -316,6 +316,9 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Recipe Recovery Reference](reference/recipe-recovery.md) - **Planned:** persistence policies, resources, durable storage, and runner contracts
 - [Recipe Runner Architecture](concepts/recipe-runner-architecture.md) - Execution and recovery ownership across the CLI and runner
 - [Recipe Command Reference](reference/recipe-command.md) - Launch flags, detached execution, and recovery decisions
+- [Recipe Run Bundle Selection and Pinning](reference/recipe-run-bundle.md) - `--bundle installed|checkout`, trust checks, the per-run bundle copy, `AMPLIHACK_RUN_BUNDLE`, nested runs, log fields and errors (issue #2528)
+- [One Bundle per Recipe Run](concepts/one-bundle-per-recipe-run.md) - Why recipes and tools come from one checked copy that survives an upgrade, and why cleanup has no separate process
+- [Run a Recipe from a Checkout's Bundle](howto/run-a-recipe-from-a-checkout-bundle.md) - Use `--bundle checkout`, see which bundle a run used, and fix untrusted-bundle and recipe-not-found errors
 
 - [Recipe Runner Overview](recipes/README.md) - Architecture, YAML format, and creating custom recipes
 - [UltraThink Recipe Runner Integration](recipes/RECIPE_RUNNER_ULTRATHINK_INTEGRATION.md) - How ultrathink uses Recipe Runner for code-enforced workflow execution

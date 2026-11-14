@@ -56,6 +56,22 @@ impl Fixture {
         )
         .expect("write recipe");
         fs::create_dir_all(dir.path().join("home")).expect("create home");
+        // Issue #2528: `recipe run` refuses a run with no installed bundle.
+        // AMPLIHACK_HOME is the temp dir, so an empty bundle there is enough
+        // for a recipe given as a path.
+        for sub in ["recipes", "agents"] {
+            fs::create_dir_all(dir.path().join("amplifier-bundle").join(sub))
+                .expect("create bundle");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for sub in ["", "recipes", "agents"] {
+                let path = dir.path().join("amplifier-bundle").join(sub);
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
+                    .expect("chmod bundle");
+            }
+        }
         // A `.git` boundary stops the launcher-context walk-up at the work
         // dir, so a context file above the temp dir (for example with TMPDIR
         // under $HOME) cannot answer for these tests.

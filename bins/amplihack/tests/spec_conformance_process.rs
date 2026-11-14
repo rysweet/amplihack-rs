@@ -224,7 +224,25 @@ fn invariant_ledger_sound_tree_dir_is_under_home() {
 /// `commands::recipe::run::execute::EXIT_ORCHESTRATION_UNAVAILABLE`.
 const EXIT_ORCHESTRATION_UNAVAILABLE: i32 = 79;
 
+/// Issue #2528: `recipe run` refuses a run with no installed bundle. The
+/// probe recipes are given as paths, so an empty bundle at the sandbox's
+/// default `~/.amplihack` is enough.
+fn ensure_bundle(home: &Path) {
+    let bundle = home.join(".amplihack").join("amplifier-bundle");
+    for sub in ["recipes", "agents"] {
+        fs::create_dir_all(bundle.join(sub)).expect("create bundle");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for dir in [bundle.join("recipes"), bundle.join("agents"), bundle] {
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("chmod bundle");
+        }
+    }
+}
+
 fn recipe_run(home: &Path, envs: &[(&str, &str)]) -> Output {
+    ensure_bundle(home);
     // A recipe whose only step is a no-op shell command. Recipe validation runs
     // before the recursion guard and rejects an empty `steps`, so the probe needs
     // one step -- but it must not need an agent: pointing these tests at
@@ -367,6 +385,7 @@ fn invariant_node_budget_caps_concurrent_recipe_runs() {
     // Seed the tree so the cap has something to count against.
     assert!(sb.register("wtree", "root", &sb.root.join("tmp"), CAP));
 
+    ensure_bundle(&sb.root);
     let recipe = sb.root.join("slow.yaml");
     fs::write(
         &recipe,

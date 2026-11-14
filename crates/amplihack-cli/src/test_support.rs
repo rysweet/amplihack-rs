@@ -185,6 +185,42 @@ pub(crate) const OUTER_RUN_IDENTITY_VARS: [&str; 7] = [
     "AMPLIHACK_TREE_ID",
 ];
 
+/// Issue #2528: a private installed home holding a trusted, empty
+/// `amplifier-bundle` (`recipes/`, `agents/`, `tools/`, all 0755), set as
+/// `AMPLIHACK_HOME` until the guard drops, so a `recipe run` under test
+/// selects it and never the developer's real `~/.amplihack`. An outer run's
+/// bundle marker and state home are cleared too. The caller must hold
+/// `env_lock()` (or `home_env_lock()`).
+#[cfg(unix)]
+pub(crate) fn installed_bundle_home() -> (tempfile::TempDir, EnvGuard) {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempdir_outside_framework_roots();
+    let home = std::fs::canonicalize(temp.path()).unwrap();
+    let bundle = home.join("amplifier-bundle");
+    for dir in ["recipes", "agents", "tools"] {
+        std::fs::create_dir_all(bundle.join(dir)).unwrap();
+        std::fs::set_permissions(bundle.join(dir), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    for dir in [&bundle, &home] {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let guard = EnvGuard::capture(&[
+        "AMPLIHACK_HOME",
+        "AMPLIHACK_RUN_BUNDLE",
+        "AMPLIHACK_RUN_BUNDLE_CHOICE",
+        "AMPLIHACK_STATE_HOME",
+    ]);
+    for name in [
+        "AMPLIHACK_RUN_BUNDLE",
+        "AMPLIHACK_RUN_BUNDLE_CHOICE",
+        "AMPLIHACK_STATE_HOME",
+    ] {
+        unsafe { std::env::remove_var(name) };
+    }
+    unsafe { std::env::set_var("AMPLIHACK_HOME", &home) };
+    (temp, guard)
+}
+
 /// Remove every [`OUTER_RUN_IDENTITY_VARS`] entry until the guard drops. The
 /// caller must hold `env_lock()` (or `home_env_lock()`), as for any `EnvGuard`.
 pub(crate) fn clear_outer_run_env() -> EnvGuard {

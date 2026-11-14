@@ -27,6 +27,11 @@ pub const REQUIRED_ASSETS: &[&str] = &[
     "tools/autodrive_expected_checks.sh",
 ];
 
+/// Names, inside a [`LaunchBundle`] home, the canonical home the copy was
+/// made from (#2528). A nested `recipe run` in an auto-drive step uses it to
+/// reuse the outer run's snapshot while `AMPLIHACK_HOME` names this copy.
+pub(crate) const LAUNCH_SOURCE_FILE: &str = "bundle-source";
+
 /// A private invocation copy keeps recipes, skills, evaluator and helpers on one release.
 pub struct LaunchBundle {
     pub home: PathBuf,
@@ -72,6 +77,11 @@ impl LaunchBundle {
         }
         use std::io::Write;
         options.open(&auth_path)?.write_all(invocation.as_bytes())?;
+        let source =
+            fs::canonicalize(home).with_context(|| format!("cannot resolve {}", home.display()))?;
+        options
+            .open(temp.path().join(LAUNCH_SOURCE_FILE))?
+            .write_all(source.as_os_str().as_encoded_bytes())?;
         let recipes = dest.join("recipes");
         for entry in fs::read_dir(&recipes)? {
             let path = entry?.path();
@@ -115,52 +125,240 @@ impl LaunchBundle {
 }
 /// Copies the trusted bundle with explicit modes (#2537): folders 0755, files
 /// 0644, executables 0755, so the copy passes `trusted_directory()` whatever
-/// the process umask.
+/// the process umask. Symlinks are skipped: compatibility aliases are not
+/// workflow authority.
 fn copy_tree(source: &Path, dest: &Path) -> Result<()> {
-    fs::create_dir(dest)?;
-    set_mode(dest, 0o755)?;
-    for entry in fs::read_dir(source)? {
-        let entry = entry?;
-        if ["gh-merge-guard", "autodrive_merge_gate.sh"]
-            .iter()
-            .any(|name| entry.file_name() == *name)
-        {
+    copy_bundle(source, dest, LinkPolicy::Skip)
+}
+
+/// What [`copy_bundle`] does with a symlink inside the bundle (#2528).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LinkPolicy {
+    /// Skip every symlink (auto-drive's existing behaviour).
+    Skip,
+    /// Keep relative links whose canonical targets stay inside the bundle,
+    /// recreated with the same link text and never descended through.
+    KeepInternal,
+}
+
+/// Entries that are never copied: the retired merge guard (#2340).
+const SKIPPED_NAMES: [&str; 2] = ["gh-merge-guard", "autodrive_merge_gate.sh"];
+
+/// Checks and copies each entry of the bundle at `source` into `dest` in one
+/// pass (#2528). `source` must pass [`trusted_directory`]; `dest` must not
+/// exist and is created 0755. Every entry must be owned by the effective user
+/// and not group or other writable (E6). Files are opened with `O_NOFOLLOW`
+/// and the open handle must be the checked file (E7). Directories become
+/// 0755, files 0755 when any execute bit is set and 0644 otherwise; setuid,
+/// setgid and sticky bits are dropped.
+pub(crate) fn copy_bundle(source: &Path, dest: &Path, links: LinkPolicy) -> Result<()> {
+    check_and_copy(source, Some(dest), links)
+}
+
+/// The checks of [`copy_bundle`] without copying anything (a dry run, #2528).
+pub(crate) fn check_bundle(source: &Path, links: LinkPolicy) -> Result<()> {
+    check_and_copy(source, None, links)
+}
+
+fn check_and_copy(source: &Path, dest: Option<&Path>, links: LinkPolicy) -> Result<()> {
+    trusted_directory(source)?;
+    let root = fs::canonicalize(source)
+        .with_context(|| format!("cannot resolve bundle {}", source.display()))?;
+    if let Some(dest) = dest {
+        fs::create_dir(dest).with_context(|| format!("cannot create {}", dest.display()))?;
+        set_mode(dest, 0o755)?;
+    }
+    walk_bundle(&root, &root, dest, links)
+}
+
+fn walk_bundle(root: &Path, dir: &Path, dest: Option<&Path>, links: LinkPolicy) -> Result<()> {
+    let mut entries = fs::read_dir(dir)
+        .with_context(|| format!("cannot read {}", dir.display()))?
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(|| format!("cannot read {}", dir.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        if SKIPPED_NAMES.iter().any(|name| entry.file_name() == *name) {
             continue;
         }
         let path = entry.path();
-        let to = dest.join(entry.file_name());
-        let metadata = fs::symlink_metadata(&path)?;
-        if metadata.file_type().is_symlink() {
-            continue;
-        } // compatibility aliases are not workflow authority
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::{MetadataExt, PermissionsExt};
-            ensure!(
-                metadata.uid() == unsafe { libc::geteuid() }
-                    && metadata.permissions().mode() & 0o022 == 0,
-                "untrusted auto-drive asset ownership or modes: {}",
-                path.display()
-            );
-        }
-        if metadata.is_dir() {
-            copy_tree(&path, &to)?;
-        } else {
-            ensure!(
-                metadata.is_file(),
-                "non-regular trusted asset {}",
-                path.display()
-            );
-            fs::copy(&path, &to)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let executable = metadata.permissions().mode() & 0o100 != 0;
-                set_mode(&to, if executable { 0o755 } else { 0o644 })?;
+        let to = dest.map(|d| d.join(entry.file_name()));
+        let metadata = fs::symlink_metadata(&path)
+            .with_context(|| format!("cannot inspect {}", path.display()))?;
+        let kind = metadata.file_type();
+        if kind.is_symlink() {
+            if links == LinkPolicy::Skip {
+                continue;
             }
+            check_owner(&path, &metadata)?;
+            let Some(text) = internal_link_text(root, &path)? else {
+                continue;
+            };
+            if let Some(to) = &to {
+                std::os::unix::fs::symlink(&text, to)
+                    .with_context(|| format!("cannot create link {}", to.display()))?;
+            }
+            continue;
+        }
+        check_entry(&path, &metadata)?;
+        if kind.is_dir() {
+            if let Some(to) = &to {
+                fs::create_dir(to).with_context(|| format!("cannot create {}", to.display()))?;
+                set_mode(to, 0o755)?;
+            }
+            walk_bundle(root, &path, to.as_deref(), links)?;
+        } else if kind.is_file() {
+            if let Some(to) = &to {
+                copy_checked_file(&path, &metadata, to)?;
+            }
+        } else {
+            bail!(
+                "untrusted bundle entry {}: not a regular file, directory or symlink",
+                path.display()
+            );
         }
     }
     Ok(())
+}
+
+/// Copies `path` from a handle opened with `O_NOFOLLOW` whose device and
+/// inode match `checked`, so a file swapped after the check is refused.
+fn copy_checked_file(path: &Path, checked: &fs::Metadata, to: &Path) -> Result<()> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    let changed = || {
+        anyhow::anyhow!(
+            "untrusted bundle entry {}: changed while being copied",
+            path.display()
+        )
+    };
+    // ELOOP is O_NOFOLLOW meeting a symlink swapped in after the check (E7);
+    // any other failure, such as EACCES on a mode 0000 file, is reported as is.
+    let mut input = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|error| {
+            if error.raw_os_error() == Some(libc::ELOOP) {
+                changed()
+            } else {
+                anyhow::Error::new(error).context(format!("cannot open {}", path.display()))
+            }
+        })?;
+    let opened = input
+        .metadata()
+        .with_context(|| format!("cannot inspect {}", path.display()))?;
+    if opened.dev() != checked.dev() || opened.ino() != checked.ino() || !opened.is_file() {
+        return Err(changed());
+    }
+    let mut output = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(to)
+        .with_context(|| format!("cannot create {}", to.display()))?;
+    std::io::copy(&mut input, &mut output)
+        .with_context(|| format!("cannot copy {} to {}", path.display(), to.display()))?;
+    let executable = opened.permissions().mode() & 0o111 != 0;
+    set_mode(to, if executable { 0o755 } else { 0o644 })
+}
+
+/// E6 for the owner alone (a symlink's own mode is always 0777).
+fn check_owner(path: &Path, metadata: &fs::Metadata) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: geteuid has no failure mode and touches no memory.
+    let euid = unsafe { libc::geteuid() };
+    ensure!(
+        metadata.uid() == euid,
+        "untrusted bundle entry {}: owned by uid {}, not the current user",
+        path.display(),
+        metadata.uid()
+    );
+    Ok(())
+}
+
+/// E6: owned by the effective user and not group or other writable.
+fn check_entry(path: &Path, metadata: &fs::Metadata) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    check_owner(path, metadata)?;
+    let mode = metadata.permissions().mode() & 0o7777;
+    ensure!(
+        mode & 0o022 == 0,
+        "untrusted bundle entry {p}: mode {mode:04o} (group or other writable); \
+         fix with chmod go-w {p}",
+        p = path.display()
+    );
+    Ok(())
+}
+
+/// The link text of a symlink `link` that [`LinkPolicy::KeepInternal`] keeps:
+/// relative, staying inside `root` when read as text, resolving inside
+/// `root`, with a target and intermediate directories that pass
+/// [`check_entry`]. Anything else is E7, except a dangling link whose text
+/// passes those text checks: it gives `None` and is left out of the copy, as
+/// `amplihack install` leaves it out of the staged bundle. The repository's
+/// own bundle has two such links (`skills/outside-in-testing/{scripts,tests}`),
+/// so refusing them would refuse every `--bundle checkout` run.
+///
+/// The text is copied verbatim, so it must stay inside the bundle without
+/// following any symlink: `..` steps past `/` stop there, and text such as
+/// `../../../..<root>/x` resolves inside the source but, in the snapshot,
+/// back to the source.
+fn internal_link_text(root: &Path, link: &Path) -> Result<Option<PathBuf>> {
+    let refuse =
+        |reason: &str| anyhow::anyhow!("untrusted bundle entry {}: {reason}", link.display());
+    let text =
+        fs::read_link(link).with_context(|| format!("cannot read link {}", link.display()))?;
+    if text.is_absolute() {
+        return Err(refuse("absolute symlink"));
+    }
+    if !text_stays_inside(root, link, &text) {
+        return Err(refuse("symlink leaves the bundle"));
+    }
+    let target = match fs::canonicalize(link) {
+        Ok(target) => target,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.raw_os_error() == Some(libc::ELOOP) => {
+            return Err(refuse("symlink cycle"));
+        }
+        Err(error) => {
+            return Err(anyhow::Error::new(error)
+                .context(format!("cannot resolve link {}", link.display())));
+        }
+    };
+    // Component-wise, so `amplifier-bundle-old` is not inside `amplifier-bundle`.
+    let Ok(inside) = target.strip_prefix(root) else {
+        return Err(refuse("symlink leaves the bundle"));
+    };
+    let mut current = root.to_path_buf();
+    for component in inside.components() {
+        current.push(component);
+        let metadata = fs::symlink_metadata(&current)
+            .with_context(|| format!("cannot inspect {}", current.display()))?;
+        check_entry(&current, &metadata)?;
+    }
+    Ok(Some(text))
+}
+
+/// True when `text`, read from the folder holding `link`, never climbs above
+/// `root` by its own components. No symlink is followed.
+fn text_stays_inside(root: &Path, link: &Path, text: &Path) -> bool {
+    use std::path::Component;
+    let Some(parent) = link.parent().and_then(|p| p.strip_prefix(root).ok()) else {
+        return false;
+    };
+    let mut depth = parent.components().count();
+    for component in text.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(_) => depth += 1,
+            Component::ParentDir => match depth.checked_sub(1) {
+                Some(up) => depth = up,
+                None => return false,
+            },
+            Component::RootDir | Component::Prefix(_) => return false,
+        }
+    }
+    true
 }
 
 fn set_mode(path: &Path, mode: u32) -> Result<()> {
@@ -193,22 +391,16 @@ pub fn pin_bundle(home: &Path) -> Result<PathBuf> {
     trusted_directory(&pinned)?;
     Ok(pinned)
 }
-fn trusted_directory(path: &Path) -> Result<()> {
-    let m = fs::symlink_metadata(path)?;
+/// Real directory, owned by the effective user, not group or other writable.
+pub(crate) fn trusted_directory(path: &Path) -> Result<()> {
+    let m = fs::symlink_metadata(path)
+        .with_context(|| format!("cannot inspect trusted bundle {}", path.display()))?;
     ensure!(
         m.is_dir() && !m.file_type().is_symlink(),
-        "trusted bundle is not a real directory"
+        "trusted bundle {} is not a real directory",
+        path.display()
     );
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        ensure!(
-            m.uid() == unsafe { libc::geteuid() } && m.permissions().mode() & 0o022 == 0,
-            "trusted bundle has unsafe ownership or modes: {}",
-            path.display()
-        );
-    }
-    Ok(())
+    check_entry(path, &m)
 }
 
 /// Remove only recognizable retired entries; never source inherited guard files.
@@ -482,3 +674,8 @@ mod umask_tests {
         );
     }
 }
+
+/// Issue #2528: `copy_bundle`, `LinkPolicy` and the E6/E7 texts.
+#[cfg(all(test, unix))]
+#[path = "tests_copy_bundle.rs"]
+mod tests_copy_bundle;

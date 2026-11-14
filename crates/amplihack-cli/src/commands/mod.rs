@@ -721,6 +721,7 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
             format,
             working_dir,
             step_timeout,
+            bundle,
             detach,
             no_detach,
             governor,
@@ -756,6 +757,7 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
                     &format,
                     working_dir.as_deref(),
                     step_timeout,
+                    bundle.as_deref(),
                 );
                 // Issue #1811: the pane's run asks the governor, so it needs
                 // the same workstream, class and wait.
@@ -782,6 +784,7 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
                 step_timeout,
                 &governor,
                 fresh,
+                bundle.as_deref(),
             )
         }
         RecipeCommands::Guide {

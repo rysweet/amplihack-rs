@@ -169,6 +169,9 @@ impl Fx {
             0o755,
         );
         fs::write(fx.root.join("local.yaml"), LOCAL_RECIPE).unwrap();
+        // Issue #2528: the checkout is skipped as an installed candidate, so
+        // `recipe run` needs a bundle under $HOME.
+        crate::support::installed_bundle::ensure(&fx.home.join(".amplihack"));
         fx
     }
 

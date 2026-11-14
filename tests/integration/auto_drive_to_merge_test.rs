@@ -2834,6 +2834,10 @@ fn a_recipe_run_from_a_round_step_is_refused_by_the_real_guard() {
             .args(["recipe", "run"])
             .arg(recipe_path("autodrive-crusty-round"))
             .arg("--dry-run")
+            // Issue #2528: a git checkout is never an installed bundle, so
+            // this checkout's bundle is chosen explicitly.
+            .args(["--bundle", "checkout", "--working-dir"])
+            .arg(workspace_root())
             .current_dir(tmp.path())
             .env_clear()
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")

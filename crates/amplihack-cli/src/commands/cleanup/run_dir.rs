@@ -710,6 +710,15 @@ impl RunWorkspace {
         create_private_dir_all(&dir.path().join("artifacts"))?;
         Ok(Self::Legacy { dir })
     }
+    /// The work root that holds `runs/` and `bundle-pins/` (#2528), or
+    /// `None` for a dry run's temporary space.
+    pub(crate) fn work_root(&self) -> Option<&Path> {
+        match self {
+            Self::Scoped { scope, .. } => Some(scope.work_root.path.as_path()),
+            Self::Legacy { .. } => None,
+        }
+    }
+
     /// The durable run folder, or `None` for a dry run's temporary space.
     ///
     /// #2329: auto-drive keeps its private state in this folder, so it is

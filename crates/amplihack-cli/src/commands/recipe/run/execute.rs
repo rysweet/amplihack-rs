@@ -571,6 +571,77 @@ fn assign_autodrive_state_dir(
     Ok(directory)
 }
 
+/// Issue #2528: the bundle `recipe run` selected and where its recipe came
+/// from. `None` only for in-crate test callers that pass their own
+/// `search_dirs`.
+pub(super) struct RunBundle<'a> {
+    pub(super) selection: &'a super::bundle_pin::Selection,
+    pub(super) origin: &'a RecipeOrigin,
+    /// The recipe name `recipe run` parsed from the source before the pin.
+    pub(super) recipe_name: &'a str,
+}
+
+/// Issue #2528 (D5): sub-recipe search directories for a run using the
+/// `amplifier-bundle` at `bundle`: its `recipes/`, then, only for a recipe
+/// given as a path, the file's parent. Never the repository root,
+/// `.claude/recipes` or `~/.amplihack`.
+pub(super) fn build_search_dirs(bundle: &Path, origin: &RecipeOrigin) -> Vec<PathBuf> {
+    let mut dirs = vec![bundle.join("recipes")];
+    if let RecipeOrigin::File(file) = origin
+        && let Some(parent) = file.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        push_unique_path(&mut dirs, parent.to_path_buf());
+    }
+    dirs
+}
+
+/// Issue #2528 (D5): `-R` per search directory, the bundle's agents and
+/// `--no-default-search`, so nothing is taken from another bundle. `bundle`
+/// is the pinned snapshot's `amplifier-bundle`, or auto-drive's invocation
+/// copy of it.
+pub(super) fn runner_bundle_args(bundle: &Path, origin: &RecipeOrigin) -> Vec<OsString> {
+    let mut args = Vec::new();
+    for dir in build_search_dirs(bundle, origin) {
+        args.push(OsString::from("-R"));
+        args.push(dir.into_os_string());
+    }
+    args.push(OsString::from("--agent-dir"));
+    args.push(bundle.join("agents").into_os_string());
+    args.push(OsString::from("--no-default-search"));
+    args
+}
+
+/// Issue #2528 (D3): the four variables an executing pinned run sets on the
+/// runner process. A dry run sets none. `launch_home` is auto-drive's
+/// invocation copy: `AMPLIHACK_HOME` names it (D7), while the nested-run
+/// marker still names the snapshot it was made from.
+pub(super) fn bundle_env(
+    pinned: &super::bundle_pin::PinnedBundle,
+    state_home: &Path,
+    launch_home: Option<&Path>,
+) -> Vec<(&'static str, OsString)> {
+    if pinned.is_dry_run() {
+        return Vec::new();
+    }
+    let home = pinned.home().as_os_str().to_owned();
+    vec![
+        (
+            "AMPLIHACK_HOME",
+            launch_home.map_or_else(|| home.clone(), |l| l.as_os_str().to_owned()),
+        ),
+        (super::bundle_pin::RUN_BUNDLE_ENV, home),
+        (
+            super::bundle_pin::RUN_BUNDLE_CHOICE_ENV,
+            pinned.choice().as_str().into(),
+        ),
+        (
+            amplihack_types::STATE_HOME_ENV,
+            state_home.as_os_str().to_owned(),
+        ),
+    ]
+}
+
 // The resolved agent binary is an extra argument on purpose: the caller
 // decided it once, for the pre-flight and the steps alike (issue #1481).
 #[allow(clippy::too_many_arguments)]
@@ -597,6 +668,7 @@ pub(super) fn execute_recipe_via_rust(
         step_timeout,
         agent_binary,
         false,
+        None,
     )
 }
 
@@ -612,6 +684,7 @@ pub(super) fn execute_recipe_via_rust_fresh(
     step_timeout: Option<u64>,
     agent_binary: amplihack_utils::agent_binary::Resolution,
     fresh: bool,
+    bundle: Option<RunBundle<'_>>,
 ) -> Result<RecipeRunResult> {
     use crate::commands::orch::autodrive::{authorization::InvocationAuthorization, trusted};
     let invocation_name = recipe_name_for_correlation(recipe_path);
@@ -632,45 +705,6 @@ pub(super) fn execute_recipe_via_rust_fresh(
     // lookup, temp dirs, bundle copies, spawn) so no descendant is ever
     // created past the limit.
     let guard = enforce_recursion_depth_guard(working_dir)?;
-    let launch = if let Some(auth) = &mut authorization {
-        let env = EnvBuilder::new().with_amplihack_home_from(working_dir);
-        let home = env
-            .var("AMPLIHACK_HOME")
-            .context("trusted AMPLIHACK_HOME missing for auto-drive")?;
-        Some(trusted::LaunchBundle::prepare(Path::new(home), auth)?)
-    } else {
-        None
-    };
-    let pinned_recipe = launch.as_ref().map(|l| {
-        l.home
-            .join("amplifier-bundle/recipes")
-            .join(format!("{invocation_name}.yaml"))
-    });
-    let recipe_path = pinned_recipe.as_deref().unwrap_or(recipe_path);
-    let pinned_search = launch
-        .as_ref()
-        .map(|l| vec![l.home.join("amplifier-bundle/recipes")]);
-    let search_dirs = pinned_search.as_deref().unwrap_or(search_dirs);
-    // Expand auto-drive defaults only after trusted entrypoint selection.
-    // Neither requested recipe defaults nor inferred values grant authority.
-    let (mut invocation_context, inferred) = if launch.is_some() {
-        let recipe = super::parse_recipe_from_path(recipe_path)?;
-        let (mut expanded, inferred) =
-            super::infer_missing_context(&recipe.context, explicit_inputs);
-        // Recovery identity is normalised on this derived copy only, never on
-        // `explicit_inputs`, which stays the raw source of authority.
-        super::recovery::normalize(&mut expanded, working_dir);
-        (expanded, inferred)
-    } else {
-        (context.clone(), Vec::new())
-    };
-    if verbose && !inferred.is_empty() {
-        eprintln!(
-            "[context] Inferred {} variable(s): {}",
-            inferred.len(),
-            inferred.join(", ")
-        );
-    }
     // Issue #1606: from here on a SIGHUP/SIGINT/SIGTERM stops the run, at any
     // point: setup, a running attempt, or retry backoff.
     super::stop_signal::arm();
@@ -710,17 +744,6 @@ pub(super) fn execute_recipe_via_rust_fresh(
         &agent_binary,
     );
 
-    // Issue #1606: record what this run resolved in every log pointer. The
-    // home is resolved the same way `build_command` resolves it below.
-    let run_settings = RunSettings {
-        agent_binary: Some(agent_binary.binary.clone()),
-        agent_binary_source: Some(agent_binary.source.label()),
-        amplihack_home: EnvBuilder::new()
-            .with_amplihack_home_from(working_dir)
-            .build()
-            .remove("AMPLIHACK_HOME"),
-    };
-
     // Issue #1808: the run's folder under the work root holds run.json and
     // owned-paths; its runtime/ (TMPDIR, TMP, TEMP and artifacts) is removed
     // when the run ends, on every exit path including a panic.
@@ -729,6 +752,161 @@ pub(super) fn execute_recipe_via_rust_fresh(
     } else {
         crate::commands::cleanup::run_dir::RunWorkspace::begin_durable(&recipe_name, working_dir)?
     });
+
+    // Issue #2528 (D2): pin the selected bundle at
+    // <work root>/bundle-pins/<key>, a path set by the bundle's contents, so a
+    // resumed run gets the same runner paths as the original run (#1741).
+    // `pinned` holds the run's lease on that snapshot and is dropped after
+    // finish_workspace below; the last run to release a snapshot removes it.
+    // A dry run checks every entry and copies nothing; a nested run reuses
+    // its parent's snapshot. The source recipe path is kept for recovery
+    // admission (F5).
+    let source_recipe = recipe_path;
+    let pinned = match &bundle {
+        Some(bundle) => {
+            let pin_root = {
+                let workspace = workspace.borrow();
+                match workspace.work_root() {
+                    Some(root) => root.to_path_buf(),
+                    // A dry run copies nothing, so the path is unused.
+                    None if dry_run => workspace.runtime_dir().to_path_buf(),
+                    None => {
+                        anyhow::bail!("cannot pin the recipe bundle: this run has no work root")
+                    }
+                }
+            };
+            let mut pinned = super::bundle_pin::pin(bundle.selection, &pin_root, dry_run)?;
+            if let RecipeOrigin::File(file) = bundle.origin {
+                pinned.set_recipe_file(file);
+            }
+            eprintln!("{}", pinned.stderr_line());
+            Some(pinned)
+        }
+        None => None,
+    };
+    let bundle_recipe = match (&pinned, &bundle) {
+        (Some(pinned), Some(bundle)) if *bundle.origin == RecipeOrigin::Bundle => {
+            let relative = recipe_path
+                .strip_prefix(bundle.selection.source())
+                .with_context(|| {
+                    format!(
+                        "recipe {} is not inside the selected bundle {}",
+                        recipe_path.display(),
+                        bundle.selection.source().display()
+                    )
+                })?;
+            Some(pinned.bundle().join(relative))
+        }
+        _ => None,
+    };
+    let recipe_path = bundle_recipe.as_deref().unwrap_or(recipe_path);
+    // Issue #2528 (F2): the recipe was parsed, and auto-drive authority
+    // decided, from the source before the pin. The file that runs must be the
+    // same recipe.
+    if let Some(bundle) = &bundle {
+        let running = recipe_name_for_correlation(recipe_path);
+        anyhow::ensure!(
+            running == invocation_name
+                && (bundle.recipe_name.trim().is_empty() || running == bundle.recipe_name),
+            "recipe changed while the bundle was being pinned: {} names {running:?}, \
+             but {:?} was read before the pin",
+            recipe_path.display(),
+            bundle.recipe_name
+        );
+    }
+    // Issue #2528 (D7): auto-drive's invocation copy is made from the run's
+    // own pinned bundle, never from AMPLIHACK_HOME resolved again.
+    let launch = if let Some(auth) = &mut authorization {
+        let home = match &pinned {
+            Some(pinned) => pinned.home().to_path_buf(),
+            None => {
+                let env = EnvBuilder::new().with_amplihack_home_from(working_dir);
+                PathBuf::from(
+                    env.var("AMPLIHACK_HOME")
+                        .context("trusted AMPLIHACK_HOME missing for auto-drive")?,
+                )
+            }
+        };
+        Some(trusted::LaunchBundle::prepare(&home, auth)?)
+    } else {
+        None
+    };
+    let pinned_recipe = launch.as_ref().map(|l| {
+        l.home
+            .join("amplifier-bundle/recipes")
+            .join(format!("{invocation_name}.yaml"))
+    });
+    let recipe_path = pinned_recipe.as_deref().unwrap_or(recipe_path);
+    let pinned_search = launch
+        .as_ref()
+        .map(|l| vec![l.home.join("amplifier-bundle/recipes")]);
+    let bundle_search = match (&pinned, &bundle) {
+        (Some(pinned), Some(bundle)) => Some(build_search_dirs(pinned.bundle(), bundle.origin)),
+        _ => None,
+    };
+    let search_dirs = pinned_search
+        .as_deref()
+        .or(bundle_search.as_deref())
+        .unwrap_or(search_dirs);
+    // Expand auto-drive defaults only after trusted entrypoint selection.
+    // Neither requested recipe defaults nor inferred values grant authority.
+    let (mut invocation_context, inferred) = if launch.is_some() {
+        let recipe = super::parse_recipe_from_path(recipe_path)?;
+        let (mut expanded, inferred) =
+            super::infer_missing_context(&recipe.context, explicit_inputs);
+        // Recovery identity is normalised on this derived copy only, never on
+        // `explicit_inputs`, which stays the raw source of authority.
+        super::recovery::normalize(&mut expanded, working_dir);
+        (expanded, inferred)
+    } else {
+        (context.clone(), Vec::new())
+    };
+    if verbose && !inferred.is_empty() {
+        eprintln!(
+            "[context] Inferred {} variable(s): {}",
+            inferred.len(),
+            inferred.join(", ")
+        );
+    }
+
+    // Issue #2528 (D3): the state root that applied before AMPLIHACK_HOME is
+    // pointed at the snapshot. A nested run reads the inherited value.
+    let state_home = match &pinned {
+        Some(pinned) if !pinned.is_dry_run() => {
+            let state_home = amplihack_types::amplihack_state_root().context(
+                "cannot settle AMPLIHACK_STATE_HOME: neither AMPLIHACK_STATE_HOME, \
+                 AMPLIHACK_HOME nor HOME gives a usable state root",
+            )?;
+            super::bundle_pin::check_state_home(
+                &state_home,
+                pinned,
+                Some(workspace.borrow().runtime_dir()),
+            )?;
+            Some(state_home)
+        }
+        _ => None,
+    };
+
+    // Issue #1606: record what this run resolved in every log pointer. The
+    // home is resolved the same way `build_command` resolves it below.
+    let snapshot_home = pinned
+        .as_ref()
+        .filter(|pinned| !pinned.is_dry_run())
+        .map(|pinned| pinned.home().display().to_string());
+    let launch_home = launch.as_ref().map(|l| l.home.display().to_string());
+    let run_settings = RunSettings {
+        agent_binary: Some(agent_binary.binary.clone()),
+        agent_binary_source: Some(agent_binary.source.label()),
+        amplihack_home: launch_home.or(snapshot_home).or_else(|| {
+            EnvBuilder::new()
+                .with_amplihack_home_from(working_dir)
+                .build()
+                .remove("AMPLIHACK_HOME")
+        }),
+        recipe_bundle: pinned.as_ref().map(|p| p.record().clone()),
+        tool_bundle: pinned.as_ref().map(|p| p.record().clone()),
+    };
+
     let delegated = recipe_runner_rs::recovery::ipc::Client::from_environment()?;
     let admission = if !dry_run && delegated.is_none() {
         // #2329: whether auto-drive authority applies is part of the resume
@@ -743,7 +921,7 @@ pub(super) fn execute_recipe_via_rust_fresh(
         ))?;
         Some(super::recovery::admit(
             &workspace.borrow(),
-            recipe_path,
+            source_recipe,
             &recipe_name,
             working_dir,
             &invocation_context,
@@ -842,12 +1020,28 @@ pub(super) fn execute_recipe_via_rust_fresh(
         // Issue #494: forward sub-recipe search dirs as -R flags so
         // recipe-runner-rs can resolve sub-recipes the same way amplihack
         // resolves top-level recipes. One -R per non-empty entry, in order.
-        for dir in search_dirs {
-            if dir.as_os_str().is_empty() {
-                continue;
+        // Issue #2528 (D5): a pinned run searches its own bundle only. An
+        // auto-drive run searches its invocation copy, which is made from
+        // the snapshot; its entry recipe is the copy's, so no file parent.
+        match (&pinned, &bundle, &launch) {
+            (Some(pinned), Some(bundle), None) => {
+                command.args(runner_bundle_args(pinned.bundle(), bundle.origin));
             }
-            command.arg("-R").arg(dir);
-            tracing::debug!(dir = %dir.display(), "forwarding -R to recipe-runner-rs");
+            (Some(_), Some(_), Some(launch)) => {
+                command.args(runner_bundle_args(
+                    &launch.home.join("amplifier-bundle"),
+                    &RecipeOrigin::Bundle,
+                ));
+            }
+            _ => {
+                for dir in search_dirs {
+                    if dir.as_os_str().is_empty() {
+                        continue;
+                    }
+                    command.arg("-R").arg(dir);
+                    tracing::debug!(dir = %dir.display(), "forwarding -R to recipe-runner-rs");
+                }
+            }
         }
 
         if dry_run {
@@ -927,6 +1121,17 @@ pub(super) fn execute_recipe_via_rust_fresh(
 
         env_builder.apply_to_command(&mut command);
         crate::commands::orch::autodrive::trusted::clean_retired_environment(&mut command)?;
+        // Issue #2528 (D3): steps and the runner read the run's one bundle.
+        // Auto-drive keeps AMPLIHACK_HOME at its invocation copy, which is
+        // made from this snapshot (D7); the marker names the snapshot, so a
+        // nested run in an auto-drive step reuses it.
+        if let (Some(pinned), Some(state_home)) = (&pinned, &state_home) {
+            command.envs(bundle_env(
+                pinned,
+                state_home,
+                launch.as_ref().map(|l| l.home.as_path()),
+            ));
+        }
         // Issue #1326: pin the session-tree directory for every descendant. Without
         // this each level re-derives it, and the previous derivation was based on
         // TMPDIR -- which we replace below with a fresh per-run tempdir, giving every
@@ -1192,6 +1397,9 @@ pub(super) fn execute_recipe_via_rust_fresh(
         }
     }
     finish_workspace(workspace.into_inner(), &final_result, dry_run);
+    // Issue #2528: release the bundle lease only once the workspace is
+    // finished; the last run using the snapshot removes it here.
+    drop(pinned);
     final_result
 }
 

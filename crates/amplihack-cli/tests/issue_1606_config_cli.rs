@@ -1321,6 +1321,8 @@ fn log_pointers(out: &Output) -> Vec<serde_json::Value> {
 }
 
 fn recipe_run(fx: &Fx, extra: &[&str], env: &[(&str, &str)]) -> Output {
+    // Issue #2528: `recipe run` needs an installed bundle under $HOME.
+    crate::support::installed_bundle::ensure(&fx.home.join(".amplihack"));
     let recipe = fx.root.join("recipe.yaml");
     fs::write(&recipe, RECIPE).unwrap();
     let runner = fx.tools.join("recipe-runner-rs");
@@ -1357,7 +1359,14 @@ fn acceptance_log_pointer_records_user_config_binary_and_home() {
     for p in &pointers {
         assert_eq!(p["agent_binary"], "claude", "{p}");
         assert_eq!(p["agent_binary_source"], "user_config", "{p}");
-        assert_eq!(p["amplihack_home"], home.to_str().unwrap(), "{p}");
+        // Issue #2528 (D3): the run's home is its snapshot of the bundle
+        // selected from the configured home.
+        assert_eq!(
+            p["recipe_bundle"]["source"],
+            home.join("amplifier-bundle").to_str().unwrap(),
+            "{p}"
+        );
+        assert_eq!(p["amplihack_home"], p["recipe_bundle"]["snapshot"], "{p}");
     }
     assert_eq!(
         runner_env(&fx, "AMPLIHACK_AGENT_BINARY").as_deref(),
