@@ -390,6 +390,12 @@ _amplihack_candidate_config_files() {
     if [ -n "${HOME:-}" ]; then
         printf '%s\n' "$HOME/.amplihack/config"
     fi
+    # Inside a pinned recipe run AMPLIHACK_HOME is the bundle snapshot; the
+    # caller's own home is exported as AMPLIHACK_STATE_HOME (#2528).
+    if [ -n "${AMPLIHACK_STATE_HOME:-}" ]; then
+        printf '%s\n' "$AMPLIHACK_STATE_HOME/config"
+        printf '%s\n' "$AMPLIHACK_STATE_HOME/.amplihack/config"
+    fi
     if [ -n "${AMPLIHACK_HOME:-}" ]; then
         printf '%s\n' "$AMPLIHACK_HOME/config"
         printf '%s\n' "$AMPLIHACK_HOME/.amplihack/config"

@@ -725,10 +725,13 @@ so the user file is the only place the consent lives.
   `node.max_old_space_mb` yourself to pin a limit.
 - `amplifier-bundle/tools/git-identity.sh` reads a `git_identity` block from
   JSON files. It checks `$AMPLIHACK_CONFIG`, `$HOME/.amplihack/config`,
-  `$AMPLIHACK_HOME/config` and `$AMPLIHACK_HOME/.amplihack/config`. Only
-  `$HOME/.amplihack/config` is migrated, and the migration keeps its
+  `$AMPLIHACK_STATE_HOME/config`, `$AMPLIHACK_STATE_HOME/.amplihack/config`,
+  `$AMPLIHACK_HOME/config` and `$AMPLIHACK_HOME/.amplihack/config`, in that
+  order (see
+  [Git identity in a pinned run](./recipe-run-bundle.md#git-identity-in-a-pinned-run)).
+  Only `$HOME/.amplihack/config` is migrated, and the migration keeps its
   `git_identity` block where the script looks for it. amplihack never reads or
-  writes the other three paths.
+  writes the other paths.
 - If step 2 or step 3 fails, for example because `$HOME` is read-only, the
   remaining legacy keys are still read as the `legacy` layer. The migration
   is retried on the next load and a config problem is printed until it
