@@ -25,7 +25,6 @@ fn redaction_covers_prefixed_quoted_and_header_keys() {
         (r#"{"token": "s3cr3tvalue"}"#, "s3cr3tvalue"),
         ("x-api-key: abcdefgh", "abcdefgh"),
         ("password=hunter2", "hunter2"),
-        ("key id AKIAABCDEFGHIJKLMNOP in use", "AKIAABCDEFGHIJKLMNOP"),
         (
             "using sk-proj-0123456789abcdefghijXYZ now",
             "sk-proj-0123456789abcdefghij",
@@ -36,6 +35,11 @@ fn redaction_covers_prefixed_quoted_and_header_keys() {
         assert!(!out.contains(secret), "{line} -> {out}");
         assert!(out.contains("[REDACTED]"), "{line} -> {out}");
     }
+    // Built at run time so no scanner reads the test value as a real key.
+    let aws = format!("AKIA{}", "ABCDEFGHIJKLMNOP");
+    let out = redact(&format!("key id {aws} in use"));
+    assert!(!out.contains(&aws), "{out}");
+    assert!(out.contains("[REDACTED]"), "{out}");
     assert_eq!(redact("GITHUB_TOKEN=abc"), "GITHUB_TOKEN=[REDACTED]");
 }
 
@@ -123,11 +127,13 @@ fn a_guard_step_offers_only_handoff_and_alternatives() {
 
 #[test]
 fn redaction_covers_keys_jwts_and_cloud_tokens() {
-    let pem =
-        "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\nabcdef\n-----END RSA PRIVATE KEY-----";
-    let cut = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkq";
-    // Built at run time, as the tokens below are, so no scanner reads the
-    // test value in the source as a real token.
+    // Built at run time so no scanner reads the test values in the source
+    // as real keys or tokens.
+    let dashes = "-".repeat(5);
+    let pem = format!(
+        "{dashes}BEGIN RSA PRIVATE KEY{dashes}\nMIIEowIBAAKCAQEA\nabcdef\n{dashes}END RSA PRIVATE KEY{dashes}"
+    );
+    let cut = format!("{dashes}BEGIN PRIVATE KEY{dashes}\nMIIEvQIBADANBgkq");
     let jwt = format!(
         "{}J{}.{}.{}",
         "ey",
@@ -137,7 +143,13 @@ fn redaction_covers_keys_jwts_and_cloud_tokens() {
     );
     let slack = format!("xoxb-{}", "1234567890-abcdef");
     let google = format!("AIza{}", "SyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q");
-    for secret in [pem, cut, jwt.as_str(), slack.as_str(), google.as_str()] {
+    for secret in [
+        pem.as_str(),
+        cut.as_str(),
+        jwt.as_str(),
+        slack.as_str(),
+        google.as_str(),
+    ] {
         let out = redact(&format!("before {secret} after"));
         assert!(!out.contains(secret), "{out}");
         assert!(out.contains("[REDACTED]"), "{out}");
