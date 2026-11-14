@@ -67,13 +67,13 @@ fn runtime_guard_removes_folder_on_drop_and_on_panic() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("runtime");
     std::fs::create_dir_all(dir.join("tmp/nested")).unwrap();
-    drop(RuntimeGuard::new(dir.clone()));
+    drop(RuntimeGuard::new(dir.clone()).unwrap());
     assert!(!dir.exists());
 
     std::fs::create_dir_all(dir.join("tmp")).unwrap();
     let d = dir.clone();
     let result = std::panic::catch_unwind(move || {
-        let _guard = RuntimeGuard::new(d);
+        let _guard = RuntimeGuard::new(d).unwrap();
         panic!("step blew up");
     });
     assert!(result.is_err());
@@ -270,11 +270,30 @@ fn five_field_lines_count_toward_the_10000_line_cap() {
     assert!(parsed.iter().all(|o| o.target.is_some()));
 }
 
+/// Issue #2096: a dry run's workspace keeps no record. Recording an attempt
+/// is a no-op that succeeds, it has no run folder, and finishing removes
+/// its temporary folder.
+#[test]
+fn a_dry_runtime_records_attempts_as_a_no_op_and_removes_its_folder() {
+    let mut workspace = RunWorkspace::dry_runtime().expect("dry runtime");
+    let runtime = workspace.runtime_dir().to_path_buf();
+    assert!(runtime.is_dir());
+    assert!(workspace.run_dir().is_none(), "a dry run has no run folder");
+    workspace
+        .record_attempt_checked("dry-attempt")
+        .expect("a dry run records nothing and must not fail");
+    workspace
+        .finish_checked(Outcome::Success, Vec::new(), None, false)
+        .expect("finish dry runtime");
+    assert!(!runtime.exists(), "{} was left behind", runtime.display());
+}
+
 // ----- issue #2486: a runtime folder in use is kept; tmp/ is re-created --------
 //
 // Contract:
-// - `pub(crate) enum RuntimeRemoval { Removed, KeptInUse, Failed }`
-//   (`Debug`, `PartialEq`); `RuntimeGuard::remove(self) -> RuntimeRemoval`.
+// - `pub(crate) enum RuntimeRemoval { Removed, KeptInUse }`
+//   (`Debug`, `PartialEq`); `RuntimeGuard::remove(self) -> Result<RuntimeRemoval>`;
+//   a failed removal or a replaced folder (issue #2096) is an `Err`.
 //   A missing folder counts as `Removed`.
 // - The guard takes one fresh `ProcScan` from `procfs::proc_root()` and keeps
 //   the folder when the scan is available and a process has its working
@@ -356,7 +375,7 @@ fn runtime_guard_keeps_folder_held_by_child_then_removes_after_exit() {
     procs.fake.link_own(holder.0.id());
 
     assert_eq!(
-        RuntimeGuard::new(rt.clone()).remove(),
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
         RuntimeRemoval::KeptInUse
     );
     assert!(
@@ -366,7 +385,7 @@ fn runtime_guard_keeps_folder_held_by_child_then_removes_after_exit() {
 
     holder.finish();
     assert_eq!(
-        RuntimeGuard::new(rt.clone()).remove(),
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
         RuntimeRemoval::Removed
     );
     assert!(!rt.exists(), "removed once the holder has exited");
@@ -379,7 +398,7 @@ fn runtime_guard_drop_also_keeps_a_folder_in_use() {
     let holder = cat_holder(&rt.join("tmp"), &rt.join("tmp"));
     procs.fake.link_own(holder.0.id());
 
-    drop(RuntimeGuard::new(rt.clone()));
+    drop(RuntimeGuard::new(rt.clone()).unwrap());
     assert!(rt.join("tmp").is_dir(), "Drop must check too");
     holder.finish();
 }
@@ -395,7 +414,7 @@ fn runtime_guard_keeps_folder_named_only_by_a_tmpdir_variable() {
     procs.fake.link_own(holder.0.id());
 
     assert_eq!(
-        RuntimeGuard::new(rt.clone()).remove(),
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
         RuntimeRemoval::KeptInUse
     );
     assert!(rt.is_dir());
@@ -431,7 +450,7 @@ fn runtime_guard_keeps_folder_with_a_file_open_in_it() {
     procs.fake.link_own(holder.0.id());
 
     assert_eq!(
-        RuntimeGuard::new(rt.clone()).remove(),
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
         RuntimeRemoval::KeptInUse
     );
     assert!(rt.join("tmp/scratch").is_file());
@@ -450,7 +469,7 @@ fn runtime_guard_ignores_a_sibling_with_a_longer_name() {
     procs.fake.link_own(holder.0.id());
 
     assert_eq!(
-        RuntimeGuard::new(rt.clone()).remove(),
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
         RuntimeRemoval::Removed
     );
     assert!(!rt.exists());
@@ -463,12 +482,17 @@ fn runtime_guard_with_no_users_removes_and_missing_counts_as_removed() {
     let _procs = fake_proc_scope();
     let (_tmp, rt) = runtime_with_tmp();
     assert_eq!(
-        RuntimeGuard::new(rt.clone()).remove(),
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
         RuntimeRemoval::Removed
     );
     assert!(!rt.exists());
+    // Issue #2096: a guard is only made for an existing folder, so the folder
+    // goes away after the guard was made.
+    std::fs::create_dir(&rt).unwrap();
+    let guard = RuntimeGuard::new(rt.clone()).unwrap();
+    std::fs::remove_dir(&rt).unwrap();
     assert_eq!(
-        RuntimeGuard::new(rt.clone()).remove(),
+        guard.remove().unwrap(),
         RuntimeRemoval::Removed,
         "a folder that is already gone is not a failure"
     );
@@ -483,7 +507,7 @@ fn runtime_guard_without_a_process_table_removes_as_before() {
     std::fs::remove_dir_all(procs.path()).unwrap();
     let (_tmp, rt) = runtime_with_tmp();
     assert_eq!(
-        RuntimeGuard::new(rt.clone()).remove(),
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
         RuntimeRemoval::Removed
     );
     assert!(!rt.exists());
@@ -513,7 +537,7 @@ fn mode(path: &Path) -> u32 {
 fn prepare_attempt_recreates_missing_tmp_and_artifacts() {
     let _procs = fake_proc_scope();
     let base = tempfile::tempdir().unwrap();
-    let ws = scoped_workspace(base.path());
+    let mut ws = scoped_workspace(base.path());
     let rt = ws.runtime_dir().to_path_buf();
     std::fs::remove_dir_all(rt.join("tmp")).unwrap();
     std::fs::remove_dir_all(rt.join("artifacts")).unwrap();
@@ -535,20 +559,50 @@ fn prepare_attempt_recreates_missing_tmp_and_artifacts() {
 fn prepare_attempt_recreates_a_runtime_folder_removed_entirely() {
     let _procs = fake_proc_scope();
     let base = tempfile::tempdir().unwrap();
-    let ws = scoped_workspace(base.path());
+    let mut ws = scoped_workspace(base.path());
     let rt = ws.runtime_dir().to_path_buf();
     std::fs::remove_dir_all(&rt).unwrap();
 
     ws.prepare_attempt().expect("prepare_attempt");
     assert!(rt.join("tmp").is_dir());
     assert!(rt.join("artifacts").is_dir());
+    assert_eq!(mode(&rt), 0o700, "re-created runtime folder mode");
+
+    // The guard adopted the folder it re-created (issue #2096 identity), so
+    // finishing the run still removes it and does not fail the run.
+    ws.finish_checked(Outcome::Success, Vec::new(), None, false)
+        .expect("finish after re-creating the runtime folder");
+    assert!(!rt.exists(), "{} was left behind", rt.display());
+}
+
+/// Issue #2096 with #2486: a runtime folder replaced by another folder is
+/// not this run's any more. The next attempt refuses to launch the step,
+/// and the replacement is neither adopted nor removed.
+#[test]
+fn prepare_attempt_refuses_a_replaced_runtime_folder() {
+    let _procs = fake_proc_scope();
+    let base = tempfile::tempdir().unwrap();
+    let mut ws = scoped_workspace(base.path());
+    let rt = ws.runtime_dir().to_path_buf();
+    std::fs::remove_dir_all(&rt).unwrap();
+    std::fs::create_dir_all(rt.join("tmp")).unwrap();
+    std::fs::write(rt.join("tmp/keep"), "x").unwrap();
+
+    let err = format!("{:#}", ws.prepare_attempt().expect_err("must refuse"));
+    assert!(err.contains("refusing to launch the step"), "{err}");
+    assert!(
+        ws.finish_checked(Outcome::Success, Vec::new(), None, false)
+            .is_err(),
+        "a replaced runtime folder fails the run"
+    );
+    assert!(rt.join("tmp/keep").is_file(), "replacement was removed");
 }
 
 #[test]
 fn prepare_attempt_keeps_an_existing_tmp_and_its_contents() {
     let _procs = fake_proc_scope();
     let base = tempfile::tempdir().unwrap();
-    let ws = scoped_workspace(base.path());
+    let mut ws = scoped_workspace(base.path());
     let rt = ws.runtime_dir().to_path_buf();
     std::fs::write(rt.join("tmp/from-attempt-1"), "kept").unwrap();
 
@@ -564,7 +618,7 @@ fn prepare_attempt_keeps_an_existing_tmp_and_its_contents() {
 fn prepare_attempt_refuses_symlinked_tmp_and_leaves_the_target_alone() {
     let _procs = fake_proc_scope();
     let base = tempfile::tempdir().unwrap();
-    let ws = scoped_workspace(base.path());
+    let mut ws = scoped_workspace(base.path());
     let rt = ws.runtime_dir().to_path_buf();
     let elsewhere = base.path().join("elsewhere");
     std::fs::create_dir_all(&elsewhere).unwrap();
@@ -591,7 +645,7 @@ fn prepare_attempt_refuses_symlinked_tmp_and_leaves_the_target_alone() {
 fn prepare_attempt_refuses_artifacts_that_is_a_file() {
     let _procs = fake_proc_scope();
     let base = tempfile::tempdir().unwrap();
-    let ws = scoped_workspace(base.path());
+    let mut ws = scoped_workspace(base.path());
     let rt = ws.runtime_dir().to_path_buf();
     std::fs::remove_dir_all(rt.join("artifacts")).unwrap();
     std::fs::write(rt.join("artifacts"), "not a folder").unwrap();
@@ -610,7 +664,7 @@ fn prepare_attempt_refuses_artifacts_that_is_a_file() {
 
 #[test]
 fn prepare_attempt_recreates_tmp_in_a_dry_run_workspace() {
-    let ws = RunWorkspace::dry_runtime().expect("dry runtime");
+    let mut ws = RunWorkspace::dry_runtime().expect("dry runtime");
     let rt = ws.runtime_dir().to_path_buf();
     std::fs::remove_dir_all(rt.join("tmp")).unwrap();
     ws.prepare_attempt().expect("prepare_attempt");
@@ -683,7 +737,7 @@ fn lock_fixtures(rt: &Path) {
     set_mode(&locked, 0o000);
     set_mode(&ro, 0o500);
 }
-
+/// The 13 Nov case: e1044c618 fails here with "Permission denied
 /// The 13 Nov case: e1044c618 returns `Failed` here with "Permission denied
 /// (os error 13)" and leaves the runtime folder behind.
 #[test]
@@ -695,7 +749,7 @@ fn removes_runtime_with_mode_000_and_0500_folders() {
     lock_fixtures(&rt);
 
     assert_eq!(
-        RuntimeGuard::new(rt.clone()).remove(),
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
         RuntimeRemoval::Removed
     );
     assert!(
@@ -713,7 +767,7 @@ fn runtime_guard_drop_removes_locked_folders_too() {
     let _restore = RestoreModes(vec![tmp.path().to_path_buf()]);
     lock_fixtures(&rt);
 
-    drop(RuntimeGuard::new(rt.clone()));
+    drop(RuntimeGuard::new(rt.clone()).unwrap());
     assert!(!rt.exists());
 }
 
@@ -727,7 +781,7 @@ fn removes_runtime_whose_root_is_0500() {
     set_mode(&rt, 0o500);
 
     assert_eq!(
-        RuntimeGuard::new(rt.clone()).remove(),
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
         RuntimeRemoval::Removed
     );
     assert!(!rt.exists());
@@ -747,7 +801,7 @@ fn a_folder_in_use_keeps_its_locked_modes() {
     procs.fake.link_own(holder.0.id());
 
     assert_eq!(
-        RuntimeGuard::new(rt.clone()).remove(),
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
         RuntimeRemoval::KeptInUse
     );
     assert_eq!(mode(&ro), 0o500, "an in-use folder is never changed");
@@ -768,7 +822,7 @@ fn restore_does_not_follow_symlinks() {
     std::os::unix::fs::symlink(&target, rt.join("tmp/link")).unwrap();
 
     assert_eq!(
-        RuntimeGuard::new(rt.clone()).remove(),
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
         RuntimeRemoval::Removed
     );
     assert!(!rt.exists());

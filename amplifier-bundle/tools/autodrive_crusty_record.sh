@@ -3,15 +3,15 @@
 set -uo pipefail
 RECORD="${AUTODRIVE_ROUND_RECORD:-}"
 [ -n "$RECORD" ] || { echo "ERROR: autodrive_round_record is required; the loop driver reads the round record from a file, never from stdout." >&2; exit 1; }
-g() { printf '%s' "${1:-}" | amplihack orch helper extract-json --require-field "$2" \
-        | amplihack orch helper extract-field --field "$2" --default "$3"; }
+g() { printf '%s' "${1:-}" | "${AMPLIHACK_BIN:-amplihack}" orch helper extract-json --require-field "$2" \
+        | "${AMPLIHACK_BIN:-amplihack}" orch helper extract-field --field "$2" --default "$3"; }
 # Whole-value checks: grep -x matches line by line, so a value with an
 # embedded newline would pass and split the one-line record.
 hex() { case "${#1}" in 40|64) ;; *) return 1 ;; esac; case "$1" in *[!0123456789abcdef]*) return 1 ;; esac; }
 digits() { case "$1" in ''|*[!0123456789]*) return 1 ;; esac; }
 VERDICT="$(printf '%s' "${RECIPE_VAR_crusty_verdict:-}" \
-  | amplihack orch helper extract-json --require-field crusty_verdict \
-  | amplihack orch helper extract-field --field crusty_verdict --default CONCERNS)"
+  | "${AMPLIHACK_BIN:-amplihack}" orch helper extract-json --require-field crusty_verdict \
+  | "${AMPLIHACK_BIN:-amplihack}" orch helper extract-field --field crusty_verdict --default CONCERNS)"
 case "$VERDICT" in CLEAN|MINOR_ONLY|CONCERNS) ;; *) VERDICT="CONCERNS" ;; esac
 COUNT="$(g "${RECIPE_VAR_crusty_verdict:-}" concern_count 0)"
 COMMITS="$(g "${RECIPE_VAR_crusty_fix_evidence:-}" commits 0)"
@@ -36,8 +36,10 @@ rm -f -- "$RECORD"
 printf '{"crusty_verdict":"%s","concern_count":%s,"commits_this_round":%s,"head_sha":"%s","reviewed_head_sha":"%s","round_label":"%s","test_signal":"","ci_signal":""}\n' \
   "$VERDICT" "$COUNT" "$COMMITS" "$SHA" "$REVIEWED" "$LABEL" > "$RECORD"
 echo "INFO: round record written to ${RECORD}" >&2
-cat "$RECORD"
+# Issue #2096: bind the record to the drive's private review generation
+# (generation and reviewed SHA) and print the bound record.
+"${AMPLIHACK_BIN:-amplihack}" internal review-bind-record "${REVIEW_DIR:-}" "$RECORD" || exit 1
 # Seal driver-owned evidence before the next-action agent receives it.
 if [ -n "${AUTODRIVE_COMPLETION_STATE:-}" ]; then
-  amplihack orch helper autodrive-completion-seal --private-state "$AUTODRIVE_COMPLETION_STATE" || exit 1
+  "${AMPLIHACK_BIN:-amplihack}" orch helper autodrive-completion-seal --private-state "$AUTODRIVE_COMPLETION_STATE" || exit 1
 fi

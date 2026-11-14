@@ -196,10 +196,10 @@ impl Fx {
     }
 }
 
-/// What git, and the config loader, accept as a repository root.
+/// A real repository with one commit: what git, the config loader and the
+/// recipe run's fail-closed checkout discovery (#2096) accept as a root.
 fn mark_repository(dir: &Path) {
-    fs::create_dir_all(dir.join(".git")).unwrap();
-    fs::write(dir.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    crate::support::git_fixture::init_with_commit(dir);
 }
 
 fn write_secure(path: &Path, body: &str) {

@@ -108,6 +108,22 @@ fn logging_stub(name: &str) -> String {
     )
 }
 
+/// Logs its argv like `logging_stub`, then runs the real Git: a recipe run
+/// asks Git whether the project is a checkout (#2096) and refuses to guess
+/// from a stub that succeeds with no answer.
+fn logging_git_stub() -> String {
+    let real = std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
+        .map(|dir| dir.join("git"))
+        .find(|path| path.is_file())
+        .expect("git on PATH")
+        .canonicalize()
+        .expect("resolve git");
+    format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CALL_LOG_DIR/git.log\"\nexec '{}' \"$@\"\n",
+        real.display()
+    )
+}
+
 /// Records that the runner started, then reports success.
 const STUB_RUNNER: &str = r#"#!/bin/sh
 case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
@@ -156,13 +172,18 @@ impl Fx {
         ] {
             fs::create_dir_all(d).unwrap();
         }
-        for name in ["git", "gh", "tmux"] {
+        for name in ["gh", "tmux"] {
             crate::support::exec_stub::write_executable(
                 &fx.tools.join(name),
                 logging_stub(name),
                 0o755,
             );
         }
+        crate::support::exec_stub::write_executable(
+            &fx.tools.join("git"),
+            logging_git_stub(),
+            0o755,
+        );
         crate::support::exec_stub::write_executable(
             &fx.tools.join("recipe-runner-rs"),
             STUB_RUNNER,

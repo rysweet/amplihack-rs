@@ -6,6 +6,8 @@ use serde::{
 };
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, fmt, path::Path};
+#[path = "run_isolation/review_generation.rs"]
+mod review_generation;
 
 fn error(code: &str) -> anyhow::Error {
     anyhow!("{code}")
@@ -172,6 +174,44 @@ pub(crate) fn provenance(
 #[derive(clap::Subcommand, Debug)]
 pub enum InternalCommands {
     ValidateRecipeRunner(ValidationArgs),
+    ReviewCheckout {
+        repository: std::path::PathBuf,
+        destination: std::path::PathBuf,
+        head: Option<String>,
+    },
+    ReviewValidate {
+        repository: std::path::PathBuf,
+        checkout: std::path::PathBuf,
+    },
+    ReviewRelease {
+        checkout: std::path::PathBuf,
+    },
+    /// Refuses an owned review checkout whose files differ from its commit.
+    ReviewClean {
+        checkout: std::path::PathBuf,
+    },
+    ReviewLaunch {
+        checkout: std::path::PathBuf,
+    },
+    ReviewHead {
+        checkout: std::path::PathBuf,
+    },
+    ReviewNext {
+        repository: std::path::PathBuf,
+        checkout: std::path::PathBuf,
+        state_dir: Option<std::path::PathBuf>,
+    },
+    ReviewAllocate {
+        repository: std::path::PathBuf,
+        state_dir: std::path::PathBuf,
+    },
+    ReviewBindRecord {
+        checkout: std::path::PathBuf,
+        record: std::path::PathBuf,
+    },
+    ReviewReleaseState {
+        state_dir: std::path::PathBuf,
+    },
 }
 #[derive(clap::Args, Debug)]
 pub struct ValidationArgs {
@@ -191,7 +231,64 @@ pub struct ValidationArgs {
 }
 
 pub(crate) fn run(command: InternalCommands) -> Result<()> {
-    let InternalCommands::ValidateRecipeRunner(args) = command;
+    let args = match command {
+        InternalCommands::ReviewReleaseState { state_dir } => {
+            return review_generation::release_state(&state_dir);
+        }
+        InternalCommands::ReviewBindRecord { checkout, record } => {
+            return review_generation::bind_record(&checkout, &record);
+        }
+        InternalCommands::ReviewAllocate {
+            repository,
+            state_dir,
+        } => {
+            let checkout = review_generation::allocate(&repository, &state_dir)?;
+            println!("{}", checkout.display());
+            return Ok(());
+        }
+        InternalCommands::ValidateRecipeRunner(args) => args,
+        InternalCommands::ReviewCheckout {
+            repository,
+            destination,
+            head,
+        } => {
+            println!(
+                "{}",
+                review_generation::provision(&repository, &destination, head.as_deref())?.display()
+            );
+            return Ok(());
+        }
+        InternalCommands::ReviewValidate {
+            repository,
+            checkout,
+        } => return review_generation::validate(&repository, &checkout),
+        InternalCommands::ReviewRelease { checkout } => {
+            return review_generation::release(&checkout);
+        }
+        InternalCommands::ReviewClean { checkout } => {
+            return review_generation::clean(&checkout);
+        }
+        InternalCommands::ReviewLaunch { checkout } => {
+            println!("{}", review_generation::launch(&checkout)?.display());
+            return Ok(());
+        }
+        InternalCommands::ReviewHead { checkout } => {
+            println!("{}", review_generation::head(&checkout)?);
+            return Ok(());
+        }
+        InternalCommands::ReviewNext {
+            repository,
+            checkout,
+            state_dir,
+        } => {
+            let next = review_generation::advance(&repository, &checkout, state_dir.as_deref())?;
+            if let Some(state) = state_dir {
+                review_generation::register(&state, &next)?;
+            }
+            println!("{}", next.display());
+            return Ok(());
+        }
+    };
     let result = (|| -> Result<Value> {
         if !args.binary.is_absolute() {
             return Err(error("INVALID_VALIDATION_REQUEST"));

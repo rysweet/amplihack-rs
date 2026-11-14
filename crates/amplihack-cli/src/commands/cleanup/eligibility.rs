@@ -3,7 +3,7 @@
 //! Everything here is pure; the `gh` call lives in [`lookup_pr`] and the
 //! `/proc` reads in [`run_is_active`]. Any uncertainty leads to a skip.
 
-use super::run_dir::{RunReport, parse_start_ticks};
+use super::run_dir::{RUN_JSON, RunReport, parse_start_ticks};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -181,6 +181,23 @@ pub(crate) fn run_is_active(report: &RunReport) -> bool {
         // Without both values a reused pid cannot be ruled out.
         _ => true,
     }
+}
+
+/// Whether the run in `run_dir` has ended: its folder is gone, or its
+/// `run.json` says it ended or names a process that is no longer running
+/// ([`run_is_active`]). A folder whose `run.json` cannot be read is an error,
+/// never "ended". Used to reclaim stable execution storage (issue #2096).
+pub(crate) fn run_has_ended(run_dir: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(run_dir) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot inspect {}", run_dir.display()));
+        }
+    }
+    let report = RunReport::read(run_dir)
+        .with_context(|| format!("cannot read {}", run_dir.join(RUN_JSON).display()))?;
+    Ok(!run_is_active(&report))
 }
 
 /// Runs `gh pr list --head=<branch> ...` in `repo_dir` and parses the answer.

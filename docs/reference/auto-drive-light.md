@@ -9,6 +9,10 @@ doc_type: reference
 
 # Auto-Drive-Light Recipe
 
+Judging agents review the PR in a private checkout at the recorded PR-head
+SHA and start in a separate trusted launch directory, as in
+[`auto-drive-to-merge`](auto-drive-to-merge.md#review-generations).
+
 Light mode shares the runner-captured authorization, evidence snapshots and agentic finalization of full auto-drive. Its default is `no_merge=true`, preserved through escalation. Controlled tests verify propagation; actual OS/runtime execution remains unverified.
 
 `auto-drive-light` builds a small change in one agent session and reuses
