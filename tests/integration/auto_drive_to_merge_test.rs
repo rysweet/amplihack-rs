@@ -253,18 +253,34 @@ fn unresolved_loops_use_the_shared_loop_health_evaluator_contract() {
     for ctx in [
         "loop_name=",
         "loop_round_label=",
-        "loop_history=",
-        "loop_last_round_output=",
         "loop_baseline_ref=",
         "loop_child_exit_code=",
-        "loop_findings_current=",
-        "loop_findings_previous=",
-        "loop_test_signal=",
-        "loop_ci_signal=",
     ] {
         assert!(
             driver.contains(ctx),
             "the loop driver must hand `{ctx}` to the evaluator — the evaluator \
+             judges measured evidence, not a prose summary of it"
+        );
+    }
+    // #2582: free-text evidence reaches the evaluator by file, not argv.
+    // eval_ctx_write (autodrive_escalate.sh) writes one file per key and the
+    // driver passes them as `--context-from-file` arguments.
+    let escalate = read(&tool_path("autodrive_escalate.sh"));
+    assert!(
+        driver.contains("eval_ctx_write") && driver.contains("\"${EVAL_CTX_ARGS[@]}\""),
+        "the loop driver must write the evaluator context and pass EVAL_CTX_ARGS"
+    );
+    for key in [
+        "loop_history",
+        "loop_last_round_output",
+        "loop_findings_current",
+        "loop_findings_previous",
+        "loop_test_signal",
+        "loop_ci_signal",
+    ] {
+        assert!(
+            escalate.contains(&format!("\"${{EVAL_CTX}}/{key}\"")),
+            "eval_ctx_write must hand `{key}` to the evaluator — the evaluator \
              judges measured evidence, not a prose summary of it"
         );
     }
