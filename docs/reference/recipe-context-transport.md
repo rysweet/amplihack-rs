@@ -329,6 +329,15 @@ round log, history and signals, then checks that:
   folder at mode 0700;
 - no `-ctx.` folder is left in the loop's state folder.
 
+The run-level test for a failed context transport is in
+`crates/amplihack-cli/src/commands/recipe/run/tests_execute.rs`. With a runner
+stub that reports `context_file_v1`, a run that fails when the context
+transport is chosen returns an error that does not contain the context value,
+makes no runner call after `--capabilities` (so no `--set` fallback), records
+a failed run in `run.json`, and finishes its admission. The test reaches this
+path with a reserved key; a context file that cannot be written fails at the
+same point and takes the same path.
+
 ## Related
 
 - [Why Prompt Text Stays Out of argv](../concepts/prompt-text-out-of-argv.md) - The threat model and the #2030 and #2582 incidents

@@ -4146,3 +4146,123 @@ fn test_2582_capability_match_is_exact_at_run_level() {
     assert!(!argv.iter().any(|a| a == "--context-file"), "{argv:?}");
     assert!(argv.iter().any(|a| a == "--set"), "{argv:?}");
 }
+
+// -------------------------------------------------------------------------
+// Issue #2582 (commit 4543e56cf): when the runner reports `context_file_v1`
+// and the context transport cannot be chosen, the run ends as a failure. The
+// admission and run.json are finished and the runner is never launched, so
+// no `--set` fallback takes the context onto argv.
+//
+// The run-level route is a reserved `AMPLIHACK_*` key: nothing before
+// `ContextTransport::choose` refuses it (admission does not filter keys), so
+// it reaches the same `Err` arm in execute.rs that a context file which
+// cannot be written reaches. The runtime folder is created after the
+// capability probe, so the stub cannot plant an unwritable entry there.
+// -------------------------------------------------------------------------
+
+#[test]
+#[cfg(unix)]
+fn a_context_transport_failure_finishes_the_run_as_failed_and_never_launches_the_runner() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let fixture = fixture_environment();
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let repo = temp.path().join("repo");
+    let runner = temp.path().join("recipe-runner-rs");
+    let calls = temp.path().join("runner-calls.log");
+    let amplihack_home = temp.path().join("amplihack-home");
+    std::fs::create_dir_all(&repo).expect("failed to create repo dir");
+    std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
+
+    // Every call records its first argument; only `--capabilities` answers.
+    // Any other call is a launch, which this run must never make.
+    std::fs::write(
+        &runner,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{}'\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\",\"context_file_v1\"]\\175'; exit 0 ;; esac\nprintf '%s\\n' '{{\"recipe_name\":\"transport-failure-probe\",\"success\":true,\"step_results\":[],\"context\":{{}}}}'\n",
+            calls.display()
+        ),
+    )
+    .expect("failed to write runner stub");
+    make_executable(&runner);
+
+    let recipe = repo.join("recipe.yaml");
+    std::fs::write(&recipe, "name: transport-failure-probe\nsteps: []\n")
+        .expect("failed to write recipe");
+
+    const VALUE: &str = "ZQXV2582RESERVEDWORD do not echo";
+    let mut context = BTreeMap::new();
+    context.insert("task_description".to_string(), "fix".to_string());
+    context.insert("AMPLIHACK_ZQXV_PROBE".to_string(), VALUE.to_string());
+
+    // Inside a recipe-run session the outer run's recovery attachment is
+    // inherited; with it the run delegates admission and makes none here.
+    let _attachment = crate::test_support::EnvGuard::capture(&["AMPLIHACK_RECOVERY_ATTACHMENT"]);
+    unsafe {
+        std::env::remove_var("AMPLIHACK_RECOVERY_ATTACHMENT");
+        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+    }
+
+    let result =
+        execute::execute_recipe_via_rust(&recipe, &context, false, false, &repo, &[], None);
+
+    let error = match result {
+        Ok(run) => panic!("a context transport failure must fail the run, got {run:?}"),
+        Err(error) => format!("{error:#}"),
+    };
+    assert!(
+        !error.contains("ZQXV2582RESERVEDWORD"),
+        "the error must not contain the context value: {error}"
+    );
+
+    let recorded = std::fs::read_to_string(&calls).expect("the capability probe must have run");
+    assert!(
+        recorded.lines().count() >= 1 && recorded.lines().all(|line| line == "--capabilities"),
+        "the runner must not be called after --capabilities (no --set fallback); calls:\n{recorded}"
+    );
+
+    let runs = fixture.1.path().join("runs");
+    let run_dirs: Vec<PathBuf> = std::fs::read_dir(&runs)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", runs.display()))
+        .map(|entry| entry.expect("run folder entry").path())
+        .filter(|path| path.is_dir())
+        .collect();
+    assert_eq!(run_dirs.len(), 1, "exactly one run folder: {run_dirs:?}");
+    let run_dir = &run_dirs[0];
+
+    let report = crate::commands::cleanup::run_dir::RunReport::read(run_dir)
+        .expect("run.json must be readable");
+    assert_eq!(
+        report.outcome, "failure",
+        "run.json must record a failed run, not an interrupted or unfinished one"
+    );
+    assert!(report.ended_at.is_some(), "run.json must record the end");
+    assert!(
+        report.attempts.is_empty(),
+        "no runner attempt may be recorded: {:?}",
+        report.attempts
+    );
+
+    let tree_path = run_dir.join("recovery").join("tree.json");
+    let tree: JsonValue = serde_json::from_slice(
+        &std::fs::read(&tree_path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", tree_path.display())),
+    )
+    .expect("tree.json must be JSON");
+    assert_eq!(
+        tree["outcome"].as_str(),
+        Some("failure"),
+        "the admission must be finished as a failure, not left running: {tree}"
+    );
+
+    for path in [run_dir.join("run.json"), tree_path] {
+        let bytes = std::fs::read(&path).unwrap_or_default();
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains("ZQXV2582RESERVEDWORD"),
+            "{} must not contain the context value",
+            path.display()
+        );
+    }
+}
