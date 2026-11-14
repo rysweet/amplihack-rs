@@ -241,11 +241,8 @@ fn hold(root: &Path, dir: PathBuf, name: &str, ts: String) -> Result<Held> {
     if block.is_some()
         && let Err(e) = put_back_block(&dir, None)
     {
-        remove_pending(&pending);
-        return Err(fail(
-            format!("{}: {e}; nothing was moved", show(&dir.join(CLAUDE_JSON))),
-            "check permissions on the profile directory",
-        ));
+        let why = format!("{}: {e}", show(&dir.join(CLAUDE_JSON)));
+        return Err(undo_hold(&dir, &pending, block.as_ref(), name, why));
     }
     if block.is_some() && !present {
         eprintln!(
@@ -261,24 +258,7 @@ fn hold(root: &Path, dir: PathBuf, name: &str, ts: String) -> Result<Held> {
         );
         if let Err(e) = move_login(&slot, &pending.join(CREDS), &show) {
             let why = move_error(e);
-            if let Err(undo) = put_back_block(&dir, block.as_ref()) {
-                return Err(fail(
-                    format!(
-                        "could not hold the login of profile '{name}': {why}; the login was \
-                         not moved, but its oauthAccount could not be put back into {}: {undo}",
-                        show(&dir.join(CLAUDE_JSON))
-                    ),
-                    format!(
-                        "the only copy of that block is {}",
-                        show(&pending.join(SAVED_BLOCK))
-                    ),
-                ));
-            }
-            remove_pending(&pending);
-            return Err(fail(
-                format!("could not hold the login of profile '{name}': {why}; nothing was moved"),
-                "check permissions on the profile directory",
-            ));
+            return Err(undo_hold(&dir, &pending, block.as_ref(), name, why));
         }
     }
     Ok(Held {
@@ -289,6 +269,38 @@ fn hold(root: &Path, dir: PathBuf, name: &str, ts: String) -> Result<Held> {
         held: present,
         block,
     })
+}
+
+/// Undoes a failed [`hold`]: puts the `oauthAccount` block back into
+/// `.claude.json`, because a failed write may already have removed the key
+/// (an atomic write renames first and syncs the directory after). The
+/// pending directory is removed only when the block is back; otherwise it is
+/// kept and named as the only copy.
+fn undo_hold(
+    dir: &Path,
+    pending: &Path,
+    block: Option<&serde_json::Value>,
+    name: &str,
+    why: String,
+) -> anyhow::Error {
+    if let Err(undo) = put_back_block(dir, block) {
+        return fail(
+            format!(
+                "could not hold the login of profile '{name}': {why}; the login was not \
+                 moved, but its oauthAccount could not be put back into {}: {undo}",
+                show(&dir.join(CLAUDE_JSON))
+            ),
+            format!(
+                "the only copy of that block is {}",
+                show(&pending.join(SAVED_BLOCK))
+            ),
+        );
+    }
+    remove_pending(pending);
+    fail(
+        format!("could not hold the login of profile '{name}': {why}; nothing was moved"),
+        "check permissions on the profile directory",
+    )
 }
 
 /// Phase C after Claude failed: the new login, if any, is set aside and the

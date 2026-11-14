@@ -517,6 +517,34 @@ fn the_duplicate_check_fails_closed_when_the_profiles_cannot_be_listed() {
 }
 
 #[test]
+fn a_claude_json_that_cannot_be_rewritten_stops_before_claude_runs_and_keeps_everything() {
+    // Removing the key fails (read-only profile directory, so the atomic
+    // write fails before its rename). The shared undo finds the key still
+    // there, removes the pending directory, and nothing has moved. A failure
+    // after the rename takes the same undo, which writes the block back.
+    if super::auto_switch::euid() == 0 {
+        return;
+    }
+    let e = env();
+    let json = e.dir("work").join(".claude.json");
+    let before = fs::read(&json).unwrap();
+    fs::set_permissions(e.dir("work"), fs::Permissions::from_mode(0o500)).unwrap();
+    let ran = Cell::new(false);
+    let result = e.check("work", || {
+        ran.set(true);
+        Ok(())
+    });
+    fs::set_permissions(e.dir("work"), fs::Permissions::from_mode(0o700)).unwrap();
+    let err = result.unwrap_err().to_string();
+    assert!(!ran.get(), "claude must not start");
+    assert!(err.contains("nothing was moved"), "{err}");
+    assert_eq!(fs::read(&json).unwrap(), before);
+    assert_eq!(ino(&e.dir("work").join(CREDS)), Some(e.work_ino));
+    assert!(!e.entries().iter().any(|x| x.starts_with(".pending-")));
+    assert_no_secrets(&err);
+}
+
+#[test]
 fn without_home_only_profiles_are_compared() {
     let e = env();
     login_checked(&e.store, &n("fresh"), None, || {
