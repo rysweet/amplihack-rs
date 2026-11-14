@@ -115,7 +115,7 @@ the driver's exit status itself, so that exit `79` is never hidden by
 | --- | --- | --- |
 | `0` | `DONE` | `0` |
 | `1` | `USAGE_LIMIT` | `1`: the run stops; a later run continues the work. |
-| `1` | `STUCK`, `NO_PROGRESS`, `BUDGET_EXHAUSTED`, `HANDOFF` | `0`, with the loop line printed. |
+| `1` | `STUCK`, `BUDGET_EXHAUSTED`, `HANDOFF` | `0`, with the loop line printed. |
 | `1` | result file missing or unreadable | `0`, with loop result `UNREADABLE`. |
 | `75` | `ORPHANED` | `75` |
 | `79` | `TERMINAL_REFUSAL`, set by the step; the result file is not consulted | `79` |
@@ -146,13 +146,12 @@ with the reason cut to 1000 bytes of printable ASCII:
 | Loop result | Outcome | Next |
 | --- | --- | --- |
 | `DONE` | `done` | `step-03` runs [`autodrive-finalize.yaml`](#finalisation-and-merge-conditions). |
-| `STUCK`, `NO_PROGRESS`, `BUDGET_EXHAUSTED`, `HANDOFF`, `UNREADABLE` | `handoff` | `step-02c` runs [`autodrive-handoff.yaml`](#hand-off). |
+| `STUCK`, `BUDGET_EXHAUSTED`, `HANDOFF`, `UNREADABLE` | `handoff` | `step-02c` runs [`autodrive-handoff.yaml`](#hand-off). |
 
 `step-02a` reads `head_sha` with `git rev-parse HEAD` in the PR worktree and
-sets `stop_comment_posted=true` for `BUDGET_EXHAUSTED` and `NO_PROGRESS`,
-and `step-02c` passes both to the hand-off,
-because the driver has already posted a stop comment for those, so the PR
-receives one comment rather than two.
+sets `stop_comment_posted=true` for `BUDGET_EXHAUSTED`, and `step-02c`
+passes both to the hand-off, because the driver has already posted a stop
+comment for a budget stop, so the PR receives one comment rather than two.
 
 ## Finalisation and merge conditions
 
@@ -308,7 +307,6 @@ The first matching row applies.
 | `DONE` | any other result, including `authorization-unreadable` | `handoff` |
 | `DONE` | `null`: finalisation did not run, or its output is missing or unreadable, with no exit `79` | `unreadable`, with a `note` naming the error kind and path |
 | `HANDOFF`, `STUCK` | | `handoff` |
-| `NO_PROGRESS` | | `no_progress` |
 | `BUDGET_EXHAUSTED` | | `budget_exhausted` |
 | `USAGE_LIMIT` | | `usage_limit` |
 | `ORPHANED` | | `orphaned` |
@@ -322,8 +320,9 @@ itself has already stopped with exit `79`, which is the terminal signal.
 
 When `merge_loop_result` is absent, for example because the crusty loop
 stopped first, `loop_result` is read from `crusty_loop_result` with the same
-table, except that a crusty `STUCK` is reported as `stuck` (crusty endings
-are not handed off) and a crusty `DONE` alone is `unreadable`.
+table, except that a crusty `STUCK` is reported as `no_progress`, as it was
+before #2575 (crusty endings are not handed off), and a crusty `DONE` alone is
+`unreadable`.
 
 When the runner bound a state directory and the context or the build result
 names a different one, `merge` is ignored (`null`) and the `note` says so.
@@ -430,9 +429,21 @@ standard output; on a merge run the merge step reports that as
   drafting rely on the agent following the dry-run instruction, and the
   hand-off's closing step makes no writes.
 
-An injected or mistaken `ready` on a PR with green checks and no required
-review merges at the assessed head. That was also possible under the parsed
-record. Branch protection and required reviews remain the safeguard.
+### Accepted risk: readiness is an agent's judgement
+
+Since #2575 the merge-ready verdict is an agent's judgement of the PR. The
+hash-checked QA evidence that used to gate the merge is gone, and the QA
+evidence and the 13 criteria are checked only by the agent. Text planted in
+the PR, its comments or its files could persuade the agents to answer
+`ready`. That answer alone cannot merge: the captured authorisation, the
+assessed-head match, green checks and GitHub's acceptance of
+`--match-head-commit` still apply. An injected or mistaken `ready` on a PR
+with green checks and no required review would merge at the assessed head.
+
+This risk is accepted. A repository that uses auto-drive to merge must have
+branch protection on its base branch, with the required status checks and
+required reviews that it relies on. Without them, the agent's judgement is
+the only gate before a merge.
 
 ## What was retired
 

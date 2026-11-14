@@ -92,9 +92,9 @@ pub(crate) fn report(
                 "unreadable"
             }
         },
-        Some("STUCK") if crusty => "stuck",
+        // A crusty STUCK keeps the stop reason it had before #2575.
+        Some("STUCK") if crusty => "no_progress",
         Some("HANDOFF" | "STUCK") => "handoff",
-        Some("NO_PROGRESS") => "no_progress",
         Some("BUDGET_EXHAUSTED") => "budget_exhausted",
         Some("USAGE_LIMIT") => "usage_limit",
         Some("ORPHANED") => "orphaned",

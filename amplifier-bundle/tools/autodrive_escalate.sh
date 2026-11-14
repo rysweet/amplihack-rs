@@ -183,9 +183,7 @@ progress_stop() {
   # Record the stopped round too, so a resumed run's summary names it.
   bash "${LOOP_HOME}/autodrive_progress.sh" record "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$1" 0 "${RECORD}.findings" "${2:-}"
   post_stop "${STATE_DIR}/${LOOP_NAME}-stuck-reason.txt"
-  # #2575: the merge-ready loop names this stop NO_PROGRESS, so the hand-off
-  # knows the stop comment is already posted; crusty keeps STUCK.
-  if [ "$LOOP_NAME" = merge-ready ]; then escalate "NO_PROGRESS" "$why"; else escalate "STUCK" "$why"; fi
+  escalate "STUCK" "$why"
   exit 1
 }
 

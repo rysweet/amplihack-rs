@@ -1317,7 +1317,6 @@ fn step02_turns_every_other_loop_ending_into_a_handoff() {
     let Some(fx) = loop_fixture() else { return };
     for result in [
         Some("STUCK"),
-        Some("NO_PROGRESS"),
         Some("BUDGET_EXHAUSTED"),
         Some("HANDOFF"),
         None,

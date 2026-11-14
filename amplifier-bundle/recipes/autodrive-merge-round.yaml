@@ -373,7 +373,7 @@ steps:
       W="$(umask 077; mktemp)" || exit 1
       trap 'rm -f -- "$W"' EXIT
       # The write-up and verdict are read as data, never interpolated (#1570).
-      write_context_value merge_ready_writeup "$W" || : > "$W"
+      write_context_value merge_ready_writeup "$W" || { echo "WARNING: the merge-ready write-up could not be read; this round records an empty write-up [autodrive-merge-round/step-05]" >&2; : > "$W"; }
       V="$(write_context_value merge_ready_word.merge_ready_verdict - 2>/dev/null)" || V=""
       case "$V" in MERGE_READY|NOT_MERGE_READY|HANDOFF) ;; *) V=NOT_MERGE_READY ;; esac
       autodrive_round_file "${RECIPE_VAR_autodrive_state_dir:-}" "${RECIPE_VAR_autodrive_round_label:-}" "$V" \

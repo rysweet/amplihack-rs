@@ -205,7 +205,6 @@ fn report_v2_stop_reason_mapping() {
         ("TERMINAL_REFUSAL", "terminal_refusal"),
         ("HANDOFF", "handoff"),
         ("STUCK", "handoff"),
-        ("NO_PROGRESS", "no_progress"),
         ("BUDGET_EXHAUSTED", "budget_exhausted"),
         ("USAGE_LIMIT", "usage_limit"),
         ("ORPHANED", "orphaned"),
@@ -228,6 +227,18 @@ fn report_v2_stop_reason_mapping() {
         assert_eq!(report["loop_result"], json!(loop_result), "{report}");
         assert!(report["merge"].is_null(), "{loop_result}: {report}");
     }
+}
+
+#[test]
+fn report_v2_crusty_stuck_keeps_no_progress() {
+    // Crusty endings were outside #2575: a crusty STUCK is still reported as
+    // no_progress, as it was before the merge-ready loop changed.
+    let auth = authorization("false", "false");
+    let ctx = context(&[("crusty_loop_result", loop_line("STUCK"))]);
+    let report = run(&auth, &ctx);
+    assert_v2_shape(&report);
+    assert_eq!(report["stop_reason"], json!("no_progress"), "{report}");
+    assert_eq!(report["loop_result"], json!("STUCK"), "{report}");
 }
 
 #[test]

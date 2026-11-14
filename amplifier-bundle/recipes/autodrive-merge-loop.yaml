@@ -171,8 +171,8 @@ steps:
       WHY="$(printf '%s\n' "${RECIPE_VAR_merge_loop_result:-}" | jq -R -r 'fromjson? | select(type == "object") | .reason // empty | strings' 2>/dev/null | tail -n 1)"
       R="$(printf '%s' "$R" | LC_ALL=C tr -cd 'A-Z_' | head -c 64)"; [ -n "$R" ] || R=UNREADABLE
       case "$R" in DONE) OUTCOME=done ;; *) OUTCOME=handoff ;; esac
-      # The driver posts its own stop comment for these two (post_stop).
-      case "$R" in BUDGET_EXHAUSTED|NO_PROGRESS) POSTED=true ;; *) POSTED=false ;; esac
+      # The driver posts its own stop comment for a budget stop (post_stop).
+      case "$R" in BUDGET_EXHAUSTED) POSTED=true ;; *) POSTED=false ;; esac
       REASON="$(printf 'loop result %s: %s' "$R" "$WHY" | LC_ALL=C tr -cd '\040-\176' | head -c 1000)"
       # The preflight output may hold prose around its JSON, as step-02 reads it.
       REPO="$(printf '%s' "${RECIPE_VAR_merge_loop_preflight:-}" | amplihack orch helper extract-json --require-field repo \
