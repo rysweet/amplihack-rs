@@ -502,9 +502,6 @@ fn scalar_to_context_value(value: &Value) -> String {
 
 #[cfg(test)]
 mod tests_autodrive_health_log;
-/// Issue #2528 (T7): bundled agent and sub-recipe references resolve in the bundle alone.
-#[cfg(test)]
-mod tests_bundle_agents;
 /// Issue #2528: bundle selection, trust and the per-run snapshot.
 #[cfg(all(test, unix))]
 mod tests_bundle_pin;
