@@ -33,12 +33,38 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Instruction text that turns a reader into an orchestrator. The list lives
-/// in `src/run_guidance/routing_markers.rs` so that `recipe guide` (#2535)
-/// refuses the same phrases; it is included here unchanged.
-#[path = "../src/run_guidance/routing_markers.rs"]
-mod routing_markers;
-use routing_markers::ROUTING_MARKERS;
+/// Instruction text that turns a reader into an orchestrator. Any of these in a
+/// file that every agent loads is a re-entry hazard, whatever the intent.
+const ROUTING_MARKERS: &[(&str, &str)] = &[
+    (
+        "auto-intent-router",
+        "the routing prompt's own source marker",
+    ),
+    (
+        "auto-routed",
+        "the literal token an agent is told to emit before orchestrating",
+    ),
+    (
+        "AMPLIHACK_CONTEXT_START",
+        "the generated-context marker; nothing writes it any more",
+    ),
+    (
+        "recipe run smart-orchestrator",
+        "the shell-out that turns a leaf step into a nested orchestration",
+    ),
+    (
+        "Skill(skill=\"dev-orchestrator\")",
+        "a direct instruction to invoke the orchestrator skill",
+    ),
+    (
+        "invoke the dev-orchestrator skill",
+        "the same instruction in prose",
+    ),
+    (
+        "launching dev-orchestrator",
+        "the phrase an agent is told to emit as it re-enters",
+    ),
+];
 
 /// Files a CLI loads into every agent's context automatically, with no
 /// provenance gate. Routing instructions must not live in any of them.

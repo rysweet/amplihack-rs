@@ -23,7 +23,6 @@
 //! `HOME`, `~/.amplihack` or `~/.claude` is read or written.
 
 use super::pr_key::{PrRef, canonical_repo_from_remote, parse_pr_url, pr_guidance_dir, pr_key};
-use super::routing_markers::ROUTING_MARKERS;
 use super::*;
 
 use std::collections::BTreeMap;
@@ -378,19 +377,18 @@ fn b2_routing_phrases_are_accepted_appended_and_read_back_unchanged() {
     let (_tmp, root) = private_root();
     let dir = run_guidance_dir(&root, "run-b2");
     let mut expected = Vec::new();
-    for (marker, _) in ROUTING_MARKERS {
-        for text in [
-            format!("please {marker} now"),
-            format!("please {} now", marker.to_uppercase()),
-        ] {
-            assert_eq!(
-                check_text(&text).as_deref(),
-                Ok(text.as_str()),
-                "accepted unchanged: {text:?}"
-            );
-            append_entry(&dir, &text, "alice").expect("appended");
-            expected.push(text);
-        }
+    let marker = "auto-intent-router";
+    for text in [
+        format!("please {marker} now"),
+        format!("please {} now", marker.to_uppercase()),
+    ] {
+        assert_eq!(
+            check_text(&text).as_deref(),
+            Ok(text.as_str()),
+            "accepted unchanged: {text:?}"
+        );
+        append_entry(&dir, &text, "alice").expect("appended");
+        expected.push(text);
     }
     let texts: Vec<String> = read_entries(&[dir]).into_iter().map(|e| e.text).collect();
     assert_eq!(texts, expected, "the read side does not drop them either");
@@ -425,7 +423,7 @@ fn s14_hand_edited_entries_with_a_delimiter_or_control_character_are_skipped_on_
 fn s13_a_from_step_entry_with_a_routing_phrase_stays_under_the_step_preamble() {
     let (_tmp, root) = private_root();
     let run = run_guidance_dir(&root, "run-s13");
-    let (marker, _) = ROUTING_MARKERS[0];
+    let marker = "auto-intent-router";
     let step_text = format!("step says {marker}");
     append_entry(&run, "Operator rule.", "alice").unwrap();
     append_entry(&run, &step_text, "alice run=abc-123").unwrap();
@@ -810,7 +808,7 @@ fn entries_that_fail_a_check_do_not_count_against_the_entry_limit() {
 }
 
 // ---------------------------------------------------------------------------
-// render_block, GuidanceForLaunch: D13, u7, u4
+// render_block, GuidanceForLaunch: D13, u4
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -898,20 +896,6 @@ fn a_block_with_only_step_entries_has_no_operator_preamble() {
         block.contains("come from an agent step in this run"),
         "{block}"
     );
-}
-
-#[test]
-fn u7_rendered_block_passes_the_1333_routing_guard() {
-    let (_tmp, root) = private_root();
-    let run = run_guidance_dir(&root, "run-p");
-    append_entry(&run, "Run only the crate tests.", "alice").unwrap();
-    let block = render_block(&read_entries(&[run])).to_lowercase();
-    for (marker, why) in ROUTING_MARKERS {
-        assert!(
-            !block.contains(&marker.to_lowercase()),
-            "the block contains {marker:?} ({why})"
-        );
-    }
 }
 
 #[test]

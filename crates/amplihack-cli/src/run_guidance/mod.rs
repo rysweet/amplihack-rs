@@ -39,8 +39,6 @@ pub(crate) mod env;
 pub(crate) mod fs_safety;
 pub(crate) mod pr_key;
 #[cfg(test)]
-mod routing_markers;
-#[cfg(test)]
 mod tests;
 
 use crate::commands::recipe::run_id::validate_run_id;
