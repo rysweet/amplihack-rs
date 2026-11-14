@@ -120,7 +120,7 @@ for integration tests. With the default target directory that is
 | --- | --- |
 | `<pin>/` | The finished install root: `bin/recipe-runner-rs` and `.crates2.json` |
 | `<pin>.partial/` | An install in progress; removed and redone if a build was interrupted |
-| `<pin>.build/` | cargo's build directory for the runner; kept so that a rebuild is incremental |
+| `<pin>.build/` | cargo's build directory for the runner; removed once the install passes its receipt check, kept after a failed build so that the next attempt is incremental |
 | `<pin>.lock` | The lock file that serialises builds |
 
 The directory is created with mode `0700`.

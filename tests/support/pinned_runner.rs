@@ -5,8 +5,8 @@
 //! installed in `~/.cargo/bin` or on `PATH`. `pinned_runner` resolves, in order:
 //!
 //! 1. `RECIPE_RUNNER_QA_BINARY` (receipt from `RECIPE_RUNNER_QA_RECEIPT`, else
-//!    `<bin>/../.crates2.json`);
-//! 2. `RECIPE_RUNNER_RS_PATH` (receipt at `<bin>/../.crates2.json`);
+//!    `<root>/.crates2.json`, where `<root>` is the directory above `bin/`);
+//! 2. `RECIPE_RUNNER_RS_PATH` (receipt at `<root>/.crates2.json`);
 //! 3. a build of the pinned revision cached under
 //!    `$CARGO_TARGET_TMPDIR/pinned-recipe-runner/<pin>/`, made at most once per
 //!    pin under a blocking file lock shared by every test binary.
@@ -47,14 +47,11 @@ fn resolve(repo_root: &Path) -> PathBuf {
     let raw = fs::read_to_string(&rev_file)
         .unwrap_or_else(|error| panic!("read {}: {error}", rev_file.display()));
     let pin = validate_pin(raw.trim());
-    let env = |name: &str| std::env::var_os(name);
-    let qa_binary: Option<OsString> = env("RECIPE_RUNNER_QA_BINARY");
-    let qa_receipt: Option<OsString> = env("RECIPE_RUNNER_QA_RECEIPT");
-    let rs_path: Option<OsString> = env("RECIPE_RUNNER_RS_PATH");
+    let env = std::env::var_os;
     resolve_override(
-        qa_binary.as_deref(),
-        qa_receipt.as_deref(),
-        rs_path.as_deref(),
+        env("RECIPE_RUNNER_QA_BINARY").as_deref(),
+        env("RECIPE_RUNNER_QA_RECEIPT").as_deref(),
+        env("RECIPE_RUNNER_RS_PATH").as_deref(),
         pin,
     )
     .unwrap_or_else(|| {
@@ -266,6 +263,9 @@ fn build_or_reuse(cache: &Path, pin: &str) -> PathBuf {
         bin.display()
     );
     assert_receipt(&bin, &root.join(".crates2.json"), pin);
+    // The build directory (~280 MB) is only needed while cargo compiles; a
+    // later rebuild of the same pin happens only after the install is lost.
+    remove_tree(&build);
     drop(lock);
     bin
 }
@@ -364,34 +364,13 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "recipe-runner.rev is not a 40-character lowercase revision")]
-    fn validate_pin_rejects_path_traversal() {
-        validate_pin("../x");
-    }
-
-    #[test]
-    #[should_panic(expected = "recipe-runner.rev is not a 40-character lowercase revision")]
-    fn validate_pin_rejects_short_sha() {
-        validate_pin("2833a0b8");
-    }
-
-    #[test]
-    #[should_panic(expected = "recipe-runner.rev is not a 40-character lowercase revision")]
-    fn validate_pin_rejects_upper_case() {
-        validate_pin(&real_pin().to_uppercase());
-    }
-
-    #[test]
-    #[should_panic(expected = "recipe-runner.rev is not a 40-character lowercase revision")]
-    fn validate_pin_rejects_leading_dash() {
-        let pin = real_pin();
-        validate_pin(&format!("-{}", &pin[1..]));
-    }
-
-    #[test]
-    fn validate_pin_rejects_wrong_lengths_and_non_hex() {
+    fn validate_pin_rejects_malformed_revisions() {
         let pin = real_pin();
         for bad in [
+            "../x".to_owned(),
+            "2833a0b8".to_owned(),
+            pin.to_uppercase(),
+            format!("-{}", &pin[1..]),
             String::new(),
             format!("{pin}0"),
             pin[..39].to_owned(),
@@ -743,15 +722,14 @@ mod tests {
                     "a finished resolution must not leave {pin}.partial behind"
                 );
                 assert_receipt(&runner, &cache.join(&pin).join(".crates2.json"), &pin);
+                if let Some(home) = std::env::var_os("HOME") {
+                    assert!(
+                        !runner.starts_with(Path::new(&home).join(".cargo/bin")),
+                        "without an override the host install must never be used: {}",
+                        runner.display()
+                    );
+                }
             }
-        }
-
-        if let Some(home) = std::env::var_os("HOME") {
-            assert!(
-                !runner.starts_with(Path::new(&home).join(".cargo/bin")),
-                "the host install must never be used: {}",
-                runner.display()
-            );
         }
 
         let version = std::process::Command::new(&runner)
