@@ -60,7 +60,7 @@ pub enum OrchCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum OrchHelperCommands {
-    /// Portable auto-drive record, state, and local Git operations.
+    /// Portable auto-drive state, authorization and local Git operations.
     Autodrive {
         #[command(subcommand)]
         operation: autodrive::helper::Operations,
