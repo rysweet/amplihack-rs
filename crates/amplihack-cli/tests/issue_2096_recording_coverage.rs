@@ -103,44 +103,10 @@ fn empty_evidence_requires_an_explicit_established_coverage_receipt() {
 #[test]
 fn pinned_runner_shell_to_rust_to_absolute_git_keeps_required_coverage() {
     let f = Fixture::new();
-    let runner = std::env::var_os("RECIPE_RUNNER_QA_BINARY")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::split_paths(&std::env::var_os("PATH").unwrap())
-                .map(|dir| dir.join("recipe-runner-rs"))
-                .find(|path| path.is_file())
-        })
-        .expect("required external runner missing; install claude-plugin/recipe-runner.rev or set RECIPE_RUNNER_QA_BINARY");
-    let receipt_path = std::env::var_os("RECIPE_RUNNER_QA_RECEIPT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            runner
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join(".crates2.json")
-        });
-    let receipt: serde_json::Value = serde_json::from_slice(&fs::read(&receipt_path)
-        .unwrap_or_else(|error| panic!("verify pinned runner via {}: {error}; provide the Cargo install receipt with RECIPE_RUNNER_QA_RECEIPT", receipt_path.display())))
-        .expect("valid runner Cargo install receipt");
-    let pin = include_str!("../../../claude-plugin/recipe-runner.rev").trim();
-    let suffix = format!("#{pin})");
-    assert!(
-        receipt["installs"]
-            .as_object()
-            .expect("Cargo installs map")
-            .iter()
-            .any(|(source, install)| {
-                source.starts_with("recipe-runner-rs ")
-                    && source.contains("git+https://github.com/rysweet/amplihack-recipe-runner")
-                    && source.ends_with(&suffix)
-                    && install["bins"]
-                        .as_array()
-                        .is_some_and(|bins| bins.iter().any(|name| name == "recipe-runner-rs"))
-            }),
-        "runner receipt does not establish pinned revision {pin}; install that revision before claiming pinned-boundary coverage"
-    );
+    // #2658: the pinned revision, from a receipt-checked override or a build
+    // cached in the test target directory; never the host's installed runner.
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let runner = crate::pinned_runner::pinned_runner(&repo_root);
     fs::write(
         f.root.join("git-path"),
         boundary::absolute_git().as_os_str().as_encoded_bytes(),

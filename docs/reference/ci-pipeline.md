@@ -265,6 +265,9 @@ test:
   `GITHUB_PATH` and the absolute executable through `RECIPE_RUNNER_RS_PATH`.
   Invalid pins or installation failures stop the job; terminal-state fixtures
   require this real executable and retain their missing-runner failure.
+  Tests that use the shared `pinned_runner` helper accept this executable
+  because its receipt names the pin, so they do not build the runner again
+  (see [Run Tests Against the Pinned Recipe Runner](../howto/run-tests-against-the-pinned-recipe-runner.md)).
 - **`cargo test --workspace --doc --locked`** runs after nextest because nextest
   does not execute doctests — the explicit step preserves that coverage.
 - **`cache-targets: false`** — the workspace links large native artifacts (Kuzu,
