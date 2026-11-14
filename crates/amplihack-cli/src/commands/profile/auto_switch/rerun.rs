@@ -14,7 +14,7 @@ use super::fsx;
 use super::overflow_inputs::OverflowInputs;
 use super::per_token;
 use super::state::{Ledger, State};
-use super::takeover::{capacity_candidate, profile_check};
+use super::takeover::{capacity_candidate, profile_check, store_rotating};
 use super::usage::{Reading, ReadingSource, Window};
 use crate::commands::profile::attempt::{
     Limited, Signals, note_key_error, run_attempt_with_recovery, usage_limited,
@@ -383,9 +383,13 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                 Some(r) => {
                     let wait_now = waiter.now();
                     let reset = wait_now.saturating_add(r.saturating_sub(fsx::now()));
-                    let wait = plan::from_reading(Harness::Claude, reset, wait_now);
+                    let wait = WaitFor::Reset {
+                        harness: Harness::Claude,
+                        reset,
+                    };
                     let seen = Some((Harness::Claude, Some(reset)));
-                    inherited_wait = Some(plan::upgrade(wait, seen, || takeover(&waiter)));
+                    inherited_wait =
+                        Some(plan::upgrade(wait, seen, wait_now, || takeover(&waiter)));
                 }
                 None => inherited_has_capacity = true,
             }
@@ -431,7 +435,8 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             profile.as_ref(),
             switch.as_ref().map(|sw| sw.store.root()),
         );
-        let Some(lim) = usage_limited(&attempt, waiter.now()) else {
+        let limit_now = waiter.now();
+        let Some(lim) = usage_limited(&attempt, limit_now) else {
             return attempt.finish(None);
         };
         if let Some(client) = &recovery {
@@ -440,7 +445,9 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         if profile.is_none() {
             // This attempt ran under the inherited profile: its limit is the
             // freshest word on that profile.
-            inherited_wait = Some(plan::upgrade(lim.wait, lim.seen, || takeover(&waiter)));
+            inherited_wait = Some(plan::upgrade(lim.wait, lim.seen, limit_now, || {
+                takeover(&waiter)
+            }));
         }
         if let Some(sw) = &switch {
             let current = profile.as_ref().unwrap_or(&sw.inherited).clone();
@@ -525,7 +532,9 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         let Some(wait) = inherited_wait.or_else(|| waiter.blocked_skip()) else {
             return attempt.finish(None);
         };
-        match waiter.after_limit(wait, n, &signals, &probe) {
+        let profile_rotating = switch.as_ref().map(|sw| move || store_rotating(sw.store));
+        let rotating = profile_rotating.as_ref().map(|f| f as &dyn Fn() -> bool);
+        match waiter.after_limit(wait, n, &signals, &probe, rotating) {
             AfterLimit::Finish(code) => return attempt.finish(code),
             AfterLimit::Retry => {
                 attempt.discard();

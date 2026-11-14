@@ -105,16 +105,13 @@ pub struct AgentConfig {
     pub memory_type: MemoryType,
     #[serde(default = "default_max_iterations")]
     pub max_iterations: usize,
-    #[serde(default = "default_timeout")]
-    pub timeout_secs: u64,
+    /// Per-agent time limit in seconds. Recorded only; not enforced. `None` = no limit (#2022).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
 }
 
 fn default_max_iterations() -> usize {
     10
-}
-
-fn default_timeout() -> u64 {
-    300
 }
 
 impl AgentConfig {
@@ -125,7 +122,7 @@ impl AgentConfig {
             storage_path: PathBuf::from(".amplihack/agents"),
             memory_type: MemoryType::Episodic,
             max_iterations: default_max_iterations(),
-            timeout_secs: default_timeout(),
+            timeout_secs: None,
         }
     }
 
@@ -140,7 +137,7 @@ impl AgentConfig {
     }
 
     pub fn with_timeout(mut self, secs: u64) -> Self {
-        self.timeout_secs = secs;
+        self.timeout_secs = Some(secs);
         self
     }
 }
@@ -170,14 +167,11 @@ pub struct TaskSpec {
     pub description: String,
     #[serde(default)]
     pub priority: TaskPriority,
-    #[serde(default = "default_task_timeout")]
-    pub timeout_secs: u64,
+    /// Per-task time limit in seconds. Recorded only; not enforced. `None` = no limit (#2022).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
     #[serde(default)]
     pub tags: Vec<String>,
-}
-
-fn default_task_timeout() -> u64 {
-    120
 }
 
 impl TaskSpec {
@@ -185,7 +179,7 @@ impl TaskSpec {
         Self {
             description: description.into(),
             priority: TaskPriority::Normal,
-            timeout_secs: default_task_timeout(),
+            timeout_secs: None,
             tags: Vec::new(),
         }
     }
@@ -196,12 +190,14 @@ impl TaskSpec {
     }
 
     pub fn with_timeout(mut self, secs: u64) -> Self {
-        self.timeout_secs = secs;
+        self.timeout_secs = Some(secs);
         self
     }
 
-    pub fn timeout(&self) -> Duration {
-        Duration::from_secs(self.timeout_secs)
+    /// The task's time limit, or `None` when no limit is set (#2022).
+    /// Recorded only; not enforced.
+    pub fn timeout(&self) -> Option<Duration> {
+        self.timeout_secs.map(Duration::from_secs)
     }
 }
 
@@ -295,15 +291,46 @@ mod tests {
         assert_eq!(cfg.agent_name, "test-agent");
         assert_eq!(cfg.model, "gpt-4");
         assert_eq!(cfg.storage_path, PathBuf::from("/data"));
-        assert_eq!(cfg.timeout_secs, 60);
+        assert_eq!(cfg.timeout_secs, Some(60));
     }
 
     #[test]
     fn agent_config_defaults() {
         let cfg = AgentConfig::new("a", "m");
         assert_eq!(cfg.max_iterations, 10);
-        assert_eq!(cfg.timeout_secs, 300);
+        // #2022: no default limit.
+        assert_eq!(cfg.timeout_secs, None);
         assert_eq!(cfg.memory_type, MemoryType::Episodic);
+    }
+
+    #[test]
+    fn task_spec_defaults_have_no_limit() {
+        let spec = TaskSpec::new("x");
+        assert_eq!(spec.timeout_secs, None);
+        assert_eq!(spec.timeout(), None);
+    }
+
+    #[test]
+    fn timeout_serde_absent_is_none_and_explicit_is_kept() {
+        let cfg = AgentConfig::new("a", "m");
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert!(json.get("timeout_secs").is_none(), "{json}");
+        let back: AgentConfig = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(back.timeout_secs, None);
+        let mut with = json;
+        with["timeout_secs"] = serde_json::json!(300);
+        let back: AgentConfig = serde_json::from_value(with).unwrap();
+        assert_eq!(back.timeout_secs, Some(300));
+
+        let spec = TaskSpec::new("x");
+        let json = serde_json::to_value(&spec).unwrap();
+        assert!(json.get("timeout_secs").is_none(), "{json}");
+        let back: TaskSpec = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(back.timeout_secs, None);
+        let mut with = json;
+        with["timeout_secs"] = serde_json::json!(120);
+        let back: TaskSpec = serde_json::from_value(with).unwrap();
+        assert_eq!(back.timeout(), Some(Duration::from_secs(120)));
     }
 
     #[test]
@@ -313,7 +340,7 @@ mod tests {
             .with_timeout(60);
         assert_eq!(spec.description, "run tests");
         assert_eq!(spec.priority, TaskPriority::High);
-        assert_eq!(spec.timeout(), Duration::from_secs(60));
+        assert_eq!(spec.timeout(), Some(Duration::from_secs(60)));
     }
 
     #[test]

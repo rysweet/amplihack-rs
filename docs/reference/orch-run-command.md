@@ -57,7 +57,7 @@ with no additional flags.
 | ------------------- | --------------------- |
 | `--mode`            | `recipe`              |
 | `--recipe`          | `default-workflow`    |
-| `--max-runtime`     | unset (engine default) |
+| `--max-runtime`     | unset: no runtime limit (issue #2022) |
 | `--timeout-policy`  | unset (engine default) |
 | `--dry-run`         | `false`               |
 

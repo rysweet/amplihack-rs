@@ -155,7 +155,7 @@ Pressing `d` in the Fleet tab triggers `run_tui_dry_run()`:
 2. A `FleetSessionReasoner` is constructed with the same backend auto-detection
    as `fleet dry-run`.
 3. `reasoner.reason_about_session()` is called.  The function blocks the UI
-   event loop for up to the 180 s reasoner timeout.
+   event loop until the reasoner returns; there is no time limit.
 4. On success, the resulting `SessionDecision` is stored in
    `ui_state.proposal_notice` and `ui_state.editor_decision`.
 5. The cockpit switches to the Detail tab.  The proposal notice is rendered
@@ -263,7 +263,7 @@ should use `t` to change the action, not try to manipulate confidence.
 ### No streaming output during reasoning
 
 **What:** The reasoner runs to completion before the TUI updates.  The cockpit
-does not show a spinner or partial output during the 180 s timeout window.
+does not show a spinner or partial output while the reasoner runs.
 
 **Why:** The current architecture calls `reason_about_session()` synchronously
 in the event-loop thread.  Adding streaming would require moving the reasoner
@@ -271,8 +271,8 @@ call to a background thread and plumbing progress events through the `mpsc`
 channel — non-trivial work with risk of introducing race conditions in the
 shared `FleetTuiUiState`.
 
-**Implication:** The TUI appears unresponsive for up to 180 s after pressing
-`d`.  This is a known limitation.  A future version may spawn the reasoner in
+**Implication:** The TUI appears unresponsive until the reasoner returns
+after pressing `d`; Ctrl-C quits it.  This is a known limitation.  A future version may spawn the reasoner in
 a background thread and render progress events.  Do not add a fake spinner that
 simply polls on a timer — wait for the proper async architecture.
 

@@ -2078,8 +2078,11 @@ to turn it on there). A failure that is not a usage limit is passed back at once
    - for a step that uses `~/.claude`, the
      [login rotator](claude-profile-rotation.md) recording a fresh cycle
      with capacity;
-   - the configured maximum;
-   - one minute before the step's timeout.
+   - the configured maximum, if one is set;
+   - one minute before the step's timeout, if one is set.
+
+   There is no default maximum: with neither set, amplihack waits for the
+   reset however far away it is, including a weekly reset days ahead.
 3. The step runs once more with the same arguments, environment and input.
    If it hits the limit again, there is no second wait. The supervisor
    writes `skipped reason=already_waited` and then the
@@ -2089,10 +2092,12 @@ to turn it on there). A failure that is not a usage limit is passed back at once
 
 ### Weekly limits: waiting for another login
 
-A weekly limit, or a limit whose message states no reset amplihack can
-read, will not lift within the run. When another login could take over,
-amplihack waits for **any** login to have capacity instead, for up to six
-hours by default:
+A weekly limit, a reset more than five hours away, or a limit whose
+message states no reset amplihack can read will not lift soon. When
+another login could take over, amplihack waits for **any** login to have
+capacity instead. When the message gave a reset, the wait also ends at
+that reset plus two minutes. There is no default limit on how long it
+waits; set a [maximum](#turn-it-off-or-change-the-maximum) to add one:
 
 - for a step that uses `~/.claude`, until the
   [login rotator](claude-profile-rotation.md) records a fresh cycle with
@@ -2116,8 +2121,11 @@ counts, because it may recover during the wait. With a single stored login
 there is nothing to wait for, and the run ends as before, even when the
 rotator is running.
 
-If no login has capacity by the deadline, the step is not run again. The
-log ends with:
+When no other login could take over, a far reset is still waited for: the
+wait is a plain reset wait that ends at the reset plus two minutes.
+
+If a maximum or step timeout is set and no login has capacity by that
+deadline, the step is not run again. The log ends with:
 
 ```
 amplihack.recipe.usage_limit_wait end reason=capacity expired
@@ -2137,14 +2145,14 @@ out and the step retried, so the loop gets an ordinary verdict.
 
 The run ends as before, with no wait, when:
 
-- the limit is an organisation spend limit, with no reset or with a weekly
-  reset (a spend limit that also says when your session limit resets is
-  waited out);
-- the limit is weekly, or states no readable reset, and no other login
-  could take over, or no rotator is running;
+- the limit is an organisation spend limit that states no reset (a spend
+  limit that states a reset, even a weekly one, is waited out until that
+  reset, and never by switching to another login);
+- the limit states no readable reset, and no other login could take over,
+  or no rotator is running;
 - the step uses an explicit `CLAUDE_CONFIG_DIR`, an inherited profile with
   auto-switch off, or a `.default` profile that is not the rotator's live
-  one, and the limit is weekly or states no readable reset;
+  one, and the limit states no readable reset;
 - the prompt came on a pipe (auto-switch then does not rerun it under
   another profile either).
 
@@ -2174,10 +2182,23 @@ A wait for another login has `wait=capacity` on its `start` line, and
 `reset=none` when Claude's message gave no readable reset:
 
 ```
-amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=2026-11-05 00:00:00 -07:00 until=2026-10-31 15:43:00 -07:00 bound=max_wait
+amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=2026-11-05 00:00:00 -07:00 until=2026-11-05 00:02:00 -07:00 bound=reset+margin
 amplihack.recipe.usage_limit_wait end reason=rotator capacity
 amplihack.recipe.usage_limit_wait resume attempt=2
 ```
+
+A wait with no reset, no maximum and no step timeout has no deadline. Its
+`start` line reads `until=none bound=unbounded`, and its `progress` lines
+carry no `remaining=`:
+
+```
+amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=none until=none bound=unbounded
+amplihack.recipe.usage_limit_wait progress
+amplihack.recipe.usage_limit_wait end reason=rotator capacity
+```
+
+Such a wait ends when a login has capacity, when the login changes, or
+when the run is stopped.
 
 The [reference](../reference/profile-command.md#usage-limit-wait) lists every
 event and reason, and the
@@ -2200,19 +2221,27 @@ export AMPLIHACK_USAGE_LIMIT_WAIT=0
 export AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS=3600
 ```
 
-The maximum defaults to `21600` seconds (six hours). It shortens a wait for
-a reset, which never lasts beyond the reset plus two minutes, and sets how
-long a wait for another login lasts. `0` means no wait: for a reset, one
-more attempt; for a weekly limit, the step ends at once as a usage limit.
+The maximum is not set by default, and no limit applies unless you set
+one. When set, it shortens any wait that would last longer: a wait for a
+reset, which never lasts beyond the reset plus two minutes, and a wait for
+another login. `0` means no wait: for a reset, one more attempt; for a
+weekly limit with another login available, the step ends at once as a
+usage limit.
 
-To wait longer than six hours for another login, raise it in your user
-file or the variable:
+To put a ceiling of twelve hours on every wait:
 
 ```bash
 amplihack config set recipe.usage_limit_max_wait_secs 43200   # twelve hours
 ```
 
-A project `config.toml` can only lower the maximum. The keys are listed in
+To remove the ceiling again:
+
+```bash
+amplihack config unset recipe.usage_limit_max_wait_secs
+```
+
+When your user file sets a maximum, a project `config.toml` can only lower
+it. When your user file sets none, a project value applies as written. The keys are listed in
 the [user-config reference](../reference/user-config.md#recipeusage_limit_wait)
 and the variables in
 [environment variables](../reference/environment-variables.md#amplihack_usage_limit_max_wait_secs).

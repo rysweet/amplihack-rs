@@ -82,7 +82,7 @@ pub(super) fn persist_state(ws: &Workstream) -> Result<()> {
         worktree_path: ws.worktree_path.clone(),
         log_file: ws.log_file.to_string_lossy().to_string(),
         progress_sidecar: ws.progress_file.to_string_lossy().to_string(),
-        max_runtime: Some(ws.max_runtime),
+        max_runtime: ws.max_runtime,
         timeout_policy: Some(ws.timeout_policy.clone()),
         workstream_scope,
         process_scope: ws.process_scope.clone(),

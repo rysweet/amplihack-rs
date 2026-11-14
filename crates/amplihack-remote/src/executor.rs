@@ -31,16 +31,20 @@ pub struct ExecutionResult {
 /// Executes amplihack commands on remote VMs.
 pub struct Executor {
     vm: VM,
-    timeout_seconds: u64,
+    /// Idle window for the remote run. `None` (issue #2022) means no limit:
+    /// the run is waited for until it exits or is stopped.
+    timeout_seconds: Option<u64>,
     remote_workspace: String,
     tunnel_port: Option<u16>,
 }
 
 impl Executor {
-    pub fn new(vm: VM, timeout_minutes: u64, tunnel_port: Option<u16>) -> Self {
+    /// `timeout_minutes` sets an idle window for the remote run; `None`
+    /// applies no limit.
+    pub fn new(vm: VM, timeout_minutes: Option<u64>, tunnel_port: Option<u16>) -> Self {
         Self {
             vm,
-            timeout_seconds: timeout_minutes * 60,
+            timeout_seconds: timeout_minutes.map(|minutes| minutes.saturating_mul(60)),
             remote_workspace: "~/workspace".to_string(),
             tunnel_port,
         }
@@ -184,7 +188,10 @@ impl Executor {
         })?;
         let child_stdout = child.stdout.take();
         let child_stderr = child.stderr.take();
-        let cfg = IdleConfig::with_idle(std::time::Duration::from_secs(self.timeout_seconds));
+        let cfg = match self.timeout_seconds {
+            Some(secs) => IdleConfig::with_idle(std::time::Duration::from_secs(secs)),
+            None => IdleConfig::none(),
+        };
         // The payload is written while the child runs: a 200 KiB prompt
         // exceeds the pipe buffer, so writing before waiting could stall.
         let (written, outcome) = tokio::join!(
@@ -194,14 +201,14 @@ impl Executor {
         written?;
         let duration = start.elapsed().as_secs_f64();
 
-        if outcome.killed_for_idle {
-            warn!(idle_secs = self.timeout_seconds, "remote run idle-reaped");
+        if let (true, Some(idle_secs)) = (outcome.killed_for_idle, self.timeout_seconds) {
+            warn!(idle_secs, "remote run idle-reaped");
             return Ok(ExecutionResult {
                 exit_code: -1,
                 stdout: outcome.stdout,
                 stderr: format!(
                     "{}\nReaped after {}s with no output (idle window)",
-                    outcome.stderr, self.timeout_seconds
+                    outcome.stderr, idle_secs
                 ),
                 duration_seconds: duration,
                 timed_out: true,
@@ -466,8 +473,8 @@ mod tests {
             created_at: None,
             tags: None,
         };
-        let exec = Executor::new(vm, 60, Some(2222));
-        assert_eq!(exec.timeout_seconds, 3600);
+        let exec = Executor::new(vm, Some(60), Some(2222));
+        assert_eq!(exec.timeout_seconds, Some(3600));
         assert_eq!(exec.tunnel_port, Some(2222));
     }
 
@@ -480,7 +487,8 @@ mod tests {
             created_at: None,
             tags: None,
         };
-        let exec = Executor::new(vm, 10, None);
+        let exec = Executor::new(vm, None, None);
+        assert_eq!(exec.timeout_seconds, None);
         assert!(exec.tunnel_port.is_none());
     }
 }

@@ -15,9 +15,6 @@ pub fn sanitize_id(raw: &str) -> String {
     SAFE_ID_RE.replace_all(raw, "_").to_string()
 }
 
-/// Default max runtime for workstreams (2 hours).
-pub const DEFAULT_MAX_RUNTIME: u64 = 7200;
-
 /// Timeout policy: interrupt the subprocess and preserve state.
 pub const INTERRUPT_PRESERVE_TIMEOUT_POLICY: &str = "interrupt-preserve";
 /// Timeout policy: mark timed-out but let the subprocess continue.
@@ -150,7 +147,9 @@ pub struct Workstream {
     pub last_step: String,
     pub attempt: u32,
     pub timeout_policy: String,
-    pub max_runtime: u64,
+    /// Runtime after which the workstream is marked resumable. `None` (the
+    /// default, issue #2022) means no limit.
+    pub max_runtime: Option<u64>,
     pub resume_checkpoint: String,
     pub workstream_scope: WorkstreamScope,
     pub process_scope: ProcessScope,
@@ -190,7 +189,7 @@ impl Workstream {
             last_step: String::new(),
             attempt: 0,
             timeout_policy: DEFAULT_TIMEOUT_POLICY.to_string(),
-            max_runtime: DEFAULT_MAX_RUNTIME,
+            max_runtime: None,
             resume_checkpoint: String::new(),
             workstream_scope: WorkstreamScope::default(),
             process_scope: ProcessScope::default(),
@@ -351,7 +350,39 @@ mod tests {
 
     #[test]
     fn test_default_constants() {
-        assert_eq!(DEFAULT_MAX_RUNTIME, 7200);
         assert_eq!(DEFAULT_TIMEOUT_POLICY, "continue-preserve");
+    }
+
+    /// Issue #2022: old state files with a numeric `max_runtime` still load,
+    /// and so do files without the field.
+    #[test]
+    fn persisted_max_runtime_loads_from_old_and_new_files() {
+        let old: PersistedState =
+            serde_json::from_str(r#"{"issue":1,"max_runtime":7200}"#).unwrap();
+        assert_eq!(old.max_runtime, Some(7200));
+        let missing: PersistedState = serde_json::from_str(r#"{"issue":1}"#).unwrap();
+        assert_eq!(missing.max_runtime, None);
+        let null: PersistedState =
+            serde_json::from_str(r#"{"issue":1,"max_runtime":null}"#).unwrap();
+        assert_eq!(null.max_runtime, None);
+        let back: PersistedState =
+            serde_json::from_str(&serde_json::to_string(&old).unwrap()).unwrap();
+        assert_eq!(back.max_runtime, Some(7200));
+    }
+
+    /// Issue #2022: a new workstream has no runtime limit.
+    #[test]
+    fn a_new_workstream_has_no_max_runtime() {
+        let dir = std::env::temp_dir();
+        let ws = Workstream::new(
+            7,
+            "feat/x".into(),
+            "d".into(),
+            "t".into(),
+            "default-workflow".into(),
+            &dir,
+            &dir,
+        );
+        assert_eq!(ws.max_runtime, None);
     }
 }

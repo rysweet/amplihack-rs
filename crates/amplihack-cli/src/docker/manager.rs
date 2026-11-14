@@ -6,17 +6,13 @@ use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
 use super::{
     DEFAULT_IMAGE_NAME, DockerDetector, LITELLM_ROUTING_LABEL, LITELLM_ROUTING_REVISION,
     VERSION_LABEL, docker_setup_command,
     helpers::{forwarded_env_vars, is_secret_env_key},
 };
-use crate::util::{run_with_timeout, run_with_timeout_described};
-
-const DOCKER_BUILD_TIMEOUT: Duration = Duration::from_secs(600);
-const DOCKER_RUN_TIMEOUT: Duration = Duration::from_secs(3600);
+use crate::util::run_untimed;
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -94,8 +90,9 @@ impl DockerManager {
                 .into_iter()
                 .filter(|(key, _)| is_secret_env_key(key)),
         );
-        let status = run_with_timeout_described(command, DOCKER_RUN_TIMEOUT, "docker run")
-            .context("failed to execute docker run")?;
+        // Issue #2022: the container runs amplihack work, so it has no time
+        // limit. It ends when the work ends or the user stops it.
+        let status = run_untimed(command).context("failed to execute docker run")?;
         Ok(status.code().unwrap_or(1))
     }
 
@@ -131,8 +128,8 @@ impl DockerManager {
         println!("Building Docker image: {}", self.image_name);
         let mut command = docker_setup_command();
         command.args(build_args);
-        let status = run_with_timeout(command, DOCKER_BUILD_TIMEOUT)
-            .context("failed to execute docker build")?;
+        // Issue #2022: a build runs without a time limit.
+        let status = run_untimed(command).context("failed to execute docker build")?;
         if !status.success() {
             eprintln!("Docker build failed.");
             return Ok(false);

@@ -27,7 +27,8 @@ pub struct WorkflowOptions<'a> {
     pub prompt: &'a str,
     pub max_turns: u32,
     pub vm_options: &'a VMOptions,
-    pub timeout_minutes: u64,
+    /// Idle window for the remote run in minutes; `None` means no limit.
+    pub timeout_minutes: Option<u64>,
     pub skip_secret_scan: bool,
     pub api_key: &'a str,
 }
@@ -48,7 +49,7 @@ pub async fn execute_remote_workflow(
     prompt: &str,
     max_turns: u32,
     vm_options: &VMOptions,
-    timeout_minutes: u64,
+    timeout_minutes: Option<u64>,
     skip_secret_scan: bool,
 ) -> Result<WorkflowResult, RemoteError> {
     let api_key = std::env::var("ANTHROPIC_API_KEY")
@@ -219,7 +220,7 @@ mod tests {
             "test",
             10,
             &VMOptions::default(),
-            60,
+            Some(60),
             true,
         ));
         assert!(result.is_err());

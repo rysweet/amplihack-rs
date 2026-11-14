@@ -42,6 +42,9 @@ pub(crate) const BUDGET_ENV: &str = "AMPLIHACK_RECIPE_TRANSIENT_BUDGET_SECS";
 /// recovers in seconds or it is not the kind of fault this loop can fix.
 const DEFAULT_MAX_ATTEMPTS: u32 = 3;
 /// Default budget for time spent waiting on backoff, across all retries.
+/// Issue #2022: this is not a limit on work. It measures only the idle
+/// backoff sleeps between attempts, never the time an attempt spends running
+/// (pinned by `tests_failure_class.rs`).
 const DEFAULT_BUDGET: Duration = Duration::from_secs(300);
 /// Delay before the first retry; doubles (with equal jitter) thereafter.
 const INITIAL_DELAY: Duration = Duration::from_secs(10);

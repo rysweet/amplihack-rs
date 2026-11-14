@@ -206,7 +206,7 @@ fn executor_validates_anthropic_api_key_before_remote_execution() {
         created_at: None,
         tags: None,
     };
-    let executor = Executor::new(vm, 1, None);
+    let executor = Executor::new(vm, Some(1), None);
 
     let err = runtime
         .block_on(executor.execute_remote("auto", "prompt", 10))

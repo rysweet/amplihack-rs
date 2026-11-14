@@ -54,7 +54,7 @@ These are the implemented inputs for issue #4032.
 
 | Field            | Surface                                                                           | Type          | Default              | Meaning                                                                                           |
 | ---------------- | --------------------------------------------------------------------------------- | ------------- | -------------------- | ------------------------------------------------------------------------------------------------- |
-| `max_runtime`    | `--max-runtime`, `AMPLIHACK_MAX_RUNTIME`, workstream config, recipe context       | `int` seconds | `7200`               | Maximum monitor budget before the orchestrator transitions an active workstream out of `running`. |
+| `max_runtime`    | `--max-runtime`, `AMPLIHACK_MAX_RUNTIME`, workstream config, recipe context       | `int` seconds | none: no limit       | Maximum monitor budget before the orchestrator transitions an active workstream out of `running`. Unset means no budget (issue #2022). |
 | `timeout_policy` | `--timeout-policy`, `AMPLIHACK_TIMEOUT_POLICY`, workstream config, recipe context | `str` enum    | `interrupt-preserve` | Controls whether timeout stops the current subprocess while preserving resumable state.           |
 
 Specific inputs beat general defaults:
@@ -63,7 +63,7 @@ Specific inputs beat general defaults:
 2. Explicit CLI flags win for run-wide defaults when no per-workstream override exists.
 3. Recipe context propagated from `smart-orchestrator` seeds defaults when CLI flags are absent.
 4. Environment variables provide ambient defaults.
-5. Built-in fallback remains `7200` seconds with preservation semantics on timeout.
+5. With none of these set, there is no runtime budget and no timeout (issue #2022).
 
 ### `timeout_policy` Values
 

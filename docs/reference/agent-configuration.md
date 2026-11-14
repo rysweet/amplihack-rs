@@ -26,7 +26,7 @@ Create `.amplihack/config.toml` in your project root:
 [agent]
 model = "claude-sonnet-4-5"
 max_turns = 100
-timeout_secs = 300
+# timeout_secs = 3600  # optional; unset means no limit (#2022)
 
 [memory]
 backend = "cognitive"

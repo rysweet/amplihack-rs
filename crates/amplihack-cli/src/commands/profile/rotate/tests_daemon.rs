@@ -15,7 +15,7 @@
 //! - `cycle::prototype_guard(root: &Path) -> Result<(), ProfileError>`.
 
 use super::cycle::prototype_guard;
-use super::daemon::{DaemonState, state_at};
+use super::daemon::{DaemonState, alive, alive_at, state_at};
 use amplihack_utils::rotator_status::parse_pid;
 
 fn is_rotator(cmdline: &[u8], exe_name: &OsStr) -> bool {
@@ -192,6 +192,59 @@ fn no_proc_is_unverifiable() {
     assert_eq!(
         state_at(&f.rs, &missing, OsStr::new(EXE)),
         DaemonState::Unverifiable
+    );
+}
+
+// --- alive_at: the usage-limit wait's rotator check (issue #2022) ----------
+
+#[test]
+fn alive_accepts_a_rotator_under_another_binary_name() {
+    let f = fake();
+    f.pid_file("31337\n");
+    // After an install replaces the binary, this process's own name reads
+    // `amplihack (deleted)`; the rotator's argv[0] is still the old path.
+    f.process(
+        31337,
+        &["/opt/other/amplihack-old", "profile", "rotate", "watch"],
+    );
+    assert_eq!(
+        state_at(&f.rs, &f.proc_root, OsStr::new("amplihack (deleted)")),
+        DaemonState::Stale,
+        "the name-checked state misses it"
+    );
+    assert!(alive_at(&f.rs, &f.proc_root), "the wait still sees it");
+}
+
+#[test]
+fn alive_is_false_with_no_rotator_and_true_without_a_proc() {
+    let f = fake();
+    assert!(!alive_at(&f.rs, &f.proc_root), "no pid file");
+    f.pid_file("31337");
+    assert!(!alive_at(&f.rs, &f.proc_root), "no such process");
+    f.process(31337, &["sleep", "30"]);
+    assert!(!alive_at(&f.rs, &f.proc_root), "not a rotator");
+    assert!(
+        alive_at(&f.rs, &f.proc_root.join("missing")),
+        "unverifiable counts as alive, so a wait is never ended on a guess"
+    );
+}
+
+#[test]
+fn alive_reads_the_process_table_through_proc_root() {
+    let f = fake();
+    f.pid_file("31337");
+    let _seam = crate::commands::agent::procfs::override_proc_root(&f.proc_root);
+    assert!(
+        !alive(f.rs.root.as_path()),
+        "no such process in the fake tree"
+    );
+    f.process(
+        31337,
+        &["/opt/other/amplihack", "profile", "rotate", "watch"],
+    );
+    assert!(
+        alive(f.rs.root.as_path()),
+        "the fake tree's rotator is seen"
     );
 }
 

@@ -117,4 +117,28 @@ for retired in "$TOOLS/autodrive_merge_gate.sh" "$TOOLS/gh-merge-guard/gh"; do
 done
 # Crusty still fails safe, and the shared evaluator retains its exact tokens.
 [ "$(printf '%s' 'unreadable' | "$REAL_AMPLIHACK" orch helper normalise-loop-verdict)" = STUCK ] || exit 1
+# Issue #2022: a default drive has no wall-clock limit. The composer's
+# default for autodrive_budget_wall_seconds goes to the budget check with a
+# recorded use far above the old 14400 s default, and must not stop the drive.
+# The control run with an explicit limit must stop it, so the case cannot pass
+# because the check never counts wall seconds, and its resume command must
+# remove the clock (=0) rather than double it (=28800).
+WB_DIR="$(mktemp -d "${TMPDIR:-/tmp}/autodrive-2022.XXXXXX")" || exit 1
+trap 'rm -rf "${WB_DIR}"' EXIT
+chmod 700 "${WB_DIR}"
+WB_DEFAULT="$(sed -n 's/^  autodrive_budget_wall_seconds: "\([^"]*\)"$/\1/p' "${RECIPES}/auto-drive-to-merge.yaml")"
+[ "${WB_DEFAULT}" = "0" ] || { echo "FAIL: 2022-default-drive-no-wall-limit: composer default is '${WB_DEFAULT}', not 0" >&2; exit 1; }
+bash "${TOOLS}/autodrive_budget.sh" add "${WB_DIR}" crusty round-1 round 1000000 >/dev/null || { echo "FAIL: 2022: could not record usage" >&2; exit 1; }
+bash "${TOOLS}/autodrive_budget.sh" check "${WB_DIR}" crusty post round-1 2107 \
+  "autodrive_budget_wall_seconds=${WB_DEFAULT}" >/dev/null; WB_RC=$?
+if [ "${WB_RC}" -ne 0 ] || [ -e "${WB_DIR}/autodrive-budget-summary.md" ]; then
+  echo "FAIL: 2022-default-drive-no-wall-limit: rc=${WB_RC}; 1,000,000 recorded seconds stopped a default drive" >&2; exit 1
+fi
+bash "${TOOLS}/autodrive_budget.sh" check "${WB_DIR}" crusty post round-1 2107 \
+  "autodrive_budget_wall_seconds=14400" >/dev/null; WB_RC=$?
+if [ "${WB_RC}" -ne 10 ] || ! grep -qF -- '-c autodrive_budget_wall_seconds=0' "${WB_DIR}/autodrive-budget-summary.md" \
+   || grep -qF -- '-c autodrive_budget_wall_seconds=28800' "${WB_DIR}/autodrive-budget-summary.md"; then
+  echo "FAIL: 2022-explicit-wall-limit-resume-removes-it: rc=${WB_RC}" >&2; exit 1
+fi
+printf '%s\n' 'PASS: 2022: a default drive has no wall limit; an explicit one stops and resumes with =0.'
 printf '%s\n' 'PASS: agentic recipes parse, local shell is portable, and malformed loop verdict blocks.'

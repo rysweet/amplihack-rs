@@ -31,11 +31,6 @@ const DEFAULT_COPILOT_PATH: &str = ".npm-global/bin/copilot";
 /// Environment variable to override the binary path.
 const COPILOT_PATH_ENV: &str = "COPILOT_CLI_PATH";
 
-/// Default idle window for a single CLI invocation (issue #867). The child is
-/// reaped only after producing no output for this long, never on total elapsed
-/// wall-clock time.
-const DEFAULT_CLI_TIMEOUT: Duration = Duration::from_secs(300);
-
 // ---------------------------------------------------------------------------
 // CopilotCliClient
 // ---------------------------------------------------------------------------
@@ -65,7 +60,9 @@ pub struct CopilotCliClient {
     /// Optional working directory for the subprocess.
     working_dir: Option<PathBuf>,
     /// Idle window: reap the subprocess after this long with no output.
-    timeout: Duration,
+    /// `None` (the default, issue #2022) means no limit: an agent call runs
+    /// until it exits or is stopped.
+    timeout: Option<Duration>,
     /// Extra environment variables injected into the subprocess.
     extra_env: HashMap<String, String>,
 }
@@ -85,7 +82,7 @@ impl CopilotCliClient {
         Ok(Self {
             binary_path: path,
             working_dir: None,
-            timeout: DEFAULT_CLI_TIMEOUT,
+            timeout: None,
             extra_env: HashMap::new(),
         })
     }
@@ -129,10 +126,11 @@ impl CopilotCliClient {
         self
     }
 
-    /// Override the per-invocation idle window (issue #867). Reinterpreted as
-    /// the no-output threshold for the idle watchdog, not a wall-clock deadline.
+    /// Set a per-invocation idle window (issue #867). Reinterpreted as the
+    /// no-output threshold for the idle watchdog, not a wall-clock deadline.
+    /// Without it there is no limit (issue #2022).
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = timeout;
+        self.timeout = Some(timeout);
         self
     }
 
@@ -240,18 +238,24 @@ impl SdkClient for CopilotCliClient {
         // Issue #867: supervise the subprocess with an idle watchdog rather than
         // a wall-clock deadline. A child that keeps streaming output is never
         // killed; only a genuinely idle one is reaped after the idle window. The
-        // configured `self.timeout` is reinterpreted as the idle window.
+        // configured `self.timeout` is reinterpreted as the idle window; with
+        // none set (the default, issue #2022) the child is only reaped.
         let stdout_pipe = child.stdout.take();
         let stderr_pipe = child.stderr.take();
-        let cfg = IdleConfig::with_idle(self.timeout);
+        let cfg = match self.timeout {
+            Some(idle) => IdleConfig::with_idle(idle),
+            None => IdleConfig::none(),
+        };
         let outcome = wait_with_idle_watchdog_sync(&mut child, stdout_pipe, stderr_pipe, cfg);
 
-        if outcome.killed_for_idle {
+        // The watchdog kills for idleness only with an idle window set.
+        if let (true, Some(idle)) = (outcome.killed_for_idle, cfg.idle_timeout) {
+            let idle_secs = idle.as_secs();
             warn!(
-                idle_secs = self.timeout.as_secs(),
+                idle_secs,
                 "copilot CLI produced no output for the idle window; reaped"
             );
-            return Err(AgentError::TimeoutError(self.timeout.as_secs()));
+            return Err(AgentError::TimeoutError(idle_secs));
         }
 
         let status = outcome.status.map_err(|e| {
@@ -390,6 +394,14 @@ mod tests {
         assert!(err.to_string().contains("not found"));
     }
 
+    /// Issue #2022: a Copilot agent call has no time limit unless one is set.
+    #[test]
+    fn default_timeout_is_none() {
+        let path = std::env::current_exe().unwrap();
+        let client = CopilotCliClient::new(&path).unwrap();
+        assert_eq!(client.timeout, None);
+    }
+
     #[test]
     fn builder_methods() {
         // Use a known-existing path for the test.
@@ -399,7 +411,7 @@ mod tests {
             .with_working_dir("/tmp")
             .with_timeout(Duration::from_secs(60))
             .with_env("FOO", "bar");
-        assert_eq!(client.timeout, Duration::from_secs(60));
+        assert_eq!(client.timeout, Some(Duration::from_secs(60)));
         assert_eq!(client.working_dir.as_deref(), Some(Path::new("/tmp")));
         assert_eq!(client.extra_env.get("FOO").map(String::as_str), Some("bar"));
     }

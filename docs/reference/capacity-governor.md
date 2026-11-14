@@ -515,16 +515,16 @@ exhaustion either. The usage-limit supervisor owns that wait
 #1801), and the governor leaves it to the supervisor rather than running a
 second, shorter wait of its own. The agent step starts, the provider prints
 its own limit message with the reset, and the supervisor waits for that
-reset (up to five hours) or for any login with capacity (up to
-`recipe.usage_limit_max_wait_secs`), then runs the step again. If the
+reset, however far away it is, or for any login with capacity, then runs
+the step again. No limit applies to that wait unless
+`recipe.usage_limit_max_wait_secs` is set (issue #2022). If the
 governor held the step instead, it would wait only `governor.wait_secs`
 (10 minutes by default) and then exit 80. The supervisor does not read the
 governor's exit 80 line as a usage limit, so the run would fail where the
 supervisor would have waited and carried on.
 
 The supervisor's own rules apply unchanged: with every login at its weekly
-limit and the reset more than five hours away, it does not wait, and the
-step fails with the provider's exit code. A start of its own, or one under
+limit, it waits for that reset on the same login. A start of its own, or one under
 an interactive session's slot, is still held by steps 2 and 3, because no
 supervisor stands behind it.
 

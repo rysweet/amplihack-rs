@@ -20,7 +20,7 @@ fn start(reset: i64, until: i64, bound: Bound) -> Event {
     Event::Start {
         harness: Harness::Claude,
         reset: Some(reset),
-        until,
+        until: Some(until),
         bound,
         capacity: false,
     }
@@ -30,7 +30,7 @@ fn capacity_start(reset: Option<i64>, until: i64, bound: Bound) -> Event {
     Event::Start {
         harness: Harness::Claude,
         reset,
-        until,
+        until: Some(until),
         bound,
         capacity: true,
     }
@@ -64,7 +64,9 @@ fn times_use_the_zone_offset_with_a_colon() {
 fn every_other_event_has_its_documented_fields() {
     let cases = [
         (
-            Event::Progress { remaining: 1740 },
+            Event::Progress {
+                remaining: Some(1740),
+            },
             "progress remaining=1740s",
         ),
         (Event::End(End::ResetReached), "end reason=reset reached"),
@@ -90,12 +92,6 @@ fn every_other_event_has_its_documented_fields() {
         (
             Event::Skipped(Skip::Cannot(NoWait::SpendLimit)),
             "skipped reason=spend_limit",
-        ),
-        // Rendering only: the upgrade to a capacity wait is decided before
-        // logging and is tested in tests_plan.rs.
-        (
-            Event::Skipped(Skip::Cannot(NoWait::ResetTooFar)),
-            "skipped reason=reset_too_far",
         ),
         (
             Event::Skipped(Skip::Cannot(NoWait::NoReset)),
@@ -142,7 +138,7 @@ fn every_line_is_one_printable_ascii_line_even_for_extreme_values() {
         capacity_start(None, i64::MAX, Bound::MaxWait),
         capacity_start(Some(i64::MIN), i64::MIN, Bound::StepTimeout),
         Event::Progress {
-            remaining: u64::MAX,
+            remaining: Some(u64::MAX),
         },
         Event::Resume { attempt: u32::MAX },
         Event::End(End::Signal(i32::MIN)),
@@ -217,7 +213,7 @@ fn the_class_survives_a_real_number_of_progress_lines() {
     for k in 1..=360u64 {
         lines.push(line(
             &Event::Progress {
-                remaining: 21_600 - k * 60,
+                remaining: Some(21_600 - k * 60),
             },
             &LA,
         ));
@@ -239,7 +235,7 @@ fn a_reset_wait_ended_by_the_step_timeout_keeps_its_class() {
             &Event::Start {
                 harness: Harness::Claude,
                 reset: Some(T0 + 16_200),
-                until: T0 + 7_140,
+                until: Some(T0 + 7_140),
                 bound: Bound::StepTimeout,
                 capacity: false,
             },
@@ -249,7 +245,7 @@ fn a_reset_wait_ended_by_the_step_timeout_keeps_its_class() {
     for k in 1..=119u64 {
         lines.push(line(
             &Event::Progress {
-                remaining: 7_140 - k * 60,
+                remaining: Some(7_140 - k * 60),
             },
             &LA,
         ));
@@ -275,4 +271,87 @@ fn no_event_can_hold_a_name_a_path_or_an_address() {
         let l = line(e, &LA);
         assert!(!l.contains('@') && !l.contains('/'), "{l}");
     }
+}
+
+// --- issue #2022: unbounded waits ----------------------------------------
+
+fn unbounded_start(reset: Option<i64>) -> Event {
+    Event::Start {
+        harness: Harness::Claude,
+        reset,
+        until: None,
+        bound: Bound::Unbounded,
+        capacity: true,
+    }
+}
+
+#[test]
+fn an_unbounded_start_line_says_until_none_bound_unbounded() {
+    assert_eq!(
+        line(&unbounded_start(None), &LA),
+        "amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude \
+         reset=none until=none bound=unbounded"
+    );
+}
+
+#[test]
+fn an_unbounded_progress_line_omits_remaining() {
+    assert_eq!(
+        line(&Event::Progress { remaining: None }, &LA),
+        "amplihack.recipe.usage_limit_wait progress"
+    );
+}
+
+#[test]
+fn bounded_lines_are_unchanged_by_the_unbounded_form() {
+    assert_eq!(
+        line(
+            &Event::Progress {
+                remaining: Some(1740)
+            },
+            &LA
+        ),
+        "amplihack.recipe.usage_limit_wait progress remaining=1740s"
+    );
+    assert_eq!(
+        line(
+            &start(1_792_337_400, 1_792_337_520, Bound::ResetMargin),
+            &LA
+        ),
+        "amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude \
+         reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 08:32:00 -07:00 bound=reset+margin"
+    );
+}
+
+#[test]
+fn unbounded_lines_are_printable_ascii_and_not_limit_messages() {
+    for e in [
+        unbounded_start(None),
+        unbounded_start(Some(i64::MAX)),
+        Event::Progress { remaining: None },
+    ] {
+        let l = line(&e, &LA);
+        assert!(l.starts_with(PREFIX), "{l}");
+        assert!(
+            l.bytes().all(|b| (0x20..0x7f).contains(&b)),
+            "one printable ASCII line: {l:?}"
+        );
+        assert!(
+            limit_patterns::limit_message(l.as_bytes(), b"", T0).is_none(),
+            "a log line must never start a wait: {l}"
+        );
+    }
+}
+
+#[test]
+fn an_unbounded_wait_keeps_the_usage_limit_class() {
+    let mut text = vec![line(&unbounded_start(None), &LA)];
+    for _ in 0..60 {
+        text.push(line(&Event::Progress { remaining: None }, &LA));
+    }
+    text.push(line(&Event::Failed(FailReason::CapacityExpired), &LA));
+    assert_eq!(
+        classify_failure_text(&text.join("\n")).0,
+        FailureClass::UsageLimit
+    );
 }

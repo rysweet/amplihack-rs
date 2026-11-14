@@ -332,7 +332,8 @@ for k in ${HIT[@]+"${HIT[@]}"}; do
   case "$k" in
     autodrive_budget_loop_rounds) RESUME="${RESUME} -c ${k}=$((L_LOOP * 2))" ;;
     autodrive_budget_total_rounds) RESUME="${RESUME} -c ${k}=$((L_TOTAL * 2))" ;;
-    autodrive_budget_wall_seconds) RESUME="${RESUME} -c ${k}=$((L_WALL * 2))" ;;
+    # #2022: a wall-clock limit is never raised, only removed: resume with 0.
+    autodrive_budget_wall_seconds) RESUME="${RESUME} -c ${k}=0" ;;
   esac
 done
 HIT_TEXT="$(IFS=,; printf '%s' "${HIT[*]:-}" | sed 's/,/, /g')"

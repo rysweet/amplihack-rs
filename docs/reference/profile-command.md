@@ -3633,7 +3633,7 @@ interactive `claude` session is running in your home directory. See
 | `INVOCATION_ID` | Set by systemd for the processes of a unit. A `rotate watch` that sees it non-empty, and runs directly in a service as described in step 2 of [Owner unit name](#owner-unit-name), records itself as the [rotation owner](#rotate-owner). A shell in a `.scope` that inherited it does not. |
 | `<root>/.auto-switch.d/rotate/owner` | The [owner marker](#rotate-owner). While it exists, launches do not start a rotator. Removed only by `rotate owner clear`. |
 | `AMPLIHACK_USAGE_LIMIT_WAIT` | `true` or `1` turns the [usage-limit wait](#usage-limit-wait) on, `false` or `0` off. Outranks `recipe.usage_limit_wait` in `config.toml`. See [Usage-limit wait settings](#usage-limit-wait-settings). |
-| `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | Upper bound on one usage-limit wait, in seconds; default `21600` (6 hours). It shortens a [reset wait](#reset-time) and sets the length of a [capacity wait](#capacity-wait). Outranks `recipe.usage_limit_max_wait_secs`. See [Usage-limit wait settings](#usage-limit-wait-settings). |
+| `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | Optional upper bound on one usage-limit wait, in seconds; unset by default, meaning no limit. It shortens a [reset wait](#reset-time) or a [capacity wait](#capacity-wait). Outranks `recipe.usage_limit_max_wait_secs`. See [Usage-limit wait settings](#usage-limit-wait-settings). |
 | `CODEX_PROFILES_ROOT` | Directory whose subdirectories are the Codex accounts `profile usage` reads; default `$HOME/.codex-profiles`. Empty means unset. See [Which accounts are read](#which-accounts-are-read). |
 | `CODEX_BIN` | The Codex program `profile usage` runs as `<bin> app-server`; default `codex`, found through `PATH`. Like `PATH`, it decides which program runs. Empty means unset. See [Live read](#live-read). |
 | `AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS` | Seconds each Codex account's live read may take, `1` to `300`; default `20`. See [Codex read deadline](#codex-read-deadline). |
@@ -10735,15 +10735,18 @@ is in the [how-to](../howto/claude-profiles.md#waiting-for-a-usage-limit-reset).
 
 There are two kinds of wait:
 
-- a **reset wait**, for a limit that resets within five hours: it waits for
-  that reset, or for a login with capacity to become live, whichever comes
-  first (see [Reset time](#reset-time));
+- a **reset wait**, for a limit with a readable reset: it waits for that
+  reset, however far away it is, or for a login with capacity to become
+  live, whichever comes first (see [Reset time](#reset-time));
 - a **capacity wait**, for a limit that does not reset within five hours (a
   weekly limit) or states no readable reset, when another login could take
-  over: it waits only for a login with capacity, for at most
-  `max_wait_secs` (see [Capacity wait](#capacity-wait)).
+  over: it waits for any login with capacity, or for the failed login's own
+  reset when the message stated one (see [Capacity wait](#capacity-wait)).
 
-When neither applies, the step is not waited for and the run ends as before.
+Neither kind has a default time limit. A wait is bounded only by the
+limit's own reset, by `max_wait_secs` when it is set, and by
+`AMPLIHACK_STEP_TIMEOUT` when it is set. When neither kind applies, the step
+is not waited for and the run ends as before.
 
 The wait reads only files: the harness's limit message, the
 [capacity file](#capacity-file), the stored [readings](#readings) and the
@@ -10846,7 +10849,8 @@ After an attempt hits a usage limit, in this order:
 7. otherwise `start`, the wait, and `end`. After `end reason=signal` the
    step exits with `128` plus the signal; after `session ended`, or after
    `step timeout` on a reset wait, the failed attempt's result is passed up;
-   after `capacity expired`, or `step timeout` on a capacity wait, the
+   after `capacity expired` or `rotator stopped`, or `step timeout` on a
+   capacity wait, the
    [closing line](#closing-line) is written and the failed attempt's result
    is passed up; after any other reason `resume` is written and the step
    runs once more.
@@ -10861,7 +10865,7 @@ When auto-switch moved the step off the inherited profile before the first
 attempt, the inherited profile's limit comes from the usage readings: the
 latest reset among its windows at 100%. A reset from a reading more than
 five hours away is treated like a weekly limit in a message: it starts a
-capacity wait when one applies, else `skipped reason=reset_too_far`. A window over the auto-switch
+capacity wait when one applies, else a reset wait for that reset. A window over the auto-switch
 threshold but under 100% is a reason to prefer another profile, not a
 limit, so it neither times nor cancels the wait. If no window is at 100%,
 the inherited profile still has capacity and no wait is built: when the
@@ -10890,12 +10894,12 @@ starts with `Claude AI usage limit reached|` and Unix seconds, or with
 
 | Message | Example | Result |
 |---------|---------|--------|
-| Session limit | `You've hit your session limit · resets 1pm (America/Los_Angeles)` | reset wait, when the reset is at most five hours away |
-| 5-hour limit | `You've hit your 5-hour limit · resets 8:20pm (America/Los_Angeles)` | reset wait, when the reset is at most five hours away |
-| Per-model limit | `You've hit your Opus limit · resets 8:20pm (America/Los_Angeles)` | reset wait, when the reset is at most five hours away |
-| Weekly limit | `You've hit your weekly limit · resets Oct 8, 12am (America/Los_Angeles)` | [capacity wait](#capacity-wait) when another login could take over, else `skipped reason=reset_too_far` |
+| Session limit | `You've hit your session limit · resets 1pm (America/Los_Angeles)` | reset wait, when the reset is at most five hours away; further away, as for a weekly limit |
+| 5-hour limit | `You've hit your 5-hour limit · resets 8:20pm (America/Los_Angeles)` | reset wait, when the reset is at most five hours away; further away, as for a weekly limit |
+| Per-model limit | `You've hit your Opus limit · resets 8:20pm (America/Los_Angeles)` | reset wait, when the reset is at most five hours away; further away, as for a weekly limit |
+| Weekly limit | `You've hit your weekly limit · resets Oct 8, 12am (America/Los_Angeles)` | [capacity wait](#capacity-wait) when another login could take over, else a reset wait until the weekly reset |
 | Spend limit with a session reset | `You've hit your org's monthly spend limit · run /usage-credits … · your session limit resets 1pm (America/Los_Angeles)` | wait for that reset: the session limit is what stops work |
-| Spend limit with a weekly reset | `… monthly spend limit · … · your weekly limit resets Oct 8, 12am (America/Los_Angeles)` | `skipped reason=reset_too_far`, even when another login could take over |
+| Spend limit with a weekly reset | `… monthly spend limit · … · your weekly limit resets Oct 8, 12am (America/Los_Angeles)` | reset wait until the weekly reset, never a capacity wait, even when another login could take over |
 | Spend limit, no reset | `You've hit your org's monthly spend limit · run /usage-credits …` | `skipped reason=spend_limit`: no reset lifts it |
 | Epoch | `Claude AI usage limit reached\|1792335000` | reset wait, when at most five hours away; further away, as for a weekly limit |
 | Shape, no readable reset | `You've hit your session limit · try again later` | capacity wait when another login could take over, else `skipped reason=no_reset` |
@@ -10912,10 +10916,12 @@ table. No year, day or zone is guessed. Without a date the time is placed
 today in that zone, with one in this year; more than 10 minutes in the past
 means tomorrow, or next year. A spring-forward gap moves to the first valid
 instant, a fall-back overlap takes the earlier one. A reset more than five
-hours away, or none that parses, is not waited for by a reset wait: waiting
-would hold the run for hours with nothing known to change. Such a limit
-starts a [capacity wait](#capacity-wait) instead when another login could
-take over.
+hours away starts a [capacity wait](#capacity-wait) when another login
+could take over, and otherwise a reset wait that lasts until that reset.
+The five-hour threshold (`FAR_RESET_THRESHOLD`) only chooses the kind of
+wait; it never limits how long a wait lasts. A limit with no reset that
+parses starts a capacity wait when another login could take over, and is
+otherwise skipped as `no_reset`.
 
 ### Deadline
 
@@ -10929,7 +10935,8 @@ candidate that applies (a tie is named by the earlier row):
 | now + `max_wait_secs` | a maximum is set | `max_wait` |
 | step start + `AMPLIHACK_STEP_TIMEOUT` − 60 s, never before now | the step timeout is set and above 0 | `step_timeout` |
 
-No input can make a reset wait longer than five hours and 120 seconds.
+A reset wait always has a deadline: its reset plus 120 s. With no maximum
+and no step timeout, a weekly reset days away is waited for in full.
 `max_wait_secs = 0` does not wait but still retries once. A reset wait that
 reaches `max_wait` retries once, whatever the reason the maximum was set.
 
@@ -10946,7 +10953,8 @@ listed.
 | `session ended` | both | the process that started the step exited (the supervisor's parent changed) | no |
 | `reset reached` | both | the `reset+margin` deadline passed; on a capacity wait this is the failed login's own reset | yes |
 | `max reached` | reset | the `max_wait` deadline passed | yes |
-| `capacity expired` | capacity | the `max_wait` deadline passed with no login showing capacity | no; [closing line](#closing-line) |
+| `capacity expired` | capacity | the `max_wait` deadline passed with no login showing capacity; an unbounded wait never ends this way | no; [closing line](#closing-line) |
+| `rotator stopped` | capacity | an unbounded capacity wait (no readable reset, no `max_wait`) found no rotator process running at two 30 s polls in a row (turning auto-switch off only pauses the rotator and does not end the wait), so nothing could record capacity or swap the login; the `failed` line keeps `reason=capacity_expired` | no; [closing line](#closing-line) |
 | `step timeout` | both | the `step_timeout` deadline passed; a fresh attempt would be killed part way | no; [closing line](#closing-line) |
 | `login changed` | both | two probes in a row, 30 s apart, agree on a fingerprint that differs from the baseline | yes |
 | `rotator capacity` | both | the step uses `$HOME/.claude` and the [rotate ledger](#rotate-state-directory) records a cycle with capacity (`swapped`, `stayed` or `switched`, no alert; `stayed-unread` is not capacity) whose `measured_at` is after the wait began, or, from a rotator that writes no `measured_at`, recorded more than 60 s after it | yes |
@@ -10981,10 +10989,12 @@ fingerprint is never printed, logged or written.
 
 ### Capacity wait
 
-A capacity wait covers a limit that a reset wait would skip as
-`reset_too_far` or `no_reset`. It does not wait for the failed login's own
-reset. It waits for any login with capacity, then runs the step once more
-on that login.
+A capacity wait covers a plan limit whose reset is more than five hours
+away or cannot be read, when another login could take over. A spend limit
+never takes this route: it gets a reset wait on the same login, or none. It waits for any login
+with capacity, then runs the step once more on that login. When the
+message stated a reset, the wait also ends at that reset plus 120 s, and
+the step runs once more on the recovered login.
 
 #### When a capacity wait starts
 
@@ -10998,13 +11008,15 @@ with their usual `skipped` reasons.
 | Weekly limit, or a reset more than five hours away | `$HOME/.claude`, with a rotator running | yes | capacity wait |
 | Weekly limit, or a reset more than five hours away | inherited profile, auto-switch on, with a rotator running | yes | capacity wait |
 | No readable reset (`no_reset`) | `$HOME/.claude` or inherited profile with auto-switch on, with a rotator running | yes | capacity wait |
-| Weekly limit or no readable reset | `$HOME/.claude` or inherited profile, no rotator running | any | `skipped reason=reset_too_far` or `no_reset` |
-| Weekly limit or no readable reset | `$HOME/.claude`, a rotator running with auto-switch off | any | `skipped reason=reset_too_far` or `no_reset` |
-| Weekly limit or no readable reset | any of the above | no | `skipped reason=reset_too_far` or `no_reset` |
-| Weekly limit or no readable reset | inherited profile, auto-switch off | any | `skipped reason=reset_too_far` or `no_reset` |
-| Weekly limit or no readable reset | a profile from the `.default` pointer that is not the rotator's live profile | any | `skipped reason=reset_too_far` or `no_reset` |
-| Weekly limit or no readable reset | `$CLAUDE_CONFIG_DIR` | any | `skipped reason=reset_too_far` or `no_reset` |
-| Spend limit, with a weekly reset or none | any | any | `skipped reason=reset_too_far` or `spend_limit` |
+| Weekly limit, or a reset more than five hours away | any other case in this table | any | reset wait until that reset |
+| No readable reset | `$HOME/.claude` or inherited profile, no rotator running | any | `skipped reason=no_reset` |
+| No readable reset | `$HOME/.claude`, a rotator running with auto-switch off | any | `skipped reason=no_reset` |
+| No readable reset | any of the above | no | `skipped reason=no_reset` |
+| No readable reset | inherited profile, auto-switch off | any | `skipped reason=no_reset` |
+| No readable reset | a profile from the `.default` pointer that is not the rotator's live profile | any | `skipped reason=no_reset` |
+| No readable reset | `$CLAUDE_CONFIG_DIR` | any | `skipped reason=no_reset` |
+| Spend limit with a weekly reset | any | any | reset wait until that reset |
+| Spend limit with no reset | any | any | `skipped reason=spend_limit` |
 
 A step whose `.default` pointer names the rotator's live profile uses
 `$HOME/.claude` and is treated as a `$HOME/.claude` step. Such a step's wait
@@ -11029,14 +11041,16 @@ reason. No `/usage` probe is made, so its wait ends only on a fresh
 or its own reset (see [Capacity for a profile step](#capacity-for-a-profile-step)).
 In an unattended recipe run `AMPLIHACK_RECIPE_RUN_ID` stops launches from
 starting the rotator and a `claude -p` step has no status line, so with no
-rotator nothing may record a reading and the wait would run to its six-hour
-maximum. With no rotator running the step therefore fails at once as before.
+rotator nothing may record a reading and, with no maximum set, the wait
+might never end. With no rotator running the step therefore does not start
+a capacity wait: a far reset is waited for as a reset wait, and a limit
+with no readable reset fails at once as before.
 
 An explicit
 `$CLAUDE_CONFIG_DIR` is skipped because the rotator never changes it and it
-is the login the user chose. A spend limit is skipped because it can apply
-to a whole organisation, so another login of the same organisation would
-not end the wait.
+is the login the user chose. A spend limit never starts a capacity wait
+because it can apply to a whole organisation, so another login of the same
+organisation would not end the wait.
 
 **Another login could take over** is one read-only check made when the
 limit is seen. It never probes the network and never writes, so it makes no
@@ -11081,19 +11095,24 @@ A capacity wait ends at the earliest of:
 | Candidate | Applies when | `bound=` |
 |-----------|--------------|----------|
 | the failed login's reset + 120 s | the limit message states a reset that is still in the future | `reset+margin` |
-| now + `max_wait_secs` (default `21600`, 6 hours) | always | `max_wait` |
+| now + `max_wait_secs` | a maximum is set | `max_wait` |
 | step start + `AMPLIHACK_STEP_TIMEOUT` − 60 s, never before now | the step timeout is set and above 0 | `step_timeout` |
 
 A tie between the reset and the maximum is named `reset+margin`; a tie
 between the maximum and the step timeout is named `max_wait`. A reset
 5 h 30 m away with a six-hour maximum therefore ends the wait at 5 h 32 m
 with `end reason=reset reached` and a retry, because the failed login has
-recovered by then. There is no five-hour ceiling: a user file or
-`AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` may set a longer maximum, and a
-capacity wait honours it. A project file can only lower it (see
+recovered by then.
+
+When no candidate applies (no readable reset, no maximum and no step
+timeout), the wait has no deadline. Its `start` line reads
+`until=none bound=unbounded`, and it ends only on a login with capacity, a
+login change, a signal or the end of the session. A project file can only
+lower a maximum the user sets (see
 [Usage-limit wait settings](#usage-limit-wait-settings)). The arithmetic
-saturates, so a maximum near `u64::MAX` waits until the step timeout, or
-indefinitely without one, rather than overflowing.
+saturates, so a maximum near `u64::MAX` or a reset near the end of time
+waits until the step timeout, or indefinitely without one, rather than
+overflowing.
 
 `max_wait_secs = 0` on a capacity wait expires at once: `start`, then
 `end reason=capacity expired` and the closing line, with no sleep and no
@@ -11176,16 +11195,18 @@ Each line goes to stderr and starts with `amplihack.recipe.usage_limit_wait`,
 then the event and `key=value` fields. Times are local,
 `%Y-%m-%d %H:%M:%S %:z`. Reset-wait lines keep their fields and order; new
 fields are only ever added at the end. A capacity wait's `start` line has
-`wait=capacity` after `reason=`.
+`wait=capacity` after `reason=`. A wait with no deadline writes
+`until=none bound=unbounded` and bare `progress` lines; every other line is
+unchanged.
 
 | Event | Fields |
 |-------|--------|
 | `start` (reset wait) | `reason=usage_limit harness=claude reset=<time> until=<time> bound=<bound>` |
-| `start` (capacity wait) | `reason=usage_limit wait=capacity harness=claude reset=<time>\|none until=<time> bound=max_wait\|step_timeout` |
-| `progress` | `remaining=<secs>s`, every 60 s |
+| `start` (capacity wait) | `reason=usage_limit wait=capacity harness=claude reset=<time>\|none until=<time>\|none bound=reset+margin\|max_wait\|step_timeout\|unbounded` |
+| `progress` | `remaining=<secs>s`, every 60 s; no fields when the wait has no deadline |
 | `end` | `reason=<end reason>` from the table above |
 | `resume` | `attempt=<n>`, counting every attempt in the step |
-| `skipped` | `reason=disabled\|ci\|already_waited\|not_supervised\|spend_limit\|reset_too_far\|no_reset\|no_limit_message\|piped_prompt` |
+| `skipped` | `reason=disabled\|ci\|already_waited\|not_supervised\|spend_limit\|no_reset\|no_limit_message\|piped_prompt` |
 | `failed` | `reason=capacity_expired\|step_timeout\|already_waited`, followed by `: usage limit not lifted` |
 
 A reset wait:
@@ -11200,13 +11221,23 @@ amplihack.recipe.usage_limit_wait resume attempt=2
 A capacity wait on a weekly limit, ended by the rotator:
 
 ```
-amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=2026-11-05 00:00:00 -07:00 until=2026-10-31 15:43:00 -07:00 bound=max_wait
-amplihack.recipe.usage_limit_wait progress remaining=21540s
+amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=2026-11-05 00:00:00 -07:00 until=2026-11-05 00:02:00 -07:00 bound=reset+margin
+amplihack.recipe.usage_limit_wait progress remaining=389040s
 amplihack.recipe.usage_limit_wait end reason=rotator capacity
 amplihack.recipe.usage_limit_wait resume attempt=2
 ```
 
-A capacity wait with no readable reset that no login lifted:
+A capacity wait with no readable reset, no maximum and no step timeout:
+
+```
+amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=none until=none bound=unbounded
+amplihack.recipe.usage_limit_wait progress
+amplihack.recipe.usage_limit_wait end reason=login capacity
+amplihack.recipe.usage_limit_wait resume attempt=2
+```
+
+A capacity wait with no readable reset and a maximum set, that no login
+lifted:
 
 ```
 amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=none until=2026-10-31 15:43:00 -07:00 bound=max_wait
@@ -11232,7 +11263,7 @@ out ([Budget keys and defaults](auto-drive-to-merge.md#budget-keys-and-defaults)
 | Setting | `config.toml` key | Environment variable | Default |
 |---------|-------------------|----------------------|---------|
 | Enabled | `recipe.usage_limit_wait` | `AMPLIHACK_USAGE_LIMIT_WAIT` | `true`; `false` in CI |
-| Maximum wait, seconds | `recipe.usage_limit_max_wait_secs` | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | `21600` (6 hours) |
+| Maximum wait, seconds | `recipe.usage_limit_max_wait_secs` | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | unset: no limit |
 
 Both are ordinary [user-config](./user-config.md#recipeusage_limit_wait)
 keys: set them with `amplihack config set recipe.usage_limit_wait false`, in
@@ -11240,20 +11271,25 @@ the user or project `config.toml`, or with the variable, which outranks the
 files. The variable takes `true`, `false`, `1` or `0`; an invalid value is
 reported by the config loader, by the variable's name only, and ignored.
 
-The maximum shortens a reset wait, which never lasts beyond its reset plus
-120 s, and sets the length of a capacity wait. `21600` is a default, not a
-ceiling: a user `config.toml` or the variable may set a higher value, which
-a capacity wait honours. A project `config.toml` may only lower the
-maximum, so a repository cannot make your runs wait longer.
-A capacity wait does not use the reset time, so the maximum and
-`AMPLIHACK_STEP_TIMEOUT` are its only bounds. With a very large maximum and
-no step timeout, the step waits until a login has capacity again, a signal
-arrives or the session ends.
+The maximum is an opt-in ceiling. Unset, no limit applies: a reset wait
+lasts until its reset plus 120 s, however far away, and a capacity wait
+lasts until the failed login's reset plus 120 s, or, with no readable
+reset, until a login has capacity again, a signal arrives, the session
+ends or the rotator stops (`end reason=rotator stopped`). When set, it shortens any wait that would last longer. When the user
+`config.toml` or the variable sets a maximum, a project `config.toml` may
+only lower it, so a repository cannot make your runs wait longer than you
+allow; when neither sets one, a project value applies as written.
+
+```sh
+# Put a ceiling of twelve hours on every usage-limit wait
+amplihack config set recipe.usage_limit_max_wait_secs 43200
+```
+
 An invalid maximum is not an error that stops a run: `config set` rejects
 it with exit code `2`, and a file or variable value is reported by the
 config loader and ignored, so the next layer down applies. See
 [user-config](./user-config.md#recipeusage_limit_wait).
-`amplihack config get recipe.usage_limit_max_wait_secs` prints `21600` when
+`amplihack config get recipe.usage_limit_max_wait_secs` prints `(unset)` when
 nothing sets it. With no setting in the environment or a file, the wait is off
 in CI, meaning any `CI` that is not, after trimming, empty, `0` or `false`
 in any case: a CI job has no

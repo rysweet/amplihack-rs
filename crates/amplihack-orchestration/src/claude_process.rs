@@ -401,7 +401,8 @@ async fn run_delivered_command(
 
     // Idle watchdog (issue #867): supervise by liveness, not a wall-clock
     // deadline. A per-call `timeout` is reinterpreted as an *idle-window*
-    // override; `None` uses the env default. A child that keeps producing
+    // override; `None` uses `AMPLIHACK_IDLE_TIMEOUT_SECS`, and with that unset
+    // there is no idle limit (issue #2022). A child that keeps producing
     // output is never killed; a genuinely idle one is reaped after the window.
     let cfg = match timeout {
         Some(t) => IdleConfig::with_idle(t),
@@ -478,9 +479,9 @@ async fn run_delivered_command(
     drop(delivery_handle);
     let duration = start.elapsed();
 
-    if outcome.killed_for_idle {
+    if let (true, Some(limit)) = (outcome.killed_for_idle, cfg.idle_timeout) {
         return ProcessResult::err(
-            format!("Idle: no output for {:?}", cfg.idle_timeout),
+            format!("Idle: no output for {limit:?}"),
             process_id,
             duration,
         );

@@ -1001,6 +1001,16 @@ fn wall_seconds_counts_child_time() {
         summary.contains("Limits reached: autodrive_budget_wall_seconds"),
         "{summary}"
     );
+    // #2022: the resume command removes the wall-clock limit; it never
+    // suggests a larger one.
+    assert!(
+        summary.contains("-c autodrive_budget_wall_seconds=0"),
+        "the resume command must set the wall limit to 0:\n{summary}"
+    );
+    assert!(
+        !summary.contains("-c autodrive_budget_wall_seconds=2"),
+        "the resume command doubled the wall limit:\n{summary}"
+    );
 }
 
 fn usage_rows(fx: &Fixture) -> Vec<Vec<String>> {
@@ -2057,7 +2067,7 @@ fn yaml_str(v: &serde_yaml::Value) -> Option<String> {
 #[test]
 fn composer_declares_defaults_and_forwards_them_to_both_loops() {
     let r = recipe("auto-drive-to-merge");
-    for (key, default) in BUDGET_KEYS.iter().zip(["12", "20", "14400"]) {
+    for (key, default) in BUDGET_KEYS.iter().zip(["12", "20", "0"]) {
         assert_eq!(
             yaml_str(&r["context"][*key]).as_deref(),
             Some(default),

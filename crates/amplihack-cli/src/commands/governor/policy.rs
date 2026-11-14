@@ -88,8 +88,9 @@ pub fn decide(i: &Inputs, now: i64) -> Decision {
     // part of work that was already admitted, so steps 2 to 4 do not hold
     // it. An exhausted limit is left to the usage-limit supervisor (#1618,
     // #1801): the step runs, the provider prints its own limit message with
-    // the reset, and the supervisor waits for that reset (up to five hours)
-    // or for another login with capacity, then reruns the step. Holding the
+    // the reset, and the supervisor waits for that reset (with no limit
+    // unless `recipe.usage_limit_max_wait_secs` sets one, #2022) or for
+    // another login with capacity, then reruns the step. Holding the
     // step here would replace that wait with the governor's (ten minutes by
     // default) and end the run with exit 80. The reserve (step 4) does not
     // hold it either: that would abandon the recipe part-way through and

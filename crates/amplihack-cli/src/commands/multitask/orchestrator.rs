@@ -34,7 +34,7 @@ pub struct ParallelOrchestrator {
     processes: HashMap<i64, Arc<Mutex<Option<Child>>>>,
     cleaned_up: std::collections::HashSet<i64>,
     freed_bytes: u64,
-    default_max_runtime: u64,
+    default_max_runtime: Option<u64>,
     default_timeout_policy: String,
     default_branch: Option<String>,
 }
@@ -50,14 +50,14 @@ impl ParallelOrchestrator {
             processes: HashMap::new(),
             cleaned_up: std::collections::HashSet::new(),
             freed_bytes: 0,
-            default_max_runtime: DEFAULT_MAX_RUNTIME,
+            default_max_runtime: None,
             default_timeout_policy: DEFAULT_TIMEOUT_POLICY.to_string(),
             default_branch: None,
         }
     }
 
     pub fn set_default_max_runtime(&mut self, max_runtime: u64) {
-        self.default_max_runtime = max_runtime;
+        self.default_max_runtime = Some(max_runtime);
     }
 
     pub fn set_default_timeout_policy(&mut self, policy: &str) {
@@ -104,7 +104,7 @@ impl ParallelOrchestrator {
             &self.state_dir,
         );
 
-        ws.max_runtime = config.max_runtime.unwrap_or(self.default_max_runtime);
+        ws.max_runtime = config.max_runtime.or(self.default_max_runtime);
         ws.timeout_policy = config
             .timeout_policy
             .clone()

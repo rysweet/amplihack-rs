@@ -97,7 +97,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_HOOK_PROTOCOL` | internal |  | Hook wire protocol, set by the Codex plugin's wrapper script. |
 | `AMPLIHACK_HOOK_SPECS` | internal |  | Not an env var: the install crate's hook spec table. |
 | `AMPLIHACK_IDLE_POLL_MS` | user preference |  | Idle-watchdog poll interval. |
-| `AMPLIHACK_IDLE_TIMEOUT_SECS` | user preference |  | Idle-watchdog timeout. |
+| `AMPLIHACK_IDLE_TIMEOUT_SECS` | user preference |  | Idle-watchdog timeout in seconds; unset, `0` or unparseable means no idle limit. See [environment variables](./environment-variables.md#amplihack_idle_timeout_secs). |
 | `AMPLIHACK_INDICATORS` | internal |  | Not an env var: the project-init marker list. |
 | `AMPLIHACK_INSTRUCTIONS_END` | internal |  | Not an env var: end marker of staged Copilot instructions. |
 | `AMPLIHACK_INSTRUCTIONS_START` | internal |  | Not an env var: start marker of staged Copilot instructions. |
@@ -168,7 +168,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_PROMPT_DELIVERY` | user preference |  | Prompt delivery mode for agent subprocesses: `auto` (default), `stdin` or `tempfile`. No value puts the prompt in argv: any other value, including `argv`, logs a warning and is treated as `auto`. Never set it in recipes or bundle config. See [Agent Prompt Channels](agent-prompt-channels.md#automatic-prompt-delivery-never-selects-argv). |
 | `AMPLIHACK_QUEUE_PATH` | test-only |  | Fleet test fixture. |
 | `AMPLIHACK_RECIPE_LOG_JSONL` | user preference |  | Path for structured runner events. |
-| `AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS` | user preference |  | Whole-run wall-clock limit for the recipe runner. |
+| `AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS` | user preference |  | Optional whole-run wall-clock limit for the recipe runner, in seconds; unset, `0` or unparseable means no limit. See [environment variables](./environment-variables.md#amplihack_recipe_runner_timeout_secs). |
 | `AMPLIHACK_RECIPE_RUN_ID` | internal |  | Run id `recipe run` hands to the runner; a new one for each attempt, including transient retries. A launch that sees it set and non-empty never starts the profile rotator, and a `change:` line in the rotate log records it as `recipe_run=<id>`; see [Rotate autostart](profile-command.md#rotate-autostart). |
 | `AMPLIHACK_RECIPE_TRANSIENT_BUDGET_SECS` | user preference |  | Time budget for transient-failure retries. |
 | `AMPLIHACK_RECIPE_TRANSIENT_MAX_ATTEMPTS` | user preference |  | Attempt cap for transient-failure retries. |
@@ -225,7 +225,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_SKIP_UPDATE_CHECK` | test-only |  | Set only by Codex plugin install tests. |
 | `AMPLIHACK_SOURCE_ROOT` | test-only |  | Codex front-door contract fixture. |
 | `AMPLIHACK_STATUSLINE_NESTED` | internal |  | Set by the status-line wrapper for the command it runs, so an inner `profile statusline` runs only `statusline.sh`. |
-| `AMPLIHACK_STEP_TIMEOUT` | user preference | `recipe.step_timeout` | Per-step timeout ceiling exported to the recipe runner. |
+| `AMPLIHACK_STEP_TIMEOUT` | user preference | `recipe.step_timeout` | Optional per-step timeout exported to the recipe runner; not set unless you set it. |
 | `AMPLIHACK_STUB` | test-only |  | Stub binary marker in recipe and remote tests. |
 | `AMPLIHACK_SUPPLIED` | internal |  | Not an env var: suffix of the `OVERRIDE_IS_AMPLIHACK_SUPPLIED` constant. |
 | `AMPLIHACK_TARGET_LINK_ROOTS` | user preference |  | Colon-separated absolute folders where linked pre-commit targets may point; `amplihack cleanup` removes a linked target (destination and link) only inside these or the managed roots, or, for a link in the host cargo wrapper's layout (`<folder>-<target name>-<12 hex>`), inside the folder holding it. Unset by default; not needed for wrapper links. Read only by `amplihack cleanup`, never by the hook. See [Linked targets](../howto/clean-up-after-recipe-runs.md#linked-targets). |

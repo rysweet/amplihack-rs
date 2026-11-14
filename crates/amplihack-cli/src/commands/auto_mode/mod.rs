@@ -22,7 +22,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 mod channel;
 mod helpers;
@@ -34,8 +34,6 @@ pub use run::run_auto_mode;
 
 use channel::AutoModeChannel;
 use runner::AutoModeRunner;
-
-const QUERY_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AutoModeTool {
@@ -124,7 +122,9 @@ impl PromptExecutor for SystemPromptExecutor {
                 tool.subcommand()
             )
         })?;
-        let output = run_delivered_output_with_timeout(delivered, QUERY_TIMEOUT)?;
+        // Issue #2022: a query is agent work; it runs until it exits or is
+        // stopped, with no time limit.
+        let output = run_delivered_output(delivered)?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -150,20 +150,17 @@ impl PromptExecutor for SystemPromptExecutor {
 }
 
 /// Runs one turn. The prompt's stdin payload, if any, is written by a
-/// separate thread inside `run_output_with_timeout_stdin`, and the delivery
+/// separate thread inside `run_output_untimed_stdin`, and the delivery
 /// handle (which owns any prompt temporary file) is dropped only after the
 /// child has been waited on.
-fn run_delivered_output_with_timeout(
-    delivered: DeliveredCommand,
-    timeout: Duration,
-) -> Result<std::process::Output> {
+fn run_delivered_output(delivered: DeliveredCommand) -> Result<std::process::Output> {
     let DeliveredCommand {
         command,
         delivery_handle,
         stdin_payload,
         ..
     } = delivered;
-    let output = crate::util::run_output_with_timeout_stdin(command, timeout, stdin_payload);
+    let output = crate::util::run_output_untimed_stdin(command, stdin_payload);
     drop(delivery_handle);
     output
 }

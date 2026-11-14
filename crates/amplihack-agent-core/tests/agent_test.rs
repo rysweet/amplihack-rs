@@ -45,7 +45,7 @@ fn agent_config_accessible() {
     assert_eq!(cfg.agent_name, "configured");
     assert_eq!(cfg.model, "gpt-4");
     assert_eq!(cfg.memory_type, MemoryType::Semantic);
-    assert_eq!(cfg.timeout_secs, 60);
+    assert_eq!(cfg.timeout_secs, Some(60));
 }
 
 // ---------------------------------------------------------------------------

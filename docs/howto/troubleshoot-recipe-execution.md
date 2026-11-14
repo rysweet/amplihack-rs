@@ -448,7 +448,7 @@ If `AMPLIHACK_STEP_TIMEOUT` is set in your shell or CI environment, unset it (`u
 
 **Note:** A handful of bash steps in bundled recipes still carry `timeout_seconds: 1800`. Those are the network-I/O steps (`gh api`, `git fetch`, `curl`) where a stuck socket could hang indefinitely. The 1800-second floor is an availability guardrail, not a work bound — if one of those fires, the underlying network call has hung and the right fix is to investigate the network failure, not to extend the timeout.
 
-**Note:** `--step-timeout` overrides per-step `timeout_seconds` only. It does not affect recipe-level `default_step_timeout` (e.g., `quality-loop.yaml`) or the `max_runtime` budget in multitask workstreams.
+**Note:** `--step-timeout` overrides per-step `timeout_seconds` only. No bundled recipe sets a recipe-level `default_step_timeout`, and the `max_runtime` budget in multitask workstreams is unset unless you pass `--max-runtime`. The recipe runner itself has no overall limit unless [`AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS`](../reference/environment-variables.md#amplihack_recipe_runner_timeout_secs) is set.
 
 ---
 

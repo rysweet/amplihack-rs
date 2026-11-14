@@ -2,7 +2,8 @@
 //! their own clock. Each pass checks, in order: a stop signal, the end of
 //! the session that started the step, the deadline, the login fingerprint,
 //! the rotator's capacity and, on a capacity wait, another login's capacity
-//! (every 30 s), and the progress line (every 60 s), then sleeps at most one
+//! (every 30 s), on a capacity wait with no deadline whether a rotator is
+//! still running, and the progress line (every 60 s), then sleeps at most one
 //! second. The login baseline is the first value two probes in a row agree
 //! on, and a change is a different value that two probes in a row agree on,
 //! so a torn or failed read of `.claude.json`, first or later, never ends the
@@ -34,6 +35,10 @@ pub(crate) trait WaitDeps {
     fn rotator_capacity(&mut self, start: i64) -> bool;
     /// A reading taken after `start` shows another stored login has capacity.
     fn other_capacity(&mut self, start: i64) -> bool;
+    /// A rotator process is still running. Asked only on a
+    /// capacity wait with no deadline, which nothing else could end once the
+    /// rotator is gone (issue #2022).
+    fn rotator_running(&mut self) -> bool;
     fn log(&mut self, line: &str);
 }
 
@@ -49,6 +54,9 @@ pub(crate) enum End {
     CapacityExpired,
     /// A reading showed that another stored login has capacity.
     OtherCapacity,
+    /// A capacity wait with no deadline saw no running rotator at two polls
+    /// in a row, so nothing could record capacity or swap the login.
+    RotatorStopped,
     SessionEnded,
     Signal(i32),
 }
@@ -63,6 +71,7 @@ impl End {
             End::RotatorCapacity => "rotator capacity",
             End::CapacityExpired => "capacity expired",
             End::OtherCapacity => "login capacity",
+            End::RotatorStopped => "rotator stopped",
             End::SessionEnded => "session ended",
             End::Signal(_) => "signal",
         }
@@ -76,6 +85,9 @@ impl End {
             (Bound::ResetMargin, _) => End::ResetReached,
             (Bound::MaxWait, PlanKind::Reset) => End::MaxReached,
             (Bound::MaxWait, PlanKind::Capacity) => End::CapacityExpired,
+            // An unbounded wait has no deadline to reach; mapped for
+            // completeness, never panicking.
+            (Bound::Unbounded, _) => End::CapacityExpired,
         }
     }
 }
@@ -91,6 +103,10 @@ pub(crate) fn wait<D: WaitDeps>(plan: &Plan, deps: &mut D) -> End {
     let mut baseline: Option<Option<D::Print>> = None;
     let mut next_poll = start.saturating_add(POLL_SECS);
     let mut next_progress = start.saturating_add(PROGRESS_SECS);
+    // Only an unbounded capacity wait depends on the rotator to end; a miss
+    // must be seen at two polls in a row, so a rotator restart is not a stop.
+    let watch_rotator = plan.kind == PlanKind::Capacity && plan.until.is_none();
+    let mut rotator_missed = false;
     loop {
         if let Some(sig) = deps.signal() {
             return End::Signal(sig);
@@ -99,7 +115,7 @@ pub(crate) fn wait<D: WaitDeps>(plan: &Plan, deps: &mut D) -> End {
             return End::SessionEnded;
         }
         let now = deps.now();
-        if now >= plan.until {
+        if plan.until.is_some_and(|until| now >= until) {
             return End::at_deadline(plan.bound, plan.kind);
         }
         if now >= next_poll {
@@ -121,14 +137,27 @@ pub(crate) fn wait<D: WaitDeps>(plan: &Plan, deps: &mut D) -> End {
             if plan.kind == PlanKind::Capacity && deps.other_capacity(start) {
                 return End::OtherCapacity;
             }
+            if watch_rotator {
+                let missed = !deps.rotator_running();
+                if missed && rotator_missed {
+                    return End::RotatorStopped;
+                }
+                rotator_missed = missed;
+            }
             next_poll = now.saturating_add(POLL_SECS);
         }
         if now >= next_progress {
-            let remaining = u64::try_from(plan.until.saturating_sub(now)).unwrap_or(0);
+            let remaining = plan
+                .until
+                .map(|until| u64::try_from(until.saturating_sub(now)).unwrap_or(0));
             deps.log(&line(&Event::Progress { remaining }, &chrono::Local));
             next_progress = now.saturating_add(PROGRESS_SECS);
         }
-        let left = plan.until.saturating_sub(now);
-        deps.sleep(Duration::from_secs(u64::try_from(left.min(1)).unwrap_or(1)));
+        // At most one second, so a signal is noticed promptly; an unbounded
+        // wait sleeps the full second.
+        let left = plan
+            .until
+            .map_or(1, |until| until.saturating_sub(now).min(1));
+        deps.sleep(Duration::from_secs(u64::try_from(left).unwrap_or(1)));
     }
 }

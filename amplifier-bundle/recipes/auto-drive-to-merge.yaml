@@ -28,7 +28,9 @@ context:
   autodrive_pr_input: ""
   autodrive_budget_loop_rounds: "12"
   autodrive_budget_total_rounds: "20"
-  autodrive_budget_wall_seconds: "14400"
+  # #2022: there is no default wall-clock limit. A drive ends on rounds or on
+  # the evaluator, never on a clock; an operator may still set one with -c.
+  autodrive_budget_wall_seconds: "0"
   build_result: ""
   crusty_loop_result: ""
   merge_loop_result: ""

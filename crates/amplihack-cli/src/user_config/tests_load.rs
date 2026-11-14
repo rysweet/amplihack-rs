@@ -158,15 +158,58 @@ fn project_cannot_raise_above_the_default_either() {
     assert_eq!(e.entry("orchestrator.max_depth").origin, Origin::Default);
 }
 
-/// Issue #1801: 21600 is a default a project cannot raise, not a ceiling.
+/// Issue #2022: the wait cap has no default. With no user value a project
+/// value applies as written (a ceiling can only shorten a wait).
 #[test]
-fn a_project_cannot_raise_the_usage_limit_wait_above_its_default() {
+fn with_no_user_value_a_project_usage_limit_wait_applies_as_written() {
     let fx = Fx::new();
     fx.project("[recipe]\nusage_limit_max_wait_secs = 86400\n");
     let e = fx.load(&[]);
     assert_eq!(
         e.entry("recipe.usage_limit_max_wait_secs").value,
-        Some(Value::Int(21_600))
+        Some(Value::Int(86_400))
+    );
+    assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
+}
+
+/// Issue #2022: unset everywhere, the wait cap has no value at all.
+#[test]
+fn the_usage_limit_wait_cap_is_unset_by_default() {
+    let fx = Fx::new();
+    let e = fx.load(&[]);
+    let entry = e.entry("recipe.usage_limit_max_wait_secs");
+    assert_eq!(entry.value, None);
+}
+
+/// S2: lower-only stays. A project cannot raise a user ceiling.
+#[test]
+fn a_project_cannot_raise_a_user_usage_limit_wait() {
+    let fx = Fx::new();
+    fx.user("[recipe]\nusage_limit_max_wait_secs = 3600\n");
+    fx.project("[recipe]\nusage_limit_max_wait_secs = 86400\n");
+    let e = fx.load(&[]);
+    assert_eq!(
+        e.entry("recipe.usage_limit_max_wait_secs").value,
+        Some(Value::Int(3600))
+    );
+    assert!(
+        e.diagnostics
+            .iter()
+            .any(|d| d.reason.contains("is above the user value 3600")),
+        "{:?}",
+        e.diagnostics
+    );
+}
+
+#[test]
+fn a_project_can_lower_a_user_usage_limit_wait() {
+    let fx = Fx::new();
+    fx.user("[recipe]\nusage_limit_max_wait_secs = 3600\n");
+    fx.project("[recipe]\nusage_limit_max_wait_secs = 600\n");
+    let e = fx.load(&[]);
+    assert_eq!(
+        e.entry("recipe.usage_limit_max_wait_secs").value,
+        Some(Value::Int(600))
     );
 }
 

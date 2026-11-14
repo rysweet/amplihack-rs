@@ -253,7 +253,9 @@ pub(crate) static KEYS: &[KeyDef] = &[
             max: u64::MAX,
         },
         env: Some("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS"),
-        default: Some("21600"),
+        // Issue #2022: no default ceiling; a usage-limit wait lasts until the
+        // reset unless this opt-in maximum is set.
+        default: None,
         lower_only: true,
     },
     KeyDef {

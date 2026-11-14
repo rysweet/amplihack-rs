@@ -22,12 +22,17 @@ use std::time::{Duration, Instant};
 
 const STDERR_TAIL_LINES: usize = 5;
 const CAPTURED_STDERR_LINES: usize = 200;
-const RECIPE_RUNNER_DEFAULT_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
 const RECIPE_RUNNER_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const RECIPE_RUNNER_PIPE_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(windows)]
 const RECIPE_RUNNER_TERMINATE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Opt-in overall limit on one recipe-runner attempt, in whole seconds
+/// (issue #2022). Unset, empty, `0` or unparseable means no limit.
 const RECIPE_RUNNER_TIMEOUT_ENV: &str = "AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS";
+/// Printed once per process when [`RECIPE_RUNNER_TIMEOUT_ENV`] holds a value
+/// that is not a whole number of seconds above 0. It names the variable and
+/// never its value, which could be anything an environment holds.
+pub(super) const RUNNER_TIMEOUT_WARNING: &str = "warning: ignored AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS (not a whole number of seconds above 0); no limit applies";
 /// Env var controlling the SIGTERM -> SIGKILL grace window (whole seconds) used
 /// when deterministically tearing down the recipe-runner process tree (#964).
 /// `0` escalates to SIGKILL immediately (no graceful window).
@@ -1239,7 +1244,7 @@ fn spawn_with_streaming_stderr(
     correlation: RecipeRunCorrelation,
     recipe_path: &Path,
     run_dir: Option<&Path>,
-    timeout: Duration,
+    timeout: Option<Duration>,
     tree_id: &str,
     stderr_sink: &mut String,
 ) -> Result<RecipeRunResult> {
@@ -1434,7 +1439,7 @@ fn spawn_with_streaming_stderr(
                 )),
             });
         }
-        RunnerWait::TimedOut => {
+        RunnerWait::TimedOut(limit) => {
             let pid = child.id();
             // Issue #1304: emit the terminal record BEFORE terminating. The
             // `?` on terminate_recipe_runner used to be able to return first,
@@ -1453,7 +1458,7 @@ fn spawn_with_streaming_stderr(
             })?;
             anyhow::bail!(
                 "recipe-runner-rs timed out after {:?} (pid {}, recipe {}, working dir {}); recipe run {} ended: {}",
-                timeout,
+                limit,
                 pid,
                 recipe_path.display(),
                 correlation.cwd(),
@@ -1817,24 +1822,50 @@ pub(super) fn meaningful_stderr_tail_with_prior_drops(
     tail
 }
 
-fn recipe_runner_timeout() -> Duration {
-    std::env::var(RECIPE_RUNNER_TIMEOUT_ENV)
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|seconds| *seconds > 0)
-        .map(Duration::from_secs)
-        .unwrap_or(RECIPE_RUNNER_DEFAULT_TIMEOUT)
+/// Resolve a raw `AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS` value (issue #2022).
+///
+/// Pure: `None`, empty, `0`, negative, non-numeric and overflowing values all
+/// give `None` (no limit); a trimmed digit string N > 0 gives `Some(N s)`.
+pub(super) fn parse_runner_timeout(raw: Option<&str>) -> Option<Duration> {
+    amplihack_utils::idle_watchdog::parse_positive_secs(raw)
+}
+
+/// True when `raw` is a non-empty value other than `0` that does not parse,
+/// which is the only case that earns [`RUNNER_TIMEOUT_WARNING`].
+/// Shares its rule with `AMPLIHACK_IDLE_TIMEOUT_SECS`.
+pub(super) fn runner_timeout_warns(raw: Option<&str>) -> bool {
+    amplihack_utils::idle_watchdog::positive_secs_is_malformed(raw)
+}
+
+/// The opt-in overall limit on a recipe-runner attempt. `None` (the default)
+/// means the runner is waited for until it exits or a stop signal arrives.
+pub(super) fn recipe_runner_timeout() -> Option<Duration> {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    let raw = std::env::var(RECIPE_RUNNER_TIMEOUT_ENV).ok();
+    if runner_timeout_warns(raw.as_deref()) {
+        WARNED.call_once(|| eprintln!("{RUNNER_TIMEOUT_WARNING}"));
+    }
+    parse_runner_timeout(raw.as_deref())
 }
 
 /// How waiting for the runner ended.
-enum RunnerWait {
+pub(super) enum RunnerWait {
     Exited(ExitStatus),
-    TimedOut,
+    /// The explicit limit that elapsed.
+    TimedOut(Duration),
     /// Issue #1606: `recipe run` received this stop signal.
     Stopped(i32),
 }
 
-fn wait_for_recipe_runner(child: &mut Child, timeout: Duration) -> std::io::Result<RunnerWait> {
+/// Wait for the runner to exit, polling for stop signals between checks.
+///
+/// With `timeout = None` there is no deadline arm: the wait ends only when the
+/// runner exits or a stop signal is pending. With `Some(limit)` it also ends
+/// with [`RunnerWait::TimedOut`] once `limit` has elapsed.
+pub(super) fn wait_for_recipe_runner(
+    child: &mut Child,
+    timeout: Option<Duration>,
+) -> std::io::Result<RunnerWait> {
     let started = Instant::now();
     loop {
         if let Some(status) = child.try_wait()? {
@@ -1843,12 +1874,16 @@ fn wait_for_recipe_runner(child: &mut Child, timeout: Duration) -> std::io::Resu
         if let Some(signal) = super::stop_signal::pending() {
             return Ok(RunnerWait::Stopped(signal));
         }
+        let Some(limit) = timeout else {
+            thread::sleep(RECIPE_RUNNER_POLL_INTERVAL);
+            continue;
+        };
         // Single clock read per poll: derive the remaining budget once and reuse
         // it for both the deadline check and the sleep cap. A zero (or elapsed)
         // remaining is the timeout.
-        let remaining = match timeout.checked_sub(started.elapsed()) {
+        let remaining = match limit.checked_sub(started.elapsed()) {
             Some(remaining) if !remaining.is_zero() => remaining,
-            _ => return Ok(RunnerWait::TimedOut),
+            _ => return Ok(RunnerWait::TimedOut(limit)),
         };
         thread::sleep(RECIPE_RUNNER_POLL_INTERVAL.min(remaining));
     }

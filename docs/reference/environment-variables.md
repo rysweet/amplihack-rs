@@ -41,6 +41,8 @@ Several of these variables have a persistent equivalent in the [user config file
   - [AMPLIHACK_MEMORY_BACKEND](#amplihack_memory_backend)
   - [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait)
   - [AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS](#amplihack_usage_limit_max_wait_secs)
+  - [AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS](#amplihack_recipe_runner_timeout_secs)
+  - [AMPLIHACK_IDLE_TIMEOUT_SECS](#amplihack_idle_timeout_secs)
   - [AMPLIHACK_GOVERNOR](#amplihack_governor)
   - [AMPLIHACK_GOVERNOR_WAIT](#amplihack_governor_wait)
   - [AMPLIHACK_GOVERNOR_CLASS](#amplihack_governor_class)
@@ -751,7 +753,9 @@ the classification rules and the greppable markers each decision writes.
 **Read by:** `amplihack recipe run`
 
 Budget for the total time spent **waiting on backoff** across all
-transient-transport retries in one recipe run. Backoff delays start at 10s and
+transient-transport retries in one recipe run. It measures only the idle
+backoff sleeps between attempts and never the time an attempt spends
+running, so it is a retry budget and not a limit on work. Backoff delays start at 10s and
 double with equal jitter, clamped so a wait never overshoots the remaining
 budget. Whichever bound is reached first — this one or
 `AMPLIHACK_RECIPE_TRANSIENT_MAX_ATTEMPTS` — ends the retry with a terminal
@@ -993,10 +997,11 @@ backend configuration reference.
 Turns the usage-limit wait on or off: a recipe agent step that fails on a
 Claude usage limit waits for the reset, or for a login with capacity, and
 runs once more instead of ending the run. A reset more than five hours away
-or an unreadable reset is waited out only by a
-[capacity wait](./profile-command.md#capacity-wait), when another login
-could take over. A spend limit is never waited for unless it also states a
-session reset. Overrides the
+is waited for like any other, or by a
+[capacity wait](./profile-command.md#capacity-wait) when another login
+could take over. An unreadable reset is waited out only by a capacity wait.
+A spend limit is waited for only when it states a reset, and never by a
+capacity wait. Overrides the
 config files; empty means unset; an invalid value prints one warning and is
 ignored. See the
 [usage-limit wait reference](./profile-command.md#usage-limit-wait).
@@ -1006,18 +1011,106 @@ ignored. See the
 ### AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS
 
 **Type:** string (non-negative integer, seconds)
-**Default:** `21600` (six hours)
+**Default:** unset: no limit
 **Config key:** [`recipe.usage_limit_max_wait_secs`](./user-config.md#recipeusage_limit_wait) in `config.toml`
 **Read by:** `amplihack claude -p` when it runs as a recipe agent step
 
-Upper bound on one usage-limit wait. For a wait on a reset it only shortens
-the wait, and `0` means no wait but one more attempt; such a wait never
-lasts longer than five hours and 120 seconds. For a
-[capacity wait](./profile-command.md#capacity-wait) on a weekly or
-unreadable reset it sets the length of the wait, with no five-hour ceiling
-(the wait still ends sooner at the failed login's own reset plus 120 s), and `0` means the step ends at once as a usage limit. The variable may set a
-value above the default. Overrides the config files; empty means unset; an
-invalid value prints one warning, naming the variable only, and is ignored.
+Optional upper bound on one usage-limit wait. Unset, a wait lasts until the
+reset plus 120 seconds, however far away the reset is, or, for a
+[capacity wait](./profile-command.md#capacity-wait) with no readable reset,
+until a login has capacity, the run is stopped or the rotator stops. When set, it ends any
+wait that would last longer. For a wait on a reset, `0` means no wait but
+one more attempt; for a capacity wait, `0` means the step ends at once as a
+usage limit. Overrides the config files; empty means unset; an invalid
+value prints one warning, naming the variable only, and is ignored. A typo
+such as `10m` therefore leaves the config-file value in force, or no limit
+if no config file sets one.
+
+```sh
+# Wait at most two hours for a usage limit to lift, in this shell only
+export AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS=7200
+```
+
+---
+
+### AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS
+
+**Type:** string (whole number of seconds)
+**Default:** unset: no limit
+**Config key:** none
+**Read by:** `amplihack recipe run`
+
+Optional wall-clock limit on one whole `recipe-runner-rs` run. Unset, a
+recipe run has no overall time limit: it runs until it finishes, fails, or
+is stopped by `amplihack recipe stop`, Ctrl-C, `SIGTERM` or `SIGHUP`.
+
+The value is trimmed and read as a whole number of seconds:
+
+| Value | Effect |
+|---|---|
+| unset, empty, `0` | No limit, no warning |
+| `7`, ` 7 ` | Limit of 7 seconds |
+| `-5`, `abc`, `7s`, a value too large for 64 bits | No limit; one warning on standard error |
+
+The warning names the variable but never prints its value. It is printed
+once per process, however many recipe runs read the variable:
+
+```
+warning: ignored AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS (not a whole number of seconds above 0); no limit applies
+```
+
+When a limit is set and reached, amplihack stops the runner's process
+group, writes the run's terminal record and ends with an error such as:
+
+```
+recipe-runner-rs timed out after 1s (pid 41213, recipe default-workflow, working dir /home/user/src/project); recipe run rs-1792335000-41210 ended: timed out
+```
+
+```sh
+# Give a CI recipe run at most four hours
+AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS=14400 \
+amplihack recipe run default-workflow \
+  -c task_description="Refresh the dependency lock file"
+```
+
+This limit is separate from [`AMPLIHACK_STEP_TIMEOUT`](#amplihack_step_timeout),
+which bounds each step, and from
+[`AMPLIHACK_RECIPE_TRANSIENT_BUDGET_SECS`](#amplihack_recipe_transient_budget_secs),
+which bounds only the backoff sleeps between transient retries.
+
+See [No default time limits on work](../concepts/no-default-time-limits.md)
+for every limit amplihack lets you set.
+
+---
+
+### AMPLIHACK_IDLE_TIMEOUT_SECS
+
+**Type:** string (whole number of seconds)
+**Default:** unset: no idle limit
+**Config key:** none
+**Read by:** the [idle watchdog](./idle-watchdog.md), for Claude agent
+subprocesses and multitask workstreams that amplihack starts (not Copilot CLI
+calls or remote runs). For multitask it sets the quiet period required
+before a workstream past an explicit `--max-runtime` is interrupted; there
+unset, `0` or malformed means 300 seconds.
+
+Optional idle limit on an agent subprocess: when set above 0, a child that
+writes nothing to standard output or standard error for this many seconds
+is killed. Unset, the watchdog never kills a child for being quiet; it
+still reaps the child and stops it when the run is stopped. It is read with
+the same rules as
+[`AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS`](#amplihack_recipe_runner_timeout_secs):
+`0`, empty or unparseable means no limit. An unparseable value, such as
+`300s`, also prints this warning once per process, without the value:
+
+```text
+warning: ignored AMPLIHACK_IDLE_TIMEOUT_SECS (not a whole number of seconds above 0); no idle limit applies
+```
+
+```sh
+# Kill an agent subprocess after 15 minutes with no output
+export AMPLIHACK_IDLE_TIMEOUT_SECS=900
+```
 
 ---
 

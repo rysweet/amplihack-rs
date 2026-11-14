@@ -9,9 +9,9 @@
 //!        results back — must be converted to `type: bash` invoking
 //!        `amplihack recipe run quality-audit-cycle` as a subprocess.
 //!
-//! Bug 3: run-recursive-cycle has no timeout guard — must wrap the subprocess
-//!        call in shell `timeout 900` (NOT a YAML-level `timeout:` field,
-//!        which would violate issue #439's CI tests).
+//! Bug 3: originally wrapped the subprocess in shell `timeout 900`. Issue
+//!        #2022 removed that: the recursive run is work, so it has neither a
+//!        shell `timeout` nor a YAML-level `timeout:` field (issue #439).
 //!
 //! These tests are written TDD-style: they assert the expected YAML structure
 //! BEFORE the implementation changes land, so they fail initially and pass
@@ -333,11 +333,13 @@ fn run_recursive_cycle_captures_output() {
 }
 
 // =========================================================================
-// Bug 3: run-recursive-cycle must have a 900s timeout guard
+// Bug 3 (revised by #2022): the recursive run is work, so no wall-clock
+// limit wraps it. Recursion stays bounded by recursion.max_depth and
+// max_cycles, not by a timer.
 // =========================================================================
 
 #[test]
-fn run_recursive_cycle_has_shell_timeout_900() {
+fn run_recursive_cycle_has_no_shell_timeout() {
     let recipe = load_recipe();
     let step = find_step(&recipe, "run-recursive-cycle");
     let cmd = step
@@ -345,13 +347,21 @@ fn run_recursive_cycle_has_shell_timeout_900() {
         .and_then(Value::as_str)
         .expect("run-recursive-cycle must have a command field");
 
-    // The timeout must be a shell `timeout` command wrapping the subprocess,
-    // NOT a YAML-level `timeout:` field (which would violate issue #439).
+    let wrapped = cmd.lines().any(|line| {
+        let line = line.trim_start();
+        !line.starts_with('#')
+            && line.contains("amplihack recipe run")
+            && line.split_whitespace().any(|w| w == "timeout")
+    });
     assert!(
-        cmd.contains("timeout 900") || cmd.contains("timeout 900s"),
-        "Bug 3: run-recursive-cycle must use shell 'timeout 900' to guard \
-         the subprocess call against unbounded execution.\n\
-         Current command does NOT contain 'timeout 900'."
+        !wrapped,
+        "#2022: run-recursive-cycle must not wrap the recursive \
+         `amplihack recipe run` in a shell `timeout`; work has no default \
+         time limit.\nCommand:\n{cmd}"
+    );
+    assert!(
+        cmd.contains("amplihack recipe run quality-audit-cycle"),
+        "run-recursive-cycle must still invoke the nested recipe run"
     );
 }
 
@@ -364,7 +374,7 @@ fn run_recursive_cycle_has_no_yaml_timeout_field() {
     assert!(
         step.get("timeout").is_none(),
         "Bug 3 / Issue #439: run-recursive-cycle must NOT have a YAML-level \
-         timeout: field. Use shell 'timeout 900' inside the command instead. \
+         timeout: field (#2022: the recursive run has no time limit). \
          The issue_439_no_per_step_timeout test enforces: bash step YAML \
          timeouts only for network commands and >= 1800s."
     );

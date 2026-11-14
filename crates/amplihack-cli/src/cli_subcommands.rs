@@ -41,9 +41,10 @@ pub struct VerifyLiveArgs {
     #[arg(long)]
     pub evidence_dir: Option<PathBuf>,
 
-    /// Maximum seconds allowed for each client execution
-    #[arg(long, default_value_t = 180, value_parser = clap::value_parser!(u64).range(10..=900))]
-    pub timeout_seconds: u64,
+    /// Maximum seconds allowed for each client execution (10-900). No limit
+    /// applies unless set.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(10..=900))]
+    pub timeout_seconds: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, ValueEnum)]
@@ -433,9 +434,10 @@ pub enum RemoteCommands {
         /// Always provision a fresh VM.
         #[arg(long = "no-reuse")]
         no_reuse: bool,
-        /// Maximum execution time in minutes.
-        #[arg(long = "timeout", default_value_t = 120, value_parser = clap::value_parser!(u64).range(5..=480))]
-        timeout: u64,
+        /// Idle limit in minutes (5-480): the remote run is stopped after this
+        /// long with no output. No limit applies unless set.
+        #[arg(long = "timeout", value_parser = clap::value_parser!(u64).range(5..=480))]
+        timeout: Option<u64>,
         /// Azure region.
         #[arg(long = "region")]
         region: Option<String>,
@@ -727,7 +729,7 @@ pub enum MultitaskCommands {
         /// Recipe name for recipe mode
         #[arg(long, default_value = "default-workflow")]
         recipe: String,
-        /// Override workstream runtime budget in seconds
+        /// Runtime budget in seconds for each workstream. No limit unless set.
         #[arg(long = "max-runtime")]
         max_runtime: Option<u64>,
         /// Timeout policy for active workstreams

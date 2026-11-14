@@ -32,15 +32,12 @@ use std::time::{Duration, Instant, SystemTime};
 // Configuration constants
 // ---------------------------------------------------------------------------
 
-/// Env var overriding the idle threshold (seconds).
+/// Env var that sets an idle threshold (seconds). Unset, `0`, empty or
+/// unparseable means no idle limit (issue #2022).
 pub const ENV_IDLE_TIMEOUT_SECS: &str = "AMPLIHACK_IDLE_TIMEOUT_SECS";
 
 /// Env var overriding the supervising-loop poll interval (milliseconds).
 pub const ENV_IDLE_POLL_MS: &str = "AMPLIHACK_IDLE_POLL_MS";
-
-/// Default idle threshold: a child is killed after this many seconds with no
-/// output on either stdout or stderr.
-pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 300;
 
 /// Default poll interval for the supervising loop (milliseconds).
 pub const DEFAULT_POLL_MS: u64 = 1000;
@@ -65,6 +62,46 @@ fn env_u64(key: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+/// Parse an opt-in limit in whole seconds (issue #2022).
+///
+/// This is the single parser for limit variables such as
+/// [`ENV_IDLE_TIMEOUT_SECS`] and `AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS`. The
+/// value is trimmed of whitespace; what remains must be one or more ASCII
+/// digits forming a `u64` above zero. Anything else (absent, empty, `0`, a
+/// sign, a unit, hex, a fraction, or a value that overflows `u64`) gives
+/// `None`, meaning no limit. It never panics.
+pub fn parse_positive_secs(raw: Option<&str>) -> Option<Duration> {
+    let trimmed = raw?.trim();
+    if trimmed.is_empty() || !trimmed.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    trimmed
+        .parse::<u64>()
+        .ok()
+        .filter(|&n| n > 0)
+        .map(Duration::from_secs)
+}
+
+/// Printed once per process when [`ENV_IDLE_TIMEOUT_SECS`] is malformed. It is
+/// a fixed string and never includes the value.
+pub const IDLE_TIMEOUT_WARNING: &str = "warning: ignored AMPLIHACK_IDLE_TIMEOUT_SECS (not a whole number of seconds above 0); no idle limit applies";
+
+/// True when `raw` is a non-empty value that [`parse_positive_secs`] rejects
+/// and that is not a spelling of zero.
+///
+/// This is the one rule for when a limit variable earns a warning: unset,
+/// empty, valid and zero values (`0`, `000`, a deliberate "no limit") do not;
+/// anything else (`300s`, `+7`, `0x10`) does.
+pub fn positive_secs_is_malformed(raw: Option<&str>) -> bool {
+    let Some(value) = raw.map(str::trim) else {
+        return false;
+    };
+    if value.is_empty() || parse_positive_secs(Some(value)).is_some() {
+        return false;
+    }
+    !(value.bytes().all(|b| b == b'0'))
+}
+
 // ---------------------------------------------------------------------------
 // IdleConfig
 // ---------------------------------------------------------------------------
@@ -73,31 +110,53 @@ fn env_u64(key: &str, default: u64) -> u64 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IdleConfig {
     /// No output for this long → the child is considered idle and is killed.
-    pub idle_timeout: Duration,
+    /// `None` means no idle limit: the child is waited for until it exits.
+    pub idle_timeout: Option<Duration>,
     /// How often the supervising loop checks for progress and process exit.
     pub poll: Duration,
 }
 
+fn poll_from_env() -> Duration {
+    Duration::from_millis(env_u64(ENV_IDLE_POLL_MS, DEFAULT_POLL_MS))
+}
+
 impl IdleConfig {
-    /// Reads [`ENV_IDLE_TIMEOUT_SECS`] (default [`DEFAULT_IDLE_TIMEOUT_SECS`])
-    /// and [`ENV_IDLE_POLL_MS`] (default [`DEFAULT_POLL_MS`]). Non-parsable or
-    /// zero values fall back to the defaults.
+    /// Reads [`ENV_IDLE_TIMEOUT_SECS`] through [`parse_positive_secs`] (unset,
+    /// zero or unparseable means no idle limit) and [`ENV_IDLE_POLL_MS`]
+    /// (default [`DEFAULT_POLL_MS`]). A malformed idle value prints
+    /// [`IDLE_TIMEOUT_WARNING`] to stderr once per process.
     pub fn from_env() -> Self {
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        let raw = std::env::var(ENV_IDLE_TIMEOUT_SECS).ok();
+        if positive_secs_is_malformed(raw.as_deref()) {
+            WARNED.call_once(|| eprintln!("{IDLE_TIMEOUT_WARNING}"));
+        }
         Self {
-            idle_timeout: Duration::from_secs(env_u64(
-                ENV_IDLE_TIMEOUT_SECS,
-                DEFAULT_IDLE_TIMEOUT_SECS,
-            )),
-            poll: Duration::from_millis(env_u64(ENV_IDLE_POLL_MS, DEFAULT_POLL_MS)),
+            idle_timeout: parse_positive_secs(raw.as_deref()),
+            poll: poll_from_env(),
         }
     }
 
-    /// Override the idle threshold; the poll interval comes from env/default.
+    /// Set an explicit idle threshold; the poll interval comes from env/default.
     pub fn with_idle(idle: Duration) -> Self {
         Self {
-            idle_timeout: idle,
-            poll: Duration::from_millis(env_u64(ENV_IDLE_POLL_MS, DEFAULT_POLL_MS)),
+            idle_timeout: Some(idle),
+            poll: poll_from_env(),
         }
+    }
+
+    /// No idle limit; the poll interval comes from env/default.
+    pub fn none() -> Self {
+        Self {
+            idle_timeout: None,
+            poll: poll_from_env(),
+        }
+    }
+
+    /// True when an idle limit is set and `last_progress` is older than it.
+    fn is_idle(&self, last_progress: Instant) -> bool {
+        self.idle_timeout
+            .is_some_and(|limit| last_progress.elapsed() >= limit)
     }
 }
 
@@ -215,9 +274,12 @@ async fn join_drainer_async(mut handle: AbortOnDropDrainer) {
 /// Drainer tasks are launched with `tokio::spawn` (requires tokio features
 /// `process`, `time`, `rt`, `io-util`). Each read chunk appends to a shared
 /// buffer and stamps a shared `Instant`. The supervising loop calls `try_wait`
-/// and `sleep(cfg.poll)`; when `now - last_progress >= cfg.idle_timeout` it
-/// kills the child and sets `killed_for_idle = true`. `select!` is intentionally
-/// not used, so the tokio `macros` feature is not required here.
+/// and `sleep(cfg.poll)`; when an idle limit is set and
+/// `now - last_progress >= limit` it kills the child and sets
+/// `killed_for_idle = true`. With no idle limit the loop is skipped and the
+/// child is waited for directly, so it is reaped as soon as it exits.
+/// `select!` is intentionally not used, so the tokio `macros` feature is not
+/// required here.
 pub async fn wait_with_idle_watchdog(
     child: &mut tokio::process::Child,
     stdout: Option<tokio::process::ChildStdout>,
@@ -244,18 +306,25 @@ pub async fn wait_with_idle_watchdog(
     });
 
     let mut killed_for_idle = false;
-    let status: io::Result<ExitStatus> = loop {
-        match child.try_wait() {
-            Ok(Some(s)) => break Ok(s),
-            Ok(None) => {}
-            Err(e) => break Err(e),
-        }
-        tokio::time::sleep(cfg.poll).await;
-        if lock(&last_progress).elapsed() >= cfg.idle_timeout {
-            let _ = child.start_kill();
-            let s = child.wait().await;
-            killed_for_idle = true;
-            break s;
+    let status: io::Result<ExitStatus> = if cfg.idle_timeout.is_none() {
+        // No idle limit (the default, issue #2022): nothing to check between
+        // polls, so block on the exit instead of polling. This reaps the child
+        // the moment it exits rather than up to `cfg.poll` later.
+        child.wait().await
+    } else {
+        loop {
+            match child.try_wait() {
+                Ok(Some(s)) => break Ok(s),
+                Ok(None) => {}
+                Err(e) => break Err(e),
+            }
+            tokio::time::sleep(cfg.poll).await;
+            if cfg.is_idle(*lock(&last_progress)) {
+                let _ = child.start_kill();
+                let s = child.wait().await;
+                killed_for_idle = true;
+                break s;
+            }
         }
     };
 
@@ -331,18 +400,24 @@ pub fn wait_with_idle_watchdog_sync(
     });
 
     let mut killed_for_idle = false;
-    let status: io::Result<ExitStatus> = loop {
-        match child.try_wait() {
-            Ok(Some(s)) => break Ok(s),
-            Ok(None) => {}
-            Err(e) => break Err(e),
-        }
-        std::thread::sleep(cfg.poll);
-        if lock(&last_progress).elapsed() >= cfg.idle_timeout {
-            let _ = child.kill();
-            let s = child.wait();
-            killed_for_idle = true;
-            break s;
+    let status: io::Result<ExitStatus> = if cfg.idle_timeout.is_none() {
+        // No idle limit: block on the exit instead of polling (see the async
+        // variant above).
+        child.wait()
+    } else {
+        loop {
+            match child.try_wait() {
+                Ok(Some(s)) => break Ok(s),
+                Ok(None) => {}
+                Err(e) => break Err(e),
+            }
+            std::thread::sleep(cfg.poll);
+            if cfg.is_idle(*lock(&last_progress)) {
+                let _ = child.kill();
+                let s = child.wait();
+                killed_for_idle = true;
+                break s;
+            }
         }
     };
 

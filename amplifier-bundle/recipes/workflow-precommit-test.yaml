@@ -50,14 +50,16 @@ steps:
 
          Run each long command so that a git credential prompt cannot stop it
          (issue #1764): export `GIT_TERMINAL_PROMPT=0`, then run it as
-         `setsid -w timeout --kill-after=60 <secs> <cmd> </dev/null`, or, where
-         `setsid` is missing, as
-         `timeout --foreground --kill-after=60 <secs> <cmd> </dev/null`. Plain
-         `timeout` puts the command in a background process group. A git that
-         asks for a credential then reads the terminal and `SIGTTIN` stops it:
-         nothing fails, and the run waits until it is killed, indefinitely
-         where `timeout` is stopped too. The wrapper is not part of the
-         reported command; `workspace_command` stays as given below.
+         `setsid -w <cmd> </dev/null`, or, where `setsid` is missing, as
+         `<cmd> </dev/null`. `setsid -w` gives the command no controlling
+         terminal, so git cannot prompt on it. Do not wrap the command in
+         `timeout`: a build or a test has no time limit (issue #2022), and
+         `timeout` counts time the command spends stopped, so a host that
+         pauses work with `SIGSTOP` gets it killed. Plain `timeout` also puts
+         the command in a background process group, where a git that reads the
+         terminal for a credential is stopped by `SIGTTIN` and the run waits
+         until someone kills it. The wrapper is not part of the reported
+         command; `workspace_command` stays as given below.
 
       4. **Fix any issues:**
          - Linting issues
@@ -148,12 +150,12 @@ steps:
          - **.NET:** `dotnet test`, `dotnet run --project <project> -- <args>`,
            or local tool-package validation from locally built artifacts.
          - **Any long command:** export `GIT_TERMINAL_PROMPT=0` and run it as
-           `setsid -w timeout --kill-after=60 <secs> <cmd> </dev/null`, or as
-           `timeout --foreground --kill-after=60 <secs> <cmd> </dev/null` where
-           `setsid` is missing. Plain `timeout` puts the command in a
+           `setsid -w <cmd> </dev/null`, or as `<cmd> </dev/null` where
+           `setsid` is missing. Do not wrap it in `timeout`: a build or a test
+           has no time limit (issue #2022), and `timeout` counts time spent
+           stopped by `SIGSTOP`. Plain `timeout` also puts the command in a
            background process group, so a git credential prompt that reads the
-           terminal is stopped by `SIGTTIN`. Nothing fails, and the run waits
-           until it is killed, indefinitely where `timeout` is stopped too.
+           terminal is stopped by `SIGTTIN` and the run waits until killed.
          - **Waiting:** to wait for a fixed time, run
            `amplihack wait --seconds N`. To wait for work to finish, run it in
            the background and wait on its PID: `cmd & pid=$!; wait $pid`.

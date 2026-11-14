@@ -387,9 +387,15 @@ A completed crusty objective is exempt; it does not reach these checks.
 | --- | --- | --- |
 | `autodrive_budget_loop_rounds` | `12` | Rounds per loop across runs using the same [state directory](#state-directory). |
 | `autodrive_budget_total_rounds` | `20` | Rounds across both loops. |
-| `autodrive_budget_wall_seconds` | `14400` | Child work time across rounds, before-round work, and evaluation, excluding recorded usage-limit waits. |
+| `autodrive_budget_wall_seconds` | `0` (no limit) | Child work time across rounds, before-round work, and evaluation, excluding recorded usage-limit waits. |
 
-`0` or empty means unlimited. Raising a limit permits resumption without
+`0` or empty means unlimited. Since #2022 the wall-seconds default is `0`:
+a default drive has no wall-clock limit and is never stopped as
+`BUDGET_EXHAUSTED` by elapsed time. The seconds are still recorded and
+reported. An operator who wants a time ceiling sets one with
+`-c autodrive_budget_wall_seconds=N`; when it is reached, the resume command
+suggests `-c autodrive_budget_wall_seconds=0`, which removes the limit, rather
+than a larger clock. The round limits resume at twice their current value. Raising a limit permits resumption without
 resetting consumed usage or making old evidence current.
 
 ### Resuming after BUDGET_EXHAUSTED
