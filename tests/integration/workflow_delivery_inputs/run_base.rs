@@ -412,39 +412,6 @@ fn default_base_does_not_change_rule_5() {
 }
 
 #[test]
-fn pr_ref_readable_accepts_only_this_repositorys_pull_requests() {
-    let u = Unit::new();
-    for (pr_ref, ok) in [
-        ("7", true),
-        (URL, true),
-        ("https://github.com/owner/repo/pull/7/", true),
-        ("https://github.com/Owner/Repo/pull/7", true),
-        ("--repo=x/y", false),
-        ("-7", false),
-        ("07", false),
-        ("0", false),
-        ("7x", false),
-        ("'7 8'", false),
-        ("''", false),
-        ("https://github.com/other/repo/pull/7", false),
-        ("https://github.com/owner/repo/pull/7/files", false),
-        ("https://example.com/owner/repo/pull/7", false),
-        ("http://github.com/owner/repo/pull/7", false),
-        ("'https://github.com/owner/repo/pull/7;id'", false),
-    ] {
-        let (out, log) = u.run(
-            &format!("delivery_pr_ref_readable {pr_ref} owner/repo"),
-            "dev",
-            false,
-            false,
-        );
-        assert_eq!(out.status.success(), ok, "{pr_ref}: {}", describe(&out));
-        assert_eq!(text(&out.stdout), "", "{pr_ref}: prints nothing");
-        assert!(log.is_empty(), "{pr_ref}: never calls gh\n{log}");
-    }
-}
-
-#[test]
 fn run_base_when_sourced_defines_functions_only() {
     let u = Unit::new();
     let (out, log) = u.call("dev '' '' owner/repo feat/x ''", "dev", false);

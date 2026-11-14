@@ -180,7 +180,7 @@ text. It returns 2 only from rule 3, when every one of these holds:
 
 - `--base` is empty;
 - the publish result records no `base_branch`;
-- the recorded pull request reference passes `delivery_pr_ref_readable`: a
+- the recorded pull request reference is a
   positive number, or a `https://github.com/<owner>/<repo>/pull/<N>` URL for
   this checkout's `origin`;
 - `gh pr view` then failed, returned something other than JSON, or returned no
@@ -535,7 +535,6 @@ amplihack recipe run default-workflow \
 | `select_strict_delivery_issue` (`tools/workflow_issue_tracking.sh`) | step-03 | Confirms the caller's issue or fails. |
 | `delivery_run_base EXPLICIT RECORDED PR_REF REPO BRANCH FORBIDDEN` | the finalize helpers below, the terminal-state probe | Prints the base the run's pull request has, by the rules in [How finalize finds the base](#how-finalize-finds-the-base), without `origin/`. On failure it writes the reason to stderr, with names quoted by `printf '%q'`, and returns 2 when rule 3 could not read the base (`gh pr view` failed, returned something other than JSON, or returned no `baseRefName`), or 1 for any other failure, including a base that `delivery_base_ref` refuses. |
 | `delivery_default_base` | `delivery_run_base` rule 5, step-22b's fallback | Prints the first of `origin/HEAD`'s target, `origin/main`, `origin/master` and `origin/develop` that resolves to a commit, without `origin/`. Reads local refs only and never calls `gh`. Returns 1 with no output when none resolves. It does not check `forbidden_base_branches`; step-22b checks its result with `delivery_base_ref`. |
-| `delivery_pr_ref_readable PR_REF REPO` | `delivery_run_base` rule 3 | Succeeds when the reference is a positive number, or a `https://github.com/<owner>/<repo>/pull/<N>` URL whose repository is `REPO`. Prints nothing. |
 
 None of them read `RECIPE_VAR_*`. Each recipe passes the values it has
 declared in its own `context` (#1561). `delivery_run_base` makes at most one
