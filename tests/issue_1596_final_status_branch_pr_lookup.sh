@@ -91,6 +91,10 @@ BRANCH="fix/1596-demo"
 #   other-repo-url  URL pointing at a different owner/repo
 #   number-mismatch URL says #4242, number says 99
 #   head-match      #4242 only when --head equals $FAKE_GH_OPEN_HEAD, else []
+# `pr view <ref>` returns the fields real gh returns (#2520): number, url,
+# title, baseRefName "main", headRefName, headRefOid, createdAt, state.
+#   FAKE_GH_NO_BASE=1      leaves out baseRefName (base unreadable)
+#   FAKE_GH_SPARSE_VIEW=1  leaves out number, url and title
 # ---------------------------------------------------------------------------
 cat >"$BINDIR/gh" <<'FAKE'
 #!/usr/bin/env bash
@@ -145,7 +149,30 @@ if [ "${1:-}" = "pr" ] && [ "${2:-}" = "list" ]; then
     exit 0
 fi
 if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
-    echo '{"state":"OPEN","mergeable":"MERGEABLE","reviews":[],"statusCheckRollup":[]}'
+    # #2520: real `gh pr view --json` returns number, url and baseRefName.
+    # Extra fields are harmless: callers select with jq. The PR named by the
+    # reference argument is the one described; an unparsable one is #4242.
+    # Shell values reach jq only through --arg/--argjson.
+    ref="${3:-}" num="" url=""
+    case "$ref" in
+        https://github.com/*/pull/*) num="${ref##*/pull/}"; num="${num%/}"; url="${ref%/}" ;;
+        *) num="$ref" ;;
+    esac
+    if ! [[ "$num" =~ ^[1-9][0-9]{0,9}$ ]]; then
+        num=4242
+        url="https://github.com/octo/example/pull/4242"
+    fi
+    [ -n "$url" ] || url="https://github.com/octo/example/pull/$num"
+    wt="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r '.worktree_path // empty' 2>/dev/null)"
+    oid="${FAKE_GH_HEAD_OID:-$(git -C "${wt:-.}" rev-parse HEAD 2>/dev/null)}"
+    jq -nc --arg u "$url" --argjson n "$num" --arg o "$oid" \
+        --arg nobase "${FAKE_GH_NO_BASE:-}" --arg sparse "${FAKE_GH_SPARSE_VIEW:-}" \
+        '{state: "OPEN", mergeable: "MERGEABLE", reviews: [], statusCheckRollup: [],
+          number: $n, url: $u, title: "fix: issue 1596 demo",
+          baseRefName: "main", headRefName: "fix/1596-demo", headRefOid: $o,
+          createdAt: "2000-01-01T00:00:00Z", isCrossRepository: false}
+         | if $nobase == "1" then del(.baseRefName) else . end
+         | if $sparse == "1" then del(.number, .url, .title) else . end'
     exit 0
 fi
 if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ]; then
