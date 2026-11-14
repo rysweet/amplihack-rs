@@ -192,12 +192,10 @@ EARLIER_ROUNDS="$(bash "${LOOP_HOME}/autodrive_last_round.sh" "$STATE_DIR" "$LOO
 if [ "$EARLIER_ROUNDS" != "0" ]; then
   echo "INFO: loop '${LOOP_NAME}': ${STATE_DIR} already holds this loop's rounds up to round-${EARLIER_ROUNDS}; this run labels its rounds from round-$((EARLIER_ROUNDS + 1)) and overwrites none of them." >&2
 fi
-ROUND="$EARLIER_ROUNDS"
-ROUND_LABEL=""
+ROUND="$EARLIER_ROUNDS"; ROUND_LABEL=""
 recovery_stop # #2539: a handoff recorded before this loop (an earlier phase) starts no round
 HISTORY=""
-PREV_FINDINGS=""
-PREV_TEST=""
+PREV_FINDINGS=""; PREV_TEST=""
 PREV_CI=""; PREV_VERDICT=""; PREV_OVERRIDDEN=0
 TOKEN_SAFE="$(printf '%s' "$CLEAN_TOKEN" | LC_ALL=C tr -cd 'A-Za-z0-9_')" # see VERDICT_SAFE
 [ -n "$TOKEN_SAFE" ] || echo "WARNING: loop '${LOOP_NAME}': the clean token has no A-Za-z0-9_ characters, so loop-health-evaluator gets an empty loop_clean_token." >&2
