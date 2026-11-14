@@ -57,3 +57,22 @@ if [ -f "$RECORD" ]; then
       || echo "WARNING: could not append the manifest row for ${ROUND_LABEL} to ${LOOP_NAME}-records.tsv." >&2
   fi
 fi
+# #2575 B2: the merge-ready round's ci_signal reaches the evaluator (as
+# loop_ci_signal) only as <state>@<head>; anything else is dropped. A WAITING
+# round (ready but for required checks still running at the head) ends the
+# loop here, before the progress stop, the budget charge and the evaluator:
+# finalisation then merges once the checks pass or ends checks-pending.
+if [ "$LOOP_NAME" = merge-ready ]; then
+  CI_RAW="$(field "$RAW" ci_signal "")"
+  if ! [[ "$CI_RAW" =~ ^(pass|pending|fail|none)@([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+    [ -z "$CI_RAW" ] || { echo "WARNING: ${ROUND_LABEL} wrote a malformed ci_signal; it is dropped." >&2
+      RAW="$(printf '%s' "$RAW" | jq -c 'del(.ci_signal)' 2>/dev/null)"; }
+    CI_RAW=""
+  fi
+  if [ "$ROUND_VERDICT" = WAITING ]; then
+    echo "AUTO_DRIVE_LOOP: WAITING — ${ROUND_LABEL} is ready except for required checks still running (${CI_RAW:-no ci signal}); finalisation decides." >&2
+    record_result "$(jq -cn --arg l "$LOOP_NAME" --arg r "$ROUND_LABEL" --arg s "$CI_RAW" \
+      '{loop:$l,loop_result:"WAITING",round_label:$r,round_verdict:"WAITING",ci_signal:$s}')"
+    exit 0
+  fi
+fi

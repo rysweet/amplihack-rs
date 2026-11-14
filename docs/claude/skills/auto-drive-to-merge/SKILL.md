@@ -61,7 +61,12 @@ captures authorization afresh.
 4. With merging disabled, make no merge request and leave the PR open.
 5. A merge happens only through the bundled `autodrive_merge.sh`, with
    captured authorization, at the head the ready round assessed, with green
-   checks, and with GitHub accepting `--match-head-commit`. Report `merged`
+   checks (or none reported), and with GitHub accepting `--match-head-commit`.
+   A required check still running is a wait: answer `waiting`, finalise, and
+   end `not merged: waiting for <check> at <sha>` with no draft; the next run
+   judges again, with no sleep or polling. A base that moved gets one base
+   merge (never a rebase or force-push), one more round and a second
+   finalisation. Success means merged. Report `merged`
    only on platform confirmation: GitHub reads back `MERGED`. Squash with an explicit message
    composed by the trusted
    `$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_message.sh`, sourced
@@ -88,7 +93,11 @@ The `crusty-old-engineer` skill supplies maintainer review. Apply the `qa-team` 
 ## Crusty and loop contracts
 
 Auto-drive substitutes accepted crusty convergence for criterion 3 with no
-minimum round count. Standalone `/merge-ready` retains its separate quality
+minimum round count. Judge it from the PR: the newest
+`Crusty verdict: <CLEAN|MINOR_ONLY|BLOCKING> at <full SHA>` comment from the
+drive's login or an `OWNER`, `MEMBER` or `COLLABORATOR`, at the current head.
+Each Crusty round posts that comment. No verdict at the head means Crusty
+runs again; a missing state file never blocks. Standalone `/merge-ready` retains its separate quality
 audit of at least three SEEK → VALIDATE → FIX cycles, continued until clean.
 Use actual crusty evidence in auto-drive's description instead of the
 standalone template's three audit-cycle rows.

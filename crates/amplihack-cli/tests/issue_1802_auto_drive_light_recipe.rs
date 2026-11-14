@@ -626,6 +626,7 @@ fn crusty_round_has_no_light_branch_in_any_step() {
             "step-02-crusty-review",
             "step-02b-review-dir-unchanged",
             "step-03-extract-crusty-verdict",
+            "step-03c-post-verdict",
             "step-04-address-concerns",
             "step-05-verify-concerns-addressed",
             "step-06-write-round-record",

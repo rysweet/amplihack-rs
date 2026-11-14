@@ -24,11 +24,16 @@
 #       line, {"qa_evidence_sha":"..."}, empty unless whole 40- or 64-digit
 #       lowercase hex. Moved here from the step at its brick budget (#1561).
 #
-#   autodrive_round_evidence.sh crusty-evidence
-#       step-01b-crusty-evidence, criterion 3: autodrive_crusty_final (the
-#       merge gate runs it too), then the range from the reviewed head to HEAD.
-#       One JSON line:
-#       {"crusty_status":"...","crusty_reason":"...","crusty_reviewed_head_sha":"...","crusty_first_unreviewed_sha":"..."}
+#   autodrive_round_evidence.sh crusty-covers <sha>
+#       Run by the step-01b agent for a Crusty verdict comment at an earlier
+#       head (#2628): does that verdict still cover HEAD? Walks the commits
+#       from <sha> to HEAD with the re-review rules (autodrive_crusty_range)
+#       and prints one token: `ok`, `crusty-unreviewed-commits:<sha>` or
+#       `crusty-range-unreadable`. Reads git only, never a state file. A
+#       <sha> that is not 40 or 64 lowercase hex prints
+#       crusty-range-unreadable and exits 2. It replaces the retired
+#       crusty-evidence subcommand: criterion 3 is no longer read from
+#       crusty-records.tsv.
 #
 #   The record-only subcommands measured-downgrade, merge-ready-verdict,
 #   findings and round-record were retired with the parsed merge-ready record
@@ -42,14 +47,14 @@
 # inherited bare variables").
 # AUTODRIVE_STATE_DIR, AUTODRIVE_QA_EVIDENCE, AUTODRIVE_ROUND_RECORD,
 # AUTODRIVE_ROUND_LABEL, PR_NUMBER and REPO_PATH come from there too.
-# crusty-range, qa-evidence-sha and crusty-evidence print only fixed tokens and
+# crusty-range, qa-evidence-sha and crusty-covers print only fixed tokens and
 # hex SHAs, so nothing from the branch under review reaches step-04's prompt through
 # them as prose.
 #
 # Executed, never sourced. autodrive_state.sh and autodrive_trust.sh are sourced
 # from beside this file and from nowhere else. When they are missing, each
 # subcommand reports what the step reported when it could not find them: no
-# re-review, an empty hash, crusty UNTRUSTED, or qa_evidence=modified. None of
+# re-review, an empty hash, crusty-range-unreadable, or qa_evidence=modified. None of
 # those can merge.
 #
 # Exit 0 with the output above; exit 2 for an unknown subcommand.
@@ -128,49 +133,38 @@ qa_evidence_hash() {
   printf '{"qa_evidence_sha":"%s"}\n' "$q"
 }
 
-crusty_evidence() {
-  local dir="${AUTODRIVE_STATE_DIR:-}" token="crusty-loop-not-done" sha="" first="" status out head_now range
-  if [ -z "$dir" ]; then
-    echo "WARNING: no autodrive_state_dir was passed to this round; crusty evidence is ABSENT." >&2
-  elif [ "$HELPERS" != "true" ]; then
-    echo "WARNING: autodrive_state.sh and autodrive_trust.sh not found beside autodrive_round_evidence.sh; criterion 3 cannot be checked." >&2
-    token="crusty-other"
-  elif out="$(autodrive_crusty_final "$dir")"; then
-    sha="$out"; token=""
-    head_now="$(git rev-parse --verify --quiet HEAD 2>/dev/null || printf '')"
-    # The base sync may have added a merge since crusty reviewed the head.
-    range="$(autodrive_crusty_range "$PWD" "$sha" "$head_now" "$(autodrive_base_sha "$PWD" "$(pr_base_ref)")")"
-    case "$range" in
-      ok) ;;
-      crusty-range-unreadable) token="crusty-range-unreadable" ;;
-      crusty-unreviewed-commits:*) token="crusty-unreviewed-commits"; first="${range#*:}" ;;
-      *) token="crusty-other" ;;
-    esac
-  else
-    token="${out:-crusty-other}"
+# crusty_covers <sha>: does a Crusty verdict at <sha> still cover HEAD? Read
+# only: git and the base lookup, never a state file (#2628).
+crusty_covers() {
+  local sha="${1:-}" head="" base="" res=""
+  if ! [[ "$sha" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+    echo "ERROR: crusty-covers takes one 40- or 64-character lowercase hex SHA" >&2
+    printf 'crusty-range-unreadable\n'; exit 2
   fi
-  case "$token" in
-    '') status="DONE_CLEAN" ;; # a CLEAN or MINOR_ONLY final record (#1979)
-    crusty-loop-not-done) status="ABSENT" ;;
-    crusty-not-clean) status="NOT_CLEAN" ;;
-    crusty-manifest-missing|crusty-record-missing|crusty-record-modified|crusty-head-sha-empty) status="UNTRUSTED" ;;
-    crusty-unreviewed-commits|crusty-range-unreadable) status="UNREVIEWED_COMMITS" ;;
-    *) status="UNTRUSTED"; token="crusty-other" ;;
+  if [ "$HELPERS" != "true" ]; then
+    echo "WARNING: autodrive_state.sh and autodrive_trust.sh not found beside autodrive_round_evidence.sh; the range cannot be checked." >&2
+    printf 'crusty-range-unreadable\n'; return 0
+  fi
+  head="$(autodrive_trust_git "$PWD" rev-parse --verify --quiet "HEAD^{commit}" 2>/dev/null)" || head=""
+  if ! autodrive_is_sha "$head"; then
+    printf 'crusty-range-unreadable\n'; return 0
+  fi
+  # An empty base SHA (no base name or a failed fetch) excludes nothing, so a
+  # base merge counts as code and Crusty runs again: never a pass.
+  base="$(autodrive_base_sha "$PWD" "$(pr_base_ref)")" || base=""
+  res="$(autodrive_crusty_range "$PWD" "$sha" "$head" "$base")"
+  case "$res" in
+    ok|crusty-unreviewed-commits:*) printf '%s\n' "$res" ;;
+    *) printf 'crusty-range-unreadable\n' ;;
   esac
-  sha="$(hex_or_empty "$sha")"; first="$(hex_or_empty "$first")"
-  [ -n "$sha" ] || [ "$status" != "DONE_CLEAN" ] || { status="UNTRUSTED"; token="crusty-other"; }
-  [ -n "$first" ] || [ "$token" != "crusty-unreviewed-commits" ] || token="crusty-range-unreadable"
-  echo "INFO: crusty evidence: status=${status} reason=${token:-none} reviewed_head_sha=${sha:-none} first_unreviewed_sha=${first:-none}" >&2
-  printf '{"crusty_status":"%s","crusty_reason":"%s","crusty_reviewed_head_sha":"%s","crusty_first_unreviewed_sha":"%s"}\n' \
-    "$status" "$token" "$sha" "$first"
 }
 
 case "${1:-}" in
   crusty-range) crusty_range ;;
   qa-evidence-sha) qa_evidence_sha "${2:-}" ;;
   qa-evidence-hash) qa_evidence_hash "${2:-}" ;;
-  crusty-evidence) crusty_evidence ;;
+  crusty-covers) crusty_covers "${2:-}" ;;
   *) echo "ERROR: autodrive_round_evidence.sh: unknown subcommand '${1:-}' (crusty-range," \
-       "qa-evidence-sha <file>, qa-evidence-hash <file>, crusty-evidence)" >&2
+       "qa-evidence-sha <file>, qa-evidence-hash <file>, crusty-covers <sha>)" >&2
      exit 2 ;;
 esac

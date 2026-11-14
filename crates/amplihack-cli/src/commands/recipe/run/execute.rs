@@ -52,6 +52,18 @@ const MAX_SESSIONS_ENV: &str = "AMPLIHACK_MAX_SESSIONS";
 /// "the tool declined, and will decline again".
 pub const EXIT_ORCHESTRATION_UNAVAILABLE: i32 = 79;
 
+/// #2663 M1: an auto-drive run succeeds only when it merged. `outcome` is the
+/// `autodrive_outcome` built by `report()`; success is an allow-list of the
+/// single `stop_reason` value `completed` (merged in this run, or already
+/// merged at entry). A missing, non-string or any other value is a failure.
+/// docs/reference/autodrive-merge-ready-round.md#success-means-merged.
+pub(crate) fn autodrive_run_succeeded(outcome: &serde_json::Value) -> bool {
+    outcome
+        .get("stop_reason")
+        .and_then(serde_json::Value::as_str)
+        == Some("completed")
+}
+
 /// Report a terminal refusal and carry the distinguishing exit code.
 ///
 /// The message is printed here because the `CliExitError` path in `main` exits
@@ -1132,6 +1144,19 @@ pub(super) fn execute_recipe_via_rust_fresh(
                     &run_result.context,
                     context.get("pr_number").map(String::as_str),
                 );
+                // #2663 M1: a run that did not merge is not a success. This
+                // runs after run_with_transient_retry has returned, so it
+                // never starts a whole-run re-attempt (#1267).
+                if run_result.success && !autodrive_run_succeeded(&outcome) {
+                    eprintln!(
+                        "INFO: auto-drive did not merge (stop_reason {}); the run is not reported as a success [#2663]",
+                        outcome
+                            .get("stop_reason")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("missing")
+                    );
+                    run_result.success = false;
+                }
                 run_result
                     .extra
                     .insert("autodrive_outcome".into(), outcome.clone());

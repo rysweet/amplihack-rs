@@ -82,6 +82,13 @@ const FIXTURES: [(&str, &str); 3] = [
 /// (pass | fail | pending | none), `merge_rc`, `rc79_on` (view | checks |
 /// merge). Every call is logged to `gh.log`, one argv per line joined by
 /// U+001F; the merge body read from stdin goes to `merge-body`.
+///
+/// #2575 B2/M1 additions: `merge_state` (the `mergeStateStatus` read before a
+/// merge request, default CLEAN), `merge_state_after` (the value read once a
+/// merge request has been made), `check_name` (the check's name, default
+/// `ci`), `base_ref`, `head_ref` and `cross` (`isCrossRepository`).
+/// #2663: `merge_rc_after` is the exit status of a merge request that GitHub
+/// did carry out (the PR reads MERGED, yet gh reports an error).
 const FAKE_GH: &str = r#"#!/usr/bin/env bash
 set -u
 S="$FAKE_STATE"
@@ -90,10 +97,15 @@ S="$FAKE_STATE"
 opt() { local want="$1" prev="" a; shift; for a in "$@"; do [ "$prev" = "$want" ] && { printf '%s' "$a"; return 0; }; prev="$a"; done; return 1; }
 case "${1:-} ${2:-}" in
   "pr view")
+    ms="$(cat "$S/merge_state" 2>/dev/null || echo CLEAN)"
+    [ -f "$S/merge-body" ] && [ -f "$S/merge_state_after" ] && ms="$(cat "$S/merge_state_after")"
     obj="$(jq -cn --arg state "$(cat "$S/state" 2>/dev/null || echo OPEN)" \
       --arg title "$(cat "$S/title" 2>/dev/null || echo 'Retire the parsed record')" \
-      --rawfile body "$S/body" --arg head "$(cat "$S/server_head")" \
-      '{number:2575,state:$state,title:$title,body:$body,headRefOid:$head,isDraft:false}')"
+      --rawfile body "$S/body" --arg head "$(cat "$S/server_head")" --arg ms "$ms" \
+      --arg base "$(cat "$S/base_ref" 2>/dev/null || echo main)" \
+      --arg headref "$(cat "$S/head_ref" 2>/dev/null || echo feat/issue-2575)" \
+      --argjson cross "$(cat "$S/cross" 2>/dev/null || echo false)" \
+      '{number:2575,state:$state,title:$title,body:$body,headRefOid:$head,isDraft:false,mergeStateStatus:$ms,baseRefName:$base,headRefName:$headref,isCrossRepository:$cross}')"
     if q="$(opt --jq "$@")" || q="$(opt -q "$@")"; then printf '%s' "$obj" | jq -r "$q"
     elif f="$(opt --json "$@")"; then printf '%s' "$obj" | jq -c --arg f "$f" '. as $o | reduce ($f | split(","))[] as $k ({}; .[$k] = $o[$k])'
     else printf '%s\n' "$obj"; fi
@@ -110,8 +122,9 @@ case "${1:-} ${2:-}" in
       fail) b=fail; rc=1 ;;
       *) b=pending; rc=8 ;;
     esac
-    if opt --json "$@" >/dev/null; then jq -cn --arg b "$b" '[{name:"ci",bucket:$b,state:($b | ascii_upcase)}]'
-    else printf 'ci\t%s\t1m\thttps://example.invalid/ci\n' "$b"; fi
+    n="$(cat "$S/check_name" 2>/dev/null || echo ci)"
+    if opt --json "$@" >/dev/null; then jq -cn --arg b "$b" --arg n "$n" '[{name:$n,bucket:$b,state:($b | ascii_upcase)}]'
+    else printf '%s\t%s\t1m\thttps://example.invalid/ci\n' "$n" "$b"; fi
     exit "$rc" ;;
   "pr merge")
     cat > "$S/merge-body"
@@ -121,7 +134,7 @@ case "${1:-} ${2:-}" in
     fi
     [ -f "$S/merge_rc" ] && { echo "fixture: merge refused by branch protection" >&2; exit "$(cat "$S/merge_rc")"; }
     printf MERGED > "$S/state"
-    exit 0 ;;
+    exit "$(cat "$S/merge_rc_after" 2>/dev/null || echo 0)" ;;
 esac
 exit 0
 "#;
@@ -162,12 +175,15 @@ exit 0
 /// under umask 077, prints `loop_stdout` (text an agent might have printed)
 /// and exits `loop_rc`.
 const FAKE_LOOP_DRIVER: &str = r#"#!/usr/bin/env bash
-S="$FAKE_STATE"; dir=""; prev=""
-for a in "$@"; do [ "$prev" = --state-dir ] && dir="$a"; prev="$a"; done
+S="$FAKE_STATE"; dir=""; repo=""; prev=""
+for a in "$@"; do [ "$prev" = --state-dir ] && dir="$a"; [ "$prev" = --repo ] && repo="$a"; prev="$a"; done
 printf '%s\n' "$@" > "$S/loop-argv"
+printf '%s\n' "$@" >> "$S/loop-argv-all"; echo "--" >> "$S/loop-argv-all"
 if [ -f "$S/loop_result" ]; then
   ( umask 077; jq -cn --arg r "$(cat "$S/loop_result")" \
       '{loop:"merge-ready",loop_result:$r,round_label:"round-2",reason:"fixture stop"}' > "$dir/merge-ready-result.json" )
+  # A round assessed the worktree's head (step-01a): finalisation's expected head.
+  [ -n "$repo" ] && ( umask 077; git -C "$repo" rev-parse HEAD > "$dir/merge-ready-latest.head" 2>/dev/null )
 fi
 [ -f "$S/loop_stdout" ] && cat "$S/loop_stdout"
 exit "$(cat "$S/loop_rc" 2>/dev/null || echo 0)"
@@ -714,18 +730,17 @@ fn github_refusal_for_protection_or_reviews_is_refused() {
 
 #[test]
 fn failing_checks_prevent_merge_attempt() {
+    // A pending required check is `checks-pending` (#2575 B2); see
+    // issue_2575_wait_sync_success.rs. Only a failing check is not green.
     let Some(fx) = Fx::new() else { return };
-    for checks in ["fail", "pending"] {
-        fx.set("required", checks);
-        let out = fx.merge_tool(PR, SHA_A);
-        assert_eq!(out.status.code(), Some(3), "{checks}: {}", show(&out));
-        assert_eq!(
-            last_json(&out, "result")["result"],
-            json!("checks-not-green"),
-            "{checks}"
-        );
-        assert_no_merge_attempt(&fx);
-    }
+    fx.set("required", "fail");
+    let out = fx.merge_tool(PR, SHA_A);
+    assert_eq!(out.status.code(), Some(3), "{}", show(&out));
+    assert_eq!(
+        last_json(&out, "result")["result"],
+        json!("checks-not-green")
+    );
+    assert_no_merge_attempt(&fx);
 }
 
 #[test]
@@ -760,22 +775,29 @@ fn failing_checks_after_the_fallback_prevent_merge_attempt() {
 }
 
 #[test]
-fn no_checks_at_all_is_handed_off() {
+fn no_checks_at_all_merges() {
+    // GitHub does not require checks: a PR with none reported is not refused
+    // for that reason, and GitHub's own branch protection decides the merge.
     let Some(fx) = Fx::new() else { return };
     fx.set("required", "none");
     fx.set("all", "none");
     let out = fx.merge_tool(PR, SHA_A);
-    assert_eq!(out.status.code(), Some(3), "{}", show(&out));
-    assert_eq!(
-        last_json(&out, "result")["result"],
-        json!("checks-not-green")
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    assert_eq!(last_json(&out, "result")["result"], json!("merged"));
+    let merges = fx.merge_calls();
+    assert_eq!(merges.len(), 1, "{merges:?}");
+    assert!(
+        merges[0].contains(&"--match-head-commit".to_string()),
+        "{merges:?}"
     );
-    assert_no_merge_attempt(&fx);
 }
 
 #[test]
 fn a_pr_that_is_not_open_is_not_merged() {
+    // A PR merged at another head is not this run's merge (#2663); one merged
+    // at the expected head is covered in issue_2575_wait_sync_success.rs.
     let Some(fx) = Fx::new() else { return };
+    fx.set("server_head", SHA_B);
     for state in ["CLOSED", "MERGED"] {
         fx.set("state", state);
         let out = fx.merge_tool(PR, SHA_A);
@@ -1541,6 +1563,16 @@ if [ "$name" = "loop-health-evaluator" ]; then
   if [ "$(wc -l < "$S/evaluator-calls")" -gt 6 ]; then echo "LOOP_HEALTH: STUCK"; exit 1; fi
   v="$(jq -r '.merge_ready_verdict // empty' "$STUB_STATE_DIR/merge-ready-$label.json" 2>/dev/null)"
   verdict=CONTINUE; [ "$v" = MERGE_READY ] && verdict=DONE
+  # The evaluator contract (#2575 B2): a round with no movement since the last
+  # one is STUCK, unless loop_ci_signal says a check is pending at that head.
+  ci=""; prev=""
+  for a in "$@"; do case "$prev:$a" in -c:loop_ci_signal=*) ci="${a#loop_ci_signal=}" ;; esac; prev=$a; done
+  printf '%s\n' "$ci" >> "$S/evaluator-ci"
+  h="$(git -C "$STUB_REPO" rev-parse HEAD)"
+  last="$(cat "$S/evaluator-head" 2>/dev/null || :)"; printf '%s' "$h" > "$S/evaluator-head"
+  if [ "$verdict" = CONTINUE ] && [ "$h" = "$last" ] && [ "$ci" != "pending@$h" ]; then
+    echo "LOOP_HEALTH: STUCK"; exit 1
+  fi
   printf '  \342\234\223 step-04-enforce-loop-verdict: completed\n    Output: LOOP_HEALTH: %s\n' "$verdict"
   exit 0
 fi
@@ -1554,18 +1586,22 @@ for a in "$@"; do
   prev=$a
 done
 line="$(sed -n "${n}p" "$S/plan")"; [ -n "$line" ] || line="$(tail -n 1 "$S/plan")"
-IFS='|' read -r word commit <<<"$line"
+IFS='|' read -r word commit ci <<<"$line"
 w="$S/writeup-$n"; [ -f "$w" ] || w="$S/writeup"
 head="$(git -C "$wd" rev-parse HEAD)"                       # step-01a
 . "$TOOLS/autodrive_state.sh" || exit 2
 . "$TOOLS/autodrive_round_word.sh" || exit 2
-v="$(autodrive_round_word "$word" | jq -r .merge_ready_verdict)" || exit 2   # step-03, step-05a
-if [ "$commit" = 1 ]; then                                    # step-04
+if [ -n "${ci:-}" ]; then out="$(autodrive_round_word "$word" "$ci" "$head")" || exit 2   # step-03, step-05a
+else out="$(autodrive_round_word "$word")" || exit 2; fi
+v="$(printf '%s' "$out" | jq -r .merge_ready_verdict)"
+sig="$(printf '%s' "$out" | jq -r '.ci_signal // empty')"
+if [ "$commit" = 1 ] && [ "$v" = NOT_MERGE_READY ]; then      # step-04: not-ready only
   t="$(git -C "$wd" write-tree)"
   c="$(git -C "$wd" -c user.name=t -c user.email=t@t commit-tree "$t" -p HEAD -m "repair $label")"
   git -C "$wd" update-ref HEAD "$c"
+  printf '%s\n' "$label" >> "$S/builder-calls"
 fi
-autodrive_round_file "$STUB_STATE_DIR" "$label" "$v" "$head" < "$w" || exit 2   # step-05
+autodrive_round_file "$STUB_STATE_DIR" "$label" "$v" "$head" ${sig:+"$sig"} < "$w" || exit 2   # step-05
 echo "round ran"
 exit 0
 "#;
@@ -1788,21 +1824,6 @@ fn not_ready_runs_another_round_with_prior_writeup() {
 }
 
 #[test]
-fn not_ready_rounds_at_an_unchanged_head_are_not_no_progress() {
-    // Round two waits for pending CI: not ready, nothing to commit, same head.
-    let Some(d) = Drive::new() else { return };
-    d.plan(&["not-ready|0", "not-ready|0", "ready|0"]);
-    d.writeup(1, "CI is still running. Outcome: not-ready.\n");
-    d.writeup(2, "CI is still running. Outcome: not-ready.\n");
-    d.writeup(3, "CI is green. Outcome: ready.\n");
-    let out = d.run();
-    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
-    assert_ne!(d.result()["loop_result"], json!("NO_PROGRESS"));
-    assert_eq!(d.result()["loop_result"], json!("DONE"));
-    assert_eq!(d.lines("round-calls"), ["round-1", "round-2", "round-3"]);
-}
-
-#[test]
 fn unclear_word_is_another_round() {
     let Some(d) = Drive::new() else { return };
     d.plan(&["probably fine|1", "ready|0"]);
@@ -1836,3 +1857,9 @@ fn handoff_word_stops_the_loop_before_the_evaluator() {
         "the hand-off reads the blocker from the latest write-up"
     );
 }
+
+// #2575 B1, B2 and M1 (Crusty's review of PR #2637): pending checks wait,
+// a missing Crusty record runs Crusty, the base sync, and success means
+// merged. A child module, so it shares the fakes and fixtures above.
+#[path = "issue_2575_wait_sync_success.rs"]
+mod wait_sync_success;

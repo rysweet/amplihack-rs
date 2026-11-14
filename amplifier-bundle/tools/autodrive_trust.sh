@@ -218,13 +218,28 @@ EOF
 #
 #   {"rereview":"true|false","range":"<token>","first_unreviewed_sha":"<sha>","base_sha":"<sha>"}
 #
-# Only a crusty loop that ended DONE and CLEAN is checked; otherwise range is
-# `not-checked`, and step-01b reports why. Only crusty-unreviewed-commits
+# No crusty-records.tsv, or one with no rows, is `no-record`: the crusty-loop
+# marker is cleared and rereview is "true", so the Crusty round runs (#2628).
+# Otherwise only a crusty loop that ended DONE and CLEAN is checked; else
+# range is `not-checked`. Besides no-record, only crusty-unreviewed-commits
 # removes the `crusty-loop` row from phases.tsv and asks for a re-review. An
 # unreadable range does not: re-running crusty cannot deepen a clone or fix
 # git, so step-01b, step-03 and the merge gate block on it instead.
 autodrive_rereview_decision() {
-  local dir="${1:-}" repo="${2:-}" ref="${3:-}" reviewed="" base="" head="" res="" first="" again="false"
+  local dir="${1:-}" repo="${2:-}" ref="${3:-}" reviewed="" base="" head="" res="" first="" again="false" rec=""
+  # #2628: no crusty record at all (a new or emptied state dir) runs Crusty,
+  # which records and posts its verdict; a missing file never blocks or skips.
+  rec="${dir%/}/crusty-records.tsv"
+  if [ -n "$dir" ] && [ -d "$dir" ] && [ ! -L "$dir" ] && [ ! -L "$rec" ] \
+    && { [ ! -e "$rec" ] || { [ -f "$rec" ] && ! grep -q '[^[:space:]]' "$rec" 2>/dev/null; }; }; then
+    if autodrive_clear_phase "$dir" "crusty-loop"; then
+      printf '{"rereview":"true","range":"no-record","first_unreviewed_sha":"","base_sha":""}\n'
+    else
+      echo "ERROR: could not clear the crusty-loop phase in the state dir; crusty is not run and criterion 3 stays unmet." >&2
+      printf '{"rereview":"false","range":"not-checked","first_unreviewed_sha":"","base_sha":""}\n'
+    fi
+    return 0
+  fi
   if ! reviewed="$(autodrive_crusty_final "$dir" 2>/dev/null)"; then
     printf '{"rereview":"false","range":"not-checked","first_unreviewed_sha":"","base_sha":""}\n'
     return 0

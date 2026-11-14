@@ -1278,6 +1278,17 @@ fn logical_line_at(command: &str, at: usize) -> String {
     joined
 }
 
+/// A loop step's driver code: its command, or for the merge loop (#2575) the
+/// trusted autodrive_merge_loop_run.sh that its step-02 runs.
+fn loop_driver_text(recipe: &str, step: &str) -> String {
+    let command = step_field(recipe, step, "command");
+    if command.contains("autodrive_merge_loop_run.sh") {
+        return fs::read_to_string(tools_dir().join("autodrive_merge_loop_run.sh"))
+            .expect("read autodrive_merge_loop_run.sh");
+    }
+    command
+}
+
 /// The `bash "$LOOP_HELPER" ...` invocation, continuation lines joined.
 fn loop_invocation(command: &str) -> String {
     let start = command
@@ -1289,7 +1300,7 @@ fn loop_invocation(command: &str) -> String {
 #[test]
 fn loop_step_02s_pass_the_resolved_pr_worktree_to_repo_and_repo_path() {
     for (recipe, step, _) in LOOPS {
-        let command = step_field(recipe, step, "command");
+        let command = loop_driver_text(recipe, step);
         assert!(command.contains("PR_WORKTREE=\"$REPO\""));
         let invocation = loop_invocation(&command);
         assert!(invocation.contains("--repo \"$PR_WORKTREE\""));
@@ -1407,6 +1418,13 @@ fn run_loop_step_02_from(
         tools.join("recipe_context_value.sh"),
     )
     .expect("copy recipe_context_value.sh");
+    // #2575: merge-loop step-02 runs the trusted autodrive_merge_loop_run.sh
+    // from the launch bundle; the loop body lives there.
+    fs::copy(
+        tools_dir().join("autodrive_merge_loop_run.sh"),
+        tools.join("autodrive_merge_loop_run.sh"),
+    )
+    .expect("copy autodrive_merge_loop_run.sh");
     // Step-02 passes the launch tree's round recipe by absolute path and
     // refuses when it is missing there (#1543).
     let recipes = root.join("ah/amplifier-bundle/recipes");

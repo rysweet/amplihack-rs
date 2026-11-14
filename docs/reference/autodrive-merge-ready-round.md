@@ -1,6 +1,6 @@
 ---
 title: Auto-drive Merge-ready Round, Merge and Hand-off
-description: how the merge-ready agent writes up the 13 criteria in the PR, how the loop reads its outcome, the GitHub-only merge conditions, the hand-off recipe and the run report (#2575).
+description: how the merge-ready agent writes up the 13 criteria in the PR, how it reads the Crusty verdict from the PR, how the loop reads its outcome and waits for pending checks, the GitHub-only merge conditions, the base sync, the hand-off recipe and the run report (#2575, #2628, #2663).
 last_updated: 2026-11-14
 review_schedule: quarterly
 owner: workflow-team
@@ -25,10 +25,12 @@ the drive.
 ## Contents
 
 - [Round steps](#round-steps)
+- [Crusty verdict at the head](#crusty-verdict-at-the-head)
 - [Outcome word](#outcome-word)
 - [Round files](#round-files)
 - [How the loop ends](#how-the-loop-ends)
 - [Finalisation and merge conditions](#finalisation-and-merge-conditions)
+- [Base sync](#base-sync)
 - [Hand-off](#hand-off)
 - [Run report](#run-report)
 - [Tool reference](#tool-reference)
@@ -41,12 +43,13 @@ the drive.
 
 | Step | Kind | Output | Responsibility |
 | --- | --- | --- | --- |
+| `step-01b-crusty-evidence` | agent | `crusty_evidence` | Reads the newest authorised `Crusty verdict:` comment on the PR and judges whether it covers the current head. See [Crusty verdict at the head](#crusty-verdict-at-the-head). |
 | `step-01a` | bash | `merge_ready_assessed_head` | Captures `git rev-parse HEAD` in the PR worktree before the assessment and checks it is 40 or 64 lowercase hex characters; any other value exits `2`. |
 | `step-02` | agent, `parse_json: false` | `merge_ready_writeup` | Reads the pinned merge-ready skill, assesses all 13 criteria at `merge_ready_assessed_head`, posts one PR comment naming that SHA and ends with one sentence stating the outcome. Under `autodrive_dry_run=true` it prints the write-up instead of posting it. |
-| `step-03` | agent | `merge_ready_outcome` | Answers one question about the write-up: did the assessment conclude ready, not ready, or hand-off? It replies with one word. |
-| `step-05a` | bash | `merge_ready_word` | Normalises the word through `autodrive_round_word`. |
-| `step-04` | agent | | Runs only when `merge_ready_word.word == 'not-ready'`. Works on the blockers named in the write-up, commits and pushes in the PR worktree. |
-| `step-05` | bash | | Writes the round files through `autodrive_round_file`, passing `merge_ready_assessed_head`. |
+| `step-03` | agent | `merge_ready_outcome` | Answers one question about the write-up: did the assessment conclude ready, not ready, waiting, or hand-off? It replies with one word on its last line and, on the line before, `ci: pass`, `ci: pending`, `ci: fail` or `ci: none`. |
+| `step-05a` | bash | `merge_ready_word` | Passes the word, the `ci:` line and `merge_ready_assessed_head` to `autodrive_round_word`. |
+| `step-04` | agent | | Runs only when `merge_ready_word.word == 'not-ready'`. Works on the blockers named in the write-up, commits and pushes in the PR worktree. It does not run for `waiting`. |
+| `step-05` | bash | | Writes the round files through `autodrive_round_file`, passing `merge_ready_assessed_head` and the round's `ci_signal`. |
 
 The head is captured before `step-02` so that the `.head` round file names
 the commit the agent assessed, not a commit made afterwards. `step-02` may
@@ -67,21 +70,156 @@ no JSON at all all lead to the same next step, which is decided by the
 outcome word. What the write-up should contain is set out in the bundled
 [evidence contract](../../amplifier-bundle/skills/auto-drive-to-merge/evidence-contract.md).
 
+## Crusty verdict at the head
+
+Criterion 3 inside auto-drive is met by a Crusty verdict posted on the PR
+itself, not by a record file in the state directory (#2628). A drive that
+starts with an empty or missing state directory still finds the verdict, and
+a missing record never blocks the drive.
+
+### Writer: the Crusty round posts its verdict
+
+After `step-03-extract-crusty-verdict`, `autodrive-crusty-round.yaml` runs the
+agent step `step-03c-post-verdict`. It posts one PR comment whose first line
+is exactly:
+
+```text
+Crusty verdict: MINOR_ONLY at 15a7f6f47c1e2d0b9a8f7e6d5c4b3a2918070605
+```
+
+The verdict is `CLEAN`, `MINOR_ONLY` or `BLOCKING`, and the SHA is the full
+40- or 64-character head the round reviewed. The verdict summary follows on
+the next lines.
+
+| Rule | Detail |
+| --- | --- |
+| Transport | The body goes in on standard input: `gh pr comment <pr> --body-file -`. If GraphQL refuses, the step makes one REST call instead: `gh api repos/{owner}/{repo}/issues/<pr>/comments -f body=@-`. |
+| Nested lines | Any summary line that starts with `Crusty verdict:` is prefixed with `> `, so only the first line can be read as a verdict. |
+| Duplicates | The step reads the comments back once and does not post again when a comment with the same head and verdict already exists. |
+| Approvals | It never calls `gh pr review --approve`. The verdict is a comment, not a review. |
+| Content | No tokens, environment values or home-directory paths. |
+| Dry run | Under `autodrive_dry_run=true` it posts nothing. |
+| Failure | A failed post does not change the round's result. The next merge round then finds no verdict at the head and criterion 3 is not met, so the PR does not merge. |
+
+### Reader: `step-01b-crusty-evidence`
+
+`step-01b-crusty-evidence` in `autodrive-merge-round.yaml` is an agent
+judgement. No tool parses or gates on the comment. The agent:
+
+1. Reads the drive's own login once with `gh api user`.
+2. Lists the PR's comments with
+   `gh api repos/{owner}/{repo}/issues/<pr>/comments --paginate`, reading
+   `.user.login`, `.author_association`, `created_at` and `updated_at`.
+3. Keeps only comments from an authorised author: the drive's own login, or
+   an author whose association is `OWNER`, `MEMBER` or `COLLABORATOR`.
+   Comments from anyone else are ignored and named in `crusty_reason`.
+4. Takes the newest authorised comment whose first line starts with
+   `Crusty verdict:`, ordered by `updated_at`, then `created_at`.
+5. Judges criterion 3 from that comment.
+
+| Newest authorised verdict comment | Criterion 3 | Reason |
+| --- | --- | --- |
+| `CLEAN` or `MINOR_ONLY` at the full current head SHA | met | |
+| `CLEAN` or `MINOR_ONLY` at an earlier full SHA, and the range check below prints `ok` | met | |
+| `BLOCKING` at the full current head SHA | not met | `quality-audit-convergence-crusty-not-done-clean` |
+| Names another head that the range check does not cover, or a shortened SHA | not met | `crusty-review-required` |
+| None | not met | `crusty-review-required` |
+
+Only the full SHA counts. A comment written by a person with a 7-character
+SHA counts as no verdict; the cost is at most one extra Crusty pass.
+
+A [base sync](#base-sync), or a commit that changes only the PR description
+or evidence files, moves the head without needing a new review. For a verdict
+at an earlier head, the agent runs the trusted, read-only range check. It is
+the only tool step-01b runs. The tool comes from the round's pinned tools
+directory, the `autodrive_tools_dir` output of `step-00-tools-dir`, never
+from `$AMPLIHACK_HOME` directly and never from the PR worktree. The prompt
+gives the agent the path as `{{autodrive_tools_dir}}`:
+
+```bash
+bash "{{autodrive_tools_dir}}/autodrive_round_evidence.sh" crusty-covers 15a7f6f47c1e2d0b9a8f7e6d5c4b3a2918070605
+# ok
+```
+
+It walks the commits from the verdict's SHA to `HEAD` with the same rules as
+the before-round re-review check (`autodrive_crusty_range`): `ok` when every
+later commit is a clean base merge or an allowed description or evidence
+change; otherwise `crusty-unreviewed-commits` or `crusty-range-unreadable`,
+and criterion 3 is not met. The SHA argument must be 40 or 64 lowercase hex
+characters, otherwise the tool prints `crusty-range-unreadable` and exits
+`2`. The check reads git only; it never reads a state file.
+
+The base SHA comes from the same lookup the re-review check uses:
+`pr_base_ref` in `autodrive_round_evidence.sh` (`AUTODRIVE_BASE_BRANCH`, or
+`gh pr view --json baseRefName`), then `autodrive_base_sha`, which fetches
+`refs/heads/<base>` from `origin` and never trusts an existing local ref.
+When the lookup gives an empty SHA (no base name, a refused name, or a
+failed fetch), the walk runs without excluding base commits. The commits a
+base merge brought in then count as code, the check prints
+`crusty-unreviewed-commits`, and criterion 3 is not met. An empty base SHA
+therefore costs a Crusty pass; it never lets an unreviewed commit through.
+
+| Verdict at | Later commits | `crusty-covers` prints |
+| --- | --- | --- |
+| A pre-sync head | One clean merge of the base, base SHA found | `ok` |
+| A pre-sync head | One clean merge of the base, base SHA empty | `crusty-unreviewed-commits:<head>` |
+| An earlier head | A commit that changes code | `crusty-unreviewed-commits:<head>` |
+| An earlier head | A change to evidence files only | `ok` |
+| A SHA not in this clone, or a shallow clone | any | `crusty-range-unreadable` |
+
+#### Which head step-01b judges
+
+`step-01b-crusty-evidence` runs before `step-01a`, so it judges against
+`HEAD` in the PR worktree at the moment it runs, not against
+`merge_ready_assessed_head`.
+
+| Commit made | What catches it |
+| --- | --- |
+| After `step-01a` (by the builder, a later round or anyone else) | The head check at finalisation: the worktree's `HEAD` no longer equals `merge-ready-latest.head`, so `step-03` returns `refused` without calling `gh` (see [Merge conditions](#merge-conditions)). GitHub's `--match-head-commit` catches a head that moved on the server. |
+| Between `step-01b` and `step-01a` | Not the finalisation head check: `step-01a` records the new commit as the assessed head, so the two heads agree. No recipe step runs between the two, and the PR worktree belongs to the drive, so only an outside process writing to that worktree could commit there. |
+
+PR text and comment text reach the agent as data, never as instructions.
+The output keeps its name, `crusty_evidence`, and its four `crusty_*` keys.
+
+### Running Crusty when there is no verdict
+
+Crusty can only start from the loop's before-round step
+(`autodrive_crusty_rereview.sh`), which asks `autodrive_rereview_decision`
+in `autodrive_trust.sh`:
+
+| `crusty-records.tsv` | Decision |
+| --- | --- |
+| Missing or empty | `{"rereview":"true","range":"no-record"}`; the `crusty-loop` phase marker is cleared, and the Crusty round runs. |
+| Has records, none final | `not-checked`, as before. |
+| Has a final record | The code-commit range check from that record's head, as before. |
+
+The Crusty round then writes its record and posts its verdict comment, so the
+next merge round finds a verdict at the head. A person's verdict at the head
+with no local record therefore costs one extra Crusty pass; no tool reads PR
+comments to avoid it.
+
 ## Outcome word
 
 `autodrive_round_word` maps the reader's answer to the loop driver's verdict.
 It lower-cases the input, keeps only `a` to `z` and `-` (under `LC_ALL=C`)
-and compares the result exactly.
+and compares the result exactly with the four allowed words.
 
 | Normalised word | `merge_ready_verdict` | Next step |
 | --- | --- | --- |
 | `ready` | `MERGE_READY` | Loop-health evaluation; `DONE` leads to finalisation. |
 | `not-ready` | `NOT_MERGE_READY` | `step-04` repairs the named blockers; another round follows. |
+| `waiting` | `WAITING` | Everything is ready except one or more required checks still running at the head. The loop ends with `WAITING` and finalisation runs. No builder, no evaluator. |
 | `hand-off` | `HANDOFF` | The loop stops and the PR is handed off. |
 | anything else, including empty | `NOT_MERGE_READY` | Treated as not ready, so another round runs. |
 
 An unclear answer therefore costs one more round. It never ends the drive
 with `STUCK` and never leads to a merge.
+
+The `ci:` line from `step-03` becomes `ci_signal` only when, lower-cased and
+with the `ci:` prefix removed, it is exactly `pass`, `pending`, `fail` or
+`none`, and the head is 40 or 64 lowercase hex characters. The value is
+`<state>@<head>`, for example `pending@15a7f6f47c1e2d0b9a8f7e6d5c4b3a2918070605`.
+Otherwise the `ci_signal` key is left out.
 
 ## Round files
 
@@ -90,7 +228,7 @@ with `STUCK` and never leads to a merge.
 
 | File | Content |
 | --- | --- |
-| `merge-ready-<label>.json` | `{"merge_ready_verdict":"MERGE_READY"}`, `NOT_MERGE_READY` or `HANDOFF`. This is the only field. |
+| `merge-ready-<label>.json` | `{"merge_ready_verdict":"MERGE_READY"}`, `NOT_MERGE_READY`, `WAITING` or `HANDOFF`, plus `ci_signal` (for example `"ci_signal":"pending@15a7f6f4…"`) when the round reported a valid one. |
 | `merge-ready-<label>.writeup` | The write-up, cut at 256 KiB with a final truncation line. |
 | `merge-ready-<label>.head` | The head captured by `step-01a` before the assessment: 40 or 64 lowercase hex characters. |
 
@@ -99,25 +237,34 @@ The loop's record step copies the last `.writeup` and `.head` to
 `merge-ready-latest.head` as the expected head of the merge.
 
 The `.json` round file is loop plumbing, not a readiness record. The loop
-driver reads `merge_ready_verdict` from it only when `LOOP_NAME=merge-ready`. The former fields `blocker_count`, `head_sha`,
-`test_signal`, `ci_signal` and `<record>.findings` are no longer written for
-the merge-ready loop. The crusty loop keeps its own round records,
+driver reads `merge_ready_verdict` and `ci_signal` from it only when
+`LOOP_NAME=merge-ready`. `ci_signal` is written only when it matches
+`^(pass|pending|fail|none)@([0-9a-f]{40}|[0-9a-f]{64})$`; the record step
+checks it against the same pattern again and uses `''` when it does not match.
+The former fields `blocker_count`, `head_sha`, `test_signal` and
+`<record>.findings` are no longer written for the merge-ready loop. The crusty loop keeps its own round records,
 written by `autodrive_crusty_record.sh`.
 
 ## How the loop ends
 
-`autodrive-merge-loop.yaml` `step-02` runs `autodrive_loop.sh` with
-`LOOP_NAME=merge-ready`. The step keeps its default `fatal` handling and maps
-the driver's exit status itself, so that exit `79` is never hidden by
-`continue_on_error` (#2490).
+`autodrive-merge-loop.yaml` `step-02` calls the trusted tool
+`autodrive_merge_loop_run.sh`, which runs `autodrive_loop.sh` with
+`LOOP_NAME=merge-ready`. The step's values reach the tool as quoted
+`RECIPE_VAR_*` environment variables, never by templating into the command.
+An optional first argument asks for that many further rounds; it must
+match `^[0-9]+$` and be at least `1`, and the tool turns it into a budget of
+the rounds already used plus that number (see
+[`autodrive_merge_loop_run.sh`](#autodrive_merge_loop_runsh)). The step keeps its default `fatal`
+handling and the tool maps the driver's exit status itself, so that exit `79`
+is never hidden by `continue_on_error` (#2490).
 
 | Driver exit | Loop result (read from `merge-ready-result.json`) | Step exit |
 | --- | --- | --- |
-| `0` | `DONE` | `0` |
+| `0` | `DONE` or `WAITING` | `0` |
 | `1` | `USAGE_LIMIT` | `1`: the run stops; a later run continues the work. |
 | `1` | `STUCK`, `BUDGET_EXHAUSTED`, `HANDOFF` | `0`, with the loop line printed. |
-| `1` | result file missing or unreadable, or `DONE` (the driver writes `DONE` only when it exits `0`) | `0`, with loop result `UNREADABLE`. |
-| `0` | anything other than `DONE`, or no readable result | `0`, with loop result `UNREADABLE`. |
+| `1` | result file missing or unreadable, or `DONE` or `WAITING` (the driver writes those only when it exits `0`) | `0`, with loop result `UNREADABLE`. |
+| `0` | anything other than `DONE` or `WAITING`, or no readable result | `0`, with loop result `UNREADABLE`. |
 | `75` | `ORPHANED` | `75` |
 | `79` | `TERMINAL_REFUSAL`, set by the step; the result file is not consulted | `79` |
 | `2` or any other value | | passed through unchanged |
@@ -133,21 +280,41 @@ step's standard error, for the log; the step's output is only the line it
 builds from the result file.
 
 A `HANDOFF` round writes a `HANDOFF` line through `record_result` before the
-evaluator runs, then the driver exits `1`. The no-progress rule does not
-apply to the merge-ready loop: its round file has no CI signal, so a round
-that waits for pending CI at an unchanged head would otherwise stop the loop.
-The budget stop bounds the loop instead. A round that writes no write-up or
+evaluator runs, then the driver exits `1`. A round that writes no write-up or
 head leaves none behind, so no earlier assessment reaches the next round or
 the hand-off.
 
+### A pending check is a wait, not a lack of progress
+
+A `WAITING` round is handled in `autodrive_loop_record.sh`. It calls
+`record_result` with
+`{"loop_result":"WAITING","round_label":"...","round_verdict":"WAITING","ci_signal":"pending@<head>"}`
+and the loop exits `0` before the progress stop, the budget charge and the
+evaluator. The builder (`step-04`) does not run. A round whose only open
+item is a required check still running at the head can therefore never be
+counted as no progress and never leads to `STUCK`.
+
+Other rounds pass their `ci_signal` to the
+[loop-health evaluator](loop-health-evaluator.md) as `loop_ci_signal`. The
+evaluator's rule: when `loop_ci_signal` is `pending@<head>` and the head has
+not changed, the verdict is `CONTINUE`, never `STUCK`. Repeated rounds with no
+movement and no pending signal, including `fail@<head>`, are still `STUCK`.
+The budget stop still bounds the loop.
+
+### Loop outcome
+
 `step-02a` turns the loop result into
-`{"outcome":"done"|"handoff","reason":"...","loop_result":"...","stop_comment_posted":"true"|"false","head_sha":"..."}`,
+`{"outcome":"done"|"handoff","finalise":"true"|"false","reason":"...","loop_result":"...","stop_comment_posted":"true"|"false","head_sha":"..."}`,
 with the reason cut to 1000 bytes of printable ASCII:
 
-| Loop result | Outcome | Next |
-| --- | --- | --- |
-| `DONE` | `done` | `step-03` runs [`autodrive-finalize.yaml`](#finalisation-and-merge-conditions). |
-| `STUCK`, `BUDGET_EXHAUSTED`, `HANDOFF`, `UNREADABLE` | `handoff` | `step-02c` runs [`autodrive-handoff.yaml`](#hand-off). |
+| Loop result | Outcome | `finalise` | Next |
+| --- | --- | --- | --- |
+| `DONE` | `done` | `true` | `step-03` runs [`autodrive-finalize.yaml`](#finalisation-and-merge-conditions). |
+| `WAITING` | `done` | `true` | `step-03` runs finalisation, which merges if the checks have passed by then, or ends `checks-pending`. |
+| `STUCK`, `BUDGET_EXHAUSTED`, `HANDOFF`, `UNREADABLE`, anything else | `handoff` | `false` | `step-02c` runs [`autodrive-handoff.yaml`](#hand-off). |
+
+`step-03` runs only when `merge_loop_outcome.finalise == 'true'`. When
+finalisation returns `base-behind`, the loop runs the [base sync](#base-sync).
 
 `step-02a` reads `head_sha` with `git rev-parse HEAD` in the PR worktree and
 sets `stop_comment_posted=true` for `BUDGET_EXHAUSTED`, and `step-02c`
@@ -182,7 +349,8 @@ this order:
 3. `merge-ready-latest.head` holds a well-formed SHA and the PR worktree's
    `HEAD` still equals it. A different head means the PR changed after the
    assessment; the step returns `refused` without calling `gh`.
-4. `autodrive_merge` finds the PR open and its checks green, then GitHub
+4. `autodrive_merge` finds the PR open, its checks green or absent (see
+   [Checks](#checks)) and its `mergeStateStatus` not `DIRTY`, then GitHub
    accepts `gh pr merge --squash --match-head-commit <expected sha>`.
 
 GitHub's acceptance covers required reviews, branch protection and a head
@@ -192,23 +360,44 @@ cause a merge.
 
 ### Checks
 
-`autodrive_merge` reads `gh pr checks <pr> --required`.
+`autodrive_merge` reads `gh pr checks <pr> --required` once.
 
 | Observation | Result |
 | --- | --- |
-| Required checks all passed | Merge is attempted. |
-| Any required check failing | `checks-not-green`; no merge attempt. |
-| Any required check pending | `checks-not-green`; no merge attempt and no waiting. |
-| `gh` reports `no required checks reported` | Falls back to all checks: exit `0` counts as green; anything else, including no checks at all, is `checks-not-green`. |
+| Exit `0`: required checks all passed | Merge is attempted. |
+| Exit `8`: a required check is still running | `checks-pending` (tool exit `7`); no merge attempt, no draft, no hand-off. The reason names the pending checks. |
+| `gh` reports `no required checks reported` | Falls back to `gh pr checks <pr>` (all checks): exit `0` continues, exit `8` is `checks-pending`, `no checks reported` continues, anything else is `checks-not-green`. |
+| Any other non-zero exit, including a failing check | `checks-not-green` (tool exit `3`); no merge attempt. |
 
-The fallback fails closed. If a later `gh` release changes that message, the
-result is a hand-off, not a merge.
+**Pending checks wait for the next wake, not a timer.** A `checks-pending`
+result ends the drive with `not merged: waiting for <check> at <sha>`, and
+the PR stays ready for review. The next drive run, started by the existing
+triggers, reads the check runs again and judges again. There is no sleep, no
+`gh pr checks --watch` (which polls on an interval) and no counter.
 
-Pending checks are not polled. The merge-ready criteria already require green
-CI, so a ready round normally finds the checks complete. If they are still
-running at finalisation, the result is `checks-not-green` and a hand-off;
-the drive does not wait, retry or sleep, in line with the rule against
-timer-based fixes. A later run picks the PR up once people mark it ready.
+**A PR with no checks at all is not refused for that reason.** GitHub does not
+require checks; when none are reported, the merge request goes ahead and
+GitHub's branch protection decides. A repository that relies on checks must
+make them required in branch protection.
+
+Check names in the reason have control characters removed and are cut to 300
+bytes before they go into the JSON, which is built with `jq --arg`.
+
+### Merge state
+
+`autodrive_merge` reads `mergeStateStatus` in the same `gh pr view` call as
+the PR state, title and body. It compares the value only with `case`
+statements whose default arm is the safe result.
+
+| When | `mergeStateStatus` | Result |
+| --- | --- | --- |
+| Before the merge request | `DIRTY` (conflicts with the base) | `base-behind` (tool exit `8`); `gh pr merge` is not called. |
+| Before the merge request | anything else | The merge request goes ahead. `BEHIND` alone does not stop it; GitHub decides whether an out-of-date branch may merge. |
+| After GitHub refuses the merge, read once more | `BEHIND` or `DIRTY` | `base-behind` (tool exit `8`). |
+| After GitHub refuses the merge | anything else, including empty or unknown | `refused` (tool exit `4`). |
+
+`--squash --match-head-commit` is always used, so the merge can only land the
+assessed head. A `gh` exit `79` stays terminal.
 
 ### Merge message
 
@@ -233,6 +422,8 @@ printf '%s' "$MERGE_BODY" | gh pr merge "$pr" --squash --match-head-commit "$sha
 | `refused` | `4`, or head moved before the call | `0` | `true` |
 | `not-open` | `5` | `0` | `true` |
 | `message-unavailable` | `6` | `0` | `true` |
+| `checks-pending` | `7` | `0` | `false` |
+| `base-behind` | `8` | `0` | `false`; the merge loop runs the [base sync](#base-sync) |
 | | `2` (bad arguments or unsafe helper) | `2` | |
 | | `79` | `79` | |
 
@@ -243,6 +434,53 @@ allow a merge. The PR stays open and is not drafted. On a merge run, a helper
 that exits non-zero or prints no object with a boolean `allows_merge` gives
 `authorization-unreadable`, and the PR is handed off. Its reason names only
 the helper's exit status. A helper exit `79` passes through as `79`.
+
+`autodrive-finalize.yaml` emits `checks-pending` and `base-behind` with
+`handoff false`, so neither reaches the hand-off or drafts the PR.
+
+## Base sync
+
+When finalisation returns `base-behind`, `autodrive-merge-loop.yaml` brings
+the base into the branch and assesses once more. These are steps written out
+in sequence, each run once; there is no loop and no counter.
+
+| Step | Kind | Runs when | Responsibility |
+| --- | --- | --- | --- |
+| `step-03b-base-sync` | agent (builder) | `finalize_merge.result == 'base-behind'` | Merges the base into the PR branch and pushes. Outputs `{"synced":"true"\|"false","reason":"..."}`. |
+| `step-03c-sync-round` | bash | `synced == 'true'` | Runs `autodrive_merge_loop_run.sh 1`: the merge-ready loop for one more round (see [the round budget](#autodrive_merge_loop_runsh)). |
+| `step-03d-sync-outcome` | bash | after `step-03c` | Maps the loop result as `step-02a` does, giving `sync_loop_outcome`. |
+| `step-03e-finalize-again` | sub-recipe | `sync_loop_outcome.finalise == 'true'` | Runs `autodrive-finalize.yaml` once more. |
+| `step-03f-sync-handoff` | sub-recipe | `synced == 'false'` or `sync_loop_outcome.outcome == 'handoff'` | Runs [`autodrive-handoff.yaml`](#hand-off). |
+
+After the second finalisation, any result other than `merged` ends the drive
+with `not merged: <reason>` or a hand-off. A second `base-behind` is not
+synced again.
+
+### What the sync step does
+
+1. Reads `baseRefName`, `headRefName` and `isCrossRepository` with
+   `gh pr view`.
+2. Checks both branch names against `^[A-Za-z0-9._/-]+$` with no leading
+   `-`. A name that fails gives `synced:false`.
+3. A PR from a fork (`isCrossRepository == true`) gives `synced:false`; the
+   drive does not push to another repository.
+4. Checks `git status --porcelain` in the PR worktree. Unrelated staged or
+   modified files give `synced:false`.
+5. Runs `git fetch origin -- <base>` and then `git merge origin/<base>`.
+6. On any conflict, runs `git merge --abort` and gives `synced:false` with the
+   reason `conflicts need review`. Conflict resolution is never pushed
+   without review.
+7. Pushes with `git push origin HEAD:<headRefName>`, with hooks on.
+
+The step never uses `rebase`, `--force`, `--force-with-lease`, `--no-verify`,
+`reset --hard`, `git add -A` or `core.hooksPath`. It stages only the merge's
+own result.
+
+A worked case: PR #2575 is `CLEAN` and ready at `15a7f6f4…`, but `main`
+moved and GitHub refuses the merge. The read-back says `BEHIND`, so
+finalisation returns `base-behind`. The sync step merges `origin/main` into
+the branch as a new merge commit and pushes. One more merge-ready round
+assesses the new head, and the second finalisation merges it at that head.
 
 ## Hand-off
 
@@ -307,9 +545,12 @@ The first matching row applies.
 | Loop result | Merge result | `stop_reason` |
 | --- | --- | --- |
 | `TERMINAL_REFUSAL` or `TERMINAL_POLICY_REFUSAL` | | `terminal_refusal` |
-| `DONE` | `merged` or `not-authorised` | `completed` |
-| `DONE` | any other result, including `authorization-unreadable` | `handoff` |
-| `DONE` | `null`: finalisation did not run, or its output is missing or unreadable, with no exit `79` | `unreadable`, with a `note` naming the error kind and path |
+| `DONE` or `WAITING` | `merged` | `completed` |
+| `DONE` or `WAITING` | `not-authorised` | `not_merged` |
+| `DONE` or `WAITING` | `checks-pending` | `waiting_for_checks` |
+| `DONE` or `WAITING` | `base-behind` | `not_merged` |
+| `DONE` or `WAITING` | any other result, including `authorization-unreadable` and unknown values | `handoff` |
+| `DONE` or `WAITING` | `null`: finalisation did not run, or its output is missing or unreadable, with no exit `79` | `unreadable`, with a `note` naming the error kind and path |
 | `HANDOFF`, `STUCK` | | `handoff` |
 | `BUDGET_EXHAUSTED` | | `budget_exhausted` |
 | `USAGE_LIMIT` | | `usage_limit` |
@@ -334,18 +575,77 @@ names a different one, `merge` is ignored (`null`) and the `note` says so.
 A PR already merged at entry is still reported through the `already_merged`
 path, which keeps its binding, selection, `run_id`, provenance and PR checks.
 
+When a [base sync](#base-sync) ran, `merge` is the second finalisation's
+`finalize_merge`.
+
+### Success means merged
+
+The run succeeds only when `stop_reason` is `completed`: the PR merged in
+this run, or was already merged at entry. The runner decides this with the
+pure function `autodrive_run_succeeded` in
+`crates/amplihack-cli/src/commands/recipe/run/execute.rs`, an allow-list of
+the single value `completed`. A missing key, an empty value or any other
+value is a failure.
+
+GitHub's merge state decides, in both directions (#2663). A PR that GitHub
+reads merged at the expected head is `merged`, and so `completed`, even when
+`gh pr merge` reported an error or the merge has moved the base so that the
+branch now reads `BEHIND`. No later base or readiness comparison is made
+after the merge. A PR that GitHub does not read merged is never `merged`,
+whatever `gh` printed or exited.
+
+| `stop_reason` | Run result |
+| --- | --- |
+| `completed` | ✓ Success |
+| `not_merged`, `waiting_for_checks`, `handoff`, `unreadable`, `budget_exhausted`, anything else | not successful |
+
+The runner sets `success=false` after `report()` adds `autodrive_outcome`,
+which is after `run_with_transient_retry` has returned, so a run that did not
+merge never starts the whole-run re-attempt (#1267).
+
+Verify-only runs (`no_merge=true` or `autodrive_dry_run=true`) and runs whose
+captured invocation does not allow a merge end `not_merged`, so they are not
+reported as ✓ Success.
+
+### Report step message
+
+The last step of `auto-drive-to-merge.yaml` reads JSON, never prose: the
+`finalize_merge` value, then `sync_loop_outcome` or `merge_loop_outcome`,
+then `handoff_result`, each parsed with `jq 'fromjson?'`. The first matching
+row applies.
+
+| Observed | Message | Step exit |
+| --- | --- | --- |
+| `finalize_merge.result == "merged"` | `completed` | `0` |
+| PR merged before the run | as for `already_merged` | `0` |
+| `checks-pending` | `not merged: waiting for <check> at <sha>` (`waiting_for_checks`) | `0` |
+| any other `finalize_merge.result` | `not merged: <reason>` (`not_merged`) | `0` |
+| a hand-off ran | `handed off: <reason>` (`handoff`) | `0` |
+| nothing parseable | `dependency_failure` | `1` |
+
+`<reason>` comes from the JSON and is passed in with `jq --arg`. A deliberate
+loop hand-off is reported as a hand-off, not as `dependency_failure`.
+
 ## Tool reference
 
 All tools live in `amplifier-bundle/tools/`, are sourced from the pinned
 launch bundle, and are listed in `REQUIRED_ASSETS` so that the launch-bundle
-digest covers them.
+digest covers them. Where a step finds them depends on its recipe:
+
+| Recipe | Tools directory |
+| --- | --- |
+| `autodrive-merge-round.yaml` | `{{autodrive_tools_dir}}`, the output of `step-00-tools-dir`. No later round step searches again. |
+| `autodrive-merge-loop.yaml`, `autodrive-finalize.yaml` | `${AMPLIHACK_HOME}/amplifier-bundle/tools`, the launch install that `step-02` pins `AMPLIHACK_HOME` to. |
+
+No step takes a tool from `REPO_PATH`, the git toplevel or the PR worktree.
+The examples below are written as an operator would run them by hand.
 
 ### `autodrive_round_word.sh`
 
 Defines functions only; sourcing it has no other effect.
 
 ```bash
-source "$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_round_word.sh"
+source "{{autodrive_tools_dir}}/autodrive_round_word.sh"
 
 autodrive_round_word "Ready."
 # {"word":"ready","merge_ready_verdict":"MERGE_READY"}
@@ -353,22 +653,35 @@ autodrive_round_word "Ready."
 autodrive_round_word "Probably ready"
 # {"word":"not-ready","merge_ready_verdict":"NOT_MERGE_READY"}
 
+autodrive_round_word "waiting" "ci: pending" 15a7f6f47c1e2d0b9a8f7e6d5c4b3a2918070605
+# {"word":"waiting","merge_ready_verdict":"WAITING","ci_signal":"pending@15a7f6f47c1e2d0b9a8f7e6d5c4b3a2918070605"}
+
+autodrive_round_word "waiting" "ci: passed" 15a7f6f
+# {"word":"waiting","merge_ready_verdict":"WAITING"}
+
 printf '%s' "$RECIPE_VAR_merge_ready_writeup" |
-  autodrive_round_file "$RECIPE_VAR_autodrive_state_dir" round-3 NOT_MERGE_READY \
-    "$RECIPE_VAR_merge_ready_assessed_head"
+  autodrive_round_file "$RECIPE_VAR_autodrive_state_dir" round-3 WAITING \
+    "$RECIPE_VAR_merge_ready_assessed_head" \
+    "pending@$RECIPE_VAR_merge_ready_assessed_head"
 # writes merge-ready-round-3.json, .writeup and .head
 ```
 
-`autodrive_round_file <state_dir> <round_label> <verdict> <assessed_head>`
+`autodrive_round_word <answer> [<ci_answer>] [<head>]` adds `ci_signal` only
+when both optional arguments are valid (see [Outcome word](#outcome-word));
+otherwise the key is left out. All JSON is built with `jq -n --arg`.
+
+`autodrive_round_file <state_dir> <round_label> <verdict> <assessed_head> [<ci_signal>]`
 reads the write-up from standard input, never from an argument, and writes
 `<assessed_head>` to the `.head` file. It does not run `git` itself.
 
 | Check | Refusal |
 | --- | --- |
+| More than 5 arguments | exit `2` |
 | `round_label` matches `^[A-Za-z0-9._-]{1,64}$` and is not `.` or `..` | exit `2` |
 | `state_dir` passes `autodrive_private_dir` | exit `2` |
-| `verdict` is `MERGE_READY`, `NOT_MERGE_READY` or `HANDOFF` | exit `2` |
+| `verdict` is `MERGE_READY`, `NOT_MERGE_READY`, `WAITING` or `HANDOFF` | exit `2` |
 | `assessed_head` is 40 or 64 lowercase hex characters | exit `2` |
+| `ci_signal`, when given, matches `^(pass\|pending\|fail\|none)@([0-9a-f]{40}\|[0-9a-f]{64})$` | not written; the round file has no `ci_signal` key |
 | Each file written under `umask 077` to a temporary file in the same directory, then moved into place with `mv -f` | exit `1` on a write failure |
 
 A file is never written through an existing path, so a symbolic link planted
@@ -383,18 +696,62 @@ autodrive_merge 2575 15a7f6f47c1e2d0b9a8f7e6d5c4b3a2918070605
 ```
 
 The function prints one JSON line built with `jq -cn`. It calls `gh` once for
-each of these, in order: PR state with title and body (one read), `checks --required`,
-merge, PR state after the merge. It adds no retries or waits.
+each of these, in order: PR state with title, body and `mergeStateStatus` (one
+read), `checks --required` (and `checks` when no required checks are
+reported), merge, PR state after the merge. It adds no retries or waits.
+
+```bash
+autodrive_merge 2575 15a7f6f47c1e2d0b9a8f7e6d5c4b3a2918070605
+# {"result":"checks-pending","pr":2575,"expected_head":"15a7f6f47c1e2d0b9a8f7e6d5c4b3a2918070605","reason":"waiting for test (ubuntu-latest) at 15a7f6f47c1e2d0b9a8f7e6d5c4b3a2918070605"}
+echo $?
+# 7
+```
 
 | Exit | Meaning |
 | --- | --- |
-| `0` | Merged; the read-back state is `MERGED`. |
+| `0` | `merged`: GitHub reads the PR `MERGED` with `headRefOid` equal to the expected head. This holds whether the PR already read so before the request (no request is made), after the request, or after `gh pr merge` exited non-zero. |
 | `2` | Bad arguments, or the merge-message helper failed its path checks. |
 | `3` | `checks-not-green`; no merge attempted. |
-| `4` | `refused`: GitHub declined the merge, for example on a moved head, a missing review or branch protection. |
-| `5` | `not-open`: the PR was not open before the merge. |
+| `4` | `refused`: GitHub declined the merge, for example on a moved head, a missing review or branch protection, and the read-back `mergeStateStatus` is not `BEHIND` or `DIRTY`. |
+| `5` | `not-open`: the PR was closed, or merged at a head other than the expected one, before the merge. |
 | `6` | `message-unavailable`: the merge-message helper refused the title or body. |
+| `7` | `checks-pending`: a required check is still running at the head; no merge attempted. |
+| `8` | `base-behind`: `DIRTY` before the merge request, or `BEHIND` or `DIRTY` after GitHub refused it. |
 | `79` | A `gh` call exited `79`; passed through at once. |
+
+### `autodrive_merge_loop_run.sh`
+
+Holds the command body of `autodrive-merge-loop.yaml` `step-02`, moved into
+a trusted tool so that the base-sync round can run it again. The body keeps
+its behaviour; the tool adds only the round-count argument and the budget sum
+described below.
+
+`autodrive-merge-loop.yaml` has no `step-00-tools-dir`. Both steps take the
+tool from the directory `step-02` already uses for its loop helper,
+`autodrive_loop.sh`: `${AMPLIHACK_HOME}/amplifier-bundle/tools` in the launch
+install, never `REPO_PATH` or the PR worktree. When the file is not there the
+step stops with `autodrive-tools-not-found` and exit `1`. Inside the tool,
+every other tool and the round recipe are found next to the tool itself
+(`dirname` of its own path), as `step-02` does today:
+
+```bash
+TOOLS="${AMPLIHACK_HOME}/amplifier-bundle/tools"
+bash "$TOOLS/autodrive_merge_loop_run.sh"     # step-02
+bash "$TOOLS/autodrive_merge_loop_run.sh" 1   # step-03c: one round
+```
+
+It reads its inputs from the step's `RECIPE_VAR_*` environment variables and
+prints the same loop line and exit statuses as described in
+[How the loop ends](#how-the-loop-ends).
+
+The optional argument is a number of further rounds. It must match
+`^[0-9]+$` (at most 9 digits) and be at least `1`, otherwise the tool exits `2`. The round
+budget counts rounds across runs that share the state directory, so the tool
+counts the merge-ready rounds already recorded in `autodrive-usage.tsv` (the file `autodrive_budget.sh` writes) and
+passes `autodrive_budget_loop_rounds=<used + N>`, never more than the
+operator's own `autodrive_budget_loop_rounds` when one is set. When the
+operator's budget leaves no room, the round stops as `BUDGET_EXHAUSTED` and
+the PR is handed off. `autodrive_budget_total_rounds` applies unchanged.
 
 ### `amplihack orch helper autodrive authorization`
 
@@ -427,8 +784,9 @@ leave the drive `STUCK` (#2656). The tests
 
 - A merge requires the captured `allows_merge()`, the PR selected at launch
   (when one was), the head the `DONE` round
-  assessed (captured before the assessment and format-checked), green checks and
-  GitHub's acceptance of `--match-head-commit`.
+  assessed (captured before the assessment and format-checked), green checks
+  (or no checks reported at all) and GitHub's acceptance of
+  `--match-head-commit`.
 - Merge permission comes only from the captured invocation. Recipe context
   can narrow it, never grant it.
 - Loop results are read from the driver's result file, not from text an
@@ -445,6 +803,23 @@ leave the drive `STUCK` (#2656). The tests
 - Under dry run, the merge path is enforced in code. Comment posting and
   drafting rely on the agent following the dry-run instruction, and the
   hand-off's closing step makes no writes.
+- A Crusty verdict comment counts only from the drive's own login or an
+  `OWNER`, `MEMBER` or `COLLABORATOR`, and only with a full SHA. Only the
+  author or a repository admin can edit a comment, so the newest verdict by
+  `updated_at` cannot be rewritten by an outside contributor.
+- The Crusty verdict is posted as a comment, never as a review approval.
+- `ci_signal`, verdicts and heads are checked against fixed sets and
+  patterns before they are stored. Finalisation decides only from `gh` exit
+  codes, `mergeStateStatus` literals and `--match-head-commit`, never from an
+  agent's words or `ci_signal`. An unknown merge state gives `refused`.
+- `WAITING` sends the drive to finalisation, which merges only on green
+  required checks at the assessed head. It cannot pass over a failing check.
+- The base sync pushes only `HEAD:<headRefName>` with the drive's existing
+  credentials, refuses fork PRs, checks branch names, puts `--` before
+  values taken from the PR, never forces, rebases, resets or skips hooks, and
+  pushes only conflict-free merges.
+- Run success is an allow-list of `stop_reason == "completed"`. Unknown merge
+  results map to `handoff`, never to `completed`.
 
 ### Accepted risk: readiness is an agent's judgement
 
@@ -460,7 +835,8 @@ with green checks and no required review would merge at the assessed head.
 This risk is accepted. A repository that uses auto-drive to merge must have
 branch protection on its base branch, with the required status checks and
 required reviews that it relies on. Without them, the agent's judgement is
-the only gate before a merge.
+the only gate before a merge. This includes checks: a PR with no checks
+reported merges when the agents judge it ready and GitHub accepts the merge.
 
 ## What was retired
 
@@ -474,6 +850,9 @@ the only gate before a merge.
 | `round-record`, `merge_ready_verdict` in `autodrive_round_evidence.sh`, and `autodrive_qa_trusted` | `autodrive_round_file` |
 | Finalisation steps `refresh-readiness`, `accept-refreshed-readiness`, `finalize-observed-action`, `reduce-observed-outcome` | `merge` and `state-outcome` |
 | Bare `STUCK` endings of the merge-ready loop | [Hand-off](#hand-off) |
+| Criterion 3 from `crusty-records.tsv` and the `crusty-evidence` subcommand of `autodrive_round_evidence.sh` | The PR's own [Crusty verdict comment](#crusty-verdict-at-the-head) and the read-only `crusty-covers` range check |
+| `checks-not-green` and a hand-off for a pending check | `checks-pending` and the next wake |
+| ✓ Success for a run that did not merge | [Success means merged](#success-means-merged) |
 
 `Binding`, `validate_binding` and `MAX_RECORD_BYTES` remain, in
 `orch/autodrive/identity.rs`, because authorisation and the already-merged

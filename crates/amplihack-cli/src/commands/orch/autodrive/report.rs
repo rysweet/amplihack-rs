@@ -16,8 +16,9 @@ use super::{
 use anyhow::{Context, Result, ensure};
 use serde_json::{Map, Value, json};
 
-/// Merge results the finalize merge step writes. Anything else is unreadable.
-const MERGE_RESULTS: [&str; 7] = [
+/// Merge results the finalize merge step writes. Any other result is reported
+/// as a hand-off (never `completed`); a missing or unparseable one is unreadable.
+const MERGE_RESULTS: [&str; 9] = [
     "merged",
     "not-authorised",
     "authorization-unreadable",
@@ -25,6 +26,8 @@ const MERGE_RESULTS: [&str; 7] = [
     "refused",
     "not-open",
     "message-unavailable",
+    "checks-pending",
+    "base-behind",
 ];
 
 pub(crate) fn report(
@@ -67,10 +70,14 @@ pub(crate) fn report(
         Some(result) => (Some(result), false),
         None => (loop_result(context.get("crusty_loop_result")), true),
     };
-    let merge = if state_dir_ok {
-        merge_result(context.get("finalize_merge"), expected_pr)
+    let (merge, unknown_merge) = if state_dir_ok {
+        match merge_result(context.get("finalize_merge"), expected_pr) {
+            MergeRead::Known(map) => (Some(map), false),
+            MergeRead::Unknown => (None, true),
+            MergeRead::Missing => (None, false),
+        }
     } else {
-        None
+        (None, false)
     };
     let merge_name = merge
         .as_ref()
@@ -78,15 +85,23 @@ pub(crate) fn report(
         .and_then(Value::as_str)
         .map(str::to_owned);
 
+    // #2663 M1: `completed` (a success) means merged. #2575 B2: a WAITING loop
+    // goes to finalisation like DONE, and a pending check is a wait.
     let stop_reason = match loop_result.as_deref() {
         Some("TERMINAL_REFUSAL" | "TERMINAL_POLICY_REFUSAL") => "terminal_refusal",
-        Some("DONE") if crusty => {
+        Some("DONE" | "WAITING") if crusty => {
             notes.push("merge_loop_result: missing or unreadable");
             "unreadable"
         }
-        Some("DONE") => match merge_name.as_deref() {
-            Some("merged" | "not-authorised") => "completed",
+        Some("DONE" | "WAITING") => match merge_name.as_deref() {
+            Some("merged") => "completed",
+            Some("not-authorised" | "base-behind") => "not_merged",
+            Some("checks-pending") => "waiting_for_checks",
             Some(_) => "handoff",
+            None if unknown_merge => {
+                notes.push("finalize_merge: unknown merge result");
+                "handoff"
+            }
             None => {
                 notes.push("finalize_merge: missing or unreadable");
                 "unreadable"
@@ -169,18 +184,32 @@ fn loop_result(raw: Option<&Value>) -> Option<String> {
     .then(|| token.to_owned())
 }
 
+/// What the finalize merge step's JSON said.
+enum MergeRead {
+    /// A documented result, reduced to its documented fields.
+    Known(Map<String, Value>),
+    /// A string `result` that is not a documented one: never `completed`.
+    Unknown,
+    /// No readable object, no string `result`, or another PR's result.
+    Missing,
+}
+
 /// The finalize merge step's JSON, reduced to its documented fields.
-fn merge_result(raw: Option<&Value>, expected_pr: Option<&str>) -> Option<Map<String, Value>> {
-    let map = tool_object(raw)?;
-    let result = map.get("result")?.as_str()?;
-    if !MERGE_RESULTS.contains(&result) {
-        return None;
-    }
+fn merge_result(raw: Option<&Value>, expected_pr: Option<&str>) -> MergeRead {
+    let Some(map) = tool_object(raw) else {
+        return MergeRead::Missing;
+    };
+    let Some(result) = map.get("result").and_then(Value::as_str) else {
+        return MergeRead::Missing;
+    };
     let pr = map.get("pr").and_then(Value::as_u64);
     if let (Some(expected), Some(pr)) = (expected_pr.filter(|p| !p.is_empty()), pr)
         && expected.parse::<u64>().ok() != Some(pr)
     {
-        return None;
+        return MergeRead::Missing;
+    }
+    if !MERGE_RESULTS.contains(&result) {
+        return MergeRead::Unknown;
     }
     let mut out = Map::new();
     out.insert("result".into(), json!(result));
@@ -201,7 +230,7 @@ fn merge_result(raw: Option<&Value>, expected_pr: Option<&str>) -> Option<Map<St
     {
         out.insert("handoff".into(), json!(handoff));
     }
-    Some(out)
+    MergeRead::Known(out)
 }
 
 /// #2329: a state directory the child reports must equal the runner-assigned

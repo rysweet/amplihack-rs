@@ -10,19 +10,29 @@
 # This file only DEFINES functions; sourcing it has no other effect. The
 # caller sources autodrive_state.sh first (autodrive_private_dir).
 #
-#   autodrive_round_word <answer>
+#   autodrive_round_word <answer> [<ci_answer> <head>]
 #       Lower-cases <answer>, keeps only a-z and - (LC_ALL=C) and compares the
 #       result exactly. Prints one JSON line:
 #         ready      {"word":"ready","merge_ready_verdict":"MERGE_READY"}
 #         not-ready  {"word":"not-ready","merge_ready_verdict":"NOT_MERGE_READY"}
+#         waiting    {"word":"waiting","merge_ready_verdict":"WAITING"}
 #         hand-off   {"word":"hand-off","merge_ready_verdict":"HANDOFF"}
 #       Anything else, including an empty answer, is not-ready: an unclear
 #       answer costs one more round and never merges or ends the drive.
-#       Returns 0, or 1 when jq cannot build the line.
+#       `waiting` means everything is ready except required checks still
+#       running at the head (#2575 B2).
+#       The line gets "ci_signal":"<state>@<head>" only when <ci_answer>,
+#       trimmed, lower-cased and without a leading `ci:`, is exactly pass,
+#       pending, fail or none, and <head> is 40 or 64 lowercase hex
+#       characters; otherwise the key is left out.
+#       Returns 0, 2 for more than three arguments, or 1 when jq cannot
+#       build the line.
 #
-#   autodrive_round_file <state_dir> <round_label> <verdict> <assessed_head>
+#   autodrive_round_file <state_dir> <round_label> <verdict> <assessed_head> [<ci_signal>]
 #       Writes, privately, into <state_dir>:
-#         merge-ready-<label>.json     {"merge_ready_verdict":"<verdict>"}
+#         merge-ready-<label>.json     {"merge_ready_verdict":"<verdict>"},
+#                                      plus "ci_signal" when <ci_signal>
+#                                      matches <state>@<head> exactly
 #         merge-ready-<label>.writeup  standard input, cut at 256 KiB
 #         merge-ready-<label>.head     <assessed_head>
 #       The write-up comes from standard input, never from an argument. Each
@@ -33,18 +43,39 @@
 #       write fails.
 
 AUTODRIVE_WRITEUP_MAX_BYTES=262144
+AUTODRIVE_CI_SIGNAL_RE='^(pass|pending|fail|none)@([0-9a-f]{40}|[0-9a-f]{64})$'
 
 autodrive_round_word() {
   local -x LC_ALL=C
-  local word verdict
+  local word verdict ci="" head="${3:-}" signal=""
+  if [ "$#" -gt 3 ]; then
+    echo "ERROR: autodrive_round_word: expected <answer> [<ci_answer> <head>]" >&2
+    return 2
+  fi
   word="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z-')"
   case "$word" in
     ready) verdict=MERGE_READY ;;
     not-ready) verdict=NOT_MERGE_READY ;;
+    waiting) verdict=WAITING ;;
     hand-off) verdict=HANDOFF ;;
     *) word=not-ready; verdict=NOT_MERGE_READY ;;
   esac
-  jq -cn --arg w "$word" --arg v "$verdict" '{word:$w,merge_ready_verdict:$v}'
+  # The ci answer is one line; anything with a line break is not an answer.
+  case "${2:-}" in
+    *$'\n'*|*$'\r'*) ci="" ;;
+    *) ci="$(printf '%s' "${2:-}" | tr '[:upper:]' '[:lower:]')"
+       ci="${ci#"${ci%%[![:space:]]*}"}"; ci="${ci%"${ci##*[![:space:]]}"}"
+       case "$ci" in ci:*) ci="${ci#ci:}"; ci="${ci#"${ci%%[![:space:]]*}"}" ;; esac ;;
+  esac
+  case "$ci" in
+    pass|pending|fail|none)
+      [[ "$head" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] && signal="${ci}@${head}" ;;
+  esac
+  if [ -n "$signal" ]; then
+    jq -cn --arg w "$word" --arg v "$verdict" --arg s "$signal" '{word:$w,merge_ready_verdict:$v,ci_signal:$s}'
+  else
+    jq -cn --arg w "$word" --arg v "$verdict" '{word:$w,merge_ready_verdict:$v}'
+  fi
 }
 
 # _autodrive_round_put <dir> <name>: standard input to <dir>/<name> through a
@@ -61,9 +92,9 @@ _autodrive_round_put() {
 
 autodrive_round_file() {
   local -x LC_ALL=C
-  local dir="${1:-}" label="${2:-}" verdict="${3:-}" head="${4:-}" base raw size
-  if [ "$#" -ne 4 ]; then
-    echo "ERROR: autodrive_round_file: expected <state_dir> <round_label> <verdict> <assessed_head>; the write-up is read from standard input" >&2
+  local dir="${1:-}" label="${2:-}" verdict="${3:-}" head="${4:-}" signal="${5:-}" base raw size
+  if [ "$#" -lt 4 ] || [ "$#" -gt 5 ]; then
+    echo "ERROR: autodrive_round_file: expected <state_dir> <round_label> <verdict> <assessed_head> [<ci_signal>]; the write-up is read from standard input" >&2
     return 2
   fi
   if ! [[ "$label" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || [ "$label" = . ] || [ "$label" = .. ]; then
@@ -71,8 +102,8 @@ autodrive_round_file() {
     return 2
   fi
   case "$verdict" in
-    MERGE_READY|NOT_MERGE_READY|HANDOFF) ;;
-    *) echo "ERROR: autodrive_round_file: the verdict is not MERGE_READY, NOT_MERGE_READY or HANDOFF" >&2; return 2 ;;
+    MERGE_READY|NOT_MERGE_READY|WAITING|HANDOFF) ;;
+    *) echo "ERROR: autodrive_round_file: the verdict is not MERGE_READY, NOT_MERGE_READY, WAITING or HANDOFF" >&2; return 2 ;;
   esac
   if ! [[ "$head" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
     echo "ERROR: autodrive_round_file: the assessed head is not 40 or 64 lowercase hex characters" >&2
@@ -103,7 +134,10 @@ autodrive_round_file() {
 
   printf '%s\n' "$head" | _autodrive_round_put "$dir" "${base}.head" \
     || { echo "ERROR: autodrive_round_file: could not write ${base}.head" >&2; return 1; }
-  jq -cn --arg v "$verdict" '{merge_ready_verdict:$v}' | _autodrive_round_put "$dir" "${base}.json" \
+  # A ci_signal that is not exactly <state>@<head> is left out, never written.
+  [[ "$signal" =~ $AUTODRIVE_CI_SIGNAL_RE ]] || signal=""
+  jq -cn --arg v "$verdict" --arg s "$signal" \
+    '{merge_ready_verdict:$v} + (if $s == "" then {} else {ci_signal:$s} end)' | _autodrive_round_put "$dir" "${base}.json" \
     || { echo "ERROR: autodrive_round_file: could not write ${base}.json" >&2; return 1; }
   return 0
 }

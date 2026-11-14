@@ -53,6 +53,12 @@ Inside auto-drive, criterion 3 substitutes accepted crusty convergence
 (an evidence-valid `CLEAN` or permitted `MINOR_ONLY` accepted by the
 completion dispatcher, with required follow-ups filed or verified)
 for the separate quality audit. There is **no minimum round count**.
+The merge-ready agent judges criterion 3 from the PR itself: the newest
+`Crusty verdict: <CLEAN|MINOR_ONLY|BLOCKING> at <full SHA>` comment from the
+drive's own login or an `OWNER`, `MEMBER` or `COLLABORATOR`, which the Crusty
+round posts after each review. With no verdict at the head, the loop runs a
+Crusty round; a missing state file never blocks. See
+[Crusty verdict at the head](autodrive-merge-ready-round.md#crusty-verdict-at-the-head).
 Standalone `/merge-ready` still requires at least three SEEK → VALIDATE → FIX
 cycles, continuing until clean. The description template's three cycle rows
 apply to that standalone audit; auto-drive's write-up cites its actual accepted
@@ -66,9 +72,9 @@ cycles. See [all criterion interpretations](auto-drive-evidence.md#authority-and
 | Prepare or build | Establish PR identity, platform state, head, base, and linked worktree. Run `default-workflow` with `no_merge=true` when a build is needed. End with an open PR. |
 | Crusty review and repair | Repair concerns, commit and push, and re-review until an evidence-valid `CLEAN` or `MINOR_ONLY` round completes the review objective; the Rust dispatcher accepts completion without a loop-health evaluator call. Unresolved concerns go to loop-health evaluation. Bind review to the reviewed head. |
 | Assess readiness | Apply the trusted merge-ready skill and description template at the PR head. Post the write-up as a PR comment and state one outcome: ready, not ready with named blockers, or hand-off. Repair named blockers and repeat until the outcome is ready and loop-health answers `DONE`. |
-| Authorized finalization | Merge only with captured authorization, at the assessed head, with green checks and GitHub's acceptance of `--match-head-commit`. With merging disabled, leave the PR open. State the outcome in prose. |
+| Authorized finalization | Merge only with captured authorization, at the assessed head, with green checks (or none reported) and GitHub's acceptance of `--match-head-commit`. A pending check ends the run `not merged: waiting for <check>` with the PR still ready for review. An out-of-date or conflicting branch gets one base sync (a merge of the base, never a rebase or force-push), one more round and a second finalisation. With merging disabled, leave the PR open. State the outcome in prose. |
 | Hand off | When the drive cannot finish, draft the PR and post one comment naming the blocker and head SHA. |
-| Report | Report the requested action, loop result, merge result, stop reason and the finalization statement. |
+| Report | Report the requested action, loop result, merge result, stop reason and the finalization statement. The run is ✓ Success only when the PR merged (`stop_reason` `completed`); see [Success means merged](autodrive-merge-ready-round.md#success-means-merged). |
 
 An open PR for the selected branch skips the build. A PR confirmed merged at
 entry skips work and is reported as already merged. An unexpected merge during
@@ -270,10 +276,13 @@ checks on the base branch covers each gap. Details:
 
 The only machine conditions on a merge are the captured authorization and
 GitHub's own: the head the ready round assessed is still the PR worktree's
-head, the required checks (or, when none are required, all checks) passed,
-and GitHub accepts `gh pr merge --match-head-commit <assessed sha>`, which
-also enforces required reviews and branch protection. A moved head or failing
-checks refuse the merge and hand the PR off. The merge tool reads the PR state
+head, the required checks (or, when none are required, all checks) passed
+or no checks are reported at all, and GitHub accepts
+`gh pr merge --match-head-commit <assessed sha>`, which also enforces required
+reviews and branch protection. A moved head or failing checks refuse the
+merge and hand the PR off. A pending check ends the run `checks-pending`
+without a hand-off; the next drive run judges again. A base that moved
+(`base-behind`) leads to one [base sync](autodrive-merge-ready-round.md#base-sync). The merge tool reads the PR state
 back after the request; a merge is reported only when GitHub says `MERGED`.
 With merging disabled, the PR stays open. See
 [merge conditions](autodrive-merge-ready-round.md#merge-conditions).
@@ -388,8 +397,11 @@ Missing or unreadable evaluator output is never success. See
 
 For a non-clean crusty round, unchanged head, sorted open-item set, and CI
 signal, with CI no longer pending, produces `STUCK`. For the merge-ready
-loop, a not-ready round that changes nothing stops on no progress and the PR
-is handed off. Budget exhaustion is separate,
+loop, a round whose only open item is a required check still running at the
+head ends the loop `WAITING` and goes to finalisation; it is never counted as
+no progress. A pending CI signal at an unchanged head is `CONTINUE`, never
+`STUCK`, for the evaluator. Other not-ready rounds that change nothing are
+judged `STUCK` and the PR is handed off. Budget exhaustion is separate,
 checked before starting more work. Budgets limit cost, not convergence.
 A completed crusty objective is exempt; it does not reach these checks.
 

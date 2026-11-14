@@ -2109,6 +2109,9 @@ fn loop_recipes_declare_empty_keys_and_pass_them_from_the_environment() {
             );
             if cmd.contains("--loop-name") {
                 driver = Some(cmd.to_string());
+            } else if driver.is_none() && cmd.contains("autodrive_merge_loop_run.sh") {
+                // #2575: the merge loop's driver call lives in this trusted tool.
+                driver = Some(read("amplifier-bundle/tools/autodrive_merge_loop_run.sh"));
             }
         }
         let cmd = driver.unwrap_or_else(|| panic!("{name}: no driver step"));

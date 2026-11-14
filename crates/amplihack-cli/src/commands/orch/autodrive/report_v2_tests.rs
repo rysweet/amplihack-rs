@@ -134,7 +134,8 @@ fn report_v2_accepts_finalize_merge_as_parsed_object() {
 }
 
 #[test]
-fn report_v2_verify_only_run_is_completed_without_a_merge() {
+fn report_v2_verify_only_run_is_not_merged() {
+    // Success means merged (#2663 M1): a verify-only run is not completed.
     for (no_merge, dry_run) in [("true", "false"), ("false", "true")] {
         let auth = authorization(no_merge, dry_run);
         let ctx = context(&[
@@ -148,7 +149,7 @@ fn report_v2_verify_only_run_is_completed_without_a_merge() {
         let report = run(&auth, &ctx);
         assert_v2_shape(&report);
         assert_eq!(report["requested_action"], json!("verify_readiness"));
-        assert_eq!(report["stop_reason"], json!("completed"), "{report}");
+        assert_eq!(report["stop_reason"], json!("not_merged"), "{report}");
     }
 }
 
@@ -380,4 +381,131 @@ fn report_note_names_no_file_contents() {
         !report.to_string().contains(secret),
         "unreadable tool output is never copied into the report: {report}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// #2663 M1 and #2575 B2: success means merged; a pending check is a wait.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn report_v2_not_authorised_on_a_merge_run_is_not_merged() {
+    let auth = authorization("false", "false");
+    let ctx = context(&[
+        ("merge_loop_result", loop_line("DONE")),
+        ("finalize_merge", merge_json("not-authorised", "false")),
+        (
+            "autodrive_finalization",
+            Value::String("Not merged.".into()),
+        ),
+    ]);
+    let report = run(&auth, &ctx);
+    assert_v2_shape(&report);
+    assert_eq!(report["stop_reason"], json!("not_merged"), "{report}");
+    assert_eq!(report["merge"]["result"], json!("not-authorised"));
+}
+
+#[test]
+fn report_v2_checks_pending_is_waiting_for_checks() {
+    let auth = authorization("false", "false");
+    for loop_result in ["DONE", "WAITING"] {
+        let ctx = context(&[
+            ("merge_loop_result", loop_line(loop_result)),
+            ("finalize_merge", merge_json("checks-pending", "false")),
+            (
+                "autodrive_finalization",
+                Value::String("Waiting for test (ubuntu-latest).".into()),
+            ),
+        ]);
+        let report = run(&auth, &ctx);
+        assert_v2_shape(&report);
+        assert_eq!(
+            report["stop_reason"],
+            json!("waiting_for_checks"),
+            "{loop_result}: {report}"
+        );
+        assert_eq!(report["merge"]["result"], json!("checks-pending"));
+        assert_eq!(report["merge"]["handoff"], json!("false"));
+    }
+}
+
+#[test]
+fn report_v2_base_behind_is_not_merged() {
+    let auth = authorization("false", "false");
+    let ctx = context(&[
+        ("merge_loop_result", loop_line("DONE")),
+        ("finalize_merge", merge_json("base-behind", "false")),
+        (
+            "autodrive_finalization",
+            Value::String("Out of date.".into()),
+        ),
+    ]);
+    let report = run(&auth, &ctx);
+    assert_v2_shape(&report);
+    assert_eq!(report["stop_reason"], json!("not_merged"), "{report}");
+    assert_eq!(report["merge"]["result"], json!("base-behind"));
+}
+
+#[test]
+fn report_v2_waiting_loop_follows_the_merge_result() {
+    let auth = authorization("false", "false");
+    let ctx = context(&[
+        ("merge_loop_result", loop_line("WAITING")),
+        ("finalize_merge", merge_json("merged", "false")),
+        ("autodrive_finalization", Value::String("merged".into())),
+    ]);
+    let report = run(&auth, &ctx);
+    assert_v2_shape(&report);
+    assert_eq!(report["loop_result"], json!("WAITING"));
+    assert_eq!(report["stop_reason"], json!("completed"), "{report}");
+
+    let ctx = context(&[("merge_loop_result", loop_line("WAITING"))]);
+    let report = run(&auth, &ctx);
+    assert_v2_shape(&report);
+    assert_eq!(report["stop_reason"], json!("unreadable"), "{report}");
+    assert!(report["note"].as_str().is_some_and(|n| !n.is_empty()));
+}
+
+#[test]
+fn report_v2_unknown_merge_result_is_a_handoff_never_completed() {
+    let auth = authorization("false", "false");
+    for result in ["bogus", "MERGED", "merged ", "completed", "already-merged"] {
+        let ctx = context(&[
+            ("merge_loop_result", loop_line("DONE")),
+            ("finalize_merge", merge_json(result, "false")),
+            ("autodrive_finalization", Value::String("merged".into())),
+        ]);
+        let report = run(&auth, &ctx);
+        assert_v2_shape(&report);
+        assert_eq!(
+            report["stop_reason"],
+            json!("handoff"),
+            "an unknown result is handed off: {result:?}: {report}"
+        );
+    }
+}
+
+#[test]
+fn report_v2_only_merged_completes_a_done_loop() {
+    let auth = authorization("false", "false");
+    for result in [
+        "not-authorised",
+        "authorization-unreadable",
+        "checks-not-green",
+        "checks-pending",
+        "base-behind",
+        "refused",
+        "not-open",
+        "message-unavailable",
+    ] {
+        let ctx = context(&[
+            ("merge_loop_result", loop_line("DONE")),
+            ("finalize_merge", merge_json(result, "false")),
+        ]);
+        let report = run(&auth, &ctx);
+        assert_ne!(
+            report["stop_reason"],
+            json!("completed"),
+            "{result}: {report}"
+        );
+    }
 }

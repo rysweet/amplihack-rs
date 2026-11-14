@@ -239,6 +239,17 @@ required follow-up is unrecorded.
 
 ## Readiness assessment outcomes
 
+> **Retired (#2575).** This section, down to
+> [Behavior examples](#behavior-examples), describes the parsed readiness
+> record (`CandidateRecord`), `helper autodrive assess` and `round`, and the
+> finalisation steps `refresh-readiness`, `remeasure-readiness` and
+> `accept-remeasured-readiness`. All of them were removed when merge
+> readiness became an agentic step. Criterion 3 is now judged from the PR's
+> own Crusty verdict comment, not from a record. See
+> [Merge-ready round, merge and hand-off](autodrive-merge-ready-round.md),
+> in particular [Crusty verdict at the head](autodrive-merge-ready-round.md#crusty-verdict-at-the-head).
+> The text below is kept only to explain older runs' logs.
+
 `amplihack orch helper autodrive assess` and `round` read the agent's
 `CandidateRecord`. A parse fault, an unknown value in a tolerant string field
 or stale evidence is reported as a recoverable, named blocker with exit 0 and
