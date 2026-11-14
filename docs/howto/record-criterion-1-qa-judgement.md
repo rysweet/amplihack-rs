@@ -133,6 +133,8 @@ qa-record: refused: handoff-incomplete at qa_handoff.owner
 exit 2
 ```
 
+That message is for an empty `owner`. Leaving the `owner` key out
+altogether is a type error, reported as `refused: schema at qa_handoff.owner`.
 Correct that field and record again. The rules are listed under
 [shape rules](../reference/auto-drive-qa.md#shape-rules).
 
