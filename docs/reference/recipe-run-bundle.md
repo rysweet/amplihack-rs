@@ -1,9 +1,9 @@
 ---
 title: Recipe run bundle selection and pinning
-description: How amplihack recipe run chooses one amplifier-bundle, checks it, copies it into the run and hands it to every step.
+description: How amplihack recipe run chooses one amplifier-bundle, checks it, pins a content-keyed copy under the work root and hands it to every step.
 doc_type: reference
 last_updated: 2026-11-13
-related_issues: [2528, 1551, 2340, 2537]
+related_issues: [2528, 1551, 2340, 2537, 1741]
 ---
 
 # Recipe run bundle selection and pinning
@@ -158,37 +158,177 @@ The two merge-guard names that auto-drive skips (`gh-merge-guard`,
 
 ## The snapshot
 
-An executing run copies the selected bundle into its own workspace:
+An executing run uses a checked, read-only copy of the selected bundle. The
+copy lives under the work root, in a folder named by a digest of the bundle's
+contents, so every launch of the same bundle gets the same path:
 
 ```
-<run dir>/
-└── runtime/                    # 0700, removed when the run ends
-    └── bundle/                 # 0755; AMPLIHACK_HOME and AMPLIHACK_RUN_BUNDLE
-        └── amplifier-bundle/   # copy of the selected bundle
-            ├── recipes/
-            ├── agents/
-            ├── tools/
-            └── ...
+<work root>/                         # 0700
+├── runs/<run id>/                   # the run's own folder (unchanged)
+└── bundle-pins/                     # 0700, checked at every launch
+    ├── .lock                        # 0600; held while a launch pins or sweeps
+    ├── .tmp-<uuid>/                 # a copy in progress
+    ├── <key>/                       # 0755; AMPLIHACK_HOME and AMPLIHACK_RUN_BUNDLE
+    │   ├── pin.json                 # 0644; source, version and choice
+    │   └── amplifier-bundle/        # read-only copy of the selected bundle
+    │       ├── recipes/
+    │       ├── agents/
+    │       ├── tools/
+    │       └── ...
+    └── <key>.use                    # 0600; shared lock held by each run using <key>
 ```
 
-When `<run dir>/runtime/tmp` would be longer than 80 bytes, the runtime
-folder is `<work root>/r/<first 12 hex digits of the run id>` instead, and the
-snapshot is `<that>/bundle`. `<run dir>` is `<work root>/runs/<run id>`, described in
-[Clean up after recipe runs](../howto/clean-up-after-recipe-runs.md).
+`<work root>` is the folder described in
+[Clean up after recipe runs](../howto/clean-up-after-recipe-runs.md)
+(`AMPLIHACK_WORK_ROOT`, by default `$HOME/.amplihack/work`). A dry run has no
+work root and no snapshot; see [Dry runs](#dry-runs).
+
+### The key
+
+`<key>` is the first 24 lower-case hex digits of a SHA-256 digest over these
+parts, in this order:
+
+| Part | Value |
+|------|-------|
+| Format tag | `v1` |
+| Choice | `installed` or `checkout` |
+| Source | Canonical source bundle path |
+| Version | See [Bundle version](#bundle-version) |
+| Tree digest | The 32-byte tree digest of the fresh copy, described below |
+
+Each part is preceded by its length in bytes as an 8-byte big-endian integer,
+so no two different sets of parts give the same input.
+
+Because the choice and the source are part of the key, a snapshot of the
+installed bundle never serves a checkout run, and the reverse. Because the
+tree digest is part of the key, a bundle whose contents change gets a new key
+and a new path.
+
+### The tree digest
+
+The tree digest is a SHA-256 digest of the copy, computed after
+`copy_bundle` has checked and copied every entry. It covers only the
+`amplifier-bundle/` folder (`.tmp-<uuid>/amplifier-bundle` for a fresh copy,
+`<key>/amplifier-bundle` for an existing snapshot), and paths are relative to
+that folder. `pin.json` and the `<key>/` folder itself are not part of it, so
+writing or reading `pin.json` never changes the digest. The walk:
+
+- visits entries in byte order of their names, depth first;
+- never follows a symlink, and opens files with `O_NOFOLLOW`;
+- feeds the hasher, for each entry, the relative path (length-prefixed), a
+  type tag (`d`, `f` or `l`) and the mode with the write bits cleared
+  (`mode & 0o7555`, as a 4-byte big-endian integer);
+- then, for a file, its length as an 8-byte big-endian integer followed by
+  its bytes, streamed; for a symlink, the link text, length-prefixed;
+- fails on any other type of entry.
+
+The write bits are left out so that a fresh copy and a read-only snapshot of
+the same bundle give the same digest. `copy_bundle` sets every directory and
+executable file of a fresh copy to `0755` and every other file to `0644`; the
+snapshot holds `0555` and `0444`. Masked with `0o7555`, both give `0555` and
+`0444`. A mask of `0o7777` would make every existing snapshot differ from a
+fresh copy, so step 6 would replace or refuse (E11) every reuse. The match
+therefore depends on `copy_bundle` keeping this normalisation: if it ever
+copies source modes through, the mask must change with it.
+
+### Modes
 
 | Property | Value |
 |----------|-------|
-| Directory mode | `0755` |
-| File mode, when the source file has any execute bit (`mode & 0o111 != 0`) | `0755` |
-| Other file mode | `0644` |
+| `bundle-pins/` | `0700`, owned by the effective user; checked with `trusted_directory` at every launch |
+| `<key>/` | `0755` |
+| Directories under `amplifier-bundle/` | `0555` |
+| Files with any execute bit in the source (`mode & 0o111 != 0`) | `0555` |
+| Other files | `0444` |
+| `pin.json` | `0644` |
+| `.lock`, `<key>.use` | `0600`, regular files owned by the effective user, opened with `O_NOFOLLOW` and `O_CLOEXEC` |
 | setuid, setgid, sticky bits | Dropped |
 | Size | The size of the bundle, about 13 MB for a release |
-| Copies per run tree | One, made by the outermost run |
 
 The modes are set explicitly, so the snapshot passes the trust checks whatever
-the process umask.
+the process umask. The whole tree sits under the `0700` work root, so other
+users cannot read it.
 
-Order of operations in `recipe run`:
+### How a launch pins the bundle
+
+A launch that does not reuse an inherited snapshot pins the bundle as follows.
+Every lock is a blocking or non-blocking `flock`. No timer or retry is
+involved.
+
+1. Check `bundle-pins/` with `trusted_directory`: a real directory, owned by
+   the effective user, no group or other write bit. It is created `0700` if
+   missing and checked even when it already exists.
+2. Try to take `.lock` exclusively without blocking. If another launch holds
+   it, print one line to stderr and then wait for it:
+
+   ```
+   recipe bundle: waiting for /home/alice/.amplihack/work/bundle-pins/.lock (another launch is pinning a bundle)
+   ```
+
+3. Remove any `.tmp-<uuid>` folder left by a launch that was killed.
+4. Check and copy the source into `.tmp-<uuid>/amplifier-bundle` with
+   `copy_bundle`. `<uuid>` is a random UUID v4 in lower-case hyphenated form,
+   generated by this launch; it is not the run id. This runs every [trust check](#trust-checks) on the source
+   (E6, E7) at every launch, whether or not a snapshot already exists.
+5. Compute the tree digest of the copy and the key, and write `pin.json`.
+6. Compare with `<key>/`:
+
+   | State of `<key>/` | Action |
+   |-------------------|--------|
+   | Missing | Make the copy read-only and rename `.tmp-<uuid>` to `<key>` |
+   | Present, and its tree digest equals the copy's | Reuse it; remove the copy |
+   | Present, digest differs, no other run holds `<key>.use` | Restore the owner write bit on the real directories of the old `<key>/` (symlinks are never followed or changed), remove it, make the copy read-only, rename the copy to `<key>` and print `recipe bundle: replacing <path>: its contents differ from <source> (<version>)` |
+   | Present, digest differs, another run holds `<key>.use` | Refuse the run (E11) |
+
+   The digest of an existing `<key>/` is always computed again from its
+   files. `pin.json` is never used to decide.
+
+   Whether another run holds `<key>.use` is tested by opening it without
+   creating it and taking a non-blocking exclusive `flock`. If the lock is
+   granted, no run holds it; if it would block, another run does. A missing
+   `<key>.use` counts as not held. The probe lock is kept while the old
+   folder is removed and the copy renamed, then released. `.lock` is held
+   throughout, so no launch or nested run can take a lease in between.
+7. Open `<key>.use`, creating it `0600` if missing, and take a shared lock on
+   it. The run keeps this lock until it ends; see [Cleanup](#cleanup).
+8. Sweep the other keys, testing each `<key>.use` with the same
+   non-blocking exclusive `flock` as step 6:
+
+   | State | Action |
+   |-------|--------|
+   | `<key>/` present, `<key>.use` not held or missing | Restore the owner write bit on its real directories, remove `<key>/`, then remove `<key>.use` if present |
+   | `<key>/` present, `<key>.use` held | Leave both |
+   | `<key>/` missing, `<key>.use` not held | Remove `<key>.use`; it was left by a run whose folder is already gone |
+   | `<key>/` missing, `<key>.use` held | Leave it; the run holding it removes it when it ends |
+
+   The sweep never touches this launch's own `<key>` and `<key>.use`.
+9. Release `.lock`.
+
+No child process, network call or terminal read happens while `.lock` is
+held. Any `flock` error other than "would block" (for example `ENOLCK` or
+`EOPNOTSUPP`) refuses the run (E12), so a run never continues without its
+lock. The runner and its steps do not inherit the lock descriptors.
+
+The sweep and the start-up clean-up act only on names that match these
+patterns, and never follow a symlink. A symlink with one of these names is
+unlinked; its target is left alone. Any other name is left alone.
+
+| Pattern | Meaning |
+|---------|---------|
+| `^[0-9a-f]{24}$` | A snapshot |
+| `^[0-9a-f]{24}\.use$` | A snapshot's lease file |
+| `^\.tmp-<uuid v4>$` | A copy in progress |
+| `.lock` | The launch lock |
+
+### Sharing between runs
+
+Runs of the same bundle share one snapshot, each holding a shared lock on its
+`<key>.use`. This is safe because the snapshot is read-only and its contents
+are fixed by its key. Runs of different bundles, including the runs before
+and after an `amplihack update`, get different keys and different snapshots,
+so an upgrade never changes the bundle of a run that has already started.
+
+### Order of operations in `recipe run`
 
 1. Merge `--bundle` and `-c bundle=` (E1, E2) and remove the `bundle` key
    from the context.
@@ -200,8 +340,9 @@ Order of operations in `recipe run`:
 5. Apply the recursion-depth guard (#964).
 6. Probe the runner binary.
 7. Create the run workspace. A dry run creates only private scratch space.
-8. Copy the bundle into `runtime/bundle/amplifier-bundle` and print the
-   stderr line. A dry run walks and checks every entry without copying.
+8. Pin the bundle as described in
+   [How a launch pins the bundle](#how-a-launch-pins-the-bundle) and print
+   the stderr line. A dry run walks and checks every entry without copying.
 9. Point the recipe path at the same file inside the snapshot. A recipe given
    as a path outside the bundle keeps its own path. A bundle recipe that is
    not inside the selected source is an error, never a fallback to the
@@ -214,8 +355,27 @@ Order of operations in `recipe run`:
     to the next (F5).
 13. Set the [step and runner environment](#step-and-runner-environment) and
     start `recipe-runner-rs`.
+14. When the run ends, finish the run workspace, then release the snapshot
+    lease ([Cleanup](#cleanup)).
 
 A retry of the runner within the same `recipe run` reuses the snapshot.
+
+### Resumed runs
+
+The runner's recovery store (#1741) records, for each run, settings that
+include `AMPLIHACK_HOME`, the `-R` and `--agent-dir` paths and the canonical
+paths of the sub-recipes it loaded. A later launch resumes a stopped run only
+when these match.
+
+A relaunch with an unchanged bundle computes the same key, so it gets the
+same snapshot path and the same runner arguments, and the run resumes. The
+snapshot is rebuilt, or reused after its digest is checked, before the runner
+starts, so every sub-recipe file that the recovery store names exists again.
+
+A relaunch after the bundle has changed gets a new key. The recovery store
+then reports the input as changed and the run starts again from the first
+step. This is deliberate: a resumed run never mixes results from one bundle
+with steps from another.
 
 ## Resolving the recipe argument
 
@@ -246,11 +406,11 @@ bundle that supplied the tools.
 
 | Argument | Value | Condition |
 |----------|-------|-----------|
-| `-R` | `<run dir>/runtime/bundle/amplifier-bundle/recipes` | Executing run |
+| `-R` | `<work root>/bundle-pins/<key>/amplifier-bundle/recipes` | Executing run |
 | `-R` | `<source bundle>/recipes` | Dry run |
 | `-R` | `<launch copy>/amplifier-bundle/recipes` | Auto-drive run (see [Auto-drive](#auto-drive)) |
 | `-R` | Parent directory of the recipe file | Only when the recipe was given as a path, and not for auto-drive |
-| `--agent-dir` | `<run dir>/runtime/bundle/amplifier-bundle/agents` | Executing run |
+| `--agent-dir` | `<work root>/bundle-pins/<key>/amplifier-bundle/agents` | Executing run |
 | `--agent-dir` | `<source bundle>/agents` | Dry run |
 | `--agent-dir` | `<launch copy>/amplifier-bundle/agents` | Auto-drive run |
 | `--no-default-search` | | Always, auto-drive included |
@@ -273,8 +433,8 @@ them to every bash and agent step. A dry run sets none of them; see
 
 | Variable | Value | Purpose |
 |----------|-------|---------|
-| `AMPLIHACK_HOME` | `<run dir>/runtime/bundle`; for auto-drive, the launch copy | Recipes and tools resolve `${AMPLIHACK_HOME}/amplifier-bundle/...` inside the snapshot or the copy made from it |
-| `AMPLIHACK_RUN_BUNDLE` | `<run dir>/runtime/bundle`, auto-drive included | Marks the run's bundle for [nested runs](#nested-runs) |
+| `AMPLIHACK_HOME` | `<work root>/bundle-pins/<key>`; for auto-drive, the launch copy | Recipes and tools resolve `${AMPLIHACK_HOME}/amplifier-bundle/...` inside the snapshot or the copy made from it |
+| `AMPLIHACK_RUN_BUNDLE` | `<work root>/bundle-pins/<key>`, auto-drive included | Marks the run's bundle for [nested runs](#nested-runs) |
 | `AMPLIHACK_RUN_BUNDLE_CHOICE` | `installed` or `checkout` | The choice the outermost run made; a nested run compares its own request with it (E3) |
 | `AMPLIHACK_STATE_HOME` | See [State home](#state-home) | Keeps hook, session and contract state out of the snapshot |
 
@@ -298,8 +458,9 @@ A value is usable when it is an absolute path with no `..` component.
 to their usual rules, without a message, when it is unset or not usable.
 Commands outside `recipe run` do not set it and behave as before.
 
-`recipe run` refuses the run (E8) in one case only: when the settled state
-home lies under a run's `runtime/` folder. That happens, for example, when a
+`recipe run` refuses the run (E8) when the settled state home lies under the
+run's `runtime/` folder or anywhere under `<work root>/bundle-pins/`,
+including under another run's snapshot. That happens, for example, when a
 nested run finds the inherited value unset or not usable and falls back to a
 root derived from the snapshot's `AMPLIHACK_HOME`.
 
@@ -329,10 +490,11 @@ outer run's environment.
 
 | Condition | Result |
 |-----------|--------|
-| `AMPLIHACK_RUN_BUNDLE` is set, passes the marker checks below, and the nested run gives no `--bundle` or `-c bundle=` | Reuses the outer snapshot; no selection, no copy, no cleanup ownership |
+| `AMPLIHACK_RUN_BUNDLE` is set, passes the marker checks below, and the nested run gives no `--bundle` or `-c bundle=` | Reuses the outer snapshot and takes a shared lease on it; no selection, no copy, no removal |
 | Marker passes and the nested run asks for a choice other than `AMPLIHACK_RUN_BUNDLE_CHOICE` | Refused (E3) |
 | Marker passes and the nested run asks for the choice in `AMPLIHACK_RUN_BUNDLE_CHOICE` | Reuses the outer snapshot |
-| Marker fails any check | Ignored with a note on stderr; the nested run selects and copies normally |
+| Marker passes, but `<key>.use` is missing | Refused (E13) |
+| Marker fails any check | Ignored with a note on stderr; the nested run selects and pins normally |
 
 The marker checks, all on canonical paths:
 
@@ -340,33 +502,40 @@ The marker checks, all on canonical paths:
 2. It equals `AMPLIHACK_HOME`, or `AMPLIHACK_HOME` is an auto-drive launch
    copy made from it: a directory that passes the directory check and whose
    `bundle-source` file names the marker.
-3. It is a `bundle` folder inside a run's runtime folder: it ends in
-   `runtime/bundle`, or in `r/<12 hex digits>/bundle` (the short runtime
-   path used when `<run dir>/runtime/tmp` would be longer than 80 bytes).
+3. Its parent is `<work root>/bundle-pins` of this run's own work root, and
+   its name is a key: exactly 24 lower-case hex digits
+   (`^[0-9a-f]{24}$`). A nested run inherits `AMPLIHACK_WORK_ROOT`, so its
+   work root is its parent's.
 4. The marker directory and its `amplifier-bundle/` pass the directory check.
 5. `AMPLIHACK_RUN_BUNDLE_CHOICE` is exactly `installed` or `checkout`.
 
-The marker is not required to lie under the runs directory. A step that can
-set `AMPLIHACK_RUN_BUNDLE` can already set `AMPLIHACK_HOME`, so a further
-location check would add no protection.
+Check 3 ties the marker to the folder whose lock files the nested run is
+about to open. A marker under some other `bundle-pins` folder, for example
+one under a different work root, fails the check.
+
+When the marker passes, the nested run takes `.lock`, opens the existing
+`<key>.use` without creating it, takes a shared lock on it and releases
+`.lock`. If `<key>.use` is missing, the outer run has ended or the folder was
+tampered with, and the nested run is refused (E13) rather than run from a
+snapshot that no lease protects. A nested run never copies, removes or
+changes the mode of anything under `bundle-pins/`.
 
 `AMPLIHACK_RUN_BUNDLE_CHOICE` decides only which request a nested run treats
 as a conflict. Changing it in a step never changes which bundle a nested run
 uses.
 
-The outermost run writes `runtime/bundle/.bundle-record.json` beside the
-snapshot, holding its `source`, `version` and `choice`. The record of a
-nested run that reuses the snapshot takes `source` and `version` from that
-file (at most 64 KiB is read, and the version is sanitised again), and sets
-`inherited` to `true`. When the file is missing, unreadable or malformed,
-`source` is the snapshot's `amplifier-bundle`, `version` is `unknown`, and a
-note on stderr names the file and the reason.
+The launch that creates a snapshot writes `<key>/pin.json`, holding its
+`source`, `version` and `choice`. The record of a nested run that reuses the
+snapshot takes `source` and `version` from that file and sets `inherited` to
+`true`. The file is read without following a symlink, at most 64 KiB is read,
+and the version is sanitised again. It is used only for the record and the
+stderr line, never to decide anything. When the file is missing, unreadable
+or malformed, `source` is the snapshot's `amplifier-bundle`, `version` is
+`unknown`, and a note on stderr names the file and the reason.
 
 When the marker fails a check and `AMPLIHACK_HOME` names the same directory,
 that `AMPLIHACK_HOME` is another run's snapshot, not an install, so it is not
 tried as an installed candidate; a second note says so.
-
-Only the outermost run owns the snapshot and removes it.
 
 ## Bundle version
 
@@ -399,7 +568,7 @@ Each is an object:
 |-------|------|-------------|
 | `source` | string | Canonical source bundle path, before copying |
 | `version` | string | See [Bundle version](#bundle-version) |
-| `snapshot` | string | `<run dir>/runtime/bundle`; absent on a dry run |
+| `snapshot` | string | `<work root>/bundle-pins/<key>`; absent on a dry run |
 | `choice` | string | `installed` or `checkout` |
 | `inherited` | boolean | `true` when a nested run reused its parent's snapshot |
 | `recipe_file` | string | The recipe file path, present only when the recipe was given as a path |
@@ -414,14 +583,14 @@ Example of an early record, formatted, with unrelated fields left out:
   "recipe_bundle": {
     "source": "/home/alice/.amplihack/releases/1.2.151/amplifier-bundle",
     "version": "1.2.151",
-    "snapshot": "/home/alice/.amplihack/work/runs/3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3/runtime/bundle",
+    "snapshot": "/home/alice/.amplihack/work/bundle-pins/9c41e07a2b5d83f6a0e1c4d7",
     "choice": "installed",
     "inherited": false
   },
   "tool_bundle": {
     "source": "/home/alice/.amplihack/releases/1.2.151/amplifier-bundle",
     "version": "1.2.151",
-    "snapshot": "/home/alice/.amplihack/work/runs/3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3/runtime/bundle",
+    "snapshot": "/home/alice/.amplihack/work/bundle-pins/9c41e07a2b5d83f6a0e1c4d7",
     "choice": "installed",
     "inherited": false
   }
@@ -458,20 +627,46 @@ makes no copy and creates no run workspace.
 
 `recipe run --detach --bundle checkout` passes `--bundle checkout` to the run
 in the tmux pane as two separate arguments after `--working-dir`. The pane's
-run selects and copies at its own start, and its workspace owns the snapshot.
-The detaching command makes no copy.
+run selects and pins at its own start, and holds its own lease on the
+snapshot. The detaching command makes no copy.
 
 ## Cleanup
 
-The snapshot lives under `<run dir>/runtime/`, so it is removed with the rest
-of `runtime/`:
+Each run that uses a snapshot holds a shared lock on `<key>.use` through a
+lease. The lease is released after the run workspace is finished, on every
+exit path. The last run to release a snapshot removes it.
+
+When a lease created by a launch (not a nested run) is released:
+
+1. Take `.lock` exclusively.
+2. Close the run's own shared lock on `<key>.use`.
+3. Try to take `<key>.use` exclusively without blocking.
+   - If that succeeds, no other run uses the snapshot. Restore the owner
+     write bit on the real directories of the tree (symlinks are never
+     followed or changed), remove `<key>/` and remove `<key>.use`.
+   - If it would block, another run still uses the snapshot. Leave it.
+4. Release `.lock`.
+
+If the removal fails, the run prints one line naming the path and continues
+to exit as it would have:
+
+```
+recipe bundle: could not remove /home/alice/.amplihack/work/bundle-pins/9c41e07a2b5d83f6a0e1c4d7; a later launch removes it
+```
+
+A nested run's lease only releases its shared lock. It never removes the
+snapshot.
 
 | How the run ends | What removes the snapshot |
 |------------------|---------------------------|
-| Success | The run's `RuntimeGuard`, in the run's own exit path |
-| Step failure or error | The run's `RuntimeGuard` |
-| Panic (unwind) | The run's `RuntimeGuard`, on drop |
-| `SIGKILL` | The end-of-run sweep of a later run, once no process uses the folder (`run-tmp` in [Clean up after recipe runs](../howto/clean-up-after-recipe-runs.md)) |
+| Success | The run's lease, if it is the last user |
+| Step failure, error or early return with `?` | The run's lease, if it is the last user |
+| Panic (unwind) | The run's lease, on drop, if it is the last user |
+| Other runs of the same bundle still running | The last of them to end |
+| `SIGKILL` | The sweep of the next launch on the same work root (step 8 of [How a launch pins the bundle](#how-a-launch-pins-the-bundle)); a relaunch of the same bundle instead reuses the folder after checking its digest |
+
+The kernel releases a killed run's locks, so a folder left by `SIGKILL` is
+never mistaken for one in use.
 
 No process, thread or timer is started for cleanup. There is no reaper
 subcommand. When `recipe run` returns, no process it started for cleanup is
@@ -480,7 +675,7 @@ still running.
 ## Auto-drive
 
 `trusted::LaunchBundle::prepare` is called with `pinned.home()`, the run's
-snapshot directory, after the copy (step 11 of the order of operations),
+snapshot directory, after the pin (step 10 of the order of operations),
 instead of reading `AMPLIHACK_HOME` again. Its YAML rewrite and policy digest are
 unchanged. `pin_bundle` accepts a plain directory (no release link) under the
 same ownership and mode checks, which is the form a snapshot takes.
@@ -493,8 +688,8 @@ snapshot:
   `--no-default-search`.
 - Steps get `AMPLIHACK_HOME=<launch copy>`, as before, and the other three
   variables as in any executing run. `AMPLIHACK_RUN_BUNDLE` names the
-  snapshot, not the launch copy, because the copy is not under a runtime
-  folder.
+  snapshot, not the launch copy, because the copy is not under
+  `bundle-pins/`.
 - The launch copy holds `bundle-source` (mode `0600`), naming the canonical
   home it was copied from. Marker check 2 accepts the launch copy through
   that file, so a nested `recipe run` in an auto-drive step reuses the
@@ -512,9 +707,12 @@ snapshot:
 | E5 | No checkout bundle | `--bundle checkout: no directory containing both .git and amplifier-bundle/ above <working dir>` |
 | E6 | Ownership or mode check fails | `untrusted bundle entry <path>: mode 0664 (group or other writable); fix with chmod go-w <path>` or `untrusted bundle entry <path>: owned by uid 1001, not the current user` |
 | E7 | Symlink refused, entry changed during copy, or unsupported file type | `untrusted bundle entry <path>: <reason>`, where the reason is `absolute symlink`, `symlink leaves the bundle`, `dangling symlink`, `symlink cycle`, `changed while being copied` or `not a regular file, directory or symlink` |
-| E8 | Settled state home lies under a run's `runtime/` folder, compared after resolving symlinks (a path not yet created resolves its nearest existing ancestor) | `AMPLIHACK_STATE_HOME <path> lies under a run's runtime/ folder` |
+| E8 | Settled state home lies under the run's `runtime/` folder or under `<work root>/bundle-pins/`, compared after resolving symlinks (a path not yet created resolves its nearest existing ancestor) | `AMPLIHACK_STATE_HOME <path> lies under a run's runtime/ folder` or `AMPLIHACK_STATE_HOME <path> lies under the bundle snapshots in <work root>/bundle-pins` |
 | E9 | Bare recipe name not found or outside the bundle | `recipe 'default-workflow' not found in the installed bundle at <path>; to use this checkout's recipes, pass --bundle checkout` or `recipe '<name>' resolves outside <recipes dir>` |
 | E10 | The recipe copied into the snapshot has a different name from the one read before the pin | `recipe changed while the bundle was being pinned: <path> names "<a>", but "<b>" was read before the pin` |
+| E11 | An existing snapshot with the same key has different contents and another run holds its `<key>.use` (a non-blocking exclusive `flock` on it would block; a missing `<key>.use` never gives E11) | `bundle snapshot <path> is in use by another run and its contents differ from <source>; wait for that run to end` |
+| E12 | `bundle-pins/` fails the directory check, a lock file is not a regular file owned by the effective user, or a lock call fails for any reason other than "would block" | `untrusted bundle snapshot directory <path>: <reason>` or `cannot lock <path>: <system error>` |
+| E13 | A nested run's marker passes its checks but `<key>.use` does not exist | `inherited bundle snapshot <path> has no lease file <path>.use; the run that pinned it has ended` |
 
 Every error exits with status 1 before the runner starts. No step runs.
 
@@ -552,13 +750,15 @@ pub(crate) fn select(choice: Option<BundleChoice>, working_dir: &Path)
 /// Pure selection over explicit inputs; used by tests.
 pub(crate) fn select_from(inputs: SelectInputs<'_>) -> anyhow::Result<Selection>;
 
-/// The bundle a run executes with.
-pub(crate) struct PinnedBundle { /* home, bundle, source, record */ }
+/// The bundle a run executes with. Owns the run's lease on the snapshot;
+/// dropping it releases the lease and, for the last user, removes the
+/// snapshot (see Cleanup). Keep it alive until the run workspace is finished.
+pub(crate) struct PinnedBundle { /* home, bundle, source, record, lease */ }
 
 impl PinnedBundle {
-    /// <run dir>/runtime/bundle (AMPLIHACK_HOME for steps)
+    /// <work root>/bundle-pins/<key> (AMPLIHACK_HOME for steps)
     pub(crate) fn home(&self) -> &Path;
-    /// <run dir>/runtime/bundle/amplifier-bundle
+    /// <work root>/bundle-pins/<key>/amplifier-bundle
     pub(crate) fn bundle(&self) -> &Path;
     /// Canonical source bundle path
     pub(crate) fn source(&self) -> &Path;
@@ -566,10 +766,38 @@ impl PinnedBundle {
     pub(crate) fn record(&self) -> &BundleRecord;
 }
 
-/// Copies the selection into runtime/bundle, or reuses an inherited
-/// snapshot. With dry_run, walks and checks every entry without copying.
-pub(crate) fn pin(selection: &Selection, runtime_dir: &Path, dry_run: bool)
+/// Pins the selection under <work_root>/bundle-pins/<key>, reusing a
+/// snapshot with the same contents, or takes a lease on an inherited
+/// snapshot. With dry_run, walks and checks every entry without copying;
+/// work_root is then unused.
+pub(crate) fn pin(selection: &Selection, work_root: &Path, dry_run: bool)
     -> anyhow::Result<PinnedBundle>;
+
+/// True only for <work root>/bundle-pins/<24 lower-case hex digits>.
+pub(crate) fn is_snapshot_path(path: &Path, work_root: &Path) -> bool;
+
+/// E8: refuses a state home under runtime_dir or under
+/// <work root>/bundle-pins/.
+pub(crate) fn check_state_home(
+    state_home: &Path,
+    pinned: &PinnedBundle,
+    runtime_dir: Option<&Path>,
+) -> anyhow::Result<()>;
+```
+
+`tree_digest` (the walk described in [The tree digest](#the-tree-digest))
+and `PinLease` (the shared lock on `<key>.use`) are private to the module.
+Lock calls use `fs4::FileExt`, called by its full path because the standard
+library's `File` has methods with the same names.
+
+In `crates/amplihack-cli/src/commands/cleanup/run_dir.rs`:
+
+```rust
+impl RunWorkspace {
+    /// The work root that holds runs/ and bundle-pins/.
+    /// None for the scratch space of a dry run.
+    pub(crate) fn work_root(&self) -> Option<&Path>;
+}
 ```
 
 In `trusted.rs`:
@@ -618,11 +846,27 @@ pub(crate) fn resolve_recipe_in_bundle(
 - **Explicit recipe paths.** A recipe given as a path outside the bundle runs
   with the trusted bundle's tools, because the user named the file. The path
   is kept in `recipe_file` for audit.
-- **Other users.** `runtime/` is `0700`, so steps that switch to another user
-  cannot read the snapshot.
+- **Other users.** The work root and `bundle-pins/` are `0700`, so steps that
+  switch to another user cannot read the snapshot.
 - **Group-writable installs.** An install made under umask `002` has
   group-writable files and is refused (E6) until fixed with
   `chmod -R go-w`.
+- **A stopped launch holds `.lock`.** A launch that is stopped (for example
+  by `SIGSTOP` or `SIGTTIN`) while it holds `bundle-pins/.lock` makes every
+  later launch on the same work root wait. The waiting launch names the lock
+  file on stderr. There is no timeout; resume or end the stopped process.
+- **Concurrent launches wait for each other.** Launches on one work root take
+  `.lock` in turn, each for the time of one copy and two tree digests of the
+  bundle.
+- **A changed bundle restarts a stopped run.** A resume after the bundle has
+  changed, for example after `amplihack update`, gets a new snapshot path, so
+  the run starts again from its first step.
+- **Disk use after `SIGKILL`.** A snapshot left by a killed run stays on disk
+  until the next launch on the same work root sweeps it.
+- **Auto-drive resume.** `trusted::LaunchBundle::prepare` makes a new launch
+  copy for each auto-drive run, so an auto-drive run's runner paths still
+  differ from one launch to the next, and a stopped auto-drive run does not
+  resume from where it stopped.
 
 ## Related
 
@@ -631,4 +875,4 @@ pub(crate) fn resolve_recipe_in_bundle(
 - [amplihack recipe reference](./recipe-command.md#recipe-run): all `recipe run` flags
 - [Recipe executor environment](./recipe-executor-environment.md): the full runner environment
 - [Versioned install layout](../concepts/versioned-install-layout.md): releases and the bundle link
-- [Clean up after recipe runs](../howto/clean-up-after-recipe-runs.md): run directories and the end-of-run sweep
+- [Clean up after recipe runs](../howto/clean-up-after-recipe-runs.md): the work root, run directories and the end-of-run sweep

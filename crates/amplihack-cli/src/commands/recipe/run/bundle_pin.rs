@@ -2,16 +2,20 @@
 //!
 //! A run selects one bundle (the installed one by default, a checkout's only
 //! when asked for), checks it with the auto-drive trust checks (#1551,
-//! #2340), and copies it into `<run dir>/runtime/bundle/amplifier-bundle`.
+//! #2340), and copies it into `<work root>/bundle-pins/<key>/amplifier-bundle`.
 //! Every step then reads recipes, agents and tools from that snapshot, so an
 //! upgrade of the installed bundle during the run does not reach it. A
 //! nested run reuses its parent's snapshot.
 //!
-//! The snapshot lives under `runtime/`, which the run's `RuntimeGuard`
-//! removes on every exit path. This module starts no process, thread or
-//! timer.
+//! `<key>` is derived from the bundle's contents (see [`store`]), so a
+//! relaunch of an unchanged bundle gets the same snapshot path and a resumed
+//! run the same runner arguments as the original run (#1741). The run's
+//! [`PinnedBundle`] holds a lease on the snapshot; the last run to release it
+//! removes the snapshot. This module starts no process, thread or timer.
 //!
 //! Reference: `docs/reference/recipe-run-bundle.md`.
+
+mod store;
 
 use super::correlation::BundleRecord;
 use crate::commands::cleanup::run_dir::read_capped_nofollow;
@@ -22,18 +26,17 @@ use anyhow::{Context, Result, bail};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+use store::{PINS_DIR, PinLease, Placement, StoreLock};
 
 /// Names the outer run's snapshot home for nested runs.
 pub(crate) const RUN_BUNDLE_ENV: &str = "AMPLIHACK_RUN_BUNDLE";
 /// The choice the outermost run made.
 pub(crate) const RUN_BUNDLE_CHOICE_ENV: &str = "AMPLIHACK_RUN_BUNDLE_CHOICE";
-/// The snapshot folder inside a run's `runtime/` folder.
-const SNAPSHOT_DIR: &str = "bundle";
 /// The bundle folder inside a home.
 const BUNDLE_DIR: &str = "amplifier-bundle";
-/// Written by the outermost run next to its snapshot so a nested run can
-/// record the same source and version.
-const PIN_RECORD: &str = ".bundle-record.json";
+/// Written by the launch that creates a snapshot, next to its bundle, so a
+/// nested run can record the same source and version.
+const PIN_RECORD: &str = "pin.json";
 /// At most this many bytes of a version or record file are read.
 const MAX_READ: u64 = 64 * 1024;
 
@@ -102,12 +105,16 @@ pub(crate) struct SelectInputs<'a> {
     pub(crate) run_bundle: Option<&'a OsStr>,
     /// `AMPLIHACK_RUN_BUNDLE_CHOICE` from the environment.
     pub(crate) run_bundle_choice: Option<&'a OsStr>,
+    /// This run's work root, the folder that holds `runs/` and
+    /// `bundle-pins/`. A marker is accepted only under its `bundle-pins`;
+    /// with no work root, every marker is ignored.
+    pub(crate) work_root: Option<&'a Path>,
 }
 
 /// An outer run's snapshot that a nested run reuses.
 #[derive(Debug, Clone)]
 struct Inherited {
-    /// Canonical `<outer run>/runtime/bundle`.
+    /// Canonical `<work root>/bundle-pins/<key>`.
     home: PathBuf,
     /// The outer run's canonical source bundle, from its pin record.
     source: PathBuf,
@@ -175,7 +182,24 @@ pub(crate) fn select(choice: Option<BundleChoice>, working_dir: &Path) -> Result
     let user_home = std::env::var_os("HOME");
     let run_bundle = std::env::var_os(RUN_BUNDLE_ENV);
     let run_bundle_choice = std::env::var_os(RUN_BUNDLE_CHOICE_ENV);
-    select_from(SelectInputs {
+    // The work root is needed only to check a marker; a run that cannot
+    // resolve one ignores the marker and says why.
+    let mut work_root_note = None;
+    let work_root = if run_bundle.as_deref().is_some_and(|value| !value.is_empty()) {
+        match crate::commands::cleanup::work_root::resolve_from_env() {
+            Ok(root) => Some(root.path),
+            Err(error) => {
+                work_root_note = Some(format!(
+                    "recipe bundle: cannot resolve the work root to check \
+                     {RUN_BUNDLE_ENV}: {error:#}"
+                ));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mut selection = select_from(SelectInputs {
         choice,
         working_dir,
         amplihack_home: amplihack_home.as_deref(),
@@ -183,7 +207,12 @@ pub(crate) fn select(choice: Option<BundleChoice>, working_dir: &Path) -> Result
         user_home: user_home.as_deref(),
         run_bundle: run_bundle.as_deref(),
         run_bundle_choice: run_bundle_choice.as_deref(),
-    })
+        work_root: work_root.as_deref(),
+    })?;
+    if let Some(note) = work_root_note {
+        selection.notes.insert(0, note);
+    }
+    Ok(selection)
 }
 
 /// Pure selection over explicit inputs (D1, D4).
@@ -191,7 +220,12 @@ pub(crate) fn select_from(inputs: SelectInputs<'_>) -> Result<Selection> {
     let mut notes = Vec::new();
     let mut inputs = inputs;
     if let Some(marker) = inputs.run_bundle.filter(|value| !value.is_empty()) {
-        match check_marker(marker, inputs.amplihack_home, inputs.run_bundle_choice) {
+        match check_marker(
+            marker,
+            inputs.amplihack_home,
+            inputs.run_bundle_choice,
+            inputs.work_root,
+        ) {
             Ok((home, marker_choice)) => {
                 if let Some(requested) = inputs.choice
                     && requested != marker_choice
@@ -256,6 +290,7 @@ fn check_marker(
     marker: &OsStr,
     amplihack_home: Option<&OsStr>,
     marker_choice: Option<&OsStr>,
+    work_root: Option<&Path>,
 ) -> std::result::Result<(PathBuf, BundleChoice), String> {
     let canonical = fs::canonicalize(marker).map_err(|_| "it is not an existing directory")?;
     if !canonical.is_dir() {
@@ -272,10 +307,20 @@ fn check_marker(
                 .into(),
         );
     }
-    if !is_snapshot_path(&canonical) {
-        return Err("it is not a bundle folder inside a run's runtime folder".into());
+    let Some(work_root) = work_root else {
+        return Err("this run has no work root to hold bundle snapshots".into());
+    };
+    if !is_snapshot_path(&canonical, work_root) {
+        return Err(format!(
+            "it is not a bundle snapshot in {}/{PINS_DIR}/<24 hex digits>",
+            work_root.display()
+        ));
     }
-    for dir in [canonical.clone(), canonical.join(BUNDLE_DIR)] {
+    let pins = canonical
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    for dir in [pins, canonical.clone(), canonical.join(BUNDLE_DIR)] {
         trusted_directory(&dir).map_err(|error| format!("{error:#}"))?;
     }
     let choice = marker_choice
@@ -300,26 +345,23 @@ fn is_launch_copy_of(home: &Path, marker: &Path) -> bool {
         .is_some_and(|source| source == marker)
 }
 
-/// True for `<runtime>/bundle`, where `<runtime>` has one of the two
-/// layouts of `run_dir::runtime_dir_for`: `.../runtime` or
-/// `.../r/<12 hex digits>`.
-fn is_snapshot_path(path: &Path) -> bool {
-    fn name(path: Option<&Path>) -> Option<&str> {
-        path.and_then(Path::file_name).and_then(OsStr::to_str)
-    }
-    if name(Some(path)) != Some(SNAPSHOT_DIR) {
+/// True only for `<work_root>/bundle-pins/<24 lower-case hex digits>`. The
+/// parent is compared as given and, when both exist, after resolving
+/// symlinks.
+pub(crate) fn is_snapshot_path(path: &Path, work_root: &Path) -> bool {
+    let named_as_key = path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(store::is_key);
+    let Some(parent) = path.parent().filter(|_| named_as_key) else {
         return false;
-    }
-    let runtime = path.parent();
-    match name(runtime) {
-        Some("runtime") => true,
-        Some(short) => {
-            short.len() == 12
-                && short.bytes().all(|b| b.is_ascii_hexdigit())
-                && name(runtime.and_then(Path::parent)) == Some("r")
-        }
-        None => false,
-    }
+    };
+    let pins = work_root.join(PINS_DIR);
+    parent == pins
+        || matches!(
+            (fs::canonicalize(parent), fs::canonicalize(&pins)),
+            (Ok(a), Ok(b)) if a == b
+        )
 }
 
 /// The outer run's snapshot as this run's selection. A pin record that
@@ -468,27 +510,31 @@ fn sanitize_version(value: &str) -> Option<String> {
     valid.then(|| value.to_string())
 }
 
-/// The bundle a run executes with.
+/// The bundle a run executes with. Owns the run's lease on the snapshot:
+/// dropping it releases the lease and, for the last launch using the
+/// snapshot, removes it. Keep it alive until the run workspace is finished.
 #[derive(Debug)]
 pub(crate) struct PinnedBundle {
     home: PathBuf,
     bundle: PathBuf,
-    /// The `runtime/` folder the snapshot lives in; `None` on a dry run.
-    runtime_dir: Option<PathBuf>,
+    /// `<work root>/bundle-pins`; `None` on a dry run.
+    pins: Option<PathBuf>,
     choice: BundleChoice,
     dry_run: bool,
     record: BundleRecord,
+    /// The shared lock on `<key>.use`; `None` on a dry run.
+    _lease: Option<PinLease>,
 }
 
 impl PinnedBundle {
-    /// `<run dir>/runtime/bundle` (`AMPLIHACK_HOME` for steps). On a dry
-    /// run, the source home.
+    /// `<work root>/bundle-pins/<key>` (`AMPLIHACK_HOME` for steps). On a
+    /// dry run, the source home.
     pub(crate) fn home(&self) -> &Path {
         &self.home
     }
 
-    /// `<run dir>/runtime/bundle/amplifier-bundle`, or the source bundle on
-    /// a dry run.
+    /// `<work root>/bundle-pins/<key>/amplifier-bundle`, or the source
+    /// bundle on a dry run.
     pub(crate) fn bundle(&self) -> &Path {
         &self.bundle
     }
@@ -532,13 +578,11 @@ impl PinnedBundle {
     }
 }
 
-/// Copies the selection into `<runtime_dir>/bundle`, or reuses an inherited
-/// snapshot. With `dry_run`, walks and checks every entry without copying.
-pub(crate) fn pin(
-    selection: &Selection,
-    runtime_dir: &Path,
-    dry_run: bool,
-) -> Result<PinnedBundle> {
+/// Pins the selection under `<work_root>/bundle-pins/<key>`, reusing a
+/// snapshot with the same contents, or takes a lease on an inherited
+/// snapshot. With `dry_run`, walks and checks every entry without copying;
+/// `work_root` is then unused.
+pub(crate) fn pin(selection: &Selection, work_root: &Path, dry_run: bool) -> Result<PinnedBundle> {
     let record = |source: &Path, snapshot: Option<&Path>, inherited: bool| BundleRecord {
         source: source.display().to_string(),
         version: selection.version().to_string(),
@@ -548,9 +592,14 @@ pub(crate) fn pin(
         recipe_file: None,
     };
     if let Some(inherited) = &selection.inherited {
+        let lease = (!dry_run)
+            .then(|| PinLease::join(&inherited.home))
+            .transpose()?;
         return Ok(PinnedBundle {
             bundle: inherited.home.join(BUNDLE_DIR),
-            runtime_dir: inherited.home.parent().map(Path::to_path_buf),
+            pins: (!dry_run)
+                .then(|| inherited.home.parent().map(Path::to_path_buf))
+                .flatten(),
             record: record(
                 &inherited.source,
                 (!dry_run).then_some(inherited.home.as_path()),
@@ -559,6 +608,7 @@ pub(crate) fn pin(
             home: inherited.home.clone(),
             choice: selection.choice,
             dry_run,
+            _lease: lease,
         });
     }
     if dry_run {
@@ -570,62 +620,128 @@ pub(crate) fn pin(
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| selection.source.clone()),
             bundle: selection.source.clone(),
-            runtime_dir: None,
+            pins: None,
             choice: selection.choice,
             dry_run,
             record: record(&selection.source, None, false),
+            _lease: None,
         });
     }
-    let home = runtime_dir.join(SNAPSHOT_DIR);
-    fs::create_dir(&home).with_context(|| format!("cannot create {}", home.display()))?;
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&home, fs::Permissions::from_mode(0o755))
-            .with_context(|| format!("cannot set mode 0755 on {}", home.display()))?;
+
+    let pins = work_root.join(PINS_DIR);
+    store::ensure_pins_dir(&pins)?;
+    let _lock = StoreLock::acquire(&pins, true)?
+        .with_context(|| format!("cannot open {}/.lock", pins.display()))?;
+    store::clean_stale_copies(&pins);
+    let tmp = pins.join(store::new_tmp_name());
+    let pinned = pin_locked(selection, &pins, &tmp);
+    // The copy is renamed into place on success; anything left is removed.
+    if let Err(error) = store::remove_entry(&tmp) {
+        eprintln!(
+            "recipe bundle: could not remove the copy {}; a later launch removes it: {error:#}",
+            tmp.display()
+        );
     }
-    let bundle = home.join(BUNDLE_DIR);
-    copy_bundle(&selection.source, &bundle, LinkPolicy::KeepInternal)?;
+    let (key, home) = pinned?;
+    let lease = PinLease::take(&pins, &key)?;
+    store::sweep(&pins, &key);
     let record = record(&selection.source, Some(&home), false);
-    write_pin_record(&home, &record)?;
     Ok(PinnedBundle {
+        bundle: home.join(BUNDLE_DIR),
         home,
-        bundle,
-        runtime_dir: Some(runtime_dir.to_path_buf()),
+        pins: Some(pins),
         choice: selection.choice,
         dry_run,
         record,
+        _lease: Some(lease),
     })
+}
+
+/// Steps 4 to 6 of a launch, with `.lock` held: copies and checks the
+/// source into `tmp`, derives the key and puts the snapshot in place.
+/// Returns the key and `<pins>/<key>`.
+fn pin_locked(selection: &Selection, pins: &Path, tmp: &Path) -> Result<(String, PathBuf)> {
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        fs::DirBuilder::new()
+            .mode(0o755)
+            .create(tmp)
+            .with_context(|| format!("cannot create {}", tmp.display()))?;
+        fs::set_permissions(tmp, fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("cannot set mode 0755 on {}", tmp.display()))?;
+    }
+    let bundle = tmp.join(BUNDLE_DIR);
+    copy_bundle(&selection.source, &bundle, LinkPolicy::KeepInternal)?;
+    let digest = store::tree_digest(&bundle)?;
+    let key = store::snapshot_key(
+        selection.choice.as_str(),
+        &selection.source,
+        &selection.version,
+        &digest,
+    );
+    write_pin_record(
+        tmp,
+        &BundleRecord {
+            source: selection.source.display().to_string(),
+            version: selection.version.clone(),
+            snapshot: None,
+            choice: selection.choice.as_str().to_string(),
+            inherited: false,
+            recipe_file: None,
+        },
+    )?;
+    let home = pins.join(&key);
+    match store::place(pins, &key, tmp, &digest, &selection.source)? {
+        Placement::Created | Placement::Reused => {}
+        Placement::Replaced => eprintln!(
+            "recipe bundle: replacing {}: its contents differ from {} ({})",
+            home.display(),
+            selection.source.display(),
+            selection.version
+        ),
+    }
+    Ok((key, home))
 }
 
 fn write_pin_record(home: &Path, record: &BundleRecord) -> Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let path = home.join(PIN_RECORD);
-    let shared = BundleRecord {
-        snapshot: None,
-        recipe_file: None,
-        ..record.clone()
-    };
     fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o644)
         .open(&path)
-        .and_then(|mut file| file.write_all(&serde_json::to_vec(&shared)?))
+        .and_then(|mut file| file.write_all(&serde_json::to_vec(record)?))
+        .and_then(|()| fs::set_permissions(&path, fs::Permissions::from_mode(0o644)))
         .with_context(|| format!("cannot write {}", path.display()))
 }
 
-/// E8: the settled state home must not lie under the run's `runtime/` folder.
-/// Both paths are compared after resolving symlinks, so a state home that is
-/// a link into `runtime/` is refused too.
-pub(crate) fn check_state_home(state_home: &Path, pinned: &PinnedBundle) -> Result<()> {
-    // A dry run sets no bundle variables, so there is nothing to check.
-    if let Some(runtime) = pinned.runtime_dir.as_deref()
-        && resolved(state_home).starts_with(resolved(runtime))
+/// E8: the settled state home must not lie under the run's `runtime/`
+/// folder or under `<work root>/bundle-pins/`. Paths are compared after
+/// resolving symlinks, so a state home that is a link into either is
+/// refused too. A dry run has no snapshot and passes no runtime folder.
+pub(crate) fn check_state_home(
+    state_home: &Path,
+    pinned: &PinnedBundle,
+    runtime_dir: Option<&Path>,
+) -> Result<()> {
+    let state = resolved(state_home);
+    if let Some(runtime) = runtime_dir
+        && state.starts_with(resolved(runtime))
     {
         bail!(
             "AMPLIHACK_STATE_HOME {} lies under a run's runtime/ folder",
             state_home.display()
+        );
+    }
+    if let Some(pins) = pinned.pins.as_deref()
+        && state.starts_with(resolved(pins))
+    {
+        bail!(
+            "AMPLIHACK_STATE_HOME {} lies under the bundle snapshots in {}",
+            state_home.display(),
+            pins.display()
         );
     }
     Ok(())

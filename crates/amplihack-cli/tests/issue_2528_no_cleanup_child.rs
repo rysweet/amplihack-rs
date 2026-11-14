@@ -2,8 +2,9 @@
 //!
 //! The first attempt at #2528 removed per-run bundle copies with detached
 //! `recipe bundle-reap` processes, and one build lane leaked 847 of them.
-//! Cleanup must happen in the run's own exit path or under its
-//! `RuntimeGuard`, with no process, thread or timer started for it.
+//! Cleanup must happen in the run's own exit path, under its
+//! `RuntimeGuard` or through its bundle lease, with no process, thread or
+//! timer started for it.
 //!
 //! The run is started in its own session (`setsid` in `pre_exec`) and joined
 //! with `wait()`. Every process the run starts, directly or through the
@@ -11,8 +12,8 @@
 //! itself; the steps here do not. After the join, one read of `/proc` must
 //! find no process left in the session, and the snapshot path from the run's
 //! early record must be gone. This is repeated for a run whose step fails.
-//! The unwind case is the `RuntimeGuard` unit test in
-//! `cleanup/tests_run_dir.rs`.
+//! The unwind case is the bundle lease unit test
+//! `the_lease_is_released_on_panic_unwind` in `recipe/run/tests_bundle_pin.rs`.
 //!
 //! A detached reaper that calls `setsid` itself would escape the session
 //! check, so the test also checks that no process outside the session has

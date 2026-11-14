@@ -1,9 +1,9 @@
 ---
 title: One bundle per recipe run
-description: Why a recipe run copies one amplifier-bundle into its workspace and uses it for recipes and tools alike.
+description: Why a recipe run pins one checked, content-keyed copy of an amplifier-bundle and uses it for recipes and tools alike.
 doc_type: explanation
 last_updated: 2026-11-13
-related_issues: [2528]
+related_issues: [2528, 1741]
 ---
 
 # One bundle per recipe run
@@ -23,6 +23,7 @@ For the exact rules, see
 - [The problem: an upgrade during a run](#the-problem-an-upgrade-during-a-run)
 - [Why the installed bundle is the default](#why-the-installed-bundle-is-the-default)
 - [Why a copy rather than a reference](#why-a-copy-rather-than-a-reference)
+- [Why the copy's path depends on its contents](#why-the-copys-path-depends-on-its-contents)
 - [Why the same trust checks for both choices](#why-the-same-trust-checks-for-both-choices)
 - [Why cleanup has no separate process](#why-cleanup-has-no-separate-process)
 - [Why nested runs reuse the copy](#why-nested-runs-reuse-the-copy)
@@ -85,13 +86,50 @@ Two ways of pinning were considered:
   leaves nothing to point at. Protecting a release from removal while runs
   use it needs a scan of other processes' environments, which relies on
   `/proc` and does not exist on macOS.
-- **Copy.** Copy the selected bundle into the run's own `runtime/` folder and
+- **Copy.** Copy the selected bundle into a private, read-only folder and
   point the run at the copy. This works the same way for every layout and
   every platform, and nothing outside the run can change it.
 
 The bundle is about 13 MB, auto-drive already copied it for each drive, and
-nested runs reuse the outer copy, so the cost is one copy per run tree. The
-copy was chosen.
+nested runs reuse the outer copy, so the cost is at most one copy per
+launch. The copy was chosen.
+
+## Why the copy's path depends on its contents
+
+The runner can resume a run that stopped part-way, for example at a usage
+limit (#1741). Before it reuses earlier results, it compares the settings of
+the new launch with those it stored for the stopped run. Those settings
+include `AMPLIHACK_HOME`, the recipe and agent directories passed to the
+runner and the canonical paths of the sub-recipes it loaded, all of which
+name the copy.
+
+A copy at a new path for every launch, such as one inside the run's own
+`runtime/` folder, therefore made every resumed run look like a different
+run, and recovery started again from the first step. Pointing a symlink at
+the copy would not help, because the runner resolves paths before comparing
+them.
+
+The copy is instead stored at `<work root>/bundle-pins/<key>`, where the key
+is a digest of the choice, the source path, the version and the full contents
+of the bundle. A relaunch with the same bundle computes the same key, gets
+the same paths and resumes. A relaunch after the bundle has changed gets a
+new key, and the runner sees the change and starts again from the beginning.
+That costs a full rerun after an upgrade, but a resumed run never combines
+results from one bundle with steps from another.
+
+A key based on the run's recovery identity was also considered. It was
+rejected because two runs of the same recipe at the same time would then
+share one path while possibly needing different bundles.
+
+A content key means that runs of the same bundle share one copy. This is safe
+because the copy is read-only and its contents are fixed by its key. Before a
+launch reuses an existing copy, it computes the full digest of that copy
+again and compares it with a fresh copy of the source. The 24-digit key is
+used only to name the folder; the decision rests on the full 256-bit digest.
+The digest leaves out the write bits, because the fresh copy is writable and
+the stored copy is read-only; with them included, no copy would ever match.
+The source is still checked and copied at every launch, so a stored copy
+never stands in for the trust checks.
 
 ## Why the same trust checks for both choices
 
@@ -119,12 +157,27 @@ host, started by its tests and never waited for. A process that outlives the run
 started it needs its own supervision, can pile up when runs are killed, and
 is hard to test without waiting for it.
 
-The copy lives under `<run dir>/runtime/`, which the run's `RuntimeGuard`
-already removes on success, on error and during unwinding. A run killed with
-`SIGKILL` cannot clean up after itself, so its folder is removed by the
-end-of-run sweep of the next run that finishes. No new process, thread or
-timer is involved, and when `recipe run` returns it has no cleanup work still
-running.
+Because runs of the same bundle share a copy, no single run owns it. Each run
+holds a shared `flock` on the copy's `<key>.use` file for as long as it runs.
+When a run ends, on success, on error or during unwinding, it releases its
+lock and tries to take the file exclusively without waiting. If that
+succeeds, no other run is using the copy, and the run removes it. A separate
+`.lock` file, held while a launch creates a copy and while a run removes one,
+keeps a new launch from picking up a copy that is being removed.
+
+Linux cannot turn an exclusive `flock` into a shared one without releasing
+it first, which would leave a gap in which another run could remove the
+copy. Two lock files avoid needing that change.
+
+A run killed with `SIGKILL` cannot clean up after itself, but the kernel
+releases its locks. The next launch on the same work root, while it holds
+`.lock`, removes every copy whose `<key>.use` it can take exclusively. No new
+process, thread or timer is involved, and when `recipe run` returns it has no
+cleanup work still running.
+
+The locks block without a timeout. A launch that is stopped while it holds
+`.lock` makes later launches wait until it is resumed or ended. The waiting
+launch prints the lock's path, so the cause can be found.
 
 ## Why nested runs reuse the copy
 
@@ -134,22 +187,25 @@ and reintroduce the mixture. It would also copy the bundle again for every
 level.
 
 The outer run therefore sets `AMPLIHACK_RUN_BUNDLE` to its copy. A nested run
-that finds a valid marker uses the same copy and does not own it. A nested run
-that asks for a different bundle is refused rather than mixed. A marker that
-fails its checks is ignored, so a stale or forged value cannot point a run at
-an unchecked directory.
+that finds a valid marker uses the same copy, takes its own shared lock on
+it, and never removes it. A nested run that asks for a different bundle is
+refused rather than mixed. A marker that fails its checks is ignored, so a
+stale or forged value cannot point a run at an unchecked directory. The
+marker must name a copy in this run's own `bundle-pins/` folder, because that
+is where the nested run opens the lock file. If the lock file is missing, the
+nested run is refused instead of running from a copy that nothing protects.
 
 ## Why state stays outside the copy
 
 Some code derives its state directory from `AMPLIHACK_HOME`. With
-`AMPLIHACK_HOME` pointing at the copy, that state would land in `runtime/`
-and be deleted when the run ends, or would change the bundle in the middle of
-the run. `recipe run` sets `AMPLIHACK_STATE_HOME` to the state root that
+`AMPLIHACK_HOME` pointing at the copy, that state would land in the shared,
+read-only copy and either fail or be deleted when the last run using it
+ends. `recipe run` sets `AMPLIHACK_STATE_HOME` to the state root that
 applied before it changed `AMPLIHACK_HOME`, and state readers check it first.
 A nested run passes the inherited value through rather than computing it
 again, since by then `AMPLIHACK_HOME` names the copy. If the state root would
-still fall inside a run's `runtime/` folder, the run is refused before any
-step starts.
+still fall inside the run's `runtime/` folder or under `bundle-pins/`, the
+run is refused before any step starts.
 
 ## Related
 

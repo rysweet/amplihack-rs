@@ -668,13 +668,21 @@ fn t6_steps_see_the_real_state_root_not_the_snapshot() {
         assert!(!Path::new(&state).starts_with(&world.work), "{state}");
     }
     let snapshot = assert_one_bundle(&stderr, &bundle, "installed").expect("snapshot recorded");
-    // `<run dir>/runtime/bundle`, or `<work root>/r/<short id>/bundle` when
-    // the default runtime path would be long.
-    assert!(
-        snapshot.ends_with("runtime/bundle")
-            || snapshot.parent().and_then(|p| p.parent()) == Some(&world.work.join("r")),
+    // `<work root>/bundle-pins/<key>`: a folder named by the bundle's
+    // contents, outside the run's own `runtime/` folder.
+    assert_eq!(
+        snapshot.parent(),
+        Some(world.work.join("bundle-pins").as_path()),
         "{}",
         snapshot.display()
+    );
+    let key = snapshot
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    assert!(
+        key.len() == 24 && key.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+        "{key}"
     );
     assert!(snapshot.starts_with(&world.work), "{}", snapshot.display());
     assert!(
@@ -864,9 +872,19 @@ fn r2_a_resumed_run_pins_the_same_bundle_with_the_same_choice() {
     }
     assert_eq!(after["choice"], "installed");
     assert_eq!(after["inherited"], false);
-    // Each launch pins its own copy of that bundle, removed when it ends.
-    for record in [&before, &after] {
-        let snapshot = PathBuf::from(record["snapshot"].as_str().expect("snapshot"));
-        assert!(!snapshot.exists(), "{}", snapshot.display());
-    }
+    // Both launches pin the unchanged bundle at the same content-keyed path,
+    // so the resumed run's runner arguments and recovery fingerprints match
+    // the first run's (#1741). The snapshot is removed when each launch ends.
+    assert_eq!(
+        before["snapshot"], after["snapshot"],
+        "same snapshot path: {before} vs {after}"
+    );
+    let snapshot = PathBuf::from(after["snapshot"].as_str().expect("snapshot"));
+    assert_eq!(
+        snapshot.parent(),
+        Some(f.work_root.join("bundle-pins").as_path()),
+        "{}",
+        snapshot.display()
+    );
+    assert!(!snapshot.exists(), "{}", snapshot.display());
 }

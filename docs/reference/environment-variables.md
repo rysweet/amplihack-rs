@@ -254,7 +254,7 @@ AMPLIHACK_HOME=/opt/amplihack amplihack claude --print-env 2>&1 | grep AMPLIHACK
 
 **Install source:** `amplihack install` also tries `AMPLIHACK_HOME` as its first framework source. Plain `install` refuses it when its version differs from the binary's. The post-update install of `amplihack update` uses a same-version tree without network access, and fetches the release tag only when the version differs. Install always stages into `$HOME/.amplihack`, so this variable never moves the install. See [Framework source selection](./framework-source-selection.md).
 
-**Recipe runs:** inside an executing `amplihack recipe run`, steps and the runner see `AMPLIHACK_HOME=<run dir>/runtime/bundle`, the run's checked copy of the selected bundle, not the value above. The variable is still the first candidate for the installed bundle when the run starts, but a value that is a git checkout is skipped with a note on stderr; use `--bundle checkout` for a checkout's bundle. See [Recipe run bundle selection and pinning](./recipe-run-bundle.md).
+**Recipe runs:** inside an executing `amplihack recipe run`, steps and the runner see `AMPLIHACK_HOME=<work root>/bundle-pins/<key>`, the run's checked, read-only copy of the selected bundle, not the value above. The variable is still the first candidate for the installed bundle when the run starts, but a value that is a git checkout is skipped with a note on stderr; use `--bundle checkout` for a checkout's bundle. See [Recipe run bundle selection and pinning](./recipe-run-bundle.md).
 
 **Python parity:** Corresponds to `AMPLIHACK_HOME` propagation in the Python launcher.
 
@@ -266,7 +266,7 @@ AMPLIHACK_HOME=/opt/amplihack amplihack claude --print-env 2>&1 | grep AMPLIHACK
 **Set by:** `amplihack recipe run`, on the runner and every step
 **Read by:** nested `amplihack recipe run`
 
-The run's bundle copy, `<run dir>/runtime/bundle`. Not set on a dry run. A nested run reuses this copy when the value names an existing directory, equals `AMPLIHACK_HOME`, ends in `runtime/bundle`, passes the bundle trust checks and `AMPLIHACK_RUN_BUNDLE_CHOICE` is valid. Otherwise the nested run ignores it, prints a note and selects a bundle itself. Reserved: `-c AMPLIHACK_RUN_BUNDLE=...` is refused. See [Nested runs](./recipe-run-bundle.md#nested-runs).
+The run's bundle copy, `<work root>/bundle-pins/<key>`, where `<key>` is 24 hex digits derived from the bundle's contents. Not set on a dry run. A nested run reuses this copy when the value names an existing directory, equals `AMPLIHACK_HOME`, lies directly in the nested run's own `<work root>/bundle-pins/` with a 24-hex-digit name, passes the bundle trust checks and `AMPLIHACK_RUN_BUNDLE_CHOICE` is valid. Otherwise the nested run ignores it, prints a note and selects a bundle itself. Reserved: `-c AMPLIHACK_RUN_BUNDLE=...` is refused. See [Nested runs](./recipe-run-bundle.md#nested-runs).
 
 ---
 

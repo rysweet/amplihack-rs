@@ -99,7 +99,7 @@ grep '^amplihack\.recipe\.log_pointer ' recipe-progress.log \
   | sed 's/^amplihack\.recipe\.log_pointer //' \
   | jq -c 'select(.event == "early") | .recipe_bundle'
 # {"source":"/home/alice/src/amplihack-rs/amplifier-bundle","version":"1.2.152+checkout",
-#  "snapshot":"/home/alice/.amplihack/work/runs/3f0c9a52-.../runtime/bundle","choice":"checkout","inherited":false}
+#  "snapshot":"/home/alice/.amplihack/work/bundle-pins/5be2a09d14c7f3e86b0d2a91","choice":"checkout","inherited":false}
 ```
 
 See [Correlate recipe runs with logs](./correlate-recipe-runs.md) for the
@@ -110,7 +110,7 @@ and `AMPLIHACK_HOME` points at the run's copy:
 
 ```bash
 echo "$AMPLIHACK_RUN_BUNDLE_CHOICE $AMPLIHACK_HOME"
-# checkout /home/alice/.amplihack/work/runs/3f0c9a52-.../runtime/bundle
+# checkout /home/alice/.amplihack/work/bundle-pins/5be2a09d14c7f3e86b0d2a91
 ```
 
 ## Run a recipe file that is not in the bundle

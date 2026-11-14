@@ -753,18 +753,29 @@ pub(super) fn execute_recipe_via_rust_fresh(
         crate::commands::cleanup::run_dir::RunWorkspace::begin_durable(&recipe_name, working_dir)?
     });
 
-    // Issue #2528 (D2): copy the selected bundle into runtime/bundle, where
-    // the RuntimeGuard removes it with the rest of runtime/. A dry run checks
-    // every entry and copies nothing; a nested run reuses its parent's copy.
-    // The source recipe path is kept for recovery admission (F5).
+    // Issue #2528 (D2): pin the selected bundle at
+    // <work root>/bundle-pins/<key>, a path set by the bundle's contents, so a
+    // resumed run gets the same runner paths as the original run (#1741).
+    // `pinned` holds the run's lease on that snapshot and is dropped after
+    // finish_workspace below; the last run to release a snapshot removes it.
+    // A dry run checks every entry and copies nothing; a nested run reuses
+    // its parent's snapshot. The source recipe path is kept for recovery
+    // admission (F5).
     let source_recipe = recipe_path;
     let pinned = match &bundle {
         Some(bundle) => {
-            let mut pinned = super::bundle_pin::pin(
-                bundle.selection,
-                workspace.borrow().runtime_dir(),
-                dry_run,
-            )?;
+            let pin_root = {
+                let workspace = workspace.borrow();
+                match workspace.work_root() {
+                    Some(root) => root.to_path_buf(),
+                    // A dry run copies nothing, so the path is unused.
+                    None if dry_run => workspace.runtime_dir().to_path_buf(),
+                    None => {
+                        anyhow::bail!("cannot pin the recipe bundle: this run has no work root")
+                    }
+                }
+            };
+            let mut pinned = super::bundle_pin::pin(bundle.selection, &pin_root, dry_run)?;
             if let RecipeOrigin::File(file) = bundle.origin {
                 pinned.set_recipe_file(file);
             }
@@ -866,7 +877,11 @@ pub(super) fn execute_recipe_via_rust_fresh(
                 "cannot settle AMPLIHACK_STATE_HOME: neither AMPLIHACK_STATE_HOME, \
                  AMPLIHACK_HOME nor HOME gives a usable state root",
             )?;
-            super::bundle_pin::check_state_home(&state_home, pinned)?;
+            super::bundle_pin::check_state_home(
+                &state_home,
+                pinned,
+                Some(workspace.borrow().runtime_dir()),
+            )?;
             Some(state_home)
         }
         _ => None,
@@ -1368,6 +1383,9 @@ pub(super) fn execute_recipe_via_rust_fresh(
         }
     }
     finish_workspace(workspace.into_inner(), &final_result, dry_run);
+    // Issue #2528: release the bundle lease only once the workspace is
+    // finished; the last run using the snapshot removes it here.
+    drop(pinned);
     final_result
 }
 

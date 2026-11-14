@@ -15,6 +15,8 @@
 //! - `take_bundle_key(&mut BTreeMap<String, String>) -> Option<String>` in
 //!   `run/mod.rs` removes the lower-case `bundle` key before export.
 //! - `trusted::clean_retired_environment` leaves the four names in place (I3).
+//! - The lock descriptors a pin holds (`bundle-pins/.lock`, `<key>.use`)
+//!   are close-on-exec, so the runner and its steps inherit none of them.
 
 use super::bundle_pin::{SelectInputs, pin, select_from};
 use super::execute::{build_search_dirs, bundle_env, runner_bundle_args};
@@ -34,10 +36,12 @@ const BUNDLE_VARS: [&str; 4] = [
     "AMPLIHACK_STATE_HOME",
 ];
 
+/// Fields drop in order: the lease first (it removes the read-only
+/// snapshot), then the temporary root.
 struct Pinned {
-    _tmp: tempfile::TempDir,
-    root: PathBuf,
     pinned: super::bundle_pin::PinnedBundle,
+    root: PathBuf,
+    _tmp: tempfile::TempDir,
 }
 
 fn pinned(dry_run: bool) -> Pinned {
@@ -72,11 +76,13 @@ fn pinned(dry_run: bool) -> Pinned {
         user_home: None,
         run_bundle: None,
         run_bundle_choice: None,
+        work_root: None,
     })
     .unwrap();
-    let runtime = root.join("runs/r/runtime");
-    fs::create_dir_all(&runtime).unwrap();
-    let pinned = pin(&selection, &runtime, dry_run).unwrap();
+    let work = root.join("work");
+    fs::create_dir_all(&work).unwrap();
+    fs::set_permissions(&work, fs::Permissions::from_mode(0o700)).unwrap();
+    let pinned = pin(&selection, &work, dry_run).unwrap();
     Pinned {
         _tmp: tmp,
         root,
@@ -89,7 +95,7 @@ fn search_dirs_for_a_bundle_recipe_are_the_snapshot_only() {
     let p = pinned(false);
     let dirs = build_search_dirs(p.pinned.bundle(), &RecipeOrigin::Bundle);
     assert_eq!(dirs, vec![p.pinned.bundle().join("recipes")]);
-    assert!(dirs[0].starts_with(p.root.join("runs/r/runtime/bundle")));
+    assert!(dirs[0].starts_with(p.root.join("work/bundle-pins")));
 }
 
 #[test]
@@ -162,7 +168,7 @@ fn bundle_env_points_steps_at_the_snapshot() {
 fn clean_retired_environment_keeps_the_bundle_variables() {
     let mut command = std::process::Command::new("true");
     for name in BUNDLE_VARS {
-        command.env(name, "/runs/r/runtime/bundle");
+        command.env(name, "/work/bundle-pins/0123456789abcdef01234567");
     }
     command.env("AMPLIHACK_BUNDLE_DIR", "/retired");
     clean_retired_environment(&mut command).unwrap();
@@ -170,7 +176,9 @@ fn clean_retired_environment_keeps_the_bundle_variables() {
     for name in BUNDLE_VARS {
         assert_eq!(
             envs.get(OsStr::new(name)),
-            Some(&Some(OsStr::new("/runs/r/runtime/bundle"))),
+            Some(&Some(OsStr::new(
+                "/work/bundle-pins/0123456789abcdef01234567"
+            ))),
             "{name} must survive clean_retired_environment"
         );
     }
@@ -275,4 +283,51 @@ fn auto_drive_runner_arguments_name_the_launch_copy_and_turn_default_search_off(
         "--no-default-search".into(),
     ];
     assert_eq!(args, expected);
+}
+
+// ---- lock descriptors (S16) ---------------------------------------------
+
+/// Paths of every descriptor open in a child process started while the
+/// bundle is pinned, read from the child's own `/proc/self/fd`.
+#[cfg(target_os = "linux")]
+fn child_descriptor_targets() -> Vec<String> {
+    let output = std::process::Command::new("ls")
+        .args(["-l", "/proc/self/fd/"])
+        .output()
+        .expect("run ls in a child");
+    assert!(output.status.success(), "{output:?}");
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.split_once(" -> ").map(|(_, t)| t.to_string()))
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_child_started_while_the_bundle_is_pinned_inherits_no_lock_descriptor() {
+    let p = pinned(false);
+    let pins = p.root.join("work/bundle-pins");
+    let lease = {
+        let home = p.pinned.home();
+        let key = home.file_name().unwrap().to_str().unwrap();
+        pins.join(format!("{key}.use"))
+    };
+    // The run holds its lease while the child runs.
+    let probe = fs::File::open(&lease).unwrap();
+    assert!(
+        !fs4::fs_std::FileExt::try_lock_exclusive(&probe).unwrap(),
+        "the pinned run holds a shared lock on {}",
+        lease.display()
+    );
+    drop(probe);
+    // `.lock` is released once the pin returns.
+    let lock = fs::File::open(pins.join(".lock")).unwrap();
+    assert!(fs4::fs_std::FileExt::try_lock_exclusive(&lock).unwrap());
+    drop(lock);
+
+    let targets = child_descriptor_targets();
+    assert!(
+        !targets.iter().any(|t| t.contains("bundle-pins")),
+        "the child inherited a lock descriptor: {targets:?}"
+    );
 }

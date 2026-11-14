@@ -59,7 +59,7 @@ pub(crate) struct BundleRecord {
     pub(crate) source: String,
     /// Sanitised version, or `unknown`.
     pub(crate) version: String,
-    /// `<run dir>/runtime/bundle`; absent on a dry run.
+    /// `<work root>/bundle-pins/<key>`; absent on a dry run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) snapshot: Option<String>,
     /// `installed` or `checkout`.

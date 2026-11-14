@@ -78,6 +78,7 @@ fn selection(f: &Fixture, choice: Option<BundleChoice>) -> Selection {
         user_home: None,
         run_bundle: None,
         run_bundle_choice: None,
+        work_root: None,
     })
     .unwrap()
 }

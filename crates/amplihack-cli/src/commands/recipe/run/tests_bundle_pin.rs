@@ -7,22 +7,35 @@
 //! Contract (docs/reference/recipe-run-bundle.md):
 //! - `BundleChoice { Installed, Checkout }` with `parse`, `from_inputs`, `as_str`;
 //!   derives `Debug, Clone, Copy, PartialEq, Eq`.
-//! - `SelectInputs<'a>` with the `pub(crate)` fields used by `inputs()` below.
-//!   `select_from` reads nothing from the process environment.
+//! - `SelectInputs<'a>` with the `pub(crate)` fields used by `inputs()` below,
+//!   including `work_root: Option<&Path>`, the run's work root (the folder
+//!   that holds `runs/` and `bundle-pins/`). A marker is accepted only when
+//!   its canonical parent is `<work_root>/bundle-pins`; with no work root,
+//!   every marker is ignored. `select_from` reads nothing from the process
+//!   environment.
 //! - `Selection` with `source()` (canonical `<home>/amplifier-bundle`),
 //!   `recipes_dir()`, `choice()`, `version()`, `inherited()` and `notes()`
 //!   (stderr notes, such as a skipped checkout or an ignored marker).
-//! - `pin(&Selection, runtime_dir, dry_run) -> PinnedBundle` with `home()`,
-//!   `bundle()`, `source()` and `record()`.
-//! - `check_state_home(state_home, &PinnedBundle)`: E8.
+//! - `pin(&Selection, work_root, dry_run) -> PinnedBundle` with `home()`
+//!   (`<work_root>/bundle-pins/<24 hex key>`), `bundle()`, `source()` and
+//!   `record()`. Dropping the `PinnedBundle` releases its lease on
+//!   `<key>.use`; the last launch lease to go removes the snapshot.
+//! - `is_snapshot_path(path, work_root)`: true only for
+//!   `<work_root>/bundle-pins/<24 lower-case hex>`.
+//! - `check_state_home(state_home, &PinnedBundle, runtime_dir)`: E8.
 //!
 //! Every test builds its own temporary homes; none reads or changes the
 //! process environment, the real `~/.amplihack` or the working directory.
+//! No test waits on a clock: lock contention is created and checked with
+//! non-blocking `flock` calls only.
 
 #![cfg(unix)]
 
-use super::bundle_pin::{BundleChoice, SelectInputs, check_state_home, pin, select_from};
+use super::bundle_pin::{
+    BundleChoice, SelectInputs, check_state_home, is_snapshot_path, pin, select_from,
+};
 use super::correlation::BundleRecord;
+use fs4::fs_std::FileExt;
 use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
@@ -74,17 +87,48 @@ fn write_checkout(root: &Path, label: &str) -> PathBuf {
     write_bundle(root, label)
 }
 
-fn scratch() -> (tempfile::TempDir, PathBuf) {
+/// A private temporary root. On drop, the owner write bit is restored on
+/// every real directory first (symlinks are never followed), so read-only
+/// snapshots left by a test do not stop the temporary root's removal.
+struct Scratch(Option<tempfile::TempDir>);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        if let Some(tmp) = self.0.take() {
+            restore_owner_write(tmp.path());
+        }
+    }
+}
+
+fn restore_owner_write(dir: &Path) {
+    let Ok(meta) = fs::symlink_metadata(dir) else {
+        return;
+    };
+    if !meta.is_dir() {
+        return;
+    }
+    let _ = fs::set_permissions(
+        dir,
+        fs::Permissions::from_mode(meta.permissions().mode() | 0o700),
+    );
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            restore_owner_write(&entry.path());
+        }
+    }
+}
+
+fn scratch() -> (Scratch, PathBuf) {
     let tmp = crate::test_support::tempdir_outside_framework_roots();
     let root = fs::canonicalize(tmp.path()).unwrap();
-    (tmp, root)
+    (Scratch(Some(tmp)), root)
 }
 
 fn os(path: &Path) -> Option<&OsStr> {
     Some(path.as_os_str())
 }
 
-/// Inputs with no candidates, no marker and no choice.
+/// Inputs with no candidates, no marker, no choice and no work root.
 fn inputs(working_dir: &Path) -> SelectInputs<'_> {
     SelectInputs {
         choice: None,
@@ -94,6 +138,7 @@ fn inputs(working_dir: &Path) -> SelectInputs<'_> {
         user_home: None,
         run_bundle: None,
         run_bundle_choice: None,
+        work_root: None,
     }
 }
 
@@ -437,27 +482,6 @@ fn no_checkout_bundle_is_e5() {
         )
     );
 }
-
-// ------------------------------------------------------------ trust
-
-#[test]
-fn a_group_writable_bundle_root_is_refused_with_no_fallback() {
-    let (_tmp, root) = scratch();
-    let checkout = root.join("checkout");
-    let bundle = write_checkout(&checkout, "B");
-    set_mode(&bundle, 0o775);
-    let installed = root.join("installed");
-    write_bundle(&installed, "A");
-
-    // Checkout requested: refused, never falls back to the installed bundle.
-    let text = err_text(select_from(SelectInputs {
-        choice: Some(BundleChoice::Checkout),
-        amplihack_home: os(&installed),
-        ..inputs(&checkout)
-    }));
-    assert!(text.contains("amplifier-bundle"), "{text}");
-}
-
 #[test]
 fn a_group_writable_file_is_refused_with_e6_naming_file_and_mode() {
     let (_tmp, root) = scratch();
@@ -470,11 +494,10 @@ fn a_group_writable_file_is_refused_with_e6_naming_file_and_mode() {
         ..inputs(&checkout)
     })
     .unwrap();
-    let runtime = root.join("run/runtime");
-    fs::create_dir_all(&runtime).unwrap();
+    let work = work_root(&root);
 
     for dry_run in [true, false] {
-        let text = err_text(pin(&selection, &runtime, dry_run));
+        let text = err_text(pin(&selection, &work, dry_run));
         let canonical = fs::canonicalize(&bad).unwrap();
         assert!(
             text.contains(&format!(
@@ -486,6 +509,12 @@ fn a_group_writable_file_is_refused_with_e6_naming_file_and_mode() {
             "dry_run={dry_run}: {text}"
         );
     }
+    // A refused launch leaves no snapshot, no lease and no copy in progress.
+    let left: Vec<String> = pin_entries(&work)
+        .into_iter()
+        .filter(|name| name != ".lock")
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
 }
 
 // ------------------------------------------------------------ version
@@ -561,36 +590,138 @@ fn checkout_version_comes_from_workspace_cargo_toml_with_suffix() {
 }
 
 // ----------------------------------------------------------- nested runs
+// ------------------------------------------------------- bundle-pins layout
 
-/// A parent run's snapshot at `<root>/runs/r1/runtime/bundle`.
-fn parent_snapshot(root: &Path) -> PathBuf {
-    let marker = root.join("runs/r1/runtime/bundle");
-    fs::create_dir_all(&marker).unwrap();
+/// A key-shaped name used for hand-built snapshots.
+const KEY: &str = "0123456789abcdef01234567";
+/// A second key-shaped name.
+const KEY2: &str = "fedcba9876543210fedcba98";
+
+fn is_key(name: &str) -> bool {
+    name.len() == 24 && name.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// `<root>/work`, private, as `WorkRoot::ensure_created` leaves it.
+fn work_root(root: &Path) -> PathBuf {
+    let work = root.join("work");
+    fs::create_dir_all(&work).unwrap();
+    set_mode(&work, 0o700);
+    work
+}
+
+fn pins_dir(work: &Path) -> PathBuf {
+    work.join("bundle-pins")
+}
+
+/// `<work>/bundle-pins`, created private if missing.
+fn private_pins(work: &Path) -> PathBuf {
+    let pins = pins_dir(work);
+    fs::create_dir_all(&pins).unwrap();
+    set_mode(&pins, 0o700);
+    pins
+}
+
+/// Sorted names in `<work>/bundle-pins`; empty when it does not exist.
+fn pin_entries(work: &Path) -> Vec<String> {
+    let mut names: Vec<String> = match fs::read_dir(pins_dir(work)) {
+        Ok(entries) => entries
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    names.sort();
+    names
+}
+
+/// `<work>/bundle-pins/<key>.use` for the snapshot `home`.
+fn lease_file(home: &Path) -> PathBuf {
+    let name = home.file_name().unwrap().to_str().unwrap();
+    home.with_file_name(format!("{name}.use"))
+}
+
+/// True when some open file description holds a `flock` on `path`: a
+/// non-blocking exclusive lock from a fresh open is refused. The probe lock
+/// is released when the file is closed on return.
+fn held(path: &Path) -> bool {
+    let file = fs::File::open(path).unwrap();
+    !FileExt::try_lock_exclusive(&file).unwrap()
+}
+
+fn exists_no_follow(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
+}
+
+/// A snapshot as `pin` lays it out, built by hand:
+/// `<work>/bundle-pins/<KEY>/amplifier-bundle` and an empty `<KEY>.use`.
+/// Returns the work root and the snapshot home (the marker).
+fn parent_snapshot(root: &Path) -> (PathBuf, PathBuf) {
+    let work = work_root(root);
+    let pins = private_pins(&work);
+    let marker = pins.join(KEY);
+    fs::create_dir(&marker).unwrap();
     write_bundle(&marker, "parent-A");
-    for dir in ["runs", "runs/r1"] {
-        set_mode(&root.join(dir), 0o755);
+    let lease = pins.join(format!("{KEY}.use"));
+    fs::write(&lease, "").unwrap();
+    set_mode(&lease, 0o600);
+    (work, marker)
+}
+
+/// Inputs of a run nested in the run that pinned `marker`.
+fn nested_inputs<'a>(
+    working_dir: &'a Path,
+    work: &'a Path,
+    marker: &'a Path,
+    choice: &'static str,
+) -> SelectInputs<'a> {
+    SelectInputs {
+        amplihack_home: os(marker),
+        run_bundle: os(marker),
+        run_bundle_choice: Some(OsStr::new(choice)),
+        work_root: Some(work),
+        ..inputs(working_dir)
     }
-    set_mode(&root.join("runs/r1/runtime"), 0o700);
-    marker
+}
+
+fn installed_selection(root: &Path) -> (PathBuf, super::bundle_pin::Selection) {
+    let home = root.join("installed");
+    let bundle = write_bundle(&home, "installed-A");
+    (bundle, select_installed(root, &home))
+}
+
+fn select_installed(root: &Path, home: &Path) -> super::bundle_pin::Selection {
+    select_from(SelectInputs {
+        amplihack_home: os(home),
+        ..inputs(root)
+    })
+    .unwrap()
+}
+
+/// Makes `file` in a read-only snapshot say `text`, keeping its mode.
+fn tamper(file: &Path, text: &str) {
+    let mode = mode_of(file);
+    set_mode(file, 0o644);
+    fs::write(file, text).unwrap();
+    set_mode(file, mode);
 }
 
 #[test]
 fn a_valid_marker_is_reused_without_selection() {
     let (_tmp, root) = scratch();
-    let marker = parent_snapshot(&root);
+    let (work, marker) = parent_snapshot(&root);
     let checkout = root.join("checkout");
     write_checkout(&checkout, "B");
 
     for choice in [None, Some(BundleChoice::Installed)] {
         let selection = select_from(SelectInputs {
             choice,
-            amplihack_home: os(&marker),
-            run_bundle: os(&marker),
-            run_bundle_choice: Some(OsStr::new("installed")),
-            ..inputs(&checkout)
+            ..nested_inputs(&checkout, &work, &marker, "installed")
         })
         .unwrap();
-        assert!(selection.inherited(), "choice {choice:?}");
+        assert!(
+            selection.inherited(),
+            "choice {choice:?}: {:?}",
+            selection.notes()
+        );
         assert_eq!(selection.choice(), BundleChoice::Installed);
         assert_eq!(
             selection.source(),
@@ -602,15 +733,12 @@ fn a_valid_marker_is_reused_without_selection() {
 #[test]
 fn a_nested_run_asking_for_another_bundle_is_refused_with_e3() {
     let (_tmp, root) = scratch();
-    let marker = parent_snapshot(&root);
+    let (work, marker) = parent_snapshot(&root);
     let checkout = root.join("checkout");
     write_checkout(&checkout, "B");
     let text = err_text(select_from(SelectInputs {
         choice: Some(BundleChoice::Checkout),
-        amplihack_home: os(&marker),
-        run_bundle: os(&marker),
-        run_bundle_choice: Some(OsStr::new("installed")),
-        ..inputs(&checkout)
+        ..nested_inputs(&checkout, &work, &marker, "installed")
     }));
     assert_eq!(
         text,
@@ -625,58 +753,184 @@ fn a_nested_run_asking_for_another_bundle_is_refused_with_e3() {
 #[test]
 fn a_marker_failing_any_check_is_ignored_with_a_note() {
     let (_tmp, root) = scratch();
-    let marker = parent_snapshot(&root);
+    let (work, marker) = parent_snapshot(&root);
     let installed = root.join("installed");
     let installed_bundle = write_bundle(&installed, "A");
-    let elsewhere = root.join("elsewhere/bundle");
+    // Key-shaped, but its parent is not a `bundle-pins` folder.
+    let elsewhere = root.join("elsewhere").join(KEY);
     fs::create_dir_all(&elsewhere).unwrap();
     write_bundle(&elsewhere, "X");
+    let other_work = root.join("other-work");
+    fs::create_dir_all(&other_work).unwrap();
+    set_mode(&other_work, 0o700);
 
-    // (AMPLIHACK_HOME, marker, marker choice) combinations that each fail one check.
-    let cases: Vec<(&Path, &Path, &str, &str)> = vec![
-        (&installed, &marker, "installed", "marker != AMPLIHACK_HOME"),
+    // (AMPLIHACK_HOME, marker, marker choice, work root) combinations that
+    // each fail one check.
+    let cases: Vec<(&Path, &Path, &str, Option<&Path>, &str)> = vec![
+        (
+            &installed,
+            &marker,
+            "installed",
+            Some(&work),
+            "marker != AMPLIHACK_HOME",
+        ),
         (
             &elsewhere,
             &elsewhere,
             "installed",
-            "not under runtime/bundle",
+            Some(&work),
+            "not under bundle-pins",
         ),
-        (&marker, &marker, "Installed", "bad choice"),
-        (&marker, &marker, "", "empty choice"),
+        (&marker, &marker, "Installed", Some(&work), "bad choice"),
+        (&marker, &marker, "", Some(&work), "empty choice"),
+        (
+            &marker,
+            &marker,
+            "installed",
+            Some(&other_work),
+            "another work root",
+        ),
+        (&marker, &marker, "installed", None, "no work root"),
     ];
-    for (home, run_bundle, choice, why) in cases {
+    for (home, run_bundle, choice, work_root, why) in cases {
         let selection = select_from(SelectInputs {
             amplihack_home: os(home),
             run_bundle: os(run_bundle),
             run_bundle_choice: Some(OsStr::new(choice)),
             configured_home: Some(&installed),
+            work_root,
             ..inputs(&root)
         })
         .unwrap_or_else(|e| panic!("{why}: {e:#}"));
         assert!(!selection.inherited(), "{why}");
         assert!(!selection.notes().is_empty(), "{why}: a note is printed");
-        if home == installed.as_path() {
-            assert_eq!(
-                selection.source(),
-                fs::canonicalize(&installed_bundle).unwrap()
-            );
+        assert_eq!(
+            selection.source(),
+            fs::canonicalize(&installed_bundle).unwrap(),
+            "{why}: the installed bundle is selected instead"
+        );
+    }
+}
+
+#[test]
+fn a_marker_under_another_work_roots_bundle_pins_is_refused() {
+    let (_tmp, root) = scratch();
+    // A complete, trusted snapshot of some other work root.
+    let (_other_work, foreign) = parent_snapshot(&root.join("other"));
+    let work = work_root(&root);
+    private_pins(&work);
+    let installed = root.join("installed");
+    let installed_bundle = write_bundle(&installed, "A");
+    let selection = select_from(SelectInputs {
+        configured_home: Some(&installed),
+        ..nested_inputs(&root, &work, &foreign, "installed")
+    })
+    .unwrap();
+    assert!(!selection.inherited(), "{:?}", selection.notes());
+    assert!(
+        selection
+            .notes()
+            .iter()
+            .any(|n| n.contains(&foreign.display().to_string())),
+        "the note names the refused marker: {:?}",
+        selection.notes()
+    );
+    assert_eq!(
+        selection.source(),
+        fs::canonicalize(&installed_bundle).unwrap()
+    );
+}
+
+#[test]
+fn a_marker_whose_name_is_not_a_key_is_ignored() {
+    let (_tmp, root) = scratch();
+    let work = work_root(&root);
+    let pins = private_pins(&work);
+    let installed = root.join("installed");
+    write_bundle(&installed, "A");
+    for name in [
+        "0123456789ABCDEF01234567",
+        "0123456789abcdef0123456",
+        "0123456789abcdef012345678",
+        "g123456789abcdef01234567",
+        ".tmp-0f8f4a2e-7c55-4a8e-9a7e-2b1d7c3e9f10",
+        "bundle",
+    ] {
+        let marker = pins.join(name);
+        fs::create_dir(&marker).unwrap();
+        write_bundle(&marker, "X");
+        let selection = select_from(SelectInputs {
+            configured_home: Some(&installed),
+            ..nested_inputs(&root, &work, &marker, "installed")
+        })
+        .unwrap();
+        assert!(!selection.inherited(), "{name}");
+    }
+}
+
+#[test]
+fn the_old_runtime_bundle_layouts_are_no_longer_markers() {
+    let (_tmp, root) = scratch();
+    let work = work_root(&root);
+    let installed = root.join("installed");
+    write_bundle(&installed, "A");
+    for rel in ["runs/r1/runtime/bundle", "r/0123456789ab/bundle"] {
+        let marker = work.join(rel);
+        fs::create_dir_all(&marker).unwrap();
+        write_bundle(&marker, "old-layout");
+        let mut dir = marker.parent();
+        while let Some(d) = dir.filter(|d| *d != work) {
+            set_mode(d, 0o700);
+            dir = d.parent();
         }
+        let selection = select_from(SelectInputs {
+            configured_home: Some(&installed),
+            ..nested_inputs(&root, &work, &marker, "installed")
+        })
+        .unwrap();
+        assert!(!selection.inherited(), "{rel}");
+        assert!(!selection.notes().is_empty(), "{rel}");
+    }
+}
+
+#[test]
+fn is_snapshot_path_accepts_only_a_key_folder_in_this_work_roots_bundle_pins() {
+    let (_tmp, root) = scratch();
+    let work = work_root(&root);
+    let pins = private_pins(&work);
+    let other_pins = private_pins(&work_root(&root.join("other")));
+    let accepted = pins.join(KEY);
+    fs::create_dir_all(&accepted).unwrap();
+    assert!(is_snapshot_path(&accepted, &work));
+
+    let refused = [
+        pins.join("0123456789ABCDEF01234567"),
+        pins.join("0123456789abcdef0123456"),
+        pins.join("0123456789abcdef012345678"),
+        pins.join(KEY).join("amplifier-bundle"),
+        pins.join(".tmp-0f8f4a2e-7c55-4a8e-9a7e-2b1d7c3e9f10"),
+        pins.clone(),
+        other_pins.join(KEY),
+        work.join("runs/r/runtime/bundle"),
+        work.join("r/0123456789ab/bundle"),
+        work.join(KEY),
+    ];
+    for path in refused {
+        fs::create_dir_all(&path).unwrap();
+        assert!(!is_snapshot_path(&path, &work), "{}", path.display());
     }
 }
 
 #[test]
 fn inherited_marker_failing_trust_is_ignored() {
     let (_tmp, root) = scratch();
-    let marker = parent_snapshot(&root);
+    let (work, marker) = parent_snapshot(&root);
     set_mode(&marker.join("amplifier-bundle"), 0o777);
     let installed = root.join("installed");
     let installed_bundle = write_bundle(&installed, "A");
     let selection = select_from(SelectInputs {
-        amplihack_home: os(&marker),
-        run_bundle: os(&marker),
-        run_bundle_choice: Some(OsStr::new("installed")),
         configured_home: Some(&installed),
-        ..inputs(&root)
+        ..nested_inputs(&root, &work, &marker, "installed")
     })
     .unwrap();
     assert!(!selection.inherited());
@@ -686,35 +940,185 @@ fn inherited_marker_failing_trust_is_ignored() {
     );
 }
 
-// ------------------------------------------------------------------ pin
+#[test]
+fn an_unreadable_pin_record_is_noted_not_silently_dropped() {
+    let (_tmp, root) = scratch();
+    let (work, marker) = parent_snapshot(&root);
+    let select = || select_from(nested_inputs(&root, &work, &marker, "installed")).unwrap();
+    let missing = select();
+    assert!(missing.inherited());
+    assert_eq!(missing.version(), "unknown");
+    let note = missing.notes().join("\n");
+    assert!(note.contains("pin.json"), "{note}");
 
-fn installed_selection(root: &Path) -> (PathBuf, super::bundle_pin::Selection) {
-    let home = root.join("installed");
-    let bundle = write_bundle(&home, "installed-A");
-    let selection = select_from(SelectInputs {
-        amplihack_home: os(&home),
-        ..inputs(root)
-    })
-    .unwrap();
-    (bundle, selection)
+    fs::write(marker.join("pin.json"), "{not json").unwrap();
+    let malformed = select();
+    assert!(malformed.inherited());
+    assert!(
+        malformed.notes().iter().any(|n| n.contains("pin record")),
+        "{:?}",
+        malformed.notes()
+    );
 }
 
 #[test]
-fn pin_copies_into_runtime_bundle_with_explicit_modes() {
+fn a_nested_run_takes_a_shared_lease_and_never_copies_or_removes() {
+    let (_tmp, root) = scratch();
+    let installed = root.join("installed");
+    let source = write_bundle(&installed, "installed-A");
+    fs::write(installed.join(".installed-by"), "version=1.2.151\n").unwrap();
+    let work = work_root(&root);
+    let outer = pin(&select_installed(&root, &installed), &work, false).unwrap();
+    let home = outer.home().to_path_buf();
+
+    let selection = select_from(nested_inputs(&root, &work, &home, "installed")).unwrap();
+    assert!(selection.inherited(), "{:?}", selection.notes());
+    let before = pin_entries(&work);
+    let nested = pin(&selection, &work, false).unwrap();
+    assert_eq!(nested.home(), home);
+    assert_eq!(pin_entries(&work), before, "no second copy, no new file");
+    let record = nested.record();
+    assert!(record.inherited);
+    assert_eq!(record.choice, "installed");
+    assert_eq!(record.version, "1.2.151", "taken from pin.json");
+    assert_eq!(
+        Path::new(&record.source),
+        fs::canonicalize(&source).unwrap(),
+        "taken from pin.json"
+    );
+
+    // The outer run ends first: the nested lease keeps the snapshot.
+    drop(outer);
+    assert!(home.join("amplifier-bundle/recipes/probe.yaml").exists());
+    assert!(held(&lease_file(&home)));
+
+    // A nested lease never removes the snapshot, even as its last user.
+    drop(nested);
+    assert!(home.join("amplifier-bundle/recipes/probe.yaml").exists());
+    assert!(!held(&lease_file(&home)));
+
+    // The next launch of the same bundle reuses it, and removes it at its end.
+    let later = pin(&select_installed(&root, &installed), &work, false).unwrap();
+    assert_eq!(later.home(), home);
+    drop(later);
+    assert!(!exists_no_follow(&home));
+}
+
+#[test]
+fn a_nested_run_without_a_lease_file_is_refused_with_e13() {
+    let (_tmp, root) = scratch();
+    let (work, marker) = parent_snapshot(&root);
+    let lease = lease_file(&marker);
+    fs::remove_file(&lease).unwrap();
+    let selection = select_from(nested_inputs(&root, &work, &marker, "installed")).unwrap();
+    assert!(selection.inherited());
+    let text = err_text(pin(&selection, &work, false));
+    assert!(
+        text.contains(&format!(
+            "inherited bundle snapshot {} has no lease file {}; \
+             the run that pinned it has ended",
+            marker.display(),
+            lease.display()
+        )),
+        "{text}"
+    );
+    assert!(
+        !exists_no_follow(&lease),
+        "a nested run never creates the lease file"
+    );
+    assert!(marker.join("amplifier-bundle/recipes/probe.yaml").exists());
+}
+
+// ------------------------------------------------- nested in auto-drive
+
+/// An auto-drive invocation copy of `snapshot`, as `LaunchBundle::prepare`
+/// lays it out: a private folder with `amplifier-bundle` and a source record.
+fn launch_copy(root: &Path, name: &str, source: &Path) -> PathBuf {
+    let launch = root.join(name);
+    fs::create_dir_all(&launch).unwrap();
+    set_mode(&launch, 0o700);
+    write_bundle(&launch, "launch-copy");
+    fs::write(
+        launch.join(crate::commands::orch::autodrive::trusted::LAUNCH_SOURCE_FILE),
+        fs::canonicalize(source).unwrap().to_str().unwrap(),
+    )
+    .unwrap();
+    launch
+}
+
+#[test]
+fn a_run_nested_in_an_auto_drive_step_reuses_the_outer_snapshot() {
+    let (_tmp, root) = scratch();
+    let (work, marker) = parent_snapshot(&root);
+    let launch = launch_copy(&root, "autodrive-invocation-a", &marker);
+    let installed = root.join("installed");
+    write_bundle(&installed, "A");
+    let selection = select_from(SelectInputs {
+        amplihack_home: os(&launch),
+        configured_home: Some(&installed),
+        ..nested_inputs(&root, &work, &marker, "checkout")
+    })
+    .unwrap();
+    assert!(selection.inherited(), "{:?}", selection.notes());
+    assert_eq!(selection.choice(), BundleChoice::Checkout);
+    assert_eq!(
+        selection.source(),
+        fs::canonicalize(marker.join("amplifier-bundle")).unwrap()
+    );
+    let before = pin_entries(&work);
+    let pinned = pin(&selection, &work, false).unwrap();
+    assert_eq!(pin_entries(&work), before, "no second copy");
+    assert_eq!(pinned.record().choice, "checkout");
+}
+
+#[test]
+fn a_launch_copy_of_another_bundle_does_not_vouch_for_the_marker() {
+    let (_tmp, root) = scratch();
+    let (work, marker) = parent_snapshot(&root);
+    let installed = root.join("installed");
+    write_bundle(&installed, "A");
+    let launch = launch_copy(&root, "autodrive-invocation-b", &installed);
+    let selection = select_from(SelectInputs {
+        amplihack_home: os(&launch),
+        configured_home: Some(&installed),
+        ..nested_inputs(&root, &work, &marker, "installed")
+    })
+    .unwrap();
+    assert!(!selection.inherited());
+    assert!(!selection.notes().is_empty());
+}
+
+// ------------------------------------------------------------------ pin
+
+#[test]
+fn pin_copies_into_a_content_keyed_folder_with_read_only_modes() {
     let (_tmp, root) = scratch();
     let (source, selection) = installed_selection(&root);
-    let runtime = root.join("runs/r/runtime");
-    fs::create_dir_all(&runtime).unwrap();
-    set_mode(&runtime, 0o700);
+    let work = work_root(&root);
 
-    let pinned = pin(&selection, &runtime, false).unwrap();
-    assert_eq!(pinned.home(), runtime.join("bundle"));
-    assert_eq!(pinned.bundle(), runtime.join("bundle/amplifier-bundle"));
+    let pinned = pin(&selection, &work, false).unwrap();
+    let home = pinned.home().to_path_buf();
+    let pins = pins_dir(&work);
+    assert_eq!(home.parent(), Some(pins.as_path()));
+    let key = home.file_name().unwrap().to_str().unwrap();
+    assert!(is_key(key), "{key}");
+    assert!(is_snapshot_path(&home, &work));
+    assert_eq!(pinned.bundle(), home.join("amplifier-bundle"));
     assert_eq!(pinned.source(), fs::canonicalize(&source).unwrap());
-    assert_eq!(mode_of(pinned.home()), 0o755);
-    assert_eq!(mode_of(pinned.bundle()), 0o755);
-    assert_eq!(mode_of(&pinned.bundle().join("tools/identity.sh")), 0o755);
-    assert_eq!(mode_of(&pinned.bundle().join("recipes/probe.yaml")), 0o644);
+
+    assert_eq!(mode_of(&work), 0o700, "the work root is not widened");
+    assert_eq!(mode_of(&pins), 0o700);
+    assert_eq!(mode_of(&home), 0o755);
+    assert_eq!(mode_of(pinned.bundle()), 0o555);
+    assert_eq!(mode_of(&pinned.bundle().join("recipes")), 0o555);
+    assert_eq!(mode_of(&pinned.bundle().join("tools/identity.sh")), 0o555);
+    assert_eq!(mode_of(&pinned.bundle().join("recipes/probe.yaml")), 0o444);
+    assert_eq!(mode_of(&home.join("pin.json")), 0o644);
+    let lease = lease_file(&home);
+    let lease_meta = fs::symlink_metadata(&lease).unwrap();
+    assert!(lease_meta.file_type().is_file());
+    assert_eq!(mode_of(&lease), 0o600);
+    assert!(held(&lease), "the run holds its lease");
     assert!(
         fs::read_to_string(pinned.bundle().join("tools/identity.sh"))
             .unwrap()
@@ -724,20 +1128,172 @@ fn pin_copies_into_runtime_bundle_with_explicit_modes() {
     let record = pinned.record();
     assert_eq!(record.choice, "installed");
     assert!(!record.inherited);
-    assert_eq!(
-        record.snapshot.as_deref(),
-        Some(runtime.join("bundle").to_str().unwrap())
-    );
+    assert_eq!(record.snapshot.as_deref(), Some(home.to_str().unwrap()));
     assert_eq!(record.source, pinned.source().to_str().unwrap());
+
+    let shared: BundleRecord =
+        serde_json::from_slice(&fs::read(home.join("pin.json")).unwrap()).unwrap();
+    assert_eq!(shared.source, record.source);
+    assert_eq!(shared.version, record.version);
+    assert_eq!(shared.choice, "installed");
+
+    let entries = pin_entries(&work);
+    assert!(
+        !entries.iter().any(|n| n.starts_with(".tmp-")),
+        "no copy in progress is left: {entries:?}"
+    );
+}
+
+#[test]
+fn the_same_contents_give_the_same_key_and_path() {
+    let (_tmp, root) = scratch();
+    let (_source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+
+    let first = pin(&selection, &work, false).unwrap();
+    let home = first.home().to_path_buf();
+    drop(first);
+    assert!(!exists_no_follow(&home), "removed by its last lease");
+
+    // A relaunch, as a resumed run does: same path, so the same runner
+    // arguments and recovery fingerprints (#1741).
+    let again = pin(
+        &select_installed(&root, &root.join("installed")),
+        &work,
+        false,
+    )
+    .unwrap();
+    assert_eq!(again.home(), home);
+    // A concurrent run of the same bundle shares the snapshot.
+    let concurrent = pin(&selection, &work, false).unwrap();
+    assert_eq!(concurrent.home(), home);
+    let keys: Vec<String> = pin_entries(&work)
+        .into_iter()
+        .filter(|n| is_key(n))
+        .collect();
+    assert_eq!(keys.len(), 1, "{keys:?}");
+}
+
+#[test]
+fn a_changed_file_gives_a_different_key() {
+    let (_tmp, root) = scratch();
+    let (source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let first = pin(&selection, &work, false).unwrap();
+    let before = first.home().to_path_buf();
+
+    fs::write(source.join("agents/core/builder.md"), "# changed\n").unwrap();
+    let second = pin(
+        &select_installed(&root, &root.join("installed")),
+        &work,
+        false,
+    )
+    .unwrap();
+    assert_ne!(second.home(), before);
+    assert!(
+        fs::read_to_string(first.bundle().join("agents/core/builder.md"))
+            .unwrap()
+            .contains("installed-A"),
+        "the first run keeps its own snapshot"
+    );
+    assert_eq!(
+        fs::read_to_string(second.bundle().join("agents/core/builder.md")).unwrap(),
+        "# changed\n"
+    );
+}
+
+#[test]
+fn an_added_file_gives_a_different_key() {
+    let (_tmp, root) = scratch();
+    let (source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let before = pin(&selection, &work, false).unwrap().home().to_path_buf();
+    fs::write(
+        source.join("recipes/extra.yaml"),
+        "name: extra\nsteps: []\n",
+    )
+    .unwrap();
+    set_mode(&source.join("recipes/extra.yaml"), 0o644);
+    let after = pin(
+        &select_installed(&root, &root.join("installed")),
+        &work,
+        false,
+    )
+    .unwrap();
+    assert_ne!(after.home(), before);
+}
+
+#[test]
+fn an_execute_bit_change_gives_a_different_key_but_a_write_bit_change_does_not() {
+    let (_tmp, root) = scratch();
+    let (source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let base = pin(&selection, &work, false).unwrap().home().to_path_buf();
+
+    // The copy normalises non-executable files to 0644, so a read-only
+    // source file gives the same tree and the same key.
+    set_mode(&source.join("recipes/probe.yaml"), 0o444);
+    let same = pin(
+        &select_installed(&root, &root.join("installed")),
+        &work,
+        false,
+    )
+    .unwrap();
+    assert_eq!(same.home(), base);
+    drop(same);
+
+    set_mode(&source.join("tools/identity.sh"), 0o644);
+    let other = pin(
+        &select_installed(&root, &root.join("installed")),
+        &work,
+        false,
+    )
+    .unwrap();
+    assert_ne!(other.home(), base);
+}
+
+#[test]
+fn the_same_bytes_at_another_source_path_get_another_key() {
+    let (_tmp, root) = scratch();
+    let work = work_root(&root);
+    let a = root.join("a");
+    let b = root.join("b");
+    write_bundle(&a, "same");
+    write_bundle(&b, "same");
+    let pa = pin(&select_installed(&root, &a), &work, false).unwrap();
+    let pb = pin(&select_installed(&root, &b), &work, false).unwrap();
+    assert_ne!(pa.home(), pb.home());
+}
+
+#[test]
+fn installed_and_checkout_choices_never_share_a_snapshot() {
+    let (_tmp, root) = scratch();
+    let work = work_root(&root);
+    let installed = root.join("installed");
+    write_bundle(&installed, "same");
+    let checkout = root.join("checkout");
+    write_checkout(&checkout, "same");
+    let pi = pin(&select_installed(&checkout, &installed), &work, false).unwrap();
+    let pc = pin(
+        &select_from(SelectInputs {
+            choice: Some(BundleChoice::Checkout),
+            ..inputs(&checkout)
+        })
+        .unwrap(),
+        &work,
+        false,
+    )
+    .unwrap();
+    assert_ne!(pi.home(), pc.home());
+    assert_eq!(pc.record().choice, "checkout");
 }
 
 #[test]
 fn the_snapshot_survives_an_upgrade_of_the_source() {
     let (_tmp, root) = scratch();
     let (source, selection) = installed_selection(&root);
-    let runtime = root.join("runtime");
-    fs::create_dir_all(&runtime).unwrap();
-    let pinned = pin(&selection, &runtime, false).unwrap();
+    let work = work_root(&root);
+    let pinned = pin(&selection, &work, false).unwrap();
 
     // Replace the installed bundle the way an upgrade does (rename over).
     let staged = root.join("staged");
@@ -753,66 +1309,494 @@ fn the_snapshot_survives_an_upgrade_of_the_source() {
 fn a_dry_run_checks_every_entry_and_copies_nothing() {
     let (_tmp, root) = scratch();
     let (_source, selection) = installed_selection(&root);
-    let runtime = root.join("runtime");
-    fs::create_dir_all(&runtime).unwrap();
-    let pinned = pin(&selection, &runtime, true).unwrap();
-    assert!(!runtime.join("bundle").exists());
+    let work = work_root(&root);
+    let pinned = pin(&selection, &work, true).unwrap();
+    assert!(!exists_no_follow(&pins_dir(&work)));
     assert_eq!(pinned.bundle(), selection.source());
     assert_eq!(pinned.record().snapshot, None);
 }
 
+// --------------------------------------------------------- lease and cleanup
+
 #[test]
-fn an_inherited_selection_pins_the_parent_snapshot_without_copying() {
+fn the_last_lease_removes_the_snapshot_and_its_lease_file() {
     let (_tmp, root) = scratch();
-    let marker = parent_snapshot(&root);
-    let selection = select_from(SelectInputs {
-        amplihack_home: os(&marker),
-        run_bundle: os(&marker),
-        run_bundle_choice: Some(OsStr::new("installed")),
-        ..inputs(&root)
-    })
-    .unwrap();
-    let runtime = root.join("child-run/runtime");
-    fs::create_dir_all(&runtime).unwrap();
-    let pinned = pin(&selection, &runtime, false).unwrap();
-    assert_eq!(pinned.home(), fs::canonicalize(&marker).unwrap());
-    assert!(!runtime.join("bundle").exists(), "no second copy");
-    assert!(pinned.record().inherited);
+    let (_source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let pinned = pin(&selection, &work, false).unwrap();
+    let home = pinned.home().to_path_buf();
+    drop(pinned);
+    assert!(!exists_no_follow(&home));
+    assert!(!exists_no_follow(&lease_file(&home)));
+    let left: Vec<String> = pin_entries(&work)
+        .into_iter()
+        .filter(|n| n != ".lock")
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
 }
 
 #[test]
-fn the_runtime_dir_is_not_widened() {
+fn a_second_lease_keeps_the_snapshot_until_it_ends() {
     let (_tmp, root) = scratch();
     let (_source, selection) = installed_selection(&root);
-    let runtime = root.join("runtime");
-    fs::create_dir_all(&runtime).unwrap();
-    set_mode(&runtime, 0o700);
-    pin(&selection, &runtime, false).unwrap();
-    assert_eq!(mode_of(&runtime), 0o700);
+    let work = work_root(&root);
+    let first = pin(&selection, &work, false).unwrap();
+    let second = pin(&selection, &work, false).unwrap();
+    let home = first.home().to_path_buf();
+    assert_eq!(second.home(), home);
+
+    drop(first);
+    assert!(home.join("amplifier-bundle/tools/identity.sh").exists());
+    assert!(
+        held(&lease_file(&home)),
+        "the second run still holds its lease"
+    );
+
+    drop(second);
+    assert!(!exists_no_follow(&home));
+    assert!(!exists_no_follow(&lease_file(&home)));
+}
+
+/// Pins, records the home, then fails the way a later step's `?` does.
+fn pin_then_fail(
+    selection: &super::bundle_pin::Selection,
+    work: &Path,
+    home: &mut Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let pinned = pin(selection, work, false)?;
+    *home = Some(pinned.home().to_path_buf());
+    std::fs::read(work.join("no-such-file"))?;
+    unreachable!("the read above fails");
+}
+
+#[test]
+fn the_lease_is_released_on_an_early_return() {
+    let (_tmp, root) = scratch();
+    let (_source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let mut home = None;
+    assert!(pin_then_fail(&selection, &work, &mut home).is_err());
+    let home = home.expect("pinned before the failure");
+    assert!(!exists_no_follow(&home));
+    assert!(!exists_no_follow(&lease_file(&home)));
+}
+
+#[test]
+fn the_lease_is_released_on_panic_unwind() {
+    let (_tmp, root) = scratch();
+    let (_source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let mut home = None;
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let pinned = pin(&selection, &work, false).unwrap();
+        home = Some(pinned.home().to_path_buf());
+        panic!("a step panicked while the bundle was pinned");
+    }));
+    assert!(outcome.is_err());
+    let home = home.expect("pinned before the panic");
+    assert!(!exists_no_follow(&home));
+    assert!(!exists_no_follow(&lease_file(&home)));
+}
+
+// ------------------------------------------------------ leftovers and sweep
+
+#[test]
+fn a_stale_copy_in_progress_is_removed_and_unknown_names_are_left() {
+    let (_tmp, root) = scratch();
+    let (_source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let pins = private_pins(&work);
+    let stale = pins.join(format!(".tmp-{}", uuid::Uuid::new_v4().hyphenated()));
+    fs::create_dir_all(stale.join("amplifier-bundle/recipes")).unwrap();
+    fs::write(stale.join("amplifier-bundle/recipes/half.yaml"), "x").unwrap();
+    set_mode(&stale.join("amplifier-bundle/recipes"), 0o555);
+    set_mode(&stale.join("amplifier-bundle"), 0o555);
+    let unknown = [".tmp-not-a-uuid", "ABCDEF0123456789ABCDEF01", "notes.txt"];
+    for name in unknown {
+        if name.ends_with(".txt") {
+            fs::write(pins.join(name), "keep").unwrap();
+        } else {
+            fs::create_dir(pins.join(name)).unwrap();
+        }
+    }
+
+    let _pinned = pin(&selection, &work, false).unwrap();
+    assert!(!exists_no_follow(&stale));
+    for name in unknown {
+        assert!(exists_no_follow(&pins.join(name)), "{name} is left alone");
+    }
+}
+
+/// A hand-built leftover snapshot `<pins>/<key>` with a read-only tree.
+fn leftover(pins: &Path, key: &str) -> PathBuf {
+    let home = pins.join(key);
+    fs::create_dir(&home).unwrap();
+    let bundle = write_bundle(&home, "leftover");
+    for dir in ["recipes", "agents/core", "agents", "tools", ""] {
+        set_mode(&bundle.join(dir), 0o555);
+    }
+    home
+}
+
+#[test]
+fn an_unused_leftover_snapshot_is_swept() {
+    let (_tmp, root) = scratch();
+    let (_source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let pins = private_pins(&work);
+    // Left by a killed run: no lease file.
+    let without_lease = leftover(&pins, KEY);
+    // Left by a killed run: a lease file nobody holds.
+    let with_lease = leftover(&pins, KEY2);
+    fs::write(lease_file(&with_lease), "").unwrap();
+    // A lone lease file whose folder is gone.
+    let lone = pins.join("aaaaaaaaaaaaaaaaaaaaaaaa.use");
+    fs::write(&lone, "").unwrap();
+
+    let pinned = pin(&selection, &work, false).unwrap();
+    for gone in [&without_lease, &with_lease, &lease_file(&with_lease), &lone] {
+        assert!(!exists_no_follow(gone), "{} is swept", gone.display());
+    }
+    assert!(pinned.bundle().join("tools/identity.sh").exists());
+}
+
+#[test]
+fn a_leftover_snapshot_in_use_is_left_alone() {
+    let (_tmp, root) = scratch();
+    let (_source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let pins = private_pins(&work);
+    let busy = leftover(&pins, KEY);
+    fs::write(lease_file(&busy), "").unwrap();
+    let busy_lease = fs::File::open(lease_file(&busy)).unwrap();
+    FileExt::lock_shared(&busy_lease).unwrap();
+    let lone = pins.join("bbbbbbbbbbbbbbbbbbbbbbbb.use");
+    fs::write(&lone, "").unwrap();
+    let lone_lease = fs::File::open(&lone).unwrap();
+    FileExt::lock_shared(&lone_lease).unwrap();
+
+    let _pinned = pin(&selection, &work, false).unwrap();
+    assert!(busy.join("amplifier-bundle/tools/identity.sh").exists());
+    assert!(exists_no_follow(&lease_file(&busy)));
+    assert!(exists_no_follow(&lone));
+    drop((busy_lease, lone_lease));
+}
+
+#[test]
+fn a_symlink_planted_in_bundle_pins_is_unlinked_and_its_target_left() {
+    let (_tmp, root) = scratch();
+    let (_source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let pins = private_pins(&work);
+    let outside = root.join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("keep"), "keep").unwrap();
+    let planted = [
+        (pins.join(KEY), outside.clone()),
+        (
+            pins.join(format!(".tmp-{}", uuid::Uuid::new_v4().hyphenated())),
+            outside.clone(),
+        ),
+        (pins.join(format!("{KEY2}.use")), outside.join("keep")),
+    ];
+    for (link, target) in &planted {
+        symlink(target, link).unwrap();
+    }
+
+    let _pinned = pin(&selection, &work, false).unwrap();
+    for (link, _) in &planted {
+        assert!(!exists_no_follow(link), "{} is unlinked", link.display());
+    }
+    assert_eq!(fs::read_to_string(outside.join("keep")).unwrap(), "keep");
+    assert_eq!(mode_of(&outside), 0o755);
+}
+
+#[test]
+fn removing_a_snapshot_never_changes_modes_through_a_symlink() {
+    let (_tmp, root) = scratch();
+    let (_source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let pins = private_pins(&work);
+    let outside = root.join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("keep"), "keep").unwrap();
+    set_mode(&outside, 0o555);
+    let home = pins.join(KEY);
+    fs::create_dir(&home).unwrap();
+    let bundle = write_bundle(&home, "leftover");
+    symlink(&outside, bundle.join("escape")).unwrap();
+    set_mode(&bundle, 0o555);
+
+    let _pinned = pin(&selection, &work, false).unwrap();
+    assert!(!exists_no_follow(&home), "the unused leftover is swept");
+    assert_eq!(mode_of(&outside), 0o555, "the link target keeps its mode");
+    assert_eq!(fs::read_to_string(outside.join("keep")).unwrap(), "keep");
+    set_mode(&outside, 0o755);
+}
+
+// ------------------------------------------------- reuse and replacement
+
+#[test]
+fn an_unused_snapshot_whose_files_changed_is_replaced() {
+    let (_tmp, root) = scratch();
+    let (_source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let first = pin(&selection, &work, false).unwrap();
+    let home = first.home().to_path_buf();
+    // Keep the folder as a killed run would leave it, then change a file.
+    let kept = root.join("kept");
+    fs::rename(&home, &kept).unwrap();
+    drop(first);
+    tamper(
+        &kept.join("amplifier-bundle/tools/identity.sh"),
+        "#!/bin/sh\necho tampered\n",
+    );
+    fs::rename(&kept, &home).unwrap();
+
+    let second = pin(&selection, &work, false).unwrap();
+    assert_eq!(second.home(), home, "same key");
+    let tool = fs::read_to_string(second.bundle().join("tools/identity.sh")).unwrap();
+    assert!(
+        tool.contains("installed-A"),
+        "replaced from the source: {tool}"
+    );
+    assert_eq!(mode_of(&second.bundle().join("tools/identity.sh")), 0o555);
+}
+
+#[test]
+fn a_snapshot_in_use_whose_files_changed_stops_the_launch_with_e11() {
+    let (_tmp, root) = scratch();
+    let (source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let first = pin(&selection, &work, false).unwrap();
+    let home = first.home().to_path_buf();
+    let tool = home.join("amplifier-bundle/tools/identity.sh");
+    tamper(&tool, "#!/bin/sh\necho tampered\n");
+
+    let text = err_text(pin(&selection, &work, false));
+    assert!(
+        text.contains(&format!(
+            "bundle snapshot {} is in use by another run and its contents differ from {}; \
+             wait for that run to end",
+            home.display(),
+            fs::canonicalize(&source).unwrap().display()
+        )),
+        "{text}"
+    );
+    assert!(
+        fs::read_to_string(&tool).unwrap().contains("tampered"),
+        "left in place"
+    );
+    assert!(held(&lease_file(&home)), "the first run keeps its lease");
+    let entries = pin_entries(&work);
+    assert!(
+        !entries.iter().any(|n| n.starts_with(".tmp-")),
+        "the refused copy is removed: {entries:?}"
+    );
+    drop(first);
+}
+
+#[test]
+fn a_snapshot_with_an_extra_file_is_not_reused() {
+    let (_tmp, root) = scratch();
+    let (_source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let first = pin(&selection, &work, false).unwrap();
+    let home = first.home().to_path_buf();
+    let kept = root.join("kept");
+    fs::rename(&home, &kept).unwrap();
+    drop(first);
+    let recipes = kept.join("amplifier-bundle/recipes");
+    set_mode(&recipes, 0o755);
+    fs::write(recipes.join("planted.yaml"), "name: planted\nsteps: []\n").unwrap();
+    set_mode(&recipes, 0o555);
+    fs::rename(&kept, &home).unwrap();
+
+    let second = pin(&selection, &work, false).unwrap();
+    assert_eq!(second.home(), home);
+    assert!(!second.bundle().join("recipes/planted.yaml").exists());
+}
+
+// --------------------------------------------------------------- E12
+
+#[test]
+fn an_unsafe_bundle_pins_folder_is_refused_with_e12() {
+    let (_tmp, root) = scratch();
+    let (_source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let pins = pins_dir(&work);
+    fs::create_dir(&pins).unwrap();
+    set_mode(&pins, 0o777);
+    let text = err_text(pin(&selection, &work, false));
+    assert!(
+        text.contains(&format!(
+            "untrusted bundle snapshot directory {}",
+            pins.display()
+        )),
+        "{text}"
+    );
+    assert!(pin_entries(&work).is_empty(), "nothing is written");
+    set_mode(&pins, 0o700);
+    fs::remove_dir(&pins).unwrap();
+
+    // A bundle-pins that is a symlink to a private folder is refused too.
+    let target = root.join("elsewhere-pins");
+    fs::create_dir(&target).unwrap();
+    set_mode(&target, 0o700);
+    symlink(&target, &pins).unwrap();
+    assert!(pin(&selection, &work, false).is_err());
+    assert_eq!(
+        fs::read_dir(&target).unwrap().count(),
+        0,
+        "nothing written through the link"
+    );
+}
+
+#[test]
+fn a_lease_file_that_is_a_symlink_is_refused_and_its_target_untouched() {
+    let (_tmp, root) = scratch();
+    let (_source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let home = pin(&selection, &work, false).unwrap().home().to_path_buf();
+    let target = root.join("target-file");
+    fs::write(&target, "keep").unwrap();
+    set_mode(&target, 0o644);
+    symlink(&target, lease_file(&home)).unwrap();
+
+    assert!(pin(&selection, &work, false).is_err());
+    assert_eq!(fs::read_to_string(&target).unwrap(), "keep");
+    assert_eq!(mode_of(&target), 0o644);
+}
+
+#[test]
+fn a_lock_file_that_is_a_symlink_is_refused() {
+    let (_tmp, root) = scratch();
+    let (_source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let pins = private_pins(&work);
+    let target = root.join("target-lock");
+    fs::write(&target, "keep").unwrap();
+    symlink(&target, pins.join(".lock")).unwrap();
+    assert!(pin(&selection, &work, false).is_err());
+    assert_eq!(fs::read_to_string(&target).unwrap(), "keep");
+    assert!(!pin_entries(&work).iter().any(|n| is_key(n)), "no snapshot");
 }
 
 // ------------------------------------------------------------ state home
 
 #[test]
-fn a_state_home_under_the_run_runtime_folder_is_refused_with_e8() {
+fn a_state_home_under_the_runtime_folder_or_the_snapshots_is_refused_with_e8() {
     let (_tmp, root) = scratch();
     let (_source, selection) = installed_selection(&root);
-    let runtime = root.join("runs/r/runtime");
+    let work = work_root(&root);
+    let runtime = work.join("runs/r/runtime");
     fs::create_dir_all(&runtime).unwrap();
-    let pinned = pin(&selection, &runtime, false).unwrap();
+    let pinned = pin(&selection, &work, false).unwrap();
+    let pins = pins_dir(&work);
+    let rt = Some(runtime.as_path());
 
-    let inside = pinned.home().to_path_buf();
+    let in_runtime = runtime.join("x");
     assert_eq!(
-        err_text(check_state_home(&inside, &pinned)),
+        err_text(check_state_home(&in_runtime, &pinned, rt)),
         format!(
             "AMPLIHACK_STATE_HOME {} lies under a run's runtime/ folder",
-            inside.display()
+            in_runtime.display()
         )
     );
-    assert!(check_state_home(&runtime.join("x"), &pinned).is_err());
-    assert!(check_state_home(&root.join("state"), &pinned).is_ok());
-    // A sibling whose name only starts with `runtime` is not inside.
-    assert!(check_state_home(&root.join("runs/r/runtime-old"), &pinned).is_ok());
+    let in_snapshot = pinned.home().to_path_buf();
+    assert_eq!(
+        err_text(check_state_home(&in_snapshot, &pinned, rt)),
+        format!(
+            "AMPLIHACK_STATE_HOME {} lies under the bundle snapshots in {}",
+            in_snapshot.display(),
+            pins.display()
+        )
+    );
+    // Anywhere under bundle-pins, including another run's key.
+    for path in [
+        pins.clone(),
+        pins.join(KEY2).join("state"),
+        pins.join(".lock"),
+    ] {
+        assert!(
+            check_state_home(&path, &pinned, rt).is_err(),
+            "{}",
+            path.display()
+        );
+    }
+    for path in [
+        root.join("state"),
+        work.join("runs/r/runtime-old"),
+        work.join("bundle-pins-old"),
+        work.join("runs/r/state"),
+    ] {
+        assert!(
+            check_state_home(&path, &pinned, rt).is_ok(),
+            "{}",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn a_state_home_linked_into_the_runtime_folder_or_the_snapshots_is_refused() {
+    let (_tmp, root) = scratch();
+    let (_source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let runtime = work.join("runs/r/runtime");
+    fs::create_dir_all(&runtime).unwrap();
+    let pinned = pin(&selection, &work, false).unwrap();
+    let rt = Some(runtime.as_path());
+    for (name, target) in [
+        ("runtime-link", runtime.clone()),
+        ("pins-link", pins_dir(&work)),
+    ] {
+        let link = root.join(name);
+        symlink(&target, &link).unwrap();
+        assert!(check_state_home(&link, &pinned, rt).is_err(), "{name}");
+        // Not created yet: the nearest existing ancestor is resolved.
+        assert!(
+            check_state_home(&link.join("later/state"), &pinned, rt).is_err(),
+            "{name}"
+        );
+    }
+    assert!(check_state_home(&root.join("state/later"), &pinned, rt).is_ok());
+}
+
+#[test]
+fn a_dry_run_has_no_state_home_to_check() {
+    let (_tmp, root) = scratch();
+    let (_source, selection) = installed_selection(&root);
+    let work = work_root(&root);
+    let pinned = pin(&selection, &work, true).unwrap();
+    assert!(check_state_home(&work.join("bundle-pins/x"), &pinned, None).is_ok());
+}
+
+// ------------------------------------------------------------ work root
+
+#[test]
+fn a_run_workspace_names_its_work_root_and_a_dry_runtime_has_none() {
+    use crate::commands::cleanup::run_dir::{RunScope, RunWorkspace};
+    use crate::commands::cleanup::work_root::WorkRoot;
+    let (_tmp, root) = scratch();
+    let work = work_root(&root);
+    let (scope, guard) = RunScope::begin(
+        WorkRoot {
+            path: work.clone(),
+            explicit: true,
+        },
+        "probe",
+        &root,
+    )
+    .unwrap();
+    let workspace = RunWorkspace::Scoped {
+        scope: Box::new(scope),
+        guard,
+    };
+    assert_eq!(workspace.work_root(), Some(work.as_path()));
+    // The snapshot folder sits beside runs/, never under the run's runtime/.
+    assert!(!pins_dir(&work).starts_with(workspace.runtime_dir()));
+    assert!(RunWorkspace::dry_runtime().unwrap().work_root().is_none());
 }
 
 // ------------------------------------------------------------ log record
@@ -836,155 +1820,14 @@ fn bundle_record_serialises_optional_fields_only_when_present() {
     assert!(json.get("recipe_file").is_none(), "{json}");
 
     let full = BundleRecord {
-        snapshot: Some("/runs/r/runtime/bundle".into()),
+        snapshot: Some("/work/bundle-pins/0123456789abcdef01234567".into()),
         recipe_file: Some("/work/x.yaml".into()),
         ..record
     };
     let json = serde_json::to_value(&full).unwrap();
-    assert_eq!(json["snapshot"], "/runs/r/runtime/bundle");
-    assert_eq!(json["recipe_file"], "/work/x.yaml");
-}
-
-#[test]
-fn a_marker_in_the_short_runtime_layout_is_reused() {
-    // `run_dir::runtime_dir_for` uses `<work root>/r/<12 hex>` for long paths.
-    let (_tmp, root) = scratch();
-    let marker = root.join("work/r/0123456789ab/bundle");
-    fs::create_dir_all(&marker).unwrap();
-    write_bundle(&marker, "parent-A");
-    for dir in ["work", "work/r", "work/r/0123456789ab"] {
-        set_mode(&root.join(dir), 0o700);
-    }
-    let selection = select_from(SelectInputs {
-        amplihack_home: os(&marker),
-        run_bundle: os(&marker),
-        run_bundle_choice: Some(OsStr::new("installed")),
-        ..inputs(&root)
-    })
-    .unwrap();
-    assert!(selection.inherited(), "{:?}", selection.notes());
-
-    // A folder named like a short id but not under `r/` is not a snapshot.
-    let other = root.join("work/x/0123456789ab/bundle");
-    fs::create_dir_all(&other).unwrap();
-    write_bundle(&other, "X");
-    let installed = root.join("installed");
-    write_bundle(&installed, "A");
-    let selection = select_from(SelectInputs {
-        configured_home: Some(&installed),
-        amplihack_home: os(&other),
-        run_bundle: os(&other),
-        run_bundle_choice: Some(OsStr::new("installed")),
-        ..inputs(&root)
-    })
-    .unwrap();
-    assert!(!selection.inherited());
-}
-
-// ------------------------------------------------- nested in auto-drive
-
-/// An auto-drive invocation copy of `snapshot`, as `LaunchBundle::prepare`
-/// lays it out: a private folder with `amplifier-bundle` and a source record.
-fn launch_copy(root: &Path, name: &str, source: &Path) -> PathBuf {
-    let launch = root.join(name);
-    fs::create_dir_all(&launch).unwrap();
-    set_mode(&launch, 0o700);
-    write_bundle(&launch, "launch-copy");
-    fs::write(
-        launch.join(crate::commands::orch::autodrive::trusted::LAUNCH_SOURCE_FILE),
-        fs::canonicalize(source).unwrap().to_str().unwrap(),
-    )
-    .unwrap();
-    launch
-}
-
-#[test]
-fn a_run_nested_in_an_auto_drive_step_reuses_the_outer_snapshot() {
-    let (_tmp, root) = scratch();
-    let marker = parent_snapshot(&root);
-    let launch = launch_copy(&root, "autodrive-invocation-a", &marker);
-    let installed = root.join("installed");
-    write_bundle(&installed, "A");
-    let selection = select_from(SelectInputs {
-        amplihack_home: os(&launch),
-        run_bundle: os(&marker),
-        run_bundle_choice: Some(OsStr::new("checkout")),
-        configured_home: Some(&installed),
-        ..inputs(&root)
-    })
-    .unwrap();
-    assert!(selection.inherited(), "{:?}", selection.notes());
-    assert_eq!(selection.choice(), BundleChoice::Checkout);
     assert_eq!(
-        selection.source(),
-        fs::canonicalize(marker.join("amplifier-bundle")).unwrap()
+        json["snapshot"],
+        "/work/bundle-pins/0123456789abcdef01234567"
     );
-    let runtime = root.join("child-run/runtime");
-    fs::create_dir_all(&runtime).unwrap();
-    let pinned = pin(&selection, &runtime, false).unwrap();
-    assert!(!runtime.join("bundle").exists(), "no second copy");
-    assert_eq!(pinned.record().choice, "checkout");
-}
-
-#[test]
-fn a_launch_copy_of_another_bundle_does_not_vouch_for_the_marker() {
-    let (_tmp, root) = scratch();
-    let marker = parent_snapshot(&root);
-    let installed = root.join("installed");
-    write_bundle(&installed, "A");
-    let launch = launch_copy(&root, "autodrive-invocation-b", &installed);
-    let selection = select_from(SelectInputs {
-        amplihack_home: os(&launch),
-        run_bundle: os(&marker),
-        run_bundle_choice: Some(OsStr::new("installed")),
-        configured_home: Some(&installed),
-        ..inputs(&root)
-    })
-    .unwrap();
-    assert!(!selection.inherited());
-    assert!(!selection.notes().is_empty());
-}
-
-#[test]
-fn an_unreadable_pin_record_is_noted_not_silently_dropped() {
-    let (_tmp, root) = scratch();
-    let marker = parent_snapshot(&root);
-    let select = || {
-        select_from(SelectInputs {
-            amplihack_home: os(&marker),
-            run_bundle: os(&marker),
-            run_bundle_choice: Some(OsStr::new("installed")),
-            ..inputs(&root)
-        })
-        .unwrap()
-    };
-    let missing = select();
-    assert!(missing.inherited());
-    assert_eq!(missing.version(), "unknown");
-    let note = missing.notes().join("\n");
-    assert!(note.contains(".bundle-record.json"), "{note}");
-
-    fs::write(marker.join(".bundle-record.json"), "{not json").unwrap();
-    let malformed = select();
-    assert!(malformed.inherited());
-    assert!(
-        malformed.notes().iter().any(|n| n.contains("pin record")),
-        "{:?}",
-        malformed.notes()
-    );
-}
-
-#[test]
-fn a_state_home_linked_into_the_runtime_folder_is_refused() {
-    let (_tmp, root) = scratch();
-    let (_source, selection) = installed_selection(&root);
-    let runtime = root.join("runs/r/runtime");
-    fs::create_dir_all(&runtime).unwrap();
-    let pinned = pin(&selection, &runtime, false).unwrap();
-    let link = root.join("state-link");
-    symlink(&runtime, &link).unwrap();
-    assert!(check_state_home(&link, &pinned).is_err());
-    // Not created yet: the nearest existing ancestor is resolved.
-    assert!(check_state_home(&link.join("later/state"), &pinned).is_err());
-    assert!(check_state_home(&root.join("state/later"), &pinned).is_ok());
+    assert_eq!(json["recipe_file"], "/work/x.yaml");
 }

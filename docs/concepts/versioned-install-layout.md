@@ -215,8 +215,8 @@ This responsibility is independent of merge enforcement. There is no merge shim 
 Runner-owned authorization records and evidence snapshots preserve workflow
 state; the finalization agent observes hosting-service state.
 
-Every `amplihack recipe run` now copies its selected bundle into its own
-workspace at start and points its steps at the copy, so a release switch
+Every `amplihack recipe run` now pins a checked, read-only copy of its
+selected bundle at start and points its steps at the copy, so a release switch
 does not reach a running recipe or its nested runs either. See
 [One bundle per recipe run](./one-bundle-per-recipe-run.md). A process
 started outside a recipe run that re-reads the public bundle link can still
