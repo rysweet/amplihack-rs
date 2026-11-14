@@ -56,6 +56,8 @@ cycles, continuing until clean. The description template's three cycle rows
 apply to that standalone audit; auto-drive records its actual accepted crusty
 rounds, reviewed head, verdict, and follow-up evidence instead of inventing
 cycles. See [all criterion interpretations](auto-drive-evidence.md#authority-and-criteria).
+The round finds the skill's files with the
+[merge-ready files resolver](autodrive-merge-ready-files.md).
 
 ## Responsibilities
 
@@ -551,3 +553,4 @@ runtime compatibility.
 - [Crusty completion contract](autodrive-crusty-completion.md)
 - [Git repository environment helper](git-repo-env-helper.md)
 - [Expected checks at the head](autodrive-expected-checks.md)
+- [Merge-ready files resolver](autodrive-merge-ready-files.md)

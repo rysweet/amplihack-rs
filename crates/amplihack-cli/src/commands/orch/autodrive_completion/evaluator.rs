@@ -96,6 +96,7 @@ pub fn run(
         (
             "loop_findings_current",
             String::from_utf8(secure_fs::read(
+                secure_fs::Scope::of(&state.state_dir),
                 &state.record.with_extension("json.findings"),
                 evidence::LIMIT,
             )?)?,
@@ -161,14 +162,19 @@ pub fn run(
             cmd.arg("-c").arg(format!("{key}={value}"));
         } else {
             let path = context_dir.path().join(&key);
-            secure_fs::output(&path)?.write_all(value.as_bytes())?;
+            secure_fs::output(secure_fs::Scope::of(&state.state_dir), &path)?
+                .write_all(value.as_bytes())?;
             cmd.arg("--context-from-file")
                 .arg(format!("{key}={}", path.display()));
         }
     }
-    let file = secure_fs::output(&health_log)?;
+    let file = secure_fs::output(secure_fs::Scope::of(&state.state_dir), &health_log)?;
     let status = cmd.stdout(file.try_clone()?).stderr(file).status()?;
-    let log = secure_fs::read(&health_log, evidence::LIMIT)?;
+    let log = secure_fs::read(
+        secure_fs::Scope::of(&state.state_dir),
+        &health_log,
+        evidence::LIMIT,
+    )?;
     let log = String::from_utf8_lossy(&log);
     eprint!("{log}");
     ensure!(
