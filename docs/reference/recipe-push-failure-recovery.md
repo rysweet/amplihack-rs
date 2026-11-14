@@ -9,8 +9,9 @@ owner: workflow-team
 
 When step-15 or step-18c of `default-workflow` fails to push, the run no
 longer ends at once. A recovery agent works out whether the change or the
-environment caused the failure. For an environment cause it makes one push
-from a clean environment. A bash gate then checks the result itself. The run
+environment caused the failure. When the remote branch has commits the
+local branch lacks, the agent merges them first. For an environment cause it
+makes one plain push from a clean environment. A bash gate then checks the result itself. The run
 ends only when the cause is in the change, or when the gate cannot confirm a
 fast-forward push of HEAD (issue #2471, first slice of #2472).
 
@@ -41,7 +42,7 @@ a push step has failed for any reason.
 - [Writing back `commit_result`](#writing-back-commit_result)
 - [Stale values from earlier steps or runs](#stale-values-from-earlier-steps-or-runs)
 - [Example run record](#example-run-record)
-- [Restoring a rewritten remote branch](#restoring-a-rewritten-remote-branch)
+- [Repairing a rewritten remote branch](#repairing-a-rewritten-remote-branch)
 - [Step budget](#step-budget)
 - [Security limits](#security-limits)
 - [Residual risks](#residual-risks)
@@ -90,7 +91,8 @@ push step (continue_on_error: true)
 <step>-push-recovery  (type: recipe → push-failure-recovery)
    ├─ push_recovery_snapshot bash: record HEAD, status, untracked paths,
    │                         remote branch commit, origin URL hashes
-   ├─ push_recovery          agent: judge cause, at most one clean push
+   ├─ push_recovery          agent: judge cause, merge origin/<branch> if it
+   │                         is ahead, at most one clean push
    ├─ push_recovery_result   bash gate: check independently, fail closed
    └─ push_recovery_commit   bash: write commit_result back (step-15 only)
    │ gate exit 0 ────────────────────────────► run continues
@@ -303,18 +305,21 @@ not start another workflow, recipe or orchestrator (the
    - **Upstream on another branch** (the #1762 refusal): an upstream is set
      and its branch name, without `origin/`, differs from
      `worktree_setup.branch_name`.
-   - **Diverged history** (`diverged-upstream`): after `git fetch origin`,
-     `git rev-list --count HEAD..@{u}` is not 0.
+   - **Remote ahead** (`diverged-upstream`, or a push rejected as not a
+     fast-forward): after `git fetch origin`,
+     `git rev-list --count HEAD..origin/<branch_name>` is not 0. The remote
+     branch holds commits HEAD lacks. The agent merges them (step 4).
 
-   If the upstream is on another branch, the history has diverged, HEAD is
-   detached, the checked-out branch is protected, or tracked changes are not
-   committed (the step's commit failed), the agent makes **no push** and
-   returns `CHANGE` with `push_result: "not-attempted"`. step-15 refuses these
-   cases on purpose, and a person has to decide what to do. A push to
+   If the upstream is on another branch, HEAD is detached, the checked-out
+   branch is protected, or tracked changes are not committed (the step's
+   commit failed), the agent makes **no merge and no push** and returns
+   `CHANGE` with `push_result: "not-attempted"`. step-15 refuses these cases
+   on purpose, and a person has to decide them. A push to
    `refs/heads/<branch_name>` would get round that refusal and could create a
    new remote branch.
-4. Otherwise makes **at most one** push, from a clean environment, with hooks
-   on:
+4. If the remote branch is ahead, merges it into HEAD. See
+   [Merging the remote branch](#merging-the-remote-branch).
+5. Makes **at most one** push, from a clean environment, with hooks on:
 
    ```bash
    env -u RECIPE_VAR_issue_number -u RECIPE_VAR_pr_number -u WORKFLOW_STARTED_AT \
@@ -324,10 +329,61 @@ not start another workflow, recipe or orchestrator (the
    There is one `-u` for each `RECIPE_VAR_*` and `WORKFLOW_*` name found in
    step 2. Sign-in variables are left alone: the clean push is not a way round
    a credential problem.
-5. Judges the cause (see [Causes](#causes-change-environment-none)) and prints
+6. Judges the cause (see [Causes](#causes-change-environment-none)) and prints
    one JSON object.
 
 There is no waiting, no timed retry and no second attempt.
+
+### Merging the remote branch
+
+When the remote branch has commits HEAD lacks, the agent fetches and merges
+that branch, with the same `env -u` list as the push and with prompts off:
+
+```bash
+env -u RECIPE_VAR_issue_number -u RECIPE_VAR_pr_number -u WORKFLOW_STARTED_AT \
+  GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git fetch origin
+env -u RECIPE_VAR_issue_number -u RECIPE_VAR_pr_number -u WORKFLOW_STARTED_AT \
+  GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never \
+  git merge --no-edit origin/feat/issue-2471-fix-amplihack-rs-issue
+```
+
+The ref merged is always `origin/<branch_name>`, where `<branch_name>` is
+the rendered `worktree_setup.branch_name`. It is never `@{u}`, because
+step-18c's branch may have no upstream. Hooks stay on.
+
+On a conflict the agent edits only the conflicted files, runs `git add` on
+only those files, and finishes the merge with the same prefix:
+
+```bash
+env -u RECIPE_VAR_issue_number -u RECIPE_VAR_pr_number -u WORKFLOW_STARTED_AT \
+  GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_EDITOR=true \
+  git merge --continue
+```
+
+`GIT_EDITOR=true` keeps git from opening an editor, which would wait for
+input that never comes. If the agent cannot resolve the conflict, it runs
+`git merge --abort` and returns `CHANGE` with `push_result: "not-attempted"`.
+The remote and HEAD are then unchanged and no `MERGE_HEAD` is left, so
+rule 9 passes and the run fails at a later rule. Which reason it reports
+depends on the state of the branch: usually `diverged-upstream` from rule 10
+when an upstream is set, or from rule 10b when none is set and origin still
+holds `remote_before`; otherwise `cause-in-change` from the agent's own
+`CHANGE`.
+
+The merge is subject to these limits:
+
+- no `-s ours`, `-X ours` or `-X theirs`: each would silently discard work a
+  collaborator has pushed;
+- no `--allow-unrelated-histories`;
+- no `--no-verify` on `merge`, `merge --continue` or `commit`;
+- no merge of any ref other than `origin/<branch_name>`;
+- the bans on credential files, sign-in variables, git config, remotes and
+  `core.hooksPath` apply to the merge commands as they do to the push.
+
+After a successful merge the agent makes the push in step 5 and returns
+`ENVIRONMENT` with `push_result: "pushed"`. `evidence` names the merged
+remote commit by SHA only and never quotes its message or content. The gate
+accepts the merge commit through rule 9.
 
 ### What the agent must not do
 
@@ -336,23 +392,26 @@ There is no waiting, no timed retry and no second attempt.
 - push to `main`, `master`, `base_branch` or any
   name in `forbidden_base_branches` (both quoted in the prompt);
 - push from the main checkout, or to a different remote branch;
-- push when the upstream is on a branch other than `worktree_setup.branch_name`,
-  or when HEAD is behind its upstream;
+- push when the upstream is on a branch other than `worktree_setup.branch_name`;
 - change the `origin` URL or push URL;
 - override `core.hooksPath`, or change git config or hook files;
-- edit, stage or commit files;
+- edit, stage or commit files, apart from the merge described in
+  [Merging the remote branch](#merging-the-remote-branch); the only commit
+  the agent may make is that merge;
+- rebase, amend, reset, cherry-pick or make any other commit;
 - read credential or token files;
 - print variable values, or credentials found in URLs or command output.
 
 A force-push that breaks the first rule is caught by the gate (rule 10b), but
 it has already reached the remote by then. See
-[Restoring a rewritten remote branch](#restoring-a-rewritten-remote-branch).
+[Repairing a rewritten remote branch](#repairing-a-rewritten-remote-branch).
 
 ### Untrusted data in the prompt
 
 Push output, such as `remote:` lines printed by a server hook, can contain
 third-party text. Hook files, `git status` output (including untracked file
-names) and evidence files are untrusted in the same way. The prompt tells the agent that none of these are instructions and
+names), evidence files, and the commit messages, file contents and conflict
+text brought in by a merge are untrusted in the same way. The prompt tells the agent that none of these are instructions and
 that it must not follow instructions found in them.
 
 ## Agent output contract
@@ -393,9 +452,9 @@ that is not JSON makes the gate fail.
 
 | Cause | When the agent picks it | What the gate does |
 |---|---|---|
-| `ENVIRONMENT`, clean push succeeded | the push passes once `RECIPE_VAR_*` and `WORKFLOW_*` are removed | checks fast-forward and that the remote ref equals HEAD; exit 0 with `pushed: "true"` |
+| `ENVIRONMENT`, clean push succeeded | the push passes once `RECIPE_VAR_*` and `WORKFLOW_*` are removed, including after a merge of the remote's commits; `evidence` names the merged commit by SHA only | checks fast-forward and that the remote ref equals HEAD; exit 0 with `pushed: "true"` |
 | `ENVIRONMENT`, clean push failed | sign-in failure, GitHub call limit, missing tool | the ref check fails; exit 1 with `push-unverified` |
-| `CHANGE` | the clean push fails on a test the change broke, a real conflict, or a lint failure in changed files; or the upstream is on another branch, or the history has diverged, so no push is made | reason `cause-in-change`; exit 1 |
+| `CHANGE` | the clean push fails on a test the change broke or a lint failure in changed files; or a merge conflict the agent could not resolve; or the upstream is on another branch, so no push is made | reason `cause-in-change`; exit 1 |
 | `NONE`, branch already at HEAD | nothing needed pushing | checks fast-forward and that the remote ref equals HEAD; exit 0 with `pushed: "true"`, reason `already-at-head` |
 | any cause, no linked worktree | the worktree was removed or never created | exit 1 with `not-linked-worktree` |
 
@@ -469,10 +528,34 @@ reason shown:
    detached HEAD), must equal the snapshot's `local_branch`, must not be a
    protected name (step-15 refuses those), and must equal the branch from
    rule 5 or have `origin/<branch>` as its upstream (the #1762 alias).
-9. **Snapshot** (`worktree-changed`, `uncommitted-changes`). HEAD and
+9. **Snapshot** (`worktree-changed`, `uncommitted-changes`). HEAD must equal
+   the snapshot's `head` (SH), or differ from it only by a merge of the
+   remote branch. When HEAD differs from SH, the gate passes this check only
+   when all of the following hold, where RB is the snapshot's
+   `remote_before`:
+   - RB is not `absent` (tested before any git call that uses RB);
+   - `git merge-base --is-ancestor SH HEAD` succeeds;
+   - `git merge-base --is-ancestor RB HEAD` succeeds;
+   - `EXTRA=$(git rev-list --no-merges HEAD ^SH ^RB) && [ -z "$EXTRA" ]`
+     succeeds, so HEAD adds no commit other than merges. Written as an
+     assignment followed by a test, a failed `rev-list` fails closed.
+
+   Otherwise the gate fails with `worktree-changed` and
+   `HEAD moved while the agent ran, other than by merging origin/<branch>`.
+   A `MERGE_HEAD` left in the worktree fails with `worktree-changed` and
+   `a merge was left unfinished`, so a later commit cannot silently become a
+   merge.
+
+   RB comes from the snapshot, never from the remote as read after the push.
+   After a correct merge and push the remote equals HEAD, so a comparison
+   with it would let a plain agent commit through. If someone pushed again
+   between the snapshot and the agent's merge, the merge brings in non-merge
+   commits outside SH and RB, and the gate fails closed with
+   `worktree-changed`. Nothing is lost; the next run merges again.
+
    `git status --porcelain --untracked-files=no` must equal the snapshot's
-   `head` and `status`, so an agent that edits a tracked file, commits or
-   switches branch is caught. Then the snapshot's `tracked_dirty` must be
+   `status`, so an agent that edits a tracked file or switches branch is
+   caught. Then the snapshot's `tracked_dirty` must be
    `"false"`. Every push step stages all tracked changes before it commits,
    so a tracked change left over means its commit did not happen
    (`uncommitted-changes`). This runs before rule 11, so `NONE` and
@@ -500,9 +583,11 @@ reason shown:
 10. **Ancestry** (`diverged-upstream`). If an upstream is set, the gate runs
     `git -c core.hooksPath=/dev/null fetch origin`, then
     `git rev-list --count HEAD..@{u}` must be 0. This matches step-15's #978
-    refusal. If either command fails, the gate fails with `push-unverified`
-    and includes git's own error message, flattened, redacted and cut like
-    every other `fail` detail.
+    refusal. After a merge and push it is 0; a failure here means the branch
+    is still behind its upstream after the agent ran, because the agent did
+    not merge or aborted the merge. If either command fails, the gate fails
+    with `push-unverified` and includes git's own error message, flattened,
+    redacted and cut like every other `fail` detail.
 10b. **Fast-forward** (`remote-history-rewritten`, `push-unverified`). When
     `remote_before` is not `absent`, the gate runs
     `git merge-base --is-ancestor <remote_before> HEAD`:
@@ -511,11 +596,11 @@ reason shown:
       held a commit that HEAD does not contain. The gate then reads the
       branch on origin with `git ls-remote`. If origin still holds
       `remote_before`, nothing was rewritten: the branch had diverged before
-      the agent ran, which rule 10 misses when no upstream is set, and the
-      gate fails with `diverged-upstream`. Otherwise it fails with
-      `remote-history-rewritten`. The message names both commits and gives
-      the restore command (see
-      [Restoring a rewritten remote branch](#restoring-a-rewritten-remote-branch));
+      the agent ran and is still behind after it, which rule 10 misses when
+      no upstream is set, and the gate fails with `diverged-upstream`.
+      Otherwise it fails with `remote-history-rewritten`. The message names
+      both commits and gives the repair commands (see
+      [Repairing a rewritten remote branch](#repairing-a-rewritten-remote-branch));
     - any other exit code, for example because `remote_before` is not in the
       local object store: fail with `push-unverified`.
 
@@ -549,15 +634,18 @@ When `SAFE` is set, a second line follows; see
 A rule 10b failure looks like this:
 
 ```text
-push-failure-recovery: remote-history-rewritten: step-15-commit-push (ENVIRONMENT): origin/feat/issue-2471-fix-amplihack-rs-issue was 9f2b6d4e8a0c2e4f6a8b0c2d4e6f8a0b2c4d6e8f before the agent ran (remote_before_source fetched), which is not an ancestor of HEAD 3c1e9a0b5d7f2e4a6c8b0d1f3e5a7c9b1d3f5e7a; the remote history was rewritten and the gate undid nothing. To restore: git push --force-with-lease=refs/heads/feat/issue-2471-fix-amplihack-rs-issue:3c1e9a0b5d7f2e4a6c8b0d1f3e5a7c9b1d3f5e7a origin 9f2b6d4e8a0c2e4f6a8b0c2d4e6f8a0b2c4d6e8f:refs/heads/feat/issue-2471-fix-amplihack-rs-issue
+push-failure-recovery: remote-history-rewritten: step-15-commit-push (ENVIRONMENT): origin/feat/issue-2471-fix-amplihack-rs-issue was 9f2b6d4e8a0c2e4f6a8b0c2d4e6f8a0b2c4d6e8f before the agent ran (remote_before_source fetched), which is not an ancestor of HEAD 3c1e9a0b5d7f2e4a6c8b0d1f3e5a7c9b1d3f5e7a; the remote history was rewritten and the gate undid nothing. To repair without rewriting history: git merge 9f2b6d4e8a0c2e4f6a8b0c2d4e6f8a0b2c4d6e8f then: git push origin HEAD:refs/heads/feat/issue-2471-fix-amplihack-rs-issue
 ```
 
-Each word of the restore command is quoted with `printf '%q'`, because git
-allows `$`, `;`, `` ` `` and `|` in branch names. A branch named
-`feat/a;b` appears as `refs/heads/feat/a\;b`. The command is printed only
-when it fits whole inside the 1,000-byte message limit and redaction leaves
-it unchanged. Otherwise the message ends with
-`To restore, push <remote_before> to the branch above with --force-with-lease expecting <HEAD>; the command is too long to print whole.`
+The repair is two commands separated by ` then: `. The separator is not
+shell syntax, and no word quoted with `printf '%q'` can contain it, so
+neither command can run the other when the line is read back by a shell.
+Each word is quoted with `printf '%q'`, because git allows `$`, `;`, `` ` ``
+and `|` in branch names. A branch named `feat/a;b` appears as
+`HEAD:refs/heads/feat/a\;b`. The commands are printed only when they fit
+whole inside the 1,000-byte message limit and redaction leaves them
+unchanged. Otherwise the message ends with
+`Merge <remote_before> into HEAD <HEAD>, then push with a plain fast-forward push: merge, never force; the command is too long to print whole.`
 
 ### Gate reasons
 
@@ -571,9 +659,9 @@ it unchanged. Otherwise the message ends with
 | `upstream-mismatch` | 1 | none | rule 6 |
 | `protected-branch` | 1 | none | rule 7 |
 | `unsafe-ref` | 1 | none | rules 8 and 8b: bad name, detached HEAD, protected local branch |
-| `worktree-changed` | 1 | none | rules 4, 8b, 9: the worktree differs from the snapshot |
+| `worktree-changed` | 1 | none | rules 4, 8b, 9: the worktree differs from the snapshot, HEAD moved other than by merging `origin/<branch>`, or a merge was left unfinished |
 | `uncommitted-changes` | 1 | none | rule 9: tracked changes left, so the step's commit failed |
-| `diverged-upstream` | 1 | none | rule 10, or rule 10b when no upstream is set and origin still holds `remote_before` |
+| `diverged-upstream` | 1 | none | the branch is still behind the remote after the agent ran: rule 10, or rule 10b when no upstream is set and origin still holds `remote_before` |
 | `remote-history-rewritten` | 1 | none | rule 10b: the remote branch's earlier commit is not an ancestor of HEAD |
 | `cause-in-change` | 1 | none | `CHANGE` |
 | `push-unverified` | 1 | none | the snapshot is missing or malformed, `worktree_setup_path.sh` is not in the bundle (rule 4), the origin URLs changed (rule 9b), the ancestry check could not run (rule 10b), or the ref check failed or could not run |
@@ -706,6 +794,18 @@ step-15-push-recovery    running push-failure-recovery
 step-16-create-draft-pr  running
 ```
 
+A run whose remote branch had a commit HEAD lacked, merged by the agent:
+
+```text
+step-15-commit-push      failed (continue_on_error)
+step-15-push-recovery    running push-failure-recovery
+  push_recovery_snapshot remote_before=9f2b6d4… remote_before_source=fetched
+  push_recovery          cause=ENVIRONMENT push_result=pushed (merged 9f2b6d4…)
+  push_recovery_result   pushed=true reason=recovered-environment
+  push_recovery_commit   commit_result written
+step-16-create-draft-pr  running
+```
+
 A run whose change broke a test ends like this:
 
 ```text
@@ -724,27 +824,35 @@ step-15-commit-push      failed (continue_on_error)
 step-15-push-recovery    running push-failure-recovery
   push_recovery_snapshot remote_before=9f2b6d4… remote_before_source=fetched
   push_recovery          cause=ENVIRONMENT push_result=pushed
-  push_recovery_result   push-failure-recovery: remote-history-rewritten: … To restore: git push --force-with-lease=…
+  push_recovery_result   push-failure-recovery: remote-history-rewritten: … To repair without rewriting history: git merge 9f2b6d4… then: git push origin HEAD:refs/heads/…
 run failed: step push_recovery_result exited 1
 ```
 
-## Restoring a rewritten remote branch
+## Repairing a rewritten remote branch
 
-The gate detects a force-push; it does not prevent one, and it never runs the
-restore itself. When it fails with `remote-history-rewritten`, its message
-gives the command that puts the remote branch back:
+The gate detects a force-push that has reached the remote; it does not
+prevent one, and it never undoes it. When it fails with
+`remote-history-rewritten`, its message gives the repair, which merges the
+lost commit back and pushes without rewriting history:
 
 ```bash
-git push --force-with-lease=refs/heads/feat/issue-2471-fix-amplihack-rs-issue:3c1e9a0b5d7f2e4a6c8b0d1f3e5a7c9b1d3f5e7a \
-  origin 9f2b6d4e8a0c2e4f6a8b0c2d4e6f8a0b2c4d6e8f:refs/heads/feat/issue-2471-fix-amplihack-rs-issue
+git merge 9f2b6d4e8a0c2e4f6a8b0c2d4e6f8a0b2c4d6e8f
+git push origin HEAD:refs/heads/feat/issue-2471-fix-amplihack-rs-issue
 ```
 
-The first commit is the HEAD the agent pushed; the second is
-`remote_before`. The lease makes the push fail, rather than overwrite, if
-anyone has pushed to the branch since. Run it from a clone that has
-`remote_before` in its object store, after checking that the commit is the
-one you want back. When `remote_before_source` was `tracking-ref`, confirm
-first that no one pushed to the branch between the last fetch and the run.
+The merged commit is `remote_before`. Run the commands in the task worktree,
+or in a clone whose HEAD is the commit the agent pushed and whose object
+store has `remote_before`. The merge puts the lost commit back into the
+branch's history; resolve any conflict as for any other merge. The push is
+then a plain fast-forward of the remote branch, which still points at the
+HEAD the agent pushed.
+
+If origin has moved again since the gate ran, the plain push is refused as
+not a fast-forward. Fetch, merge that tip too, and push again with a plain
+push. Never force-push. When `remote_before_source` was `tracking-ref`, a
+commit pushed between the last fetch and the run may also have been
+overwritten and is not named in the message; check the remote's reflog or
+ask the people who push to the branch.
 
 ## Step budget
 
@@ -787,7 +895,16 @@ budget; the next step added to either of them needs a split.
   steps do, so `continue_on_error` does not turn those refusals into a push.
 - No bash command contains a `{{...}}` placeholder.
 - The only push allowed is `HEAD:refs/heads/<branch>` to `origin`, with hooks
-  on.
+  on. The only commit allowed is a merge of `origin/<branch>`, with hooks on,
+  and rule 9 rejects any other new commit.
+- The merge commands run with `GIT_TERMINAL_PROMPT=0` and
+  `GCM_INTERACTIVE=never`, and `merge --continue` with `GIT_EDITOR=true`, so
+  none of them can wait for input.
+- Neither the prompt nor the gate offers a force-push as a remedy. The one
+  `+` refspec in the recipe is the snapshot's fetch,
+  `+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH`. It updates the
+  recipe's own local tracking ref, with hooks and prompts off, and changes
+  nothing on the remote.
 - Only variable names are collected, never values. Credential files are never
   read.
 - The clean environment removes only `RECIPE_VAR_*` and `WORKFLOW_*`. Sign-in
@@ -806,8 +923,22 @@ budget; the next step added to either of them needs a split.
   gate, so server-side branch protection is still the defence for protected
   branches.
 - A force-push by the agent has reached the remote by the time rule 10b
-  reports it. The recipe detects it and gives the restore command; preventing
-  it needs server-side branch protection on the task branch.
+  reports it. The recipe detects it and gives the merge-then-push repair;
+  preventing it needs server-side branch protection on the task branch.
+- If origin moves again after the gate prints the repair, the plain push is
+  refused as not a fast-forward, and the person merges that tip too.
+- Rule 9 proves that a merge added no plain commit. It does not inspect the
+  merge commit's own tree, so conflict edits, or content added in the merge
+  itself, are not checked by the gate. Pre-push tests, CI and review cover
+  them.
+- If the remote moves between the snapshot and the agent's merge, rule 9
+  fails closed with `worktree-changed`. Nothing is destroyed.
+- Hooks that run during the merge and the push may read config files the
+  merge brought in, such as `.pre-commit-config.yaml`. This is accepted: the
+  people who push to the branch already have write access to the
+  repository, and CI runs their code.
+- A merge needs a git identity. Without one the merge fails, the agent
+  aborts it and returns `CHANGE`, and the run ends.
 - When `remote_before_source` is `tracking-ref`, the snapshot's fetch failed
   and the branch was not confirmed absent. Rule 10b then compares against the
   last fetched state, not the remote as it was when the agent started. A
@@ -854,13 +985,18 @@ recovery and gate definitions, taken by id. Its fixture:
 - a local bare `remote.git` whose `pre-receive` hook rejects a push when
   `RECIPE_VAR_issue_number` reaches it;
 - a linked worktree on `feat/x`, one commit ahead. The `Upstream` setting
-  chooses the remote's `feat/x`: `Ahead`, `AtHead`, `Diverged` (a commit HEAD
-  lacks) or `Absent` (`refs/heads/feat/x` deleted from `remote.git` only);
+  chooses the remote's `feat/x`: `Ahead`, `AtHead`, `Diverged` (a commit
+  adding `other.txt`, which HEAD lacks), `Conflict` (a commit adding
+  `change.txt` with other content, so a merge stops on an add/add conflict)
+  or `Absent` (`refs/heads/feat/x` deleted from `remote.git` only);
 - a fake `AMPLIHACK_LAUNCHER_BINARY` (mode 0700) written by the test. It
   refuses to run outside the TempDir, makes the clean-environment push, prints
   the agent JSON, and answers step-15's hook-repair prompt without making a
   fix. For each step in its literal step list it copies the snapshot to
-  `$T/snapshot-<step>.json`, so tests can read it.
+  `$T/snapshot-<step>.json`, so tests can read it. Its `merge` mode runs
+  `git fetch` and `git merge` with hooks on; on success it makes the clean
+  push and returns `ENVIRONMENT`, and on a conflict it runs
+  `git merge --abort` and returns `CHANGE`.
 
 Cases:
 
@@ -869,14 +1005,15 @@ Cases:
 | positive (step-15) | the script fails, recovery runs, the remote ref equals HEAD, `commit_result.pushed == "true"`, the record shows `cause=ENVIRONMENT`, names `RECIPE_VAR_issue_number` and lists the clean push |
 | negative (`CHANGE`) | the hook always fails and the fake agent returns `CHANGE`; the run exits non-zero with `cause-in-change`, stderr contains `recovery record`, `explanation` and `evidence`, and the remote does not move |
 | missing helper (`step18c_missing_worktree_helper_is_named_not_reported_as_no_worktree`) | a bundle copy without `worktree_setup_path.sh`: the run exits non-zero with `push-unverified` naming the helper, never `not-linked-worktree` |
-| diverged remote without an upstream (`step18c_diverged_remote_without_upstream_is_not_called_a_rewrite`) | `Diverged` fixture with the upstream unset, `change` agent mode: step-18c's push is rejected and the agent leaves the remote alone; the run exits non-zero with `diverged-upstream`, never `remote-history-rewritten` or a restore command, and the remote is unchanged |
-| force-push (`step15_force_push_over_another_commit_fails_closed`) | `Diverged` fixture, `force` agent mode: the agent force-pushes HEAD over the remote's commit and returns `ENVIRONMENT` with a token-shaped `explanation`; the run exits non-zero, the step is failed, the output contains `remote-history-rewritten` and both commits, `git ls-remote` on `remote.git` shows HEAD, and the token appears only in redacted form |
+| diverged remote without an upstream (`step18c_diverged_remote_without_upstream_is_merged_and_pushed`) | `Diverged` fixture with the upstream unset, `merge` agent mode: step-18c's push is rejected, the agent merges `origin/feat/x` and pushes; the run exits 0, the record shows `recovered-environment`, the remote equals HEAD, HEAD is a merge with two parents that contains both the remote's commit and the run's commit, and the agent ran once, for step-18c |
+| force-push (`step15_force_push_over_another_commit_fails_closed`) | `Diverged` fixture, `force` agent mode: the agent force-pushes HEAD over the remote's commit and returns `ENVIRONMENT` with a token-shaped `explanation`; the run exits non-zero, the step is failed, the output contains `remote-history-rewritten`, both commits, `git merge <overwritten>` and `git push origin HEAD:refs/heads/feat/x`, the repair line has no `--force`, `force-with-lease`, ` -f ` or `+` refspec, `git ls-remote` on `remote.git` shows HEAD, and the token appears only in redacted form |
 | absent remote (`step15_first_push_with_absent_remote_is_recovered`) | `Absent` fixture: the run is recovered, the snapshot records `remote_before` and `remote_before_source` as `absent`, and origin equals HEAD |
 | untracked file (`step15_untracked_file_left_by_agent_is_recovered_and_recorded`) | `env-untracked` agent mode leaves a new untracked file; the run is recovered, `new_untracked_count` is 1 and the path is not named in the record |
 | untracked past the cap (`step15_untracked_count_past_snapshot_cap_is_flagged`) | 250 untracked files exist before the snapshot and the agent adds one; the snapshot lists 200 with `untracked_truncated: "true"`, and the record has `new_untracked_count: 51` and the same flag |
-| quoted restore command (`step15_restore_command_quotes_branch_with_shell_metacharacters`) | branch ``feat/x;$(touch>pwned)`touch>pwned`\|a&b>pwned`` with the `force` agent: bash reads the printed restore command back as the five intended words and creates no file |
+| quoted repair commands (`step15_repair_commands_quote_branch_with_shell_metacharacters`) | branch ``feat/x;$(touch>pwned)`touch>pwned`\|a&b>pwned`` with the `force` agent: the repair line is split on ` then: `, and bash reads each half back as `git merge <remote_before>` and `git push origin HEAD:refs/heads/<branch>`; no file is created and no force remedy is printed |
 | upstream on another branch | the worktree's upstream is `origin/feat/other`, so step-15 refuses (#1762); a misbehaving fake agent pushes `HEAD:refs/heads/feat/x` and returns `ENVIRONMENT`; the run exits non-zero with `upstream-mismatch` and step-16 does not run |
-| diverged upstream | the remote branch has a commit HEAD lacks, so step-15 refuses (#978); the fake agent returns `ENVIRONMENT` without pushing; the run exits non-zero with `diverged-upstream` |
+| diverged upstream (`step15_diverged_upstream_is_merged_and_pushed`) | the remote branch has a commit HEAD lacks, so step-15 refuses (#978); the `merge` agent merges `origin/feat/x` and pushes; the run exits 0 with `recovered-environment`, the remote equals HEAD, HEAD is a two-parent merge containing both commits, and step-16 runs |
+| merge conflict (`step15_unresolvable_merge_conflict_aborts_and_ends_the_run`) | `Conflict` fixture, `merge` agent mode: the merge stops on a conflict, the agent aborts it and returns `CHANGE`; the run exits non-zero, the recovery record has `"cause":"CHANGE"`, the remote and local HEAD are unchanged and no `MERGE_HEAD` is left. The gate reason is not pinned |
 | `NONE` on step-15 | the remote ref already equals HEAD; `commit_result.pushed == "true"` with reason `already-at-head`, and step-16 runs |
 | stale environment | an inherited `RECIPE_VAR_commit_result` of `{"pushed":"true"}` does not skip recovery |
 | stale caller context | a caller context with `commit_result` set to `{"pushed":"true"}` does not skip recovery, because the `default-workflow` call step resets it |

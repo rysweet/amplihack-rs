@@ -120,8 +120,12 @@ enum Upstream {
     Ahead,
     /// `origin/feat/other`: step-15 refuses to push (#1762).
     OtherBranch,
-    /// `origin/feat/x` has a commit HEAD lacks (#978).
+    /// `origin/feat/x` has a commit HEAD lacks (#978), in a file HEAD does
+    /// not touch, so a merge is clean.
     Diverged,
+    /// `origin/feat/x` has a commit HEAD lacks that adds `change.txt` with
+    /// other content: merging it gives an add/add conflict.
+    Conflict,
     /// `origin/feat/x` already equals HEAD.
     AtHead,
     /// `refs/heads/feat/x` does not exist on the remote: a first push. Only
@@ -233,7 +237,7 @@ impl Fixture {
         self.p("remote.git")
     }
 
-    fn git(&self, dir: &Path, args: &[&str]) -> String {
+    fn git_cmd(&self, dir: &Path, args: &[&str]) -> Command {
         let mut cmd = amplihack_git::command();
         cmd.env_clear()
             .current_dir(dir)
@@ -253,7 +257,11 @@ impl Fixture {
             ])
             .args(args);
         crate::isolated_amplihack::no_git_prompt(&mut cmd);
-        let out = cmd.output().expect("run fixture git");
+        cmd
+    }
+
+    fn git(&self, dir: &Path, args: &[&str]) -> String {
+        let out = self.git_cmd(dir, args).output().expect("run fixture git");
         assert!(
             out.status.success(),
             "fixture git {args:?} in {} failed: {}",
@@ -261,6 +269,36 @@ impl Fixture {
             String::from_utf8_lossy(&out.stderr)
         );
         String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// Whether a git command succeeds; for checks such as `merge-base
+    /// --is-ancestor` whose failure is an answer, not a fixture error.
+    fn git_ok(&self, dir: &Path, args: &[&str]) -> bool {
+        self.git_cmd(dir, args)
+            .output()
+            .expect("run fixture git")
+            .status
+            .success()
+    }
+
+    /// Another clone commits `file` with `content` on the run's branch and
+    /// pushes it, so the remote has a commit HEAD lacks.
+    fn push_other(&self, file: &str, content: &str) {
+        let other = self.p("other");
+        self.git(
+            &self.p("tmp"),
+            &[
+                "clone",
+                "-q",
+                &self.remote().display().to_string(),
+                &other.display().to_string(),
+            ],
+        );
+        self.git(&other, &["switch", "-q", &self.branch]);
+        fs::write(other.join(file), content).unwrap();
+        self.git(&other, &["add", file]);
+        self.git(&other, &["commit", "-q", "-m", "someone else"]);
+        self.git(&other, &["push", "-q", "origin", &self.branch]);
     }
 
     fn build_repos(&self, upstream: Upstream) {
@@ -312,24 +350,9 @@ impl Fixture {
         self.git(&self.wt(), &["add", "change.txt"]);
         self.git(&self.wt(), &["commit", "-q", "-m", "the run's change"]);
         match upstream {
-            Upstream::Diverged => {
-                // Someone else pushed to feat/x: HEAD is behind as well as ahead.
-                let other = self.p("other");
-                self.git(
-                    &tmp,
-                    &[
-                        "clone",
-                        "-q",
-                        &remote.display().to_string(),
-                        &other.display().to_string(),
-                    ],
-                );
-                self.git(&other, &["switch", "-q", br]);
-                fs::write(other.join("other.txt"), "someone else\n").unwrap();
-                self.git(&other, &["add", "other.txt"]);
-                self.git(&other, &["commit", "-q", "-m", "someone else"]);
-                self.git(&other, &["push", "-q", "origin", br]);
-            }
+            // Someone else pushed to feat/x: HEAD is behind as well as ahead.
+            Upstream::Diverged => self.push_other("other.txt", "someone else\n"),
+            Upstream::Conflict => self.push_other("change.txt", "someone else's change\n"),
             Upstream::AtHead => {
                 self.git(
                     &self.wt(),
@@ -405,7 +428,11 @@ esac
     /// - `env-untracked`: leaves an untracked file in the worktree, then the
     ///   clean push, `ENVIRONMENT`;
     /// - `repoint`: points `origin` at a decoy bare repository of its own,
-    ///   pushes there and claims `ENVIRONMENT`.
+    ///   pushes there and claims `ENVIRONMENT`;
+    /// - `merge`: as the prompt asks when the remote has commits HEAD lacks,
+    ///   fetches and merges `origin/<branch>` with hooks on and no
+    ///   `--no-verify`, then the clean push and `ENVIRONMENT`; on a conflict
+    ///   it runs `git merge --abort` and returns `CHANGE` without a push.
     fn write_fake_launcher(&self) {
         let path = self.p("bin/fake-launcher");
         fs::write(
@@ -480,6 +507,17 @@ case "$mode" in
     git remote set-url origin "$T/decoy.git"
     if push_clean; then push_result=pushed; else push_result=failed; fi
     cause=ENVIRONMENT; evidence_last="pushed to a remote of its choosing"; actions=$(jq -nc --arg a "$action" '[$a]') ;;
+  merge)
+    if env "${{unset_args[@]}}" GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git fetch -q origin > "$T/agent-merge.log" 2>&1 \
+      && env "${{unset_args[@]}}" GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_EDITOR=true \
+           git -c user.email=a@example.invalid -c user.name=A -c commit.gpgsign=false merge --no-edit "origin/$BR" >> "$T/agent-merge.log" 2>&1; then
+      if push_clean; then push_result=pushed; else push_result=failed; fi
+      cause=ENVIRONMENT; evidence_last="merged origin/$BR at $(git rev-parse HEAD^2) and pushed"
+      actions=$(jq -nc --arg a "git merge --no-edit origin/$BR" --arg b "$action" '[$a, $b]')
+    else
+      git merge --abort > /dev/null 2>&1
+      cause=CHANGE; evidence_last="the merge of origin/$BR conflicted and could not be resolved"
+    fi ;;
   claim-env) cause=ENVIRONMENT; evidence_last="claimed without a push" ;;
   none|none-noworktree) cause=NONE; evidence_last="nothing needed pushing" ;;
   *) echo "fake agent: unknown mode $mode" >&2; exit 95 ;;
@@ -814,6 +852,85 @@ fn recovery_record_lines(run: &Run) -> String {
     lines.join("\n")
 }
 
+/// The commands after `To repair without rewriting history: ` on the gate's
+/// `remote-history-rewritten` line, and that whole line.
+fn repair_line(run: &Run) -> (String, String) {
+    const MARK: &str = "To repair without rewriting history: ";
+    let text = run.all_text();
+    let line = text
+        .lines()
+        .find(|l| l.contains("remote-history-rewritten") && l.contains(MARK))
+        .unwrap_or_else(|| panic!("no repair commands on the failure line; {}", run.debug()))
+        .to_string();
+    let cmd = line.split(MARK).nth(1).unwrap().trim_end().to_string();
+    (line, cmd)
+}
+
+/// N2: the gate never prints a force push, of any spelling, as a remedy.
+fn assert_no_force_remedy(line: &str) {
+    for bad in ["--force", "force-with-lease", " -f "] {
+        assert!(
+            !line.contains(bad),
+            "the repair line must not offer `{bad}`: {line}"
+        );
+    }
+    assert!(
+        !line.split_whitespace().any(|w| w.starts_with('+')),
+        "the repair line must not offer a `+` refspec: {line}"
+    );
+}
+
+/// The two halves of the repair commands, split on the non-shell separator
+/// ` then: ` and each read back by bash as words, in `scratch`. Reading a
+/// half evaluates only `set -- <half>`, so nothing in it runs.
+fn repair_words(cmd: &str, scratch: &Path) -> Vec<Vec<String>> {
+    let halves: Vec<&str> = cmd.split(" then: ").collect();
+    assert_eq!(halves.len(), 2, "two commands joined by ` then: `: {cmd}");
+    halves
+        .iter()
+        .map(|half| {
+            let out = Command::new("bash")
+                .current_dir(scratch)
+                .args(["-c", r#"eval "set -- $1"; printf '%s\0' "$@""#, "_", half])
+                .output()
+                .expect("bash");
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout)
+                .split('\0')
+                .filter(|w| !w.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .collect()
+}
+
+/// N1: HEAD is a merge commit with two parents that contains both the
+/// remote's commit `rb` and the run's own commit `run_head`.
+fn assert_merged(f: &Fixture, rb: &str, run_head: &str) {
+    let head = f.head();
+    let parents = f.git(&f.wt(), &["rev-list", "--parents", "-n1", "HEAD"]);
+    assert_eq!(
+        parents.split_whitespace().count(),
+        3,
+        "HEAD must be a merge with two parents: {parents}"
+    );
+    for (name, sha) in [("the remote's commit", rb), ("the run's commit", run_head)] {
+        assert!(
+            f.git_ok(&f.wt(), &["merge-base", "--is-ancestor", sha, &head]),
+            "{name} {sha} must be an ancestor of HEAD {head}"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(f.wt().join("other.txt")).unwrap_or_default(),
+        "someone else\n",
+        "the remote's file must be in the merged tree"
+    );
+}
+
 // --- step-15 -------------------------------------------------------------------
 
 /// The positive case the issue asks for: the push fails only because an
@@ -938,19 +1055,82 @@ fn step15_upstream_on_another_branch_is_refused_even_if_the_agent_pushes() {
     before.assert_held(&f, &run);
 }
 
-/// The remote branch has a commit HEAD lacks (#978). The gate's ancestry
-/// check fails the run whatever cause the agent claims.
+/// N1: the remote branch has a commit HEAD lacks (#978). The agent fetches,
+/// merges origin/feat/x with hooks on and pushes with a plain push. The gate
+/// accepts a HEAD whose only new commit is that merge, and PR creation runs.
 #[test]
-fn step15_diverged_upstream_is_refused() {
+fn step15_diverged_upstream_is_merged_and_pushed() {
     let _ = runner_or_skip!();
     let f = Fixture::new(Upstream::Diverged);
-    f.set_agent_mode("claim-env");
+    f.set_agent_mode("merge");
     let before = Untouched::capture(&f);
     let remote_before = f.remote_ref(BRANCH);
+    let run_head = f.head();
     let run = f.run(&f.publish_recipe("fixture-publish"), &[], &[]);
 
-    assert_failed_with(&run, "diverged-upstream");
-    assert_eq!(f.remote_ref(BRANCH), remote_before);
+    assert_eq!(
+        run.code,
+        0,
+        "a diverged branch is merged, not stopped; {}",
+        run.debug()
+    );
+    assert_eq!(
+        f.agent_calls(),
+        vec!["step-15-commit-push"],
+        "one recovery agent call"
+    );
+    let head = f.head();
+    assert_ne!(head, run_head, "the agent's merge moved HEAD");
+    assert_merged(&f, &remote_before, &run_head);
+    assert_recovered(&run, "commit_result", "recovered-environment", &head);
+    assert_eq!(f.ls_remote(BRANCH), head, "the plain push reached origin");
+    assert_eq!(
+        snapshot(&run)["head"],
+        run_head.as_str(),
+        "the snapshot was taken before the merge"
+    );
+    assert_eq!(
+        run.status("step-16-create-draft-pr"),
+        "completed",
+        "step-16 must run on the gate's commit_result; {}",
+        run.debug()
+    );
+    before.assert_held(&f, &run);
+}
+
+/// N1: the remote's commit conflicts with the run's. The agent cannot resolve
+/// it, aborts the merge and answers CHANGE: the run ends, nothing is pushed
+/// and no merge is left half done. The gate reason is not pinned: which rule
+/// fires first is #2606's (m3).
+#[test]
+fn step15_unresolvable_merge_conflict_aborts_and_ends_the_run() {
+    let _ = runner_or_skip!();
+    let f = Fixture::new(Upstream::Conflict);
+    f.set_agent_mode("merge");
+    let before = Untouched::capture(&f);
+    let remote_before = f.ls_remote(BRANCH);
+    let run_head = f.head();
+    let run = f.run(&f.publish_recipe("fixture-publish"), &[], &[]);
+
+    assert_ne!(run.code, 0, "the run must fail; {}", run.debug());
+    assert_eq!(
+        f.agent_calls(),
+        vec!["step-15-commit-push"],
+        "{}",
+        run.debug()
+    );
+    assert!(
+        recovery_record_lines(&run).contains("\"cause\":\"CHANGE\""),
+        "the record must hold the agent's CHANGE; {}",
+        run.debug()
+    );
+    assert_eq!(f.ls_remote(BRANCH), remote_before, "nothing is pushed");
+    assert_eq!(f.head(), run_head, "the aborted merge leaves HEAD alone");
+    let merge_head = f.git(&f.wt(), &["rev-parse", "--git-path", "MERGE_HEAD"]);
+    assert!(
+        !f.wt().join(&merge_head).exists(),
+        "no MERGE_HEAD may be left behind: {merge_head}"
+    );
     assert_ne!(run.status("step-16-create-draft-pr"), "completed");
     before.assert_held(&f, &run);
 }
@@ -1127,7 +1307,8 @@ fn step15_protected_local_branch_is_refused_even_if_the_agent_pushes() {
 /// B2: the remote branch has someone else's commit, and the agent
 /// force-pushes HEAD over it. The remote now equals HEAD, so every other check
 /// passes; the gate's ancestry check against the snapshot's remote_before
-/// fails the run, names both commits and gives the restore command. The
+/// fails the run, names both commits and prints a repair that does not
+/// rewrite history (N2): merge the lost commit back, then a plain push. The
 /// agent's token-shaped explanation reaches the record only in redacted form.
 #[test]
 fn step15_force_push_over_another_commit_fails_closed() {
@@ -1159,11 +1340,17 @@ fn step15_force_push_over_another_commit_fails_closed() {
         "the failure must name the overwritten commit and HEAD; {}",
         run.debug()
     );
-    assert!(
-        text.contains(&format!("{overwritten}:refs/heads/{BRANCH}")),
-        "the failure must give the restore refspec; {}",
-        run.debug()
+    let (line, cmd) = repair_line(&run);
+    let halves: Vec<&str> = cmd.split(" then: ").collect();
+    assert_eq!(
+        halves,
+        vec![
+            format!("git merge {overwritten}").as_str(),
+            format!("git push origin HEAD:refs/heads/{BRANCH}").as_str(),
+        ],
+        "the repair is a merge of the lost commit and a plain push: {line}"
     );
+    assert_no_force_remedy(&line);
     assert_eq!(
         f.ls_remote(BRANCH),
         head,
@@ -1206,11 +1393,12 @@ fn step15_untracked_count_past_snapshot_cap_is_flagged() {
     assert_eq!(rec["new_untracked_count"], 51, "{}", run.debug());
 }
 
-/// S-A: git allows shell metacharacters in branch names, so the restore
-/// command the gate prints quotes each word. Read back by bash, it gives the
-/// intended arguments and runs nothing.
+/// S-A: git allows shell metacharacters in branch names, so the repair
+/// commands the gate prints quote each word. Each half, read back by bash on
+/// its own, gives the intended arguments and runs nothing; neither half is a
+/// force push.
 #[test]
-fn step15_restore_command_quotes_branch_with_shell_metacharacters() {
+fn step15_repair_commands_quote_branch_with_shell_metacharacters() {
     let _ = runner_or_skip!();
     let branch = "feat/x;$(touch>pwned)`touch>pwned`|a&b>pwned";
     let f = Fixture::with_branch(Upstream::Diverged, branch);
@@ -1220,44 +1408,28 @@ fn step15_restore_command_quotes_branch_with_shell_metacharacters() {
     let head = f.head();
 
     assert_failed_with(&run, "remote-history-rewritten");
-    let text = run.all_text();
-    let line = text
-        .lines()
-        .find(|l| l.contains("remote-history-rewritten") && l.contains("To restore: "))
-        .unwrap_or_else(|| panic!("no restore command; {}", run.debug()));
-    let cmd = line.split("To restore: ").nth(1).unwrap().trim_end();
+    let (line, cmd) = repair_line(&run);
     let scratch = f.p("tmp/parse");
     fs::create_dir_all(&scratch).unwrap();
-    let out = Command::new("bash")
-        .current_dir(&scratch)
-        .args(["-c", r#"eval "set -- $1"; printf '%s\0' "$@""#, "_", cmd])
-        .output()
-        .expect("bash");
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let words: Vec<String> = String::from_utf8_lossy(&out.stdout)
-        .split('\0')
-        .filter(|w| !w.is_empty())
-        .map(str::to_string)
-        .collect();
+    let words = repair_words(&cmd, &scratch);
     assert_eq!(
         words,
         vec![
-            "git".to_string(),
-            "push".to_string(),
-            format!("--force-with-lease=refs/heads/{branch}:{head}"),
-            "origin".to_string(),
-            format!("{overwritten}:refs/heads/{branch}"),
+            vec!["git".to_string(), "merge".to_string(), overwritten.clone()],
+            vec![
+                "git".to_string(),
+                "push".to_string(),
+                "origin".to_string(),
+                format!("HEAD:refs/heads/{branch}"),
+            ],
         ],
-        "restore command: {cmd}"
+        "repair commands: {cmd}"
     );
     assert!(
         fs::read_dir(&scratch).unwrap().next().is_none(),
-        "reading the restore command must run nothing"
+        "reading the repair commands must run nothing"
     );
+    assert_no_force_remedy(&line);
     assert_eq!(
         f.ls_remote(branch),
         head,
@@ -1450,18 +1622,19 @@ fn step18c_missing_worktree_helper_is_named_not_reported_as_no_worktree() {
     before.assert_held(&f, &run);
 }
 
-/// Without an upstream the gate's #978 check (rule 10) does not run. A remote
-/// branch that had diverged before the agent ran, and that the agent left
-/// alone, is a divergence, not a rewritten history: the gate must not say the
-/// history was rewritten or print a restore command.
+/// N1 without an upstream: rule 10 does not run, and the remote branch has
+/// a commit HEAD lacks. The agent merges origin/feat/x (by the run's branch
+/// name, not `@{u}`) and pushes with a plain push; the gate accepts the merge
+/// and does not call it a rewrite.
 #[test]
-fn step18c_diverged_remote_without_upstream_is_not_called_a_rewrite() {
+fn step18c_diverged_remote_without_upstream_is_merged_and_pushed() {
     let _ = runner_or_skip!();
     let f = Fixture::new(Upstream::Diverged);
     f.git(&f.wt(), &["branch", "-q", "--unset-upstream"]);
-    f.set_agent_mode("change");
+    f.set_agent_mode("merge");
     let before = Untouched::capture(&f);
     let remote_before = f.ls_remote(BRANCH);
+    let run_head = f.head();
     let run = f.run(&f.pr_review_recipe(&f.wt()), &[], &[]);
 
     assert_eq!(
@@ -1470,17 +1643,15 @@ fn step18c_diverged_remote_without_upstream_is_not_called_a_rewrite() {
         "{}",
         run.debug()
     );
-    assert_failed_with(&run, "diverged-upstream");
-    let text = run.all_text();
+    assert_eq!(run.code, 0, "{}", run.debug());
+    let head = f.head();
+    assert_merged(&f, &remote_before, &run_head);
+    assert_recovered(&run, "push_recovery_result", "recovered-environment", &head);
+    assert_eq!(f.ls_remote(BRANCH), head, "the plain push reached origin");
     assert!(
-        !text.contains("remote-history-rewritten") && !text.contains("To restore"),
-        "an untouched diverged remote must not be reported as rewritten; {}",
+        !run.all_text().contains("remote-history-rewritten"),
+        "a merge is not a rewrite; {}",
         run.debug()
-    );
-    assert_eq!(
-        f.ls_remote(BRANCH),
-        remote_before,
-        "the remote is untouched"
     );
     before.assert_held(&f, &run);
 }
@@ -1535,10 +1706,10 @@ fn step18c_stale_recovery_keys_do_not_reach_the_call() {
 
 // --- what the fake agent saw -----------------------------------------------------
 
-/// The recovery prompt names the failed step and its output key, and is the
-/// only prompt any case sends.
+/// A recovery sends exactly one agent prompt, which carries no variable's
+/// value, and fires no hook-repair loop.
 #[test]
-fn recovery_prompt_names_the_failed_step_and_output_key() {
+fn recovery_calls_the_agent_once_without_leaking_values() {
     let _ = runner_or_skip!();
     let f = Fixture::new(Upstream::Ahead);
     let run = f.run(&f.publish_recipe("fixture-publish"), &[], &[]);
@@ -1560,7 +1731,6 @@ fn recovery_prompt_names_the_failed_step_and_output_key() {
         prompts.keys()
     );
     let prompt = prompts.values().next().unwrap();
-    assert!(prompt.contains("step-15-commit-push") && prompt.contains("commit_result"));
     assert!(
         !prompt.contains(INHERITED_ISSUE),
         "the prompt must not carry a variable's value"
