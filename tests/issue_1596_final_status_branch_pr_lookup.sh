@@ -903,6 +903,135 @@ else
     record_fail "17e-a: the skipped lookup names its reason on stderr only"; dump
 fi
 
+# --- 22b. #2520: a found PR is reported when its base cannot be read --------
+# Step-22b only writes the final report. When `gh pr view` gives no
+# baseRefName and the run has no base_branch, it reports against the default
+# branch (one WARNING) and the scope helper still checks the live base. A base
+# that is refused (another repository, forbidden) is never replaced. In every
+# path a found PR keeps its number and URL: never #0, #null or "null — null".
+FALLBACK_WARNING="reporting against the default branch"
+fallback_warnings() { grep -c -F -- "$FALLBACK_WARNING" "$ERR" 2>/dev/null || true; }
+
+# assert_pr_identity_kept <label> <url>: the report names the PR by its real
+# number and URL and never as #0 / #null.
+assert_pr_identity_kept() {
+    local label="$1" url="$2"
+    if grep -qE -- '#4242([^0-9]|$)' "$OUT" \
+        && grep -qF -- "$url" "$OUT" \
+        && ! grep -qE -- '#0([^0-9]|$)' "$OUT" "$ERR" \
+        && ! grep -qF -- '#null' "$OUT" "$ERR" \
+        && ! grep -qF -- 'null — null' "$OUT" "$ERR"; then
+        record_pass "$label"
+    else
+        record_fail "$label"; dump
+    fi
+}
+
+# assert_base_refused <label>: no fallback, no scoped match, and no
+# "lacks … context" error (repo, branch and head are all known; only the base
+# is), so the #1268 adjudication decides.
+assert_base_refused() {
+    local label="$1"
+    if [ "$(fallback_warnings)" = "0" ] \
+        && [ ! -s "$SCOPE_LOG" ] \
+        && ! grep -qF -- "lacks repo, branch, headRefOid, or baseRefName context" "$ERR"; then
+        record_pass "$label"
+    else
+        record_fail "$label"; dump; echo "    scope log:"; sed 's/^/    | /' "$SCOPE_LOG"
+    fi
+}
+
+# A. Unreadable base, no base_branch: default branch main, one WARNING.
+read -r repo wt < <(make_layout c22b-unreadable main)
+run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
+    FAKE_GH_NO_BASE=1 RECIPE_VAR_worktree_setup__worktree_path="$wt"
+assert_resolved_worktree_pr "22b-base-unreadable: no baseRefName, no base_branch -> EXISTING_OPEN_PR from the worktree branch"
+if grep -qF -- "--base main" "$SCOPE_LOG" && [ "$(fallback_warnings)" = "1" ] \
+    && ! grep -qF -- "$FALLBACK_WARNING" "$OUT" \
+    && ! grep -qF -- "lacks repo, branch, headRefOid, or baseRefName context" "$ERR"; then
+    record_pass "22b-base-unreadable-a: scope helper gets --base main; exactly one fallback WARNING, on stderr"
+else
+    record_fail "22b-base-unreadable-a: scope helper gets --base main; exactly one fallback WARNING, on stderr"
+    dump; echo "    scope log:"; sed 's/^/    | /' "$SCOPE_LOG"
+fi
+assert_pr_identity_kept "22b-base-unreadable-b: report keeps #4242 and its URL" "$PR_URL_OK"
+
+# A'. The fallback match is still checked by the scope helper: a miss goes to
+# the #1268 adjudication and the PR keeps its identity.
+read -r repo wt < <(make_layout c22b-unreadable-miss main)
+run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
+    FAKE_GH_NO_BASE=1 SCOPE_STUB_MODE=miss RECIPE_VAR_worktree_setup__worktree_path="$wt"
+if grep -qF -- "--base main" "$SCOPE_LOG" \
+    && grep -q "TERMINAL STATE ADJUDICATION (issue #1268)" "$ERR"; then
+    record_pass "22b-base-unreadable-miss: a fallback-base miss is adjudicated (#1268), not trusted"
+else
+    record_fail "22b-base-unreadable-miss: a fallback-base miss is adjudicated (#1268), not trusted"
+    dump; echo "    scope log:"; sed 's/^/    | /' "$SCOPE_LOG"
+fi
+assert_pr_identity_kept "22b-base-unreadable-miss-a: report keeps #4242 and its URL" "$PR_URL_OK"
+
+# B. gh pr view returns no number/url/title; a scope miss forces the #1268
+# evidence path, which must fill the PR's identity from the run's own values.
+read -r repo wt < <(make_layout c22b-sparse main)
+run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
+    FAKE_GH_SPARSE_VIEW=1 SCOPE_STUB_MODE=miss RECIPE_VAR_worktree_setup__worktree_path="$wt"
+assert_pr_identity_kept "22b-sparse-view-evidence: sparse gh pr view -> #4242 and its URL, never #0/#null" "$PR_URL_OK"
+if ! grep -q '^outstanding_pr=#null' "$OUT" \
+    && grep -qF -- "outstanding_pr=#4242 [OPEN] $PR_URL_OK — " "$OUT"; then
+    record_pass "22b-sparse-view-evidence-a: outstanding_pr line names #4242 and its URL"
+else
+    record_fail "22b-sparse-view-evidence-a: outstanding_pr line names #4242 and its URL"; dump
+fi
+
+# C. Refused: the default branch is forbidden -> no fallback.
+read -r repo wt < <(make_layout c22b-forbidden-default main)
+run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
+    FAKE_GH_NO_BASE=1 RECIPE_VAR_forbidden_base_branches=main \
+    RECIPE_VAR_worktree_setup__worktree_path="$wt"
+assert_base_refused "22b-forbidden-default-base: forbidden default branch -> no fallback, no scoped match"
+assert_pr_identity_kept "22b-forbidden-default-base-a: report keeps #4242 and its URL" "$PR_URL_OK"
+
+# D. Refused: the live baseRefName is forbidden -> never replaced.
+read -r repo wt < <(make_layout c22b-forbidden-live main)
+run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
+    RECIPE_VAR_forbidden_base_branches=main RECIPE_VAR_worktree_setup__worktree_path="$wt"
+assert_base_refused "22b-forbidden-live-base: forbidden live baseRefName -> no fallback, no scoped match"
+assert_pr_identity_kept "22b-forbidden-live-base-a: report keeps #4242 and its URL" "$PR_URL_OK"
+
+# E. Refused: the recorded PR is in another repository -> its base is not
+# read and the default branch is not substituted.
+OTHER_PR_URL="https://github.com/other/repo/pull/4242"
+read -r repo wt < <(make_layout c22b-cross-repo main)
+run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
+    FAKE_GH_NO_BASE=1 RECIPE_VAR_pr_url="$OTHER_PR_URL" RECIPE_VAR_pr_number=4242 \
+    RECIPE_VAR_worktree_setup__worktree_path="$wt"
+assert_base_refused "22b-cross-repo-no-fallback: PR in another repository -> no fallback, no scoped match"
+if ! grep -qE -- '^pr view .*--json baseRefName$' "$GH_LOG"; then
+    record_pass "22b-cross-repo-no-fallback-a: the other repository's PR base is never read"
+else
+    record_fail "22b-cross-repo-no-fallback-a: the other repository's PR base is never read"; dump
+fi
+
+# F. No base anywhere: no base_branch, no baseRefName, no origin/* default.
+read -r repo wt < <(make_layout c22b-no-default main)
+git -C "$repo" symbolic-ref --delete refs/remotes/origin/HEAD
+git -C "$repo" update-ref -d refs/remotes/origin/main
+run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
+    FAKE_GH_NO_BASE=1 RECIPE_VAR_worktree_setup__worktree_path="$wt"
+assert_base_refused "22b-no-base-anywhere: no base found -> no scoped match claimed, no 'lacks' error"
+assert_pr_identity_kept "22b-no-base-anywhere-a: report keeps #4242 and its URL" "$PR_URL_OK"
+
+# G. An explicit base_branch is never replaced, even when gh gives no base.
+read -r repo wt < <(make_layout c22b-explicit main)
+run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
+    FAKE_GH_NO_BASE=1 RECIPE_VAR_base_branch=main RECIPE_VAR_worktree_setup__worktree_path="$wt"
+if grep -qF -- "--base main" "$SCOPE_LOG" && [ "$(fallback_warnings)" = "0" ]; then
+    record_pass "22b-explicit-base: explicit base_branch used as-is, no fallback WARNING"
+else
+    record_fail "22b-explicit-base: explicit base_branch used as-is, no fallback WARNING"
+    dump; echo "    scope log:"; sed 's/^/    | /' "$SCOPE_LOG"
+fi
+
 # --- 14. lookup does not depend on caller credentials -----------------------
 # env -i already strips GH_TOKEN/GITHUB_TOKEN; assert the script never asks gh
 # for a token itself.

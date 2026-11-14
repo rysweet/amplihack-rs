@@ -26,10 +26,12 @@ use serde_yaml::Value;
 use super::{Repo, bash, describe, git, helper, text, workspace_root};
 
 /// Fake gh for `delivery_run_base`: `gh pr view` prints a pull request whose
-/// base is `$PR_BASE`, or fails when `$GH_FAIL` is set. Every call is logged.
+/// base is `$PR_BASE`, fails when `$GH_FAIL` is set, or prints text that is
+/// not JSON when `$GH_NOT_JSON` is set. Every call is logged.
 const FAKE_GH_VIEW: &str = r#"#!/bin/sh
 printf '%s\n' "$*" >> "$GH_LOG"
 [ -z "${GH_FAIL:-}" ] || { echo "fake gh: HTTP 502" >&2; exit 1; }
+[ -z "${GH_NOT_JSON:-}" ] || { echo "this is {not json"; exit 0; }
 case "$1 $2" in
   "pr view") printf '{"baseRefName":"%s","number":7}\n' "$PR_BASE" ;;
   *) echo "fake gh: unexpected: $*" >&2; exit 7 ;;
@@ -63,8 +65,19 @@ impl Unit {
     /// Sources the helper and runs `delivery_run_base` with `args` (already
     /// shell-quoted), the fake gh answering with base `pr_base`.
     fn call(&self, args: &str, pr_base: &str, gh_fail: bool) -> (Output, String) {
+        self.run(
+            &format!("delivery_run_base {args}"),
+            pr_base,
+            gh_fail,
+            false,
+        )
+    }
+
+    /// Sources the helper and runs `command` (a function call with its
+    /// arguments already shell-quoted) against the fake gh.
+    fn run(&self, command: &str, pr_base: &str, gh_fail: bool, not_json: bool) -> (Output, String) {
         let _ = fs::remove_file(&self.log);
-        let script = format!(". \"$HELPER\"\ndelivery_run_base {args}\n");
+        let script = format!(". \"$HELPER\"\n{command}\n");
         let path = format!(
             "{}:{}",
             self.bin.display(),
@@ -79,6 +92,7 @@ impl Unit {
                 ("GH_LOG", self.log.to_str().unwrap()),
                 ("PR_BASE", pr_base),
                 ("GH_FAIL", if gh_fail { "1" } else { "" }),
+                ("GH_NOT_JSON", if not_json { "1" } else { "" }),
             ],
         );
         (out, fs::read_to_string(&self.log).unwrap_or_default())
@@ -129,7 +143,8 @@ fn run_base_never_uses_origin_head_once_a_pull_request_is_recorded() {
     let u = Unit::new();
     git(&u.repo.path(), &["remote", "set-head", "origin", "dev"]);
     let (out, log) = u.call("'' '' 7 owner/repo feat/x ''", "dev", true);
-    assert_eq!(out.status.code(), Some(1), "{}\n{log}", describe(&out));
+    // 2: the base is unreadable (#2520), still a failure, never a fall-back.
+    assert_eq!(out.status.code(), Some(2), "{}\n{log}", describe(&out));
     assert_eq!(text(&out.stdout), "", "nothing printed on failure");
     assert_eq!(log.lines().count(), 1, "one call, no retry\n{log}");
 }
@@ -191,7 +206,6 @@ fn run_base_checks_a_derived_base_like_an_explicit_one() {
             "forbidden_base_branches",
         ),
         ("'' '' 7 owner/repo feat/x ''", "@", "plain branch name"),
-        ("'' '' 7 owner/repo feat/x ''", "", ""),
     ] {
         let (out, log) = u.call(args, pr_base, false);
         assert_eq!(
@@ -271,6 +285,163 @@ fn run_base_treats_the_pull_request_base_as_data() {
     let (out, log) = u.call("'' '' 7 owner/repo feat/x ''", &base, false);
     assert_eq!(out.status.code(), Some(1), "{}\n{log}", describe(&out));
     assert!(!marker.exists(), "the base name was run as a command");
+}
+
+#[test]
+fn run_base_returns_2_only_when_the_pull_request_base_is_unreadable() {
+    // #2520: step-22b falls back to the default branch on exit code 2 only,
+    // so an unreadable base (2) must never look like a refused one (1).
+    let u = Unit::new();
+    // (args, pr_base, gh_fail, not_json, expected exit code)
+    for (args, pr_base, gh_fail, not_json, code) in [
+        // Unreadable: gh failed, output not JSON, no baseRefName.
+        ("'' '' 7 owner/repo feat/x ''", "dev", true, false, 2),
+        (
+            &format!("'' '' {URL} owner/repo feat/x ''"),
+            "dev",
+            true,
+            false,
+            2,
+        ),
+        ("'' '' 7 owner/repo feat/x ''", "dev", false, true, 2),
+        ("'' '' 7 owner/repo feat/x ''", "", false, false, 2),
+        // Refused: a live base delivery_base_ref refuses.
+        ("'' '' 7 owner/repo feat/x ''", "ghost", false, false, 1),
+        ("'' '' 7 owner/repo feat/x dev", "dev", false, false, 1),
+        ("'' '' 7 owner/repo feat/x ''", "@", false, false, 1),
+        // Refused: a reference in another repository or of the wrong shape,
+        // even when gh would have failed.
+        (
+            "'' '' https://github.com/other/repo/pull/7 owner/repo feat/x ''",
+            "dev",
+            true,
+            false,
+            1,
+        ),
+        ("'' '' 07 owner/repo feat/x ''", "dev", true, false, 1),
+        // Refused: a recorded or explicit base is never "unreadable".
+        ("'' ghost 7 owner/repo feat/x ''", "dev", true, false, 1),
+        ("'a..b' '' 7 owner/repo feat/x ''", "dev", true, false, 1),
+    ] {
+        let (out, log) = u.run(
+            &format!("delivery_run_base {args}"),
+            pr_base,
+            gh_fail,
+            not_json,
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(code),
+            "{args} (pr base {pr_base:?}, gh_fail {gh_fail}, not_json {not_json}): {}\n{log}",
+            describe(&out)
+        );
+        assert_eq!(text(&out.stdout), "", "{args}: nothing printed on failure");
+        assert!(
+            !text(&out.stderr).is_empty(),
+            "{args}: the reason is on stderr"
+        );
+        assert!(
+            log.lines().count() <= 1,
+            "{args}: at most one gh call\n{log}"
+        );
+    }
+}
+
+#[test]
+fn default_base_reads_local_refs_only() {
+    // delivery_default_base: origin/HEAD's target, then origin/main,
+    // origin/master, origin/develop. No gh call, no `origin/` prefix.
+    let u = Unit::new();
+    let path = u.repo.path();
+    let (out, log) = u.run("delivery_default_base", "dev", true, false);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(text(&out.stdout), "main\n");
+    assert!(log.is_empty(), "never calls gh\n{log}");
+
+    git(&path, &["remote", "set-head", "origin", "dev"]);
+    let (out, _) = u.run("delivery_default_base", "dev", true, false);
+    assert_eq!(
+        text(&out.stdout),
+        "dev\n",
+        "origin/HEAD's target first: {}",
+        describe(&out)
+    );
+
+    git(&path, &["remote", "set-head", "origin", "--delete"]);
+    let (out, _) = u.run("delivery_default_base", "dev", true, false);
+    assert_eq!(
+        text(&out.stdout),
+        "main\n",
+        "then origin/main: {}",
+        describe(&out)
+    );
+
+    // Only origin/dev is left, which is not in the list: no default.
+    git(&path, &["update-ref", "-d", "refs/remotes/origin/main"]);
+    let (out, log) = u.run("delivery_default_base", "dev", true, false);
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert_eq!(text(&out.stdout), "", "nothing printed");
+    assert_eq!(text(&out.stderr), "", "silent on failure");
+    assert!(log.is_empty(), "never calls gh\n{log}");
+}
+
+#[test]
+fn default_base_does_not_change_rule_5() {
+    // delivery_run_base rule 5 now uses delivery_default_base: still main,
+    // and still a failure (1) when no default resolves.
+    let u = Unit::new();
+    let (out, _) = u.call("'' '' '' owner/repo feat/x ''", "dev", false);
+    assert_eq!(text(&out.stdout), "main\n", "{}", describe(&out));
+    git(
+        &u.repo.path(),
+        &["remote", "set-head", "origin", "--delete"],
+    );
+    git(
+        &u.repo.path(),
+        &["update-ref", "-d", "refs/remotes/origin/main"],
+    );
+    let (out, log) = u.call("'' '' '' owner/repo feat/x ''", "dev", false);
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert!(
+        text(&out.stderr)
+            .contains("none of origin/HEAD, origin/main, origin/master, origin/develop resolves"),
+        "{}",
+        describe(&out)
+    );
+    assert!(log.is_empty(), "no gh call\n{log}");
+}
+
+#[test]
+fn pr_ref_readable_accepts_only_this_repositorys_pull_requests() {
+    let u = Unit::new();
+    for (pr_ref, ok) in [
+        ("7", true),
+        (URL, true),
+        ("https://github.com/owner/repo/pull/7/", true),
+        ("https://github.com/Owner/Repo/pull/7", true),
+        ("--repo=x/y", false),
+        ("-7", false),
+        ("07", false),
+        ("0", false),
+        ("7x", false),
+        ("'7 8'", false),
+        ("''", false),
+        ("https://github.com/other/repo/pull/7", false),
+        ("https://github.com/owner/repo/pull/7/files", false),
+        ("https://example.com/owner/repo/pull/7", false),
+        ("http://github.com/owner/repo/pull/7", false),
+        ("'https://github.com/owner/repo/pull/7;id'", false),
+    ] {
+        let (out, log) = u.run(
+            &format!("delivery_pr_ref_readable {pr_ref} owner/repo"),
+            "dev",
+            false,
+            false,
+        );
+        assert_eq!(out.status.success(), ok, "{pr_ref}: {}", describe(&out));
+        assert_eq!(text(&out.stdout), "", "{pr_ref}: prints nothing");
+        assert!(log.is_empty(), "{pr_ref}: never calls gh\n{log}");
+    }
 }
 
 #[test]

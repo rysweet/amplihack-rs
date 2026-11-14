@@ -116,7 +116,7 @@ request has. It takes the first rule that gives a value:
 | 2 | `base_branch` in step-16's publish result (`pr_publish_result.base_branch`). | Rule 4. |
 | 3 | The `baseRefName` of the pull request this run recorded, found by `pr_url` or `pr_number` with one read-only `gh pr view`. | The reference and rule 4. |
 | 4 | Not a source: the value from rule 2 or 3 goes through `delivery_base_ref`. | See below. |
-| 5 | Only when the run recorded no pull request at all: the old discovery, the first of `origin/HEAD`, `origin/main`, `origin/master` and `origin/develop` that exists. This is the finalize helpers' own list, not step-04's. | As before. |
+| 5 | Only when the run recorded no pull request at all: the old discovery, `delivery_default_base`, which gives the first of `origin/HEAD`, `origin/main`, `origin/master` and `origin/develop` that exists. This is the finalize helpers' own list, not step-04's. | As before. |
 
 An explicit `base_branch` always wins. It is never replaced by the pull
 request's base, so `base_branch=main` with a pull request into `dev` still
@@ -141,7 +141,9 @@ with `jq` for `baseRefName` and nothing else.
 Once the run has recorded a pull request, `origin/HEAD` and the
 `origin/main`/`origin/master`/`origin/develop` list are never used, even when `gh pr view` fails. The
 helper fails closed instead, so a stale `origin/HEAD` cannot send finalize to
-the wrong pull request, or tell it there is none.
+the wrong pull request, or tell it there is none. Step-22b, which only writes
+the final report, is the one exception; see
+[When step-22b cannot read the base](#when-step-22b-cannot-read-the-base).
 
 Each helper works the base out once and uses that one value for both the
 scoped lookup (`workflow_pr_scope.sh --base`) and the identity check before
@@ -164,6 +166,104 @@ The two evidence steps (`workflow_terminal_evidence.sh` and
 line to stderr naming the base they used. The terminal-state probe never
 reports success when the base cannot be worked out: a pull request that does
 not match ends in `FAILED_INVALID_INPUT`, as before.
+
+### When step-22b cannot read the base
+
+Step-22b (`workflow_final_status.sh`) prints the run's final status. It
+changes nothing on GitHub, so it does not fail just because the base cannot be
+read. Step-21 (`gh pr ready`) and the terminal-state probe still fail closed,
+and they never use the fallback below.
+
+`delivery_run_base` returns 2 when the base is *unreadable* and 1 when it is
+*refused*, so step-22b tells the two apart by exit code, without reading error
+text. It returns 2 only from rule 3, when every one of these holds:
+
+- `--base` is empty;
+- the publish result records no `base_branch`;
+- the recorded pull request reference passes `delivery_pr_ref_readable`: a
+  positive number, or a `https://github.com/<owner>/<repo>/pull/<N>` URL for
+  this checkout's `origin`;
+- `gh pr view` then failed, returned something other than JSON, or returned no
+  `baseRefName`.
+
+On exit code 2 only, step-22b takes the repository's default branch from
+`delivery_default_base`. That is the first of `origin/HEAD`'s target,
+`origin/main`, `origin/master` and `origin/develop` that exists locally. The
+candidate still goes through `delivery_base_ref` with
+`forbidden_base_branches`. Step-22b prints one warning on stderr, with the
+branch name quoted by `printf '%q'`:
+
+```text
+WARNING: workflow_final_status.sh: the pull request's base could not be read; reporting against the default branch main
+```
+
+The fallback base is used for two things only: the scoped match
+(`workflow_pr_scope.sh --base`) and the no-diff check. The scope helper still
+compares `--base` with the live pull request's `baseRefName`. A wrong guess
+therefore gives a miss, never a false match, and the #1268 adjudication then
+decides the terminal state.
+
+A fallback base never creates a success state. The terminal state, for example
+`EXISTING_OPEN_PR`, comes from the publish evidence before the scoped match
+runs. The match can only confirm that state or veto it: a miss sends the run
+to the #1268 adjudication, and a match leaves the state as it was.
+
+The terminal-state recipe's strict gate (`strict-terminal-state` in
+`workflow-terminal-state.yaml`) runs the same `workflow_final_status.sh` with
+`--base "${RECIPE_VAR_base_branch:-}"`. With an empty `base_branch` it gets the
+same fallback, and it passes when the fallback match confirms the success
+state the publish evidence set. That is safe: `workflow_pr_scope.sh` keeps
+only pull requests whose live `baseRefName` equals `--base`, so a match means
+the pull request's base really is the default branch.
+
+A base that is *refused* (exit code 1) is never replaced. The fallback does
+not run when:
+
+- an explicit or recorded `base_branch` exists, whatever `gh` returns;
+- the pull request reference is malformed or names another repository;
+- `gh pr view` returned a `baseRefName` that `delivery_base_ref` refuses;
+- the default branch itself is refused by `delivery_base_ref`.
+
+`delivery_base_ref` refuses a name that is not a valid branch name, is written
+as a ref (`refs/...`) or as `@`, has no `refs/remotes/origin/<base>`, matches
+`forbidden_base_branches`, or equals the branch being delivered.
+
+When no base can be found at all, step-22b skips the scoped match and does not
+claim one. It prints no `lacks … context` error for the base. That error still
+appears when the repository, branch or head commit is missing. The terminal
+state comes from the #1268 adjudication.
+
+In every one of these paths a pull request that was found keeps its number and
+URL. The report never shows `#0`, `#null` or `null — null` for it:
+
+- step-22b assigns `PR_URL` and `PR_NUMBER` from the scope helper's reply only
+  when the new value is valid (a `github.com` pull request URL, a number
+  matching `^[1-9][0-9]{0,9}$`). Otherwise it keeps the value it had;
+- `workflow_terminal_evidence.sh` fills a missing `number` or `url` on the
+  run's own pull request from the run's `pr_number` and `pr_url` before it
+  removes duplicates and writes the verdict. The number comes from `pr_number`,
+  or from `pr_url` when that is a complete `github.com` pull request URL.
+  Entries from `gh pr list` are not changed.
+
+Example: a run with an empty `base_branch` and no `base_branch` in its publish
+result recorded `https://github.com/octo/example/pull/4242`. The pull request exists and
+is open, but `gh pr view` returns no `baseRefName`. Step-22b warns, uses
+`main` from `origin/HEAD`, and calls `workflow_pr_scope.sh --head <branch> --base main`.
+The pull request's live base is `main`, so the match confirms the
+`EXISTING_OPEN_PR` state the publish evidence set. An excerpt of the output,
+with stderr and stdout interleaved and other lines left out:
+
+```text
+WARNING: workflow_final_status.sh: the pull request's base could not be read; reporting against the default branch main
+terminal_success=true
+terminal_state=EXISTING_OPEN_PR
+terminal_status=EXISTING_OPEN_PR
+PR Status:
+=== PR: https://github.com/octo/example/pull/4242 ===
+```
+
+If the live base were `dev` instead, the scoped match would miss and the
+#1268 adjudication would decide the terminal state.
 
 Example: the repository's default branch on GitHub is `main`, `origin/dev`
 exists, and the run is started with `-c base_branch=dev`. Step-16 opens
@@ -433,7 +533,9 @@ amplihack recipe run default-workflow \
 | `strict_issue_tag ISSUE REPOSITORY PR_REPOSITORY` | step-03, step-15, step-16 | Prints `#N` or `owner/repo#N`. |
 | `same_github_repository A B` | step-03, step-16 | Case-insensitive `owner/repo` comparison. |
 | `select_strict_delivery_issue` (`tools/workflow_issue_tracking.sh`) | step-03 | Confirms the caller's issue or fails. |
-| `delivery_run_base EXPLICIT RECORDED PR_REF REPO BRANCH FORBIDDEN` | the finalize helpers below, the terminal-state probe | Prints the base the run's pull request has, by the rules in [How finalize finds the base](#how-finalize-finds-the-base), without `origin/`. Returns 1, with names quoted by `printf '%q'` on stderr, when no rule gives a checked value. |
+| `delivery_run_base EXPLICIT RECORDED PR_REF REPO BRANCH FORBIDDEN` | the finalize helpers below, the terminal-state probe | Prints the base the run's pull request has, by the rules in [How finalize finds the base](#how-finalize-finds-the-base), without `origin/`. On failure it writes the reason to stderr, with names quoted by `printf '%q'`, and returns 2 when rule 3 could not read the base (`gh pr view` failed, returned something other than JSON, or returned no `baseRefName`), or 1 for any other failure, including a base that `delivery_base_ref` refuses. |
+| `delivery_default_base` | `delivery_run_base` rule 5, step-22b's fallback | Prints the first of `origin/HEAD`'s target, `origin/main`, `origin/master` and `origin/develop` that resolves to a commit, without `origin/`. Reads local refs only and never calls `gh`. Returns 1 with no output when none resolves. It does not check `forbidden_base_branches`; step-22b checks its result with `delivery_base_ref`. |
+| `delivery_pr_ref_readable PR_REF REPO` | `delivery_run_base` rule 3 | Succeeds when the reference is a positive number, or a `https://github.com/<owner>/<repo>/pull/<N>` URL whose repository is `REPO`. Prints nothing. |
 
 None of them read `RECIPE_VAR_*`. Each recipe passes the values it has
 declared in its own `context` (#1561). `delivery_run_base` makes at most one
@@ -442,7 +544,9 @@ declared in its own `context` (#1561). `delivery_run_base` makes at most one
 The finalize helpers take the base the same way, as an argument. A set
 `--base` is never replaced. An empty or absent `--base` uses
 `delivery_run_base`, which falls back to discovery only when the run recorded
-no pull request:
+no pull request. `workflow_final_status.sh` alone also falls back when
+`delivery_run_base` returns 2, as described in
+[When step-22b cannot read the base](#when-step-22b-cannot-read-the-base):
 
 | Helper | Called by |
 | ------ | --------- |
@@ -458,7 +562,23 @@ cargo test -p amplihack --test integration issue_1881_local_default_tracking::st
 cargo test -p amplihack --test integration workflow_publish_pr_metadata::recovery
 cargo test -p amplihack --test integration workflow_delivery_inputs
 cargo test -p amplihack --test integration workflow_finalize_resilience
+bash tests/issue_1596_final_status_branch_pr_lookup.sh
 ```
+
+The shell test runs step-22b with a fake `gh` whose `gh pr view` returns
+`number`, `url`, `title`, `baseRefName`, `headRefName`, `createdAt`,
+`isCrossRepository` and `state`, as the real `gh pr view --json` does. Two
+switches, read only by the fake, remove fields: `FAKE_GH_NO_BASE=1` leaves out
+`baseRefName`, and `FAKE_GH_SPARSE_VIEW=1` leaves out `number`, `url` and
+`title`. The cases for
+[When step-22b cannot read the base](#when-step-22b-cannot-read-the-base)
+check that an unreadable base gives one warning and `--base main` for the
+scope helper, that a sparse reply still prints `#4242` and the pull request
+URL, and that a pull request in another repository, a forbidden default
+branch, or a live `baseRefName` in `forbidden_base_branches` gets no fallback
+and no fallback warning. A unit case checks that `delivery_run_base` returns 2
+for an unreadable base and 1 for a refused one. None of them may print `#0`, `#null` or
+`null — null`.
 
 The finalize tests use a fake `gh` and a local git repository whose
 `origin/HEAD` is `main`, with a real `origin/dev` and pull request 7

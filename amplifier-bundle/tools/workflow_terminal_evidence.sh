@@ -158,6 +158,26 @@ resolve_base_ref() {
 
 PR_FIELDS="number,state,title,url,headRefName,baseRefName,createdAt,isCrossRepository"
 
+# fill_explicit_pr_identity JSON: the explicit PR object with a missing url or
+# number filled from the run's own PR_URL / PR_NUMBER (#2520), so a partial
+# `gh pr view` reply never shows the found PR as #0 or #null. The number is
+# PR_NUMBER when valid, else the number in PR_URL when the whole URL is a
+# github.com pull request URL. Values reach jq only through --arg.
+fill_explicit_pr_identity() {
+  local pr_json="$1" url="" number=""
+  if [[ "$PR_URL" =~ ^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/([1-9][0-9]{0,9})/?$ ]]; then
+    url="${PR_URL%/}"
+    number="${BASH_REMATCH[1]}"
+  fi
+  if [[ "$PR_NUMBER" =~ ^[1-9][0-9]{0,9}$ ]]; then
+    number="$PR_NUMBER"
+  fi
+  printf '%s' "$pr_json" | jq -c --arg url "$url" --arg number "$number" '
+    (if ((.url // "") | tostring) == "" and $url != "" then .url = $url else . end)
+    | (if (.number == null or .number == "" or .number == 0) and $number != ""
+       then .number = ($number | tonumber) else . end)'
+}
+
 collect() {
   local prs_for_head="[]" explicit_pr="null" open_all="[]"
   local evidence_readable="true" unreadable_reason=""
@@ -229,6 +249,7 @@ collect() {
       if raw="$(gh_read "terminal evidence pr view" pr view "$explicit_target" --repo "$REPO" --json "$PR_FIELDS" 2>/dev/null)" \
         && printf '%s' "$raw" | jq -e 'type == "object"' >/dev/null 2>&1; then
         explicit_pr="$(printf '%s' "$raw" | jq -c '.')"
+        explicit_pr="$(fill_explicit_pr_identity "$explicit_pr")"
       fi
     fi
 

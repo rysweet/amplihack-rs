@@ -15,8 +15,10 @@ export GH_PAGER=cat PAGER=cat LESS=FRX
 #                  from step-16's publish result or the pull request's own
 #                  baseRefName (delivery_run_base in workflow_delivery_inputs.sh).
 #                  origin/HEAD, then origin/main, origin/master, origin/develop,
-#                  is used only when the run recorded no pull request at all
-#                  (docs/reference/workflow-delivery-inputs.md).
+#                  is used only when the run recorded no pull request at all,
+#                  or, for this report only, when the recorded pull request's
+#                  base cannot be read (#2520; see ensure_expected_base and
+#                  docs/reference/workflow-delivery-inputs.md).
 EXPECTED_BASE_INPUT=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -102,16 +104,38 @@ resolve_expected_base_branch() {
 
 # Works the base out once (at most one gh call) and keeps it in EXPECTED_BASE,
 # so the no-diff check and the scoped match use the same value.
+#
+# #2520: this step only writes the report, so when the pull request's base is
+# unreadable (delivery_run_base exit 2: gh failed, output not JSON, or no
+# baseRefName) and the run has neither a base_branch nor a recorded base, it
+# reports against the repository's default branch, checked like any other base
+# (delivery_base_ref with forbidden_base_branches). State `fallback`. The scope
+# helper still compares that base with the live baseRefName, so a wrong base
+# is a miss that the #1268 adjudication decides. A refused base (exit 1) is
+# never replaced. Step-21 and the terminal-state probe stay fail-closed.
 EXPECTED_BASE=""
 EXPECTED_BASE_STATE=""
 ensure_expected_base() {
-  case "$EXPECTED_BASE_STATE" in ok) return 0 ;; failed) return 1 ;; esac
-  if EXPECTED_BASE="$(resolve_expected_base_branch)" && [ -n "$EXPECTED_BASE" ]; then
+  local rc=0 candidate=""
+  case "$EXPECTED_BASE_STATE" in ok|fallback) return 0 ;; failed) return 1 ;; esac
+  EXPECTED_BASE="$(resolve_expected_base_branch)" || rc=$?
+  if [ "$rc" -eq 0 ] && [ -n "$EXPECTED_BASE" ]; then
     EXPECTED_BASE_STATE="ok"
     return 0
   fi
   EXPECTED_BASE=""
   EXPECTED_BASE_STATE="failed"
+  if [ "$rc" -eq 2 ] && [ -z "$EXPECTED_BASE_INPUT" ] \
+      && [ -z "$(rv_field pr_publish_result base_branch)" ]; then
+    if candidate="$(delivery_default_base)" \
+        && delivery_base_ref "$candidate" "" "${RECIPE_VAR_forbidden_base_branches:-}" >/dev/null 2>&1; then
+      EXPECTED_BASE="$candidate"
+      EXPECTED_BASE_STATE="fallback"
+      printf "WARNING: workflow_final_status.sh: the pull request's base could not be read; reporting against the default branch %q\n" "$candidate" >&2
+      return 0
+    fi
+    echo "WARNING: workflow_final_status.sh: the pull request's base could not be read and no usable default branch was found (none resolves, or it is refused); the scoped match is skipped" >&2
+  fi
   return 1
 }
 
@@ -239,20 +263,25 @@ esac
 
 validate_final_pr_scope() {
   local current_branch local_head repo_identity expected_base scoped_json reason created_after
+  local scoped_url scoped_number
   [ -x "$PR_SCOPE_HELPER" ] || { echo "ERROR: workflow_pr_scope.sh missing or not executable at $PR_SCOPE_HELPER" >&2; return 1; }
   command -v jq >/dev/null 2>&1 || { echo "ERROR: jq CLI not found — cannot validate scoped final PR metadata" >&2; return 127; }
   # #1762: an alias worktree's PR is on <B>, the branch it pushes to.
   current_branch="$(bash "$SCRIPT_DIR/workflow_remote_branch.sh" .)" || { echo "ERROR: workflow_remote_branch.sh is missing or failed at $SCRIPT_DIR" >&2; return 1; }
   local_head="$(git rev-parse --verify HEAD 2>/dev/null || true)"
   repo_identity="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" || true)"
-  expected_base=""
-  if ensure_expected_base; then
-    expected_base="$EXPECTED_BASE"
-  fi
-  [ -n "$repo_identity" ] && [ -n "$current_branch" ] && [ -n "$local_head" ] && [ -n "$expected_base" ] || {
+  [ -n "$repo_identity" ] && [ -n "$current_branch" ] && [ -n "$local_head" ] || {
     echo "ERROR: scoped final PR validation lacks repo, branch, headRefOid, or baseRefName context" >&2
     return 1
   }
+  # #2520: an unknown base is not missing context; it is a scope miss that
+  # the #1268 adjudication decides. ensure_expected_base has said why.
+  if ! ensure_expected_base; then
+    scope_failure_reason="base_unknown"
+    echo "WARNING: scoped final PR match skipped: the pull request's base is unknown (base_unknown); the run's actual artifacts decide (issue #1268)." >&2
+    return 1
+  fi
+  expected_base="$EXPECTED_BASE"
   created_after="${WORKFLOW_STARTED_AT:-${RECIPE_STARTED_AT:-${TASK_STARTED_AT:-}}}"
   scoped_issue_id="${RECIPE_VAR_issue_number:-}"
   # issue_number can carry a non-numeric local tracking reference (e.g.
@@ -274,8 +303,16 @@ validate_final_pr_scope() {
   [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] && scope_args+=(--pr-number "$PR_NUMBER")
   [ -n "$created_after" ] && scope_args+=(--created-after "$created_after")
   if scoped_json="$("$PR_SCOPE_HELPER" "${scope_args[@]}")"; then
-    PR_URL="$(printf '%s' "$scoped_json" | jq -r '.url // empty')"
-    PR_NUMBER="$(printf '%s' "$scoped_json" | jq -r '(.number // "") | tostring')"
+    # A reply never clears or corrupts the PR's identity (#2520): each field
+    # replaces the run's value only when it is valid.
+    scoped_url="$(printf '%s' "$scoped_json" | jq -r '.url // empty' 2>/dev/null || true)"
+    scoped_number="$(printf '%s' "$scoped_json" | jq -r '(.number // "") | tostring' 2>/dev/null || true)"
+    if [[ "$scoped_url" =~ ^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/[1-9][0-9]{0,9}$ ]]; then
+      PR_URL="$scoped_url"
+    fi
+    if [[ "$scoped_number" =~ ^[1-9][0-9]{0,9}$ ]]; then
+      PR_NUMBER="$scoped_number"
+    fi
     return 0
   fi
   reason="$(printf '%s' "$scoped_json" | jq -r '.reason // ""' 2>/dev/null || true)"
