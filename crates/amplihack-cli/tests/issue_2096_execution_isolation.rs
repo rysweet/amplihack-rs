@@ -101,6 +101,8 @@ impl Fixture {
         let home = root.join("home");
         fs::create_dir_all(&repo).unwrap();
         fs::create_dir_all(&home).unwrap();
+        // Issue #2528: `recipe run` needs an installed bundle at AMPLIHACK_HOME.
+        crate::support::installed_bundle::ensure(&home.join(".amplihack"));
         let runner = root.join("recipe-runner-rs");
         crate::support::exec_stub::write_executable(&runner, STUB_RUNNER, 0o755);
         let f = Self {
