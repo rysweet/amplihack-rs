@@ -119,8 +119,18 @@ oneof() { # oneof <value> <default> <allowed>...: the value if allowed, else the
 }
 
 PR="${1:-}"
-case "$PR" in '' | *[!0-9]*) PR="$(gh pr view --json number --jq .number 2>/dev/null || "${AMPLIHACK_BIN:-amplihack}" orch helper autodrive-gh-read pr-for-branch "$(git symbolic-ref --short -q HEAD)" 2>/dev/null | jq -r ".number // empty" 2>/dev/null || printf '')" ;; esac
-digits "$PR" || PR=""
+# No usable number: the current branch's PR, through GraphQL then the REST
+# fallback. The helper's own error goes to stderr; a PR that neither finds is
+# said so, and the facts below are then facts-unreadable.
+case "$PR" in '' | *[!0-9]*)
+  PR="$(gh pr view --json number --jq .number 2>/dev/null)" || PR=""
+  if ! digits "$PR"; then
+    BRANCH="$(git symbolic-ref --short -q HEAD)" || BRANCH=""
+    PR=""
+    [ -z "$BRANCH" ] || PR="$("${AMPLIHACK_BIN:-amplihack}" orch helper autodrive-gh-read pr-for-branch "$BRANCH" | jq -r '.number // empty')" || PR=""
+  fi ;;
+esac
+digits "$PR" || { echo "WARN: autodrive_platform_facts: no pull request number for this branch; facts unreadable" >&2; PR=""; }
 
 # One read of the pull request. gh's own jq joins the fields with `|`, so no
 # other JSON reader is needed. `|` is not whitespace, so an empty field (an
@@ -146,7 +156,8 @@ fi
 UNAV=""; GH_OUT=""
 gh_read() { # gh_read <read> <arg>...: the helper's JSON line in GH_OUT; status 0 answered, 3 unavailable
   local rc
-  GH_OUT="$("${AMPLIHACK_BIN:-amplihack}" orch helper autodrive-gh-read "$@" 2>/dev/null)"; rc=$?
+  GH_OUT="$("${AMPLIHACK_BIN:-amplihack}" orch helper autodrive-gh-read "$@")"; rc=$?
+  [ "$rc" -eq 0 ] || echo "WARN: autodrive_platform_facts: autodrive-gh-read $1 exited $rc" >&2
   [ "$rc" -ne 3 ] || UNAV="${UNAV}${UNAV:+,}$(printf '%s' "$GH_OUT" | jq -c --arg r "$1" '{read:$r,rate_limited:(.unavailable.rate_limited==true),reset_epoch:(.unavailable.reset_epoch//null)}' 2>/dev/null \
     || printf '{"read":"%s","rate_limited":false,"reset_epoch":null}' "$1")"
   return "$rc"
@@ -154,8 +165,17 @@ gh_read() { # gh_read <read> <arg>...: the helper's JSON line in GH_OUT; status 
 # checks at the HEAD just read: REST only, no second GraphQL try or pulls/{n} read
 if [ "$VIEW_OK" != "true" ] && [ -n "$PR" ] && gh_read pr "$PR"; then
   IFS='|' read -r STATE DRAFT MERGEABLE MSTATE HEAD BASE <<<"$(printf '%s' "$GH_OUT" | jq -r '[.state,(.is_draft|tostring),.mergeable,.merge_state,.head_sha,.base_ref]|map(. // "" | tostring)|join("|")')"
+  # GitHub's own decision or "" (REST has none); an empty one is decided by
+  # the required count below, never assumed (#2333).
   gh_read reviews "$PR" && DECISION="$(printf '%s' "$GH_OUT" | jq -r '.review_decision // ""')"
-  CHECKS="unreadable"; gh_read checks "${HEAD:-$PR}" && CHECKS="$(printf '%s' "$GH_OUT" | jq -r 'if (.checks|length)==0 then "none" elif all(.checks[]; .bucket=="pass" or .bucket=="skipping") then "pass" else "not-passed" end')"
+  # Checks only at the head just read: with no head there is no SHA to pin
+  # them to, so they stay unreadable rather than read by PR number.
+  CHECKS="unreadable"
+  if [ -z "$HEAD" ]; then
+    echo "WARN: autodrive_platform_facts: the REST pr read gave no head; checks unreadable" >&2
+  elif gh_read checks "$HEAD"; then
+    CHECKS="$(printf '%s' "$GH_OUT" | jq -r 'if (.checks|length)==0 then "none" elif all(.checks[]; .bucket=="pass" or .bucket=="skipping") then "pass" else "not-passed" end')"
+  fi
   [ -n "$STATE" ] && [ -n "$HEAD" ] && VIEW_OK="true"
 fi
 CHECKS="$(oneof "$CHECKS" unreadable pass not-passed none)"

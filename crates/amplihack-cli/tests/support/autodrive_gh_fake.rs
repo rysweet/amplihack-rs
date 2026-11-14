@@ -19,6 +19,10 @@
 //! | `reset-abs` | an absolute epoch for `gh api rate_limit` | now + 600 |
 //! | `extra`     | text appended to every refusal's stderr  | empty   |
 //!
+//! Branch protection (`branches/*/protection/*`) answers 404 unless
+//! `rest-protection.json` exists; `rules/branches/*` answers `[]` and
+//! `branches/*` `{"protected":false}` unless their fixtures say otherwise.
+//!
 //! GraphQL calls are `pr view`, `pr checks`, `pr list`, `repo view` and
 //! `api graphql`. Every other `api` call is REST. `api rate_limit` always
 //! answers, as GitHub's does under a limit.
@@ -96,6 +100,11 @@ esac
 case "$path" in
   */merge|*/merges) echo "fake gh: a merge was attempted" >> "$log/merge-attempt"; exit 1 ;;
   repos/*/*/pulls/7/reviews*) emit_file rest-reviews.json ;;
+  repos/*/*/branches/*/protection/*)
+    [ -f "$fix/rest-protection.json" ] || { echo "HTTP 404: Not Found (https://api.github.com/$path)" >&2; exit 1; }
+    emit_file rest-protection.json ;;
+  repos/*/*/rules/branches/*) [ -f "$fix/rest-rules.json" ] || printf '[]' > "$fix/rest-rules.json"; emit_file rest-rules.json ;;
+  repos/*/*/branches/*) [ -f "$fix/rest-branch.json" ] || printf '{"protected":false}' > "$fix/rest-branch.json"; emit_file rest-branch.json ;;
   repos/*/*/commits/*/check-runs*) emit_file rest-check-runs.json ;;
   repos/*/*/commits/*/status*) emit_file rest-status.json ;;
   repos/*/*/pulls/7) emit_file rest-pr.json ;;

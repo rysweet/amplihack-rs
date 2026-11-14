@@ -66,18 +66,6 @@ pub fn review_counts(reviews: &[Value]) -> (u64, u64) {
     (count("APPROVED"), count("CHANGES_REQUESTED"))
 }
 
-/// GraphQL `reviewDecision` computed from `pulls/{n}/reviews`.
-pub fn review_decision(reviews: &[Value], required: u64) -> &'static str {
-    let (approvals, changes) = review_counts(reviews);
-    if changes > 0 {
-        "CHANGES_REQUESTED"
-    } else if approvals >= required {
-        "APPROVED"
-    } else {
-        "REVIEW_REQUIRED"
-    }
-}
-
 /// A check run's bucket, as `gh pr checks` names it.
 pub fn check_run_bucket(status: &str, conclusion: Option<&str>) -> &'static str {
     if status != "completed" {

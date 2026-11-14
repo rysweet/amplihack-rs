@@ -1,6 +1,6 @@
-//! #2472 (waits slice), decision A2 as amended: a loop that ended `WAITING`
+//! #2472 (waits slice), decision A2 (no new stop reason): a loop that ended `WAITING`
 //! is reported by the top-level reducer as `readiness: incomplete`,
-//! `action: not_requested`, `stop_reason: waiting`, with the blocker
+//! `action: not_requested`, `stop_reason: blockers`, with the blocker
 //! `waiting: <wait_target>`. Included from `report.rs` with:
 //!
 //! ```ignore
@@ -60,7 +60,7 @@ fn waiting_blockers(v: &Value) -> Vec<String> {
 }
 
 #[test]
-fn a_waiting_merge_loop_is_incomplete_with_stop_reason_waiting_and_its_target() {
+fn a_waiting_merge_loop_is_incomplete_with_stop_reason_blockers_and_its_target() {
     for target in [
         format!("ci@{SHA}"),
         format!("mergeability@{SHA}"),
@@ -76,7 +76,7 @@ fn a_waiting_merge_loop_is_incomplete_with_stop_reason_waiting_and_its_target() 
         );
         assert_eq!(v["readiness"], "incomplete", "{target}: {v}");
         assert_eq!(v["action"], "not_requested", "{target}: {v}");
-        assert_eq!(v["stop_reason"], "waiting", "{target}: {v}");
+        assert_eq!(v["stop_reason"], "blockers", "{target}: {v}");
         assert_eq!(waiting_blockers(&v), [format!("waiting: {target}")], "{v}");
     }
 }
@@ -89,7 +89,7 @@ fn a_waiting_crusty_loop_is_reported_the_same_way() {
                "wait_target": "read@pr-head"}),
     );
     assert_eq!(v["readiness"], "incomplete", "{v}");
-    assert_eq!(v["stop_reason"], "waiting", "{v}");
+    assert_eq!(v["stop_reason"], "blockers", "{v}");
     assert_eq!(waiting_blockers(&v), ["waiting: read@pr-head"], "{v}");
 }
 
@@ -99,7 +99,7 @@ fn a_waiting_loop_without_a_target_adds_no_waiting_blocker() {
         "merge_loop_result",
         json!({"loop_result": "WAITING", "loop": "merge-ready", "wait_reason": "ci-pending"}),
     );
-    assert_eq!(v["stop_reason"], "waiting", "{v}");
+    assert_eq!(v["stop_reason"], "blockers", "{v}");
     assert_eq!(v["readiness"], "incomplete", "{v}");
     assert!(waiting_blockers(&v).is_empty(), "{v}");
 }
@@ -121,7 +121,7 @@ fn an_invalid_wait_target_is_named_invalid_and_never_repeated() {
             "merge_loop_result",
             json!({"loop_result": "WAITING", "loop": "merge-ready", "wait_target": target}),
         );
-        assert_eq!(v["stop_reason"], "waiting", "{target}: {v}");
+        assert_eq!(v["stop_reason"], "blockers", "{target}: {v}");
         assert_eq!(
             waiting_blockers(&v),
             ["waiting: <invalid target>"],

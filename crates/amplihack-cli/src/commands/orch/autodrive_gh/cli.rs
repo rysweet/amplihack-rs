@@ -25,11 +25,7 @@ enum ReadCommand {
     /// Check buckets at a PR's head, or at a 40-hex commit SHA.
     Checks { target: String },
     /// Review decision, approvals and unresolved threads.
-    Reviews {
-        n: String,
-        #[arg(long, default_value = "1")]
-        required: String,
-    },
+    Reviews { n: String },
     /// The open PR for a branch.
     PrForBranch { branch: String },
 }
@@ -92,15 +88,9 @@ pub fn read_cli(args: ReadArgs) -> anyhow::Result<()> {
             };
             (json!({"read": "checks", "pr": pr}), checks(&gh, &t))
         }
-        ReadCommand::Reviews { n, required } => {
+        ReadCommand::Reviews { n } => {
             let n = pr_arg(n);
-            let required = valid_pr(required)
-                .filter(|r| *r <= 100)
-                .unwrap_or_else(|| usage("--required must be 1-100"));
-            (
-                json!({"read": "reviews", "pr": n}),
-                reviews(&gh, n, required),
-            )
+            (json!({"read": "reviews", "pr": n}), reviews(&gh, n))
         }
         ReadCommand::PrForBranch { branch } => {
             if !valid_branch(branch) {

@@ -49,7 +49,8 @@ pub(crate) fn report(
                             "ORPHANED" => "orphaned",
                             "TERMINAL_POLICY_REFUSAL" => "terminal_refusal",
                             "STUCK" => "no_progress",
-                            "WAITING" => "waiting",
+                            // A2: no new stop reason; the wait is a blocker.
+                            "WAITING" => "blockers",
                             _ => stop_reason,
                         };
                         if result == "WAITING"

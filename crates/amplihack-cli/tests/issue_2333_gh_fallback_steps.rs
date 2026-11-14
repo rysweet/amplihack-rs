@@ -670,3 +670,44 @@ fn step03_checks_by_sha_is_one_gh_call_and_reports_pending() {
         );
     }
 }
+
+// ── autodrive_platform_facts.sh: the REST fallback states no review decision ─
+
+fn platform_facts(g: &GhRepo) -> Value {
+    let o = tool(g, "autodrive_platform_facts.sh", &["7"]);
+    assert!(o.status.success(), "{}", show(&o));
+    last_json(&o)
+}
+
+#[test]
+fn rest_fallback_with_no_review_rule_and_no_reviews_is_not_a_missing_approval() {
+    // #2333 review: REST counted approvals against an assumed requirement of
+    // one, so a repo that requires no review got required-approval-missing
+    // on a clean PR, a STUCK finding on the fallback path.
+    let g = GhRepo::new();
+    g.mode("gql", "refuse");
+    g.fixture("rest-reviews.json", &json!([]));
+    let v = platform_facts(&g);
+    assert_eq!(v["review_decision"], "", "{v}");
+    assert_eq!(v["required_approvals"], "0", "{v}");
+    assert_eq!(v["approval_status"], "MET", "{v}");
+    assert_eq!(v["approval_source"], "required-count", "{v}");
+    assert_eq!(v["approval_blocker"], "", "{v}");
+}
+
+#[test]
+fn rest_fallback_never_calls_one_approval_enough_when_two_are_required() {
+    let g = GhRepo::new();
+    g.mode("gql", "refuse");
+    g.fixture(
+        "rest-rules.json",
+        &json!([{"type": "pull_request", "parameters": {"required_approving_review_count": 2}}]),
+    );
+    // alice's one approval (the default fixture) is not GitHub's decision.
+    let v = platform_facts(&g);
+    assert_eq!(v["review_decision"], "", "{v}");
+    assert_eq!(v["required_approvals"], "2", "{v}");
+    assert_eq!(v["approval_status"], "NOT_MET", "{v}");
+    assert_eq!(v["approval_source"], "required-count", "{v}");
+    assert_eq!(v["approval_blocker"], "required-approval-missing", "{v}");
+}

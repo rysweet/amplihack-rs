@@ -82,7 +82,7 @@ amplihack orch helper autodrive-gh-read pr 2333
 amplihack orch helper autodrive-gh-read head 2333
 amplihack orch helper autodrive-gh-read checks 2333
 amplihack orch helper autodrive-gh-read checks 3f9c2d1e8b7a6c5d4e3f2a1b0c9d8e7f6a5b4c3d
-amplihack orch helper autodrive-gh-read reviews 2333 --required 1
+amplihack orch helper autodrive-gh-read reviews 2333
 amplihack orch helper autodrive-gh-read pr-for-branch feat/issue-2333-fix-amplihack-rs-issue
 ```
 
@@ -91,7 +91,7 @@ amplihack orch helper autodrive-gh-read pr-for-branch feat/issue-2333-fix-amplih
 | `pr <n>` | PR number | `state`, `is_draft`, `head_sha`, `head_ref`, `base_ref`, `merge_state`, `mergeable`, `merged_at` |
 | `head <n>` | PR number | `head_sha` (and `head_ref` when the source has it) |
 | `checks <n\|sha>` | PR number or a 40-hex commit SHA | `head_sha` and `checks`: a list of `{name, bucket}`; `bucket` is `pass`, `fail`, `pending` or `skipping` |
-| `reviews <n>` | PR number; optional `--required <count>` (`1`–`100`, default `1`) | `review_decision`, `approvals`, `changes_requested`, `unresolved_threads` |
+| `reviews <n>` | PR number | `review_decision`, `approvals`, `changes_requested`, `unresolved_threads` |
 | `pr-for-branch <branch>` | branch name | `number` of the open PR for the branch, or `null` when there is none |
 
 These five are the only subcommands. Merge state, mergeability and the base
@@ -185,15 +185,18 @@ of the same PR give equal output apart from `source`.
 | `draft` | `DRAFT` |
 | `unknown` or any other value | `UNKNOWN` |
 
-**Review decision**, from `pulls/{n}/reviews`. The latest `APPROVED`,
-`CHANGES_REQUESTED` or `DISMISSED` review per user counts; `COMMENTED`
-reviews are ignored.
+**Reviews**, from `pulls/{n}/reviews`. The latest `APPROVED`,
+`CHANGES_REQUESTED` or `DISMISSED` review per user counts toward `approvals`
+and `changes_requested`; `COMMENTED` reviews are ignored.
 
-| Condition | `review_decision` |
-| --- | --- |
-| Any user's latest review is `CHANGES_REQUESTED` | `CHANGES_REQUESTED` |
-| Otherwise, approvals ≥ `--required` | `APPROVED` |
-| Otherwise | `REVIEW_REQUIRED` |
+`review_decision` is GitHub's own `reviewDecision` and nothing else. REST has
+no such field, so on the REST path it is always `""`; on the GraphQL path it
+is `""` whenever GitHub states none (GitHub publishes a decision only when a
+rule on the base requires an approving review). No decision is ever worked
+out from the approval count: only GitHub knows the branch's review rules
+(required count, code owners, last push, who may approve). An empty decision
+sends `autodrive_platform_facts.sh` to its required-count, merge-state and
+review-rule logic, exactly as an empty GraphQL decision does.
 
 **Checks**, from `commits/{sha}/check-runs` plus the legacy contexts in
 `commits/{sha}/status`. Results are read up to 10 pages and 8 MiB; a larger
@@ -487,17 +490,18 @@ is no separate waiting outcome. A loop that ended `WAITING` is reported as:
 | --- | --- |
 | `readiness` | `incomplete` |
 | `action` | `not_requested` |
-| `stop_reason` | `waiting` |
+| `stop_reason` | `blockers` |
 | `blockers` | includes `waiting: <wait_target>` |
 
 ```json
-{"schema_version":1,"readiness":"incomplete","action":"not_requested","platform_state":"unknown","stop_reason":"waiting","blockers":["accepted finalization evidence unavailable: …","waiting: ci@3f9c2d1e8b7a6c5d4e3f2a1b0c9d8e7f6a5b4c3d"]}
+{"schema_version":1,"readiness":"incomplete","action":"not_requested","platform_state":"unknown","stop_reason":"blockers","blockers":["accepted finalization evidence unavailable: …","waiting: ci@3f9c2d1e8b7a6c5d4e3f2a1b0c9d8e7f6a5b4c3d"]}
 ```
 
-`stop_reason` `waiting` is set in the reducer's error path, beside
-`budget_exhausted`, `usage_limit`, `orphaned`, `terminal_refusal` and
-`no_progress`. The typed `StopReason` enum and the accepted-outcome path do
-not change.
+Decision A2 rules out a new stop reason, so the reducer's error path maps
+`WAITING` to the existing `blockers` (one of the typed `StopReason` values in
+`evidence-contract.md`), and the `waiting: <wait_target>` blocker says what
+the drive is waiting for. The typed `StopReason` enum and the
+accepted-outcome path do not change.
 
 `wait_target` is read as a JSON string and checked against the same closed
 pattern as `autodrive_round_evidence.sh`:
@@ -672,8 +676,10 @@ outcome costs no GitHub request and is not affected by rate limits.
   still needs the evaluator's `DONE` and finalize's own checks. The
   completion dispatch checks the record before the remote read, so a rate
   limit cannot turn an invalid record into a wait.
-- **Review decision.** The REST `review_decision` is computed locally and is
-  evidence only. GitHub's answer at merge time decides.
+- **Review decision.** `review_decision` is only ever GitHub's own answer,
+  or `""`. Approval counts are evidence; they never become a decision, so an
+  approval from an account without write access cannot satisfy the drive's
+  approval check.
 - **One write.** `autodrive-gh-update-branch` is the only write. The helper
   itself reads the previous round's sidecar (`--prior-wait`) with the strict
   reader and makes the write only when that sidecar is valid, records
@@ -682,7 +688,7 @@ outcome costs no GitHub request and is not affected by rate limits.
 - **Head of the right repository.** The `ls-remote` route is used only when
   `origin` is the repository being read. Otherwise no `git ls-remote` call
   is made; resolving `origin` reads only local configuration.
-- **Arguments.** PR numbers, SHAs, branch names, `--required` and `--repo`
+- **Arguments.** PR numbers, SHAs, branch names and `--repo`
   are validated before any command is built, and passed as separate
   arguments. The branch in `pulls?head=` is sent with `-X GET -f head=…`.
   `head.sha` and `base.ref` returned by GitHub are validated again before use.
@@ -711,7 +717,7 @@ outcome costs no GitHub request and is not affected by rate limits.
 
 | Behaviour | Test file |
 | --- | --- |
-| Each of `pr`, `head`, `checks`, `reviews` falls back to REST (and `head` to `ls-remote`) when the fake `gh` refuses GraphQL with the secondary-limit message; REST output equals the GraphQL output | `crates/amplihack-cli/tests/issue_2333_gh_fallback_reads.rs` |
+| Each of `pr`, `head`, `checks`, `reviews` falls back to REST (and `head` to `ls-remote`) when the fake `gh` refuses GraphQL with the secondary-limit message; REST output equals the GraphQL output, except `review_decision`, which REST always leaves `""` and GraphQL leaves `""` when GitHub states none | `crates/amplihack-cli/tests/issue_2333_gh_fallback_reads.rs` |
 | With `--repo` different from `origin`, the head read makes no `ls-remote` call and that route is unavailable; with `--repo` equal to `origin`, `ls-remote` is still used | `crates/amplihack-cli/tests/issue_2333_gh_fallback_reads.rs` |
 | A read failing over GraphQL and REST reports unavailable, with text distinct from a finding | `crates/amplihack-cli/tests/issue_2333_gh_fallback.rs` |
 | `autodrive-gh-read pr <n>` returns base and merge state over REST when GraphQL is refused | `crates/amplihack-cli/tests/issue_2333_gh_fallback_steps.rs` |
@@ -725,7 +731,7 @@ outcome costs no GitHub request and is not affected by rate limits.
 | REST mapping rows, rate-limit classing (same answer as `classify_gh_error` on every sample), reset bounds, argument rejection and redaction | `crates/amplihack-cli/src/commands/orch/autodrive_gh_tests.rs` |
 | Wait classing, every downgrade token row, the `ci_signal` mapping, `wait_target` order, recompute targets and the pinned `autodrive-round-waits` field names | `crates/amplihack-cli/src/commands/orch/autodrive_waits_tests.rs` |
 | Strict sidecar reader: a valid sidecar at the same head qualifies; a different head, a file over 4 KiB, an unknown key or an invalid `head_sha` each count as a first read; the `none`/`first-read` recompute target is `mergeability@<expected_head_sha>` | `crates/amplihack-cli/src/commands/orch/autodrive_waits_tests.rs` |
-| `WAITING` with a valid target gives `readiness` `incomplete`, `stop_reason` `waiting` and the blocker `waiting: ci@<sha>`; a missing target adds no waiting blocker; an invalid target adds `waiting: <invalid target>` without the value; `unresolved_threads: "unavailable"` blocks readiness and is never read as `0` | unit tests in `crates/amplihack-cli/src/commands/orch/autodrive/report.rs` |
+| `WAITING` with a valid target gives `readiness` `incomplete`, `stop_reason` `blockers` and the blocker `waiting: ci@<sha>`; a missing target adds no waiting blocker; an invalid target adds `waiting: <invalid target>` without the value; `unresolved_threads: "unavailable"` blocks readiness and is never read as `0` | unit tests in `crates/amplihack-cli/src/commands/orch/autodrive/report.rs` |
 
 Each test uses a temporary `HOME`, `XDG_CONFIG_HOME` and `GH_CONFIG_DIR`,
 removes `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` and `GH_HOST` from

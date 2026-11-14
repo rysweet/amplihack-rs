@@ -69,46 +69,42 @@ fn review(user: &str, state: &str) -> Value {
 }
 
 #[test]
-fn review_decision_uses_each_users_latest_counting_review() {
+fn review_counts_use_each_users_latest_counting_review() {
     let r = [
         review("a", "APPROVED"),
         review("a", "COMMENTED"), // ignored: a stays APPROVED
         review("b", "CHANGES_REQUESTED"),
         review("b", "DISMISSED"), // b's latest counting review
     ];
-    assert_eq!(rest_map::review_decision(&r, 1), "APPROVED");
-    assert_eq!(rest_map::review_decision(&r, 2), "REVIEW_REQUIRED");
+    assert_eq!(rest_map::review_counts(&r), (1, 0));
 }
 
 #[test]
-fn any_latest_changes_requested_wins() {
+fn a_latest_changes_requested_is_counted() {
     let r = [
         review("a", "APPROVED"),
         review("b", "APPROVED"),
         review("c", "CHANGES_REQUESTED"),
     ];
-    assert_eq!(rest_map::review_decision(&r, 1), "CHANGES_REQUESTED");
+    assert_eq!(rest_map::review_counts(&r), (2, 1));
 }
 
 #[test]
 fn a_later_approval_clears_the_same_users_changes_requested() {
     let r = [review("a", "CHANGES_REQUESTED"), review("a", "APPROVED")];
-    assert_eq!(rest_map::review_decision(&r, 1), "APPROVED");
+    assert_eq!(rest_map::review_counts(&r), (1, 0));
 }
 
 #[test]
-fn no_reviews_or_only_comments_is_review_required() {
-    assert_eq!(rest_map::review_decision(&[], 1), "REVIEW_REQUIRED");
-    assert_eq!(
-        rest_map::review_decision(&[review("a", "COMMENTED")], 1),
-        "REVIEW_REQUIRED"
-    );
+fn no_reviews_or_only_comments_count_nothing() {
+    assert_eq!(rest_map::review_counts(&[]), (0, 0));
+    assert_eq!(rest_map::review_counts(&[review("a", "COMMENTED")]), (0, 0));
 }
 
 #[test]
 fn one_user_approving_twice_counts_once() {
     let r = [review("a", "APPROVED"), review("a", "APPROVED")];
-    assert_eq!(rest_map::review_decision(&r, 2), "REVIEW_REQUIRED");
+    assert_eq!(rest_map::review_counts(&r), (1, 0));
 }
 
 // ── D4: check buckets ────────────────────────────────────────────────────────

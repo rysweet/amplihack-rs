@@ -293,7 +293,12 @@ fn unresolved_threads(gh: &Gh, n: u64) -> Result<u64, String> {
 }
 
 /// Review decision, approvals, changes requested and unresolved threads.
-pub fn reviews(gh: &Gh, n: u64, required: u64) -> Read {
+///
+/// `review_decision` is GitHub's own `reviewDecision` and nothing else. When
+/// GitHub states none (no review rule on the base, or the REST path, which
+/// has no such field) it is `""`: the approval counts are evidence, never a
+/// decision, because only GitHub knows the branch's review rules.
+pub fn reviews(gh: &Gh, n: u64) -> Read {
     let mut read = cascade(
         gh,
         vec![
@@ -301,10 +306,10 @@ pub fn reviews(gh: &Gh, n: u64, required: u64) -> Read {
                 let v = gh.view(n, "reviewDecision,latestReviews")?;
                 let latest = v["latestReviews"].as_array().cloned().unwrap_or_default();
                 let (approvals, changes) = rest_map::review_counts(&latest);
-                let decision = match v["reviewDecision"].as_str() {
-                    Some(d @ ("APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED")) => d,
-                    _ => rest_map::review_decision(&latest, required),
-                };
+                let decision = v["reviewDecision"]
+                    .as_str()
+                    .filter(|d| matches!(*d, "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED"))
+                    .unwrap_or_default();
                 Ok(fields(
                     json!({"review_decision": decision, "approvals": approvals,
                                       "changes_requested": changes}),
@@ -314,8 +319,8 @@ pub fn reviews(gh: &Gh, n: u64, required: u64) -> Read {
                 let list = gh.rest_pages(&format!("pulls/{n}/reviews"), None)?;
                 let (approvals, changes) = rest_map::review_counts(&list);
                 Ok(fields(
-                    json!({"review_decision": rest_map::review_decision(&list, required),
-                                      "approvals": approvals, "changes_requested": changes}),
+                    json!({"review_decision": "", "approvals": approvals,
+                                      "changes_requested": changes}),
                 ))
             }),
         ],

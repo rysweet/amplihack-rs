@@ -238,13 +238,16 @@ fn checks_read_by_sha_uses_rest_directly() {
 fn reviews_read_falls_back_to_rest_with_latest_review_per_user() {
     let g = GhRepo::new();
     let via_graphql = ok(&g.read(&["reviews", "7"]));
+    assert_eq!(
+        via_graphql["review_decision"], "APPROVED",
+        "GitHub's own: {via_graphql}"
+    );
     g.mode("gql", "refuse");
     let v = ok(&g.read(&["reviews", "7"]));
     assert_eq!(v["source"], "rest", "{v}");
     // alice: APPROVED (her COMMENTED is ignored); bob: DISMISSED is his latest.
-    assert_eq!(v["review_decision"], "APPROVED", "{v}");
     assert_eq!(v["approvals"], 1, "{v}");
-    assert_eq!(via_graphql["review_decision"], v["review_decision"]);
+    assert_eq!(v["changes_requested"], 0, "{v}");
     assert_eq!(
         v["unresolved_threads"], "unavailable",
         "threads have no REST path; a refused GraphQL read is a wait, never 0: {v}"
@@ -252,21 +255,49 @@ fn reviews_read_falls_back_to_rest_with_latest_review_per_user() {
 }
 
 #[test]
-fn reviews_read_honours_required_count_and_changes_requested() {
+fn rest_reviews_read_never_states_a_review_decision() {
+    // REST has no reviewDecision. Counting approvals against a guessed
+    // requirement would call a PR with no reviews REVIEW_REQUIRED in a repo
+    // that requires none, and one approval APPROVED in a repo that requires
+    // two or a code owner. The decision stays empty for the caller's
+    // required-count logic.
     let g = GhRepo::new();
     g.mode("gql", "refuse");
-    let v = ok(&g.read(&["reviews", "7", "--required", "2"]));
-    assert_eq!(v["review_decision"], "REVIEW_REQUIRED", "{v}");
-    g.fixture(
-        "rest-reviews.json",
-        &json!([
+    for reviews in [
+        json!([]),
+        json!([{"user": {"login": "alice"}, "state": "APPROVED"}]),
+        json!([
             {"user": {"login": "alice"}, "state": "APPROVED"},
             {"user": {"login": "dave"}, "state": "APPROVED"},
             {"user": {"login": "dave"}, "state": "CHANGES_REQUESTED"},
         ]),
+    ] {
+        g.fixture("rest-reviews.json", &reviews);
+        let v = ok(&g.read(&["reviews", "7"]));
+        assert_eq!(v["source"], "rest", "{v}");
+        assert_eq!(v["review_decision"], "", "{reviews}: {v}");
+    }
+    let v = ok(&g.read(&["reviews", "7"]));
+    assert_eq!(
+        (v["approvals"].clone(), v["changes_requested"].clone()),
+        (json!(1), json!(1)),
+        "{v}"
+    );
+}
+
+#[test]
+fn graphql_reviews_read_keeps_an_empty_decision_empty() {
+    let g = GhRepo::new();
+    let head = g.head();
+    g.fixture(
+        "gql-pr.json",
+        &json!({"number": 7, "state": "OPEN", "headRefOid": head, "reviewDecision": "",
+            "latestReviews": [{"author": {"login": "alice"}, "state": "APPROVED"}]}),
     );
     let v = ok(&g.read(&["reviews", "7"]));
-    assert_eq!(v["review_decision"], "CHANGES_REQUESTED", "{v}");
+    assert_eq!(v["source"], "graphql", "{v}");
+    assert_eq!(v["review_decision"], "", "{v}");
+    assert_eq!(v["approvals"], 1, "{v}");
 }
 
 #[test]
@@ -425,7 +456,7 @@ fn bad_arguments_exit_2_before_any_gh_call() {
         &["head", "--repo=x"],
         &["checks", "deadbeef"],
         &["checks", "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ"],
-        &["reviews", "7", "--required", "many"],
+        &["reviews", "7", "--required", "2"],
         &["pr-for-branch", "--upload-pack=touch pwned"],
         &["pr-for-branch", "a..b"],
         &["pr-for-branch", "-x"],
