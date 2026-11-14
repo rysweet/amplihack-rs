@@ -658,7 +658,10 @@ fn label_or_empty(value: &str) -> &str {
     }
 }
 
-fn write_new_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+pub(in crate::commands::orch) fn write_new_private(
+    path: &std::path::Path,
+    bytes: &[u8],
+) -> Result<()> {
     use std::io::Write;
     let mut options = std::fs::OpenOptions::new();
     options.create_new(true).write(true);
