@@ -1153,6 +1153,9 @@ pub(super) fn execute_recipe_via_rust_fresh(
                 Err(error) => return AttemptOutcome::Final(Err(error)),
             };
             let mut stderr_tail = String::new();
+            // Issue #2677: the one unobserved fallback start needs the
+            // command built again after the record is downgraded.
+            let correlation_run_id = correlation.run_id().to_string();
             // Cloned so no RefCell borrow is held across the attempt.
             let run_dir = workspace.borrow().run_dir().map(Path::to_path_buf);
             let attempt_result = spawn_with_streaming_stderr(
@@ -1164,6 +1167,7 @@ pub(super) fn execute_recipe_via_rust_fresh(
                 &guard.tree_id,
                 &mut stderr_tail,
                 &git_record,
+                &|| build_command(correlation_run_id.as_str()),
             );
 
             // Structured runner failures and spawn/parse errors both enter
@@ -1473,40 +1477,9 @@ fn spawn_with_streaming_stderr(
     tree_id: &str,
     stderr_sink: &mut String,
     git_record: &super::git_record::GitRecord,
+    rebuild: &dyn Fn() -> Result<Command>,
 ) -> Result<RecipeRunResult> {
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        // Issue #1606: SIGKILL cannot be caught, so a `recipe run` killed that
-        // way never tears the runner down. On Linux the kernel then sends the
-        // runner SIGTERM (PR_SET_PDEATHSIG). Captured before the fork: the
-        // check after prctl catches a parent that died in between.
-        #[cfg(target_os = "linux")]
-        let parent = std::process::id() as libc::pid_t;
-        // SAFETY: `pre_exec` runs after fork and before exec. `setsid`,
-        // `prctl` and `getppid` are async-signal-safe. `setsid` lets timeout
-        // cleanup terminate the recipe tree.
-        unsafe {
-            command.pre_exec(move || {
-                if libc::setsid() == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                #[cfg(target_os = "linux")]
-                {
-                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    if libc::getppid() != parent {
-                        // No allocation after fork: ESRCH, "no such process",
-                        // for the parent that is already gone.
-                        return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
-                    }
-                }
-                Ok(())
-            });
-        }
-    }
+    arm_runner(&mut command);
     // A required record (every real run) is spawned under the native
     // observer. Only a dry run's record is not required, and it never
     // reaches `GitRecord::spawn`: it spawns the runner plainly.
@@ -1514,13 +1487,40 @@ fn spawn_with_streaming_stderr(
     let (spawned, mut observer) = if git_record.is_required() {
         match git_record.spawn(command, correlation.run_id()) {
             Ok((child, observer)) => (Ok(child), Some(observer)),
+            Err(error)
+                if error
+                    .downcast_ref::<super::git_record::observer::ObserverNotEstablished>()
+                    .is_some() =>
+            {
+                // Issue #2677: the observer never attached, so it watched
+                // nothing. Not a retry: this is the single unobserved start
+                // that replaces the observed one, decided by what happened,
+                // and it happens at most once because the downgrade makes
+                // the record not required. If the record refuses (evidence
+                // may exist), the run fails closed with both errors.
+                match git_record.attempt_not_established(correlation.run_id(), &error) {
+                    Ok(()) => {
+                        // Built again after the downgrade, so `apply_to`
+                        // removes every observer and trace variable.
+                        let spawned = rebuild().map(|mut command| {
+                            arm_runner(&mut command);
+                            command
+                        });
+                        (spawned.and_then(spawn_unobserved), None)
+                    }
+                    Err(refused) => (Err(error.context(format!("{refused:#}"))), None),
+                }
+            }
             Err(error) => (Err(error), None),
         }
     } else {
         (spawn_unobserved(command), None)
     };
     #[cfg(not(target_os = "linux"))]
-    let spawned = spawn_unobserved(command);
+    let spawned = {
+        let _ = (git_record, rebuild);
+        spawn_unobserved(command)
+    };
     let mut child = spawned.map_err(|error| {
         correlation.emit_early();
         fail_with_final_record(
@@ -1827,8 +1827,49 @@ fn spawn_with_streaming_stderr(
     }
 }
 
-/// Spawns the runner without the native observer: a dry run on Linux, and
-/// every launch elsewhere (real runs are refused there before this point).
+/// The runner's process setup, shared by the observed start and the single
+/// unobserved fallback (issue #2677), so neither can lose it: captured
+/// stdout and stderr, its own session, and on Linux a SIGTERM when this
+/// process dies.
+fn arm_runner(command: &mut Command) {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // Issue #1606: SIGKILL cannot be caught, so a `recipe run` killed that
+        // way never tears the runner down. On Linux the kernel then sends the
+        // runner SIGTERM (PR_SET_PDEATHSIG). Captured before the fork: the
+        // check after prctl catches a parent that died in between.
+        #[cfg(target_os = "linux")]
+        let parent = std::process::id() as libc::pid_t;
+        // SAFETY: `pre_exec` runs after fork and before exec. `setsid`,
+        // `prctl` and `getppid` are async-signal-safe. `setsid` lets timeout
+        // cleanup terminate the recipe tree.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::getppid() != parent {
+                        // No allocation after fork: ESRCH, "no such process",
+                        // for the parent that is already gone.
+                        return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+                    }
+                }
+                Ok(())
+            });
+        }
+    }
+}
+
+/// Spawns the runner without the native observer: a dry run on Linux, the
+/// single fallback start after the Linux observer could not attach (#2677),
+/// and every launch elsewhere.
 fn spawn_unobserved(mut command: Command) -> Result<Child> {
     command.spawn().context("failed to spawn recipe-runner-rs")
 }

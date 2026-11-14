@@ -2,7 +2,7 @@
 title: Recipe Run and Auto-Drive Checkout Isolation
 description: Where recipe runs and auto-drive reviews execute, what they copy from the caller, how they record Git, and how they release what they own.
 doc_type: reference
-last_updated: 2026-11-13
+last_updated: 2026-11-14
 ---
 
 # Recipe run and auto-drive checkout isolation
@@ -171,12 +171,35 @@ git fetch origin   # updates refs/remotes/origin/* from the real remote
 find their base the same way.
 
 The private repository is bare, so `workflow_worktree_root.sh root` gives the
-folder beside it (the run's storage folder) as the main root, and that folder
-is not a repository. The worktree helpers therefore ask Git through the
-checkout, which shares the same refs, configuration and worktree list:
-`workflow_worktree_root.sh base` is given the checkout, `assert-not-nested`
-lists worktrees from the current repository when the main root is not one, and
-`workflow_caller_branch_alias.sh` runs its Git commands in the caller path.
+folder beside it (the run's storage folder, `<work root>/exec/<hash>`) as the
+main root, and that folder is not a repository. The worktree helpers therefore
+ask Git through the checkout, which shares the same refs, configuration and
+worktree list: `workflow_worktree_root.sh base` is given the checkout,
+`assert-not-nested` lists worktrees from the current repository when the main
+root is not one, and `workflow_caller_branch_alias.sh` runs its Git commands in
+the caller path.
+
+A `step-04-setup-worktree` from before #2290, for example one found first in
+the caller's own `amplifier-bundle/`, passes the `root` answer back to the
+helper (`base "$MAIN_REPO_PATH"`). The helper accepts that: when the folder it
+is given is not a work tree, but it is exactly the `root` answer for the
+checkout named by `AMPLIHACK_RUN_CHECKOUT`, `root` prints that folder as its
+own root and `base` resolves as it would from the checkout. Both print the
+same path under `<work root>/worktrees`:
+
+```sh
+# In a step of a new-branch run started with
+#   amplihack recipe run smart-orchestrator -w ~/src/amplihack-rs \
+#     -c repo_path=. -c issue_number=2677 -c force_single_workstream=true
+h=amplifier-bundle/tools/workflow_worktree_root.sh
+main=$("$h" root .)          # <work root>/exec/<hash>
+"$h" base .                  # <work root>/worktrees/amplihack-rs-<hash8>
+"$h" base "$main"            # the same path
+```
+
+Any other folder that is not a work tree still fails with
+`'<path>' is not inside a git work tree.`, whether or not
+`AMPLIHACK_RUN_CHECKOUT` is set.
 
 Path inputs are mapped before launch:
 
@@ -310,7 +333,11 @@ Each record has schema version `1` and `run_id`, `attempt_id`, `executable`,
 - `<run dir>/git-recording.json`, with scope `runner-descendants`
 
 Failure to start the observer, losing it during the run, a storage or
-attribution error, or a failed publication makes the run fail. An empty
+attribution error, or a failed publication makes the run fail. The one
+exception is an observer that could not attach to the runner at all (the
+kernel refused `PTRACE_TRACEME`, or the observer exited before handoff): the
+run continues unobserved and records `"coverage":"unavailable"`, as off Linux.
+See [The Linux observer could not attach](recipe-runner-logging.md#the-linux-observer-could-not-attach). An empty
 journal means the observer ran and saw no Git commands that can write.
 `GitRecord::dry_run()` is the only state with recording switched off, and only
 a dry run reaches it. See the [Git command record](recipe-runner-logging.md#git-command-record).
@@ -467,9 +494,10 @@ workspace code. None of them is discarded with `.ok()`, `let _ =` or
 | Failure | Result |
 | --- | --- |
 | Unsafe input, unborn `HEAD`, bare or malformed repository | Preparation fails naming the path; no step runs; admission finished as `Failure`. |
-| Observer fails to start on Linux | The runner never starts. Without a writable work root: `cannot initialize required Git recording; provide a writable absolute AMPLIHACK_WORK_ROOT and retry`. |
+| Observer could not attach on Linux (`PTRACE_TRACEME` refused, or observer exited before handoff) | One notice on stderr; the runner starts once unobserved; `coverage: "unavailable"` is recorded. |
+| Observer fails to start on Linux for any other reason | The runner never starts. Without a writable work root: `cannot initialize required Git recording; provide a writable absolute AMPLIHACK_WORK_ROOT and retry`. |
 | Not Linux | The run proceeds unobserved and records `coverage: "unavailable"`. Without a writable work root it stops with the same message as above. |
-| Seeding `origin/*` or copying `origin/HEAD` fails | Preparation fails with `partial resources retained at <exec dir>`; no step runs. |
+| Seeding `origin/*` (for example an `origin` URL that cannot be fetched) or copying `origin/HEAD` fails | Preparation fails with `cannot seed origin refs` and `partial resources retained at <exec dir>`; no step runs. |
 | Observer lost, storage or attribution error | Controlled teardown, partial evidence kept, run fails. |
 | Checkout identity changed at release | Resources kept, run fails. |
 | Review dir fails a check | `REVIEW_DIR_CHANGED` or `REVIEW_DIR_UNSTAMPED`; no judging. |
@@ -490,7 +518,7 @@ everywhere; only command recording depends on Linux.
 
 | Platform | Steps run in | Git command recording |
 | --- | --- | --- |
-| Linux | The private checkout | Required. The ptrace observer runs and its failure fails the run. |
+| Linux | The private checkout | Required. The ptrace observer runs and its failure fails the run. If it could not attach at all, the run continues unobserved with `coverage: "unavailable"`. |
 | macOS and every other non-Linux target | The private checkout | Unavailable. No observer is started and the run is not failed for it. |
 
 Off Linux, `GitRecord` enters its `Unavailable` state:

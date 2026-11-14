@@ -2,15 +2,17 @@
 title: Recipe Runner Logging Reference
 description: Progress output, correlation, and the required Git command record.
 doc_type: reference
-last_updated: 2026-11-13
+last_updated: 2026-11-14
 ---
 
 # Recipe Runner Logging Reference
 
 On Linux, every real run records the Git commands its runner, steps, agents
 and hooks launch, using an observer. A run whose recording fails does not
-succeed. On other platforms the run proceeds without recording and says so
-(see [When recording is unavailable](#when-recording-is-unavailable)).
+succeed. The one Linux exception is an observer that could not attach to the
+runner at all: that run proceeds without recording and says so. On other
+platforms the run always proceeds without recording and says so (see
+[When recording is unavailable](#when-recording-is-unavailable)).
 Trace2 output is kept for diagnostics only. See
 [required recording](recipe-checkout-isolation.md#required-recording).
 
@@ -328,7 +330,9 @@ the recording receipt. Command records have schema version `1`, `run_id`,
 The receipt's scope is explicitly `runner-descendants`.
 
 Required storage, collector loss, incomplete receipts, bounds, and publication
-failures prevent success. Raw evidence is retained when final publication
+failures prevent success. An observer that never attached is the one
+exception (see
+[The Linux observer could not attach](#the-linux-observer-could-not-attach)). Raw evidence is retained when final publication
 fails. A successful empty journal requires a completed observer receipt.
 The mechanism does not establish observation of preparation/release processes,
 arbitrary non-Git index writes, renamed Git executables, unrelated processes,
@@ -337,9 +341,16 @@ or tamper resistance against the same user. See the
 
 ### When recording is unavailable
 
-Off Linux (macOS and every other non-Linux target) there is no observer. A
-real run still executes in its private checkout, but no Git command is
-recorded. The run prints one notice to stderr and continues:
+A real run has no Git command record in two cases:
+
+- Off Linux (macOS and every other non-Linux target), where there is no
+  observer.
+- On Linux, when the observer could not attach to the runner (see
+  [The Linux observer could not attach](#the-linux-observer-could-not-attach)).
+
+In both cases the run still executes in its private checkout, but no Git
+command is recorded. Off Linux the run prints one notice to stderr and
+continues:
 
 ```text
 amplihack: Git command recording is unavailable on this platform; the run continues in its private checkout without recording
@@ -362,7 +373,7 @@ At the end of the run, `<run dir>/git-recording.json` (mode `0600`) holds:
 | `schema_version` | `1` |
 | `coverage` | `"unavailable"`. A Linux run has `"established"`. |
 | `complete` | Always `false`. |
-| `reason` | A fixed sentence naming why. It contains no path, environment value or command line. |
+| `reason` | A fixed sentence naming why. It contains no path, environment value, error number or command line. |
 | `backend` | `null`. A Linux run has `"linux-ptrace-exec"`. |
 
 `run.json` copies this object into its existing `git_recording` field. No
@@ -382,17 +393,91 @@ removed. A run still needs a usable work root; without one it stops with
 `cannot initialize required Git recording; provide a writable absolute
 AMPLIHACK_WORK_ROOT and retry`.
 
-Check which kind of record a run has:
+#### The Linux observer could not attach
+
+On Linux the observer starts the runner under `PTRACE_TRACEME`. If the kernel
+refuses that, or the observer exits before it hands the runner over, the
+observer never watched anything for that attempt. Instead of failing before
+any step runs, amplihack then:
+
+1. Checks that nothing was recorded: no earlier attempt of this run was
+   observed, the attempt's journal in `git-trace2/` is an empty regular file
+   with one link, and `git-trace2/` (mode `0700`, owned by the user) holds
+   nothing else.
+2. Deletes that empty journal.
+3. Prints one notice to stderr, naming a fixed cause:
+
+   ```text
+   amplihack: Git command recording is unavailable for this run: the Linux ptrace observer could not attach (nested tracing is unsupported); the run continues in its private checkout without recording
+   ```
+
+   The cause in brackets is `nested tracing is unsupported` when the kernel
+   refused `PTRACE_TRACEME` (`EPERM` or `ENOSYS`, as under another tracer or a
+   strict `ptrace_scope`), or `observer exited before runner handoff`.
+4. Starts the runner once, unobserved, with the same command and the clean
+   environment described [above](#when-recording-is-unavailable). This is a
+   single fallback chosen by what happened, not a retry: if the runner itself
+   cannot start, the run fails with that error.
+
+At the end of the run, `git-recording.json` holds:
+
+```json
+{
+  "schema_version": 1,
+  "coverage": "unavailable",
+  "complete": false,
+  "reason": "the Linux ptrace observer could not attach to the runner, so this run has no Git command record",
+  "backend": null
+}
+```
+
+The empty `git-trace2/` folder is removed (only if it is empty). There is no
+`git-commands.jsonl`.
+
+Every other recording failure still fails the run, as before:
+
+| Case | Result |
+| --- | --- |
+| The observer attached, but its receipt is missing | `required observer did not finalize; partial evidence retained: ...` |
+| The journal is not empty, or `git-trace2/` holds a receipt or any other entry | The downgrade is refused; the files are kept; the run fails. |
+| The journal was replaced, is a symbolic link, or has other links | The downgrade is refused; the run fails. |
+| An earlier attempt of this run was observed | The downgrade is refused; the run fails. |
+| A receipt from another attempt, an oversized journal or line | The run fails. |
+| A nested run's relay to its parent's observer fails | The run fails. |
+| The journal cannot be created | The run fails. |
+| The runner binary cannot be executed with an error other than `EPERM` (`ENOENT`, `EACCES`, `ENOEXEC`, `E2BIG`, `ETXTBSY`) | The run fails with the spawn error; no unobserved start is tried. |
+
+The kind of failure is decided by its error number alone. An `EPERM` from
+executing the runner, as a security module can return, looks the same as a
+refused `PTRACE_TRACEME`, so it gets the one unobserved start; that start then
+fails with its own spawn error.
+
+A missing receipt alone never makes a run unavailable: only an attempt the
+observer never attached to can be.
+
+#### Check which kind of record a run has
 
 ```sh
 jq -r '.git_recording.coverage' \
   ~/.amplihack/work/runs/3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3/run.json
-# established   (Linux)
-# unavailable   (macOS)
+# established   (Linux, observed)
+# unavailable   (macOS, or Linux where the observer could not attach)
 ```
 
+Tell the two `unavailable` cases apart by `reason`:
+
+```sh
+jq -r '.git_recording.reason' \
+  ~/.amplihack/work/runs/3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3/run.json
+# Git command recording needs the Linux ptrace observer; this platform has none
+# the Linux ptrace observer could not attach to the runner, so this run has no Git command record
+```
+
+Treat `unavailable` as "no evidence", never as a clean record.
+
 The platform is chosen from the build target. No flag or environment variable
-selects the unobserved path on Linux.
+selects the unobserved path on Linux; only an observer that failed to attach
+does.
 
 ### Diagnostic Trace2 compatibility
 

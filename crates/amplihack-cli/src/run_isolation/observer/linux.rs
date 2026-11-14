@@ -41,6 +41,36 @@ pub(crate) fn parent_observer() -> Result<Option<u32>> {
     Ok(Some(group))
 }
 
+/// The observer could not be set up for this attempt, so nothing about the
+/// runner was observed: `PTRACE_TRACEME` was refused (the spawn failed with
+/// exactly `EPERM` or `ENOSYS`), or the tracing thread ended before handing
+/// the runner over. Issue #2677: the caller may then run the attempt once
+/// unobserved and record coverage as unavailable. Every other observer
+/// failure stays a plain error and fails closed.
+#[derive(Debug)]
+pub(crate) struct ObserverNotEstablished(anyhow::Error);
+
+impl std::fmt::Display for ObserverNotEstablished {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The inner chain is reached through `source`, so it is not
+        // repeated here.
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for ObserverNotEstablished {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.source()
+    }
+}
+
+/// Classified by error number only, never by message text. Exec errors
+/// (`ENOENT`, `EACCES`, `ENOEXEC`, `E2BIG`, `ETXTBSY`, `ESRCH`) mean the
+/// runner itself cannot start, so they are not an observer failure.
+fn traceme_refused(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(libc::EPERM) | Some(libc::ENOSYS))
+}
+
 pub(crate) struct Observer {
     result: mpsc::Receiver<Result<ExitStatus>>,
     thread: Option<JoinHandle<()>>,
@@ -88,9 +118,16 @@ impl Observer {
             let child = match command.spawn() {
                 Ok(child) => child,
                 Err(error) => {
-                    let _ = child_tx.send(Err(anyhow::Error::new(error).context(
+                    let refused = traceme_refused(&error);
+                    let error = anyhow::Error::new(error).context(
                         "required Linux observer unavailable; nested tracing is unsupported",
-                    )));
+                    );
+                    let error = if refused {
+                        anyhow::Error::new(ObserverNotEstablished(error))
+                    } else {
+                        error
+                    };
+                    let _ = child_tx.send(Err(error));
                     return;
                 }
             };
@@ -125,9 +162,23 @@ impl Observer {
             }
             let _ = tx.send(observed);
         });
-        let child = child_rx
-            .recv()
-            .context("observer exited before runner handoff")??;
+        let child = match child_rx.recv() {
+            Ok(Ok(child)) => child,
+            Ok(Err(error)) => {
+                // The thread returns right after reporting a failed spawn.
+                // Joined first, so nothing still holds the journal open.
+                join_tracing_thread(thread)?;
+                return Err(error);
+            }
+            Err(_) => {
+                // A panicked thread may have spawned the runner before it
+                // died, so a panic stays a plain error and fails closed.
+                join_tracing_thread(thread)?;
+                return Err(anyhow::Error::new(ObserverNotEstablished(anyhow::anyhow!(
+                    "observer exited before runner handoff"
+                ))));
+            }
+        };
         Ok((
             child,
             Self {
@@ -239,6 +290,13 @@ impl Observer {
         Ok(())
     }
 }
+/// Waits for a tracing thread that never handed a runner over.
+fn join_tracing_thread(thread: JoinHandle<()>) -> Result<()> {
+    thread
+        .join()
+        .map_err(|_| anyhow::anyhow!("required observer panicked before runner handoff"))
+}
+
 impl Drop for Observer {
     fn drop(&mut self) {
         if let Err(error) = self.terminate() {
@@ -749,4 +807,47 @@ fn record_exec(
         .sync_data()
         .context("persist required observed Git command before resuming execution")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests_not_established {
+    use super::*;
+
+    #[test]
+    fn only_eperm_and_enosys_mean_traceme_was_refused() {
+        for errno in [libc::EPERM, libc::ENOSYS] {
+            assert!(traceme_refused(&std::io::Error::from_raw_os_error(errno)));
+        }
+        for errno in [
+            libc::ENOENT,
+            libc::EACCES,
+            libc::ENOEXEC,
+            libc::E2BIG,
+            libc::ETXTBSY,
+            libc::ESRCH,
+        ] {
+            assert!(!traceme_refused(&std::io::Error::from_raw_os_error(errno)));
+        }
+        assert!(!traceme_refused(&std::io::Error::other("no errno")));
+    }
+
+    #[test]
+    fn not_established_keeps_the_cause_chain_once() {
+        let inner = anyhow::Error::new(std::io::Error::from_raw_os_error(libc::EPERM))
+            .context("required Linux observer unavailable; nested tracing is unsupported");
+        let error = anyhow::Error::new(ObserverNotEstablished(inner));
+        let text = format!("{error:#}");
+        assert_eq!(
+            text.matches("nested tracing is unsupported").count(),
+            1,
+            "{text}"
+        );
+        assert!(
+            error
+                .chain()
+                .filter_map(|e| e.downcast_ref::<std::io::Error>())
+                .any(|e| e.raw_os_error() == Some(libc::EPERM)),
+            "{text}"
+        );
+    }
 }
