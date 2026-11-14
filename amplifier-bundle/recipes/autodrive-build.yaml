@@ -14,6 +14,7 @@ recursion:
 context:
   step_recovery_dir: ""
   build_recovery: ""
+  base_branch: ""  # base for the pull request, passed on to default-workflow; empty: the PR's own base (docs/reference/workflow-delivery-inputs.md)
   task_description: ""
   requirements: ""
   repo_path: "."
@@ -66,6 +67,7 @@ steps:
     # Issue #2539: a failed build goes to step-02r instead of ending the run.
     continue_on_error: true
     context:
+      base_branch: "{{base_branch}}"
       task_description: "{{no_merge_directive.task_description}}"
       requirements: "{{no_merge_directive.requirements}}"
       repo_path: "{{repo_path}}"

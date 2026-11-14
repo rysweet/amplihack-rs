@@ -23,6 +23,7 @@ tags: ["smart-orchestrator","orchestrator","composable","classify","route","refl
 # convert its nonzero result into a successful orchestration summary.
 
 context:
+  base_branch: ""  # base for the pull request, passed on to default-workflow; empty: the PR's own base (docs/reference/workflow-delivery-inputs.md)
   task_description: ""
   repo_path: "."
   # Issue #342: target an existing PR branch in sub-recipes.
@@ -72,11 +73,15 @@ steps:
     recovery: {"replay": "never"}
     type: "recipe"
     recipe: "smart-classify-route"
+    context:
+      base_branch: "{{base_branch}}"
 
   - id: "smart-execute-routing"
     recovery: {"replay": "never"}
     type: "recipe"
     recipe: "smart-execute-routing"
+    context:
+      base_branch: "{{base_branch}}"
 
   - id: "smart-reflect-loop"
     recovery: {"replay": "never"}

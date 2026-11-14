@@ -28,7 +28,8 @@ The recipe is `amplifier-bundle/recipes/quick-change.yaml`. It was added for iss
 - [Routing from smart-orchestrator](#routing-from-smart-orchestrator)
 - [The select-workflow helper](#the-select-workflow-helper)
 - [Steps skipped after a quick change](#steps-skipped-after-a-quick-change)
-- [Recursion limits](#recursion-limits)
+- [Recursion limits and line budgets](#recursion-limits-and-line-budgets)
+- [Same context as the development route](#same-context-as-the-development-route)
 - [Security limits](#security-limits)
 - [Out of scope](#out-of-scope)
 - [Related](#related)
@@ -102,7 +103,8 @@ The run log shows the routing choice on stderr:
 | `quick_change_max_lines` | `"150"` | Line limit (additions plus deletions). Must match `^[0-9]{1,6}$`. |
 | `allow_no_op` | `"false"` | When exactly `"true"`, an empty diff finishes the run with verdict `empty` and no commit, push or PR, in place of failing it. smart-classify-route sets it for docs-only, audit, orchestration and meta tasks, and smart-execute-routing passes it on, as it does to `default-workflow`. See [Empty diff](#empty-diff). |
 | `existing_branch`, `pr_number` | `""` | Not used by `quick-change`, which always creates a new `quick/` branch. Its worktree step passes both as empty, so values inherited from the orchestrator are ignored; the orchestrator does not choose `quick-change` when either is set, or when the task text names a branch (see [Precedence](#precedence)). The recipe sets `existing_branch` itself when it invokes `default-workflow` on hand-over. |
-| `base_branch`, `forbidden_base_branches`, `strict_delivery` | inherited | The [delivery inputs](workflow-delivery-inputs.md#where-the-inputs-apply) of `default-workflow`, not declared here. The worktree step passes `base_branch` and `forbidden_base_branches` as empty, so the `quick/` branch starts from `origin/HEAD`, the branch the PR targets, and a base inherited from the orchestrator is not used. `strict_delivery` is passed through: when it is `"true"`, step 04 of `workflow-worktree` refuses to create the branch and the run stops. |
+| `base_branch` | `""` | Declared here with default `""`. `smart-execute-routing` passes `base_branch: "{{base_branch}}"` in `execute-single-round-1-quick-change`, as in the round-1 call to `default-workflow`. The worktree step (step 1) passes it to `workflow-worktree` as empty, so the `quick/` branch starts from `origin/HEAD` and a base inherited from the orchestrator is not used; the context merged back from that step keeps it empty. `quick-change-handover` passes `base_branch: "{{base_branch}}"` to `default-workflow`, which is empty, so finalize reads the base from the pull request ([How finalize finds the base](workflow-delivery-inputs.md#how-finalize-finds-the-base)). |
+| `forbidden_base_branches`, `strict_delivery` | inherited | [Delivery inputs](workflow-delivery-inputs.md#where-the-inputs-apply) of `default-workflow`, not declared here. The worktree step passes `forbidden_base_branches` as empty. `strict_delivery` is passed through: when it is `"true"`, step 04 of `workflow-worktree` refuses to create the branch and the run stops. |
 
 No GitHub issue is created by `quick-change`. A hand-over can create one; see [Hand-over to default-workflow](#hand-over-to-default-workflow).
 
@@ -298,7 +300,7 @@ When the verdict is `handover`:
 
 1. `quick-change-write-handover` writes the full diff against the pinned base, untracked files included, to `<state dir>/quick-change-handover.patch`, and writes the hand-over note described below.
 2. Nothing is committed or pushed by `quick-change`. The worktree and branch are left as they are, including any commit the agent made against its instructions.
-3. `quick-change-handover` runs `default-workflow` with the original task, the note appended, and `existing_branch` set from `worktree_setup.branch_name`.
+3. `quick-change-handover` runs `default-workflow` with the original task, the note appended, `existing_branch` set from `worktree_setup.branch_name`, and `base_branch: "{{base_branch}}"`, which is empty after step 1.
 
 `default-workflow` then reuses the `quick/` branch through its own steps:
 
@@ -617,11 +619,28 @@ Reflection rounds and outside-in validation exist to judge a full workflow run. 
 
 `selected_workflow` is declared in the context of `smart-orchestrator`, `smart-classify-route`, `smart-execute-routing`, `smart-reflect-loop` and `smart-validate-summarize`, so each condition can read it.
 
-## Recursion limits
+## Recursion limits and line budgets
 
 `quick-change.yaml` sets `max_depth: 6` and `max_total_steps: 140`. On the pinned runner, limits are counted from the top-level recipe, and a `recipe` step fails when the depth it runs at has reached `max_depth`. The longest path is smart-orchestrator, smart-execute-routing, `quick-change`, then a hand-over into `default-workflow` and its sub-recipes: about 146 of 200 steps, counting `handover-reselect-workflow` and the reflection and validation steps that run after a hand-over, with the deepest sub-recipe (`workflow-terminal-adjudication`) at depth 5 of 6. A change to the runner pin can change how these are counted.
 
-`issue_1740_quick_change_recipe::handover_nesting_leaves_one_level_spare` walks the `recipe:` steps of the bundled YAML from smart-orchestrator, and from `quick-change` run on its own, through `quick-change` and its hand-over, and fails when any sub-recipe on those paths sits deeper than `max_depth - 1`. A new level of sub-recipe under `default-workflow` would use that spare level, and the test fails before it ships.
+No test checks the nesting depth, so a new level of sub-recipe under `default-workflow` must be checked against `max_depth` by hand.
+
+Two line budgets keep the recipes that run a quick change small:
+
+| File | Budget | Test |
+| --- | --- | --- |
+| `quick-change.yaml` | 300 lines | `issue_1740_quick_change_recipe::recursion_limits_and_line_budget`, which also checks `max_depth: 6` and `max_total_steps: 140` |
+| `smart-execute-routing.yaml` | 400 lines | `issue_1740_routing_recipes::smart_recipes_stay_within_400_lines` |
+
+Both files are at their budgets, so a line added to either needs a line removed. After any edit, the recipe's entry in `amplifier-bundle/recipes/_recipe_manifest.json` must be the first 16 characters of the file's SHA-256:
+
+```bash
+sha256sum amplifier-bundle/recipes/quick-change.yaml | cut -c1-16
+```
+
+## Same context as the development route
+
+`execute-single-round-1-quick-change` passes the same `context:` map as `execute-single-round-1-development`: `base_branch`, `worktree_setup`, `allow_no_op`, `skip_pre_agent_validation` and `auto_init_repo`, each as `"{{<key>}}"`. `issue_1740_routing_recipes::quick_change_round_1_follows_development_and_forwards_the_same_context` compares the two maps and fails when they differ, so a key added to one round-1 call must be added to the other. The test checks the forwarded keys, not prompt wording.
 
 ## Security limits
 
