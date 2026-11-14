@@ -185,11 +185,21 @@ steps:
           | jq -r '[(.statusCheckRollup // [])[] | select(.conclusion == "FAILURE" or .conclusion == "CANCELLED" or .conclusion == "TIMED_OUT") | (.name // .context // "unknown")] | join(", ")')"
         TASK="Fix CI failures on PR #${NUM} (branch ${BRANCH}): ${TITLE}. Failing checks: ${FAILING}."
         echo "drive-red-prs-to-fix: dispatching default-workflow for PR #$NUM"
-        if ! amplihack recipe run default-workflow \
-            -c task_description="$TASK" \
+        # #2582: the task holds PR-author text, so it goes by a 0600 file in a
+        # 0700 folder, not argv, and both are removed by literal path after.
+        CTX_DIR="$(mktemp -d "${TMPDIR:-/tmp}/quality-loop-ctx.XXXXXX")"
+        if ! ( umask 077 && printf '%s' "$TASK" > "${CTX_DIR}/task_description" ); then
+          rm -f -- "${CTX_DIR}/task_description"; rmdir -- "$CTX_DIR" || true
+          echo "drive-red-prs-to-fix: could not write the task file for PR #$NUM" >&2; exit 1
+        fi
+        RC=0
+        amplihack recipe run default-workflow \
+            --context-from-file "task_description=${CTX_DIR}/task_description" \
             -c repo_path="$REPO" \
             -c existing_branch="$BRANCH" \
-            -c pr_number="$NUM"; then
+            -c pr_number="$NUM" || RC=$?
+        rm -f -- "${CTX_DIR}/task_description"; rmdir -- "$CTX_DIR" || true
+        if [ "$RC" -ne 0 ]; then
           echo "drive-red-prs-to-fix: default-workflow failed for PR #$NUM" >&2; exit 1
         fi
         DISPATCHED+=("$NUM"); COUNT=$((COUNT + 1))

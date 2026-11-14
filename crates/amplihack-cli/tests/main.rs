@@ -34,6 +34,8 @@ mod issue_2545_autodrive_repo_context;
 mod issue_2556_autodrive_evidence;
 #[path = "issue_2582_context_off_argv.rs"]
 mod issue_2582_context_off_argv;
+#[path = "issue_2582_nested_context_off_argv.rs"]
+mod issue_2582_nested_context_off_argv;
 #[path = "issue_2585_launch_notices_stderr.rs"]
 mod issue_2585_launch_notices_stderr;
 

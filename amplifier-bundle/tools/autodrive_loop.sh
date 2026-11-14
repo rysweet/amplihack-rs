@@ -91,7 +91,7 @@ LOOP_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
 # shellcheck source=/dev/null
 . "${LOOP_HOME}/autodrive_state.sh" 2>/dev/null \
   || { echo "ERROR: autodrive_loop.sh: autodrive_state.sh is missing beside it (${LOOP_HOME:-<unknown>}); the state dir cannot be made private" >&2; exit 2; }
-# shellcheck source=autodrive_escalate.sh # escalate, usage_limit_stop (#1801)
+# shellcheck source=autodrive_escalate.sh # escalate, usage_limit_stop (#1801), eval_ctx_write (#2582)
 . "${LOOP_HOME}/autodrive_escalate.sh" 2>/dev/null || { echo "ERROR: autodrive_loop.sh: autodrive_escalate.sh is missing beside it (${LOOP_HOME:-<unknown>}); the loop cannot report how it stopped" >&2; exit 2; }
 # shellcheck source=autodrive_refusal.sh # terminal_refusal, child_failure_summary (#1437)
 . "${LOOP_HOME}/autodrive_refusal.sh" 2>/dev/null || { echo "ERROR: autodrive_loop.sh: autodrive_refusal.sh is missing beside it (${LOOP_HOME:-<unknown>}); a refusal could not be told from a failure" >&2; exit 2; }
@@ -300,24 +300,19 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(print
     fi
     usage_add evaluator "$T0"
   else
+  # #2582: agent output and log text reach the evaluator by file, not argv (eval_ctx_write).
+  eval_ctx_write || { escalate EVALUATOR_CONTEXT_FAILED "could not write the evaluator context"; exit 1; }
   ( umask "$CALLER_UMASK" && AMPLIHACK_USAGE_WAIT_LEDGER="$(wait_ledger evaluator)" exec "$AMPLIHACK_BIN" recipe run "$HEALTH_RECIPE_PATH" \
       --working-dir "$REVIEW_REAL" \
       -c "loop_name=auto-drive:${LOOP_NAME}" \
       -c "loop_round_label=${ROUND_LABEL}" \
-      -c "loop_history=${HISTORY}" \
-      -c "loop_last_round_output=$(bash "${LOOP_HOME}/autodrive_round_tail.sh" "$LOG")" \
       -c "loop_repo_path=${REPO}" -c "loop_agent_working_dir=${REVIEW_REAL}" \
       -c "loop_baseline_ref=${BASELINE}" \
       -c "loop_child_exit_code=${ROUND_RC}" \
-      -c "loop_findings_current=${FINDINGS}" \
-      -c "loop_findings_previous=${PREV_FINDINGS}" \
-      -c "loop_test_signal=${TEST_SIGNAL}" \
-      -c "loop_test_signal_previous=${PREV_TEST}" \
-      -c "loop_ci_signal=${CI_SIGNAL}" \
-      -c "loop_ci_signal_previous=${PREV_CI}" \
+      "${EVAL_CTX_ARGS[@]}" \
       -c "loop_clean_token=${TOKEN_SAFE}" -c "loop_round_verdict=${EVAL_VERDICT}" ) \
       >"$HEALTH_LOG" 2>&1
-  HEALTH_RC=$?; usage_add evaluator "$T0"
+  HEALTH_RC=$?; usage_add evaluator "$T0"; eval_ctx_remove
   fi
   tail -n 120 "$HEALTH_LOG" >&2 || true; orphan_stop "$HEALTH_RC" "the loop-health evaluator for ${ROUND_LABEL}"
 

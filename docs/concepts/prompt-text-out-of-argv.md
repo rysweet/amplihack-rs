@@ -1,7 +1,7 @@
 ---
 title: "Why Prompt Text Stays Out of argv"
 description: "Why amplihack never puts the operating contract, a task prompt or a recipe brief in an agent process's command line, and the threat model behind the rule."
-last_updated: 2026-11-13
+last_updated: 2026-11-14
 review_schedule: quarterly
 owner: rysweet
 doc_type: explanation
@@ -176,12 +176,24 @@ between the two is made from the capability report alone, and a run that
 should use the file and cannot write it fails rather than putting the values
 on argv, for the same reason as in [Why fail instead of falling back](#why-fail-instead-of-falling-back).
 
-The pinned runner does not yet report `context_file_v1`, and it still passes
-each agent step's prompt to the agent launcher with `-p`. Both are runner
-changes, tracked in `rysweet/amplihack-recipe-runner`. Until they are released
-and the pin moves, context values and task text remain in some argv on a host.
-Agents are therefore also told to stop their own jobs by PID and never by
-pattern; see [Stop Background Jobs by PID](../howto/stop-background-jobs-by-pid.md).
+The same applies one level down. The bundled callers that start a nested
+`amplihack recipe run`, the auto-drive loop's health evaluator and the
+quality loop's PR dispatch, pass agent output and task text with
+`--context-from-file` from a private file, not with `-c key="$VALUE"`. The
+nested `amplihack` process therefore has paths, labels and numbers on its argv,
+not the text.
+
+The pinned runner does not yet report `context_file_v1`
+([rysweet/amplihack-recipe-runner#211](https://github.com/rysweet/amplihack-recipe-runner/issues/211)),
+and it still passes each agent step's prompt to the agent launcher with `-p`
+([rysweet/amplihack-recipe-runner#205](https://github.com/rysweet/amplihack-recipe-runner/issues/205)),
+so the first 8 KiB of each prompt is on the `amplihack claude` wrapper's argv.
+Until both are released and the pin moves, context values and task text remain
+in the runner's argv and in the wrappers' argv, including those of nested runs.
+For that reason the copies of the stop-by-PID guidance inside recipe prompts
+name no tools or processes, and agents are told to stop their own jobs by PID
+and never by pattern; see
+[Stop Background Jobs by PID](../howto/stop-background-jobs-by-pid.md).
 
 Rules, file locations and errors are in the
 [Recipe Context Transport Reference](../reference/recipe-context-transport.md).

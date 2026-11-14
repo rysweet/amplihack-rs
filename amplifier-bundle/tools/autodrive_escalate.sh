@@ -4,9 +4,10 @@
 # usage_limit_stop tells a child that failed on a Claude usage limit from any
 # other failure, so the loop stops as USAGE_LIMIT and never as STUCK (#1801).
 # progress_stop and budget_stop are the two stops decided in code (#1743).
-# docs/reference/auto-drive-to-merge.md. Defines functions only; the caller
+# docs/reference/auto-drive-to-merge.md. Defines functions and EVAL_KEYS; the caller
 # sets LOOP_NAME, ROUND_LABEL and RECORD, and for #1743 STATE_DIR, LOOP_HOME,
-# AD_PR and BUDGET_CTX.
+# AD_PR and BUDGET_CTX. eval_ctx_write and eval_ctx_remove hold the evaluator
+# context files (#2582).
 
 # log_body <log_file>: the log without input echoes, as terminal_refusal reads
 # it. workflow_hook_repair.sh keeps a copy, which a test holds equal to this.
@@ -194,4 +195,47 @@ budget_stop() {
   [ "${2:-}" = --force ] || post_stop "${STATE_DIR}/autodrive-budget-summary.md"
   escalate "BUDGET_EXHAUSTED" "usage budget reached (${hit}); see autodrive-budget-summary.md in the state directory" budget
   exit 1
+}
+
+# eval_ctx_write: writes the loop-health evaluator's free-text context (#2582)
+# to one file per key in a new mktemp -d folder under STATE_DIR, and sets
+# EVAL_CTX_ARGS to the matching --context-from-file arguments. Agent output and
+# log text then never reach the nested run's argv, where `ps` and `pkill -f`
+# read it. The loop runs at umask 077, so the folder is 0700 and each file
+# 0600. Text goes through printf, a builtin, or a direct redirect only. Reads
+# HISTORY, LOG, FINDINGS, PREV_FINDINGS, TEST_SIGNAL, PREV_TEST, CI_SIGNAL,
+# PREV_CI, LOOP_HOME, LOOP_NAME and ROUND_LABEL. Returns non-zero, with nothing
+# left behind, when the folder or a file cannot be written.
+EVAL_KEYS=(loop_history loop_last_round_output loop_findings_current loop_findings_previous
+  loop_test_signal loop_test_signal_previous loop_ci_signal loop_ci_signal_previous)
+EVAL_CTX=""; EVAL_CTX_ARGS=()
+eval_ctx_write() {
+  local k
+  EVAL_CTX_ARGS=()
+  EVAL_CTX="$(mktemp -d "${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}-ctx.XXXXXX")" || EVAL_CTX=""
+  if [ -z "$EVAL_CTX" ] \
+    || ! printf '%s' "$HISTORY" >"${EVAL_CTX}/loop_history" \
+    || ! bash "${LOOP_HOME}/autodrive_round_tail.sh" "$LOG" >"${EVAL_CTX}/loop_last_round_output" \
+    || ! printf '%s' "$FINDINGS" >"${EVAL_CTX}/loop_findings_current" \
+    || ! printf '%s' "$PREV_FINDINGS" >"${EVAL_CTX}/loop_findings_previous" \
+    || ! printf '%s' "$TEST_SIGNAL" >"${EVAL_CTX}/loop_test_signal" \
+    || ! printf '%s' "$PREV_TEST" >"${EVAL_CTX}/loop_test_signal_previous" \
+    || ! printf '%s' "$CI_SIGNAL" >"${EVAL_CTX}/loop_ci_signal" \
+    || ! printf '%s' "$PREV_CI" >"${EVAL_CTX}/loop_ci_signal_previous"; then
+    echo "ERROR: could not write the loop-health evaluator's context files in the state dir; the evaluator was not started" >&2
+    eval_ctx_remove
+    return 1
+  fi
+  for k in "${EVAL_KEYS[@]}"; do EVAL_CTX_ARGS+=(--context-from-file "${k}=${EVAL_CTX}/${k}"); done
+}
+
+# eval_ctx_remove: removes eval_ctx_write's files by their literal paths, then
+# the folder. Never fails: a folder left behind holds the same text as the
+# round log beside it, and must not change the round's outcome.
+eval_ctx_remove() {
+  local k
+  [ -n "$EVAL_CTX" ] || return 0
+  for k in "${EVAL_KEYS[@]}"; do rm -f -- "${EVAL_CTX}/${k}" || true; done
+  rmdir -- "$EVAL_CTX" || true
+  EVAL_CTX=""; EVAL_CTX_ARGS=()
 }

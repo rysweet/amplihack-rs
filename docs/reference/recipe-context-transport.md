@@ -1,7 +1,7 @@
 ---
 title: "Recipe Context Transport Reference"
-description: "How amplihack recipe run hands recipe context to recipe-runner-rs: the context_file_v1 capability, the private context file, the --set fallback, cleanup, errors, and the detached and nested paths."
-last_updated: 2026-11-13
+description: "How amplihack recipe run hands recipe context to recipe-runner-rs: the context_file_v1 capability, the private context file, the --set fallback, cleanup, errors, the detached and nested paths, and the bundled nested calls that pass text by file."
+last_updated: 2026-11-14
 review_schedule: quarterly
 owner: rysweet
 doc_type: reference
@@ -204,6 +204,38 @@ transport in the same way. Give it context through `--context-file` or
 `amplihack` process's own argv. See
 [Give a nested recipe the context it needs](../howto/pass-large-recipe-context.md#give-a-nested-recipe-the-context-it-needs).
 
+### Bundled nested calls
+
+The bundled scripts and recipes that start a nested `amplihack recipe run`
+pass agent output, logs and task text with `--context-from-file`. Each writes
+the values to files at mode 0600 in a new folder at mode 0700, passes
+`--context-from-file key=<path>`, and removes each file by its literal path and
+then the folder once the nested run has exited. Fixed tokens, labels, numbers
+and paths still go through `-c`. `amplifier-bundle/tools/workflow_hook_repair.sh`
+already worked this way; the two callers below now do the same.
+
+| Caller | Nested recipe | Keys passed by file | Private folder |
+| --- | --- | --- | --- |
+| `amplifier-bundle/tools/autodrive_loop.sh`, loop-health evaluator | the loop's health recipe | `loop_history`, `loop_last_round_output`, `loop_findings_current`, `loop_findings_previous`, `loop_test_signal`, `loop_test_signal_previous`, `loop_ci_signal`, `loop_ci_signal_previous` | `mktemp -d "${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}-ctx.XXXXXX"`, created under the script's `umask 077` |
+| `amplifier-bundle/recipes/quality-loop.yaml`, `drive-red-prs-to-fix` dispatch | `default-workflow` | `task_description` | `mktemp -d` under `$TMPDIR`, created in a subshell under `umask 077`, one per dispatched PR |
+
+In `autodrive_loop.sh`, the evaluator's exit status is captured before the
+files are removed, and a failed `rmdir` does not fail the round. If the folder
+or a file cannot be created, the loop stops with the escalation label
+`EVALUATOR_CONTEXT_FAILED` and starts no evaluator; the message names the
+failure, not the values. A loop stopped while the evaluator is running can
+leave its `-ctx.XXXXXX` folder behind. The folder is private, holds the same
+text as the round log beside it, and its unique name never blocks a later
+round.
+
+In `quality-loop.yaml`, the `NUM` and `BRANCH` checks still run before the
+dispatch, and the dispatch's exit status is kept while the file and folder are
+removed, so a failed dispatch still fails the step.
+
+The nested `amplihack` process then chooses its transport by the rules above.
+On the pinned runner it still passes every value to `recipe-runner-rs` as
+`--set`; see [What the runner still puts on argv](#what-the-runner-still-puts-on-argv).
+
 ## Errors
 
 No error message or log line contains a context value. Keys are escaped before
@@ -228,8 +260,17 @@ The amplihack side is complete, but the protection depends on the runner:
   a runner with the option is released and the pin moves, every run takes the
   set transport and context values remain on the runner's argv.
 - **Item B, agent prompts.** The runner passes each agent step's prompt, which
-  contains the task text, to the agent launcher as `-p <prompt>`. That has to
+  contains the task text, to the agent launcher as `-p <prompt>`, so the first
+  8 KiB of each prompt is on the `amplihack claude` wrapper's argv. That has to
   be fixed in the runner, behind a capability such as `agent_prompt_file_v1`.
+  Until then, recipe prompts avoid naming tools or processes that an agent
+  might select by pattern; see
+  [Stop Background Jobs by PID](../howto/stop-background-jobs-by-pid.md#why-the-recipe-copies-name-no-tools).
+
+The bundled nested calls (see [Bundled nested calls](#bundled-nested-calls))
+keep text off the nested `amplihack` process's argv on every runner version.
+They do not change items A and B: the nested run's own runner and agent
+wrappers behave as described here.
 
 Item A is tracked in
 [rysweet/amplihack-recipe-runner#211](https://github.com/rysweet/amplihack-recipe-runner/issues/211)
@@ -273,6 +314,20 @@ The behaviour test `crates/amplihack-cli/tests/issue_2582_context_off_argv.rs`
 does the same walk in Rust against a runner stub, for three cases: a runner
 that reports `context_file_v1`, a runner that does not (the `--set` fallback),
 and a `recipe detached-child` running a nested `recipe run`.
+
+The behaviour test
+`crates/amplihack-cli/tests/issue_2582_nested_context_off_argv.rs` (Linux only)
+runs two rounds of `autodrive_loop.sh` with a non-crusty loop name and a stub
+`AMPLIHACK_BIN`. When the stub is started as the loop-health evaluator, it
+copies `/proc/$$/cmdline` and each `--context-from-file` file into the test's
+temporary folder and exits. The test plants sentinel strings in the findings,
+round log, history and signals, then checks that:
+
+- none of the sentinels, and none of the eight `key=` prefixes, appear in the
+  recorded command line;
+- the copied context files contain the sentinels, and were at mode 0600 in a
+  folder at mode 0700;
+- no `-ctx.` folder is left in the loop's state folder.
 
 ## Related
 
