@@ -303,6 +303,15 @@ gh_pr_number_from_url() {
 #                           of blocking, logging a WARNING. Leave UNSET for write
 #                           paths so they wait-for-reset with no REST fallback.
 #
+#   GH_RETRY_DIAGNOSTIC_FILE private file owned by the caller (optional):
+#                           emptied when each attempt starts and overwritten
+#                           with each failed attempt's sanitized, bounded
+#                           diagnostic (or its temp-creation failure);
+#                           independent of retry warnings. Empty after failure
+#                           means no attempt's failure was recorded (e.g.
+#                           cancelled before the next attempt).
+#                           Read only after failure; caller removes the file.
+#
 # Sets GH_RETRY_LAST_CLASS to the class of the final failure (or
 # `success`/`rate_limit_rest`) for callers that need to branch on it.
 _gh_retry_core() {
@@ -326,6 +335,15 @@ _gh_retry_core() {
   return "$retry_status"
 }
 
+# Private-state contract: call these helpers only within _gh_retry_core.
+# It owns local stderr_file/stdout_file, GH_OWNED_PID, retry_status,
+# retry_interrupted_status, retry_int/term/hup and retry_shell_pid. Attempts
+# replace captures and child PID; cleanup cancels/reaps the child, unlinks
+# captures and clears those variables. Interrupt sets retry_interrupted_status;
+# restore uses saved traps/PID to preserve the caller's signal disposition.
+# The core cleans up and restores traps on return. GH_RETRY_LAST_CLASS is the
+# caller-visible result; GH_RETRY_DIAGNOSTIC_FILE belongs to the caller, is
+# overwritten only with safe diagnostics, and is never removed by this owner.
 _gh_retry_cleanup() {
   gh_cancel_owned "$GH_OWNED_PID"
   GH_OWNED_PID=""
@@ -372,11 +390,27 @@ _gh_retry_attempts() {
 
   while :; do
     attempt=$((attempt + 1))
+    # Clear the previous attempt's diagnostic first, so a failure before this
+    # attempt runs gh never reports an earlier attempt's text. Temp creation
+    # failure records its own diagnostic below; a cancellation during a
+    # backoff or reset wait leaves the capture empty, and the caller falls
+    # back to its ordinary stderr capture.
+    if [ -n "${GH_RETRY_DIAGNOSTIC_FILE:-}" ]; then
+      if : >"$GH_RETRY_DIAGNOSTIC_FILE"; then :; else
+        printf 'WARNING: gh terminal diagnostic capture reset failed (exit %s)\n' "$?" >&2
+      fi
+    fi
     if stderr_file="$(umask 077; mktemp "${GH_RETRY_TMPDIR:-${TMPDIR:-/tmp}}/.workflow-gh-retry.XXXXXX" 2>/dev/null)"; then
       :
     else
       status=$?
-      printf 'ERROR: gh %s: private stderr temp creation failed (exit %s)\n' "$label" "$status" >&2
+      diagnostic="private stderr temp creation failed (exit $status)"
+      printf 'ERROR: gh %s: %s\n' "$label" "$diagnostic" >&2
+      # This is the last attempt's failure; record it so the caller does not
+      # have to find it behind earlier retry warnings in ordinary stderr.
+      if [ -n "${GH_RETRY_DIAGNOSTIC_FILE:-}" ]; then
+        printf '%s' "$diagnostic" >"$GH_RETRY_DIAGNOSTIC_FILE" 2>/dev/null || :
+      fi
       return "$status"
     fi
     gh_start_owned timeout 60 gh "$@" >"$stdout_file" 2>"$stderr_file"
@@ -393,6 +427,11 @@ _gh_retry_attempts() {
     fi
     GH_OWNED_PID=""
     diagnostic="$(gh_safe_stderr "$stderr_file")"
+    if [ -n "${GH_RETRY_DIAGNOSTIC_FILE:-}" ]; then
+      if printf '%s' "$diagnostic" >"$GH_RETRY_DIAGNOSTIC_FILE"; then :; else
+        printf 'WARNING: gh terminal diagnostic capture failed (exit %s)\n' "$?" >&2
+      fi
+    fi
     class="$(classify_gh_error "$stderr_file")" || class=other
     GH_RETRY_LAST_CLASS="$class"
 

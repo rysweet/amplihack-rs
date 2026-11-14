@@ -9,6 +9,8 @@ use std::path::PathBuf;
 mod cancellation;
 #[path = "issue_2306_publish/fixture.rs"]
 mod fixture;
+#[path = "issue_2306_publish/followup.rs"]
+mod followup;
 #[path = "issue_2306_publish/recovery.rs"]
 mod recovery;
 #[path = "issue_2306_publish/retry.rs"]

@@ -248,3 +248,44 @@ fn persistent_awk_failure_still_serializes_success_after_exactly_one_creation() 
         1
     );
 }
+
+#[test]
+fn followup_actual_runner_accepts_canonical_repository_casing() {
+    let f = PublishFixture::new();
+    f.git(&[
+        "remote",
+        "set-url",
+        "origin",
+        "https://github.com/Owner/Repo.git",
+    ]);
+    let result = run_step(&f, &[]);
+    assert_eq!(result["success"], true, "{result}");
+    assert_eq!(result["step_results"][0]["status"], "completed");
+    let published = &result["context"]["pr_publish_result"];
+    assert_eq!(published["state"], "FOLLOWUP_CREATED");
+    assert_eq!(published["pr_number"], "99");
+    assert_eq!(published["pr_url"], "https://github.com/owner/repo/pull/99");
+}
+
+#[test]
+fn followup_actual_runner_keeps_final_rejection_after_long_retry_warning() {
+    let f = PublishFixture::new();
+    f.long_transient_create_failure();
+    let secret = "sk-ant-api03-ABCDEFGHIJKLMNOPQRST";
+    f.write(
+        "create.stderr",
+        &format!("distinctive final creation rejection {secret}"),
+    );
+    let result = run_step(&f, &[("CREATE_STATUS", "23")]);
+    let error = failed_step_error(&result);
+    assert!(
+        error.contains("distinctive final creation rejection"),
+        "{error}"
+    );
+    assert!(error.contains("exit 23"), "{error}");
+    assert!(!result.to_string().contains(secret), "{result}");
+    assert!(
+        !result.to_string().contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWX"),
+        "{result}"
+    );
+}

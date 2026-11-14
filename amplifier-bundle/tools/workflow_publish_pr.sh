@@ -6,12 +6,14 @@ PUBLISH_OPERATION="publishing prerequisites"
 PUBLISH_DIAGNOSED=false
 CREATE_STDERR_FILE=""
 CREATE_STDOUT_FILE=""
+CREATE_DIAGNOSTIC_FILE=""
 PUBLISH_CHILD=""
 publish_exit_diagnostic() {
   local status=$?
   if [ -n "$PUBLISH_CHILD" ]; then gh_cancel_owned "$PUBLISH_CHILD"; fi
   [ -z "$CREATE_STDERR_FILE" ] || gh_remove_capture "$CREATE_STDERR_FILE"
   [ -z "$CREATE_STDOUT_FILE" ] || gh_remove_capture "$CREATE_STDOUT_FILE"
+  [ -z "$CREATE_DIAGNOSTIC_FILE" ] || gh_remove_capture "$CREATE_DIAGNOSTIC_FILE"
   if [ "$status" -ne 0 ] && [ "$PUBLISH_DIAGNOSED" != true ]; then
     printf 'ERROR: workflow_publish_pr.sh: %s failed (exit %s)\n' "$PUBLISH_OPERATION" "$status" >&2
   fi
@@ -1004,7 +1006,11 @@ RECENT_COMMITS=$(git log --oneline --no-decorate "${BASE_REF}..HEAD" -6 2>/dev/n
 }
 COMMITS_AHEAD="${COMMITS_AHEAD:-unknown}"
 if [ "$PR_TITLE_SOURCE" = template ]; then
-  if safe_scope="$(sanitize_body_evidence "$PR_SCOPE" 2>/dev/null)"; then :; else safe_scope="branch changes"; fi
+  if safe_scope="$(sanitize_body_evidence "$PR_SCOPE" 2>/dev/null)"; then :; else
+    scope_status=$?
+    printf 'WARNING: optional scope sanitization failed (exit %s); using safe text\n' "$scope_status" >&2
+    safe_scope="branch changes"
+  fi
   PR_SUMMARY="Concise workflow-generated PR for ${safe_scope}."
 else
   PR_SUMMARY="Workflow-generated PR."
@@ -1085,8 +1091,10 @@ fi
 PUBLISH_OPERATION="gh pr create"
 PUBLISH_OPERATION="gh pr create stdout temp creation"
 CREATE_STDOUT_FILE="$(umask 077; mktemp "${TMPDIR:-/tmp}/workflow-pr-result.XXXXXX")"
+PUBLISH_OPERATION="gh pr create terminal diagnostic temp creation"
+CREATE_DIAGNOSTIC_FILE="$(umask 077; mktemp "${TMPDIR:-/tmp}/workflow-pr-diagnostic.XXXXXX")"
 PUBLISH_OPERATION="gh pr create"
-gh_start_owned gh_pr_create_with_retry >"$CREATE_STDOUT_FILE" 2>"$CREATE_STDERR_FILE"
+GH_RETRY_DIAGNOSTIC_FILE="$CREATE_DIAGNOSTIC_FILE" gh_start_owned gh_pr_create_with_retry >"$CREATE_STDOUT_FILE" 2>"$CREATE_STDERR_FILE"
 PUBLISH_CHILD=$GH_OWNED_PID
 if wait "$PUBLISH_CHILD"; then
   PUBLISH_CHILD=""
@@ -1096,7 +1104,17 @@ if wait "$PUBLISH_CHILD"; then
 else
   CREATE_STATUS=$?
   PUBLISH_CHILD=""
-  CREATE_DIAGNOSTIC="$(gh_safe_stderr "$CREATE_STDERR_FILE")"
+  # Retry history cannot displace the last attempt. The helper retains its
+  # sanitized diagnostic separately across process boundaries and empties it
+  # when each attempt starts; an attempt whose stderr temp creation fails
+  # records that failure instead. Failures with no recorded attempt (body
+  # writing, or cancellation before the next attempt) leave it empty and use
+  # the ordinary stderr capture.
+  if [ -s "$CREATE_DIAGNOSTIC_FILE" ]; then
+    CREATE_DIAGNOSTIC="$(gh_safe_stderr "$CREATE_DIAGNOSTIC_FILE")"
+  else
+    CREATE_DIAGNOSTIC="$(gh_safe_stderr "$CREATE_STDERR_FILE")"
+  fi
   gh_remove_capture "$CREATE_STDERR_FILE"
   CREATE_STDERR_FILE=""
   CREATE_MESSAGE="gh pr create failed (exit ${CREATE_STATUS}): ${CREATE_DIAGNOSTIC}"
@@ -1115,16 +1133,22 @@ fi
 PUBLISH_OPERATION="gh pr create result parsing (PR identity)"
 # Require one URL for the expected repository, without trailing messages,
 # query strings or extra path components. The number helper alone is permissive.
-case "$PR_URL_RESULT" in
-  "https://github.com/${REPO_IDENTITY}/pull/"*) : ;;
-  *) finish_publish "FAILED_PR_IDENTITY" "pr-identity-failed" failure "gh pr create succeeded but result parsing found an invalid PR identity URL" 1 ;;
-esac
-created_number="${PR_URL_RESULT#"https://github.com/${REPO_IDENTITY}/pull/"}"
+created_url_re='^https://github[.]com/([^/]+/[^/]+)/pull/([0-9]+)$'
+if [[ "$PR_URL_RESULT" =~ $created_url_re ]]; then
+  created_repo="${BASH_REMATCH[1]}"
+  created_number="${BASH_REMATCH[2]}"
+else
+  finish_publish "FAILED_PR_IDENTITY" "pr-identity-failed" failure "gh pr create succeeded but result parsing found an invalid PR identity URL" 1
+fi
+# GitHub returns canonical owner/repository casing, which can differ from the
+# origin. Scope ASCII case folding to identity comparison, keeping URL syntax
+# strict and avoiding external formatters after successful creation (Bash 3.2).
+if ! (LC_ALL=C; shopt -s nocasematch; [[ "$created_repo" == "$REPO_IDENTITY" ]]); then
+  finish_publish "FAILED_PR_IDENTITY" "pr-identity-failed" failure "gh pr create succeeded but result parsing found an invalid PR identity URL" 1
+fi
 case "$created_number" in
-  ''|*[!0-9]*|0)
+  ''|*[!0-9]*|0*)
     finish_publish "FAILED_PR_IDENTITY" "pr-identity-failed" failure "gh pr create succeeded but result parsing found an invalid PR identity URL" 1 ;;
 esac
-if PR_NUMBER_RESULT="$(gh_pr_number_from_url "$PR_URL_RESULT")"; then :; else
-  finish_publish "FAILED_PR_IDENTITY" "pr-identity-failed" failure "gh pr create succeeded but result parsing could not resolve PR identity" 1
-fi
+PR_NUMBER_RESULT="$created_number"
 finish_publish "$PUBLISH_STATE" "$LEGACY_PUBLISH_STATE" "success" "draft PR created"
