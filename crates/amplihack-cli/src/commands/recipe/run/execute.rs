@@ -798,11 +798,25 @@ pub(super) fn execute_recipe_via_rust_fresh(
     // last runner child has been reaped: by the explicit `drop` before
     // `finish_workspace` on a normal exit, and by declaration order (after
     // `workspace`) on an early return. Written once and reused by every retry.
-    let transport = super::context_transport::ContextTransport::choose(
+    // A failed write (or a reserved key, normally refused earlier at intake)
+    // ends the run as a failure: the admission and run.json are finished, as
+    // for any error raised while building the runner command.
+    let chosen = super::context_transport::ContextTransport::choose(
         &runner_report,
         workspace.borrow().runtime_dir(),
         context,
-    )?;
+    );
+    let transport = match chosen {
+        Ok(transport) => transport,
+        Err(error) => {
+            let final_result = Err(error);
+            if let Some(admission) = &admission {
+                admission.finish(recipe_runner_rs::recovery::model::Outcome::Failure)?;
+            }
+            finish_workspace(workspace.into_inner(), &final_result, dry_run);
+            return final_result;
+        }
+    };
     tracing::debug!(
         file = matches!(
             transport,
