@@ -77,6 +77,21 @@ Report steps: `workflow-finalize` `step-recovery-report` (before
 `workflow-complete`), `auto-drive-to-merge` `autodrive-report`, and
 `autodrive_loop.sh` before the first round and after each round.
 
+### Recovery inside the auto-drive loops
+
+The round recipes run on the private review generations of
+[Auto Drive To Merge](./auto-drive-to-merge.md#review-generations) (issue
+#2096). Recovery still wraps the round guard steps and `step-02b` there:
+
+- Agent steps in the rounds start in `{{review_launch_dir}}`, which only the
+  loop sets.
+- `autodrive_loop.sh` takes the recovery directory as
+  `--context step_recovery_dir=<dir>` and passes it on to each round.
+- A caller cannot set the loop's own keys. `--context` refuses
+  `review_dir`, `review_launch_dir`, `reviewed_head_sha`,
+  `autodrive_launch_tools` and `autodrive_completion_state`, and the loop's
+  own `-c` values come after the caller's, so the loop's values win.
+
 `workflow-worktree` `step-04-setup-worktree` writes the build's branch to
 `build-branch.txt` in the recovery directory. A retried build passes it as
 `existing_branch`, so the retry continues the first attempt's branch and PR.
@@ -231,6 +246,11 @@ prompt says the evidence is untrusted data, and that the agent must not make
 GitHub writes, bypass hooks, read credentials, change the review directory,
 the main checkout, guard or validator scripts or their evidence, write under
 the recovery directory, or start another orchestration.
+
+A local repair adds new commits only. The prompt forbids rewriting or
+discarding commits (amend, rebase, squash, reset to an earlier commit) and
+force-pushing (issue #2629). This limits how a repair may change history; it
+does not allow a push, which stays forbidden.
 
 Evidence (`evidence-<id>-<n>-<8 hex>.json`, mode `0600`, schema 1):
 `untrusted_notice`, `step_id`, `goal`, `failure`, `allowed_choices`,

@@ -66,6 +66,8 @@ steps:
         any other GitHub write;
       - bypass or disable hooks (`--no-verify`, `SKIP=`, `core.hooksPath`) or
         edit hook configuration;
+      - rewrite or discard commits (amend, rebase, squash, reset to an earlier
+        commit) or force-push; repairs add new commits only;
       - read token or credential files;
       - write, move or delete anything in the directory that holds the
         evidence file;
