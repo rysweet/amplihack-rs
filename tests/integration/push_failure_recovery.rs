@@ -128,6 +128,9 @@ enum Upstream {
     Conflict,
     /// `origin/feat/x` already equals HEAD.
     AtHead,
+    /// `origin/feat/x` already has the run's commit and one more on top, so
+    /// HEAD is behind but not ahead: a merge is a fast-forward.
+    Behind,
     /// `refs/heads/feat/x` does not exist on the remote: a first push. Only
     /// the remote's ref is deleted; the worktree keeps its tracking ref.
     Absent,
@@ -360,6 +363,13 @@ impl Fixture {
                 );
                 self.git(&self.wt(), &["fetch", "-q", "origin"]);
             }
+            Upstream::Behind => {
+                self.git(
+                    &self.wt(),
+                    &["push", "-q", "origin", &format!("HEAD:{remote_ref}")],
+                );
+                self.push_other("other.txt", "someone else\n");
+            }
             Upstream::Absent => {
                 self.git(&remote, &["update-ref", "-d", &remote_ref]);
             }
@@ -425,6 +435,9 @@ esac
     ///   and `origin/<branch>` by hand with `git commit-tree` around a new
     ///   file, resets to it so `git status` is clean, pushes and claims
     ///   `ENVIRONMENT`;
+    /// - `reset-to-remote`: disobeys the prompt, fetches and runs `git reset
+    ///   --hard origin/<branch>`, dropping the run's commits, then the clean
+    ///   push (which has nothing to send) and `ENVIRONMENT`;
     /// - `none`: no push, `NONE`;
     /// - `none-noworktree`: no worktree to work in, `NONE`;
     /// - `force`: disobeys the prompt, force-pushes HEAD over the remote
@@ -507,6 +520,11 @@ case "$mode" in
     git reset -q --hard "$forged"
     if push_clean; then push_result=pushed; else push_result=failed; fi
     cause=ENVIRONMENT; evidence_last="merged and pushed"; actions=$(jq -nc --arg a "$action" '[$a]') ;;
+  reset-to-remote)
+    env "${{unset_args[@]}}" GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git fetch -q origin > "$T/agent-merge.log" 2>&1
+    git reset -q --hard "origin/$BR"
+    if push_clean; then push_result=pushed; else push_result=failed; fi
+    cause=ENVIRONMENT; evidence_last="reset to origin/$BR and pushed"; actions=$(jq -nc --arg a "$action" '[$a]') ;;
   force)
     if env "${{unset_args[@]}}" git push --force origin "HEAD:refs/heads/$BR" > "$T/agent-push.log" 2>&1; then push_result=pushed; else push_result=failed; fi
     cause=ENVIRONMENT; evidence_last="pushed over the remote branch"; actions=$(jq -nc --arg a "$action" '[$a]')
@@ -1356,6 +1374,91 @@ fn step15_hand_built_merge_with_nothing_to_merge_is_refused() {
     );
     assert_failed_with(&run, "worktree-changed");
     assert_ne!(run.status("step-16-create-draft-pr"), "completed");
+    before.assert_held(&f, &run);
+}
+
+/// An agent that resets the branch to `origin/<branch>`, dropping the run's
+/// tested commit, is refused. HEAD equals the remote, `git status` is clean
+/// and the push has nothing to send, so only rule 9's fast-forward check
+/// (the snapshot HEAD must be an ancestor of the remote) catches it; that is
+/// why this test pins `worktree-changed`.
+#[test]
+fn step15_reset_to_remote_dropping_the_run_commit_is_refused() {
+    let _ = runner_or_skip!();
+    let f = Fixture::new(Upstream::Diverged);
+    f.set_agent_mode("reset-to-remote");
+    let before = Untouched::capture(&f);
+    let remote_before = f.ls_remote(BRANCH);
+    let run_head = f.head();
+    let run = f.run(&f.publish_recipe("fixture-publish"), &[], &[]);
+
+    assert_eq!(
+        f.agent_calls(),
+        vec!["step-15-commit-push"],
+        "{}",
+        run.debug()
+    );
+    // The fixture really dropped the run's commit: HEAD is the remote's
+    // commit, which does not contain it.
+    let wt = f.wt();
+    assert_eq!(f.head(), remote_before, "{}", run.debug());
+    assert!(
+        !f.git_ok(&wt, &["merge-base", "--is-ancestor", &run_head, "HEAD"]),
+        "{}",
+        run.debug()
+    );
+    assert_failed_with(&run, "worktree-changed");
+    assert_eq!(
+        f.ls_remote(BRANCH),
+        remote_before,
+        "the remote is unchanged"
+    );
+    assert_ne!(run.status("step-16-create-draft-pr"), "completed");
+    before.assert_held(&f, &run);
+}
+
+/// The remote already holds the run's commit with one more on top. step-15
+/// would call that already pushed, so it is made to fail before its push (a
+/// missing tool) and recovery runs. The agent's merge is a fast-forward, so
+/// HEAD becomes the remote's commit and the push has nothing to send. Rule 9 accepts it because the result equals
+/// `remote_before` and the snapshot HEAD is its ancestor.
+#[test]
+fn step15_fast_forward_to_remote_is_accepted() {
+    let _ = runner_or_skip!();
+    let f = Fixture::new(Upstream::Behind);
+    f.touch("fail-artifact-guard");
+    f.set_agent_mode("merge");
+    let before = Untouched::capture(&f);
+    let remote_before = f.ls_remote(BRANCH);
+    let run_head = f.head();
+    assert_ne!(remote_before, run_head, "the fixture leaves HEAD behind");
+    let run = f.run(&f.publish_recipe("fixture-publish"), &[], &[]);
+
+    assert_eq!(run.code, 0, "a fast-forward is accepted; {}", run.debug());
+    assert_eq!(
+        f.agent_calls(),
+        vec!["step-15-commit-push"],
+        "one recovery agent call"
+    );
+    let head = f.head();
+    assert_eq!(head, remote_before, "HEAD fast-forwarded to the remote");
+    assert!(
+        f.git_ok(&f.wt(), &["merge-base", "--is-ancestor", &run_head, "HEAD"]),
+        "the run's commit is still in HEAD"
+    );
+    assert_eq!(
+        snapshot(&run)["remote_before"],
+        remote_before.as_str(),
+        "the snapshot recorded the remote before the agent ran"
+    );
+    assert_recovered(&run, "commit_result", "recovered-environment", &head);
+    assert_eq!(f.ls_remote(BRANCH), head);
+    assert_eq!(
+        run.status("step-16-create-draft-pr"),
+        "completed",
+        "{}",
+        run.debug()
+    );
     before.assert_held(&f, &run);
 }
 

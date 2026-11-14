@@ -373,8 +373,10 @@ holds `remote_before`; otherwise `cause-in-change` from the agent's own
 The merge is subject to these limits:
 
 - `-s ours` only when the agent judges that the branch's tree is meant to
-  win; the remote commits stay in history, nothing is rewritten, and
-  `evidence` says that `-s ours` was used;
+  win, with the same `env -u` prefix as the other merge commands so its
+  hooks do not see the inherited `RECIPE_VAR_*` values; the remote commits
+  stay in history, nothing is rewritten, and `evidence` says that `-s ours`
+  was used;
 - no `-X ours` or `-X theirs`: each would silently drop one side's hunks
   inside a merge that looks like an ordinary one;
 - no `--allow-unrelated-histories`;
@@ -1033,6 +1035,8 @@ Cases:
 | failed commit | a `pre-commit` hook rejects step-15's commit, origin already equals the old HEAD, the fake agent returns `NONE`; the run fails with `uncommitted-changes` and step-16 does not run |
 | agent commits | the fake agent commits a new file, pushes it and returns `ENVIRONMENT`; the run fails with `worktree-changed` |
 | hand-built merge | the remote branch is already in HEAD, so there is nothing to merge; the fake agent builds a two-parent merge of HEAD and `origin/feat/x` with `git commit-tree`, resets to it, pushes and returns `ENVIRONMENT`; the run fails with `worktree-changed` |
+| reset to the remote (`step15_reset_to_remote_dropping_the_run_commit_is_refused`) | `Diverged` fixture, `reset-to-remote` agent mode: the agent runs `git reset --hard origin/feat/x`, dropping the run's commit, makes the clean push (nothing to send) and returns `ENVIRONMENT`; the run fails with `worktree-changed`, the remote is unchanged and step-16 does not run |
+| fast-forward (`step15_fast_forward_to_remote_is_accepted`) | `Behind` fixture, where the remote already holds the run's commit with one more on top, and step-15 fails before its push (a missing tool) so recovery runs; the `merge` agent's merge is a fast-forward, so HEAD becomes `remote_before`; the run exits 0 with `recovered-environment`, the run's commit is still in HEAD and step-16 runs |
 | protected local branch | the worktree is on `master`, so step-15 refuses; the fake agent pushes `HEAD:refs/heads/feat/x` anyway; the run fails with `unsafe-ref` |
 | step-18c without a worktree | the fake agent returns `NONE`; the snapshot holds only `linked`, passes rule 2, and the run fails with `not-linked-worktree`, not `push-unverified` |
 | step-18c detached HEAD | step-18c refuses; the fake agent pushes anyway; the run fails with `unsafe-ref` |
