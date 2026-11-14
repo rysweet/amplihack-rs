@@ -1,6 +1,6 @@
 //! Public manifest and report contract. Source paths never enter reports.
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::{collections::BTreeSet, path::PathBuf};
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,11 +30,70 @@ pub struct Session {
     pub files: Vec<PathBuf>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
-#[serde(rename_all = "snake_case")]
+/// Adapter names are exact; safe unknown names retain their spelling.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Provider {
     Claude,
     Codex,
+    Unsupported(String),
+}
+impl Provider {
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Unsupported(name) => name,
+        }
+    }
+}
+impl Serialize for Provider {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.label())
+    }
+}
+impl<'de> Deserialize<'de> for Provider {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        if !safe_label(&name) {
+            return Err(serde::de::Error::custom("invalid provider label"));
+        }
+        Ok(match name.as_str() {
+            "claude" => Self::Claude,
+            "codex" => Self::Codex,
+            _ => Self::Unsupported(name),
+        })
+    }
+}
+
+/// Direct input validity travels with observations, independently of token lower bounds.
+#[derive(Clone, Default)]
+pub(super) struct InputEvidence {
+    pub reasons: BTreeSet<&'static str>,
+}
+impl InputEvidence {
+    pub fn tokens(&self, provider: &Provider, tokens: Option<Tokens>) -> Option<u64> {
+        if !self.reasons.is_empty() {
+            return None;
+        }
+        let t = tokens?;
+        if *provider == Provider::Codex {
+            Some(t.input)
+        } else {
+            t.input
+                .checked_add(t.cache_read)?
+                .checked_add(t.cache_write)
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct ContextPerRequest {
+    pub input_tokens: Option<u64>,
+    pub observed_attempts: Option<u64>,
+    pub tokens_per_observed_attempt: Option<f64>,
+    pub unit: &'static str,
+    pub attempt_basis: &'static str,
+    pub unknown_reasons: BTreeSet<&'static str>,
 }
 
 /// Disjoint token buckets except cache-write duration fields, which partition cache_write.
@@ -113,6 +172,8 @@ pub struct SessionReport {
     pub run_id: Option<String>,
     pub parent: Option<String>,
     pub provider: Provider,
+    pub identifier_backed_response_count: u64,
+    pub context_per_request: ContextPerRequest,
     pub direct: Option<Tokens>,
     pub inclusive: Option<Tokens>,
     pub models: Vec<ModelUsage>,
@@ -146,6 +207,7 @@ pub struct Report {
     pub branch: Option<String>,
     pub prs: Vec<u64>,
     pub allocation: &'static str,
+    pub identifier_backed_response_count: u64,
     pub total: Option<Tokens>,
     pub unattributed: Option<Tokens>,
     /// Non-additive evidence: stable identity is missing, so deduplication is impossible.

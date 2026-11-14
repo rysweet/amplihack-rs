@@ -4,6 +4,1040 @@ use crate::commands::pr::{GhOutput, GhRunner};
 use serde_json::{Value, json};
 use std::{cell::RefCell, path::PathBuf};
 
+// Response counts and context per request. The tests read report fields
+// through JSON, so a renamed or missing field fails an assertion that names
+// it, rather than failing the build.
+mod context_and_response_counts {
+    use super::*;
+
+    fn usage(input: Value) -> Value {
+        json!({"input_tokens":input,"output_tokens":9,
+            "cache_read_input_tokens":20,"cache_creation_input_tokens":10,
+            "cache_creation":{"ephemeral_5m_input_tokens":4,"ephemeral_1h_input_tokens":6}})
+    }
+
+    fn codex_usage(input: u64, read: u64, write: u64) -> Value {
+        json!({"input_tokens":input,"cached_input_tokens":read,
+            "cache_write_input_tokens":write,"output_tokens":50,"reasoning_output_tokens":8})
+    }
+
+    fn write(dir: &std::path::Path, name: &str, rows: &[Value]) {
+        std::fs::write(
+            dir.join(name),
+            rows.iter().map(|v| format!("{v}\n")).collect::<String>(),
+        )
+        .unwrap();
+    }
+
+    fn report(provider: &str, rows: &[Value]) -> Report {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "log", rows);
+        collect(
+            &manifest(json!([session("s", provider, json!(["log"]))])),
+            dir.path(),
+        )
+        .unwrap()
+    }
+
+    fn public(r: &Report) -> Value {
+        serde_json::to_value(r).unwrap()
+    }
+
+    fn context(r: &Value, index: usize) -> &Value {
+        let c = &r["sessions"][index]["context_per_request"];
+        for field in [
+            "input_tokens",
+            "observed_attempts",
+            "tokens_per_observed_attempt",
+            "unit",
+            "attempt_basis",
+            "unknown_reasons",
+        ] {
+            assert!(
+                c.get(field).is_some(),
+                "context_per_request.{field} must be present: {c}"
+            );
+        }
+        assert_eq!(c["unit"], "tokens per observed attempt");
+        let reasons = c["unknown_reasons"].as_array().unwrap();
+        let mut sorted = reasons.clone();
+        sorted.sort_by_key(Value::to_string);
+        sorted.dedup();
+        assert_eq!(*reasons, sorted, "reason codes must be sorted and unique");
+        c
+    }
+
+    fn unknown(c: &Value, reason: &str) {
+        assert!(c["tokens_per_observed_attempt"].is_null(), "{c}");
+        assert!(
+            c["unknown_reasons"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(reason)),
+            "missing {reason}: {c}"
+        );
+    }
+
+    #[test]
+    fn direct_context_deduplicates_streams_copies_and_excludes_children_and_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = native_usage("claude", "s", "a", usage(json!(100)));
+        let mut streamed = a.clone();
+        streamed["message"]["usage"]["output_tokens"] = json!(999);
+        let mut b = native_usage("claude", "s", "b", usage(json!(50)));
+        b["message"]["usage"]["cache_read_input_tokens"] = json!(0);
+        b["message"]["usage"]["cache_creation_input_tokens"] = json!(0);
+        b["message"]["usage"]["cache_creation"] =
+            json!({"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0});
+        let child = native_usage("claude", "child", "c", usage(json!(1000)));
+        write(dir.path(), "start", &[a.clone(), streamed]);
+        write(dir.path(), "resume", &[a, b]);
+        write(dir.path(), "child", &[child]);
+        let mut child_session = session("child", "claude", json!(["child"]));
+        child_session["parent"] = json!("s");
+        let r = collect(
+            &manifest(json!([
+                session("s", "claude", json!(["start", "resume"])),
+                child_session
+            ])),
+            dir.path(),
+        )
+        .unwrap();
+        let v = public(&r);
+        let c = context(&v, 0);
+        assert_eq!(c["input_tokens"], 180);
+        assert_eq!(c["observed_attempts"], 2);
+        assert_eq!(c["tokens_per_observed_attempt"], 90.0);
+        assert_eq!(c["attempt_basis"], "identifier_backed_responses");
+        assert_eq!(c["unknown_reasons"], json!([]));
+        assert_eq!(v["identifier_backed_response_count"], 3);
+        assert_eq!(v["sessions"][0]["identifier_backed_response_count"], 2);
+        assert!(r.sessions[0].inclusive.unwrap().total() > r.sessions[0].direct.unwrap().total());
+    }
+
+    #[test]
+    fn explicit_zero_is_numeric_while_missing_and_invalid_input_remain_unknown() {
+        for (value, reason) in [
+            (json!(0), None),
+            (Value::Null, Some("missing_input_fields")),
+            (json!(-1), Some("invalid_input_fields")),
+            (json!("0"), Some("invalid_input_fields")),
+            (json!(1.5), Some("invalid_input_fields")),
+            (json!(true), Some("invalid_input_fields")),
+        ] {
+            let mut u = usage(value.clone());
+            u["cache_read_input_tokens"] = json!(0);
+            u["cache_creation_input_tokens"] = json!(0);
+            u["cache_creation"] =
+                json!({"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0});
+            if value.is_null() {
+                u.as_object_mut().unwrap().remove("input_tokens");
+            }
+            let r = report("claude", &[native_usage("claude", "s", "a", u)]);
+            let v = public(&r);
+            let c = context(&v, 0);
+            assert_eq!(c["observed_attempts"], 1, "{value}");
+            assert_eq!(r.total.unwrap().output, 9, "retain known totals: {value}");
+            if let Some(reason) = reason {
+                assert!(c["input_tokens"].is_null(), "{value}: {c}");
+                unknown(c, reason);
+            } else {
+                assert_eq!(c["input_tokens"], 0);
+                assert_eq!(c["tokens_per_observed_attempt"], 0.0);
+                assert_eq!(c["unknown_reasons"], json!([]));
+            }
+        }
+    }
+
+    #[test]
+    fn each_missing_input_bucket_taints_context_even_with_other_known_counters() {
+        for field in [
+            "input_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        ] {
+            let mut u = usage(json!(100));
+            u.as_object_mut().unwrap().remove(field);
+            let r = public(&report("claude", &[native_usage("claude", "s", "a", u)]));
+            let c = context(&r, 0);
+            assert!(c["input_tokens"].is_null(), "missing {field}");
+            unknown(c, "missing_input_fields");
+        }
+    }
+
+    #[test]
+    fn one_unknown_contributor_taints_context_without_discarding_known_totals() {
+        let rows = [
+            native_usage("claude", "s", "known", usage(json!(100))),
+            native_usage("claude", "s", "unknown", json!({"output_tokens":5})),
+        ];
+        let r = report("claude", &rows);
+        let v = public(&r);
+        let c = context(&v, 0);
+        assert_eq!(v["identifier_backed_response_count"], 2);
+        assert_eq!(c["observed_attempts"], 2);
+        assert!(c["input_tokens"].is_null());
+        unknown(c, "missing_input_fields");
+        assert_eq!(r.total.unwrap().input, 100);
+        assert_eq!(r.total.unwrap().output, 14);
+    }
+
+    /// The record Claude Code writes itself for an API error, as found in
+    /// local transcripts: a client UUID as `message.id`, model `<synthetic>`,
+    /// `isApiErrorMessage: true`, every counter an explicit zero and a
+    /// `cache_creation` sub-object. Interrupt records have the same message
+    /// but no `isApiErrorMessage`.
+    fn client_record(id: &str, api_error: bool) -> Value {
+        let mut v = json!({"type":"assistant","sessionId":"s",
+            "timestamp":"2026-01-01T00:00:01Z","uuid":id,
+            "message":{"id":id,"type":"message","role":"assistant","model":"<synthetic>",
+                "stop_reason":"stop_sequence","stop_sequence":"","content":[],
+                "usage":{"input_tokens":0,"output_tokens":0,
+                    "cache_creation_input_tokens":0,"cache_read_input_tokens":0,
+                    "cache_creation":{"ephemeral_5m_input_tokens":0,
+                        "ephemeral_1h_input_tokens":0},
+                    "server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},
+                    "service_tier":null,"output_tokens_details":null}}});
+        if api_error {
+            v["isApiErrorMessage"] = json!(true);
+            v["apiErrorStatus"] = json!(429);
+            v["error"] = json!("rate_limit");
+        }
+        v
+    }
+
+    #[test]
+    fn client_generated_records_are_neither_responses_nor_attempts() {
+        let real = native_usage("claude", "s", "msg_real", usage(json!(100)));
+        let baseline = public(&report("claude", std::slice::from_ref(&real)));
+        // An API error flagged only by `isApiErrorMessage` is dropped too.
+        let mut flagged = client_record("4b6f0c1e-0d7a-4d55-9a43-1f0f6b8f1a02", true);
+        flagged["message"]["model"] = json!("model");
+        let with_client = public(&report(
+            "claude",
+            &[
+                real,
+                client_record("9cbe036f-5d2b-4a1e-8f7c-3a6e2d9b0c11", true),
+                client_record("33a38de9-7e41-4c0b-b5d2-6f1a9c8e2d44", false),
+                flagged,
+            ],
+        ));
+        let c = context(&with_client, 0);
+        assert_eq!(c["input_tokens"], 130);
+        assert_eq!(c["observed_attempts"], 1);
+        assert_eq!(c["tokens_per_observed_attempt"], 130.0);
+        assert_eq!(c["unknown_reasons"], json!([]));
+        assert_eq!(with_client["identifier_backed_response_count"], 1);
+        assert_eq!(
+            with_client["sessions"][0]["identifier_backed_response_count"],
+            1
+        );
+        assert_eq!(with_client["models"][0]["observed_attempts"], 1);
+        // Nothing about the report changes: counts, context, totals, models,
+        // diagnostics, completeness and observation bounds.
+        assert_eq!(with_client, baseline);
+    }
+
+    #[test]
+    fn a_session_of_only_client_records_reports_no_observation_not_zero() {
+        let only = public(&report(
+            "claude",
+            &[
+                client_record("9cbe036f-5d2b-4a1e-8f7c-3a6e2d9b0c11", true),
+                client_record("33a38de9-7e41-4c0b-b5d2-6f1a9c8e2d44", false),
+            ],
+        ));
+        let c = context(&only, 0);
+        assert!(c["tokens_per_observed_attempt"].is_null(), "{c}");
+        assert!(c["input_tokens"].is_null(), "{c}");
+        assert!(c["observed_attempts"].is_null(), "{c}");
+        // Nothing was observed, so no input field was absent either.
+        assert_eq!(c["unknown_reasons"], json!(["no_usage_observed"]));
+        assert_eq!(c["attempt_basis"], "unknown");
+        assert_eq!(only["identifier_backed_response_count"], 0);
+        assert!(only["total"].is_null());
+        // The same as a session whose log holds no records at all.
+        assert_eq!(only, public(&report("claude", &[])));
+    }
+
+    #[test]
+    fn counters_on_a_client_record_are_diagnosed_not_silently_dropped() {
+        for (field, value) in [
+            ("input_tokens", json!(5)),
+            ("output_tokens", json!(5)),
+            ("cache_read_input_tokens", json!("5")),
+        ] {
+            let mut record = client_record("9cbe036f-5d2b-4a1e-8f7c-3a6e2d9b0c11", true);
+            record["message"]["usage"][field] = value.clone();
+            let r = report(
+                "claude",
+                &[
+                    native_usage("claude", "s", "msg_real", usage(json!(100))),
+                    record,
+                ],
+            );
+            assert!(has(&r, "usage_on_client_generated_record"), "{field}");
+            assert!(!r.complete && !r.sessions[0].complete, "{field}");
+            assert_eq!(r.identifier_backed_response_count, 1, "{field}");
+            assert_eq!(r.total.unwrap().input, 100, "{field}: {value}");
+            // Whether the provider served the record is unknown, so it is an
+            // unknown contributor: the ratio is withheld, not left at 130.
+            let v = public(&r);
+            let c = context(&v, 0);
+            unknown(c, "usage_on_client_generated_record");
+            assert!(c["input_tokens"].is_null(), "{field}: {c}");
+            assert!(c["observed_attempts"].is_null(), "{field}: {c}");
+        }
+    }
+
+    /// Copied history keeps its native owner: a counted client record held in
+    /// another session's file makes the owner's context unknown, while the
+    /// holder's own, fully known input keeps its ratio.
+    #[test]
+    fn a_copied_client_record_with_counters_makes_its_owner_context_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut record = client_record("9cbe036f-5d2b-4a1e-8f7c-3a6e2d9b0c11", true);
+        record["sessionId"] = json!("owner");
+        record["message"]["usage"]["input_tokens"] = json!(5);
+        write(
+            dir.path(),
+            "owner",
+            &[native_usage(
+                "claude",
+                "owner",
+                "msg_owner",
+                usage(json!(100)),
+            )],
+        );
+        write(
+            dir.path(),
+            "holder",
+            &[
+                native_usage("claude", "holder", "msg_holder", usage(json!(100))),
+                record,
+            ],
+        );
+        let r = collect(
+            &manifest(json!([
+                session("owner", "claude", json!(["owner"])),
+                session("holder", "claude", json!(["holder"])),
+            ])),
+            dir.path(),
+        )
+        .unwrap();
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "usage_on_client_generated_record"
+                    && d.session == Some(1)
+                    && d.line == Some(2))
+        );
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "incomplete_usage_observation" && d.session == Some(0))
+        );
+        assert!(!r.sessions[0].complete && !r.sessions[1].complete);
+        let v = public(&r);
+        unknown(context(&v, 0), "usage_on_client_generated_record");
+        let holder = context(&v, 1);
+        assert_eq!(holder["tokens_per_observed_attempt"], 130.0);
+        assert_eq!(holder["unknown_reasons"], json!([]));
+    }
+
+    /// A `token_count` with `info` but neither total nor last usage may stand
+    /// for a request whose input is unknown, so it cannot leave the ratio
+    /// published as if every request were known.
+    #[test]
+    fn a_codex_token_count_without_usage_leaves_context_input_unknown() {
+        let rows = [
+            json!({"type":"session_meta","payload":{"id":"s"}}),
+            json!({"type":"turn_context","payload":{"model":"m"}}),
+            token_count([100, 20, 30, 10], Some([100, 20, 30, 10]), 1),
+        ];
+        let control = public(&report("codex", &rows));
+        assert_eq!(context(&control, 0)["tokens_per_observed_attempt"], 100.0);
+        let empty = json!({"type":"event_msg","timestamp":"2026-01-01T00:00:02Z",
+            "payload":{"type":"token_count","info":{"model_context_window":1000}}});
+        let mut with_empty = rows.to_vec();
+        with_empty.push(empty);
+        let r = report("codex", &with_empty);
+        assert!(has(&r, "missing_usage"));
+        assert!(!r.complete && !r.sessions[0].complete);
+        assert_eq!(
+            r.total,
+            report("codex", &rows).total,
+            "totals are unaffected"
+        );
+        let v = public(&r);
+        let c = context(&v, 0);
+        unknown(c, "missing_input_fields");
+        assert!(c["input_tokens"].is_null(), "{c}");
+        assert!(c["observed_attempts"].is_null(), "{c}");
+    }
+
+    #[test]
+    fn zero_cumulative_attempts_never_substitute_one_or_divide_by_zero() {
+        let mut zero = codex_record(0, 0, 0, 0, 1);
+        zero["payload"]["model"] = json!("model");
+        let r = public(&report(
+            "codex",
+            &[json!({"type":"session_meta","payload":{"id":"s"}}), zero],
+        ));
+        let c = context(&r, 0);
+        assert_eq!(c["observed_attempts"], 0);
+        unknown(c, "zero_observed_attempts");
+    }
+
+    #[test]
+    fn codex_inclusive_input_is_not_added_to_its_cache_subsets() {
+        let r = public(&report(
+            "codex",
+            &[native_usage("codex", "s", "a", codex_usage(120, 20, 10))],
+        ));
+        let c = context(&r, 0);
+        assert_eq!(c["input_tokens"], 120);
+        assert_eq!(c["observed_attempts"], 1);
+        assert_eq!(c["tokens_per_observed_attempt"], 120.0);
+    }
+
+    #[test]
+    fn real_shaped_codex_fixtures_without_cache_write_report_numeric_context() {
+        // codex-start.jsonl / codex-resume.jsonl carry the Codex CLI
+        // `token_count` shape, which has no `cache_write_input_tokens`.
+        let r = collect(
+            &manifest(json!([session(
+                "codex-session",
+                "codex",
+                json!([
+                    "codex-resume.jsonl",
+                    "codex-start.jsonl",
+                    "codex-start.jsonl"
+                ])
+            )])),
+            &fixture_dir(),
+        )
+        .unwrap();
+        assert!(has(&r, "cache_write_counter_unreported"));
+        // Each transition equals its record's `last_token_usage`; the
+        // repeated start file is a replay and is not checked at all.
+        assert!(!has(&r, "unconfirmed_cumulative_transition"));
+        let v = public(&r);
+        let c = context(&v, 0);
+        assert_eq!(c["input_tokens"], 180);
+        assert_eq!(c["observed_attempts"], 2);
+        assert_eq!(c["tokens_per_observed_attempt"], 90.0);
+        assert_eq!(c["unknown_reasons"], json!([]));
+    }
+
+    #[test]
+    fn a_missing_cumulative_prefix_leaves_cumulative_only_attempts_unknown() {
+        // The resume file alone: its total of 180 covers the start file's
+        // request too, while its `last_token_usage` reports 80.
+        let r = collect(
+            &manifest(json!([session(
+                "codex-session",
+                "codex",
+                json!(["codex-resume.jsonl"])
+            )])),
+            &fixture_dir(),
+        )
+        .unwrap();
+        assert!(has(&r, "unconfirmed_cumulative_transition"));
+        assert!(!r.sessions[0].complete);
+        let v = public(&r);
+        let c = context(&v, 0);
+        assert_eq!(c["input_tokens"], 180, "the input is retained");
+        assert!(c["observed_attempts"].is_null(), "{c}");
+        assert!(c["tokens_per_observed_attempt"].is_null(), "{c}");
+        assert_eq!(c["attempt_basis"], "unknown");
+        assert_eq!(c["unknown_reasons"], json!(["unknown_attempts_for_input"]));
+        // Token totals keep the whole cumulative high-water mark.
+        assert_eq!(r.total.unwrap().input + r.total.unwrap().cache_read, 180);
+    }
+
+    /// A Codex CLI `token_count` record: `[input, cached, output, reasoning]`.
+    fn token_count(total: [u64; 4], last: Option<[u64; 4]>, second: u32) -> Value {
+        let usage = |[input, read, output, reasoning]: [u64; 4]| {
+            json!({"input_tokens":input,"cached_input_tokens":read,
+                "cache_write_input_tokens":0,"output_tokens":output,
+                "reasoning_output_tokens":reasoning})
+        };
+        let mut info = json!({"total_token_usage": usage(total)});
+        if let Some(last) = last {
+            info["last_token_usage"] = usage(last);
+        }
+        json!({"type":"event_msg","timestamp":format!("2026-01-01T00:00:{second:02}Z"),
+            "payload":{"type":"token_count","info":info}})
+    }
+
+    #[test]
+    fn a_gap_between_resume_files_leaves_cumulative_only_attempts_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = |name: &str, record: Value| {
+            write(
+                dir.path(),
+                name,
+                &[
+                    json!({"type":"session_meta","payload":{"id":"s"}}),
+                    json!({"type":"turn_context","payload":{"model":"m"}}),
+                    record,
+                ],
+            )
+        };
+        file(
+            "start",
+            token_count([100, 20, 30, 10], Some([100, 20, 30, 10]), 1),
+        );
+        file(
+            "middle",
+            token_count([180, 50, 50, 15], Some([80, 30, 20, 5]), 2),
+        );
+        file(
+            "end",
+            token_count([250, 60, 60, 20], Some([70, 10, 10, 5]), 3),
+        );
+        let run = |files: Value| {
+            collect(&manifest(json!([session("s", "codex", files)])), dir.path()).unwrap()
+        };
+
+        let all = run(json!(["start", "middle", "end"]));
+        assert!(all.complete, "{:?}", all.diagnostics);
+        let v = public(&all);
+        let c = context(&v, 0);
+        assert_eq!(c["input_tokens"], 250);
+        assert_eq!(c["observed_attempts"], 3);
+        assert_eq!(c["tokens_per_observed_attempt"], 250.0 / 3.0);
+        assert_eq!(c["attempt_basis"], "cumulative_only_transitions");
+
+        // Without the middle file the last transition covers two requests.
+        let gap = run(json!(["start", "end"]));
+        assert!(!gap.complete);
+        assert!(has(&gap, "unconfirmed_cumulative_transition"));
+        assert_eq!(gap.total, all.total, "token totals are unaffected");
+        let v = public(&gap);
+        let c = context(&v, 0);
+        assert_eq!(c["input_tokens"], 250);
+        assert!(c["observed_attempts"].is_null(), "{c}");
+        unknown(c, "unknown_attempts_for_input");
+        assert_eq!(c["attempt_basis"], "unknown");
+    }
+
+    #[test]
+    fn unusable_last_usage_cannot_confirm_a_cumulative_transition() {
+        for last in [json!({}), json!("80")] {
+            let mut record = token_count([180, 50, 50, 15], None, 1);
+            record["payload"]["info"]["last_token_usage"] = last.clone();
+            let r = report(
+                "codex",
+                &[json!({"type":"session_meta","payload":{"id":"s"}}), record],
+            );
+            assert!(has(&r, "missing_or_invalid_token_field"), "{last}");
+            assert!(has(&r, "unconfirmed_cumulative_transition"), "{last}");
+            let v = public(&r);
+            let c = context(&v, 0);
+            assert!(c["observed_attempts"].is_null(), "{last}: {c}");
+            unknown(c, "unknown_attempts_for_input");
+        }
+    }
+
+    #[test]
+    fn without_last_usage_a_cumulative_transition_counts_as_one_attempt() {
+        // The documented limit: with no `last_token_usage` there is nothing
+        // to check a transition against, so a missing prefix is not detected.
+        let r = report(
+            "codex",
+            &[
+                json!({"type":"session_meta","payload":{"id":"s"}}),
+                json!({"type":"turn_context","payload":{"model":"m"}}),
+                token_count([180, 50, 50, 15], None, 1),
+            ],
+        );
+        assert!(!has(&r, "unconfirmed_cumulative_transition"));
+        let v = public(&r);
+        let c = context(&v, 0);
+        assert_eq!(c["observed_attempts"], 1);
+        assert_eq!(c["tokens_per_observed_attempt"], 180.0);
+        assert_eq!(c["unknown_reasons"], json!([]));
+    }
+
+    #[test]
+    fn a_session_without_attributed_usage_reports_no_usage_observed() {
+        // An empty log, and a log whose only response belongs to a native
+        // session that is not in the manifest.
+        for rows in [
+            vec![],
+            vec![native_usage("claude", "elsewhere", "m", usage(json!(100)))],
+        ] {
+            let r = report("claude", &rows);
+            assert!(has(&r, "no_usage_observed"));
+            let v = public(&r);
+            let c = context(&v, 0);
+            assert!(c["input_tokens"].is_null(), "{c}");
+            assert!(c["observed_attempts"].is_null(), "{c}");
+            assert_eq!(c["unknown_reasons"], json!(["no_usage_observed"]));
+        }
+    }
+
+    #[test]
+    fn claude_subagent_records_count_in_the_parent_direct_context() {
+        // Claude Code subagent transcripts carry the parent's `sessionId`
+        // with `isSidechain: true`. Ownership follows `sessionId`, so their
+        // requests are the parent's direct requests wherever they are listed.
+        let dir = tempfile::tempdir().unwrap();
+        let mut sub = native_usage("claude", "s", "msg_sub", usage(json!(10)));
+        sub["isSidechain"] = json!(true);
+        sub["agentId"] = json!("a1");
+        write(
+            dir.path(),
+            "main",
+            &[native_usage("claude", "s", "msg_main", usage(json!(100)))],
+        );
+        write(dir.path(), "agent", &[sub]);
+        let mut child = session("agent-entry", "claude", json!(["agent"]));
+        child["parent"] = json!("s");
+        for sessions in [
+            json!([session("s", "claude", json!(["main", "agent"]))]),
+            json!([session("s", "claude", json!(["main"])), child]),
+        ] {
+            let v = public(&collect(&manifest(sessions), dir.path()).unwrap());
+            let c = context(&v, 0);
+            assert_eq!(c["input_tokens"], 130 + 40);
+            assert_eq!(c["observed_attempts"], 2);
+            assert_eq!(c["tokens_per_observed_attempt"], 85.0);
+            assert_eq!(v["sessions"][0]["identifier_backed_response_count"], 2);
+            if let Some(entry) = v["sessions"].get(1) {
+                assert!(entry["direct"].is_null(), "{entry}");
+                assert_eq!(
+                    entry["context_per_request"]["unknown_reasons"],
+                    json!(["no_usage_observed"])
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn codex_cache_write_is_optional_but_required_fields_and_present_values_are_checked() {
+        let mut absent = codex_usage(120, 20, 0);
+        absent
+            .as_object_mut()
+            .unwrap()
+            .remove("cache_write_input_tokens");
+        let c = public(&report("codex", &[native_usage("codex", "s", "a", absent)]));
+        let ctx = context(&c, 0);
+        assert_eq!(ctx["tokens_per_observed_attempt"], 120.0);
+        assert_eq!(ctx["unknown_reasons"], json!([]));
+
+        for field in ["input_tokens", "cached_input_tokens"] {
+            let mut u = codex_usage(120, 20, 0);
+            u.as_object_mut().unwrap().remove(field);
+            u.as_object_mut()
+                .unwrap()
+                .remove("cache_write_input_tokens");
+            let r = public(&report("codex", &[native_usage("codex", "s", "a", u)]));
+            unknown(context(&r, 0), "missing_input_fields");
+        }
+
+        let mut invalid = codex_usage(120, 20, 0);
+        invalid["cache_write_input_tokens"] = json!("10");
+        let r = public(&report(
+            "codex",
+            &[native_usage("codex", "s", "a", invalid)],
+        ));
+        unknown(context(&r, 0), "invalid_input_fields");
+
+        let r = public(&report(
+            "codex",
+            &[native_usage("codex", "s", "a", codex_usage(100, 60, 50))],
+        ));
+        unknown(context(&r, 0), "overlapping_input_subsets");
+    }
+
+    #[test]
+    fn impossible_codex_cache_subsets_keep_context_unknown() {
+        let r = report(
+            "codex",
+            &[native_usage("codex", "s", "a", codex_usage(10, 8, 8))],
+        );
+        let v = public(&r);
+        unknown(context(&v, 0), "overlapping_input_subsets");
+        assert!(!r.complete);
+        assert_eq!(
+            r.total.unwrap().output,
+            42,
+            "known output survives invalid input"
+        );
+    }
+
+    #[test]
+    fn cumulative_only_transitions_deduplicate_replays_across_models_and_resumes() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = json!({"type":"session_meta","payload":{"id":"s"}});
+        let turn = |m: &str| json!({"type":"turn_context","payload":{"model":m}});
+        let a = codex_record(100, 20, 30, 10, 1);
+        let b = codex_record(180, 50, 50, 15, 2);
+        write(
+            dir.path(),
+            "start",
+            &[meta.clone(), turn("first"), a.clone()],
+        );
+        write(
+            dir.path(),
+            "resume",
+            &[meta, turn("second"), a, b.clone(), b],
+        );
+        let r = public(
+            &collect(
+                &manifest(json!([session("s", "codex", json!(["start", "resume"]))])),
+                dir.path(),
+            )
+            .unwrap(),
+        );
+        let c = context(&r, 0);
+        assert_eq!(r["identifier_backed_response_count"], 0);
+        assert_eq!(c["input_tokens"], 180);
+        assert_eq!(c["observed_attempts"], 2);
+        assert_eq!(c["tokens_per_observed_attempt"], 90.0);
+        assert_eq!(c["attempt_basis"], "cumulative_only_transitions");
+    }
+
+    #[test]
+    fn identified_response_with_missing_cumulative_prefix_retains_input_but_unknown_attempts() {
+        let mut row = native_usage("codex", "s", "a", codex_usage(40, 5, 0));
+        row["payload"]["thread_token_usage"] = codex_usage(100, 20, 0);
+        let r = report("codex", &[row]);
+        let v = public(&r);
+        let c = context(&v, 0);
+        assert_eq!(c["input_tokens"], 100);
+        assert!(c["observed_attempts"].is_null());
+        unknown(c, "unknown_attempts_for_input");
+        assert_eq!(c["attempt_basis"], "unknown");
+        assert_eq!(v["identifier_backed_response_count"], 1);
+        assert_eq!(r.total.unwrap().input + r.total.unwrap().cache_read, 100);
+    }
+
+    #[test]
+    fn contradictory_cumulative_and_response_input_cannot_supply_a_compatible_ratio() {
+        let mut row = native_usage("codex", "s", "a", codex_usage(100, 0, 0));
+        row["payload"]["thread_token_usage"] = codex_usage(40, 0, 0);
+        let r = public(&report("codex", &[row]));
+        let c = context(&r, 0);
+        unknown(c, "incompatible_attempt_basis");
+        assert_eq!(c["attempt_basis"], "incompatible");
+        assert_eq!(r["complete"], false);
+    }
+
+    #[test]
+    fn provider_scoped_response_count_includes_missing_usage_but_excludes_unidentified() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = native_usage("claude", "s", "same-id", usage(json!(10)));
+        let mut no_usage = native_usage("claude", "s", "without-usage", Value::Null);
+        no_usage["message"].as_object_mut().unwrap().remove("usage");
+        let mut unidentified = native_usage("claude", "s", "ignored", usage(json!(999)));
+        unidentified["message"]
+            .as_object_mut()
+            .unwrap()
+            .remove("id");
+        write(
+            dir.path(),
+            "claude",
+            &[a.clone(), a, no_usage.clone(), no_usage, unidentified],
+        );
+        write(
+            dir.path(),
+            "codex",
+            &[native_usage("codex", "c", "same-id", codex_usage(10, 0, 0))],
+        );
+        let r = collect(
+            &manifest(json!([
+                session("s", "claude", json!(["claude"])),
+                session("c", "codex", json!(["codex"]))
+            ])),
+            dir.path(),
+        )
+        .unwrap();
+        let v = public(&r);
+        assert_eq!(v["identifier_backed_response_count"], 3);
+        assert_eq!(v["sessions"][0]["identifier_backed_response_count"], 2);
+        assert_eq!(v["sessions"][1]["identifier_backed_response_count"], 1);
+        unknown(context(&v, 0), "missing_input_fields");
+        assert!(!r.unresolved.is_empty());
+    }
+
+    #[test]
+    fn unidentified_response_with_valid_usage_makes_context_input_unknown() {
+        let identified = native_usage("claude", "s", "a", usage(json!(100)));
+        let mut unidentified = native_usage("claude", "s", "ignored", usage(json!(999)));
+        unidentified["message"]
+            .as_object_mut()
+            .unwrap()
+            .remove("id");
+        let v = public(&report("claude", &[identified, unidentified]));
+        let c = context(&v, 0);
+        assert!(c["input_tokens"].is_null(), "{c}");
+        assert!(c["observed_attempts"].is_null(), "{c}");
+        assert!(c["tokens_per_observed_attempt"].is_null(), "{c}");
+        assert_eq!(c["unknown_reasons"], json!(["unidentified_response_input"]));
+        assert_eq!(v["identifier_backed_response_count"], 1);
+    }
+
+    #[test]
+    fn conflicting_native_owners_count_once_globally_and_neither_owns_context() {
+        let dir = tempfile::tempdir().unwrap();
+        for id in ["a", "b"] {
+            write(
+                dir.path(),
+                id,
+                &[native_usage("claude", id, "shared", usage(json!(100)))],
+            );
+        }
+        let r = collect(
+            &manifest(json!([
+                session("a", "claude", json!(["a"])),
+                session("b", "claude", json!(["b"]))
+            ])),
+            dir.path(),
+        )
+        .unwrap();
+        let v = public(&r);
+        assert_eq!(v["identifier_backed_response_count"], 1);
+        assert_eq!(r.unattributed, r.total);
+        for i in 0..2 {
+            assert_eq!(v["sessions"][i]["identifier_backed_response_count"], 0);
+            assert!(r.sessions[i].direct.is_none());
+            unknown(context(&v, i), "ambiguous_session_ownership");
+        }
+    }
+
+    #[test]
+    fn unsupported_provider_preserves_spelling_and_never_selects_another_adapter() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "log",
+            &[native_usage("claude", "s", "a", usage(json!(100)))],
+        );
+        let value = json!({"version":1,"workstream":"issue-1810","repository":"example/repo",
+            "branch":"feat/usage","prs":[42],"completed":true,
+            "sessions":[session("s","OtherProvider-v2",json!(["log"]))]});
+        let parsed = serde_json::from_value::<Manifest>(value);
+        assert!(
+            parsed.is_ok(),
+            "safe unsupported providers must be representable"
+        );
+        let r = collect(&parsed.unwrap(), dir.path()).unwrap();
+        let v = public(&r);
+        assert_eq!(v["sessions"][0]["provider"], "OtherProvider-v2");
+        assert_eq!(v["identifier_backed_response_count"], 0);
+        assert!(r.total.is_none());
+        assert!(!r.complete);
+        unknown(context(&v, 0), "unsupported_provider");
+    }
+
+    #[test]
+    fn unsupported_accounting_schema_cannot_turn_unknown_usage_into_zero() {
+        let row = json!({"type":"token_usage_record","timestamp":"2026-01-01T00:00:00Z",
+            "payload":{"thread_id":"s","response_id":"a","model":"model",
+            "usage":{"future_input_tokens":100}}});
+        let r = report("codex", &[row]);
+        let v = public(&r);
+        assert_eq!(v["identifier_backed_response_count"], 1);
+        assert!(r.total.is_none());
+        unknown(context(&v, 0), "unsupported_schema");
+    }
+
+    #[test]
+    fn checked_context_accumulation_refuses_overflow_within_or_between_responses() {
+        for rows in [
+            vec![native_usage("claude", "s", "a", usage(json!(u64::MAX)))],
+            vec![
+                native_usage("claude", "s", "a", usage(json!(u64::MAX - 40))),
+                native_usage("claude", "s", "b", usage(json!(50))),
+            ],
+        ] {
+            let r = report("claude", &rows);
+            let v = public(&r);
+            let c = context(&v, 0);
+            assert!(c["input_tokens"].is_null());
+            unknown(c, "arithmetic_overflow");
+            assert!(!r.complete);
+        }
+    }
+
+    #[test]
+    fn merged_response_copies_cannot_establish_overlapping_codex_input() {
+        let rows = [
+            native_usage("codex", "s", "a", codex_usage(10, 8, 0)),
+            native_usage("codex", "s", "a", codex_usage(10, 0, 8)),
+        ];
+        let r = public(&report("codex", &rows));
+        assert_eq!(r["identifier_backed_response_count"], 1);
+        unknown(context(&r, 0), "overlapping_input_subsets");
+    }
+
+    #[test]
+    fn merged_claude_buckets_are_checked_after_component_maxima() {
+        let mut first = usage(json!(u64::MAX - 10));
+        first["cache_creation_input_tokens"] = json!(0);
+        first["cache_read_input_tokens"] = json!(0);
+        first["cache_creation"] =
+            json!({"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0});
+        let second = usage(json!(0));
+        let rows = [
+            native_usage("claude", "s", "a", first),
+            native_usage("claude", "s", "a", second),
+        ];
+        let r = public(&report("claude", &rows));
+        unknown(context(&r, 0), "arithmetic_overflow");
+        assert!(context(&r, 0)["input_tokens"].is_null());
+    }
+
+    #[test]
+    fn unsupported_cumulative_contributor_taints_known_response_context() {
+        let rows = [
+            native_usage("codex", "s", "a", codex_usage(10, 0, 0)),
+            json!({"type":"token_usage_record","timestamp":"2026-01-01T00:00:01Z",
+                "payload":{"thread_id":"s","model":"model",
+                    "thread_token_usage":{"future_input_tokens":100}}}),
+        ];
+        let r = public(&report("codex", &rows));
+        unknown(context(&r, 0), "unsupported_schema");
+        assert!(context(&r, 0)["input_tokens"].is_null());
+    }
+
+    #[test]
+    fn contradictory_cache_partitions_cannot_inflate_context() {
+        let mut u = usage(json!(100));
+        u["cache_creation"] =
+            json!({"ephemeral_5m_input_tokens":10,"ephemeral_1h_input_tokens":10});
+        let r = public(&report("claude", &[native_usage("claude", "s", "a", u)]));
+        unknown(context(&r, 0), "overlapping_input_subsets");
+        assert_eq!(r["total"]["output"], 9);
+    }
+
+    #[test]
+    fn native_cumulative_only_thread_snapshots_supply_compatible_attempts() {
+        let row = json!({"type":"token_usage_record","timestamp":"2026-01-01T00:00:00Z",
+            "payload":{"thread_id":"s","model":"model","thread_token_usage":codex_usage(120,20,0)}});
+        let r = public(&report("codex", &[row.clone(), row]));
+        let c = context(&r, 0);
+        assert_eq!(r["identifier_backed_response_count"], 0);
+        assert_eq!(c["input_tokens"], 120);
+        assert_eq!(c["observed_attempts"], 1);
+        assert_eq!(c["tokens_per_observed_attempt"], 120.0);
+        assert_eq!(c["attempt_basis"], "cumulative_only_transitions");
+    }
+
+    #[test]
+    fn context_lines_have_their_own_heading_with_one_line_per_session() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "a",
+            &[native_usage("claude", "s", "a", usage(json!(100)))],
+        );
+        write(
+            dir.path(),
+            "b",
+            &[native_usage("claude", "review", "b", usage(json!(50)))],
+        );
+        let r = collect(
+            &manifest(json!([
+                session("s", "claude", json!(["a"])),
+                session("review", "claude", json!(["b"]))
+            ])),
+            dir.path(),
+        )
+        .unwrap();
+        let rendered = summary(&r);
+        let section = |heading: &str| -> Vec<String> {
+            let start = rendered
+                .find(heading)
+                .unwrap_or_else(|| panic!("{heading}"));
+            rendered[start + heading.len()..]
+                .lines()
+                .skip_while(|l| l.trim().is_empty())
+                .take_while(|l| l.starts_with("- "))
+                .map(str::to_owned)
+                .collect()
+        };
+        let context = section("Session context per request:");
+        let totals = section("Session direct / inclusive token totals (inclusive rows overlap):");
+        for lines in [&context, &totals] {
+            assert_eq!(lines.len(), 2, "{rendered}");
+            assert_eq!(lines.iter().filter(|l| l.starts_with("- `s`")).count(), 1);
+            assert_eq!(
+                lines.iter().filter(|l| l.starts_with("- `review`")).count(),
+                1
+            );
+        }
+        assert!(
+            context
+                .iter()
+                .all(|l| l.contains("tokens per observed attempt"))
+        );
+        assert!(
+            totals
+                .iter()
+                .all(|l| !l.contains("tokens per observed attempt"))
+        );
+    }
+
+    #[test]
+    fn canonical_renderer_and_publication_include_every_context_and_preserve_one_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let known = native_usage("claude", "s", "a", usage(json!(100)));
+        let missing = native_usage("claude", "review", "b", json!({"output_tokens":5}));
+        write(dir.path(), "first", &[known]);
+        write(dir.path(), "review", &[missing]);
+        let mut m = manifest(json!([
+            session("s", "claude", json!(["first"])),
+            session("review", "claude", json!(["review"]))
+        ]));
+        m.prs.push(43);
+        let r = collect(&m, dir.path()).unwrap();
+        let rendered = summary(&r);
+        let lower = rendered.to_lowercase();
+        for phrase in [
+            "tokens per observed attempt",
+            "observational",
+            "context-window",
+            "missing_input_fields",
+            "unknown",
+            "identifier",
+            "shared non-additive",
+            "inclusive",
+            "informational",
+        ] {
+            assert!(lower.contains(phrase), "renderer must explain {phrase}");
+        }
+        assert!(rendered.contains("130"));
+        assert_eq!(summary(&r), rendered, "rendering is deterministic");
+        let host = Hosting::default();
+        assert_eq!(publish::publish(&m, &r, 42, &host).unwrap(), "created");
+        let original = host.comments.borrow()[0].clone();
+        let (marker, body) = original["body"].as_str().unwrap().split_once('\n').unwrap();
+        assert_eq!(body, rendered, "publication uses the canonical renderer");
+        assert!(marker.starts_with("<!-- amplihack-usage:v1:"));
+        assert_eq!(publish::publish(&m, &r, 42, &host).unwrap(), "unchanged");
+        assert_eq!(*host.methods.borrow(), vec!["POST"]);
+        // A successor input snapshot supplies late review usage; the old bytes stay untouched.
+        write(
+            dir.path(),
+            "late",
+            &[native_usage("claude", "review", "late", usage(json!(25)))],
+        );
+        m.sessions[1].files.push("late".into());
+        let late = collect(&m, dir.path()).unwrap();
+        assert_eq!(publish::publish(&m, &late, 42, &host).unwrap(), "updated");
+        let comments = host.comments.borrow();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0]["id"], original["id"]);
+        assert!(comments[0]["body"].as_str().unwrap().starts_with(marker));
+        assert_eq!(*host.methods.borrow(), vec!["POST", "PATCH"]);
+    }
+}
+
 fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/commands/usage/fixtures")
 }
@@ -157,6 +1191,9 @@ fn ancestry_cycles_duplicate_identities_and_unsafe_labels_rejected() {
     );
     let mut m = manifest(json!([session("s", "codex", json!([]))]));
     m.workstream = Some("secret\n<!-- injected -->".into());
+    assert!(collect(&m, &fixture_dir()).is_err());
+    m.workstream = Some("safe".into());
+    m.sessions[0].provider = Provider::Unsupported("secret\n<!-- injected -->".into());
     assert!(collect(&m, &fixture_dir()).is_err());
 }
 

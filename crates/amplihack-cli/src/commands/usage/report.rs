@@ -64,6 +64,43 @@ pub fn summary(r: &Report) -> String {
             );
         }
     }
+    let _ = writeln!(
+        s,
+        "\nIdentifier-backed responses (provider-scoped unique IDs): {}. These differ from cumulative-only attempts.\n",
+        r.identifier_backed_response_count
+    );
+    s.push_str("Context per request is an observational estimate, not a measurement of context-window occupancy. Unit: tokens per observed attempt. Direct input includes disjoint new/cache-read/cache-write input; excludes output, duration partitions and inclusive child totals.\n");
+    s.push_str("\nSession context per request:\n\n");
+    for session in &r.sessions {
+        let c = &session.context_per_request;
+        let estimate = c
+            .tokens_per_observed_attempt
+            .map(|v| format!("{v:.2}"))
+            .unwrap_or_else(|| {
+                format!(
+                    "unknown ({})",
+                    c.unknown_reasons
+                        .iter()
+                        .copied()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            });
+        let _ = writeln!(
+            s,
+            "- `{}`: {} identifier-backed responses; context {} tokens per observed attempt; input {}; attempts {}; basis {}.",
+            session.id,
+            session.identifier_backed_response_count,
+            estimate,
+            c.input_tokens
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "unknown".into()),
+            c.observed_attempts
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "unknown".into()),
+            c.attempt_basis
+        );
+    }
     s.push_str("\nSession direct / inclusive token totals (inclusive rows overlap):\n\n");
     for session in &r.sessions {
         let _ = writeln!(
