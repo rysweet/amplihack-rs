@@ -54,7 +54,7 @@ set -uo pipefail
 
 AUTODRIVE_EXIT_POLICY_REFUSAL=79
 
-LOOP_NAME=""; ROUND_RECIPE=""; CLEAN_TOKEN=""; ALSO_CLEAN=""; VERDICT_FIELD=""
+LOOP_NAME=""; AD_RECOVERY_DIR=""; ROUND_RECIPE=""; CLEAN_TOKEN=""; ALSO_CLEAN=""; VERDICT_FIELD=""
 REPO="."; REVIEW_DIR=""; STATE_DIR=""; TASK_FILE_IN=""; ROUND_CTX=(); BEFORE_ROUND=""; CTX_REFUSED=""; BUDGET_CTX=(); BEFORE_CTX=(); AD_PR=""; INVOCATION_FILE=""
 
 # shellcheck disable=SC2034 # AD_PR is read by the sourced autodrive_escalate.sh
@@ -70,7 +70,7 @@ while [ $# -gt 0 ]; do
     --review-dir)    REVIEW_DIR="${2:-}"; shift 2 ;;
     --state-dir)     STATE_DIR="${2:-}"; shift 2 ;;
     --task-file)     TASK_FILE_IN="${2:-}"; shift 2 ;;
-    --context)       case "${2:-}" in review_dir=*|autodrive_launch_tools=*|autodrive_completion_state=*) CTX_REFUSED="${2%%=*}" ;; pr_number=*) AD_PR="${2#*=}" ;; esac
+    --context)       case "${2:-}" in review_dir=*|autodrive_launch_tools=*|autodrive_completion_state=*) CTX_REFUSED="${2%%=*}" ;; pr_number=*) AD_PR="${2#*=}" ;; step_recovery_dir=*) AD_RECOVERY_DIR="${2#*=}" ;; esac
                      case "${2:-}" in no_merge=*|autodrive_dry_run=*|autodrive_base_branch=*) BEFORE_CTX+=("-c" "${2:-}"); ROUND_CTX+=("-c" "${2:-}") ;; autodrive_budget_*) BUDGET_CTX+=("${2:-}"); BEFORE_CTX+=("-c" "${2:-}") ;; *) ROUND_CTX+=("-c" "${2:-}") ;; esac; shift 2 ;;
     --before-round)  BEFORE_ROUND="${2:-}"; shift 2 ;;
     *) echo "ERROR: autodrive_loop.sh: unknown argument '$1'" >&2; exit 2 ;;
@@ -191,6 +191,7 @@ if [ "$EARLIER_ROUNDS" != "0" ]; then
 fi
 ROUND="$EARLIER_ROUNDS"
 ROUND_LABEL=""
+recovery_stop # #2539: a handoff recorded before this loop (an earlier phase) starts no round
 HISTORY=""
 PREV_FINDINGS=""
 PREV_TEST=""
@@ -264,6 +265,7 @@ while :; do
     echo "INFO: ${ROUND_LABEL} child failed: ${ROUND_CHILD}; not a policy refusal, continuing" >&2
   fi
   check_review_dir "${ROUND_LABEL}${BEFORE_ROUND:+ or its before-round step}"
+  recovery_stop # #2539: a handoff recorded in this round ends the loop here (also when the round exited 81)
 
   # Preserve the round and its manifest before accepting any next action.
   . "${LOOP_HOME}/autodrive_loop_record.sh" || exit 1

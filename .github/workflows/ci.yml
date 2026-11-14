@@ -611,6 +611,9 @@ jobs:
       - run: cargo nextest run --workspace --locked --no-fail-fast
         env:
           AMPLIHACK_TEST_REQUIRE_STRACE: "1"
+          # Issue #2539: the step-recovery recipe and loop tests fail, not skip,
+          # without recipe-runner-rs (installed above) or jq (on the runner image).
+          AMPLIHACK_2539_REQUIRE_RECIPE_RUNNER: "1"
       # Issue #1278: CI is the only place this suite runs WITHOUT git's hook
       # variables set, which is exactly why the unpassable pre-push gate stayed
       # invisible for so long. Re-run the crates that spawn git with GIT_DIR and

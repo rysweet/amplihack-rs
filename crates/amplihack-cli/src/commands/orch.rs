@@ -25,6 +25,8 @@ pub(crate) mod autodrive;
 mod autodrive_completion;
 mod named_branch;
 mod select_workflow;
+mod step_recovery;
+pub(crate) use step_recovery::STEP_RECOVERY_HANDOFF_EXIT;
 mod workflow_log_inventory;
 
 // TDD contracts for #2329. The implementation supplies `mod autodrive`;
@@ -78,6 +80,12 @@ pub enum OrchHelperCommands {
     AutodriveCompletionWrite(autodrive_completion::Write),
     /// Validate the decision and complete or launch the convergence evaluator.
     AutodriveCompletionDispatch(autodrive_completion::Dispatch),
+    /// Step failure recovery for recipe steps (issue #2539). Internal: called
+    /// by bundle recipes; see docs/reference/step-failure-recovery.md.
+    StepRecovery {
+        #[command(subcommand)]
+        command: step_recovery::StepRecoveryCommands,
+    },
     /// Read stdin, print the first complete JSON object found in it.
     ///
     /// Mirrors `orch_helper.extract_json`. Tries, in order: ```json blocks,
@@ -537,6 +545,7 @@ pub fn run(command: OrchHelperCommands) -> Result<()> {
         OrchHelperCommands::AutodriveCompletionDispatch(args) => {
             autodrive_completion::dispatch(args)
         }
+        OrchHelperCommands::StepRecovery { command } => step_recovery::run(command),
         OrchHelperCommands::ExtractJson { require_field } => {
             let input = read_stdin()?;
             let found = match require_field.as_deref() {

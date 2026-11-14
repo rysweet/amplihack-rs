@@ -21,6 +21,7 @@ recursion:
   max_depth: 6
   max_total_steps: 30
 context:
+  step_recovery_dir: ""
   repo_path: "."
   review_dir: ""
   autodrive_launch_tools: ""
@@ -40,9 +41,19 @@ steps:
   - id: "step-00-review-dir-guard"
     type: "bash"
     command: |
+      # Issue #2539: with a recovery directory, a failure goes to the recovery
+      # agent (docs/reference/step-failure-recovery.md); without one, the body
+      # runs as before. The body is unchanged and runs with no shell splicing.
+      IFS= read -r -d '' STEP_BODY <<'STEP_RECOVERY_BODY' || :
       # AUTODRIVE_LAUNCH_TOOLS (#1543): the leading "/" keeps an empty or relative value from resolving against the cwd;
       # the guard itself checks the value (autodrive_worktree_guard.sh, "AUTODRIVE_LAUNCH_TOOLS").
       bash "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_worktree_guard.sh" round-guard || { echo "STOP: review-dir guard refused or not found under AUTODRIVE_LAUNCH_TOOLS (#1528) [autodrive-crusty-round/step-00]" >&2; exit 1; }
+      STEP_RECOVERY_BODY
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-00-review-dir-guard
+      exec amplihack orch helper step-recovery run --step-id step-00-review-dir-guard --guard \
+        --dir "$RECIPE_VAR_step_recovery_dir" \
+        --goal "Check the review directory before crusty round ${RECIPE_VAR_autodrive_round_label:-round} of PR ${RECIPE_VAR_pr_number:-unknown}" \
+        -- bash -c "$STEP_BODY" step-00-review-dir-guard
     output: "review_index"
   - id: "step-01-round-context"
     type: "agent"
@@ -136,7 +147,17 @@ steps:
   - id: "step-02b-review-dir-unchanged"
     type: "bash"
     command: |
+      # Issue #2539: with a recovery directory, a failure goes to the recovery
+      # agent (docs/reference/step-failure-recovery.md); without one, the body
+      # runs as before. The body is unchanged and runs with no shell splicing.
+      IFS= read -r -d '' STEP_BODY <<'STEP_RECOVERY_BODY' || :
       bash "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_worktree_guard.sh" round-index-check "${REVIEW_DIR:-}" "${RECIPE_VAR_review_index:-}" step-02-crusty-review || exit 1
+      STEP_RECOVERY_BODY
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-02b-review-dir-unchanged
+      exec amplihack orch helper step-recovery run --step-id step-02b-review-dir-unchanged --guard \
+        --dir "$RECIPE_VAR_step_recovery_dir" \
+        --goal "Confirm the crusty review left the review directory unchanged in round ${RECIPE_VAR_autodrive_round_label:-round} of PR ${RECIPE_VAR_pr_number:-unknown}" \
+        -- bash -c "$STEP_BODY" step-02b-review-dir-unchanged
   - id: "step-03-extract-crusty-verdict"
     type: "bash"
     parse_json: true

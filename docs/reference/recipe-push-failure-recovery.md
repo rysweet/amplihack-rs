@@ -60,7 +60,6 @@ a push step has failed for any reason.
 Step-20b (`step-20b-push-cleanup` in `workflow-finalize.yaml`) is not covered
 here. Its failures belong to the general recovery step from #2570
 (`step-recovery run --essential --stop-on-handoff`, part of #2539).
-`workflow-finalize.yaml` is the same as on `main`.
 
 Each covered push step has one change: `continue_on_error: true`. Its
 `command:` text is byte-for-byte the same as before, so the tests that pull
