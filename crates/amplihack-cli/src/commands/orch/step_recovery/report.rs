@@ -98,7 +98,11 @@ fn init_dir(args: InitArgs) -> Result<PathBuf> {
                 .join(name);
             make_private_dir(&dir)?;
             if let Some(tag) = &args.created_by {
-                super::secure_fs::create(&dir.join(CREATED_BY), tag.as_bytes())?;
+                super::secure_fs::create(
+                    super::secure_fs::Scope::Strict,
+                    &dir.join(CREATED_BY),
+                    tag.as_bytes(),
+                )?;
             }
             dir
         }

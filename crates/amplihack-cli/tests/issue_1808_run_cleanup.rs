@@ -24,5 +24,7 @@ mod runner;
 mod scripts;
 #[path = "issue_1808_run_cleanup/sweep.rs"]
 mod sweep;
+#[path = "issue_1808_run_cleanup/tmpdir_in_use.rs"]
+mod tmpdir_in_use;
 #[path = "issue_1808_run_cleanup/worktree_target.rs"]
 mod worktree_target;

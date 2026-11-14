@@ -261,7 +261,7 @@ pub fn read_all(dir: &Path) -> Result<Vec<(PathBuf, Vec<Record>)>> {
     let mut out = Vec::new();
     for name in names {
         let path = dir.join(&name);
-        let bytes = secure_fs::read(&path, RECORD_FILE_LIMIT)
+        let bytes = secure_fs::read_strict(&path, RECORD_FILE_LIMIT)
             .with_context(|| format!("unsafe or unreadable record file {}", path.display()))?;
         let records = parse_lines(&path, &bytes)?;
         out.push((path, records));

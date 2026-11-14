@@ -5,7 +5,7 @@ mod dispatch;
 mod evaluator;
 mod evidence;
 mod private_state;
-pub(crate) mod secure_fs;
+pub(super) mod secure_fs;
 
 use anyhow::Result;
 use clap::Args;

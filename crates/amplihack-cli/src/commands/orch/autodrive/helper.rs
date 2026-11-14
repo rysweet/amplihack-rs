@@ -368,7 +368,10 @@ fn local_binding(repo: &std::path::Path, b: &Binding) -> Result<()> {
     Ok(())
 }
 
-fn write_new_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+pub(in crate::commands::orch) fn write_new_private(
+    path: &std::path::Path,
+    bytes: &[u8],
+) -> Result<()> {
     use std::io::Write;
     let mut options = std::fs::OpenOptions::new();
     options.create_new(true).write(true);

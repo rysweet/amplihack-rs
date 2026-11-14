@@ -48,7 +48,7 @@ fn snapshot(dir: &Path) -> Result<Vec<(String, usize, Vec<u8>)>> {
         if name.starts_with('.') {
             continue;
         }
-        let bytes = secure_fs::read(&dir.join(&name), record::RECORD_FILE_LIMIT)
+        let bytes = secure_fs::read_strict(&dir.join(&name), record::RECORD_FILE_LIMIT)
             .with_context(|| format!("unsafe or unreadable file {name} in {}", dir.display()))?;
         out.push((name, bytes.len(), Sha256::digest(&bytes).to_vec()));
     }

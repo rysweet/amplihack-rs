@@ -130,7 +130,7 @@ impl Evidence<'_> {
         );
         let path = dir.join(name);
         let body = serde_json::to_vec_pretty(&self.to_json())?;
-        secure_fs::create(&path, &body)?;
+        secure_fs::create(secure_fs::Scope::Strict, &path, &body)?;
         Ok(path)
     }
 }
