@@ -11817,8 +11817,9 @@ account is accepted.
 Because the key is removed in step 1, the profile has no `oauthAccount`
 while Claude runs. During that time, a duplicate check by another
 `profile login` and the account fallback used when there is no rotator
-ledger do not see an account for this profile. The [lease](#leases) covers
-this window, and the rotator decides from its ledgers.
+ledger do not see an account for this profile. No lease is taken for this
+window: the [lease](#leases) check runs before Claude starts and again after
+it exits, and the rotator decides from its ledgers.
 
 If the profile is leased, hosts another account or was made the rotator's
 live profile when Claude exits, amplihack writes nothing to `.claude.json`

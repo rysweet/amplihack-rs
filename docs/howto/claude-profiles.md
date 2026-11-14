@@ -1292,15 +1292,18 @@ or one of these directories. To use a kept login again, move it back with
 `mv -n` into a profile that has no `.credentials.json`, never `cp`.
 
 If amplihack itself is killed while Claude runs, the previous login stays in
-the `.pending-…` directory, which is printed at the start when there was a
-login file to hold. Ctrl-C is handled, but
+the `.pending-…` directory, which is printed at the start whenever there was
+a login file or an `oauthAccount` block to hold. Ctrl-C is handled, but
 closing the terminal (SIGHUP) or `kill` (SIGTERM) ends amplihack before it
 can restore anything. The previous login is then at
 `<root>/.rejected-logins/.pending-<name>-<time>/.credentials.json`, and its
 `oauthAccount` block is next to it in `oauthAccount.json`. If Claude wrote a
 new login, move that one aside first (or delete it if you do not want it),
 then move the previous one back into the profile directory with one `mv`.
-This example uses the default root; if you chose another root (`amplihack
+amplihack also removed the `oauthAccount` key from the profile's
+`.claude.json` before Claude started. If Claude did not write a new one, set
+that key back to the contents of `oauthAccount.json`, or the profile names
+no account until its next login. This example uses the default root; if you chose another root (`amplihack
 profile root` prints it), use that path instead:
 
 ```bash
