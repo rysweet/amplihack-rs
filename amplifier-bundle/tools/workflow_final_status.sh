@@ -117,14 +117,25 @@ resolve_expected_base_branch() {
 # confirms a terminal no-diff (#2520).
 EXPECTED_BASE=""
 EXPECTED_BASE_STATE=""
+#
+# delivery_run_base's stderr is held back until the outcome is known: when the
+# fallback is taken, its reason goes into the one WARNING instead of an ERROR
+# line followed by a substituted base.
 ensure_expected_base() {
-  local rc=0 candidate=""
+  local rc=0 candidate="" combined="" reason=""
   case "$EXPECTED_BASE_STATE" in ok|fallback) return 0 ;; failed) return 1 ;; esac
-  EXPECTED_BASE="$(resolve_expected_base_branch)" || rc=$?
-  if [ "$rc" -eq 0 ] && [ -n "$EXPECTED_BASE" ]; then
-    EXPECTED_BASE_STATE="ok"
-    return 0
+  # On success delivery_run_base prints only the base, on stdout, so it is the
+  # last line; on failure its stdout is empty and the text is the reason.
+  combined="$(resolve_expected_base_branch 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    EXPECTED_BASE="${combined##*$'\n'}"
+    [ "$combined" = "$EXPECTED_BASE" ] || printf '%s\n' "${combined%$'\n'*}" >&2
+    if [ -n "$EXPECTED_BASE" ]; then
+      EXPECTED_BASE_STATE="ok"
+      return 0
+    fi
   fi
+  reason="$combined"
   EXPECTED_BASE=""
   EXPECTED_BASE_STATE="failed"
   if [ "$rc" -eq 2 ] && [ -z "$EXPECTED_BASE_INPUT" ] \
@@ -133,11 +144,17 @@ ensure_expected_base() {
         && delivery_base_ref "$candidate" "" "${RECIPE_VAR_forbidden_base_branches:-}" >/dev/null 2>&1; then
       EXPECTED_BASE="$candidate"
       EXPECTED_BASE_STATE="fallback"
-      printf "WARNING: workflow_final_status.sh: the pull request's base could not be read; reporting against the default branch %q\n" "$candidate" >&2
+      reason="$(printf '%s' "$reason" | head -n 1)"
+      reason="${reason#ERROR: }"
+      reason="${reason%; no other base is substituted}"
+      printf "WARNING: workflow_final_status.sh: the pull request's base could not be read (%s); reporting against the default branch %q\n" "${reason:-no reason given}" "$candidate" >&2
       return 0
     fi
+    [ -z "$reason" ] || printf '%s\n' "$reason" >&2
     echo "WARNING: workflow_final_status.sh: the pull request's base could not be read and no usable default branch was found (none resolves, or it is refused); the scoped match is skipped" >&2
+    return 1
   fi
+  [ -z "$reason" ] || printf '%s\n' "$reason" >&2
   return 1
 }
 

@@ -190,11 +190,12 @@ On exit code 2 only, step-22b takes the repository's default branch from
 `delivery_default_base`. That is the first of `origin/HEAD`'s target,
 `origin/main`, `origin/master` and `origin/develop` that exists locally. The
 candidate still goes through `delivery_base_ref` with
-`forbidden_base_branches`. Step-22b prints one warning on stderr, with the
+`forbidden_base_branches`. Step-22b prints one warning on stderr, and no
+`ERROR` line. The warning gives `delivery_run_base`'s reason and the
 branch name quoted by `printf '%q'`:
 
 ```text
-WARNING: workflow_final_status.sh: the pull request's base could not be read; reporting against the default branch main
+WARNING: workflow_final_status.sh: the pull request's base could not be read (<reason>); reporting against the default branch main
 ```
 
 The fallback base is used for one thing only: the scoped match
@@ -258,7 +259,7 @@ The pull request's live base is `main`, so the match confirms the
 with stderr and stdout interleaved and other lines left out:
 
 ```text
-WARNING: workflow_final_status.sh: the pull request's base could not be read; reporting against the default branch main
+WARNING: workflow_final_status.sh: the pull request's base could not be read (pull request https://github.com/octo/example/pull/4242 reported no baseRefName); reporting against the default branch main
 terminal_success=true
 terminal_state=EXISTING_OPEN_PR
 terminal_status=EXISTING_OPEN_PR

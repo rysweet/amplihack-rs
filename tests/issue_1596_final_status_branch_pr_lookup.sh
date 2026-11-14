@@ -957,6 +957,14 @@ else
     dump; echo "    scope log:"; sed 's/^/    | /' "$SCOPE_LOG"
 fi
 assert_pr_identity_kept "22b-base-unreadable-b: report keeps #4242 and its URL" "$PR_URL_OK"
+# The step succeeds with a substituted base, so the reason is in the WARNING
+# and no ERROR line about the base is printed.
+if grep -qF -- "reported no baseRefName); $FALLBACK_WARNING main" "$ERR" \
+    && ! grep -q '^ERROR:' "$ERR"; then
+    record_pass "22b-base-unreadable-c: the WARNING names the reason; no ERROR line"
+else
+    record_fail "22b-base-unreadable-c: the WARNING names the reason; no ERROR line"; dump
+fi
 
 # A'. The fallback match is still checked by the scope helper: a miss goes to
 # the #1268 adjudication and the PR keeps its identity.

@@ -87,7 +87,7 @@ fi
 # that cannot be read leaves it empty, so workflow_finalization_collect.sh
 # keeps its discovery, and a warning names that fallback.
 resolve_finalization_base() {
-  local target pr_ref base
+  local target pr_ref base reason
   [ -z "$FINALIZATION_BASE_BRANCH" ] || return 0
   [ -z "$(workflow_finalization_metadata base_ref || :)" ] || return 0
   target="$(workflow_finalization_metadata worktree_path || :)"
@@ -98,12 +98,17 @@ resolve_finalization_base() {
   [ "$pr_ref" != "''" ] || pr_ref=""
   [ -n "$pr_ref" ] || pr_ref="$(resolve_pr_number)"
   [ "$pr_ref" != "''" ] || pr_ref=""
+  # delivery_run_base prints only the base on success and only its reason on
+  # failure; the reason goes into the one WARNING below, not an ERROR line.
   if base="$(cd "$target" && delivery_run_base "" "$(rv_field pr_publish_result base_branch)" "$pr_ref" \
       "$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" 2>/dev/null || true)" \
-      "" "${RECIPE_VAR_forbidden_base_branches:-}")" && [ -n "$base" ]; then
-    FINALIZATION_BASE_BRANCH="$base"
+      "" "${RECIPE_VAR_forbidden_base_branches:-}" 2>&1)" && [ -n "$base" ]; then
+    FINALIZATION_BASE_BRANCH="${base##*$'\n'}"
   else
-    echo "WARNING: workflow_agentic_finalization.sh: the base of the run's pull request was not resolved; the evidence diff uses the discovered base (origin/HEAD)" >&2
+    reason="${base%%$'\n'*}"
+    reason="${reason#ERROR: }"
+    reason="${reason%; no other base is substituted}"
+    echo "WARNING: workflow_agentic_finalization.sh: the base of the run's pull request was not resolved (${reason:-no reason given}); the evidence diff uses the discovered base (origin/HEAD)" >&2
   fi
 }
 

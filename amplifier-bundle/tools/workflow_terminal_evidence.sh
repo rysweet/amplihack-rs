@@ -140,19 +140,27 @@ gh_read() {
 # evidence, so when that cannot be read it falls back to the discovery and
 # names the base it used on stderr.
 resolve_base_ref() {
-  local candidate recorded=""
+  local candidate recorded="" combined="" reason="not resolved"
   if declare -F delivery_run_base >/dev/null 2>&1; then
     declare -F rv_field >/dev/null 2>&1 && recorded="$(rv_field pr_publish_result base_branch 2>/dev/null || true)"
-    if candidate="$(delivery_run_base "" "$recorded" "${PR_URL:-$PR_NUMBER}" "$REPO" "$HEAD_REF" "${RECIPE_VAR_forbidden_base_branches:-}")" && [ -n "$candidate" ]; then
-      printf '%s\n' "$candidate"; return 0
+    # delivery_run_base prints only the base on success and only its reason on
+    # failure; the reason goes into the one WARNING below, not an ERROR line.
+    if combined="$(delivery_run_base "" "$recorded" "${PR_URL:-$PR_NUMBER}" "$REPO" "$HEAD_REF" "${RECIPE_VAR_forbidden_base_branches:-}" 2>&1)" \
+        && [ -n "$combined" ]; then
+      printf '%s\n' "${combined##*$'\n'}"; return 0
     fi
+    reason="${combined%%$'\n'*}"
+    reason="${reason#ERROR: }"
+    reason="${reason%; no other base is substituted}"
+    reason="${reason:-not resolved}"
   fi
   for candidate in "$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)" origin/main origin/master origin/develop; do
     if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null 2>&1; then
-      printf 'WARNING: workflow_terminal_evidence.sh: the base of the run'"'"'s pull request was not resolved; evidence uses %q\n' "$candidate" >&2
+      printf 'WARNING: workflow_terminal_evidence.sh: the base of the run'"'"'s pull request was not resolved (%s); evidence uses %q\n' "$reason" "$candidate" >&2
       printf '%s\n' "${candidate#origin/}"; return 0
     fi
   done
+  printf 'WARNING: workflow_terminal_evidence.sh: the base of the run'"'"'s pull request was not resolved (%s), and no default branch resolves\n' "$reason" >&2
   return 1
 }
 
