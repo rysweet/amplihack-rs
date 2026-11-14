@@ -62,6 +62,18 @@ export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE CDPATH
 
+# printed_matches <qa-inputs.json> <stdout record>: the printed record is the
+# file with declared_qa.log_tail replaced by log_tail_bytes, its size in
+# UTF-8 bytes; the tail itself is never printed.
+printed_matches() {
+    [ -f "$1" ] && python3 -I -c '
+import json, sys
+f = json.loads(open(sys.argv[1], "rb").read().decode("utf-8"))
+p = json.loads(sys.argv[2])
+t = f["declared_qa"].pop("log_tail")
+n = p["declared_qa"].pop("log_tail_bytes", None)
+sys.exit(0 if f == p and n == len(t.encode("utf-8")) else 1)' "$1" "$2" 2>/dev/null
+}
 valid_json() { python3 -I -c 'import json,sys; json.loads(sys.stdin.buffer.read().decode("utf-8"))' 2>/dev/null; }
 # field_of <dotted.key>: a string prints as itself; any other value (array,
 # number, null, boolean) prints as compact JSON, so ["a b"] differs from ["a","b"].
@@ -338,7 +350,7 @@ expect ev-root-ws "root workspace, change in crates/x" schema=1 qa_round=round-1
     changed_files='["crates/x/src/lib.rs"]' declared_qa.candidates="" declared_qa.command="cargo $CARGO_ARGS" \
     head_sha="$(git -C "$REPO" rev-parse HEAD)" base_sha="$(git -C "$REPO" rev-parse refs/remotes/origin/main)"
 expect_calls ev-root-ws-calls "cargo runs at the root" cargo "cargo|.|$CARGO_ARGS"
-if cmp -s <(printf '%s\n' "$OUT") "$EVDIR/qa-inputs.json"; then pass ev-root-ws-file "qa-inputs.json beside AUTODRIVE_QA_EVIDENCE holds the printed record"
+if printed_matches "$EVDIR/qa-inputs.json" "$OUT"; then pass ev-root-ws-file "qa-inputs.json beside AUTODRIVE_QA_EVIDENCE holds the printed record"
 else fail ev-root-ws-file "qa-inputs.json differs from stdout or is missing"; fi
 if [ ! -e "$EVDIR/qa-evidence.json" ]; then pass ev-root-ws-noverdict "no qa-evidence.json is written"
 else fail ev-root-ws-noverdict "the tool wrote $EVDIR/qa-evidence.json"; fi

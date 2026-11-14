@@ -992,15 +992,22 @@ fn qa_record_writes_the_record_and_derives_fields() {
     assert_eq!(ev["qa_round"], "round-7", "--round overrides: {ev}");
     assert_eq!(ev["qa_reason"], "", "{ev}");
     assert_eq!(ev["qa_repo_type"], "node", "{ev}");
-    assert_eq!(ev["qa_command"], "npm test", "{ev}");
-    assert_eq!(ev["qa_command_source"], "detected", "{ev}");
     assert_eq!(ev["docs_only"], "true", "{ev}");
     assert_eq!(
         ev["qa_declared_command"],
-        json!({"source": "detected", "dir": ".", "command": "npm test", "exit_status": 0})
+        json!({"source": "detected", "dir": ".", "command": "npm test",
+               "status": "ran", "cause": "", "exit_status": 0})
     );
-    assert_eq!(ev["declared_qa"]["status"], "ran", "{ev}");
-    assert!(ev["declared_qa"].get("log_tail").is_none(), "{ev}");
+    // The declared command is recorded once (#2618 review).
+    for dup in [
+        "qa_command",
+        "qa_command_source",
+        "qa_dir",
+        "qa_exit_code",
+        "declared_qa",
+    ] {
+        assert!(ev.get(dup).is_none(), "{dup} is not recorded: {ev}");
+    }
     let raw = fs::read_to_string(&out).unwrap();
     assert!(
         !raw.contains("LOGTAIL-SECRET"),

@@ -1883,6 +1883,10 @@ fn merge_ready_files_resolver_is_read_only_and_set_u_safe() {
 /// Run it, as step-00 does, in a temporary git repository: once with the
 /// install inside that repository (the `"$TOP"/*` match path) and once
 /// with the install outside it.
+///
+/// #2561: `origin/main` points at the fixture commit and the in-repository
+/// SKILL.md then changes, so the branch-criteria warning appears only when
+/// `TOP` is the repository root; an empty or unset `TOP` loses it.
 #[test]
 fn merge_ready_files_resolver_runs_under_set_u_in_a_git_repository() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -1919,19 +1923,39 @@ fn merge_ready_files_resolver_runs_under_set_u_in_a_git_repository() {
     };
     let inside = install_skill(&repo);
     let outside = install_skill(&root.join("install"));
+    // The base branch is the fixture commit. There is no origin/HEAD, so the
+    // resolver compares against origin/main.
     let mut setup = Command::new("bash");
     setup
         .arg("-c")
         .arg(
             "git init -q . && git add -A && git -c user.name=t -c user.email=t@example.invalid \
-             commit -q --no-verify -m init",
+             commit -q --no-verify -m init && git update-ref refs/remotes/origin/main HEAD",
         )
         .current_dir(&repo);
     isolate(&mut setup);
     let git = setup.output().expect("run git");
-    assert!(git.status.success(), "commit the fixture: {git:?}");
+    assert!(
+        git.status.success(),
+        "commit the fixture and set origin/main: {git:?}"
+    );
+    // The branch under review changes its copy of the criteria; the warning
+    // compares the working tree, so the edit stays uncommitted.
+    {
+        use std::io::Write as _;
+        let mut skill = fs::OpenOptions::new()
+            .append(true)
+            .open(inside.join("SKILL.md"))
+            .expect("open the in-repository SKILL.md");
+        writeln!(skill, "changed on the branch under review").expect("edit SKILL.md");
+    }
+    const BRANCH_WARNING: &str =
+        "merge-ready criteria come from the branch under review and differ from origin/main";
 
-    for (amplihack_home, dir) in [(&repo, &inside), (&root.join("install"), &outside)] {
+    for (amplihack_home, dir, expect_warning) in [
+        (&repo, &inside, true),
+        (&root.join("install"), &outside, false),
+    ] {
         let mut resolver = Command::new("bash");
         resolver
             .arg("-u")
@@ -1945,6 +1969,13 @@ fn merge_ready_files_resolver_runs_under_set_u_in_a_git_repository() {
         assert!(
             out.status.success() && !stderr.contains("unbound variable"),
             "AMPLIHACK_HOME={}: {out:?}",
+            amplihack_home.display()
+        );
+        assert_eq!(
+            stderr.contains(BRANCH_WARNING),
+            expect_warning,
+            "AMPLIHACK_HOME={}: the branch-criteria warning must appear only when the \
+             criteria lie under the repository root (TOP):\n{stderr}",
             amplihack_home.display()
         );
         let json: serde_json::Value =
@@ -1961,6 +1992,39 @@ fn merge_ready_files_resolver_runs_under_set_u_in_a_git_repository() {
             "skill_md_sha must be a git blob hash: {json}"
         );
     }
+}
+
+/// #2561: the not-found message prints the searched paths, which come from
+/// `AMPLIHACK_HOME` and have not been checked by `unsafe_path`. It must strip
+/// control bytes, so a crafted path cannot start a new log line such as a
+/// GitHub `::error::` workflow command.
+#[test]
+fn merge_ready_files_not_found_message_strips_control_bytes() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = fs::canonicalize(tmp.path()).expect("canonical tempdir");
+    let crafted = root.join("x\n::error::injected");
+    let out = Command::new("bash")
+        .arg("-u")
+        .arg(tool_path("autodrive_merge_ready_files.sh"))
+        .current_dir(&root)
+        .env("AMPLIHACK_HOME", &crafted)
+        .env("REPO_PATH", &root)
+        .env_remove("BASH_ENV")
+        .output()
+        .expect("run the resolver");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "not found must exit 1: {out:?}");
+    assert!(out.stdout.is_empty(), "stdout must stay empty: {out:?}");
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(lines.len(), 1, "exactly one stderr line:\n{stderr}");
+    assert!(
+        lines[0].starts_with("ERROR: merge-ready-skill-files-not-found: searched "),
+        "unexpected message:\n{stderr}"
+    );
+    assert!(
+        lines.iter().all(|l| !l.starts_with("::")),
+        "no stderr line may start a workflow command:\n{stderr}"
+    );
 }
 
 #[test]

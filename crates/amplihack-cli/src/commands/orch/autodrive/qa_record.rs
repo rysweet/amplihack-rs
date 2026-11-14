@@ -398,9 +398,10 @@ fn derived_reason(status: QaStatus) -> &'static str {
 /// The declared QA command as `autodrive_qa_evidence.sh` measured it. #2458
 /// adds its kind and scenarios fields here and in that script's block. Unknown
 /// fields are ignored (R2.2), so a newer script does not break an older
-/// binary; only the fields named here are copied.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+/// binary; only the fields named here are copied. Every field is required
+/// (`exit_status` may be null), so `"declared_qa": {}` is refused rather than
+/// read as a command that was never run.
+#[derive(Debug, Clone, Deserialize)]
 pub struct DeclaredQa {
     pub source: String,
     pub dir: String,
@@ -410,9 +411,9 @@ pub struct DeclaredQa {
     pub cause: String,
     pub candidates: String,
     pub ci_skip: String,
-    /// Read so the field is known; never written to the evidence, because test
-    /// output can hold secrets.
-    #[serde(skip_serializing)]
+    /// Parsed only so the documented field is required; never copied into the
+    /// evidence, because test output can hold secrets.
+    #[allow(dead_code)]
     pub log_tail: String,
 }
 
@@ -443,11 +444,13 @@ struct DeclaredCommand<'a> {
     source: &'a str,
     dir: &'a str,
     command: &'a str,
+    status: &'a str,
+    cause: &'a str,
     exit_status: Option<i64>,
 }
 
-/// The evidence file. `qa_status` is what the gate reads; the flat legacy
-/// fields keep their names for readers of earlier records.
+/// The evidence file. `qa_status` is what the gate reads. The declared
+/// command is recorded once, in `qa_declared_command`.
 #[derive(Debug, Serialize)]
 struct Evidence<'a> {
     qa_status: QaStatus,
@@ -463,12 +466,6 @@ struct Evidence<'a> {
     head_sha: &'a str,
     docs_only: &'a str,
     qa_repo_type: &'a str,
-    qa_command: &'a str,
-    qa_command_source: &'a str,
-    qa_dir: &'a str,
-    /// The declared command's exit status as a string, `""` when nothing ran.
-    qa_exit_code: String,
-    declared_qa: &'a DeclaredQa,
     git_env_cleared: &'a str,
     run_env_cleared: &'a str,
 }
@@ -536,8 +533,8 @@ fn check_copied(inputs: &QaInputs, copies_round: bool) -> Result<(), Refusal> {
 }
 
 /// The output's parent must be a private state directory: owned by this
-/// user with no group or other access, the same check the evidence store
-/// applies (`state::private`).
+/// user with no group or other access (`private_mode::make_private`, with
+/// repair refused).
 fn check_parent(out: &Path) -> Result<PathBuf> {
     let parent = match out.parent() {
         Some(p) if !p.as_os_str().is_empty() => p.to_owned(),
@@ -550,10 +547,17 @@ fn check_parent(out: &Path) -> Result<PathBuf> {
             .any(|c| !matches!(c, Component::Normal(_))),
         "--out names no file"
     );
-    let meta = std::fs::metadata(&parent)
-        .with_context(|| format!("stat output directory {}", parent.display()))?;
-    super::state::private(&meta, true)
-        .with_context(|| format!("output directory {}", parent.display()))?;
+    let dir = std::fs::File::open(&parent)
+        .with_context(|| format!("open output directory {}", parent.display()))?;
+    // Checked as the evidence store checks its folders, but never repaired:
+    // a directory with group or other access is refused.
+    super::private_mode::make_private(
+        &dir,
+        &parent,
+        super::private_mode::Kind::Dir,
+        super::private_mode::Repair::Refuse,
+    )
+    .with_context(|| format!("output directory {}", parent.display()))?;
     Ok(parent)
 }
 
@@ -652,17 +656,14 @@ pub fn record(
             source: &d.source,
             dir: &d.dir,
             command: &d.command,
+            status: &d.status,
+            cause: &d.cause,
             exit_status: d.exit_status,
         },
         qa_round: round.unwrap_or(&inputs.qa_round),
         head_sha: &head,
         docs_only: &inputs.docs_only,
         qa_repo_type: &inputs.repo_type,
-        qa_command: &d.command,
-        qa_command_source: &d.source,
-        qa_dir: &d.dir,
-        qa_exit_code: d.exit_status.map(|c| c.to_string()).unwrap_or_default(),
-        declared_qa: d,
         git_env_cleared: &inputs.git_env_cleared,
         run_env_cleared: &inputs.run_env_cleared,
     };

@@ -11,7 +11,8 @@
 # which step-02a-qa-inputs of autodrive-merge-evidence.yaml runs. This runs
 # that tool, unmodified, on a scratch Rust repository. It checks that
 # qa-inputs.json is valid strict-UTF-8 JSON, and that its stdout matches the
-# file, when:
+# file except that declared_qa.log_tail is printed only as log_tail_bytes,
+# when:
 #   - the declared command (AUTODRIVE_QA_COMMAND) prints colour, cursor and
 #     erase sequences, quotes, backslashes, tabs, multibyte text and control
 #     bytes: declared_qa.log_tail keeps the runner's words, with quotes and
@@ -92,10 +93,18 @@ record() {
     set -e
     printf '%s' "${stdout##*$'\n'}"
 }
-# file_matches <log-file> <record>: qa-inputs.json is valid JSON equal to the record.
+# file_matches <log-file> <record>: qa-inputs.json is valid JSON, and the
+# printed record is the file with declared_qa.log_tail replaced by
+# log_tail_bytes, its size in UTF-8 bytes (the tail is never printed).
 file_matches() {
     local f="$1.d/qa-inputs.json"
-    [[ -f "$f" ]] && valid_json < "$f" && [[ "$(cat "$f")" == "$2" ]]
+    [[ -f "$f" ]] && valid_json < "$f" && python3 -I -c '
+import json, sys
+f = json.loads(open(sys.argv[1], "rb").read().decode("utf-8"))
+p = json.loads(sys.argv[2])
+tail = f["declared_qa"].pop("log_tail")
+n = p["declared_qa"].pop("log_tail_bytes")
+sys.exit(0 if f == p and n == len(tail.encode("utf-8")) else 1)' "$f" "$2"
 }
 
 # check_log <id> <description> <printf-format for the log> [text the summary must keep]...
@@ -113,7 +122,11 @@ check_log() {
         ok=0
         fail "$id" "$desc: qa-inputs.json is missing, invalid or differs from stdout"
     fi
-    summary="$(printf '%s' "$out" | field_of declared_qa.log_tail)"
+    if ! printf '%s' "$out" | python3 -c 'import json,sys; sys.exit("log_tail" in json.loads(sys.stdin.buffer.read().decode("utf-8"))["declared_qa"])'; then
+        ok=0
+        fail "$id" "$desc: stdout prints declared_qa.log_tail; only qa-inputs.json may hold it"
+    fi
+    summary="$(field_of declared_qa.log_tail < "$log.d/qa-inputs.json")"
     for want in "$@"; do
         if [[ "$summary" != *"$want"* ]]; then
             ok=0

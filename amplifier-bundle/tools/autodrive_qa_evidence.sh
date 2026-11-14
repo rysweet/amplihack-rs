@@ -29,7 +29,8 @@
 #   AUTODRIVE_QA_HEAD      the head commit (default HEAD)
 #   AUTODRIVE_QA_COMMAND, AUTODRIVE_QA_DIR, AUTODRIVE_QA_COMMANDS and
 #   AUTODRIVE_QA_SCENARIO_DIR, described where they are read below.
-# Output: the inputs JSON on stdout and in qa-inputs.json (mode 0600). Exit 1
+# Output: the inputs JSON in qa-inputs.json (mode 0600), and on stdout with
+# declared_qa.log_tail replaced by log_tail_bytes (its size). Exit 1
 # only when AUTODRIVE_QA_EVIDENCE is not absolute, REPO_PATH cannot be
 # entered, or the file cannot be written; every other condition is recorded
 # in the file.
@@ -273,9 +274,13 @@ OUT="$(printf '{"schema":1,"qa_round":%s,"head_sha":%s,"base_sha":%s,"repo_type"
   printf '"changed_files":%s,"scenario_dir":%s,"existing_scenarios":%s,' "$CHANGED" "$(jstr "$SDIR")" "$SCENARIOS"
   printf '"declared_qa":{"source":%s,"dir":%s,"command":%s,"status":%s,"exit_status":%s,' \
     "$(jstr "$SRC")" "$(jstr "$QD")" "$(jstr "$CMDTEXT")" "$(jstr "$STATUS")" "$EXIT"
-  printf '"cause":%s,"candidates":%s,"ci_skip":%s,"log_tail":%s},' \
-    "$(jstr "$CAUSE")" "$(jstr "$UNRES")" "$(jstr "$CISKIP")" "$(jstr "$TAIL")"
-  printf '"git_env_cleared":%s,"run_env_cleared":%s}' "$(jstr "$GCLR")" "$(jstr "$RCLR")")"
+  printf '"cause":%s,"candidates":%s,"ci_skip":%s,' "$(jstr "$CAUSE")" "$(jstr "$UNRES")" "$(jstr "$CISKIP")")"
+REST="$(printf '},"git_env_cleared":%s,"run_env_cleared":%s}' "$(jstr "$GCLR")" "$(jstr "$RCLR")")"
+# The private file keeps log_tail; the printed copy names only its size,
+# because stdout reaches the recipe log and the judging agent's prompt and
+# test output can hold secrets or planted instructions.
+SHOWN="${OUT}\"log_tail_bytes\":$(LC_ALL=C; printf '%s' "${#TAIL}")${REST}"
+OUT="${OUT}\"log_tail\":$(jstr "$TAIL")${REST}"
 # Private to this user, written whole, and never through a planted symlink:
 # mv replaces a link at the target rather than following it.
 TMP="$(umask 077; mktemp "${OUT_DIR%/}/.qa-inputs.XXXXXX" 2>/dev/null)" || TMP=""
@@ -289,4 +294,4 @@ fi
 if [ -e "$EVIDENCE" ] || [ -L "$EVIDENCE" ]; then
   rm -f -- "$EVIDENCE" || { echo "ERROR: cannot remove the earlier ${EVIDENCE}" >&2; exit 1; }
 fi
-printf '%s\n' "$OUT"
+printf '%s\n' "$SHOWN"

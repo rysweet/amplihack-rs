@@ -4,7 +4,7 @@ use super::{
 };
 use anyhow::{Context, Result, ensure};
 use clap::Subcommand;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Local, portable operations. None invokes hosting APIs or performs a merge.
 #[derive(Debug, Subcommand)]
@@ -118,23 +118,10 @@ pub fn run(op: Operations) -> Result<()> {
             repo,
         } => {
             let auth = InvocationAuthorization::read_private(&invocation)?;
-            let store = EvidenceStore::create(&directory)?;
-            let candidate: CandidateRecord = serde_json::from_slice(&stdin_bytes()?)
-                .context("invalid refreshed readiness candidate")?;
-            local_binding(&repo, &candidate.binding)?;
-            super::review::verify(&repo, &candidate)?;
-            let accepted = validate_candidate(&auth, &candidate.binding, &candidate)?;
-            if candidate.readiness == Readiness::MergeReady {
-                super::completion::verify(&auth, &directory, &candidate)?;
-            }
-            let followups =
-                super::followups::read(&store, &directory, candidate.binding.pr_number)?;
-            let artifact_snapshots = store.snapshot_references(accepted.record())?;
-            let path = store.snapshot(&serde_json::to_vec(accepted.record())?)?;
-            println!(
-                "{}",
-                serde_json::json!({"accepted":path,"readiness":candidate.readiness,"binding":candidate.binding,"artifact_snapshots":artifact_snapshots,"followups":followups})
-            );
+            // Authorisation and private state come before stdin is read.
+            EvidenceStore::create(&directory)?;
+            let out = assess(&auth, &directory, &repo, &stdin_bytes()?)?;
+            println!("{out}");
         }
         Operations::Round {
             invocation,
@@ -143,34 +130,10 @@ pub fn run(op: Operations) -> Result<()> {
             record,
         } => {
             let auth = InvocationAuthorization::read_private(&invocation)?;
-            let store = EvidenceStore::create(&directory)?;
-            ensure!(
-                record
-                    .parent()
-                    .context("round record has no parent")?
-                    .canonicalize()?
-                    == directory.canonicalize()?,
-                "round record is outside state"
-            );
-            let candidate: CandidateRecord =
-                serde_json::from_slice(&stdin_bytes()?).context("invalid agent round evidence")?;
-            local_binding(&repo, &candidate.binding)?;
-            super::review::verify(&repo, &candidate)?;
-            let accepted = validate_candidate(&auth, &candidate.binding, &candidate)?;
-            store.snapshot_references(accepted.record())?;
-            let evidence = store.snapshot(&serde_json::to_vec(accepted.record())?)?;
-            let ready = accepted.record().readiness == Readiness::MergeReady;
-            let result = serde_json::json!({"merge_ready_verdict":if ready {"MERGE_READY"} else {"NOT_MERGE_READY"}, "blocker_count":candidate.blockers.len(), "head_sha":candidate.binding.head_sha, "round_label":candidate.binding.round_id, "accepted_evidence":evidence, "test_signal":if ready {"PASS"} else {"BLOCKED"}, "ci_signal":if ready {"GREEN"} else {"UNVERIFIED"}});
-            let mut findings = String::new();
-            for c in &candidate.criteria {
-                if !c.blockers.is_empty() {
-                    findings.push_str(&c.id);
-                    findings.push('\n');
-                }
-            }
-            write_new_private(&record.with_extension("json.findings"), findings.as_bytes())?;
-            write_new_private(&record, &serde_json::to_vec(&result)?)?;
-            println!("{result}");
+            EvidenceStore::create(&directory)?;
+            round_record_path(&directory, &record)?;
+            let out = round(&auth, &directory, &repo, &record, &stdin_bytes()?)?;
+            println!("{out}");
         }
         Operations::Reduce {
             accepted: accepted_path,
@@ -372,47 +335,377 @@ fn qa_record_stdin() -> Result<Vec<u8>> {
         .read_to_end(&mut bytes)?;
     Ok(bytes)
 }
-fn local_binding(repo: &std::path::Path, b: &Binding) -> Result<()> {
-    validate_binding(b)?;
+/// Final acceptance keeps the strict messages: stale evidence is an error here.
+fn local_binding(repo: &Path, b: &Binding) -> Result<()> {
+    let blockers = binding_drift(repo, b)?;
+    let stale = |name: &str| blockers.iter().any(|x| x == name);
     ensure!(
-        trusted::git(repo, &["rev-parse", "--verify", "HEAD"])? == b.head_sha,
+        !stale(STALE_HEAD),
         "evidence head differs from current worktree; refresh required"
     );
+    ensure!(
+        !stale(STALE_BASE),
+        "base changed or not fetched; refresh required"
+    );
+    ensure!(!stale(STALE_MERGE_BASE), "merge-base differs from evidence");
+    // Fail closed: an unreadable HEAD, or any blocker added later, rejects.
+    ensure!(
+        blockers.is_empty(),
+        "worktree HEAD unreadable or evidence not current; refresh required"
+    );
+    Ok(())
+}
+
+const STALE_HEAD: &str = "stale-evidence-head";
+const STALE_BASE: &str = "stale-evidence-base";
+const STALE_MERGE_BASE: &str = "stale-evidence-merge-base";
+const HEAD_UNREADABLE: &str = "current-head-unreadable";
+
+/// Placeholder for a worktree HEAD that Git could not read. It can never
+/// equal a bound SHA, because `validate_binding` requires 40 or 64 hex digits,
+/// and `revision_or_empty` prints it as `""`.
+const UNKNOWN_HEAD: &str = "unknown";
+
+/// #2556: read the worktree HEAD. A HEAD that cannot be read (for example a
+/// repository with no commits) is a recoverable fault: it adds the fixed
+/// blocker `current-head-unreadable` and returns `UNKNOWN_HEAD`. Git's message
+/// goes only to debug logging, never to the output. Only this read is
+/// tolerant; every other Git failure stays an error.
+fn head_or_unknown(repo: &Path, blockers: &mut Vec<String>) -> String {
+    match trusted::git(repo, &["rev-parse", "--verify", "HEAD"]) {
+        Ok(head) => head,
+        Err(err) => {
+            tracing::debug!(error = %err, "autodrive: worktree HEAD is unreadable");
+            blockers.push(HEAD_UNREADABLE.to_string());
+            UNKNOWN_HEAD.to_string()
+        }
+    }
+}
+
+struct Drift {
+    blockers: Vec<String>,
+    current_head: String,
+    current_base: String,
+}
+
+/// #2556: name each way the evidence binding has drifted from the local
+/// worktree (`stale-evidence-head`, `-base`, `-merge-base`), or that the
+/// worktree HEAD cannot be read (`current-head-unreadable`). Drift is a
+/// refresh outcome; an invalid binding, a bad ref format, a branch mismatch,
+/// grafts and every other Git failure stay hard errors.
+pub fn binding_drift(repo: &Path, b: &Binding) -> Result<Vec<String>> {
+    Ok(drift(repo, b)?.blockers)
+}
+
+fn drift(repo: &Path, b: &Binding) -> Result<Drift> {
+    // Validate every record value before any of it reaches a Git argument.
+    validate_binding(b)?;
     trusted::git(repo, &["check-ref-format", "--branch", &b.base_branch])?;
     trusted::git(repo, &["check-ref-format", "--branch", &b.head_branch])?;
     ensure!(
         trusted::git(repo, &["symbolic-ref", "--short", "HEAD"])? == b.head_branch,
         "PR head branch differs from worktree"
     );
-    ensure!(
-        trusted::git(
-            repo,
-            &[
-                "rev-parse",
-                "--verify",
-                &format!("refs/remotes/origin/{}^{{commit}}", b.base_branch)
-            ]
-        )? == b.base_sha,
-        "base changed or not fetched; refresh required"
-    );
-    ensure!(
-        trusted::git(repo, &["merge-base", &b.head_sha, &b.base_sha])? == b.merge_base_sha,
-        "merge-base differs from evidence"
-    );
     let common = trusted::git(
         repo,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     )?;
     ensure!(
-        !std::path::Path::new(&common)
-            .join("info/grafts")
-            .try_exists()?,
+        !Path::new(&common).join("info/grafts").try_exists()?,
         "Git grafts cannot establish evidence"
+    );
+    let mut blockers = Vec::new();
+    let current_head = head_or_unknown(repo, &mut blockers);
+    if current_head == UNKNOWN_HEAD {
+        // Nothing can be compared with a HEAD that cannot be read.
+        return Ok(Drift {
+            blockers,
+            current_head,
+            current_base: String::new(),
+        });
+    }
+    let current_base = trusted::git(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            &format!("refs/remotes/origin/{}^{{commit}}", b.base_branch),
+        ],
+    )?;
+    if current_head != b.head_sha {
+        blockers.push(STALE_HEAD.to_string());
+    }
+    if current_base != b.base_sha {
+        blockers.push(STALE_BASE.to_string());
+    }
+    // The merge-base is only meaningful once head and base both match.
+    if blockers.is_empty()
+        && trusted::git(repo, &["merge-base", &b.head_sha, &b.base_sha])? != b.merge_base_sha
+    {
+        blockers.push(STALE_MERGE_BASE.to_string());
+    }
+    Ok(Drift {
+        blockers,
+        current_head,
+        current_base,
+    })
+}
+
+/// Why a candidate could not be assessed: a curable writer fault or stale
+/// evidence. Integrity faults are errors and never reach this type.
+struct NotAccepted {
+    blockers: Vec<String>,
+    evidence_head: String,
+    round_label: String,
+    current_head: String,
+    current_base: String,
+}
+
+enum Reading {
+    Current(Box<CandidateRecord>),
+    Refresh(NotAccepted),
+}
+
+/// Parse, name unknown values, then compare the binding with the worktree.
+/// A binding with unknown fields never reaches Git.
+fn read_candidate(repo: &Path, input: &[u8]) -> Result<Reading> {
+    ensure!(
+        input.len() <= MAX_RECORD_BYTES,
+        "evidence exceeds size limit"
+    );
+    let candidate: CandidateRecord = match serde_json::from_slice(input) {
+        Ok(candidate) => candidate,
+        Err(err) => {
+            // Identity is echoed only from a well-formed JSON value, and only
+            // after it passes the SHA and label patterns below.
+            let loose: serde_json::Value =
+                serde_json::from_slice(input).unwrap_or(serde_json::Value::Null);
+            let text = |v: &serde_json::Value| v.as_str().unwrap_or("").to_string();
+            let mut blockers = vec![parse_blocker(&err)];
+            let current_head = head_or_unknown(repo, &mut blockers);
+            return Ok(Reading::Refresh(NotAccepted {
+                blockers,
+                evidence_head: text(&loose["binding"]["head_sha"]),
+                round_label: text(&loose["binding"]["round_id"]),
+                current_head,
+                current_base: String::new(),
+            }));
+        }
+    };
+    let unknown = unknown_fields(&candidate);
+    let binding_unknown = unknown
+        .iter()
+        .any(|b| b.starts_with("unknown-field:binding."));
+    let (drift_blockers, current_head, current_base) = if binding_unknown {
+        let mut blockers = Vec::new();
+        let current_head = head_or_unknown(repo, &mut blockers);
+        (blockers, current_head, String::new())
+    } else {
+        let d = drift(repo, &candidate.binding)?;
+        (d.blockers, d.current_head, d.current_base)
+    };
+    if unknown.is_empty() && drift_blockers.is_empty() {
+        return Ok(Reading::Current(Box::new(candidate)));
+    }
+    Ok(Reading::Refresh(NotAccepted {
+        blockers: unknown.into_iter().chain(drift_blockers).collect(),
+        evidence_head: candidate.binding.head_sha.clone(),
+        round_label: candidate.binding.round_id.clone(),
+        current_head,
+        current_base,
+    }))
+}
+
+/// #2556: assess a refreshed readiness candidate. A writer fault or stale
+/// evidence gives `status:"refresh_required"` with named blockers; nothing is
+/// written and no follow-ups are read. Integrity faults stay errors.
+pub fn assess(
+    auth: &InvocationAuthorization,
+    directory: &Path,
+    repo: &Path,
+    input: &[u8],
+) -> Result<serde_json::Value> {
+    let store = EvidenceStore::create(directory)?;
+    let candidate = match read_candidate(repo, input)? {
+        Reading::Current(candidate) => candidate,
+        Reading::Refresh(n) => {
+            tracing::info!(
+                blockers = ?n.blockers,
+                "autodrive assess: evidence not accepted; refresh required"
+            );
+            return Ok(serde_json::json!({
+                "status": "refresh_required",
+                "accepted": null,
+                "readiness": Readiness::Incomplete,
+                "refresh_required": true,
+                "evidence_head": revision_or_empty(&n.evidence_head),
+                "current_head": revision_or_empty(&n.current_head),
+                "current_base": revision_or_empty(&n.current_base),
+                "blockers": safe_blockers(&n.blockers),
+            }));
+        }
+    };
+    super::review::verify(repo, &candidate)?;
+    let accepted = validate_candidate(auth, &candidate.binding, &candidate)?;
+    if candidate.readiness == Readiness::MergeReady {
+        super::completion::verify(auth, directory, &candidate)?;
+    }
+    let followups = super::followups::read(&store, directory, candidate.binding.pr_number)?;
+    let artifact_snapshots = store.snapshot_references(accepted.record())?;
+    let path = store.snapshot(&serde_json::to_vec(accepted.record())?)?;
+    Ok(serde_json::json!({
+        "status": "accepted",
+        "accepted": path,
+        "readiness": candidate.readiness,
+        "refresh_required": false,
+        "binding": candidate.binding,
+        "artifact_snapshots": artifact_snapshots,
+        "followups": followups,
+    }))
+}
+
+/// The round record must be a new file directly inside the state directory.
+fn round_record_path(directory: &Path, record: &Path) -> Result<()> {
+    ensure!(
+        record
+            .parent()
+            .context("round record has no parent")?
+            .canonicalize()?
+            == directory.canonicalize()?,
+        "round record is outside state"
+    );
+    ensure!(
+        record.symlink_metadata().is_err(),
+        "round record {} already exists",
+        record.display()
     );
     Ok(())
 }
 
-fn write_new_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+/// #2556: accept an agent round and write the loop's signal record. A writer
+/// fault or stale evidence writes a NOT_MERGE_READY record whose blockers are
+/// also written to `<record>.findings`, and returns it (exit 0).
+pub fn round(
+    auth: &InvocationAuthorization,
+    directory: &Path,
+    repo: &Path,
+    record: &Path,
+    input: &[u8],
+) -> Result<serde_json::Value> {
+    let store = EvidenceStore::create(directory)?;
+    round_record_path(directory, record)?;
+    let (result, findings) = match read_candidate(repo, input)? {
+        Reading::Refresh(n) => {
+            let blockers = safe_blockers(&n.blockers);
+            tracing::info!(
+                blockers = ?blockers,
+                "autodrive round: evidence not accepted; NOT_MERGE_READY"
+            );
+            let findings = lines(blockers.iter());
+            let result = serde_json::json!({
+                "merge_ready_verdict": "NOT_MERGE_READY",
+                "blocker_count": blockers.len(),
+                "blockers": blockers,
+                "head_sha": revision_or_empty(&n.evidence_head),
+                "round_label": label_or_empty(&n.round_label),
+                "accepted_evidence": null,
+                "test_signal": "BLOCKED",
+                "ci_signal": "UNVERIFIED",
+            });
+            (result, findings)
+        }
+        Reading::Current(candidate) => {
+            super::review::verify(repo, &candidate)?;
+            let accepted = validate_candidate(auth, &candidate.binding, &candidate)?;
+            store.snapshot_references(accepted.record())?;
+            let evidence = store.snapshot(&serde_json::to_vec(accepted.record())?)?;
+            let ready = accepted.record().readiness == Readiness::MergeReady;
+            let blockers = safe_blockers(&candidate.blockers);
+            let result = serde_json::json!({
+                "merge_ready_verdict": if ready {"MERGE_READY"} else {"NOT_MERGE_READY"},
+                "blocker_count": blockers.len(),
+                "blockers": blockers,
+                "head_sha": revision_or_empty(&candidate.binding.head_sha),
+                "round_label": label_or_empty(&candidate.binding.round_id),
+                "accepted_evidence": evidence,
+                "test_signal": if ready {"PASS"} else {"BLOCKED"},
+                "ci_signal": if ready {"GREEN"} else {"UNVERIFIED"},
+            });
+            let blocked = candidate.criteria.iter().filter(|c| !c.blockers.is_empty());
+            (result, lines(blocked.map(|c| &c.id)))
+        }
+    };
+    write_new_private(&record.with_extension("json.findings"), findings.as_bytes())?;
+    write_new_private(record, &serde_json::to_vec(&result)?)?;
+    Ok(result)
+}
+
+/// One item per line, each ending in a newline.
+fn lines<'a>(items: impl Iterator<Item = &'a String>) -> String {
+    items.map(|item| format!("{item}\n")).collect()
+}
+
+/// The parse fault is named from serde's category and position only; its
+/// message can quote record text, so it is never used.
+fn parse_blocker(err: &serde_json::Error) -> String {
+    use serde_json::error::Category;
+    let category = match err.classify() {
+        Category::Io => "io",
+        Category::Syntax => "syntax",
+        Category::Data => "data",
+        Category::Eof => "eof",
+    };
+    format!(
+        "evidence-parse-error:{category} at line {} column {}",
+        err.line(),
+        err.column()
+    )
+}
+
+const MAX_BLOCKER_BYTES: usize = 256;
+
+/// Blockers are printed and written to files: no control characters and at
+/// most 256 bytes each.
+fn safe_blockers(blockers: &[String]) -> Vec<String> {
+    blockers
+        .iter()
+        .map(|b| {
+            let mut out = String::new();
+            for c in b.chars().filter(|c| !c.is_control()) {
+                if out.len() + c.len_utf8() > MAX_BLOCKER_BYTES {
+                    break;
+                }
+                out.push(c);
+            }
+            out
+        })
+        .collect()
+}
+
+fn revision_or_empty(value: &str) -> &str {
+    if [40, 64].contains(&value.len()) && value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        value
+    } else {
+        ""
+    }
+}
+
+fn label_or_empty(value: &str) -> &str {
+    if (1..=128).contains(&value.len())
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+    {
+        value
+    } else {
+        ""
+    }
+}
+
+pub(in crate::commands::orch) fn write_new_private(
+    path: &std::path::Path,
+    bytes: &[u8],
+) -> Result<()> {
     use std::io::Write;
     let mut options = std::fs::OpenOptions::new();
     options.create_new(true).write(true);

@@ -144,6 +144,18 @@ recommit() {
 }
 export AUTODRIVE_QA_BASE=main
 
+# printed_matches <qa-inputs.json> <stdout record>: the printed record is the
+# file with declared_qa.log_tail replaced by log_tail_bytes, its size in
+# UTF-8 bytes; the tail itself is never printed.
+printed_matches() {
+    [ -f "$1" ] && python3 -I -c '
+import json, sys
+f = json.loads(open(sys.argv[1], "rb").read().decode("utf-8"))
+p = json.loads(sys.argv[2])
+t = f["declared_qa"].pop("log_tail")
+n = p["declared_qa"].pop("log_tail_bytes", None)
+sys.exit(0 if f == p and n == len(t.encode("utf-8")) else 1)' "$1" "$2" 2>/dev/null
+}
 # run_tool [VAR=value]... - runs the tool on $REPO with a scrubbed environment
 # (every other AUTODRIVE_QA_* unset unless given), with AUTODRIVE_QA_EVIDENCE
 # in a private directory outside the repository. Sets OUT (the record from
@@ -234,7 +246,7 @@ run_tool
 expect b "root crate" repo_type=rust-cli declared_qa.source=detected declared_qa.dir=. \
     declared_qa.command="cargo $CARGO_ARGS" declared_qa.status=ran declared_qa.exit_status=0
 expect_calls b-calls "cargo runs at the root" cargo "cargo|.|$CARGO_ARGS"
-if [ "$RC" -eq 0 ] && [ -f "$INPUTS" ] && [ "$(cat "$INPUTS")" = "$OUT" ] && [ ! -e "${INPUTS%/*}/qa-evidence.json" ]; then
+if [ "$RC" -eq 0 ] && printed_matches "$INPUTS" "$OUT" && [ ! -e "${INPUTS%/*}/qa-evidence.json" ]; then
     pass b-file "exit 0, qa-inputs.json matches stdout and no qa-evidence.json is written"
 else fail b-file "rc=$RC inputs=$(cat "$INPUTS" 2>/dev/null | head -c 200)"; fi
 expect_target b-target $'rust-cli\t.'

@@ -208,7 +208,7 @@ _file_qa_status() {
   field "$(head -c 1048576 -- "$1" 2>/dev/null)" qa_status MISSING
 }
 
-MD_QA=""; MD_CI=""; MD_CONFLICT="";MD_THREADS=""; MD_CRUSTY=""; MD_APPROVAL=""; MD_QH=""; MD_QNOW=""
+MD_QA=""; MD_CI=""; MD_CONFLICT=""; MD_THREADS=""; MD_CRUSTY=""; MD_APPROVAL=""; MD_QH=""; MD_QNOW=""
 _measured_read() {
   MD_QA="$(token "$(field "${RECIPE_VAR_qa_evidence:-}" qa_status MISSING)")"
   # Criterion 1 passes only when the step-02 reply AND the hashed file both

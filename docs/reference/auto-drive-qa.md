@@ -155,15 +155,18 @@ Example for a PR that changes two Markdown files in a Node repository:
 | `declared_qa` | The declared command and its result. See [the declared QA command](#the-declared-qa-command). |
 | `git_env_cleared`, `run_env_cleared` | See [git repository environment helper](git-repo-env-helper.md). |
 
-`log_tail` stays in the inputs file. It is never copied into
-`qa-evidence.json`, because test output can contain secrets.
+`log_tail` stays in the inputs file, which is private (mode 0600). It is
+never copied into `qa-evidence.json`, and the script does not print it:
+test output can contain secrets, and the step's printed output reaches the
+recipe log and the judging agent's prompt. The printed JSON is the file's
+content with `log_tail` replaced by `log_tail_bytes`, its length in bytes.
+The judging agent reads the tail from `qa-inputs.json`.
 
-`qa-record` requires every field above except the fields inside
-`declared_qa`: each of those may be absent and then defaults to empty (`""`,
-or null for `exit_status`), so `"declared_qa": {}` is accepted and is
-recorded with an empty status. An empty status means no declared command was
-run. `qa-record` ignores fields it does not know, so a newer inputs script
-(#2458) does not break an older helper. The strings it copies into the evidence (`qa_round` when `--round` is absent,
+`qa-record` requires every field above, including every field inside
+`declared_qa` (`exit_status` may be null), so `"declared_qa": {}` is refused
+with exit 1. `qa-record` ignores fields it does not know, so a newer inputs
+script (#2458) does not break an older helper. The strings it copies into
+the evidence (`qa_round` when `--round` is absent,
 `repo_type`, `docs_only`, `git_env_cleared`, `run_env_cleared` and the
 `declared_qa` strings except `log_tail`) must meet the judgement's
 [type limits](#type-limits): the inputs file sits in a directory the agent
@@ -471,9 +474,8 @@ free of forged lines and escape sequences.
 | --- | --- |
 | `head_sha` | `git rev-parse --verify HEAD^{commit}` in `--repo`; 40 or 64 lowercase hexadecimal characters. |
 | `qa_reason` | Derived: empty for `PASS`, `qa-scenario-failed` for `FAIL`, `qa-handoff` for `HANDOFF`. |
-| `qa_declared_command` | `{source, dir, command, exit_status}` from `declared_qa` in the inputs file. |
-| `declared_qa` | The inputs file's `declared_qa` block without `log_tail`. |
-| `qa_round`, `qa_repo_type`, `qa_dir`, `qa_command`, `qa_command_source`, `qa_exit_code`, `docs_only`, `git_env_cleared`, `run_env_cleared` | Copied from the inputs file for readers of the earlier flat format. |
+| `qa_declared_command` | `{source, dir, command, status, cause, exit_status}` from `declared_qa` in the inputs file. This is the only copy of the declared command in the record. |
+| `qa_round`, `qa_repo_type`, `docs_only`, `git_env_cleared`, `run_env_cleared` | Copied from the inputs file. |
 
 The record contains no `gadugi_*` fields and no `log_tail`.
 

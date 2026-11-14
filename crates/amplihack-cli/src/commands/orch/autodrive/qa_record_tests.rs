@@ -371,6 +371,21 @@ fn inputs_ignore_unknown_fields_but_require_documented_ones() {
     assert!(serde_json::from_value::<super::QaInputs>(v).is_err());
 }
 
+/// Every `declared_qa` field is required: an empty block is refused, not read
+/// as "nothing declared" (#2618 review).
+#[test]
+fn inputs_refuse_an_empty_declared_qa_block() {
+    let mut v = inputs();
+    v["declared_qa"] = json!({});
+    assert!(serde_json::from_value::<super::QaInputs>(v).is_err());
+    let mut v = inputs();
+    v["declared_qa"].as_object_mut().unwrap().remove("status");
+    assert!(serde_json::from_value::<super::QaInputs>(v).is_err());
+    let mut v = inputs();
+    v["declared_qa"]["exit_status"] = Value::Null;
+    assert_eq!(copied(v, true), Ok(()));
+}
+
 /// R2.3: copied inputs strings follow the judgement's text rule; log_tail
 /// is never copied, so it is not checked.
 #[test]

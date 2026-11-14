@@ -88,6 +88,18 @@ export HOME="$WORK/home" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 mkdir -p "$HOME"
 ID_ENV=(GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid)
 
+# printed_matches <qa-inputs.json> <stdout record>: the printed record is the
+# file with declared_qa.log_tail replaced by log_tail_bytes, its size in
+# UTF-8 bytes; the tail itself is never printed.
+printed_matches() {
+    [ -f "$1" ] && python3 -I -c '
+import json, sys
+f = json.loads(open(sys.argv[1], "rb").read().decode("utf-8"))
+p = json.loads(sys.argv[2])
+t = f["declared_qa"].pop("log_tail")
+n = p["declared_qa"].pop("log_tail_bytes", None)
+sys.exit(0 if f == p and n == len(t.encode("utf-8")) else 1)' "$1" "$2" 2>/dev/null
+}
 PASS_COUNT=0
 FAIL_COUNT=0
 CASES_PASSED=0
@@ -203,7 +215,7 @@ CLEAN_RC="$RC"
 CLEAN_STATUS="$(printf '%s' "$OUT" | qa_of)"
 [[ "$CLEAN_RC" == 0 ]] || { ok=0; fail clean "exit $CLEAN_RC: $(tail -n 3 "$EV.err" | tr '\n' '|')"; }
 [[ "$CLEAN_STATUS" == "ran 0" ]] || { ok=0; fail clean "declared_qa status and exit_status are '$CLEAN_STATUS', want 'ran 0' (the scratch-repository suite should pass)"; }
-[[ "$(cat "${EV%/*}/qa-inputs.json" 2>/dev/null)" == "$OUT" ]] || { ok=0; fail clean "qa-inputs.json beside AUTODRIVE_QA_EVIDENCE is missing or differs from stdout"; }
+printed_matches "${EV%/*}/qa-inputs.json" "$OUT" || { ok=0; fail clean "qa-inputs.json beside AUTODRIVE_QA_EVIDENCE is missing or differs from stdout"; }
 got="$(printf '%s' "$OUT" | field_of docs_only 2>/dev/null || echo '<invalid>')"
 [[ "$got" == unknown ]] || { ok=0; fail clean "docs_only=$got, want unknown without a base ref in the scratch repository"; }
 same clean "the caller repository" "$caller_before" "$(snapshot "$CALLER" objects)" || ok=0
@@ -276,7 +288,7 @@ refusal_case() {
     run_tool "$dir/autodrive_qa_evidence.sh" "$id"
     [[ "$RC" == 0 ]] || { ok=0; fail "$id" "exit $RC, want 0"; }
     grep -qxF -- "$WANT_MSG" "$EV.err" || { ok=0; fail "$id" "stderr lacks the exact warning: $(head -n 3 "$EV.err" | tr '\n' '|')"; }
-    [[ "$(cat "${EV%/*}/qa-inputs.json" 2>/dev/null)" == "$OUT" ]] || { ok=0; fail "$id" "qa-inputs.json is missing or differs from stdout"; }
+    printed_matches "${EV%/*}/qa-inputs.json" "$OUT" || { ok=0; fail "$id" "qa-inputs.json is missing or differs from stdout"; }
     [[ ! -e "$EV" ]] || { ok=0; fail "$id" "a qa-evidence.json verdict file was written"; }
     for f in git_env_cleared run_env_cleared; do
         got="$(printf '%s' "$OUT" | field_of "$f" 2>/dev/null || echo '<invalid>')"
