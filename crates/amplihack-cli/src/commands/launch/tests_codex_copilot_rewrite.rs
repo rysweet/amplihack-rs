@@ -225,7 +225,7 @@ fn copilot_prompt_flags_get_the_pointer_sentence() {
         (vec!["--interactive", SENTINEL], "--interactive"),
         (vec!["--model", "gpt-5", "-p", SENTINEL, "--silent"], "-p"),
     ] {
-        let r = rewrite_copilot_passthrough(&s(&input), true, true).unwrap();
+        let r = rewrite_copilot_passthrough(&s(&input), true, true, None).unwrap();
         assert!(
             !r.args.iter().any(|a| a.contains("SENTINEL")),
             "{:?}",
@@ -248,7 +248,7 @@ fn copilot_prompt_flags_get_the_pointer_sentence() {
 
 #[test]
 fn copilot_without_grant_dir_adds_no_add_dir() {
-    let r = rewrite_copilot_passthrough(&s(&["-p", SENTINEL]), false, true).unwrap();
+    let r = rewrite_copilot_passthrough(&s(&["-p", SENTINEL]), false, true, None).unwrap();
     assert_eq!(r.args.len(), 2);
     assert_eq!(r.args[0], "-p");
     assert!(r.args[1].starts_with(FILE_REFERENCE_PREFIX));
@@ -264,15 +264,16 @@ fn copilot_cases_left_unchanged() {
         vec!["--", "-p", SENTINEL],
         vec![],
     ] {
-        let r = rewrite_copilot_passthrough(&s(&input), true, true).unwrap();
+        let r = rewrite_copilot_passthrough(&s(&input), true, true, None).unwrap();
         assert_eq!(r.args, s(&input), "{input:?}");
     }
 }
 
 #[test]
 fn copilot_same_flag_twice_is_an_error_without_the_text() {
-    let err = rewrite_copilot_passthrough(&s(&["-p", SENTINEL, "--prompt", "again"]), true, true)
-        .expect_err("two prompts");
+    let err =
+        rewrite_copilot_passthrough(&s(&["-p", SENTINEL, "--prompt", "again"]), true, true, None)
+            .expect_err("two prompts");
     let message = format!("{err:#}");
     assert!(message.contains("given twice"), "{message}");
     assert!(!message.contains("SENTINEL"), "{message}");
@@ -284,15 +285,15 @@ fn copilot_same_flag_twice_is_an_error_without_the_text() {
 #[test]
 fn copilot_prompt_without_add_dir_or_path_access_is_refused() {
     for input in [vec!["-p", SENTINEL], vec!["--prompt", SENTINEL]] {
-        let err = rewrite_copilot_passthrough(&s(&input), false, false).expect_err("refused");
+        let err = rewrite_copilot_passthrough(&s(&input), false, false, None).expect_err("refused");
         let message = format!("{err:#}");
         assert!(message.contains("add --allow-all-paths"), "{message}");
         assert!(!message.contains("SENTINEL"), "{message}");
     }
-    let r = rewrite_copilot_passthrough(&s(&["-i", SENTINEL]), false, false).unwrap();
+    let r = rewrite_copilot_passthrough(&s(&["-i", SENTINEL]), false, false, None).unwrap();
     assert!(r.args[1].starts_with(FILE_REFERENCE_PREFIX), "{:?}", r.args);
     // `--add-dir` alone is enough.
-    rewrite_copilot_passthrough(&s(&["-p", SENTINEL]), true, false).unwrap();
+    rewrite_copilot_passthrough(&s(&["-p", SENTINEL]), true, false, None).unwrap();
 }
 
 /// Crusty round 2: on a terminal (not subprocess-safe) a caller's

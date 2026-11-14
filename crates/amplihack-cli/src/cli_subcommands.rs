@@ -605,6 +605,29 @@ pub enum RecipeCommands {
         #[command(flatten)]
         governor: crate::commands::governor::GovernorArgs,
     },
+    /// Add an instruction that every later agent step of a recipe run
+    /// receives after its own prompt
+    Guide {
+        /// Run folder name, correlation id, detached session name, or the
+        /// pull request URL of an auto-drive
+        /// (https://github.com/<owner>/<repo>/pull/<n>)
+        target: String,
+        /// `-` reads the instruction from stdin, as does giving nothing.
+        /// Any other value here is refused: instruction text is never
+        /// accepted on the command line (PR #2567, issue #2582). Leading
+        /// hyphens are allowed so `--text` gets that refusal, not clap's
+        /// error; `guide.rs` reads `--from-step` and `--file` after `-`.
+        #[arg(hide = true, num_args = 0.., allow_hyphen_values = true, value_parser = clap::value_parser!(std::ffi::OsString))]
+        text: Vec<std::ffi::OsString>,
+        /// Read the instruction from this file instead of stdin
+        #[arg(long = "file", value_name = "PATH")]
+        file: Option<std::path::PathBuf>,
+        /// Allow the command inside a recipe run (`AMPLIHACK_RECIPE_RUN_ID`
+        /// set). The entry is then shown to later steps as coming from an
+        /// agent step in this run, not from the operator.
+        #[arg(long = "from-step")]
+        from_step: bool,
+    },
     /// Stop a recipe run and its whole process tree: a tmux session started
     /// by `recipe run --detach`, or a run id from its log pointer
     Stop {

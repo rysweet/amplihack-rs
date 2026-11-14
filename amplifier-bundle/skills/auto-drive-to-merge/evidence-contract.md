@@ -72,6 +72,28 @@ An attempt records `operation`, `outcome` (`failed`, `refused`, `ambiguous`,
 supply equivalent complete observations; retain the original failure. Never
 claim ready with unrecovered required operations or missing evidence.
 
+No string field is ever `null`. A succeeded attempt has `"cause":"none"`. A
+value you cannot observe is written as `"unknown"`, and it blocks readiness.
+
+The local reader tolerates a writer that breaks this rule, but never accepts
+the result. A `null`, missing or `"unknown"` value in a binding, attempt,
+review range, evidence, recovery or finalization string field, or in
+`reviewed_head_sha` or `verified_head_sha`, is read as unknown. It produces a
+blocker named `unknown-field:<path>`, for example
+`unknown-field:attempts[0].cause` or `unknown-field:binding.head_sha`, and the
+readiness is `incomplete`. An empty `cause` on a succeeded attempt is not a
+blocker. The rule does not extend to `schema_version`, criterion `id`,
+`blockers`, `not_applicable_reason`, evidence-reference `file` and `sha256`,
+enums, integers or booleans: a `null` there, and any unknown key, is still a
+parse fault, reported as an `evidence-parse-error:` blocker.
+Other record faults still fail the command with a non-zero exit, for
+example a criterion that is incomplete and has no cause.
+
+Evidence bound to a head, base or merge-base that differs from the local
+worktree is stale. It is reported with the blockers `stale-evidence-head`,
+`stale-evidence-base` or `stale-evidence-merge-base` and must be measured
+again at the current head; it is never accepted.
+
 Loop completion describes the loop only. An action refusal does not rewrite a converged loop as failed; the reducer records the action failure separately.
 
 A `FinalizationObservation` contains:
