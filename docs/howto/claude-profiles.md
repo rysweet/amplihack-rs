@@ -1279,7 +1279,7 @@ wrote anyway goes to `.rejected-logins/` like a refused one.
 
 ```
 <root>/.rejected-logins/                         0700
-├── .pending-<name>-<time>/                       the previous login while Claude runs
+├── .pending-<name>-<time>/                       the previous login and oauthAccount.json while Claude runs
 ├── <name>-<time>/                                a refused login
 │   ├── .credentials.json                         0600, moved, not copied
 │   └── oauthAccount.json                         its oauthAccount block, 0600
@@ -1292,14 +1292,18 @@ or one of these directories. To use a kept login again, move it back with
 `mv -n` into a profile that has no `.credentials.json`, never `cp`.
 
 If amplihack itself is killed while Claude runs, the previous login stays in
-the `.pending-…` directory printed at the start. Ctrl-C is handled, but
+the `.pending-…` directory, which is printed at the start whenever there was
+a login file or an `oauthAccount` block to hold. Ctrl-C is handled, but
 closing the terminal (SIGHUP) or `kill` (SIGTERM) ends amplihack before it
 can restore anything. The previous login is then at
 `<root>/.rejected-logins/.pending-<name>-<time>/.credentials.json`, and its
 `oauthAccount` block is next to it in `oauthAccount.json`. If Claude wrote a
 new login, move that one aside first (or delete it if you do not want it),
 then move the previous one back into the profile directory with one `mv`.
-This example uses the default root; if you chose another root (`amplihack
+amplihack also removed the `oauthAccount` key from the profile's
+`.claude.json` before Claude started. If Claude did not write a new one, set
+that key back to the contents of `oauthAccount.json`, or the profile names
+no account until its next login. This example uses the default root; if you chose another root (`amplihack
 profile root` prints it), use that path instead:
 
 ```bash
@@ -1310,21 +1314,39 @@ mv -n ~/.amplihack/claude-profiles/.rejected-logins/.pending-rssourcelabs-202610
 #### When the check cannot move the login
 
 - **macOS.** Claude keeps the login in the Keychain, not in
-  `.credentials.json`. A duplicate is still reported and `login` exits 1,
-  but there is no file to move aside. The profile's `oauthAccount` block is
-  left as Claude wrote it, so `.claude.json` still matches the login in the
-  Keychain. Sign out in the browser and log in again.
-- **No login file after a previous one.** If the profile had a
-  `.credentials.json` and Claude exits 0 without writing a new one, the
-  login did not finish: the previous login and its `oauthAccount` block are
-  both put back, and `login` exits 1.
+  `.credentials.json`, and writes only the `oauthAccount` block in
+  `.claude.json`. amplihack removes that block before Claude starts, so a
+  block that names an account afterwards is the new login. An empty or
+  malformed block does not count. The new login is checked like a file
+  login:
+  - not a duplicate: the login is accepted, a previous `.credentials.json`
+    moves to `<name>-<time>-replaced/`, and the account is recorded;
+  - a duplicate, with a previous `.credentials.json`: the previous login and
+    its `oauthAccount` block are put back and `login` exits 1:
+
+    ```
+    error: profile 'work' is signed in to the same account and organization as profile 'personal'; Claude wrote no login file. The previous login file and oauthAccount of 'work' were put back, but the macOS Keychain may still hold the refused account, and Claude may use it until 'work' is logged in again
+    ```
+
+  - a duplicate, with no previous login file: the refusal is printed and
+    `login` exits 1, but the block is left as Claude wrote it, so
+    `.claude.json` still matches the login in the Keychain.
+
+  A refused login stays in the Keychain. Sign out in the browser and log
+  in again.
+- **No login after a previous one.** If the profile had a
+  `.credentials.json` and Claude exits 0 without writing a new one or a new
+  `oauthAccount` block, the login did not finish: the previous login and
+  its `oauthAccount` block are both put back, and `login` exits 1.
 - **The profiles cannot be read.** If the profile root cannot be listed or
   the auto-switch state cannot be opened, the new login cannot be compared,
   so it is treated like a refused one: moved to `.rejected-logins/`, the
   previous login put back, exit 1.
 - **The rotator swapped the profile in during the login.** `profile rotate`
   takes no lease. If it made this profile the live one while Claude ran,
-  amplihack stops without moving anything and prints where each login is.
+  amplihack stops without moving anything and prints where each login is,
+  and the `.pending-…` directory that holds the profile's earlier
+  `oauthAccount` block, even when the profile had no login file.
 - **A login file that is not private.** If the new `.credentials.json` is
   not a private regular file (for example mode `0644`, or a symlink),
   amplihack does not move it or change its mode. It exits 1, reports the
@@ -1333,7 +1355,8 @@ mv -n ~/.amplihack/claude-profiles/.rejected-logins/.pending-rssourcelabs-202610
 - **A session started using the profile during the login.** If auto-switch
   lent the profile's login to a session or the profile now hosts another
   account, amplihack stops without moving anything and prints where each
-  login is.
+  login is, and the `.pending-…` directory that holds the earlier
+  `oauthAccount` block.
 
 #### `/login` inside a running session
 
