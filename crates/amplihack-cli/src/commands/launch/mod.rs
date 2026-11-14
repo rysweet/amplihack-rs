@@ -342,7 +342,7 @@ fn run_launch_core(
         .ok()
         .unwrap_or_else(|| PathBuf::from("."));
     if let Some(activation) = DockerDetector.activation_source(docker) {
-        println!("{}", activation.message());
+        eprintln!("{}", activation.message());
         let docker_args = build_docker_launcher_args(
             launcher_command,
             resume,

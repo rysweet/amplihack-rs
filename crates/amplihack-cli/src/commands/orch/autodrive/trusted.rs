@@ -105,8 +105,12 @@ impl LaunchBundle {
         })
     }
 }
+/// Copies the trusted bundle with explicit modes (#2537): folders 0755, files
+/// 0644, executables 0755, so the copy passes `trusted_directory()` whatever
+/// the process umask.
 fn copy_tree(source: &Path, dest: &Path) -> Result<()> {
     fs::create_dir(dest)?;
+    set_mode(dest, 0o755)?;
     for entry in fs::read_dir(source)? {
         let entry = entry?;
         if ["gh-merge-guard", "autodrive_merge_gate.sh"]
@@ -139,9 +143,26 @@ fn copy_tree(source: &Path, dest: &Path) -> Result<()> {
                 "non-regular trusted asset {}",
                 path.display()
             );
-            fs::copy(&path, to)?;
+            fs::copy(&path, &to)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let executable = metadata.permissions().mode() & 0o100 != 0;
+                set_mode(&to, if executable { 0o755 } else { 0o644 })?;
+            }
         }
     }
+    Ok(())
+}
+
+fn set_mode(path: &Path, mode: u32) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+    }
+    #[cfg(not(unix))]
+    let _ = (path, mode);
     Ok(())
 }
 
@@ -301,5 +322,123 @@ mod required_assets_tests {
                 "required asset {relative} is not in amplifier-bundle"
             );
         }
+    }
+}
+
+/// #2537: the per-invocation copy must pass its own trust check under umask 002.
+#[cfg(all(test, unix))]
+mod umask_tests {
+    use super::{LaunchBundle, REQUIRED_ASSETS, pin_bundle};
+    use crate::commands::orch::autodrive::authorization::InvocationAuthorization;
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    use std::process::Command;
+
+    // The umask is per process and sibling tests create files concurrently,
+    // so each test here runs alone in a child of the test binary.
+    const UMASK_CHILD: &str = "AMPLIHACK_ISSUE_2537_UMASK_CHILD";
+
+    fn under_umask_002(test: &str, body: impl FnOnce()) {
+        if std::env::var_os(UMASK_CHILD).is_some() {
+            // SAFETY: umask has no failure mode, and this child runs only this test.
+            let previous = unsafe { libc::umask(0o002) };
+            body();
+            unsafe { libc::umask(previous) };
+            return;
+        }
+        let name = format!("commands::orch::autodrive::trusted::umask_tests::{test}");
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--test-threads=1", "--nocapture"])
+            .env(UMASK_CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{name} failed under umask 002:\n{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            stdout.contains("test result: ok. 1 passed"),
+            "re-running {name} ran no test:\n{stdout}"
+        );
+    }
+
+    fn mode_of(path: &Path) -> u32 {
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    /// A private home holding a real `amplifier-bundle` with installer modes.
+    fn fake_home() -> (tempfile::TempDir, std::path::PathBuf) {
+        let temp = crate::test_support::tempdir_outside_framework_roots();
+        let home = temp.path().join("home");
+        let bundle = home.join("amplifier-bundle");
+        for relative in REQUIRED_ASSETS {
+            let path = bundle.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let body = if relative.ends_with(".yaml") {
+                format!("name: {}\n", relative.trim_end_matches(".yaml"))
+            } else {
+                "#!/bin/sh\n".to_owned()
+            };
+            fs::write(&path, body).unwrap();
+            let mode = if relative.ends_with(".sh") {
+                0o755
+            } else {
+                0o644
+            };
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+        }
+        fn dirs_0755(dir: &Path) {
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
+            for entry in fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs_0755(&path);
+                }
+            }
+        }
+        dirs_0755(&home);
+        (temp, home)
+    }
+
+    fn authorization() -> InvocationAuthorization {
+        InvocationAuthorization::capture("auto-drive-light", &BTreeMap::new()).unwrap()
+    }
+
+    #[test]
+    fn invocation_copy_passes_trust_check_under_umask_002() {
+        under_umask_002("invocation_copy_passes_trust_check_under_umask_002", || {
+            let (_temp, home) = fake_home();
+            let launch = LaunchBundle::prepare(&home, &mut authorization()).unwrap();
+            let copy = launch.home.join("amplifier-bundle");
+            // The child invocation pins the copy as its own trusted bundle.
+            assert_eq!(pin_bundle(&launch.home).unwrap(), copy);
+            assert_eq!(mode_of(&copy), 0o755);
+            assert_eq!(mode_of(&copy.join("skills/merge-ready")), 0o755);
+            assert_eq!(mode_of(&copy.join("tools/autodrive_loop.sh")), 0o755);
+            assert_eq!(mode_of(&copy.join("skills/merge-ready/SKILL.md")), 0o644);
+            // The invocation proceeds: a nested launch from the copy is accepted.
+            LaunchBundle::prepare(&launch.home, &mut authorization()).unwrap();
+        });
+    }
+
+    #[test]
+    fn group_writable_source_bundle_is_still_refused_under_umask_002() {
+        under_umask_002(
+            "group_writable_source_bundle_is_still_refused_under_umask_002",
+            || {
+                let (_temp, home) = fake_home();
+                let bundle = home.join("amplifier-bundle");
+                fs::set_permissions(&bundle, fs::Permissions::from_mode(0o775)).unwrap();
+                assert!(LaunchBundle::prepare(&home, &mut authorization()).is_err());
+                fs::set_permissions(&bundle, fs::Permissions::from_mode(0o755)).unwrap();
+                let asset = bundle.join("skills/merge-ready/SKILL.md");
+                fs::set_permissions(&asset, fs::Permissions::from_mode(0o664)).unwrap();
+                assert!(LaunchBundle::prepare(&home, &mut authorization()).is_err());
+            },
+        );
     }
 }
