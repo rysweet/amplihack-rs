@@ -14,6 +14,8 @@ mod context;
 /// Issue #2030 — the 0600 contract file and the Claude Code version gate.
 mod contract_file;
 pub(crate) mod hook_settings;
+/// Issue #1883: agent steps inherit the parent session's effort and model.
+pub(crate) mod inherit;
 /// Issue #2030 — `amplihack claude` passthrough arguments never carry prompt
 /// text to the agent's argv.
 mod passthrough_rewrite;
@@ -34,6 +36,9 @@ mod tests_codex_exec_args;
 mod tests_command;
 #[cfg(test)]
 mod tests_env;
+/// Issue #1883: effort and model inheritance for recipe step agents.
+#[cfg(test)]
+mod tests_inherit;
 #[cfg(test)]
 mod tests_issue_2030_contract;
 #[cfg(all(test, unix))]
@@ -65,8 +70,10 @@ pub(crate) use power_steering::maybe_prompt_re_enable_power_steering;
 
 // Internal imports from submodules used by run_launch.
 use blarify::maybe_run_blarify_indexing_prompt;
+#[cfg(test)]
+use command::build_command_for_dir;
 use command::{
-    augment_claude_launch_env, build_command_for_dir, build_docker_launcher_args,
+    augment_claude_launch_env, build_docker_launcher_args, build_launch_command,
     isolate_routed_copilot_home,
 };
 use context::persist_launcher_context;
@@ -571,7 +578,7 @@ fn run_launch_core(
                 None
             }
         };
-        let mut cmd = build_command_for_dir(
+        let (mut cmd, applied) = build_launch_command(
             &binary,
             resume,
             continue_session,
@@ -604,6 +611,9 @@ fn run_launch_core(
         )?;
         // Issue #1569: only the supervising amplihack sees this marker.
         cmd.env_remove(crate::commands::profile::AUTO_SWITCH_SUPERVISED_ENV);
+        // Issue #1883 (C1): tell the agent's children which effort and model
+        // this launch runs with, after the launch environment is applied.
+        inherit::export_to_child(&mut cmd, &applied, tool);
 
         // Spawn child in its own process group.
         //

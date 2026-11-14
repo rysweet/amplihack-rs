@@ -287,9 +287,23 @@ fn env_entry_bytes(name: &str, value: &str) -> usize {
 
 /// The `AMPLIHACK_` namespace belongs to amplihack. A context key in it is
 /// never mirrored into the env and never forwarded to the runner, so a recipe
-/// cannot choose, for example, the pinned Claude profile (issue #1567).
-fn is_reserved_context_key(key: &str) -> bool {
+/// cannot choose, for example, the pinned Claude profile (issue #1567), or
+/// the effort and model its steps inherit (`AMPLIHACK_PARENT_*`, #1883 S6).
+pub(super) fn is_reserved_context_key(key: &str) -> bool {
     key.to_ascii_uppercase().starts_with("AMPLIHACK_")
+}
+
+/// Refuse reserved keys in a context map before it reaches the runner. For
+/// `amplihack recipe run` the map is `-c`, the context file and the top-level
+/// recipe's own `context:`, merged.
+fn reject_reserved_context_keys<'a>(mut keys: impl Iterator<Item = &'a str>) -> Result<()> {
+    if let Some(key) = keys.find(|key| is_reserved_context_key(key)) {
+        anyhow::bail!(
+            "recipe context key {} is reserved: the AMPLIHACK_ namespace cannot be set from recipe context",
+            crate::commands::profile::escape_for_error(key)
+        );
+    }
+    Ok(())
 }
 
 /// Validate a single recipe context entry for env export (issue #784 / #1023),
@@ -614,6 +628,23 @@ pub(super) fn execute_recipe_via_rust_fresh(
     fresh: bool,
 ) -> Result<RecipeRunResult> {
     use crate::commands::orch::autodrive::{authorization::InvocationAuthorization, trusted};
+    // Refuse an `AMPLIHACK_*` context key before any work: before the
+    // recursion guard, the trusted bundle, the runner lookup and its
+    // capability probe. `pass_context` refuses the same keys when it hands the
+    // context to the runner, on every run (a dry run too, which still starts
+    // the runner with `--dry-run`), as it did before #1883; this only refuses
+    // them sooner. `run_recipe_with_options`, the one production caller, has
+    // already merged the top-level recipe's own `context:` into `context`
+    // (`infer_missing_context`), after reading the recipe with
+    // `parse_recipe_from_path`, the parser that also takes JSON with
+    // surrogate-pair escapes (#1964). So the file is not parsed a second time
+    // here. A trusted auto-drive run (#2340) passes only the operator's
+    // inputs; its defaults come from the pinned recipe below, into
+    // `invocation_context`, which `pass_context` checks. Sub-recipe
+    // `context:` is the runner's, which exports it to bash steps under
+    // upper-case names until it refuses the namespace
+    // (rysweet/amplihack-recipe-runner#146).
+    reject_reserved_context_keys(context.keys().map(String::as_str))?;
     let invocation_name = recipe_name_for_correlation(recipe_path);
     // #2329: authority is captured once, from the raw operator inputs of this
     // invocation, before defaults, recovery normalisation or admission. A
@@ -709,6 +740,18 @@ pub(super) fn execute_recipe_via_rust_fresh(
         crate::agent_binary_notice::Reporter::RecipeRun,
         &agent_binary,
     );
+
+    // Issue #1883: the effort and model every step inherits, worked out once
+    // for the run, with its log lines printed once here and never by a step.
+    // A recovered run (#2334) passes through here too, so its remaining steps
+    // inherit what this launch resolved. It reads the context the runner is
+    // given: for a trusted auto-drive run (#2340) that is the pinned recipe's
+    // defaults and the operator's inputs, not the requested file's defaults.
+    let (inherited, inherit_lines) =
+        super::inherit_inputs::inherit_for_run(&invocation_context, agent_binary.binary.as_str());
+    for line in &inherit_lines {
+        eprintln!("{line}");
+    }
 
     // Issue #1606: record what this run resolved in every log pointer. The
     // home is resolved the same way `build_command` resolves it below.
@@ -806,12 +849,12 @@ pub(super) fn execute_recipe_via_rust_fresh(
         // keeps AMPLIHACK_* variables, which is why only the profile name (not
         // CLAUDE_CONFIG_DIR) needs to survive: each step's nested
         // `amplihack claude` rebuilds the dir from it. `pass_context` refuses
-        // `AMPLIHACK_*` keys from `-c` and this run's context. The runner still
-        // exports top-level context keys under their uppercase names
-        // (`legacy_uppercase_alias`), so a recipe's own YAML `context:`
-        // defaults or a step `output:` named `amplihack_claude_profile` can
-        // still override the pinned value until the runner refuses that
-        // namespace too (rysweet/amplihack-recipe-runner#146).
+        // `AMPLIHACK_*` keys in the context map, which holds `-c`, the context
+        // file and the top-level recipe's own `context:` (merged by
+        // `run_recipe_with_options`), as it did before #1883. The runner still exports a sub-recipe's `context:`, a `type: recipe`
+        // step's `context:` and step `output:` names under their upper-case
+        // names, so those can still override the pinned value until the runner
+        // refuses that namespace too (rysweet/amplihack-recipe-runner#146).
         let mut command = Command::new(&binary);
         command
             .arg(recipe_path)
@@ -916,6 +959,14 @@ pub(super) fn execute_recipe_via_rust_fresh(
 
         env_builder.apply_to_command(&mut command);
         crate::commands::orch::autodrive::trusted::clean_retired_environment(&mut command)?;
+        // Issue #1883 (C3): the runner passes these to every step. Removed
+        // first, so a stale value from this process never reaches a step, and
+        // set only with the run's checked value.
+        crate::commands::launch::inherit::set_parent_env(
+            &mut command,
+            &inherited,
+            &agent_binary.binary,
+        );
         // Issue #1326: pin the session-tree directory for every descendant. Without
         // this each level re-derives it, and the previous derivation was based on
         // TMPDIR -- which we replace below with a fresh per-run tempdir, giving every
@@ -1668,12 +1719,7 @@ pub(super) fn pass_context(
     command: &mut Command,
     context: &BTreeMap<String, String>,
 ) -> Result<usize> {
-    if let Some(key) = context.keys().find(|k| is_reserved_context_key(k)) {
-        anyhow::bail!(
-            "recipe context key {} is reserved: the AMPLIHACK_ namespace cannot be set from recipe context",
-            crate::commands::profile::escape_for_error(key)
-        );
-    }
+    reject_reserved_context_keys(context.keys().map(String::as_str))?;
     if let Some((key, value)) = context
         .iter()
         .find(|(k, v)| k.len() + 1 + v.len() + 1 > MAX_ARG_STRLEN_BYTES)

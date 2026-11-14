@@ -12,6 +12,8 @@ mod failure_class;
 mod failure_evidence;
 mod failure_markers;
 mod format;
+/// Issue #1883: the effort and model a run's steps inherit.
+mod inherit_inputs;
 /// Issue #1618: the usage-limit patterns of every agent harness, in one place.
 pub(crate) mod limit_patterns;
 mod limit_reset;
@@ -491,6 +493,9 @@ mod tests_failure_class;
 mod tests_failure_class_1437;
 #[cfg(test)]
 mod tests_format;
+/// Issue #1883: effort and model inheritance worked out once per run.
+#[cfg(test)]
+mod tests_inherit_inputs;
 #[cfg(test)]
 mod tests_limit_patterns;
 #[cfg(test)]

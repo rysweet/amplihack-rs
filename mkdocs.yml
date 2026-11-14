@@ -88,6 +88,7 @@ nav:
       - Agent Binary Routing: concepts/agent-binary-routing.md
       - Versioned Install Layout: concepts/versioned-install-layout.md
       - Launch Target Resolution: LAUNCH_TARGET_RESOLUTION.md
+      - Effort and Model Inheritance: reference/effort-and-model-inheritance.md
       - System Prompt Append: SYSTEM_PROMPT_APPEND.md
       - Memory Architecture: concepts/memory-backend-architecture.md
   - Workflows:

@@ -48,6 +48,7 @@ Several of these variables have a persistent equivalent in the [user config file
   - [AMPLIHACK_WORKSTREAM](#amplihack_workstream)
   - [HOME](#home)
   - [AMPLIHACK_DEFAULT_MODEL](#amplihack_default_model)
+  - [AMPLIHACK_PARENT_EFFORT and AMPLIHACK_PARENT_MODEL](#amplihack_parent_effort-and-amplihack_parent_model)
   - [AMPLIHACK_ENABLE_BLARIFY](#amplihack_enable_blarify)
   - [AMPLIHACK_BLARIFY_MODE](#amplihack_blarify_mode)
   - [AMPLIHACK_NO_UPDATE_CHECK](#amplihack_no_update_check)
@@ -110,7 +111,11 @@ every session marker and sets both variables (#1525). It also removes
 `AMPLIHACK_PARENT_RECIPE_PID`, `AMPLIHACK_PARENT_RECIPE_STARTTIME` and
 `AMPLIHACK_AUTODRIVE_STATE_DIR` (#1976): a tmux server first started from a
 recipe step keeps the step's values, and a run in a later session would watch
-a parent that has gone and stop at once with exit `75`. It belongs inside the
+a parent that has gone and stop at once with exit `75`. It removes
+`AMPLIHACK_PARENT_EFFORT`, `AMPLIHACK_PARENT_EFFORT_BINARY`,
+`AMPLIHACK_PARENT_MODEL`, `AMPLIHACK_PARENT_MODEL_BINARY`,
+`CLAUDE_CODE_EFFORT_LEVEL` and `ANTHROPIC_MODEL` too, then sets the caller's own value of each (#1883), so a
+run there inherits the caller's effort and model, not the server starter's. It belongs inside the
 double-quoted tmux command; in single quotes it expands in the new session and
 reads the server's markers. An answer read from a marker the tmux server holds
 is tagged `AMPLIHACK_AGENT_BINARY_SOURCE=tmux_server:<marker variable>`. That
@@ -1111,6 +1116,10 @@ ignore it.
 | a model id | `--model` with that id, trimmed of surrounding whitespace; a dotted Claude id is [rewritten to hyphens](#dotted-claude-model-ids) |
 | empty or whitespace-only | nothing; the tool picks its own default |
 
+Inside `amplihack recipe run`, a model inherited from the parent session wins
+over this variable. See
+[Effort and Model Inheritance for Recipe Steps](./effort-and-model-inheritance.md).
+
 Because amplihack passes `--model` unless this variable is empty, the `"model"`
 in `~/.claude/settings.json` only takes effect when you set
 `AMPLIHACK_DEFAULT_MODEL=` (empty).
@@ -1258,6 +1267,50 @@ amplihack claude --model 'claude-opus-5-5[1m]'
 For the other flags amplihack adds to the launch command, such as
 `--dangerously-skip-permissions`, and the order of the assembled command line,
 see [Launch Flag Injection](./launch-flag-injection.md).
+
+---
+
+### AMPLIHACK_PARENT_EFFORT and AMPLIHACK_PARENT_MODEL
+
+**Type:** string
+**Default:** unset. Never set to an empty string.
+**Set by:** each `amplihack <binary>` launch and `amplihack recipe run`, for
+the recipe runner. A launch takes the effort from the agent's final argv. It
+sets the model only when the model was given on the command line or
+inherited, not when amplihack chose it itself.
+**Used by:** `commands/launch/inherit.rs` and `commands/recipe/run/inherit_inputs.rs`
+
+The effort and model that agent steps inherit from the session that started a
+recipe run (issue #1883). Do not set these by hand; pass `-c effort=` and
+`-c model=` to `amplihack recipe run` instead. They cannot be set through `-c`,
+a context file or the `context:` of the recipe the run starts; a sub-recipe's
+`context:` is not checked (rysweet/amplihack-recipe-runner#146). The
+resolution order, the support for each binary and the log lines are in
+[Effort and Model Inheritance for Recipe Steps](./effort-and-model-inheritance.md).
+
+A tmux server started inside an amplihack session keeps these variables, with
+`CLAUDE_CODE_EFFORT_LEVEL` and `ANTHROPIC_MODEL`, and gives them to every later
+`tmux new-session`. `$(amplihack agent-binary --shell)` removes all six and
+sets the caller's own values instead; see
+[Limitations](./effort-and-model-inheritance.md#limitations).
+
+`AMPLIHACK_PARENT_MODEL_BINARY` accompanies an exported model and records the
+binary that selected it. Codex and Copilot inherit models from a parent launch
+of the same binary, including through nested recipe runs. This marker is
+removed whenever no model is exported, and its context alias is also reserved.
+
+`AMPLIHACK_PARENT_EFFORT_BINARY` does the same for the effort: it accompanies
+an exported effort, records the binary that runs with it (for
+`amplihack recipe run`, the run's agent binary), and is removed whenever no
+effort is exported. Copilot takes an inherited effort only when this names
+`copilot`, because which `--reasoning-effort` levels copilot accepts depends
+on its model and copilot refuses to start on one it does not support.
+`claude` and `codex` ignore it.
+
+```sh
+amplihack claude -- --effort high
+# the agent's environment holds AMPLIHACK_PARENT_EFFORT=high
+```
 
 ---
 

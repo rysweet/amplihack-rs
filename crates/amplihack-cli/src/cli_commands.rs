@@ -130,7 +130,13 @@ MODEL SELECTION (issues #1421, #1527)
   AMPLIHACK_LITELLM_MODEL is set (the LiteLLM gateway), the model is
   AMPLIHACK_LITELLM_MODEL and AMPLIHACK_DEFAULT_MODEL is not read. Other
   AMPLIHACK_LITELLM_* variables, such as AMPLIHACK_LITELLM_TELEMETRY_FILE, do
-  not affect the model.")]
+  not affect the model.
+
+  Under `amplihack recipe run`, each agent step inherits the run's effort and
+  model through AMPLIHACK_PARENT_EFFORT and AMPLIHACK_PARENT_MODEL (issue
+  #1883). The inherited model ranks below the step's own `--model` and the
+  gateway model, and above AMPLIHACK_DEFAULT_MODEL. See
+  docs/reference/effort-and-model-inheritance.md.")]
     Claude {
         /// Disable post-session reflection analysis.
         #[arg(long = "no-reflection")]

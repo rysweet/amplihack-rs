@@ -11,6 +11,8 @@ fn build_command_injects_uvx_plugin_and_project_args_for_claude() {
     let _home_guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Issue #1883 (C1): not the calling session's exported model or effort.
+    let _parent = super::tests_command::clear_parent_env();
     let home = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let execution_dir = tempfile::tempdir().unwrap();
@@ -94,6 +96,8 @@ fn build_command_suppresses_uvx_plugins_for_routed_claude() {
     let _home_guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Issue #1883 (C1): not the calling session's exported model or effort.
+    let _parent = super::tests_command::clear_parent_env();
     let home = tempfile::tempdir().unwrap();
     let original_home = set_home(home.path());
     let previous_uv_python = std::env::var_os("UV_PYTHON");
@@ -141,6 +145,8 @@ fn build_command_prefers_original_cwd_for_staged_uvx_launches() {
     let _home_guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Issue #1883 (C1): not the calling session's exported model or effort.
+    let _parent = super::tests_command::clear_parent_env();
     let home = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let execution_dir = tempfile::tempdir().unwrap();
@@ -204,6 +210,8 @@ fn build_command_does_not_duplicate_uvx_plugin_or_add_dir_args() {
     let _home_guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Issue #1883 (C1): not the calling session's exported model or effort.
+    let _parent = super::tests_command::clear_parent_env();
     let home = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let original_home = set_home(home.path());
@@ -458,6 +466,8 @@ fn build_command_skips_dangerous_flag_for_copilot() {
     let _home_guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Issue #1883 (C1): not the calling session's exported model or effort.
+    let _parent = super::tests_command::clear_parent_env();
     let home = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let original_home = set_home(home.path());
@@ -500,6 +510,8 @@ fn build_command_injects_dangerous_flag_for_claude() {
     let _home_guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Issue #1883 (C1): not the calling session's exported model or effort.
+    let _parent = super::tests_command::clear_parent_env();
     let home = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let original_home = set_home(home.path());

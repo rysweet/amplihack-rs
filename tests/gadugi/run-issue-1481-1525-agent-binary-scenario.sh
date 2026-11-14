@@ -20,7 +20,9 @@
 #     overriding a session marker.
 #   - `amplihack agent-binary --shell`: the `env -u <every marker> ...` prefix,
 #     with a default guess still tagged `default:<cli>` and anything else
-#     handed on untagged.
+#     handed on untagged; the caller's effort and model variables (#1883)
+#     set after their removal, and one a shell would change held back and
+#     named.
 #   - The hand-off itself: the prefix, expanded in one environment and run in
 #     another that holds a different session's marker, delivers the caller's
 #     answer; a default guess arrives still announced as one.
@@ -103,8 +105,9 @@ BASE_PATH="$WORK/bin:/usr/bin:/bin"
 
 # Every session marker amplihack knows, in its own order
 # (crates/amplihack-utils/src/agent_binary.rs, SESSION_MARKERS), then the
-# #1976 parent-watch variables (recipe/run/parent_watch.rs, PARENT_WATCH_ENV).
-UNSET_ALL="-u CLAUDECODE -u CLAUDE_CODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_PROJECT_DIR -u CLAUDE_CODE_ENTRYPOINT -u COPILOT_CLI -u GITHUB_COPILOT -u GITHUB_COPILOT_AGENT -u COPILOT_AGENT -u AMPLIHACK_PARENT_RECIPE_PID -u AMPLIHACK_PARENT_RECIPE_STARTTIME -u AMPLIHACK_AUTODRIVE_STATE_DIR"
+# #1976 parent-watch variables (recipe/run/parent_watch.rs, PARENT_WATCH_ENV),
+# then the #1883 effort and model variables (launch/inherit.rs, ENV_INPUTS).
+UNSET_ALL="-u CLAUDECODE -u CLAUDE_CODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_PROJECT_DIR -u CLAUDE_CODE_ENTRYPOINT -u COPILOT_CLI -u GITHUB_COPILOT -u GITHUB_COPILOT_AGENT -u COPILOT_AGENT -u AMPLIHACK_PARENT_RECIPE_PID -u AMPLIHACK_PARENT_RECIPE_STARTTIME -u AMPLIHACK_AUTODRIVE_STATE_DIR -u AMPLIHACK_PARENT_EFFORT -u AMPLIHACK_PARENT_EFFORT_BINARY -u AMPLIHACK_PARENT_MODEL -u AMPLIHACK_PARENT_MODEL_BINARY -u CLAUDE_CODE_EFFORT_LEVEL -u ANTHROPIC_MODEL"
 
 fail=0
 passed=0
@@ -238,6 +241,27 @@ expect shell-marker "env $UNSET_ALL AMPLIHACK_AGENT_BINARY=claude AMPLIHACK_AGEN
   CLAUDECODE=1 -- agent-binary --shell
 expect shell-explicit-clears-stale-tag "env $UNSET_ALL AMPLIHACK_AGENT_BINARY=codex AMPLIHACK_AGENT_BINARY_SOURCE=" = \
   AMPLIHACK_AGENT_BINARY=codex AMPLIHACK_AGENT_BINARY_SOURCE=session:claude -- agent-binary --shell
+# Issue #1883: a caller inside an amplihack session holds its effort and model.
+# The line removes all six variables, then sets the caller's own values, in
+# ENV_INPUTS order, before the agent-binary assignments.
+CALLER_EFFORT_MODEL="AMPLIHACK_PARENT_EFFORT=high AMPLIHACK_PARENT_EFFORT_BINARY=claude AMPLIHACK_PARENT_MODEL=claude-opus-5-5 AMPLIHACK_PARENT_MODEL_BINARY=claude CLAUDE_CODE_EFFORT_LEVEL=high ANTHROPIC_MODEL=claude-opus-5-5"
+# shellcheck disable=SC2086 # the assignments are meant to be word-split into run_in's VAR=value list
+expect shell-carries-the-callers-effort-and-model \
+  "env $UNSET_ALL $CALLER_EFFORT_MODEL AMPLIHACK_AGENT_BINARY=claude AMPLIHACK_AGENT_BINARY_SOURCE=" = \
+  CLAUDECODE=1 $CALLER_EFFORT_MODEL -- agent-binary --shell
+# A model a shell would glob is removed, not set, and named without its value;
+# its provenance does not cross without it. The effort still crosses.
+expect shell-holds-back-a-model-a-shell-would-change \
+  "env $UNSET_ALL AMPLIHACK_PARENT_EFFORT=high AMPLIHACK_PARENT_EFFORT_BINARY=claude AMPLIHACK_AGENT_BINARY=claude AMPLIHACK_AGENT_BINARY_SOURCE=" \
+  "amplihack: not handed on: AMPLIHACK_PARENT_MODEL. " \
+  CLAUDECODE=1 AMPLIHACK_PARENT_EFFORT=high AMPLIHACK_PARENT_EFFORT_BINARY=claude \
+  'AMPLIHACK_PARENT_MODEL=claude-opus-5[1m]' AMPLIHACK_PARENT_MODEL_BINARY=claude -- agent-binary --shell
+if grep -qF '[1m]' "$WORK/case-shell-holds-back-a-model-a-shell-would-change/stderr"; then
+  flunk "shell-held-back-model-not-echoed: the line quotes the model" \
+    "$WORK/case-shell-holds-back-a-model-a-shell-would-change/stderr"
+else
+  pass "shell-held-back-model-not-echoed"
+fi
 
 # --- the hand-off: expanded in the caller, run on the far side --------------
 # The caller is a Claude Code session; the far side holds a Copilot session's

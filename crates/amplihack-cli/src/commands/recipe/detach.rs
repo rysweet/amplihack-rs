@@ -146,7 +146,13 @@ pub(crate) fn launch(request: Launch<'_>) -> Result<()> {
     // Issue #1811: a tmux server started here keeps this environment for
     // every later session; the governor's parent and recipe markers must not
     // reach them. Issue #1976: nor the parent-watch and state-dir variables.
-    for name in PANE_ENV_REMOVED {
+    // Issue #1883: nor this session's effort and model, which a later
+    // session's run would otherwise inherit. The pane's run still gets them:
+    // it takes the spec's environment, not the server's.
+    for name in PANE_ENV_REMOVED
+        .into_iter()
+        .chain(crate::commands::launch::inherit::ENV_INPUTS)
+    {
         tmux.env_remove(name);
     }
     let started = tmux
