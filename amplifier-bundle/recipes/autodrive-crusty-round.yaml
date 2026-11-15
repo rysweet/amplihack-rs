@@ -39,6 +39,7 @@ context:
   crusty_fix_evidence: ""
   no_merge: "true"
   autodrive_dry_run: "false"
+  crusty_verdict_posted: ""
 steps:
   - id: "step-00-review-dir-guard"
     type: "bash"

@@ -14,6 +14,7 @@ recursion:
   max_depth: 6
   max_total_steps: 120
 context:
+  autodrive_authorization: ""
   step_recovery_dir: ""
   base_branch: ""  # base for the pull request, passed on to default-workflow; empty: the PR's own base (docs/reference/workflow-delivery-inputs.md)
   task_description: ""
