@@ -1608,16 +1608,17 @@ file the session reads: the profile's `$CLAUDE_CONFIG_DIR/settings.json` for
 sessions the rotator starts, the project's `.claude/settings.json` and
 `.claude/settings.local.json`, any managed settings file, and any file
 passed with `--settings`. If `jq` reports a parse error on any of them,
-that file does not parse. In Claude
-Code 2.1.325 a settings file that does not parse turns automatic
-continuation off. Repair the file; adding the key to a file that does not
-parse changes nothing. `amplihack install` and
-the rotator do not write this key, and leave any value you set alone.
+that file does not parse. In Claude Code 2.1.325, when the key is absent
+from every file that parses, a settings file that does not parse turns
+automatic continuation off. Repair the file; adding the key to a file that
+does not parse changes nothing. `amplihack install` and the rotator do not
+write this key, and leave any value you set alone.
 
 Whether a session at its limit gets a continue put in place for the reset
-or the options menu (`What do you want to do?`) is decided by a server-side
-control in Claude Code. Neither amplihack nor the setting above changes
-that choice. On
+or the options menu (`What do you want to do?`) is decided inside Claude
+Code by a server-side control and by the account's billing type; accounts
+billed by usage do not continue automatically. Neither amplihack nor the
+setting above changes that choice. On
 [#2695](https://github.com/rysweet/amplihack-rs/issues/2695) a standing
 session stayed on the menu after the `limit-resume` hook had run and the
 rotator had a login with room. When that happens, the session goes on only

@@ -441,11 +441,13 @@ the hook has already resumed a session, the automatic continue at the
 reset adds at most one extra turn. A key absent from one file can still be
 `false` in another: check the profile's `$CLAUDE_CONFIG_DIR/settings.json`,
 the project's `.claude/settings.json` and `.claude/settings.local.json`,
-managed settings and any `--settings` file. In 2.1.325 any of these files
-that does not parse turns automatic continuation off; a `jq` parse error
-on a file shows this, and the fix is to repair it. A server-side control in
-Claude Code decides whether a session at its limit gets a continue put in
-place for the reset or the options menu instead. When the menu opens and the
+managed settings and any `--settings` file. In 2.1.325, when no file that
+parses sets the key, any of these files that does not parse turns
+automatic continuation off; a `jq` parse error on a file shows this, and
+the fix is to repair it. A server-side control in Claude Code and the
+account's billing type (usage-billed accounts never continue
+automatically) decide whether a session at its limit gets a continue put
+in place for the reset or the options menu instead. When the menu opens and the
 hook does not move it on, the session waits for a person or for the reset;
 amplihack cannot change that choice ([#2695](https://github.com/rysweet/amplihack-rs/issues/2695)).
 
