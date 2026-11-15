@@ -30,10 +30,11 @@ mod support;
 mod issue_2096_execution_isolation;
 #[path = "issue_2329_autodrive_outcomes.rs"]
 mod issue_2329_autodrive_outcomes;
-#[path = "issue_2545_autodrive_repo_context.rs"]
-mod issue_2545_autodrive_repo_context;
 #[path = "issue_2556_autodrive_evidence.rs"]
 mod issue_2556_autodrive_evidence;
+#[path = "issue_2575_agentic_merge_ready.rs"]
+mod issue_2575_agentic_merge_ready;
+mod issue_2575_finalize_recovery_runner;
 #[path = "issue_2585_launch_notices_stderr.rs"]
 mod issue_2585_launch_notices_stderr;
 

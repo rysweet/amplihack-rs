@@ -49,7 +49,7 @@ AUTODRIVE_RECIPES=(
   autodrive-crusty-loop autodrive-merge-evidence autodrive-merge-round
   autodrive-merge-loop autodrive-finalize
 )
-AUTODRIVE_TOOLS=(autodrive_budget.sh autodrive_progress.sh autodrive_crusty_rereview.sh autodrive_done_override.sh autodrive_escalate.sh autodrive_loop.sh autodrive_merge_message.sh autodrive_merge_ready_files.sh
+AUTODRIVE_TOOLS=(autodrive_budget.sh autodrive_progress.sh autodrive_crusty_rereview.sh autodrive_done_override.sh autodrive_escalate.sh autodrive_loop.sh autodrive_merge_message.sh autodrive_merge.sh autodrive_round_word.sh
   autodrive_platform_facts.sh autodrive_pr_head.sh autodrive_qa_evidence.sh autodrive_round_evidence.sh autodrive_state.sh
   autodrive_trust.sh autodrive_unmerged.sh autodrive_worktree_guard.sh)
 # merge-round step-00-tools-dir finds the tools once and every later step of
@@ -112,7 +112,7 @@ for tool in "$TOOLS"/autodrive_*.sh; do
     echo "FAIL: platform-specific prerequisite in $tool" >&2; exit 1
   fi
 done
-for retired in "$TOOLS/autodrive_merge_gate.sh" "$TOOLS/gh-merge-guard/gh"; do
+for retired in "$TOOLS/autodrive_merge_gate.sh" "$TOOLS/gh-merge-guard/gh" "$TOOLS/autodrive_merge_ready_files.sh"; do
   [ ! -e "$retired" ] || { echo "FAIL: retired dependency $retired" >&2; exit 1; }
 done
 # Crusty still fails safe, and the shared evaluator retains its exact tokens.

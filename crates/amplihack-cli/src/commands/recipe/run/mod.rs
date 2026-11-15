@@ -484,7 +484,11 @@ fn scalar_to_context_value(value: &Value) -> String {
 }
 
 #[cfg(test)]
+mod tests_autodrive_final_status;
+#[cfg(test)]
 mod tests_autodrive_health_log;
+#[cfg(test)]
+mod tests_autodrive_success;
 #[cfg(test)]
 mod tests_context;
 #[cfg(test)]

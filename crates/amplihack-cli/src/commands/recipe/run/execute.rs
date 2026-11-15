@@ -53,6 +53,51 @@ const MAX_SESSIONS_ENV: &str = "AMPLIHACK_MAX_SESSIONS";
 /// "the tool declined, and will decline again".
 pub const EXIT_ORCHESTRATION_UNAVAILABLE: i32 = 79;
 
+/// #2663 M1: a merge run succeeds only when it merged. `outcome` is the
+/// `autodrive_outcome` built by `report()`; success is an allow-list of the
+/// single `stop_reason` value `completed` (merged in this run, already merged
+/// at entry, or, since #2575 B4, a verify-only run that reached `DONE` or
+/// `WAITING`). A missing, non-string or any other value is a failure.
+/// docs/reference/autodrive-merge-ready-round.md#success-means-merged.
+pub(crate) fn autodrive_run_succeeded(outcome: &serde_json::Value) -> bool {
+    outcome
+        .get("stop_reason")
+        .and_then(serde_json::Value::as_str)
+        == Some("completed")
+}
+
+/// #2663: the run's final status follows the merge, in both directions. A run
+/// that did not merge is not a success; a run whose merge `report()` read as
+/// `completed` is a success even when a later step failed. Applied only to an
+/// `Ok` run result, after `run_with_transient_retry` has returned, so it never
+/// starts a whole-run re-attempt (#1267) and never touches exit 79 or another
+/// terminal block, which are `Err`. It runs before the failure class is
+/// attached, so a raised run carries none.
+/// docs/reference/autodrive-merge-ready-round.md#success-means-merged.
+pub(crate) fn apply_autodrive_outcome(
+    run_result: &mut RecipeRunResult,
+    outcome: &serde_json::Value,
+) {
+    let succeeded = autodrive_run_succeeded(outcome);
+    if run_result.success == succeeded {
+        return;
+    }
+    if succeeded {
+        eprintln!(
+            "INFO: auto-drive completed; a later step failed, the run is reported as a success [#2663]"
+        );
+    } else {
+        eprintln!(
+            "INFO: auto-drive did not complete (stop_reason {}); the run is not reported as a success [#2663]",
+            outcome
+                .get("stop_reason")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("missing")
+        );
+    }
+    run_result.success = succeeded;
+}
+
 /// Report a terminal refusal and carry the distinguishing exit code.
 ///
 /// The message is printed here because the `CliExitError` path in `main` exits
@@ -770,6 +815,7 @@ pub(super) fn execute_recipe_via_rust_fresh(
         let state_dir =
             assign_autodrive_state_dir(explicit_inputs, &workspace.borrow(), &launch.home)?;
         auth.bind_state_dir(state_dir.clone());
+        launch.record_state_dir(auth)?;
         invocation_context.insert("no_merge".into(), auth.no_merge().to_string());
         invocation_context.insert("autodrive_dry_run".into(), auth.dry_run().to_string());
         invocation_context.insert(
@@ -1244,8 +1290,8 @@ pub(super) fn execute_recipe_via_rust_fresh(
                     auth,
                     &run_result.context,
                     context.get("pr_number").map(String::as_str),
-                    working_dir,
                 );
+                apply_autodrive_outcome(&mut run_result, &outcome);
                 run_result
                     .extra
                     .insert("autodrive_outcome".into(), outcome.clone());

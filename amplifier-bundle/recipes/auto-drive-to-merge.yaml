@@ -14,6 +14,7 @@ recursion:
   max_depth: 6
   max_total_steps: 120
 context:
+  autodrive_authorization: ""
   step_recovery_dir: ""
   base_branch: ""  # base for the pull request, passed on to default-workflow; empty: the PR's own base (docs/reference/workflow-delivery-inputs.md)
   task_description: ""
@@ -34,6 +35,9 @@ context:
   build_result: ""
   crusty_loop_result: ""
   merge_loop_result: ""
+  merge_loop_outcome: ""
+  sync_loop_outcome: ""
+  finalize_merge: ""
   autodrive_finalization: ""
 steps:
   # Issue #2539: one step-recovery directory per drive, passed to every child
@@ -130,6 +134,11 @@ steps:
       build_result: "{{build_result}}"
       step_recovery_dir: "{{step_recovery_dir}}"
     condition: "build_result and build_result.merged_before_run != 'true'"
+  # #2663 M1: success means merged. The step reads tool-written JSON only,
+  # never the finalisation prose: finalize_merge, then a hand-off from the
+  # merge loop (sync_loop_outcome, then merge_loop_outcome). Every reason
+  # reaches the output through jq --arg.
+  # docs/reference/autodrive-merge-ready-round.md#report-step-message.
   - id: "autodrive-report"
     type: "bash"
     parse_json: true
@@ -139,26 +148,65 @@ steps:
       SRD="${RECIPE_VAR_step_recovery_dir:-}"
       report() { [ -z "$SRD" ] || amplihack orch helper step-recovery report --dir "$SRD" "$@" >&2 || exit $?; }
       [ -n "$SRD" ] || echo "[step-recovery] recovery was disabled for this drive; see the step-recovery-init warning" >&2
-      VALUE="${RECIPE_VAR_autodrive_finalization:-}"
-      if [ -n "$VALUE" ]; then
-        report --remove-if-created-by auto-drive-to-merge
-        printf '%s' "$VALUE"; exit 0
+      set -uo pipefail
+      obj() { printf '%s\n' "${1:-}" | jq -R -c 'fromjson? | select(type == "object")' 2>/dev/null | tail -n 1; }
+      say() { # say <stop_reason> <action> <result> <message>
+        printf '%s\n' "$4"
+        jq -cn --arg s "$1" --arg a "$2" --arg r "$3" --arg m "$4" \
+          '{readiness:"incomplete",action:$a,result:$r,stop_reason:$s,message:$m}'
+      }
+      F="$(obj "${RECIPE_VAR_finalize_merge:-}")"
+      R="$(printf '%s' "$F" | jq -r '.result // empty | strings' 2>/dev/null)"
+      # #2575 B3: a finalisation re-run by recovery is another process; its
+      # merge step wrote the result, bound to this run, to the state folder.
+      SF="${RECIPE_VAR_autodrive_state_dir:-}"; SF="${SF%/}/finalize-merge.json"
+      if [ -z "$R" ] && [ -n "${RECIPE_VAR_autodrive_state_dir:-}" ] && [ -f "$SF" ] && [ ! -L "$SF" ]; then
+        ID="$(obj "${RECIPE_VAR_autodrive_authorization:-}" | jq -r '.run_id // empty | strings' 2>/dev/null)"
+        F="$(obj "$(head -c 65536 -- "$SF")")"
+        if [ -n "$ID" ] && [ "$(printf '%s' "$F" | jq -r '.run_id // empty | strings' 2>/dev/null)" = "$ID" ]; then
+          R="$(printf '%s' "$F" | jq -r '.result // empty | strings' 2>/dev/null)"
+        fi
       fi
-      report
+      # #2575 B4: a verify-only run that reached finalisation did what it was asked.
+      VERIFY=false
+      if [ "${RECIPE_VAR_no_merge:-}" != false ] || [ "${RECIPE_VAR_autodrive_dry_run:-}" != false ]; then VERIFY=true; fi
+      if [ -n "$R" ]; then
+        report --remove-if-created-by auto-drive-to-merge
+        WHY="$(printf '%s' "$F" | jq -r '.reason // empty | strings' 2>/dev/null)"
+        case "$R" in
+          merged) say completed merged "$R" "completed: merged${WHY:+ ($WHY)}" ;;
+          not-authorised) if [ "$VERIFY" = true ]; then
+              say completed not_requested "$R" "completed: verified; no merge was requested"
+            else
+              say not_merged not_merged "$R" "not merged: ${WHY:-$R}"
+            fi ;;
+          checks-pending) say waiting_for_checks not_merged "$R" "not merged: ${WHY:-waiting for required checks}" ;;
+          *) say not_merged not_merged "$R" "not merged: ${WHY:-$R}" ;;
+        esac
+        exit 0
+      fi
       MERGED_BEFORE="$(printf '%s' "${RECIPE_VAR_build_result:-}" | amplihack orch helper extract-field --field merged_before_run --default false)" || exit 1
       if [ "$MERGED_BEFORE" = true ]; then
         printf '%s' '{"readiness":"incomplete","action":"already_merged","platform_state":"merged","stop_reason":"completed"}'
-      else
-        echo "ERROR: finalization evidence missing; readiness is incomplete" >&2
-        printf '%s' '{"readiness":"incomplete","action":"not_requested","platform_state":"unknown","stop_reason":"dependency_failure"}'
-        if [ -n "$SRD" ]; then
-          amplihack orch helper step-recovery record --dir "$SRD" --step-id autodrive-report \
-            --reason "the drive ended with no finalization evidence and no earlier recorded handoff" \
-            --owner run-requester --needs "read the drive log, then rerun finalization or the drive" || exit $?
-          report
-        fi
-        exit 1
+        exit 0
       fi
+      for O in "${RECIPE_VAR_sync_loop_outcome:-}" "${RECIPE_VAR_merge_loop_outcome:-}"; do
+        L="$(obj "$O")"
+        [ "$(printf '%s' "$L" | jq -r '.outcome // empty | strings' 2>/dev/null)" = handoff ] || continue
+        WHY="$(printf '%s' "$L" | jq -r '.reason // empty | strings' 2>/dev/null)"
+        say handoff handoff handoff "handed off: ${WHY:-the merge loop stopped}"
+        exit 0
+      done
+      report
+      echo "ERROR: no finalisation or hand-off evidence; readiness is incomplete" >&2
+      printf '%s\n' '{"readiness":"incomplete","action":"not_requested","platform_state":"unknown","stop_reason":"dependency_failure"}'
+      if [ -n "$SRD" ]; then
+        amplihack orch helper step-recovery record --dir "$SRD" --step-id autodrive-report \
+          --reason "the drive ended with no finalization evidence and no earlier recorded handoff" \
+          --owner run-requester --needs "read the drive log, then rerun finalization or the drive" || exit $?
+        report
+      fi
+      exit 1
     output: "autodrive_summary"
 output:
   format: "markdown"
