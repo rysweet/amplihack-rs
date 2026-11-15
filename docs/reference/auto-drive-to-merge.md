@@ -353,8 +353,9 @@ or no checks are reported at all, and GitHub accepts
 `gh pr merge --match-head-commit <assessed sha>`, which also enforces required
 reviews and branch protection. A moved head or failing checks refuse the
 merge and hand the PR off. A pending check ends the run `checks-pending`
-without a hand-off; the next drive run judges again. A base that moved
-(`base-behind`) leads to one [base sync](autodrive-merge-ready-round.md#base-sync). The merge tool reads the PR state
+and hands the PR off as a draft naming the checks, so no PR is left ready
+with no drive. A base that moved
+(`base-behind`) leads to one [base sync](autodrive-merge-ready-round.md#base-sync); a second is handed off. The merge tool reads the PR state
 back after the request; a merge is reported only when GitHub says `MERGED`.
 With merging disabled, the PR stays open. See
 [merge conditions](autodrive-merge-ready-round.md#merge-conditions).

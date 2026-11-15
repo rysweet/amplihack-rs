@@ -898,6 +898,11 @@ fn finalize_fixture() -> Option<(Fx, String)> {
 }
 
 fn finalize_merge(fx: &Fx, run: &FinalizeRun) -> Output {
+    finalize_merge_with(fx, run, &[])
+}
+
+/// The finalize merge step with extra `RECIPE_VAR_*` values.
+fn finalize_merge_with(fx: &Fx, run: &FinalizeRun, vars: &[(&str, &str)]) -> Output {
     let command = command_of("autodrive-finalize", "merge");
     let invocation = fx.state.join("invocation.json");
     let mut c = fx.bash();
@@ -912,6 +917,9 @@ fn finalize_merge(fx: &Fx, run: &FinalizeRun) -> Output {
         .env("RECIPE_VAR_autodrive_dry_run", run.dry_run)
         .current_dir(&fx.repo)
         .stdin(Stdio::null());
+    for (k, v) in vars {
+        c.env(format!("RECIPE_VAR_{k}"), v);
+    }
     c.output().expect("run finalize merge step")
 }
 

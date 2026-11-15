@@ -39,6 +39,38 @@ pub struct LaunchBundle {
     _temp: tempfile::TempDir,
 }
 impl LaunchBundle {
+    /// #2575: `prepare` writes `invocation.json` before the runner assigns
+    /// the state directory, so the record would hold none and the finalize
+    /// authorization read (`orch helper autodrive authorization`) would refuse
+    /// every merge run. The runner calls this once the directory is bound. The
+    /// record is replaced by a new private file renamed over it, never edited
+    /// in place.
+    pub(crate) fn record_state_dir(&self, auth: &InvocationAuthorization) -> Result<()> {
+        ensure!(
+            auth.state_dir().is_some(),
+            "the invocation has no runner-bound state directory to record"
+        );
+        let path = self.home.join("invocation.json");
+        let temp = self.home.join(".invocation.json.new");
+        match fs::remove_file(&temp) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        use std::io::Write;
+        let mut file = options.open(&temp)?;
+        file.write_all(serde_json::to_string(auth)?.as_bytes())?;
+        file.sync_all()?;
+        fs::rename(&temp, &path)?;
+        Ok(())
+    }
     pub fn prepare(home: &Path, auth: &mut InvocationAuthorization) -> Result<Self> {
         ensure!(
             home.is_absolute(),
@@ -451,6 +483,30 @@ mod umask_tests {
         assert_eq!(mode_of(&launch.home), 0o700);
         InvocationAuthorization::read_private(&launch.home.join("invocation.json"))
             .expect("the finalize authorization read must accept the invocation folder");
+    }
+
+    /// #2575: the record is written before the runner binds the state
+    /// directory; once bound, the finalize authorization read must find it.
+    #[test]
+    fn invocation_record_names_the_bound_state_directory() {
+        let (temp, home) = fake_home();
+        let mut auth = authorization();
+        let launch = LaunchBundle::prepare(&home, &mut auth).unwrap();
+        let record = launch.home.join("invocation.json");
+        assert!(
+            InvocationAuthorization::read_private(&record)
+                .unwrap()
+                .state_dir()
+                .is_none()
+        );
+        let state = temp.path().join("state");
+        auth.bind_state_dir(state.clone());
+        launch.record_state_dir(&auth).unwrap();
+        let read = InvocationAuthorization::read_private(&record).unwrap();
+        assert_eq!(read.state_dir(), Some(state.as_path()));
+        assert_eq!(read.run_id(), auth.run_id());
+        assert_eq!(mode_of(&record), 0o600);
+        assert!(!launch.home.join(".invocation.json.new").exists());
     }
 
     #[test]

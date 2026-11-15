@@ -220,6 +220,8 @@ EOF
 #
 # No crusty-records.tsv, or one with no rows, is `no-record`: the crusty-loop
 # marker is cleared and rereview is "true", so the Crusty round runs (#2628).
+# So is a final CLEAN record with no `<WORD> <sha>` line for its reviewed head
+# in crusty-verdict-posted.txt: its verdict is not on the PR (#2575 B1).
 # Otherwise only a crusty loop that ended DONE and CLEAN is checked; else
 # range is `not-checked`. Besides no-record, only crusty-unreviewed-commits
 # removes the `crusty-loop` row from phases.tsv and asks for a re-review. An
@@ -242,6 +244,18 @@ autodrive_rereview_decision() {
   fi
   if ! reviewed="$(autodrive_crusty_final "$dir" 2>/dev/null)"; then
     printf '{"rereview":"false","range":"not-checked","first_unreviewed_sha":"","base_sha":""}\n'
+    return 0
+  fi
+  # #2575 B1: a clean record whose verdict was never read back on the PR
+  # (autodrive_crusty_posted.sh) is no record: Crusty runs and posts again.
+  rec="${dir%/}/crusty-verdict-posted.txt"
+  if [ -L "$rec" ] || [ ! -f "$rec" ] || ! grep -Eqx "(CLEAN|MINOR_ONLY) ${reviewed}" "$rec" 2>/dev/null; then
+    if autodrive_clear_phase "$dir" "crusty-loop"; then
+      printf '{"rereview":"true","range":"no-record","first_unreviewed_sha":"","base_sha":""}\n'
+    else
+      echo "ERROR: could not clear the crusty-loop phase in the state dir; crusty is not run and criterion 3 stays unmet." >&2
+      printf '{"rereview":"false","range":"not-checked","first_unreviewed_sha":"","base_sha":""}\n'
+    fi
     return 0
   fi
   base="$(autodrive_base_sha "$repo" "$ref")" || base=""

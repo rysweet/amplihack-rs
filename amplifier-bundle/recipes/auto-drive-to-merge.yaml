@@ -156,11 +156,29 @@ steps:
       }
       F="$(obj "${RECIPE_VAR_finalize_merge:-}")"
       R="$(printf '%s' "$F" | jq -r '.result // empty | strings' 2>/dev/null)"
+      # #2575 B3: a finalisation re-run by recovery is another process; its
+      # merge step wrote the result, bound to this run, to the state folder.
+      SF="${RECIPE_VAR_autodrive_state_dir:-}"; SF="${SF%/}/finalize-merge.json"
+      if [ -z "$R" ] && [ -n "${RECIPE_VAR_autodrive_state_dir:-}" ] && [ -f "$SF" ] && [ ! -L "$SF" ]; then
+        ID="$(obj "${RECIPE_VAR_autodrive_authorization:-}" | jq -r '.run_id // empty | strings' 2>/dev/null)"
+        F="$(obj "$(head -c 65536 -- "$SF")")"
+        if [ -n "$ID" ] && [ "$(printf '%s' "$F" | jq -r '.run_id // empty | strings' 2>/dev/null)" = "$ID" ]; then
+          R="$(printf '%s' "$F" | jq -r '.result // empty | strings' 2>/dev/null)"
+        fi
+      fi
+      # #2575 B4: a verify-only run that reached finalisation did what it was asked.
+      VERIFY=false
+      if [ "${RECIPE_VAR_no_merge:-}" != false ] || [ "${RECIPE_VAR_autodrive_dry_run:-}" != false ]; then VERIFY=true; fi
       if [ -n "$R" ]; then
         report --remove-if-created-by auto-drive-to-merge
         WHY="$(printf '%s' "$F" | jq -r '.reason // empty | strings' 2>/dev/null)"
         case "$R" in
           merged) say completed merged "$R" "completed: merged${WHY:+ ($WHY)}" ;;
+          not-authorised) if [ "$VERIFY" = true ]; then
+              say completed not_requested "$R" "completed: verified; no merge was requested"
+            else
+              say not_merged not_merged "$R" "not merged: ${WHY:-$R}"
+            fi ;;
           checks-pending) say waiting_for_checks not_merged "$R" "not merged: ${WHY:-waiting for required checks}" ;;
           *) say not_merged not_merged "$R" "not merged: ${WHY:-$R}" ;;
         esac

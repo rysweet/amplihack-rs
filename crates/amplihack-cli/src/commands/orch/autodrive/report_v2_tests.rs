@@ -134,8 +134,9 @@ fn report_v2_accepts_finalize_merge_as_parsed_object() {
 }
 
 #[test]
-fn report_v2_verify_only_run_is_not_merged() {
-    // Success means merged (#2663 M1): a verify-only run is not completed.
+fn report_v2_verify_only_run_that_reaches_done_is_completed() {
+    // #2575 B4: a verify-only run (no_merge or dry run) that reaches DONE did
+    // what it was asked and is `completed`; only a merge run must merge.
     for (no_merge, dry_run) in [("true", "false"), ("false", "true")] {
         let auth = authorization(no_merge, dry_run);
         let ctx = context(&[
@@ -149,7 +150,7 @@ fn report_v2_verify_only_run_is_not_merged() {
         let report = run(&auth, &ctx);
         assert_v2_shape(&report);
         assert_eq!(report["requested_action"], json!("verify_readiness"));
-        assert_eq!(report["stop_reason"], json!("not_merged"), "{report}");
+        assert_eq!(report["stop_reason"], json!("completed"), "{report}");
     }
 }
 
@@ -524,4 +525,74 @@ fn report_v2_merged_record_without_pr_is_not_trusted() {
     assert_v2_shape(&report);
     assert_ne!(report["stop_reason"], json!("completed"), "{report}");
     assert!(report["merge"].is_null(), "{report}");
+}
+
+// ---------------------------------------------------------------------------
+// #2575 B3: a finalisation re-run by recovery runs in another process; its
+// merge step's record in the runner-bound state folder is read instead.
+// ---------------------------------------------------------------------------
+
+fn bound_state(auth: &mut InvocationAuthorization) -> tempfile::TempDir {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("state");
+    crate::commands::orch::autodrive::state::EvidenceStore::create(&dir).unwrap();
+    auth.bind_state_dir(dir);
+    temp
+}
+
+fn write_state_record(auth: &InvocationAuthorization, run_id: &str, result: &str) {
+    use std::os::unix::fs::OpenOptionsExt;
+    let line = json!({"result": result, "pr": 2575, "expected_head": HEAD,
+        "handoff": "false", "reason": "fixture", "run_id": run_id});
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(auth.state_dir().unwrap().join("finalize-merge.json"))
+        .unwrap();
+    std::io::Write::write_all(&mut file, format!("{line}\n").as_bytes()).unwrap();
+}
+
+#[test]
+fn report_v2_reads_this_runs_merge_record_from_the_state_folder() {
+    let mut auth = authorization("false", "false");
+    let _temp = bound_state(&mut auth);
+    let run_id = auth.run_id().to_owned();
+    write_state_record(&auth, &run_id, "merged");
+    let ctx = context(&[("merge_loop_result", loop_line("DONE"))]);
+    let report = run(&auth, &ctx);
+    assert_v2_shape(&report);
+    assert_eq!(report["stop_reason"], json!("completed"), "{report}");
+    assert_eq!(report["merge"]["result"], json!("merged"), "{report}");
+    assert!(
+        report["note"]
+            .as_str()
+            .is_some_and(|n| n.contains("read from the state folder")),
+        "{report}"
+    );
+}
+
+#[test]
+fn report_v2_ignores_another_runs_merge_record() {
+    let mut auth = authorization("false", "false");
+    let _temp = bound_state(&mut auth);
+    write_state_record(&auth, "11111111-2222-4333-8444-555555555555", "merged");
+    let ctx = context(&[("merge_loop_result", loop_line("DONE"))]);
+    let report = run(&auth, &ctx);
+    assert_eq!(report["stop_reason"], json!("unreadable"), "{report}");
+    assert!(report["merge"].is_null(), "{report}");
+}
+
+#[test]
+fn report_v2_prefers_the_context_over_the_state_folder() {
+    let mut auth = authorization("false", "false");
+    let _temp = bound_state(&mut auth);
+    let run_id = auth.run_id().to_owned();
+    write_state_record(&auth, &run_id, "merged");
+    let ctx = context(&[
+        ("merge_loop_result", loop_line("DONE")),
+        ("finalize_merge", merge_json("refused", "true")),
+    ]);
+    let report = run(&auth, &ctx);
+    assert_eq!(report["stop_reason"], json!("handoff"), "{report}");
 }

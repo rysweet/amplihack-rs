@@ -191,7 +191,30 @@ the next lines.
 | Approvals | It never calls `gh pr review --approve`. The verdict is a comment, not a review. |
 | Content | No tokens, environment values or home-directory paths. |
 | Dry run | Under `autodrive_dry_run=true` it posts nothing. |
-| Failure | A failed post does not change the round's result. The next merge round then finds no verdict at the head and criterion 3 is not met, so the PR does not merge. |
+| Failure | A failed post does not change the round's result. The next merge round then finds no verdict at the head and criterion 3 is not met, so the PR does not merge. Step-06 records no posted line, so the next before-round step runs Crusty again (see [Running Crusty when there is no verdict](#running-crusty-when-there-is-no-verdict)). |
+
+#### The verdict form
+
+The drive counts only a comment whose first line is exactly
+`Crusty verdict: <CLEAN|MINOR_ONLY|BLOCKING> at <full sha>`, with a full 40-
+or 64-character lowercase SHA. A verdict in any other form, including a
+shortened SHA or a verdict on a later line, counts as no verdict. A person or
+lane that reviews outside the drive and wants the drive to count the verdict
+posts it in this form, as the PR owner, a member or a collaborator.
+
+#### The posted line
+
+`step-03c-post-verdict` ends its reply with one JSON line,
+`{"verdict_posted":"true|false","head_sha":"<full sha>"}`: `true` only when it
+posted the comment, or found its own comment with that exact first line.
+After writing the round record, step-06 runs `autodrive_crusty_posted.sh`.
+When that line says `true` for the head the round reviewed, the tool appends
+`<WORD> <reviewed sha>` to `crusty-verdict-posted.txt` in the state
+directory; otherwise it records nothing. No tool reads PR comments (#2628).
+The agent's word decides only whether Crusty runs again, never a merge: a
+wrong `true` leaves criterion 3 unmet, as before this change. Under
+`autodrive_dry_run=true` the line is recorded without a post, because nothing
+was posted and Crusty would only repeat itself.
 
 ### Reader: `step-01b-crusty-evidence`
 
@@ -283,7 +306,8 @@ in `autodrive_trust.sh`:
 | --- | --- |
 | Missing or empty | `{"rereview":"true","range":"no-record"}`; the `crusty-loop` phase marker is cleared, and the Crusty round runs. |
 | Has records, none final | `not-checked`, as before. |
-| Has a final record | The code-commit range check from that record's head, as before. |
+| Has a final `CLEAN` or `MINOR_ONLY` record, and `crusty-verdict-posted.txt` has no `CLEAN <sha>` or `MINOR_ONLY <sha>` line for its reviewed head | `{"rereview":"true","range":"no-record"}`, as for no record: the marker is cleared and Crusty runs (#2575). This covers a verdict post that failed and a state directory written before this change. |
+| Has a final record whose verdict was posted | The code-commit range check from that record's head, as before. |
 
 The Crusty round then writes its record and posts its verdict comment, so the
 next merge round finds a verdict at the head. A person's verdict at the head
@@ -301,6 +325,12 @@ and compares the result exactly with the four allowed words.
 | `ready` | `MERGE_READY` | Loop-health evaluation; `DONE` leads to finalisation. |
 | `not-ready` | `NOT_MERGE_READY` | `step-04` repairs the named blockers; another round follows. |
 | `waiting` | `WAITING` | Everything is ready except one or more required checks still running at the head. The loop ends with `WAITING` and finalisation runs. No builder, no evaluator. |
+
+`WAITING` goes to finalisation on the reader's one word. `MERGE_READY` also
+needs the loop-health evaluator's `DONE` before the loop ends; `WAITING` does
+not. This is not a safety gap: finalisation still requires green or absent
+required checks and GitHub's acceptance of the merge, and a pending check ends
+`checks-pending` without a merge request.
 | `hand-off` | `HANDOFF` | The loop stops and the PR is handed off. |
 | anything else, including empty | `NOT_MERGE_READY` | Treated as not ready, so another round runs. |
 
@@ -402,7 +432,7 @@ with the reason cut to 1000 bytes of printable ASCII:
 | Loop result | Outcome | `finalise` | Next |
 | --- | --- | --- | --- |
 | `DONE` | `done` | `true` | `step-03` runs [`autodrive-finalize.yaml`](#finalisation-and-merge-conditions). |
-| `WAITING` | `done` | `true` | `step-03` runs finalisation, which merges if the checks have passed by then, or ends `checks-pending`. |
+| `WAITING` | `done` | `true` | `step-03` runs finalisation, which merges if the checks have passed by then, or ends `checks-pending` and hands the PR off. |
 | `STUCK`, `BUDGET_EXHAUSTED`, `HANDOFF`, `UNREADABLE`, anything else | `handoff` | `false` | `step-02c` runs [`autodrive-handoff.yaml`](#hand-off). |
 
 `step-03` runs only when `merge_loop_outcome.finalise == 'true'`. When
@@ -457,15 +487,18 @@ cause a merge.
 | Observation | Result |
 | --- | --- |
 | Exit `0`: required checks all passed | Merge is attempted. |
-| Exit `8`: a required check is still running | `checks-pending` (tool exit `7`); no merge attempt, no draft, no hand-off. The reason names the pending checks. |
+| Exit `8`: a required check is still running | `checks-pending` (tool exit `7`); no merge attempt. The PR is handed off. The reason names the pending checks. |
 | `gh` reports `no required checks reported` on stderr, with nothing on stdout | Falls back to `gh pr checks <pr>` (all checks): exit `0` continues, exit `8` is `checks-pending`, `no checks reported` on stderr with nothing on stdout continues, anything else is `checks-not-green`. The message is never matched in stdout, where check names from the PR's own workflows appear. |
 | Any other non-zero exit, including a failing check | `checks-not-green` (tool exit `3`); no merge attempt. |
 
-**Pending checks wait for the next wake, not a timer.** A `checks-pending`
-result ends the drive with `not merged: waiting for <check> at <sha>`, and
-the PR stays ready for review. The next drive run, started by the existing
-triggers, reads the check runs again and judges again. There is no sleep, no
-`gh pr checks --watch` (which polls on an interval) and no counter.
+**Pending checks are handed back, not waited on.** A `checks-pending`
+result ends the drive with `not merged: waiting for <check> at <sha>`. No
+drive is left running to wait for the checks, so the finalisation hands the
+PR off: it becomes a draft, and the hand-off comment names the pending checks
+and the head. Once the checks pass, a person marks the PR ready and starts a
+drive, which reads the check runs again and merges. A PR is never left ready
+for review with no drive. There is no sleep, no `gh pr checks --watch` (which
+polls on an interval) and no counter.
 
 **A PR with no checks at all is not refused for that reason.** GitHub does not
 require checks; when none are reported, the merge request goes ahead and
@@ -514,7 +547,7 @@ printf '%s' "$MERGE_BODY" | gh pr merge "$pr" --squash --match-head-commit "$sha
 | `refused` | `4`, or head moved before the call | `0` | `true` |
 | `not-open` | `5` | `0` | `true` |
 | `message-unavailable` | `6` | `0` | `true` |
-| `checks-pending` | `7` | `0` | `false` |
+| `checks-pending` | `7` | `0` | `true` |
 | `base-behind` | `8` | `0` | `false`; the merge loop runs the [base sync](#base-sync) |
 | | `2` (bad arguments or unsafe helper) | `2` | |
 | | `79` | `79` | |
@@ -527,8 +560,32 @@ that exits non-zero or prints no object with a boolean `allows_merge` gives
 `authorization-unreadable`, and the PR is handed off. Its reason names only
 the helper's exit status. A helper exit `79` passes through as `79`.
 
-`autodrive-finalize.yaml` emits `checks-pending` and `base-behind` with
-`handoff false`, so neither reaches the hand-off or drafts the PR.
+`autodrive-finalize.yaml` emits `base-behind` with `handoff false`: the
+merge loop syncs the base instead. It emits `checks-pending` with
+`handoff true`, so the PR is drafted with a comment naming the checks.
+
+### The merge result in the state folder
+
+The `merge` step prints its JSON line and also writes the same line, with a
+`run_id` field, to `finalize-merge.json` in the runner-bound state folder
+(mode `0600`, through a new file renamed over the old). The `run_id` is the
+calling run's: `step-03r-finalize-recovery` passes it to the separate
+`amplihack recipe run autodrive-finalize` process as
+`autodrive_parent_run_id`; otherwise the step takes it from
+`autodrive_authorization`. With no well-formed run id, or a state folder that
+is missing or a symbolic link, nothing is written.
+
+`report()` and the report step read this file only when the context holds no
+`finalize_merge`, which happens when finalisation was re-run by recovery in
+another process (#2575). They use it only when its `run_id` is this run's, so
+a record another run left in a reused folder is ignored. `report()` reads it
+through the private evidence store and adds the note
+`finalize_merge: read from the state folder`.
+
+The runner writes `invocation.json` again once it has bound the state folder
+to the invocation, so the authorization read below finds the bound folder.
+Before this, the record held no state folder and every merge run's
+finalisation returned `authorization-unreadable`.
 
 ## Base sync
 
@@ -542,11 +599,14 @@ in sequence, each run once; there is no loop and no counter.
 | `step-03c-sync-round` | bash | `synced == 'true'` | Runs `autodrive_merge_loop_run.sh 1`: the merge-ready loop for one more round (see [the round budget](#autodrive_merge_loop_runsh)). |
 | `step-03d-sync-outcome` | bash | after `step-03c` | Maps the loop result as `step-02a` does, giving `sync_loop_outcome`. |
 | `step-03e-finalize-again` | sub-recipe | `sync_loop_outcome.finalise == 'true'` | Runs `autodrive-finalize.yaml` once more. |
-| `step-03f-sync-handoff` | sub-recipe | `finalize_merge.result == 'base-behind'` and `synced != 'true'` (including a base sync that returned no JSON), or `sync_loop_outcome.outcome == 'handoff'` | Runs [`autodrive-handoff.yaml`](#hand-off). |
+| `step-03f-sync-handoff` | sub-recipe | `finalize_merge.result == 'base-behind'` and `synced != 'true'` (including a base sync that returned no JSON), or `sync_loop_outcome.outcome == 'handoff'`, or a second finalisation that returned `base-behind` again | Runs [`autodrive-handoff.yaml`](#hand-off), naming the moving base. |
 
 After the second finalisation, any result other than `merged` ends the drive
 with `not merged: <reason>` or a hand-off. A second `base-behind` is not
-synced again.
+synced again: the base moved while the drive assessed it, and the PR is
+handed off with the reason `the branch is out of date with its base: the base
+sync did not finish, or the base moved again after it`, so it is never left
+ready with no drive.
 
 ### What the sync step does
 
@@ -639,7 +699,8 @@ The first matching row applies.
 | any value, missing or unreadable | `merged`, with `pr` and `expected_head` | `completed`; when `loop_result` is not `DONE` or `WAITING`, the `note` says `loop_result not consulted` |
 | `TERMINAL_REFUSAL` or `TERMINAL_POLICY_REFUSAL` | | `terminal_refusal` |
 | `DONE` or `WAITING` | `merged` | `completed` |
-| `DONE` or `WAITING` | `not-authorised` | `not_merged` |
+| `DONE` or `WAITING` | `not-authorised`, `requested_action` `verify_readiness` | `completed` |
+| `DONE` or `WAITING` | `not-authorised`, `requested_action` `merge` | `not_merged` |
 | `DONE` or `WAITING` | `checks-pending` | `waiting_for_checks` |
 | `DONE` or `WAITING` | `base-behind` | `not_merged` |
 | `DONE` or `WAITING` | any other result, including `authorization-unreadable` and unknown values | `handoff` |
@@ -676,7 +737,8 @@ When a [base sync](#base-sync) ran, `merge` is the second finalisation's
 ### Success means merged
 
 The run succeeds only when `stop_reason` is `completed`: the PR merged in
-this run, or was already merged at entry. The runner decides this with the
+this run, was already merged at entry, or the run was verify-only and
+reached `DONE` or `WAITING` (merge result `not-authorised`). The runner decides this with the
 pure function `autodrive_run_succeeded` in
 `crates/amplihack-cli/src/commands/recipe/run/execute.rs`, an allow-list of
 the single value `completed`. A missing key, an empty value or any other
@@ -712,20 +774,23 @@ This happens after `run_with_transient_retry` has returned, so a run that
 did not merge never starts the whole-run re-attempt (#1267). The runner
 prints one `INFO` line whenever it changes the status.
 
-Verify-only runs (`no_merge=true` or `autodrive_dry_run=true`) and runs whose
-captured invocation does not allow a merge end `not_merged`, so they are not
-reported as ✓ Success.
+A verify-only run (`no_merge=true` or `autodrive_dry_run=true`) that reaches
+finalisation did what it was asked: it ends `completed` and is ✓ Success, as
+[Verify a PR without merging](../howto/verify-pr-with-auto-drive.md) states.
+A merge run that ends `not-authorised` stays `not_merged`.
 
 ### Report step message
 
 The last step of `auto-drive-to-merge.yaml` reads JSON, never prose: the
-`finalize_merge` value, then `sync_loop_outcome` or `merge_loop_outcome`,
+`finalize_merge` value (or, when the context has none, this run's
+`finalize-merge.json` in the state folder), then `sync_loop_outcome` or `merge_loop_outcome`,
 then `handoff_result`, each parsed with `jq 'fromjson?'`. The first matching
 row applies.
 
 | Observed | Message | Step exit |
 | --- | --- | --- |
 | `finalize_merge.result == "merged"` | `completed` | `0` |
+| `not-authorised` on a verify-only run (`no_merge` or `autodrive_dry_run` not `false`) | `completed: verified; no merge was requested` (`completed`) | `0` |
 | PR merged before the run | as for `already_merged` | `0` |
 | `checks-pending` | `not merged: waiting for <check> at <sha>` (`waiting_for_checks`) | `0` |
 | any other `finalize_merge.result` | `not merged: <reason>` (`not_merged`) | `0` |

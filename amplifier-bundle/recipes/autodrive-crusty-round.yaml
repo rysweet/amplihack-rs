@@ -223,8 +223,8 @@ steps:
         "$VERDICT" "$SOURCE" "${COUNT:-0}"
     output: "crusty_verdict"
   # #2628 B1: the verdict goes on the PR itself, so the merge-ready round reads
-  # criterion 3 from the PR, not from a state file. A failed post changes
-  # nothing here: the next merge round then finds no verdict and Crusty runs.
+  # criterion 3 from the PR. Step-06 records the post only when this step
+  # reports it done; a record without that line is no record: Crusty runs again.
   - id: "step-03c-post-verdict"
     condition: "autodrive_dry_run != 'true'"
     type: "agent"
@@ -240,7 +240,7 @@ steps:
       - Read the PR's comments once first (`gh api repos/{owner}/{repo}/issues/{{crusty_round_context.pr}}/comments --paginate`); if a comment by your own login already has that exact first line, post nothing.
       - Write the body to a private temporary file and post it on standard input: `gh pr comment {{crusty_round_context.pr}} --body-file - < <file>`. If GraphQL refuses, make one REST call instead: `gh api repos/{owner}/{repo}/issues/{{crusty_round_context.pr}}/comments -F body=@<file>`. Remove the file afterwards.
       - Never approve or request changes (`gh pr review`), never edit other comments, and never include tokens, environment values, authentication output or home-directory paths.
-      If posting fails, say so in one sentence; the round result does not change. Exit 79 is terminal and is never retried.
+      If posting fails, say so in one sentence; the round result does not change. Exit 79 is terminal and is never retried. End with one JSON line: {"verdict_posted":"true|false","head_sha":"<the full sha above>"}, true only when you posted the comment or found your own comment with that exact first line.
 
       <<<UNTRUSTED-CRUSTY-REVIEW
       {{crusty_review}}
@@ -344,6 +344,7 @@ steps:
     type: "bash"
     command: |
       bash "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_crusty_record.sh" || exit 1
+      bash "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_crusty_posted.sh" || : # #2575 B1: posted-verdict line from step-03c; absent means Crusty runs again
     output: "crusty_round_record_written"
 
   - id: "step-07-select-next-action"

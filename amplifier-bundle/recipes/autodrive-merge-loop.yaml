@@ -89,7 +89,7 @@ steps:
       R="$(printf '%s\n' "$LOOP_LINE" | jq -R -r 'fromjson? | select(type == "object") | .loop_result // empty | strings' 2>/dev/null | tail -n 1)"
       WHY="$(printf '%s\n' "$LOOP_LINE" | jq -R -r 'fromjson? | select(type == "object") | .reason // empty | strings' 2>/dev/null | tail -n 1)"
       R="$(printf '%s' "$R" | LC_ALL=C tr -cd 'A-Z_' | head -c 64)"; [ -n "$R" ] || R=UNREADABLE
-      # WAITING: ready but for required checks still running; finalisation merges once they pass or ends checks-pending.
+      # WAITING: ready but for required checks still running; finalisation merges if they pass, or ends checks-pending and hands off.
       case "$R" in DONE|WAITING) OUTCOME=done; FINALISE=true ;; *) OUTCOME=handoff; FINALISE=false ;; esac
       # The driver posts its own stop comment for a budget stop (post_stop).
       case "$R" in BUDGET_EXHAUSTED) POSTED=true ;; *) POSTED=false ;; esac
@@ -154,6 +154,9 @@ steps:
   # a successful recipe step's output to its result summary, never empty, so
   # a finalization that succeeded never runs again here. Like step-03 it runs
   # only when the loop asked for finalisation, never after a hand-off (#2575).
+  # The re-run is a separate process: its merge step writes its result to
+  # finalize-merge.json in the state folder, bound to this run's id, and the
+  # report reads it from there (#2575 B3).
   - id: "step-03r-finalize-recovery"
     type: "bash"
     condition: "merge_loop_outcome.finalise == 'true' and not autodrive_finalization"
@@ -166,7 +169,8 @@ steps:
         -c "repo_path=$(g repo)" -c "review_dir=$(g review_dir)" -c "pr_number=$(g pr)" \
         -c "autodrive_state_dir=$(g state_dir)" -c "merge_loop_result=${RECIPE_VAR_merge_loop_result:-}" \
         -c "no_merge=${RECIPE_VAR_no_merge:-true}" -c "autodrive_dry_run=${RECIPE_VAR_autodrive_dry_run:-false}" \
-        -c "build_result=${RECIPE_VAR_build_result:-}"
+        -c "build_result=${RECIPE_VAR_build_result:-}" \
+        -c "autodrive_parent_run_id=$(printf '%s\n' "${RECIPE_VAR_autodrive_authorization:-}" | jq -R -r 'fromjson? | select(type == "object") | .run_id // empty | strings' 2>/dev/null | tail -n 1)"
       STEP_RECOVERY_BODY
       [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || { echo "ERROR: step-03-finalize failed and this run has no step_recovery_dir" >&2; exit 1; }
       exec amplihack orch helper step-recovery run --already-failed --essential \
@@ -177,7 +181,8 @@ steps:
     output: "autodrive_finalization"
   # #2663 M1 base sync: when finalisation finds the branch out of date with its
   # base (base-behind), merge the base in, assess once more and finalise again.
-  # Each step runs once, in order; a second base-behind is not synced again.
+  # Each step runs once, in order; a second base-behind is not synced again:
+  # step-03f hands the PR off, naming the moving base (#2575).
   # docs/reference/autodrive-merge-ready-round.md#base-sync.
   - id: "step-03b-base-sync"
     condition: "merge_loop_outcome.finalise == 'true' and finalize_merge.result == 'base-behind'"
@@ -218,7 +223,7 @@ steps:
       R="$(printf '%s\n' "$LOOP_LINE" | jq -R -r 'fromjson? | select(type == "object") | .loop_result // empty | strings' 2>/dev/null | tail -n 1)"
       WHY="$(printf '%s\n' "$LOOP_LINE" | jq -R -r 'fromjson? | select(type == "object") | .reason // empty | strings' 2>/dev/null | tail -n 1)"
       R="$(printf '%s' "$R" | LC_ALL=C tr -cd 'A-Z_' | head -c 64)"; [ -n "$R" ] || R=UNREADABLE
-      # WAITING: ready but for required checks still running; finalisation merges once they pass or ends checks-pending.
+      # WAITING: ready but for required checks still running; finalisation merges if they pass, or ends checks-pending and hands off.
       case "$R" in DONE|WAITING) OUTCOME=done; FINALISE=true ;; *) OUTCOME=handoff; FINALISE=false ;; esac
       # The driver posts its own stop comment for a budget stop (post_stop).
       case "$R" in BUDGET_EXHAUSTED) POSTED=true ;; *) POSTED=false ;; esac
@@ -252,14 +257,14 @@ steps:
       build_result: "{{build_result}}"
     output: "autodrive_finalization"
   - id: "step-03f-sync-handoff"
-    condition: "(finalize_merge.result == 'base-behind' and base_sync.synced != 'true') or sync_loop_outcome.outcome == 'handoff'"
+    condition: "(finalize_merge.result == 'base-behind' and base_sync.synced != 'true') or sync_loop_outcome.outcome == 'handoff' or (sync_loop_outcome.finalise == 'true' and finalize_merge.result == 'base-behind')"
     type: "recipe"
     recipe: "autodrive-handoff"
     context:
       review_dir: "{{merge_loop_preflight.review_dir}}"
       pr_number: "{{merge_loop_preflight.pr}}"
       head_sha: "{{finalize_merge.expected_head}}"
-      handoff_reason: "the branch is out of date with its base and the base sync did not finish"
+      handoff_reason: "the branch is out of date with its base: the base sync did not finish, or the base moved again after it"
       handoff_blocker: "{{base_sync.reason}} {{sync_loop_outcome.reason}}"
       autodrive_state_dir: "{{merge_loop_preflight.state_dir}}"
       stop_comment_posted: "false"

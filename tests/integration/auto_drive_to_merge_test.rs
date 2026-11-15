@@ -49,7 +49,7 @@ const AUTODRIVE_RECIPES: [&str; 8] = [
     "autodrive-finalize",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 31] = [
+const AUTODRIVE_TOOLS: [&str; 32] = [
     "autodrive_budget.sh",
     "autodrive_crusty_rereview.sh",
     "autodrive_done_override.sh",
@@ -61,6 +61,7 @@ const AUTODRIVE_TOOLS: [&str; 31] = [
     "autodrive_loop.sh",
     "autodrive_loop_record.sh",
     "autodrive_crusty_record.sh",
+    "autodrive_crusty_posted.sh",
     "autodrive_crusty_finalize.sh",
     "autodrive_completion_context.sh",
     "autodrive_merge.sh",

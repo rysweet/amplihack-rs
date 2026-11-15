@@ -149,3 +149,43 @@ fn merged_with_wrong_state_dir_does_not_raise() {
     assert!(!success, "{outcome}");
     assert!(outcome["merge"].is_null(), "{outcome}");
 }
+
+/// #2575 B4: a verify-only run that reaches DONE is a success, as before
+/// 8794c2df2 (docs/howto/verify-pr-with-auto-drive.md). Only a merge run
+/// must merge to succeed.
+#[test]
+fn verify_only_run_that_reaches_done_is_success() {
+    for (no_merge, dry_run) in [("true", "false"), ("false", "true")] {
+        let auth = InvocationAuthorization::capture(
+            "auto-drive-light",
+            &BTreeMap::from([
+                ("no_merge".into(), no_merge.into()),
+                ("autodrive_dry_run".into(), dry_run.into()),
+            ]),
+        )
+        .expect("valid invocation");
+        let loop_line = json!({"loop": "merge-ready", "loop_result": "DONE"}).to_string();
+        let ctx = context(&[
+            ("merge_loop_result", Value::String(loop_line)),
+            ("finalize_merge", finalize_merge("not-authorised")),
+        ]);
+        let (success, outcome) = final_status(&auth, false, ctx);
+        assert!(success, "{outcome}");
+        assert_eq!(outcome["stop_reason"], json!("completed"), "{outcome}");
+        assert_eq!(outcome["requested_action"], json!("verify_readiness"));
+    }
+}
+
+/// The same result on a merge run is a refusal, never a success.
+#[test]
+fn not_authorised_on_a_merge_run_is_failure() {
+    let auth = authorization();
+    let loop_line = json!({"loop": "merge-ready", "loop_result": "DONE"}).to_string();
+    let ctx = context(&[
+        ("merge_loop_result", Value::String(loop_line)),
+        ("finalize_merge", finalize_merge("not-authorised")),
+    ]);
+    let (success, outcome) = final_status(&auth, true, ctx);
+    assert!(!success, "{outcome}");
+    assert_eq!(outcome["stop_reason"], json!("not_merged"), "{outcome}");
+}

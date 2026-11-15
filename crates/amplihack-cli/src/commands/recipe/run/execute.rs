@@ -814,6 +814,7 @@ pub(super) fn execute_recipe_via_rust_fresh(
         let state_dir =
             assign_autodrive_state_dir(explicit_inputs, &workspace.borrow(), &launch.home)?;
         auth.bind_state_dir(state_dir.clone());
+        launch.record_state_dir(auth)?;
         invocation_context.insert("no_merge".into(), auth.no_merge().to_string());
         invocation_context.insert("autodrive_dry_run".into(), auth.dry_run().to_string());
         invocation_context.insert(

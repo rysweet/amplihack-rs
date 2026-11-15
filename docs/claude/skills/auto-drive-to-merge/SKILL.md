@@ -63,10 +63,12 @@ captures authorization afresh.
    captured authorization, at the head the ready round assessed, with green
    checks (or none reported), and with GitHub accepting `--match-head-commit`.
    A required check still running is a wait: answer `waiting`, finalise, and
-   end `not merged: waiting for <check> at <sha>` with no draft; the next run
-   judges again, with no sleep or polling. A base that moved gets one base
-   merge (never a rebase or force-push), one more round and a second
-   finalisation. Success means merged. Report `merged`
+   end `not merged: waiting for <check> at <sha>`. No drive waits on it, so
+   the PR is handed off as a draft naming the checks, with no sleep or
+   polling. A base that moved gets one base merge (never a rebase or
+   force-push), one more round and a second finalisation; a second moved
+   base is handed off. A merge run succeeds only when merged; a verify-only
+   run that reaches DONE succeeds. Report `merged`
    only on platform confirmation: GitHub reads back `MERGED`. Squash with an explicit message
    composed by the trusted
    `$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_message.sh`, sourced

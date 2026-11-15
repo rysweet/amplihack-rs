@@ -34,6 +34,7 @@ mod issue_2329_autodrive_outcomes;
 mod issue_2556_autodrive_evidence;
 #[path = "issue_2575_agentic_merge_ready.rs"]
 mod issue_2575_agentic_merge_ready;
+mod issue_2575_finalize_recovery_runner;
 #[path = "issue_2585_launch_notices_stderr.rs"]
 mod issue_2585_launch_notices_stderr;
 

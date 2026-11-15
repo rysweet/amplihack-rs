@@ -6,7 +6,8 @@
 //!   reader may answer `waiting`; `autodrive_round_word` maps it to `WAITING`
 //!   with a `ci_signal` of `<state>@<head>`; a `WAITING` round ends the loop
 //!   before the builder and the evaluator; finalisation reports
-//!   `checks-pending` (exit 7, no hand-off, no draft) and the next wake merges
+//!   `checks-pending` (exit 7). No drive waits on it, so it is handed off
+//!   (the PR becomes a draft naming the checks), and the next drive merges
 //!   once the check has passed. A pending signal at an unchanged head is
 //!   `CONTINUE`, never `STUCK`.
 //! - M1: success means merged. `autodrive_merge` reads `mergeStateStatus`;
@@ -30,6 +31,7 @@
 //! by stand-ins, and no prompt wording is asserted.
 
 use super::*;
+use std::fs;
 
 // ===========================================================================
 // autodrive_round_word / autodrive_round_file: `waiting` and `ci_signal`
@@ -383,11 +385,13 @@ fn the_merge_request_never_forces_or_bypasses() {
 }
 
 // ===========================================================================
-// autodrive-finalize: checks-pending and base-behind are not hand-offs
+// autodrive-finalize: checks-pending is handed off; base-behind is synced
 // ===========================================================================
 
+/// No drive waits on a pending check, so the PR is not left ready with no
+/// drive: it is handed off, never merged.
 #[test]
-fn finalize_pending_check_is_not_a_handoff() {
+fn finalize_pending_check_is_handed_off() {
     let Some((fx, head)) = finalize_fixture() else {
         return;
     };
@@ -396,7 +400,7 @@ fn finalize_pending_check_is_not_a_handoff() {
     assert_eq!(out.status.code(), Some(0), "{}", show(&out));
     let v = finalize_result(&out);
     assert_eq!(v["result"], json!("checks-pending"), "{v}");
-    assert_eq!(v["handoff"], json!("false"), "no draft, no hand-off: {v}");
+    assert_eq!(v["handoff"], json!("true"), "{v}");
     assert_eq!(v["expected_head"], json!(head));
     assert_no_merge_attempt(&fx);
 }
@@ -415,9 +419,78 @@ fn finalize_base_behind_is_not_a_handoff() {
     assert_no_merge_attempt(&fx);
 }
 
+// ===========================================================================
+// #2575 B3: the merge step's result reaches the report from the state folder
+// ===========================================================================
+
+fn state_record(fx: &Fx) -> Value {
+    let text = fs::read_to_string(fx.state.join("finalize-merge.json"))
+        .expect("the merge step writes its result to the state folder");
+    serde_json::from_str(text.trim()).expect("one JSON line")
+}
+
+/// A finalisation re-run by recovery (step-03r) is a separate process with
+/// its own invocation. Its merge step writes the result to the state folder,
+/// bound to the run id the caller passed, so the calling run can report it.
+#[test]
+fn merge_step_writes_its_result_for_the_calling_run() {
+    let Some((fx, head)) = finalize_fixture() else {
+        return;
+    };
+    let parent = "0b6f8f9e-3c1d-4a5b-9e7f-1a2b3c4d5e6f";
+    let out = finalize_merge_with(&fx, &AUTHORISED, &[("autodrive_parent_run_id", parent)]);
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    let printed = finalize_result(&out);
+    assert_eq!(printed["result"], json!("merged"), "{printed}");
+    let record = state_record(&fx);
+    assert_eq!(record["run_id"], json!(parent), "{record}");
+    assert_eq!(record["result"], json!("merged"), "{record}");
+    assert_eq!(record["expected_head"], json!(head), "{record}");
+    assert_eq!(
+        fs::metadata(fx.state.join("finalize-merge.json"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o077,
+        0,
+        "the record is private"
+    );
+}
+
+/// In the run's own process the run id comes from the runner-written
+/// authorization; a verify-only run records `not-authorised` the same way.
+#[test]
+fn merge_step_binds_its_record_to_the_runs_authorization() {
+    let Some((fx, _)) = finalize_fixture() else {
+        return;
+    };
+    let auth = json!({"run_id": RUN_ID, "no_merge": true}).to_string();
+    let verify = FinalizeRun {
+        no_merge: "true",
+        dry_run: "false",
+    };
+    let out = finalize_merge_with(&fx, &verify, &[("autodrive_authorization", &auth)]);
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    let record = state_record(&fx);
+    assert_eq!(record["run_id"], json!(RUN_ID), "{record}");
+    assert_eq!(record["result"], json!("not-authorised"), "{record}");
+}
+
+/// With no run id the record is not written: it could not be told apart from
+/// another run's.
+#[test]
+fn merge_step_without_a_run_id_writes_no_record() {
+    let Some((fx, _)) = finalize_fixture() else {
+        return;
+    };
+    let out = finalize_merge(&fx, &AUTHORISED);
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    assert!(!fx.state.join("finalize-merge.json").exists());
+}
+
 /// #2575's behaviour test: a drive whose only open item is a pending required
-/// check is not merged and not handed off; the next wake, once the check has
-/// passed, merges. No sleep, no polling: each wake reads the checks once.
+/// check is not merged and is handed off; the next drive, once the check has
+/// passed, merges. No sleep, no polling: each drive reads the checks once.
 #[test]
 fn pending_check_merges_on_the_next_wake_once_it_passes() {
     let Some((fx, head)) = finalize_fixture() else {
@@ -428,14 +501,8 @@ fn pending_check_merges_on_the_next_wake_once_it_passes() {
     assert_eq!(first.status.code(), Some(0), "{}", show(&first));
     let v = finalize_result(&first);
     assert_eq!(v["result"], json!("checks-pending"), "{v}");
-    assert_eq!(v["handoff"], json!("false"));
+    assert_eq!(v["handoff"], json!("true"));
     assert_no_merge_attempt(&fx);
-    for c in fx.gh_calls() {
-        assert!(
-            !(c.get(1).map(String::as_str) == Some("ready")),
-            "the PR is not drafted: {c:?}"
-        );
-    }
     let report = report_step(&fx, &[("finalize_merge", &v.to_string())]);
     assert_eq!(report.status.code(), Some(0), "{}", show(&report));
     let r = last_json(&report, "stop_reason");
@@ -844,13 +911,6 @@ fn out_of_date_branch_is_synced_by_a_merge_then_merged() {
     let first = finalize_result(&out);
     assert_eq!(first["result"], json!("base-behind"), "{first}");
     assert_eq!(first["handoff"], json!("false"), "{first}");
-    let sync = step_by_prefix("autodrive-merge-loop", "step-03b");
-    assert!(
-        sync["condition"]
-            .as_str()
-            .is_some_and(|c| c.contains("base-behind")),
-        "the base sync runs only on base-behind: {sync:?}"
-    );
 
     // 2. Stand-in for the step-03b builder: the documented commands only.
     git_in(&fx.repo, &["fetch", "-q", "origin", "--", "main"]);
@@ -951,11 +1011,6 @@ fn a_sync_round_that_stops_is_handed_off_not_finalised() {
     let outcome = last_json(&mapped, "outcome");
     assert_eq!(outcome["outcome"], json!("handoff"), "{outcome}");
     assert_eq!(outcome["finalise"], json!("false"), "{outcome}");
-    let again = step_by_prefix("autodrive-merge-loop", "step-03e");
-    assert_eq!(
-        again["condition"].as_str(),
-        Some("sync_loop_outcome.finalise == 'true'")
-    );
 }
 
 // ===========================================================================
@@ -1000,12 +1055,16 @@ fn report_step_says_completed_only_for_a_merge() {
         ("base-behind", "false", "not_merged"),
         ("refused", "true", "not_merged"),
         ("checks-not-green", "true", "not_merged"),
-        ("checks-pending", "false", "waiting_for_checks"),
+        ("checks-pending", "true", "waiting_for_checks"),
     ] {
         let reason = format!("fixture reason for {result}");
         let out = report_step(
             &fx,
-            &[("finalize_merge", &merge_line(result, handoff, &reason))],
+            &[
+                ("finalize_merge", &merge_line(result, handoff, &reason)),
+                ("no_merge", "false"),
+                ("autodrive_dry_run", "false"),
+            ],
         );
         assert_eq!(out.status.code(), Some(0), "{result}: {}", show(&out));
         let v = last_json(&out, "stop_reason");
@@ -1016,6 +1075,86 @@ fn report_step_says_completed_only_for_a_merge() {
             show(&out)
         );
     }
+}
+
+/// #2575 B4: a verify-only run that reached finalisation did what it was
+/// asked; the report step says `completed`, as before 8794c2df2.
+#[test]
+fn report_step_says_completed_for_a_verify_only_run() {
+    let Some(fx) = Fx::new() else { return };
+    for (no_merge, dry_run) in [("true", "false"), ("false", "true")] {
+        let out = report_step(
+            &fx,
+            &[
+                (
+                    "finalize_merge",
+                    &merge_line("not-authorised", "false", "this run is verify-only"),
+                ),
+                ("no_merge", no_merge),
+                ("autodrive_dry_run", dry_run),
+            ],
+        );
+        assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+        assert_eq!(
+            last_json(&out, "stop_reason")["stop_reason"],
+            json!("completed"),
+            "{}",
+            show(&out)
+        );
+    }
+}
+
+/// #2575 B3: a finalisation re-run by recovery is another process, so its
+/// result is not in this run's context. The report step reads the merge
+/// step's record from the state folder, only when it names this run.
+#[test]
+fn report_step_reads_this_runs_merge_result_from_the_state_folder() {
+    let Some(fx) = Fx::new() else { return };
+    let dir = fx.root.join("state-b3");
+    fs::create_dir_all(&dir).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    let run_id = "0b6f8f9e-3c1d-4a5b-9e7f-1a2b3c4d5e6f";
+    let mut record: Value = serde_json::from_str(&merge_line(
+        "merged",
+        "false",
+        "merged at the expected head",
+    ))
+    .unwrap();
+    record["run_id"] = json!(run_id);
+    fs::write(dir.join("finalize-merge.json"), format!("{record}\n")).unwrap();
+    let state = dir.to_str().unwrap();
+    let ours = json!({"run_id": run_id}).to_string();
+    let out = report_step(
+        &fx,
+        &[
+            ("autodrive_state_dir", state),
+            ("autodrive_authorization", &ours),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    assert_eq!(
+        last_json(&out, "stop_reason")["stop_reason"],
+        json!("completed"),
+        "{}",
+        show(&out)
+    );
+
+    // A record another run left in the folder is not this run's evidence.
+    let other = json!({"run_id": "11111111-2222-4333-8444-555555555555"}).to_string();
+    let out = report_step(
+        &fx,
+        &[
+            ("autodrive_state_dir", state),
+            ("autodrive_authorization", &other),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", show(&out));
+    assert_eq!(
+        last_json(&out, "stop_reason")["stop_reason"],
+        json!("dependency_failure"),
+        "{}",
+        show(&out)
+    );
 }
 
 #[test]
@@ -1163,6 +1302,90 @@ fn rereview_with_no_crusty_record_runs_crusty() {
     let v = rereview(&fx);
     assert_eq!(v["rereview"], json!("true"), "{v}");
     assert_eq!(v["range"], json!("no-record"), "{v}");
+}
+
+// #2575 B1: autodrive_crusty_posted.sh records a verdict only when the
+// posting agent (step-03c) reports it posted at the reviewed head. No tool
+// reads PR comments (#2628).
+
+fn posted_run(report: &str, extra: &[(&str, &str)]) -> Option<String> {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = tmp.path().join("state");
+    fs::create_dir_all(&state).unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+    let record = state.join("crusty-round-1.json");
+    fs::write(
+        &record,
+        format!(
+            "{}\n",
+            json!({"crusty_verdict": "CLEAN", "reviewed_head_sha": SHA_A})
+        ),
+    )
+    .unwrap();
+    // A gh that fails the test if called: the tool reads no comment.
+    let bin = tmp.path().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    write_executable(
+        &bin.join("gh"),
+        "#!/bin/sh\ntouch \"$POSTED_LOG/gh-called\"\nexit 1\n",
+        0o755,
+    );
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut c = crate::isolated_amplihack::isolated("bash");
+    c.arg(workspace_tools().join("autodrive_crusty_posted.sh"))
+        .env("PATH", path)
+        .env("POSTED_LOG", tmp.path())
+        .env("AUTODRIVE_ROUND_RECORD", &record)
+        .env("RECIPE_VAR_crusty_verdict_posted", report)
+        .current_dir(tmp.path())
+        .stdin(Stdio::null());
+    for (k, v) in extra {
+        c.env(k, v);
+    }
+    let out = c.output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    assert!(!tmp.path().join("gh-called").exists(), "no comment is read");
+    fs::read_to_string(state.join("crusty-verdict-posted.txt")).ok()
+}
+
+fn workspace_tools() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../amplifier-bundle/tools")
+}
+
+#[test]
+fn posted_verdict_is_recorded_when_the_agent_reports_it_at_the_reviewed_head() {
+    let report = format!(
+        "Posted the verdict.\n{}",
+        json!({"verdict_posted": "true", "head_sha": SHA_A})
+    );
+    assert_eq!(
+        posted_run(&report, &[]).as_deref(),
+        Some(format!("CLEAN {SHA_A}\n").as_str())
+    );
+}
+
+#[test]
+fn posted_verdict_is_not_recorded_for_a_failed_post_or_another_head() {
+    for report in [
+        json!({"verdict_posted": "false", "head_sha": SHA_A}).to_string(),
+        json!({"verdict_posted": "true", "head_sha": SHA_B}).to_string(),
+        "Posting failed: GraphQL refused and the REST call returned 403.".to_owned(),
+        String::new(),
+    ] {
+        assert_eq!(posted_run(&report, &[]), None, "{report}");
+    }
+}
+
+#[test]
+fn posted_verdict_in_a_dry_run_is_recorded_without_a_post() {
+    assert_eq!(
+        posted_run("", &[("RECIPE_VAR_autodrive_dry_run", "true")]).as_deref(),
+        Some(format!("CLEAN {SHA_A}\n").as_str())
+    );
 }
 
 #[test]

@@ -71,7 +71,20 @@ pub(crate) fn report(
         None => (loop_result(context.get("crusty_loop_result")), true),
     };
     let (merge, unknown_merge) = if state_dir_ok {
-        match merge_result(context.get("finalize_merge"), expected_pr) {
+        let read = match merge_result(context.get("finalize_merge"), expected_pr) {
+            // #2575 B3: a finalisation re-run by recovery runs in another
+            // process, so its result never reaches this context. Its merge
+            // step wrote the same line, bound to this run, to the state folder.
+            MergeRead::Missing => match state_merge_record(auth) {
+                Some(record) => {
+                    notes.push("finalize_merge: read from the state folder");
+                    merge_result(Some(&record), expected_pr)
+                }
+                None => MergeRead::Missing,
+            },
+            read => read,
+        };
+        match read {
             MergeRead::Known(map) => (Some(map), false),
             MergeRead::Unknown => (None, true),
             MergeRead::Missing => (None, false),
@@ -110,6 +123,10 @@ pub(crate) fn report(
         }
         Some("DONE" | "WAITING") => match merge_name.as_deref() {
             Some("merged") => "completed",
+            // #2575 B4: a verify-only run (no_merge or dry run) that reached
+            // DONE did what it was asked; it is `completed`, as before
+            // 8794c2df2. A merge run that was refused stays `not_merged`.
+            Some("not-authorised") if requested_action == "verify_readiness" => "completed",
             Some("not-authorised" | "base-behind") => "not_merged",
             Some("checks-pending") => "waiting_for_checks",
             Some(_) => "handoff",
@@ -197,6 +214,22 @@ fn loop_result(raw: Option<&Value>) -> Option<String> {
         && token.len() <= 64
         && token.bytes().all(|b| b.is_ascii_uppercase() || b == b'_'))
     .then(|| token.to_owned())
+}
+
+/// The file the finalize merge step writes its result to, in the runner-bound
+/// state folder (#2575 B3).
+pub(crate) const STATE_MERGE_RECORD: &str = "finalize-merge.json";
+
+/// The merge step's result from the runner-bound state folder, only when it
+/// names this run: a record another run left in a reused folder is ignored.
+/// Read through the private evidence store, so a link, a shared file or an
+/// oversized one is never read.
+fn state_merge_record(auth: &InvocationAuthorization) -> Option<Value> {
+    let store = super::state::EvidenceStore::create(auth.state_dir()?).ok()?;
+    let bytes = store.read_private(STATE_MERGE_RECORD).ok()?;
+    let record = tool_object(Some(&Value::String(String::from_utf8(bytes).ok()?)))?;
+    (record.get("run_id").and_then(Value::as_str) == Some(auth.run_id()))
+        .then_some(Value::Object(record))
 }
 
 /// What the finalize merge step's JSON said.
