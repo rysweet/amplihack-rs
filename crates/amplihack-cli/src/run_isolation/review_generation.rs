@@ -248,10 +248,12 @@ fn storage_of(generation: &Generation) -> Result<&Path> {
 /// `launch`. Storage is always created there, so a record naming storage
 /// anywhere else is never trusted and nothing at that path is removed.
 ///
-/// Both [`read`] and [`remove_storage`] check it here rather than once on
-/// the way in, because `provision` builds a `Generation` in memory that
-/// never passes back through [`read`]; a removal trusting its caller would
-/// be checked on one path into it and unchecked on the other.
+/// Both [`read`] and [`remove_storage`] call this rather than relying on a
+/// single check on the way in. Every caller of `remove_storage` does reach
+/// it through [`read`] (`retire` by way of `read_live`, `release` from
+/// [`read`] directly), so the shape has already been checked once; the
+/// removal re-derives it locally anyway, so the path it deletes is one it
+/// computed itself rather than one handed to it.
 fn checked_storage_of(generation: &Generation) -> Result<&Path> {
     let storage = storage_of(generation)?;
     let confined = storage.parent().is_some() && storage.parent() == generation.checkout.parent();
@@ -472,10 +474,17 @@ pub(crate) fn advance(source: &Path, checkout: &Path, state: Option<&Path>) -> R
 /// storage, so no state leaves live storage without a record naming it.
 fn retire(checkout: &Path, mut generation: Generation) -> Result<()> {
     let storage = storage_of(&generation)?.to_path_buf();
+    // Every resource `remove_storage` will require afterwards is checked
+    // here, before `git worktree remove` destroys the checkout. `launch`,
+    // `identities[3]`, is in the set for that reason: without it a changed
+    // or absent `launch` passes this precheck, the checkout is destroyed,
+    // and the removal then refuses, leaking storage and reporting a changed
+    // identity for a tree this precheck had just declared sound.
     for (path, expected) in [
         (storage.as_path(), generation.identities[0]),
         (generation.repository.as_path(), generation.identities[1]),
         (checkout, generation.identities[2]),
+        (generation.launch.as_path(), generation.identities[3]),
     ] {
         if identity(path)? != expected {
             bail!("review generation resource identity changed; retained for recovery");

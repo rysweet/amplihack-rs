@@ -833,6 +833,59 @@ fn release_root_after_retirement_removes_everything() {
 }
 
 #[test]
+fn advance_destroys_nothing_when_the_recorded_launch_directory_is_replaced() {
+    // `retire` runs `git worktree remove --force` and only then calls
+    // `remove_storage`, which requires the recorded `launch` directory,
+    // `identities[3]`. Its precheck covers the same set, so a generation
+    // whose `launch` was replaced is never half dismantled: the checkout
+    // is not destroyed only for the storage removal to refuse afterwards,
+    // leaking storage and reporting a changed identity for a tree the
+    // precheck had just declared sound.
+    //
+    // On this path `read_live` refuses first, which is why the command
+    // fails rather than returning a successor. The precheck entry covers
+    // the window between that read and the worktree removal, which a test
+    // driving the CLI cannot open.
+    let f = Fixture::new();
+    let pr = pr_worktree(&f);
+    let state = private_state(&f);
+    let first = allocate(&f, &pr, &state);
+    let storage = storage_of(&first);
+    assert!(storage.join("launch").is_dir());
+    // A different directory at the recorded path: present, so it is read,
+    // and carrying an inode the manifest never recorded. The recorded one
+    // is renamed rather than removed, so its inode is still in use and the
+    // replacement cannot be handed the same one.
+    fs::rename(storage.join("launch"), storage.join("launch-displaced")).unwrap();
+    fs::create_dir(storage.join("launch")).unwrap();
+    advance_pr(&f, &pr, "advance");
+    let made = next(&f, &pr, &first, &state);
+    assert!(
+        !made.status.success(),
+        "a generation missing a recorded resource is not advanced: {}",
+        text(&made)
+    );
+    assert!(
+        text(&made).contains("review generation resource identity changed"),
+        "{}",
+        text(&made)
+    );
+    assert!(
+        first.is_dir(),
+        "the superseded checkout survives a refused advance"
+    );
+    assert!(
+        storage.join("repository.git").is_dir(),
+        "storage is retained for recovery"
+    );
+    assert_ne!(
+        manifest(&first)["retired"],
+        true,
+        "nothing is recorded as retired"
+    );
+}
+
+#[test]
 fn release_frees_storage_left_by_failed_retirement() {
     let f = Fixture::new();
     let pr = pr_worktree(&f);

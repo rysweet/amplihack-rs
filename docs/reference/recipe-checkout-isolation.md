@@ -406,16 +406,22 @@ When `review-next` finds that the PR head has moved, it provisions the next
 generation, records it in the current generation's `children` and writes the
 manifest. It then retires the generation it replaced:
 
-1. It checks the device and inode of the old storage, its `repository.git`
-   and its checkout against the pairs the manifest recorded for them. A review
-   generation manifest records four pairs, in this order: the storage
-   directory, `repository.git`, the checkout and `launch`. Retirement's own
-   loop does not check the launch directory; step 4 checks it, once the
-   checkout is gone and the storage is about to be removed. The launch
-   directory is not unchecked for the call as a whole: `review-next` reads the
-   generation as live before it provisions the successor, and reading a live
-   generation compares all four recorded pairs against disk, so a changed
-   launch directory stops the call before retirement starts.
+1. It checks the device and inode of the old storage, its `repository.git`,
+   its checkout and its launch directory against the pairs the manifest
+   recorded for them. A review generation manifest records four pairs, in
+   this order: the storage directory, `repository.git`, the checkout and
+   `launch`. All four are checked here, before anything is removed, so every
+   resource the storage removal in step 4 will require has been checked
+   while the checkout is still intact. Were `launch` left out, a generation
+   whose launch directory had changed would lose its checkout in step 2 and
+   then be refused in step 4, leaking the storage and reporting a changed
+   identity for a tree step 1 had just accepted. `review-next` also reads
+   the generation as live before it provisions the successor, and reading a
+   live generation compares all four pairs, so on that path a changed launch
+   directory stops the call before retirement starts;
+   `advance_destroys_nothing_when_the_recorded_launch_directory_is_replaced`
+   pins that. The check in step 1 covers the window between that read and
+   the worktree removal.
 2. It runs `git worktree remove --force` on the old checkout.
 3. It sets `"retired": true` in the old manifest and writes it atomically.
 4. It removes the old storage, only when the path still exists, is a
