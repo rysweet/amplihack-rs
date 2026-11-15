@@ -981,6 +981,32 @@ first clock read and for `ready`, then moves virtual time on by the timeout
 the executor reads (`recipe_runner_timeout()`). The test sets
 `AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS` once, and the advance follows it.
 
+The executor reads that control through one value, `RunnerClock` in
+`run/execute.rs`, taken once per attempt. Every real run on Linux is
+spawned under the native Git observer, and a dry run, or any run on another
+platform, as a plain child. Both paths use it:
+
+- The wait. `wait_for_recipe_runner` (plain child) and
+  `wait_for_observed_runner` (observer) both poll in `wait_for_runner`.
+  They differ only in how they ask whether the runner has exited, so
+  neither can measure the timeout on a clock the test does not control.
+- The teardown grace. The plain child's `terminate_recipe_runner` waits on
+  it in `wait_until_exited`. The observed teardown sends SIGTERM to the
+  runner's tree, waits on it in `stop::sweep_on`, kills the survivors and
+  only then calls `Observer::terminate`. In virtual time the grace stays
+  frozen until the tree exits, so the SIGTERM handler in
+  `test_timeout_teardown_sends_sigterm_before_sigkill` always runs before
+  SIGKILL, on either path.
+- Cancellation. A cancelled worker ends the wait as a timeout and ends any
+  grace at once. On the plain path the wait first kills the runner's group,
+  whose pid is still unreaped. On the observed path the tracing thread may
+  already have reaped the runner, so nothing is signalled by pid there;
+  `Observer::terminate` kills every task it still traces.
+
+Production reads the system clock through the same value and is never
+cancelled. `amplihack recipe stop` keeps `stop::sweep`, which is
+`sweep_on` with the system clock.
+
 ### Teardown leaves no orphan
 
 `tests_teardown.rs` proves that teardown kills a step's orphans:

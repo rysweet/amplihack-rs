@@ -480,6 +480,66 @@ fn test_teardown_grace_window_is_configurable() {
 }
 
 // -------------------------------------------------------------------------
+// Test 3b — the observed runner's grace is measured on the injected clock.
+//
+// Every real run on Linux is spawned under the native Git observer, and its
+// teardown waits out the grace in `stop::sweep_on` on the runner's clock
+// (`RunnerClock` in `execute.rs`), not in `terminate_recipe_runner_with`.
+// The child ignores TERM and blocks on a stdin pipe this test holds, so only
+// the SIGKILL that ends the grace can end it. On a virtual clock the grace is
+// exactly the configured window however slowly the host runs; giving up (a
+// cancelled test) ends it at once. A sweep that read the real clock would
+// leave the virtual clock at zero in the first case.
+// -------------------------------------------------------------------------
+#[cfg(target_os = "linux")]
+#[test]
+fn test_observed_teardown_grace_is_measured_on_the_runner_clock() {
+    use crate::commands::recipe::{process_tree, stop};
+    use crate::test_support::virtual_clock::VirtualClock;
+    use std::io::BufRead;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{Command, Stdio};
+    use std::time::Duration;
+
+    let grace = Duration::from_secs(4);
+    for (give_up, expected_elapsed) in [(false, grace), (true, Duration::ZERO)] {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "trap '' TERM; echo ready; read _hold"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn a TERM-ignoring child");
+        // The trap is installed once `ready` is written. If an assertion
+        // below fails, dropping `child` closes its stdin and `read` returns.
+        let mut ready = String::new();
+        std::io::BufReader::new(child.stdout.take().expect("piped stdout"))
+            .read_line(&mut ready)
+            .expect("read the child's ready line");
+        assert_eq!(ready, "ready\n", "the child must install its trap");
+        let pid = child.id() as i32;
+        let start = process_tree::start_time(pid).expect("start time of the live child");
+        let tree = stop::Tree::from([(pid, start)]);
+
+        let clock = VirtualClock::new();
+        stop::terminate(&tree);
+        let killed = stop::sweep_on(&tree, grace, &clock, &|| give_up);
+
+        assert_eq!(killed, 1, "give_up={give_up}: the child ignores TERM");
+        assert_eq!(
+            clock.elapsed(),
+            expected_elapsed,
+            "give_up={give_up}: virtual time spent in the grace"
+        );
+        let status = child.wait().expect("reap the child");
+        assert_eq!(
+            status.signal(),
+            Some(libc::SIGKILL),
+            "give_up={give_up}: only the SIGKILL after the grace ends the child: {status:?}"
+        );
+    }
+}
+
+// -------------------------------------------------------------------------
 // Test 4 — teardown is SCOPED to the runner's process group only.
 //
 // The reaper signals the runner's process group (the runner is a session

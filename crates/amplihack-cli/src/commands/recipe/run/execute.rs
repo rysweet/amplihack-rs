@@ -20,7 +20,7 @@ use std::process::Child;
 use std::process::{ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const STDERR_TAIL_LINES: usize = 5;
 const CAPTURED_STDERR_LINES: usize = 200;
@@ -1598,13 +1598,16 @@ fn spawn_with_streaming_stderr(
         let _ = stdout_tx.send(result);
     });
 
+    // One clock for this attempt's timeout and every teardown grace below,
+    // whichever way the runner was spawned.
+    let runner = RunnerClock::current();
     #[cfg(target_os = "linux")]
     let waited = match &observer {
-        Some(observer) => wait_for_observed_runner(observer, timeout),
-        None => wait_for_recipe_runner(&mut child, timeout),
+        Some(observer) => wait_for_observed_runner(observer, timeout, &runner),
+        None => wait_for_recipe_runner(&mut child, timeout, &runner),
     };
     #[cfg(not(target_os = "linux"))]
-    let waited = wait_for_recipe_runner(&mut child, timeout);
+    let waited = wait_for_recipe_runner(&mut child, timeout, &runner);
     let status = match waited
         .context("failed to wait for recipe-runner-rs")
         .map_err(|error| {
@@ -1627,8 +1630,7 @@ fn spawn_with_streaming_stderr(
                 let tree = crate::commands::recipe::stop::snapshot_group(child.id() as i32);
                 #[cfg(unix)]
                 reap_recipe_runner_group(child.id(), recipe_runner_teardown_grace());
-                crate::commands::recipe::stop::terminate(&tree);
-                crate::commands::recipe::stop::sweep(&tree, recipe_runner_teardown_grace());
+                sweep_runner_tree(&tree, &runner);
                 // Issue #1976: the captured signal value alone decides the
                 // status; a signal stored after an orphan request replaces it
                 // and is a Failure.
@@ -1674,17 +1676,12 @@ fn spawn_with_streaming_stderr(
             // that could not be reaped must not leave its descendants behind.
             #[cfg(target_os = "linux")]
             let teardown = match observer.as_mut() {
-                Some(observer) => {
-                    crate::commands::recipe::stop::terminate(&tree);
-                    crate::commands::recipe::stop::sweep(&tree, recipe_runner_teardown_grace());
-                    observer.terminate()
-                }
-                None => terminate_recipe_runner(&mut child),
+                Some(observer) => terminate_observed_runner(&tree, observer, &runner),
+                None => terminate_recipe_runner(&mut child, &runner),
             };
             #[cfg(not(target_os = "linux"))]
-            let teardown = terminate_recipe_runner(&mut child);
-            crate::commands::recipe::stop::terminate(&tree);
-            crate::commands::recipe::stop::sweep(&tree, recipe_runner_teardown_grace());
+            let teardown = terminate_recipe_runner(&mut child, &runner);
+            sweep_runner_tree(&tree, &runner);
             let stopped = anyhow::Error::new(super::stop_signal::StoppedBySignal(signal));
             return Err(match teardown {
                 Ok(()) => stopped,
@@ -1714,14 +1711,12 @@ fn spawn_with_streaming_stderr(
                     let tree = crate::commands::recipe::stop::snapshot_tree(
                         &std::collections::BTreeSet::from([child.id() as i32]),
                     );
-                    crate::commands::recipe::stop::terminate(&tree);
-                    crate::commands::recipe::stop::sweep(&tree, recipe_runner_teardown_grace());
-                    observer.terminate()
+                    terminate_observed_runner(&tree, observer, &runner)
                 }
-                None => terminate_recipe_runner(&mut child),
+                None => terminate_recipe_runner(&mut child, &runner),
             };
             #[cfg(not(target_os = "linux"))]
-            let teardown = terminate_recipe_runner(&mut child);
+            let teardown = terminate_recipe_runner(&mut child, &runner);
             teardown.with_context(|| {
                 format!("recipe run {run_id} timed out and could not be terminated: {detail}")
             })?;
@@ -1834,30 +1829,64 @@ fn spawn_unobserved(mut command: Command) -> Result<Child> {
     command.spawn().context("failed to spawn recipe-runner-rs")
 }
 
+/// Waits for a runner spawned under the native observer (every real run on
+/// Linux). The observer's tracing thread reaps the runner, so its exit comes
+/// from `observer.try_wait`, never from `Child::try_wait`. The timeout is
+/// measured on `runner`'s clock in [`wait_for_runner`], the same loop as
+/// [`wait_for_recipe_runner`].
 #[cfg(target_os = "linux")]
 fn wait_for_observed_runner(
     observer: &super::git_record::observer::Observer,
     timeout: Duration,
+    runner: &RunnerClock,
 ) -> std::io::Result<RunnerWait> {
-    let started = Instant::now();
-    loop {
-        if let Some(status) = observer.try_wait().map_err(std::io::Error::other)? {
-            return Ok(RunnerWait::Exited(status));
-        }
-        if let Some(tasks) = observer.finished_scope() {
-            let tree = crate::commands::recipe::stop::snapshot_tree(&tasks.into_iter().collect());
-            crate::commands::recipe::stop::terminate(&tree);
-            crate::commands::recipe::stop::sweep(&tree, recipe_runner_teardown_grace());
-        }
-        if let Some(signal) = super::stop_signal::pending() {
-            return Ok(RunnerWait::Stopped(signal));
-        }
-        let remaining = match timeout.checked_sub(started.elapsed()) {
-            Some(remaining) if !remaining.is_zero() => remaining,
-            _ => return Ok(RunnerWait::TimedOut),
-        };
-        thread::sleep(RECIPE_RUNNER_POLL_INTERVAL.min(remaining));
-    }
+    wait_for_runner(
+        timeout,
+        runner,
+        || {
+            if let Some(status) = observer.try_wait().map_err(std::io::Error::other)? {
+                return Ok(Some(status));
+            }
+            if let Some(tasks) = observer.finished_scope() {
+                let tree =
+                    crate::commands::recipe::stop::snapshot_tree(&tasks.into_iter().collect());
+                sweep_runner_tree(&tree, runner);
+            }
+            Ok(None)
+        },
+        // The runner may already have been reaped by the tracing thread, so
+        // its pid and group id are not ours to signal. The timeout teardown
+        // that follows ends the run: its grace is abandoned at once (see
+        // `sweep_runner_tree`) and `Observer::terminate` kills every task the
+        // observer still traces, which are unreaped by construction.
+        || {},
+    )
+}
+
+/// The teardown for an observed runner: SIGTERM to `tree`, the teardown grace
+/// on `runner`'s clock, SIGKILL to whatever of `tree` is left, then the
+/// observer kills and reaps every task it still traces and joins its thread.
+#[cfg(target_os = "linux")]
+fn terminate_observed_runner(
+    tree: &crate::commands::recipe::stop::Tree,
+    observer: &mut super::git_record::observer::Observer,
+    runner: &RunnerClock,
+) -> Result<()> {
+    sweep_runner_tree(tree, runner);
+    observer.terminate()
+}
+
+/// SIGTERM every process of `tree`, wait up to the teardown grace on
+/// `runner`'s clock for them to exit, then SIGKILL the survivors. A test that
+/// has cancelled its run ends the grace at once.
+fn sweep_runner_tree(tree: &crate::commands::recipe::stop::Tree, runner: &RunnerClock) {
+    crate::commands::recipe::stop::terminate(tree);
+    crate::commands::recipe::stop::sweep_on(
+        tree,
+        recipe_runner_teardown_grace(),
+        runner.clock(),
+        &|| runner.cancelled(),
+    );
 }
 
 fn recipe_name_for_correlation(recipe_path: &Path) -> String {
@@ -2140,22 +2169,64 @@ enum RunnerWait {
     Stopped(i32),
 }
 
-fn wait_for_recipe_runner(child: &mut Child, timeout: Duration) -> std::io::Result<RunnerWait> {
+/// The clock a runner attempt's timeout and teardown grace are measured on,
+/// and whether the attempt has been cancelled. Production reads the system
+/// clock and is never cancelled. A lib test that runs the executor under
+/// `test_runner::RunnerWorker` gets that worker's control instead: its
+/// (optionally virtual) clock and its cancel flag. Both runner paths, the
+/// plain child and the observed one, take it from here, so neither can wait
+/// or tear down on a clock the test does not control.
+struct RunnerClock {
     #[cfg(all(test, unix))]
-    let control = super::test_runner::current();
-    let clock: &dyn Clock = &SystemClock;
-    #[cfg(all(test, unix))]
-    let clock = control.as_deref().map_or(clock, |c| c as &dyn Clock);
+    control: Option<Arc<super::test_runner::Control>>,
+}
+
+impl RunnerClock {
+    /// The control installed for this thread, if any. Read on the executor's
+    /// thread, where `RunnerWorker` installs it.
+    fn current() -> Self {
+        Self {
+            #[cfg(all(test, unix))]
+            control: super::test_runner::current(),
+        }
+    }
+
+    fn clock(&self) -> &dyn Clock {
+        #[cfg(all(test, unix))]
+        if let Some(control) = self.control.as_deref() {
+            return control;
+        }
+        &SystemClock
+    }
+
+    fn cancelled(&self) -> bool {
+        #[cfg(all(test, unix))]
+        if let Some(control) = self.control.as_deref() {
+            return control.cancelled();
+        }
+        false
+    }
+}
+
+/// Polls `try_wait` until the runner exits, a stop signal arrives, or
+/// `timeout` passes on `runner`'s clock. Both runner paths wait here. On
+/// cancellation `on_cancel` runs first, while the caller can still name the
+/// runner safely, and the wait reports a timeout, so the usual teardown ends
+/// the run.
+fn wait_for_runner(
+    timeout: Duration,
+    runner: &RunnerClock,
+    mut try_wait: impl FnMut() -> std::io::Result<Option<ExitStatus>>,
+    on_cancel: impl FnOnce(),
+) -> std::io::Result<RunnerWait> {
+    let clock = runner.clock();
     let started = clock.now();
     loop {
-        #[cfg(all(test, unix))]
-        if control.as_ref().is_some_and(|c| c.cancelled()) {
-            // SAFETY: the worker owns the unreaped child, reserving its pid.
-            // Cancel only its runner group before joining the test worker.
-            unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
+        if runner.cancelled() {
+            on_cancel();
             return Ok(RunnerWait::TimedOut);
         }
-        if let Some(status) = child.try_wait()? {
+        if let Some(status) = try_wait()? {
             return Ok(RunnerWait::Exited(status));
         }
         if let Some(signal) = super::stop_signal::pending() {
@@ -2172,7 +2243,34 @@ fn wait_for_recipe_runner(child: &mut Child, timeout: Duration) -> std::io::Resu
     }
 }
 
-fn terminate_recipe_runner(child: &mut Child) -> Result<()> {
+/// Waits for a runner spawned as a plain child: a dry run on Linux, and
+/// every run elsewhere.
+fn wait_for_recipe_runner(
+    child: &mut Child,
+    timeout: Duration,
+    runner: &RunnerClock,
+) -> std::io::Result<RunnerWait> {
+    let pid = child.id();
+    wait_for_runner(
+        timeout,
+        runner,
+        || child.try_wait(),
+        || {
+            // SAFETY: `try_wait` has not returned the child, so it is still
+            // unreaped and its pid, the id of the group it leads, is still
+            // this runner's. Cancel only that group before the test worker
+            // is joined.
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-(pid as libc::pid_t), libc::SIGKILL)
+            };
+            #[cfg(not(unix))]
+            let _ = pid;
+        },
+    )
+}
+
+fn terminate_recipe_runner(child: &mut Child, runner: &RunnerClock) -> Result<()> {
     let pid = child.id();
     #[cfg(unix)]
     {
@@ -2188,25 +2286,18 @@ fn terminate_recipe_runner(child: &mut Child) -> Result<()> {
         // The signal target is `-pgid`, so this is scoped strictly to the
         // runner's own session and never touches unrelated / parent processes.
         let pgid = pid as libc::pid_t;
-        let clock: &dyn Clock = &SystemClock;
-        #[cfg(test)]
-        let control = super::test_runner::current();
-        #[cfg(test)]
-        let clock = control.as_deref().map_or(clock, |c| c as &dyn Clock);
         terminate_recipe_runner_with(
-            clock,
+            runner.clock(),
             || {
                 // A test's virtual grace may be frozen while it awaits the
                 // TERM handler. Unwinding must still cancel and join it.
-                #[cfg(test)]
-                if control.as_ref().is_some_and(|c| c.cancelled()) {
-                    return false;
-                }
-                matches!(child.try_wait(), Ok(None))
+                !runner.cancelled() && matches!(child.try_wait(), Ok(None))
             },
             |signal| signal_process_group(pgid, signal),
         );
     }
+    #[cfg(not(unix))]
+    let _ = runner;
     #[cfg(windows)]
     {
         let mut command = Command::new("taskkill");
