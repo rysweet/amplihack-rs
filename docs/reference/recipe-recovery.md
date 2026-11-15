@@ -65,6 +65,13 @@ and contain a positive issue number. Conflicting or unverifiable work
 identifiers do not enter a shared recovery namespace. The run logs the
 reason and executes fresh. Task prose is not parsed as recovery authority.
 
+Once the issue is known, amplihack writes it back to the recipe context in
+both forms: `issue_number` as the number and, when `origin` is a GitHub
+remote, `issue_url` as `https://github.com/<owner>/<repo>/issues/<n>`. The
+runner treats every context key a shell step can see as an input of that
+step, so a launch given the number and a relaunch given the URL must present
+the same keys and values for completed shell steps to be replayed.
+
 An identity lock serializes predecessor selection, monotonic sequence
 allocation, new-attempt registration, and latest-marker publication.
 Sequence overflow is an error. The latest marker names the admitted

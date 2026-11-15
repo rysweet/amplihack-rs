@@ -84,9 +84,29 @@ pub(super) fn identity(
 }
 /// Normalize explicit work metadata before evaluating inputs, so a URL and its
 /// equivalent numeric issue select compatible context at relaunch.
+///
+/// Both keys are written: the runner treats every context key a shell step
+/// can see as one of its inputs (runner #208), so `issue_url` present on one
+/// launch and absent on the other would stop replay even though the issue is
+/// the same. A GitHub `origin` gives the canonical URL; otherwise only the
+/// number is normalised.
 pub(super) fn normalize(context: &mut BTreeMap<String, String>, repo: &Path) {
-    if let Some(issue) = work_repository(repo, context).and_then(|repo| issue(context, &repo)) {
-        context.insert("issue_number".into(), issue.to_string());
+    let Some(repo) = work_repository(repo, context) else {
+        return;
+    };
+    let Some(issue) = issue(context, &repo) else {
+        return;
+    };
+    context.insert("issue_number".into(), issue.to_string());
+    let repository = git(&repo, &["remote", "get-url", "origin"])
+        .ok()
+        .and_then(|remote| String::from_utf8(remote).ok())
+        .and_then(|remote| repository_name(&remote));
+    if let Some(repository) = repository {
+        context.insert(
+            "issue_url".into(),
+            format!("https://github.com/{repository}/issues/{issue}"),
+        );
     }
 }
 pub(super) fn admit(

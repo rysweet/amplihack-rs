@@ -251,6 +251,26 @@ printf '%s\n' '{{"label":"saved-output","enabled":true,"count":7,"empty":null,"i
             "input",
         ];
         context.extend(steps.iter().filter_map(|s| s["output"].as_str()));
+        // Bash and recipe steps depend on every context key they can see
+        // (runner #208, "semantic-input-coverage-v2"), and replay only when
+        // the recipe persists each one. A child sees its parent's outputs and
+        // a parent sees its children's, so every document persists the
+        // outputs any fixture recipe produces, as the shipped recipes persist
+        // the union of the keys their callers and children set.
+        for key in [
+            "architecture",
+            "classify",
+            "decompose",
+            "design",
+            "first-call",
+            "implement",
+            "prepare",
+            "second-call",
+        ] {
+            if !context.contains(&key) {
+                context.push(key);
+            }
+        }
         json!({
             "name": name, "description": "Issue 1741 behavior fixture", "version": "1.0.0",
             "context": {},
