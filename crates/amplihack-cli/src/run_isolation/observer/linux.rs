@@ -15,6 +15,15 @@ use std::thread::JoinHandle;
 
 /// A marker alone never authorizes observer reuse: the kernel must identify
 /// that process's thread group as our active tracer.
+///
+/// Issue #2677: a traced process with no `AMPLIHACK_OBSERVER_PID` at all is
+/// treated as having no parent observer. That cannot produce a false
+/// "established" record. The direct path then asks for `PTRACE_TRACEME`:
+/// if the tracer follows forks the kernel refuses it and the record says
+/// "unavailable"; otherwise the child is untraced and is observed normally.
+/// A variable that is present in any form (empty, non-UTF-8, padded,
+/// negative, overflowing or naming another group) must still parse as a
+/// `u32` and name the tracer's thread group, or the run stops here.
 pub(crate) fn parent_observer() -> Result<Option<u32>> {
     let status = fs::read_to_string("/proc/self/status")?;
     let tracer: u32 = status
@@ -24,21 +33,92 @@ pub(crate) fn parent_observer() -> Result<Option<u32>> {
     if tracer == 0 {
         return Ok(None);
     }
+    let Some(announced) = std::env::var_os("AMPLIHACK_OBSERVER_PID") else {
+        return Ok(None);
+    };
     let status = fs::read_to_string(format!("/proc/{tracer}/status"))?;
     let group: u32 = status
         .lines()
         .find_map(|line| line.strip_prefix("Tgid:")?.trim().parse().ok())
         .context("missing tracer thread group")?;
-    if std::env::var("AMPLIHACK_OBSERVER_PID")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        != Some(group)
-    {
+    if announced.to_str().and_then(|s| s.parse::<u32>().ok()) != Some(group) {
         bail!(
             "process is traced by an unrelated observer; cannot establish required recording ownership"
         );
     }
     Ok(Some(group))
+}
+
+/// The observer could not be set up for this attempt, so nothing about the
+/// runner was observed: `PTRACE_TRACEME` was refused (the spawn failed with
+/// exactly `EPERM` or `ENOSYS`). Issue #2677: the caller may then run the
+/// attempt once unobserved and record coverage as unavailable. Every other
+/// observer failure stays a plain error and fails closed.
+#[derive(Debug)]
+pub(crate) struct ObserverNotEstablished {
+    /// The error number of the refused spawn, taken from its `io::Error`.
+    errno: i32,
+    error: anyhow::Error,
+}
+
+impl ObserverNotEstablished {
+    pub(crate) fn errno(&self) -> i32 {
+        self.errno
+    }
+}
+
+/// Fixed names for the only numbers `traceme_refused` accepts. No other
+/// number can reach this, so it is never guessed.
+pub(crate) fn errno_name(errno: i32) -> &'static str {
+    match errno {
+        libc::EPERM => "EPERM",
+        libc::ENOSYS => "ENOSYS",
+        _ => "unexpected",
+    }
+}
+
+impl std::fmt::Display for ObserverNotEstablished {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The inner chain is reached through `source`, so it is not
+        // repeated here.
+        write!(f, "{}", self.error)
+    }
+}
+
+impl std::error::Error for ObserverNotEstablished {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.error.source()
+    }
+}
+
+/// The runner's own spawn failed for a reason other than a refused
+/// `PTRACE_TRACEME` (for example a missing binary or working folder), after
+/// the tracing thread returned cleanly. Nothing ran, so the caller may
+/// discard this attempt's empty journal and report the spawn error alone.
+/// Built only in the `Command::spawn` error arm; every other observer
+/// failure stays a plain error and fails closed.
+#[derive(Debug)]
+pub(crate) struct RunnerNotStarted {
+    error: anyhow::Error,
+}
+
+impl std::fmt::Display for RunnerNotStarted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.error)
+    }
+}
+
+impl std::error::Error for RunnerNotStarted {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.error.source()
+    }
+}
+
+/// Classified by error number only, never by message text. Exec errors
+/// (`ENOENT`, `EACCES`, `ENOEXEC`, `E2BIG`, `ETXTBSY`, `ESRCH`) mean the
+/// runner itself cannot start, so they are not an observer failure.
+fn traceme_refused(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(libc::EPERM) | Some(libc::ENOSYS))
 }
 
 pub(crate) struct Observer {
@@ -77,6 +157,12 @@ impl Observer {
         let thread = std::thread::spawn(move || {
             // SAFETY: only the async-signal-safe ptrace syscall is used after
             // fork. A denied TRACEME becomes a spawn failure before exec.
+            //
+            // Hooks registered earlier by the caller (setsid, prctl
+            // PR_SET_PDEATHSIG, getppid) run before this one. An EPERM from
+            // them would be read below as a refused TRACEME. setsid cannot
+            // fail in a freshly forked non-leader and PR_SET_PDEATHSIG does
+            // not return EPERM, so no further check is made.
             unsafe {
                 command.pre_exec(|| {
                     if libc::ptrace(libc::PTRACE_TRACEME, 0, 0, 0) == -1 {
@@ -88,9 +174,25 @@ impl Observer {
             let child = match command.spawn() {
                 Ok(child) => child,
                 Err(error) => {
-                    let _ = child_tx.send(Err(anyhow::Error::new(error).context(
-                        "required Linux observer unavailable; nested tracing is unsupported",
-                    )));
+                    let error = match error.raw_os_error() {
+                        Some(errno) if traceme_refused(&error) => {
+                            // The errno is the one this spawn returned; it is never
+                            // read again or parsed from text.
+                            let context = format!(
+                                "required Linux observer unavailable: PTRACE_TRACEME refused (errno {errno}, {})",
+                                errno_name(errno)
+                            );
+                            anyhow::Error::new(ObserverNotEstablished {
+                                errno,
+                                error: anyhow::Error::new(error).context(context),
+                            })
+                        }
+                        _ => anyhow::Error::new(RunnerNotStarted {
+                            error: anyhow::Error::new(error)
+                                .context("failed to spawn recipe-runner-rs"),
+                        }),
+                    };
+                    let _ = child_tx.send(Err(error));
                     return;
                 }
             };
@@ -125,9 +227,31 @@ impl Observer {
             }
             let _ = tx.send(observed);
         });
-        let child = child_rx
-            .recv()
-            .context("observer exited before runner handoff")??;
+        let child = match child_rx.recv() {
+            Ok(Ok(child)) => child,
+            Ok(Err(error)) => {
+                // The thread returns right after reporting a failed spawn.
+                // Joined first, so nothing still holds the journal open. A
+                // join that fails is reported, never returned: this attempt's
+                // own cause is what the run must name.
+                return Err(spawn_error_outranks_join_failure(
+                    error,
+                    join_tracing_thread(thread),
+                ));
+            }
+            Err(_) => {
+                // The thread sends on every path except a panic, so a
+                // dropped sender means it panicked, which the join reports.
+                // A panicked thread may have spawned the runner before it
+                // died, so this stays a plain error and fails closed. It is
+                // deliberately not a RunnerNotStarted, so the caller never
+                // discards this attempt's journal.
+                join_tracing_thread(thread)?;
+                return Err(anyhow::anyhow!(
+                    "required observer exited before runner handoff"
+                ));
+            }
+        };
         Ok((
             child,
             Self {
@@ -247,6 +371,39 @@ impl Observer {
         Ok(())
     }
 }
+/// Waits for a tracing thread that never handed a runner over.
+fn join_tracing_thread(thread: JoinHandle<()>) -> Result<()> {
+    thread
+        .join()
+        .map_err(|_| anyhow::anyhow!("required observer panicked before runner handoff"))
+}
+
+/// Builds the line reporting a tracing thread that did not exit cleanly after
+/// the runner failed to start. Fixed text plus the join's own chain: no path,
+/// command line or environment value reaches it, and it carries neither the
+/// spawn context nor the word `nested`, so it is never mistaken for the cause
+/// the caller returns.
+fn join_failure_warning(failure: &anyhow::Error) -> String {
+    format!(
+        "amplihack: warning: the observer thread did not exit cleanly after the runner \
+         failed to start: {failure:#}"
+    )
+}
+
+/// Issue #2677 A6: the runner's own spawn failure outranks a failed join of
+/// the tracing thread. The thread is joined so nothing still holds the
+/// journal open, but replacing `spawn` with the join's error would lose the
+/// attempt's errno and its [`RunnerNotStarted`] marker, and the run would
+/// again name something other than its own cause. The join failure is
+/// reported on stderr; `spawn` is returned exactly as it stands, never
+/// re-contextualised.
+fn spawn_error_outranks_join_failure(spawn: anyhow::Error, join: Result<()>) -> anyhow::Error {
+    if let Err(failure) = join {
+        eprintln!("{}", join_failure_warning(&failure));
+    }
+    spawn
+}
+
 impl Drop for Observer {
     fn drop(&mut self) {
         if let Err(error) = self.terminate() {
@@ -757,4 +914,194 @@ fn record_exec(
         .sync_data()
         .context("persist required observed Git command before resuming execution")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests_not_established {
+    use super::*;
+
+    #[test]
+    fn only_eperm_and_enosys_mean_traceme_was_refused() {
+        for errno in [libc::EPERM, libc::ENOSYS] {
+            assert!(traceme_refused(&std::io::Error::from_raw_os_error(errno)));
+        }
+        for errno in [
+            libc::ENOENT,
+            libc::EACCES,
+            libc::ENOEXEC,
+            libc::E2BIG,
+            libc::ETXTBSY,
+            libc::ESRCH,
+        ] {
+            assert!(!traceme_refused(&std::io::Error::from_raw_os_error(errno)));
+        }
+        assert!(!traceme_refused(&std::io::Error::other("no errno")));
+    }
+
+    #[test]
+    fn not_established_keeps_the_cause_chain_once() {
+        // M2: the text names the refused call and its errno, and states no
+        // cause the code cannot know.
+        let inner = anyhow::Error::new(std::io::Error::from_raw_os_error(libc::EPERM)).context(
+            "required Linux observer unavailable: PTRACE_TRACEME refused (errno 1, EPERM)",
+        );
+        let error = anyhow::Error::new(ObserverNotEstablished {
+            errno: libc::EPERM,
+            error: inner,
+        });
+        let text = format!("{error:#}");
+        assert_eq!(
+            text.matches("PTRACE_TRACEME refused (errno 1, EPERM)")
+                .count(),
+            1,
+            "{text}"
+        );
+        assert!(!text.contains("nested tracing"), "{text}");
+        let marker = error
+            .downcast_ref::<ObserverNotEstablished>()
+            .expect("the marker is the outermost error");
+        assert_eq!(marker.errno(), libc::EPERM);
+        assert_eq!(errno_name(marker.errno()), "EPERM");
+        assert!(
+            error
+                .chain()
+                .filter_map(|e| e.downcast_ref::<std::io::Error>())
+                .any(|e| e.raw_os_error() == Some(libc::EPERM)),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn errno_names_cover_only_the_refused_traceme_numbers() {
+        assert_eq!(errno_name(libc::EPERM), "EPERM");
+        assert_eq!(errno_name(libc::ENOSYS), "ENOSYS");
+        // Unreachable through traceme_refused; never a guessed name.
+        assert_eq!(errno_name(libc::ENOENT), "unexpected");
+    }
+
+    #[test]
+    fn runner_not_started_keeps_the_spawn_errno_and_says_nothing_of_ptrace() {
+        // B1d: a runner that cannot start reports its own error, with the
+        // io::Error as the root cause, so its errno is not lost.
+        let inner = anyhow::Error::new(std::io::Error::from_raw_os_error(libc::ENOENT))
+            .context("failed to spawn recipe-runner-rs");
+        let error = anyhow::Error::new(RunnerNotStarted { error: inner });
+        let text = format!("{error:#}");
+        assert_eq!(
+            text.matches("failed to spawn recipe-runner-rs").count(),
+            1,
+            "{text}"
+        );
+        for word in ["PTRACE", "ptrace", "tracing", "observer"] {
+            assert!(!text.contains(word), "{word}: {text}");
+        }
+        assert_eq!(
+            error
+                .root_cause()
+                .downcast_ref::<std::io::Error>()
+                .and_then(std::io::Error::raw_os_error),
+            Some(libc::ENOENT),
+            "{text}"
+        );
+        assert!(error.downcast_ref::<ObserverNotEstablished>().is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // Issue #2677 A6: when the tracing thread has already reported a failed
+    // runner spawn, `Observer::spawn` joins it so nothing still holds the
+    // journal open. A join that fails must not become the error the caller
+    // sees: `join_tracing_thread(thread)?` would replace the spawn error,
+    // losing its errno and its `RunnerNotStarted` marker, and the run would
+    // again name something other than its own cause. The join failure is
+    // reported separately; the spawn error is returned as it stands.
+    //
+    // `spawn_error_outranks_join_failure(spawn, join)` is that rule: it
+    // reports a failed `join` and returns `spawn` unchanged.
+    // -----------------------------------------------------------------
+
+    fn unstarted_spawn_error() -> anyhow::Error {
+        anyhow::Error::new(RunnerNotStarted {
+            error: anyhow::Error::new(std::io::Error::from_raw_os_error(libc::ENOENT))
+                .context("failed to spawn recipe-runner-rs"),
+        })
+    }
+
+    #[test]
+    fn a_failed_join_never_displaces_the_spawn_error() {
+        let error = spawn_error_outranks_join_failure(
+            unstarted_spawn_error(),
+            Err(anyhow::anyhow!(
+                "required observer panicked before runner handoff"
+            )),
+        );
+        let text = format!("{error:#}");
+        assert!(
+            error.downcast_ref::<RunnerNotStarted>().is_some(),
+            "the attempt still never started, so its journal is still released: {text}"
+        );
+        assert_eq!(
+            error.chain().next().map(ToString::to_string).as_deref(),
+            Some("failed to spawn recipe-runner-rs"),
+            "{text}"
+        );
+        assert_eq!(
+            text.matches("failed to spawn recipe-runner-rs").count(),
+            1,
+            "{text}"
+        );
+        assert_eq!(
+            error
+                .root_cause()
+                .downcast_ref::<std::io::Error>()
+                .and_then(std::io::Error::raw_os_error),
+            Some(libc::ENOENT),
+            "the spawn's errno survives the join failure: {text}"
+        );
+        for word in ["panicked", "did not finalize", "PTRACE", "tracing"] {
+            assert!(!text.contains(word), "{word}: {text}");
+        }
+    }
+
+    #[test]
+    fn a_successful_join_leaves_the_spawn_error_alone() {
+        let error = spawn_error_outranks_join_failure(unstarted_spawn_error(), Ok(()));
+        let text = format!("{error:#}");
+        assert!(error.downcast_ref::<RunnerNotStarted>().is_some(), "{text}");
+        assert_eq!(
+            error.chain().next().map(ToString::to_string).as_deref(),
+            Some("failed to spawn recipe-runner-rs"),
+            "{text}"
+        );
+        assert_eq!(
+            text.matches("failed to spawn recipe-runner-rs").count(),
+            1,
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_join_failure_warning_carries_its_fixed_prefix_and_no_path() {
+        // The join failure is reported, never returned, so what it carries is
+        // asserted against the built line rather than captured from stderr.
+        const PREFIX: &str = "amplihack: warning: the observer thread did not exit cleanly after the runner \
+             failed to start: ";
+        let failure = anyhow::anyhow!("required observer panicked before runner handoff");
+        let line = join_failure_warning(&failure);
+        assert!(line.starts_with(PREFIX), "{line}");
+        assert!(
+            line.contains("required observer panicked before runner handoff"),
+            "the join's own reason is what the line is for: {line}"
+        );
+        assert!(
+            !line.contains('/'),
+            "no path reaches the line, so it can be quoted unread: {line}"
+        );
+        assert!(!line.contains('\n'), "one warning is one line: {line:?}");
+        for word in ["failed to spawn recipe-runner-rs", "nested"] {
+            assert!(
+                !line.contains(word),
+                "{word} belongs to the returned error, not this warning: {line}"
+            );
+        }
+    }
 }
