@@ -261,17 +261,12 @@ impl GitRecord {
                 // refuses, the attempt still counts and `finish` fails
                 // closed; the spawn error is returned either way.
                 let released = match &*self.state.borrow() {
-                    State::Enabled { trace_dir, .. } => {
-                        match self.release_unstarted_attempt(trace_dir, attempt_id) {
-                            Ok(()) => true,
-                            Err(refusal) => {
-                                // Reported, never returned: the spawn error
-                                // stays the only cause the caller sees.
-                                eprintln!("{}", refused_release_warning(&refusal));
-                                false
-                            }
-                        }
-                    }
+                    // A refusal is reported, never returned: the spawn error
+                    // stays the only cause the caller sees.
+                    State::Enabled { trace_dir, .. } => self
+                        .release_unstarted_attempt(trace_dir, attempt_id)
+                        .inspect_err(|refusal| eprintln!("{}", refused_release_warning(refusal)))
+                        .is_ok(),
                     _ => false,
                 };
                 if released {

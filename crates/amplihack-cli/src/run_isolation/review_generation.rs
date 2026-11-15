@@ -222,22 +222,7 @@ fn read(checkout: &Path) -> Result<Generation> {
     {
         bail!("invalid review generation ownership");
     }
-    let storage = storage_of(&generation)?;
-    // Storage is always created beside the checkout as review-generation-*,
-    // so a record naming storage anywhere else is never trusted or removed.
-    let confined = storage.parent().is_some() && storage.parent() == checkout.parent();
-    let named = storage
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with("review-generation-"));
-    if !confined || !named {
-        bail!("review storage is outside its allocation directory; refusing to trust it");
-    }
-    if generation.repository != storage.join("repository.git")
-        || generation.launch != storage.join("launch")
-    {
-        bail!("invalid review resource paths");
-    }
+    let storage = checked_storage_of(&generation)?;
     // A retired generation's checkout and storage were removed on purpose;
     // `release` checks the storage path itself before removing anything.
     if !generation.retired {
@@ -256,6 +241,36 @@ fn read(checkout: &Path) -> Result<Generation> {
 }
 fn storage_of(generation: &Generation) -> Result<&Path> {
     generation.repository.parent().context("review storage")
+}
+/// The generation's storage directory, checked against the shape every
+/// generation is created with: beside the checkout, named
+/// `review-generation-*`, and holding the recorded `repository.git` and
+/// `launch`. Storage is always created there, so a record naming storage
+/// anywhere else is never trusted and nothing at that path is removed.
+///
+/// Both [`read`] and [`remove_storage`] check it here rather than once on
+/// the way in, because `provision` builds a `Generation` in memory that
+/// never passes back through [`read`]; a removal trusting its caller would
+/// be checked on one path into it and unchecked on the other.
+fn checked_storage_of(generation: &Generation) -> Result<&Path> {
+    let storage = storage_of(generation)?;
+    let confined = storage.parent().is_some() && storage.parent() == generation.checkout.parent();
+    let named = storage
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("review-generation-"));
+    if !confined || !named {
+        bail!(
+            "review storage is outside its allocation directory; refusing to trust it: {}",
+            storage.display()
+        );
+    }
+    if generation.repository != storage.join("repository.git")
+        || generation.launch != storage.join("launch")
+    {
+        bail!("invalid review resource paths: {}", storage.display());
+    }
+    Ok(storage)
 }
 /// [`read`] for every caller that trusts or uses the generation: a retired
 /// generation is refused. Only `release`, `release_state` and the child walk
@@ -490,14 +505,11 @@ fn retire(checkout: &Path, mut generation: Generation) -> Result<()> {
 /// including a missing path, is `false`; the caller then refuses and removes
 /// nothing.
 fn is_recorded_dir(path: &Path, expected: (u64, u64)) -> bool {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            !metadata.file_type().is_symlink()
-                && metadata.is_dir()
-                && (metadata.dev(), metadata.ino()) == expected
-        }
-        Err(_) => false,
-    }
+    fs::symlink_metadata(path).is_ok_and(|metadata| {
+        !metadata.file_type().is_symlink()
+            && metadata.is_dir()
+            && (metadata.dev(), metadata.ino()) == expected
+    })
 }
 /// Removes a generation's storage directory only when the whole recorded
 /// tree is still there: the storage directory itself (`identities[0]`), and
@@ -512,12 +524,6 @@ fn is_recorded_dir(path: &Path, expected: (u64, u64)) -> bool {
 /// recorded credential. A substitute cannot also reproduce the recorded
 /// children, so the recorded set is what authorises the removal.
 ///
-/// The storage path is derived from the record here rather than taken as an
-/// argument, and its confinement re-checked, because `provision` builds a
-/// `Generation` in memory that never passes back through [`read`]; a removal
-/// trusting its caller would be checked on one path into it and unchecked on
-/// the other.
-///
 /// `identities[2]`, the checkout, is deliberately not consulted: it is a
 /// sibling of storage rather than part of it, and on the retired path it is
 /// already gone.
@@ -528,22 +534,7 @@ fn is_recorded_dir(path: &Path, expected: (u64, u64)) -> bool {
 /// below the root can redirect the walk. The exposure is narrowed to the
 /// root component, not closed.
 fn remove_storage(generation: &Generation) -> Result<()> {
-    let storage = storage_of(generation)?;
-    let confined = storage.parent().is_some() && storage.parent() == generation.checkout.parent();
-    let named = storage
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with("review-generation-"));
-    if !confined
-        || !named
-        || generation.repository != storage.join("repository.git")
-        || generation.launch != storage.join("launch")
-    {
-        bail!(
-            "review storage is outside its allocation directory; refusing to remove it: {}",
-            storage.display()
-        );
-    }
+    let storage = checked_storage_of(generation)?;
     match fs::symlink_metadata(storage) {
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
