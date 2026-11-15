@@ -126,6 +126,15 @@ cause() { CAUSES="${CAUSES}${CAUSES:+; }$1"; }
 HEAD_SHA=""
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || printf '')"
+  # git rev-parse prints its own argument when it cannot resolve it, so a
+  # checkout with no commit in it would record the word HEAD here. The
+  # value is an object name or nothing at all: hexadecimal, at least seven
+  # digits long, and anything else becomes empty before it is printed.
+  case "$HEAD_SHA" in
+    [0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]*) ;;
+    *) HEAD_SHA="" ;;
+  esac
+  case "$HEAD_SHA" in *[!0-9a-fA-F]*) HEAD_SHA="" ;; esac
 else
   echo "[skip] not a git repo; the qa evidence records no head sha, so the merge gate refuses it rather than merging unbound evidence" >&2
 fi
