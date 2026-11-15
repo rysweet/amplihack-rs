@@ -1579,6 +1579,46 @@ The hook acts only when Claude Code runs it, on a `StopFailure` event with
   session then hits a limit on the second login, that is a new event and
   the hook waits for the next swap.
 
+### When a session stays on the usage-limit menu
+
+Claude Code can continue a session by itself when the usage limit resets.
+The setting is "Continue automatically at usage limit" in `/config`, stored
+as `autoContinueAtUsageLimit` in `settings.json` (see
+[`autoContinueAtUsageLimit`](https://code.claude.com/docs/en/settings-reference#autocontinueatusagelimit)
+in the Claude Code settings reference). In Claude Code 2.1.325 a missing
+key counts as on, so a session needs no entry for it. Leave it on: `false`
+removes the continue at the reset, and a session the hook does not resume
+then waits for a person.
+
+Check what a settings file holds:
+
+```bash
+jq 'has("autoContinueAtUsageLimit"), .autoContinueAtUsageLimit' ~/.claude/settings.json
+```
+
+```
+false
+null
+```
+
+`false` and `null` mean the key is absent and the setting is on. If `jq`
+reports a parse error instead, the file does not parse. In Claude Code
+2.1.325 a `settings.json` that does not parse turns automatic continuation
+off, together with the file's other settings. Repair the file; adding the
+key to a file that does not parse changes nothing. `amplihack install` and
+the rotator do not write this key, and leave any value you set alone.
+
+Whether a session at its limit gets a continue put in place for the reset
+or the options menu (`What do you want to do?`) is decided by a server-side
+control in Claude Code. Neither amplihack nor the setting above changes
+that choice. On
+[#2695](https://github.com/rysweet/amplihack-rs/issues/2695) a standing
+session stayed on the menu after the `limit-resume` hook had run and the
+rotator had a login with room. When that happens, the session goes on only
+when a person answers the menu or the limit resets. Continue it by hand as
+in [Continue a session yourself](#continue-a-session-yourself). The findings
+apply to Claude Code 2.1.325; check them again after an upgrade.
+
 ### Continue a session yourself
 
 If the hook did not resume a session (no rotator, no swap, `watch-lost`,
