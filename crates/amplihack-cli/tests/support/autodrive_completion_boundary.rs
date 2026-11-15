@@ -12,8 +12,22 @@ if [ "${1:-} ${2:-}" = 'recipe show' ]; then exit 0; fi
 [ "${1:-} ${2:-}" = 'recipe run' ] || exit 2
 name="$(basename "$3" .yaml)"; shift 3
 if [ "$name" = loop-health-evaluator ]; then
+  # The context dir is a temporary of the dispatch and is gone once it
+  # returns, so the values are read here and logged with the call (#2333).
+  ctx="$(
+    prev=""
+    for a in "$@"; do
+      case "$prev" in
+        --context-from-file) jq -n --arg k "${a%%=*}" --rawfile v "${a#*=}" '{($k): $v}' 2>/dev/null ;;
+        -c) jq -n --arg k "${a%%=*}" --arg v "${a#*=}" '{($k): $v}' ;;
+      esac
+      prev="$a"
+    done | jq -cs 'add // {}'
+  )"
+  [ -n "$ctx" ] || ctx='{}'
   jq -cn --arg depth "$AMPLIHACK_SESSION_DEPTH" --arg ceiling "$AMPLIHACK_MAX_DEPTH" \
-    --arg cwd "$PWD" --args '$ARGS.positional as $argv | {depth:$depth,ceiling:$ceiling,cwd:$cwd,argv:$argv}' -- "$@" >> "$FAKE_LOG/evaluator.jsonl"
+    --argjson ctx "$ctx" \
+    --arg cwd "$PWD" --args '$ARGS.positional as $argv | {depth:$depth,ceiling:$ceiling,cwd:$cwd,context:$ctx,argv:$argv}' -- "$@" >> "$FAKE_LOG/evaluator.jsonl"
   if [ -f "$FIXTURE/eval-rc" ]; then
     [ ! -f "$FIXTURE/eval-message" ] || cat "$FIXTURE/eval-message"
     exit "$(cat "$FIXTURE/eval-rc")"

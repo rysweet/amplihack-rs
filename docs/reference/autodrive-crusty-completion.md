@@ -1,7 +1,7 @@
 ---
 title: Auto-drive Crusty Completion Contract
-description: Completion-first dispatch, decision integrity, and follow-up finalization for Crusty reviews.
-last_updated: 2026-11-12
+description: Completion-first dispatch, decision integrity, the PR head check without GraphQL, and follow-up finalization for Crusty reviews.
+last_updated: 2026-11-15
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -23,6 +23,7 @@ loop's own evaluator and completion policy are unchanged.
 
 ## Contents
 
+- [Crusty loop preflight](#crusty-loop-preflight)
 - [Next-action judgment](#next-action-judgment)
 - [Rust helper operations](#rust-helper-operations)
 - [Decision format](#decision-format)
@@ -30,8 +31,52 @@ loop's own evaluator and completion policy are unchanged.
 - [Head check outcomes](#head-check-outcomes)
 - [Results and accounting](#results-and-accounting)
 - [Follow-up finalization](#follow-up-finalization)
+- [Readiness assessment outcomes](#readiness-assessment-outcomes)
 - [Behavior examples](#behavior-examples)
 - [Configuration and failures](#configuration-and-failures)
+
+## Crusty loop preflight
+
+Step `step-01-crusty-loop-preflight` in `autodrive-crusty-loop.yaml` decides
+whether the Crusty loop runs. `should_run` is the string `"true"` or
+`"false"`. Steps `step-02-crusty-loop` and `step-03-record-crusty-phase` run
+only when it is `"true"`. An open PR with a verified worktree at the PR head,
+valid private state and no complete Crusty round at that head always runs the
+loop.
+
+`should_run` is `"false"` only in these cases, each with named blockers:
+
+| `skip_reason` | Observation |
+| --- | --- |
+| `merged` | The PR is merged. |
+| `closed` | The PR is closed without merging. |
+| `complete-at-head` | An evidence-valid `CLEAN` or `MINOR_ONLY` round already exists at the current PR head. |
+| `no-access` | The PR cannot be read, or cannot be identified unambiguously, through any configured authenticated interface. |
+| `no-worktree` | No linked worktree for the PR head branch can be found or verified. |
+| `no-state` | The private state directory cannot be created, or existing state is unsafe. `state_dir` is then `""`. |
+| `worktree-diverged` | The worktree and the PR head have diverged and cannot be reconciled without losing commits. |
+
+`skip_reason` is `""` if and only if `should_run` is `"true"`. It is
+informational: the step conditions compare only `should_run`.
+
+The preflight agent decides whether a round is complete at the head, using
+the rule from #2345: a `CLEAN` round, or a `MINOR_ONLY` round whose follow-up
+obligations are met. No Rust function makes that judgement. An existing open
+PR whose round at the current head is incomplete, missing or recorded at an
+older head is not `complete-at-head`, so step-02 and step-03 run.
+
+The worktree position relative to the PR head affects the result as follows:
+
+- A worktree behind the PR head is repaired with `git fetch` and
+  `git merge --ff-only`, then checked again with
+  `amplihack orch helper autodrive worktree`. The loop then runs.
+- A worktree that has diverged is reported as `worktree-diverged` and the
+  loop does not run. Reset, force and branch switches are not used.
+- A worktree ahead of the PR head is treated as the head under review, and a
+  review receipt for that local head does not count as merge readiness at a
+  different remote PR head: `completion::verify` rejects a receipt bound to
+  another head
+  (`receipt_for_a_local_ahead_head_is_not_readiness_at_another_pr_head`).
 
 ## Next-action judgment
 
@@ -43,7 +88,7 @@ After the round record is written, an agent reads the record and its
 | `CLEAN`, and `reviewed_head_sha` equals `head_sha` | `complete` | Finalize required follow-ups, then record phase completion. |
 | `MINOR_ONLY`, and `reviewed_head_sha` equals `head_sha` | `complete` | File or verify every minor follow-up before recording phase completion. |
 | `CONCERNS` (blocking or major concerns open), including after a round with commits when the heads differ | `evaluate` | Retain remediation, progress and budget checks, then evaluate convergence where applicable. |
-| `CLEAN` or `MINOR_ONLY`, but `reviewed_head_sha` differs from `head_sha` | `evaluate`, with the head mismatch as the reason | The new head is not reviewed yet, so `complete` is not allowed. Dispatch currently refuses this decision too, so the round stops with a dispatch error. It fails closed and grants no merge authority; changing dispatch is a follow-up under #2472. |
+| `CLEAN` or `MINOR_ONLY`, but `reviewed_head_sha` differs from `head_sha` | `evaluate`, with the head mismatch as the reason | The new head is not reviewed yet, so `complete` is not allowed. Dispatch does not accept this decision either, so the round stops with a dispatch error. It fails closed and grants no merge authority. Dispatch's own head check reaches the same closed failure from its own read ([Differs](#the-three-outcomes)); routing either of them to the evaluator instead of erroring is still a follow-up under #2472, which this change does not settle. |
 | Invalid evidence: missing or unreadable record, no verdict, or a failed or refused round (rc not 0, exit `79`) | `evaluate`, with the fault as the reason | Never `complete`. Dispatch keeps its own failure handling: exits `79` and `75` return before the decision is read, a missing or unreadable record fails dispatch validation, and a record with no verdict goes to the evaluator as `MISSING`. |
 
 The PR head is the round record's `head_sha`. The agent compares
@@ -83,7 +128,7 @@ driver interfaces; operators use the existing auto-drive recipe invocation.
 
 | Operation | Responsibility |
 | --- | --- |
-| Prepare | Accept `--pr <n>` (the PR number, `1`–`9999999999`) and store it in the private state as `pr`. Create a fresh unpredictable run identity, a unique per-round decision output path, and driver-owned identity, evidence snapshots and evaluator launch context. |
+| Prepare | Accept the PR number as `--pr <n>` (`1` to `9999999999`) and store it in the private state as `pr`. Create a fresh unpredictable run identity, a unique per-round decision output path, and driver-owned identity, evidence snapshots and evaluator launch context. |
 | Seal | The record-writing bash step captures fresh evidence before the next-action agent runs. Direct clients preparing existing records seal during prepare. |
 | Write | Accept typed `complete` or `evaluate` and a bounded reason; compute the designated record's hash and atomically create the decision. |
 | Dispatch | Independently validate the decision and evidence; return objective completion or launch the trusted evaluator with typed process arguments. |
@@ -125,6 +170,8 @@ Dispatch validates all of the following independently of the agent's claim:
 - Current reviewed-head evidence and the recorded child execution status.
   A completion claim additionally requires successful child execution and an
   allowed `CLEAN` or `MINOR_ONLY` round result.
+- The PR's head on GitHub, read after every check above has passed; see
+  [Head check outcomes](#head-check-outcomes).
 - Private directory ancestry, ownership, permissions and regular-file types.
   Descriptor-relative no-follow opens and descriptor metadata checks avoid
   races between path validation and use.
@@ -145,43 +192,148 @@ step from arbitrary code running as that user.
 
 ## Head check outcomes
 
-Dispatch compares the reviewed head with the PR's current head. The PR number
-comes from the private state's `pr` field, which `autodrive_completion_context.sh`
-passes to Prepare as `--pr` when `AD_PR` is a valid number. State files
-written before this field existed have no `pr`; dispatch then looks up the
-open PR for the branch through `pulls?head={owner}:{branch}&state=open`. A
-`pr` of `0` counts as absent.
+Dispatch reads the PR's head on GitHub and compares it with the head the
+round reviewed. No GraphQL call is made on this path: `gh pr view --json
+headRefOid` is not used, so an exhausted GraphQL allowance cannot decide a
+clean round (#2333). The merge step's own reads are separate and are
+described in [Auto-drive REST Reads](autodrive-rest-reads.md).
 
-The head is read with the [GitHub read cascade](autodrive-github-reads.md#the-read-cascade):
-GraphQL, then REST, then `git ls-remote origin refs/pull/{n}/head`. The check
-has three outcomes, matched explicitly in `dispatch.rs`:
+### Where the PR number comes from
 
-| Outcome | When | Result |
+`autodrive_completion_context.sh` passes the merge loop's existing `AD_PR` to
+Prepare as `--pr <n>` when it matches `^[1-9][0-9]{0,9}$`, and Prepare stores
+it in the private state as `pr`. Nothing else supplies it. It is never read
+from the round record, from the evaluator context, or from any file the
+round's agent can write. A state file written before this field existed has
+no `pr`, and a `pr` of `0` counts as absent; dispatch then resolves the head
+from the PR worktree's current branch, whose name is validated before it is
+composed into a ref.
+
+### The two read routes
+
+| Order | Read | Used when |
 | --- | --- | --- |
-| `head-matches` | A source answered with the reviewed head SHA. | Dispatch continues. |
-| `head-differs` | A source answered with another SHA. | Refused: `current PR head differs from reviewed evidence`. A real finding; fails closed as before. |
-| `head-unavailable` | Every source failed, or the PR number read was unavailable (`pr-number-unresolved`). | `complete` becomes `WAITING`, exit `76`. |
-| refused | Every source refused the read (bad credentials, no permission, not found), the branch has no open PR, or the worktree is not on a branch. | An error, not a wait: `the PR head read was refused on every path (…); not a wait`. Waiting would not clear it. |
+| 1 | `git ls-remote <canonical origin URL> refs/pull/{n}/head` | Always first. It is correct for fork PRs as well as same-repository ones, and uses the git protocol, so neither API allowance applies to it. |
+| 2 | `gh api repos/{owner}/{repo}/pulls/{n} --jq .head.sha` | Route 1 answered with no line. |
 
-The record, manifest and sidecar checks run **before** the head read. An
-invalid record is still refused as `INVALID_DECISION` when the head is also
-unavailable, so a rate limit cannot turn a bad record into a wait.
+These are two routes to one fact, not a retry schedule. Neither is repeated,
+nothing sleeps between them, and no further read follows the second.
 
-A `head-unavailable` dispatch prints one JSON line and exits `76`:
+`origin` is resolved from `remote.origin.url` and has to read as
+`https://github.com/<owner>/<repo>` or `git@github.com:<owner>/<repo>`, with
+or without a `.git` suffix. Any other value is `origin-not-github` and gives
+the unavailable outcome, never `Matches` and never `Differs`. The verified
+`<owner>/<repo>` pair is then used on both routes, rather than letting `gh`
+resolve the repository from the worktree's remotes, and `git ls-remote` is
+invoked with the canonical HTTPS URL as a literal argument, from a directory
+outside the PR worktree, with `GIT_CONFIG_NOSYSTEM=1`,
+`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT`
+removed, `GIT_TERMINAL_PROMPT=0`, and `GIT_ASKPASS` and `SSH_ASKPASS`
+removed. The round's own agent writes inside that worktree, so a remote, an
+`insteadOf` rewrite or a credential helper configured there must not reach
+this read; and a remote that asks for credentials must fail rather than wait
+for an answer that will not come.
+
+Both SHAs are validated as 40 or 64 lowercase hex characters and compared as
+whole strings. Exactly one `ls-remote` line with a valid first field counts
+as an answer: zero lines falls through to route 2, and more than one line is
+unavailable rather than a choice among them.
+
+### The three outcomes
+
+| Outcome | When | What dispatch does |
+| --- | --- | --- |
+| Matches | A route answered with the reviewed head SHA. | The decision proceeds as before: `complete` writes the `.dispatched` receipt and returns `loop_result` `DONE` with `evaluator_invoked` `false`. |
+| Differs | A route answered with another SHA. | An error, naming both commits: the reviewed head is no longer the PR's head, so the completion claim is stale. It fails closed and grants no merge authority. The message says only that the head differs; it never says "unavailable". |
+| Unavailable | No route answered, the PR number could not be resolved, or `origin` is not a GitHub remote. | Not an error. Dispatch writes the `.dispatched` receipt and runs the loop-health evaluator with the fault stated in its context, so the round is judged by the agentic evaluation with the evidence in front of it. |
+
+Before #2333 the two read failures and the moved head shared one message,
+and an unavailable read ended the round as `INVALID_DECISION`, which stopped
+the merge loop with `crusty-rereview-not-done`. Neither is reachable from an
+unavailable read now. Dispatch has no `WAITING` result and no exit code of
+its own for this case: the exit codes `79` and `75` keep
+their existing meanings, and nothing new enters that space.
+
+### The dispatch line
+
+A `Matches` completion is unchanged except for an additive `head_read` field:
 
 ```json
-{"loop":"crusty","loop_result":"WAITING","round_label":"round-1","reason":"the PR head could not be read on any path","wait_reason":"head-unavailable","wait_target":"ratelimit-reset@1794528000","evaluator_invoked":false}
+{"loop":"crusty","loop_result":"DONE","round_label":"round-14","round_verdict":"CLEAN","source":"objective-completion","evaluator_invoked":false,"head_read":"matches"}
 ```
 
-`wait_target` is `ratelimit-reset@<epoch>` or `ratelimit-reset@unknown` when a
-rate limit refused the read, `read@pr-number` when the PR number read was
-unavailable, otherwise `read@pr-head`. On `WAITING` dispatch
-creates no `.dispatched` receipt, does not run the evaluator and does not
-write the sealed record, so the same decision can be dispatched again when the
-drive resumes. `autodrive_loop.sh` maps exit `76` to `record_result WAITING`
-and exits `0`; it never maps it to `INVALID_DECISION`. A child process that
-exits `76` is not passed through as `WAITING`. `head-unavailable` never grants
-completion. See [The WAITING result](autodrive-github-reads.md#the-waiting-result).
+An unavailable read runs the evaluator, so the line is the evaluator's, with
+`evaluator_invoked` `true` and `head_read` naming the fault:
+
+```json
+{"loop":"crusty","loop_result":"CONTINUE","round_label":"round-14","source":"loop-health-evaluator","evaluator_invoked":true,"head_read":"unavailable:read-failed"}
+```
+
+### What the evaluator is told
+
+An unavailable read inserts `loop_head_read` into the evaluator's context,
+alongside `loop_ci_signal` and the other declared keys. Its default is the
+empty string, so every other caller is unaffected, and the step-02 prompt
+states that a non-empty value is a fault in reading GitHub rather than
+evidence about the branch, and that the round's own verdict still stands.
+
+`loop_head_read` is not a member of `evaluator::FIELDS`, so a context key of
+that name supplied through the shell is still rejected as an unknown field.
+Dispatch inserts it directly, and applies the same constraints at that point:
+one line, no NUL, no control characters, and a bounded length.
+
+### The grammar of the two fields
+
+Both fields carry program-generated tokens and nothing else. The token set is
+closed:
+
+| Token | Meaning |
+| --- | --- |
+| `read-failed` | Neither route answered. |
+| `origin-not-github` | `remote.origin.url` is not a GitHub remote in an accepted form. |
+| `pr-number-unresolved` | No PR number was supplied and none could be resolved from the worktree's branch. |
+| `ambiguous-ref` | `git ls-remote` returned more than one line for the ref. |
+| `bad-sha` | A route answered, but the SHA did not validate as 40 or 64 lowercase hex characters. |
+
+`head_read`, on the dispatch line, matches:
+
+```
+^(matches|unavailable:(read-failed|origin-not-github|pr-number-unresolved|ambiguous-ref|bad-sha))$
+```
+
+`loop_head_read`, in the evaluator's context, carries the bare token and is
+empty when the head read did not fail:
+
+```
+^(read-failed|origin-not-github|pr-number-unresolved|ambiguous-ref|bad-sha)?$
+```
+
+No exit status, no text from `gh` or `git` standard error, and no check name,
+PR title, branch name, path or URL appears in either field. All of those can
+be set by anyone who can open a pull request or name a workflow, and both
+values are read by an agent.
+
+There is no `differs` value in either field. A `Differs` outcome stops the
+round with a dispatch error instead of writing a dispatch line, so the only
+record of it is that error, which names both commits.
+
+### Why an unreadable head cannot complete a round
+
+The unavailable outcome is reachable by anything that breaks a read, so it
+does not fail closed on its own. Three properties together keep it from
+becoming a completion:
+
+1. The head check runs only after `evidence::validate` has accepted the
+   record, and only for a `CLEAN` or `MINOR_ONLY` verdict. An invalid record
+   with an unreadable head is still `INVALID_DECISION`.
+2. The record is bound by hash to its manifest row, with the review
+   directory stamp compared.
+3. The evaluator's `DONE` is downgraded to `CONTINUE` for an unresolved
+   review, so an unavailable read costs one further Crusty round rather than
+   completing one.
+
+The third property is not special-cased for this path. The cost is one round
+on a rare fault, against a clean round discarded every time a read failed.
 
 ## Results and accounting
 
@@ -192,6 +344,7 @@ Accepted objective completion returns these structured fields:
 | `source` | `objective-completion` |
 | `loop_result` | `DONE` |
 | `evaluator_invoked` | `false` |
+| `head_read` | `matches` |
 
 The real round verdict remains `CLEAN` or `MINOR_ONLY`; it is not rewritten
 to persuade an evaluator. Round records, reviewed-head evidence, sidecars,
@@ -233,6 +386,106 @@ available for recovery without duplicate issues. Later merge-loop filing
 remains idempotent, and finalization refuses to report readiness while a
 required follow-up is unrecorded.
 
+## Readiness assessment outcomes
+
+> **Retired (#2575).** This section, down to
+> [Behavior examples](#behavior-examples), describes the parsed readiness
+> record (`CandidateRecord`), `helper autodrive assess` and `round`, and the
+> finalisation steps `refresh-readiness`, `remeasure-readiness` and
+> `accept-remeasured-readiness`. All of them were removed when merge
+> readiness became an agentic step. Criterion 3 is now judged from the PR's
+> own Crusty verdict comment, not from a record. See
+> [Merge-ready round, merge and hand-off](autodrive-merge-ready-round.md),
+> in particular [Crusty verdict at the head](autodrive-merge-ready-round.md#crusty-verdict-at-the-head).
+> The text below is kept only to explain older runs' logs.
+
+`amplihack orch helper autodrive assess` and `round` read the agent's
+`CandidateRecord`. A parse fault, an unknown value in a tolerant string field
+or stale evidence is reported as a recoverable, named blocker with exit 0 and
+never produces readiness. The record rules are in the skill's
+`evidence-contract.md`.
+
+Faults found by `validate_candidate` after these checks remain hard errors
+and exit non-zero, for example a criterion that is incomplete and has no
+cause. Making those recoverable is tracked separately in #2539.
+
+| Fault | Blocker |
+| --- | --- |
+| `null`, missing or `"unknown"` value in a tolerant string field | `unknown-field:<path>`, for example `unknown-field:attempts[0].cause` |
+| Any other parse failure, such as a bad enum value or an unknown key | `evidence-parse-error:<class> at line <n> column <n>` |
+| Evidence head differs from the worktree `HEAD` | `stale-evidence-head` |
+| Evidence base differs from the current base | `stale-evidence-base` |
+| Evidence merge-base differs from the current merge-base | `stale-evidence-merge-base` |
+| The worktree `HEAD` cannot be read, for example in a repository with no commits | `current-head-unreadable` |
+
+The field at line 1 column 26 in the failure reported in #2556 is
+`attempts[0].cause`: in `{"attempts":[{"cause":null` the `null` token ends at
+column 26. The writer rule in `evidence-contract.md` and in the refresh,
+remeasure and merge-round prompts is `"cause":"none"` for an attempt that
+succeeded and `"unknown"` for any value that could not be observed. The
+reader treats `null`, a missing key and `"unknown"` the same way, so a writer
+that breaks the rule produces a blocker, not a parse failure that ends the
+round. No output ever contains serde's message text, such as
+`invalid type: null, expected a string`.
+
+Unknown-field and parse blockers come first, followed by drift or
+`current-head-unreadable` blockers.
+
+The merge-base is compared only when the head and base match. Once the head
+or base has drifted, the merge-base check is skipped and only the drift
+blockers are reported. When the worktree `HEAD` cannot be read, no
+comparison is made: the only drift blocker is `current-head-unreadable`, and
+both `current_head` and `current_base` are printed as `""`.
+
+Integrity faults stay hard errors and exit non-zero, because refreshing the
+evidence cannot fix them: oversize input, an invalid binding, an invalid
+branch name, a head branch that does not match, grafts, and every Git
+failure other than reading `HEAD`.
+
+For any of these faults, `assess` prints the following, writes no snapshot
+and changes nothing in the state directory:
+
+```json
+{"status":"refresh_required","accepted":null,"readiness":"incomplete","refresh_required":true,"evidence_head":"<40 or 64 hex, or empty>","current_head":"<40 or 64 hex, or empty>","current_base":"<40 or 64 hex, or empty>","blockers":["stale-evidence-head"]}
+```
+
+Each SHA field holds 40 or 64 hexadecimal characters, or `""` when the value
+does not have that form.
+
+An accepted candidate prints the existing result with `"status":"accepted"`
+and `"refresh_required":false` added.
+
+For the same faults, `round` writes a round record with
+`merge_ready_verdict` `NOT_MERGE_READY`, `test_signal` `BLOCKED`,
+`ci_signal` `UNVERIFIED`, `accepted_evidence` null and the `blockers`
+array, and writes the blockers one per line to `<record>.findings`. The
+loop's progress check reads that file, so a writer fault that repeats at the
+same head stops the loop as no progress with the blocker named.
+Authorisation, the state directory, a record path whose parent is not the
+state directory and an existing record path remain hard errors, checked
+before anything is written.
+
+`autodrive-finalize.yaml` measures stale evidence again once:
+
+1. `accept-refreshed-readiness` assesses the refreshed candidate.
+2. When its `status` is `refresh_required`, `remeasure-readiness` builds a
+   new `CandidateRecord` at the current head, base and merge-base, and
+   `accept-remeasured-readiness` assesses it through the full pipeline. The
+   second result replaces `accepted_readiness`.
+3. `finalize-observed-action` and `reduce-observed-outcome` run only when
+   `status` is `accepted`.
+4. Otherwise `report-unaccepted-readiness` reports
+   `{"outcome":{"readiness":"incomplete","blockers":[...]},"accepted_snapshot":null}`.
+
+There is no further loop and no timer. A remeasured candidate gains no trust
+from the first assessment. `validate_reduction` still requires the evidence
+head to equal the worktree head, so a merge is never reduced against a head
+that moved after acceptance; an unreadable worktree `HEAD` also fails
+reduction. Evidence measured at a newer head still needs a Crusty
+review covering that head: `review::verify` reports `crusty-review-required`
+for substantive commits after `reviewed_head_sha`, and `completion::verify`
+rejects a receipt bound to another head.
+
 ## Behavior examples
 
 | Input and evidence | Observable result |
@@ -244,15 +497,24 @@ required follow-up is unrecorded.
 | Major findings recur with no measured progress | Existing no-progress detection or evaluator judgment stops as `STUCK`. |
 | Unresolved `CONCERNS`, evaluator says `DONE` | No phase advancement; require re-review and retain inconsistent-`DONE` safeguards. |
 | Completion decision from another run, altered sidecar, changed reviewed head, or failed child | Reject completion; no phase marker. |
-| Valid `CLEAN`, GraphQL head read refused by a secondary rate limit, REST head matches | `head-matches`; objective completion as usual. |
-| Valid `CLEAN`, every head read fails | `loop_result=WAITING`, `wait_reason=head-unavailable`, exit `76`; not `INVALID_DECISION`, no receipt. |
+| Valid `CLEAN`, head reviewed and head on GitHub both `b5864181`, every GraphQL read unavailable | `head_read=matches` from `git ls-remote`; objective completion as usual. |
+| Valid `CLEAN`, `git ls-remote` fails and the REST read is unavailable | The evaluator runs with `loop_head_read` set; `evaluator_invoked=true`. Not `INVALID_DECISION`, and the merge loop does not stop with `crusty-rereview-not-done`. |
+| Valid `CLEAN`, a route answers with a SHA other than the reviewed head | A dispatch error naming both commits. No completion, no merge authority. |
+| Open PR, worktree behind the PR head, no complete round at that head | Preflight fast-forwards the worktree; `should_run="true"`, `skip_reason=""`; the Crusty loop runs. |
+| Open PR, worktree diverged from the PR head | `should_run="false"`, `skip_reason="worktree-diverged"`; the worktree is left unchanged. |
+| Merge-ready verdict with `"cause":null` in an attempt that did not succeed | `round` exits 0 with `NOT_MERGE_READY` and `unknown-field:attempts[0].cause`. |
+| Merge-ready verdict with the `cause` key removed from an attempt that did not succeed | `assess` exits 0 with `status=refresh_required` and `unknown-field:attempts[0].cause`. |
+| Refreshed candidate bound to commit A while the worktree is at commit B | `assess` exits 0 with `status=refresh_required`, `stale-evidence-head` and `current_head` B; finalize remeasures once. The candidate re-bound to B is `accepted` with `binding.head_sha` B, and only then does `finalize-observed-action` run. |
+| Remeasured candidate still refused | `report-unaccepted-readiness` records `readiness: incomplete` with the blockers and exits 0; recovery takes over. |
+| Repository with no commits, where the binding names the unborn current branch | `assess` exits 0 with `status=refresh_required`, `current_head` and `current_base` `""`, and `current-head-unreadable`. |
+| Candidate whose binding names another head branch | Hard error, non-zero exit; no refresh is attempted. |
 
 ## Configuration and failures
 
 Completion-first dispatch requires no new operator setting and applies in
 every repository. Existing `plan_task_id`, `autodrive_state_dir`,
 `autodrive_dry_run` and `autodrive_budget_*` settings retain their roles; see
-the [auto-drive skill](../claude/skills/auto-drive-to-merge/SKILL.md#invoking-it).
+the [auto-drive skill](../claude/skills/auto-drive-to-merge/SKILL.md#invocation-and-authorization).
 Pre-round budget checks still run before spending another review session.
 
 An installation without the Rust helper fails preflight with an explicit
