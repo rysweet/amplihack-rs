@@ -4803,7 +4803,10 @@ the rotator applies to its [plan pool](#plan-pool). Every selection
      over, and a launch or rerun writes `ALERT: API key not used
      session=<account>: …; auto-switch from <profile>` to stderr every time
      and to the rotate log once per set of unmeasured profiles (again once
-     the set changes or every plan profile has a reading). `session=` is the
+     the set changes or every plan profile has a reading). The
+     [usage-limit wait's own capacity check](#capacity-for-a-profile-step)
+     makes the same choice without writing the line, so a step waiting out
+     a limit does not repeat it every 30 s. `session=` is the
      account of the session that ran out; `live=`, in the rotator's form of
      the line, is the login in `~/.claude`. Excluded profiles do not count,
      and neither do those the rotator skips as `no login` or `not oauth`,
@@ -5540,7 +5543,7 @@ profile and never appears in `profile list`.
 | `capacity-weights.json` | Optional, written by you. Each login's weight in the capacity summary; see [Capacity weights](#capacity-weights). A JSON object, capped at 64 KiB, with no `version`. |
 | `usage-history.jsonl` | One line per measured cycle from `profile usage` and the rotator, kept for eight days; see [Usage history](#usage-history). JSON lines, not one JSON document; read from the last 4 MiB. |
 | `usage-history.lock` | Lock for writers of `usage-history.jsonl`. Separate from `lock`. |
-| `key-held` | The unmeasured plan profiles named by the last `ALERT: API key not used session=…` that auto-switch wrote to the rotate log, one name per line, so the same set is logged once. Removed once every plan profile has a reading. Not JSON. |
+| `key-held` | The unmeasured plan profiles named by the last `ALERT: API key not used session=…` that auto-switch wrote to the rotate log, one name per line, so the same set is logged once. Removed once every plan profile has a reading. Written by the launch and rerun checks only, never by the [usage-limit wait's capacity check](#capacity-for-a-profile-step). Not JSON. |
 | `notice/<session>` | The last capacity state shown in a Claude session; see [Notice records](#notice-records). Unlike the other state files, it is a bare word, not JSON, and is read up to 64 bytes. |
 
 Apart from `capacity.json`, `capacity-weights.json`, `usage-history.jsonl`
@@ -11138,10 +11141,27 @@ A reset wait starts on its reset alone, so it never consults the start check
 in [When a capacity wait starts](#when-a-capacity-wait-starts) and does not
 need a rotator running. Without a rotator, though, an unattended recipe run
 has nothing recording readings, so such a wait usually still runs to its
-reset. The check itself adds four bounded reads every 30 s: the effective
-configuration, the auto-switch ledger, the readings file, and a listing of
-the profile root to enumerate the stored profiles. There is no new timer,
-poll or retry; the check rides the 30 s probe the fingerprint already uses.
+reset. The check itself is a set of bounded local reads, repeated every
+30 s: the effective configuration, the auto-switch ledger, the readings
+file, a listing of the profile root to enumerate the stored profiles, the
+[overflow inputs](#auto-switch-and-overflow-profiles), and one `stat` per
+candidate login for its [login check](#api-key-login-check). None of them
+makes a network call. There is no new timer, poll or retry; the check rides
+the 30 s probe the fingerprint already uses. A read that fails, and a file
+that is missing or damaged, counts as no candidate, so the wait runs on to
+its deadline rather than moving the step.
+
+**The check writes nothing.** It makes the same choice as the auto-switch
+rerun check, by the same candidate rules, but it does not print the
+`ALERT: API key not used session=…` line to the step's stderr, append it to
+the [rotate log](#rotate-log), or write the
+[`key-held` marker](#state-directory). A wait may run for five hours, so
+those writes would otherwise repeat around six hundred times and crowd the
+step's output. The alert for a step that is waiting was written once by the
+rerun check before the wait began, which is the record of why work was held
+off the API key. One consequence: a `key-held` marker left by that earlier
+check is not cleared during the wait, even if the held profiles gain
+readings while it runs. The next launch or rerun check clears it.
 
 **A step pinned to a profile can therefore change account part way through a
 run.** Where one profile must be kept for billing or data separation, there
