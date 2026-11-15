@@ -1,7 +1,7 @@
 ---
 title: Record a Criterion-1 QA Judgement by Hand
-description: Produce qa-inputs.json, write a judgement and record it with qa-record, as the criterion-1 agent step does.
-last_updated: 2026-11-13
+description: Measure the QA facts for a PR, judge criterion 1 from them and the diff, and write the judgement up - what the criterion-1 agent step does inside an auto-drive round.
+last_updated: 2026-11-15
 review_schedule: quarterly
 owner: workflow-team
 doc_type: howto
@@ -9,15 +9,18 @@ doc_type: howto
 
 # Record a Criterion-1 QA Judgement by Hand
 
-Use this to reproduce what the criterion-1 agent step does in an auto-drive
-round, for example when checking a refused record or a hand-off, or to keep
-a record of a manual `/merge-ready` run. A manual run does not require it. Field
-meanings are in [Auto-drive QA](../reference/auto-drive-qa.md).
+Use this to reproduce what the criterion-1 step does in an auto-drive round:
+checking a judgement a round recorded, working out why a blocker was named,
+or keeping a record of a manual `/merge-ready` run. A manual run does not
+require it. Field meanings are in
+[Auto-drive QA](../reference/auto-drive-qa.md); the rules the judgement
+follows are in
+[criterion-1-qa-judgement.md](../../amplifier-bundle/skills/merge-ready/criterion-1-qa-judgement.md).
 
 ## Before you start
 
 - A worktree at the PR head, and an installed `amplihack`.
-- A private state directory: owned by you, mode `0700` (no group or other access).
+- A private state directory: owned by you, mode `0700`.
 
 ```bash
 cd ~/src/my-pr-worktree
@@ -26,127 +29,145 @@ mkdir -p "$STATE" && chmod 700 "$STATE"
 export AUTODRIVE_QA_EVIDENCE="$STATE/qa-evidence.json"
 ```
 
-## 1. Measure the inputs
+## 1. Measure the facts
 
 In a drive, the recipe sets the base and head from the observed PR. By hand,
 you set them. `AUTODRIVE_QA_BASE` is the PR's base branch name without
-`origin/`; the script reads `refs/remotes/origin/<base>`, so fetch it first.
+`origin/`; the tool reads `refs/remotes/origin/<base>`, so fetch it first.
 `AUTODRIVE_QA_HEAD` defaults to `HEAD`.
 
 ```bash
 git fetch origin main
 REPO_PATH="$PWD" AUTODRIVE_QA_BASE=main AUTODRIVE_ROUND_LABEL=round-1 \
-  bash "$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_qa_evidence.sh"
-jq '{repo_type, docs_only, changed_files, declared_qa: (.declared_qa | del(.log_tail))}' \
-  "$STATE/qa-inputs.json"
+  bash "$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_qa_evidence.sh" >/dev/null
+jq '{qa_status, qa_reason, docs_only, qa_repo_type, qa_command_paths,
+     gadugi_scenario_dir, gadugi_scenario_dir_state, qa_scenarios,
+     gadugi_status, qa_command, qa_exit_code}' "$AUTODRIVE_QA_EVIDENCE"
 ```
 
 Output for a PR that changes only `docs/install.md` in a Node repository:
 
 ```json
 {
-  "repo_type": "node",
+  "qa_status": "PASS",
+  "qa_reason": "",
   "docs_only": "true",
-  "changed_files": ["docs/install.md"],
-  "declared_qa": {"source": "detected", "dir": ".", "command": "npm test",
-    "status": "ran", "exit_status": 0, "cause": "", "candidates": "", "ci_skip": "no-match"}
+  "qa_repo_type": "node",
+  "qa_command_paths": "docs/install.md",
+  "gadugi_scenario_dir": "tests/agentic",
+  "gadugi_scenario_dir_state": "detected",
+  "qa_scenarios": "install.yaml login.yaml",
+  "gadugi_status": "FOUND",
+  "qa_command": "npm test",
+  "qa_exit_code": "0"
 }
 ```
 
-The script runs the declared command; it does not run any scenario. With
-`AUTODRIVE_QA_BASE` unset, or a base that is not fetched, `changed_files` is
-empty and `docs_only` is `unknown`. See
+The tool runs the declared QA command. It runs no scenario, and it issues no
+verdict you may rely on: `qa_status` describes the measurement only. With
+`AUTODRIVE_QA_BASE` unset, or a base that is not fetched,
+`qa_command_paths` is `(unknown)` and `docs_only` is `unknown`; see
 [base and head](../reference/auto-drive-qa.md#base-and-head).
 
-## 2. Write the judgement
+## 2. Judge whether the change is user-facing
 
-For a documentation-only change:
+Read the diff, not only the measurement:
 
 ```bash
-cat > "$STATE/judgement.json" <<'EOF'
-{
-  "qa_status": "PASS",
-  "qa_judgement": "not_user_facing",
-  "qa_judgement_reason": "Only installation prose changes; no code, configuration or build input.",
-  "qa_cited_files": ["docs/install.md"],
-  "qa_scenarios": [],
-  "qa_iterations": [],
-  "qa_handoff": null
-}
+git diff --stat "$(git merge-base origin/main HEAD)" HEAD
+```
+
+`docs_only` binds you one way only. `false` means you may not judge the PR
+not user-facing. `true` is advisory: judge the change user-facing anyway
+when it alters anything a user, operator or calling program sees, including
+agent instructions and build inputs.
+
+## 3. Exercise a user-facing change
+
+Run only the scenarios this PR changed or added, in isolation:
+
+```bash
+export TMPDIR="$STATE/tmp" && mkdir -p "$TMPDIR"
+gadugi-test run -d tests/agentic --scenario "upgrade from 1.2 to 1.3"
+```
+
+Give any `tmux` the scenario needs its own socket, with
+`tmux -S "$STATE/tmux.sock" …`. Never run the whole suite on a shared host,
+and in amplihack-rs never run `tests/gadugi/*` on the host: CI runs those.
+When a scenario fails, classify the cause as `product`, `scenario` or
+`environment`, fix the code or the scenario, commit, and run again. Never
+weaken, skip or delete a failing scenario to reach a pass.
+
+## 4. Write the judgement up
+
+The judgement is prose, in the merge-ready report for a manual run or in the
+PR comment for a drive. Keep a copy outside the repository so it is never
+committed:
+
+```bash
+cat > "$STATE/judgement.md" <<'EOF'
+Criterion 1: not user-facing.
+
+The diff changes installation prose only: docs/install.md. No code,
+configuration or build input changes, so no scenario exercises it.
+Measured docs_only=true; the declared command `npm test` passed (exit 0).
 EOF
 ```
 
-For an unreachable service, a hand-off:
-
-```json
-{
-  "qa_status": "HANDOFF",
-  "qa_judgement": "user_facing",
-  "qa_judgement_reason": "The login journey needs the staging identity service, which refuses connections.",
-  "qa_cited_files": ["src/auth/login.rs"],
-  "qa_scenarios": [{"path": "tests/agentic/login.yaml", "written_in_pr": true, "commit": "3b9e2f1", "result": "fail"}],
-  "qa_iterations": [{"attempt": 1, "failing_scenario": "tests/agentic/login.yaml", "cause": "environment", "fix_commit": null, "result": "fail"}],
-  "qa_handoff": {"step_id": "step-02-qa-team-scenarios", "failure": "connection refused: identity service",
-    "choice": "handoff", "reason": "service unreachable from CI and isolation",
-    "owner": "repository maintainer", "needs": "restore the staging identity service or name another endpoint"}
-}
-```
-
-When the declared QA command failed and the PR caused it, record the
-attempt with `failing_scenario` set to `null`:
-
-```json
-{"attempt": 1, "failing_scenario": null, "cause": "product", "fix_commit": "7c41d0a", "result": "pass"}
-```
-
-For a user-facing PR, a passing declared command is not enough for `PASS`:
-at least one scenario must have `result` `pass`, or the record is refused
-with `user-facing-needs-passing-scenario`.
-
-## 3. Record it
-
-```bash
-amplihack orch helper autodrive qa-record \
-  --inputs "$STATE/qa-inputs.json" --repo "$PWD" --out "$AUTODRIVE_QA_EVIDENCE" \
-  < "$STATE/judgement.json"
-echo "exit $?"
-jq -r '.qa_status, .qa_reason, .head_sha' "$AUTODRIVE_QA_EVIDENCE"
-```
-
-Output for the documentation-only judgement:
+A user-facing judgement names the journeys, the scenarios with their paths
+and results, whether this PR wrote them and their commits, and each failure
+with its cause and what you did:
 
 ```text
-exit 0
-PASS
-
-9f2c1e4b7a0d3f6e8c5b2a1d4e7f0a3c6b9d2e5f
+Criterion 1: user-facing. src/auth/login.rs changes the login flow.
+tests/agentic/login.yaml (written in this PR, commit 3b9e2f1): pass.
+Attempt 1 failed on a product cause - the token was not refreshed; fixed in
+commit 7c41d0a and the scenario passed on attempt 2.
 ```
 
-`qa_reason` is empty for `PASS`. `head_sha` is the worktree's `HEAD`.
+Leave raw command output, log tails, environment values, file contents from
+outside the diff, `~/.claude` and `~/.amplihack` paths and email addresses
+out of it. Name the scenario, the file and the outcome instead.
 
-## When the record is refused
+## 5. Hand off when only a person can act
 
-Exit 2 means nothing was written. The message names the rule and the field:
+A hand-off is the only criterion-1 path that ends a drive. Record the six
+fields of [step failure recovery](../reference/step-failure-recovery.md):
 
 ```text
-qa-record: refused: handoff-incomplete at qa_handoff.owner
-exit 2
+step_id: step-02-qa-team-scenarios
+failure: cannot connect to the staging identity service
+choice:  handoff
+reason:  the login scenario needs the staging identity service, unreachable
+         from CI and from isolation
+owner:   platform team
+needs:   restore the staging identity service, or name another endpoint for
+         the login scenario
 ```
 
-That message is for an empty `owner`. Leaving the `owner` key out
-altogether is a type error, reported as `refused: schema at qa_handoff.owner`.
-Correct that field and record again. The rules are listed under
-[shape rules](../reference/auto-drive-qa.md#shape-rules).
+`owner` is a person or a team name, never an email address.
 
-Exit 1 is an environment problem: a missing or symlinked inputs file, a
-repository with no `HEAD`, a state directory that group or others can
-access, or an inputs field that breaks the type limits. Fix the environment; the judgement is not at fault.
+## 6. Read a named blocker
 
-## Clean up
+Where the measurement names a fact you have to work around, the judgement
+names the blocker and carries on:
+
+| Fact in the record | Blocker | What the judgement does |
+| --- | --- | --- |
+| `gadugi_scenario_dir_state` `operator-missing` | `qa-scenario-dir-missing:<path>` | Falls back to a tracked `tests/agentic`, `tests/gadugi/scenarios` or `scenarios` inside the repository, recording both paths; otherwise hands off; otherwise records not user-facing with cited files. |
+| the record is absent, unparseable or carries an unknown value | `qa-measurement-unavailable` | Judges from the diff and the scenarios. |
+| `gadugi_status` `NOT_INSTALLED`, `qa_reason` `qa-command-not-installed` | `qa-tool-not-installed:<tool>` | Uses other evidence, or hands off naming the tool. Installs nothing. |
+| `qa_reason` `qa-command-failed` | `qa-command-failed:<name>` | Decides whether this PR caused the failure. |
+
+None of them is a per-round QA failure, and none of them ends a run.
+
+## 7. Clean up
 
 ```bash
-rm -f "$HOME/.amplihack/work/qa-check/judgement.json" \
-  "$HOME/.amplihack/work/qa-check/qa-inputs.json" \
-  "$HOME/.amplihack/work/qa-check/qa-evidence.json"
-rmdir "$HOME/.amplihack/work/qa-check"
+rm -rf "$STATE/tmp"
+rm -f "$STATE/judgement.md" "$STATE/qa-evidence.json" "$STATE/tmux.sock"
+rmdir "$STATE"
 ```
+
+Remove any `logs/` and `outputs/` directories a scenario run created in the
+worktree, so the artifact guard does not stop your next commit.

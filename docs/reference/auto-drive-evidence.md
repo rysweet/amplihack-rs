@@ -44,7 +44,7 @@ accepted completion dispatch, and required follow-ups; do not claim unperformed 
 
 | ID | Criterion | Supporting evidence |
 | --- | --- | --- |
-| 1 | QA | Selected suite, source and directory, validated and executed scenarios where required, commands and results, tested head, and log references. Follow [QA selection](auto-drive-qa.md). Scenario files alone are insufficient. |
+| 1 | QA | The recorded judgement: whether the change is user-facing with the diff files it cites, the scenarios covering this PR's change with their results and commits, each failure with its cause and what was done, the selected suite with its source, directory and result, the tested head, and any named blocker or hand-off. Follow [QA selection](auto-drive-qa.md). Scenario files alone are insufficient, and a measured status alone is not the judgement. |
 | 2 | Documentation | Changed external surfaces, corresponding documentation updates and discoverable links, or a supported explanation of why no update is needed. |
 | 3 | Audit convergence | Auto-drive substitutes accepted completed crusty convergence: `CLEAN` or permitted `MINOR_ONLY`, required follow-ups, reviewed-head binding, and accepted completion dispatch (no evaluator call for a completed objective; see [Crusty completion](autodrive-crusty-completion.md)). No minimum round count applies. Standalone `/merge-ready` retains its separate audit of at least three SEEK → VALIDATE → FIX cycles, continued until clean. |
 | 4 | Checks/build validation | Complete current-head check rollup, required checks, conclusions and policy interpretation. Pending, failing, cancelled, stale, unavailable, or zero reported checks do not pass. |
@@ -62,7 +62,10 @@ Non-applicability requires an explanation permitted by the authoritative
 criterion. It cannot excuse missing tooling, access, approvals, policy, or
 evidence. Criterion 1 is a recorded judgement, not an exemption: a
 documentation-only PR is recorded as Verified with a `not_user_facing`
-judgement that cites its files. See [Auto-drive QA](auto-drive-qa.md).
+judgement that cites its files. An absent QA tool, a missing scenario or a
+scenario directory that does not exist is a named recoverable input to that
+judgement, never a criterion-1 outcome. See
+[Auto-drive QA](auto-drive-qa.md).
 
 ## Record contract
 
@@ -214,7 +217,10 @@ A GraphQL refusal can be recovered through another authenticated interface
 only if it supplies equivalent complete facts, including every page of
 conversations. A missing `gh` can be recovered through another available
 client. Neither authorizes incomplete evidence or removes a failed criterion.
-Required QA tooling remains required.
+For criterion 1, a QA tool only a person can install is the recoverable
+blocker `qa-tool-not-installed:<tool>`: the judgement meets criterion 1 by
+other evidence or hands off to the named owner, and installs nothing
+automatically.
 
 Record what failed, the cause, the alternative, and what it proved. If no
 usable alternative exists, retain the named blocker and incomplete outcome.
