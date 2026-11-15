@@ -502,7 +502,7 @@ runs again, and the issue identity comes from the step's recorded output. A
 changed input still forces the step to execute, so the checks run under the new
 value; an unchanged input is accepted on the first attempt's check. Moving the
 checks out of the restored step is an open follow-up on
-[#2658](https://github.com/rysweet/amplihack-rs/issues/2658).
+[#2711](https://github.com/rysweet/amplihack-rs/issues/2711).
 
 One pairing holds across every recipe that persists these keys: a list that
 names `repository`, `pr_repository` or `closing_reference` also names

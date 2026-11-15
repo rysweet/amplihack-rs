@@ -1,7 +1,7 @@
 ---
 title: Run Tests Against the Pinned Recipe Runner
 type: howto
-updated: 2026-11-14
+updated: 2026-11-15
 related: issue #2658, issue #2539, issue #2582, issue #2290, issue #2306, issue #2096
 ---
 
@@ -350,6 +350,28 @@ The build failed. Common causes:
 
 After you fix the cause, run the tests again. The helper removes the
 leftover `<pin>.partial` and builds again, reusing `<pin>.build`.
+
+### "runner receipt <path> is not valid JSON" or "has no installs map"
+
+The receipt at that path exists but cannot be read as a Cargo install receipt.
+The helper treats an unreadable receipt as a fault rather than as a missing
+install, so it panics instead of rebuilding, whether the path is an override or
+a finished cache entry.
+
+When `<path>` is under `pinned-recipe-runner/<pin>/`, the cache entry is the
+one at fault and has to be removed by hand. With the default target directory,
+from the repository root:
+
+```bash
+rm -rf target/tmp/pinned-recipe-runner/<pin>
+```
+
+The next run rebuilds that entry. Deleting the whole
+`pinned-recipe-runner` directory works as well and costs a rebuild of every pin
+it holds. When `<path>` is an override's receipt, reinstall the runner at the
+pin rather than editing the file. Rebuilding a corrupt cache entry without the
+manual delete is
+[#2710](https://github.com/rysweet/amplihack-rs/issues/2710).
 
 ### The test seems to wait before it starts
 

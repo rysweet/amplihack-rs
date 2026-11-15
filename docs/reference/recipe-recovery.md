@@ -333,7 +333,7 @@ own inputs. A changed delivery input is still caught, because the comparison
 reports `input_changed` and the step executes again; an unchanged one is
 accepted on the strength of the first attempt's check. Moving the checks out of
 the restored step, so that they run on every attempt, is an open follow-up on
-[#2658](https://github.com/rysweet/amplihack-rs/issues/2658).
+[#2711](https://github.com/rysweet/amplihack-rs/issues/2711).
 
 The storage of the two kinds of input is asymmetric, which matters when
 extending a persist list. Environment variables a step references are stored as
