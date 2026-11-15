@@ -141,11 +141,17 @@ exit 0
 
 /// A fake `amplihack`: `orch helper autodrive authorization` answers from
 /// `auth_out` / `auth_rc`; `extract-json` / `extract-field` are jq-based.
-/// Every call is logged to `amplihack.log`.
+/// `internal review-allocate` makes and prints `review-gen` in the fake state
+/// (#2290); `internal review-release` succeeds. Every call is logged to
+/// `amplihack.log`.
 const FAKE_AMPLIHACK: &str = r#"#!/usr/bin/env bash
 set -u
 S="$FAKE_STATE"
 ( IFS=$'\037'; printf '%s\n' "$*" ) >> "$S/amplihack.log"
+case "${1:-} ${2:-}" in
+  "internal review-allocate") mkdir -p "$S/review-gen" && printf '%s\n' "$S/review-gen"; exit 0 ;;
+  "internal review-release") exit 0 ;;
+esac
 case "${1:-} ${2:-} ${3:-} ${4:-}" in
   "orch helper autodrive authorization")
     [ -f "$S/auth_out" ] && cat "$S/auth_out"
@@ -1522,10 +1528,22 @@ fn step02a_reason_is_bounded() {
 /// real `autodrive_round_word` and `autodrive_round_file`; the evaluator
 /// answers DONE when the round file says MERGE_READY and CONTINUE otherwise,
 /// and STUCK after six calls so a broken driver cannot loop for ever.
+/// `internal review-allocate` and `review-next` add a detached worktree of the
+/// PR worktree's HEAD as the next private review generation (#2290);
+/// `review-launch` prints a separate launch directory, `review-head` the
+/// generation's HEAD, and `review-release` succeeds.
 const DRIVER_AMPLIHACK: &str = r#"#!/usr/bin/env bash
 set -u
 S="$STUB_STATE"
 case "${1:-} ${2:-}" in
+  "internal review-allocate"|"internal review-next")
+    n="$(( $(cat "$S/review-gens" 2>/dev/null || echo 0) + 1 ))"; printf '%s' "$n" > "$S/review-gens"
+    g="$S/review-gen-$n"
+    git -C "$3" worktree add -q --detach "$g" HEAD >/dev/null 2>&1 || exit 1
+    printf '%s\n' "$g"; exit 0 ;;
+  "internal review-launch") mkdir -p "$S/launch" && printf '%s\n' "$S/launch"; exit 0 ;;
+  "internal review-head") exec git -C "$3" rev-parse --verify HEAD ;;
+  "internal review-release") exit 0 ;;
   "recipe show") exit 0 ;;
   "orch helper")
     in="$(cat)"
@@ -1548,14 +1566,13 @@ case "${1:-} ${2:-}" in
   *) exit 0 ;;
 esac
 name="$(basename -- "${3:-}" .yaml)"
-label=""; wd=""; prev=""
+label=""; prev=""
 for a in "$@"; do
   case "$prev:$a" in
     -c:autodrive_round_label=*) label="${a#autodrive_round_label=}" ;;
     -c:loop_round_label=*) label="${a#loop_round_label=}" ;;
     --context-from-file:loop_round_label=*) label="$(cat -- "${a#*=}")" ;;
   esac
-  [ "$prev" = "--working-dir" ] && wd="$a"
   prev=$a
 done
 if [ "$name" = "loop-health-evaluator" ]; then
@@ -1588,7 +1605,7 @@ done
 line="$(sed -n "${n}p" "$S/plan")"; [ -n "$line" ] || line="$(tail -n 1 "$S/plan")"
 IFS='|' read -r word commit ci <<<"$line"
 w="$S/writeup-$n"; [ -f "$w" ] || w="$S/writeup"
-head="$(git -C "$wd" rev-parse HEAD)"                       # step-01a
+head="$(git -C "$STUB_REPO" rev-parse HEAD)"                # step-01a reads the PR worktree
 . "$TOOLS/autodrive_state.sh" || exit 2
 . "$TOOLS/autodrive_round_word.sh" || exit 2
 if [ -n "${ci:-}" ]; then out="$(autodrive_round_word "$word" "$ci" "$head")" || exit 2   # step-03, step-05a
@@ -1596,9 +1613,9 @@ else out="$(autodrive_round_word "$word")" || exit 2; fi
 v="$(printf '%s' "$out" | jq -r .merge_ready_verdict)"
 sig="$(printf '%s' "$out" | jq -r '.ci_signal // empty')"
 if [ "$commit" = 1 ] && [ "$v" = NOT_MERGE_READY ]; then      # step-04: not-ready only
-  t="$(git -C "$wd" write-tree)"
-  c="$(git -C "$wd" -c user.name=t -c user.email=t@t commit-tree "$t" -p HEAD -m "repair $label")"
-  git -C "$wd" update-ref HEAD "$c"
+  t="$(git -C "$STUB_REPO" write-tree)"
+  c="$(git -C "$STUB_REPO" -c user.name=t -c user.email=t@t commit-tree "$t" -p HEAD -m "repair $label")"
+  git -C "$STUB_REPO" update-ref HEAD "$c"
   printf '%s\n' "$label" >> "$S/builder-calls"
 fi
 autodrive_round_file "$STUB_STATE_DIR" "$label" "$v" "$head" ${sig:+"$sig"} < "$w" || exit 2   # step-05
