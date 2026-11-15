@@ -436,11 +436,13 @@ automatically at usage limit" in `/config`, key `autoContinueAtUsageLimit`,
 documented in the
 [settings reference](https://code.claude.com/docs/en/settings-reference#autocontinueatusagelimit)).
 In Claude Code 2.1.325 a missing key counts as on, and amplihack does not
-write it. Tell the user to leave it on: `false` removes that fallback. In
-2.1.325 any settings file the session reads that does not parse (the
-profile's `$CLAUDE_CONFIG_DIR/settings.json`, or the project's
-`.claude/settings.json` or `.claude/settings.local.json`) turns automatic
-continuation off; a `jq` parse error on that file shows this, and the fix
+write it. Tell the user to leave it on: `false` removes that fallback. If
+the hook has already resumed a session, the automatic continue at the
+reset adds at most one extra turn. A key absent from one file can still be
+`false` in another: check the profile's `$CLAUDE_CONFIG_DIR/settings.json`,
+the project's `.claude/settings.json` and `.claude/settings.local.json`,
+managed settings and any `--settings` file. In 2.1.325 any of these files
+that does not parse turns automatic continuation off; a `jq` parse error on that file shows this, and the fix
 is to repair the file. A server-side control in Claude
 Code decides whether a session at its limit gets a continue put in place
 for the reset or the options menu instead. When the menu opens and the

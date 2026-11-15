@@ -1588,7 +1588,8 @@ as `autoContinueAtUsageLimit` in `settings.json` (see
 in the Claude Code settings reference). In Claude Code 2.1.325 a missing
 key counts as on, so a session needs no entry for it. Leave it on: `false`
 removes the continue at the reset, and a session the hook does not resume
-then waits for a person.
+then waits for a person. If the hook has already resumed a session, the
+automatic continue at the reset adds at most one extra turn to it.
 
 Check what a settings file holds:
 
@@ -1601,10 +1602,13 @@ false
 null
 ```
 
-`false` and `null` mean the key is absent and the setting is on. Run the
-same check on every settings file the session reads: the profile's
-`$CLAUDE_CONFIG_DIR/settings.json` for sessions the rotator starts, and the
-project's `.claude/settings.json` and `.claude/settings.local.json`. If `jq`
+`false` and `null` mean the key is absent from this file. Another settings
+file can still set it to `false`, so run the same check on every settings
+file the session reads: the profile's `$CLAUDE_CONFIG_DIR/settings.json` for
+sessions the rotator starts, the project's `.claude/settings.json` and
+`.claude/settings.local.json`, any managed settings file, and any file
+passed with `--settings`. Managed settings and a `--settings` file can also
+turn automatic continuation off. If `jq`
 reports a parse error on any of them, that file does not parse. In Claude
 Code 2.1.325 a settings file that does not parse turns automatic
 continuation off. Repair the file; adding the key to a file that does not
