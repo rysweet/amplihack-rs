@@ -41,33 +41,43 @@ git fetch origin main
 REPO_PATH="$PWD" AUTODRIVE_QA_BASE=main AUTODRIVE_ROUND_LABEL=round-1 \
   bash "$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_qa_evidence.sh" >/dev/null
 jq '{qa_status, qa_reason, docs_only, qa_repo_type, qa_command_paths,
-     gadugi_scenario_dir, gadugi_scenario_dir_state, qa_scenarios,
-     gadugi_status, qa_command, qa_exit_code}' "$AUTODRIVE_QA_EVIDENCE"
+     gadugi_required, gadugi_scenario_dir, gadugi_scenario_dir_state,
+     qa_scenarios, gadugi_status, qa_command, qa_exit_code}' \
+  "$AUTODRIVE_QA_EVIDENCE"
 ```
 
-Output for a PR that changes only `docs/install.md` in a Node repository:
+Output for a Node PR that changes `src/auth/login.ts` and
+`docs/install.md`:
 
 ```json
 {
   "qa_status": "PASS",
   "qa_reason": "",
-  "docs_only": "true",
+  "docs_only": "false",
   "qa_repo_type": "node",
-  "qa_command_paths": "docs/install.md",
+  "qa_command_paths": "docs/install.md src/auth/login.ts",
+  "gadugi_required": "true",
   "gadugi_scenario_dir": "tests/agentic",
   "gadugi_scenario_dir_state": "detected",
-  "qa_scenarios": "install.yaml login.yaml",
+  "qa_scenarios": "tests/agentic/install.yaml tests/agentic/login.yaml",
   "gadugi_status": "FOUND",
   "qa_command": "npm test",
   "qa_exit_code": "0"
 }
 ```
 
+Node is the only repository type whose detection requires gadugi scenarios,
+so this is the one shape in which the record names a detected scenario
+directory. In amplihack-rs, and for any documentation-only PR, expect
+`gadugi_required` `false`, `gadugi_status` `NOT_REQUIRED`, an empty
+`gadugi_scenario_dir` and `gadugi_scenario_dir_state` `not-consulted`: the
+tool looked for no directory, and you find it yourself.
+
 The tool runs the declared QA command. It runs no scenario, and it issues no
 verdict you may rely on: `qa_status` describes the measurement only. With
 `AUTODRIVE_QA_BASE` unset, or a base that is not fetched,
 `qa_command_paths` is `(unknown)` and `docs_only` is `unknown`; see
-[base and head](../reference/auto-drive-qa.md#base-and-head).
+[operator environment](../reference/auto-drive-qa.md#operator-environment).
 
 ## 2. Judge whether the change is user-facing
 
@@ -84,19 +94,30 @@ agent instructions and build inputs.
 
 ## 3. Exercise a user-facing change
 
-Run only the scenarios this PR changed or added, in isolation:
+Run only the scenarios this PR changed or added, one at a time, each staged
+alone outside the repository. `gadugi-test --scenario` matches a substring
+of the scenario's `name:` field, not a path, and concurrent scenarios in one
+directory share a single CLI runner where the first to finish ends the
+others' processes (gadugi-agentic-test #207) — so `-d` must point at the
+staging directory, never at `tests/agentic` itself. Validate before you run:
 
 ```bash
 export TMPDIR="$STATE/tmp" && mkdir -p "$TMPDIR"
-gadugi-test run -d tests/agentic --scenario "upgrade from 1.2 to 1.3"
+stage="$(mktemp -d "$TMPDIR/scenario.XXXXXX")"
+cp -- tests/agentic/login.yaml "$stage/"
+gadugi-test validate -d "$stage"
+gadugi-test run -d "$stage" --scenario "upgrade from 1.2 to 1.3"
+rm -rf -- "$stage"
 ```
 
-Give any `tmux` the scenario needs its own socket, with
+The `--scenario` argument is the scenario's own `name:` value, not its file
+name. Give any `tmux` the scenario needs its own socket, with
 `tmux -S "$STATE/tmux.sock" …`. Never run the whole suite on a shared host,
 and in amplihack-rs never run `tests/gadugi/*` on the host: CI runs those.
 When a scenario fails, classify the cause as `product`, `scenario` or
-`environment`, fix the code or the scenario, commit, and run again. Never
-weaken, skip or delete a failing scenario to reach a pass.
+`environment` — a `gadugi-test validate` failure is a `scenario` cause — fix
+the code or the scenario, commit, and run again. Never weaken, skip or
+delete a failing scenario to reach a pass.
 
 ## 4. Write the judgement up
 
@@ -104,25 +125,32 @@ The judgement is prose, in the merge-ready report for a manual run or in the
 PR comment for a drive. Keep a copy outside the repository so it is never
 committed:
 
+A user-facing judgement names the journeys, the scenarios with their paths
+and results, whether this PR wrote them and their commits, and each failure
+with its cause and what you did. For the PR measured above:
+
 ```bash
 cat > "$STATE/judgement.md" <<'EOF'
+Criterion 1: user-facing. src/auth/login.ts changes the login flow, so
+docs_only=false binds.
+
+tests/agentic/login.yaml (written in this PR, commit 3b9e2f1): pass, staged
+alone and run by name. Attempt 1 failed on a product cause - the token was
+not refreshed; fixed in commit 7c41d0a and the scenario passed on attempt 2.
+The declared command `npm test` passed (exit 0).
+EOF
+```
+
+A PR that changes documentation and nothing else is judged the other way.
+Its record reads docs_only=true with gadugi_status=NOT_REQUIRED, and the
+reason must cite files that appear in the diff:
+
+```text
 Criterion 1: not user-facing.
 
 The diff changes installation prose only: docs/install.md. No code,
 configuration or build input changes, so no scenario exercises it.
 Measured docs_only=true; the declared command `npm test` passed (exit 0).
-EOF
-```
-
-A user-facing judgement names the journeys, the scenarios with their paths
-and results, whether this PR wrote them and their commits, and each failure
-with its cause and what you did:
-
-```text
-Criterion 1: user-facing. src/auth/login.rs changes the login flow.
-tests/agentic/login.yaml (written in this PR, commit 3b9e2f1): pass.
-Attempt 1 failed on a product cause - the token was not refreshed; fixed in
-commit 7c41d0a and the scenario passed on attempt 2.
 ```
 
 Leave raw command output, log tails, environment values, file contents from
@@ -155,11 +183,21 @@ names the blocker and carries on:
 | Fact in the record | Blocker | What the judgement does |
 | --- | --- | --- |
 | `gadugi_scenario_dir_state` `operator-missing` | `qa-scenario-dir-missing:<path>` | Falls back to a tracked `tests/agentic`, `tests/gadugi/scenarios` or `scenarios` inside the repository, recording both paths; otherwise hands off; otherwise records not user-facing with cited files. |
-| the record is absent, unparseable or carries an unknown value | `qa-measurement-unavailable` | Judges from the diff and the scenarios. |
+| the record is absent, unparseable or carries an unknown value; or `qa_reason` `qa-command-missing` with `qa_command_paths` `(unknown)`, `docs_only` `unknown` and `qa_repo_type` `unknown` | `qa-measurement-unavailable` | Judges from the diff and the scenarios. |
 | `gadugi_status` `NOT_INSTALLED`, `qa_reason` `qa-command-not-installed` | `qa-tool-not-installed:<tool>` | Uses other evidence, or hands off naming the tool. Installs nothing. |
 | `qa_reason` `qa-command-failed` | `qa-command-failed:<name>` | Decides whether this PR caused the failure. |
 
 None of them is a per-round QA failure, and none of them ends a run.
+
+Two record shapes are **not** blockers, however they look:
+
+- `gadugi_scenario_dir_state` `not-consulted` with an empty
+  `gadugi_scenario_dir`. This is the normal reading outside Node, including
+  in amplihack-rs. Find the scenario directory yourself.
+- `qa_reason` `qa-command-missing` where `qa_command_paths` holds real paths
+  and `docs_only` is `true` or `false`. The change was measured; the token
+  says only that this repository declares no suite command, or that
+  `AUTODRIVE_QA_DIR` does not exist. `qa_summary` names which.
 
 ## 7. Clean up
 
