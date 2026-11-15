@@ -816,8 +816,22 @@ pub(super) fn execute_recipe_via_rust_fresh(
     };
     let bundle_recipe = match (&pinned, &bundle) {
         (Some(pinned), Some(bundle)) if *bundle.origin == RecipeOrigin::Bundle => {
-            let relative = recipe_path
-                .strip_prefix(bundle.selection.source())
+            // The recipe lies in the selected bundle, or (B3) in the bundle
+            // under the AMPLIHACK_HOME a nested run's marker check accepted,
+            // which is auto-drive's invocation copy of that same snapshot.
+            // Either way the run reads the snapshot's own file, so an
+            // upgrade or an edit of the copy during the run does not reach
+            // it. For an `autodrive-` round this value is replaced again
+            // below by the round's own invocation copy, which carries its
+            // authorisation.
+            let roots = [
+                Some(bundle.selection.source().to_path_buf()),
+                bundle.selection.accepted_home_bundle_dir(),
+            ];
+            let relative = roots
+                .iter()
+                .flatten()
+                .find_map(|root| recipe_path.strip_prefix(root).ok())
                 .with_context(|| {
                     format!(
                         "recipe {} is not inside the selected bundle {}",

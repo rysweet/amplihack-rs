@@ -118,6 +118,22 @@ struct Inherited {
     home: PathBuf,
     /// The outer run's canonical source bundle, from its pin record.
     source: PathBuf,
+    /// The canonical `AMPLIHACK_HOME` [`check_marker`] accepted: the
+    /// snapshot itself, or the auto-drive invocation copy made from it.
+    /// Held in memory only; it is never written to `pin.json`, so no
+    /// process trusts a home another process validated (B3).
+    accepted_home: PathBuf,
+}
+
+/// What [`check_marker`] accepted: the outer run's snapshot, the
+/// `AMPLIHACK_HOME` that vouched for it, and the outer run's choice.
+#[derive(Debug, Clone)]
+struct AcceptedMarker {
+    /// Canonical `<work root>/bundle-pins/<key>`.
+    marker: PathBuf,
+    /// Canonical accepted `AMPLIHACK_HOME` (B3).
+    home: PathBuf,
+    choice: BundleChoice,
 }
 
 /// The checked source bundle, or an inherited snapshot.
@@ -157,6 +173,31 @@ impl Selection {
     #[cfg(test)]
     pub(crate) fn inherited(&self) -> bool {
         self.inherited.is_some()
+    }
+
+    /// Issue #2528 (B3): `<accepted AMPLIHACK_HOME>/amplifier-bundle/recipes`
+    /// for an inherited selection, and `None` for a top-level run.
+    ///
+    /// Auto-drive starts its crusty, merge, health-evaluator and hook-repair
+    /// rounds by a path into the invocation copy its own steps run under,
+    /// not by name, so that the round recipe cannot come from the worktree
+    /// under review (#1528, #1543). That home is the one the marker check
+    /// already accepted, so a recipe under it belongs to this run and is not
+    /// "another bundle". The copy is a copy of the snapshot, so a recipe
+    /// under it also names a recipe in the snapshot, and that is the one the
+    /// run reads. The `amplifier-bundle` join stays here, in the module that
+    /// owns bundle layout.
+    pub(crate) fn accepted_home_bundle_dir(&self) -> Option<PathBuf> {
+        self.inherited
+            .as_ref()
+            .map(|inherited| inherited.accepted_home.join(BUNDLE_DIR))
+    }
+
+    /// `<accepted AMPLIHACK_HOME>/amplifier-bundle/recipes`, the directory a
+    /// nested round is started from. See [`Self::accepted_home_bundle_dir`].
+    pub(crate) fn accepted_home_recipes_dir(&self) -> Option<PathBuf> {
+        self.accepted_home_bundle_dir()
+            .map(|bundle| bundle.join("recipes"))
     }
 
     /// Lines for stderr: a skipped checkout or an ignored marker.
@@ -226,19 +267,19 @@ pub(crate) fn select_from(inputs: SelectInputs<'_>) -> Result<Selection> {
             inputs.run_bundle_choice,
             inputs.work_root,
         ) {
-            Ok((home, marker_choice)) => {
+            Ok(accepted) => {
                 if let Some(requested) = inputs.choice
-                    && requested != marker_choice
+                    && requested != accepted.choice
                 {
                     bail!(
                         "this run is nested in a run pinned to the {} bundle at {}; \
                          --bundle {} cannot change it",
-                        marker_choice.as_str(),
-                        home.display(),
+                        accepted.choice.as_str(),
+                        accepted.marker.display(),
                         requested.as_str()
                     );
                 }
-                return Ok(inherited_selection(home, marker_choice));
+                return Ok(inherited_selection(accepted));
             }
             Err(reason) => {
                 notes.push(format!(
@@ -289,14 +330,19 @@ pub(crate) fn select_from(inputs: SelectInputs<'_>) -> Result<Selection> {
     })
 }
 
-/// The marker checks of a nested run (S7). Returns the canonical marker and
-/// the outer run's choice, or the reason the marker is ignored.
+/// The marker checks of a nested run (S7). Returns the canonical marker, the
+/// `AMPLIHACK_HOME` that was accepted with it, and the outer run's choice, or
+/// the reason the marker is ignored.
+///
+/// The accepted home is kept rather than discarded because resolving a recipe
+/// path needs exactly the home this check already validated (B3): either the
+/// snapshot itself, or auto-drive's invocation copy made from it.
 fn check_marker(
     marker: &OsStr,
     amplihack_home: Option<&OsStr>,
     marker_choice: Option<&OsStr>,
     work_root: Option<&Path>,
-) -> std::result::Result<(PathBuf, BundleChoice), String> {
+) -> std::result::Result<AcceptedMarker, String> {
     let canonical = fs::canonicalize(marker).map_err(|_| "it is not an existing directory")?;
     if !canonical.is_dir() {
         return Err("it is not an existing directory".into());
@@ -304,14 +350,15 @@ fn check_marker(
     let home = amplihack_home
         .filter(|value| !value.is_empty())
         .and_then(|value| fs::canonicalize(value).ok());
-    let same_home = home.as_deref() == Some(canonical.as_path());
-    if !same_home && !home.is_some_and(|home| is_launch_copy_of(&home, &canonical)) {
+    let Some(accepted_home) = home.filter(|home| {
+        home.as_path() == canonical.as_path() || is_launch_copy_of(home, &canonical)
+    }) else {
         return Err(
             "it is neither AMPLIHACK_HOME nor the bundle AMPLIHACK_HOME's auto-drive copy \
              was made from"
                 .into(),
         );
-    }
+    };
     let Some(work_root) = work_root else {
         return Err("this run has no work root to hold bundle snapshots".into());
     };
@@ -332,16 +379,30 @@ fn check_marker(
         .and_then(OsStr::to_str)
         .and_then(|value| BundleChoice::parse(value).ok())
         .ok_or_else(|| format!("{RUN_BUNDLE_CHOICE_ENV} is not installed or checkout"))?;
-    Ok((canonical, choice))
+    Ok(AcceptedMarker {
+        marker: canonical,
+        home: accepted_home,
+        choice,
+    })
 }
 
 /// True when `home` is an auto-drive invocation copy (`LaunchBundle`) made
 /// from the snapshot home `marker`: a trusted folder whose source record
 /// names `marker`. Auto-drive steps keep `AMPLIHACK_HOME` at that copy (D7),
 /// so their nested runs still reuse the outer run's snapshot.
+///
+/// The copy's own `amplifier-bundle`, and the `recipes/` inside it, are
+/// checked as well, because accepting the copy now also accepts recipe files
+/// read from that directory (B3). A copy that fails any of the three checks
+/// is not a launch copy, so the caller falls back to ordinary selection and
+/// says why, with no new message.
 fn is_launch_copy_of(home: &Path, marker: &Path) -> bool {
-    if trusted_directory(home).is_err() {
-        return false;
+    let bundle = home.join(BUNDLE_DIR);
+    let recipes = bundle.join("recipes");
+    for dir in [home, bundle.as_path(), recipes.as_path()] {
+        if trusted_directory(dir).is_err() {
+            return false;
+        }
     }
     read_capped_nofollow(&home.join(LAUNCH_SOURCE_FILE), MAX_READ)
         .ok()
@@ -372,7 +433,12 @@ pub(crate) fn is_snapshot_path(path: &Path, work_root: &Path) -> bool {
 /// The outer run's snapshot as this run's selection. A pin record that
 /// cannot be read leaves the source as the snapshot and the version
 /// `unknown`, with a note saying why.
-fn inherited_selection(home: PathBuf, choice: BundleChoice) -> Selection {
+fn inherited_selection(accepted: AcceptedMarker) -> Selection {
+    let AcceptedMarker {
+        marker: home,
+        home: accepted_home,
+        choice,
+    } = accepted;
     let bundle = home.join(BUNDLE_DIR);
     let path = home.join(PIN_RECORD);
     let mut notes = Vec::new();
@@ -404,7 +470,11 @@ fn inherited_selection(home: PathBuf, choice: BundleChoice) -> Selection {
         source: bundle,
         choice,
         version,
-        inherited: Some(Inherited { home, source }),
+        inherited: Some(Inherited {
+            home,
+            source,
+            accepted_home,
+        }),
         notes,
     }
 }

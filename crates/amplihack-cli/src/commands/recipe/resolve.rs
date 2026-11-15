@@ -336,6 +336,9 @@ pub(crate) fn is_path_like_recipe(input: &str) -> bool {
 /// resolved with the usual relative-path roots and canonicalised; a path that
 /// cannot be, or that is not a regular file, is refused (E15). Then:
 /// - under the canonical selected `recipes/`: `(canonical, Bundle)`;
+/// - for a run that inherited an outer run's snapshot, under the accepted
+///   `AMPLIHACK_HOME`'s `amplifier-bundle/recipes/`: `(canonical, Bundle)`
+///   too (B3), which is how auto-drive starts its rounds;
 /// - under any other `amplifier-bundle/recipes/`: refused (E14), with advice
 ///   that depends on whether that bundle's parent directory holds `.git`;
 /// - anywhere else: `(path, File(path))`, a standalone recipe file.
@@ -397,6 +400,19 @@ fn classify_recipe_path(
         .unwrap_or_else(|_| selection.recipes_dir().to_path_buf());
     if canonical.starts_with(&recipes) {
         return Ok((canonical, RecipeOrigin::Bundle));
+    }
+    // B3. A nested run may also be started by a path into the bundle under
+    // the `AMPLIHACK_HOME` its marker check accepted, which for an auto-drive
+    // step is the invocation copy its own recipe came from: that is how
+    // `autodrive_loop.sh` starts the crusty, merge, health-evaluator and
+    // hook-repair rounds. The origin is `Bundle`, not `File`, so the round's
+    // sub-recipes, agents and tools still come from the one pinned snapshot
+    // rather than adding the copy as a second search root.
+    if let Some(accepted) = selection.accepted_home_recipes_dir() {
+        let accepted = std::fs::canonicalize(&accepted).unwrap_or(accepted);
+        if canonical.starts_with(&accepted) {
+            return Ok((canonical, RecipeOrigin::Bundle));
+        }
     }
     if let Some(bundle_dir) = foreign_bundle_dir(&canonical) {
         anyhow::bail!(foreign_bundle_message(&canonical, bundle_dir, selection));
