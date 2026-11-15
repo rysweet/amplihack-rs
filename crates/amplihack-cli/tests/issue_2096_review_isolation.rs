@@ -1167,3 +1167,51 @@ fn retired_release_frees_storage_the_removal_never_reached() {
     );
     assert!(!manifest_of(&first).exists(), "the record is freed with it");
 }
+
+#[test]
+fn retired_release_refuses_storage_whose_launch_child_is_gone() {
+    // The partial case, and the only one in which `launch` decides the
+    // answer on its own: the storage directory and `repository.git` both
+    // still carry the identities the manifest recorded for them, and
+    // `launch` is gone. A tree that is only partly the recorded one is not
+    // the recorded one, so the removal refuses and leaves the rest on disk.
+    // This is `retired_release_frees_storage_the_removal_never_reached` with
+    // `launch` removed and nothing else changed.
+    let f = Fixture::new();
+    let pr = pr_worktree(&f);
+    let state = private_state(&f);
+    let first = allocate(&f, &pr, &state);
+    let storage = storage_of(&first);
+    assert!(storage.join("repository.git").is_dir());
+    assert!(storage.join("launch").is_dir());
+    f.git_in(
+        &storage.join("repository.git"),
+        &["worktree", "remove", "--force", first.to_str().unwrap()],
+    );
+    let mut record = manifest(&first);
+    record["retired"] = serde_json::json!(true);
+    let path = manifest_of(&first);
+    fs::remove_file(&path).unwrap();
+    fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+    // A removal that stopped halfway: `launch` is gone, the other two
+    // recorded pairs are untouched.
+    fs::remove_dir_all(storage.join("launch")).unwrap();
+    let out = internal(&f, &["review-release".as_ref(), os(&first)]);
+    assert!(
+        !out.status.success(),
+        "storage missing a recorded child is not the recorded storage"
+    );
+    assert!(
+        text(&out).contains("review storage identity changed; retained"),
+        "{}",
+        text(&out)
+    );
+    assert!(
+        storage.join("repository.git").is_dir(),
+        "nothing is deleted, so what is left can be looked at"
+    );
+    assert!(
+        manifest_of(&first).exists(),
+        "the record is retained for recovery"
+    );
+}
