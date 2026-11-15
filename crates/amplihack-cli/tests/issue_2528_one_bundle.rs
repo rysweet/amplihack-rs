@@ -1069,3 +1069,150 @@ fn t6b_steps_find_the_git_identity_under_a_non_default_amplihack_home() {
         "identity not found under the state home: {lines:?}\n{stderr}"
     );
 }
+
+// ---------------------------------------------------------------------- B3
+
+/// B3: `autodrive_loop.sh` starts each round by the path it builds,
+/// `<launch copy>/amplifier-bundle/recipes/<round>.yaml`, because the round
+/// recipe must not be taken from the worktree under review (#1528, #1543)
+/// and because the copy's `autodrive-*` recipes carry the run's
+/// authorisation. The run must accept that path: it names the run's own
+/// bundle, which is what the one-bundle rule asks for, not another bundle.
+///
+/// The step here starts the round exactly as the loop does. The nested run
+/// reuses the outer run's snapshot, and its recipe, sub-recipes and tools all
+/// come from it.
+#[test]
+fn b3_a_step_starts_a_nested_round_by_the_path_into_its_own_bundle_copy() {
+    let runner = runner("b3");
+    let world = World::new();
+    let checkout = world.root.join("checkout");
+    git_init(&checkout);
+    let bundle = checkout.join("amplifier-bundle");
+    for asset in AUTODRIVE_ASSETS {
+        let (body, mode) = if asset.ends_with(".sh") {
+            ("#!/bin/sh\n".to_owned(), 0o755)
+        } else if asset.ends_with(".yaml") {
+            let name = Path::new(asset).file_stem().unwrap().to_str().unwrap();
+            (recipe(name, "asset", &[("noop", "true\n".into())]), 0o644)
+        } else {
+            ("# asset\n".to_owned(), 0o644)
+        };
+        put(&bundle, asset, &body, mode);
+    }
+    put(&bundle, "agents/core/builder.md", "# builder\n", 0o644);
+
+    let out = quoted(&world.out());
+    // The round, as a crusty or merge round is: an `autodrive-` recipe that
+    // the trust checks rewrite, calling a tool from the same bundle.
+    put(
+        &bundle,
+        "tools/round_tool.sh",
+        "#!/bin/sh\necho tool=round\n",
+        0o755,
+    );
+    put(
+        &bundle,
+        "recipes/autodrive-2528-round.yaml",
+        &recipe(
+            "autodrive-2528-round",
+            "round",
+            &[(
+                "round",
+                format!(
+                    "echo round=ran >> {out}\n\
+                     \"$AMPLIHACK_HOME/amplifier-bundle/tools/round_tool.sh\" >> {out} 2>&1\n"
+                ),
+            )],
+        ),
+        0o644,
+    );
+
+    let round_err = quoted(&world.records.join("round.stderr"));
+    put(
+        &bundle,
+        "recipes/autodrive-2528-loop.yaml",
+        &recipe(
+            "autodrive-2528-loop",
+            "loop",
+            &[(
+                "start-round",
+                format!(
+                    "round=\"$AMPLIHACK_HOME/amplifier-bundle/recipes/autodrive-2528-round.yaml\"\n\
+                     echo \"round_path=$round\" >> {out}\n\
+                     {amp} recipe run \"$round\" -w {root} > /dev/null 2> {round_err}\n\
+                     echo \"round_rc=$?\" >> {out}\n",
+                    amp = quoted(&amplihack_bin()),
+                    root = quoted(&world.root),
+                ),
+            )],
+        ),
+        0o644,
+    );
+
+    let output = world.run(
+        Some(&runner),
+        &checkout,
+        &[
+            "autodrive-2528-loop",
+            "--bundle",
+            "checkout",
+            "-w",
+            checkout.to_str().unwrap(),
+        ],
+    );
+    let stderr = text(&output.stderr);
+    let round = fs::read_to_string(world.records.join("round.stderr")).unwrap_or_default();
+    assert!(
+        output.status.success(),
+        "run failed:\n{stderr}\nround:\n{round}"
+    );
+    let lines = world.lines();
+
+    // The round started, from the path the loop builds, and exited 0.
+    assert!(
+        !round.contains("belongs to the bundle at"),
+        "a path into the run's own bundle copy is not another bundle:\n{round}"
+    );
+    assert!(
+        lines.iter().any(|l| l == "round_rc=0"),
+        "the round did not run: {lines:?}\n{round}"
+    );
+    assert!(lines.iter().any(|l| l == "round=ran"), "{lines:?}\n{round}");
+
+    // The path it was started by lies inside the auto-drive launch copy.
+    let round_path = lines
+        .iter()
+        .find_map(|l| l.strip_prefix("round_path="))
+        .unwrap_or_else(|| panic!("no round_path: {lines:?}\n{stderr}"));
+    assert!(
+        round_path.contains("autodrive-invocation-")
+            && round_path.ends_with("amplifier-bundle/recipes/autodrive-2528-round.yaml"),
+        "{round_path}"
+    );
+
+    // One bundle: the round reuses the outer run's snapshot for its recipe,
+    // its sub-recipes and its tools, and makes no second copy.
+    let snapshot = assert_one_bundle(&stderr, &fs::canonicalize(&bundle).unwrap(), "checkout")
+        .expect("snapshot recorded");
+    assert!(
+        lines.iter().any(|l| l == "tool=round"),
+        "the round's tool came from the one bundle: {lines:?}\n{round}"
+    );
+    assert!(round.contains("(inherited)"), "{round}");
+    let mut saw_early = false;
+    for record in records(&round) {
+        if record["event"] == "early" {
+            saw_early = true;
+            assert_eq!(record["recipe_bundle"]["inherited"], true, "{record}");
+            assert_eq!(record["recipe_bundle"]["choice"], "checkout", "{record}");
+            assert_eq!(
+                record["recipe_bundle"]["snapshot"],
+                snapshot.to_str().unwrap(),
+                "{record}"
+            );
+            assert_eq!(record["recipe_bundle"], record["tool_bundle"], "{record}");
+        }
+    }
+    assert!(saw_early, "no early record from the round:\n{round}");
+}
