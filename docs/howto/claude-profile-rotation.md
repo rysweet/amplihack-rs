@@ -1601,11 +1601,14 @@ false
 null
 ```
 
-`false` and `null` mean the key is absent and the setting is on. If `jq`
-reports a parse error instead, the file does not parse. In Claude Code
-2.1.325 a `settings.json` that does not parse turns automatic continuation
-off, together with the file's other settings. Repair the file; adding the
-key to a file that does not parse changes nothing. `amplihack install` and
+`false` and `null` mean the key is absent and the setting is on. Run the
+same check on every settings file the session reads: the profile's
+`$CLAUDE_CONFIG_DIR/settings.json` for sessions the rotator starts, and the
+project's `.claude/settings.json` and `.claude/settings.local.json`. If `jq`
+reports a parse error on any of them, that file does not parse. In Claude
+Code 2.1.325 a settings file that does not parse turns automatic
+continuation off. Repair the file; adding the key to a file that does not
+parse changes nothing. `amplihack install` and
 the rotator do not write this key, and leave any value you set alone.
 
 Whether a session at its limit gets a continue put in place for the reset
