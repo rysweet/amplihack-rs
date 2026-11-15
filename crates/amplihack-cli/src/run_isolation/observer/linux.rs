@@ -15,6 +15,15 @@ use std::thread::JoinHandle;
 
 /// A marker alone never authorizes observer reuse: the kernel must identify
 /// that process's thread group as our active tracer.
+///
+/// Issue #2677: a traced process with no `AMPLIHACK_OBSERVER_PID` at all is
+/// treated as having no parent observer. That cannot produce a false
+/// "established" record. The direct path then asks for `PTRACE_TRACEME`:
+/// if the tracer follows forks the kernel refuses it and the record says
+/// "unavailable"; otherwise the child is untraced and is observed normally.
+/// A variable that is present in any form (empty, non-UTF-8, padded,
+/// signed, overflowing or naming another group) must still parse exactly
+/// and name the tracer's thread group, or the run stops here.
 pub(crate) fn parent_observer() -> Result<Option<u32>> {
     let status = fs::read_to_string("/proc/self/status")?;
     let tracer: u32 = status
@@ -24,16 +33,15 @@ pub(crate) fn parent_observer() -> Result<Option<u32>> {
     if tracer == 0 {
         return Ok(None);
     }
+    let Some(announced) = std::env::var_os("AMPLIHACK_OBSERVER_PID") else {
+        return Ok(None);
+    };
     let status = fs::read_to_string(format!("/proc/{tracer}/status"))?;
     let group: u32 = status
         .lines()
         .find_map(|line| line.strip_prefix("Tgid:")?.trim().parse().ok())
         .context("missing tracer thread group")?;
-    if std::env::var("AMPLIHACK_OBSERVER_PID")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        != Some(group)
-    {
+    if announced.to_str().and_then(|s| s.parse::<u32>().ok()) != Some(group) {
         bail!(
             "process is traced by an unrelated observer; cannot establish required recording ownership"
         );
@@ -47,19 +55,67 @@ pub(crate) fn parent_observer() -> Result<Option<u32>> {
 /// attempt once unobserved and record coverage as unavailable. Every other
 /// observer failure stays a plain error and fails closed.
 #[derive(Debug)]
-pub(crate) struct ObserverNotEstablished(anyhow::Error);
+pub(crate) struct ObserverNotEstablished {
+    /// The error number of the refused spawn, taken from its `io::Error`.
+    pub(crate) errno: i32,
+    pub(crate) error: anyhow::Error,
+}
+
+impl ObserverNotEstablished {
+    pub(crate) fn errno(&self) -> i32 {
+        self.errno
+    }
+
+    /// Fixed names for the only numbers `traceme_refused` accepts.
+    pub(crate) fn errno_name(&self) -> &'static str {
+        errno_name(self.errno)
+    }
+}
+
+/// Fixed names for the only numbers `traceme_refused` accepts. No other
+/// number can reach this, so it is never guessed.
+pub(crate) fn errno_name(errno: i32) -> &'static str {
+    match errno {
+        libc::EPERM => "EPERM",
+        libc::ENOSYS => "ENOSYS",
+        _ => "unexpected",
+    }
+}
 
 impl std::fmt::Display for ObserverNotEstablished {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // The inner chain is reached through `source`, so it is not
         // repeated here.
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.error)
     }
 }
 
 impl std::error::Error for ObserverNotEstablished {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.0.source()
+        self.error.source()
+    }
+}
+
+/// The runner's own spawn failed for a reason other than a refused
+/// `PTRACE_TRACEME` (for example a missing binary or working folder), after
+/// the tracing thread returned cleanly. Nothing ran, so the caller may
+/// discard this attempt's empty journal and report the spawn error alone.
+/// Built only in the `Command::spawn` error arm; every other observer
+/// failure stays a plain error and fails closed.
+#[derive(Debug)]
+pub(crate) struct RunnerNotStarted {
+    pub(crate) error: anyhow::Error,
+}
+
+impl std::fmt::Display for RunnerNotStarted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.error)
+    }
+}
+
+impl std::error::Error for RunnerNotStarted {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.error.source()
     }
 }
 
@@ -106,6 +162,12 @@ impl Observer {
         let thread = std::thread::spawn(move || {
             // SAFETY: only the async-signal-safe ptrace syscall is used after
             // fork. A denied TRACEME becomes a spawn failure before exec.
+            //
+            // Hooks registered earlier by the caller (setsid, prctl
+            // PR_SET_PDEATHSIG, getppid) run before this one. An EPERM from
+            // them would be read below as a refused TRACEME. setsid cannot
+            // fail in a freshly forked non-leader and PR_SET_PDEATHSIG does
+            // not return EPERM, so no further check is made.
             unsafe {
                 command.pre_exec(|| {
                     if libc::ptrace(libc::PTRACE_TRACEME, 0, 0, 0) == -1 {
@@ -117,14 +179,25 @@ impl Observer {
             let child = match command.spawn() {
                 Ok(child) => child,
                 Err(error) => {
-                    let refused = traceme_refused(&error);
-                    let error = anyhow::Error::new(error).context(
-                        "required Linux observer unavailable; nested tracing is unsupported",
-                    );
-                    let error = if refused {
-                        anyhow::Error::new(ObserverNotEstablished(error))
-                    } else {
-                        error
+                    let error = match error.raw_os_error() {
+                        Some(errno) if traceme_refused(&error) => {
+                            // The errno is the one this spawn returned; it is never
+                            // read again or parsed from text.
+                            let mut refused = ObserverNotEstablished {
+                                errno,
+                                error: anyhow::Error::new(error),
+                            };
+                            let context = format!(
+                                "required Linux observer unavailable: PTRACE_TRACEME refused (errno {errno}, {})",
+                                refused.errno_name()
+                            );
+                            refused.error = refused.error.context(context);
+                            anyhow::Error::new(refused)
+                        }
+                        _ => anyhow::Error::new(RunnerNotStarted {
+                            error: anyhow::Error::new(error)
+                                .context("failed to spawn recipe-runner-rs"),
+                        }),
                     };
                     let _ = child_tx.send(Err(error));
                     return;
@@ -173,7 +246,9 @@ impl Observer {
                 // The thread sends on every path except a panic, so a
                 // dropped sender means it panicked, which the join reports.
                 // A panicked thread may have spawned the runner before it
-                // died, so this stays a plain error and fails closed.
+                // died, so this stays a plain error and fails closed. It is
+                // deliberately not a RunnerNotStarted, so the caller never
+                // discards this attempt's journal.
                 join_tracing_thread(thread)?;
                 return Err(anyhow::anyhow!(
                     "required observer exited before runner handoff"
@@ -834,15 +909,28 @@ mod tests_not_established {
 
     #[test]
     fn not_established_keeps_the_cause_chain_once() {
-        let inner = anyhow::Error::new(std::io::Error::from_raw_os_error(libc::EPERM))
-            .context("required Linux observer unavailable; nested tracing is unsupported");
-        let error = anyhow::Error::new(ObserverNotEstablished(inner));
+        // M2: the text names the refused call and its errno, and states no
+        // cause the code cannot know.
+        let inner = anyhow::Error::new(std::io::Error::from_raw_os_error(libc::EPERM)).context(
+            "required Linux observer unavailable: PTRACE_TRACEME refused (errno 1, EPERM)",
+        );
+        let error = anyhow::Error::new(ObserverNotEstablished {
+            errno: libc::EPERM,
+            error: inner,
+        });
         let text = format!("{error:#}");
         assert_eq!(
-            text.matches("nested tracing is unsupported").count(),
+            text.matches("PTRACE_TRACEME refused (errno 1, EPERM)")
+                .count(),
             1,
             "{text}"
         );
+        assert!(!text.contains("nested tracing"), "{text}");
+        let marker = error
+            .downcast_ref::<ObserverNotEstablished>()
+            .expect("the marker is the outermost error");
+        assert_eq!(marker.errno(), libc::EPERM);
+        assert_eq!(marker.errno_name(), "EPERM");
         assert!(
             error
                 .chain()
@@ -850,5 +938,47 @@ mod tests_not_established {
                 .any(|e| e.raw_os_error() == Some(libc::EPERM)),
             "{text}"
         );
+    }
+
+    #[test]
+    fn errno_names_cover_only_the_refused_traceme_numbers() {
+        let named = |errno| {
+            ObserverNotEstablished {
+                errno,
+                error: anyhow::anyhow!("refused"),
+            }
+            .errno_name()
+        };
+        assert_eq!(named(libc::EPERM), "EPERM");
+        assert_eq!(named(libc::ENOSYS), "ENOSYS");
+        // Unreachable through traceme_refused; never a guessed name.
+        assert_eq!(named(libc::ENOENT), "unexpected");
+    }
+
+    #[test]
+    fn runner_not_started_keeps_the_spawn_errno_and_says_nothing_of_ptrace() {
+        // B1d: a runner that cannot start reports its own error, with the
+        // io::Error as the root cause, so its errno is not lost.
+        let inner = anyhow::Error::new(std::io::Error::from_raw_os_error(libc::ENOENT))
+            .context("failed to spawn recipe-runner-rs");
+        let error = anyhow::Error::new(RunnerNotStarted { error: inner });
+        let text = format!("{error:#}");
+        assert_eq!(
+            text.matches("failed to spawn recipe-runner-rs").count(),
+            1,
+            "{text}"
+        );
+        for word in ["PTRACE", "ptrace", "tracing", "observer"] {
+            assert!(!text.contains(word), "{word}: {text}");
+        }
+        assert_eq!(
+            error
+                .root_cause()
+                .downcast_ref::<std::io::Error>()
+                .and_then(std::io::Error::raw_os_error),
+            Some(libc::ENOENT),
+            "{text}"
+        );
+        assert!(error.downcast_ref::<ObserverNotEstablished>().is_none());
     }
 }

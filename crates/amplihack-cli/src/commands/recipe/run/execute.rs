@@ -1488,31 +1488,32 @@ fn spawn_with_streaming_stderr(
     let (spawned, mut observer) = if git_record.is_required() {
         match git_record.spawn(command, correlation.run_id()) {
             Ok((child, observer)) => (Ok(child), Some(observer)),
-            Err(error)
-                if error
-                    .downcast_ref::<super::git_record::observer::ObserverNotEstablished>()
-                    .is_some() =>
+            Err(error) => match error
+                .downcast_ref::<super::git_record::observer::ObserverNotEstablished>()
+                .map(|refused| refused.errno())
             {
-                // Issue #2677: the observer never attached, so it watched
-                // nothing. Not a retry: this is the single unobserved start
-                // that replaces the observed one, decided by what happened,
-                // and it happens at most once because the downgrade makes
-                // the record not required. If the record refuses (evidence
-                // may exist), the run fails closed with both errors.
-                match git_record.attempt_not_established(correlation.run_id()) {
-                    Ok(()) => {
-                        // Built again after the downgrade, so `apply_to`
-                        // removes every observer and trace variable.
-                        let spawned = rebuild().map(|mut command| {
-                            arm_runner(&mut command);
-                            command
-                        });
-                        (spawned.and_then(spawn_unobserved), None)
+                Some(errno) => {
+                    // Issue #2677: the observer never attached, so it watched
+                    // nothing. Not a retry: this is the single unobserved start
+                    // that replaces the observed one, decided by what happened,
+                    // and it happens at most once because the downgrade makes
+                    // the record not required. If the record refuses (evidence
+                    // may exist), the run fails closed with both errors.
+                    match git_record.attempt_not_established(correlation.run_id(), errno) {
+                        Ok(()) => {
+                            // Built again after the downgrade, so `apply_to`
+                            // removes every observer and trace variable.
+                            let spawned = rebuild().map(|mut command| {
+                                arm_runner(&mut command);
+                                command
+                            });
+                            (spawned.and_then(spawn_unobserved), None)
+                        }
+                        Err(refused) => (Err(error.context(format!("{refused:#}"))), None),
                     }
-                    Err(refused) => (Err(error.context(format!("{refused:#}"))), None),
                 }
-            }
-            Err(error) => (Err(error), None),
+                None => (Err(error), None),
+            },
         }
     } else {
         (spawn_unobserved(command), None)

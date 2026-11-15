@@ -32,6 +32,8 @@ snippets, run correlation pointers, and additive JSON fields emitted by
 - [JSONL log events](#jsonl-log-events)
 - [Git command record](#git-command-record)
   - [When recording is unavailable](#when-recording-is-unavailable)
+    - [The Linux observer could not attach](#the-linux-observer-could-not-attach)
+    - [A run started from an observed step](#a-run-started-from-an-observed-step)
 - [Configuration](#configuration)
 - [Examples](#examples)
 
@@ -396,25 +398,28 @@ AMPLIHACK_WORK_ROOT and retry`.
 #### The Linux observer could not attach
 
 On Linux the observer starts the runner under `PTRACE_TRACEME`. If the kernel
-refuses that, or the observer exits before it hands the runner over, the
-observer never watched anything for that attempt. Instead of failing before
-any step runs, amplihack then:
+refuses that, the observer never watched anything for that attempt. Instead of
+failing before any step runs, amplihack then:
 
 1. Checks that nothing was recorded: no earlier attempt of this run was
-   observed, the attempt's journal in `git-trace2/` is an empty regular file
-   with one link, and `git-trace2/` (mode `0700`, owned by the user) holds
-   nothing else.
+   observed, `git-trace2/` holds nothing except this attempt's journal, and
+   that journal is empty or absent. Anything else fails the run and keeps the
+   files.
 2. Deletes that empty journal.
 3. Prints one notice to stderr, with fixed text:
 
    ```text
-   amplihack: Git command recording is unavailable for this run: the Linux ptrace observer could not attach (nested tracing is unsupported); the run continues in its private checkout without recording
+   amplihack: Git command recording is unavailable for this run: the kernel refused PTRACE_TRACEME (errno 1, EPERM), so the Linux observer could not attach; the run continues in its private checkout without recording
    ```
 
-   The cause in brackets is always `nested tracing is unsupported`: the
-   kernel refused `PTRACE_TRACEME` (`EPERM` or `ENOSYS`, as under another
-   tracer or a strict `ptrace_scope`). That refusal is the only case that
-   takes this path.
+   The notice contains only the error number and its name. Only two error
+   numbers take this path:
+
+   | Error number | Meaning |
+   | --- | --- |
+   | `1` (`EPERM`) | The process is already traced (a nested run started from an observed step, or a debugger that follows forks), or Yama `ptrace_scope` forbids tracing. |
+   | `38` (`ENOSYS`) | A seccomp filter blocks `ptrace`. |
+
 4. Starts the runner once, unobserved, with the same command and the clean
    environment described [above](#when-recording-is-unavailable). This is a
    single fallback chosen by what happened, not a retry: if the runner itself
@@ -435,18 +440,61 @@ At the end of the run, `git-recording.json` holds:
 The empty `git-trace2/` folder is removed (only if it is empty). There is no
 `git-commands.jsonl`.
 
+When the refusal stops the run instead (step 1 found something), the error
+names the refusal and its error number:
+
+```text
+required Linux observer unavailable: PTRACE_TRACEME refused (errno 1, EPERM)
+```
+
+#### A run started from an observed step
+
+A step of an observed run is traced by that run's observer, which follows
+every fork. A nested `amplihack recipe run` started from such a step decides
+what to do from `AMPLIHACK_OBSERVER_PID`:
+
+| `AMPLIHACK_OBSERVER_PID` in the nested run | Result |
+| --- | --- |
+| Names the observer that traces it | The nested run relays to the parent's observer and gets its own journal, as described in [Git command record](#git-command-record). |
+| Not set | The nested run behaves as if there were no parent observer. The kernel refuses its `PTRACE_TRACEME` with `EPERM`, a step runs, and its `git-recording.json` says `unavailable`. Its Git commands are still in the outer run's journal. |
+| Set, but empty, malformed or naming another process | The nested run stops before any step: `process is traced by an unrelated observer`. |
+
+The same rule applies to a run under any other tracer. A tracer that does not
+follow forks leaves the runner untraced, so its `PTRACE_TRACEME` succeeds and
+the run is observed normally. Neither case can produce `established` for a run
+whose commands were not all seen.
+
+Removing the variable does not turn recording off. Outside an observed step
+it has no effect, because a run with no tracer is observed normally. Inside an
+observed step it changes only the nested run's own record: the outer observer
+still traces every process the nested run starts, so its Git commands go into
+the outer run's journal. Use it only to diagnose the second row from inside a
+step:
+
+```sh
+env -u AMPLIHACK_OBSERVER_PID amplihack recipe run default-workflow -w "$PWD"
+# amplihack: Git command recording is unavailable for this run: the kernel refused PTRACE_TRACEME (errno 1, EPERM), so the Linux observer could not attach; the run continues in its private checkout without recording
+```
+
+#### Other failures
+
 Every other recording failure still fails the run, as before:
 
 | Case | Result |
 | --- | --- |
 | The observer attached, but its receipt is missing | `required observer did not finalize; partial evidence retained: ...` |
 | The journal is not empty, or `git-trace2/` holds a receipt or any other entry | The downgrade is refused; the files are kept; the run fails. |
-| The journal was replaced, is a symbolic link, or has other links | The downgrade is refused; the run fails. |
 | An earlier attempt of this run was observed | The downgrade is refused; the run fails. |
 | A receipt from another attempt, an oversized journal or line | The run fails. |
 | A nested run's relay to its parent's observer fails | The run fails. |
 | The journal cannot be created | The run fails. |
-| The runner binary cannot be executed with an error other than `EPERM` (`ENOENT`, `EACCES`, `ENOEXEC`, `E2BIG`, `ETXTBSY`) | The run fails with the spawn error; no unobserved start is tried. |
+| The runner cannot start with an error other than `EPERM` or `ENOSYS` (`ENOENT`, `EACCES`, `ENOEXEC`, `E2BIG`, `ETXTBSY`) | The run fails with the spawn error and its error number, for example `failed to spawn recipe-runner-rs: No such file or directory (os error 2)`. No unobserved start is tried. |
+
+A runner that cannot start, such as a missing binary or folder, reports that
+failure and its error number first. An attempt that never started leaves
+nothing to check, so its empty journal is removed and no missing-receipt error
+follows. If that attempt's journal has content, or `git-trace2/` holds any
+other entry, the files are kept and the run also reports the missing receipt.
 
 The kind of failure is decided by its error number alone. An `EPERM` from
 executing the runner, as a security module can return, looks the same as a

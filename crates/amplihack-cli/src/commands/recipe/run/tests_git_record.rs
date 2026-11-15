@@ -931,10 +931,11 @@ fn begin_delegates_to_the_current_platform() {
 // Contract (see "The Linux observer could not attach" in
 // `docs/reference/recipe-runner-logging.md`):
 //
-// - `GitRecord::attempt_not_established(&self, attempt_id: &str)
-//   -> Result<()>` downgrades a required, enabled
-//   record with no established attempt to `unavailable`, removing the
-//   attempt's empty journal. Every other case returns `Err` and leaves the
+// - `GitRecord::attempt_not_established(&self, attempt_id: &str, errno: i32)
+//   -> Result<()>` downgrades a required, enabled record with no established
+//   attempt to `unavailable` when nothing was recorded: `git-trace2/` holds
+//   nothing but this attempt's journal, which is empty or absent (M5). The
+//   empty journal is removed. Every other case returns `Err` and leaves the
 //   record and its files unchanged.
 // - After a downgrade `is_required()` is false, `apply_to` sets no observer
 //   or trace variable, and `finish` writes the Linux `unavailable` marker and
@@ -988,7 +989,7 @@ fn unestablished_attempt_records_linux_unavailable() {
     let root = tempfile::tempdir().unwrap();
     let (record, journal) = unattached_attempt(root.path(), "a1");
     record
-        .attempt_not_established("a1")
+        .attempt_not_established("a1", libc::EPERM)
         .expect("an observer that never attached downgrades the record");
     assert!(!journal.exists(), "the empty journal is removed");
     assert!(
@@ -1036,7 +1037,7 @@ fn downgrade_accepts_an_attempt_whose_journal_was_never_created() {
     let root = tempfile::tempdir().unwrap();
     let record = GitRecord::begin_on(Some(root.path()), RecordingPlatform::Linux).unwrap();
     record
-        .attempt_not_established("a1")
+        .attempt_not_established("a1", libc::EPERM)
         .expect("a journal that does not exist holds no evidence");
     record.finish().unwrap();
     let marker: Value =
@@ -1050,7 +1051,7 @@ fn downgrade_accepts_an_attempt_whose_journal_was_never_created() {
 fn apply_to_after_downgrade_sets_no_observer_env() {
     let root = tempfile::tempdir().unwrap();
     let (record, _journal) = unattached_attempt(root.path(), "a1");
-    record.attempt_not_established("a1").unwrap();
+    record.attempt_not_established("a1", libc::EPERM).unwrap();
     // The fallback command is built again after the downgrade.
     let mut command = command_with_caller_trace(root.path());
     for var in OBSERVER_VARS {
@@ -1088,7 +1089,7 @@ fn established_attempt_without_receipt_still_fails_closed() {
         fs::remove_file(&receipt).unwrap();
     }
 
-    let refused = record.attempt_not_established("a2");
+    let refused = record.attempt_not_established("a2", libc::EPERM);
     assert!(
         refused.is_err(),
         "after an established attempt no later attempt may downgrade"
@@ -1112,7 +1113,7 @@ fn downgrade_refuses_a_non_empty_journal() {
     let evidence = b"{\"schema_version\":1}\n";
     fs::write(&journal, evidence).unwrap();
     assert!(
-        record.attempt_not_established("a1").is_err(),
+        record.attempt_not_established("a1", libc::EPERM).is_err(),
         "a journal holding anything is partial evidence"
     );
     assert_eq!(fs::read(&journal).unwrap(), evidence, "evidence is kept");
@@ -1133,7 +1134,7 @@ fn downgrade_refuses_with_stray_receipt() {
     fs::write(raw.join("observer-a1.receipt"), b"{}").unwrap();
     let before = names_in(&raw);
     assert!(
-        record.attempt_not_established("a1").is_err(),
+        record.attempt_not_established("a1", libc::EPERM).is_err(),
         "a receipt means the observer ran"
     );
     assert_eq!(names_in(&raw), before, "files are unchanged");
@@ -1150,7 +1151,7 @@ fn downgrade_refuses_any_other_entry_in_the_trace_folder() {
     fs::write(raw.join("observer-a0.jsonl"), b"").unwrap();
     let before = names_in(&raw);
     assert!(
-        record.attempt_not_established("a1").is_err(),
+        record.attempt_not_established("a1", libc::EPERM).is_err(),
         "another attempt's journal is not this attempt's to discard"
     );
     assert_eq!(names_in(&raw), before, "files are unchanged");
@@ -1167,40 +1168,11 @@ fn downgrade_refuses_symlinked_journal() {
     let journal = root.path().join(TRACE_DIR).join("observer-a1.jsonl");
     symlink(&elsewhere, &journal).unwrap();
     assert!(
-        record.attempt_not_established("a1").is_err(),
-        "a symlinked journal is replaced storage"
+        record.attempt_not_established("a1", libc::EPERM).is_err(),
+        "a symlink is not an empty journal (M5: symlink_metadata, never followed)"
     );
     assert!(fs::symlink_metadata(&journal).is_ok(), "the link is kept");
     assert!(elsewhere.exists(), "the target is never touched");
-    assert!(record.is_required());
-}
-
-#[test]
-#[cfg(target_os = "linux")]
-fn downgrade_refuses_a_hard_linked_journal() {
-    let root = tempfile::tempdir().unwrap();
-    let (record, journal) = unattached_attempt(root.path(), "a1");
-    let other = root.path().join("other-name");
-    fs::hard_link(&journal, &other).unwrap();
-    assert!(
-        record.attempt_not_established("a1").is_err(),
-        "a journal with two links is not the one the observer made"
-    );
-    assert!(journal.exists());
-    assert!(record.is_required());
-}
-
-#[test]
-#[cfg(target_os = "linux")]
-fn downgrade_refuses_a_replaced_trace_folder() {
-    let root = tempfile::tempdir().unwrap();
-    let record = GitRecord::begin_on(Some(root.path()), RecordingPlatform::Linux).unwrap();
-    let raw = root.path().join(TRACE_DIR);
-    fs::set_permissions(&raw, fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(
-        record.attempt_not_established("a1").is_err(),
-        "a trace folder that is not 0700 was changed under the run"
-    );
     assert!(record.is_required());
 }
 
@@ -1211,15 +1183,15 @@ fn downgrade_refuses_when_not_required_or_not_enabled() {
     // disabled. Neither has an observer attempt to give up on.
     let root = tempfile::tempdir().unwrap();
     let other = GitRecord::begin_on(Some(root.path()), RecordingPlatform::Other).unwrap();
-    assert!(other.attempt_not_established("a1").is_err());
+    assert!(other.attempt_not_established("a1", libc::EPERM).is_err());
     let dry = GitRecord::dry_run();
-    assert!(dry.attempt_not_established("a1").is_err());
+    assert!(dry.attempt_not_established("a1", libc::EPERM).is_err());
     // A Linux record already downgraded once cannot downgrade again.
     let linux_root = tempfile::tempdir().unwrap();
     let (record, _journal) = unattached_attempt(linux_root.path(), "a1");
-    record.attempt_not_established("a1").unwrap();
+    record.attempt_not_established("a1", libc::EPERM).unwrap();
     assert!(
-        record.attempt_not_established("a2").is_err(),
+        record.attempt_not_established("a2", libc::EPERM).is_err(),
         "the fallback happens at most once"
     );
 }
@@ -1243,4 +1215,107 @@ fn a_runner_that_cannot_exec_is_not_an_unattached_observer() {
         "{error:#}"
     );
     assert!(record.is_required(), "nothing is downgraded");
+}
+
+// ---------------------------------------------------------------------------
+// Issue #2677 B1d: a runner that cannot start (missing binary or folder)
+// reported "required observer did not finalize; partial evidence retained:
+// No such file or directory", which named the missing receipt, not the
+// failed spawn. The spawn's own error now comes first and is the only cause:
+// the attempt never started, so its empty journal is released and `finish`
+// has nothing to check.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[cfg(target_os = "linux")]
+fn a_runner_that_cannot_start_reports_its_own_error_first() {
+    let root = tempfile::tempdir().unwrap();
+    let record = GitRecord::begin_on(Some(root.path()), RecordingPlatform::Linux).unwrap();
+    let error = record
+        .spawn(Command::new(root.path().join("no-such-runner")), "a1")
+        .err()
+        .expect("a missing runner binary cannot start");
+    let text = format!("{error:#}");
+    assert!(
+        error
+            .downcast_ref::<super::git_record::observer::RunnerNotStarted>()
+            .is_some(),
+        "the spawn failure is marked as an attempt that never started: {text}"
+    );
+    assert_eq!(
+        error.chain().next().map(ToString::to_string).as_deref(),
+        Some("failed to spawn recipe-runner-rs"),
+        "{text}"
+    );
+    assert_eq!(
+        error
+            .root_cause()
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::raw_os_error),
+        Some(libc::ENOENT),
+        "the spawn's errno is kept: {text}"
+    );
+    for word in ["receipt", "did not finalize", "PTRACE", "tracing"] {
+        assert!(!text.contains(word), "{word}: {text}");
+    }
+    assert!(record.is_required(), "a spawn failure is not a downgrade");
+
+    record
+        .finish()
+        .expect("an attempt that never started leaves nothing to check");
+    assert!(
+        !root.path().join(TRACE_DIR).exists(),
+        "the empty git-trace2/ folder is released"
+    );
+    assert!(
+        !root.path().join("git-recording.json").exists(),
+        "no coverage is claimed for a run whose runner never started"
+    );
+    assert!(!root.path().join(SUMMARY).exists());
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn a_failure_before_the_runner_spawn_keeps_the_attempt_and_fails_closed() {
+    // SR-3: only `RunnerNotStarted` releases an attempt. Here the observer
+    // cannot create its journal (`create_new` finds one already there), a
+    // plain error: the existing file and the attempt count are kept, so
+    // `finish` still fails closed.
+    let root = tempfile::tempdir().unwrap();
+    let (record, journal) = unattached_attempt(root.path(), "a1");
+    let error = record
+        .spawn(Command::new("true"), "a1")
+        .err()
+        .expect("an existing journal cannot be created again");
+    for marker in [
+        error
+            .downcast_ref::<super::git_record::observer::RunnerNotStarted>()
+            .is_some(),
+        error
+            .downcast_ref::<super::git_record::observer::ObserverNotEstablished>()
+            .is_some(),
+    ] {
+        assert!(!marker, "{error:#}");
+    }
+    assert!(journal.exists(), "the journal is not released");
+    assert!(record.is_required());
+    assert!(
+        record.finish().is_err(),
+        "the attempt still counts, so its missing receipt fails the run"
+    );
+    assert!(journal.exists(), "evidence is kept");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn downgrade_refuses_when_the_trace_folder_is_gone() {
+    // M5: a missing `git-trace2/` is not "nothing was recorded".
+    let root = tempfile::tempdir().unwrap();
+    let record = GitRecord::begin_on(Some(root.path()), RecordingPlatform::Linux).unwrap();
+    fs::remove_dir(root.path().join(TRACE_DIR)).unwrap();
+    assert!(
+        record.attempt_not_established("a1", libc::EPERM).is_err(),
+        "storage that vanished is not an empty attempt"
+    );
+    assert!(record.is_required());
 }

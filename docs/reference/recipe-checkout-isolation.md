@@ -335,7 +335,7 @@ Each record has schema version `1` and `run_id`, `attempt_id`, `executable`,
 Failure to start the observer, losing it during the run, a storage or
 attribution error, or a failed publication makes the run fail. The one
 exception is an observer that could not attach to the runner at all (the
-kernel refused `PTRACE_TRACEME`): the run continues unobserved and records `"coverage":"unavailable"`, as off Linux.
+kernel refused `PTRACE_TRACEME` with `EPERM` or `ENOSYS`): the run continues unobserved and records `"coverage":"unavailable"`, as off Linux.
 See [The Linux observer could not attach](recipe-runner-logging.md#the-linux-observer-could-not-attach). An empty
 journal means the observer ran and saw no Git commands that can write.
 `GitRecord::dry_run()` is the only state with recording switched off, and only
@@ -493,7 +493,8 @@ workspace code. None of them is discarded with `.ok()`, `let _ =` or
 | Failure | Result |
 | --- | --- |
 | Unsafe input, unborn `HEAD`, bare or malformed repository | Preparation fails naming the path; no step runs; admission finished as `Failure`. |
-| Observer could not attach on Linux (`PTRACE_TRACEME` refused) | One notice on stderr; the runner starts once unobserved; `coverage: "unavailable"` is recorded. |
+| Observer could not attach on Linux (`PTRACE_TRACEME` refused with `EPERM` or `ENOSYS`) | One notice on stderr naming `PTRACE_TRACEME` and the error number; the runner starts once unobserved; `coverage: "unavailable"` is recorded. |
+| Runner cannot start on Linux (missing binary or folder, or another spawn error) | The run fails with `failed to spawn recipe-runner-rs` and the spawn error number; no unobserved start. No missing-receipt error follows unless the attempt's journal has content or `git-trace2/` holds another entry, in which case the files are kept and that error is also reported. |
 | Observer fails to start on Linux for any other reason | The runner never starts. Without a writable work root: `cannot initialize required Git recording; provide a writable absolute AMPLIHACK_WORK_ROOT and retry`. |
 | Not Linux | The run proceeds unobserved and records `coverage: "unavailable"`. Without a writable work root it stops with the same message as above. |
 | Seeding `origin/*` (for example an `origin/*` ref whose objects are missing from the caller's repository) or copying `origin/HEAD` fails | Preparation fails with `cannot seed origin refs` and `partial resources retained at <exec dir>`; no step runs. |

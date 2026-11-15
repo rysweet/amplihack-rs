@@ -22,6 +22,9 @@ mod contract_support;
 mod exec_reclaim;
 #[path = "issue_2096_input_preservation.rs"]
 mod input_preservation;
+#[cfg(target_os = "linux")]
+#[path = "issue_2677_nested_unobserved.rs"]
+mod nested_unobserved;
 #[path = "issue_2096_ownership_lifecycle.rs"]
 mod ownership_lifecycle;
 #[path = "issue_2096_private_base_ref.rs"]
@@ -86,6 +89,21 @@ if [ -n "${ISSUE_2677_ROOT_HELPER:-}" ]; then
     || echo failed >> "$out/base_from_main.err"
   AMPLIHACK_WORK_ROOT_EXPLICIT=1 AMPLIHACK_WORK_ROOT="$ISSUE_2677_WORK_ROOT" \
     bash "$ISSUE_2677_ROOT_HELPER" base . > "$out/base_from_checkout"
+fi
+# Issue #2677 B1: the drive's launch shape. A step of this (observed) run
+# starts another `amplihack recipe run` without the observer marker, so the
+# outer observer still traces it. Removing ISSUE_2677_NESTED_BIN stops the
+# nested stub from recursing.
+if [ -n "${ISSUE_2677_NESTED_BIN:-}" ]; then
+  nested="$ISSUE_2677_NESTED_OUT"
+  mkdir -p "$nested"
+  status=0
+  env -u AMPLIHACK_OBSERVER_PID -u ISSUE_2677_NESTED_BIN \
+    ISSUE_2096_OBSERVATIONS="$nested/observations" \
+    AMPLIHACK_WORK_ROOT="$nested/work" \
+    "$ISSUE_2677_NESTED_BIN" recipe run "$ISSUE_2677_NESTED_RECIPE" -w "$PWD" \
+    > "$nested/stdout" 2> "$nested/stderr" || status=$?
+  printf '%s' "$status" > "$nested/status"
 fi
 if [ -n "${ISSUE_2096_STAGE:-}" ]; then
   printf 'private output\n' > run-output

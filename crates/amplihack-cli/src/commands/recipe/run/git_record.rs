@@ -236,50 +236,44 @@ impl GitRecord {
     ) -> Result<(std::process::Child, observer::Observer)> {
         let (path, run_id) = self.begin_attempt(attempt_id)?;
         let spawned = observer::Observer::spawn(command, path, run_id, attempt_id.to_string());
-        if spawned.is_ok() {
-            self.established.set(self.established.get() + 1);
+        match &spawned {
+            Ok(_) => self.established.set(self.established.get() + 1),
+            Err(error) if error.downcast_ref::<observer::RunnerNotStarted>().is_some() => {
+                // Issue #2677 B1d: the runner's own spawn failed, so the
+                // attempt never started. Its empty journal is released and
+                // the attempt uncounted, so `finish` has nothing to check and
+                // the spawn error is the only cause reported. If the release
+                // refuses, the attempt still counts and `finish` fails
+                // closed; the spawn error is returned either way.
+                let released = match &*self.state.borrow() {
+                    State::Enabled { trace_dir, .. } => {
+                        self.release_unstarted_attempt(trace_dir, attempt_id)
+                    }
+                    _ => Err(anyhow::anyhow!("required Git recorder is unavailable")),
+                };
+                if released.is_ok() {
+                    self.spawned.set(self.spawned.get() - 1);
+                }
+            }
+            Err(_) => {}
         }
         spawned
     }
 
-    /// Issue #2677: the observer could not be set up for `attempt_id`
-    /// ([`observer::ObserverNotEstablished`]), so it watched nothing. When
-    /// nothing at all was recorded, the record becomes unavailable (as off
-    /// Linux): the attempt's empty journal is removed, `is_required` turns
-    /// false and a notice is printed. The caller then starts the runner once
-    /// unobserved.
-    ///
-    /// Every other case returns `Err` and changes nothing, so the run fails
-    /// closed with its evidence: a record that is not a required, enabled
-    /// one; any earlier established attempt; storage that is not a 0700
-    /// folder owned by this user; any entry besides this attempt's journal;
-    /// or a journal that is not an empty regular file with one link.
+    /// Releases the storage of an attempt that recorded nothing. Every check
+    /// runs before anything changes: no attempt of this run was established,
+    /// `git-trace2/` holds nothing but this attempt's journal, and that
+    /// journal is empty or absent. A journal with any content, any other
+    /// entry, or a missing folder is refused, so evidence is never removed.
     #[cfg(target_os = "linux")]
-    pub(crate) fn attempt_not_established(&self, attempt_id: &str) -> Result<()> {
-        use std::os::unix::fs::MetadataExt;
+    fn release_unstarted_attempt(&self, trace_dir: &Path, attempt_id: &str) -> Result<()> {
         const KEPT: &str = "partial evidence retained";
-        let Ok(mut state) = self.state.try_borrow_mut() else {
-            bail!("Git recording is in use; the observer failure stands");
-        };
-        let State::Enabled { run_dir, trace_dir } = &*state else {
-            bail!("Git recording is not observing this run; the observer failure stands");
-        };
-        if !self.required.get() {
-            bail!("Git recording is not required for this run; the observer failure stands");
-        }
         if self.established.get() != 0 {
             bail!("an earlier attempt of this run was observed; {KEPT}");
         }
         let journal_name = format!("observer-{attempt_id}.jsonl");
         if Path::new(&journal_name).file_name() != Some(std::ffi::OsStr::new(&journal_name)) {
             bail!("invalid observer attempt id; {KEPT}");
-        }
-        let folder = fs::symlink_metadata(trace_dir)
-            .with_context(|| format!("cannot inspect recorder storage; {KEPT}"))?;
-        // SAFETY: geteuid has no preconditions and cannot fail.
-        let euid = unsafe { libc::geteuid() };
-        if !folder.file_type().is_dir() || folder.mode() & 0o7777 != 0o700 || folder.uid() != euid {
-            bail!("required collector storage was replaced; {KEPT}");
         }
         for entry in fs::read_dir(trace_dir)
             .with_context(|| format!("cannot list recorder storage; {KEPT}"))?
@@ -290,34 +284,38 @@ impl GitRecord {
             }
         }
         let journal = trace_dir.join(&journal_name);
-        match fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
-            .open(&journal)
-        {
-            Ok(file) => {
-                let opened = file
-                    .metadata()
-                    .with_context(|| format!("cannot inspect observer journal; {KEPT}"))?;
-                let named = fs::symlink_metadata(&journal)
-                    .with_context(|| format!("cannot inspect observer journal; {KEPT}"))?;
-                if !opened.file_type().is_file()
-                    || !named.file_type().is_file()
-                    || opened.len() != 0
-                    || opened.nlink() != 1
-                    || (opened.dev(), opened.ino()) != (named.dev(), named.ino())
-                {
-                    bail!("observer journal is not the empty file the observer made; {KEPT}");
-                }
-                drop(file);
-                fs::remove_file(&journal)
-                    .with_context(|| format!("cannot remove empty observer journal; {KEPT}"))?;
-            }
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
+        match fs::symlink_metadata(&journal) {
+            Ok(metadata) if metadata.len() == 0 => fs::remove_file(&journal)
+                .with_context(|| format!("cannot remove empty observer journal; {KEPT}")),
+            Ok(_) => bail!("observer journal is not empty; {KEPT}"),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
             Err(error) => {
-                return Err(error).with_context(|| format!("cannot open observer journal; {KEPT}"));
+                Err(error).with_context(|| format!("cannot inspect observer journal; {KEPT}"))
             }
         }
+    }
+
+    /// Issue #2677: the kernel refused `PTRACE_TRACEME` for `attempt_id`
+    /// ([`observer::ObserverNotEstablished`]), so the observer watched
+    /// nothing. When nothing was recorded (no attempt was established and
+    /// `git-trace2/` holds nothing but this attempt's journal, empty or
+    /// absent), the record becomes unavailable (as off Linux): the empty
+    /// journal is removed, `is_required` turns false and a notice naming
+    /// the refused call and its `errno` is printed. The caller then starts
+    /// the runner once unobserved. Every other case returns `Err` and
+    /// changes nothing, so the run fails closed with its evidence.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn attempt_not_established(&self, attempt_id: &str, errno: i32) -> Result<()> {
+        let Ok(mut state) = self.state.try_borrow_mut() else {
+            bail!("Git recording is in use; the observer failure stands");
+        };
+        let State::Enabled { run_dir, trace_dir } = &*state else {
+            bail!("Git recording is not observing this run; the observer failure stands");
+        };
+        if !self.required.get() {
+            bail!("Git recording is not required for this run; the observer failure stands");
+        }
+        self.release_unstarted_attempt(trace_dir, attempt_id)?;
         // Every check passed: only now does the record change.
         *state = State::Unavailable {
             run_dir: run_dir.clone(),
@@ -325,12 +323,13 @@ impl GitRecord {
             trace_dir: Some(trace_dir.clone()),
         };
         self.required.set(false);
-        // Fixed text only: the error itself is not printed, so no path or
-        // command line reaches the notice.
+        // Fixed text only: just the integer errno and its fixed name, so no
+        // path, command line or environment value reaches the notice.
+        let name = observer::errno_name(errno);
         eprintln!(
-            "amplihack: Git command recording is unavailable for this run: the Linux ptrace \
-             observer could not attach (nested tracing is unsupported); the run continues in \
-             its private checkout without recording"
+            "amplihack: Git command recording is unavailable for this run: the kernel refused \
+             PTRACE_TRACEME (errno {errno}, {name}), so the Linux observer could not attach; \
+             the run continues in its private checkout without recording"
         );
         Ok(())
     }
