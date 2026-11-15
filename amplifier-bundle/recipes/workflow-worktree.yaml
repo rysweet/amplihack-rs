@@ -17,7 +17,7 @@ recursion:
   max_depth: 6
   max_total_steps: 80
 
-context: { base_branch: "", forbidden_base_branches: "", strict_delivery: "false" }  # caller delivery inputs: docs/reference/workflow-delivery-inputs.md
+context: { base_branch: "", forbidden_base_branches: "", strict_delivery: "false", step_recovery_dir: "" }  # caller delivery inputs: docs/reference/workflow-delivery-inputs.md
 
 steps:
   - id: "step-04-setup-worktree"
@@ -381,9 +381,9 @@ steps:
 
       # Output structured JSON for subsequent steps.
       # created=false signals that an existing worktree was reused (diagnostic for re-runs).
-      # Consumers accept worktree_setup.worktree_path only as an already-resolved
-      # worktree root (#1561 V4), so emit the physical path.
+      # worktree_setup.worktree_path must be an already-resolved root (#1561 V4): emit the physical path.
       WORKTREE_PATH="$(cd -P -- "$WORKTREE_PATH" && pwd -P)" || { echo "ERROR: cannot resolve the worktree path to a physical directory (#1561)" >&2; exit 1; }
+      [ ! -d "${RECIPE_VAR_step_recovery_dir:-/nonexistent}" ] || (umask 077 && printf '%s\n' "$BRANCH_NAME" > "$RECIPE_VAR_step_recovery_dir/build-branch.txt") || echo "WARNING: could not record the branch for a retried build (#2539)" >&2  # autodrive-build step-02r reuses it
       printf '{"worktree_path": "%s", "branch_name": "%s", "base_ref": "%s", "base_branch": "%s", "runtime_root": "%s", "created": %s}\n' \
         "$(json_escape "$WORKTREE_PATH")" \
         "$(json_escape "$BRANCH_NAME")" \
