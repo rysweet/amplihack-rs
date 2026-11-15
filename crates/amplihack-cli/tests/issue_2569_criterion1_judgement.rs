@@ -13,7 +13,7 @@
 //! case runs anything under `tests/gadugi/`.
 
 use crate::support::criterion1_world::{
-    GadugiCall, SCENARIO_NAME, World, all_strings, field, json_of, show,
+    GadugiCall, SCENARIO_NAME, World, all_strings, field, json_of, last_line, show,
 };
 use serde_json::Value;
 
@@ -72,6 +72,14 @@ fn assert_record_contract(rec: &Value) {
             "{key} must be 0: the measurement runs no scenario"
         );
     }
+    // The record binds to the tree it was measured on, so head_sha is an
+    // object name or nothing at all. A git argument recorded in its place
+    // would bind the evidence to a commit that does not exist.
+    let head = field(rec, "head_sha");
+    assert!(
+        head.is_empty() || (head.len() >= 7 && head.chars().all(|c| c.is_ascii_hexdigit())),
+        "head_sha must be a hex object name or empty, never {head:?}"
+    );
     if state == "not-consulted" {
         assert_eq!(
             field(rec, "gadugi_scenario_dir"),
@@ -962,4 +970,168 @@ fn awkward_scenario_file_names_are_reported_named_and_never_run() {
     }
     // The PR's own scenario still ran, by its name: value.
     assert_staging_rule(&w.gadugi_calls());
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// S4 — the trust root is never the worktree under review
+// ─────────────────────────────────────────────────────────────────────────
+
+/// The round resolves its tools directory by searching `$AMPLIHACK_HOME`
+/// first and the repository second, and a PR in this repository carries a
+/// complete `amplifier-bundle/tools` of its own. So the search can land on
+/// the worktree under review, and the PR would then supply both the tool
+/// that measures it and the rules that judge it. `step-02a-qa-inputs` reads
+/// a tools directory inside the worktree as no trust root at all: it names
+/// the blocker, runs nothing from there, hands on no guidance path and
+/// exits 0.
+#[test]
+fn a_tools_directory_inside_the_worktree_under_review_is_not_a_trust_root() {
+    let w = World::new();
+    w.node_repo(&[]);
+    let marker = w.base.join("worktree-tool-ran");
+    // A complete, well-shaped decoy, so what stops it is the containment
+    // check rather than a malformed record.
+    let tools = w.worktree_bundle(&format!(
+        "#!/bin/sh\ntouch '{}'\nprintf '%s\\n' '{}'\n",
+        marker.display(),
+        concat!(
+            r#"{"qa_status":"PASS","qa_reason":"","qa_repo_type":"node","docs_only":"true","#,
+            r#""gadugi_status":"NOT_REQUIRED","gadugi_scenario_dir":"","#,
+            r#""gadugi_scenario_dir_state":"not-consulted","head_sha":""}"#,
+        )
+    ));
+    w.feature_pr();
+
+    let o = w.run_step(
+        "autodrive-merge-evidence.yaml",
+        "step-02a-qa-inputs",
+        &[(
+            "RECIPE_VAR_autodrive_tools_dir",
+            &tools.display().to_string(),
+        )],
+    );
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "step-02a names a blocker and exits 0; it never ends a round: {}",
+        show(&o)
+    );
+    assert!(
+        !marker.exists(),
+        "a measurement from the worktree under review ran: the PR supplied the tool that measures it"
+    );
+
+    let out = json_of(&o);
+    assert_eq!(
+        field(&out, "qa_reason"),
+        "qa-measurement-unavailable",
+        "a tools directory inside the worktree is the named blocker: {out}"
+    );
+    assert_eq!(
+        field(&out, "qa_status"),
+        "BLOCKED",
+        "an unavailable measurement is never reported as a pass: {out}"
+    );
+    assert_eq!(
+        field(&out, "qa_guidance"),
+        "",
+        "no guidance path is handed on, so no copy from the worktree can be followed: {out}"
+    );
+    assert_ne!(
+        field(&out, "docs_only"),
+        "true",
+        "the decoy's own fields must reach nothing: {out}"
+    );
+
+    // And the round carries on: the judgement reads the named blocker and
+    // still records a judgement.
+    let j = w.judgement("auto", "pass");
+    assert_judgement_shape(&j);
+    assert!(
+        blockers(&j).contains(&"qa-measurement-unavailable".to_string()),
+        "the judgement carries the named blocker: {:?}",
+        blockers(&j)
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// S5 — a record with no fields in it
+// ─────────────────────────────────────────────────────────────────────────
+
+/// `step-02a-qa-inputs` appends the guidance path to the record it was
+/// given, by dropping the record's closing brace and writing a new one. A
+/// record with no fields has nothing to append to: dropping its brace
+/// leaves `{`, and the step would print `{,"qa_guidance":"…"}`, which the
+/// runner cannot parse under `parse_json: true`. The step must read a
+/// record with no fields as the named blocker instead, and its own output
+/// must stay one parseable object.
+#[test]
+fn a_record_with_no_fields_is_a_named_blocker_rather_than_a_broken_line() {
+    let w = World::new();
+    w.node_repo(&[]);
+    w.feature_pr();
+
+    for (name, body) in [
+        ("empty-record-bundle", "#!/bin/sh\nprintf '{}\\n'\n"),
+        ("blank-record-bundle", "#!/bin/sh\nprintf '{ }\\n'\n"),
+        ("array-record-bundle", "#!/bin/sh\nprintf '[]\\n'\n"),
+    ] {
+        let tools = w.private_bundle(name, body);
+        let o = w.run_step(
+            "autodrive-merge-evidence.yaml",
+            "step-02a-qa-inputs",
+            &[(
+                "RECIPE_VAR_autodrive_tools_dir",
+                &tools.display().to_string(),
+            )],
+        );
+        assert_eq!(
+            o.status.code(),
+            Some(0),
+            "{name}: step-02a names a blocker and exits 0: {}",
+            show(&o)
+        );
+        let line = last_line(&o);
+        let v: Value = serde_json::from_str(&line).unwrap_or_else(|e| {
+            panic!(
+                "{name}: step-02a sets parse_json, so its last line is one JSON object; {e}: {line}"
+            )
+        });
+        assert_eq!(
+            field(&v, "qa_reason"),
+            "qa-measurement-unavailable",
+            "{name}: a record carrying no field is unavailable, never a pass: {v}"
+        );
+        assert_eq!(field(&v, "qa_status"), "BLOCKED", "{name}: {v}");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// S6 — the record binds to a commit or to nothing
+// ─────────────────────────────────────────────────────────────────────────
+
+/// `head_sha` is what binds the record to the tree it was measured on, so a
+/// later round cannot present an earlier round's evidence. In a checkout
+/// with no commit in it, `git rev-parse HEAD` prints its own argument and
+/// fails, and that word must not be recorded as the head: an object name or
+/// nothing, never the string `HEAD`.
+#[test]
+fn a_record_measured_before_the_first_commit_names_no_head_sha() {
+    let w = World::new();
+    w.repo_without_commits();
+
+    let rec = w.record(&[]);
+    assert_record_contract(&rec);
+    let head = field(&rec, "head_sha");
+    assert_eq!(
+        head, "",
+        "with no commit there is no head to bind the record to: {rec}"
+    );
+    assert!(
+        !w.gadugi_calls()
+            .iter()
+            .any(|c| c.subcommand == "run" || c.subcommand == "validate"),
+        "the measurement runs no scenario: {:?}",
+        w.gadugi_calls()
+    );
 }

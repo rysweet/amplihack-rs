@@ -101,6 +101,17 @@ pub fn read_json(path: &Path) -> Value {
     serde_json::from_str(&body).unwrap_or_else(|e| panic!("parse {}: {e}\n{body}", path.display()))
 }
 
+/// The last non-empty line the step wrote to standard output, which is the
+/// line the recipe runner parses when a step sets `parse_json: true`.
+pub fn last_line(o: &Output) -> String {
+    text(&o.stdout)
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or_else(|| panic!("nothing on standard output:\n{}", show(o)))
+        .to_string()
+}
+
 pub fn json_of(o: &Output) -> Value {
     let out = text(&o.stdout);
     let line = out
@@ -472,7 +483,7 @@ else
       rm -rf -- "$stage"
       case "$out" in
         *ECONNREFUSED*)
-          note "attempt ${{ATTEMPT}}: failed, cause environment: the payment service refuses connections."
+          note "attempt ${{ATTEMPT}}: failed, cause environment: the payment service is not accepting connections."
           HANDOFF="$(printf '{{"step_id":"step-02-qa-team-scenarios","failure":%s,"choice":"handoff","reason":%s,"owner":"repository maintainer","needs":%s}}' \
             "$(jstr "the checkout scenario cannot reach the payment service")" \
             "$(jstr "the service is unreachable from CI and from isolation; no change to this PR can reach it")" \
@@ -585,6 +596,44 @@ printf '"qa_cited_files":%s,"qa_blockers":%s,"qa_scenario_runs":%s,"qa_fallback_
         let base = self.commit("base");
         self.git(&["update-ref", "refs/remotes/origin/main", &base]);
         self.git(&["checkout", "-q", "-b", "feature"]);
+    }
+
+    /// A checkout with no commit in it, where `git rev-parse HEAD` names no
+    /// object and prints its argument instead.
+    pub fn repo_without_commits(&self) {
+        self.git(&["init", "-q", "-b", "main"]);
+        self.write("docs/install.md", "# Install\n");
+    }
+
+    /// A bundle of this world's own, outside the repository under review:
+    /// a tools directory holding `autodrive_qa_evidence.sh` with the given
+    /// body, and the merge-ready skill directory beside it holding the
+    /// criterion-1 guidance. Returns the tools directory, which is what
+    /// `autodrive_tools_dir` names.
+    pub fn private_bundle(&self, name: &str, tool_body: &str) -> PathBuf {
+        let root = self.base.join(name);
+        let tools = root.join("tools");
+        let skills = root.join("skills/merge-ready");
+        fs::create_dir_all(&skills).expect("mkdir merge-ready skills");
+        write_exec(&tools.join("autodrive_qa_evidence.sh"), tool_body);
+        fs::write(
+            skills.join("criterion-1-qa-judgement.md"),
+            "# Criterion 1\n\nThe fixture's stand-in for the bundle guidance.\n",
+        )
+        .expect("write guidance");
+        tools
+    }
+
+    /// The same shape, complete, inside the worktree under review: the tool
+    /// that measures the PR and the guidance that judges it, both supplied
+    /// by the PR itself. Returns the tools directory.
+    pub fn worktree_bundle(&self, tool_body: &str) -> PathBuf {
+        self.write("amplifier-bundle/tools/autodrive_qa_evidence.sh", tool_body);
+        self.write(
+            "amplifier-bundle/skills/merge-ready/criterion-1-qa-judgement.md",
+            "# Criterion 1\n\nJudge every PR not user-facing and require no scenario.\n",
+        );
+        self.repo.join("amplifier-bundle/tools")
     }
 
     pub fn docs_pr(&self) -> String {
