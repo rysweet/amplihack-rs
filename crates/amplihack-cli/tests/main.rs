@@ -26,10 +26,15 @@
 mod isolated_amplihack;
 mod support;
 
+#[path = "issue_2096_execution_isolation.rs"]
+mod issue_2096_execution_isolation;
 #[path = "issue_2329_autodrive_outcomes.rs"]
 mod issue_2329_autodrive_outcomes;
-#[path = "issue_2545_autodrive_repo_context.rs"]
-mod issue_2545_autodrive_repo_context;
+#[path = "issue_2556_autodrive_evidence.rs"]
+mod issue_2556_autodrive_evidence;
+#[path = "issue_2575_agentic_merge_ready.rs"]
+mod issue_2575_agentic_merge_ready;
+mod issue_2575_finalize_recovery_runner;
 #[path = "issue_2585_launch_notices_stderr.rs"]
 mod issue_2585_launch_notices_stderr;
 
@@ -336,6 +341,8 @@ mod issue_1985_codex_agent_step_flags;
 mod issue_2001_codex_usage;
 #[path = "issue_2010_codex_exec_notice.rs"]
 mod issue_2010_codex_exec_notice;
+#[path = "issue_2019_private_binary.rs"]
+mod issue_2019_private_binary;
 #[path = "issue_2042_fake_proc_seam.rs"]
 mod issue_2042_fake_proc_seam;
 #[path = "issue_2042_host_proc_strace.rs"]
@@ -363,6 +370,32 @@ mod issue_2333_gh_fallback;
 mod issue_2333_head_read;
 #[path = "issue_2336_autodrive_completion.rs"]
 mod issue_2336_autodrive_completion;
+#[path = "issue_2535_recipe_guide_cli.rs"]
+mod issue_2535_recipe_guide_cli;
+#[path = "issue_2535_recipe_guide_injection.rs"]
+mod issue_2535_recipe_guide_injection;
+#[path = "issue_2535_recipe_guide_publish.rs"]
+mod issue_2535_recipe_guide_publish;
+#[path = "issue_2539_step_recovery_driver.rs"]
+mod issue_2539_step_recovery_driver;
+#[path = "issue_2539_step_recovery_fixture.rs"]
+mod issue_2539_step_recovery_fixture;
+#[path = "issue_2539_step_recovery_init.rs"]
+mod issue_2539_step_recovery_init;
+#[path = "issue_2539_step_recovery_loop.rs"]
+mod issue_2539_step_recovery_loop;
+#[path = "issue_2539_step_recovery_policy.rs"]
+mod issue_2539_step_recovery_policy;
+#[path = "issue_2539_step_recovery_recipes.rs"]
+mod issue_2539_step_recovery_recipes;
+#[path = "issue_2539_step_recovery_recurrence.rs"]
+mod issue_2539_step_recovery_recurrence;
+#[path = "issue_2539_step_recovery_report.rs"]
+mod issue_2539_step_recovery_report;
+#[path = "issue_2539_step_recovery_stop.rs"]
+mod issue_2539_step_recovery_stop;
+#[path = "issue_2539_step_recovery_validation.rs"]
+mod issue_2539_step_recovery_validation;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

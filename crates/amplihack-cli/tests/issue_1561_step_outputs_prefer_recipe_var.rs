@@ -854,7 +854,9 @@ fn merge_round_tool_steps() -> Vec<(String, String)> {
 fn decoy_tools(dir: &Path, marker: &Path) {
     std::fs::create_dir_all(dir).unwrap();
     for name in [
-        "autodrive_merge_ready_files.sh",
+        "autodrive_round_word.sh",
+        "autodrive_state.sh",
+        "recipe_context_value.sh",
         "autodrive_platform_facts.sh",
         "autodrive_round_evidence.sh",
         "autodrive_trust.sh",

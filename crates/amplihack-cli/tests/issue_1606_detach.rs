@@ -74,12 +74,9 @@ impl Fx {
         for dir in [&fx.home, &fx.project, &fx.tools, &fx.records, &fx.tmux_dir] {
             fs::create_dir_all(dir).unwrap();
         }
-        fs::create_dir_all(fx.project.join(".git")).unwrap();
-        fs::write(
-            fx.project.join(".git").join("HEAD"),
-            "ref: refs/heads/main\n",
-        )
-        .unwrap();
+        // A real repository: a recipe run's checkout discovery fails closed on
+        // a malformed `.git` (#2096).
+        crate::support::git_fixture::init_with_commit(&fx.project);
         crate::support::exec_stub::write_executable(
             &fx.tools.join("recipe-runner-rs"),
             runner,
@@ -95,6 +92,8 @@ impl Fx {
             .current_dir(&self.project)
             .env_clear()
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            // `env_clear` dropped the probe knob `isolated` set (issue #2019).
+            .env(crate::isolated_amplihack::PROBE_WAIT_ENV, "exit")
             .env("TMPDIR", std::env::temp_dir())
             .env(
                 "PATH",

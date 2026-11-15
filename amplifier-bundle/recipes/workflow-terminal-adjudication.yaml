@@ -35,6 +35,7 @@ inputs:
 context:
   repo_path: "."
   base_branch: ""
+  forbidden_base_branches: ""  # a base read from the PR must not match these globs (docs/reference/workflow-delivery-inputs.md)
   terminal_adjudication_evidence: ""
   terminal_adjudication_narrative: ""
   terminal_adjudication: ""

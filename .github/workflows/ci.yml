@@ -399,9 +399,6 @@ jobs:
       - name: Recipes — documentation-only pull requests need no gadugi scenario (issue #2219)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-2219-docs-only-scenarios.sh
-      - name: Recipes — the stop names what held the pull request (issue #2219)
-        shell: bash
-        run: bash amplifier-bundle/recipes/tests/test-issue-2219-stop-line.sh
       - name: Recipes — fatal allowlist preserved; bookkeeping gates degraded (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-fatal-allowlist-preserved.sh
@@ -603,6 +600,9 @@ jobs:
       - run: cargo nextest run --workspace --locked --no-fail-fast
         env:
           AMPLIHACK_TEST_REQUIRE_STRACE: "1"
+          # Issue #2539: the step-recovery recipe and loop tests fail, not skip,
+          # without recipe-runner-rs (installed above) or jq (on the runner image).
+          AMPLIHACK_2539_REQUIRE_RECIPE_RUNNER: "1"
       # Issue #1278: CI is the only place this suite runs WITHOUT git's hook
       # variables set, which is exactly why the unpassable pre-push gate stayed
       # invisible for so long. Re-run the crates that spawn git with GIT_DIR and
@@ -862,6 +862,18 @@ jobs:
           cargo build --release --locked --target ${{ matrix.target }}
           -p amplihack -p amplihack-hooks-bin
           --features amplihack-hooks-bin/signal
+
+      # The release build compiles neither cfg(test) nor debug_assertions
+      # code. Check the Unix tests of the crates with injected clocks and FIFO
+      # fixtures, and amplihack-utils' debug-only probe capture path
+      # (binary_finder::to_exit: poll, fcntl, FIONREAD), on macOS too, where
+      # Linux-only pidfds are unavailable. The dev profile, not --release,
+      # keeps debug_assertions on.
+      - name: Check test compilation (macOS)
+        if: runner.os == 'macOS'
+        run: >
+          cargo check --locked --tests --target ${{ matrix.target }}
+          -p amplihack-cli -p amplihack-utils -p amplihack-hooks
 
       # Outside-in: drive the real hooks binary through session-stop and
       # user-prompt-submit, as Claude Code does (issue #1483).

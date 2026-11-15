@@ -266,6 +266,8 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-14c-sync-package-json",
     "step-14g-artifact-guard",
     "step-15-commit-push",
+    // Issue #2471: agentic recovery after a failed push (push-failure-recovery).
+    "step-15-push-recovery",
     "step-16-create-draft-pr",
     "step-16b-outside-in-fix-loop",
     // Phase 7: workflow-pr-review (steps 17a-19d)
@@ -278,6 +280,7 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-18a-analyze-feedback",
     "step-18b-implement-feedback",
     "step-18c-push-feedback-changes",
+    "step-18c-push-recovery",
     "step-18d-respond-to-comments",
     "step-18e-verification-gate",
     "step-19a-philosophy-check",
@@ -285,6 +288,8 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-19c-zero-bs-verification",
     "step-19d-verification-gate",
     // Phase 8: workflow-finalize (terminal gate + steps 20-22b + complete)
+    // Issue #2539: the run's step-recovery directory, checked or created first.
+    "step-recovery-init",
     "finalize-terminal-state",
     // Issue #1714: fast-forward to an accepted PR head before any agent edits.
     "step-20-sync-pr-head",
@@ -303,6 +308,8 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "agentic-finalizer",
     "finalizer-step-status",
     "validate-agentic-finalization",
+    // Issue #2539: a recorded handoff ends the run here, before completion.
+    "step-recovery-report",
     "workflow-complete",
 ];
 
@@ -328,6 +335,7 @@ const PR_REVIEW_STEP_INVENTORY: &[&str] = &[
     "step-18a-analyze-feedback",
     "step-18b-implement-feedback",
     "step-18c-push-feedback-changes",
+    "step-18c-push-recovery",
     "step-18d-respond-to-comments",
     "step-18e-verification-gate",
     "step-19a-philosophy-check",

@@ -148,7 +148,49 @@ mod platform {
     }
 
     pub fn read(scope: Scope<'_>, path: &Path, limit: usize) -> Result<Vec<u8>> {
+        read_file(scope, path, limit, None)
+    }
+
+    /// Like [`read`] with `Scope::Strict`, but the file itself is never
+    /// repaired either: step recovery refuses any unsafe record (#2539).
+    pub fn read_strict(path: &Path, limit: usize) -> Result<Vec<u8>> {
+        read_file(Scope::Strict, path, limit, Some(Repair::Refuse))
+    }
+
+    /// Like [`read_strict`], but a file that does not exist reads as `None`.
+    pub fn read_optional(path: &Path, limit: usize) -> Result<Option<Vec<u8>>> {
+        match std::fs::symlink_metadata(path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                check_dir(path.parent().context("missing parent")?)?;
+                Ok(None)
+            }
+            _ => read_strict(path, limit).map(Some),
+        }
+    }
+
+    /// Appends `bytes` with one write, creating the file at 0600 if needed.
+    /// The folder and the file must be private; neither is repaired (#2539).
+    pub fn append(path: &Path, bytes: &[u8]) -> Result<()> {
+        let (dir, _) = parent(Scope::Strict, path)?;
+        let mut file = open_at(
+            &dir,
+            path.file_name().context("missing filename")?,
+            libc::O_WRONLY | libc::O_APPEND | libc::O_CREAT,
+        )?;
+        private(&file, path, Kind::File, Repair::Refuse)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        Ok(())
+    }
+
+    fn read_file(
+        scope: Scope<'_>,
+        path: &Path,
+        limit: usize,
+        file_repair: Option<Repair>,
+    ) -> Result<Vec<u8>> {
         let (dir, repair) = parent(scope, path)?;
+        let repair = file_repair.unwrap_or(repair);
         let file = open_at(
             &dir,
             path.file_name().context("missing filename")?,
@@ -211,7 +253,7 @@ mod platform {
 }
 
 #[cfg(unix)]
-pub use platform::{check_dir, create, output, read};
+pub use platform::{append, check_dir, create, output, read, read_optional, read_strict};
 #[cfg(not(unix))]
 pub fn read(_: Scope<'_>, _: &Path, _: usize) -> Result<Vec<u8>> {
     anyhow::bail!("completion dispatch requires Unix private-state support")
@@ -228,4 +270,16 @@ pub fn check_dir(_: &Path) -> Result<()> {
 #[cfg(not(unix))]
 pub fn output(_: Scope<'_>, _: &Path) -> Result<std::fs::File> {
     anyhow::bail!("completion dispatch requires Unix private-state support")
+}
+#[cfg(not(unix))]
+pub fn read_strict(_: &Path, _: usize) -> Result<Vec<u8>> {
+    anyhow::bail!("step recovery requires Unix private-state support")
+}
+#[cfg(not(unix))]
+pub fn read_optional(_: &Path, _: usize) -> Result<Option<Vec<u8>>> {
+    anyhow::bail!("step recovery requires Unix private-state support")
+}
+#[cfg(not(unix))]
+pub fn append(_: &Path, _: &[u8]) -> Result<()> {
+    anyhow::bail!("step recovery requires Unix private-state support")
 }

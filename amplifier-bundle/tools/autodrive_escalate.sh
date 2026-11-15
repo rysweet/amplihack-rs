@@ -3,8 +3,7 @@
 # escalate writes the stop to stderr and its JSON record to stdout, and
 # usage_limit_stop tells a child that failed on a Claude usage limit from any
 # other failure, so the loop stops as USAGE_LIMIT and never as STUCK (#1801).
-# progress_stop and budget_stop are the two stops decided in code (#1743);
-# wait_stop ends a round whose only blockers are waits as WAITING (#2472).
+# progress_stop and budget_stop are the two stops decided in code (#1743).
 # docs/reference/auto-drive-to-merge.md. Defines functions only; the caller
 # sets LOOP_NAME, ROUND_LABEL and RECORD, and for #1743 STATE_DIR, LOOP_HOME,
 # AD_PR and BUDGET_CTX.
@@ -52,7 +51,8 @@ orphan_stop() {
 # operator cannot see which criterion held the pull request up. Two sources:
 #
 #   the round record's held_by field  one condition line per disagreeing
-#       measurement, written by autodrive_round_evidence.sh round-record.
+#       measurement, when a round record carries one. The merge-ready round
+#       file holds only merge_ready_verdict since #2575, so it prints none.
 #   ${RECORD}.findings                one `reported <id>` line per blocker
 #       the round reported.
 #
@@ -106,7 +106,7 @@ held_by_lines() {
   [ "$n" -le 10 ] || printf '  held by: reported (+%s more)\n' "$((n - 10))"
 }
 
-escalate() { # escalate <verdict> <why> [usage_limit|budget|orphaned|waiting <wait_reason> <wait_target>]
+escalate() { # escalate <verdict> <why> [usage_limit|budget|orphaned]
   echo "AUTO_DRIVE_LOOP: ${1} — loop '${LOOP_NAME}' stops at round label '${ROUND_LABEL:-?}'." >&2
   echo "  Reason: ${2}" >&2
   held_by_lines >&2
@@ -115,14 +115,11 @@ escalate() { # escalate <verdict> <why> [usage_limit|budget|orphaned|waiting <wa
     usage_limit) echo "  This is a usage limit, not a judgement about progress. Run again when a login has capacity." >&2 ;;
     orphaned) echo "  This is a lost driver, not a judgement about progress. Relaunch auto-drive to resume from the recorded round." >&2 ;;
     budget) echo "  This is a usage budget set by the operator, not a judgement about progress. Relaunch with a higher budget to resume from the recorded round." >&2 ;;
-    waiting) echo "  This is a wait, not a judgement about progress. Resume the drive after ${5}." >&2 ;;
     *) echo "  This is a judgement about absence of progress, not an attempt count." >&2 ;;
   esac
-  local f=() v w="" # JSON-escaped; control characters become spaces (#1801)
+  local f=() v # JSON-escaped; control characters become spaces (#1801)
   for v in "$LOOP_NAME" "$1" "${ROUND_LABEL:-?}" "$2"; do f+=("$(printf '%s' "$v" | tr '\001-\037' ' ' | sed 's/\\/\\\\/g; s/"/\\"/g')"); done
-  # wait_reason and wait_target passed wait_valid, so they hold no quote (#2333).
-  [ "${3:-}" != waiting ] || w="$(printf ',"wait_reason":"%s","wait_target":"%s"' "$4" "$5")"
-  record_result "$(printf '{"loop":"%s","loop_result":"%s","round_label":"%s","reason":"%s"' "${f[@]}")${w}}"
+  record_result "$(printf '{"loop":"%s","loop_result":"%s","round_label":"%s","reason":"%s"}' "${f[@]}")"
 }
 
 # record_result <json>: prints the loop's result line and writes the same line
@@ -134,6 +131,16 @@ record_result() {
   t="$(umask 077; mktemp "${STATE_DIR}/.result.XXXXXX")" && printf '%s\n' "$1" > "$t" \
     && mv -f -- "$t" "${STATE_DIR}/${LOOP_NAME}-result.json" && return 0
   rm -f -- "$t"; echo "WARNING: could not write ${LOOP_NAME}-result.json in the state dir." >&2
+}
+
+# merge_ready_prior <latest writeup>: writes the merge-ready round's
+# prior_writeup file (#2575): the previous round's write-up, or empty in the
+# first round of a run. Private temporary file, then mv -f, never through a link.
+merge_ready_prior() {
+  local t
+  t="$(umask 077; mktemp "${STATE_DIR}/.prior_writeup.XXXXXX")" || return 1
+  if [ -n "${1:-}" ] && [ -f "$1" ] && [ ! -L "$1" ]; then cat -- "$1" > "$t" || { rm -f -- "$t"; return 1; }; fi
+  mv -f -- "$t" "${STATE_DIR}/merge-ready-prior_writeup.txt" || { rm -f -- "$t"; return 1; }
 }
 
 # wait_ledger <phase>: the path, cleared, a child's usage-limit waits are written
@@ -170,9 +177,7 @@ stops_preflight() {
 progress_stop() {
   local why rc
   [ -z "${PROGRESS_OFF:-}" ] || return 0
-  local waiting; waiting="$(field "${RAW:-}" round_waiting false)"
-  [ -z "${WAIT_REJECTED:-}" ] || waiting=false # a wait wait_stop refused is not skipped (#2472)
-  why="$(bash "${LOOP_HOME}/autodrive_progress.sh" check "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$1" "${RECORD}.findings" "${2:-}" "$waiting")"
+  why="$(bash "${LOOP_HOME}/autodrive_progress.sh" check "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$1" "${RECORD}.findings" "${2:-}")"
   rc=$?
   [ "$rc" -eq 10 ] || { [ "$rc" -eq 0 ] || echo "WARNING: the no-progress check exited ${rc}; the evaluator decides." >&2; return 0; }
   # Record the stopped round too, so a resumed run's summary names it.
@@ -202,73 +207,20 @@ budget_stop() {
   exit 1
 }
 
-# wait_valid <wait_target> <wait_reason>: both match the closed patterns of
-# docs/reference/autodrive-github-reads.md#waits-and-fixable-findings (#2333).
-wait_valid() {
-  local s="${1#*@}"
-  case "$1" in
-    ratelimit-reset@unknown|read@pr|read@pr-head|read@pr-number|read@checks|read@reviews|read@threads) ;;
-    ratelimit-reset@*) case "$s" in ''|*[!0-9]*) return 1 ;; esac; [ "${#s}" -le 12 ] || return 1 ;;
-    ci@*|mergeability@*) case "$s" in *[!0-9a-f]*) return 1 ;; esac; [ "${#s}" -eq 40 ] || return 1 ;;
-    *) return 1 ;;
-  esac
-  case "$2" in ''|,*|*,|*[!a-z0-9,-]*) return 1 ;; esac
-  [ "${#2}" -le 400 ] # every closed wait id joined fits
-}
-
-# wait_stop: WAITING when every blocker of the round is a wait (#2472), read
-# from the round record, or from the ${RECORD}.wait sidecar crusty step-01
-# writes when no read of the PR head answered. Never STUCK and never DONE:
-# loop_result WAITING, exit 0, resumable. A target or reason outside the
-# closed patterns is ignored with a WARNING and sets WAIT_REJECTED, so the
-# no-progress rule counts the round (it is not skipped as waiting) and the
-# evaluator judges it. AUTODRIVE_EXIT_WAITING is the completion dispatch's exit
-# when the PR head is unavailable; the loop maps it to WAITING and never
-# exits with it.
-
-AUTODRIVE_EXIT_WAITING=76
-wait_stop() { # wait_stop <RF>: RF 2 (a failed round) is WAITING only through the sidecar
-  local src="" t r
-  if [ -f "$RECORD" ] && [ ! -L "$RECORD" ]; then [ "${1:-0}" = 2 ] || src="${RAW:-}"
-  elif [ -f "${RECORD}.wait" ] && [ ! -L "${RECORD}.wait" ] && [ -O "${RECORD}.wait" ]; then src="$(head -c 4096 -- "${RECORD}.wait")"; fi
-  [ -n "$src" ] && [ "$(field "$src" round_waiting false)" = true ] || return 0
-  t="$(field "$src" wait_target '')"
-  r="$(field "$src" wait_reason '')"
-  [ -n "$r" ] || r="$(field "$src" waits '[]' | tr -d '[]" ' | LC_ALL=C tr -cd 'a-z0-9,-')"
-  if ! wait_valid "$t" "$r"; then
-    echo "WARNING: ${ROUND_LABEL} says it is waiting, but its wait target or reason is not in the closed set; the round is judged as usual." >&2
-    WAIT_REJECTED=1 # progress_stop then counts this round like any other
-    return 0
+# recovery_stop: before the first round and after each, read the run's step-recovery records
+# (#2539, docs/reference/step-failure-recovery.md). A recorded handoff ends
+# the loop with the report's own exit status (STEP_RECOVERY_HANDOFF_EXIT),
+# before the evaluator or another round meets the same failure. Invalid or
+# unsafe records end it with exit 2. Without a step_recovery_dir it does nothing.
+recovery_stop() {
+  [ -n "${AD_RECOVERY_DIR:-}" ] || return 0
+  local out rc
+  out="$("$AMPLIHACK_BIN" orch helper step-recovery report --dir "$AD_RECOVERY_DIR")"; rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  if [ "$rc" -eq 81 ]; then # STEP_RECOVERY_HANDOFF_EXIT: report found a handoff
+    escalate "STEP_RECOVERY_HANDOFF" "the run holds a recorded handoff (checked ${ROUND_LABEL:+after }${ROUND_LABEL:-before the first round}); the owner must act before the run goes on: ${out}"
+    exit "$rc"
   fi
-  escalate "WAITING" "every blocker this round is a wait (${r})" waiting "$r" "$t"
-  exit 0
-}
-
-# dispatch_wait_stop <rc> <evaluator_invoked> <dispatch json>: the completion
-# dispatch found the PR head unavailable on every read path (exit 76, #2333).
-# The round is WAITING: the dispatch's own line is the result, the loop exits
-# 0, and 76 is never re-exited. Anything else returns to the caller.
-dispatch_wait_stop() {
-  [ "${1:-}" = "$AUTODRIVE_EXIT_WAITING" ] && [ "${2:-}" = false ] && [ "$(field "${3:-}" loop_result '')" = WAITING ] || return 0
-  echo "AUTO_DRIVE_LOOP: WAITING — loop '${LOOP_NAME}' stops at round label '${ROUND_LABEL:-?}': the PR head is unavailable on every read path; resume the drive later." >&2
-  record_result "$3"
-  exit 0
-}
-
-# before_wait_stop <rc> <before_round_result> <stdout file>: the crusty
-# re-review before a merge round ended WAITING (exit 76, #2333/#2472), for
-# example because the PR head was unavailable on every path. The merge loop
-# stops WAITING, resumable, never BEFORE_ROUND_FAILED. A target or reason
-# outside the closed set returns, so the step counts as failed.
-before_wait_stop() {
-  local out t r
-  [ "${1:-}" = "$AUTODRIVE_EXIT_WAITING" ] && [ "${2:-}" = crusty-rereview-waiting ] || return 0
-  out="$(cat -- "${3:-}" 2>/dev/null)"
-  t="$(field "$out" wait_target '')"; r="$(field "$out" wait_reason '')"; r="${r:-crusty-rereview-waiting}"
-  if ! wait_valid "$t" "$r"; then
-    echo "WARNING: the crusty re-review says it is waiting, but its wait target or reason is not in the closed set; the before-round step counts as failed." >&2
-    return 0
-  fi
-  escalate "WAITING" "the crusty re-review before ${ROUND_LABEL} is waiting (${r})" waiting "$r" "$t"
-  exit 0
+  escalate "INVALID_RECOVERY_RECORDS" "the step-recovery records in ${AD_RECOVERY_DIR} are invalid or unsafe (report exit ${rc}); nothing runs on unread records"
+  exit 2
 }

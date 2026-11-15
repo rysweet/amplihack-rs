@@ -1,7 +1,7 @@
 ---
 title: Expected Checks at the Head
-description: how auto-drive decides CI green from every expected check at the head SHA (#2186), autodrive_expected_checks.sh, and its limits.
-last_updated: 2026-11-12
+description: how auto-drive decides CI green from every expected check at the head SHA (#2186), autodrive_expected_checks.sh and its optional declared scenarios job (#2458), and its limits.
+last_updated: 2026-11-13
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -24,7 +24,7 @@ caught only when the base branch requires it (see
 ## Usage
 
 ```bash
-/bin/bash -p amplifier-bundle/tools/autodrive_expected_checks.sh <HEAD_SHA> <BASE_REF>
+/bin/bash -p amplifier-bundle/tools/autodrive_expected_checks.sh <HEAD_SHA> <BASE_REF> [JOB]
 ```
 
 Run it from inside a clone of the repository, so `gh` picks the repository
@@ -34,8 +34,9 @@ from the clone (or from `GH_REPO`). It is run, never sourced.
 | --- | --- |
 | `HEAD_SHA` | Exactly 40 characters of `[0-9a-f]`. |
 | `BASE_REF` | Only `A-Z a-z 0-9 . _ / -`; no leading `-` or `/`; no `..` or `//`; no trailing `/` or `.lock`. |
+| `JOB` | Optional. 1 to 128 bytes of `A-Za-z0-9`, space and `._/()+:,@%-`; no leading `-`. |
 
-Both are checked before any `gh` call. A bad argument prints a usage line on
+All arguments are checked before any `gh` call. A bad argument prints a usage line on
 stderr and exits `2`.
 
 The helper is read-only. It makes `gh api` GET requests only, writes nothing
@@ -468,6 +469,19 @@ Finalization refreshes the head before any merge request and requires
 expected-head protection, so a head that moves after this read is not merged
 on stale evidence. `autodrive_platform_facts.sh` still reports a `CHECKS`
 fact; it is advisory only.
+
+### Declared scenarios job
+
+When the measured QA evidence record (`{{autodrive_qa_evidence}}`, written by
+step-02) has `qa_criterion1_declaration` `ci-job:<name>`, step-03 passes
+`'<name>'`, in single quotes, as the third argument to the same command. The
+named job must then be a check-run at the head with exactly that name, and
+every check-run of that name must be `success` or `neutral`; `skipped` is
+`RED`, a commit status of that name does not count, and an absent job is
+`MISSING` with the name in `missing[]`. A bad name exits `2` before any `gh`
+call and prints no verdict, so step-03 records `UNREADABLE` (the "anything
+else, or no verdict" row of the table above). See
+[Declaring how criterion 1 is met](auto-drive-qa.md#declaring-how-criterion-1-is-met).
 
 ## Limits of the expected set
 

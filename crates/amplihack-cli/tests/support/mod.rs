@@ -6,12 +6,14 @@ pub mod autodrive_gh_fake;
 pub mod events;
 pub mod exec_stub;
 pub mod fake_proc;
+pub mod git_fixture;
 pub mod proc_root_scan;
 pub mod profile_1962;
 pub mod profile_default;
 pub mod profile_rotate;
 pub mod quick_change_repo;
 pub mod quiet_process;
+pub mod recipe_guide;
 /// The crate-private bounded capability probe, compiled into this binary once
 /// for `runner_probe_cleanup` and `runner_probe_lifecycle` (a file may be a
 /// module only once per crate). Both run their tests in a quiet process, so
@@ -22,5 +24,11 @@ pub mod runner_probe;
 pub mod scratch_base;
 pub mod sessions_archive;
 pub mod socket_dir;
+pub mod step_recovery;
+pub mod step_recovery_check;
 pub mod test_path;
+pub mod unix_process;
+/// The fake clocks shared with the lib tests and the utils and hooks tests
+/// (issue #2019).
+pub mod virtual_clock;
 pub mod wait;
