@@ -130,15 +130,12 @@ impl Fixture {
     pub fn new() -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
-        let runner = std::env::var_os("RECIPE_RUNNER_RS_PATH")
-            .or_else(|| std::env::var_os("RECIPE_RUNNER_QA_BINARY"))
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::split_paths(&std::env::var_os("PATH")?)
-                    .map(|p| p.join("recipe-runner-rs"))
-                    .find(|p| p.is_file())
-            })
-            .expect("install the pinned real runner or set RECIPE_RUNNER_RS_PATH; no stub/skip");
+        // #2658: the pinned revision, from a receipt-checked override or a
+        // build cached in the test target directory; never the host's
+        // installed runner, whose replay rules may differ from the pin's.
+        let runner = crate::pinned_runner::pinned_runner(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
+        );
         let mut f = Self {
             repo: root.join("repo"),
             home: root.join("home"),
