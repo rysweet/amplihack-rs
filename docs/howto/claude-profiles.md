@@ -2117,11 +2117,12 @@ to turn it on there). A failure that is not a usage limit is passed back at once
    `failed reason=already_waited: usage limit not lifted`, and the step
    ends as a usage limit.
 
-Both the auto-switch rerun in step 1 and the capacity exit in step 2 can
-move a step onto another account, so a step pinned to a profile may finish
-on a different login from the one it started on. That matters if you rely
-on that profile for billing or data separation. To hold a step on its own
-login, either turn auto-switch off (`amplihack profile auto-switch off`),
+Both the auto-switch rerun in step 1 and the usage-reading exit in step 2
+(logged as `end reason=login capacity`) can move a step onto another
+account, so a step pinned to a profile may finish on a different login from
+the one it started on. That matters if you rely on that profile for billing
+or data separation. To hold a step on its own login, either turn
+auto-switch off (`amplihack profile auto-switch off`),
 or put the other profiles in the auto-switch exclude list
 (`amplihack profile auto-switch exclude <name>…`, which replaces the list,
 so name every profile you want excluded in one call).

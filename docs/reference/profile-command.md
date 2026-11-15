@@ -11236,6 +11236,18 @@ amplihack.recipe.usage_limit_wait end reason=login changed
 amplihack.recipe.usage_limit_wait resume attempt=2
 ```
 
+A reset wait ended by a reading showing another login has room. The `start`
+line has no `wait=capacity`, so it does not announce that this exit is
+possible; the [capacity check](#capacity-for-a-profile-step) runs on both
+kinds of wait, and the retry runs on the login that showed room:
+
+```
+amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 08:32:00 -07:00 bound=reset+margin
+amplihack.recipe.usage_limit_wait progress remaining=1740s
+amplihack.recipe.usage_limit_wait end reason=login capacity
+amplihack.recipe.usage_limit_wait resume attempt=2
+```
+
 A capacity wait on a weekly limit, ended by the rotator:
 
 ```
