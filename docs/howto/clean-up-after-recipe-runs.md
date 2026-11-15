@@ -1479,6 +1479,30 @@ See [Superseded generations are
 retired](../reference/recipe-checkout-isolation.md#superseded-generations-are-retired)
 for what each pair is checked against and why one pair is not enough.
 
+**An auto-drive printed `review generation resource identity changed;
+retained for recovery`.** This is the other identity message, and it reports
+a different thing. It comes from the check made whenever a live
+generation is read, before any removal is attempted, so nothing was deleted
+and the record is still live. Four pairs are compared here rather than three,
+the checkout being the fourth, and any command that uses the generation can
+report it, `review-next` included: that one stops before it provisions a
+successor, so no retirement begins.
+
+Read the two apart this way. `review storage identity changed; retained`
+means a removal was attempted and refused, and a directory is left behind
+that `amplihack cleanup` will not take. `review generation resource identity
+changed; retained for recovery` means no removal was attempted at all: the
+generation is intact on disk, and every command that reads it refuses until
+the path that moved is accounted for.
+A recorded path that is absent, is a symbolic link or is no longer a
+directory gives a third message, `review resource is not an owned directory`
+and the path, and is investigated the same way.
+
+Inspect it with the `stat` command above, adding the checkout, and compare
+all four pairs in `<checkout>.review-owner.json` in their recorded order:
+storage, `repository.git`, checkout, `launch`. Remove nothing on this
+message; the generation may still be in use.
+
 ## Related documentation
 
 - [Hygiene Cleanup](../operations/hygiene-cleanup.md) - Opt-in cleanup of stale worktrees, detached Cargo targets and session artifacts outside recipe runs

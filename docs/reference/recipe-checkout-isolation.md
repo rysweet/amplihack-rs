@@ -421,7 +421,8 @@ manifest. It then retires the generation it replaced:
    directory stops the call before retirement starts;
    `advance_destroys_nothing_when_the_recorded_launch_directory_is_replaced`
    pins that. The check in step 1 covers the window between that read and
-   the worktree removal.
+   the worktree removal, and refuses with the same message the read gives,
+   `review generation resource identity changed; retained for recovery`.
 2. It runs `git worktree remove --force` on the old checkout.
 3. It sets `"retired": true` in the old manifest and writes it atomically.
 4. It removes the old storage, only when the path still exists, is a
@@ -567,6 +568,7 @@ workspace code. None of them is discarded with `.ok()`, `let _ =` or
 | Review checkout has edited or untracked files | `review-validate` and `index-check` refuse it, naming the first changed path. |
 | Retiring a superseded review generation fails | One warning; the new generation is used and the old one is freed by `review-release` at loop exit. |
 | A command is given a retired review generation | Refused: `review generation is superseded and retired`. |
+| A live review generation's recorded resource is a different directory: its storage directory, `repository.git`, its checkout or `launch` no longer carries the device and inode the manifest recorded for it | The command that read it is refused with `review generation resource identity changed; retained for recovery`. Nothing is removed, the record stays live with `"retired": false`, and the checkout and storage are left in place. `review-next` stops here rather than retiring the generation it would have replaced. A recorded path that is absent, is a symlink or is no longer a directory is refused earlier, by `review resource is not an owned directory: <path>` or the underlying I/O error. |
 | A storage path is no longer the recorded directory: a symlink, a non-directory, a different directory, or a directory missing one of the two children the manifest recorded inside it | Nothing is deleted. `review-next` warns and carries on; `review-release` fails with `review storage identity changed; retained` and the path. |
 | Stable execution path still held | The attempt prints the reason and uses a fresh random path. |
 | Git recording trace folder cannot be removed | The error is returned: the folder may contain command lines. |
