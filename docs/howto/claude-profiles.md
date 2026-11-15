@@ -2110,7 +2110,9 @@ to turn it on there). A failure that is not a usage limit is passed back at once
      reset;
    - the configured maximum;
    - one minute before the step's timeout.
-3. The step runs once more with the same arguments, environment and input.
+3. The step runs once more with the same arguments and input, and the same
+   environment except for `CLAUDE_CONFIG_DIR`, which names the other
+   profile when the wait ended on its capacity.
    If it hits the limit again, there is no second wait. The supervisor
    writes `skipped reason=already_waited` and then the
    [closing line](../reference/profile-command.md#closing-line),
