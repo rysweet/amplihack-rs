@@ -130,8 +130,13 @@ pub(crate) struct Waiter {
     /// (#1801), called only when a limit is seen. Always false for a step
     /// with an explicit login or an inherited profile.
     home_takeover: Box<dyn Fn() -> bool>,
-    /// When this step's wait began, on the wait's clock, if a capacity wait.
-    capacity_start: Option<i64>,
+    /// Set when the retry after this step's wait may run under another
+    /// login, and holding the instant from which a capacity reading counts
+    /// as fresh enough to choose one. Set before a capacity wait (#1801),
+    /// which may move login however it ends, and after a wait of any kind
+    /// that ended on another login's capacity (#2694). `None` leaves the
+    /// retry on the inherited profile.
+    retry_start: Option<i64>,
 }
 
 impl Waiter {
@@ -162,7 +167,7 @@ impl Waiter {
             blocked: None,
             prompt_in_args,
             home_takeover,
-            capacity_start: None,
+            retry_start: None,
         }
     }
 
@@ -199,9 +204,10 @@ impl Waiter {
         (self.home_takeover)()
     }
 
-    /// When this step's capacity wait began, on the wait's clock.
-    pub(crate) fn capacity_start(&self) -> Option<i64> {
-        self.capacity_start
+    /// The wait start to use when choosing the login the retry runs under,
+    /// if one should be chosen at all; `None` keeps the inherited profile.
+    pub(crate) fn retry_start(&self) -> Option<i64> {
+        self.retry_start
     }
 
     /// The wait's clock, for reading a reset relative to it.
@@ -260,7 +266,7 @@ impl Waiter {
         };
         self.used = true;
         let capacity = p.kind == PlanKind::Capacity;
-        self.capacity_start = capacity.then_some(now);
+        self.retry_start = capacity.then_some(now);
         log(&Event::Start {
             harness,
             reset: p.reset,
@@ -280,6 +286,14 @@ impl Waiter {
         // Real time, not the test clock: auto-drive compares it with its own
         // wall time (issue #1743).
         ledger::record(waited_from.elapsed());
+        // A wait of any kind that ended because another login has room
+        // retries under that login (#2694). `now` is the wait's own start
+        // on this clock: a later instant would make every reading taken
+        // during the wait look stale and silently keep the exhausted
+        // profile.
+        if end == End::OtherCapacity {
+            self.retry_start = Some(now);
+        }
         log(&Event::End(end));
         match end {
             End::Signal(sig) => AfterLimit::Finish(Some(128 + sig)),

@@ -2101,6 +2101,13 @@ to turn it on there). A failure that is not a usage limit is passed back at once
    - for a step that uses `~/.claude`, the
      [login rotator](claude-profile-rotation.md) recording a fresh cycle
      with capacity;
+   - for a step under an inherited profile with auto-switch on, a usage
+     reading taken during the wait showing that another stored profile has
+     capacity; the step then runs on that profile rather than waiting out
+     the exhausted profile's reset. Only a status line or the
+     [login rotator](claude-profile-rotation.md) records such readings, so
+     in an unattended run with neither, the wait usually still goes to the
+     reset;
    - the configured maximum;
    - one minute before the step's timeout.
 3. The step runs once more with the same arguments, environment and input.
@@ -2109,6 +2116,15 @@ to turn it on there). A failure that is not a usage limit is passed back at once
    [closing line](../reference/profile-command.md#closing-line),
    `failed reason=already_waited: usage limit not lifted`, and the step
    ends as a usage limit.
+
+Both the auto-switch rerun in step 1 and the capacity exit in step 2 can
+move a step onto another account, so a step pinned to a profile may finish
+on a different login from the one it started on. That matters if you rely
+on that profile for billing or data separation. To hold a step on its own
+login, either turn auto-switch off (`amplihack profile auto-switch off`),
+or put the other profiles in the auto-switch exclude list
+(`amplihack profile auto-switch exclude <name>…`, which replaces the list,
+so name every profile you want excluded in one call).
 
 ### Weekly limits: waiting for another login
 
@@ -2126,6 +2142,9 @@ hours by default:
   the step then runs on that profile, not on the exhausted one. This also
   needs a rotator running; without one nothing may record a reading during
   an unattended run, so the run ends at once, as before.
+
+The caveat under [What happens](#what-happens) applies here too: a step
+pinned to a profile may finish on another account unless you hold it.
 
 "Another login could take over" means the profile store holds another
 login that auto-switch could choose once its readings allow: not excluded

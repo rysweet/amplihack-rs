@@ -9,6 +9,9 @@
 //! - AC14: `max_wait_secs = 0` is immediate `usage_limit`, one attempt.
 //! - AC15: a retry that hits the limit again gets no second wait.
 //! - S24: the wait never runs the stub to probe a login.
+//! - Issue #2694: the same exit now ends a reset wait, so a step whose
+//!   stored profile states a near reset no longer sleeps to it while
+//!   another login has room.
 //!
 //! Tests that need something to happen during a wait run on the real clock,
 //! scaled, with `TEST_NOW` removed: a reading or rotator cycle is stamped with
@@ -296,6 +299,91 @@ fn ac13_an_inherited_profile_step_retries_on_the_login_with_capacity() {
     );
     let ev = events(&out);
     assert!(ev[0].contains(" wait=capacity "), "{ev:?}");
+    assert_eq!(ev[1..], ["end reason=login capacity", "resume attempt=3"]);
+    assert!(
+        text(&out.stderr).contains(
+            "amplihack: a login has capacity again; rerunning this step under profile \"Y\" (auto-switch)"
+        ),
+        "the run log must name the login the retry moved to: {}",
+        describe(&out)
+    );
+    f.assert_isolated("0");
+    assert_no_account_detail(&f, &out);
+}
+
+/// Claude's other limit wording, which states the reset as an epoch. The
+/// tests that need something to happen during a wait run on the real clock,
+/// where a fixed clock time such as `LIMIT_TEXT`'s 8:30am is between zero
+/// and twenty-four hours away and so would not always give a reset wait.
+/// 3 h 45 min is inside the five-hour ceiling, so the plan is `Reset`.
+fn near_reset_message() -> String {
+    format!("Claude AI usage limit reached|{}", real_now() + 13_500)
+}
+
+/// Issue #2694: a step that inherited profile X, limited with a reset under
+/// five hours away, takes a reset wait. While it waits, a reading shows Y
+/// has room, so the wait ends there and the retry runs under Y. No rotator
+/// runs: a reset wait needs none, and the move is auto-switch's, not the
+/// rotator's.
+#[test]
+fn issue_2694_a_reset_wait_under_a_profile_ends_on_another_logins_capacity() {
+    let f = with_profiles();
+    let mut c = nested_x(&f);
+    // X, then Y, then the retry.
+    c.env("LIMIT_CALLS", "2")
+        .env("LIMIT_MESSAGE", near_reset_message());
+    real_clock(&mut c);
+    let usage = f.profiles.join(".auto-switch.d").join("usage.json");
+    let count = f.records.join("count.0");
+    let out = run_during_wait(&f, &mut c, move || {
+        // The reading must change during the wait that follows Y's limit
+        // hit (call 2), not during one after X's. Checked after the write,
+        // so a wrong order fails here rather than at the ceiling.
+        let calls = fs::read_to_string(&count).unwrap_or_default();
+        let now = real_now();
+        let reading = |pct: f64, source: &str| {
+            serde_json::json!({
+                "five_hour": {"used_percentage": pct, "resets_at": now + 13_500},
+                "seven_day": {"used_percentage": 5.0, "resets_at": now + 86_400},
+                "observed_at": now,
+                "source": source,
+            })
+        };
+        let body = serde_json::json!({
+            "version": 1,
+            "accounts": {"X": reading(100.0, "statusline"), "Y": reading(10.0, "statusline")},
+        });
+        replace(&usage, &body.to_string());
+        assert_eq!(
+            calls.trim(),
+            "2",
+            "the wait started after call {calls:?}; expected X, then Y, then the retry"
+        );
+    });
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(f.count("0"), 3, "{}", describe(&out));
+    assert_eq!(f.call("0", 1)["PROFILE"], "X");
+    assert_eq!(f.call("0", 2)["PROFILE"], "Y");
+    assert_eq!(
+        f.call("0", 3)["PROFILE"],
+        "Y",
+        "the login with capacity, not the exhausted inherited one"
+    );
+    assert_eq!(
+        f.call("0", 3)["CLAUDE_CONFIG_DIR"],
+        f.profiles.join("Y").display().to_string()
+    );
+    let ev = events(&out);
+    assert_eq!(ev.len(), 3, "{ev:?}");
+    assert!(
+        ev[0].starts_with("start reason=usage_limit harness=claude reset="),
+        "a reset wait, not a capacity wait: {ev:?}"
+    );
+    assert!(
+        !ev[0].contains(" wait=capacity"),
+        "a reset wait, not a capacity wait: {ev:?}"
+    );
+    assert!(ev[0].ends_with(" bound=reset+margin"), "{ev:?}");
     assert_eq!(ev[1..], ["end reason=login capacity", "resume attempt=3"]);
     assert!(
         text(&out.stderr).contains(

@@ -342,10 +342,11 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
     // The profile this attempt runs under; `None` keeps the inherited
     // environment.
     let mut profile: Option<ProfileName> = None;
-    // The inherited profile's own limit. The retry after a wait always runs
-    // under that profile, so only its reset times the wait; the limits of
-    // the profiles auto-switch tried matter only to its choice of candidate,
-    // which `next_profile` records (#1618).
+    // The inherited profile's own limit. Only its reset times the wait: the
+    // limits of the profiles auto-switch tried matter only to its choice of
+    // candidate, which `next_profile` records (#1618). The retry runs under
+    // that profile too, unless the wait ended on another login's capacity,
+    // in which case it moves to that login (#1801, #2694).
     let mut inherited_wait: Option<WaitFor> = None;
     // Set when the step was moved off the inherited profile only for being
     // over the auto-switch threshold (no window at 100%). That profile still
@@ -354,9 +355,10 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
     // free for the inherited profile's own limit, which is the likelier one
     // on a nearly-empty window (#1618).
     let mut inherited_has_capacity = false;
-    // Whether another login could end a capacity wait: the one read-only
-    // check, made when a limit is seen (#1801). Both kinds of step need a
-    // running rotator, so a wait never starts when nothing could end it.
+    // Whether another login could take over, so a capacity wait is worth
+    // starting: the one read-only check, made when a limit is seen (#1801).
+    // Both kinds of step need a running rotator, so a capacity wait never
+    // starts when nothing could end it.
     let takeover = |waiter: &Waiter| match &switch {
         Some(sw) => profile_check(sw.store, sw.inherited.as_str()),
         None => waiter.takeover_home(),
@@ -536,13 +538,15 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
 }
 
 /// The profile the retry after a wait runs under; `None` keeps the inherited
-/// environment. After a capacity wait that is the login that showed capacity,
-/// never the exhausted inherited one; after a reset wait, always `None`. The
-/// candidate is chosen again here and may now be `None`: the one retry then
-/// runs on the inherited profile, at a cost of one more attempt.
+/// environment. After a capacity wait, and after a wait of any kind that
+/// ended because another login has room (#2694), that is the login which
+/// showed capacity, never the exhausted inherited one; after a reset wait
+/// that ran to its deadline, `None`. The candidate is chosen again here and
+/// may now be `None`: the one retry then runs on the inherited profile, at a
+/// cost of one more attempt.
 fn retry_profile(switch: Option<&Switch<'_>>, waiter: &Waiter) -> Option<ProfileName> {
     let sw = switch?;
-    let start = waiter.capacity_start()?;
+    let start = waiter.retry_start()?;
     let pick = capacity_candidate(sw.store, &sw.state, &sw.inherited, start, waiter.now())?;
     // The run log names the login the retry moves to, as every other move
     // in this loop does (#1801, item 3).
