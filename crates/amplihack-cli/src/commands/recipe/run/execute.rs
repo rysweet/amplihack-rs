@@ -53,10 +53,11 @@ const MAX_SESSIONS_ENV: &str = "AMPLIHACK_MAX_SESSIONS";
 /// "the tool declined, and will decline again".
 pub const EXIT_ORCHESTRATION_UNAVAILABLE: i32 = 79;
 
-/// #2663 M1: an auto-drive run succeeds only when it merged. `outcome` is the
+/// #2663 M1: a merge run succeeds only when it merged. `outcome` is the
 /// `autodrive_outcome` built by `report()`; success is an allow-list of the
-/// single `stop_reason` value `completed` (merged in this run, or already
-/// merged at entry). A missing, non-string or any other value is a failure.
+/// single `stop_reason` value `completed` (merged in this run, already merged
+/// at entry, or, since #2575 B4, a verify-only run that reached `DONE` or
+/// `WAITING`). A missing, non-string or any other value is a failure.
 /// docs/reference/autodrive-merge-ready-round.md#success-means-merged.
 pub(crate) fn autodrive_run_succeeded(outcome: &serde_json::Value) -> bool {
     outcome
@@ -83,11 +84,11 @@ pub(crate) fn apply_autodrive_outcome(
     }
     if succeeded {
         eprintln!(
-            "INFO: auto-drive merged; a later step failed, the run is reported as a success [#2663]"
+            "INFO: auto-drive completed; a later step failed, the run is reported as a success [#2663]"
         );
     } else {
         eprintln!(
-            "INFO: auto-drive did not merge (stop_reason {}); the run is not reported as a success [#2663]",
+            "INFO: auto-drive did not complete (stop_reason {}); the run is not reported as a success [#2663]",
             outcome
                 .get("stop_reason")
                 .and_then(serde_json::Value::as_str)

@@ -548,7 +548,7 @@ printf '%s' "$MERGE_BODY" | gh pr merge "$pr" --squash --match-head-commit "$sha
 | `not-open` | `5` | `0` | `true` |
 | `message-unavailable` | `6` | `0` | `true` |
 | `checks-pending` | `7` | `0` | `true` |
-| `base-behind` | `8` | `0` | `false`; the merge loop runs the [base sync](#base-sync) |
+| `base-behind` | `8` | `0` | `false`; the merge loop runs the [base sync](#base-sync). `true` after a recovery re-run, which no base sync follows |
 | | `2` (bad arguments or unsafe helper) | `2` | |
 | | `79` | `79` | |
 
@@ -561,7 +561,7 @@ that exits non-zero or prints no object with a boolean `allows_merge` gives
 the helper's exit status. A helper exit `79` passes through as `79`.
 
 `autodrive-finalize.yaml` emits `base-behind` with `handoff false`: the
-merge loop syncs the base instead. It emits `checks-pending` with
+merge loop syncs the base instead, except after a recovery re-run (below). It emits `checks-pending` with
 `handoff true`, so the PR is drafted with a comment naming the checks.
 
 ### The merge result in the state folder
