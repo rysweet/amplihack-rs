@@ -428,7 +428,7 @@ fn check_unmerged_observes_platform_and_retains_failed_attempts() {
 }
 
 #[test]
-fn light_qa_judges_criterion_1_and_records_through_qa_record() {
+fn light_qa_judges_criterion_1_and_records_the_judgement_in_its_reply() {
     let s = step(&r(), "light-qa");
     assert!(is_agent(&s));
     let prompt = s["prompt"].as_str().unwrap();
@@ -437,10 +437,19 @@ fn light_qa_judges_criterion_1_and_records_through_qa_record() {
         "recorded base",
         "criterion-1-qa-judgement.md",
         "{{light_qa_inputs}}",
-        "qa-record",
+        "qa_judgement",
+        "qa_handoff",
         "does not meet criterion 1",
     ] {
         assert!(prompt.contains(policy), "light-qa must mention `{policy}`");
+    }
+    // The parsed record that decided criterion 1 is retired (#2569): the
+    // judgement is the agent's own reply, and the measurement owns its file.
+    for retired in ["qa-record", "qa-inputs.json"] {
+        assert!(
+            !prompt.contains(retired),
+            "light-qa must not name the retired `{retired}`"
+        );
     }
 }
 
@@ -1075,8 +1084,19 @@ fn light_prereqs_passes_in_node_repository_without_gadugi_test() {
     let path = format!("{}:/usr/bin:/bin", e.fakes.bin.display());
     let o = e.run("light-prereqs", &[("PATH", path.as_str())]);
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
-    assert_eq!(stdout(&o).trim(), "{}", "{}", show(&o));
-    assert!(!stderr(&o).contains("gadugi"), "{}", show(&o));
+    // An absent gadugi-test is a fact the step reports, in either repository
+    // type, and never a stop: criterion 1 is judged in the loop (#2569).
+    assert_eq!(
+        stdout(&o).trim(),
+        r#"{"gadugi_test":"not-installed"}"#,
+        "{}",
+        show(&o)
+    );
+    assert!(
+        !stderr(&o).contains("gadugi-test-not-installed"),
+        "{}",
+        show(&o)
+    );
 }
 
 #[test]

@@ -269,9 +269,10 @@ elif [ "$KIND" = "rust-cli" ] && [ -d "${ROOT}/${TDIR}/tests/parity/scenarios" ]
     [ -n "$f" ] && SCEN="${SCEN}${SCEN:+ }${PFX}/${f##*/}"
   done < <(find "${ROOT}/${TDIR}/tests/parity/scenarios" -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.yml' \) 2>/dev/null | LC_ALL=C sort)
 fi
-# Top-level regular files only: gadugi-test validate -d does not read
-# subdirectories. A symlinked or non-regular *.yaml entry is never run, so
-# it is named here and, once validate passes, fails like a failed run.
+# Top-level regular files only, because the tool that validates a directory
+# of scenarios does not read subdirectories. A symlinked or non-regular
+# *.yaml entry is named here and is not a file the judgement may run: the
+# listing declined to follow the link, so the judgement does not either.
 if [ -n "$SDIR" ] && [ -d "$SDIR" ]; then
   while IFS= read -r f; do
     [ -n "$f" ] || continue
