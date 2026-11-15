@@ -800,7 +800,7 @@ fn the_measurement_and_the_guidance_come_from_the_bundle_not_the_worktree() {
         "the resolved guidance must be a regular file: {guide}"
     );
 
-    // And the judgement refuses a guidance path inside the worktree.
+    // And the judgement does not follow a guidance path inside the worktree.
     w.record(&[]);
     let o = w
         .cmd("bash")
