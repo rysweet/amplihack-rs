@@ -4805,8 +4805,8 @@ the rotator applies to its [plan pool](#plan-pool). Every selection
      and to the rotate log once per set of unmeasured profiles (again once
      the set changes or every plan profile has a reading). The
      [usage-limit wait's own capacity check](#capacity-for-a-profile-step)
-     makes the same choice without writing the line, so a step waiting out
-     a limit does not repeat it every 30 s. `session=` is the
+     applies the same candidate rules without writing the line, so a step
+     waiting out a limit does not repeat it every 30 s. `session=` is the
      account of the session that ran out; `live=`, in the rotator's form of
      the line, is the login in `~/.claude`. Excluded profiles do not count,
      and neither do those the rotator skips as `no login` or `not oauth`,
@@ -11143,25 +11143,37 @@ need a rotator running. Without a rotator, though, an unattended recipe run
 has nothing recording readings, so such a wait usually still runs to its
 reset. The check itself is a set of bounded local reads, repeated every
 30 s: the effective configuration, the auto-switch ledger, the readings
-file, a listing of the profile root to enumerate the stored profiles, the
-[overflow inputs](#auto-switch-and-overflow-profiles), and one `stat` per
-candidate login for its [login check](#api-key-login-check). None of them
-makes a network call. There is no new timer, poll or retry; the check rides
-the 30 s probe the fingerprint already uses. A read that fails, and a file
-that is missing or damaged, counts as no candidate, so the wait runs on to
-its deadline rather than moving the step.
+file, a listing of the profile root to enumerate the stored profiles, and
+the [overflow inputs](#auto-switch-and-overflow-profiles), which resolve
+each stored profile's [kind](#kind-detection) from its own files and read
+the [rotate ledger](#rotate-state-directory) for spend blocks and the
+overflow gate. Off macOS, where the login is a file rather than a Keychain
+entry, each candidate costs one further `stat` for its login file, and a
+marked API-key candidate costs auto-switch's
+[own login check](#api-key-profiles-and-auto-switch) against the profile's
+`.claude.json` and `settings.json`. None of them makes a network call.
+There is no new timer, poll or retry; the check rides the 30 s probe the
+fingerprint already uses. A read that fails, and a file that is missing or
+damaged, counts as no candidate, so the wait runs on to its deadline rather
+than moving the step.
 
-**The check writes nothing.** It makes the same choice as the auto-switch
-rerun check, by the same candidate rules, but it does not print the
-`ALERT: API key not used session=…` line to the step's stderr, append it to
-the [rotate log](#rotate-log), or write the
-[`key-held` marker](#state-directory). A wait may run for five hours, so
-those writes would otherwise repeat around six hundred times and crowd the
-step's output. The alert for a step that is waiting was written once by the
-rerun check before the wait began, which is the record of why work was held
-off the API key. One consequence: a `key-held` marker left by that earlier
-check is not cleared during the wait, even if the held profiles gain
-readings while it runs. The next launch or rerun check clears it.
+**The check writes nothing.** It applies the same candidate rules as the
+auto-switch rerun check, narrowed by the freshness restriction above, but
+it does not print the `ALERT: API key not used session=…` line to the
+step's stderr, append it to the [rotate log](#rotate-log), or write the
+[`key-held` marker](#state-directory). The stderr line is written on every
+check that finds a held set, so over a five-hour wait it would repeat
+around six hundred times and crowd the step's output; the rotate-log line
+and the marker are written once per set, and are suppressed with it.
+
+If the key was already being held back when the wait began, the alert was
+written by the rerun check that ran just before it, and that is the record
+of why work was held off the API key. A held set that first arises during
+the wait, because a plan profile's reading ages out or the profile is
+removed, is recorded nowhere until the next launch or rerun check. A
+`key-held` marker left by an earlier check is likewise not cleared during
+the wait, even if the held profiles gain readings while it runs; the next
+launch or rerun check clears it.
 
 **A step pinned to a profile can therefore change account part way through a
 run.** Where one profile must be kept for billing or data separation, there
