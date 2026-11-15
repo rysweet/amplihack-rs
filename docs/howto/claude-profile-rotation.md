@@ -1607,9 +1607,8 @@ file can still set it to `false`, so run the same check on every settings
 file the session reads: the profile's `$CLAUDE_CONFIG_DIR/settings.json` for
 sessions the rotator starts, the project's `.claude/settings.json` and
 `.claude/settings.local.json`, any managed settings file, and any file
-passed with `--settings`. Managed settings and a `--settings` file can also
-turn automatic continuation off. If `jq`
-reports a parse error on any of them, that file does not parse. In Claude
+passed with `--settings`. If `jq` reports a parse error on any of them,
+that file does not parse. In Claude
 Code 2.1.325 a settings file that does not parse turns automatic
 continuation off. Repair the file; adding the key to a file that does not
 parse changes nothing. `amplihack install` and
