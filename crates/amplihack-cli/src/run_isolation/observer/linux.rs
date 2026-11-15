@@ -229,6 +229,14 @@ impl Observer {
     pub(crate) fn finished_scope(&self) -> Option<Vec<i32>> {
         self.finished_scopes.try_recv().ok()
     }
+    /// The tasks this observer still holds unreaped: the set `terminate`
+    /// kills. The thread that reaps a task removes it from the set as soon as
+    /// its wait returns, so a task listed here has not been free for reuse
+    /// any longer than that. A runner's own pid, by contrast, stays in its
+    /// `Child` after the runner has been reaped.
+    pub(crate) fn traced_tasks(&self) -> BTreeSet<i32> {
+        self.pids.lock().expect("observer pids").clone()
+    }
     pub(crate) fn terminate(&mut self) -> Result<()> {
         kill_all(&self.pids);
         if let Some(thread) = self.thread.take() {
