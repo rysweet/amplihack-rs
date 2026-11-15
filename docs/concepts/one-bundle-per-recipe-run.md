@@ -2,7 +2,7 @@
 title: One bundle per recipe run
 description: Why a recipe run pins one checked, content-keyed copy of an amplifier-bundle and uses it for recipes and tools alike.
 doc_type: explanation
-last_updated: 2026-11-14
+last_updated: 2026-11-15
 related_issues: [2528, 1741]
 ---
 
@@ -29,6 +29,7 @@ For the exact rules, see
 - [Why nested runs reuse the copy](#why-nested-runs-reuse-the-copy)
 - [Why state stays outside the copy](#why-state-stays-outside-the-copy)
 - [Why a path into another bundle is refused](#why-a-path-into-another-bundle-is-refused)
+- [Why a path into the run's own home is not another bundle](#why-a-path-into-the-runs-own-home-is-not-another-bundle)
 
 ## The problem: two bundles in one run
 
@@ -223,7 +224,8 @@ A path is therefore classified by where it leads, after `..` and symlinks are
 resolved:
 
 - a path inside the run's own bundle is a bundle recipe and runs from the
-  copy, like a bare name;
+  copy, like a bare name. For a nested run, this includes the home it
+  inherited, which the next section describes;
 - a path inside another bundle's `recipes/` directory is refused, with a
   message that gives the bare name and says how to select that bundle:
   from inside its checkout with `--bundle checkout` when it is in a git
@@ -238,7 +240,56 @@ follow from the flags the user gave. The refusal costs one rerun and names
 the command to use.
 
 Docs and skills now start work by bare name, so the path form is needed only
-for standalone files.
+for standalone files, and for the one case the next section describes.
+
+## Why a path into the run's own home is not another bundle
+
+The loops that drive a run do not start their rounds by name. Each resolves
+the round's recipe in the `recipes/` directory beside the tools it is
+running from, which inside an auto-drive run is
+`<launch copy>/amplifier-bundle/recipes`, and passes that path to
+`recipe run`: `autodrive_loop.sh` for the crusty and merge rounds and the
+health evaluator, `workflow_hook_repair.sh` for the hook-repair rounds.
+
+They run the file rather than the name for two reasons. The first is why the
+loops resolve the path themselves at all: a round's recipe must come from
+the bundle the loop was launched from, never from the worktree under
+review, which carries its own `recipes/` that a bare name would find first,
+so that the tree being judged does not supply its own reviewer or stop rule
+(#1543, #1528). The second applies to the recipes `prepare` rewrites in
+each launch copy, those whose `name` is `auto-drive-to-merge` or
+`auto-drive-light` or begins with `autodrive-`: for those, the file in the
+copy is the one carrying the run's authorisation. The health evaluator and
+the hook-rejection repair recipe are not rewritten and rest on the first
+reason alone. Classifying such a path as a path into another bundle would
+mean that no round could start inside a drive.
+
+The path is not into another bundle, and the run can tell so without a new
+test. Before a nested run looks at its recipe argument it has already
+checked `AMPLIHACK_RUN_BUNDLE` against `AMPLIHACK_HOME` and accepted one of
+them: the snapshot itself, or the launch copy whose `bundle-source` names
+the snapshot. That accepted home is the bundle this run is already using. A
+path under its `recipes/` is therefore treated like a bare name, by the same
+check that let the nested run reuse the snapshot in the first place, rather
+than by a second rule that could drift from it. A top-level run has accepted
+no home and is unaffected.
+
+Such a run still takes its sub-recipes, agents and tools from the snapshot.
+Treating the file as a standalone recipe instead would have added the copy's
+`recipes/` directory to the directories the runner searches, which is the
+second lookup this design exists to remove, and the copy is writable where
+the snapshot is not. Keeping the search on the snapshot costs the round
+nothing: `prepare` writes a fresh launch copy, with its own authorisation,
+for each nested auto-drive run, so a round started this way is authorised by
+its own launch rather than by what it can reach on disk.
+
+Because the accepted home comes from checks the run has already made, and is
+kept only in memory, nothing on disk tells a later process which paths to
+accept. Everything else about the classification is unchanged: canonical
+paths are compared component by component, so `recipes-old/` and `tools/`
+still do not match, a symlink is judged by its target (and a launch copy
+holds none, since the copy skips them), and a path into some other run's
+snapshot is still a path into another bundle.
 
 ## Related
 

@@ -2,7 +2,7 @@
 title: Recipe run bundle selection and pinning
 description: How amplihack recipe run chooses one amplifier-bundle, checks it, pins a content-keyed copy under the work root and hands it to every step.
 doc_type: reference
-last_updated: 2026-11-14
+last_updated: 2026-11-15
 related_issues: [2528, 1551, 2340, 2537, 1741, 2096]
 ---
 
@@ -398,6 +398,7 @@ with steps from another.
 |---------------|---------|-------------------------|------------------------------------|
 | Bare name | `default-workflow` | `default-workflow.yaml` in the selected bundle's `recipes/` only (the snapshot copy in an executing run) | The selected bundle |
 | Path inside the selected bundle's `recipes/` | `~/.amplihack/amplifier-bundle/recipes/default-workflow.yaml` with the installed bundle; `amplifier-bundle/recipes/default-workflow.yaml` in a checkout with `--bundle checkout` | The same file inside the snapshot, exactly as for a bare name | The selected bundle |
+| Path inside the home a nested run inherited | `"$AMPLIHACK_HOME/amplifier-bundle/recipes/autodrive-crusty-round.yaml"` in a step of an auto-drive run | The recipe of that name inside the snapshot, exactly as for a bare name | The selected bundle, which is the outer run's snapshot |
 | Path inside any other `amplifier-bundle/recipes/` | `amplifier-bundle/recipes/smart-orchestrator.yaml` in a checkout, with the default installed bundle | Nothing: the run is refused (E14) | Nothing |
 | Any other path (a standalone recipe file) | `./experiments/triage.yaml`, `recipes/release.yml` | The given path | The selected bundle |
 
@@ -412,22 +413,83 @@ A path is classified as follows:
    for example because the file does not exist, the run fails (E15) with an
    error that names the path. The raw path is never used instead. If the
    canonical path is not a regular file, for example a directory, the run
-   also fails (E15). This applies to every path, so steps 3 and 4 only ever
+   also fails (E15). This applies to every path, so steps 3 to 6 only ever
    see regular files.
 3. The selected bundle's `recipes/` directory is canonicalised as well. If
    the canonical path lies under it, compared component by component and
    never as a text prefix, the recipe is a bundle recipe.
-4. Otherwise, if any ancestor of the canonical path is a directory named
+4. Otherwise, when this run is a nested run whose `AMPLIHACK_RUN_BUNDLE`
+   marker passed the checks in [Nested runs](#nested-runs), the
+   `AMPLIHACK_HOME` that marker check 2 accepted is canonicalised as well,
+   and its `amplifier-bundle/recipes` directory is compared in the same way
+   as in step 3. A canonical path under it is a bundle recipe, and is
+   rebased onto the snapshot: the run reads the recipe of that name inside
+   the snapshot, and its sub-recipes, agents and tools come from there too.
+   The accepted home is the snapshot itself when `AMPLIHACK_HOME` equals the
+   marker, and the auto-drive launch copy when the marker was accepted
+   through `bundle-source`; the copy is a copy of the snapshot, so a path
+   into it always names a recipe the snapshot holds.
+5. Otherwise, if any ancestor of the canonical path is a directory named
    `amplifier-bundle` whose `recipes/` directory contains the path, the run
    is refused (E14). Paths under `amplifier-bundle/tools/` or a directory
    such as `amplifier-bundle/recipes-old/` are not matched.
-5. Any other path is a standalone recipe file.
+6. Any other path is a standalone recipe file.
 
-E14 has no override: no flag, context key or environment variable lets a
-run take its recipe from one bundle and its sub-recipes and tools from
-another. Run the recipe by its bare name with the bundle you want: from
-inside the checkout that holds the file with `--bundle checkout`, or with
-`--bundle installed` for the installed bundle.
+Step 4 applies only to a nested run that inherited a snapshot. A top-level
+run has accepted no home, so for it a path into any `amplifier-bundle/`
+other than the selected bundle's reaches step 5 unchanged. The accepted
+home comes only from the marker checks that have already run; no
+environment variable is read again while a recipe argument is classified,
+and the accepted home is never written to `pin.json`, so no later process
+takes a path on another process's word.
+
+Step 4 exists because the loops that drive a run start their rounds by
+path. `launch_recipe` in `tools/autodrive_worktree_guard.sh`, called from
+`cmd_loop_preflight`, resolves a round's recipe in the `recipes/` directory
+beside the tools the loop is running from, and `tools/autodrive_loop.sh`
+hands the result to `recipe run` as `ROUND_RECIPE_PATH` for its crusty and
+merge rounds and as `HEALTH_RECIPE_PATH` for the health evaluator.
+`autodrive_launch_recipe` in `tools/autodrive_state.sh` normalises the
+`--round-recipe` argument against that same directory before the preflight
+runs. Hook-repair rounds come from `tools/workflow_hook_repair.sh`, which
+builds its round and health recipe paths from `HOOK_REPAIR_TOOLS_DIR` in
+the same way. In an auto-drive run that directory is
+`<launch copy>/amplifier-bundle/recipes`, under the `AMPLIHACK_HOME` those
+steps are given.
+
+Running the file rather than the name is deliberate, for two reasons. A
+round's recipe must come from the bundle the loop was launched from and
+never from the worktree under review, whose own `recipes/` a bare name
+would find first (#1543, #1528); the loop therefore resolves the path
+itself and refuses one that resolves inside the reviewed tree. And for the
+recipes `trusted::LaunchBundle::prepare` rewrites, those whose `name` is
+`auto-drive-to-merge` or `auto-drive-light` or begins with `autodrive-`,
+the file in the launch copy is the one that carries the run's
+authorisation. `loop-health-evaluator` and `hook-rejection-repair` are not
+rewritten, and reach their launch copy for the first reason alone.
+
+The outcome is `RecipeOrigin::Bundle` rather than `RecipeOrigin::File`, so
+the copy's `recipes/` directory does not become a second directory the
+runner searches, and a round's sub-recipes, agents and tools come from the
+snapshot exactly as they do for a bare name. Authorisation is unaffected,
+because `prepare` makes a fresh launch copy, with its own authorisation,
+for each nested auto-drive run.
+
+Paths that step 4 does not accept behave as before. Comparison is component
+by component on canonical paths, so a path under the accepted home's
+`recipes-old/` or `tools/` does not match. A path into another run's
+snapshot is not the accepted home and reaches step 5. A symlink is judged
+by its target, so one whose target leads into another bundle reaches step 5
+as well; an auto-drive launch copy holds no symlinks, because `copy_tree`
+skips them, so that rule bites only when the accepted home is the snapshot.
+If the accepted home's `recipes/` cannot be canonicalised it is compared as
+it is, so only an identical canonical path can match it.
+
+Outside step 4, E14 has no override: no flag, context key or environment
+variable lets a run take its recipe from one bundle and its sub-recipes and
+tools from another. Run the recipe by its bare name with the bundle you
+want: from inside the checkout that holds the file with `--bundle checkout`,
+or with `--bundle installed` for the installed bundle.
 
 For a bare name:
 
@@ -439,8 +501,9 @@ For a bare name:
 - If the name is not found, the run fails with E9, which names the bundle and
   the choice.
 
-For a path inside the selected bundle, the run is recorded exactly as a run
-by bare name: `recipe_file` is absent. For a standalone recipe file, the log
+For a path inside the selected bundle, and for a path inside the accepted
+home of a nested run, the run is recorded exactly as a run by bare name:
+`recipe_file` is absent. For a standalone recipe file, the log
 record keeps the file path in `recipe_file`, alongside the bundle that
 supplied the sub-recipes, agents and tools.
 
@@ -599,7 +662,9 @@ The marker checks, all on canonical paths:
 1. `AMPLIHACK_RUN_BUNDLE` names an existing directory.
 2. It equals `AMPLIHACK_HOME`, or `AMPLIHACK_HOME` is an auto-drive launch
    copy made from it: a directory that passes the directory check and whose
-   `bundle-source` file names the marker.
+   `bundle-source` file names the marker. Its `amplifier-bundle/`, and that
+   directory's `recipes/`, must pass the directory check as well, because a
+   step may start a round by a path into them.
 3. Its parent is `<work root>/bundle-pins` of this run's own work root, and
    its name is a key: exactly 24 lower-case hex digits
    (`^[0-9a-f]{24}$`). A nested run inherits `AMPLIHACK_WORK_ROOT`, so its
@@ -617,6 +682,13 @@ the existing `<key>.use`, creating neither, takes a shared lock on
 tampered with, and the nested run is refused (E13) rather than run from a
 snapshot that no lease protects. A nested run never copies, removes or
 changes the mode of anything under `bundle-pins/`.
+
+The home check 2 accepted, the snapshot itself or the launch copy, is kept
+with the selection and used when the nested run classifies its recipe
+argument (step 4 of
+[Resolving the recipe argument](#resolving-the-recipe-argument)). It is held
+in memory for the life of that run only: it is not part of `pin.json`, and a
+top-level run has none.
 
 `AMPLIHACK_RUN_BUNDLE_CHOICE` decides only which request a nested run treats
 as a conflict. Changing it in a step never changes which bundle a nested run
@@ -816,6 +888,16 @@ snapshot:
   that file, so a nested `recipe run` in an auto-drive step reuses the
   snapshot and the outer run's choice instead of copying the launch copy as
   an installed bundle.
+- `tools/autodrive_loop.sh` starts each round with the path of that round's
+  recipe inside the launch copy,
+  `<launch copy>/amplifier-bundle/recipes/<round>.yaml`, and
+  `tools/workflow_hook_repair.sh` does the same for hook-repair rounds.
+  That path is accepted, and the snapshot's own copy of that recipe is
+  the one that runs, along with the round's sub-recipes, agents and
+  tools. For a round `trusted::LaunchBundle::prepare` applies to, the
+  recipe is then replaced again by that round's own invocation copy,
+  which carries its authorisation. See step 4 of
+  [Resolving the recipe argument](#resolving-the-recipe-argument).
 
 ## Errors
 
@@ -849,6 +931,10 @@ the first ending names the directory from which `--bundle checkout` selects
 that bundle. The second ending covers the reverse case: a path into the
 installed bundle, or into an unpacked copy, while the run uses
 `--bundle checkout`.
+
+E14 is not given for a path inside the home a nested run inherited: such a
+path is a bundle recipe, as step 4 of
+[Resolving the recipe argument](#resolving-the-recipe-argument) describes.
 
 In E15, `<path>` is the path as given, so that a missing file is named the
 way the user typed it.
@@ -897,6 +983,17 @@ pub(crate) struct Selection { /* source, choice, version, inherited */ }
 impl Selection {
     /// <source>/amplifier-bundle/recipes
     pub(crate) fn recipes_dir(&self) -> &Path;
+
+    /// <accepted home>/amplifier-bundle for an inherited selection, where
+    /// the accepted home is the AMPLIHACK_HOME marker check 2 accepted:
+    /// the snapshot itself, or the auto-drive launch copy made from it.
+    /// None for a top-level run. Used as the second root the recipe path
+    /// is rebased onto the snapshot from.
+    pub(crate) fn accepted_home_bundle_dir(&self) -> Option<PathBuf>;
+
+    /// The recipes/ directory inside accepted_home_bundle_dir(), which is
+    /// what a recipe path is classified against.
+    pub(crate) fn accepted_home_recipes_dir(&self) -> Option<PathBuf>;
 }
 
 /// Reads the environment and calls select_from.
@@ -940,6 +1037,11 @@ pub(crate) fn check_state_home(
     runtime_dir: Option<&Path>,
 ) -> anyhow::Result<()>;
 ```
+
+The private marker check returns the accepted home alongside the canonical
+marker and the outer run's choice, and the private `Inherited` struct keeps
+it. Neither is serialised, so `pin.json` is unchanged and no field is added
+to any on-disk record.
 
 `tree_digest` (the walk described in [The tree digest](#the-tree-digest))
 and `PinLease` (the shared lock on `<key>.use`) are private to the module.
@@ -989,6 +1091,11 @@ pub(crate) enum RecipeOrigin { Bundle, File(PathBuf) }
 
 /// Bare names resolve only inside selection.recipes_dir().
 /// A path inside selection.recipes_dir() returns (canonical path, Bundle).
+/// For an inherited selection, a path inside
+/// selection.accepted_home_recipes_dir() also returns (canonical path,
+/// Bundle), so an auto-drive round started by a path into the run's own
+/// launch copy runs from that copy while its sub-recipes, agents and tools
+/// still come from the snapshot.
 /// A path that cannot be canonicalised or is not a regular file is
 /// refused (E15) before it is classified.
 /// A path inside another amplifier-bundle/recipes/ is refused (E14); the
@@ -1014,6 +1121,12 @@ pub(crate) fn resolve_recipe_in_bundle(
 - **Renamed bundle directories.** E14 recognises another bundle only by a
   directory named `amplifier-bundle`. A copy of a bundle under another name
   is treated as a standalone recipe file.
+- **The accepted home is not read-only.** The snapshot is read-only, but an
+  auto-drive launch copy is an ordinary directory belonging to the run. A
+  path into its `recipes/` is checked when the argument is classified and
+  read shortly afterwards, and a change made in between is not detected.
+  This is the same window the launch copy already has for the `-R`
+  directory the runner is given.
 - **Other users.** The work root and `bundle-pins/` are `0700`, so steps that
   switch to another user cannot read the snapshot.
 - **Group-writable installs.** An install made under umask `002` has
