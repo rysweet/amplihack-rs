@@ -390,12 +390,13 @@ Directory mode `0700`; record, evidence and spool files `0600`.
 Integration tests are modules of `cli_integration` in
 `crates/amplihack-cli/tests/issue_2539_step_recovery_*.rs`; unit tests are in
 `step_recovery/tests.rs` and `tests_review.rs`. The agent is a stub runner
-replaying scripted replies. Tests that need the real `recipe-runner-rs`
-skip without it, and fail without it when
-`AMPLIHACK_2539_REQUIRE_RECIPE_RUNNER` is set (as in CI).
+replaying scripted replies. Tests that need the real `recipe-runner-rs` use
+the pinned build from `tests/support/pinned_runner.rs` and never skip; see
+[Run tests against the pinned recipe runner](../howto/run-tests-against-the-pinned-recipe-runner.md).
+The loop tests also need `jq` and fail without it.
 
 ```bash
-AMPLIHACK_2539_REQUIRE_RECIPE_RUNNER=1 cargo test -p amplihack-cli --test cli_integration issue_2539_step_recovery
+cargo test -p amplihack-cli --test cli_integration issue_2539_step_recovery
 cargo test -p amplihack-cli --lib step_recovery
 ```
 

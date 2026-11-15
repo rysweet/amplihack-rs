@@ -112,16 +112,11 @@ fn git(dir: &std::path::Path, args: &[&str]) -> String {
 }
 
 impl Loop {
-    fn new() -> Option<Self> {
-        if !jq_available() {
-            let required = std::env::var_os("AMPLIHACK_2539_REQUIRE_RECIPE_RUNNER").is_some();
-            assert!(
-                !required,
-                "jq is not installed; the stub orch helper needs it"
-            );
-            eprintln!("SKIP: jq is not installed; the stub orch helper needs it");
-            return None;
-        }
+    fn new() -> Self {
+        assert!(
+            jq_available(),
+            "jq is not installed; the stub orch helper needs it"
+        );
         let tmp = tempfile::tempdir_in(crate::support::scratch_base::scratch_base()).unwrap();
         let root = tmp.path().canonicalize().unwrap();
         let p = |n: &str| root.join(n);
@@ -151,12 +146,12 @@ impl Loop {
             0o755,
         );
         crate::support::exec_stub::write_executable(&p("bin").join("gh"), GH_STUB, 0o755);
-        Some(Self {
+        Self {
             stub: p("stub"),
             recovery: p("recovery"),
             root,
             _tmp: tmp,
-        })
+        }
     }
 
     fn run(&self) -> Output {
@@ -222,7 +217,7 @@ fn loop_result(o: &Output) -> serde_json::Value {
 
 #[test]
 fn a_round_that_records_a_handoff_stops_the_loop_with_exit_81() {
-    let Some(l) = Loop::new() else { return };
+    let l = Loop::new();
     fs::write(l.stub.join("handoff-rounds"), "round-2\n").unwrap();
     let o = l.run();
     assert_eq!(o.status.code(), Some(HANDOFF_EXIT), "{}", show(&o));
@@ -255,7 +250,7 @@ fn a_round_that_records_a_handoff_stops_the_loop_with_exit_81() {
 
 #[test]
 fn a_handoff_in_the_first_round_stops_before_any_evaluator() {
-    let Some(l) = Loop::new() else { return };
+    let l = Loop::new();
     fs::write(l.stub.join("handoff-rounds"), "round-1\n").unwrap();
     let o = l.run();
     assert_eq!(o.status.code(), Some(HANDOFF_EXIT), "{}", show(&o));
@@ -265,7 +260,7 @@ fn a_handoff_in_the_first_round_stops_before_any_evaluator() {
 
 #[test]
 fn a_round_that_ended_with_81_at_its_guard_stops_the_loop_through_recovery_stop() {
-    let Some(l) = Loop::new() else { return };
+    let l = Loop::new();
     fs::write(l.stub.join("stop-rounds"), "round-1\n").unwrap();
     let o = l.run();
     assert_eq!(o.status.code(), Some(HANDOFF_EXIT), "{}", show(&o));
@@ -276,7 +271,7 @@ fn a_round_that_ended_with_81_at_its_guard_stops_the_loop_through_recovery_stop(
 
 #[test]
 fn invalid_recovery_records_stop_the_loop_with_exit_2() {
-    let Some(l) = Loop::new() else { return };
+    let l = Loop::new();
     fs::write(l.stub.join("corrupt-rounds"), "round-1\n").unwrap();
     let o = l.run();
     assert_eq!(o.status.code(), Some(2), "{}", show(&o));
@@ -291,7 +286,7 @@ fn invalid_recovery_records_stop_the_loop_with_exit_2() {
 
 #[test]
 fn without_a_handoff_the_loop_runs_on_to_the_evaluators_stop() {
-    let Some(l) = Loop::new() else { return };
+    let l = Loop::new();
     let o = l.run();
     assert_eq!(
         o.status.code(),
