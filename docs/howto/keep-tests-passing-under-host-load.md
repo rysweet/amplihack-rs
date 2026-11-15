@@ -990,18 +990,33 @@ platform, as a plain child. Both paths use it:
   `wait_for_observed_runner` (observer) both poll in `wait_for_runner`.
   They differ only in how they ask whether the runner has exited, so
   neither can measure the timeout on a clock the test does not control.
-- The teardown grace. The plain child's `terminate_recipe_runner` waits on
-  it in `wait_until_exited`. The observed teardown sends SIGTERM to the
-  runner's tree, waits on it in `stop::sweep_on`, kills the survivors and
-  only then calls `Observer::terminate`. In virtual time the grace stays
-  frozen until the tree exits, so the SIGTERM handler in
-  `test_timeout_teardown_sends_sigterm_before_sigkill` always runs before
-  SIGKILL, on either path.
-- Cancellation. A cancelled worker ends the wait as a timeout and ends any
-  grace at once. On the plain path the wait first kills the runner's group,
-  whose pid is still unreaped. On the observed path the tracing thread may
-  already have reaped the runner, so nothing is signalled by pid there;
+- Every teardown grace. The plain child's `terminate_recipe_runner` waits
+  on it in `wait_until_exited`, and so does `reap_recipe_runner_group`,
+  which sweeps the group of a runner that has already exited. Every tree
+  sweep waits on it in `sweep_runner_tree`, which calls `stop::sweep_on`:
+  the observed teardown (`terminate_observed_runner`, which sends SIGTERM
+  to the runner's tree, waits, kills the survivors and only then calls
+  `Observer::terminate`), the observer's finished-scope sweeps and the
+  sweep after a runner that exited with a stop signal pending. In virtual
+  time the grace stays frozen until the tree exits, so the SIGTERM handler
+  in `test_timeout_teardown_sends_sigterm_before_sigkill` always runs
+  before SIGKILL, on either path.
+- Cancellation. Each poll asks whether the runner has exited before it
+  checks the cancel flag, so a runner that has exited is reported as
+  exited. Otherwise a cancelled worker ends the wait as a timeout and ends
+  any grace at once. On the plain path the wait first kills the runner's
+  group: only the executor waits on a plain child, and it has just found
+  it running, so its pid is still the runner's. On the observed path the
+  tracing thread reaps the runner as soon as it exits, so the runner's pid
+  is never used: the timeout and stop teardowns take their snapshot from
+  the tasks the observer still traces (`Observer::traced_tasks`), and
   `Observer::terminate` kills every task it still traces.
+
+`tests_teardown.rs` checks the clock wiring of the tree sweep directly:
+`test_sweep_runner_tree_measures_the_grace_on_the_runner_clock` runs
+`sweep_runner_tree` on a `RunnerWorker` and fails if the sweep never reads
+the worker's clock. `sweep_on_measures_grace_on_the_given_clock_and_honours_give_up`
+covers `stop::sweep_on` itself.
 
 Production reads the system clock through the same value and is never
 cancelled. `amplihack recipe stop` keeps `stop::sweep`, which is

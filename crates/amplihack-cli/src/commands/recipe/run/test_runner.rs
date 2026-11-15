@@ -82,18 +82,27 @@ impl<T: Send + 'static> RunnerWorker<T> {
     /// or its default). The executor's next poll therefore times out,
     /// whatever timeout the test configured.
     pub(super) fn time_out_after_ready(&self, what: &str, mut ready: impl FnMut() -> bool) {
-        crate::test_support::wait::wait_until(what, || {
-            self.control.started.load(Ordering::SeqCst) && ready()
-        });
+        crate::test_support::wait::wait_until(what, || self.clock_read() && ready());
         // The first clock read has happened, so advancing cannot precede
         // the executor's deadline origin. Readiness itself consumes no budget.
+        self.advance(super::execute::recipe_runner_timeout());
+    }
+
+    /// Whether the work has read this worker's clock yet. Code that measures
+    /// time on any other clock never makes this true.
+    pub(super) fn clock_read(&self) -> bool {
+        self.control.started.load(Ordering::SeqCst)
+    }
+
+    /// Moves this worker's virtual time on by `by`.
+    pub(super) fn advance(&self, by: Duration) {
         *self
             .control
             .time
             .as_ref()
             .expect("virtual runner clock")
             .lock()
-            .unwrap() += super::execute::recipe_runner_timeout();
+            .unwrap() += by;
     }
 
     pub(super) fn wait(&mut self) -> T {

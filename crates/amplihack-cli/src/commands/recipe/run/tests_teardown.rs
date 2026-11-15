@@ -32,7 +32,8 @@ use super::*;
 
 mod execute {
     pub(super) use super::super::execute::{
-        new_tree_id, resolve_claimed_depth, terminate_recipe_runner_with,
+        RunnerClock, new_tree_id, resolve_claimed_depth, sweep_runner_tree,
+        terminate_recipe_runner_with,
     };
     pub(super) use super::execute_recipe_via_rust_for_test as execute_recipe_via_rust;
 }
@@ -480,20 +481,19 @@ fn test_teardown_grace_window_is_configurable() {
 }
 
 // -------------------------------------------------------------------------
-// Test 3b — the observed runner's grace is measured on the injected clock.
+// Test 3b — `stop::sweep_on` measures its grace on the clock it is given.
 //
-// Every real run on Linux is spawned under the native Git observer, and its
-// teardown waits out the grace in `stop::sweep_on` on the runner's clock
-// (`RunnerClock` in `execute.rs`), not in `terminate_recipe_runner_with`.
-// The child ignores TERM and blocks on a stdin pipe this test holds, so only
-// the SIGKILL that ends the grace can end it. On a virtual clock the grace is
-// exactly the configured window however slowly the host runs; giving up (a
-// cancelled test) ends it at once. A sweep that read the real clock would
-// leave the virtual clock at zero in the first case.
+// This calls `sweep_on` directly with a `VirtualClock`; whether the executor
+// passes it the runner's clock is Test 3c. The child ignores TERM and blocks
+// on a stdin pipe this test holds, so only the SIGKILL that ends the grace
+// can end it. On a virtual clock the grace is exactly the configured window
+// however slowly the host runs; `give_up` (a cancelled test) ends it at once.
+// A `sweep_on` that read the real clock would leave the virtual clock at zero
+// in the first case.
 // -------------------------------------------------------------------------
 #[cfg(target_os = "linux")]
 #[test]
-fn test_observed_teardown_grace_is_measured_on_the_runner_clock() {
+fn sweep_on_measures_grace_on_the_given_clock_and_honours_give_up() {
     use crate::commands::recipe::{process_tree, stop};
     use crate::test_support::virtual_clock::VirtualClock;
     use std::io::BufRead;
@@ -537,6 +537,95 @@ fn test_observed_teardown_grace_is_measured_on_the_runner_clock() {
             "give_up={give_up}: only the SIGKILL after the grace ends the child: {status:?}"
         );
     }
+}
+
+// -------------------------------------------------------------------------
+// Test 3c — the executor's tree sweep waits its grace on the runner's clock.
+//
+// Every real run on Linux is spawned under the native Git observer. Its
+// timeout and stop teardown (`terminate_observed_runner`), its finished-scope
+// sweeps and the sweep after a runner that exited with a stop signal pending
+// all wait the grace in `execute::sweep_runner_tree`, which takes the
+// attempt's `RunnerClock`. This runs that helper on a `RunnerWorker` with
+// virtual time, the way the recipe tests run the executor, against a child
+// that ignores TERM.
+//
+// The test first waits for the helper to read the worker's clock. A helper
+// that measured the grace on the system clock never reads it, and returns by
+// itself once the real grace (2 s here) has passed; the test then fails with
+// a message naming the cause rather than passing. Once the clock has been
+// read the grace is frozen, and only the test's advance of virtual time by
+// the grace ends it, with SIGKILL to the child.
+//
+// Not covered here: `Observer::terminate`, the one other call in
+// `terminate_observed_runner`, and the cancellation wiring, whose failure
+// would hold the frozen grace until the test's ceiling instead of failing.
+// -------------------------------------------------------------------------
+#[cfg(target_os = "linux")]
+#[test]
+fn test_sweep_runner_tree_measures_the_grace_on_the_runner_clock() {
+    use super::test_runner::RunnerWorker;
+    use crate::commands::recipe::{process_tree, stop};
+    use std::io::BufRead;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{Command, Stdio};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut env = EnvGuard::capture(&[]);
+    let grace = Duration::from_secs(2);
+    env.assign(TEARDOWN_GRACE_ENV, grace.as_secs().to_string());
+
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", "trap '' TERM; echo ready; read _hold"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn a TERM-ignoring child");
+    let mut ready = String::new();
+    std::io::BufReader::new(child.stdout.take().expect("piped stdout"))
+        .read_line(&mut ready)
+        .expect("read the child's ready line");
+    assert_eq!(ready, "ready\n", "the child must install its trap");
+    let pid = child.id() as i32;
+    let start = process_tree::start_time(pid).expect("start time of the live child");
+    let tree = stop::Tree::from([(pid, start)]);
+
+    let finished = Arc::new(AtomicBool::new(false));
+    let worker_finished = Arc::clone(&finished);
+    let mut worker = RunnerWorker::spawn(None, true, move || {
+        let killed = execute::sweep_runner_tree(&tree, &execute::RunnerClock::current());
+        worker_finished.store(true, Ordering::SeqCst);
+        killed
+    });
+    crate::test_support::wait::wait_until("the tree sweep to read the runner clock", || {
+        if worker.clock_read() {
+            return true;
+        }
+        assert!(
+            !finished.load(Ordering::SeqCst),
+            "sweep_runner_tree ended its grace without reading the runner clock, \
+             so it measured the grace on another clock"
+        );
+        false
+    });
+    worker.advance(grace);
+    let killed = worker.wait();
+
+    assert_eq!(
+        killed, 1,
+        "the child ignores TERM, so the grace must end in SIGKILL"
+    );
+    let status = child.wait().expect("reap the child");
+    assert_eq!(
+        status.signal(),
+        Some(libc::SIGKILL),
+        "only the SIGKILL after the grace ends the child: {status:?}"
+    );
 }
 
 // -------------------------------------------------------------------------
