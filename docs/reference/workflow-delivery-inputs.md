@@ -20,6 +20,7 @@ lists the paths that do not use them.
 - [How the issue is referenced](#how-the-issue-is-referenced)
 - [What strict delivery does not do](#what-strict-delivery-does-not-do)
 - [How the inputs reach each phase](#how-the-inputs-reach-each-phase)
+  - [After a usage-limit relaunch](#after-a-usage-limit-relaunch)
 - [Where the inputs apply](#where-the-inputs-apply)
 - [Example](#example)
 - [Helpers](#helpers)
@@ -475,6 +476,50 @@ these names for something else clears it in the calling step's `context:`
 (for example `base_branch: ""`) before it calls `default-workflow`, or uses
 another name.
 
+### After a usage-limit relaunch
+
+Recovery restores completed steps, never a caller-supplied context value. A run
+that stopped at a usage limit is relaunched with its own command line, and its
+initial context is built from that line and the recipe defaults, exactly as the
+first attempt's was; only the recorded context deltas of restored steps are
+re-applied on top. The caller therefore passes the same `-c` values again. A
+relaunch that omits one runs under that input's default, and every default here
+is the permissive one: no denied base, strict delivery off, and the remote
+default branch as the base. Naming an input in a recipe's persist list does not
+change this, in either direction.
+
+What the persist lists do govern is replay. The recipes on these paths name the
+inputs in `recovery.persist.context`, which lets the runner compare each saved
+value with the live one and execute the dependent steps again when they differ,
+so a step completed under one delivery choice is not replayed into a relaunch
+running under another. See
+[caller-set keys in routing and workflow recipes](recipe-recovery.md#caller-set-keys-in-routing-and-workflow-recipes).
+
+One consequence affects how a relaunched run should be read. The checks
+described here live inside `step-03-create-issue`, so when a relaunch restores
+that step neither `delivery_strict_mode` nor `select_strict_delivery_issue`
+runs again, and the issue identity comes from the step's recorded output. A
+changed input still forces the step to execute, so the checks run under the new
+value; an unchanged input is accepted on the first attempt's check. Moving the
+checks out of the restored step is an open follow-up on
+[#2658](https://github.com/rysweet/amplihack-rs/issues/2658).
+
+One pairing holds across every recipe that persists these keys: a list that
+names `repository`, `pr_repository` or `closing_reference` also names
+`strict_delivery`. The three are read only under strict delivery, and step-03
+ends the run when one of them is set without it, so a comparison that could see
+a target move while the switch that gives it meaning went uncompared would have
+no use. Check the pairing whenever you extend one of these lists.
+
+`step_recovery_dir` travels the same paths but is not a delivery input. It is
+an absolute path to a `0700` directory the enclosing run owns, created by
+`auto-drive-to-merge` and handed down through `autodrive-build` to
+`default-workflow` and its phase recipes. An empty value turns step recovery
+off, except in `workflow-finalize`, which creates a directory of its own when
+it inherits an empty value. Its contents decide what a retried build reuses, so
+a run should be given a directory of its own rather than a shared or
+predictable one. See [step failure recovery](step-failure-recovery.md).
+
 ## Where the inputs apply
 
 The inputs take effect where `default-workflow` runs: on its own, or in-process
@@ -609,3 +654,4 @@ the two documented clears.
 - [Tracking Issue Selection Reference](workflow-tracking-issue-selection.md) - how step-03 chooses the issue when `strict_delivery` is off
 - [Issue Deduplication Reference](issue-dedup.md) - the issue claim check
 - [Workflow GitHub Repo Identity](workflow-github-repo-identity.md) - the `origin` parser publication uses
+- [Recipe Recovery Reference](recipe-recovery.md#caller-set-keys-in-routing-and-workflow-recipes) - how these inputs behave across a usage-limit relaunch

@@ -1,6 +1,6 @@
 ---
 title: Step Failure Recovery Reference
-last_updated: 2026-11-14
+last_updated: 2026-11-15
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -363,6 +363,34 @@ empty recovery directory.
 
 Directory mode `0700`; record, evidence and spool files `0600`.
 
+### The directory path as a recovery input
+
+`step_recovery_dir` is an ordinary context key, so the Rust runner counts it as
+an input of every bash and recipe step that can see it, whether or not the step
+mentions it. Runner #208 widened that coverage to bash steps; agent steps are
+outside it. The key is set in every `default-workflow` run, and a key that
+cannot be saved makes its steps non-replayable, so `default-workflow`,
+`workflow-prep` and `workflow-design` name it in `recovery.persist.context`.
+
+Without that entry the bash `replay: reuse` steps of the two phase recipes
+cannot replay after a usage-limit relaunch:
+`step-02d-detect-host-type`, `step-03-create-issue` and
+`step-03b-extract-issue-number` in `workflow-prep`, and
+`step-06b-checkpoint-doc-review` and `step-06d-goal-already-met-probe` in
+`workflow-design`. The relaunch then restarts at the earliest of them and
+redoes work the first attempt had finished, including issue creation. Their
+agent steps are unaffected either way.
+
+Neither phase recipe reads the value; they persist it because the runner counts
+it, not because a step consults it. Inside the phase tree the readers are
+`workflow-worktree`, which writes `build-branch.txt` under the directory, and
+`workflow-finalize`, which guards three of its steps with it and, at its first
+step, runs `init --created-by workflow-finalize` and rebinds the key to its own
+output. An empty inherited value therefore means recovery is off everywhere
+except in `workflow-finalize`, where it means the phase makes a directory of its
+own. See
+[caller-set keys in routing and workflow recipes](recipe-recovery.md#caller-set-keys-in-routing-and-workflow-recipes).
+
 ## Security
 
 - Files go through `secure_fs`: opened with `O_NOFOLLOW` relative to a
@@ -407,3 +435,4 @@ cargo test -p amplihack-cli --lib step_recovery
 - [Recipe Check Exit Status](./recipe-check-exit-status.md)
 - [Auto Drive To Merge](./auto-drive-to-merge.md)
 - [Default Workflow Agentic Finalization](./default-workflow-agentic-finalization.md)
+- [Recipe Recovery Reference](./recipe-recovery.md#caller-set-keys-in-routing-and-workflow-recipes)
