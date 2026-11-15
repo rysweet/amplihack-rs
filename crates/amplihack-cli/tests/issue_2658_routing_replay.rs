@@ -122,6 +122,41 @@ fn copy_tree(src: &Path, dest: &Path) {
     );
 }
 
+/// Run one attempt with a `PATH` and launcher that reach only the fixture's
+/// own fakes, and pair the output with the run directory it created.
+fn attempt_with(
+    f: &Fixture,
+    recipe: &Path,
+    bin: &Path,
+    launcher: &Path,
+    extra: &[&str],
+) -> Attempt {
+    let before = f.run_dirs();
+    let output = f
+        .command(recipe, &f.repo, "2658", extra)
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .env("AMPLIHACK_LAUNCHER_BINARY", launcher)
+        .output()
+        .expect("execute amplihack");
+    let run_dirs = f.run_dirs().difference(&before).cloned().collect();
+    f.attempt_from(output, run_dirs)
+}
+
+/// The step ids a relaunch restored rather than re-executed.
+///
+/// These cases assert `mode` and `restart` directly rather than through
+/// `Attempt::assert_resumed`, which resolves its source run through
+/// `Attempt::dir()` and so requires a `smart-orchestrator` root scope. Both
+/// cases run a shipped recipe that is not that one.
+fn restored_steps(recovery: &Value) -> BTreeSet<&str> {
+    recovery["restored_steps"]
+        .as_array()
+        .unwrap_or_else(|| panic!("restored_steps: {recovery:#}"))
+        .iter()
+        .filter_map(|s| s["step_id"].as_str())
+        .collect()
+}
+
 struct Routing {
     f: Fixture,
     recipe: PathBuf,
@@ -173,30 +208,22 @@ printf '%s\n' '{{"task_type":"Development","goal":"g","success_criteria":["c"],"
     }
 
     fn attempt(&self) -> Attempt {
-        let before = self.f.run_dirs();
-        let output = self
-            .f
-            .command(
-                &self.recipe,
-                &self.f.repo,
-                "2658",
-                &[
-                    "-c",
-                    "base_branch=main",
-                    // A key the recipe never declares, so the run sets it to a
-                    // value no default supplies. A key that is never set
-                    // behaves identically whether or not a persist list names
-                    // it, and would observe nothing.
-                    "-c",
-                    "forbidden_base_branches=release/*",
-                ],
-            )
-            .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
-            .env("AMPLIHACK_LAUNCHER_BINARY", &self.launcher)
-            .output()
-            .expect("execute amplihack");
-        let run_dirs = self.f.run_dirs().difference(&before).cloned().collect();
-        self.f.attempt_from(output, run_dirs)
+        attempt_with(
+            &self.f,
+            &self.recipe,
+            &self.bin,
+            &self.launcher,
+            &[
+                "-c",
+                "base_branch=main",
+                // A key the recipe never declares, so the run sets it to a
+                // value no default supplies. A key that is never set behaves
+                // identically whether or not a persist list names it, and
+                // would observe nothing.
+                "-c",
+                "forbidden_base_branches=release/*",
+            ],
+        )
     }
 }
 
@@ -231,12 +258,10 @@ fn shipped_classify_route_bash_step_replays_after_a_usage_limit_relaunch() {
         "a persisted-input routing bash step must not become the restart point: {recovery:#}\n{}",
         describe(&second.output)
     );
-    let restored = recovery["restored_steps"]
-        .as_array()
-        .unwrap_or_else(|| panic!("restored_steps: {recovery:#}"));
     assert!(
-        restored.iter().any(|s| s["step_id"] == BASH_STEP),
-        "{BASH_STEP} must be restored, not rerun: {recovery:#}"
+        restored_steps(&recovery).contains(BASH_STEP),
+        "{BASH_STEP} must be restored, not rerun: {recovery:#}\n{}",
+        describe(&second.output)
     );
     assert_eq!(
         r.f.events(),
@@ -321,17 +346,14 @@ printf '%s\n' '{{"status":"OK","requires_api_design":"true","requires_database_d
     }
 
     fn attempt(&self) -> Attempt {
-        let before = self.f.run_dirs();
         let recovery_dir = format!("step_recovery_dir={}", self.recovery_dir.display());
-        let output = self
-            .f
-            .command(&self.recipe, &self.f.repo, "2658", &["-c", &recovery_dir])
-            .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
-            .env("AMPLIHACK_LAUNCHER_BINARY", &self.launcher)
-            .output()
-            .expect("execute amplihack");
-        let run_dirs = self.f.run_dirs().difference(&before).cloned().collect();
-        self.f.attempt_from(output, run_dirs)
+        attempt_with(
+            &self.f,
+            &self.recipe,
+            &self.bin,
+            &self.launcher,
+            &["-c", &recovery_dir],
+        )
     }
 
     /// How many agent steps the fake has answered across every attempt.
@@ -439,12 +461,7 @@ fn shipped_phase_recipes_replay_their_bash_steps_after_a_usage_limit_relaunch() 
         "a persisted-input phase bash step must not become the restart point: {recovery:#}\n{}",
         describe(&second.output)
     );
-    let restored: BTreeSet<&str> = recovery["restored_steps"]
-        .as_array()
-        .unwrap_or_else(|| panic!("restored_steps: {recovery:#}"))
-        .iter()
-        .filter_map(|s| s["step_id"].as_str())
-        .collect();
+    let restored = restored_steps(&recovery);
     for step in PREP_BASH_STEPS.iter().chain(DESIGN_BASH_STEPS.iter()) {
         assert!(
             restored.contains(step),
