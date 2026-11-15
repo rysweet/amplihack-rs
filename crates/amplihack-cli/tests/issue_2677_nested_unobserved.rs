@@ -10,6 +10,8 @@
 //! `unavailable`, naming the refused call and its errno. The test waits only
 //! for process exit and keeps all state under the fixture's tempdir.
 
+#![cfg(target_os = "linux")]
+
 use std::path::{Path, PathBuf};
 
 use super::{Fixture, find_named, json_file, succeeds};

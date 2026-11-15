@@ -22,7 +22,6 @@ mod contract_support;
 mod exec_reclaim;
 #[path = "issue_2096_input_preservation.rs"]
 mod input_preservation;
-#[cfg(target_os = "linux")]
 #[path = "issue_2677_nested_unobserved.rs"]
 mod nested_unobserved;
 #[path = "issue_2096_ownership_lifecycle.rs"]
