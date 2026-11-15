@@ -8,6 +8,9 @@
 //! the merge step also writes its result, bound to the calling run's id, to the
 //! runner-bound state folder.
 //!
+//! The same re-run that finds the branch behind its base hands the PR off:
+//! no base sync follows a re-run, so the PR must not stay ready with no drive.
+//!
 //! B4: the same drive with merging off is a verify-only run that reaches DONE;
 //! it ends `completed` and successful.
 //!
@@ -16,7 +19,7 @@
 //! driver and the finalize `merge` step with the trusted `autodrive_merge.sh`.
 //! What is a stand-in: `gh` (GitHub reads the PR merged at the head), the
 //! recovery agent (it answers retry_after_repair), and the two finalisation
-//! agent steps, which become one-line bash steps in the test's copy of the
+//! agent steps and the hand-off agent step, which become one-line bash steps in the test's copy of the
 //! bundle. The real runner is `RECIPE_RUNNER_QA_BINARY`, else
 //! `recipe-runner-rs` on `PATH`; without one each test says so and returns.
 //! Nothing reaches GitHub or an agent. tests/gadugi/* is not run here.
@@ -103,11 +106,26 @@ fn finalize_without_agents(bundle: &Path) {
         }
     }
     fs::write(&path, serde_yaml::to_string(&doc).unwrap()).unwrap();
+    // The hand-off agent: it records that it was reached.
+    let path = bundle.join("recipes/autodrive-handoff.yaml");
+    let mut doc = yaml(&path);
+    for step in steps_mut(&mut doc).iter_mut() {
+        if step["id"].as_str() == Some("hand-off") {
+            *step = bash_step(
+                "hand-off",
+                "handoff_action",
+                "printf '%s\\n' \"$RECIPE_VAR_handoff_reason\" > \"$FAKE_LOG/handoff\"",
+            );
+        }
+    }
+    fs::write(&path, serde_yaml::to_string(&doc).unwrap()).unwrap();
 }
 
-/// The recovery agent: it answers retry_after_repair, once per call.
+/// The recovery agent: it answers retry_after_repair on its first call and
+/// hands off on any later one, as an agent does when a retry fails again (a
+/// re-run that does not merge exits non-zero).
 const RECOVERY_STAND_IN: &str = r#"name: step-failure-recovery
-description: test stand-in that answers retry_after_repair
+description: test stand-in that retries once, then hands off
 version: 1.0.0
 context:
   step_recovery_evidence: ""
@@ -117,15 +135,29 @@ steps:
   - id: recover
     type: bash
     command: |
-      printf '%s\n' '{"step_recovery":{"choice":"retry_after_repair","reason":"the first finalisation stopped before its merge step","repair":"none needed; run finalisation again"}}'
+      if [ -e "$FAKE_LOG/recovered" ]; then
+        printf '%s\n' '{"step_recovery":{"choice":"handoff","reason":"the re-run did not merge","owner":"run-requester","needs":"read the PR hand-off comment"}}'
+      else
+        : > "$FAKE_LOG/recovered"
+        printf '%s\n' '{"step_recovery":{"choice":"retry_after_repair","reason":"the first finalisation stopped before its merge step","repair":"none needed; run finalisation again"}}'
+      fi
 "#;
 
 /// GitHub: the PR reads MERGED at the assessed head, so `autodrive_merge`
-/// reports `merged` without a merge request.
+/// reports `merged` without a merge request. With `$FAKE_LOG/behind` present
+/// it reads OPEN and DIRTY with green checks, so `autodrive_merge` reports
+/// `base-behind`; the hand-off read-back reads it a draft.
 const FAKE_GH: &str = r#"#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FAKE_LOG/gh.log"
 case "${1:-} ${2:-}" in
-  "pr view") jq -cn --arg h "$(cat "$FAKE_LOG/head")" '{state:"MERGED",title:"Fixture",body:"",mergeStateStatus:"CLEAN",headRefOid:$h}' ;;
+  "pr view")
+    case "$*" in *isDraft*) echo true; exit 0 ;; esac
+    if [ -e "$FAKE_LOG/behind" ]; then
+      jq -cn --arg h "$(cat "$FAKE_LOG/head")" '{state:"OPEN",title:"Fixture",body:"",mergeStateStatus:"DIRTY",headRefOid:$h}'
+    else
+      jq -cn --arg h "$(cat "$FAKE_LOG/head")" '{state:"MERGED",title:"Fixture",body:"",mergeStateStatus:"CLEAN",headRefOid:$h}'
+    fi ;;
+  "pr checks") printf 'build\tpass\t1m\thttps://example.invalid\n' ;;
   *) echo "fixture gh: unexpected call: $*" >&2; exit 1 ;;
 esac
 "#;
@@ -234,6 +266,7 @@ impl Fixture {
             "b3-first-finalisation.yaml",
             "autodrive-b3-fixture.yaml",
             "autodrive-finalize.yaml",
+            "autodrive-handoff.yaml",
         ] {
             fs::set_permissions(recipes.join(name), fs::Permissions::from_mode(0o644)).unwrap();
         }
@@ -403,6 +436,30 @@ fn a_merge_made_by_recovered_finalisation_ends_the_run_completed() {
     let gh = fs::read_to_string(f.log.join("gh.log")).unwrap_or_default();
     assert!(gh.contains("pr view"), "{gh}");
     assert!(!gh.contains("pr merge"), "already merged at the head: {gh}");
+}
+
+#[test]
+fn a_recovered_finalisation_that_finds_the_base_behind_hands_the_pr_off() {
+    let Some(runner) = runner() else { return };
+    let f = Fixture::new();
+    fs::write(f.log.join("behind"), "").unwrap();
+    let o = f.run(&runner, "false");
+    let v = outcome(&o);
+    assert_eq!(v["merge"]["result"], json!("base-behind"), "{}", show(&o));
+    assert_eq!(v["merge"]["handoff"], json!("true"), "{}", show(&o));
+    assert_eq!(v["stop_reason"], json!("not_merged"), "{}", show(&o));
+    let handoff = fs::read_to_string(f.log.join("handoff"))
+        .unwrap_or_else(|_| panic!("the hand-off was not reached: {}", show(&o)));
+    assert!(handoff.contains("base-behind"), "{handoff}");
+    let gh = fs::read_to_string(f.log.join("gh.log")).unwrap_or_default();
+    assert!(
+        gh.contains("isDraft"),
+        "the hand-off read the PR back: {gh}"
+    );
+    assert!(
+        !gh.contains("pr merge"),
+        "no merge request on a DIRTY branch: {gh}"
+    );
 }
 
 #[test]

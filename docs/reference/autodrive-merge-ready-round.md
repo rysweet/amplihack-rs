@@ -582,6 +582,11 @@ a record another run left in a reused folder is ignored. `report()` reads it
 through the private evidence store and adds the note
 `finalize_merge: read from the state folder`.
 
+A re-run by recovery is not followed by the merge loop's base sync. When it
+finds the branch behind its base, its `merge` step emits `base-behind` with
+`handoff true`, so the PR is drafted with a comment rather than left ready
+with no drive. The run ends `not_merged`.
+
 The runner writes `invocation.json` again once it has bound the state folder
 to the invocation, so the authorization read below finds the bound folder.
 Before this, the record held no state folder and every merge run's

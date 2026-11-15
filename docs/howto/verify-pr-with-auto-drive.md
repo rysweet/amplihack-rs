@@ -54,6 +54,10 @@ Expected successful outcome: loop result `DONE`, merge result
 `not-authorised`, stop reason `completed`, PR still open and not a draft. If
 a blocker cannot be cleared within the run, expect a hand-off instead: the PR
 becomes a draft with a comment naming the blocker and head SHA.
+A run whose only open item is a required check still running ends with loop
+result `WAITING` and stop reason `completed`: the verify-only run finished,
+but the checks have not passed yet, so read them before relying on the
+result.
 `no_merge=true` never permits a merge, including after re-review or
 light-to-full escalation.
 
