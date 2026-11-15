@@ -31,8 +31,10 @@
 #   workflow_terminal_evidence.sh collect [--repo O/R] [--head REF] [--base REF]
 #       [--head-sha SHA] [--pr-url URL] [--pr-number N] [--created-after TIME]
 #   workflow_terminal_evidence.sh collect-for-step [--base REF]
-#       (recipe wrapper for collect; --base is the run's base_branch, and an
-#       empty value keeps the origin/HEAD discovery)
+#       (recipe wrapper for collect; --base is the run's base_branch. Empty:
+#       the base of the run's pull request (delivery_run_base), and the
+#       origin/HEAD discovery only when that cannot be read, with a note on
+#       stderr naming the base used)
 #   workflow_terminal_evidence.sh verdict-token          (recipe wrapper: prose -> token)
 #   workflow_terminal_evidence.sh adjudicate [--evidence JSON | --evidence-file F | -]
 #       [--agent-verdict TOKEN] [--scope-reason REASON] [--report-only]
@@ -116,6 +118,13 @@ fi
 # Defines parse_github_repo_identity (issue #1642).
 # shellcheck source=workflow_github_repo.sh disable=SC1090
 . "$GITHUB_REPO_HELPER"
+# Defines delivery_run_base (#2520). Evidence is best-effort: without the
+# helper, resolve_base_ref keeps the discovery and says so.
+DELIVERY_INPUTS_HELPER="${WORKFLOW_DELIVERY_INPUTS_HELPER:-${SCRIPT_DIR}/workflow_delivery_inputs.sh}"
+if [ -f "$DELIVERY_INPUTS_HELPER" ] && [ -r "$DELIVERY_INPUTS_HELPER" ]; then
+  # shellcheck source=workflow_delivery_inputs.sh disable=SC1090
+  . "$DELIVERY_INPUTS_HELPER"
+fi
 
 gh_read() {
   local label="$1"; shift
@@ -126,21 +135,56 @@ gh_read() {
   fi
 }
 
+# The base of the run's pull request (delivery_run_base): the recorded publish
+# base, else the pull request's own baseRefName. This step only collects
+# evidence, so when that cannot be read it falls back to the discovery and
+# names the base it used on stderr.
 resolve_base_ref() {
-  local candidate
-  candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-  if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null 2>&1; then
-    printf '%s\n' "${candidate#origin/}"; return 0
+  local candidate recorded="" combined="" reason="not resolved"
+  if declare -F delivery_run_base >/dev/null 2>&1; then
+    declare -F rv_field >/dev/null 2>&1 && recorded="$(rv_field pr_publish_result base_branch 2>/dev/null || true)"
+    # delivery_run_base prints only the base on success and only its reason on
+    # failure; the reason goes into the one WARNING below, not an ERROR line.
+    if combined="$(delivery_run_base "" "$recorded" "${PR_URL:-$PR_NUMBER}" "$REPO" "$HEAD_REF" "${RECIPE_VAR_forbidden_base_branches:-}" 2>&1)" \
+        && [ -n "$combined" ]; then
+      printf '%s\n' "${combined##*$'\n'}"; return 0
+    fi
+    reason="${combined%%$'\n'*}"
+    reason="${reason#ERROR: }"
+    reason="${reason%; no other base is substituted}"
+    reason="${reason:-not resolved}"
   fi
-  for candidate in origin/main origin/master origin/develop; do
-    if git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null 2>&1; then
+  for candidate in "$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)" origin/main origin/master origin/develop; do
+    if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null 2>&1; then
+      printf 'WARNING: workflow_terminal_evidence.sh: the base of the run'"'"'s pull request was not resolved (%s); evidence uses %q\n' "$reason" "$candidate" >&2
       printf '%s\n' "${candidate#origin/}"; return 0
     fi
   done
+  printf 'WARNING: workflow_terminal_evidence.sh: the base of the run'"'"'s pull request was not resolved (%s), and no default branch resolves\n' "$reason" >&2
   return 1
 }
 
 PR_FIELDS="number,state,title,url,headRefName,baseRefName,createdAt,isCrossRepository"
+
+# fill_explicit_pr_identity JSON: the explicit PR object with a missing url or
+# number filled from the run's own PR_URL / PR_NUMBER (#2520), so a partial
+# `gh pr view` reply never shows the found PR as #0 or #null. The number is
+# PR_NUMBER when valid, else the number in PR_URL when the whole URL is a
+# github.com pull request URL. Values reach jq only through --arg.
+fill_explicit_pr_identity() {
+  local pr_json="$1" url="" number=""
+  if [[ "$PR_URL" =~ ^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/([1-9][0-9]{0,9})/?$ ]]; then
+    url="${PR_URL%/}"
+    number="${BASH_REMATCH[1]}"
+  fi
+  if [[ "$PR_NUMBER" =~ ^[1-9][0-9]{0,9}$ ]]; then
+    number="$PR_NUMBER"
+  fi
+  printf '%s' "$pr_json" | jq -c --arg url "$url" --arg number "$number" '
+    (if ((.url // "") | tostring) == "" and $url != "" then .url = $url else . end)
+    | (if (.number == null or .number == "" or .number == 0) and $number != ""
+       then .number = ($number | tonumber) else . end)'
+}
 
 collect() {
   local prs_for_head="[]" explicit_pr="null" open_all="[]"
@@ -154,7 +198,7 @@ collect() {
   # A missing resolver leaves HEAD_REF empty, so the verdict is UNCERTAIN.
   [ -n "$HEAD_REF" ] || HEAD_REF="$(bash "$SCRIPT_DIR/workflow_remote_branch.sh" .)" || HEAD_REF=""
   [ -n "$HEAD_SHA" ] || HEAD_SHA="$(git rev-parse --verify HEAD 2>/dev/null || true)"
-  [ -n "$BASE_REF" ] || BASE_REF="$(resolve_base_ref 2>/dev/null || true)"
+  [ -n "$BASE_REF" ] || BASE_REF="$(resolve_base_ref || true)"
 
   # --- git-side evidence: did the work already land in the base branch? -----
   # Ancestry catches a merge commit / fast-forward; an empty diff catches a
@@ -213,6 +257,7 @@ collect() {
       if raw="$(gh_read "terminal evidence pr view" pr view "$explicit_target" --repo "$REPO" --json "$PR_FIELDS" 2>/dev/null)" \
         && printf '%s' "$raw" | jq -e 'type == "object"' >/dev/null 2>&1; then
         explicit_pr="$(printf '%s' "$raw" | jq -c '.')"
+        explicit_pr="$(fill_explicit_pr_identity "$explicit_pr")"
       fi
     fi
 

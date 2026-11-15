@@ -58,9 +58,6 @@ AUTODRIVE_TOOLS=(autodrive_budget.sh autodrive_progress.sh autodrive_crusty_rere
 # context.rs shell_env_vars); the step bodies run here get the first form. A
 # case that needs another directory, or none, sets it on its own command.
 export RECIPE_VAR_autodrive_tools_dir="${TOOLS}"
-# The resolver is new in #1517. Its absence is a test failure (section 6a),
-# not a harness error, so every other section still runs and reports.
-RESOLVER="${TOOLS}/autodrive_merge_ready_files.sh"
 STATE_HELPER="${TOOLS}/autodrive_state.sh"
 # The range and qa evidence checks are new in #1517 too. A missing file fails
 # the sections that use it (5k, 6f to 6h) and every other section still runs.

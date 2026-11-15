@@ -3,18 +3,11 @@ description: "Phase 7: PR review cycle — testing-evidence, reviewer, gates (17
 version: "1.0.0"
 author: "Amplihack Team"
 tags: ["development", "review", "pr"]
-recursion:
-  max_depth: 6
-  max_total_steps: 80
+recursion: { max_depth: 6, max_total_steps: 80 }
 inputs:
   - name: worktree_setup.worktree_path
     description: "Absolute path to the per-task worktree produced by workflow-worktree (step-04). Required by bash steps in step-18c-push-feedback-changes that cd into the worktree. step-19c-zero-bs-verification falls back to REPO_PATH or cwd if the worktree is already cleaned up."
-context:
-  worktree_setup: ""
-  allow_no_op: false
-  local_testing_gate: ""
-  philosophy_check: ""
-  patterns_check: ""
+context: { worktree_setup: "", allow_no_op: false, local_testing_gate: "", philosophy_check: "", patterns_check: "", feedback_push_result: "" }
 steps:
   - id: "step-17a-testing-evidence-gate"
     type: "bash"
@@ -186,6 +179,7 @@ steps:
     output: "pr_feedback_changes"
   - id: "step-18c-push-feedback-changes"
     type: "bash"
+    continue_on_error: true
     condition: "terminal_state.terminal_success != 'true'"
     command: |
       set -euo pipefail
@@ -284,6 +278,11 @@ steps:
       fi
       echo "=== Changes Pushed ==="
     output: "feedback_push_result"
+  - id: "step-18c-push-recovery"
+    type: "recipe"
+    recipe: "push-failure-recovery"
+    condition: "terminal_state.terminal_success != 'true' && 'Changes Pushed' not in feedback_push_result"
+    context: { push_step: "step-18c-push-feedback-changes", push_output_key: "feedback_push_result", push_recovery_snapshot: "", push_recovery: "", push_recovery_result: "" }
   - id: "step-18d-respond-to-comments"
     type: "bash"
     condition: "terminal_state.terminal_success != 'true'"

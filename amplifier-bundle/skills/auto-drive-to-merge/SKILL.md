@@ -31,6 +31,10 @@ not a verified compatibility claim.
 Use the [verify-only instructions](../../../docs/howto/verify-pr-with-auto-drive.md) to leave an existing PR open. Pass `no_merge=true` explicitly. The full-composer default is `false`; its build always receives `true`.
 Dry-run separately suppresses merging and follow-up issue creation.
 
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `base_branch` | empty | Branch a new build starts from and its PR targets, passed through `autodrive-build` to `default-workflow`. Empty keeps the remote default branch; finalize then takes the base from the PR the build opened ([reference](../../../docs/reference/workflow-delivery-inputs.md#how-finalize-finds-the-base)). |
+
 Strictly parse authorization before children run. Preserve fresh runner-owned
 authorization through context overwrite, shared loops, re-review, and
 light-to-full escalation. Child output, inherited environment, PR text,

@@ -6,11 +6,11 @@ description: >
   reads the skill's SKILL.md and template, found by the SHIPPED
   amplifier-bundle/tools/autodrive_merge_ready_files.sh. This scenario (via
   tests/gadugi/run-autodrive-merge-ready-files-scenario.sh) asserts that the
-  lookup takes both files from one install, fails by name when they are
-  missing, that the merge round has no Skill(merge-ready) call, and that a
-  missing gadugi-test stops auto-drive at its first step, before the build,
-  in a Node repository, while a Rust CLI repository starts without it, as
-  qa-team's repo-type table says, with the shipped step bodies.
+  lookup takes both files from one install and fails by name when they are
+  missing, and that the shipped step-00 body resolves the files with
+  gadugi-test on PATH and without it, in a Node and a Rust CLI repository.
+  A missing gadugi-test does not stop step-00; the QA agent handles recovery
+  from a missing tool.
 version: "1.0"
 config:
   timeout: 60000
@@ -37,11 +37,11 @@ steps:
     action: validate_exit_code
     params:
       expected: 0
-  - name: skill-files-read-not-invoked
+  - name: merge-ready-files-summary
     agent: cli-agent
     action: validate_output
     params:
-      expected: "contains:merge-ready read from its files; gadugi-test checked before the build where criterion 1 needs it"
+      expected: "contains:merge-ready read from its files; step-00 resolves them with or without gadugi-test"
 assertions:
   - name: all-cases-passed
     type: output_contains
@@ -53,18 +53,28 @@ assertions:
     params:
       target: stdout
       expected: "PASS: merge_ready_files_resolved"
-  - name: no-skill-invocation
+  - name: template-never-mixed
     type: output_contains
     params:
       target: stdout
-      expected: "PASS: merge_round_reads_skill_files"
-  - name: gadugi-checked-before-build
+      expected: "PASS: merge_ready_template_never_mixed"
+  - name: missing-install-named
     type: output_contains
     params:
       target: stdout
-      expected: "PASS: gadugi_missing_stops_before_build"
-  - name: rust-starts-without-gadugi
+      expected: "PASS: merge_ready_missing_install_named"
+  - name: step00-resolves
     type: output_contains
     params:
       target: stdout
-      expected: "PASS: rust_repo_starts_without_gadugi"
+      expected: "PASS: merge_round_step00_resolves"
+  - name: step00-leaves-tool-recovery-to-agent
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: merge_round_step00_leaves_tool_recovery_to_agent"
+  - name: rust-step00-needs-no-gadugi
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: merge_round_step00_rust_needs_no_gadugi"

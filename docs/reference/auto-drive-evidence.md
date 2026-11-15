@@ -104,7 +104,9 @@ and trusted policy. Missing, unreadable, stale, altered, mismatched,
 unsupported, or contradictory records cannot establish readiness. Matching
 the head alone does not refresh approvals, conversations, checks, or policy.
 
-Private directories are created with mode `0700` and files with `0600`.
+Private directories are created with mode `0700` and files with `0600`,
+whatever the umask; see [Auto-drive State Permissions](./auto-drive-state-permissions.md)
+for when the check repairs an entry this user owns and when it refuses.
 Storage validates ownership and permissions, rejects traversal, symlinks and
 special files, bounds input sizes, and atomically snapshots the same opened
 bytes that it validates and hashes. Evidence references stay within designated

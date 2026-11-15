@@ -2,10 +2,16 @@
 title: Clean up after recipe runs
 description: Locate, retain, remove, or archive run-owned files and recovery state.
 doc_type: howto
-last_updated: 2026-11-11
+last_updated: 2026-11-12
 ---
 
 # Clean Up After Recipe Runs
+
+Each real run removes its own execution checkout when it ends, after checking
+the ownership manifest and the device and inode of every owned path. A path
+that changed is kept and the run fails. Private repository metadata stays when
+a durable worktree depends on it. See
+[ownership and release](../reference/recipe-checkout-isolation.md#ownership-and-release).
 
 Use this guide to find what a recipe run leaves on disk, to choose where it
 goes, and to remove or archive it with `amplihack cleanup`.
@@ -59,8 +65,9 @@ amplihack cleanup --apply --only run-tmp --only tmp-leftover
 
 No configuration is needed for the end-of-run cleanup. It runs after every
 `amplihack recipe run` unless `AMPLIHACK_CLEANUP_ON_EXIT=0` is set. A
-`recipe run --dry-run` still removes its own `runtime/` folder but never runs
-the sweep.
+`recipe run --dry-run` still removes its temporary `amplihack-dry-*` folder
+(`RunWorkspace::dry_runtime`) but never runs the sweep. A dry run creates no
+`runs/` folder, so there is nothing else to remove.
 
 ## Settings
 
@@ -110,9 +117,12 @@ The runner creates one folder per run:
 │       ├── run.json              # the run report (kept)
 │       ├── owned-paths           # worktrees and targets this run created
 │       ├── cleanup-record.json   # written only when cleanup removed something
+│       ├── git-commands.jsonl    # index-writing git commands the run made (kept)
+│       ├── git-trace2/           # raw git events; deleted once summarised
 │       ├── recovery/             # private completions and required artifact copies
 │       ├── procs/                # one record per running attempt, for recipe stop (Linux)
 │       └── runtime/              # removed when the run ends
+│           ├── checkout/         # the run's detached worktree (git runs only)
 │           ├── tmp/              # TMPDIR, TMP and TEMP for every step
 │           └── artifacts/        # AMPLIHACK_WORKFLOW_ARTIFACT_DIR
 ├── targets/                      # one cargo target per checkout, from git-hook-cargo.sh
@@ -374,19 +384,46 @@ For publication and retention invariants, see
 ## What happens when a run ends
 
 When `amplihack recipe run` finishes, whether the run succeeded, failed or
-panicked, the runner:
+panicked, the runner does these steps in order. Each step runs even when an
+earlier one failed, and the final error names every failure.
 
-1. Removes `<run dir>/runtime/`, including everything steps wrote to
-   `TMPDIR` and `artifacts/`. Durable `recovery/` state and
-   copied artifacts will remain outside that disposable folder.
-2. Finalises `run.json` with the end time, outcome and step summary.
-3. Unless `AMPLIHACK_CLEANUP_ON_EXIT=0` is set, sweeps the whole work root for
-   run-owned items that are now eligible (the categories `run-tmp`,
-   `run-worktree` and `run-target`), and removes them. This includes items
-   from earlier runs, and from the current run if it is already eligible.
-   When the sweep removes a worktree, that worktree's target goes with it in
-   the same sweep, whether the run recorded it as `created` or `reused`; see
-   [When a target is removed](#when-a-target-is-removed).
+1. Removes the execution checkout (`checkout.remove()`). It deletes only paths
+   its `owner.json` proves the run owns and never follows symlinks. It does
+   not change the caller's worktree list. A substituted path is kept and the
+   run fails. When a durable worktree depends on the private repository, the
+   repository stays and is listed in `durable-dependencies`.
+2. Publishes the Git command record (`git_record.finish()`):
+   `git-commands.jsonl`, `diagnostics/git/commands.jsonl` and
+   `git-recording.json`, then removes `git-trace2/`. See
+   [Git command record](../reference/recipe-runner-logging.md#git-command-record).
+   A publication failure makes the run fail.
+3. Finishes the recovery admission with an outcome judged from the run and
+   the first two steps.
+4. Finishes the workspace (`finish_workspace`):
+   1. Removes `<run dir>/runtime/`, including everything steps wrote to
+      `TMPDIR` and `artifacts/`, unless a running process still uses it.
+      Durable `recovery/` state and copied artifacts remain outside that
+      disposable folder. See
+      [A runtime folder still in use is kept](#a-runtime-folder-still-in-use-is-kept)
+      and
+      [Locked folders inside the runtime folder](#locked-folders-inside-the-runtime-folder).
+      A folder that was replaced by another one is kept and the run fails;
+      see [A replaced runtime folder is refused](#a-replaced-runtime-folder-is-refused).
+   2. Finalises `run.json` with the end time, outcome and step summary.
+   3. Unless `AMPLIHACK_CLEANUP_ON_EXIT=0` is set, sweeps the whole work root
+      for run-owned items that are now eligible (the categories `run-tmp`,
+      `run-worktree` and `run-target`), and removes them. This includes items
+      from earlier runs, and from the current run if it is already eligible.
+      When the sweep removes a worktree, that worktree's target goes with it in
+      the same sweep, whether the run recorded it as `created` or `reused`; see
+      [When a target is removed](#when-a-target-is-removed).
+
+`AMPLIHACK_CLEANUP_ON_EXIT=0` skips only the sweep in step 4. Steps 1 to 3
+always run.
+
+A run that fails before its first step, for example on an unborn `HEAD`,
+still finishes its recovery admission as `Failure`, so the next launch does
+not try to resume it.
 
 The sweep is best effort. If another cleanup holds the lock, the sweep is
 skipped. It stops after 120 seconds. Any problem is printed as a warning and
@@ -423,12 +460,168 @@ When the sweep removes something from a run, it adds an entry to that run's
 
 If nothing was removed, no record is written.
 
-If the work root cannot be used, for example because it is group-writable,
-execution stops with an error. Failed recovery admission or durable publication
-cannot fall back to temporary storage.
+A real run starts its workspace with `RunWorkspace::begin_durable`. If the
+work root cannot be used, for example because it is group-writable, the run
+fails before any step starts, with an error that names the work root. Fix
+its permissions (`chmod g-w,o-w`) or point `AMPLIHACK_WORK_ROOT` at a private
+absolute directory. A real run never falls back to a temporary folder. A `--dry-run` uses
+`RunWorkspace::dry_runtime`: a temporary `amplihack-dry-*` folder that is
+removed on exit, with no run folder, checkout or recording.
+
+### A runtime folder still in use is kept
+
+A step can start a process that outlives the run, such as a build server, a
+language server or a background job a test left behind. If the runner removed
+`runtime/` under such a process, the process, and any agent that inherited its
+`TMPDIR`, would be left pointing at a folder that no longer exists.
+
+So before step 4.1 removes `runtime/`, the runner checks the process table once.
+The folder is in use if any running process other than the runner itself:
+
+- has its working folder inside it;
+- holds a file open inside it; or
+- has `TMPDIR`, `TMP` or `TEMP` set to a path inside it.
+
+These are the same checks the sweep and `amplihack cleanup` make for
+`run-tmp`. If the folder is in use, the runner leaves it in place, does not
+change its permissions or move it, and prints one line on stderr:
+
+```text
+amplihack: runtime folder "~/.amplihack/work/r/<id>" is still in use by a running process; leaving it in place — the end-of-run cleanup sweep will remove it later
+```
+
+The real message shows the full absolute path of the runtime folder in double
+quotes: `<work root>/runs/<run id>/runtime`, or `<work root>/r/<short id>`
+when that path would be too long. The run's exit
+status does not change. The message names only the folder, never the process
+or its environment.
+
+The kept folder is an ordinary `run-tmp` candidate. Once the run has ended it
+is no longer active, so the next sweep, from a later run or from
+`amplihack cleanup --apply`, removes it after checking again that no process
+uses it. A process that runs for a long time keeps the folder until a sweep
+runs after that process exits. To remove it now, stop the process and run:
+
+```bash
+amplihack cleanup --apply --only run-tmp
+```
+
+The check needs `/proc`. Where `/proc` cannot be read, as on macOS, the
+runner removes `runtime/` at the end of the run as before, while the sweep
+still keeps every folder it cannot prove unused.
+
+The folder of a `recipe run --dry-run` is not checked: it lives in the system
+temporary folder, no sweep ever looks at it, and keeping it would leave it
+there for good. It is removed at the end of the dry run.
+
+### Locked folders inside the runtime folder
+
+A step can leave a folder under `TMPDIR` that its owner cannot write to or
+search, for example a test fixture left at mode `000` or `0500`. Removing the
+contents of such a folder fails with `Permission denied (os error 13)`.
+
+So once the runner has found that no process uses `runtime/`, and before it
+removes it, the runner walks the folder from its root and gives the owner back
+read, write and search access (`u+rwx`) on every folder the run owns. It adds
+only those three owner bits: group and other bits stay as they were, and no
+bit is ever removed. File modes are never changed, because removing a file
+depends on the mode of the folder that holds it, not on the file's own mode.
+
+The walk does not follow symbolic links. A link inside `runtime/` is removed
+as a link, and the folder it points to keeps its mode and its contents.
+
+The walk leaves alone, and does not enter, any entry that:
+
+- belongs to another user; or
+- is on another filesystem than the runtime folder, such as a bind mount.
+
+It names each such entry in a warning on stderr and leaves its permissions
+unchanged:
+
+```text
+amplihack: warning: leaving permissions unchanged on "/home/ryan/.amplihack/work/r/3f0c9a526d1e/tmp/fixture" in the runtime folder: not owned by this user or on another filesystem
+```
+
+At most 20 entries are named on stderr; any further ones are counted in one
+last line, `amplihack: warning: … and 37 more entries left unchanged`. Every
+path is quoted, so a name with a newline or control characters in it is shown
+escaped. The full list is written to the debug log only, which is off by
+default. To see every path, run with `RUST_LOG=amplihack_cli=debug` (or
+`RUST_LOG=debug`); the entries then appear on stderr.
+
+These warnings never change the run's exit status. The runner then removes
+`runtime/` as usual. If an entry it left alone stops the removal, the folder
+stays in place and the run fails with `release owned runtime directory`
+and the underlying error. A later sweep tries again, but it fails for as long as the
+entry still belongs to another user or a folder in it is still locked, so fix
+the folder by hand as shown below.
+
+This applies to the runner's own removal of `runtime/` at the end of a run.
+The sweep and `amplihack cleanup` do not change permissions: a `run-tmp`
+folder that still holds a locked folder is reported as failed and kept, and
+`amplihack cleanup` exits with a non-zero status. Give the owner access back on
+the folders only, then run the sweep again. Point `find` at the runtime folder
+itself, which is `<work root>/runs/<run id>/runtime` or, when that path is too
+long, `<work root>/r/<short id>`:
+
+```bash
+RUNTIME="$HOME/.amplihack/work/r/3f0c9a526d1e"   # or .../runs/<run id>/runtime
+find "$RUNTIME" -type d -exec chmod u+rwx {} +
+amplihack cleanup --apply --only run-tmp
+```
+
+The `-type d` test leaves file modes unchanged, as the runner does. Avoid
+`chmod -R u+rwx`, which also makes every file executable. Entries owned by
+another user need that user, or root, to change or remove them.
 
 Unverifiable historical records instead cause a logged fresh execution
 after secure admission of the new attempt.
+
+### A replaced runtime folder is refused
+
+While a run lives, the runner holds its runtime folder open. When the run
+starts, it opens the folder with `O_DIRECTORY | O_NOFOLLOW` and records the
+device and inode number of the open folder. A symbolic link or a file at that
+path fails to open, and the run does not start. If the folder at the path
+changes between the check and the open, the run also does not start.
+
+Because the folder stays open, the filesystem cannot free its inode number
+and give it to another folder. On ext4, a new folder made at the same path
+would otherwise often get the number that was just freed and look like the
+original.
+
+Before each step, the runner compares the folder at the path with the one it
+holds:
+
+| Folder at the path | What the runner does |
+| --- | --- |
+| The same folder | Launches the step. |
+| Missing | Creates it again with mode `0700`, opens and records the new folder, then launches the step. |
+| A different folder, a symbolic link or a file | Refuses the step and fails the run. |
+| A new folder that cannot be opened | Refuses the step. The old record stays in place, so at the end of the run the new folder is kept and the run fails. |
+
+A refused step prints:
+
+```text
+amplihack: this run's runtime folder cannot be used: "/home/ryan/.amplihack/work/r/3f0c9a526d1e" is no longer this run's runtime folder; refusing to launch the step
+```
+
+When the run ends, the runner checks the folder again in the same way while
+it still holds it open. It removes only the folder it holds open. If the
+runner created the folder again during the run, that new folder is the one it
+holds and the one it removes. Any other folder at the path is kept, and the
+run fails with:
+
+```text
+runtime resource identity changed; replacement retained at /home/ryan/.amplihack/work/r/3f0c9a526d1e
+```
+
+See step 4.1 in [What happens when a run ends](#what-happens-when-a-run-ends).
+
+The open folder does not count as "in use" when the run ends, because the runner
+skips its own process. Step processes do not inherit it, because it is opened
+close-on-exec. Another amplihack process's sweep sees the open folder and
+keeps it, which is correct while the run lives.
 
 ## When a run is eligible for cleanup
 
@@ -808,6 +1001,7 @@ amplihack cleanup --apply --skip-logs
 | `run-tmp` | `<work root>/runs/<id>/runtime` (or `<work root>/r/<short id>`) left by a run that is no longer active, such as one that was killed. The keep period does not apply: the folder is removed as soon as the run is inactive and no running process (such as a child the killed run left behind) uses it. | remove |
 | `run-worktree` | Worktrees recorded in a run's `owned-paths`, under `<work root>/worktrees/` or `<main checkout>/worktrees/`, once the run is eligible. | `git worktree remove`; the branch is kept |
 | `run-target` | Targets recorded in a run's `owned-paths`: on the events in [When a target is removed](#when-a-target-is-removed), or for legacy lines once the run is eligible. Also the target removed by `--worktree-target`. A linked target loses both its destination and the link. | remove |
+| `run-exec` | Folders directly under `<work root>/exec/`: the stable execution storage of runs with a recovery identity ([checkout isolation](../reference/recipe-checkout-isolation.md)). One is collected when the run named in its `claim.json` has ended and no worktree registered in its private repository still exists outside it; an empty folder with no claim, and a `.reclaim-*` folder an interrupted reclaim moved aside, are collected too. A symlink is never followed. The keep period does not apply. A relaunch with the same identity applies the same rules before it reuses the path. | remove |
 | `untagged-target` | Folders directly under `<work root>/targets/`, and `amplihack-precommit-target-*` folders in the hook cache base, that no run recorded and that have not been modified within the keep period. | remove |
 | `tmp-leftover` | Top-level `replay-*`, `release-*` and `amplihack-workflow-*` folders in the system temporary folder that you own, that are older than the keep period, that hold no `pid` marker naming a live process, and that no running process has as its working folder, holds a file open in, or has as its `TMPDIR`, `TMP` or `TEMP`. | remove |
 | `recipe-log` | Files in `recipe.log_dir` older than `--log-days`. | archive |
@@ -1023,6 +1217,12 @@ expects:
 - the `tmp-leftover` folders described above;
 - log originals, after their archive is verified.
 
+The `owned-paths` rules below apply to this cleanup command only. They are
+separate from the release a recipe run does at its end: that release deletes
+only paths its `owner.json` manifest proves the run created, with matching
+identities. See
+[ownership and release](../reference/recipe-checkout-isolation.md#ownership-and-release).
+
 An entry in `owned-paths` is a request, not a permission. A recorded path
 outside these folders is reported as skipped.
 
@@ -1146,6 +1346,52 @@ output stay as described in [Hygiene Cleanup](../operations/hygiene-cleanup.md).
 
 ## Troubleshooting
 
+**`git worktree list` shows a `prunable` entry under `runs/`.** A run was
+killed with `SIGKILL`, so it could not remove its own checkout. The
+end-of-run sweep deleted the folder later, but the worktree record is still in
+the repository's `.git/worktrees/`. It does no harm. `amplihack cleanup` never
+prunes records, so remove it from the repository yourself:
+
+```bash
+git -C ~/src/myapp worktree prune --dry-run --verbose
+git -C ~/src/myapp worktree prune
+```
+
+Check the dry-run list first: `prune` also drops records of worktrees on a
+disk that is not mounted.
+
+**A run printed `runtime folder ... is still in use by a running process`.**
+A process started during the run still has its working folder, an open file
+or its `TMPDIR` in the run's runtime folder. Nothing needs to be done: a later
+sweep removes the folder once that process exits. To find processes that
+hold it, set `DIR` to the path from the message:
+
+```bash
+DIR="$HOME/.amplihack/work/r/<id>"   # the quoted path from the message
+for p in /proc/[0-9]*; do
+  { readlink "$p/cwd"; ls -l "$p/fd";
+    tr '\0' '\n' < "$p/environ" | grep -E '^(TMPDIR|TMP|TEMP)='; } 2>/dev/null \
+    | grep -qE "$DIR(/|$)" && echo "${p#/proc/} $(tr '\0' ' ' < "$p/cmdline")"
+done
+```
+
+The loop reads every process, so it can take a minute or more on a busy host.
+
+See [A runtime folder still in use is kept](#a-runtime-folder-still-in-use-is-kept).
+
+**A dry run fails with `inherited TMPDIR ... does not exist (or is not a
+directory)` or `is not an absolute directory`.** `recipe run --dry-run`
+creates its folder inside `TMPDIR`, and the `TMPDIR` it inherited is missing,
+is a file, or is a relative path. This happens most often in a shell that was
+started inside an earlier run, whose runtime folder has since been removed.
+The runner does not create the folder for you, because that path may belong
+to another run. Point `TMPDIR` at a folder that exists:
+
+```bash
+export TMPDIR=/tmp
+amplihack recipe run default-workflow --dry-run -c task_description="Check plan"
+```
+
 **`work root ... is writable by group or others`.** An existing
 `~/.amplihack/work` created with a permissive umask is refused. Fix it with:
 
@@ -1153,7 +1399,7 @@ output stay as described in [Hygiene Cleanup](../operations/hygiene-cleanup.md).
 chmod 700 ~/.amplihack/work
 ```
 
-Until then, runs fall back to a private temporary folder and print a warning.
+Until then, `amplihack recipe run` stops with this error before any step runs.
 
 **A worktree is always skipped with `not recorded in owned-paths`.** The
 worktree was created outside the bundled helpers, or by a release before this

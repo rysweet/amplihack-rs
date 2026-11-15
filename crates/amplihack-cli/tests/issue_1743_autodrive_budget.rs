@@ -50,6 +50,7 @@ set -u
 S="$STUB_STATE"
 case "${1:-} ${2:-}" in
   "recipe show") exit 0 ;;
+  "internal "*) exec "$REAL_AMPLIHACK" "$@" ;;
   "orch helper")
     case "${3:-}" in autodrive-completion-*) exec "$REAL_AMPLIHACK" "$@" ;; esac
     in="$(cat)"
@@ -101,10 +102,14 @@ for a in "$@"; do
     case "$a" in
       autodrive_round_record=*) record="${a#autodrive_round_record=}" ;;
       autodrive_round_label=*) label="${a#autodrive_round_label=}" ;;
+      repo_path=*) repo="${a#repo_path=}" ;;
     esac
   fi
   prev=$a
 done
+# The PR checkout is repo_path; since #2096 the round starts in the review
+# generation's trusted launch dir.
+[ -z "${repo:-}" ] || wd="$repo"
 printf '%s\n' "$label" >> "$S/round-calls"
 r="${label#round-}"
 line="$(sed -n "${r}p" "$S/plan")"; [ -n "$line" ] || line="$(tail -n 1 "$S/plan")"

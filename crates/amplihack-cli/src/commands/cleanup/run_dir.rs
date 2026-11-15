@@ -50,47 +50,272 @@ pub(crate) fn short_id(run_id: &str) -> String {
         .collect()
 }
 
-/// Removes a runtime folder when dropped, including during unwinding.
+/// What [`RuntimeGuard::remove`] did with the runtime folder. A removal that
+/// failed, or a folder whose identity changed, is an error instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimeRemoval {
+    /// The folder is gone (or was already gone).
+    Removed,
+    /// Another process still uses the folder, so it was left in place for a
+    /// later sweep (issue #2486).
+    KeptInUse,
+}
+
+/// Removes a runtime folder when dropped, including during unwinding, unless
+/// another process still uses it (issue #2486): a child that outlives the run
+/// and still has its working folder, an open file or TMPDIR/TMP/TEMP there
+/// keeps the folder, and the end-of-run sweep removes it once no process
+/// holds it.
 #[derive(Debug)]
 pub(crate) struct RuntimeGuard {
     path: Option<PathBuf>,
+    identity: (u64, u64),
+    /// The folder held open for the guard's life, so its inode cannot be
+    /// freed and handed to a folder made again at the same path: on ext4 a
+    /// freed inode number is reused at once, and `(dev, ino)` alone would
+    /// then match a replacement (issue #2096).
+    _anchor: fs::File,
+}
+
+/// Opens the folder at `path` itself, read-only, refusing a symbolic link or
+/// a non-folder at its last component, and returns the handle with the
+/// `(dev, ino)` of what it opened.
+fn open_anchor(path: &Path) -> Result<(fs::File, (u64, u64))> {
+    let anchor = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(path)
+        .with_context(|| format!("cannot open runtime folder {}", path.display()))?;
+    let meta = anchor
+        .metadata()
+        .with_context(|| format!("cannot inspect runtime folder {}", path.display()))?;
+    Ok((anchor, (meta.dev(), meta.ino())))
 }
 
 impl RuntimeGuard {
-    pub(crate) fn new(path: PathBuf) -> Self {
-        Self { path: Some(path) }
+    pub(crate) fn new(path: PathBuf) -> Result<Self> {
+        let metadata = fs::symlink_metadata(&path)?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            bail!("runtime resource is not a private directory");
+        }
+        let (anchor, identity) = open_anchor(&path)?;
+        if identity != (metadata.dev(), metadata.ino()) {
+            bail!(
+                "runtime folder {} changed while it was being opened",
+                path.display()
+            );
+        }
+        Ok(Self {
+            path: Some(path),
+            identity,
+            _anchor: anchor,
+        })
     }
 
     pub(crate) fn path(&self) -> &Path {
         self.path.as_deref().unwrap_or(Path::new(""))
     }
 
-    /// Removes the folder now and reports a failure as a warning.
-    pub(crate) fn remove(mut self) {
-        self.remove_inner();
+    /// Before an attempt (issue #2486): the folder is still this guard's, or
+    /// it is gone and is re-created privately and its identity re-stamped, so
+    /// a later release still removes it. Anything else at the path is
+    /// refused, so a substituted folder is never adopted (issue #2096).
+    fn ensure_present(&mut self) -> Result<()> {
+        let Some(path) = self.path.as_deref() else {
+            bail!("the runtime folder was already released");
+        };
+        match fs::symlink_metadata(path) {
+            Ok(meta) if meta.file_type().is_dir() && (meta.dev(), meta.ino()) == self.identity => {
+                Ok(())
+            }
+            Ok(_) => bail!("{path:?} is no longer this run's runtime folder"),
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                create_private_dir_all(path.parent().context("runtime parent")?)?;
+                fs::DirBuilder::new().mode(0o700).create(path)?;
+                let (anchor, identity) = open_anchor(path)?;
+                self._anchor = anchor;
+                self.identity = identity;
+                Ok(())
+            }
+            Err(error) => Err(error).context(format!("cannot inspect {path:?}")),
+        }
     }
 
-    fn remove_inner(&mut self) {
+    /// Removes the folder now, unless a process still uses it (issue
+    /// #2486). It is fallible and never deletes a substituted path (issue
+    /// #2096): a folder whose identity changed is refused and kept.
+    pub(crate) fn remove(mut self) -> Result<RuntimeRemoval> {
+        self.release()
+    }
+
+    fn release(&mut self) -> Result<RuntimeRemoval> {
         let Some(path) = self.path.take() else {
-            return;
+            return Ok(RuntimeRemoval::Removed);
         };
-        match fs::remove_dir_all(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Err(error) => {
-                tracing::warn!(path = %path.display(), %error, "could not remove the run's runtime folder");
-                eprintln!(
-                    "amplihack: warning: could not remove the run's runtime folder {}: {error}",
-                    path.display()
-                );
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                return Ok(RuntimeRemoval::Removed);
             }
+            Err(error) => return Err(error).context("inspect runtime ownership before release"),
+        };
+        if !metadata.is_dir() || (metadata.dev(), metadata.ino()) != self.identity {
+            bail!(
+                "runtime resource identity changed; replacement retained at {}",
+                path.display()
+            );
+        }
+        // One fresh scan: a child started by the last step may still run.
+        // Without `/proc` `found_user` is false and the folder is removed as
+        // before; the sweep still fails closed on its own scan.
+        if super::procs::ProcScan::take().found_user(&path) {
+            tracing::warn!(
+                path = ?path,
+                "runtime folder is still in use by a running process; leaving it in place"
+            );
+            eprintln!(
+                "amplihack: runtime folder {path:?} is still in use by a running process; \
+                 leaving it in place \u{2014} the end-of-run cleanup sweep will remove it later"
+            );
+            return Ok(RuntimeRemoval::KeptInUse);
+        }
+        // No process uses the folder: give the owner back access to folders
+        // a step left locked, so removal is not stopped by them.
+        let unchanged = restore_owner_access(&path, euid());
+        report_unchanged(&path, &unchanged);
+        match fs::remove_dir_all(&path) {
+            Ok(()) => Ok(RuntimeRemoval::Removed),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(RuntimeRemoval::Removed),
+            Err(error) => Err(error).context("release owned runtime directory"),
         }
     }
 }
 
 impl Drop for RuntimeGuard {
     fn drop(&mut self) {
-        self.remove_inner();
+        if let Err(error) = self.release() {
+            eprintln!("amplihack: runtime retained: {error:#}");
+        }
+    }
+}
+
+/// This process's effective uid (a copy of `sweep.rs`'s, so `run_dir` does
+/// not depend on the sweep).
+fn euid() -> u32 {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    unsafe { libc::geteuid() }
+}
+
+/// How many entries left unchanged are named on stderr; the rest are counted
+/// in one last line, so a step that leaves millions of them cannot flood it.
+const UNCHANGED_STDERR_LIMIT: usize = 20;
+
+/// Gives the owner back read, write and search access (`u+rwx`) on every
+/// folder under `root`, `root` included, that `uid` owns and that is on the
+/// same filesystem as `root`, so `remove_dir_all` is not stopped by a folder
+/// a step left at mode `000` or `0500` (issue #2486).
+///
+/// Only the owner's bits are added; no bit is removed, files are never
+/// chmodded (removing a file depends on its folder's mode), and symbolic links
+/// are neither followed nor chmodded. An entry owned by another uid, or on
+/// another filesystem, is neither changed nor entered: its path is returned
+/// so the caller can report it. Errors are logged and the walk goes on; this
+/// never panics, because it runs from `Drop`.
+fn restore_owner_access(root: &Path, uid: u32) -> Vec<PathBuf> {
+    let mut unchanged = Vec::new();
+    let root_dev = match fs::symlink_metadata(root) {
+        Ok(meta) => meta.dev(),
+        Err(error) if error.kind() == ErrorKind::NotFound => return unchanged,
+        Err(error) => {
+            tracing::warn!(path = ?root, %error, "cannot inspect the runtime folder before removing it");
+            return unchanged;
+        }
+    };
+    // An explicit stack, not recursion, so a deep tree cannot overflow it.
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        let meta = match fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => {
+                tracing::warn!(path = ?path, %error, "cannot inspect a runtime folder entry");
+                continue;
+            }
+        };
+        let file_type = meta.file_type();
+        if file_type.is_symlink() {
+            continue;
+        }
+        if meta.uid() != uid || meta.dev() != root_dev {
+            unchanged.push(path);
+            continue;
+        }
+        if !file_type.is_dir() {
+            continue;
+        }
+        let mode = meta.mode() & 0o7777;
+        if mode & 0o700 != 0o700 {
+            // The chmod goes by path straight after the lstat above, so an
+            // entry swapped for a symlink in between would be followed. The
+            // race is accepted: the runtime folder is private to this uid and
+            // no process uses it any more, so only this uid or root could
+            // make the swap. Linux has no working
+            // fchmodat(AT_SYMLINK_NOFOLLOW), an O_PATH fd cannot be
+            // fchmodded, and a 000 folder cannot be opened to fchmod it.
+            let wanted = fs::Permissions::from_mode(mode | 0o700);
+            if let Err(error) = fs::set_permissions(&path, wanted) {
+                tracing::warn!(path = ?path, %error, "cannot give the owner access to a runtime folder");
+                continue;
+            }
+        }
+        match fs::read_dir(&path) {
+            Ok(entries) => {
+                for entry in entries {
+                    match entry {
+                        Ok(entry) => stack.push(entry.path()),
+                        Err(error) => {
+                            tracing::warn!(path = ?path, %error, "cannot list a runtime folder");
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(path = ?path, %error, "cannot list a runtime folder");
+            }
+        }
+    }
+    unchanged
+}
+
+/// Reports the entries [`restore_owner_access`] left unchanged: every path at
+/// debug level, a count as a warning, and at most
+/// [`UNCHANGED_STDERR_LIMIT`] paths on stderr. Paths are shown quoted
+/// (`{:?}`), so a name holding a newline or control bytes cannot forge a log
+/// line. It never changes the run's result.
+fn report_unchanged(runtime: &Path, unchanged: &[PathBuf]) {
+    if unchanged.is_empty() {
+        return;
+    }
+    for path in unchanged {
+        tracing::debug!(path = ?path, "left permissions unchanged in the runtime folder");
+    }
+    tracing::warn!(
+        runtime = ?runtime,
+        count = unchanged.len(),
+        "runtime folder holds entries not owned by this user or on another filesystem; \
+         their permissions were left unchanged"
+    );
+    for path in unchanged.iter().take(UNCHANGED_STDERR_LIMIT) {
+        eprintln!(
+            "amplihack: warning: leaving permissions unchanged on {path:?} in the runtime \
+             folder: not owned by this user or on another filesystem"
+        );
+    }
+    if unchanged.len() > UNCHANGED_STDERR_LIMIT {
+        eprintln!(
+            "amplihack: warning: \u{2026} and {} more entries left unchanged",
+            unchanged.len() - UNCHANGED_STDERR_LIMIT
+        );
     }
 }
 
@@ -336,7 +561,9 @@ pub(crate) fn write_atomic_0600(path: &Path, bytes: &[u8]) -> Result<()> {
         let _ = fs::remove_file(&tmp);
         bail!("refusing to replace symbolic link {}", path.display());
     }
-    fs::rename(&tmp, path).with_context(|| format!("cannot replace {}", path.display()))
+    fs::rename(&tmp, path).with_context(|| format!("cannot replace {}", path.display()))?;
+    fs::File::open(path.parent().context("atomic write parent")?)?.sync_all()?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -375,6 +602,8 @@ pub(crate) struct RunReport {
     pub steps: Vec<StepStatus>,
     #[serde(default)]
     pub log_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_recording: Option<serde_json::Value>,
 }
 
 impl RunReport {
@@ -451,6 +680,7 @@ impl RunScope {
             attempts: Vec::new(),
             steps: Vec::new(),
             log_path: None,
+            git_recording: None,
         };
         let runtime_dir = runtime_dir_for(&work_root.path, &run_id);
         let scope = Self {
@@ -460,7 +690,9 @@ impl RunScope {
             report,
         };
         scope.write_report()?;
-        let guard = RuntimeGuard::new(runtime_dir.clone());
+        create_private_dir_all(runtime_dir.parent().context("runtime parent")?)?;
+        fs::DirBuilder::new().mode(0o700).create(&runtime_dir)?;
+        let guard = RuntimeGuard::new(runtime_dir.clone())?;
         create_private_dir_all(&runtime_dir.join("tmp"))?;
         create_private_dir_all(&runtime_dir.join("artifacts"))?;
         Ok((scope, guard))
@@ -470,33 +702,6 @@ impl RunScope {
         let mut bytes = serde_json::to_vec_pretty(&self.report)?;
         bytes.push(b'\n');
         write_atomic_0600(&self.run_dir.join(RUN_JSON), &bytes)
-    }
-
-    /// Records the correlation id of a new attempt; also refreshes the mtime
-    /// of `run.json`, which dates a killed run.
-    pub(crate) fn record_attempt(&mut self, correlation_id: &str) {
-        self.report.attempts.push(Attempt {
-            correlation_id: correlation_id.to_string(),
-        });
-        if let Err(error) = self.write_report() {
-            eprintln!("amplihack: warning: could not update the run report: {error:#}");
-        }
-    }
-
-    /// Finalises `run.json` with the end time, outcome and step summary.
-    pub(crate) fn finish(
-        &mut self,
-        outcome: Outcome,
-        steps: Vec<StepStatus>,
-        log_path: Option<String>,
-    ) {
-        self.report.ended_at = Some(now_rfc3339());
-        self.report.outcome = outcome.as_str().to_string();
-        self.report.steps = steps;
-        self.report.log_path = log_path;
-        if let Err(error) = self.write_report() {
-            eprintln!("amplihack: warning: could not finalise the run report: {error:#}");
-        }
     }
 }
 
@@ -515,6 +720,64 @@ pub(crate) enum RunWorkspace {
 }
 
 impl RunWorkspace {
+    /// Appends one attempt to `run.json` and rewrites it, propagating any
+    /// write error. A dry-run workspace (`dry_runtime`) has no run folder and
+    /// records nothing, so this is `Ok(())` for it. Real runs are always
+    /// `Scoped`: `begin_durable` never falls back to a temporary folder.
+    pub(crate) fn record_attempt_checked(&mut self, correlation_id: &str) -> Result<()> {
+        let Self::Scoped { scope, .. } = self else {
+            return Ok(());
+        };
+        scope.report.attempts.push(Attempt {
+            correlation_id: correlation_id.to_string(),
+        });
+        scope.write_report()
+    }
+    /// Production finalization propagates report publication failures.
+    pub(crate) fn finish_checked(
+        self,
+        outcome: Outcome,
+        steps: Vec<StepStatus>,
+        log_path: Option<String>,
+        sweep: bool,
+    ) -> Result<()> {
+        match self {
+            Self::Scoped { mut scope, guard } => {
+                let recording = scope.run_dir.join("git-recording.json");
+                match read_capped_nofollow(&recording, 4096) {
+                    Ok(bytes) => scope.report.git_recording = Some(serde_json::from_slice(&bytes)?),
+                    Err(error) if error.kind() == ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(error).context("read required recording finalization");
+                    }
+                }
+                let runtime = guard.remove();
+                scope.report.ended_at = Some(now_rfc3339());
+                scope.report.outcome = if runtime.is_err() {
+                    Outcome::Failure
+                } else {
+                    outcome
+                }
+                .as_str()
+                .to_string();
+                scope.report.steps = steps;
+                scope.report.log_path = log_path;
+                let report = scope.write_report();
+                match (runtime, report) {
+                    (Err(runtime), Err(report)) => {
+                        return Err(runtime).context(format!("run report also failed: {report:#}"));
+                    }
+                    (Err(error), _) | (_, Err(error)) => return Err(error),
+                    (Ok(_), Ok(())) => {}
+                }
+                if sweep && super::cleanup_on_exit_enabled() {
+                    super::sweep::end_of_run(&scope.work_root);
+                }
+                Ok(())
+            }
+            Self::Legacy { dir } => dir.close().context("release legacy recipe runtime"),
+        }
+    }
     /// Recovery never silently executes without durable admission.
     pub(crate) fn begin_durable(recipe: &str, cwd: &Path) -> Result<Self> {
         let root = super::work_root::resolve_from_env()?;
@@ -526,10 +789,30 @@ impl RunWorkspace {
         })
     }
     /// A dry run owns only temporary scratch space and never a run scope.
+    ///
+    /// The scratch space goes under the inherited TMPDIR, which must be an
+    /// existing absolute folder (issue #2486). It is never created here:
+    /// re-creating a missing inherited TMPDIR could bring back a folder of
+    /// another run that was already removed.
     pub(crate) fn dry_runtime() -> Result<Self> {
+        let base = std::env::temp_dir();
+        if !base.is_absolute() {
+            bail!(
+                "amplihack: inherited TMPDIR {base:?} is not an absolute directory; \
+                 refusing to start the run \u{2014} set TMPDIR to an existing directory"
+            );
+        }
+        match fs::metadata(&base) {
+            Ok(meta) if meta.is_dir() => {}
+            _ => bail!(
+                "amplihack: inherited TMPDIR {base:?} does not exist (or is not a directory); \
+                 refusing to start the run \u{2014} set TMPDIR to an existing directory"
+            ),
+        }
         let dir = tempfile::Builder::new()
             .prefix("amplihack-dry-")
-            .tempdir()?;
+            .tempdir_in(&base)
+            .with_context(|| format!("cannot create a dry-run folder under {base:?}"))?;
         create_private_dir_all(&dir.path().join("tmp"))?;
         create_private_dir_all(&dir.path().join("artifacts"))?;
         Ok(Self::Legacy { dir })
@@ -566,8 +849,65 @@ impl RunWorkspace {
         }
     }
 
-    /// The run folder `<work root>/runs/<id>/`; `None` for a dry run, which
-    /// has none (issue #2175: so it writes no process record either).
+    /// The work root of a durable run, or `None` for a dry run.
+    pub(crate) fn work_root_path(&self) -> Option<PathBuf> {
+        match self {
+            Self::Scoped { scope, .. } => Some(scope.work_root.path.clone()),
+            Self::Legacy { .. } => None,
+        }
+    }
+
+    /// Re-creates this run's own `<runtime>/tmp` and `<runtime>/artifacts`
+    /// before an attempt, at the same path every time (issue #2486), so a
+    /// step never starts with a TMPDIR that no longer exists. A real folder
+    /// is kept as it is; a symbolic link or a file there is refused, because
+    /// `create_private_dir_all` would follow a link.
+    /// A run's runtime folder itself must still be the one it was given, or
+    /// be missing (then it is re-created); a replaced folder is refused.
+    pub(crate) fn prepare_attempt(&mut self) -> Result<()> {
+        if let Self::Scoped { guard, .. } = self {
+            guard.ensure_present().map_err(|error| {
+                anyhow::anyhow!(
+                    "amplihack: this run's runtime folder cannot be used: {error:#}; \
+                     refusing to launch the step"
+                )
+            })?;
+        }
+        let runtime = self.runtime_dir();
+        for (name, label) in [("tmp", "TMPDIR"), ("artifacts", "artifacts folder")] {
+            let dir = runtime.join(name);
+            match fs::symlink_metadata(&dir) {
+                Ok(meta) if meta.file_type().is_dir() => {}
+                Ok(_) => bail!(
+                    "amplihack: this run's {} {:?} is a symbolic link or not a directory; \
+                     refusing to launch the step",
+                    label,
+                    dir
+                ),
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    if let Err(error) = create_private_dir_all(&dir) {
+                        bail!(
+                            "amplihack: cannot create this run's {} {:?}: {error:#}; \
+                             refusing to launch the step",
+                            label,
+                            dir
+                        );
+                    }
+                }
+                Err(error) => bail!(
+                    "amplihack: cannot check this run's {} {:?}: {error}; \
+                     refusing to launch the step",
+                    label,
+                    dir
+                ),
+            }
+        }
+        Ok(())
+    }
+
+    /// The durable run folder `<work root>/runs/<run id>/`; `None` for a dry
+    /// run, which has only a temporary folder (issue #2096) and so writes no
+    /// process record either (issue #2175).
     pub(crate) fn run_dir(&self) -> Option<&Path> {
         match self {
             Self::Scoped { scope, .. } => Some(&scope.run_dir),
@@ -614,37 +954,6 @@ impl RunWorkspace {
             vars.push(("AMPLIHACK_RUN_DIR", "".into()));
         }
         vars
-    }
-
-    pub(crate) fn record_attempt(&mut self, correlation_id: &str) {
-        if let Self::Scoped { scope, .. } = self {
-            scope.record_attempt(correlation_id);
-        }
-    }
-
-    /// Removes `runtime/`, finalises `run.json` and, when `sweep` is true and
-    /// `AMPLIHACK_CLEANUP_ON_EXIT` is not `0`, runs the end-of-run sweep.
-    pub(crate) fn finish(
-        self,
-        outcome: Outcome,
-        steps: Vec<StepStatus>,
-        log_path: Option<String>,
-        sweep: bool,
-    ) {
-        match self {
-            Self::Scoped { mut scope, guard } => {
-                guard.remove();
-                scope.finish(outcome, steps, log_path);
-                if sweep && super::cleanup_on_exit_enabled() {
-                    super::sweep::end_of_run(&scope.work_root);
-                }
-            }
-            Self::Legacy { dir } => {
-                if let Err(error) = dir.close() {
-                    eprintln!("amplihack: warning: could not remove the runtime folder: {error}");
-                }
-            }
-        }
     }
 }
 

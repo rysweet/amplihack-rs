@@ -3,7 +3,7 @@
 CTX_DIR="$(mktemp -d "$STATE_DIR/.completion-context.XXXXXX")" || return 2
 CTX_FILES=()
 completion_context() {
-  printf '%s' "$2" > "$CTX_DIR/$1" || return 2
+  ( umask 077 && set -C && printf '%s' "$2" > "$CTX_DIR/$1" ) || return 2
   CTX_FILES+=(--context-from-file "$1=$CTX_DIR/$1")
 }
 completion_context loop_history "$HISTORY" &&

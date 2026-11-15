@@ -13,6 +13,7 @@ recursion:
   max_depth: 6
   max_total_steps: 30
 context:
+  step_recovery_dir: ""
   repo_path: "."
   pr_number: ""
   pr_url: ""
@@ -50,6 +51,10 @@ steps:
     condition: "merge_loop_preflight.should_run == 'true'"
     type: "bash"
     command: |
+      # Issue #2539: with a recovery directory, a failure goes to the recovery
+      # agent (docs/reference/step-failure-recovery.md); without one, the body
+      # runs as before. The body is unchanged and runs with no shell splicing.
+      IFS= read -r -d '' STEP_BODY <<'STEP_RECOVERY_BODY' || :
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || true
       LOOP_HELPER="${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_loop.sh"
@@ -94,18 +99,17 @@ steps:
         export AMPLIHACK_HOME
       fi
 
-      # The review dir is the main checkout of the repository that holds the
-      # preflight's repo ($REPO, #1543): the PR head's worktree when a PR
-      # number was supplied, else repo_path. The read-only judging agents
-      # (review, merge-ready assessment, loop-health analyzer) start there,
-      # never in the PR worktree, so the branch under review does not supply
-      # their AGENTS.md, CLAUDE.md or .claude hooks; it is never `pwd`, which
-      # may be the PR worktree. The PR worktree is resolved from the same
-      # $REPO: the #1528 resolver refuses the main checkout and returns the
-      # PR's one linked worktree, where only each round's commit step works.
-      REVIEW_DIR="$(g review_dir)"
+      # The PR worktree is the preflight's repo ($REPO, #1543): the PR head's
+      # linked worktree, where only each round's commit step works. Rust then
+      # allocates a private review generation at that PR commit; reviewed
+      # instruction files remain data and judging starts from separate trusted
+      # launch material (#1528/#2096). The loop owns its generation, including
+      # nested re-reviews, and releases it on exit.
       PR_WORKTREE="$REPO"
-      [ -n "$REVIEW_DIR" ] && [ -n "$PR_WORKTREE" ] || { echo "ERROR: prepared PR worktree and review directory are required (#1528)" >&2; exit 1; }
+      [ -n "$PR_WORKTREE" ] || { echo "ERROR: prepared PR worktree is required (#1528)" >&2; exit 1; }
+      REVIEW_DIR="$(amplihack internal review-allocate "$PR_WORKTREE" "$DIR")" || exit 1
+      release_review_dir() { amplihack internal review-release "$REVIEW_DIR"; }
+      trap 'rc=$?; release_review_dir || rc=1; rm -f -- "${TASK_IN:-}"; exit "$rc"' EXIT
       bash "$LOOP_HELPER" --task-file "$TASK_IN" \
         --invocation "${RECIPE_VAR_autodrive_invocation_file:-}" \
         --loop-name "merge-ready" \
@@ -117,6 +121,7 @@ steps:
         --review-dir "$REVIEW_DIR" \
         --state-dir "$DIR" \
         --context "repo_path=$PR_WORKTREE" \
+        --context "step_recovery_dir=${RECIPE_VAR_step_recovery_dir:-}" \
         --context "pr_number=${PR}" \
         --context "plan_task_id=${RECIPE_VAR_plan_task_id:-}" \
         --context "pr_url=${PR_URL:-}" \
@@ -134,6 +139,12 @@ steps:
         exit 79
       fi
       exit "$RC"
+      STEP_RECOVERY_BODY
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-02-merge-ready-loop
+      exec amplihack orch helper step-recovery run --step-id step-02-merge-ready-loop --essential --stop-on-handoff \
+        --dir "$RECIPE_VAR_step_recovery_dir" \
+        --goal "Run the merge-ready loop to a merge-ready verdict for PR ${RECIPE_VAR_pr_number:-unknown}" \
+        -- bash -c "$STEP_BODY" step-02-merge-ready-loop
     output: "merge_loop_result"
   - id: "step-02b-file-followups"
     condition: "merge_loop_preflight.should_run == 'true'"
@@ -148,6 +159,8 @@ steps:
   - id: "step-03-finalize"
     type: "recipe"
     recipe: "autodrive-finalize"
+    # Issue #2539: a failed finalization goes to step-03r instead of ending the run.
+    continue_on_error: true
     context:
       repo_path: "{{merge_loop_preflight.repo}}"
       review_dir: "{{merge_loop_preflight.review_dir}}"
@@ -157,6 +170,32 @@ steps:
       no_merge: "{{no_merge}}"
       autodrive_dry_run: "{{autodrive_dry_run}}"
       build_result: "{{build_result}}"
+    output: "autodrive_finalization"
+  # Issue #2539: the runner drops a failed sub-recipe's output and status, so
+  # recovery starts with --already-failed; a retry runs the same finalization.
+  # `not autodrive_finalization` is true only after a failure: the runner sets
+  # a successful recipe step's output to its result summary, never empty, so
+  # a finalization that succeeded never runs again here.
+  - id: "step-03r-finalize-recovery"
+    type: "bash"
+    condition: "not autodrive_finalization"
+    command: |
+      IFS= read -r -d '' STEP_BODY <<'STEP_RECOVERY_BODY' || :
+      set -uo pipefail
+      g() { printf '%s' "${RECIPE_VAR_merge_loop_preflight:-}" | amplihack orch helper extract-json --require-field "$1" \
+              | amplihack orch helper extract-field --field "$1" --default ''; }
+      exec amplihack recipe run autodrive-finalize \
+        -c "repo_path=$(g repo)" -c "review_dir=$(g review_dir)" -c "pr_number=$(g pr)" \
+        -c "autodrive_state_dir=$(g state_dir)" -c "merge_loop_result=${RECIPE_VAR_merge_loop_result:-}" \
+        -c "no_merge=${RECIPE_VAR_no_merge:-true}" -c "autodrive_dry_run=${RECIPE_VAR_autodrive_dry_run:-false}" \
+        -c "build_result=${RECIPE_VAR_build_result:-}"
+      STEP_RECOVERY_BODY
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || { echo "ERROR: step-03-finalize failed and this run has no step_recovery_dir" >&2; exit 1; }
+      exec amplihack orch helper step-recovery run --already-failed --essential \
+        --step-id step-03-finalize \
+        --dir "$RECIPE_VAR_step_recovery_dir" \
+        --goal "Finalize PR ${RECIPE_VAR_pr_number:-unknown}: record readiness and perform only the authorized action" \
+        -- bash -c "$STEP_BODY" step-03-finalize
     output: "autodrive_finalization"
 output:
   format: "markdown"

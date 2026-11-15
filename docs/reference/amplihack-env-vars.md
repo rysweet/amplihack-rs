@@ -195,6 +195,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_RUNTIME_ROOT` | internal |  | Runtime root handed to recipe steps. |
 | `AMPLIHACK_RUN_DIR` | internal |  | Run folder `<work root>/runs/<run id>` handed to recipe steps. |
 | `AMPLIHACK_RUN_ID` | internal |  | Id of one `amplihack recipe run` invocation, handed to recipe steps; names the run folder. Differs from `AMPLIHACK_RECIPE_RUN_ID`, which is the id of the current attempt. |
+| `AMPLIHACK_RUN_GUIDANCE_DIRS` | internal |  | Guidance folders `recipe run` hands to its runner; the agent-step launcher adds their entries to each prompt. Removed by `--detach`, `agent-binary --shell` and test isolation. See [amplihack recipe guide](recipe-cli-reference.md#what-the-agent-receives). |
 | `AMPLIHACK_RUST_BINARY` | user preference |  | Binary for the Rust trial. |
 | `AMPLIHACK_RUST_RUNTIME` | internal |  | Marks a process launched by the Rust CLI. |
 | `AMPLIHACK_RUST_TRIAL_HOME` | user preference |  | Home for the Rust trial. |
