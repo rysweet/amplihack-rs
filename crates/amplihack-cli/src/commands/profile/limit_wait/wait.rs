@@ -5,9 +5,11 @@
 //! and the progress line (every 60 s), then sleeps at most one second.
 //! Another login's capacity ends a wait of any kind, not only a capacity
 //! wait (issue #2694): a step whose own reset is hours away still moves to
-//! a login with room as soon as one is seen. The login baseline is the first value two probes in a row agree
-//! on, and a change is a different value that two probes in a row agree on,
-//! so a torn or failed read of `.claude.json`, first or later, never ends the
+//! a login with room as soon as one is seen.
+//!
+//! The login baseline is the first value two probes in a row agree on, and
+//! a change is a different value that two probes in a row agree on, so a
+//! torn or failed read of `.claude.json`, first or later, never ends the
 //! wait.
 
 use super::events::{Event, line};
