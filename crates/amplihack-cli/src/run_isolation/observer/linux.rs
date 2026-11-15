@@ -22,8 +22,8 @@ use std::thread::JoinHandle;
 /// if the tracer follows forks the kernel refuses it and the record says
 /// "unavailable"; otherwise the child is untraced and is observed normally.
 /// A variable that is present in any form (empty, non-UTF-8, padded,
-/// signed, overflowing or naming another group) must still parse exactly
-/// and name the tracer's thread group, or the run stops here.
+/// negative, overflowing or naming another group) must still parse as a
+/// `u32` and name the tracer's thread group, or the run stops here.
 pub(crate) fn parent_observer() -> Result<Option<u32>> {
     let status = fs::read_to_string("/proc/self/status")?;
     let tracer: u32 = status
@@ -57,18 +57,13 @@ pub(crate) fn parent_observer() -> Result<Option<u32>> {
 #[derive(Debug)]
 pub(crate) struct ObserverNotEstablished {
     /// The error number of the refused spawn, taken from its `io::Error`.
-    pub(crate) errno: i32,
-    pub(crate) error: anyhow::Error,
+    errno: i32,
+    error: anyhow::Error,
 }
 
 impl ObserverNotEstablished {
     pub(crate) fn errno(&self) -> i32 {
         self.errno
-    }
-
-    /// Fixed names for the only numbers `traceme_refused` accepts.
-    pub(crate) fn errno_name(&self) -> &'static str {
-        errno_name(self.errno)
     }
 }
 
@@ -104,7 +99,7 @@ impl std::error::Error for ObserverNotEstablished {
 /// failure stays a plain error and fails closed.
 #[derive(Debug)]
 pub(crate) struct RunnerNotStarted {
-    pub(crate) error: anyhow::Error,
+    error: anyhow::Error,
 }
 
 impl std::fmt::Display for RunnerNotStarted {
@@ -183,16 +178,14 @@ impl Observer {
                         Some(errno) if traceme_refused(&error) => {
                             // The errno is the one this spawn returned; it is never
                             // read again or parsed from text.
-                            let mut refused = ObserverNotEstablished {
-                                errno,
-                                error: anyhow::Error::new(error),
-                            };
                             let context = format!(
                                 "required Linux observer unavailable: PTRACE_TRACEME refused (errno {errno}, {})",
-                                refused.errno_name()
+                                errno_name(errno)
                             );
-                            refused.error = refused.error.context(context);
-                            anyhow::Error::new(refused)
+                            anyhow::Error::new(ObserverNotEstablished {
+                                errno,
+                                error: anyhow::Error::new(error).context(context),
+                            })
                         }
                         _ => anyhow::Error::new(RunnerNotStarted {
                             error: anyhow::Error::new(error)
@@ -930,7 +923,7 @@ mod tests_not_established {
             .downcast_ref::<ObserverNotEstablished>()
             .expect("the marker is the outermost error");
         assert_eq!(marker.errno(), libc::EPERM);
-        assert_eq!(marker.errno_name(), "EPERM");
+        assert_eq!(errno_name(marker.errno()), "EPERM");
         assert!(
             error
                 .chain()
@@ -942,17 +935,10 @@ mod tests_not_established {
 
     #[test]
     fn errno_names_cover_only_the_refused_traceme_numbers() {
-        let named = |errno| {
-            ObserverNotEstablished {
-                errno,
-                error: anyhow::anyhow!("refused"),
-            }
-            .errno_name()
-        };
-        assert_eq!(named(libc::EPERM), "EPERM");
-        assert_eq!(named(libc::ENOSYS), "ENOSYS");
+        assert_eq!(errno_name(libc::EPERM), "EPERM");
+        assert_eq!(errno_name(libc::ENOSYS), "ENOSYS");
         // Unreachable through traceme_refused; never a guessed name.
-        assert_eq!(named(libc::ENOENT), "unexpected");
+        assert_eq!(errno_name(libc::ENOENT), "unexpected");
     }
 
     #[test]

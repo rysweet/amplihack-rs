@@ -246,12 +246,12 @@ impl GitRecord {
                 // refuses, the attempt still counts and `finish` fails
                 // closed; the spawn error is returned either way.
                 let released = match &*self.state.borrow() {
-                    State::Enabled { trace_dir, .. } => {
-                        self.release_unstarted_attempt(trace_dir, attempt_id)
-                    }
-                    _ => Err(anyhow::anyhow!("required Git recorder is unavailable")),
+                    State::Enabled { trace_dir, .. } => self
+                        .release_unstarted_attempt(trace_dir, attempt_id)
+                        .is_ok(),
+                    _ => false,
                 };
-                if released.is_ok() {
+                if released {
                     self.spawned.set(self.spawned.get() - 1);
                 }
             }
