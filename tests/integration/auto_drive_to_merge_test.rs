@@ -1682,7 +1682,12 @@ fn qa_evidence_measures_the_suite_and_runs_no_scenario() {
         "NO_SCENARIOS",
         "FOUND",
         "\"gadugi_scenario_dir_state\":\"%s\"",
-        "\"gadugi_scenario_results\":\"%s\"",
+        // The run-shaped fields stay in the record so a reader written
+        // against the earlier contract still parses, but nothing here runs
+        // a scenario, so they are structural literals rather than
+        // conversions fed from a measurement.
+        "\"gadugi_scenario_results\":\"\"",
+        "\"gadugi_scenarios_run\":\"0\"",
         "umask 077",
         "autodrive_trust.sh",
     ] {

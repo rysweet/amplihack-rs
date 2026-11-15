@@ -1037,11 +1037,14 @@ fn a_tools_directory_inside_the_worktree_under_review_is_not_a_trust_root() {
         "",
         "no guidance path is handed on, so no copy from the worktree can be followed: {out}"
     );
-    assert_ne!(
-        field(&out, "docs_only"),
-        "true",
-        "the decoy's own fields must reach nothing: {out}"
-    );
+    // The blocker record is built from the step's own literals and carries
+    // four fields, so none of the decoy's reaches a reader at all.
+    for key in ["docs_only", "qa_repo_type", "gadugi_status", "head_sha"] {
+        assert!(
+            out.get(key).is_none(),
+            "the decoy's own fields must reach nothing, and {key} did: {out}"
+        );
+    }
 
     // And the round carries on: the judgement reads the named blocker and
     // still records a judgement.
