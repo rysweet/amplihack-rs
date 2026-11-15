@@ -4,8 +4,11 @@
 //! runner's own classifier calls a usage limit, reruns it under the next
 //! eligible profile while auto-switch is on (#1569). When none is left, or
 //! auto-switch is off or no profile was inherited, the usage-limit wait may
-//! run the step once more in the inherited environment (#1618), or, after a
-//! capacity wait, on the login that showed capacity (#1801). Only the final
+//! run the step once more in the inherited environment (#1618), or on the
+//! login that showed capacity: after a capacity wait (#1801), and after a
+//! reset wait that ended early because a reading taken during it showed
+//! another login had room (#2694). A step pinned to a profile can therefore
+//! finish on a different account from the one it started on. Only the final
 //! attempt's stdout is printed.
 
 use super::candidate::{self, Pool};
