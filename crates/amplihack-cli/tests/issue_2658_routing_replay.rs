@@ -146,14 +146,11 @@ fn shipped_classify_route_bash_step_replays_after_a_usage_limit_relaunch() {
         "a persisted-input routing bash step must not become the restart point: {recovery:#}\n{}",
         describe(&second.output)
     );
-    let restored: Vec<&str> = recovery["restored_steps"]
+    let restored = recovery["restored_steps"]
         .as_array()
-        .unwrap_or_else(|| panic!("restored_steps: {recovery:#}"))
-        .iter()
-        .filter_map(|s| s.as_str().or_else(|| s["step_id"].as_str()))
-        .collect();
+        .unwrap_or_else(|| panic!("restored_steps: {recovery:#}"));
     assert!(
-        restored.contains(&BASH_STEP),
+        restored.iter().any(|s| s["step_id"] == BASH_STEP),
         "{BASH_STEP} must be restored, not rerun: {recovery:#}"
     );
     assert_eq!(

@@ -98,6 +98,9 @@ pub(super) fn normalize(context: &mut BTreeMap<String, String>, repo: &Path) {
         return;
     };
     context.insert("issue_number".into(), issue.to_string());
+    // A failed `get-url` is treated like a missing or non-GitHub origin, as
+    // `issue()` does. `work_repository` has already run git in this
+    // repository, so in practice the failure is a missing `origin`.
     let repository = git(&repo, &["remote", "get-url", "origin"])
         .ok()
         .and_then(|remote| String::from_utf8(remote).ok())
