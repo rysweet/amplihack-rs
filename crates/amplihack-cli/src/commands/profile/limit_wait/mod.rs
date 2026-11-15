@@ -223,10 +223,18 @@ impl Waiter {
 
     /// After attempt `n` hit its usage limit and no auto-switch rerun is
     /// left: pass the result up, or wait once and ask for a retry. `inherited`
-    /// is the inherited profile's own limit: the retry runs under that
-    /// profile, so other profiles' limits do not time or cancel the wait.
-    /// `probe(start, now)`, both on the wait's clock, ends a capacity wait:
-    /// a reading taken after `start` shows another login has capacity.
+    /// is the inherited profile's own limit, and it times the wait: other
+    /// profiles' limits neither lengthen nor cancel it.
+    ///
+    /// `probe(start, now)`, both on the wait's clock, ends a wait of any
+    /// kind, reset as well as capacity: a reading taken after `start` shows
+    /// that another login has room (#2694). The retry then runs under that
+    /// login, so a step pinned to a profile may change account part way
+    /// through a run; auto-switch off, or the other profiles in the
+    /// auto-switch exclude list, holds it on its own login. Whether the step
+    /// may move at all is `probe`'s own decision and belongs nowhere else:
+    /// it is false for a step with no auto-switch candidate, which is how a
+    /// step on `$HOME/.claude` or under an explicit login stays put.
     pub(crate) fn after_limit(
         &mut self,
         inherited: WaitFor,
@@ -288,9 +296,12 @@ impl Waiter {
         ledger::record(waited_from.elapsed());
         // A wait of any kind that ended because another login has room
         // retries under that login (#2694). `now` is the wait's own start
-        // on this clock: a later instant would make every reading taken
-        // during the wait look stale and silently keep the exhausted
-        // profile.
+        // on this clock, and it is both halves of the freshness bound that
+        // decides which readings may move a step onto another account, not
+        // a tuning parameter: a later instant would make every reading
+        // taken during the wait look stale, so the step would silently
+        // retry on the exhausted profile, and an earlier one would admit
+        // readings taken before the limit was hit.
         if end == End::OtherCapacity {
             self.retry_start = Some(now);
         }
