@@ -222,7 +222,7 @@ consistent default branch regardless of the host git version.
 Auto-init is enabled by default, so repo-creation tasks need no extra flags:
 
 ```sh
-amplihack recipe run amplifier-bundle/recipes/smart-orchestrator.yaml \
+amplihack recipe run smart-orchestrator \
   -c task_description="scaffold a new Rust CLI project" \
   -c repo_path="./my-new-project"
 ```
@@ -231,7 +231,7 @@ To disable auto-init and restore the pre-#900 hard-fail (fail-closed for
 locked-down or CI contexts that must never create a repository):
 
 ```sh
-amplihack recipe run amplifier-bundle/recipes/smart-orchestrator.yaml \
+amplihack recipe run smart-orchestrator \
   -c task_description="refactor auth module" \
   -c repo_path="." \
   -c auto_init_repo="false"

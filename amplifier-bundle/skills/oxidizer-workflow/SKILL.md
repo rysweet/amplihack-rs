@@ -44,7 +44,7 @@ is achieved, with quality audit and silent degradation checks on every iteration
 ### Via Recipe Runner
 
 ```bash
-amplihack recipe run amplifier-bundle/recipes/oxidizer-workflow.yaml \
+amplihack recipe run oxidizer-workflow \
   -c python_package_path=src/mypackage \
   -c rust_target_path=rust/mypackage \
   -c rust_repo_name=my-rust-package \

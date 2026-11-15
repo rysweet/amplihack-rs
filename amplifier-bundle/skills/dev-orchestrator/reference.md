@@ -111,7 +111,7 @@ recipe directly based on your classification:
 Example:
 
 ```bash
-amplihack recipe run amplifier-bundle/recipes/investigation-workflow.yaml \
+amplihack recipe run investigation-workflow \
   -c task_description="TASK_DESCRIPTION_HERE" \
   -c repo_path="."
 ```
@@ -188,7 +188,7 @@ Example:
 # ANNOUNCE the strategy change first — never do this silently
 echo "[ADAPTIVE] smart-orchestrator failed at parse-decomposition: <error>"
 echo "[ADAPTIVE] Switching to direct investigation-workflow invocation"
-amplihack recipe run amplifier-bundle/recipes/investigation-workflow.yaml \
+amplihack recipe run investigation-workflow \
   -c task_description="TASK_DESCRIPTION_HERE" \
   -c repo_path="."
 ```

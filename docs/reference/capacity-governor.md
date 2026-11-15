@@ -76,7 +76,7 @@ Workstreams:
 Start a recipe that may wait up to 30 minutes for capacity:
 
 ```sh
-amplihack recipe run amplifier-bundle/recipes/default-workflow.yaml \
+amplihack recipe run default-workflow \
   --governor-wait 30m -c task_description="Fix issue #1811"
 ```
 
