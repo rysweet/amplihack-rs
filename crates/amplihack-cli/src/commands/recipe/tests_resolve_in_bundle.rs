@@ -451,3 +451,327 @@ fn a_release_link_install_accepts_paths_through_the_link_and_the_target() {
         assert_eq!(origin, RecipeOrigin::Bundle, "{}", file.display());
     }
 }
+
+// ------------------------------- B3: a path into the run's own bundle copy
+//
+// Contract (docs/reference/recipe-run-bundle.md, "Resolving the recipe
+// argument", fourth outcome): when a run inherited an outer run's snapshot,
+// a canonical path under `<accepted AMPLIHACK_HOME>/amplifier-bundle/recipes`
+// resolves to `RecipeOrigin::Bundle` rather than E14. The accepted home is
+// the one the marker check already validated: the snapshot itself when
+// `AMPLIHACK_HOME` names it, or auto-drive's invocation copy when the
+// snapshot is what that copy was made from.
+//
+// `autodrive_loop.sh` starts the crusty, merge, health-evaluator and
+// hook-repair rounds by `<copy>/amplifier-bundle/recipes/<round>.yaml`, so
+// without this a nested round cannot start at all. The origin is `Bundle`,
+// not `File`, so the round's sub-recipes, agents and tools keep coming from
+// the one snapshot.
+//
+// The acceptance is bounded: only for an inherited selection, only under
+// that home's `recipes/`, and only when the copy passes the directory
+// checks. Everything else stays E14.
+
+/// A key-shaped snapshot name, as `store::is_key` requires.
+const SNAPSHOT_KEY: &str = "0123456789abcdef01234567";
+
+/// Writes `<recipes>/<name>.yaml` with an explicit mode.
+fn put_recipe(recipes: &Path, name: &str) -> PathBuf {
+    let path = recipes.join(format!("{name}.yaml"));
+    fs::write(&path, format!("name: {name}\nsteps: []\n")).unwrap();
+    set_mode(&path, 0o644);
+    path
+}
+
+/// An outer run's snapshot and the auto-drive invocation copy made from it,
+/// plus an installed home and a checkout that are neither.
+struct Nested {
+    _tmp: tempfile::TempDir,
+    root: PathBuf,
+    work: PathBuf,
+    /// `<work>/bundle-pins/<key>`, the marker.
+    snapshot: PathBuf,
+    /// The launch copy whose `bundle-source` names the snapshot.
+    copy: PathBuf,
+    installed: PathBuf,
+    checkout: PathBuf,
+}
+
+fn nested() -> Nested {
+    let tmp = crate::test_support::tempdir_outside_framework_roots();
+    let root = fs::canonicalize(tmp.path()).unwrap();
+
+    let work = root.join("work");
+    fs::create_dir_all(&work).unwrap();
+    set_mode(&work, 0o700);
+    let pins = work.join("bundle-pins");
+    fs::create_dir_all(&pins).unwrap();
+    set_mode(&pins, 0o700);
+
+    let snapshot = pins.join(SNAPSHOT_KEY);
+    fs::create_dir(&snapshot).unwrap();
+    let snapshot_recipes = write_bundle(&snapshot, "snapshot");
+    put_recipe(&snapshot_recipes, "autodrive-2528-round");
+    set_mode(&snapshot, 0o755);
+    fs::write(
+        snapshot.join("pin.json"),
+        format!(
+            "{{\"source\":\"{}\",\"version\":\"unknown\",\"choice\":\"checkout\",\
+             \"inherited\":false}}\n",
+            root.join("checkout/amplifier-bundle").display()
+        ),
+    )
+    .unwrap();
+    set_mode(&snapshot.join("pin.json"), 0o444);
+
+    // `LaunchBundle::prepare`'s copy: a private folder holding its own
+    // `amplifier-bundle` and a `bundle-source` naming the snapshot.
+    let copy = root.join("autodrive-invocation-2528");
+    fs::create_dir_all(&copy).unwrap();
+    let copy_recipes = write_bundle(&copy, "launch-copy");
+    put_recipe(&copy_recipes, "autodrive-2528-round");
+    fs::create_dir_all(copy.join("amplifier-bundle/tools")).unwrap();
+    set_mode(&copy.join("amplifier-bundle/tools"), 0o755);
+    fs::write(
+        copy.join("bundle-source"),
+        fs::canonicalize(&snapshot).unwrap().to_str().unwrap(),
+    )
+    .unwrap();
+    set_mode(&copy.join("bundle-source"), 0o644);
+    set_mode(&copy, 0o700);
+
+    let installed = root.join("installed");
+    write_bundle(&installed, "installed");
+    let checkout = root.join("checkout");
+    fs::create_dir_all(checkout.join(".git")).unwrap();
+    write_bundle(&checkout, "checkout");
+
+    Nested {
+        _tmp: tmp,
+        root,
+        work,
+        snapshot,
+        copy,
+        installed,
+        checkout,
+    }
+}
+
+/// The selection of a run nested in the run that pinned the snapshot, with
+/// `AMPLIHACK_HOME` at `home` (the copy, or the snapshot itself). `choice`
+/// is what the nested run asked for, and matters only when the marker is
+/// refused and the run has to select a bundle of its own.
+fn try_nested_selection(
+    n: &Nested,
+    home: &Path,
+    choice: Option<BundleChoice>,
+) -> anyhow::Result<Selection> {
+    select_from(SelectInputs {
+        choice,
+        working_dir: &n.checkout,
+        amplihack_home: Some(home.as_os_str()),
+        configured_home: Some(&n.installed),
+        user_home: None,
+        run_bundle: Some(n.snapshot.as_os_str()),
+        run_bundle_choice: Some(std::ffi::OsStr::new("checkout")),
+        work_root: Some(&n.work),
+    })
+}
+
+fn nested_selection(n: &Nested, home: &Path) -> Selection {
+    try_nested_selection(n, home, None).unwrap()
+}
+
+#[test]
+fn a_round_started_by_a_path_into_the_launch_copy_runs_from_the_pinned_bundle() {
+    let n = nested();
+    let s = nested_selection(&n, &n.copy);
+    assert!(
+        s.inherited(),
+        "the nested run reuses the outer snapshot: {:?}",
+        s.notes()
+    );
+    // The path `autodrive_loop.sh` builds for each round.
+    let round = n
+        .copy
+        .join("amplifier-bundle/recipes/autodrive-2528-round.yaml");
+    let (path, origin) = resolve_recipe_in_bundle(arg(&round), &s, &n.checkout)
+        .unwrap_or_else(|e| panic!("a round in the run's own bundle copy must run: {e:#}"));
+    assert_eq!(path, fs::canonicalize(&round).unwrap());
+    assert_eq!(
+        origin,
+        RecipeOrigin::Bundle,
+        "the round's sub-recipes, agents and tools come from the one snapshot"
+    );
+}
+
+#[test]
+fn a_path_into_the_snapshot_home_itself_runs_from_the_pinned_bundle() {
+    let n = nested();
+    // A nested run whose AMPLIHACK_HOME is the snapshot, not a launch copy.
+    let s = nested_selection(&n, &n.snapshot);
+    assert!(s.inherited(), "{:?}", s.notes());
+    let round = n
+        .snapshot
+        .join("amplifier-bundle/recipes/autodrive-2528-round.yaml");
+    let (path, origin) = resolve_recipe_in_bundle(arg(&round), &s, &n.checkout).unwrap();
+    assert_eq!(path, fs::canonicalize(&round).unwrap());
+    assert_eq!(origin, RecipeOrigin::Bundle);
+}
+
+#[test]
+fn a_nested_run_still_refuses_a_path_into_an_unrelated_bundle() {
+    let n = nested();
+    let s = nested_selection(&n, &n.copy);
+    // The checkout's own bundle, and a third bundle that is in no checkout.
+    let elsewhere = n.root.join("elsewhere");
+    write_bundle(&elsewhere, "elsewhere");
+    for other in [&n.checkout, &n.installed, &elsewhere] {
+        let file = other.join("amplifier-bundle/recipes/probe.yaml");
+        let text = err(arg(&file), &s, &n.checkout);
+        assert!(
+            text.contains(&format!(
+                "recipe {} belongs to the bundle at {}, not to this run's",
+                fs::canonicalize(&file).unwrap().display(),
+                other.join("amplifier-bundle").display()
+            )),
+            "{}: {text}",
+            other.display()
+        );
+    }
+}
+
+#[test]
+fn a_dot_dot_path_out_of_the_launch_copy_is_still_refused() {
+    let n = nested();
+    let s = nested_selection(&n, &n.copy);
+    // Starts in the copy's recipes/, then climbs into the checkout's bundle.
+    let sneaky = n
+        .copy
+        .join("amplifier-bundle/recipes/../../../checkout/amplifier-bundle/recipes/probe.yaml");
+    let text = err(arg(&sneaky), &s, &n.checkout);
+    assert!(
+        text.contains(&format!(
+            "belongs to the bundle at {}",
+            n.checkout.join("amplifier-bundle").display()
+        )),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_symlink_out_of_the_launch_copy_is_classified_by_its_target() {
+    let n = nested();
+    let s = nested_selection(&n, &n.copy);
+    let link = n.copy.join("amplifier-bundle/recipes/borrowed.yaml");
+    symlink(
+        n.checkout.join("amplifier-bundle/recipes/probe.yaml"),
+        &link,
+    )
+    .unwrap();
+    let text = err(arg(&link), &s, &n.checkout);
+    assert!(
+        text.contains(&format!(
+            "belongs to the bundle at {}",
+            n.checkout.join("amplifier-bundle").display()
+        )),
+        "a link out of the copy is judged by its canonical target: {text}"
+    );
+}
+
+#[test]
+fn a_group_writable_launch_copy_bundle_is_not_inherited_and_its_recipes_are_refused() {
+    let n = nested();
+    // The copy's own folder stays private; its bundle directory does not.
+    // That directory is now read for recipes, so it is checked too.
+    set_mode(&n.copy.join("amplifier-bundle"), 0o775);
+    let round = n
+        .copy
+        .join("amplifier-bundle/recipes/autodrive-2528-round.yaml");
+
+    // With no choice of its own the run falls back to AMPLIHACK_HOME, which
+    // is that same copy, and pinning refuses it by name. So the copy cannot
+    // become this run's bundle either, by the marker or by selection.
+    let error = format!(
+        "{:#}",
+        try_nested_selection(&n, &n.copy, None)
+            .expect_err("a group writable bundle cannot be pinned")
+    );
+    assert!(
+        error.contains("mode 0775 (group or other writable)")
+            && error.contains(&n.copy.join("amplifier-bundle").display().to_string()),
+        "{error}"
+    );
+
+    // Given a bundle it can select, the run starts, but it inherited
+    // nothing, so a path into the copy is another bundle as before.
+    let s = try_nested_selection(&n, &n.copy, Some(BundleChoice::Checkout)).unwrap();
+    assert!(
+        !s.inherited(),
+        "a copy whose bundle directory is group writable does not vouch for \
+         the marker: {:?}",
+        s.notes()
+    );
+    assert!(
+        !s.notes().is_empty(),
+        "the run says why it ignored the marker"
+    );
+    let text = err(arg(&round), &s, &n.checkout);
+    assert!(
+        text.contains("belongs to the bundle at"),
+        "an unchecked copy gets no acceptance: {text}"
+    );
+}
+
+#[test]
+fn paths_outside_the_copys_recipes_dir_are_not_bundle_recipes() {
+    let n = nested();
+    let s = nested_selection(&n, &n.copy);
+    let bundle = n.copy.join("amplifier-bundle");
+    for rel in ["recipes-old/x.yaml", "tools/x.yaml"] {
+        let file = bundle.join(rel);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        set_mode(file.parent().unwrap(), 0o755);
+        fs::write(&file, "name: x\nsteps: []\n").unwrap();
+        set_mode(&file, 0o644);
+        let (path, origin) = resolve_recipe_in_bundle(arg(&file), &s, &n.checkout)
+            .unwrap_or_else(|e| panic!("{rel}: {e:#}"));
+        assert_eq!(path, file, "{rel}");
+        assert_eq!(
+            origin,
+            RecipeOrigin::File(file.clone()),
+            "{rel}: only recipes/ is the bundle's recipe directory"
+        );
+    }
+}
+
+#[test]
+fn a_top_level_run_gains_no_acceptance_for_its_amplihack_home_bundle() {
+    let n = nested();
+    // The same launch copy, but this run inherited nothing: it selected the
+    // checkout's bundle itself. A path into AMPLIHACK_HOME's bundle is then
+    // another bundle, exactly as before.
+    let s = select_from(SelectInputs {
+        choice: Some(BundleChoice::Checkout),
+        working_dir: &n.checkout,
+        amplihack_home: Some(n.copy.as_os_str()),
+        configured_home: None,
+        user_home: None,
+        run_bundle: None,
+        run_bundle_choice: None,
+        work_root: None,
+    })
+    .unwrap();
+    assert!(!s.inherited());
+    let round = n
+        .copy
+        .join("amplifier-bundle/recipes/autodrive-2528-round.yaml");
+    let text = err(arg(&round), &s, &n.checkout);
+    assert!(
+        text.contains(&format!(
+            "belongs to the bundle at {}",
+            n.copy.join("amplifier-bundle").display()
+        )),
+        "{text}"
+    );
+}
