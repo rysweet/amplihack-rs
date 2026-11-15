@@ -2,7 +2,7 @@
 title: Recipe Runner Logging Reference
 description: Progress output, correlation, and the required Git command record.
 doc_type: reference
-last_updated: 2026-11-14
+last_updated: 2026-11-15
 ---
 
 # Recipe Runner Logging Reference
@@ -425,6 +425,35 @@ failing before any step runs, amplihack then:
    single fallback chosen by what happened, not a retry: if the runner itself
    cannot start, the run fails with that error.
 
+The rule in step 1 is the whole of the decision: downgrade to `unavailable`
+when the kernel declined `PTRACE_TRACEME` for this attempt and nothing was
+recorded, by the three measures named there; otherwise fail and keep the
+files. Whether the record is still marked required is not a further condition
+on it. A Linux run that got as far as starting the runner has recording set up
+and marked required, the only thing that clears the mark is this downgrade,
+and the downgrade sets `unavailable` on the same step, so asking whether the
+mark is still set only asks whether the step has already run. A record that was
+never set up cannot reach this path at all. Reaching it with recording in use,
+or in any state but enabled, is a programming error at the call site and fails
+like any other refusal, without changing the record.
+
+Three things are checked before anything changes, in this order: that no
+other borrow of the record is in progress, that the record is enabled, and
+that the attempt recorded nothing. The first two are call-site conditions and
+say so when they fail. The third is the decision above, and it is the only one
+that deletes anything. Only when all three hold does the record become
+`unavailable`, the required mark clear and the notice print, in that order, so
+a refusal at any point leaves the record and the files exactly as they were.
+
+The state check also answers a second downgrade of the same record. The first
+call leaves the record `unavailable` rather than enabled, so a second fails
+with `Git recording is not observing this run; the observer failure stands`,
+prints no notice and removes no journal. Covered by
+`downgrade_rests_on_what_was_recorded_not_on_the_required_flag`,
+`downgrade_still_refuses_a_journal_with_content_on_an_unrequired_record` and
+`a_second_downgrade_of_one_record_is_refused_and_deletes_nothing` in
+`crates/amplihack-cli/src/commands/recipe/run/tests_git_record.rs`.
+
 At the end of the run, `git-recording.json` holds:
 
 ```json
@@ -464,6 +493,16 @@ follow forks leaves the runner untraced, so its `PTRACE_TRACEME` succeeds and
 the run is observed normally. Neither case can produce `established` for a run
 whose commands were not all seen.
 
+The second row is covered end to end by
+`crates/amplihack-cli/tests/issue_2677_nested_unobserved.rs`, which starts an
+observed run, starts a second `amplihack recipe run` from one of its steps
+with `AMPLIHACK_OBSERVER_PID` removed, and asserts that the nested run's step
+runs, that it exits zero, and that its `git-recording.json` says
+`coverage: "unavailable"`. It also asserts that the refusal it observes is
+`errno 1` (`EPERM`). That assertion holds only on a host where the outer run
+could be observed at all, which needs Yama `ptrace_scope` at `0` or `1`; the
+test says so when the outer run turns out to be unobserved.
+
 Removing the variable does not turn recording off. Outside an observed step
 it has no effect, because a run with no tracer is observed normally. Inside an
 observed step it changes only the nested run's own record: the outer observer
@@ -483,6 +522,8 @@ Every other recording failure still fails the run, as before:
 | Case | Result |
 | --- | --- |
 | The observer attached, but its receipt is missing | `required observer did not finalize; partial evidence retained: ...` |
+| The tracing thread panicked before it reported the runner spawn, so its sender is dropped | The thread is joined before anything else is decided, and that join reports the panic, so the run fails with `required observer panicked before runner handoff`. The attempt is not marked as one that never started, because the thread may have spawned the runner before it died, so the journal is kept and the run fails closed on it. |
+| The sender is dropped without a panic | The join succeeds and the run fails with `required observer exited before runner handoff`. The thread sends on every path except a panic, so nothing is expected to reach this case; the arm exists so that a dropped sender can never be read as a successful handoff. The journal is kept for the same reason as the row above. |
 | The journal is not empty, or `git-trace2/` holds a receipt or any other entry | The downgrade is refused; the files are kept; the run fails. |
 | An earlier attempt of this run was observed | The downgrade is refused; the run fails. |
 | A receipt from another attempt, an oversized journal or line | The run fails. |
@@ -495,6 +536,95 @@ failure and its error number first. An attempt that never started leaves
 nothing to check, so its empty journal is removed and no missing-receipt error
 follows. If that attempt's journal has content, or `git-trace2/` holds any
 other entry, the files are kept and the run also reports the missing receipt.
+
+What follows concerns the path where the tracing thread reported a failed
+spawn. A thread that died before reporting anything is a different path, and
+it reports a different message. The thread is joined first on that path, so a
+thread that really panicked is named by the join: the run fails with
+`required observer panicked before runner handoff`. The text `required
+observer exited before runner handoff` is reached only when that join
+succeeds, which means the sender was dropped without a panic; since the thread
+sends on every path except a panic, nothing is expected to reach it. An
+operator looking for a dead observer in a run log should search for the panic
+phrase, not the exit phrase. Neither error is marked as an attempt that never
+started, because a thread can panic after spawning the runner, so the journal
+is kept and the run fails closed on it.
+
+On the reported-spawn path, nothing displaces the spawn error as the reported
+cause:
+
+- When the empty journal cannot be released, the attempt still counts, so the
+  run also reports the missing receipt at the end, and the reason the release
+  was refused is printed to stderr when it happens:
+
+  ```text
+  amplihack: warning: could not release the unstarted attempt's recorder storage: recorder storage holds other entries; partial evidence retained
+  ```
+
+  The line is that fixed prefix followed by the refusal and its causes. Like
+  the unavailable notice, it carries only fixed text and, where the refusal
+  came from the operating system, that error's own message. No path, command
+  line or environment value is put into it, so a run log holding it can be
+  quoted in an issue unread. Any message later added to this path has to keep
+  that property. Both warnings described here are built, not printed, by a
+  named function that takes the failure and returns the finished line as a
+  `String`; the caller prints what it returns. That is a requirement rather
+  than a style preference, because it is what makes the constraint checkable:
+  the assertion runs against the returned line, with no stderr to capture and
+  no process to drive. A line assembled inside an `eprintln!` at the point of
+  failure would read the same and leave nothing to assert against.
+  `a_refused_release_warning_carries_its_fixed_prefix_and_no_path`
+  checks that the line starts with the prefix above and holds neither the run
+  directory nor the journal path. What the refusal leaves behind is covered
+  separately, by
+  `a_refused_release_keeps_the_attempt_and_still_reports_the_spawn_error`,
+  which asserts that the other attempt's journal survives, that the attempt is
+  still counted and that the spawn error is what the caller gets.
+- When the tracing thread also fails to join, nothing is wrapped around the
+  spawn error at all. The join failure is reported the same way as the refusal
+  above, as a warning on stderr, and the spawn error is returned unchanged:
+
+  ```text
+  amplihack: warning: the observer thread did not exit cleanly after the runner failed to start: required observer panicked before runner handoff
+  ```
+
+  That line is subject to the same path-free constraint as the one above and
+  is built the same way;
+  `a_join_failure_warning_carries_its_fixed_prefix_and_no_path` asserts its
+  prefix and the absence of any path. The spawn error itself is untouched, so
+  `failed to spawn recipe-runner-rs` is the first line of its chain, the
+  spawning error number is its root cause,
+  and it keeps the type that marks an attempt which never started. All three
+  hold on every path, not only when the join happens to succeed, which is what
+  lets the run release the empty journal and report the spawn as the single
+  cause.
+
+  Attaching the join failure as further context would not do: `anyhow`
+  prepends context, so the attached text, not the spawn phrase, would become
+  the first line of the chain, and the type test that releases the journal
+  would be the only thing still holding. The test
+  `a_runner_that_cannot_start_reports_its_own_error_first` asserts the first
+  line, the root cause's error number, and that the chain names no tracing or
+  ptrace machinery and no missing receipt; keeping the join failure off the
+  chain is what makes those assertions hold regardless of what the thread
+  did. Both join outcomes are covered in the observer module itself, by
+  `a_failed_join_never_displaces_the_spawn_error` and
+  `a_successful_join_leaves_the_spawn_error_alone` in
+  `crates/amplihack-cli/src/run_isolation/observer/linux.rs`: neither outcome
+  reaches the error the caller gets. That the thread is joined at all is
+  carried by the rule's signature, not by those tests, which are handed a
+  finished result and so cannot show it:
+  `spawn_error_outranks_join_failure(spawn: anyhow::Error, join: Result<()>)`
+  takes the join's outcome by value, so no call site reaches the rule without
+  having waited for the thread first.
+
+The ordering matters because the two causes read very differently. A spawn
+error names the file that is missing or unreadable. A missing receipt says
+only that an observer that was asked for did not finish, and reads the same
+whatever caused it, so it makes a poor first line whenever a more specific
+cause is in hand. Both can appear at once when a run's own files change
+underneath it, as happens when an installation is replaced while a run is
+going (issue #2677).
 
 The kind of failure is decided by its error number alone. An `EPERM` from
 executing the runner, as a security module can return, looks the same as a

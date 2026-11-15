@@ -231,9 +231,13 @@ impl Observer {
             Ok(Ok(child)) => child,
             Ok(Err(error)) => {
                 // The thread returns right after reporting a failed spawn.
-                // Joined first, so nothing still holds the journal open.
-                join_tracing_thread(thread)?;
-                return Err(error);
+                // Joined first, so nothing still holds the journal open. A
+                // join that fails is reported, never returned: this attempt's
+                // own cause is what the run must name.
+                return Err(spawn_error_outranks_join_failure(
+                    error,
+                    join_tracing_thread(thread),
+                ));
             }
             Err(_) => {
                 // The thread sends on every path except a panic, so a
@@ -364,6 +368,32 @@ fn join_tracing_thread(thread: JoinHandle<()>) -> Result<()> {
     thread
         .join()
         .map_err(|_| anyhow::anyhow!("required observer panicked before runner handoff"))
+}
+
+/// Builds the line reporting a tracing thread that did not exit cleanly after
+/// the runner failed to start. Fixed text plus the join's own chain: no path,
+/// command line or environment value reaches it, and it carries neither the
+/// spawn context nor the word `nested`, so it is never mistaken for the cause
+/// the caller returns.
+fn join_failure_warning(failure: &anyhow::Error) -> String {
+    format!(
+        "amplihack: warning: the observer thread did not exit cleanly after the runner \
+         failed to start: {failure:#}"
+    )
+}
+
+/// Issue #2677 A6: the runner's own spawn failure outranks a failed join of
+/// the tracing thread. The thread is joined so nothing still holds the
+/// journal open, but replacing `spawn` with the join's error would lose the
+/// attempt's errno and its [`RunnerNotStarted`] marker, and the run would
+/// again name something other than its own cause. The join failure is
+/// reported on stderr; `spawn` is returned exactly as it stands, never
+/// re-contextualised.
+fn spawn_error_outranks_join_failure(spawn: anyhow::Error, join: Result<()>) -> anyhow::Error {
+    if let Err(failure) = join {
+        eprintln!("{}", join_failure_warning(&failure));
+    }
+    spawn
 }
 
 impl Drop for Observer {
@@ -966,5 +996,104 @@ mod tests_not_established {
             "{text}"
         );
         assert!(error.downcast_ref::<ObserverNotEstablished>().is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // Issue #2677 A6: when the tracing thread has already reported a failed
+    // runner spawn, `Observer::spawn` joins it so nothing still holds the
+    // journal open. A join that fails must not become the error the caller
+    // sees: `join_tracing_thread(thread)?` would replace the spawn error,
+    // losing its errno and its `RunnerNotStarted` marker, and the run would
+    // again name something other than its own cause. The join failure is
+    // reported separately; the spawn error is returned as it stands.
+    //
+    // `spawn_error_outranks_join_failure(spawn, join)` is that rule: it
+    // reports a failed `join` and returns `spawn` unchanged.
+    // -----------------------------------------------------------------
+
+    fn unstarted_spawn_error() -> anyhow::Error {
+        anyhow::Error::new(RunnerNotStarted {
+            error: anyhow::Error::new(std::io::Error::from_raw_os_error(libc::ENOENT))
+                .context("failed to spawn recipe-runner-rs"),
+        })
+    }
+
+    #[test]
+    fn a_failed_join_never_displaces_the_spawn_error() {
+        let error = spawn_error_outranks_join_failure(
+            unstarted_spawn_error(),
+            Err(anyhow::anyhow!(
+                "required observer panicked before runner handoff"
+            )),
+        );
+        let text = format!("{error:#}");
+        assert!(
+            error.downcast_ref::<RunnerNotStarted>().is_some(),
+            "the attempt still never started, so its journal is still released: {text}"
+        );
+        assert_eq!(
+            error.chain().next().map(ToString::to_string).as_deref(),
+            Some("failed to spawn recipe-runner-rs"),
+            "{text}"
+        );
+        assert_eq!(
+            text.matches("failed to spawn recipe-runner-rs").count(),
+            1,
+            "{text}"
+        );
+        assert_eq!(
+            error
+                .root_cause()
+                .downcast_ref::<std::io::Error>()
+                .and_then(std::io::Error::raw_os_error),
+            Some(libc::ENOENT),
+            "the spawn's errno survives the join failure: {text}"
+        );
+        for word in ["panicked", "did not finalize", "PTRACE", "tracing"] {
+            assert!(!text.contains(word), "{word}: {text}");
+        }
+    }
+
+    #[test]
+    fn a_successful_join_leaves_the_spawn_error_alone() {
+        let error = spawn_error_outranks_join_failure(unstarted_spawn_error(), Ok(()));
+        let text = format!("{error:#}");
+        assert!(error.downcast_ref::<RunnerNotStarted>().is_some(), "{text}");
+        assert_eq!(
+            error.chain().next().map(ToString::to_string).as_deref(),
+            Some("failed to spawn recipe-runner-rs"),
+            "{text}"
+        );
+        assert_eq!(
+            text.matches("failed to spawn recipe-runner-rs").count(),
+            1,
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_join_failure_warning_carries_its_fixed_prefix_and_no_path() {
+        // The join failure is reported, never returned, so what it carries is
+        // asserted against the built line rather than captured from stderr.
+        const PREFIX: &str = "amplihack: warning: the observer thread did not exit cleanly after the runner \
+             failed to start: ";
+        let failure = anyhow::anyhow!("required observer panicked before runner handoff");
+        let line = join_failure_warning(&failure);
+        assert!(line.starts_with(PREFIX), "{line}");
+        assert!(
+            line.contains("required observer panicked before runner handoff"),
+            "the join's own reason is what the line is for: {line}"
+        );
+        assert!(
+            !line.contains('/'),
+            "no path reaches the line, so it can be quoted unread: {line}"
+        );
+        assert!(!line.contains('\n'), "one warning is one line: {line:?}");
+        for word in ["failed to spawn recipe-runner-rs", "nested"] {
+            assert!(
+                !line.contains(word),
+                "{word} belongs to the returned error, not this warning: {line}"
+            );
+        }
     }
 }

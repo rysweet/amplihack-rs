@@ -2,7 +2,7 @@
 title: Clean up after recipe runs
 description: Locate, retain, remove, or archive run-owned files and recovery state.
 doc_type: howto
-last_updated: 2026-11-12
+last_updated: 2026-11-15
 ---
 
 # Clean Up After Recipe Runs
@@ -1439,8 +1439,49 @@ removed. `git worktree remove` run by hand does not remove the target; call
 the default path is over 80 bytes; a very long `AMPLIHACK_WORK_ROOT` can still
 exceed the socket limit, so choose a shorter one.
 
+**An auto-drive printed `review storage identity changed; retained`.** The
+review generation's storage directory is not the one the drive recorded, so
+nothing under it was deleted and the path is left for a person to look at.
+The check compares three recorded pairs of device and inode number: the
+storage directory itself, the `repository.git` inside it, and the `launch`
+directory inside it. A mismatch in any of the three stops the removal,
+including a recorded child that has been removed, replaced, or turned into a
+symbolic link.
+
+Two causes account for most of these. A retirement that stopped partway
+removed one child and then failed, so the rest is kept rather than finished.
+Or the directory at the path is not the drive's at all. Look before removing
+anything:
+
+```bash
+# the path from the message, under the drive's state directory
+DIR="$HOME/.amplihack/state/auto-drive/pr-2340/review-Qx81Lm/review-generation-5e6f7a8b"
+ls -la "$DIR"
+stat -c '%d %i %N' "$DIR" "$DIR/repository.git" "$DIR/launch" 2>&1
+```
+
+`stat` does not follow symbolic links here, so a link shows as a link rather
+than as its target. The manifest beside the generation's checkout,
+`<checkout>.review-owner.json`, holds the four pairs recorded when the
+generation was made, in the order storage, `repository.git`, checkout,
+`launch`. Compare its first, second and fourth pairs with the output above to
+see which one moved.
+
+When the directory holds only what the drive made, remove it yourself.
+`amplihack cleanup` does not remove it, because it cannot tell a retained
+directory from a replacement:
+
+```bash
+rm -rf "$DIR"
+```
+
+See [Superseded generations are
+retired](../reference/recipe-checkout-isolation.md#superseded-generations-are-retired)
+for what each pair is checked against and why one pair is not enough.
+
 ## Related documentation
 
 - [Hygiene Cleanup](../operations/hygiene-cleanup.md) - Opt-in cleanup of stale worktrees, detached Cargo targets and session artifacts outside recipe runs
 - [Configure Workflow Runtime Isolation](configure-workflow-runtime-isolation.md) - Where workflow runtime output is written
 - [Correlate Recipe Runs with Logs](correlate-recipe-runs.md) - Match a run id to its logs and processes
+- [Recipe Run and Auto-Drive Checkout Isolation](../reference/recipe-checkout-isolation.md) - What a run and a review generation own, and the identity checks that decide what is removed

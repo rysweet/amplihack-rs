@@ -162,6 +162,21 @@ const UNAVAILABLE_REASON: &str =
 /// to the runner (issue #2677). It holds no path, error number or command.
 pub(crate) const LINUX_UNAVAILABLE_REASON: &str = "the Linux ptrace observer could not attach to the runner, so this run has no Git command record";
 
+/// Builds the line reporting a refused release of an unstarted attempt's
+/// recorder storage (issue #2677 A6b). Fixed text plus the refusal's own
+/// chain, formatted with `{:#}` so the operating system's message underneath
+/// is kept. No path, command line or environment value goes into it, and it
+/// carries neither the spawn context nor the word `nested`, so a run log
+/// holding it can be quoted unread and the line is never mistaken for the
+/// cause `spawn` returns.
+#[cfg(target_os = "linux")]
+pub(super) fn refused_release_warning(refusal: &anyhow::Error) -> String {
+    format!(
+        "amplihack: warning: could not release the unstarted attempt's recorder \
+         storage: {refusal:#}"
+    )
+}
+
 impl GitRecord {
     /// Production recording on the build's platform; see [`Self::begin_on`].
     pub(crate) fn begin(run_dir: Option<&Path>) -> Result<Self> {
@@ -246,9 +261,17 @@ impl GitRecord {
                 // refuses, the attempt still counts and `finish` fails
                 // closed; the spawn error is returned either way.
                 let released = match &*self.state.borrow() {
-                    State::Enabled { trace_dir, .. } => self
-                        .release_unstarted_attempt(trace_dir, attempt_id)
-                        .is_ok(),
+                    State::Enabled { trace_dir, .. } => {
+                        match self.release_unstarted_attempt(trace_dir, attempt_id) {
+                            Ok(()) => true,
+                            Err(refusal) => {
+                                // Reported, never returned: the spawn error
+                                // stays the only cause the caller sees.
+                                eprintln!("{}", refused_release_warning(&refusal));
+                                false
+                            }
+                        }
+                    }
                     _ => false,
                 };
                 if released {
@@ -297,13 +320,23 @@ impl GitRecord {
 
     /// Issue #2677: the kernel refused `PTRACE_TRACEME` for `attempt_id`
     /// ([`observer::ObserverNotEstablished`]), so the observer watched
-    /// nothing. When nothing was recorded (no attempt was established and
-    /// `git-trace2/` holds nothing but this attempt's journal, empty or
-    /// absent), the record becomes unavailable (as off Linux): the empty
-    /// journal is removed, `is_required` turns false and a notice naming
-    /// the refused call and its `errno` is printed. The caller then starts
-    /// the runner once unobserved. Every other case returns `Err` and
-    /// changes nothing, so the run fails closed with its evidence.
+    /// nothing.
+    ///
+    /// One rule decides it (M5): proceed when nothing was recorded, meaning
+    /// no attempt of this run was established and `git-trace2/` holds nothing
+    /// but this attempt's journal, itself empty or absent; otherwise fail and
+    /// change nothing, so the run fails closed with its evidence. The
+    /// `required` flag is not consulted: the only caller reaches this path
+    /// because the record was required, and the transition below clears the
+    /// flag itself, so reading it here would only restate the caller. What
+    /// stops a second downgrade of one record is the state check above: the
+    /// first transition leaves the record `Unavailable` rather than
+    /// `Enabled`.
+    ///
+    /// On success the record becomes unavailable (as off Linux): the empty
+    /// journal is removed, `is_required` turns false and a notice naming the
+    /// refused call and its `errno` is printed. The caller then starts the
+    /// runner once unobserved.
     #[cfg(target_os = "linux")]
     pub(crate) fn attempt_not_established(&self, attempt_id: &str, errno: i32) -> Result<()> {
         let Ok(mut state) = self.state.try_borrow_mut() else {
@@ -312,9 +345,6 @@ impl GitRecord {
         let State::Enabled { run_dir, trace_dir } = &*state else {
             bail!("Git recording is not observing this run; the observer failure stands");
         };
-        if !self.required.get() {
-            bail!("Git recording is not required for this run; the observer failure stands");
-        }
         self.release_unstarted_attempt(trace_dir, attempt_id)?;
         // Every check passed: only now does the record change.
         *state = State::Unavailable {

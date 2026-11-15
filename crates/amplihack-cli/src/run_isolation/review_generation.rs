@@ -481,26 +481,84 @@ fn retire(checkout: &Path, mut generation: Generation) -> Result<()> {
         &manifest_path(checkout)?,
         &serde_json::to_vec(&generation)?,
     )?;
-    remove_storage(&storage, generation.identities[0])
+    remove_storage(&generation)
 }
-/// Removes a generation's storage directory only when the path is still that
-/// directory: not a symlink, and with the recorded device and inode. An
-/// absent path is already freed.
-fn remove_storage(storage: &Path, expected: (u64, u64)) -> Result<()> {
-    let metadata = match fs::symlink_metadata(storage) {
-        Ok(metadata) => metadata,
+/// True when `path` is still the directory recorded as `expected`: a
+/// directory, not a symlink, and carrying the recorded device and inode.
+/// `symlink_metadata` is used rather than a followed `stat`, because a
+/// symlink to a directory satisfies `is_dir()` once followed. Any error,
+/// including a missing path, is `false`; the caller then refuses and removes
+/// nothing.
+fn is_recorded_dir(path: &Path, expected: (u64, u64)) -> bool {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            !metadata.file_type().is_symlink()
+                && metadata.is_dir()
+                && (metadata.dev(), metadata.ino()) == expected
+        }
+        Err(_) => false,
+    }
+}
+/// Removes a generation's storage directory only when the whole recorded
+/// tree is still there: the storage directory itself (`identities[0]`), and
+/// the two recorded directories inside it, `repository.git`
+/// (`identities[1]`) and `launch` (`identities[3]`). An absent storage path
+/// is already freed and is the one non-removing success.
+///
+/// Issue #2677 A1: the storage directory's own `(dev, ino)` is not enough on
+/// its own. `retire` frees that inode moments before `release` reads the
+/// path again, so the filesystem may hand the same inode to whatever
+/// directory is created there next, and that directory then presents the
+/// recorded credential. A substitute cannot also reproduce the recorded
+/// children, so the recorded set is what authorises the removal.
+///
+/// The storage path is derived from the record here rather than taken as an
+/// argument, and its confinement re-checked, because `provision` builds a
+/// `Generation` in memory that never passes back through [`read`]; a removal
+/// trusting its caller would be checked on one path into it and unchecked on
+/// the other.
+///
+/// `identities[2]`, the checkout, is deliberately not consulted: it is a
+/// sibling of storage rather than part of it, and on the retired path it is
+/// already gone.
+///
+/// The checks are path-based and `remove_dir_all` resolves the root once
+/// more, so substitution of the root component between the two remains
+/// possible; `std` has descended with `openat` since 1.58.1, so nothing
+/// below the root can redirect the walk. The exposure is narrowed to the
+/// root component, not closed.
+fn remove_storage(generation: &Generation) -> Result<()> {
+    let storage = storage_of(generation)?;
+    let confined = storage.parent().is_some() && storage.parent() == generation.checkout.parent();
+    let named = storage
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("review-generation-"));
+    if !confined
+        || !named
+        || generation.repository != storage.join("repository.git")
+        || generation.launch != storage.join("launch")
+    {
+        bail!(
+            "review storage is outside its allocation directory; refusing to remove it: {}",
+            storage.display()
+        );
+    }
+    match fs::symlink_metadata(storage) {
+        Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
-    };
-    if metadata.file_type().is_symlink()
-        || !metadata.is_dir()
-        || (metadata.dev(), metadata.ino()) != expected
+    }
+    if !is_recorded_dir(storage, generation.identities[0])
+        || !is_recorded_dir(&generation.repository, generation.identities[1])
+        || !is_recorded_dir(&generation.launch, generation.identities[3])
     {
         bail!(
             "review storage identity changed; retained: {}",
             storage.display()
         );
     }
+    // Strictly after every check, and the only remover on either path.
     fs::remove_dir_all(storage)?;
     Ok(())
 }
@@ -608,7 +666,7 @@ pub(crate) fn release(checkout: &Path) -> Result<()> {
             bail!("cannot release owned review checkout; generation retained");
         }
     }
-    remove_storage(storage_of(&generation)?, generation.identities[0])?;
+    remove_storage(&generation)?;
     fs::remove_file(manifest_path(checkout)?)?;
     if let Some((parent, expected)) = generation.allocation {
         if checkout.parent() != Some(parent.as_path()) || identity(&parent)? != expected {
