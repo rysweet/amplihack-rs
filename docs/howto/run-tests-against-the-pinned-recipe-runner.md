@@ -2,7 +2,7 @@
 title: Run Tests Against the Pinned Recipe Runner
 type: howto
 updated: 2026-11-14
-related: issue #2658, issue #2582, issue #2290, issue #2306, issue #2096
+related: issue #2658, issue #2539, issue #2582, issue #2290, issue #2306, issue #2096
 ---
 
 # Run Tests Against the Pinned Recipe Runner
@@ -33,10 +33,22 @@ at the pinned revision. It never uses a runner installed on the host.
 | Test target | Tests |
 | --- | --- |
 | `amplihack`, `--test integration` | `workflow_publish_pr_metadata::runner::actual_runner_*` (six tests) and `workflow_publish_pr_metadata::runner::persistent_awk_failure_still_serializes_success_after_exactly_one_creation`, in `tests/integration/issue_2306_publish/runner.rs` |
+| `amplihack`, `--test integration` | `pinned_runner_tests::*`, the helper's own unit tests, in `tests/support/pinned_runner_tests.rs` |
 | `amplihack-cli`, `--test cli_integration` | `issue_2096_execution_isolation::recording_coverage::pinned_runner_shell_to_rust_to_absolute_git_keeps_required_coverage`, in `crates/amplihack-cli/tests/issue_2096_recording_coverage.rs` |
+| `amplihack-cli`, `--test cli_integration` | Every test that runs a recipe through `issue_1741_fixture::Fixture`, in the `issue_1741_*` files |
+| `amplihack-cli`, `--test cli_integration` | `issue_2658_routing_replay::*`, in `crates/amplihack-cli/tests/issue_2658_routing_replay.rs` |
+| `amplihack-cli`, `--test cli_integration` | The `issue_2539_step_recovery_*` tests that run a real runner, through `real_runner()` in `crates/amplihack-cli/tests/issue_2539_step_recovery_fixture.rs` |
+| `amplihack-cli`, `--test cli_integration` | `issue_1976_real_runner_nested_run::a_step_under_the_real_runner_gets_the_parent_variables_and_its_nested_run_dies_with_the_observed_tree`, through `real_runner()` in `crates/amplihack-cli/tests/issue_1976_real_runner_nested_run.rs` |
 
-Both files call the same function, so the two targets share one build of the
-runner.
+Every file calls the same function, so the two targets share one build of the
+runner. None of these tests skips when the runner is missing: the helper builds
+it or the test fails. The 1976 test no longer reads
+`AMPLIHACK_1976_REQUIRE_RECIPE_RUNNER` and no longer looks for
+`recipe-runner-rs` on `PATH`.
+
+The helper's unit tests are compiled into the `integration` target only.
+`crates/amplihack-cli/tests/main.rs` includes the helper but not its tests, so
+`cargo test --workspace` runs them once.
 
 ## Run the tests
 
@@ -197,6 +209,43 @@ diverged from it, the script keeps it rather than downgrading, and the receipt
 check then fails. Run the script with `--force` to install the pin, or unset
 `RECIPE_RUNNER_RS_PATH` to let the helper build its own copy.
 
+### Reuse the runner that `amplihack install` put in `~/.cargo/bin`
+
+Each target directory has its own cache, so a host with several worktrees or
+several `CARGO_TARGET_DIR` values builds the runner once per directory. If
+`~/.cargo/bin/recipe-runner-rs` is already at the pin, point the helper at it
+and no build happens:
+
+```bash
+amplihack install
+RECIPE_RUNNER_RS_PATH="$HOME/.cargo/bin/recipe-runner-rs" \
+  cargo test -p amplihack-cli --test cli_integration issue_2658_routing_replay::
+```
+
+`amplihack install` runs `cargo install --locked --git
+https://github.com/rysweet/amplihack-recipe-runner --rev <pin>` when the
+runner in `~/.cargo/bin` is missing or older than the pin. Cargo records that
+install in `~/.cargo/.crates2.json`, which is `<bin>/../../.crates2.json` for
+this binary, so the install passes the same receipt check as any other
+override. The check is a consistency check on Cargo's install record, not
+proof of where the binary came from.
+
+This works only when both of these hold:
+
+- The `amplihack` that ran the install was built from a checkout with the same
+  `claude-plugin/recipe-runner.rev` as the one you are testing. An older
+  `amplihack` installs its own pin.
+- `~/.cargo/bin` does not hold a runner that is newer than the pin or has
+  diverged from it. `amplihack install` keeps such a runner rather than
+  downgrading it.
+
+If either fails, the receipt names another revision and the test panics with
+"receipt `<path>` does not name recipe-runner-rs at #`<pin>`". The helper does
+not fall back to its cache. Unset `RECIPE_RUNNER_RS_PATH` to let the helper
+build its own copy, or install the pin with the `cargo install` command above.
+
+### Use a build that is not a plain `cargo install`
+
 To test a runner build that is not a plain `cargo install`, set
 `RECIPE_RUNNER_QA_BINARY` to the binary and `RECIPE_RUNNER_QA_RECEIPT` to a
 `.crates2.json` that names the pin.
@@ -235,6 +284,23 @@ let output = Command::new(amplihack_binary())
 
 Do not add your own lookup through `PATH` or `~/.cargo/bin`, and do not skip
 the test when the runner is missing.
+
+If the code under test calls `recipe-runner-rs` by name, put a symlink to the
+returned path in a `bin` directory inside the test's temporary home and put
+that directory first on the child's `PATH`. Do not resolve the name with
+`which` or a `PATH` search. `issue_2658_routing_replay.rs` does this so that
+the shipped routing recipes reach the pinned runner.
+
+Unit tests for the helper itself go in `tests/support/pinned_runner_tests.rs`,
+which only `tests/integration/main.rs` includes:
+
+```rust
+#[path = "../support/pinned_runner_tests.rs"]
+mod pinned_runner_tests;
+```
+
+Do not add a `#[cfg(test)] mod tests` to `pinned_runner.rs`. Every target that
+includes the helper would compile and run a copy of it.
 
 ## Check that a test does not depend on the host
 

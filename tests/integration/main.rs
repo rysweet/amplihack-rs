@@ -30,6 +30,9 @@ mod isolated_amplihack_scan;
 // pinned revision instead of using whatever the host has installed.
 #[path = "../support/pinned_runner.rs"]
 mod pinned_runner;
+// The helper's unit tests run in this binary only.
+#[path = "../support/pinned_runner_tests.rs"]
+mod pinned_runner_tests;
 
 // Issue #1973: condition waits with one ceiling, shared with cli_integration.
 #[path = "../../crates/amplihack-cli/tests/support/wait.rs"]

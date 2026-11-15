@@ -2,7 +2,7 @@
 title: Recipe recovery reference
 description: Durable recovery identity, persistence policies, resource declarations, and runner contracts.
 doc_type: reference
-last_updated: 2026-11-11
+last_updated: 2026-11-14
 ---
 
 # Recipe recovery reference
@@ -18,6 +18,7 @@ admission and trusted failure classification. Recovery requires
 - [Launch controls](#launch-controls)
 - [Identity and admission](#identity-and-admission)
 - [Recipe persistence policy](#recipe-persistence-policy)
+  - [Routing recipes and caller-set keys](#routing-recipes-and-caller-set-keys)
 - [Step replay policy and resources](#step-replay-policy-and-resources)
 - [Completion contract](#completion-contract)
 - [Compatibility and invalidation](#compatibility-and-invalidation)
@@ -165,6 +166,16 @@ Artifacts outside the run may instead remain external validated file
 dependencies. Resources that cannot be copied or verified make dependent
 results non-replayable.
 
+With the pinned runner, a step that reads an artifact-bound key executes again
+after a relaunch even when the artifact is unchanged: the rebound path counts
+as a changed input (`input_changed`). This is the open upstream bug
+[amplihack-recipe-runner#218](https://github.com/rysweet/amplihack-recipe-runner/issues/218),
+not intended behaviour. In `smart-execute-routing.yaml`,
+`create-workstreams-config` rebinds `workstreams_file`, so
+`launch-parallel-round-1` relaunches every workstream on each relaunch until
+the pin moves to a runner with the fix. This is tracked in
+[#2696](https://github.com/rysweet/amplihack-rs/issues/2696).
+
 Shipped classification, preparation and design recipes opt into semantic
 persistence. Container recipes re-enter their children; session setup and
 authorization steps execute again. Declare any additional opaque file
@@ -172,6 +183,56 @@ dependencies before enabling reuse in custom recipes.
 Session setup and authorization resources use current live admission;
 saved session outputs alone are never sufficient. A user-supplied shell
 command cannot act as a trusted live-resource rebinder.
+
+### Routing recipes and caller-set keys
+
+The pinned runner treats every context key as an input of every bash and
+recipe step. A key that is set but missing from `persist.context` cannot be
+saved, so every `replay: reuse` bash or recipe step in that recipe executes
+again after a relaunch. A recipe that declares reuse must therefore list each
+key that its caller sets with `-c` or that a parent passes in, not only the keys its own
+steps read.
+
+The shipped routing recipes list these caller-set keys:
+
+| Recipe | Caller-set keys in `persist.context` |
+| --- | --- |
+| `smart-classify-route.yaml` | `base_branch`, `strict_delivery` |
+| `smart-orchestrator.yaml` | `base_branch`, `closing_reference`, `forbidden_base_branches`, `pr_repository`, `repository`, `strict_delivery` |
+| `smart-execute-routing.yaml` | `base_branch`, `closing_reference`, `forbidden_base_branches`, `pr_repository`, `repository`, `strict_delivery` |
+
+`base_branch` defaults to an empty string in all three recipes, so it is
+always set, possibly to an empty value. `strict_delivery` reaches the
+orchestrator from classification and then reaches execute-routing. The four delivery inputs can be set with `-c` or
+arrive from a development child.
+
+Persisting `forbidden_base_branches` and `strict_delivery` does not weaken
+them. When either value differs at relaunch, the runner reports
+`input_changed` and the dependent steps execute again under the new value.
+
+`repository` and `pr_repository` are written to private recovery storage.
+Give them as `owner/name`, never as a URL with credentials in it.
+
+The test
+[`issue_2658_routing_replay.rs`](../../crates/amplihack-cli/tests/issue_2658_routing_replay.rs)
+runs the shipped `smart-classify-route.yaml` on the pinned runner with
+`base_branch=main`, stops it with a usage limit at `classify-and-decompose`,
+relaunches it, and checks that `preflight-validation` is restored and that the
+restart step is `classify-and-decompose`.
+
+These lists cover keys that callers set. They do not cover the keys that a
+development child adds when `execute_sub_recipe` merges its whole final
+context back into the routing recipe, defaults included. After a development
+child finishes, the routing bash and recipe steps that follow it execute
+again on relaunch. The same limit applied before the runner moved to 0.7.0
+(revision `2833a0b`). This is tracked in
+[#2697](https://github.com/rysweet/amplihack-rs/issues/2697).
+
+The merge-back also writes the child's values for `forbidden_base_branches`
+and `strict_delivery` over the values the caller set, defaults included. A
+routing step that runs after a development child therefore reads the child's
+values, not the caller's. #2697 also covers stopping a child from weakening a
+guard that the caller set.
 
 ## Completion contract
 

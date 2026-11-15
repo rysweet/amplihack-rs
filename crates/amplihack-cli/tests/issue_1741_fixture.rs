@@ -252,8 +252,11 @@ printf '%s\n' '{{"label":"saved-output","enabled":true,"count":7,"empty":null,"i
         // (runner #208, "semantic-input-coverage-v2"), and replay only when
         // the recipe persists each one. A child sees its parent's outputs and
         // a parent sees its children's, so every document persists the
-        // outputs any fixture recipe produces, as the shipped recipes persist
-        // the union of the keys their callers and children set.
+        // outputs any fixture recipe produces. The shipped routing recipes
+        // likewise persist the keys their callers set and their routing
+        // children return (issue_2658_routing_replay.rs runs one on the pin);
+        // keys merged back from development children are not yet persisted
+        // (rysweet/amplihack-rs#2697).
         for key in [
             "architecture",
             "classify",
@@ -334,6 +337,12 @@ printf '%s\n' '{{"label":"saved-output","enabled":true,"count":7,"empty":null,"i
             .output()
             .expect("execute amplihack");
         let run_dirs = self.run_dirs().difference(&before).cloned().collect();
+        self.attempt_from(output, run_dirs)
+    }
+
+    /// An attempt from a command the caller built with [`Self::command`] and
+    /// adjusted, such as a run of a shipped recipe with its own PATH.
+    pub fn attempt_from(&self, output: Output, run_dirs: Vec<PathBuf>) -> Attempt {
         Attempt {
             output,
             run_dirs,

@@ -367,6 +367,8 @@ mod issue_2535_recipe_guide_cli;
 mod issue_2535_recipe_guide_injection;
 #[path = "issue_2535_recipe_guide_publish.rs"]
 mod issue_2535_recipe_guide_publish;
+#[path = "issue_2658_routing_replay.rs"]
+mod issue_2658_routing_replay;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

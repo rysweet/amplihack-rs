@@ -303,10 +303,17 @@ fn artifact_copy_and_explicit_context_binding_survive_the_original_file() {
 
     let third = f.run(&[]);
     assert!(third.output.status.success(), "{}", describe(&third.output));
-    // The pinned runner rebinds `artifact_path` to this attempt's copy, and a
-    // bash step depends on every key it can see, so `design` reruns with
-    // `input_changed` (amplihack-recipe-runner#218). The artifact still
-    // survives the original file and stays bound to the new attempt.
+    // `design` should be reused here. It reruns with `input_changed` because
+    // of the open upstream bug rysweet/amplihack-recipe-runner#218: the pinned
+    // runner rebinds `artifact_path` to this attempt's copy, and a bash step
+    // depends on every key it can see. This is not intended behaviour. The
+    // same bug makes `launch-parallel-round-1` in smart-execute-routing.yaml
+    // relaunch every workstream on each relaunch, because
+    // `create-workstreams-config` rebinds `workstreams_file`. The assertions
+    // stay as a tripwire for the next pin move. Once the pin takes the fix,
+    // restore `third.assert_resumed(&second, "implement")` as
+    // rysweet/amplihack-rs#2696 describes. The artifact still survives the
+    // original file and stays bound to the new attempt.
     let recovery = third.assert_resumed(&second, "design");
     assert!(
         recovery["invalidated_steps"]
