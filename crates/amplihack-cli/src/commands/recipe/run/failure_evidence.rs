@@ -79,7 +79,7 @@ pub(super) fn step_evidence(step: &RecipeRunStepResult) -> String {
     parts.join("\n")
 }
 
-pub(super) fn tail_lines(text: &str, max_lines: usize) -> String {
+pub(crate) fn tail_lines(text: &str, max_lines: usize) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let start = lines.len().saturating_sub(max_lines);
     lines[start..].join("\n")
@@ -90,7 +90,7 @@ fn tail_of(lines: &[String], max_lines: usize) -> String {
     lines[start..].join("\n")
 }
 
-pub(super) fn truncate_evidence(mut text: String) -> String {
+pub(crate) fn truncate_evidence(mut text: String) -> String {
     if text.chars().count() <= EVIDENCE_MAX_CHARS {
         return text;
     }

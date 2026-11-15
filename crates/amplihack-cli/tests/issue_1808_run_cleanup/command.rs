@@ -151,6 +151,7 @@ fn every_category_is_accepted_by_only() {
         "run-tmp",
         "run-worktree",
         "run-target",
+        "run-exec",
         "untagged-target",
         "tmp-leftover",
         "recipe-log",

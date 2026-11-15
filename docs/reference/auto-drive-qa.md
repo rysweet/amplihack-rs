@@ -548,7 +548,6 @@ Applied to #2458: a repository with a root `package.json`, a multi-area PR, a
 merge-base qa.toml with `multi_area = "command"`, a passing `command`, and
 evidence measured against the PR's base recording `multi-area-command`. An
 agent following either text judges criterion 1 met.
-
 ## CI selection
 
 Read regular top-level `.yml` and `.yaml` blobs from merge-base

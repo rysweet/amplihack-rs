@@ -19,6 +19,7 @@ recursion:
   max_total_steps: 80
 
 context:
+  base_branch: ""  # base for the pull request, passed on to default-workflow; empty: the PR's own base (docs/reference/workflow-delivery-inputs.md)
   force_single_workstream: ""
   workflow: ""
   selected_workflow: ""

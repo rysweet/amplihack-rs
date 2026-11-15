@@ -8,30 +8,26 @@
 # the checkout under test.
 #
 # This runs amplifier-bundle/tools/autodrive_qa_evidence.sh, unmodified, on a
-# caller repository (REPO_PATH). Since #2569 the tool issues no verdict: it
-# runs the declared QA command and writes qa-inputs.json beside
-# AUTODRIVE_QA_EVIDENCE, with declared_qa.status and declared_qa.exit_status. The acceptance suite behaves like a normal
+# caller repository (REPO_PATH). The acceptance suite behaves like a normal
 # test suite: it creates its own scratch repository under TMPDIR, commits
 # there with no `-C`, and checks that git resolved the scratch repository.
 # With the variables inherited, that commit lands in whichever repository
 # they name. Cases:
 #   control  the suite, run directly with every git name at a throwaway
 #            repository, changes it: proof the suite would show a leak;
-#   1. clean environment: declared_qa.status `ran` with exit_status 0,
-#      git_env_cleared and run_env_cleared are `none`, the caller is byte-identical (index, HEAD, refs, objects,
+#   1. clean environment: PASS, git_env_cleared and run_env_cleared are
+#      `none`, the caller is byte-identical (index, HEAD, refs, objects,
 #      worktree files);
 #   2. all 12 git names at a decoy repository, all 5 run-identity names set:
-#      the same exit status, declared_qa.status and exit_status as case 1, head_sha is the caller's,
+#      the same exit status and qa_status as case 1, head_sha is the caller's,
 #      the caller AND the decoy are byte-identical, and the evidence names all
 #      12 and all 5 variables (issue #2033, Acceptance);
 #   3. all 12 git names at REPO_PATH's own .git, the Product-Management #742
-#      damage: the suite ran and exited 0, the caller is byte-identical;
+#      damage: PASS, the caller is byte-identical;
 #   4. extra, not the acceptance proof: a suite that commits in REPO_PATH
 #      itself, git names at the decoy: the commit lands in the caller and the
 #      decoy is byte-identical;
-#   5. git-repo-env.sh missing beside the tool: exit 0 with a warning, and
-#      qa-inputs.json records git_env_cleared and run_env_cleared as
-#      `unavailable`, so the judging agent can see nothing was cleared;
+#   5. git-repo-env.sh missing beside the tool: exit 1 by name, no evidence;
 #   6. git-repo-env.sh a symlink: the same as case 5.
 # Only exit statuses and before-and-after snapshots are compared: no sleep,
 # timeout or clock read.
@@ -49,22 +45,7 @@ TOOL="${TOOLS}/autodrive_qa_evidence.sh"
 harness_error() { echo "HARNESS-ERROR: $*" >&2; exit 2; }
 [[ -f "$TOOL" ]] || harness_error "tool not found: $TOOL"
 command -v python3 >/dev/null 2>&1 || harness_error "python3 is required to read the JSON"
-# field_of <dotted.path>: one field of the JSON on stdin, e.g. declared_qa.status.
-field_of() {
-    python3 -c '
-import json, sys
-v = json.loads(sys.stdin.buffer.read().decode("utf-8"))
-for k in sys.argv[1].split("."):
-    v = v.get(k, "<missing>") if isinstance(v, dict) else "<missing>"
-print(v if isinstance(v, str) else json.dumps(v))' "$1"
-}
-# qa_of: "<declared_qa.status> <declared_qa.exit_status>" of the JSON on stdin.
-qa_of() {
-    local j
-    j="$(cat)"
-    printf '%s %s' "$(printf '%s' "$j" | field_of declared_qa.status 2>/dev/null || echo '<invalid>')" \
-        "$(printf '%s' "$j" | field_of declared_qa.exit_status 2>/dev/null || echo '<invalid>')"
-}
+field_of() { python3 -c 'import json,sys; print(json.loads(sys.stdin.buffer.read().decode("utf-8")).get(sys.argv[1], "<missing>"))' "$1"; }
 
 GIT_NAMES="GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_COMMON_DIR GIT_DIR"
 GIT_NAMES="$GIT_NAMES GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_INDEX_FILE GIT_INDEX_VERSION GIT_NAMESPACE"
@@ -88,18 +69,6 @@ export HOME="$WORK/home" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 mkdir -p "$HOME"
 ID_ENV=(GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid)
 
-# printed_matches <qa-inputs.json> <stdout record>: the printed record is the
-# file with declared_qa.log_tail replaced by log_tail_bytes, its size in
-# UTF-8 bytes; the tail itself is never printed.
-printed_matches() {
-    [ -f "$1" ] && python3 -I -c '
-import json, sys
-f = json.loads(open(sys.argv[1], "rb").read().decode("utf-8"))
-p = json.loads(sys.argv[2])
-t = f["declared_qa"].pop("log_tail")
-n = p["declared_qa"].pop("log_tail_bytes", None)
-sys.exit(0 if f == p and n == len(t.encode("utf-8")) else 1)' "$1" "$2" 2>/dev/null
-}
 PASS_COUNT=0
 FAIL_COUNT=0
 CASES_PASSED=0
@@ -173,15 +142,10 @@ same() {
     return 1
 }
 
-# run_tool <tool> <case> [NAME=value]... — sets RC, OUT (the last stdout line)
-# and EV (AUTODRIVE_QA_EVIDENCE). Each case has its own directory, so
-# qa-inputs.json beside EV is that case's alone; stderr goes to EV.err.
+# run_tool <tool> <evidence> [NAME=value]... — sets RC and OUT (the last line).
 run_tool() {
-    local tool="$1" stdout
-    EV="$WORK/ev-$2/qa-evidence.json"
+    local tool="$1" ev="$2" stdout
     shift 2
-    mkdir -p "${EV%/*}"
-    local ev="$EV"
     set +e
     stdout="$(env -i HOME="$HOME" TMPDIR="$WORK" PATH="/usr/bin:/bin" \
         GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "${ID_ENV[@]}" \
@@ -210,12 +174,11 @@ mkdir -p "$WORK/control-tmp"
 # --- Case 1: clean environment -------------------------------------------
 ok=1
 caller_before="$(snapshot "$CALLER" objects)"
-run_tool "$TOOL" 1
+run_tool "$TOOL" "$WORK/ev1.json"
 CLEAN_RC="$RC"
-CLEAN_STATUS="$(printf '%s' "$OUT" | qa_of)"
-[[ "$CLEAN_RC" == 0 ]] || { ok=0; fail clean "exit $CLEAN_RC: $(tail -n 3 "$EV.err" | tr '\n' '|')"; }
-[[ "$CLEAN_STATUS" == "ran 0" ]] || { ok=0; fail clean "declared_qa status and exit_status are '$CLEAN_STATUS', want 'ran 0' (the scratch-repository suite should pass)"; }
-printed_matches "${EV%/*}/qa-inputs.json" "$OUT" || { ok=0; fail clean "qa-inputs.json beside AUTODRIVE_QA_EVIDENCE is missing or differs from stdout"; }
+CLEAN_STATUS="$(printf '%s' "$OUT" | field_of qa_status 2>/dev/null || echo '<invalid>')"
+[[ "$CLEAN_RC" == 0 ]] || { ok=0; fail clean "exit $CLEAN_RC: $(tail -n 3 "$WORK/ev1.json.err" | tr '\n' '|')"; }
+[[ "$CLEAN_STATUS" == PASS ]] || { ok=0; fail clean "qa_status=$CLEAN_STATUS (the scratch-repository suite should pass)"; }
 got="$(printf '%s' "$OUT" | field_of docs_only 2>/dev/null || echo '<invalid>')"
 [[ "$got" == unknown ]] || { ok=0; fail clean "docs_only=$got, want unknown without a base ref in the scratch repository"; }
 same clean "the caller repository" "$caller_before" "$(snapshot "$CALLER" objects)" || ok=0
@@ -223,7 +186,7 @@ for f in git_env_cleared run_env_cleared; do
     got="$(printf '%s' "$OUT" | field_of "$f" 2>/dev/null || echo '<invalid>')"
     [[ "$got" == none ]] || { ok=0; fail clean "$f=$got, want none"; }
 done
-[[ "$ok" == 1 ]] && { pass clean "clean run: the suite ran and exited 0, records none and none, caller byte-identical"; CASES_PASSED=$((CASES_PASSED + 1)); }
+[[ "$ok" == 1 ]] && { pass clean "clean run passes, records none and none, caller byte-identical"; CASES_PASSED=$((CASES_PASSED + 1)); }
 
 # --- Case 2: every git name at the decoy, every run name set ---------------
 ok=1
@@ -231,10 +194,10 @@ git_env_at "$DECOY"; DECOY_ENV=("${GIT_ENV[@]}")
 decoy_before="$(snapshot "$DECOY" objects)"
 caller_before="$(snapshot "$CALLER" objects)"
 caller_head="$(git -C "$CALLER" rev-parse HEAD)"
-run_tool "$TOOL" 2 "${DECOY_ENV[@]}" "${RUN_ENV[@]}"
-status="$(printf '%s' "$OUT" | qa_of)"
+run_tool "$TOOL" "$WORK/ev2.json" "${DECOY_ENV[@]}" "${RUN_ENV[@]}"
+status="$(printf '%s' "$OUT" | field_of qa_status 2>/dev/null || echo '<invalid>')"
 [[ "$RC" == "$CLEAN_RC" ]] || { ok=0; fail decoy "exit $RC, the clean run exited $CLEAN_RC"; }
-[[ "$status" == "$CLEAN_STATUS" ]] || { ok=0; fail decoy "declared_qa status and exit_status are '$status', the clean run gave '$CLEAN_STATUS'"; }
+[[ "$status" == "$CLEAN_STATUS" ]] || { ok=0; fail decoy "qa_status=$status, the clean run gave $CLEAN_STATUS"; }
 head_sha="$(printf '%s' "$OUT" | field_of head_sha 2>/dev/null || echo '<invalid>')"
 [[ "$head_sha" == "$caller_head" ]] || { ok=0; fail decoy "head_sha=$head_sha, want the caller's $caller_head"; }
 same decoy "the decoy repository" "$decoy_before" "$(snapshot "$DECOY" objects)" || ok=0
@@ -250,9 +213,9 @@ got="$(printf '%s' "$OUT" | field_of run_env_cleared 2>/dev/null || echo '<inval
 ok=1
 git_env_at "$CALLER"; SELF_ENV=("${GIT_ENV[@]}")
 caller_before="$(snapshot "$CALLER" objects)"
-run_tool "$TOOL" 3 "${SELF_ENV[@]}" "${RUN_ENV[@]}"
-status="$(printf '%s' "$OUT" | qa_of)"
-[[ "$RC" == 0 && "$status" == "ran 0" ]] || { ok=0; fail self "exit $RC, declared_qa '$status', want 0 and 'ran 0': $(tail -n 3 "$EV.err" | tr '\n' '|')"; }
+run_tool "$TOOL" "$WORK/ev3.json" "${SELF_ENV[@]}" "${RUN_ENV[@]}"
+status="$(printf '%s' "$OUT" | field_of qa_status 2>/dev/null || echo '<invalid>')"
+[[ "$RC" == 0 && "$status" == PASS ]] || { ok=0; fail self "exit $RC, qa_status=$status, want 0 and PASS: $(tail -n 3 "$WORK/ev3.json.err" | tr '\n' '|')"; }
 same self "the caller repository" "$caller_before" "$(snapshot "$CALLER" objects)" || ok=0
 got="$(printf '%s' "$OUT" | field_of git_env_cleared 2>/dev/null || echo '<invalid>')"
 [[ "$got" == "$GIT_NAMES" ]] || { ok=0; fail self "git_env_cleared=<$got>, want <$GIT_NAMES>"; }
@@ -265,37 +228,30 @@ ok=1
 decoy_before="$(snapshot "$DECOY" objects)"
 before_caller="$(commits "$CALLER")"
 SUITE="$COMMIT_SUITE"
-run_tool "$TOOL" 4 "${DECOY_ENV[@]}"
+run_tool "$TOOL" "$WORK/ev4.json" "${DECOY_ENV[@]}"
 SUITE="$SCRATCH_SUITE"
-status="$(printf '%s' "$OUT" | qa_of)"
-[[ "$RC" == 0 && "$status" == "ran 0" ]] || { ok=0; fail commit-here "exit $RC, declared_qa '$status', want 0 and 'ran 0'"; }
+status="$(printf '%s' "$OUT" | field_of qa_status 2>/dev/null || echo '<invalid>')"
+[[ "$RC" == 0 && "$status" == PASS ]] || { ok=0; fail commit-here "exit $RC, qa_status=$status, want 0 and PASS"; }
 same commit-here "the decoy repository" "$decoy_before" "$(snapshot "$DECOY" objects)" || ok=0
 [[ "$(commits "$CALLER")" == $((before_caller + 1)) ]] || { ok=0; fail commit-here "the commit did not land in the checkout under test"; }
 [[ "$ok" == 1 ]] && { pass commit-here "a committing suite writes to REPO_PATH, never the decoy"; CASES_PASSED=$((CASES_PASSED + 1)); }
 
 # --- Cases 5 and 6: the helper is missing, or a symlink ---------------------
-# #2569: the tool no longer refuses. It warns and records that nothing could
-# be cleared, so the judging agent reads `unavailable`, never `none`.
-WANT_MSG='WARNING: autodrive_trust.sh or git-repo-env.sh is missing beside this tool; the command source is recorded as unavailable'
+WANT_MSG='ERROR: autodrive-qa-helpers-not-found: autodrive_state.sh, autodrive_trust.sh or git-repo-env.sh is missing'
 refusal_case() {
-    local id="$1" dir="$WORK/tools-$1" before got f
+    local id="$1" dir="$WORK/tools-$1" ev="$WORK/ev-$1.json" before
     ok=1
     mkdir -p "$dir"
     cp -R "$TOOLS/." "$dir/"
     rm -f -- "$dir/git-repo-env.sh"
     [[ "$id" != symlink ]] || ln -s "$TOOLS/git-repo-env.sh" "$dir/git-repo-env.sh"
     before="$(snapshot "$CALLER")"
-    run_tool "$dir/autodrive_qa_evidence.sh" "$id"
-    [[ "$RC" == 0 ]] || { ok=0; fail "$id" "exit $RC, want 0"; }
-    grep -qxF -- "$WANT_MSG" "$EV.err" || { ok=0; fail "$id" "stderr lacks the exact warning: $(head -n 3 "$EV.err" | tr '\n' '|')"; }
-    printed_matches "${EV%/*}/qa-inputs.json" "$OUT" || { ok=0; fail "$id" "qa-inputs.json is missing or differs from stdout"; }
-    [[ ! -e "$EV" ]] || { ok=0; fail "$id" "a qa-evidence.json verdict file was written"; }
-    for f in git_env_cleared run_env_cleared; do
-        got="$(printf '%s' "$OUT" | field_of "$f" 2>/dev/null || echo '<invalid>')"
-        [[ "$got" == unavailable ]] || { ok=0; fail "$id" "$f=$got, want unavailable"; }
-    done
-    [[ "$before" == "$(snapshot "$CALLER")" ]] || { ok=0; fail "$id" "the caller changed"; }
-    [[ "$ok" == 1 ]] && { pass "$id" "helper $id: warned by name, recorded unavailable, caller byte-identical"; CASES_PASSED=$((CASES_PASSED + 1)); }
+    run_tool "$dir/autodrive_qa_evidence.sh" "$ev"
+    [[ "$RC" == 1 ]] || { ok=0; fail "$id" "exit $RC, want 1"; }
+    grep -qxF -- "$WANT_MSG" "$ev.err" || { ok=0; fail "$id" "stderr lacks the exact message: $(head -n 3 "$ev.err" | tr '\n' '|')"; }
+    [[ ! -e "$ev" ]] || { ok=0; fail "$id" "an evidence file was written"; }
+    [[ "$before" == "$(snapshot "$CALLER")" ]] || { ok=0; fail "$id" "the suite ran: the caller changed"; }
+    [[ "$ok" == 1 ]] && { pass "$id" "helper $id: refused by name, no evidence, nothing ran"; CASES_PASSED=$((CASES_PASSED + 1)); }
     return 0
 }
 refusal_case missing

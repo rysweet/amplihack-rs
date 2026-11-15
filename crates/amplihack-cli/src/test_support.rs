@@ -257,8 +257,11 @@ impl IsolatedWorkRoot {
             "AMPLIHACK_WORK_ROOT",
             "AMPLIHACK_WORK_ROOT_EXPLICIT",
             "AMPLIHACK_CLEANUP_ON_EXIT",
+            crate::run_guidance::GUIDANCE_DIRS_ENV,
         ]);
         unsafe {
+            // Issue #2535: an outer run's guidance never reaches a test run.
+            std::env::remove_var(crate::run_guidance::GUIDANCE_DIRS_ENV);
             std::env::set_var("AMPLIHACK_WORK_ROOT", dir.path().join("work"));
             std::env::remove_var("AMPLIHACK_WORK_ROOT_EXPLICIT");
             std::env::set_var("AMPLIHACK_CLEANUP_ON_EXIT", "0");
