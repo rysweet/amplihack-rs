@@ -74,6 +74,25 @@ pub(super) fn fetch_latest_release() -> Result<UpdateRelease> {
     parse_latest_release(response, &asset_name)
 }
 
+/// Select the platform archive for this exact published version, never latest.
+pub(super) fn fetch_exact_release(version: &str) -> Result<UpdateRelease> {
+    let version = Version::parse(version).context("invalid release executable version")?;
+    let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/tags/v{version}");
+    let name = expected_archive_name()?;
+    let release = parse_latest_release(http_get(&url)?, &name)?;
+    if release.version != version.to_string() {
+        bail!(
+            "requested release v{version}, received v{}",
+            release.version
+        );
+    }
+    let expected = format!("https://github.com/{GITHUB_REPO}/releases/download/v{version}/{name}");
+    if release.asset_url != expected {
+        bail!("release v{version} executable archive does not belong to the selected release");
+    }
+    Ok(release)
+}
+
 /// SEC-1: Validate that a download URL belongs to the expected GitHub host.
 pub(crate) fn validate_download_url(url: &str) -> Result<()> {
     let allowed_hosts = [
@@ -109,6 +128,10 @@ pub(crate) fn validate_bounded_download_url(url: &str) -> Result<()> {
 /// check of the final URL before any of the body is read (issue #1955).
 pub(crate) fn http_get_bounded(url: &str, budget: Duration) -> Result<Vec<u8>> {
     validate_bounded_download_url(url)?;
+    #[cfg(all(test, unix))]
+    if let Some(result) = crate::test_support::release_fixture::intercept_download(url) {
+        return result;
+    }
     let deadline = Instant::now() + budget;
     let mut delay = Duration::from_millis(HTTP_INITIAL_BACKOFF_MS);
     for attempt in 1..=HTTP_MAX_ATTEMPTS {
@@ -227,6 +250,10 @@ pub(super) fn github_error_message(status: u16, url: &str) -> String {
 
 /// Calls [`http_get`] with exponential backoff for transient errors.
 pub(crate) fn http_get_with_retry(url: &str) -> Result<Vec<u8>> {
+    #[cfg(all(test, unix))]
+    if let Some(result) = crate::test_support::release_fixture::intercept_download(url) {
+        return result;
+    }
     let mut delay_ms = HTTP_INITIAL_BACKOFF_MS;
     for attempt in 1..=HTTP_MAX_ATTEMPTS {
         match http_get(url) {
@@ -253,9 +280,13 @@ pub(crate) fn http_get_with_retry(url: &str) -> Result<Vec<u8>> {
     unreachable!("loop exits via return inside the body")
 }
 
-fn http_get(url: &str) -> Result<Vec<u8>> {
+pub(super) fn http_get(url: &str) -> Result<Vec<u8>> {
     // SEC-1: Reject URLs from unexpected hosts before making any network call.
     validate_download_url(url)?;
+    #[cfg(all(test, unix))]
+    if let Some(result) = crate::test_support::release_fixture::intercept_download(url) {
+        return result;
+    }
 
     let timeout = Duration::from_secs(NETWORK_TIMEOUT_SECS);
     let response = match ureq::AgentBuilder::new()

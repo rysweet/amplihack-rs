@@ -12,6 +12,8 @@
 //! endpoint for each fake `fake-at-1886-<uuid>` token. Measuring is stubbed
 //! (`Ctx.measure`). No `claude`, no daemon, no process variable.
 
+#![cfg(target_os = "linux")]
+
 use super::cred_identity::read_with;
 use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
 use super::decide::{Probed, Reading, Win, Windows};

@@ -12,27 +12,42 @@
 //! while the key profile's own files pass auto-switch's check; both cases are
 //! below.
 
+#[cfg(target_os = "linux")]
 use crate::commands::profile::ProfileError;
+#[cfg(target_os = "linux")]
 use crate::commands::profile::auto_switch::config::Config;
-use crate::commands::profile::auto_switch::kit::{Liveness, now};
+#[cfg(target_os = "linux")]
+use crate::commands::profile::auto_switch::kit::Liveness;
+use crate::commands::profile::auto_switch::kit::now;
+#[cfg(target_os = "linux")]
 use crate::commands::profile::auto_switch::{
     OverflowInputs, Pool, ReadingSource, SwitchReading, Window, select_with_overflow,
 };
 use crate::commands::profile::kind;
 use crate::commands::profile::name::ProfileName;
+#[cfg(target_os = "linux")]
 use crate::commands::profile::overflow::{Gate, OverflowEntry};
 use crate::commands::profile::rotate::candidates::login_unusable;
+#[cfg(target_os = "linux")]
 use crate::commands::profile::rotate::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
-use crate::commands::profile::rotate::decide::{Probed, Reading, Win, Windows};
+#[cfg(target_os = "linux")]
+use crate::commands::profile::rotate::decide::Probed;
+use crate::commands::profile::rotate::decide::{Reading, Win, Windows};
+#[cfg(target_os = "linux")]
 use crate::commands::profile::rotate::gate_record::GateSource;
+#[cfg(target_os = "linux")]
 use crate::commands::profile::rotate::key_check::KeyCheckFn;
 use crate::commands::profile::rotate::ledger::{RotateLedger, RotateState};
+#[cfg(target_os = "linux")]
 use crate::commands::profile::rotate::observe::{Measurement, Snap, decide_measured};
 use crate::commands::profile::rotate::plan_room::no_room::{self, MAX_SECS};
+#[cfg(target_os = "linux")]
 use crate::commands::profile::rotate::settings;
 use crate::commands::profile::rotate::tests_swap::{login, private};
 use crate::commands::profile::store::ProfileStore;
+#[cfg(target_os = "linux")]
 use amplihack_utils::claude_capacity as cap;
+#[cfg(target_os = "linux")]
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -42,6 +57,7 @@ const CREDS: &str = ".credentials.json";
 const KEY: &str = "api-key";
 const WORK: &str = "work";
 const CRED: &str = "cred";
+#[cfg(target_os = "linux")]
 const GATE: Gate = Gate {
     wait: 1800,
     unknown_reset: false,
@@ -65,6 +81,7 @@ fn dir700(p: &std::path::Path) {
 
 struct Fx {
     _tmp: tempfile::TempDir,
+    #[cfg(target_os = "linux")]
     home: PathBuf,
     root: PathBuf,
     store: ProfileStore,
@@ -112,6 +129,7 @@ fn fx() -> Fx {
     .unwrap();
     Fx {
         _tmp: tmp,
+        #[cfg(target_os = "linux")]
         home,
         root,
         store,
@@ -121,6 +139,7 @@ fn fx() -> Fx {
 
 /// A probe at `session`% of the session window, four hours from its reset,
 /// so the overflow wait holds.
+#[cfg(target_os = "linux")]
 fn probed(session: f64) -> Probed {
     let resets_at = Some(now() + 4 * 3600);
     let reading = if session >= 100.0 {
@@ -149,18 +168,21 @@ fn probed(session: f64) -> Probed {
 }
 
 /// `work` and `cred` at their session limits.
+#[cfg(target_os = "linux")]
 fn all_full(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let others = vec![(n(CRED), probed(100.0)), (n(KEY), Probed::platform())];
     decide_measured(ctx, snap, probed(100.0), others, now())
 }
 
 /// `work` well below every threshold, `cred` full.
+#[cfg(target_os = "linux")]
 fn work_roomy(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let others = vec![(n(CRED), probed(100.0)), (n(KEY), Probed::platform())];
     decide_measured(ctx, snap, probed(10.0), others, now())
 }
 
 impl Fx {
+    #[cfg(target_os = "linux")]
     fn cycle(
         &self,
         measure: crate::commands::profile::rotate::cycle::MeasureFn,
@@ -187,6 +209,7 @@ impl Fx {
     /// recorded it at 100%. Auto-switch has no reading of `work`: no
     /// status line records the login in `~/.claude`. A profile is eligible
     /// with its login file in its own directory, as in `nested_candidate`.
+    #[cfg(target_os = "linux")]
     fn auto_switch_pick(&self) -> Option<String> {
         let cfg = Config {
             enabled: true,
@@ -224,14 +247,17 @@ impl Fx {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn passes(_: &std::path::Path) -> Result<&'static str, String> {
     Ok("fake")
 }
 
+#[cfg(target_os = "linux")]
 fn fails(_: &std::path::Path) -> Result<&'static str, String> {
     Err("fake failure".to_string())
 }
 
+#[cfg(target_os = "linux")]
 fn recorded(f: &Fx) -> Vec<String> {
     let l = f.ledger();
     l.no_room

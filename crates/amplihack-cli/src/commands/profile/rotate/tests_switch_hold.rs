@@ -27,14 +27,20 @@
 //!   a switch's pin and pointer writes (D-Release).
 
 use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
+#[cfg(target_os = "linux")]
 use super::ledger::SWITCHED;
 use super::log::msg;
 use super::pin::{self, PinState};
 use super::settings;
 use super::swap::DOCUMENTED;
-use super::switch::{Switched, release, switch_live};
-use super::tests_swap::{Env, NOW, env, hold_state_lock, ino_at, json, n};
+use super::switch::release;
+#[cfg(target_os = "linux")]
+use super::switch::{Switched, switch_live};
+#[cfg(target_os = "linux")]
+use super::tests_swap::ino_at;
+use super::tests_swap::{Env, NOW, env, hold_state_lock, json, n};
 use super::{FOREIGN_IGNORES_HOLD, foreign_note_for};
+#[cfg(target_os = "linux")]
 use crate::commands::profile::auto_switch::kit::now;
 use crate::commands::profile::pointer;
 use amplihack_utils::rotator_status::parse_cycle;
@@ -55,6 +61,7 @@ fn watch_ctx(e: &Env) -> Ctx {
     Ctx::new(e.store.clone(), e.home.clone(), s)
 }
 
+#[cfg(target_os = "linux")]
 fn switch_to(e: &Env, name: &str) {
     match switch_live(&e.store, &e.home, &n(name)) {
         Ok(Ok(Switched::Moved { .. })) => {}

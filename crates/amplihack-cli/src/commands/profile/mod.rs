@@ -140,6 +140,7 @@ mod tests_verify_cmd;
 use anyhow::Result;
 /// For `amplihack sessions` (issue #1746): the live check and profile root.
 #[cfg(unix)]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) use auto_switch::claude_config_dirs;
 /// File helpers shared with the usage-limit wait (#1618).
 #[cfg(unix)]
@@ -161,8 +162,7 @@ pub(crate) use settings_refresh::{Refresh, refresh_profile_settings};
 use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::path::PathBuf;
-pub(crate) use store::ProfileStore;
-pub(crate) use store::ROOT_ENV;
+pub(crate) use store::{ProfileStore, ROOT_ENV};
 pub use supervise_gate::maybe_supervise;
 
 /// Name of the profile a parent launch resolved. Every launch that applies a

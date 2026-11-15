@@ -17,25 +17,27 @@
 //! launches (issue #1691, "keeps the `.default` pointer behaviour"); the last
 //! section runs the whole switch with `/proc` unscannable, as on macOS.
 
-use super::TuneFlags;
 use super::cycle::Ctx;
 use super::identify::{LiveId, Skip};
 use super::observe::Snap;
 use super::pin::{self, PinState};
-use super::settings;
 use super::switch::not_a_candidate;
 use super::switch::{Switched, switch_in};
 use super::tests_swap::{CREDS, Env, env, ino_at, n, private};
 use super::tests_switch::assert_refused;
+use super::{TuneFlags, settings};
 use crate::commands::profile::auto_switch::kit::Liveness;
 use crate::commands::profile::pointer;
+#[cfg(target_os = "linux")]
 use crate::test_support::proc::FAKE_PID_BASE;
 use std::fs;
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::PermissionsExt;
 
 /// A fake running `claude` whose `CLAUDE_CONFIG_DIR` is profile `name`'s
 /// directory, in `e`'s synthetic process table. Returns its pid, for
 /// [`end_session`].
+#[cfg(target_os = "linux")]
 fn session_in(e: &Env, k: u32, name: &str) -> u32 {
     let pid = FAKE_PID_BASE + k;
     e.proc.running_session(pid, &e.root.join(name));
@@ -43,11 +45,13 @@ fn session_in(e: &Env, k: u32, name: &str) -> u32 {
 }
 
 /// The session at `pid` exits: its entry leaves the table.
+#[cfg(target_os = "linux")]
 fn end_session(e: &Env, pid: u32) {
     e.proc.fake.remove(pid);
 }
 
 /// Writes the auto-switch ledger: directory → the account live in it.
+#[cfg(target_os = "linux")]
 fn hosts(e: &Env, entries: &[(&str, &str)]) {
     let hosts: serde_json::Map<String, serde_json::Value> = entries
         .iter()
@@ -67,6 +71,7 @@ fn hosts(e: &Env, entries: &[(&str, &str)]) {
     );
 }
 
+#[cfg(target_os = "linux")]
 fn ledger_bytes(e: &Env) -> Vec<u8> {
     fs::read(e.root.join(".auto-switch.d/ledger.json")).unwrap()
 }

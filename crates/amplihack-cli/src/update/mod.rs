@@ -6,9 +6,14 @@ mod network;
 mod path_verify;
 mod post_install;
 
+pub(crate) use archive::find_binary as find_release_binary;
+pub(crate) use archive::find_optional_binary as find_optional_release_binary;
 pub use check::{
     StartupUpdateOutcome, maybe_print_update_notice_from_args, run_update,
     should_skip_update_check_for_subcommand,
+};
+pub(crate) use install::{
+    acquire_release_archive, validate_release_executable, verify_installed_version,
 };
 pub(crate) use network::{MAX_TAG_TARBALL_BYTES, http_get_bounded};
 

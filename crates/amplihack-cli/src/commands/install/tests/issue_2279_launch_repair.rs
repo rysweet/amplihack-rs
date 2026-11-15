@@ -27,11 +27,11 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
-    let tmp = tempfile::tempdir().unwrap();
-    let bin_dir = tempfile::tempdir().unwrap();
+    let tmp = crate::test_support::tempdir_outside_framework_roots();
+    let bin_dir = crate::test_support::tempdir_outside_framework_roots();
     let home = tmp.path().to_path_buf();
     let hooks_bin = create_exe_stub(&bin_dir.path().join("stub_bin"), "amplihack-hooks");
-    let mut env = IsolatedHome::new(&home);
+    let mut env = IsolatedHome::installed(&home);
     env.set("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_bin);
     env.set("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", "1");
     env.unset("CLAUDE_CONFIG_DIR");

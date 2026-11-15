@@ -28,7 +28,16 @@ fn install(
     binary: &BinaryIdentity,
     fetcher: &FakeFetcher,
 ) -> anyhow::Result<()> {
-    run_install_with_fetcher(local, false, force_refresh, false, mode, binary, fetcher)
+    let version = local
+        .as_ref()
+        .map(|path| super::super::framework_source::read_source_version(path));
+    let version = match version {
+        Some(super::super::framework_source::SourceVersion::Known(version)) => version.to_string(),
+        _ => binary.version.clone(),
+    };
+    crate::test_support::release_fixture::with_release(&version, || {
+        run_install_with_fetcher(local, false, force_refresh, false, mode, binary, fetcher)
+    })
 }
 
 fn explicit(force_refresh: bool, fetcher: &FakeFetcher) -> anyhow::Result<()> {
@@ -242,7 +251,7 @@ fn a_refusal_comes_before_the_interactive_wizard() {
 // ── --local ──
 
 #[test]
-fn local_stages_an_older_tree_and_self_heal_then_leaves_it_alone() {
+fn local_stages_an_older_release_and_stamps_the_selected_version() {
     let fx = InstallEnv::new();
     let tree = versioned_tree(&fx.source_path("old"), &older_than_binary());
     mark_tree(&tree, "chosen");
@@ -262,18 +271,8 @@ fn local_stages_an_older_tree_and_self_heal_then_leaves_it_alone() {
         fs::read_to_string(fx.staged_file("context/sentinel.txt")).unwrap(),
         "chosen"
     );
-    // The stamp is the binary's, so self-heal doesn't undo the user's choice.
-    assert_eq!(stamp().as_deref(), Some(crate::VERSION));
-    let mut notice = Vec::new();
-    crate::self_heal::ensure_assets_match_binary_version_with(
-        &[
-            std::ffi::OsString::from("amplihack"),
-            std::ffi::OsString::from("launch"),
-        ],
-        &mut notice,
-        || panic!("self-heal must not re-stage over --local"),
-    )
-    .unwrap();
+    // The stamp describes the selected release, including a deliberate downgrade.
+    assert_eq!(stamp().as_deref(), Some(older_than_binary().as_str()));
 }
 
 #[test]

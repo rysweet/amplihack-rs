@@ -1,116 +1,93 @@
-# How to Install from a Local Repository
+---
+title: Install framework assets from a local repository
+description: Stage a local framework bundle while retaining release executable provenance.
+doc_type: howto
+review_schedule: as-needed
+---
 
-Use `amplihack install --local <PATH>` when you want to install from a local checkout instead of cloning from GitHub. This is useful in air-gapped environments, when testing a development branch, or when you have a slow network connection.
+# Install framework assets from a local repository
 
-## When to Use This
+Use `--local` to select framework assets from a checkout. Installation still
+publishes executables from a supported release source. This option does not
+install a development CLI or its sibling binaries.
 
-| Scenario | Command |
-|----------|---------|
-| Air-gapped machine | `amplihack install --local /mnt/usb/amplihack` (pre-install `recipe-runner-rs`, see below) |
-| Testing a dev branch | `amplihack install --local ~/src/amplihack-dev` |
-| CI pipeline (pre-cloned) | `amplihack install --local $GITHUB_WORKSPACE` |
-| Normal first install | `amplihack install` (no flag; uses a same-version local source or fetches the release tag) |
-| Staging a tree whose version differs from the binary | `amplihack install --local ~/src/amplihack-rs` |
+## Prepare the sources
 
-## Steps
-
-### 1. Obtain a local checkout
+Use a supported release CLI and obtain the framework checkout:
 
 ```sh
-# Clone the repository (amplihack-rs bundles framework assets since #254)
 git clone https://github.com/rysweet/amplihack-rs ~/src/amplihack-rs
-
-# Or copy from another machine
-rsync -a user@remote:~/src/amplihack ~/src/amplihack
 ```
 
-### 2. Run install with --local
+The command creates `~/src/amplihack-rs`. If you already have that checkout,
+use it directly.
 
-`--local` reads the framework bundle from the given checkout and does not
-contact GitHub for it, but the recipe-runner phase still runs
-`cargo install --git https://github.com/rysweet/amplihack-recipe-runner` when
-`recipe-runner-rs` is missing, and that needs network access. On an air-gapped
-host, build `recipe-runner-rs` elsewhere and either place it on `PATH`
-(`~/.cargo/bin` or `~/.local/bin`) or point `RECIPE_RUNNER_RS_PATH` at it
-before installing. If the phase does fail, the staged assets already have an
-uninstall manifest: provision the binary and re-run install, or run
-`amplihack uninstall`.
+The framework path must exist, contain a recognised framework root marker and
+pass [bundle compatibility validation](../reference/framework-bundle-compatibility.md).
+The installer canonicalises the root. Symlinks within the asset tree are
+skipped rather than followed; provide regular files for assets you need staged.
+
+## Stage the local framework
 
 ```sh
-amplihack install --local ~/src/amplihack
+amplihack install --local ~/src/amplihack-rs
 ```
 
-### Alternative: execute the local Rust checkout through npm
+Installation reports the selected framework path and version. If the asset
+version differs from the CLI's release version, it prints both versions and a
+warning, then stages the compatible bundle. A recognised asset version also
+selects the executable release version. The release allocation and
+`.installed-version` stamp use the selected executable release version.
 
-When you want npm/npx to invoke the Rust CLI from a local checkout of
-`amplihack-rs`, point `--package` at the repository root:
+Install resolves all required release executables before acquiring framework
+sources, taking the installation lock or changing profiles. It uses an eligible
+installed release of the selected version, or obtains that exact published
+platform archive. An unavailable archive is an error when no matching eligible
+release is installed. The installer never falls back to publishing a checkout
+build, even when you invoke `install` from that build.
+
+After success, check the CLI selected by your shell:
 
 ```sh
-npx --yes --package=/path/to/amplihack-rs -- amplihack install
-```
-
-That wrapper path uses the same `amplihack` bin name, provisions
-`amplihack` + `amplihack-hooks`, and then delegates to the native Rust CLI.
-If a matching GitHub release archive is unavailable, the wrapper falls back to
-building from the packaged Cargo workspace.
-
-That local-checkout path is also the way to use the wrapper on platforms without
-published release archives yet, because the fallback build needs the Rust
-workspace and a local Rust toolchain.
-
-The `--local` flag explicitly specifies the framework source directory. Without `--local`, `amplihack install` uses `AMPLIHACK_HOME` or the current checkout only when its version equals the binary's, refuses when it differs, and otherwise fetches the tag of the binary's release. See [Framework source selection](../reference/framework-source-selection.md). All other phases (binary deployment, asset staging, hook wiring) run identically.
-
-### Staging a tree with a different version
-
-`--local` is the only way to stage a tree whose version differs from the binary's, older or newer. Install prints both versions and a warning, then stages the tree:
-
-```text
-📦 Using framework source /home/alice/src/amplihack-old (v1.2.90, from --local)
-⚠️  This source is v1.2.90 but this binary is v1.2.99. Staging it because --local was given.
-```
-
-The stamp then records the binary's version, so self-heal leaves your choice in place. `--local` doesn't skip the [compatibility check](../reference/framework-bundle-compatibility.md).
-
-### 3. Verify
-
-```sh
+command -v amplihack
 amplihack --version
-# amplihack-rs 0.1.0
-
-# Confirm hooks are registered
-grep -c "amplihack-hooks" ~/.claude/settings.json
-# Should print 5 (one entry per binary-subcommand hook)
 ```
 
-## Path Requirements
+The path should be your user-level `~/.local/bin/amplihack`; the version should
+be the selected release version. For an unversioned asset tree, installation
+uses the running CLI version to select release executables.
 
-The path passed to `--local` must:
+## Prepare an offline host
 
-- Exist and be a directory
-- Contain a `.claude` directory (either at `<PATH>/.claude` or `<PATH>/../.claude`)
+`--local` avoids fetching the framework bundle. It does not make every install
+phase offline. Before disconnecting:
 
-Symlinks within the local repository are skipped with a warning — they are not followed during asset staging. If your checkout uses internal symlinks, the linked targets will not be staged; copy the files directly instead. Device, socket, and FIFO entries are skipped silently.
+- Provide an eligible installed release matching the selected executable
+  version; a compiled checkout is insufficient.
+- Provide the compatible local framework tree.
+- Provision `recipe-runner-rs` on `PATH`, or set `RECIPE_RUNNER_RS_PATH` to its
+  executable. Otherwise the recipe-runner phase needs network access.
 
-The installer canonicalizes the root path before staging to prevent traversal outside the given directory.
+Optional tool provisioning retains its own requirements; see the
+[install reference](../reference/install-command.md).
 
-## Example: Installing a Feature Branch
+## Recover from refusal
 
-```sh
-# Check out the feature branch
-git clone --branch feat/bootstrap-parity https://github.com/rysweet/amplihack-rs \
-    ~/src/amplihack-bootstrap-test
+If release executables cannot be resolved, the active release, stamp and links
+stay unchanged. Restore access to a supported published release and rerun
+installation, or use `amplihack update` to select the available newer release.
+`--local` cannot bypass executable validation.
 
-# Build the CLI from the same branch (if testing CLI changes)
-cd ~/src/amplihack-rs-update
-git checkout feat/bootstrap-parity
-cargo build --release
+This also limits `install --local` recovery guidance after a framework-tag
+fetch failure: it replaces the asset source only. It cannot recover missing
+release executables or make an unpublished development version installable.
 
-# Install from the local checkout
-./target/release/amplihack install --local ~/src/amplihack-bootstrap-test
-```
+To exercise development CLI changes without publishing them, follow
+[Run a checkout build safely](run-checkout-safely.md).
 
-## See Also
+## Related documentation
 
-- [Install amplihack for the First Time](./first-install.md) — standard network install
-- [amplihack install reference](../reference/install-command.md) — all flags
-- [Framework source selection](../reference/framework-source-selection.md) — how install chooses a source without `--local`
+- [First installation](first-install.md)
+- [Install command reference](../reference/install-command.md)
+- [Framework source selection](../reference/framework-source-selection.md)
+- [Executable eligibility](../features/self-heal-asset-restage.md#executable-eligibility)

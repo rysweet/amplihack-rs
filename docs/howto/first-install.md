@@ -6,13 +6,16 @@ This guide walks through running `amplihack install` on a machine that has never
 
 | Requirement | Minimum version | Why |
 |-------------|----------------|-----|
-| Rust toolchain | 1.88 (2024 edition) | Build from source |
-| Internet access | — | Default install fetches the binary's release tag from GitHub unless a same-version local source exists (skip with `--local`) |
-| Node.js + npm (optional) | 18+ | Only needed when using the npm/npx wrapper path |
+| Supported host | Linux or macOS, x86_64 or aarch64 | A matching published release archive must be available; on Windows, use WSL |
+| Internet access | — | A first installation obtains release executables and any missing framework or tool sources; `--local` supplies framework assets only |
+| Rust toolchain (optional) | Workspace toolchain | Needed to build a CLI from source; building does not authorise publishing that executable |
+| Node.js + npm (optional) | Node.js 24+ | Only needed when using the npm/npx wrapper path |
 
 ### macOS SIP Note {#macos-sip-note}
 
-On macOS with System Integrity Protection (SIP) active, `deploy_binaries()` copies the running executable to `~/.local/bin`. SIP may quarantine the copied binary, making it non-executable. If `amplihack-hooks` fails to run after install, remove the quarantine attribute:
+Installation stages validated release executables in `~/.amplihack/releases/`
+and publishes links in `~/.local/bin`. If macOS reports that an executable
+from a trusted downloaded release is quarantined, remove its quarantine attribute:
 
 ```sh
 xattr -d com.apple.quarantine ~/.local/bin/amplihack-hooks
@@ -21,28 +24,34 @@ xattr -d com.apple.quarantine ~/.local/bin/amplihack
 
 ## Install Steps
 
-### 1. Build the CLI binary
+### 1. Obtain a release CLI
+
+Download and unpack the archive for your supported host from
+[amplihack-rs releases](https://github.com/rysweet/amplihack-rs/releases).
+Use the unpacked CLI to start installation:
 
 ```sh
-cd /path/to/amplihack-rs-update
-cargo build --release
+cd /path/to/unpacked-release
+./amplihack --version
 ```
 
-This produces two binaries:
-
-- `target/release/amplihack` — the main CLI
-- `target/release/amplihack-hooks` — the multicall hook dispatcher
+You may also build a CLI from source and invoke its explicit `install`
+command. Installation still requires an eligible installed release of the
+selected version or that exact published platform archive. A checkout and
+its sibling binaries cannot replace those release executables. An unpublished
+checkout version cannot be installed merely by compiling it. See
+[Run a checkout build safely](run-checkout-safely.md).
 
 ### 2. Run the installer
 
 ```sh
-./target/release/amplihack install
+./amplihack install
 ```
 
 For guided setup (choose default tool, hook scope, update-check frequency):
 
 ```sh
-./target/release/amplihack install --interactive
+./amplihack install --interactive
 ```
 
 See [Interactive Install](./interactive-install.md) for a walkthrough of the wizard prompts.
@@ -61,17 +70,19 @@ native `amplihack install` flow. It prefers the matching GitHub release archive
 and falls back to a local Cargo build when the packaged Rust workspace is present.
 
 Published release archives currently cover Linux and macOS on `x64`/`arm64`.
-On Windows, or any other platform without a published release target, the npm
-wrapper needs the packaged Rust workspace plus a local Rust toolchain so it can
-fall back to a source build. If you do not want that dependency, use the native
-`cargo install` path instead of the npm wrapper.
+The wrapper's source-build fallback can provide a CLI to invoke, but cannot
+provide release publication authority. Installation still requires eligible
+installed release executables or the matching published platform archive.
+An unsupported platform cannot bypass that requirement by building from
+source. On Windows, use WSL and its Linux release target.
 
 The installer performs these phases in order:
 
 | Phase | What happens |
 |-------|-------------|
+| **Resolve release executables** | Validates required executables from an eligible installed release of the selected version, or obtains that exact published platform archive. Refuses before installation writes if they are unavailable. |
 | **Obtain framework** | Uses a local source with the binary's version, or fetches the matching release tag, or uses `--local` when requested. See [Framework source selection](../reference/framework-source-selection.md). |
-| **Deploy binaries** | Copies `amplihack` and `amplihack-hooks` to `~/.local/bin` with `0o755` permissions. |
+| **Publish release** | Stages validated release executables and the framework bundle under `~/.amplihack/releases/`, then switches the user-level binary and bundle links. |
 | **Stage assets** | Copies framework files (agents, commands, tools, skills, etc.) to `~/.amplihack/.claude/`. |
 | **Create runtime dirs** | Creates `~/.amplihack/.claude/runtime/` subdirectories with `0o755` permissions. |
 | **Wire hooks** | Updates `~/.claude/settings.json` with the [7 amplihack hooks](../reference/hook-specifications.md). Backs up the existing file first. |
@@ -98,8 +109,12 @@ Open `~/.claude/settings.json` and confirm the `hooks` section contains entries 
 
 ```
 ~/.local/bin/
-├── amplihack            # main CLI binary
-└── amplihack-hooks      # multicall hook dispatcher
+├── amplihack            # link to the release CLI
+└── amplihack-hooks      # link to the release hook dispatcher
+
+~/.amplihack/releases/<release>/
+├── bin/                # validated release executables
+└── amplifier-bundle/   # framework bundle
 
 ~/.amplihack/.claude/
 ├── agents/amplihack/    # agent prompts
@@ -125,22 +140,14 @@ Open `~/.claude/settings.json` and confirm the `hooks` section contains entries 
 
 ## Troubleshooting
 
-**`amplihack-hooks not found`**
+**Required release executables unavailable or invalid**
 
-The installer searches for `amplihack-hooks` in this order:
-1. `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` environment variable
-2. Sibling of the running `amplihack` executable
-3. `PATH` lookup
-4. `~/.local/bin/amplihack-hooks`
-5. `~/.cargo/bin/amplihack-hooks`
-
-Build `amplihack-hooks` before running the installer:
-
-```sh
-cargo build --release --bin amplihack-hooks
-```
-
-See [Binary Resolution](../reference/binary-resolution.md) for the full lookup sequence.
+Use a supported published release for your platform and restore access to its
+archive. Installation requires both `amplihack` and `amplihack-hooks` from
+the selected release; a local build, a hooks override or a companion on `PATH`
+cannot substitute for them. `--local` changes framework assets only. See
+[Release binary staging](../reference/install-command.md#release-binary-staging-internal)
+and [offline preparation](local-install.md#prepare-an-offline-host).
 
 **`⚠️  ~/.local/bin is not in $PATH`**
 
@@ -153,7 +160,7 @@ source ~/.bashrc
 
 **`⚠️  PATH conflict`**
 
-The installer deployed current binaries to `~/.local/bin`, but another
+The installer published release binary links in `~/.local/bin`, but another
 `amplihack` or `amplihack-hooks` appears earlier on `PATH`. Follow
 [Repair install/update PATH conflicts](repair-install-update-path-conflicts.md)
 to reorder `PATH` or remove stale system binaries.
@@ -165,7 +172,7 @@ Install is idempotent. Re-running updates hook registrations in place without du
 ## See Also
 
 - [Interactive Install](./interactive-install.md) — guided wizard for tool, scope, and update preferences
-- [Install from a Local Repository](./local-install.md) — offline install without git clone
+- [Install from a Local Repository](./local-install.md) — local framework assets and offline preparation
 - [Repair install/update PATH conflicts](./repair-install-update-path-conflicts.md) — fix stale `/usr/local/bin` binaries
 - [Uninstall amplihack](./uninstall.md) — clean removal
 - [amplihack install reference](../reference/install-command.md) — all flags and options

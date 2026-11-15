@@ -8,10 +8,9 @@
 
 mod version;
 
-pub use version::{get_latest_version, sanitize_version};
-
 use crate::util::is_noninteractive;
 use amplihack_utils::launch_target::{LaunchTarget, OverrideOrigin, TargetSource};
+pub use version::{get_latest_version, sanitize_version};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -37,7 +36,9 @@ use amplihack_utils::launch_target::{LaunchTarget, OverrideOrigin, TargetSource}
 pub fn maybe_print_npm_update_notice(tool: &str, skip: bool, override_origin: OverrideOrigin) {
     // SEC-WS3: AMPLIHACK_NONINTERACTIVE check is the second guard.
     // Unconditionally prevents subprocess spawning regardless of skip flag.
-    if !check_wanted(skip, is_noninteractive()) {
+    if !check_wanted(skip, is_noninteractive())
+        || !crate::commands::install::may_publish_implicitly()
+    {
         return;
     }
 

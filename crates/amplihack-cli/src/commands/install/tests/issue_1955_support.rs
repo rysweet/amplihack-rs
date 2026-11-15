@@ -127,6 +127,7 @@ pub(super) struct InstallEnv {
     pub(super) outside: tempfile::TempDir,
     pub(super) home: PathBuf,
     pub(super) env: IsolatedHome,
+    _downloads: crate::test_support::release_fixture::Downloads,
 }
 
 impl InstallEnv {
@@ -140,7 +141,7 @@ impl InstallEnv {
         let runner_stub = create_exe_stub(&stub_bin, "recipe-runner-rs");
         write_script(&stub_bin.join("git"), "#!/bin/sh\nexit 1\n");
 
-        let mut env = IsolatedHome::new(&home);
+        let mut env = IsolatedHome::installed(&home);
         env.set("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
         env.set("RECIPE_RUNNER_RS_PATH", &runner_stub);
         env.set("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", "1");
@@ -152,11 +153,15 @@ impl InstallEnv {
             &std::env::var_os("PATH").unwrap_or_default(),
         ));
         env.set("PATH", std::env::join_paths(path_dirs).unwrap());
+        let native = crate::test_support::release_fixture::native_release().join("release");
+        let downloads =
+            crate::test_support::release_fixture::Downloads::release(crate::VERSION, &native, true);
         Self {
             _home: home_dir,
             outside,
             home,
             env,
+            _downloads: downloads,
         }
     }
 

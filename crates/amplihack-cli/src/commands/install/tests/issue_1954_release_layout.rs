@@ -37,19 +37,24 @@
 //! The install lock has its own file, `issue_1954_install_lock.rs`.
 
 use super::super::bundle_compat::validate_framework_bundle_compatibility;
+use super::super::release_layout;
+#[cfg(target_os = "linux")]
+use super::super::release_layout::scan_pids;
 use super::super::release_layout::{
-    self, COMPLETE_MARKER, CleanupReport, Exchange, INSTALLED_BY, InUse, InstalledBy, RETIRED_DIR,
+    COMPLETE_MARKER, CleanupReport, Exchange, INSTALLED_BY, InUse, InstalledBy, RETIRED_DIR,
     ReleaseTxn, Retired, cleanup_unused_with, exchange_dirs, exchange_dirs_with,
     format_installed_by, format_kept_in_use, is_release_path, keep_set, kept_in_use_warning,
-    make_tree_writable, read_installed_by, releases_dir, retire, retire_with, scan_pids,
-    switch_link, validate_version, write_installed_by,
+    make_tree_writable, read_installed_by, releases_dir, retire, retire_with, switch_link,
+    validate_version, write_installed_by,
 };
 use super::helpers::create_source_repo;
 use std::collections::BTreeMap;
 use std::fs;
+#[cfg(target_os = "linux")]
 use std::io::{BufRead, BufReader};
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
 use std::process::{Child, Command, Stdio};
 
 // ---------------------------------------------------------------- fixtures
@@ -136,11 +141,14 @@ fn known(entries: &[(&Path, u32)]) -> InUse {
 /// after `exec`, so `/proc/<pid>/environ` is its own); the test blocks on
 /// that line, no timer. Dropping it closes the child's stdin, which ends its
 /// `read`, then reaps it with `wait()`. No signal is sent.
+#[cfg(target_os = "linux")]
 struct Holder(Child);
 
+#[cfg(target_os = "linux")]
 impl Holder {
     /// Holds `dir` as cwd and `file` open on fd 3. Paths reach `sh` only as
     /// positional arguments (S-V7).
+    #[cfg(target_os = "linux")]
     fn spawn(dir: &Path, file: &Path, env: &[(&str, &str)]) -> Self {
         let mut command = Command::new("/bin/sh");
         command
@@ -175,11 +183,13 @@ impl Holder {
         holder
     }
 
+    #[cfg(target_os = "linux")]
     fn pid(&self) -> u32 {
         self.0.id()
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for Holder {
     fn drop(&mut self) {
         // Closing stdin ends the child's `read`; it then exits by itself.

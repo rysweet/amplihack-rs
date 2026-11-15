@@ -1,14 +1,12 @@
 //! First-run bootstrap for framework assets and host CLIs.
 
 use crate::binary_finder::{BinaryFinder, BinaryInfo};
-use crate::claude_plugin;
 use crate::commands::install;
-use crate::copilot_setup;
-use crate::freshness;
 use crate::tool_update_check::{get_latest_version, sanitize_version};
 use crate::util::{
     format_output_diagnostics, is_noninteractive, run_output_with_timeout, run_with_timeout,
 };
+use crate::{claude_plugin, copilot_setup, freshness};
 use amplihack_utils::claude_native::{
     CLAUDE_NPM_PACKAGE, claude_platform_packages, detect_musl, is_materialized,
 };
@@ -52,6 +50,12 @@ fn prepare_selected_launcher(tool: &str) -> Result<()> {
     check_required_tools()?;
     install::ensure_framework_installed()?;
 
+    // A checkout may use existing assets, but must not publish hooks,
+    // provider configuration or a replacement runner while launching.
+    if !install::may_publish_implicitly() {
+        return Ok(());
+    }
+
     // Best-effort: reconcile the managed recipe runner with the bundled pin.
     // Can be disabled via
     // AMPLIHACK_NO_FRESHNESS_CHECK=1 or the standard non-interactive guards.
@@ -72,7 +76,7 @@ fn prepare_selected_launcher(tool: &str) -> Result<()> {
             // older than the install would write its older hook wrappers over
             // the newer install's, and the user's config.json is never
             // rewritten from here, only filled in when amplihack is absent.
-            if install::newer_install_stamp()?.is_none() {
+            if install::may_publish_implicitly() {
                 copilot_setup::ensure_copilot_home_staged(
                     copilot_setup::UserConfig::for_implicit_install(),
                 )?;
@@ -522,7 +526,7 @@ fn latest_published_version(
     package: Option<&'static str>,
     target: Option<&LaunchTarget>,
 ) -> Option<String> {
-    if is_noninteractive() {
+    if is_noninteractive() || !install::may_publish_implicitly() {
         return None;
     }
     let package = package?;
@@ -601,7 +605,7 @@ fn log_rejected_candidates(tool: &str, resolution: &Resolution) {
 
 /// Map a tool name to the npm package used for installation and upgrades.
 ///
-/// This is the single source of truth — both `install_tool` and
+/// This is the single source of truth: both `install_tool` and
 /// `maybe_upgrade_tool` read through here so they can never disagree on
 /// which package backs a given tool.
 pub(crate) fn npm_package_for_install(tool: &str) -> Option<&'static str> {
@@ -614,6 +618,17 @@ pub(crate) fn npm_package_for_install(tool: &str) -> Option<&'static str> {
 }
 
 fn install_tool(tool: &str) -> Result<()> {
+    // Every caller is implicit (missing-client startup or an owned-client
+    // upgrade). Keep discovery read-only, and refuse here before either npm
+    // or uv can create directories, clean caches or invoke an installer.
+    // Explicit framework install/update do not call this helper.
+    if crate::self_heal::env_bypass_set() {
+        bail!("AMPLIHACK_SKIP_AUTO_INSTALL prevents automatic acquisition of '{tool}'");
+    }
+    if !install::release_layout::executable_allows_implicit_install() {
+        crate::self_heal::warn_implicit_origin_once(&mut std::io::stderr());
+        bail!("Automatic acquisition of '{tool}' refused because of executable origin");
+    }
     if let Some(pkg) = npm_package_for_install(tool) {
         return install_npm_package(tool, pkg);
     }

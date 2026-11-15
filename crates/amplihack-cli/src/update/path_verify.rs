@@ -155,25 +155,28 @@ mod tests {
         assert!(msg.contains(".cargo/bin/amplihack (no version reported)"));
     }
 
-    /// This host is the reproduction: two distinct copies on PATH. The probe must
-    /// find at least the one it is running as, or the check is inert.
+    /// Discover and probe a controlled executable, independently of whether
+    /// the developer or CI runner has installed amplihack on its own PATH.
+    #[cfg(unix)]
     #[test]
     fn the_probe_finds_copies_on_this_host() {
-        // Issue #1380: this reads PATH, and sibling tests point PATH at a tempdir
-        // holding one stub binary while they run. A reader has to take the same
-        // lock as the writers or it observes a PATH with no amplihack on it and
-        // fails for reasons that have nothing to do with the probe.
-        let _guard = crate::test_support::env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        // Deliberately asks for a version nothing can be, so every copy found is
-        // reported stale -- this asserts discovery, not the comparison.
-        let found = stale_copies_on_path("0.0.0-nonexistent").unwrap_or_default();
-        if std::env::var_os("PATH").is_some() {
-            assert!(
-                !found.is_empty() || std::env::current_exe().is_err(),
-                "the probe found no amplihack on PATH at all; the gate would be inert"
-            );
-        }
+        let temp = crate::test_support::tempdir_outside_framework_roots();
+        let executable = temp.path().join("amplihack");
+        let native = crate::test_support::release_fixture::native_release().join("release");
+        crate::test_support::copy_executable(&native, &executable);
+        crate::test_support::with_env(
+            &[
+                ("HOME", Some(temp.path().as_os_str())),
+                ("PATH", Some(temp.path().as_os_str())),
+            ],
+            || {
+                let found = stale_copies_on_path("0.0.0-nonexistent").unwrap();
+                assert_eq!(found.len(), 1);
+                assert_eq!(found[0].path, executable);
+                assert_eq!(found[0].reported.as_deref(), Some(crate::VERSION));
+                verify_all_path_copies(crate::VERSION).unwrap();
+                assert!(verify_all_path_copies("0.0.0-nonexistent").is_err());
+            },
+        );
     }
 }

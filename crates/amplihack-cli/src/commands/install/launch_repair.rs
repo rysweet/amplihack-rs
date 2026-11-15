@@ -27,6 +27,28 @@ pub(super) fn launch_settings_target() -> Result<(PathBuf, bool)> {
     }
 }
 
+/// Read-only assessment for an executable that cannot reconcile installation
+/// assets. Do not probe a provider or create a settings file to decide this.
+pub(super) fn settings_hooks_need_repair() -> Result<bool> {
+    let (settings, may_create) = launch_settings_target()?;
+    let hooks = match binary::stable_hooks_binary() {
+        Ok(hooks) => hooks,
+        Err(error) => {
+            tracing::debug!(%error, "no installed hooks available for read-only assessment");
+            return Ok(true);
+        }
+    };
+    let Some(mut target) = HookTarget::new(hooks, true) else {
+        return Ok(true);
+    };
+    let first = drift_file(&settings, &target);
+    if first == FileDrift::Clean || (first == FileDrift::Absent && !may_create) {
+        return Ok(false);
+    }
+    target.limit_resume = false;
+    Ok(drift_file(&settings, &target) != FileDrift::Clean)
+}
+
 /// Issue #2279 (D4): repairs any drift of amplihack's hooks block in the
 /// launch target, not only a file with no amplihack hook at all. A current
 /// file is not touched; a file that is not JSON or may not be written gets

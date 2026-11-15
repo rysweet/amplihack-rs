@@ -61,6 +61,7 @@ pub(super) fn newer_version() -> String {
 pub(super) struct IsolatedHome {
     saved: Vec<(&'static str, Option<OsString>)>,
     _lock: std::sync::MutexGuard<'static, ()>,
+    _origin: Option<super::super::release_layout::TestEligibility>,
 }
 
 impl IsolatedHome {
@@ -72,8 +73,14 @@ impl IsolatedHome {
         let mut env = Self {
             saved: Vec::new(),
             _lock: lock,
+            _origin: None,
         };
         env.put("HOME", Some(home.as_os_str()));
+        env.put("CLAUDE_CONFIG_DIR", None);
+        env.set("CODEX_HOME", home.join(".codex"));
+        env.set("AMPLIHACK_CLAUDE_PROFILE_ROOT", home.join("profiles"));
+        env.set("XDG_CONFIG_HOME", home.join(".config"));
+        env.set("XDG_CACHE_HOME", home.join(".cache"));
         // Asset-restaging tests must not select the enclosing agent's provider.
         env.set("AMPLIHACK_AGENT_BINARY", "claude");
         env.set("AMPLIHACK_SKIP_MMDC", "1");
@@ -85,6 +92,14 @@ impl IsolatedHome {
         ] {
             env.put(name, None);
         }
+        env
+    }
+
+    /// Exercise an eligible installed binary's existing installation rules.
+    /// Origin regressions deliberately use `new` instead.
+    pub(super) fn installed(home: &Path) -> Self {
+        let mut env = Self::new(home);
+        env._origin = Some(super::super::release_layout::TestEligibility::installed());
         env
     }
 
@@ -131,9 +146,20 @@ pub(super) fn assert_home_is(home: &Path) {
         Some(home),
         "HOME must be the test's temp dir before any installer code runs"
     );
+    let canonical_home = home.canonicalize().expect("the private test home exists");
+    // Match the shared scratch helper's candidates, including macOS's
+    // canonical /private/var spelling and its clean /var/tmp fallback.
     assert!(
-        home.starts_with(std::env::temp_dir()),
-        "HOME {home:?} is not under the temp dir; refusing to run installer code"
+        [
+            std::env::temp_dir(),
+            PathBuf::from("/var/tmp"),
+            PathBuf::from("/tmp")
+        ]
+        .iter()
+        .any(|base| base
+            .canonicalize()
+            .is_ok_and(|base| { canonical_home != base && canonical_home.starts_with(base) })),
+        "HOME {home:?} is not under a scratch base; refusing to run installer code"
     );
 }
 
@@ -327,9 +353,9 @@ fn newer_stamp_refuses_implicit_restage_and_changes_nothing_under_home() {
         &["amplihack", "launch"][..],
     ] {
         for (bundle, write_bundle) in bundles {
-            let tmp = tempfile::tempdir().unwrap();
+            let tmp = crate::test_support::tempdir_outside_framework_roots();
             let home = tmp.path();
-            let _env = IsolatedHome::new(home);
+            let _env = IsolatedHome::installed(home);
             write_bundle(home);
             plant_newer_install(home, &newer);
             version_stamp::write_installed_version(&newer).unwrap();
@@ -381,9 +407,9 @@ fn newer_stamp_refuses_implicit_restage_and_changes_nothing_under_home() {
 #[test]
 fn refusal_warning_does_not_attribute_the_framework_version_to_unknown_binaries() {
     let newer = newer_version();
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::test_support::tempdir_outside_framework_roots();
     let home = tmp.path();
-    let _env = IsolatedHome::new(home);
+    let _env = IsolatedHome::installed(home);
     create_minimal_staged_assets(home);
     version_stamp::write_installed_versions(&newer, None).unwrap();
 
@@ -422,9 +448,9 @@ fn refusal_warning_does_not_attribute_the_framework_version_to_unknown_binaries(
 #[test]
 fn bypass_with_a_newer_stamp_prints_only_the_unchanged_bypass_line() {
     let newer = newer_version();
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::test_support::tempdir_outside_framework_roots();
     let home = tmp.path();
-    let mut env = IsolatedHome::new(home);
+    let mut env = IsolatedHome::installed(home);
     env.set("AMPLIHACK_SKIP_AUTO_INSTALL", "1");
     create_minimal_staged_assets(home);
     version_stamp::write_installed_version(&newer).unwrap();
@@ -460,9 +486,9 @@ fn bypass_with_a_newer_stamp_prints_only_the_unchanged_bypass_line() {
 #[test]
 fn unparseable_or_build_metadata_stamp_still_stages() {
     for raw in [format!("{}+build.7", crate::VERSION), "garbage".to_string()] {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = crate::test_support::tempdir_outside_framework_roots();
         let home = tmp.path();
-        let _env = IsolatedHome::new(home);
+        let _env = IsolatedHome::installed(home);
         create_minimal_staged_assets(home);
         let stamp_path = version_stamp::installed_version_path().unwrap();
         fs::create_dir_all(stamp_path.parent().unwrap()).unwrap();
@@ -497,11 +523,11 @@ fn unparseable_or_build_metadata_stamp_still_stages() {
 /// A refusal must leave every byte under HOME as it was.
 #[test]
 fn real_run_install_behind_self_heal_never_touches_a_newer_install() {
-    let home_dir = tempfile::tempdir().unwrap();
+    let home_dir = crate::test_support::tempdir_outside_framework_roots();
     let home = home_dir.path();
     // The source repo and stub tools live outside HOME so the HOME snapshot
     // sees only what the installer would write.
-    let fixture = tempfile::tempdir().unwrap();
+    let fixture = crate::test_support::tempdir_outside_framework_roots();
     let stub_bin = fixture.path().join("stub_bin");
     create_exe_stub(&stub_bin, "python3");
     let hooks_stub = create_exe_stub(&stub_bin, "amplihack-hooks");
@@ -509,7 +535,7 @@ fn real_run_install_behind_self_heal_never_touches_a_newer_install() {
     let repo = fixture.path().join("local-repo");
     create_source_repo(&repo);
 
-    let mut env = IsolatedHome::new(home);
+    let mut env = IsolatedHome::installed(home);
     env.set("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
     env.set("RECIPE_RUNNER_RS_PATH", &runner_stub);
     // Network tripwire: the unfixed path must never fall back to cargo install.
@@ -588,9 +614,9 @@ fn newer_stamp_landing_while_waiting_on_the_install_lock_is_still_refused() {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     let newer = newer_version();
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::test_support::tempdir_outside_framework_roots();
     let home = tmp.path();
-    let _env = IsolatedHome::new(home);
+    let _env = IsolatedHome::installed(home);
     create_minimal_staged_assets(home);
 
     // Hold the install lock the way a concurrent (newer) installer would.
@@ -609,6 +635,7 @@ fn newer_stamp_landing_while_waiting_on_the_install_lock_is_still_refused() {
     assert_home_is(home);
     let (observed, result, notice) = std::thread::scope(|scope| {
         let worker = scope.spawn(|| {
+            let _origin = super::super::release_layout::TestEligibility::installed();
             let mut notice = Vec::new();
             let result = ensure_assets_match_binary_version_with(
                 &args(&["amplihack", "recipe", "run", "x"]),

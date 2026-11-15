@@ -249,6 +249,8 @@ fn existing_framework_reconciles_native_resources_when_codex_arrives() {
     unsafe {
         std::env::set_var("AMPLIHACK_CODEX_BINARY_PATH", &explicit);
     }
+    let _origin = super::super::release_layout::TestEligibility::installed();
+    let _automatic = EnvGuard::unset(["AMPLIHACK_SKIP_AUTO_INSTALL"]);
     crate::freshness::with_provider("codex", super::super::ensure_framework_installed).unwrap();
     assert!(home.join(".amplihack/codex/ownership.json").is_file());
     assert!(explicit.with_extension("installed").exists());

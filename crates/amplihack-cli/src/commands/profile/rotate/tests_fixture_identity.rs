@@ -48,6 +48,7 @@ fn fixture_root(path: &Path, depth: usize) -> PathBuf {
 /// Register `root`, a tempdir directly below `temp_dir()`, for a fixture
 /// that writes its synthetic identity without `body()` (the handfix
 /// fixtures). The same validation as `body()` applies.
+#[cfg(target_os = "linux")]
 pub(in crate::commands::profile::rotate) fn own_root(root: &Path) {
     let granted = fixture_root(root, 1);
     assert_eq!(

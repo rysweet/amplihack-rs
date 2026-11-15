@@ -86,17 +86,23 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let home_dir = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
+        let home_dir = crate::test_support::tempdir_outside_framework_roots();
+        let outside = crate::test_support::tempdir_outside_framework_roots();
         let home = home_dir.path().to_path_buf();
         let stub_bin = outside.path().join("stub_bin");
         create_exe_stub(&stub_bin, "python3");
-        let hooks_stub = create_exe_stub(&stub_bin, "amplihack-hooks");
+        let hooks_stub = stub_bin.join("amplihack-hooks");
+        fs::create_dir_all(&stub_bin).unwrap();
+        fs::copy(
+            crate::test_support::release_fixture::native_release().join("release"),
+            &hooks_stub,
+        )
+        .unwrap();
         let runner_stub = create_exe_stub(&stub_bin, "recipe-runner-rs");
         let repo = outside.path().join("local-repo");
         create_source_repo(&repo);
 
-        let mut env = IsolatedHome::new(&home);
+        let mut env = IsolatedHome::installed(&home);
         env.set("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
         env.set("RECIPE_RUNNER_RS_PATH", &runner_stub);
         env.set("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", "1");
@@ -141,8 +147,10 @@ impl Fixture {
 
     fn install(&self, mode: InstallMode) {
         assert_home_is(&self.home);
-        local_install_scoped(&self.repo, None, false, mode)
-            .unwrap_or_else(|e| panic!("{mode:?} install failed: {e:#}"));
+        crate::test_support::release_fixture::with_release(crate::VERSION, || {
+            local_install_scoped(&self.repo, None, false, mode)
+        })
+        .unwrap_or_else(|e| panic!("{mode:?} install failed: {e:#}"));
     }
 }
 
@@ -274,62 +282,39 @@ fn implicit_restage_without_a_stamp_keeps_installed_binaries_and_stamps_them_unk
     );
 }
 
-/// Review M1: the stamp check vouches only for this build's own binaries. A
-/// hooks binary found elsewhere on PATH, of unknown version, must not replace
-/// an installed one, even when this build is newer than the stamp.
+/// Even with unrelated hooks on PATH, an eligible newer release publishes
+/// both executables from the selected release, independently of that lookup.
 #[test]
-fn implicit_restage_never_replaces_hooks_with_a_path_copy() {
+fn implicit_restage_uses_selected_release_instead_of_path_hooks() {
     let mut fx = Fixture::new();
     fx._env.unset("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
-    let installed = fx.plant_installed_hooks();
+    fx.plant_installed_hooks();
+    let ambient_bin = fx.home.join("unrelated-path-bin");
+    create_exe_stub(&ambient_bin, "amplihack-hooks");
+    fx._env.set(
+        "PATH",
+        std::env::join_paths([
+            ambient_bin,
+            PathBuf::from("/usr/bin"),
+            PathBuf::from("/bin"),
+        ])
+        .unwrap(),
+    );
     version_stamp::write_installed_version(&older_version()).unwrap();
 
     fx.install(InstallMode::Implicit);
 
-    assert_eq!(
-        fs::read(fx.installed_hooks()).unwrap(),
-        installed,
-        "an implicit re-stage replaced installed hooks with a PATH copy"
-    );
+    for name in ["amplihack", "amplihack-hooks"] {
+        let installed = fx.home.join(".local/bin").join(name);
+        assert!(
+            fs::read(&installed).unwrap() == fs::read(&fx.hooks_stub).unwrap(),
+            "{name} must use selected release bytes"
+        );
+    }
     assert_eq!(
         version_stamp::read_binaries_version().unwrap().as_deref(),
-        Some(older_version().as_str()),
-        "the kept hooks binary is still at the old stamp's version"
-    );
-
-    // The mixed state crusty flagged: `amplihack` was upgraded (its source is
-    // the running executable) while hooks were kept, so the `binaries:`
-    // version above is not the version of ~/.local/bin/amplihack.
-    let installed_self = crate::path_conflicts::preferred_user_bin(&fx.home)
-        .join(crate::path_conflicts::binary_filename("amplihack"));
-    let running_self =
-        crate::commands::install::resolve_running_binary_source(&std::env::current_exe().unwrap());
-    assert_eq!(
-        fs::read(&installed_self).unwrap(),
-        fs::read(&running_self).unwrap(),
-        "fixture: the implicit re-stage must upgrade ~/.local/bin/amplihack while keeping hooks"
-    );
-    // A later, older build's refusal must not print the kept version beside
-    // the upgraded binary's path.
-    let framework = version_stamp::read_installed_version_quiet()
-        .unwrap()
-        .expect("stamp written");
-    crate::self_heal::set_downgrade_warned(false);
-    let mut notice = Vec::new();
-    crate::self_heal::warn_implicit_downgrade_once(&mut notice, &framework);
-    let notice = String::from_utf8(notice).unwrap();
-    let line = notice
-        .lines()
-        .find(|l| l.trim_start().starts_with("installed:"))
-        .unwrap_or_else(|| panic!("no `installed:` line in the warning:\n{notice}"));
-    assert_eq!(
-        line,
-        format!(
-            "  installed: {}; framework v{framework}; binaries kept from v{}",
-            paths::sanitize_path(&installed_self),
-            older_version()
-        ),
-        "the warning attributed the kept hooks' version to the upgraded amplihack binary"
+        Some(crate::VERSION),
+        "both published executables now have the selected release version"
     );
 }
 
@@ -347,7 +332,9 @@ fn pre_502_state_restages_once_then_stops() {
             notice,
             || {
                 installs.set(installs.get() + 1);
-                local_install_scoped(&fx.repo, None, false, InstallMode::Implicit)
+                crate::test_support::release_fixture::with_release(crate::VERSION, || {
+                    local_install_scoped(&fx.repo, None, false, InstallMode::Implicit)
+                })
             },
         )
         .expect("launch")

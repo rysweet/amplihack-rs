@@ -26,6 +26,8 @@
 //! that turns on a session has its own static flag, so parallel tests do not
 //! share one. Logins are only renamed or replaced inside the temp dir.
 
+#![cfg(target_os = "linux")]
+
 use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
 use super::damp::FAILED_PROBE_LIMIT;
 use super::decide::{Decision, Probed};

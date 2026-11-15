@@ -1,7 +1,7 @@
 ---
 title: Framework source selection reference
 description: Which source amplihack install, update and self-heal stage the framework bundle from, how versions are compared, and which checks and modes staging applies.
-last_updated: 2026-11-11
+last_updated: 2026-11-13
 review_schedule: as-needed
 owner: amplihack-maintainers
 doc_type: reference
@@ -14,9 +14,15 @@ doc_type: reference
 version. A source with a different version is used only with an explicit
 `--local`.
 
+Framework assets and executable publication have separate source contracts.
+A matching framework version does not establish executable provenance.
+`--local`, `AMPLIHACK_HOME`, checkout discovery and compile-time paths select
+assets only; none authorises publishing a checkout executable.
+
 ## Contents
 
 - [Sources each command consults](#sources-each-command-consults)
+- [Executable sources](#executable-sources)
 - [How a source's version is read](#how-a-sources-version-is-read)
 - [Source rules](#source-rules)
 - [Release tag fetch](#release-tag-fetch)
@@ -32,9 +38,11 @@ version. A source with a different version is used only with an explicit
 
 ## Sources each command consults
 
-Each command tries its sources in the order shown.
+This table lists **framework-asset sources only**, in selection order. It does
+not select executable bytes or remove the separate release-executable
+requirement described below.
 
-| Command | Sources, in order |
+| Command | Framework-asset sources, in order |
 |---|---|
 | `amplihack install --local <PATH>` | `<PATH>` only |
 | `amplihack install` | `AMPLIHACK_HOME`, current-directory walk-up, executable walk-up, compile-time workspace root, `~/.amplihack`, release tag fetch |
@@ -57,6 +65,41 @@ set this variable themselves and the user may not have chosen it.
 
 `AMPLIHACK_HOME` is only ever a source here. Install always stages into
 `$HOME/.amplihack`, wherever `AMPLIHACK_HOME` points.
+
+Implicit callers check automatic-install suppression and canonical executable
+origin before acquiring any source or taking an installation lock. Refusal
+leaves installation and profile state unchanged. See
+[Executable eligibility](../features/self-heal-asset-restage.md#executable-eligibility).
+
+## Executable sources
+
+A recognised `--local` asset version selects the release version for executables
+and stamps. An unversioned local tree retains the running CLI version as the
+release selection; it still cannot supply development executables.
+
+Before acquiring framework assets, explicit install resolves executable sources:
+
+1. An eligible installed release matching the selected release version.
+2. Otherwise, the published platform archive for that exact release version.
+
+Required executables include `amplihack`, `amplihack-hooks` and the asset
+resolver where applicable to the release. Archive extraction retains the
+existing download validation and destination-containment checks, including
+rejection of escaping archive entries or links. All required paths are
+validated before taking the installation lock, allocating a release or
+changing profiles. Temporary extracted files remain available until staging
+finishes.
+
+Neither a running checkout executable nor its siblings or `PATH` companions
+can fill a missing release executable. If a suitable source is unavailable,
+installation fails with release-installation guidance; it does not switch the
+active release. A valid local framework bundle alone cannot make installation
+succeed offline.
+
+Explicit update publishes the executables from its selected downloaded
+release. It releases the publication lock before starting the new executable's
+post-update install. That install uses the same executable-source contract.
+See [Post-update installation](../features/update-reexec-new-binary.md).
 
 ## How a source's version is read
 
@@ -102,7 +145,9 @@ A refusal has these properties:
   the current directory would match.
 
 After `amplihack install --local <PATH>`, the stamp records the binary's
-version, so self-heal doesn't replace the bundle you chose.
+selected release version, so self-heal doesn't replace the bundle you chose
+solely because the local asset tree declared another version. The override
+does not change which release executables are published.
 
 ## Release tag fetch
 
@@ -111,7 +156,10 @@ branch or an older tag.
 
 **When a build may fetch:** only when `AMPLIHACK_RELEASE_VERSION` was set at
 build time and the version has no `+` build metadata. Dev and snapshot builds
-make no network request and tell you to use `amplihack install --local`.
+make no framework-tag network request and tell you to use
+`amplihack install --local`. This guidance addresses missing framework assets
+only. Under the executable-source contract, `--local` cannot recover
+an install whose required release executables are unavailable.
 
 **Routes:**
 
@@ -170,8 +218,10 @@ If any step after the first fails, the staging directory is deleted, the
 installed bundle stays as it was and the stamp doesn't advance. A symlink at the
 source's `amplifier-bundle` root is an error.
 
-Self-heal stages under `~/.amplihack/.install.lock`, including its fetch.
-Explicit `install` doesn't take that lock.
+Permitted installation mutations are serialised by
+`~/.amplihack/.install.lock`. Explicit install resolves release executables
+before taking that lock under the executable-source contract. Refused
+implicit paths neither create nor acquire it.
 
 ## Fetch backoff
 
@@ -277,6 +327,12 @@ first and always needs network access.
 | Tag fetch fails, or the build may not fetch | Exit non-zero; bundle and stamp unchanged; names `install --local` | Installed bundle compatible: warn, leave the stamp, run the command. Bundle missing or incompatible: exit 1. |
 | Fetched tree has the wrong or an unknown version | Exit non-zero | Exit 1 |
 | Manifest check fails | Exit non-zero | Exit 1 |
+
+The `install --local` recovery hints address framework-source failures only.
+Under the executable-source contract, they require the selected
+release's executables to be available from an eligible installed release or
+its exact published platform archive. A local framework tree cannot replace
+missing release executables.
 
 `amplihack update` exits non-zero when its post-update install fails. The new
 binary is already in place by then, so run `amplihack install` once the cause is
@@ -437,9 +493,10 @@ Install never prints `Bundled framework source not found`.
 - **Stale stamp with `AMPLIHACK_HOME` at `~/.amplihack`:** if the current
   directory is an older checkout, install refuses and names that directory. You
   may not have thought of it as the source.
-- **Concurrent installs:** explicit install takes no lock and shares a staging
-  path with self-heal. A race usually ends in a manifest failure, so self-heal
-  can exit 1 while an explicit install runs.
+- **Partial link publication:** links are switched individually. If publication
+  fails part-way through, the error reports the transaction state; installation
+  does not promise rollback of every link. Missing release executables are
+  rejected before a transaction starts.
 - **Symlinks:** symlinks in the source aren't staged.
 
 ## Contributor API

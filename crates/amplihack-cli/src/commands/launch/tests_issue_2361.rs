@@ -221,7 +221,7 @@ fn recipe_step_environment_keeps_state_and_contract_out_of_the_checkout() {
             binary_name: "claude",
             extra_args: &[],
             proxy: false,
-            newer_stamp: false,
+            publication_refused: false,
             target: Some(&target),
             amplihack_home: &contract_dir,
         });

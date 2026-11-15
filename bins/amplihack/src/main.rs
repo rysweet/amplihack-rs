@@ -24,9 +24,14 @@ fn main() {
     // `$(amplihack agent-binary --shell)`, which is spliced into a command line,
     // that turned the hand-off into `2026-...Z: not found` (#1525). The same
     // applies to any caller that captures amplihack's stdout.
+    // Colour only when a person is watching. Diagnostics are routinely
+    // captured into a file or an issue (issue #2496 asks for a `RUST_LOG`
+    // run), and escape sequences in that capture are noise at best and a
+    // forged line at worst, which defeats the sanitising the refusal paths do.
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .with_target(false)
         .init();
 

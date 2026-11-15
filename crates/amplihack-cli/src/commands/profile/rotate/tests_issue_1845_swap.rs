@@ -26,44 +26,60 @@
 //!   record is never overwritten by a swap from that profile.
 //! - `swap::is_account_mismatch(&ProfileError) -> bool`.
 
+#[cfg(target_os = "linux")]
 use super::ledger::RotateLedger;
+#[cfg(target_os = "linux")]
 use super::swap::{Source, swap};
+#[cfg(target_os = "linux")]
 use super::tests_swap::{CREDS, LOCK, NOW, env, ino_at, json, login, n, private};
 use crate::commands::profile::ProfileError;
+#[cfg(target_os = "linux")]
 use crate::commands::profile::auto_switch::kit::State;
+#[cfg(target_os = "linux")]
 use crate::commands::profile::expected::{record, recorded};
+#[cfg(target_os = "linux")]
 use crate::commands::profile::name::ProfileName;
+#[cfg(target_os = "linux")]
 use crate::commands::profile::rotate::identify::Account;
+#[cfg(target_os = "linux")]
 use std::fs;
+#[cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
 
 const MISMATCH: &str = "the login in ~/.claude is not the account recorded for profile";
 
+#[cfg(target_os = "linux")]
 fn state(root: &Path) -> State {
     State::new(root).unwrap()
 }
 
+#[cfg(target_os = "linux")]
 fn uuid(u: &str) -> Account {
     Account::from_block(&serde_json::json!({ "accountUuid": u })).unwrap()
 }
 
+#[cfg(target_os = "linux")]
 fn email(e: &str) -> Account {
     Account::from_block(&serde_json::json!({ "emailAddress": e })).unwrap()
 }
 
+#[cfg(target_os = "linux")]
 fn rec(root: &Path, p: &str, a: &Account) {
     record(&state(root), &n(p), a).unwrap();
 }
 
+#[cfg(target_os = "linux")]
 fn got(root: &Path, p: &str) -> Option<String> {
     recorded(&state(root), &n(p))
 }
 
+#[cfg(target_os = "linux")]
 fn expected_dir(root: &Path) -> PathBuf {
     root.join(".auto-switch.d").join("expected")
 }
 
 /// Every file under `expected/`, with its bytes.
+#[cfg(target_os = "linux")]
 fn records(root: &Path) -> Vec<(String, Vec<u8>)> {
     let mut v: Vec<(String, Vec<u8>)> = fs::read_dir(expected_dir(root))
         .map(|r| {
@@ -81,6 +97,7 @@ fn records(root: &Path) -> Vec<(String, Vec<u8>)> {
     v
 }
 
+#[cfg(target_os = "linux")]
 fn ledger_says(rs: &super::ledger::RotateState, live: &str, account: &str) {
     rs.save_ledger(&RotateLedger {
         version: 1,
@@ -100,6 +117,7 @@ fn ledger_says(rs: &super::ledger::RotateState, live: &str, account: &str) {
     .unwrap();
 }
 
+#[cfg(target_os = "linux")]
 fn refusal(r: Result<ProfileName, ProfileError>) -> String {
     match r {
         Err(e @ ProfileError::RotateRefused(_)) => {
@@ -110,6 +128,7 @@ fn refusal(r: Result<ProfileName, ProfileError>) -> String {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn assert_no_account(s: &str) {
     for secret in [
         "u-work",
@@ -470,6 +489,7 @@ fn swapping_back_backfills_the_outgoing_profile_and_never_the_incoming_one() {
 /// The fixture's `work` names the adopted account in its `.claude.json`;
 /// the swap only adopts a login no login-less profile matches, so these
 /// tests first point `work` at another account.
+#[cfg(target_os = "linux")]
 fn work_holds_another_account(e: &super::tests_swap::Env) {
     private(
         &e.root.join("work/.claude.json"),
@@ -511,6 +531,7 @@ fn an_adopting_swap_is_not_checked_and_replaces_a_stale_record() {
 }
 
 /// The duplicate-warning line for the pair `a`, `b`, in either order.
+#[cfg(target_os = "linux")]
 fn pair_line(e: &super::tests_swap::Env, a: &str, b: &str) -> String {
     use crate::commands::profile::duplicates::{accounts, warnings};
     let st = state(&e.root);
@@ -675,9 +696,11 @@ fn another_profile_in_another_organization_does_not_stop_the_backfill() {
     assert_eq!(got(&e.root, "work").as_deref(), Some("u-work"));
 }
 
+#[cfg(target_os = "linux")]
 fn uuid_in(u: &str, org: &str) -> Account {
     Account::from_block(&serde_json::json!({ "accountUuid": u, "organizationUuid": org })).unwrap()
 }
+#[cfg(target_os = "linux")]
 fn add_profile(e: &super::tests_swap::Env, p: &str, body: serde_json::Value) {
     e.store.add(&n(p)).unwrap();
     private(

@@ -103,6 +103,9 @@
 #      and a failed write never fails the hook.
 set -euo pipefail
 
+# A checkout build must never repair or switch the host installation (#2496).
+export AMPLIHACK_SKIP_AUTO_INSTALL=1
+
 # The repository-selecting GIT_* names live in one shell file shared with
 # auto-drive (#2033). It is found from this script's own path, never by asking
 # git, because GIT_DIR may still be set here.

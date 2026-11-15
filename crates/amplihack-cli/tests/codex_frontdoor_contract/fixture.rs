@@ -163,7 +163,8 @@ esac
         );
         let mut input = unsafe { fs::File::from_raw_fd(master) };
         let terminal = unsafe { fs::File::from_raw_fd(slave) };
-        let child = crate::isolated_amplihack::isolated(&cli)
+        let installed_cli = crate::support::amplihack_bin::installed_copy(&cli, home.path());
+        let child = crate::isolated_amplihack::isolated(&installed_cli)
             .args([
                 "codex",
                 "--no-reflection",

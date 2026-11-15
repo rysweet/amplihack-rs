@@ -319,9 +319,12 @@ fn dispose_old_commands(
         Err(error) => format!("{error:#}"),
     };
 
-    let users = match scan(&[old.to_path_buf()]) {
+    let users: Option<Vec<u32>> = match scan(&[old.to_path_buf()]) {
+        #[cfg(any(target_os = "linux", test))]
         InUse::Known(map) => Some(map.into_values().flatten().collect::<Vec<u32>>()),
-        InUse::Unknown | InUse::Unsupported => None,
+        #[cfg(any(target_os = "linux", test))]
+        InUse::Unknown => None,
+        InUse::Unsupported => None,
     };
     if users.as_ref().is_some_and(|pids| pids.is_empty()) {
         match release_layout::remove_tree(old) {

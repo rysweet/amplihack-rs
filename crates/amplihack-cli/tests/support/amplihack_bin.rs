@@ -35,3 +35,10 @@ pub fn amplihack_bin() -> PathBuf {
     })
     .clone()
 }
+
+/// Give an acquisition regression an eligible executable in its disposable
+/// installation. Ordinary subprocess tests keep using the checkout binary and
+/// automatic-install opt-out; only installation tests opt in to this fixture.
+pub fn installed_copy(binary: &Path, home: &Path) -> PathBuf {
+    crate::isolated_amplihack::installed_release_binary(binary, home)
+}

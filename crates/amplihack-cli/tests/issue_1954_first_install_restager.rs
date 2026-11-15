@@ -121,6 +121,10 @@ fn canonical(path: &Path) -> PathBuf {
 #[test]
 fn the_new_binary_restages_on_the_first_update_and_a_live_run_survives() {
     let host = Host::new();
+    let existing_releases: BTreeSet<_> = fs::read_dir(host.releases())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
     plant_legacy_layout(&host);
     let stamp = host.home.join(".amplihack/.installed-version");
     fs::write(&stamp, format!("{}\n", older_version())).unwrap();
@@ -269,10 +273,12 @@ fn the_new_binary_restages_on_the_first_update_and_a_live_run_survives() {
         }
     }
 
-    // Only one release was made, and it is the one the record names.
+    // Only one new release was made. The native executable source fixture
+    // existed before the hand-off and is not a publication by this install.
     let made: Vec<String> = fs::read_dir(host.releases())
         .map(|it| {
             it.flatten()
+                .filter(|e| !existing_releases.contains(&e.file_name()))
                 .map(|e| e.file_name().to_string_lossy().into_owned())
                 .filter(|n| !n.starts_with('.'))
                 .collect()
