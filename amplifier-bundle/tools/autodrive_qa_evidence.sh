@@ -299,7 +299,7 @@ fi
 # not. Elsewhere the four states are facts, each one something the judgement
 # can act on: NOT_INSTALLED is a named recoverable blocker, NO_SCENARIOS is a
 # journey to write, FOUND is a list to choose from.
-G_STATUS=""; VALIDATED=0; RUNS=0; PASSED=0; FAILED=0
+G_STATUS=""
 if [ "$GREQ" = "false" ]; then
   G_STATUS="NOT_REQUIRED"
   echo "INFO: gadugi scenarios are not part of criterion 1's measurement in a ${KIND} repository (qa-team's repo-type table, declaration ${DECL}); the judgement decides what exercises this PR's change" >&2
@@ -316,13 +316,6 @@ fi
 [ -z "$DECLSKIP" ] || cause ".amplihack/qa.toml: scenarios_ci_job not used: ${DECLSKIP}"
 [ -n "$SYMLINKED" ] && cause "symlinked scenario named and not runnable: ${SYMLINKED}"
 [ -n "$NONREG" ] && cause "non-regular scenario entry named and not runnable: ${NONREG}"
-# No scenario ran here, so there is no per-scenario result list to build and
-# no temporary file to build it in. The field stays in the record as the empty
-# string so a reader written against the earlier record is still valid, and
-# autodrive_scenario_results stays in autodrive_trust.sh for the readers that
-# do have a result list (#1517 D7).
-RESULTS=""
-
 # --- qa_status and qa_reason -----------------------------------------
 # qa_reason is the first token that applies, in this fixed order; the
 # FAIL tokens come first because the merge round can act on them.
@@ -370,10 +363,16 @@ F='{"qa_status":"%s","qa_reason":"%s","qa_repo_type":"%s","qa_dir":"%s","qa_comm
 F="${F}"'"qa_command_source":"%s","qa_criterion1_declaration":"%s","qa_command_paths":"%s","qa_candidates":"%s","qa_ci_skip":"%s",'
 F="${F}"'"qa_suite_commands_count":"%s","qa_scenarios":"%s","qa_exit_code":"%s","qa_summary":"%s",'
 F="${F}"'"qa_round":"%s","head_sha":"%s","docs_only":"%s","gadugi_required":"%s","gadugi_status":"%s",'
+# The eight run-shaped fields are literals: this file runs no scenario, so
+# each is structurally empty or zero rather than a measurement. They stay in
+# the record so a reader written against the earlier record is still valid,
+# and autodrive_scenario_results stays in autodrive_trust.sh for the readers
+# that do have a result list (#1517 D7). The agent's own scenario runs are
+# reported in qa_judgement_notes, not here.
 F="${F}"'"gadugi_validate_exit_code":"","gadugi_run_exit_code":"","gadugi_scenario_count":"%s",'
-F="${F}"'"gadugi_scenario_dir":"%s","gadugi_scenario_dir_state":"%s","gadugi_scenarios_validated":"%s",'
-F="${F}"'"gadugi_scenarios_run":"%s","gadugi_scenarios_passed":"%s","gadugi_scenarios_failed":"%s",'
-F="${F}"'"gadugi_failed_scenarios":"","gadugi_scenario_results":"%s","git_env_cleared":"%s","run_env_cleared":"%s"}\n'
+F="${F}"'"gadugi_scenario_dir":"%s","gadugi_scenario_dir_state":"%s","gadugi_scenarios_validated":"0",'
+F="${F}"'"gadugi_scenarios_run":"0","gadugi_scenarios_passed":"0","gadugi_scenarios_failed":"0",'
+F="${F}"'"gadugi_failed_scenarios":"","gadugi_scenario_results":"","git_env_cleared":"%s","run_env_cleared":"%s"}\n'
 # shellcheck disable=SC2059 # F is the fixed format above, never input
 OUT="$(printf "$F" \
   "$STATUS" "$REASON" "$TYPE" "$(printf '%s' "$QD" | san | ascii | cut -c1-200)" "$(printf '%s' "$CMDTEXT" | san | ascii | cut -c1-500)" \
@@ -382,7 +381,7 @@ OUT="$(printf "$F" \
   "$(printf '%s' "$SCEN" | san | ascii | cut -c1-2000)" "$RC" "$SUMMARY" \
   "$(printf '%s' "${AUTODRIVE_ROUND_LABEL:-round}" | san)" "$HEAD_SHA" \
   "$DOCSONLY" "$GREQ" "$G_STATUS" "$COUNT" "$(printf '%s' "$SREL" | san | ascii | cut -c1-200)" "$SSTATE" \
-  "$VALIDATED" "$RUNS" "$PASSED" "$FAILED" "$(printf '%s' "$RESULTS" | san)" "$(printf '%s' "$GCLR" | san | ascii)" "$(printf '%s' "$RCLR" | san | ascii)")"
+  "$(printf '%s' "$GCLR" | san | ascii)" "$(printf '%s' "$RCLR" | san | ascii)")"
 # Private to this user (#1517 D5), and never written through a planted symlink.
 [ -z "$EVIDENCE" ] || ( umask 077; rm -f -- "$EVIDENCE"; printf '%s' "$OUT" > "$EVIDENCE" )
 printf '%s\n' "$OUT"
