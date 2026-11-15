@@ -14,7 +14,7 @@ use crate::support::step_recovery::{Fixture, HANDOFF_EXIT, bundle_recipes, show}
 /// `(recipe, step whose command runs the driver, recorded step id)`. Bash
 /// steps are wrapped in place; an agent or sub-recipe step keeps its type,
 /// gets `continue_on_error`, and is recovered by the bash step after it.
-const CONVERTED: [(&str, &str, &str); 12] = [
+const CONVERTED: [(&str, &str, &str); 11] = [
     (
         "autodrive-crusty-loop",
         "step-02-crusty-loop",
@@ -39,11 +39,6 @@ const CONVERTED: [(&str, &str, &str); 12] = [
         "autodrive-merge-round",
         "step-00-review-dir-guard",
         "step-00-review-dir-guard",
-    ),
-    (
-        "autodrive-merge-round",
-        "step-00-merge-ready-files",
-        "step-00-merge-ready-files",
     ),
     (
         "autodrive-merge-round",
@@ -171,11 +166,6 @@ fn each_converted_step_runs_its_command_through_the_driver_with_its_own_id() {
             "--guard",
         ),
         (
-            "autodrive-merge-round",
-            "step-00-merge-ready-files",
-            "--essential --stop-on-handoff",
-        ),
-        (
             "workflow-finalize",
             "step-20b-push-cleanup",
             "--essential --stop-on-handoff",
@@ -251,6 +241,29 @@ fn autodrive_build_recovers_its_sub_recipe_step_and_keeps_build_result_for_resol
     let pos = |id: &str| ids.iter().position(|s| s == id).unwrap();
     assert!(pos("step-02-default-workflow") < pos("step-02r-default-workflow-recovery"));
     assert!(pos("step-02r-default-workflow-recovery") < pos("step-03-resolve-pr"));
+}
+
+#[test]
+fn merge_loop_recovers_finalisation_only_where_the_loop_asked_for_it() {
+    // #2575: step-03 runs only when the loop outcome asks to finalise, so its
+    // recovery never runs after a hand-off, where nothing was finalised.
+    let s03 = step("autodrive-merge-loop", "step-03-finalize");
+    assert_eq!(s03["continue_on_error"].as_bool(), Some(true));
+    assert_eq!(s03["output"].as_str(), Some("autodrive_finalization"));
+    let s03r = step("autodrive-merge-loop", "step-03r-finalize-recovery");
+    assert_eq!(
+        s03r["condition"].as_str().unwrap(),
+        format!(
+            "{} and not autodrive_finalization",
+            s03["condition"].as_str().unwrap()
+        )
+    );
+    let ids = step_ids("autodrive-merge-loop");
+    let pos = |id: &str| ids.iter().position(|s| s == id).unwrap();
+    assert_eq!(
+        pos("step-03r-finalize-recovery"),
+        pos("step-03-finalize") + 1
+    );
 }
 
 #[test]

@@ -449,8 +449,6 @@ fn report_uses_typed_finalization_and_missing_evidence_stays_incomplete() {
     assert!(cmd.contains("already_merged"));
     assert!(cmd.contains("dependency_failure"));
     assert!(!cmd.contains("merge_gate_result"));
-    let helper = read("crates/amplihack-cli/src/commands/orch/autodrive/helper.rs");
-    assert!(helper.contains("followups"));
 }
 
 #[test]
@@ -628,6 +626,7 @@ fn crusty_round_has_no_light_branch_in_any_step() {
             "step-02-crusty-review",
             "step-02b-review-dir-unchanged",
             "step-03-extract-crusty-verdict",
+            "step-03c-post-verdict",
             "step-04-address-concerns",
             "step-05-verify-concerns-addressed",
             "step-06-write-round-record",
@@ -673,8 +672,8 @@ fn crusty_round_has_no_light_branch_in_any_step() {
     );
     assert_eq!(
         round["context"].as_mapping().unwrap().len(),
-        16,
-        "completion state, shared authorization and dry-run context, the review generation's launch dir and commit (#2096), and the step-recovery directory (#2539) reach the crusty round"
+        17,
+        "completion state, shared authorization and dry-run context, the review generation's launch dir and commit (#2096), the step-recovery directory (#2539) and the verdict-posted line (#2575) reach the crusty round"
     );
 }
 

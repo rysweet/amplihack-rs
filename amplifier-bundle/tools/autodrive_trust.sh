@@ -7,8 +7,8 @@
 # after that head and allows only base merges and description or evidence
 # changes; anything else goes back to crusty. Criterion 1 is met by the qa
 # evidence, which an agent step running as the same user could edit after it
-# was measured; autodrive_qa_trusted accepts it only through the hash chain
-# that starts at the loop's merge-ready-records.tsv manifest.
+# was measured; the merge-ready agent reads it as evidence for its write-up,
+# and nothing here accepts it as a merge condition (#2575).
 # autodrive_gadugi_required says whether criterion 1 needs gadugi-test at all.
 # The QA target (#1763) lives in autodrive_qa_scope.sh and the qa.toml reader
 # (#2458) in autodrive_qa_sources.sh, both loaded from this file's directory.
@@ -218,15 +218,44 @@ EOF
 #
 #   {"rereview":"true|false","range":"<token>","first_unreviewed_sha":"<sha>","base_sha":"<sha>"}
 #
-# Only a crusty loop that ended DONE and CLEAN is checked; otherwise range is
-# `not-checked`, and step-01b reports why. Only crusty-unreviewed-commits
+# No crusty-records.tsv, or one with no rows, is `no-record`: the crusty-loop
+# marker is cleared and rereview is "true", so the Crusty round runs (#2628).
+# So is a final CLEAN record with no `<WORD> <sha>` line for its reviewed head
+# in crusty-verdict-posted.txt: its verdict is not on the PR (#2575 B1).
+# Otherwise only a crusty loop that ended DONE and CLEAN is checked; else
+# range is `not-checked`. Besides no-record, only crusty-unreviewed-commits
 # removes the `crusty-loop` row from phases.tsv and asks for a re-review. An
 # unreadable range does not: re-running crusty cannot deepen a clone or fix
 # git, so step-01b, step-03 and the merge gate block on it instead.
 autodrive_rereview_decision() {
-  local dir="${1:-}" repo="${2:-}" ref="${3:-}" reviewed="" base="" head="" res="" first="" again="false"
+  local dir="${1:-}" repo="${2:-}" ref="${3:-}" reviewed="" base="" head="" res="" first="" again="false" rec=""
+  # #2628: no crusty record at all (a new or emptied state dir) runs Crusty,
+  # which records and posts its verdict; a missing file never blocks or skips.
+  rec="${dir%/}/crusty-records.tsv"
+  if [ -n "$dir" ] && [ -d "$dir" ] && [ ! -L "$dir" ] && [ ! -L "$rec" ] \
+    && { [ ! -e "$rec" ] || { [ -f "$rec" ] && ! grep -q '[^[:space:]]' "$rec" 2>/dev/null; }; }; then
+    if autodrive_clear_phase "$dir" "crusty-loop"; then
+      printf '{"rereview":"true","range":"no-record","first_unreviewed_sha":"","base_sha":""}\n'
+    else
+      echo "ERROR: could not clear the crusty-loop phase in the state dir; crusty is not run and criterion 3 stays unmet." >&2
+      printf '{"rereview":"false","range":"not-checked","first_unreviewed_sha":"","base_sha":""}\n'
+    fi
+    return 0
+  fi
   if ! reviewed="$(autodrive_crusty_final "$dir" 2>/dev/null)"; then
     printf '{"rereview":"false","range":"not-checked","first_unreviewed_sha":"","base_sha":""}\n'
+    return 0
+  fi
+  # #2575 B1: a clean record whose verdict was never read back on the PR
+  # (autodrive_crusty_posted.sh) is no record: Crusty runs and posts again.
+  rec="${dir%/}/crusty-verdict-posted.txt"
+  if [ -L "$rec" ] || [ ! -f "$rec" ] || ! grep -Eqx "(CLEAN|MINOR_ONLY) ${reviewed}" "$rec" 2>/dev/null; then
+    if autodrive_clear_phase "$dir" "crusty-loop"; then
+      printf '{"rereview":"true","range":"no-record","first_unreviewed_sha":"","base_sha":""}\n'
+    else
+      echo "ERROR: could not clear the crusty-loop phase in the state dir; crusty is not run and criterion 3 stays unmet." >&2
+      printf '{"rereview":"false","range":"not-checked","first_unreviewed_sha":"","base_sha":""}\n'
+    fi
     return 0
   fi
   base="$(autodrive_base_sha "$repo" "$ref")" || base=""
@@ -258,46 +287,6 @@ autodrive_qa_evidence_sha() {
   h="$(autodrive_blob_hash "$(dirname -- "$f")" < "$f")"
   autodrive_is_sha "$h" || { printf '\n'; return 1; }
   printf '%s\n' "$h"
-}
-
-# autodrive_qa_trusted <state_dir> <record_copy> <qa_copy> <head_sha> -> `ok`
-# or the token of the first check that failed:
-#
-#   qa-manifest-missing   merge-ready-records.tsv absent, a symlink, or its last
-#                         row malformed (file name ^merge-ready-[A-Za-z0-9._-]+\.json$)
-#   qa-record-modified    record_copy's hash differs from the manifest hash, or it
-#                         is not one line starting with {"merge_ready_verdict":",
-#                         or it lacks one 40- or 64-hex qa_evidence_sha
-#   qa-evidence-modified  qa_copy's hash differs from qa_evidence_sha
-#   qa-evidence-stale     qa_copy's one head_sha is not <head_sha>
-#
-# record_copy and qa_copy are the caller's private copies; they are hashed and
-# parsed as given and the originals are never re-read, so what the caller
-# reads afterwards is what was verified. The manifest is read once.
-autodrive_qa_trusted() {
-  local -x LC_ALL=C
-  local dir="${1:-}" rec="${2:-}" qa="${3:-}" head="${4:-}" row="" want="" qsha="" qhead=""
-  row="$(autodrive_manifest_row "$dir" merge-ready)" || { printf 'qa-manifest-missing\n'; return 1; }
-  want="${row#* }"
-  if [ -z "$rec" ] || [ ! -f "$rec" ] \
-     || [ "$(autodrive_blob_hash "$dir" < "$rec")" != "$want" ] \
-     || [ "$(awk 'END { print NR }' "$rec")" != "1" ] \
-     || ! grep -q '^{"merge_ready_verdict":"' "$rec" \
-     || [ "$(grep -o '"qa_evidence_sha":' "$rec" | wc -l | tr -d ' ')" != "1" ]; then
-    printf 'qa-record-modified\n'; return 1
-  fi
-  qsha="$(sed -n 's/.*"qa_evidence_sha":"\([^"]*\)".*/\1/p' "$rec")"
-  autodrive_is_sha "$qsha" || { printf 'qa-record-modified\n'; return 1; }
-  if [ -z "$qa" ] || [ ! -f "$qa" ] || [ "$(autodrive_blob_hash "$dir" < "$qa")" != "$qsha" ]; then
-    printf 'qa-evidence-modified\n'; return 1
-  fi
-  if [ "$(grep -o '"head_sha":' "$qa" | wc -l | tr -d ' ')" = "1" ]; then
-    qhead="$(sed -n 's/.*"head_sha":"\([^"]*\)".*/\1/p' "$qa")"
-  fi
-  if ! autodrive_is_sha "$head" || [ "$qhead" != "$head" ]; then
-    printf 'qa-evidence-stale\n'; return 1
-  fi
-  printf 'ok\n'
 }
 
 # --- per-scenario results (D6) ---------------------------------------------

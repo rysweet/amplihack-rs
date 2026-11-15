@@ -24,7 +24,16 @@ use std::process::{Command, Stdio};
 
 /// Writes `body` to `path` (replacing it by rename) with permission bits
 /// `mode`. The path and mode reach `sh` as arguments, never as script text.
+///
+/// Panics before writing anything if `mode` has a setuid, setgid or sticky
+/// bit (`mode & 0o7000 != 0`): a test stub never needs one.
 pub fn write_executable(path: &Path, body: impl AsRef<[u8]>, mode: u32) {
+    assert!(
+        mode & 0o7000 == 0,
+        "refusing to write stub {} with mode {mode:o}: setuid, setgid and sticky \
+         bits (0o7000) are not allowed",
+        path.display()
+    );
     let mut child = Command::new("/bin/sh")
         .args([
             "-c",

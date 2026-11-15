@@ -66,9 +66,8 @@ record is an ordinary failure.
 | `autodrive-crusty-loop` | `step-03-record-crusty-phase` (agent), recovered by `step-03r-record-crusty-phase-recovery` | `--essential` |
 | `autodrive-crusty-round` | `step-00-review-dir-guard`, `step-02b-review-dir-unchanged` | `--guard` |
 | `autodrive-merge-round` | `step-00-review-dir-guard`, `step-02b-review-dir-unchanged` | `--guard` |
-| `autodrive-merge-round` | `step-00-merge-ready-files` | `--essential --stop-on-handoff` |
 | `autodrive-merge-loop` | `step-02-merge-ready-loop` | `--essential --stop-on-handoff` |
-| `autodrive-merge-loop` | `step-03-finalize` (sub-recipe), recovered by `step-03r-finalize-recovery` | `--already-failed --essential` |
+| `autodrive-merge-loop` | `step-03-finalize` (sub-recipe), recovered by `step-03r-finalize-recovery` only when the loop asked for finalisation | `--already-failed --essential` |
 | `workflow-finalize` | `step-20b-push-cleanup` | `--essential --stop-on-handoff --no-repair` |
 | `workflow-finalize` | `step-21-pr-ready` | `--essential --stop-on-handoff` |
 | `workflow-finalize` | `validate-agentic-finalization` | `--guard` |

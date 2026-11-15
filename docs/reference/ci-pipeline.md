@@ -86,6 +86,14 @@ It uses the runner's C/C++ toolchain, avoiding the GNU cross-toolchain package
 installation that failed when Ubuntu's package mirrors could not be resolved.
 The target and required check name remain `aarch64-unknown-linux-gnu`.
 
+The two macOS legs of the `ci.yml` build matrix also run
+`cargo check --locked --tests -p amplihack-cli -p amplihack-utils -p amplihack-hooks`.
+The release build compiles neither `cfg(test)` nor `debug_assertions` code,
+so without this step no macOS job compiles the Unix test fixtures or
+`amplihack-utils`' debug-only probe capture path (`binary_finder::to_exit`).
+The step uses the dev profile, which keeps `debug_assertions` on; with
+`--release` that code would not be compiled.
+
 ### Auto Release cross-build legs (`release.yml`)
 
 The **Auto Release** workflow (`.github/workflows/release.yml`) builds a
