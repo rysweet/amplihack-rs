@@ -64,10 +64,12 @@ Non-applicability requires an explanation permitted by the authoritative
 criterion. It cannot excuse missing tooling, access, approvals, policy, or
 evidence. Criterion 1 is a recorded judgement, not an exemption: a
 documentation-only PR is recorded as Verified with a `not_user_facing`
-judgement that cites its files. An absent QA tool, a missing scenario or a
-scenario directory that does not exist is a named recoverable input to that
-judgement, never a criterion-1 outcome. See
-[Auto-drive QA](auto-drive-qa.md).
+judgement that cites its files, and that judgement is accepted only where
+the measured `docs_only` is `true`, or, where it is `unknown` or absent
+from the record altogether, where the notes name what the change set was
+judged from. An absent QA tool, a missing scenario or a scenario directory
+that does not exist is a named recoverable input to that judgement, never a
+criterion-1 outcome. See [Auto-drive QA](auto-drive-qa.md).
 
 ## The write-up
 

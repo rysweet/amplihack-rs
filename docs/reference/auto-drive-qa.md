@@ -24,6 +24,12 @@ guidance the judgement follows is
 read only from the pinned bundle, never from the worktree under review: a PR
 cannot change the guidance that judges it.
 
+The launch checks that guidance file into its trusted assets alongside the
+merge-ready skill and the auto-drive tools, so a bundle installed before the
+guidance existed names the missing file at launch and starts no drive that
+would judge criterion 1 without it. Reinstalling with `amplihack install`
+is the remedy; nothing falls back to the repository's own copy.
+
 For the evidence and finalization contracts shared by all criteria, see
 [current behaviour and authority](auto-drive-to-merge.md#current-behavior-and-authority).
 This reference does not establish execution coverage for the
@@ -58,13 +64,15 @@ order:
 
 | Step | Kind | What it does |
 | --- | --- | --- |
-| `step-02a-qa-inputs` | bash | Resolves the pinned tools directory from `autodrive_tools_dir` or `$AMPLIHACK_HOME`, never through the git toplevel and never from the worktree under review, sets `AUTODRIVE_QA_BASE` to the PR's observed base branch, and runs the trusted `autodrive_qa_evidence.sh`. That tool selects and runs the declared QA command, measures the changed files, the documentation-only flag, the repository type and the scenario directory with its tracked scenarios, and writes [the measured record](#the-measured-record). It runs no scenario and issues no verdict any consumer conditions on. The step prints that record with one field added, `qa_guidance`: the absolute path of the pinned bundle copy of `criterion-1-qa-judgement.md`, checked to be a regular file beside the resolved tools directory. That is the only copy the judgement may read its rules from, so a PR cannot rewrite them. |
+| `step-02a-qa-inputs` | bash | Resolves the pinned tools directory from `autodrive_tools_dir` or `$AMPLIHACK_HOME`, never through the git toplevel and never from the worktree under review. It resolves that directory and the worktree with `pwd -P` and checks that the first does not lie inside the second, so a PR carrying its own `amplifier-bundle/tools` cannot supply the tool or the guidance that judges it. It then sets `AUTODRIVE_QA_BASE` to the PR's observed base branch, and runs the trusted `autodrive_qa_evidence.sh`. That tool selects and runs the declared QA command, measures the changed files, the documentation-only flag, the repository type and the scenario directory with its tracked scenarios, and writes [the measured record](#the-measured-record). The step checks the shape of what the tool wrote before it uses it: output that is not an object carrying at least one field is treated as no record at all. It runs no scenario and issues no verdict any consumer conditions on. The step prints that record with one field added, `qa_guidance`: the absolute path of the pinned bundle copy of `criterion-1-qa-judgement.md`, checked to be a regular file beside the resolved tools directory. That is the only copy the judgement may read its rules from, so a PR cannot rewrite them. |
 | `step-02-qa-team-scenarios` | agent | Reads the guidance from the pinned bundle, the diff, the linked issue, the measured record and the existing scenarios. Judges, writes or extends this PR's scenarios, runs them, fixes and re-runs, and returns the judgement. |
 
-`step-02a-qa-inputs` cannot end a round. When the measurement cannot run —
-a tools directory, a tool or a guidance file that is absent, not a regular
-file or not one plain absolute line; a worktree that is not a git
-repository; or a tool that wrote no record — the step prints an object built
+`step-02a-qa-inputs` cannot end a round. The measurement cannot run when a
+tools directory, a tool or a guidance file is absent, is not a regular file
+or is not one plain absolute line; when the resolved tools directory lies
+inside the worktree under review; when the worktree is not a git repository;
+when the tool wrote no record; or when what it wrote is not an object
+carrying at least one field. In each case the step prints an object built
 from its own literals, naming `qa-measurement-unavailable`, and exits 0:
 
 ```json
@@ -77,7 +85,14 @@ Every `qa_summary` the step can print there is one of its own literals, and
 the object carries no interpolated command output: the step is
 `parse_json: true` and has no sanitiser of its own. An empty `qa_guidance`
 says the judgement has no pinned copy of the guidance to read, and must say
-so rather than fall back to the worktree's.
+so rather than fall back to the worktree's. That record carries four fields
+and no `docs_only`; an absent `docs_only` is read as `unknown`, under
+[how the merge round reads the judgement](#how-the-merge-round-reads-the-judgement).
+
+A record of `{}`, or any output with no `"field":` pair in it, reaches that
+same path. The shape check runs before the step appends `qa_guidance`, so a
+degenerate record is reported by name rather than handed on as an empty set
+of facts that each read as absent.
 
 The agent loop inside `step-02-qa-team-scenarios`:
 
@@ -96,6 +111,16 @@ The agent loop inside `step-02-qa-team-scenarios`:
 5. On a failure, classify its cause as `product`, `scenario` or
    `environment`, fix it, commit the fix and run again.
 6. Record a hand-off only when a person must act.
+
+The record is spliced into the agent step's prompt as data, inside a fence,
+with the step saying so at the point of the splice. Two of its fields hold
+free text from the branch under review: `qa_summary` carries the tail of the
+declared command's output, and `qa_scenarios` carries path names from the
+worktree. The measurement sanitises both so the JSON stays valid and the
+terminal is unharmed, which protects the data channel and not the
+instruction channel; a line in either field that reads like an instruction
+is a string the PR author wrote, and the judgement treats it as one. The
+same holds for the diff, the issue, scenario files and commit messages.
 
 No missing scenario, repository type, absent tool, non-existent operator
 scenario directory or failing declared command ends a drive, and none of
@@ -172,7 +197,7 @@ measured facts. Each one is an input it carries on from, not an outcome.
 | Blocker | Derived from | What the judgement does |
 | --- | --- | --- |
 | `qa-scenario-dir-missing:<path>` | `gadugi_scenario_dir_state` is `operator-missing` | Falls back to the repository's own tracked scenario directory, recording the fallback and the operator path it replaced; otherwise hands off naming the path and the operator; otherwise records `not_user_facing` with cited diff files. Never a per-round QA failure. |
-| `qa-measurement-unavailable` | the record is absent, unparseable or incomplete, carries a value outside its set, or carries the broken-scope signature: `qa_reason` `qa-command-missing` together with `qa_command_paths` `(unknown)`, `docs_only` `unknown` and `qa_repo_type` `unknown` (see [telling the three causes apart](#telling-the-three-qa-command-missing-causes-apart)) | Judges from the diff and the scenarios; hands off only when it cannot. A broken bundle install surfaces by name; it neither passes silently nor ends the run. `gadugi_required` `true` is not this signature: it is the normal value for a Node repository and for any operator-set scenario directory. |
+| `qa-measurement-unavailable` | the record is absent, unparseable, incomplete or not an object carrying at least one field; the pinned tools directory resolved inside the worktree under review; the record carries a value outside its set; or it carries the broken-scope signature: `qa_reason` `qa-command-missing` together with `qa_command_paths` `(unknown)`, `docs_only` `unknown` and `qa_repo_type` `unknown` (see [telling the three causes apart](#telling-the-three-qa-command-missing-causes-apart)) | Judges from the diff and the scenarios; hands off only when it cannot. A broken bundle install surfaces by name; it neither passes silently nor ends the run. `gadugi_required` `true` is not this signature: it is the normal value for a Node repository and for any operator-set scenario directory. |
 | `qa-tool-not-installed:<tool>` | `gadugi_status` `NOT_INSTALLED`, or `qa_reason` `qa-command-not-installed` | Meets criterion 1 by other evidence — the declared command, the repository's own tests, or a scenario the available tools run — or hands off naming the tool and its owner. Nothing is ever installed automatically. |
 | `qa-command-failed:<name>` | `qa_reason` `qa-command-failed` with `qa_exit_code` | Finds out whether the PR caused the failure and fixes it like any product failure if it did. |
 
@@ -277,7 +302,7 @@ beside `gadugi_status` `FOUND` and state `detected` cannot be produced.
 | `qa_scenarios` | Scenario files, as space-separated repository-relative paths, capped at 2,000 bytes. From `gadugi_scenario_dir` where it was consulted; for a Rust CLI project where it was not, the selected project's `tests/parity/scenarios/*.y{a,}ml`, which `cargo test` runs. Top-level regular files only: a symlinked or non-regular entry is named here and not followed. |
 | `qa_summary` | The recorded causes and the last lines of the command's output, sanitised. |
 | `qa_round` | `AUTODRIVE_ROUND_LABEL`, or `round`. |
-| `head_sha` | The head measured. |
+| `head_sha` | The head measured: hexadecimal digits, or empty where the head could not be read. The tool constrains the value to that set before printing it, so a ref name, an option-like string or any other output of a misread head cannot reach a reader through this field. |
 | `docs_only` | `true`, `false` or `unknown`, from the [documentation-only measurement](#documentation-only-measurement). |
 | `gadugi_required` | What `autodrive_gadugi_required` reports: `true` for a Node project, for any repository where `AUTODRIVE_QA_SCENARIO_DIR` is set, and where the scope helper did not load; `false` for a documentation-only PR, for a Rust CLI or Python project, and under a #2458 declaration. It is a fact about the repository and the operator environment; no consumer conditions criterion 1 on it, and it is not a signal that the measurement is broken — see [telling the three `qa-command-missing` causes apart](#telling-the-three-qa-command-missing-causes-apart). |
 | `gadugi_status` | `NOT_REQUIRED`, `NOT_INSTALLED`, `NO_SCENARIOS` or `FOUND`. `NOT_REQUIRED` whenever `gadugi_required` is `false`, which is every Rust CLI and Python repository and every documentation-only PR; the tool then consults no scenario directory and calls no tool. `FOUND` means scenarios were discovered and listed; the tool runs none. |
@@ -669,11 +694,18 @@ one direction only:
 | --- | --- |
 | `false` | Binding. The judgement may not be `not_user_facing`. |
 | `true` | Advisory. The judgement may still find the change user-facing and exercise it. |
-| `unknown` | The change set could not be measured. The judgement reads the diff and, in doubt, treats the change as user-facing. |
+| `unknown` | The change set could not be measured. The judgement reads the diff and, in doubt, treats the change as user-facing. A `not_user_facing` judgement remains open, but the round accepts one only where the notes name what the change set was judged from. |
+| absent | The record carries no `docs_only` field at all, as the `qa-measurement-unavailable` record does. Read exactly as `unknown`. |
 
 A documentation-only PR meets criterion 1 through a recorded
 `not_user_facing` judgement whose reason cites files that appear in the diff,
 never through the measurement alone.
+
+`unknown`, and an absent `docs_only` read as `unknown`, are the states in
+which criterion 1 could be satisfied with no change set measured, no suite
+command run and no scenario executed. The round's acceptance closes that:
+see
+[how the merge round reads the judgement](#how-the-merge-round-reads-the-judgement).
 
 The measurement requires a known non-empty full diff, with every path
 qualifying. A shortened display of changed paths is never sufficient.
@@ -715,8 +747,25 @@ it decides no criterion.
 judgement:
 
 - a `not_user_facing` judgement meets criterion 1 when its reason cites
-  files that appear in the PR diff. This is recorded as criterion `qa`
-  Verified with that evidence, never NotApplicable;
+  files that appear in the PR diff **and** the measured `docs_only` is
+  `true`. This is recorded as criterion `qa` Verified with that evidence,
+  never NotApplicable;
+- a measured `docs_only` of `false` is binding against a `not_user_facing`
+  judgement. Criterion 1 is not met, whatever the reason cites, and the next
+  round judges the change as user-facing;
+- a measured `docs_only` of `unknown` means no change set was measured, so a
+  `not_user_facing` judgement meets criterion 1 only where the notes name
+  what the change set was judged from, such as the diff that was read
+  against the recorded base. Where they do not, criterion 1 is not met and
+  the next round measures and judges again. The rule is there because an
+  unmeasured change set is the one state in which the cited files have no
+  measurement to be checked against;
+- the `qa-measurement-unavailable` record carries no `docs_only` field at
+  all. An absent field is read as `unknown` and takes the rule above, never
+  as a fourth state of its own. A documentation-only PR behind a stale
+  bundle or a containment failure therefore still meets criterion 1 on a
+  judgement whose notes name what the change set was judged from, and no
+  blocker leaves criterion 1 unreachable in every later round;
 - a `user_facing` judgement meets criterion 1 when the scenarios covering
   this PR's change were run and passed, as the notes report. A passing
   declared command alone does not;

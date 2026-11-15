@@ -92,6 +92,15 @@ not user-facing. `true` is advisory: judge the change user-facing anyway
 when it alters anything a user, operator or calling program sees, including
 agent instructions and build inputs.
 
+What a drive's round accepts afterwards follows from the measured value:
+
+| Measured `docs_only` | A `not_user_facing` judgement |
+| --- | --- |
+| `true` | Met, where the reason cites files that appear in the diff. |
+| `false` | Not met, whatever the reason cites. |
+| `unknown` | Met only where the notes also name what the change set was judged from, such as the diff read against the recorded base. Nothing was measured, so the citation has nothing to be checked against. |
+| absent | Read exactly as `unknown`. The `qa-measurement-unavailable` record carries no `docs_only` field, so the notes-naming rule applies there too and criterion 1 stays reachable. |
+
 ## 3. Exercise a user-facing change
 
 Run only the scenarios this PR changed or added, one at a time, each staged
@@ -183,7 +192,7 @@ names the blocker and carries on:
 | Fact in the record | Blocker | What the judgement does |
 | --- | --- | --- |
 | `gadugi_scenario_dir_state` `operator-missing` | `qa-scenario-dir-missing:<path>` | Falls back to a tracked `tests/agentic`, `tests/gadugi/scenarios` or `scenarios` inside the repository, recording both paths; otherwise hands off; otherwise records not user-facing with cited files. |
-| the record is absent, unparseable or carries an unknown value; or `qa_reason` `qa-command-missing` with `qa_command_paths` `(unknown)`, `docs_only` `unknown` and `qa_repo_type` `unknown` | `qa-measurement-unavailable` | Judges from the diff and the scenarios. |
+| the record is absent, unparseable, empty of fields, or carries an unknown value; the resolved tools directory lies inside the worktree under review; or `qa_reason` `qa-command-missing` with `qa_command_paths` `(unknown)`, `docs_only` `unknown` and `qa_repo_type` `unknown` | `qa-measurement-unavailable` | Judges from the diff and the scenarios. The record carries no `docs_only`, so section 2's absent row applies. |
 | `gadugi_status` `NOT_INSTALLED`, `qa_reason` `qa-command-not-installed` | `qa-tool-not-installed:<tool>` | Uses other evidence, or hands off naming the tool. Installs nothing. |
 | `qa_reason` `qa-command-failed` | `qa-command-failed:<name>` | Decides whether this PR caused the failure. |
 
@@ -199,7 +208,46 @@ Two record shapes are **not** blockers, however they look:
   says only that this repository declares no suite command, or that
   `AUTODRIVE_QA_DIR` does not exist. `qa_summary` names which.
 
-## 7. Clean up
+## 7. Tell the trust-root and record-shape causes apart
+
+Several conditions end in `qa-measurement-unavailable`: an absent or
+unparseable record, a value outside its set, the broken-scope signature in
+the tables above, and the two checked here. A judgement naming the blocker
+says which of them applies only once you have run the checks yourself. The
+two below are the ones you can reproduce by hand.
+
+The tool is pinned to the installed bundle, never the worktree. A drive
+whose tools directory resolved inside the worktree it was measuring supplies
+no record and no guidance path, because the PR under review would otherwise
+be supplying the rules that judge it. Resolve both paths and compare them
+the way the step does:
+
+```bash
+T=$( cd "$AMPLIHACK_HOME/amplifier-bundle/tools" && pwd -P )
+W=$( pwd -P )
+case "$T" in "$W" | "$W"/*) echo contained ;; *) echo separate ;; esac
+# separate
+```
+
+`contained` is the trust-root cause. Run the measurement from the installed
+bundle instead; a copy inside the worktree is never the one to use.
+
+The record shape check requires an object with at least one field. Output of
+`{}` counts as no record, rather than as a record whose fields all read as
+absent. `jq -e` reports the shape through its exit status, so output that
+does not parse at all gives `unavailable` rather than a parse error:
+
+```bash
+jq -e 'type == "object" and length > 0' "$AUTODRIVE_QA_EVIDENCE" \
+  >/dev/null 2>&1 && echo usable || echo unavailable
+# usable
+```
+
+A bundle installed before this guidance shipped lacks
+`skills/merge-ready/criterion-1-qa-judgement.md`. A drive launched from it
+names that missing file and starts nothing; `amplihack install` restores it.
+
+## 8. Clean up
 
 ```bash
 rm -rf "$STATE/tmp"
