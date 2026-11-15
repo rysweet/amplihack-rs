@@ -86,8 +86,13 @@ steps:
         || unavailable "criterion-1-qa-judgement.md is not a regular file beside the auto-drive tools directory"
       safe_path "$GUIDE" || unavailable "the criterion-1 guidance path is not one plain absolute line"
       cd -- "$WT" 2>/dev/null || unavailable "cannot enter the worktree under review"
-      git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-        || unavailable "the worktree under review is not a git repository"
+      # Optional and visibly skipped (#537): without a checkout there is
+      # nothing to measure, and this step names that instead of ending the
+      # round.
+      git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+        echo "[skip] not a git repo at ${WT}; the QA measurement needs one, so this step reports the named blocker instead" >&2
+        unavailable "the worktree under review is not a git repository"
+      }
       # The PR's own base: what the drive measured against, else origin/HEAD.
       BASE="${AUTODRIVE_QA_BASE:-}"
       if [ -z "$BASE" ]; then

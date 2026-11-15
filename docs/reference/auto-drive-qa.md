@@ -58,18 +58,26 @@ order:
 
 | Step | Kind | What it does |
 | --- | --- | --- |
-| `step-02a-qa-inputs` | bash | Resolves the pinned tools directory, sets `AUTODRIVE_QA_BASE` to the PR's observed base branch, and runs the trusted `autodrive_qa_evidence.sh`. That tool selects and runs the declared QA command, measures the changed files, the documentation-only flag, the repository type and the scenario directory with its tracked scenarios, and writes [the measured record](#the-measured-record). It runs no scenario and issues no verdict any consumer conditions on. |
+| `step-02a-qa-inputs` | bash | Resolves the pinned tools directory from `autodrive_tools_dir` or `$AMPLIHACK_HOME`, never through the git toplevel and never from the worktree under review, sets `AUTODRIVE_QA_BASE` to the PR's observed base branch, and runs the trusted `autodrive_qa_evidence.sh`. That tool selects and runs the declared QA command, measures the changed files, the documentation-only flag, the repository type and the scenario directory with its tracked scenarios, and writes [the measured record](#the-measured-record). It runs no scenario and issues no verdict any consumer conditions on. The step prints that record with one field added, `qa_guidance`: the absolute path of the pinned bundle copy of `criterion-1-qa-judgement.md`, checked to be a regular file beside the resolved tools directory. That is the only copy the judgement may read its rules from, so a PR cannot rewrite them. |
 | `step-02-qa-team-scenarios` | agent | Reads the guidance from the pinned bundle, the diff, the linked issue, the measured record and the existing scenarios. Judges, writes or extends this PR's scenarios, runs them, fixes and re-runs, and returns the judgement. |
 
 `step-02a-qa-inputs` cannot end a round. When the measurement cannot run —
-a tools directory that is absent or not absolute, or a non-zero exit from
-the tool — the step prints an object built from literals and its exit code,
-naming `qa-measurement-unavailable`, and exits 0:
+a tools directory, a tool or a guidance file that is absent, not a regular
+file or not one plain absolute line; a worktree that is not a git
+repository; or a tool that wrote no record — the step prints an object built
+from its own literals, naming `qa-measurement-unavailable`, and exits 0:
 
 ```json
 {"qa_status": "BLOCKED", "qa_reason": "qa-measurement-unavailable",
- "qa_summary": "the QA measurement did not run (exit 1)"}
+ "qa_summary": "autodrive_qa_evidence.sh is not a regular file under the auto-drive tools directory",
+ "qa_guidance": ""}
 ```
+
+Every `qa_summary` the step can print there is one of its own literals, and
+the object carries no interpolated command output: the step is
+`parse_json: true` and has no sanitiser of its own. An empty `qa_guidance`
+says the judgement has no pinned copy of the guidance to read, and must say
+so rather than fall back to the worktree's.
 
 The agent loop inside `step-02-qa-team-scenarios`:
 
@@ -120,11 +128,6 @@ An absent `gadugi-test` is a fact for the judgement, so nothing there ends
 the drive, and the repository type is not consulted. A value outside the two
 literals, or an absent `gadugi_test` key, is read as `not-installed`: the
 step reports a fact and may not stop the drive by being unreadable.
-
-The step prints `{}` today, so this is a new contract rather than a
-description of current output, and
-`crates/amplihack-cli/tests/issue_1802_auto_drive_light_recipe.rs` must
-assert it.
 
 Before the PR exists the change is uncommitted, and the tool diffs committed
 history only: `qa_command_paths` and `docs_only` do not describe the change.
@@ -306,16 +309,17 @@ check failed by name and the measurement is still incomplete, the tool
 prints an `ERROR:` line saying the measurement is incomplete and records
 `qa-command-missing` with `BLOCKED` rather than `PASS`.
 
-No named check produces `gadugi-validate-failed`, `gadugi-run-failed` or
-`gadugi-scenario-unnamed` any longer, because the tool runs no scenario. One
-path still reaches `gadugi-run-failed`: the unknown-reason safety net at the
-end of the status mapping, which turns a `qa_reason` outside the list into
-`FAIL` with `gadugi-run-failed`. Every token the tool picks is a literal
-from the list, so the net is unreachable in practice, but it is not removed:
-it is what keeps an unrecognised token from being read as a pass. A reader
-therefore tolerates all three tokens as unexpected rather than impossible,
-and treats them as it treats any failing measurement — an input to the
-judgement, never an outcome.
+`gadugi-validate-failed`, `gadugi-run-failed` and `gadugi-scenario-unnamed`
+are gone: the tool runs no scenario, so it cannot observe a validation or a
+run failing, and no path reaches them. The unknown-reason safety net at the
+end of the status mapping now records `BLOCKED` with `qa-command-missing`,
+the same incomplete measurement as above, rather than inventing a failure it
+did not observe. Every token the tool picks is a literal from the list, so
+the net is unreachable in practice; it is not removed, because it is what
+keeps an unrecognised token from being read as a pass. A reader that meets
+one of the three retired tokens is reading a record an older tool wrote:
+treat it as any failing measurement — an input to the judgement, never an
+outcome.
 
 ### Telling the three `qa-command-missing` causes apart
 
@@ -743,7 +747,7 @@ These criterion-1 outcomes no longer exist. None of them ends a drive.
 | Retired | What happens now |
 | --- | --- |
 | `qa-gadugi-no-scenarios`, the `NO_SCENARIOS` hold | The judgement writes or extends scenarios in the PR and runs them. `no-scenarios` survives only as a measured `qa_reason`. |
-| `gadugi-validate-failed`, `gadugi-run-failed`, `gadugi-scenario-unnamed` | The tool runs no scenario, so no named check produces them; `gadugi-run-failed` survives only as the unknown-reason safety net's token. Readers tolerate all three as unexpected, not impossible. The judgement classifies a failure it sees as `product`, `scenario` or `environment`, fixes it and runs again. |
+| `gadugi-validate-failed`, `gadugi-run-failed`, `gadugi-scenario-unnamed` | Gone: the tool runs no scenario, so it cannot observe a validation or a run failing, and the unknown-reason safety net records the incomplete measurement `qa-command-missing` instead. A reader that meets one of them is reading an older tool's record. The judgement classifies a failure it sees as `product`, `scenario` or `environment`, fixes it and runs again. |
 | `gadugi-test-missing` kept as a blocker in every report | An absent tool is a fact. Criterion 1 is met by other evidence, or a hand-off names the tool and its owner. It is never installed automatically. |
 | `gadugi_required` deciding criterion 1 from the repository type | Reported as a fact only. The judgement decides what testing a PR needs. |
 | "Missing required QA tooling remains BLOCKED" | Replaced by `qa-tool-not-installed:<tool>`, a recoverable input. |
