@@ -2481,7 +2481,10 @@ fn test_run_recipe_forwards_recipe_parent_as_dash_r() {
     unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
     let orchestration_env = crate::test_support::clear_outer_run_env();
     // Issue #2528: every run selects a bundle; give it a private installed one.
+    // Both bindings must be named and must outlive the run below; see
+    // `assert_private_installed_bundle`, which checks exactly that.
     let (_installed, _installed_env) = crate::test_support::installed_bundle_home();
+    crate::test_support::assert_private_installed_bundle(_installed.path());
 
     let result = super::run_recipe(
         recipe.to_str().unwrap(),

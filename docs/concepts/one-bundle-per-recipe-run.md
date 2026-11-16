@@ -295,5 +295,6 @@ snapshot is still a path into another bundle.
 
 - [Recipe run bundle selection and pinning](../reference/recipe-run-bundle.md): rules, environment and errors
 - [Run a recipe from a checkout's bundle](../howto/run-a-recipe-from-a-checkout-bundle.md): task steps
+- [Give a test its own installed bundle](../howto/give-a-test-its-own-installed-bundle.md): fixtures for tests and scenarios that drive a run
 - [Versioned install layout](./versioned-install-layout.md): how installs switch releases
 - [Recipe runner architecture](./recipe-runner-architecture.md): how the CLI and the runner divide the work

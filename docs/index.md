@@ -182,6 +182,7 @@ amplihack copilot
 - [`amplihack agent` Reference](reference/agent-command.md) - Register flags, `amplihack claude --supervise`, the supervisor pass, result texts, status formats, the registry and the systemd unit
 - [Install/Update PATH Conflict Reference](reference/install-update-path-conflicts.md) - Rust binary precedence, stale wrapper neutralization, and PATH profile persistence
 - [Framework Bundle Compatibility](reference/framework-bundle-compatibility.md) - Atomic bundle refresh and active `orch_helper.py` rejection
+- [Recipe Manifest Entries](reference/recipe-manifest-entries.md) - The `_recipe_manifest.json` entry rule, how to regenerate it, and what the compatibility check reads from it
 - [Framework Source Selection](reference/framework-source-selection.md) - Which source install, update and self-heal stage the bundle from, the release tag fetch, the manifest check and file modes
 - [Versioned Install Layout](concepts/versioned-install-layout.md) - Releases under `~/.amplihack/releases`, atomic link switch, in-use cleanup and why an install leaves running recipe runs alone
 - [Azure Integration](AZURE_INTEGRATION.md) - Deploy to Azure cloud
@@ -319,6 +320,8 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Recipe Run Bundle Selection and Pinning](reference/recipe-run-bundle.md) - `--bundle installed|checkout`, trust checks, the per-run bundle copy, `AMPLIHACK_RUN_BUNDLE`, nested runs, log fields and errors (issue #2528)
 - [One Bundle per Recipe Run](concepts/one-bundle-per-recipe-run.md) - Why recipes and tools come from one checked copy that survives an upgrade, and why cleanup has no separate process
 - [Run a Recipe from a Checkout's Bundle](howto/run-a-recipe-from-a-checkout-bundle.md) - Use `--bundle checkout`, see which bundle a run used, and fix untrusted-bundle and recipe-not-found errors
+- [Give a Test Its Own Installed Bundle](howto/give-a-test-its-own-installed-bundle.md) - Fixtures that give a Rust test or a gadugi scenario a private, trusted installed bundle, the modes the trust checks require, and how to spot a test that passed because its bundle was missing
+- [Recipe Manifest Entries](reference/recipe-manifest-entries.md) - What `_recipe_manifest.json` holds, the 16-character SHA-256 entry rule, the regenerate and check commands, and the narrow contract the install-time validator actually enforces
 
 - [Recipe Runner Overview](recipes/README.md) - Architecture, YAML format, and creating custom recipes
 - [UltraThink Recipe Runner Integration](recipes/RECIPE_RUNNER_ULTRATHINK_INTEGRATION.md) - How ultrathink uses Recipe Runner for code-enforced workflow execution

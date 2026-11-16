@@ -221,6 +221,42 @@ pub(crate) fn installed_bundle_home() -> (tempfile::TempDir, EnvGuard) {
     (temp, guard)
 }
 
+/// Issue #2528 (M2): panics unless `AMPLIHACK_HOME` currently names a private
+/// installed bundle, so a run started next selects it and not the developer's
+/// real `~/.amplihack`.
+///
+/// Call it after [`installed_bundle_home`] and before the run under test. The
+/// helper returns a `TempDir` and an `EnvGuard` that must both stay alive for
+/// the whole run: written `let _ = installed_bundle_home();` they are dropped
+/// on the spot, the previous `AMPLIHACK_HOME` comes back, and the test goes on
+/// to exercise whatever bundle the developer happens to have installed —
+/// passing on one machine, meeting E4 on another, and touching the real home
+/// either way. Nothing else notices, because a run with a usable bundle
+/// succeeds. This does.
+#[cfg(unix)]
+pub(crate) fn assert_private_installed_bundle(expected: &std::path::Path) {
+    let home = std::env::var_os("AMPLIHACK_HOME").unwrap_or_else(|| {
+        panic!(
+            "AMPLIHACK_HOME is unset: hold the installed_bundle_home() guard \
+             (named bindings, not `let _ =`) for the whole run"
+        )
+    });
+    let home = std::path::PathBuf::from(home);
+    let canonical = |path: &std::path::Path| std::fs::canonicalize(path).unwrap_or(path.to_owned());
+    assert_eq!(
+        canonical(&home),
+        canonical(expected),
+        "AMPLIHACK_HOME must still be the private installed home; the \
+         installed_bundle_home() guard was dropped too early"
+    );
+    let recipes = home.join("amplifier-bundle/recipes");
+    assert!(
+        recipes.is_dir(),
+        "{} must hold a trusted, empty amplifier-bundle/recipes",
+        home.display()
+    );
+}
+
 /// Remove every [`OUTER_RUN_IDENTITY_VARS`] entry until the guard drops. The
 /// caller must hold `env_lock()` (or `home_env_lock()`), as for any `EnvGuard`.
 pub(crate) fn clear_outer_run_env() -> EnvGuard {

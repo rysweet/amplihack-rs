@@ -1153,6 +1153,7 @@ pub(crate) fn resolve_recipe_in_bundle(
 
 - [One bundle per recipe run](../concepts/one-bundle-per-recipe-run.md): why runs pin a snapshot
 - [Run a recipe from a checkout's bundle](../howto/run-a-recipe-from-a-checkout-bundle.md): task steps
+- [Give a test its own installed bundle](../howto/give-a-test-its-own-installed-bundle.md): fixtures that satisfy these rules in tests and scenarios
 - [amplihack recipe reference](./recipe-command.md#recipe-run): all `recipe run` flags
 - [Recipe executor environment](./recipe-executor-environment.md): the full runner environment
 - [Versioned install layout](../concepts/versioned-install-layout.md): releases and the bundle link

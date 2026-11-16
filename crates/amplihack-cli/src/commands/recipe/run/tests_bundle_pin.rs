@@ -2105,6 +2105,55 @@ fn bundle_record_serialises_optional_fields_only_when_present() {
     assert_eq!(json["recipe_file"], "/work/x.yaml");
 }
 
+/// Issue #2528 (B3): the `AMPLIHACK_HOME` the marker check accepted stays in
+/// memory, in `Inherited::accepted_home`, and reaches `pin.json` and the log
+/// pointer through nothing.
+///
+/// A recipe path under that home is accepted because *this* process ran the
+/// whole chain for it: canonicalise, `is_dir`, equality with `AMPLIHACK_HOME`
+/// or `is_launch_copy_of`, three `trusted_directory` checks, the bundle-source
+/// read and `is_snapshot_path`. Written into the pin record it would become a
+/// claim a later process reads and believes without repeating any of that, so
+/// planting a record would hand out acceptance for a directory of the
+/// planter's choosing (#1528, #1543). The record holds paths a reader
+/// re-checks for itself, and no verdict.
+///
+/// Asserted as a closed set, not as `get("accepted_home").is_none()`: the
+/// field would be serialised under whatever name it was given, and a closed
+/// set catches it under any name.
+#[test]
+fn the_pin_record_carries_no_accepted_home_and_no_other_verdict() {
+    let record = BundleRecord {
+        source: "/src/amplifier-bundle".into(),
+        version: "1.0.0".into(),
+        snapshot: Some("/work/bundle-pins/0123456789abcdef01234567".into()),
+        choice: "installed".into(),
+        inherited: true,
+        recipe_file: Some("/work/x.yaml".into()),
+    };
+    let json = serde_json::to_value(&record).unwrap();
+    let mut keys: Vec<&str> = json
+        .as_object()
+        .expect("the record is a JSON object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "choice",
+            "inherited",
+            "recipe_file",
+            "snapshot",
+            "source",
+            "version"
+        ],
+        "a new pin-record field must be a path or flag a reader re-checks, \
+         never an accepted AMPLIHACK_HOME or any other verdict this process reached"
+    );
+}
+
 // ------------------------------------------------- run-start line (B1, R3)
 
 #[test]

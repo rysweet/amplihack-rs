@@ -252,4 +252,5 @@ directory. Either:
 
 - [Recipe run bundle selection and pinning](../reference/recipe-run-bundle.md): full rules and error list
 - [One bundle per recipe run](../concepts/one-bundle-per-recipe-run.md): why runs work this way
+- [Give a test its own installed bundle](./give-a-test-its-own-installed-bundle.md): the same setup inside a test or a scenario
 - [Recipe CLI commands](./recipe-cli-commands.md): other recipe tasks

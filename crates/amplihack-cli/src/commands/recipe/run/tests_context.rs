@@ -743,6 +743,7 @@ mod capacity_warning {
         let _orchestration = crate::test_support::clear_outer_run_env();
         // Issue #2528: every run selects a bundle; give it a private installed one.
         let (_installed, _installed_env) = crate::test_support::installed_bundle_home();
+        crate::test_support::assert_private_installed_bundle(_installed.path());
         let _env = crate::test_support::EnvGuard::set([
             ("HOME", home.to_str().unwrap()),
             ("AMPLIHACK_CLAUDE_PROFILE_ROOT", root.to_str().unwrap()),
