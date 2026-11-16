@@ -15,6 +15,9 @@
 #     directory laid out the way the crusty loop writes it;
 #   - the real `amplihack recipe run` and its recursion guard, against a sealed
 #     ceiling of 3, with a stand-in recipe runner so nothing real is started.
+#     That run needs one installed bundle (issue #2528), so the scenario
+#     installs a copy of this repository's under its own private HOME and
+#     starts the round by name, the way a run outside a checkout does.
 #
 # The rounds themselves are stand-ins: a stub `amplihack recipe run` writes the
 # round record and logs the session depth it was started at; `orch helper` is
@@ -251,13 +254,43 @@ fi
 #    stand-in recipe-runner-rs records the depth the guard hands it.
 TREES="$WORK/trees"; mkdir -p "$TREES" "$WORK/tmp"
 printf '{"sessions":{},"ceiling":3}' > "$TREES/scenario.json"
-printf '#!/bin/sh\nprintf "depth=%%s\\n" "${AMPLIHACK_SESSION_DEPTH:-}" >> "$RUNNER_LOG"\nprintf "{}\\n"\n' > "$WORK/bin/recipe-runner-rs"
+cat > "$WORK/bin/recipe-runner-rs" <<'RUNNER'
+#!/bin/sh
+# The read-only capability probe runs before any step and must answer with a
+# report the run accepts; it is not an invocation, so it logs no depth.
+case "${1:-}" in
+  --capabilities)
+    printf '{"schema_version":1,"version":"scenario","capabilities":["durable_recovery_v1"]}\n'
+    exit 0 ;;
+esac
+printf 'depth=%s\n' "${AMPLIHACK_SESSION_DEPTH:-}" >> "$RUNNER_LOG"
+printf '{}\n'
+RUNNER
 chmod +x "$WORK/bin/recipe-runner-rs"
+# An installed bundle of this repository's under the scenario's own HOME, the
+# one bundle the run takes its recipe, its sub-recipes and its tools from
+# (issue #2528). Modes are set explicitly, never left to the umask, because
+# the bundle trust checks (#1551) refuse a group- or other-writable entry.
+# Symlinks are left as they are: `find -type d` and `-type f` do not follow
+# them, and the bundle's dangling links are copied as links.
+AMP_HOME="$WORK/home/.amplihack"
+mkdir -p "$AMP_HOME"
+cp -a "$REPO_ROOT/amplifier-bundle" "$AMP_HOME/amplifier-bundle" \
+  || { echo "FAIL: could not install a bundle under $AMP_HOME"; echo "SCENARIO_FAILED"; exit 1; }
+chmod 0755 "$WORK/home" "$AMP_HOME"
+find "$AMP_HOME" -type d -exec chmod 0755 {} +
+find "$AMP_HOME" -type f -exec chmod go-w {} +
+[ -f "$AMP_HOME/amplifier-bundle/recipes/autodrive-crusty-round.yaml" ] \
+  || { echo "FAIL: the installed bundle has no autodrive-crusty-round recipe"; echo "SCENARIO_FAILED"; exit 1; }
 guard() { # guard <depth> -> exit code of a real `recipe run` of the crusty round started at <depth>
+  # The round is started by name, from the installed bundle under HOME. The
+  # #1528 rule that a round is started by a launch-side path applies to
+  # autodrive_worktree_guard.sh, which is not what this case exercises.
   ( cd "$WORK" && env -i HOME="$WORK/home" PATH="$SYS_PATH" TMPDIR="$WORK/tmp" AMPLIHACK_SKIP_AUTO_INSTALL=1 \
+      AMPLIHACK_HOME="$AMP_HOME" \
       AMPLIHACK_SESSION_TREE_DIR="$TREES" AMPLIHACK_TREE_ID=scenario AMPLIHACK_SESSION_DEPTH="$1" AMPLIHACK_MAX_DEPTH=3 \
       AMPLIHACK_MIN_AVAILABLE_MIB=0 RECIPE_RUNNER_RS_PATH="$WORK/bin/recipe-runner-rs" RUNNER_LOG="$WORK/runner-$1.log" \
-      "$REAL" recipe run "$REPO_ROOT/amplifier-bundle/recipes/autodrive-crusty-round.yaml" --dry-run ) \
+      "$REAL" recipe run autodrive-crusty-round --dry-run ) \
     >"$WORK/guard-$1.out" 2>"$WORK/guard-$1.err"
 }
 # Depth 4 is a merge round's step: where the nested step-00c crusty loop ran.

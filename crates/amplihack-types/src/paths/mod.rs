@@ -123,7 +123,31 @@ pub fn resolve_state_root(
     home.and_then(usable_root).map(|h| h.join(".amplihack"))
 }
 
+/// Names the state root of a pinned `recipe run` (#2528). Inside such a run
+/// `AMPLIHACK_HOME` is the run's bundle snapshot, so state readers take this
+/// variable first.
+pub const STATE_HOME_ENV: &str = "AMPLIHACK_STATE_HOME";
+
+/// `AMPLIHACK_STATE_HOME` when it is set, passes the path rule (absolute, no
+/// `..` component) and is not a Git checkout root; `None` otherwise, without
+/// a message, so callers apply their usual rules (#2528).
+///
+/// The checkout probe is the same [`is_git_checkout`] gate `AMPLIHACK_HOME`
+/// passes through, and is here rather than in each caller because this
+/// variable names a *state* root and outranks `AMPLIHACK_HOME`: without it,
+/// the highest-precedence candidate would be the one candidate that reaches
+/// a state write unchecked, which is exactly #2361's symptom -- runtime
+/// state at a checkout root, picked up by the recipe stagers.
+pub fn state_home_override() -> Option<PathBuf> {
+    let value = env::var_os(STATE_HOME_ENV)?;
+    usable_root(&value)
+        .filter(|root| !is_git_checkout(root))
+        .map(Path::to_path_buf)
+}
+
 /// The amplihack state root for hook-written runtime state (#1963, #2361).
+///
+/// `AMPLIHACK_STATE_HOME` is read first when it is usable (#2528).
 ///
 /// Reads `AMPLIHACK_HOME` and `HOME`. When `AMPLIHACK_HOME` passes the path
 /// rule, probes it with [`is_git_checkout`], then applies
@@ -136,6 +160,9 @@ pub fn resolve_state_root(
 /// their write; there is no fallback to the checkout, the working directory
 /// or `REPO_PATH`.
 pub fn amplihack_state_root() -> Option<PathBuf> {
+    if let Some(state_home) = state_home_override() {
+        return Some(state_home);
+    }
     let amplihack_home = env::var_os("AMPLIHACK_HOME");
     let is_checkout = amplihack_home
         .as_deref()

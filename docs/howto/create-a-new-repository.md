@@ -20,7 +20,7 @@ not — and step-01 initializes a git repository on the `main` branch when one
 does not already exist. No action needed:
 
 ```sh
-amplihack recipe run amplifier-bundle/recipes/smart-orchestrator.yaml \
+amplihack recipe run smart-orchestrator \
   -c task_description="scaffold a new Rust CLI project called widgetron" \
   -c repo_path="./widgetron"
 ```
@@ -72,7 +72,7 @@ To watch the auto-init happen at runtime, run with `--verbose` and look for the
 `[init]` line in step-01's output:
 
 ```sh
-amplihack recipe run amplifier-bundle/recipes/smart-orchestrator.yaml \
+amplihack recipe run smart-orchestrator \
   -c task_description="scaffold a new project" \
   -c repo_path="./widgetron" \
   --verbose
@@ -87,7 +87,7 @@ implicitly, set `auto_init_repo="false"` to restore the pre-#900 behavior.
 step-01 then hard-fails on a non-git directory:
 
 ```sh
-amplihack recipe run amplifier-bundle/recipes/smart-orchestrator.yaml \
+amplihack recipe run smart-orchestrator \
   -c task_description="refactor auth module" \
   -c repo_path="." \
   -c auto_init_repo="false"
@@ -115,6 +115,25 @@ context:
 
 Apply the same change in `default-workflow.yaml` if you run that recipe
 directly.
+
+A run by name uses the installed bundle, so an edit made in an amplihack-rs
+checkout takes effect only when you start the run with `--bundle checkout`
+from inside that checkout. `--bundle checkout` selects the checkout that holds
+the working directory, as described in
+[Recipe run bundle selection: `checkout`](../reference/recipe-run-bundle.md#checkout),
+so give the new repository as an absolute path outside the checkout:
+
+```sh
+cd ~/src/amplihack-rs
+amplihack recipe run smart-orchestrator --bundle checkout \
+  -c task_description="scaffold a new project" \
+  -c repo_path="$HOME/src/widgetron"
+```
+
+Do not start the run with the path of the edited file. A path into a
+checkout's `amplifier-bundle/recipes/` is refused unless the run uses that
+checkout's bundle; see
+[Run a recipe from a checkout's bundle](./run-a-recipe-from-a-checkout-bundle.md).
 
 **Trade-off:** With `auto_init_repo="false"`, any task pointed at a directory
 without a `.git` will fail at step-01. Only set this when implicit repo creation

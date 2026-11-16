@@ -455,6 +455,7 @@ printf '{"recipe_name":"stderr-forwarding","success":true,"step_results":[],"con
     let recipe = write_temp_recipe("stderr-forwarding", true);
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create AMPLIHACK_HOME");
+    ensure_empty_bundle(&amplihack_home);
 
     let (stdout, stderr, success) = run_output(
         crate::isolated_amplihack::isolated(&bin)
@@ -533,4 +534,21 @@ fn recipe_run_progress_flag_fails_with_explicit_default_progress_guidance() {
             || stderr.contains("stderr by default"),
         "error output must explain that live progress is already emitted to stderr by default. stderr:\n{stderr}"
     );
+}
+
+/// Issue #2528: `recipe run` refuses a run with no installed bundle. A recipe
+/// given as a path needs only an empty one at the home it names.
+fn ensure_empty_bundle(home: &std::path::Path) {
+    let bundle = home.join("amplifier-bundle");
+    for sub in ["recipes", "agents"] {
+        std::fs::create_dir_all(bundle.join(sub)).expect("create bundle");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for dir in [bundle.join("recipes"), bundle.join("agents"), bundle] {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod bundle");
+        }
+    }
 }

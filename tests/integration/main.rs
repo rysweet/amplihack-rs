@@ -549,3 +549,9 @@ mod issue_1771_precommit_symlinked_caches;
 // recipe-runner-rs with agent steps stubbed, all under isolated(..).
 #[path = "issue_1966_consensus_criticality.rs"]
 mod issue_1966_consensus_criticality;
+
+// Issue #2528: every _recipe_manifest.json entry is the sha256 prefix of the
+// recipe it names, checked over every entry rather than a hand-kept list, so
+// a merge that edits a recipe cannot leave its entry stale unnoticed.
+#[path = "issue_2528_recipe_manifest.rs"]
+mod issue_2528_recipe_manifest;

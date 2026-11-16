@@ -31,6 +31,9 @@ smart-orchestrator recipe and all required companion recipes.
 | `amplifier-bundle/recipes/smart-validate-summarize.yaml` | Outside-in validation, summary, and completion. |
 | `amplifier-bundle/recipes/_recipe_manifest.json` | Manifest entries for the parent and companion recipes. |
 
+The manifest's own format, the entry rule and the commands that regenerate and
+check it are in [Recipe manifest entries](./recipe-manifest-entries.md).
+
 The parent recipe delegates to the companion recipes:
 
 ```yaml

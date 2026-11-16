@@ -33,6 +33,10 @@ mod support;
 mod issue_2096_execution_isolation;
 #[path = "issue_2329_autodrive_outcomes.rs"]
 mod issue_2329_autodrive_outcomes;
+#[path = "issue_2528_no_cleanup_child.rs"]
+mod issue_2528_no_cleanup_child;
+#[path = "issue_2528_one_bundle.rs"]
+mod issue_2528_one_bundle;
 #[path = "issue_2556_autodrive_evidence.rs"]
 mod issue_2556_autodrive_evidence;
 #[path = "issue_2575_agentic_merge_ready.rs"]

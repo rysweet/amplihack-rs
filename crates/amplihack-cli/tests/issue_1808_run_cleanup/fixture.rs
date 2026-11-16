@@ -316,6 +316,9 @@ impl Fx {
         let capability = r#"case "$1" in --capabilities) printf '%s\n' '{"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]}'; exit 0 ;; esac"#;
         let body = runner_body.replacen('\n', &format!("\n{capability}\n"), 1);
         write_executable(&runner, &body, 0o755);
+        // Issue #2528: `recipe run` refuses a home with no installed bundle
+        // (E4). Only runs get one; `cleanup` tests check a home stays empty.
+        crate::support::installed_bundle::ensure(&self.home.join(".amplihack"));
         let mut c = self.amplihack();
         c.arg("recipe")
             .arg("run")

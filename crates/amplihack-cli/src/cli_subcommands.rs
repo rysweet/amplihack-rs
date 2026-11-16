@@ -594,6 +594,15 @@ pub enum RecipeCommands {
         /// sub-recipes intentionally have none, so agent steps never time out.
         #[arg(long = "step-timeout")]
         step_timeout: Option<u64>,
+        /// Which amplifier-bundle supplies the recipe, its sub-recipes, agents
+        /// and tools: `installed` (the default: AMPLIHACK_HOME, then
+        /// paths.home, then ~/.amplihack) or `checkout` (the nearest
+        /// ancestor of the working directory holding .git and
+        /// amplifier-bundle/). Same as `-c bundle=<CHOICE>`. The run copies
+        /// the bundle into its own folder, so an upgrade during the run does
+        /// not change it.
+        #[arg(long, value_name = "CHOICE", value_parser = ["installed", "checkout"])]
+        bundle: Option<String>,
         /// Run in a new tmux session with a private log, print the session
         /// name and log path, and return. The default comes from
         /// `recipe.detach` (`amplihack config`).

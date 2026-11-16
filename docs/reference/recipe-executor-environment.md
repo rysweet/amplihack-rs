@@ -26,7 +26,10 @@ non-interactive nested execution before the runner receives any recipe context.
 | `AMPLIHACK_RECIPE_RUN_ID` | Generated UUID | Stable correlation identity for this `amplihack recipe run` invocation |
 | `CLAUDECODE` | *(removed)* | Explicitly unset so nested agents do not detect a parent Claude Code session |
 | `AMPLIHACK_AGENT_BINARY` | Active launcher binary | Propagates the current runtime selection, such as `copilot`, `claude`, `codex`, or `amplifier` |
-| `AMPLIHACK_HOME` | Resolved framework home | Gives the runner access to installed recipes, hooks, skills, and agents |
+| `AMPLIHACK_HOME` | `<work root>/bundle-pins/<key>` | The run's checked copy of the selected bundle; recipes, agents and tools resolve inside it. A dry run leaves `AMPLIHACK_HOME` unchanged and sets none of the next three variables. See [Recipe run bundle selection and pinning](./recipe-run-bundle.md) |
+| `AMPLIHACK_RUN_BUNDLE` | `<work root>/bundle-pins/<key>` | Marks the run's bundle so nested `recipe run` calls reuse it |
+| `AMPLIHACK_RUN_BUNDLE_CHOICE` | `installed` or `checkout` | The bundle choice of the outermost run |
+| `AMPLIHACK_STATE_HOME` | State root in effect before `AMPLIHACK_HOME` was changed; a nested run passes the inherited value through | State readers use it first, so state stays out of the bundle copy |
 | `AMPLIHACK_ASSET_RESOLVER` | Resolved native resolver path, when available | Lets nested tools resolve bundled assets without hardcoded paths |
 | `AMPLIHACK_GRAPH_DB_PATH` | Project-local graph DB path | Keeps launched hooks and memory/code-graph features on the same project store |
 | `PAGER` / pager-related defaults | Pager-safe values | Prevents child commands from blocking on interactive pagers |

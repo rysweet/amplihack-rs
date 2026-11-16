@@ -86,7 +86,10 @@ fn evaluator_cmd(f: &Fixture, env: &[(&str, &str)]) -> Command {
         .env_remove("CLAUDE_CONFIG_DIR")
         .env("RECIPE_RUNNER_RS_PATH", &runner)
         .env("AMPLIHACK_AGENT_BINARY", "claude")
-        .env("AMPLIHACK_HOME", f.home.join(".amplihack"))
+        .env(
+            "AMPLIHACK_HOME",
+            crate::support::installed_bundle::home(f.home.join(".amplihack")),
+        )
         .env("LIMIT_STEP", STEP)
         .env("LIMIT_MESSAGE", WEEKLY_TEXT)
         .env("VERDICT", VERDICT);

@@ -150,7 +150,7 @@ steps:
   - id: "build-layers-1-4"
     name: "Step 2: Build Layers 1-4 (Structural)"
     type: "agent"
-    agent: "amplihack:amplihack:core:builder"
+    agent: "amplihack:core:builder"
     description: |
       Build the first 4 atlas layers. Read .claude/skills/code-atlas/LAYERS.yaml
       for slug, scope_target, and diagram_type for each layer.
@@ -189,7 +189,7 @@ steps:
   - id: "build-layers-5-8"
     name: "Step 3: Build Layers 5-8 (Behavioral)"
     type: "agent"
-    agent: "amplihack:amplihack:core:builder"
+    agent: "amplihack:core:builder"
     description: |
       Build the remaining 4 atlas layers. Read .claude/skills/code-atlas/LAYERS.yaml
       for slug, scope_target, and diagram_type for each layer.
@@ -227,7 +227,7 @@ steps:
   - id: "verify-all-layers"
     name: "Step 4: Verify All 8 Layers Built"
     type: "agent"
-    agent: "amplihack:amplihack:core:reviewer"
+    agent: "amplihack:core:reviewer"
     description: |
       Verify that ALL 8 atlas layers were successfully built. This is a hard gate.
 
@@ -262,7 +262,7 @@ steps:
   - id: "bug-hunt-mermaid"
     name: "Step 3: Bug-Hunt — Mermaid Arm"
     type: "agent"
-    agent: "amplihack:amplihack:core:reviewer"
+    agent: "amplihack:core:reviewer"
     parallel_group: "dual-format-hunt"
     description: |
       3-pass bug hunt using ONLY the Mermaid (.mmd) diagrams from Step 2.
@@ -298,7 +298,7 @@ steps:
   - id: "bug-hunt-graphviz"
     name: "Step 4: Bug-Hunt — Graphviz Arm"
     type: "agent"
-    agent: "amplihack:amplihack:core:reviewer"
+    agent: "amplihack:core:reviewer"
     parallel_group: "dual-format-hunt"
     description: |
       3-pass bug hunt using ONLY the Graphviz DOT (.dot) diagrams from Step 2.
@@ -325,7 +325,7 @@ steps:
   - id: "merge-bug-findings"
     name: "Step 5: Merge and Deduplicate Bug Findings"
     type: "agent"
-    agent: "amplihack:amplihack:core:reviewer"
+    agent: "amplihack:core:reviewer"
     description: |
       Merge findings from both the Mermaid and Graphviz arms:
 
@@ -355,7 +355,7 @@ steps:
   - id: "validate-bugs-security"
     name: "Step 6a: Validate Bugs — Security Specialist"
     type: "agent"
-    agent: "amplihack:amplihack:specialized:security"
+    agent: "amplihack:specialized:security"
     parallel_group: "bug-validation"
     description: |
       Security specialist reviews each merged bug finding independently.
@@ -381,7 +381,7 @@ steps:
   - id: "validate-bugs-architect"
     name: "Step 6b: Validate Bugs — Architecture Specialist"
     type: "agent"
-    agent: "amplihack:amplihack:core:architect"
+    agent: "amplihack:core:architect"
     parallel_group: "bug-validation"
     description: |
       Architecture specialist reviews each merged bug finding independently.
@@ -405,7 +405,7 @@ steps:
   - id: "validate-bugs-tester"
     name: "Step 6c: Validate Bugs — Testing Specialist"
     type: "agent"
-    agent: "amplihack:amplihack:core:tester"
+    agent: "amplihack:core:tester"
     parallel_group: "bug-validation"
     description: |
       Testing specialist reviews each merged bug finding independently.
@@ -436,7 +436,7 @@ steps:
   - id: "tally-validation-votes"
     name: "Step 6d: Tally Validation Votes"
     type: "agent"
-    agent: "amplihack:amplihack:core:reviewer"
+    agent: "amplihack:core:reviewer"
     description: |
       Tally votes from the three validation specialists:
 
@@ -496,7 +496,7 @@ steps:
   - id: "file-issues"
     name: "Step 7b: File Work Items for Validated Bugs"
     type: "agent"
-    agent: "amplihack:amplihack:core:builder"
+    agent: "amplihack:core:builder"
     description: |
       File ALL validated bugs as work items. This is DETERMINISTIC — every
       validated bug gets filed, no agent discretion about which to include.
@@ -551,7 +551,7 @@ steps:
   - id: "ingest-to-graph"
     name: "Step 8: Ingest Atlas into Code Graph + Generate OpenCypher"
     type: "agent"
-    agent: "amplihack:amplihack:core:builder"
+    agent: "amplihack:core:builder"
     description: |
       TWO outputs from this step:
         A) Ingest atlas into Kuzu code graph (REQUIRED — NOT optional)
@@ -645,7 +645,7 @@ steps:
   - id: "final-checklist-review"
     name: "Step 10: Final Checklist Review and Summary"
     type: "agent"
-    agent: "amplihack:amplihack:core:reviewer"
+    agent: "amplihack:core:reviewer"
     description: |
       Final independent review of the completed atlas. Walk through this
       checklist and report PASS/FAIL for each item:

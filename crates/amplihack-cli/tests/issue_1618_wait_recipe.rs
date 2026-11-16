@@ -62,7 +62,10 @@ fn run_recipe_with(f: &Fixture, limited_step: &str, env: &[(&str, &str)]) -> Out
         .arg(&f.work)
         .env("RECIPE_RUNNER_RS_PATH", &runner)
         .env("AMPLIHACK_AGENT_BINARY", "claude")
-        .env("AMPLIHACK_HOME", f.home.join(".amplihack"))
+        .env(
+            "AMPLIHACK_HOME",
+            crate::support::installed_bundle::home(f.home.join(".amplihack")),
+        )
         .env("LIMIT_STEP", limited_step);
     for (k, v) in env {
         c.env(k, v);

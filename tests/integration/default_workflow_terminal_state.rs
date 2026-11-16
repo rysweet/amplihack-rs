@@ -1110,6 +1110,11 @@ steps:
             &mut command,
             &tmp.path().join(format!("child-{terminal_state}")),
         );
+        ensure_empty_bundle(
+            &tmp.path()
+                .join(format!("child-{terminal_state}"))
+                .join("home/.amplihack"),
+        );
         command
             .args(["recipe", "run"])
             .arg(&recipe_path)
@@ -1510,4 +1515,21 @@ fn final_status_does_not_count_a_named_pr_behind_local_head_as_published() {
         !helper_text("workflow_pr_ready.sh").contains("--allow-head-behind"),
         "workflow_pr_ready.sh must not opt in to --allow-head-behind"
     );
+}
+
+/// Issue #2528: `recipe run` refuses a run with no installed bundle. A recipe
+/// given as a path needs only an empty one at the home it names.
+fn ensure_empty_bundle(home: &std::path::Path) {
+    let bundle = home.join("amplifier-bundle");
+    for sub in ["recipes", "agents"] {
+        std::fs::create_dir_all(bundle.join(sub)).expect("create bundle");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for dir in [bundle.join("recipes"), bundle.join("agents"), bundle] {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod bundle");
+        }
+    }
 }

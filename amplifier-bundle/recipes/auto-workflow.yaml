@@ -39,7 +39,7 @@ steps:
   # Step 2: Plan the work
   - id: "plan-task"
     type: "agent"
-    agent: "foundation:zen-architect"
+    agent: "amplihack:core:architect"
     prompt: |
       Create a detailed execution plan for this task:
 
@@ -58,7 +58,7 @@ steps:
   # Step 3: Execute iteration 1
   - id: "execute-iteration-1"
     type: "agent"
-    agent: "foundation:modular-builder"
+    agent: "amplihack:core:builder"
     prompt: |
       **AUTONOMOUS EXECUTION MODE**
 
@@ -83,7 +83,7 @@ steps:
   - id: "execute-iteration-2"
     type: "agent"
     condition: "'CONTINUE' in iteration_1"
-    agent: "foundation:modular-builder"
+    agent: "amplihack:core:builder"
     prompt: |
       **AUTONOMOUS EXECUTION - CONTINUING**
 
@@ -101,7 +101,7 @@ steps:
   - id: "execute-iteration-3"
     type: "agent"
     condition: "iteration_2 and 'CONTINUE' in iteration_2"
-    agent: "foundation:modular-builder"
+    agent: "amplihack:core:builder"
     prompt: |
       **AUTONOMOUS EXECUTION - CONTINUING**
 
@@ -115,7 +115,7 @@ steps:
   - id: "execute-iteration-4"
     type: "agent"
     condition: "iteration_3 and 'CONTINUE' in iteration_3"
-    agent: "foundation:modular-builder"
+    agent: "amplihack:core:builder"
     prompt: |
       **AUTONOMOUS EXECUTION - CONTINUING**
 
@@ -129,7 +129,7 @@ steps:
   - id: "execute-iteration-5"
     type: "agent"
     condition: "iteration_4 and 'CONTINUE' in iteration_4"
-    agent: "foundation:modular-builder"
+    agent: "amplihack:core:builder"
     prompt: |
       **AUTONOMOUS EXECUTION - FINAL ITERATION**
 
@@ -152,7 +152,7 @@ steps:
   # Step 9: Generate summary
   - id: "generate-summary"
     type: "agent"
-    agent: "foundation:zen-architect"
+    agent: "amplihack:core:architect"
     prompt: |
       Generate a summary of the auto-mode execution:
 

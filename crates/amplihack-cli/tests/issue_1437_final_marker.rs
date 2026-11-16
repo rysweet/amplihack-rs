@@ -77,7 +77,10 @@ fn run_fixture(stub: &str) -> (i32, String) {
         .env("HOME", &home)
         .env("RECIPE_RUNNER_RS_PATH", &runner)
         .env("AMPLIHACK_AGENT_BINARY", "claude")
-        .env("AMPLIHACK_HOME", home.join(".amplihack"))
+        .env(
+            "AMPLIHACK_HOME",
+            crate::support::installed_bundle::home(home.join(".amplihack")),
+        )
         .env("AMPLIHACK_NONINTERACTIVE", "1")
         .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")

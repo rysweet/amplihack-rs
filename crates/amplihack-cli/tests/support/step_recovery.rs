@@ -155,7 +155,7 @@ impl Fixture {
             .env("HOME", &self.home)
             .env("TMPDIR", self.root.join("tmp"))
             .env("XDG_STATE_HOME", self.root.join("state"))
-            .env("AMPLIHACK_HOME", self.home.join(".amplihack"))
+            .env("AMPLIHACK_HOME", self.installed_home())
             .env("RECIPE_RUNNER_RS_PATH", self.tools.join("recipe-runner-rs"))
             .env("STEP_RECOVERY_AGENT_DIR", &self.agent)
             .env("AMPLIHACK_AGENT_BINARY", "claude")
@@ -171,7 +171,26 @@ impl Fixture {
         cmd
     }
 
-    /// `step-recovery run` with the fixture's dir and goal, the
+    /// The fixture's installed home (#2528: `recipe run` needs one). Its
+    /// bundle holds a copy of the shipped recovery recipe, so the driver's
+    /// child run finds it by name or by path inside the run's own bundle.
+    pub fn installed_home(&self) -> PathBuf {
+        let home = crate::support::installed_bundle::home(self.home.join(".amplihack"));
+        let recipe = "step-failure-recovery.yaml";
+        let copy = self.installed_recipes().join(recipe);
+        if !copy.exists() {
+            fs::copy(bundle_recipes().join(recipe), &copy).unwrap();
+            fs::set_permissions(&copy, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        home
+    }
+
+    /// `recipes/` of the fixture's installed bundle.
+    pub fn installed_recipes(&self) -> PathBuf {
+        self.home.join(".amplihack/amplifier-bundle/recipes")
+    }
+
+    /// `step-recovery run` with the fixture's dir and goal, the installed
     /// bundle's recipes as `--recipe-dir`, `extra` flags, then `-- command`.
     pub fn run_cmd(&self, step_id: &str, extra: &[&str], command: &[&str]) -> Command {
         let mut cmd = self.amplihack();
@@ -187,7 +206,7 @@ impl Fixture {
         .arg(&self.dir)
         .args(["--goal", "Merge the fixture pull request"])
         .arg("--recipe-dir")
-        .arg(bundle_recipes())
+        .arg(self.installed_recipes())
         .args(extra)
         .arg("--")
         .args(command);

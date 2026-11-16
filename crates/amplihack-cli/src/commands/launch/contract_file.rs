@@ -101,7 +101,13 @@ pub(crate) fn contract_home_from(
 /// with [`amplihack_types::is_git_checkout`] and applies
 /// [`contract_home_from`]: `AMPLIHACK_HOME` when it is not a Git checkout,
 /// otherwise `$HOME/.amplihack`. Fails when neither yields a directory.
+/// A usable `AMPLIHACK_STATE_HOME` is taken first (#2528).
 pub(crate) fn contract_home() -> Result<PathBuf> {
+    // Issue #2528: inside a pinned recipe run AMPLIHACK_HOME is the bundle
+    // snapshot; the real home is in AMPLIHACK_STATE_HOME.
+    if let Some(state_home) = amplihack_types::state_home_override() {
+        return Ok(state_home);
+    }
     let amplihack_home = std::env::var_os("AMPLIHACK_HOME");
     let is_checkout = amplihack_home
         .as_deref()

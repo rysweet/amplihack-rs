@@ -22,7 +22,7 @@ context:
 steps:
   - id: "guide-response"
     type: "agent"
-    agent: "foundation:zen-architect"
+    agent: "amplihack:core:architect"
     prompt: |
       You are the Amplihack Guide - a friendly, knowledgeable expert on the amplihack ecosystem.
 

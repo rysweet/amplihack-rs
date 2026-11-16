@@ -83,6 +83,8 @@ additive; consumers must ignore fields they do not understand.
 | `agent_binary` | string | early, final | no | Agent CLI the steps run under (`claude`, `copilot`, `codex` or `amplifier`), resolved once at entry. |
 | `agent_binary_source` | string | early, final | no | Resolver layer that chose `agent_binary`: `env`, `user_config`, `session_marker`, `launcher_context` or `default`. See [Active Agent Binary](./active-agent-binary.md#resolution-precedence). |
 | `amplihack_home` | string | early, final | no | `AMPLIHACK_HOME` handed to the runner. Omitted when no home resolved. |
+| `recipe_bundle` | object | early, final | no | Bundle that supplied the recipe and sub-recipes: `source`, `version`, `snapshot`, `choice`, `inherited`, and `recipe_file` when the recipe was given as a path. See [Log record and stderr line](./recipe-run-bundle.md#log-record-and-stderr-line). |
+| `tool_bundle` | object | early, final | no | Bundle that supplied tools, with the same fields. Always equal to `recipe_bundle`. |
 | `child_pid` | integer | final | no | Child `recipe-runner-rs` process ID when the child spawned. |
 | `exit_code` | integer | final | no | Child exit code when available. |
 | `status` | string | final | yes | Lowercase terminal wrapper status. See [Final statuses](#final-statuses). |
