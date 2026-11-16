@@ -85,3 +85,19 @@ pub fn matches(tree: &[Process], needles: &[&str]) -> Vec<(u32, String)> {
         .map(|(pid, arg)| (pid, String::from_utf8_lossy(arg).into_owned()))
         .collect()
 }
+
+/// Every `(pid, argv element)` in `tree` where the element *is* `flag`, or is
+/// its `--flag=value` form.
+///
+/// [`matches`] is a substring search, which is what a context value needs: a
+/// value can sit inside a larger argument. A flag name needs this instead.
+/// Searching for `--set` as a substring also finds `--settings`, which the
+/// agent CLI is launched with, and reports the opposite of the truth.
+pub fn flags(tree: &[Process], flag: &str) -> Vec<(u32, String)> {
+    let eq = format!("{flag}=");
+    tree.iter()
+        .flat_map(|(pid, argv)| argv.iter().map(move |arg| (*pid, arg)))
+        .filter(|(_, arg)| arg.as_slice() == flag.as_bytes() || arg.starts_with(eq.as_bytes()))
+        .map(|(pid, arg)| (pid, String::from_utf8_lossy(arg).into_owned()))
+        .collect()
+}

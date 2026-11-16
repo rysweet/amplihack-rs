@@ -262,11 +262,7 @@ impl Fixture {
         let tools = root.join("tools");
         let work_root = root.join("work");
         let recipes = root.join("recipes");
-        let agents = root
-            .join(".claude")
-            .join("agents")
-            .join("amplihack")
-            .join("core");
+        let agents = root.join(".claude/agents/amplihack/core");
         for d in [
             &home,
             &records,
@@ -510,7 +506,7 @@ fn no_context_value_or_prompt_text_on_any_argv_of_a_real_run() {
         hits.is_empty(),
         "context or prompt text on argv: {hits:?}\ntree:\n{shown}"
     );
-    let sets: Vec<(u32, String)> = proc_tree::matches(&tree, &["--set"]);
+    let sets: Vec<(u32, String)> = proc_tree::flags(&tree, "--set");
     assert!(
         sets.is_empty(),
         "a --set argument survived on argv: {sets:?}\ntree:\n{shown}"
@@ -519,7 +515,7 @@ fn no_context_value_or_prompt_text_on_any_argv_of_a_real_run() {
     // Both runs must be carrying their context in a private file while they
     // run, so the absence above is the transport working and not an empty
     // context.
-    let files = proc_tree::matches(&tree, &["--context-file"]);
+    let files = proc_tree::flags(&tree, "--context-file");
     assert!(
         files.len() >= 2,
         "expected --context-file on the outer and the nested runner: {files:?}\ntree:\n{shown}"
