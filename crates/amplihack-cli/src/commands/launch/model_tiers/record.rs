@@ -90,7 +90,11 @@ pub(crate) fn append(run_dir: Option<&Path>, record: &Record) {
     let Ok(mut file) = options.open(&path) else {
         return;
     };
-    if !fs::metadata(&path).is_ok_and(|meta| meta.is_file()) {
+    // The open handle, not the path: re-stating by path re-checks a
+    // different object from the one about to be written, and on a platform
+    // with no `O_NOFOLLOW` above it would pass for a symlink to a regular
+    // file and append through it.
+    if !file.metadata().is_ok_and(|meta| meta.is_file()) {
         return;
     }
     // Advisory, and skipping beats blocking: the record is a report, never a

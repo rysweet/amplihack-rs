@@ -205,7 +205,13 @@ fn patch(text: &str, wanted: &BTreeMap<&str, Tier>) -> Option<Patched> {
         let id_position = out.len();
         let mut replaced = false;
         for line in &lines[index..end] {
-            if line.trim_start().starts_with("model:") && !replaced {
+            // Anchored to the step's own field indent, not to `model:`
+            // anywhere in the body: a prompt or a shell line that happens to
+            // begin `model:` is the step's content, and replacing it would
+            // both corrupt the body and leave the step with no tier. No
+            // bundled recipe has that shape today, so the invariant would
+            // otherwise live in the data rather than in the code.
+            if !replaced && is_step_field(line, indent, "model:") {
                 out.push(model_line.clone());
                 replaced = true;
             } else {
@@ -224,6 +230,13 @@ fn patch(text: &str, wanted: &BTreeMap<&str, Tier>) -> Option<Patched> {
         text: out.join("\n"),
         matched,
     })
+}
+
+/// Whether `line` is the named field of a step whose `- id:` sits at
+/// `indent`, so it is written at `indent + 2` like every other field.
+fn is_step_field(line: &str, indent: usize, field: &str) -> bool {
+    let trimmed = line.trim_start();
+    line.len() - trimmed.len() == indent + 2 && trimmed.starts_with(field)
 }
 
 /// `(indent, id)` when `line` opens a step, as the bundled recipes write it:

@@ -28,22 +28,18 @@ pub(crate) enum Injection {
     Added(Vec<String>),
     /// The command line already sets the effort; amplihack adds nothing.
     CallerChose,
-    /// The value is outside the five words amplihack will write. The command
-    /// line is left alone: the model still applies and the launch proceeds.
-    Rejected,
 }
 
 /// Add `-c model_reasoning_effort=<effort>` to `args`.
 ///
-/// `effort` is rejected unless it is one of the accepted words. That is argv
-/// safety, not a claim about Codex: the value becomes the right-hand side of
-/// a `-c` token, so only an allowlisted word is ever written. Whether the
+/// `effort` is an [`Effort`], not a string, so only one of the five
+/// allowlisted words can ever become the right-hand side of a `-c` token.
+/// That is argv safety expressed in the type: a word outside the list is
+/// refused at the table, with a `BadEffort` notice naming the file the
+/// operator wrote it in, and never reaches this function. Whether the
 /// installed Codex accepts the word it is handed is Codex's decision, and it
 /// says so in its own output.
-pub(crate) fn inject(args: &[String], effort: &str) -> Injection {
-    let Some(effort) = Effort::parse(effort) else {
-        return Injection::Rejected;
-    };
+pub(crate) fn inject(args: &[String], effort: Effort) -> Injection {
     if caller_set_config_key(args, KEY) {
         return Injection::CallerChose;
     }

@@ -502,6 +502,10 @@ this section, and the section is printed after the `Steps:` block.
 `amplifier-bundle/tools/autodrive_loop.sh` reads those two lines with awk, and
 a test runs that awk over the formatter's output.
 
+The section names at most 50 launches one by one and then says how many more
+there were. A summary is read rather than parsed; `model-tiers.jsonl` holds
+every launch.
+
 The section is printed only by `--format table`. `--format json` and
 `--format yaml` are the runner's own envelope and are unchanged; read
 `model-tiers.jsonl` for the same facts in a machine-readable form.

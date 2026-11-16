@@ -281,6 +281,7 @@ pub(crate) fn model_tier_lines(
         .collect();
     let paired = ran.len() == records.len();
     let mut lines = vec!["Model tiers:".to_string()];
+    let shown = records.len().min(MAX_TIER_LINES);
     if !paired {
         // Deliberately names no id, not even to say which one is missing:
         // half an attribution reads as a whole one.
@@ -292,7 +293,7 @@ pub(crate) fn model_tier_lines(
             ran.len()
         ));
     }
-    for (index, record) in records.iter().enumerate() {
+    for (index, record) in records.iter().take(shown).enumerate() {
         let label = if paired {
             ran[index].step_id.clone()
         } else {
@@ -300,16 +301,35 @@ pub(crate) fn model_tier_lines(
         };
         lines.push(format!("  {label}: {}", describe(record)));
     }
+    if records.len() > shown {
+        // A summary is read, not parsed. A run of a thousand launches would
+        // otherwise print a thousand lines here and bury the step results
+        // above them.
+        lines.push(format!(
+            "  … and {} more launches; the full record is model-tiers.jsonl in the run \
+             directory.",
+            records.len() - shown
+        ));
+    }
     lines
 }
+
+/// How many launches the section names one by one.
+const MAX_TIER_LINES: usize = 50;
 
 /// What one launch ran on, in one line: the tier it asked for, the model and
 /// effort it got, and where they differ from what was asked.
 fn describe(record: &Record) -> String {
+    // Every field here was read back off disk by `record::read_all`, and a
+    // run directory is not a trust boundary amplihack owns alone. The values
+    // are validated or allowlisted on the way in, so this is defence in
+    // depth; it is also the only place in this feature where text from a file
+    // reaches a terminal, and the repo already has one answer for that.
+    let safe = crate::user_config::safe::display_safe;
     let tier = record.tier.map(Tier::as_str).unwrap_or("none");
     let model = match record.effective_model.as_deref() {
-        Some(model) => model.to_string(),
-        None => format!("{} default model", record.harness),
+        Some(model) => safe(model),
+        None => format!("{} default model", safe(&record.harness)),
     };
     let mut line = format!("{tier} → {model}");
     if let Some(effort) = record.effective_effort.map(Effort::as_str) {
@@ -325,10 +345,10 @@ fn describe(record: &Record) -> String {
     if record.requested_model != record.effective_model
         && let Some(requested) = record.requested_model.as_deref()
     {
-        asides.push(format!("requested: {requested}"));
+        asides.push(format!("requested: {}", safe(requested)));
     }
     if let Some(reason) = record.fallback {
-        asides.push(reason_text(reason, &record.column));
+        asides.push(reason_text(reason, &safe(&record.column)));
     }
     if !asides.is_empty() {
         line.push_str(&format!(" ({})", asides.join("; ")));

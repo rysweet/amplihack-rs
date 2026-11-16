@@ -303,6 +303,33 @@ fn a_recipe_that_only_mentions_a_named_step_is_not_copied() {
     );
 }
 
+#[test]
+fn a_model_line_inside_a_step_body_is_not_mistaken_for_the_field() {
+    // The `model:` the patch rewrites is the step's own field, at the step's
+    // field indent. A prompt or a shell line that happens to begin `model:`
+    // is the step's content: replacing it would both corrupt the body and
+    // leave the step with no tier. No bundled recipe has that shape today,
+    // so without this the invariant would live in the data, not the code.
+    let f = Fixture::new();
+    fs::write(
+        f.recipes.join("sample.yaml"),
+        "name: \"sample\"\nsteps:\n  - id: \"step-08-implement\"\n    agent: \"a\"\n    \
+         prompt: |\n      model: whatever the caller asked for\n      Build it.\n",
+    )
+    .unwrap();
+    let staged = f.staged(&[("step-08-implement", Tier::Fast)]);
+    let text = staged_text(&staged, "sample.yaml");
+    assert!(
+        text.contains("model: whatever the caller asked for"),
+        "the prompt is copied verbatim:\n{text}"
+    );
+    assert_eq!(
+        model_of(&text, "step-08-implement").as_deref(),
+        Some("fast"),
+        "and the step still gains the tier it was given:\n{text}"
+    );
+}
+
 // -------------------------------------------------------------------------
 // Step ids are identifiers, never path components
 // -------------------------------------------------------------------------

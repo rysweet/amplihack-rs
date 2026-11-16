@@ -401,8 +401,11 @@ pub(crate) fn parse_raw(kind: ValueKind, raw: &str) -> Result<Value, String> {
         ValueKind::AgentBinary => validate_binary_name(raw)
             .map(Value::Text)
             .ok_or_else(|| kind_requirement(kind)),
-        // Checked on the raw input, before any trimming: a leading space
-        // would otherwise hide a leading dash from a later reader.
+        // Checked on whatever the caller passes, and the value stored is
+        // the one checked. The file path hands over the raw input; the
+        // environment path trims first (`load.rs`), which rejects everything
+        // raw validation would and stores the trimmed value, so neither can
+        // hide a leading dash from a later reader.
         ValueKind::ModelId => crate::commands::launch::model_tiers::table::validate_model_id(raw)
             .map(|()| Value::Text(raw.to_string()))
             .map_err(|_| kind_requirement(kind)),

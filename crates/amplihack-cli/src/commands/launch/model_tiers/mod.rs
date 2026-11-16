@@ -93,7 +93,7 @@ pub(crate) fn resolve_passthrough(
         record.effective_effort = match effort {
             EffortOutcome::Added(effort) => Some(effort),
             EffortOutcome::NotApplicable => record.effective_effort,
-            EffortOutcome::CallerChose | EffortOutcome::Rejected => None,
+            EffortOutcome::CallerChose => None,
         };
         if let Some(notice) = applied_notice(tool, record, effort) {
             eprintln!("{}", notice.render());
@@ -112,8 +112,6 @@ enum EffortOutcome {
     Added(table::Effort),
     /// The command line already set one, which amplihack never overrides.
     CallerChose,
-    /// amplihack would not write the value; the model still applies.
-    Rejected,
 }
 
 /// The one line a tiered launch prints, or `None` when the tier gave this
@@ -146,8 +144,9 @@ fn applied_notice(tool: &str, record: &record::Record, effort: EffortOutcome) ->
 /// differ by model and a declared effort for them is recorded rather than
 /// written onto a command line.
 ///
-/// A value the injection will not write is dropped with one line: the model
-/// still applies and the launch proceeds. There is no retry.
+/// An effort amplihack will not write never reaches here: the value is an
+/// [`table::Effort`], and a word outside the five is refused at the table
+/// with a `BadEffort` notice, where the operator wrote it.
 fn reasoning_effort(
     tool: &str,
     args: Vec<String>,
@@ -156,17 +155,9 @@ fn reasoning_effort(
     let Some(effort) = effort.filter(|_| tool == "codex") else {
         return (args, EffortOutcome::NotApplicable);
     };
-    match codex_effort::inject(&args, effort.as_str()) {
+    match codex_effort::inject(&args, effort) {
         codex_effort::Injection::Added(injected) => (injected, EffortOutcome::Added(effort)),
         codex_effort::Injection::CallerChose => (args, EffortOutcome::CallerChose),
-        codex_effort::Injection::Rejected => {
-            eprintln!(
-                "amplihack: model tiers: `{}` is not a reasoning effort amplihack will write; \
-                 the model still applies and `{tool}` uses its own effort.",
-                effort.as_str()
-            );
-            (args, EffortOutcome::Rejected)
-        }
     }
 }
 
