@@ -28,6 +28,8 @@
 # means the child consumed stdin; the sentinel still there means it never
 # looked. Because the file is at EOF from the start, even a reading mode
 # terminates, so a failure here is a reported failure and never a hang.
+# No errexit, and none is switched on later: a failing assertion must be counted
+# and reported by ok(), never abort the run before the tally is printed.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -59,16 +61,14 @@ ok() { # ok <name> <detail> <cmd...>
 
 # run_mode <mode> [extra args...]
 # Runs the stub in <mode> with a regular-file stdin holding $SENTINEL.
-# Sets: RC, OUT, LEFT (what remained on stdin after the stub exited).
+# Sets: RC, ERR, LEFT (what remained on stdin after the stub exited).
 run_mode() {
   local mode="$1"; shift
   local d="${WORK}/m-$$-${RANDOM}"; mkdir -p "$d"
   printf '%s' "$SENTINEL" > "${d}/payload"
   exec 3<"${d}/payload"
-  set +e
-  OUT="$(STUB_STATE="$d" bash "$STUB" orch helper "$mode" "$@" <&3 2>"${d}/err")"
+  STUB_STATE="$d" bash "$STUB" orch helper "$mode" "$@" <&3 >/dev/null 2>"${d}/err"
   RC=$?
-  set -e
   LEFT="$(cat <&3)"
   exec 3<&-
   ERR="$(cat "${d}/err")"
@@ -103,10 +103,11 @@ do
   ok "W1-RC0-${mode}" "exit status was ${RC}, not 0 (stderr: ${ERR})" test "$RC" -eq 0
 done
 
-# `set -u` is on in the stub. Dispatching before the read must not leave the
-# blob variable unset on the path that skips the read.
+# `set -u` is on in the stub, and the gate exits before `$BLOB` is ever
+# assigned. Pinned so that a dispatch which falls through to the stand-ins
+# instead of exiting cannot reach them with the blob variable unset.
 run_mode autodrive-completion-seal --private-state "${WORK}/unbound-probe"
-ok W1-SET-U-CLEAN "the skip path tripped set -u: ${ERR}" \
+ok W1-SET-U-CLEAN "a mode with no stand-in tripped set -u: ${ERR}" \
   bash -c '! printf "%s" "$1" | grep -qi "unbound variable"' _ "$ERR"
 
 echo "=== W1: the five blob modes still drain stdin and still answer ==="
@@ -224,7 +225,6 @@ chmod 0755 "${IT}/alt"
 printf '%s' "$SENTINEL" > "${IT}/payload"
 SHA40="$(printf 'a%.0s' $(seq 40))"
 exec 3<"${IT}/payload"
-set +e
 AB_LOG="${IT}/log" AB_STATE="${IT}/state" AB_STUB="$STUB_EXE" REAL_AMPLIHACK="" \
   AMPLIHACK_BIN="${IT}/alt" \
   AUTODRIVE_ROUND_RECORD="${IT}/record.json" REVIEW_DIR="${IT}/gen" AUTODRIVE_ROUND_LABEL=round-1 \
@@ -234,7 +234,6 @@ AB_LOG="${IT}/log" AB_STATE="${IT}/state" AB_STUB="$STUB_EXE" REAL_AMPLIHACK="" 
   AUTODRIVE_COMPLETION_STATE="${IT}/completion" \
   bash "$RECORD_TOOL" <&3 >/dev/null 2>"${IT}/err"
 IT_RC=$?
-set -e
 IT_LEFT="$(cat <&3)"
 exec 3<&-
 ok INT-RECORD-RC0 "the record tool exited ${IT_RC} (stderr: $(tail -n 2 "${IT}/err"))" \

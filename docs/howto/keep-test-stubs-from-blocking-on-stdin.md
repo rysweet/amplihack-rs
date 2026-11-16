@@ -115,13 +115,24 @@ blob, at which point each goes on the list like the rest.
 
 ## Half one: dispatch before reading
 
-In `tests/issue_1437_amplihack_stub.sh`, the `orch helper` branch parses its
-flags, then decides whether this mode has a blob at all:
+In `tests/issue_1437_amplihack_stub.sh`, the `orch helper` branch decides
+whether this mode has a blob at all before it parses a flag or opens stdin.
+With `BLOB="$(cat)"` ahead of that dispatch, `autodrive-completion-seal`
+inherited the caller's stdin and the test stopped there (#2582); a mode that is
+piped into belongs on the allowlist even when the stub has no stand-in for it:
 
 ```bash
 if [ "${1:-} ${2:-}" = "orch helper" ]; then
   if [ -n "${REAL_AMPLIHACK:-}" ]; then exec "$REAL_AMPLIHACK" "$@"; fi
-  MODE="${3:-}"; FIELD=""; DEFAULT=""; REQUIRE_BOOLEAN=false
+  MODE="${3:-}"
+  # Answer and leave, before stdin or the arguments are touched, for every mode
+  # this stub has no stand-in for: see the stdin rule in this file's header.
+  # Only the five modes below carry a blob, and only they use the arguments.
+  case "$MODE" in
+    normalise-loop-verdict|extract-json|extract-field|normalise-verdict|normalise-type) : ;;
+    *) exit 0 ;;
+  esac
+  FIELD=""; DEFAULT=""; REQUIRE_BOOLEAN=false
   shift 3 || true
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -131,16 +142,7 @@ if [ "${1:-} ${2:-}" = "orch helper" ]; then
       *) shift ;;
     esac
   done
-  # A mode that is never given a blob must not open stdin: with `BLOB="$(cat)"`
-  # ahead of this dispatch, `autodrive-completion-seal` inherited the caller's
-  # stdin and the test stopped there (#2582). A mode that is piped into
-  # belongs on this list even when the stub has no stand-in for it.
-  BLOB=""
-  case "$MODE" in
-    normalise-loop-verdict|extract-json|extract-field|normalise-verdict|normalise-type)
-      BLOB="$(cat)" ;;
-    *) exit 0 ;;
-  esac
+  BLOB="$(cat)"
   case "$MODE" in
     normalise-loop-verdict)
       ...
@@ -148,11 +150,16 @@ if [ "${1:-} ${2:-}" = "orch helper" ]; then
 
 Three details carry weight:
 
-- `BLOB=""` before the dispatch, because the stub runs under `set -u` and the
-  stand-ins below read `$BLOB` unconditionally.
+- The gate sits above the flag parse, so the five modes past it are exactly the
+  modes that reach `BLOB="$(cat)"`. That keeps the read unconditional: there is
+  no path to the stand-ins on which `$BLOB` is unset, so `set -u` needs no
+  `BLOB=""` ahead of the dispatch and the allowlist is stated once rather than
+  split across a read gate and a dispatch that have to be kept in step.
 - `*) exit 0` keeps the answer the stub already gave an unhandled mode. The
   second `case` ends the same way, so the behaviour of a mode the stub does
-  not implement is unchanged: exit 0, no output.
+  not implement is unchanged: exit 0, no output. Skipping the flag parse
+  changes nothing either: it only ever set `$FIELD`, `$DEFAULT` and
+  `$REQUIRE_BOOLEAN`, which none of the modes past `*) exit 0` read.
 - The `REAL_AMPLIHACK` passthrough stays above the dispatch. When a test sets
   that variable the stub is not in the path at all, and the real binary reads
   stdin for whichever modes it reads stdin for.

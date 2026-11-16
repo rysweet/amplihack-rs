@@ -22,10 +22,11 @@
 #
 #                 The last two have no stand-in and answer nothing, but the
 #                 tree pipes into them, so they must keep draining: a mode that
-#                 is piped into belongs in the read list even with no stand-in,
+#                 is piped into belongs on that list even with no stand-in,
 #                 or its writer takes SIGPIPE and the pipeline ends 141 under
-#                 `set -o pipefail`. Adding a mode means deciding which list it
-#                 joins. See docs/howto/keep-test-stubs-from-blocking-on-stdin.md.
+#                 `set -o pipefail`. Adding a mode means two decisions: whether
+#                 it joins the list above, and whether it needs a stand-in
+#                 below. See docs/howto/keep-test-stubs-from-blocking-on-stdin.md.
 #   recipe show   exit 0.
 #   recipe run    the loop names recipes by absolute launch-side path (#1543),
 #                 so the recipe is keyed on its base name. Every call is logged
@@ -96,7 +97,15 @@ knob() { # knob <prefix> <n> <default>
 
 if [ "${1:-} ${2:-}" = "orch helper" ]; then
   if [ -n "${REAL_AMPLIHACK:-}" ]; then exec "$REAL_AMPLIHACK" "$@"; fi
-  MODE="${3:-}"; FIELD=""; DEFAULT=""; REQUIRE_BOOLEAN=false
+  MODE="${3:-}"
+  # Answer and leave, before stdin or the arguments are touched, for every mode
+  # this stub has no stand-in for: see the stdin rule in this file's header.
+  # Only the five modes below carry a blob, and only they use the arguments.
+  case "$MODE" in
+    normalise-loop-verdict|extract-json|extract-field|normalise-verdict|normalise-type) : ;;
+    *) exit 0 ;;
+  esac
+  FIELD=""; DEFAULT=""; REQUIRE_BOOLEAN=false
   shift 3 || true
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -106,14 +115,7 @@ if [ "${1:-} ${2:-}" = "orch helper" ]; then
       *) shift ;;
     esac
   done
-  # Read stdin only for the modes that carry a JSON blob (see the stdin rule in
-  # this file's header). BLOB is set first so the skip path stays `set -u` safe.
-  BLOB=""
-  case "$MODE" in
-    normalise-loop-verdict|extract-json|extract-field|normalise-verdict|normalise-type)
-      BLOB="$(cat)" ;;
-    *) exit 0 ;;
-  esac
+  BLOB="$(cat)"
   case "$MODE" in
     normalise-loop-verdict)
       case "$BLOB" in CONTINUE|DONE|STUCK) printf '%s' "$BLOB" ;; *) printf STUCK ;; esac
