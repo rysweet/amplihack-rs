@@ -1,42 +1,9 @@
 //! Issue #1619 (TDD): the tier vocabulary and the per-harness table.
 //!
-//! Wire with `#[cfg(test)] mod tests_table;` in
-//! `launch/model_tiers/mod.rs` when `table.rs` lands.
-//!
-//! Expected API (`model_tiers::table`):
-//!
-//! ```ignore
-//! enum Tier { Fast, Standard, Strong }
-//! impl Tier {
-//!     fn parse(raw: &str) -> Option<Tier>;   // trimmed, case-insensitive
-//!     fn as_str(self) -> &'static str;       // "fast" | "standard" | "strong"
-//! }
-//! const TIER_WORDS: [&str; 3];
-//!
-//! enum Effort { Minimal, Low, Medium, High, Xhigh }
-//! impl Effort { fn parse(raw: &str) -> Option<Effort>; fn as_str(self) -> &'static str; }
-//! const ACCEPTED_EFFORTS: [&str; 5];
-//!
-//! struct Entry { model: Option<String>, effort: Option<Effort> }
-//! struct Table { /* column -> tier -> Entry, plus step_tiers */ }
-//! impl Table {
-//!     fn shipped() -> &'static Table;
-//!     fn entry(&self, column: &str, tier: Tier) -> Option<&Entry>;
-//!     fn has_column(&self, column: &str) -> bool;
-//!     fn step_tiers(&self) -> &BTreeMap<String, Tier>;
-//!     fn parse_override(text: &str) -> Result<(Table, Vec<Notice>), String>;
-//!     fn merged_over(&self, base: &Table) -> Table;
-//! }
-//! fn column_for(binary_name: &str) -> &'static str;
-//! fn validate_model_id(raw: &str) -> Result<(), String>;
-//! ```
-//!
 //! This module reads no file and no environment variable: the shipped table
 //! is `include_str!`ed and the override is parsed from text.
 
-use super::table::{
-    ACCEPTED_EFFORTS, Effort, TIER_WORDS, Table, Tier, column_for, validate_model_id,
-};
+use super::table::{Effort, Table, Tier, column_for, validate_model_id};
 use crate::commands::launch::DEFAULT_MODEL;
 
 // -------------------------------------------------------------------------
@@ -45,8 +12,8 @@ use crate::commands::launch::DEFAULT_MODEL;
 
 #[test]
 fn the_vocabulary_is_exactly_three_words() {
-    assert_eq!(TIER_WORDS, ["fast", "standard", "strong"]);
-    for word in TIER_WORDS {
+    assert_eq!(Tier::ALL.map(Tier::as_str), ["fast", "standard", "strong"]);
+    for word in Tier::ALL.map(Tier::as_str) {
         assert_eq!(
             Tier::parse(word).map(Tier::as_str),
             Some(word),
@@ -90,10 +57,10 @@ fn a_tier_is_matched_trimmed_and_case_insensitively() {
 #[test]
 fn the_effort_allowlist_is_exactly_five_words() {
     assert_eq!(
-        ACCEPTED_EFFORTS,
+        Effort::ALL.map(Effort::as_str),
         ["minimal", "low", "medium", "high", "xhigh"]
     );
-    for word in ACCEPTED_EFFORTS {
+    for word in Effort::ALL.map(Effort::as_str) {
         assert_eq!(Effort::parse(word).map(Effort::as_str), Some(word));
     }
     for word in ["turbo", "max", "none", "", "HIGH ", "high;id"] {

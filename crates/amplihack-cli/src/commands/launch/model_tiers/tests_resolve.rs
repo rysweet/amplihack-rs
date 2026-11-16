@@ -1,27 +1,5 @@
 //! Issue #1619 (TDD): the pure resolver — the single decision point.
 //!
-//! Wire with `#[cfg(test)] mod tests_resolve;` in
-//! `launch/model_tiers/mod.rs` when `resolve.rs` lands.
-//!
-//! Expected API (`model_tiers::resolve`):
-//!
-//! ```ignore
-//! struct Request<'a> {
-//!     harness: &'a str,
-//!     argv: &'a [String],
-//!     table: &'a Table,
-//!     force: Option<&'a str>,
-//!     through_gateway: bool,
-//! }
-//! struct Resolution {
-//!     argv: Vec<String>,
-//!     notices: Vec<Notice>,
-//!     record: Option<Record>,
-//!     effort: Option<Effort>,
-//! }
-//! fn resolve(request: &Request) -> Resolution;
-//! ```
-//!
 //! Purity is a security property here, not only a testing one: every
 //! rejection path is reachable from a table-driven unit test rather than from
 //! a process spawn, so the rejection paths are actually exercised.

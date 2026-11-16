@@ -16,17 +16,9 @@ use serde::{Deserialize, Serialize};
 use super::notice::Notice;
 use crate::commands::launch::command::is_claude_compatible_tool;
 
-/// The only three tier words. There is no fourth and no alias: one set, used
-/// in recipes, in config, in the documentation and in the tests.
-pub(crate) const TIER_WORDS: [&str; 3] = ["fast", "standard", "strong"];
-
-/// The reasoning-effort values amplihack will write on a command line. This
-/// is argv safety, not a claim about what the installed harness accepts: the
-/// value becomes the right-hand side of `-c model_reasoning_effort=…`.
-pub(crate) const ACCEPTED_EFFORTS: [&str; 5] = ["minimal", "low", "medium", "high", "xhigh"];
-
-/// Longest accepted model id, in bytes.
-const MAX_MODEL_ID_BYTES: usize = 128;
+/// Longest accepted model id, in bytes. `user_config::schema` states this
+/// in the requirement it prints, rather than repeating the number.
+pub(crate) const MAX_MODEL_ID_BYTES: usize = 128;
 
 /// The one version of the tier-file format amplihack knows.
 const VERSION: i64 = 1;
@@ -44,16 +36,18 @@ pub(crate) enum Tier {
 }
 
 impl Tier {
+    /// Every tier there is. One set, used in recipes, in config, in the
+    /// documentation and in the tests: there is no fourth and no alias.
+    /// [`Tier::parse`] and every diagnostic that lists the words read this,
+    /// so a word cannot exist in one place and not another.
+    pub(crate) const ALL: [Tier; 3] = [Tier::Fast, Tier::Standard, Tier::Strong];
+
     /// The tier `raw` names, trimmed and matched case-insensitively, or
     /// `None` when `raw` is anything else — including a concrete model id,
     /// which is forwarded as typed (issue #1527).
     pub(crate) fn parse(raw: &str) -> Option<Tier> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "fast" => Some(Tier::Fast),
-            "standard" => Some(Tier::Standard),
-            "strong" => Some(Tier::Strong),
-            _ => None,
-        }
+        let word = raw.trim().to_ascii_lowercase();
+        Tier::ALL.into_iter().find(|tier| tier.as_str() == word)
     }
 
     pub(crate) fn as_str(self) -> &'static str {
@@ -77,15 +71,23 @@ pub(crate) enum Effort {
 }
 
 impl Effort {
+    /// Every reasoning effort amplihack will write on a command line. This
+    /// is argv safety, not a claim about what the installed harness accepts:
+    /// the value becomes the right-hand side of
+    /// `-c model_reasoning_effort=…`.
+    pub(crate) const ALL: [Effort; 5] = [
+        Effort::Minimal,
+        Effort::Low,
+        Effort::Medium,
+        Effort::High,
+        Effort::Xhigh,
+    ];
+
     pub(crate) fn parse(raw: &str) -> Option<Effort> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "minimal" => Some(Effort::Minimal),
-            "low" => Some(Effort::Low),
-            "medium" => Some(Effort::Medium),
-            "high" => Some(Effort::High),
-            "xhigh" => Some(Effort::Xhigh),
-            _ => None,
-        }
+        let word = raw.trim().to_ascii_lowercase();
+        Effort::ALL
+            .into_iter()
+            .find(|effort| effort.as_str() == word)
     }
 
     pub(crate) fn as_str(self) -> &'static str {

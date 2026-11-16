@@ -12,10 +12,6 @@ use amplihack_utils::agent_binary::validate_binary_name;
 use super::ConfigError;
 use crate::commands::session_tree::state::MAX_DEPTH_CEILING;
 
-/// What a model id may look like, phrased to follow `<key>: `.
-const MODEL_ID_REQUIREMENT: &str = "must be a model id of at most 128 letters, digits and '.', '_', '-', '[', ']', '@' or ':', \
-     not starting with '-'";
-
 /// Longest accepted path value, in bytes.
 pub(crate) const MAX_PATH_BYTES: usize = 4096;
 
@@ -462,7 +458,13 @@ pub(crate) fn from_toml(kind: ValueKind, item: &toml_edit::Value) -> Result<Valu
 pub(crate) fn kind_requirement(kind: ValueKind) -> String {
     match kind {
         ValueKind::AgentBinary => "must be one of amplifier, claude, codex or copilot".to_string(),
-        ValueKind::ModelId => MODEL_ID_REQUIREMENT.to_string(),
+        // The length comes from the checker itself, so the requirement this
+        // prints cannot outlive a change to it.
+        ValueKind::ModelId => format!(
+            "must be a model id of at most {} letters, digits and '.', '_', '-', '[', ']', \
+             '@' or ':', not starting with '-'",
+            crate::commands::launch::model_tiers::table::MAX_MODEL_ID_BYTES
+        ),
         ValueKind::AbsPath => format!(
             "must be an absolute path without '..', control characters or NUL, at most \
              {MAX_PATH_BYTES} bytes"

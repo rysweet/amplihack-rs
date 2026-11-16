@@ -7,7 +7,7 @@
 //! A notice never echoes argv, a prompt or a model the operator did not
 //! configure: these lines land in run logs that get pasted into issues.
 
-use super::table::{ACCEPTED_EFFORTS, Effort, TIER_WORDS, Tier};
+use super::table::{Effort, Tier};
 use crate::user_config::safe::display_safe;
 
 /// Something amplihack decided about a tier, or found in a tier file.
@@ -181,7 +181,7 @@ impl Notice {
                 format!(
                     "amplihack: model tiers: `{column}.{word}`: `{word}` is not a tier; the \
                      entry is ignored. The tiers are {}.",
-                    TIER_WORDS.join(", ")
+                    Tier::ALL.map(Tier::as_str).join(", ")
                 )
             }
             Notice::UnknownField {
@@ -215,7 +215,7 @@ impl Notice {
                 display_safe(column),
                 display_safe(tier),
                 display_safe(value),
-                ACCEPTED_EFFORTS.join(", ")
+                Effort::ALL.map(Effort::as_str).join(", ")
             ),
             Notice::BadStepTier { step, value } => format!(
                 "amplihack: model tiers: step_tiers.{}: `{}` is not a tier; the step keeps \

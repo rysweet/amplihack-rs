@@ -1,24 +1,5 @@
 //! Issue #1619 (TDD): the measurement record.
 //!
-//! Wire with `#[cfg(test)] mod tests_record;` in
-//! `launch/model_tiers/mod.rs` when `record.rs` lands.
-//!
-//! Expected API (`model_tiers::record`):
-//!
-//! ```ignore
-//! enum Fallback { NoColumn, NoMapping, NoModel, Gateway }
-//! struct Record {
-//!     v: u32, seq: u64, run_id: Option<String>,
-//!     harness: String, column: String, tier: Option<Tier>,
-//!     requested_model: Option<String>, effective_model: Option<String>,
-//!     requested_effort: Option<Effort>, effective_effort: Option<Effort>,
-//!     fallback: Option<Fallback>,
-//! }
-//! const RECORD_FILE: &str = "model-tiers.jsonl";
-//! fn append(run_dir: Option<&Path>, record: &Record) -> ();
-//! fn read_all(run_dir: &Path) -> Vec<Record>;
-//! ```
-//!
 //! The record is what makes the saving measurable, and it is also the file
 //! people paste into issues and PRs. Its schema is a closed set of eleven
 //! named scalars with no argv, environment, prompt, working-directory or path

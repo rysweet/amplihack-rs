@@ -1,23 +1,5 @@
 //! Issue #1619 (TDD): overriding one step's tier.
 //!
-//! Wire with `#[cfg(test)] mod tests_step_tiers;` in
-//! `commands/recipe/run/mod.rs` when `step_tiers.rs` lands.
-//!
-//! Expected API (`recipe::run::step_tiers`):
-//!
-//! ```ignore
-//! struct Staged { dir: PathBuf, files: Vec<PathBuf> }
-//! struct Outcome { staged: Option<Staged>, notices: Vec<Notice> }
-//! fn stage(
-//!     run_dir: &Path,
-//!     recipe_dirs: &[PathBuf],
-//!     top_level_recipe: &Path,
-//!     overrides: &BTreeMap<String, Tier>,
-//! ) -> Result<Outcome, String>;
-//! fn validate_step_id(raw: &str) -> bool;
-//! const RECIPE_DIR_ENV: &str = "AMPLIHACK_PACKAGE_RECIPE_DIR";
-//! ```
-//!
 //! Staging has no output channel of its own: it hands its diagnostics back
 //! and `execute.rs` renders them, once per run. A step id nothing matches is
 //! the likeliest operator error in this feature and the one with no other

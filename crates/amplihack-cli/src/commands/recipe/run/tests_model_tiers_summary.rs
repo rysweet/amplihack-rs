@@ -1,18 +1,6 @@
 //! Issue #1619 (TDD): the run summary names the model and effort each step
 //! ran on.
 //!
-//! Wire with `#[cfg(test)] mod tests_model_tiers_summary;` in
-//! `commands/recipe/run/mod.rs` when the summary section lands.
-//!
-//! Expected API (`recipe::run::format`):
-//!
-//! ```ignore
-//! fn model_tier_lines(
-//!     records: &[Record],
-//!     step_results: &[RecipeRunStepResult],
-//! ) -> Vec<String>;
-//! ```
-//!
 //! `Record` derives `Clone` so a test can build a one-element slice from one.
 //!
 //! Pure: it takes the records and the runner's ordered step results and

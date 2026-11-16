@@ -964,14 +964,6 @@ pub(super) fn execute_recipe_via_rust_fresh(
             .as_deref()
             .map_err(|e| *e),
     );
-    // Issue #1619: an instance may give one named step a tier of its own. The
-    // step id never reaches the child, so the override is applied recipe-side:
-    // patched copies of only the recipes that declare a named step, written
-    // into this run's own directory and put first in the runner's search
-    // order. With nothing configured nothing is staged, no variable is set and
-    // the run behaves exactly as it did before. A staging failure is reported
-    // and the run continues on the recipes as written: a tier preference must
-    // never stop a run.
     // Issue #1619: the run summary's `Model tiers:` section reads the records
     // this run's agent steps write into the run directory. A top-level
     // `recipe run` hands AMPLIHACK_RUN_DIR to its children without setting it
@@ -980,6 +972,14 @@ pub(super) fn execute_recipe_via_rust_fresh(
     if let Some(run_dir) = workspace.borrow().run_dir() {
         super::format::remember_run_dir(run_dir);
     }
+    // Issue #1619: an instance may give one named step a tier of its own. The
+    // step id never reaches the child, so the override is applied recipe-side:
+    // patched copies of only the recipes that declare a named step, written
+    // into this run's own directory and put first in the runner's search
+    // order. With nothing configured nothing is staged, no variable is set and
+    // the run behaves exactly as it did before. A staging failure is reported
+    // and the run continues on the recipes as written: a tier preference must
+    // never stop a run.
     let staged_recipes =
         stage_step_tier_overrides(workspace.borrow().run_dir(), search_dirs, &mapped_recipe);
     let build_command = |run_id: &str| -> Result<Command> {

@@ -1,16 +1,5 @@
 //! Issue #1619 (TDD): injecting Codex's reasoning effort.
 //!
-//! Wire with `#[cfg(test)] mod tests_codex_effort;` in
-//! `launch/model_tiers/mod.rs` when `codex_effort.rs` lands.
-//!
-//! Expected API (`model_tiers::codex_effort`):
-//!
-//! ```ignore
-//! enum Injection { Added(Vec<String>), CallerChose }
-//! fn inject(args: &[String], effort: Effort) -> Injection;
-//! const KEY: &str = "model_reasoning_effort";
-//! ```
-//!
 //! `inject` takes an `Effort`, not a string: only one of the five allowlisted
 //! words can become the right-hand side of a `-c` token, and the type says
 //! so. A word outside the list is refused at the table, where the operator
