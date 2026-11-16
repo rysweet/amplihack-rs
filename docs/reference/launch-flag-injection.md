@@ -400,8 +400,10 @@ prompt. The preconditions, including the trusted-checkout requirement, are in
 ## --deny-tool
 
 Every Copilot CLI launch receives one `--deny-tool shell(<prefix>)` argument
-pair per entry in amplihack's
-[dangerous-command policy](./dangerous-command-policy.md). amplihack spawns
+pair per prefix in amplihack's
+[dangerous-command policy](./dangerous-command-policy.md) — ten for the
+shipped list, which renders ten prefixes from six policy entries, since the
+five forced and deleting push forms share one entry. amplihack spawns
 `copilot` directly, with no shell in between, so each value is one argv
 element:
 
@@ -440,9 +442,10 @@ command lines are unchanged; see
 
 They are not the only flags a `copilot` launch receives. amplihack also
 injects `--allow-all` (issue #303), unless the caller passed an allow-all flag
-of its own or set `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1`. The deny flags are what
-makes that allow survivable, so the opt-out suppresses `--allow-all` and
-leaves the deny flags in place.
+of its own or set `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1`. The opt-out suppresses
+`--allow-all` and leaves the deny flags in place. Which of the two wins for a
+command they both cover is Copilot's resolution order, not amplihack's:
+amplihack passes both and does not enforce a precedence between them.
 
 - Copilot CLI has no user-level file for command deny rules, only per-session
   flags, so the policy is applied here rather than at install.

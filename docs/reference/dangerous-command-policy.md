@@ -55,6 +55,15 @@ To add your own entries, see
 Entries are rendered in this order, in every harness. The order is fixed, which
 is what makes a second run byte-identical to the first.
 
+Ten rendered prefixes come from six policy entries. The five push forms share
+one entry, whose last position holds the five flags as alternatives; that entry
+has one identifier and becomes one Codex rule, while Claude and Copilot, which
+match text rather than tokens, get one prefix per alternative. The six
+identifiers are `pkill`, `killall`, `pgrep`, `tmux-kill-server`,
+`tmux-kill-session-all` and `git-push-force-or-delete`; they appear in the
+Codex file's comments and in the tests. Count prefixes when reading the tables
+below, and entries when reading the code.
+
 | # | Command prefix | Why |
 |---|----------------|-----|
 | 1 | `pkill` | Pattern kills match processes the run did not start. |
@@ -169,7 +178,7 @@ manages, so all four read the same `settings.json` and get the same
 
 ### Claude Code and the Claude-compatible tools
 
-The ten default entries are appended to `permissions.deny`:
+The ten default prefixes are appended to `permissions.deny`, one entry each:
 
 ```json
 {
@@ -223,8 +232,9 @@ still covered.
 
 The Codex home — `$CODEX_HOME` if set and non-empty, otherwise `~/.codex` —
 gets one file, `$CODEX_HOME/rules/amplihack-dangerous-commands.rules`. It holds
-one rule per policy entry, except that the five push forms collapse into one
-rule with alternatives. Two of the rules are shown:
+six rules, one per policy entry: Codex compares whole tokens, so the five push
+forms stay one rule whose last position lists them as alternatives rather than
+becoming five. Two of the six are shown:
 
 ```python
 # amplihack: dangerous-command deny rules
@@ -257,7 +267,12 @@ someone else wrote there is left alone.
 
 The file is amplihack's own and is rewritten whole. Any other file in
 `rules/`, including one you wrote by hand, is never read, rewritten or
-removed.
+removed. If `rules/` is missing, amplihack creates it at mode 0700 inside a
+Codex home that is a real directory.
+
+If `rules/` is there but is a symlink or is not a directory, the write is
+refused and nothing is created, chmod-ed or written through it. The link's
+target keeps the mode it had and receives no file.
 
 `amplihack install` and `amplihack update` write the file whenever the Codex
 home directory exists, whether or not the Codex plugin itself is selected, so
@@ -339,10 +354,17 @@ flag at a prompt yourself; do not copy them into a config file.
 
 These are not the only flags amplihack injects into a `copilot` launch:
 `--allow-all` is injected as well, unless the caller passed an allow-all flag
-of its own or set `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1`. The deny flags are what
-makes that allow survivable, so they are injected either way, including when
-the opt-out suppresses `--allow-all`. See
+of its own or set `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1`. The deny flags are
+injected either way, including when the opt-out suppresses `--allow-all`. See
 [Launch Flag Injection](./launch-flag-injection.md#-deny-tool).
+
+How Copilot resolves a `--deny-tool` against that `--allow-all`, or against an
+approval already saved in the project's `permissions-config.json`, is
+Copilot's own behaviour. amplihack passes both sets of flags and reads neither
+the outcome nor the saved approvals; nothing in amplihack enforces an order
+between them, and no test here asserts one. Treat the Copilot rendering as
+flags handed to a harness that documents a deny-over-allow order, not as a
+stop amplihack performs.
 
 - A `--deny-tool` you pass yourself for the same prefix is not repeated. Both
   spellings count: `--deny-tool shell(pkill)` as two arguments, and the joined
@@ -416,14 +438,23 @@ in code and are written regardless.
 
 Quotes, backslashes, parentheses, commas, colons, semicolons, glob characters,
 control characters and NUL are all rejected, because each of them is syntax in
-at least one of the three renderings or in `config get` output. The rejected
-value is escaped and truncated before it is printed, in the same way as every
-other config diagnostic. The index is 1-based and counts every element of the
-array, including ones that validated:
+at least one of the three renderings or in `config get` output.
+
+One warning is printed for the whole value, and it never quotes what the file
+held. The rejected entry is attacker-chosen text, so the diagnostic states the
+requirement instead of echoing it; the same requirement is printed whether the
+value was too long, held a non-string element, or held one entry with a
+rejected character:
 
 ```text
-warning: /home/alice/.amplihack/config.toml: policy.deny_commands: entry 2: unsupported character; use letters, digits, space and . _ / @ = + -
+warning: /home/alice/.amplihack/config.toml: policy.deny_commands: must be a TOML array of at most 64 command prefixes, each 1 to 8 words of ASCII letters, digits and the characters . _ - / @ = +
 ```
+
+The line is the config diagnostic form — `<path>: <key>: <reason>` behind
+`warning: ` — and it names no index. Nothing tells you which entry failed, so
+check the value against the table above entry by entry. `amplihack config get
+policy.deny_commands` printing an empty line after such a warning is the
+confirmation that the whole value reverted to unset.
 
 ## When the writers run
 
@@ -456,10 +487,24 @@ A harness home that does not exist is not created. Nothing is written outside
   byte-identical, and reports that there was nothing to change.
 - **Atomic, and private.** Each file is written to a temporary file in the same
   directory, created with `O_EXCL` and `O_NOFOLLOW` at mode 0600, synced, then
-  renamed over the target. Every file the policy writers touch therefore ends
-  up mode 0600, the Claude `settings.json` included; a `rules/` directory
-  amplihack creates is mode 0700. A symlinked, non-regular or foreign-owned
-  target is left alone and reported.
+  renamed over the target. Those two flags are what makes the temporary file
+  safe: a name already taken is an error rather than an overwrite, and a
+  symlink at that name is never followed. Every file the policy writers touch
+  therefore ends up mode 0600, the Claude `settings.json` included; a `rules/`
+  directory amplihack creates is mode 0700. A symlinked, non-regular or
+  foreign-owned target is left alone and reported.
+- **The Codex home is checked before anything is created.** It is examined
+  without following a link. A symlink there refuses the write — `the Codex
+  home is a symlink` — and a path that exists and is not a directory is
+  refused the same way, `the Codex home is not a directory`. Neither case
+  creates anything.
+- **The `rules/` directory is checked the same way.** A symlink or a
+  non-directory at `$CODEX_HOME/rules` refuses the write with `the Codex rules
+  directory is a symlink` or `the Codex rules directory is not a directory`,
+  and the link's target is neither given mode 0700 nor written into. The check
+  is needed one level down as well as at the home, because the directory is
+  created with `create_dir_all` and chmod-ed 0700, and both of those follow a
+  link.
 - **Loud on failure.** A policy write that does not succeed prints one line on
   stderr, in quiet mode as well, and install still exits 0. Every writer uses
   the same sentence, which names the harness, the file in question and the
@@ -467,6 +512,8 @@ A harness home that does not exist is not created. Nothing is written outside
 
   ```text
   ⚠️  Codex: the dangerous-command deny rules were not written (permission denied); fix what that names, then run `amplihack install` again
+  ⚠️  Codex: the dangerous-command deny rules were not written (the Codex home is a symlink); fix what that names, then run `amplihack install` again
+  ⚠️  Codex: the dangerous-command deny rules were not written (the Codex rules directory is a symlink); fix what that names, then run `amplihack install` again
   ⚠️  Claude Code (home settings): the dangerous-command deny rules were not written (permissions is not a JSON object); fix what that names, then run `amplihack install` again
   ⚠️  Claude Code (profile work): the dangerous-command deny rules were not written (permissions.deny is not a JSON array); fix what that names, then run `amplihack install` again
   ```
@@ -490,6 +537,26 @@ The section reports what this run actually wrote, one line per harness. A
 harness whose files were refused does not get a line saying they were written,
 and a harness there was nothing to write for is named rather than passed over:
 a positive claim never outlives the write behind it.
+
+"This run" is exact. The record each Claude writer leaves is cleared when the
+policy phase *starts* as well as when the section is printed, so an outcome
+from an earlier phase of the same process can never supply a line for a later
+phase that wrote nothing.
+
+Two in-process sequences make this concrete, and both stay inside one
+thread, which is what the record is scoped to:
+
+- A Codex launch reads the record before the launch repair writes the home
+  settings file. The launch's own policy call takes whatever the record holds,
+  and the settings write that follows records its outcome afterwards — where
+  the next phase would find it. The launch branch therefore clears first.
+- Profile seeding records as it seeds, and a test process that seeds and then
+  installs on the same thread would see the seeding outcome if the install's
+  write phase did not clear before `ensure_settings_json` runs. It does.
+
+An `amplihack update` is not one of these. `update` re-executes the new
+binary out of process, so nothing it does afterwards shares a record with the
+run that started it.
 
 On a machine with a Claude home, managed profiles and a Codex home:
 
@@ -582,7 +649,7 @@ is not a boundary, and nothing here should be relied on as one.
 |--------|---------|------------------------|
 | A nested shell | `sh -c 'pkill -f vitest'` | no |
 | Interposition | `env pkill -f vitest`, `xargs pkill`, `command pkill` | tmux only |
-| An absolute path | `/usr/bin/pkill -f vitest` | tmux only |
+| A path invocation | `/usr/bin/pkill -f vitest`, `./pkill -f vitest`, `busybox pkill` | tmux only |
 | An environment-variable prefix | `FOO=1 pkill -f vitest` | tmux only |
 | Flag reordering | `git push origin --force` | no |
 | Refspec deletion | `git push origin :topic` | no |
@@ -603,7 +670,14 @@ other two: Codex compares whole tokens, so `-at` is not `-a`, while Claude and
 Copilot match the prefix as text and `-at` begins with `-a`. Every grouped
 form is denied by the guard regardless.
 
-The absolute-path and nested-shell rows were measured, not assumed:
+The path-invocation row deserves a note, because `/` and `.` are accepted
+characters in a policy entry and a reader may expect a prefix to follow the
+binary rather than the text. It does not. `pkill` matches the word `pkill`;
+`/usr/bin/pkill`, `./pkill` and `busybox pkill` are different prefixes and are
+not denied. Writing the path forms as extra entries does not close the gap,
+since the set of paths that reach a binary is open.
+
+The path-invocation and nested-shell rows were measured, not assumed:
 `codex execpolicy check` against the shipped file returns `{"matchedRules":[]}`
 for both `/usr/bin/pkill -f x` and `bash -lc "pkill -f x"` on codex-cli
 0.166.0. Issue #2589 records an earlier report that Codex caught those two

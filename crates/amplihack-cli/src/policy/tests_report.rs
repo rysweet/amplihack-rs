@@ -348,7 +348,7 @@ fn a_claude_warning_names_the_file_it_met() {
 // and a per-thread record keeps the tests in this binary independent of each
 // other without a lock.
 
-use super::claude::{DenyOutcome, record, take_record};
+use super::claude::{DenyOutcome, clear_record, record, take_record};
 
 /// Each test starts from an empty record on its own thread.
 fn clear() {
@@ -448,4 +448,43 @@ fn a_recorded_warning_carries_no_control_character() {
         "unescaped control character in {:?}",
         warnings[0]
     );
+}
+
+/// `take_record` empties the record on the way out, which covers a phase
+/// that reaches its policy section. A phase that does not -- a launch
+/// bootstrap that wrote settings without printing a policy section, a
+/// profile seed, another test on this thread -- leaves its outcomes behind,
+/// and the next run would read them as its own. `clear_record` is what the
+/// write phase calls before the Claude writers run.
+#[test]
+fn clearing_the_record_discards_what_was_recorded_before_it() {
+    clear();
+    record("home settings", &DenyOutcome::Written);
+    record(
+        "profile work",
+        &DenyOutcome::Unparseable("permissions.deny is not a JSON array".to_string()),
+    );
+
+    clear_record();
+
+    let (outcome, warnings) = take_record();
+    assert_eq!(
+        outcome,
+        HarnessWrite::NothingToWriteInto,
+        "nothing recorded before the clear belongs to this run"
+    );
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+/// Clearing does not disable the record: what the write phase records after
+/// the clear is reported as usual.
+#[test]
+fn what_is_recorded_after_the_clear_is_still_reported() {
+    clear();
+    record("home settings", &DenyOutcome::Written);
+    clear_record();
+    record("profile work", &DenyOutcome::Written);
+    let (outcome, warnings) = take_record();
+    assert_eq!(outcome, HarnessWrite::Written);
+    assert!(warnings.is_empty(), "{warnings:?}");
 }

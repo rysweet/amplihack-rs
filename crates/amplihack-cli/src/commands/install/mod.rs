@@ -534,6 +534,12 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
     // the user's own settings file, which `ensure_permissions` already
     // covers.
     if crate::freshness::codex_selected() {
+        // The policy section below reads the thread-local record the Claude
+        // writers leave. Nothing in this bootstrap has written a Claude
+        // settings file yet -- `repair_settings_hooks` runs after this --
+        // so anything in the record came from an earlier phase in the same
+        // process and is not this run's work to report (SEC-C3).
+        crate::policy::claude::clear_record();
         for warning in apply_dangerous_command_policy().warnings {
             let _ = writeln!(notice, "amplihack: warning: {warning}");
         }
@@ -814,6 +820,13 @@ fn local_install_scoped(
         .first()
         .cloned()
         .unwrap_or_else(|| hooks_bin.clone());
+    // Issue #2589: the Claude deny entries are written by the three calls
+    // below -- `ensure_settings_json`, the profile refresh and profile
+    // seeding -- and each records the file it met for the policy section
+    // further down. The write phase starts here, so the record starts empty:
+    // an outcome left by an earlier phase in this process would otherwise be
+    // printed as a file this run wrote (SEC-C3).
+    crate::policy::claude::clear_record();
     // Issue #1526: an implicit re-stage never writes (or backs up) the
     // user's settings.json; only `amplihack install` does. Its one output is
     // a stderr warning when settings.json lacks hooks this build registers,

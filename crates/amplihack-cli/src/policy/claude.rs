@@ -127,6 +127,24 @@ pub(crate) fn record(label: &str, outcome: &DenyOutcome) {
     );
 }
 
+/// Empties the record, so that what is reported next describes the writes
+/// that come after this call alone.
+///
+/// [`take_record`] already empties the record on its way out, which covers a
+/// phase that reaches its policy section. A phase that does not reach one --
+/// the launch bootstrap, which writes `settings.json` after it has read the
+/// record, profile seeding, or another test on this thread -- leaves its
+/// outcomes behind for whatever runs next in the same process. Reporting one
+/// of those as this run's work would print a positive line about a file this
+/// run never met, so each install entry point clears the record where its
+/// own write phase starts (SEC-C3).
+///
+/// Clearing an already-empty record is not an error, so the call needs no
+/// condition around it.
+pub(crate) fn clear_record() {
+    RECORD.with_borrow_mut(Vec::clear);
+}
+
 /// What the record adds up to, and one warning line per refused file,
 /// clearing the record. An empty record is
 /// [`HarnessWrite::NothingToWriteInto`](super::HarnessWrite::NothingToWriteInto):

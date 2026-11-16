@@ -523,7 +523,11 @@ policy.deny_commands` removes the key.
   world-writable, or owned by somebody else) contributes no entries, while the
   shipped defaults are still written.
 - On Copilot CLI the entries become command-line arguments of the launched
-  process, so they are visible to every user on the host.
+  process, so they are readable by every user on the host through `/proc`.
+  Write short command prefixes only: a host name, a service name, a login or
+  anything else you would not publish does not belong in this list. The
+  shipped defaults are command names and reveal nothing; what you add is
+  yours to judge. This is the same rule that keeps prompt text out of argv.
 
 The defaults apply whether or not this key is set. Run `amplihack update`
 after changing it; Copilot picks a change up on the next launch without one.

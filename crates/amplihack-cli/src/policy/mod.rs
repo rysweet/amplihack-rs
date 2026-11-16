@@ -15,8 +15,13 @@
 //!
 //! What these rules are. Each rendering matches a command prefix, so a
 //! nested shell (`sh -c '...'`), an interposing command (`env`, `xargs`), a
-//! reordered flag or a shell alias passes. They prevent a mistake; they are
-//! not a security boundary, and the pull request says so plainly.
+//! path invocation (`/usr/bin/pkill`, `./pkill`, `busybox pkill`), a
+//! reordered flag or a shell alias passes. Path invocation is easy to
+//! overlook here because [`Prefix`] accepts `/` and `.`, which may suggest
+//! that a prefix follows the binary; it does not, and the set of paths to a
+//! binary is open, so adding them as entries would not close it. These rules
+//! prevent a mistake; they are not a security boundary, and the
+//! documentation and the pull request say so plainly.
 
 pub(crate) mod claude;
 pub(crate) mod codex;

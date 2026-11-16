@@ -6,10 +6,12 @@
 //!
 //! The write goes through `secure_files::write_private_atomic`, which refuses
 //! a symlinked, non-regular or foreign-owned target and writes through a
-//! temporary file created with `O_EXCL | O_NOFOLLOW` under an unpredictable
-//! name. A helper that writes a predictable `<name>.tmp` with `fs::write`
-//! would let a symlink planted there redirect the bytes on a shared machine
-//! (SEC-C1).
+//! temporary file created with `O_EXCL | O_NOFOLLOW`. Those two flags, not the
+//! temporary name, are what makes it safe: the name is predictable
+//! (`.<name>.tmp.<pid>.<nanos>`), but a name already taken is an error rather
+//! than an overwrite, and a symlink planted at that name is never followed. A
+//! helper that writes `<name>.tmp` with `fs::write` has neither property and
+//! would let such a link redirect the bytes on a shared machine (SEC-C1).
 //!
 //! Nothing here creates a Codex home that does not exist: a harness
 //! amplihack does not manage is left alone (SEC-A3).
@@ -66,27 +68,49 @@ fn reason(error: &std::io::Error) -> String {
     }
 }
 
+/// Whether `path` can hold a directory amplihack writes into: `Ok(true)` for
+/// a directory, `Ok(false)` for nothing at all, and `Err(reason)` for a
+/// symlink, a non-directory or a path that cannot be read. `what` names the
+/// directory in the reason and never holds file content (SEC-D3).
+///
+/// Both directories on the way to the rules file need this. The write itself
+/// is protected by `O_NOFOLLOW`, but `ensure_private_directory` below is
+/// `create_dir_all` followed by `set_permissions`, and both of those follow a
+/// link: without the check, a link planted at `<CODEX_HOME>/rules` by another
+/// user on a shared machine has its target chmod-ed 0700 and the rules file
+/// written inside it (SEC-D2).
+fn directory_state(path: &Path, what: &str) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(reason(&error)),
+        Ok(meta) if meta.file_type().is_symlink() => Err(format!("{what} is a symlink")),
+        Ok(meta) if !meta.is_dir() => Err(format!("{what} is not a directory")),
+        Ok(_) => Ok(true),
+    }
+}
+
 /// Writes amplihack's rules file into `codex_home`, merging nothing and
 /// replacing only its own file.
 pub(in crate::commands::install) fn write_deny_rules(
     codex_home: &Path,
     instance: &[String],
 ) -> DenyRulesWrite {
-    match fs::symlink_metadata(codex_home) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return DenyRulesWrite::Absent;
-        }
-        Err(error) => return DenyRulesWrite::Refused(reason(&error)),
-        Ok(meta) if meta.file_type().is_symlink() => {
-            return DenyRulesWrite::Refused("the Codex home is a symlink".to_string());
-        }
-        Ok(meta) if !meta.is_dir() => {
-            return DenyRulesWrite::Refused("the Codex home is not a directory".to_string());
-        }
-        Ok(_) => {}
+    match directory_state(codex_home, "the Codex home") {
+        Ok(true) => {}
+        // Nothing here creates a Codex home that does not exist: a harness
+        // amplihack does not manage is left alone (SEC-A3).
+        Ok(false) => return DenyRulesWrite::Absent,
+        Err(fault) => return DenyRulesWrite::Refused(fault),
     }
 
+    // The rules directory gets the same check as the home above, because
+    // `ensure_private_directory` would follow a link planted there and
+    // chmod and write into its target instead (SEC-D2). An absent directory
+    // is the ordinary case and is created below.
     let dir = codex_home.join(RULES_DIR);
+    if let Err(fault) = directory_state(&dir, "the Codex rules directory") {
+        return DenyRulesWrite::Refused(fault);
+    }
     if let Err(error) = ensure_private_directory(&dir) {
         return DenyRulesWrite::Refused(reason(&error));
     }

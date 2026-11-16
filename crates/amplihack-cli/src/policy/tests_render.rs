@@ -310,3 +310,73 @@ fn copilot_args_carry_short_command_names_only() {
         assert!(!arg.contains('\n'), "{arg:?}");
     }
 }
+
+// --- the Codex literal invariant (SEC-V4, the shipped half) -----------------
+//
+// `codex::rules_file` writes every id, justification and example into a
+// double-quoted Starlark literal and escapes nothing, because the only values
+// that reach it are either shipped constants in `DEFAULTS` or prefixes that
+// `Prefix::try_from` has already narrowed. `tests_prefix.rs` holds the second
+// half; this is the first. Without it the argument rests on reading the
+// constants, and the next entry added to the list -- an apostrophe in a
+// justification, a line break for width -- breaks the rendered file silently.
+
+/// Text that renders inside a double-quoted Starlark literal unescaped.
+fn safe_in_a_literal(text: &str) -> Result<(), String> {
+    if let Some(bad) = text
+        .chars()
+        .find(|c| *c == '"' || *c == '\\' || c.is_control())
+    {
+        return Err(format!("{bad:?} in {text:?}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn every_shipped_entry_renders_inside_a_codex_string_literal_unescaped() {
+    for entry in super::DEFAULTS {
+        let mut texts: Vec<(&str, &str)> =
+            vec![("id", entry.id), ("justification", entry.justification)];
+        texts.extend(entry.match_examples.iter().map(|e| ("match example", *e)));
+        texts.extend(
+            entry
+                .not_match_examples
+                .iter()
+                .map(|e| ("not_match example", *e)),
+        );
+        for (what, text) in texts {
+            if let Err(bad) = safe_in_a_literal(text) {
+                panic!(
+                    "policy entry {}: the {what} needs escaping to render into the Codex \
+                     rules file, and the renderer escapes nothing: {bad}",
+                    entry.id
+                );
+            }
+        }
+        for token in entry.tokens {
+            let words: &[&str] = match token {
+                super::Token::Word(word) => std::slice::from_ref(word),
+                super::Token::AnyOf(words) => words,
+            };
+            for word in words {
+                assert!(
+                    safe_in_a_literal(word).is_ok(),
+                    "policy entry {}: the token {word:?} needs escaping",
+                    entry.id
+                );
+            }
+        }
+    }
+}
+
+/// The rendered file is therefore quote-balanced: every `"` in it opens or
+/// closes a literal, and none came out of an entry.
+#[test]
+fn the_rendered_rules_file_has_balanced_quotes_on_every_line() {
+    for line in codex::rules_file(&[]).lines() {
+        assert!(
+            line.matches('"').count() % 2 == 0,
+            "an odd number of quotes means a value broke out of its literal: {line:?}"
+        );
+    }
+}

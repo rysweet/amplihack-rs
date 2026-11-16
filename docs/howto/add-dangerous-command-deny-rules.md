@@ -193,6 +193,23 @@ and still exits 0:
   ⚠️  Claude Code (home settings): the dangerous-command deny rules were not written (permissions is not a JSON object); fix what that names, then run `amplihack install` again
 ```
 
+A Codex line can also read `(the Codex home is a symlink)` or `(the Codex home
+is not a directory)`. amplihack will not write through a link at `$CODEX_HOME`,
+nor change its target's mode. Replace the link with a real directory, or point
+`CODEX_HOME` at the directory the link was aiming for, then run `amplihack
+update` again.
+
+The `rules/` directory inside it is checked the same way, and reports `(the
+Codex rules directory is a symlink)` or `(the Codex rules directory is not a
+directory)`. So if you keep `rules/` as a link into a dotfiles checkout, no
+rules file is written and the link's target is left exactly as it was. Point
+`CODEX_HOME` at the real directory instead, or replace the link:
+
+```console
+$ readlink ~/.codex/rules     # empty once rules/ is a real directory
+$ ls -l ~/.codex/rules/amplihack-dangerous-commands.rules
+```
+
 The second form means the settings file holds a `permissions` value amplihack
 will not merge into, so that file has no amplihack deny entries. Open it and
 make `permissions` an object whose `deny` is an array of strings:
@@ -256,6 +273,7 @@ The harnesses match a command prefix, so these forms are not matched:
 ```sh
 sh -c 'pkill -f vitest'        # nested shell
 env pkill -f vitest            # interposition
+/usr/bin/pkill -f vitest       # path invocation; ./pkill and busybox pkill too
 git push origin --force        # flags after the positional argument
 git push origin :topic         # refspec deletion
 tmux -S /tmp/s kill-server     # socket-qualified, deliberately allowed

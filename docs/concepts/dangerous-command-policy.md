@@ -128,6 +128,16 @@ per-session flags, so amplihack passes the flags on every launch it controls
 and states that limit in the install output. Writing a hook in place of a
 missing mechanism would have hidden which harnesses are actually covered.
 
+Copilot is also where the division between what amplihack does and what the
+harness does is sharpest. amplihack launches `copilot` with `--allow-all` and
+with a `--deny-tool` per policy entry. Whether a deny flag outranks that allow,
+or a project approval already saved in `permissions-config.json`, is Copilot's
+own resolution order, and the deny flags are useful only if it resolves them
+that way. amplihack passes the flags; it does not enforce the precedence
+between them, cannot observe how Copilot resolved them, and no test in this
+repository asserts it. The precedence is recorded as an open check against the
+version it was last looked at, not as a property of this feature.
+
 `rusty`, `rustyclawd` and `amplifier` need nothing of their own. amplihack
 launches all three the way it launches `claude`, with `CLAUDE_CONFIG_DIR`
 pinned to the home or profile directory it manages, so they read the
@@ -136,7 +146,7 @@ tools.
 
 ## Why the tmux guard stays
 
-Two of the ten default entries name tmux, and amplihack already denies the
+Two of the ten default prefixes name tmux, and amplihack already denies the
 dangerous tmux forms through the `tmux_guard` pre-tool-use hook, on Claude
 Code, Copilot and Codex alike. The guard was not replaced and is not
 redundant.
@@ -221,10 +231,12 @@ hung four builds and ended several dozen runs.
 
 ## Why a failed write is loud
 
-A deny rule can fail to arrive. The Codex home can be read-only; a settings
-file can hold a `permissions` value amplihack will not merge into without
-discarding what the user put there, and when it does, that file gets no
-entries at all.
+A deny rule can fail to arrive. The Codex home can be read-only, or be a
+symlink amplihack [declines to write
+through](../reference/dangerous-command-policy.md#how-the-files-are-written),
+as is the `rules/` directory inside it; a settings file can hold a
+`permissions` value amplihack will not merge into without discarding what the
+user put there, and when it does, that file gets no entries at all.
 
 Neither case stops the install. The rest of an install still has value, and a
 harness home that cannot be written is the user's to fix, not amplihack's to
@@ -250,9 +262,17 @@ mistake-prevention measure. It is not a security boundary, and treating it as
 one would be the more expensive error.
 
 An agent that means to run `pkill` can run `sh -c 'pkill -f x'`, `env pkill`,
-or a shell alias, and none of the three harnesses will match it. The same agent
-runs as the user and can edit `~/.amplihack/config.toml`, `~/.claude/settings.json`
-and the Codex rules file directly. Nothing here constrains a determined
+a shell alias, or the same binary named by a path: `/usr/bin/pkill`, `./pkill`
+or `busybox pkill`. None of the three harnesses will match any of them. Path
+invocation is worth naming on its own because `/` and `.` are accepted
+characters in a policy entry, so a reader may reasonably expect a prefix to
+cover the paths that reach the same binary. It does not: a prefix is compared
+against the text or tokens the agent actually typed, and `/usr/bin/pkill` does
+not begin with `pkill`. Adding the path forms as entries would not close this
+either, since the set of paths to a binary is open.
+
+The same agent runs as the user and can edit `~/.amplihack/config.toml`,
+`~/.claude/settings.json` and the Codex rules file directly. Nothing here constrains a determined
 process running as you; see
 [Why Prompt Text Stays Out of argv](./prompt-text-out-of-argv.md), which makes
 the same distinction about file permissions.
