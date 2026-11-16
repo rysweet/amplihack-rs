@@ -132,10 +132,10 @@ pub(crate) struct Waiter {
     home_takeover: Box<dyn Fn() -> bool>,
     /// Set when the retry after this step's wait may run under another
     /// login, and holding the instant from which a capacity reading counts
-    /// as fresh enough to choose one. Set before a capacity wait (#1801),
-    /// which may move login however it ends, and after a wait of any kind
-    /// that ended on another login's capacity (#2694). `None` leaves the
-    /// retry on the inherited profile.
+    /// as fresh enough to choose one: after a capacity wait (#1801), which
+    /// may move login however it ends, and after a wait of any kind that
+    /// ended on another login's capacity (#2694). Written once, when the
+    /// wait returns. `None` leaves the retry on the inherited profile.
     retry_start: Option<i64>,
 }
 
@@ -274,7 +274,6 @@ impl Waiter {
         };
         self.used = true;
         let capacity = p.kind == PlanKind::Capacity;
-        self.retry_start = capacity.then_some(now);
         log(&Event::Start {
             harness,
             reset: p.reset,
@@ -294,17 +293,16 @@ impl Waiter {
         // Real time, not the test clock: auto-drive compares it with its own
         // wall time (issue #1743).
         ledger::record(waited_from.elapsed());
-        // A wait of any kind that ended because another login has room
-        // retries under that login (#2694). `now` is the wait's own start
-        // on this clock, and it is both halves of the freshness bound that
+        // The retry moves to another login after a capacity wait however it
+        // ended (#1801), and after a wait of any kind that ended because
+        // another login has room (#2694). `now` is the wait's own start on
+        // this clock, and it is both halves of the freshness bound that
         // decides which readings may move a step onto another account, not
         // a tuning parameter: a later instant would make every reading
         // taken during the wait look stale, so the step would silently
         // retry on the exhausted profile, and an earlier one would admit
         // readings taken before the limit was hit.
-        if end == End::OtherCapacity {
-            self.retry_start = Some(now);
-        }
+        self.retry_start = (capacity || end == End::OtherCapacity).then_some(now);
         log(&Event::End(end));
         match end {
             End::Signal(sig) => AfterLimit::Finish(Some(128 + sig)),

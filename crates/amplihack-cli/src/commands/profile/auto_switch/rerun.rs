@@ -110,7 +110,7 @@ pub(super) fn silent_candidate(
 }
 
 /// Whether a caller of [`candidate`] wants the held-key ALERT written.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 enum KeyAlert {
     Write,
     Silent,
@@ -119,7 +119,6 @@ enum KeyAlert {
 /// Everything a candidate choice is read from, bundled so that [`candidate`]
 /// stays inside clippy's argument limit without an exemption. Shared
 /// references only: the choice reads this state and never writes it.
-#[derive(Clone, Copy)]
 struct Reads<'a> {
     state: &'a State,
     ledger: &'a Ledger,
