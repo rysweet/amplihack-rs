@@ -19,6 +19,9 @@ files.
   - [recipe.detach, recipe.tmux_session_pattern and recipe.log_dir](#recipedetach)
   - [recipe.usage_limit_wait and recipe.usage_limit_max_wait_secs](#recipeusage_limit_wait)
   - [orchestrator.max_depth](#orchestratormax_depth)
+  - [model.force](#modelforce)
+  - [model.tier_map and model.step_tiers](#modeltier_map-and-modelstep_tiers)
+  - [Review keys](#review-keys)
   - [Governor keys](#governor-keys)
   - [sessions.daily_archive](#sessionsdaily_archive)
   - [sessions.archive_days and sessions.archive_dest](#sessionsarchive_days-and-sessionsarchive_dest)
@@ -62,6 +65,19 @@ recipe.log_dir = (unset)  # default
 recipe.usage_limit_wait = true  # default
 recipe.usage_limit_max_wait_secs = 21600  # default
 orchestrator.max_depth = 3  # default
+model.force = (unset)  # default
+model.tier_map = (unset)  # default
+model.step_tiers = (unset)  # default
+review.combined_small_diff = false  # default
+review.combined_diff_threshold = 200  # default
+governor.enabled = false  # default
+governor.max_concurrency = 4  # default
+governor.reserve_points = 10  # default
+governor.step = 1  # default
+governor.band_pct = 10  # default
+governor.eval_interval_secs = 60  # default
+governor.wait_secs = 600  # default
+governor.max_reading_age_secs = 3600  # default
 sessions.daily_archive = true  # default
 sessions.archive_days = 3  # default
 sessions.archive_dest = (unset)  # default
@@ -153,6 +169,11 @@ command, so it never prints `flag`.
 | `recipe.usage_limit_wait` | bool | `true` (`false` in CI) | `AMPLIHACK_USAGE_LIMIT_WAIT` | — | user, project |
 | `recipe.usage_limit_max_wait_secs` | integer seconds, at least 0 | `21600` | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | — | user, project (lower only) |
 | `orchestrator.max_depth` | integer, 0 to 32 | `3` | `AMPLIHACK_MAX_DEPTH` | — | user, project (lower only) |
+| `model.force` | model id | (unset) | `AMPLIHACK_FORCE_MODEL` | — | user only |
+| `model.tier_map` | absolute path | (unset: `$AMPLIHACK_HOME/model-tiers.toml`, then `~/.amplihack/model-tiers.toml`) | — | — | user only |
+| `model.step_tiers` | absolute path | (unset) | — | — | user only |
+| `review.combined_small_diff` | bool | `false` | — | — | user, project |
+| `review.combined_diff_threshold` | integer lines, 1 to 100000 | `200` | — | — | user, project |
 | `governor.enabled` | bool | `false` | — | — | user only |
 | `governor.max_concurrency` | integer, 1 to 64 | `4` | — | — | user only |
 | `governor.reserve_points` | integer, 0 to 100 | `10` | — | — | user only |
@@ -384,6 +405,87 @@ stays at 2 even with `orchestrator.max_depth = 10` configured. See
 
 A project file can only lower this value: the result is the smaller of the
 project value and the user value (or the default, 3).
+
+### model.force
+
+One model id for every launch, whatever tier a step declared and whatever the
+[tier mapping](./model-tiers.md) says. `AMPLIHACK_FORCE_MODEL` sets the same
+thing for one run.
+
+```sh
+amplihack config set model.force claude-sonnet-5-5
+```
+
+This is the only setting that replaces a concrete `--model` already on a
+launched command line, which is a deliberate exception to issue #1527. It
+fires only from your own user file or your own environment, and the stderr
+line names it as the origin:
+
+```text
+amplihack: passing `--model claude-sonnet-5-5` to `claude` (from model.force). Run `amplihack config unset model.force` to go back to each step's tier.
+```
+
+Like every other model line amplihack prints, it ends by naming the setting
+that controls it, so the line and the lever cannot drift apart.
+
+The reasoning effort of the step's tier still applies, so forcing one model
+across a mixed-tier recipe does not flatten Codex effort to a single value. A
+launch through the LiteLLM gateway ignores it, as it ignores tiers.
+
+The value is validated the way `agent.binary` is: at most 128 bytes, no
+control characters or whitespace, none of `/`, `\`, `;`, `$`, a backtick, `'` or `"`, not starting
+with `-`, and drawn from letters, digits and `. _ [ ] @ : -`. It lands as the
+argument right after `--model`, and both Codex and Claude Code have
+single-token flags that bypass their sandbox, so a value that could act as
+another argument is rejected rather than passed on.
+
+User-only.
+
+### model.tier_map and model.step_tiers
+
+Where the [model tier](./model-tiers.md) mapping and the per-step tier
+overrides are read from.
+
+- `model.tier_map` names the mapping file. Unset, amplihack reads
+  `$AMPLIHACK_HOME/model-tiers.toml`, then `~/.amplihack/model-tiers.toml`.
+  Exactly one file is read, and its entries merge cell by cell over the
+  mapping that ships with amplihack.
+- `model.step_tiers` names a file holding only a `[step_tiers]` table, for
+  when the mapping is managed centrally and the per-step tiers are not. A
+  `[step_tiers]` table in the `model.tier_map` file works too; where both name
+  the same step, `model.step_tiers` wins.
+
+Both files are read once per process through the same reader every other
+amplihack config file uses: at most 64 KiB, regular files only, opened
+non-blocking, so a FIFO, device file or directory is reported rather than
+read. A symlink that resolves to a regular file is followed, exactly as
+`~/.amplihack/config.toml` is; a dangling one is reported rather than taken
+for "no file". A file amplihack cannot use produces one stderr line naming it
+and the reason, and the shipped mapping then applies.
+
+Both keys are user-only, like every path-valued key. A project file arrives
+with a repository you may have just cloned, and these files drive amplihack's
+rewriting of recipe YAML, whose steps run shell commands.
+
+### Review keys
+
+Whether the separate code, security and philosophy review passes of the
+refactor-review phase may run as one combined pass on a small change.
+
+- `review.combined_small_diff` turns it on. Default `false`, so the three
+  passes run separately exactly as they did before the setting existed.
+- `review.combined_diff_threshold` is the changed-line count at or below which
+  a diff counts as small. Default `200`, accepted range 1 to 100000.
+
+```sh
+amplihack config set review.combined_small_diff true
+amplihack config set review.combined_diff_threshold 120
+```
+
+Above the threshold the three passes run separately whatever the first key
+says. This applies to the refactor-review phase of a build, not to PR review.
+See [Combined review for small
+diffs](./model-tiers.md#combined-review-for-small-diffs).
 
 ### Governor keys
 
@@ -660,9 +762,16 @@ have just cloned, so it is trusted less.
 
 - **The user file must be owned by you and not writable by group or others.**
   If it is not, its user-only keys (`agent.binary`, `paths.home`, `node.*`,
-  `recipe.log_dir`, `governor.*`) are ignored and reported. Its other keys still apply.
+  `recipe.log_dir`, `model.*`, `governor.*`, `sessions.*`) are ignored and
+  reported. Its other keys still apply.
 - **The project file never names a path, a command, an executable or the
   agent CLI.** `agent.binary` and every path-valued key are user-only.
+- **The project file cannot choose a model or the tier mapping.** `model.force`,
+  `model.tier_map` and `model.step_tiers` are user-only. A forced model becomes
+  the argument right after `--model`, and the two path keys name files that drive
+  amplihack's rewriting of recipe YAML, whose steps run shell commands. The
+  `review.*` keys choose how many review passes run, name nothing and no path, and
+  are the only keys of this feature a project file may set.
 - **The project file cannot change the capacity governor.** Every
   `governor.*` key is user-only.
 - **`config set --project` and `config edit --project` refuse a project
@@ -788,6 +897,7 @@ so the user file is the only place the consent lives.
 - [Environment Variables](./environment-variables.md) — What each variable does
 - [Active Agent Binary](./active-agent-binary.md) — The full agent-binary resolver, including the `user_config` layer
 - [amplihack doctor](./doctor-command.md) — The `Effective config` section
+- [Model Tiers](./model-tiers.md) — What the `model.*` and `review.*` keys control: the tier vocabulary, the per-harness mapping, precedence and the run-summary section
 - [Capacity Governor](./capacity-governor.md): What the `governor.*` keys control
 - [Memory Configuration Consent](../features/memory-consent-prompt.md) — The NODE_OPTIONS prompt whose answer `node.heap_consent` stores
 - [Config Write Durability](../concepts/config-write-durability.md): Why the launcher's consent save skips the `fsync` that other config writes perform

@@ -478,3 +478,14 @@ mod issue_2279_doctor;
 mod issue_2297_codex_installation;
 #[path = "issue_2552_build_preflight_decision.rs"]
 mod issue_2552_build_preflight_decision;
+
+// Issue #1619 (TDD): per-step model tiers reach the harness.
+// `issue_1619_tier_propagation` exercises the real chain through an
+// argv-recording fake harness: tier resolution per harness, the fall-back,
+// both overrides, Codex reasoning effort and the measurement record.
+// `issue_1619_tier_argv_safety` pins that rewriting `--model` disturbs
+// nothing else on the command line.
+#[path = "issue_1619_tier_argv_safety.rs"]
+mod issue_1619_tier_argv_safety;
+#[path = "issue_1619_tier_propagation.rs"]
+mod issue_1619_tier_propagation;

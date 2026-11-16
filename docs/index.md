@@ -148,6 +148,8 @@ amplihack copilot
 - [User Configuration](reference/user-config.md) - Persistent defaults in `~/.amplihack/config.toml` and `.amplihack/config.toml`, and the `amplihack config` command
 - [Config Write Durability](concepts/config-write-durability.md) - Why the first-launch save of `node.heap_consent` skips `fsync` while `config set` and `config unset` keep it
 - [AMPLIHACK_* Environment Variable Audit](reference/amplihack-env-vars.md) - Every `AMPLIHACK_*` name classified as user preference, internal or test-only, with its config key
+- [Model Tiers](reference/model-tiers.md) - How a recipe step's `fast`, `standard` or `strong` tier becomes a model and, on Codex, a reasoning effort: the per-harness mapping, precedence, the fall-back to a harness default, instance and per-step overrides, and the run-summary section that names what each step ran on
+- [Put Recipe Steps on Model Tiers](howto/set-model-tiers.md) - Change one cell of the mapping, fill in a harness column, move one step, force one model everywhere, and read back what a run spent
 - [Profile Management](PROFILE_MANAGEMENT.md) - Multiple environment configurations
 - [Hook Configuration](HOOK_CONFIGURATION_GUIDE.md) - Customize framework behavior
 - [Artifact Guard](artifact-guard.md) - Guard for broad staging, pre-commit, and workflow publication artifacts
@@ -326,6 +328,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Quick-Change Recipe](reference/quick-change-recipe.md) - Single-session recipe for small changes: diff limits, hand-over to default-workflow, routing precedence and the `Workflow:` log line, `-c workflow=`
 - [Auto-Drive-Light Recipe](reference/auto-drive-light.md) - Smaller drive-to-merge recipe for small PRs: eligibility rules, escalation to auto-drive-to-merge, the task id its follow-up issues name, and the per-finding follow-up model it shares with auto-drive-to-merge
 - [Correlate Recipe Runs with Logs](howto/correlate-recipe-runs.md) - Match terminal output, final JSON, child process IDs, and runner log paths by run ID
+- [Model Tiers](reference/model-tiers.md) - The tier a recipe agent step declares, the per-harness model and effort it maps to, and the combined review pass for small diffs
 - [Recipe Executor Environment](reference/recipe-executor-environment.md) - Step-level variables plus subprocess environment contract for forced non-interactive recipe execution
 - [Recipe Commit Hook Repair](reference/recipe-commit-hook-repair.md) - How checkpoint and publish steps hand a rejected git `pre-commit` or `pre-push` hook to a fixing agent, retry under loop-health evaluation, and refuse changes to hook configuration
 - [Recipe Push Failure Recovery](reference/recipe-push-failure-recovery.md) - How a failed step-15 or step-18c push is judged as a change or environment fault, merged with the remote branch when it is ahead, retried once from a clean environment, and checked by a gate (including a fast-forward check) before the run continues

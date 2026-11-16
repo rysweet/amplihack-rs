@@ -1,0 +1,396 @@
+//! Issue #1619 (TDD): overriding one step's tier.
+//!
+//! Wire with `#[cfg(test)] mod tests_step_tiers;` in
+//! `commands/recipe/run/mod.rs` when `step_tiers.rs` lands.
+//!
+//! Expected API (`recipe::run::step_tiers`):
+//!
+//! ```ignore
+//! struct Staged { dir: PathBuf, files: Vec<PathBuf> }
+//! fn stage(
+//!     run_dir: &Path,
+//!     recipe_dirs: &[PathBuf],
+//!     top_level_recipe: &Path,
+//!     overrides: &BTreeMap<String, Tier>,
+//! ) -> Result<Option<Staged>, String>;
+//! fn validate_step_id(raw: &str) -> bool;
+//! const RECIPE_DIR_ENV: &str = "AMPLIHACK_PACKAGE_RECIPE_DIR";
+//! ```
+//!
+//! Why the override is applied recipe-side rather than at launch: the step id
+//! never reaches the child process. The recipe runner sets no step-id
+//! environment variable, so amplihack cannot know at launch time which step a
+//! command belongs to. Patching the recipe is the honest way to change one
+//! step's tier, and the patch is line-scoped and vocabulary-closed — only one
+//! of three literal words is ever written into a recipe file.
+//!
+//! Homes and recipe directories here are tempfile directories only.
+
+use super::step_tiers::{RECIPE_DIR_ENV, Staged, stage, validate_step_id};
+use crate::commands::launch::model_tiers::table::Tier;
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::PathBuf;
+
+const RECIPE: &str = r#"name: "sample"
+steps:
+  - id: "step-08-implement"
+    agent: "amplihack:builder"
+    model: "strong"
+    prompt: |
+      Build it.
+  - id: "step-20-final-cleanup"
+    agent: "amplihack:cleanup"
+    prompt: |
+      Tidy up.
+  - id: "run-the-build"
+    type: "bash"
+    command: |
+      echo building
+"#;
+
+struct Fixture {
+    _tmp: tempfile::TempDir,
+    run_dir: PathBuf,
+    recipes: PathBuf,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let run_dir = root.join("run");
+        let recipes = root.join("recipes");
+        fs::create_dir_all(&run_dir).unwrap();
+        fs::create_dir_all(&recipes).unwrap();
+        fs::write(recipes.join("sample.yaml"), RECIPE).unwrap();
+        Self {
+            _tmp: tmp,
+            run_dir,
+            recipes,
+        }
+    }
+
+    fn recipe(&self) -> PathBuf {
+        self.recipes.join("sample.yaml")
+    }
+
+    fn stage(&self, overrides: &[(&str, Tier)]) -> Result<Option<Staged>, String> {
+        let map: BTreeMap<String, Tier> = overrides
+            .iter()
+            .map(|(id, tier)| ((*id).to_string(), *tier))
+            .collect();
+        stage(&self.run_dir, &[self.recipes.clone()], &self.recipe(), &map)
+    }
+}
+
+fn staged_text(staged: &Staged, name: &str) -> String {
+    fs::read_to_string(staged.dir.join(name)).unwrap_or_else(|e| panic!("read staged {name}: {e}"))
+}
+
+/// The `model:` a step declares in `text`, read the simple way a reader of
+/// the file would.
+fn model_of(text: &str, step_id: &str) -> Option<String> {
+    let recipe: serde_yaml::Value = serde_yaml::from_str(text).expect("staged YAML parses");
+    recipe
+        .get("steps")?
+        .as_sequence()?
+        .iter()
+        .find(|s| s.get("id").and_then(serde_yaml::Value::as_str) == Some(step_id))?
+        .get("model")?
+        .as_str()
+        .map(str::to_string)
+}
+
+// -------------------------------------------------------------------------
+// The no-override case is pinned first
+// -------------------------------------------------------------------------
+
+#[test]
+fn nothing_is_staged_when_no_step_tier_is_configured() {
+    let f = Fixture::new();
+    let staged = f.stage(&[]).expect("no overrides is not an error");
+    assert!(
+        staged.is_none(),
+        "with nothing configured, nothing is staged, no environment variable is set, \
+         and the run behaves byte for byte as it did before"
+    );
+    assert!(
+        fs::read_dir(&f.run_dir).unwrap().next().is_none(),
+        "no directory is created either"
+    );
+}
+
+#[test]
+fn the_environment_variable_is_the_runners_first_search_directory() {
+    assert_eq!(
+        RECIPE_DIR_ENV, "AMPLIHACK_PACKAGE_RECIPE_DIR",
+        "the staged copies must be found before the bundled ones, and amplihack sets \
+         this variable nowhere else"
+    );
+}
+
+// -------------------------------------------------------------------------
+// Patching
+// -------------------------------------------------------------------------
+
+#[test]
+fn an_existing_model_line_is_rewritten() {
+    let f = Fixture::new();
+    let staged = f
+        .stage(&[("step-08-implement", Tier::Standard)])
+        .expect("stage")
+        .expect("one file is staged");
+    let text = staged_text(&staged, "sample.yaml");
+    assert_eq!(
+        model_of(&text, "step-08-implement").as_deref(),
+        Some("standard")
+    );
+}
+
+#[test]
+fn a_step_with_no_model_line_gains_one() {
+    let f = Fixture::new();
+    let staged = f
+        .stage(&[("step-20-final-cleanup", Tier::Fast)])
+        .expect("stage")
+        .expect("one file is staged");
+    let text = staged_text(&staged, "sample.yaml");
+    assert_eq!(
+        model_of(&text, "step-20-final-cleanup").as_deref(),
+        Some("fast")
+    );
+}
+
+#[test]
+fn only_the_named_step_is_touched() {
+    let f = Fixture::new();
+    let staged = f
+        .stage(&[("step-20-final-cleanup", Tier::Fast)])
+        .expect("stage")
+        .expect("staged");
+    let text = staged_text(&staged, "sample.yaml");
+    assert_eq!(
+        model_of(&text, "step-08-implement").as_deref(),
+        Some("strong"),
+        "the other step keeps the tier its recipe declares"
+    );
+    assert!(
+        text.contains("echo building"),
+        "the bash step body is copied, never regenerated: {text}"
+    );
+    assert!(
+        text.contains("Build it."),
+        "prompts are copied verbatim: a patched recipe is the same recipe"
+    );
+}
+
+#[test]
+fn only_one_of_three_literal_words_is_ever_written() {
+    // The patch is vocabulary-closed, so no text from an override file can
+    // reach a prompt or a shell body.
+    let f = Fixture::new();
+    for tier in [Tier::Fast, Tier::Standard, Tier::Strong] {
+        let staged = f
+            .stage(&[("step-08-implement", tier)])
+            .expect("stage")
+            .expect("staged");
+        let text = staged_text(&staged, "sample.yaml");
+        assert_eq!(
+            model_of(&text, "step-08-implement").as_deref(),
+            Some(tier.as_str())
+        );
+    }
+}
+
+#[test]
+fn a_step_id_no_recipe_contains_stages_nothing_for_that_step() {
+    let f = Fixture::new();
+    let staged = f
+        .stage(&[("step-99-polish", Tier::Fast)])
+        .expect("an unknown step id is reported, not an error");
+    match staged {
+        None => {}
+        Some(staged) => assert!(
+            staged.files.is_empty(),
+            "only files that contain a named step id are staged"
+        ),
+    }
+}
+
+#[test]
+fn only_files_containing_a_named_step_are_copied() {
+    let f = Fixture::new();
+    fs::write(
+        f.recipes.join("other.yaml"),
+        "name: \"other\"\nsteps:\n  - id: \"x\"\n    type: \"bash\"\n    command: \"true\"\n",
+    )
+    .unwrap();
+    let staged = f
+        .stage(&[("step-08-implement", Tier::Fast)])
+        .expect("stage")
+        .expect("staged");
+    assert!(
+        !staged.dir.join("other.yaml").exists(),
+        "a recipe with no named step is left to be found in its own directory"
+    );
+}
+
+// -------------------------------------------------------------------------
+// Step ids are identifiers, never path components
+// -------------------------------------------------------------------------
+
+#[test]
+fn step_ids_amplihack_accepts() {
+    for good in [
+        "step-08-implement",
+        "step-10b-security-review",
+        "a",
+        "A1",
+        "a.b_c-d",
+        &"x".repeat(128),
+    ] {
+        assert!(validate_step_id(good), "`{good}` must be accepted");
+    }
+}
+
+#[test]
+fn step_ids_amplihack_rejects() {
+    for bad in [
+        "",
+        ".",
+        "..",
+        "../etc/passwd",
+        "a/b",
+        "a\\b",
+        "-leading-dash",
+        ".leading-dot",
+        "a b",
+        "a\0b",
+        "a\nb",
+        "a;b",
+        "a$b",
+        &"x".repeat(129),
+    ] {
+        assert!(!validate_step_id(bad), "`{bad:?}` must be rejected");
+    }
+}
+
+#[test]
+fn a_rejected_step_id_stages_nothing_and_is_not_an_error() {
+    let f = Fixture::new();
+    let mut map: BTreeMap<String, Tier> = BTreeMap::new();
+    map.insert("../../escape".to_string(), Tier::Fast);
+    let staged = stage(&f.run_dir, &[f.recipes.clone()], &f.recipe(), &map)
+        .expect("a bad step id is reported, not fatal");
+    assert!(
+        staged.is_none() || staged.unwrap().files.is_empty(),
+        "a step id that is not an identifier never reaches a path join"
+    );
+}
+
+#[test]
+fn staged_file_names_come_only_from_the_discovered_recipe() {
+    let f = Fixture::new();
+    let staged = f
+        .stage(&[("step-08-implement", Tier::Fast)])
+        .expect("stage")
+        .expect("staged");
+    for file in &staged.files {
+        assert_eq!(
+            file.parent(),
+            Some(staged.dir.as_path()),
+            "every staged file is directly inside the staging directory: {file:?}"
+        );
+        assert_eq!(
+            file.file_name(),
+            Some(std::ffi::OsStr::new("sample.yaml")),
+            "the name comes from the recipe amplihack found, never from the override \
+             file"
+        );
+    }
+}
+
+// -------------------------------------------------------------------------
+// The staging directory
+// -------------------------------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn the_staging_directory_and_its_files_are_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let staged = f
+        .stage(&[("step-08-implement", Tier::Fast)])
+        .expect("stage")
+        .expect("staged");
+    let dir_mode = fs::metadata(&staged.dir).unwrap().permissions().mode() & 0o777;
+    assert_eq!(dir_mode, 0o700, "directory mode was {dir_mode:o}");
+    for file in &staged.files {
+        let mode = fs::metadata(file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{file:?} mode was {mode:o}");
+    }
+}
+
+#[test]
+fn the_staging_directory_lives_under_the_run_directory() {
+    let f = Fixture::new();
+    let staged = f
+        .stage(&[("step-08-implement", Tier::Fast)])
+        .expect("stage")
+        .expect("staged");
+    assert!(
+        staged.dir.starts_with(&f.run_dir),
+        "the patched copies belong to the run that made them: {:?}",
+        staged.dir
+    );
+}
+
+#[test]
+fn the_original_recipe_file_is_never_modified() {
+    let f = Fixture::new();
+    let before = fs::read_to_string(f.recipe()).unwrap();
+    let _ = f
+        .stage(&[("step-08-implement", Tier::Fast)])
+        .expect("stage");
+    assert_eq!(
+        fs::read_to_string(f.recipe()).unwrap(),
+        before,
+        "staging writes copies; the bundled recipe is read-only to this feature"
+    );
+}
+
+#[test]
+fn a_recipe_directory_that_cannot_be_read_is_reported_rather_than_fatal() {
+    let f = Fixture::new();
+    let missing: PathBuf = f.run_dir.join("no-such-recipe-dir");
+    let mut map: BTreeMap<String, Tier> = BTreeMap::new();
+    map.insert("step-08-implement".to_string(), Tier::Fast);
+    let result = stage(&f.run_dir, &[missing], &f.recipe(), &map);
+    assert!(
+        result.is_ok(),
+        "a missing search directory must not stop a run of 100 agent steps: {result:?}"
+    );
+}
+
+#[test]
+fn the_top_level_recipe_is_staged_even_when_it_is_outside_the_search_directories() {
+    // The documented fall-back if the staging directory cannot be placed
+    // ahead of the bundled one: the override still covers the recipe named on
+    // the command line.
+    let f = Fixture::new();
+    let elsewhere = f.run_dir.parent().unwrap().join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let recipe = elsewhere.join("named.yaml");
+    fs::write(&recipe, RECIPE).unwrap();
+    let mut map: BTreeMap<String, Tier> = BTreeMap::new();
+    map.insert("step-08-implement".to_string(), Tier::Fast);
+    let staged = stage(&f.run_dir, &[], &recipe, &map)
+        .expect("stage")
+        .expect("the recipe named on the command line is always reachable");
+    let text = staged_text(&staged, "named.yaml");
+    assert_eq!(
+        model_of(&text, "step-08-implement").as_deref(),
+        Some("fast")
+    );
+}

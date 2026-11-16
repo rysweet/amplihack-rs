@@ -549,3 +549,11 @@ mod issue_1771_precommit_symlinked_caches;
 // recipe-runner-rs with agent steps stubbed, all under isolated(..).
 #[path = "issue_1966_consensus_criticality.rs"]
 mod issue_1966_consensus_criticality;
+
+// Issue #1619 (TDD): the bundled recipes declare a model tier per agent step.
+// Pure structural assertions on the shipped YAML: every agent step of the
+// tiered set carries one of the three tier words, no bundled recipe names a
+// concrete model, the untiered recipes are untouched, the brick budget still
+// holds, and the small-diff combined review is wired and off by default.
+#[path = "issue_1619_recipe_tiers_test.rs"]
+mod issue_1619_recipe_tiers;

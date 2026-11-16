@@ -83,6 +83,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_EXTERNAL_OTLP_AUTHORIZATION` | internal |  | OTLP header the Docker launcher must not forward; named in its filter. |
 | `AMPLIHACK_FLEET_EXISTING_VMS` | user preference |  | Existing VMs for `amplihack fleet` to use. |
 | `AMPLIHACK_FLEET_REASONER_BINARY_PATH` | user preference |  | Path to the fleet reasoner's CLI. |
+| `AMPLIHACK_FORCE_MODEL` | user preference | `model.force` | One model id for every launch, whatever [tier](./model-tiers.md) a step declared. The one setting that replaces a concrete `--model` already on the command line. Ignored on a LiteLLM gateway launch. |
 | `AMPLIHACK_FORCE_RECIPE_RUNNER_DOWNGRADE` | user preference |  | Allows installing an older recipe runner. |
 | `AMPLIHACK_GIT_1278_CHILD` | test-only |  | Re-exec switch for the #1278 git test. |
 | `AMPLIHACK_GIT_1278_PLAIN` | test-only |  | Re-exec switch for the #1278 git test. |
@@ -305,3 +306,4 @@ environment is not changed.
 
 - [User Configuration](./user-config.md) — The config files, their keys and the `amplihack config` command
 - [Environment Variables](./environment-variables.md) — Detailed behaviour of the variables amplihack sets and reads
+- [Model Tiers](./model-tiers.md) — `AMPLIHACK_FORCE_MODEL`, how `AMPLIHACK_DEFAULT_MODEL` and `AMPLIHACK_LITELLM_MODEL` rank against a step's tier, and the `model-tiers.jsonl` record written under `AMPLIHACK_RUN_DIR`
