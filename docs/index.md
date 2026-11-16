@@ -149,7 +149,7 @@ amplihack copilot
 - [Config Write Durability](concepts/config-write-durability.md) - Why the first-launch save of `node.heap_consent` skips `fsync` while `config set` and `config unset` keep it
 - [AMPLIHACK_* Environment Variable Audit](reference/amplihack-env-vars.md) - Every `AMPLIHACK_*` name classified as user preference, internal or test-only, with its config key
 - [Model Tiers](reference/model-tiers.md) - How a recipe step's `fast`, `standard` or `strong` tier becomes a model and, on Codex, a reasoning effort: the per-harness mapping, precedence, the fall-back to a harness default, instance and per-step overrides, and the run-summary section that names what each step ran on
-- [Put Recipe Steps on Model Tiers](howto/set-model-tiers.md) - Change one cell of the mapping, fill in a harness column, move one step, force one model everywhere, and read back what a run spent
+- [Put Recipe Steps on Model Tiers](howto/set-model-tiers.md) - Change one cell of the mapping, fill in a harness column, move one step, force one model everywhere, run small-change reviews as one pass, and read back what a run spent
 - [Profile Management](PROFILE_MANAGEMENT.md) - Multiple environment configurations
 - [Hook Configuration](HOOK_CONFIGURATION_GUIDE.md) - Customize framework behavior
 - [Artifact Guard](artifact-guard.md) - Guard for broad staging, pre-commit, and workflow publication artifacts
