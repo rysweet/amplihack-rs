@@ -330,8 +330,9 @@ on the private repository because that is the only checkout it is given. A
 command that runs outside any repository, such as `git clone` or
 `git ls-remote`, is ordinary work and has no effect on the run.
 
-Caller `GIT_TRACE2*` variables are inherited rather than stripped; see
-[Git commands a run makes](recipe-runner-logging.md#git-commands-a-run-makes)
+Caller `GIT_TRACE2*` variables are cleared from the runner's environment, so
+a trace target set outside a run cannot collect the run's Git traffic; see
+[Caller Git trace variables are cleared](recipe-runner-logging.md#caller-git-trace-variables-are-cleared)
 in the logging reference.
 
 ## Private review generations
@@ -519,7 +520,7 @@ Isolation cannot be switched off.
 | `RECIPE_RUNNER_RS_PATH` | Runner binary. It starts in the private checkout like any step. |
 | `AMPLIHACK_RUN_CHECKOUT` | Set for steps. An inherited value is ignored and grants no ownership. |
 | `AMPLIHACK_CLEANUP_ON_EXIT=0` | Skips the cleanup sweep only. Release still runs. |
-| Caller `GIT_TRACE2_*` | Inherited by the runner and by the Git processes a run starts. amplihack sets none of them and reads none of them. |
+| Caller `GIT_TRACE2_*` | Cleared from the runner's environment, so they reach neither the runner nor the Git processes a run starts. amplihack sets none of them and reads none of them. |
 
 ## Rust components
 

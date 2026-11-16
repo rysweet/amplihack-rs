@@ -42,8 +42,13 @@ generation chain. Actual agent automatic instruction/configuration discovery
 still requires production validation.
 
 Nothing here traces, journals or attributes the Git commands a run makes. A
-run needs no `ptrace` privilege on any platform; the private clone is the whole
-of the isolation.
+run needs no `ptrace` privilege on any platform; the private clone is what
+isolates a run's Git state, and no record of what it did is kept.
+
+`RunCheckout::apply_to` still shapes the runner's environment around that
+clone: it scrubs inherited repository selection and config injection, points
+Git at the private checkout, and clears the caller's `GIT_TRACE2*` namespace
+so a trace target set outside the run cannot collect its Git traffic.
 
 Regression contracts live in `tests/issue_2096_*` and `tests/issue_2738_*`.
 The crate sets `autotests = false`, so each of those files is compiled only
